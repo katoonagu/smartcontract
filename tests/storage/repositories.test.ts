@@ -1346,7 +1346,9 @@ describe("TRON address USDT index repositories", () => {
     expect(state.lockOwner).toBe("worker-a");
     expect(queuedDb.queries).toHaveLength(1);
     expect(queuedDb.queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
-    expect(queuedDb.queries[0].sql).toContain("do update set");
+    expect(queuedDb.queries[0].sql).toContain(
+      "on conflict (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set"
+    );
     expect(queuedDb.queries[0].sql).toContain("status not in ('complete', 'running', 'failed_terminal')");
     expect(queuedDb.queries[0].sql).toContain("status = 'partial'");
     expect(queuedDb.queries[0].sql).toContain("status = 'failed_retryable'");
@@ -1780,6 +1782,9 @@ describe("TRON address USDT index repositories", () => {
     });
 
     expect(queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
+    expect(queries[0].sql).toContain(
+      "on conflict (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash)"
+    );
     expect(queries[0].params).toContain("targeted");
     expect(queries[0].params).toContain(targetTimestamp.getTime());
   });

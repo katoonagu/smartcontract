@@ -539,6 +539,14 @@ function strictProviderLimitedProgressJson(
   });
 }
 
+function whereReportScoreValidityResultJson(report: WhereIsMoneyReport): Record<string, unknown> {
+  return {
+    score_valid: report.scoreValid !== false,
+    score_blocked_reason: report.scoreBlockedReason ?? null,
+    technical_status: report.technicalStatus ?? "completed"
+  };
+}
+
 function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
   const snapshot = job.progressJson.fastRiskSnapshot;
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
@@ -1234,7 +1242,7 @@ async function runWhereIsMoneyJob(
     },
     resultJson: {
       subjectAddress: report.subjectAddress,
-      ...(strictBenchmark ? strictCompletedResultJson() : {}),
+      ...(strictBenchmark ? strictCompletedResultJson() : whereReportScoreValidityResultJson(report)),
       whereIsMoneyReport: report,
       contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
       contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? []
@@ -1279,8 +1287,12 @@ export async function runSingleDeepForensicJobCycle(
         const targetedIndex = isRecord(job.progressJson.targetedIndex)
           ? job.progressJson.targetedIndex
           : {};
+        const statusReason = targetedStatusReasonField(targetedIndex.statusReason);
+        if (statusReason === "partial_provider_cap") {
+          return await runWhereIsMoneyJob(deps, job, options);
+        }
         const mapped = targetedHistoryTerminalStatus(
-          targetedStatusReasonField(targetedIndex.statusReason),
+          statusReason,
           nullableStringField(targetedIndex.lastError)
         );
         await deps.completeForensicCheckJob({
@@ -1441,6 +1453,7 @@ export async function runSingleDeepForensicJobCycle(
         approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
         secondLayerRelationshipProfiles: report.secondLayerRelationshipProfiles ?? null,
         contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
+        contractDrivenCampaignSummary: report.contractDrivenCampaignSummary ?? null,
         contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
         assetContinuationProfiles: report.assetContinuationProfiles ?? [],
         boundaryExposureProfiles: report.boundaryExposureProfiles,

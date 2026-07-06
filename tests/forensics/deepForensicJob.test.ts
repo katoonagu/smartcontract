@@ -1044,6 +1044,25 @@ describe("deep forensic job runner", () => {
       ...emptyDeepReport(),
       runProfile: "bounded_rerun",
       providerBudget,
+      contractDrivenCampaignSummary: {
+        incomingTxTotal: 2,
+        incomingAmountRaw: "3000000",
+        txInfoEnrichedIncomingTx: 2,
+        campaignClassificationStatus: "complete",
+        countsAreLowerBounds: false,
+        plainUsdtTransferTxCount: 1,
+        plainUsdtTransferAmountRaw: "1000000",
+        wrapperDrivenIncomingTxCount: 1,
+        wrapperDrivenIncomingAmountRaw: "2000000",
+        verify20WrapperTxCount: 1,
+        transferFromWrapperTxCount: 0,
+        permitWrapperTxCount: 0,
+        otherContractMethodTxCount: 0,
+        unknownUnenrichedTxCount: 0,
+        txInfoUnavailableTxCount: 0,
+        exactApprovalDrainProfileCount: 0,
+        campaignClusters: []
+      },
       assetContinuationProfiles,
       boundaryExposureProfiles,
       operationalFlowProfiles,
@@ -1074,6 +1093,7 @@ describe("deep forensic job runner", () => {
       expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
         runProfile: "bounded_rerun",
         providerBudget,
+        contractDrivenCampaignSummary: report.contractDrivenCampaignSummary,
         assetContinuationProfiles,
         boundaryExposureProfiles,
         operationalFlowProfiles,
@@ -2958,6 +2978,316 @@ describe("deep forensic job runner", () => {
           statusReason: "partial_provider_cap"
         })
       ]));
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("resumes ordinary where provider-cap terminal progress into dense-hop materiality scoring", async () => {
+    vi.resetModules();
+    const thjSubject = "THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7";
+    const denseHop = "TYCBsKvJSrLoj6pudJCLFNFYdBcntNP1gU";
+    const cleanSource = "TCleanCex1111111111111111111111111111";
+    const hopTimestamp = new Date("2026-07-01T12:39:03.000Z");
+    const denseHopMateriality = {
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      unresolvedAmountRaw: "1562000000",
+      unresolvedAmountUsdt: 1562,
+      unresolvedShareOfCheckedBalance: 0.001562,
+      unresolvedShareOfSelectedAmount: 0.001562,
+      largestUnresolvedAmountRaw: "1562000000",
+      largestUnresolvedAmountUsdt: 1562,
+      aggregateUnresolvedShareOfCheckedBalance: 0.001562,
+      aggregateUnresolvedShareOfSelectedAmount: 0.001562,
+      unresolvedPathCount: 1,
+      denseHopUnresolvedPathCount: 1,
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: true,
+      unresolvedReasonCounts: {
+        provider_cap_hit: 1,
+        dense_hop_provider_cap: 1,
+        funding_source_unresolved: 1
+      },
+      thresholds: {
+        maxResidualUnresolvedShare: 0.01,
+        maxResidualUnresolvedAmountUsdt: 100,
+        maxResidualUnresolvedAmountRaw: "100000000",
+        maxDenseHopUnresolvedShare: 0.01,
+        maxDenseHopAggregateUnresolvedShare: 0.02,
+        maxDenseHopUnresolvedAmountUsdt: 10000,
+        maxDenseHopUnresolvedAmountRaw: "10000000000"
+      }
+    };
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      const denseEdges = await deps.fetchEdgesForAddress(denseHop, { latestTimestamp: hopTimestamp });
+      const denseCoverage = await deps.getHistoryCoverageForAddress(denseHop, { latestTimestamp: hopTimestamp });
+      return {
+        subjectAddress: thjSubject,
+        currentUsdtBalanceRaw: "1000000000000",
+        fastWalletRisk: null,
+        balanceFormingTransfers: [
+          {
+            txHash: "tx-clean-covered",
+            fromAddress: cleanSource,
+            toAddress: thjSubject,
+            amountRaw: "998438000000",
+            timestamp: "2026-07-01T12:30:00.000Z"
+          },
+          {
+            txHash: "tx-dense-tail",
+            fromAddress: denseHop,
+            toAddress: thjSubject,
+            amountRaw: "1562000000",
+            timestamp: hopTimestamp.toISOString()
+          }
+        ],
+        originPaths: [
+          {
+            balanceTransferTxHash: "tx-clean-covered",
+            rootSourceAddress: cleanSource,
+            rootSourceType: "allowlist_cex",
+            pathAddresses: [cleanSource, thjSubject],
+            txHashes: ["tx-clean-covered"],
+            steps: [{
+              txHash: "tx-clean-covered",
+              fromAddress: cleanSource,
+              toAddress: thjSubject,
+              amountRaw: "998438000000",
+              timestamp: "2026-07-01T12:30:00.000Z"
+            }],
+            historyCoverage: [],
+            stoppedReason: "known_service_boundary",
+            verdict: "ACCEPTABLE",
+            riskScoreContribution: 15,
+            balanceShare: 0.998438,
+            amountPreservationRatio: 1,
+            timeSpanMs: null,
+            reasons: ["Covered clean source remains dominant."]
+          },
+          {
+            balanceTransferTxHash: "tx-dense-tail",
+            rootSourceAddress: denseHop,
+            rootSourceType: "incomplete",
+            pathAddresses: [denseHop, thjSubject],
+            txHashes: ["tx-dense-tail"],
+            steps: [{
+              txHash: "tx-dense-tail",
+              fromAddress: denseHop,
+              toAddress: thjSubject,
+              amountRaw: "1562000000",
+              timestamp: hopTimestamp.toISOString()
+            }],
+            historyCoverage: [denseCoverage],
+            stoppedReason: "incoming_history_not_fetched",
+            verdict: "REVIEW",
+            riskScoreContribution: 45,
+            balanceShare: 0.001562,
+            amountPreservationRatio: 1,
+            timeSpanMs: null,
+            sourceProvenance: [{
+              mode: "source_provenance",
+              targetTxHash: "tx-dense-tail",
+              targetFromAddress: denseHop,
+              targetToAddress: thjSubject,
+              targetTimestamp: hopTimestamp.toISOString(),
+              targetAmountRaw: "1562000000",
+              proofClass: "unresolved",
+              coveredAmountRaw: "0",
+              coverageRatio: 0,
+              amountContinuity: "strong",
+              stopReason: "incoming_history_not_fetched",
+              fundingBundle: null,
+              coverageWindow: {
+                startTimestamp: null,
+                endTimestamp: hopTimestamp.toISOString(),
+                complete: false,
+                capped: true,
+                providerInconsistent: false
+              },
+              reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"]
+            }],
+            reasons: [`Dense-hop source remains unresolved after provider-cap terminal state; cached_edges:${denseEdges.length}`]
+          }
+        ],
+        senderInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        approvalDrainReviewFindings: [],
+        contractLlmVerdicts: [],
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          riskBand: "MEDIUM",
+          provenanceConfidence: 40,
+          coverageCompleteness: 80,
+          walletRole: "unknown_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [],
+          sourcePolicyEvidence: [],
+          contractSuspicionEvidence: [],
+          unknownOriginEvidence: [],
+          riskLayers: [],
+          dominantRiskLayer: null,
+          scoreValid: true,
+          scoreBlockedReason: null,
+          technicalStatus: "completed",
+          sourceProvenanceMateriality: denseHopMateriality,
+          reasons: ["Dense-hop unresolved source is below relative materiality."],
+          warnings: ["Dense-hop unresolved source is shown as a caveat, not clean or bad evidence."]
+        },
+        decision: "REVIEW",
+        userDecision: "REVIEW",
+        internalDecision: "REVIEW",
+        proofLevel: "insufficient_coverage",
+        riskScore: 45,
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
+        sourceProvenanceMateriality: denseHopMateriality,
+        decisionReasons: ["Dense-hop unresolved source is below relative materiality."],
+        coverage: {
+          selectedInboundTxCount: 2,
+          currentBalanceRaw: "1000000000000",
+          requestedAmountRaw: null,
+          targetAmountRaw: "1000000000000",
+          selectedAmountRaw: "1000000000000",
+          coverageRatio: 1,
+          selectedInboundVolumeRaw: "1000000000000",
+          currentBalanceCoverageRatio: 1,
+          maxDepth: 20,
+          fetchedAddressCount: 2,
+          partial: true,
+          notes: ["Dense-hop source unresolved below materiality."]
+        }
+      };
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        id: "where-thj-provider-cap",
+        kind: "where_is_money_check",
+        subjectAddress: thjSubject,
+        windowStart: new Date("2026-07-01T00:00:00.000Z"),
+        windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+        progressJson: {
+          mode: "wallet_profile",
+          jobPhase: "provider_limited",
+          targetedIndex: {
+            phase: "provider_limited",
+            scoreValid: false,
+            scoreBlockedReason: "provider_cap_unresolved",
+            technicalStatus: "provider_cap_unresolved",
+            waitingFor: null,
+            lastIndexedAddress: denseHop,
+            lastIndexedTargetTimestamp: hopTimestamp.toISOString(),
+            lastIndexStatus: "partial",
+            statusReason: "partial_provider_cap",
+            providerCapHit: true,
+            budgetExhausted: false,
+            fetchedPageCount: 26,
+            fetchedTransferCount: 1297,
+            uniqueCounterpartyCount: 1191
+          }
+        }
+      };
+      const getAddressUsdtIndexState = vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+        ...queuedIndexState(input.address),
+        coverageMode: "targeted",
+        status: "partial",
+        statusReason: "partial_provider_cap",
+        targetTimestamp: input.targetTimestamp ?? null,
+        providerCapHit: true,
+        budgetExhausted: false,
+        attemptCount: 12,
+        maxAttempts: 8,
+        budgetPages: 12000,
+        fetchedPageCount: 26,
+        fetchedTransferCount: 1297,
+        uniqueCounterpartyCount: 1191
+      } as any));
+      const indexedLookup = vi.fn(async (address: string) => {
+        if (address !== denseHop) return [];
+        return [indexedTransfer({
+          txHash: "tx-dense-cache-context",
+          blockTimestamp: new Date("2026-07-01T12:20:00.000Z"),
+          fromAddress: "TContext1111111111111111111111111111",
+          toAddress: denseHop,
+          amountRaw: "1000000"
+        })];
+      });
+      const queueAddressUsdtHistory = vi.fn(async () => {
+        throw new Error("terminal provider-cap resume must score cached evidence, not requeue");
+      });
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState,
+        queueAddressUsdtHistory,
+        listIndexedUsdtTransfersForAddress: indexedLookup,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({
+          subjectAddress: address,
+          balanceRaw: address === thjSubject ? "1000000000000" : null
+        })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(runWhereIsMoneyCheck).toHaveBeenCalledTimes(1);
+      expect(indexedLookup).toHaveBeenCalledWith(denseHop, expect.objectContaining({
+        maxTimestamp: hopTimestamp
+      }));
+      expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+      expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+      const completion = completeForensicCheckJob.mock.calls[0]?.[0];
+      if (!completion) throw new Error("expected where completion");
+      expect(completion).toMatchObject({
+        id: sourceJob.id,
+        status: "completed",
+        lastError: null,
+        progressJson: expect.objectContaining({
+          decision: "REVIEW",
+          riskScore: 45
+        }),
+        resultJson: expect.objectContaining({
+          subjectAddress: thjSubject,
+          score_valid: true,
+          score_blocked_reason: null,
+          technical_status: "completed",
+          whereIsMoneyReport: expect.objectContaining({
+            decision: "REVIEW",
+            userDecision: "REVIEW",
+            riskScore: 45,
+            scoreValid: true,
+            scoreBlockedReason: null,
+            technicalStatus: "completed",
+            sourceProvenanceMateriality: expect.objectContaining({
+              outcome: "dense_hop_unresolved_below_materiality",
+              unresolvedAmountRaw: "1562000000",
+              hardEvidenceInUnresolved: false,
+              excludedFromDecisiveScore: true
+            })
+          })
+        })
+      });
+      expect(completion.resultJson).not.toMatchObject({
+        score_valid: false,
+        score_blocked_reason: "provider_cap_unresolved",
+        technical_status: "provider_cap_unresolved"
+      });
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();

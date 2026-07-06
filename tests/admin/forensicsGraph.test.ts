@@ -1917,6 +1917,137 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("shows dense-hop unresolved source provenance as a caveat when materiality is below threshold", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopDense11111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 45,
+        decision: "REVIEW",
+        score_valid: true,
+        scoreValid: true,
+        score_blocked_reason: null,
+        scoreBlockedReason: null,
+        technical_status: "completed",
+        technicalStatus: "completed",
+        coverage: {
+          coverageRatio: 1,
+          currentBalanceRaw: "1000000000000",
+          targetAmountRaw: "1000000000000",
+          selectedAmountRaw: "1000000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 40,
+          reasons: ["Dense-hop unresolved source is below relative materiality."],
+          score_valid: true,
+          scoreValid: true,
+          technical_status: "completed",
+          technicalStatus: "completed",
+          sourceProvenanceMateriality: {
+            outcome: "dense_hop_unresolved_below_materiality",
+            materialityTier: "small_relative_dense_hop_tail",
+            unresolvedAmountRaw: "1562000000",
+            unresolvedAmountUsdt: 1562,
+            unresolvedShareOfCheckedBalance: 0.001562,
+            unresolvedShareOfSelectedAmount: 0.001562,
+            largestUnresolvedAmountRaw: "1562000000",
+            largestUnresolvedAmountUsdt: 1562,
+            aggregateUnresolvedShareOfCheckedBalance: 0.001562,
+            aggregateUnresolvedShareOfSelectedAmount: 0.001562,
+            unresolvedPathCount: 1,
+            denseHopUnresolvedPathCount: 1,
+            hardEvidenceInUnresolved: false,
+            excludedFromDecisiveScore: true,
+            unresolvedReasonCounts: {
+              provider_cap_hit: 1,
+              dense_hop_provider_cap: 1,
+              funding_source_unresolved: 1
+            },
+            thresholds: {
+              maxResidualUnresolvedShare: 0.01,
+              maxResidualUnresolvedAmountUsdt: 100,
+              maxResidualUnresolvedAmountRaw: "100000000",
+              maxDenseHopUnresolvedShare: 0.01,
+              maxDenseHopAggregateUnresolvedShare: 0.02,
+              maxDenseHopUnresolvedAmountUsdt: 10000,
+              maxDenseHopUnresolvedAmountRaw: "10000000000"
+            }
+          }
+        },
+        originPaths: [{
+          verdict: "REVIEW",
+          stoppedReason: "incoming_history_not_fetched",
+          riskScoreContribution: 45,
+          balanceShare: 0.001562,
+          pathAddresses: [hop, subject],
+          txHashes: ["tx-dense"],
+          steps: [{
+            txHash: "tx-dense",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "1562000000",
+            timestamp: "2026-07-01T12:39:03.000Z"
+          }],
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-dense",
+            targetFromAddress: hop,
+            targetToAddress: subject,
+            targetTimestamp: "2026-07-01T12:39:03.000Z",
+            targetAmountRaw: "1562000000",
+            proofClass: "unresolved",
+            coveredAmountRaw: "0",
+            coverageRatio: 0,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: null,
+            coverageWindow: {
+              startTimestamp: null,
+              endTimestamp: "2026-07-01T12:39:03.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"]
+          }],
+          reasons: ["Dense-hop source unresolved after provider-cap terminal state."]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      denseHopUnresolvedPathCount: 1,
+      excludedFromDecisiveScore: true,
+      unresolvedReasonCounts: expect.objectContaining({ dense_hop_provider_cap: 1 })
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "Dense hop caveat",
+        pathId: "path:0"
+      })
+    ]));
+    expect(result.graph.limitations.filter((limitation) => limitation.pathId === "path:0")).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "History not fully fetched"
+      })
+    ]));
+    expect(result.graph.paths[0]).toMatchObject({
+      stopReason: "incoming_history_not_fetched",
+      stopReasonLabel: "Dense hop caveat"
+    });
+  });
+
   it("hides where-is-money bundle-covered member edges and profile context duplicates", () => {
     const subject = "TSubject111111111111111111111111111111";
     const hop = "THop111111111111111111111111111111111";
@@ -7727,11 +7858,35 @@ describe("projectForensicJobGraph", () => {
     );
     expect(callEdge).toMatchObject({
       type: "approval",
+      displayRole: "profile_context",
       metadata: {
         method: "contract-driven token transfer",
         spenderResolution: "wrapper_contract"
       }
     });
+
+    const authorityEdge = result.graph.edges.find((edge) =>
+      edge.metadata.evidenceType === "approval_drain_spender_authority"
+    );
+    expect(authorityEdge).toMatchObject({
+      fromNodeId: `addr:${victim}`,
+      toNodeId: `addr:${spenderContract}`,
+      type: "approval",
+      displayRole: "profile_context",
+      amountRaw: null,
+      metadata: {
+        boundaryContextOnly: true,
+        fromAddress: victim,
+        toAddress: spenderContract,
+        victimAddress: victim,
+        spenderAddress: spenderContract
+      }
+    });
+    expect(result.graph.edges.some((edge) =>
+      edge.fromNodeId === `addr:${spenderContract}` &&
+      edge.toNodeId === `addr:${victim}` &&
+      edge.metadata.evidenceType === "approval_drain_spender_authority"
+    )).toBe(false);
   });
 
   it("projects repeated Verify20 contract-driven inflows as a drainer-like receiver campaign", () => {
@@ -7849,6 +8004,7 @@ describe("projectForensicJobGraph", () => {
       edge.metadata.evidenceType === "contract_trigger_context"
     );
     expect(triggerEdge).toMatchObject({
+      displayRole: "profile_context",
       amountRaw: "9370000000",
       txHash,
       metadata: {
@@ -7880,6 +8036,163 @@ describe("projectForensicJobGraph", () => {
         underlyingTransfers: []
       }
     });
+  });
+
+  it("surfaces contract-driven campaign denominators in Admin graph summary and receiver metadata", () => {
+    const subject = "TDenominatorReceiver1111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 3 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenCampaignSummary: {
+          incomingTxTotal: 116,
+          incomingAmountRaw: "437600000000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          plainUsdtTransferAmountRaw: "115500000000",
+          wrapperDrivenIncomingTxCount: 101,
+          wrapperDrivenIncomingAmountRaw: "322100000000",
+          verify20WrapperTxCount: 101,
+          transferFromWrapperTxCount: 0,
+          permitWrapperTxCount: 0,
+          otherContractMethodTxCount: 0,
+          unknownUnenrichedTxCount: 0,
+          txInfoUnavailableTxCount: 0,
+          exactApprovalDrainProfileCount: 0,
+          campaignClusters: [{
+            method: "Verify20",
+            contractAddress: "TVerify20Denominator111111111111",
+            txCount: 101,
+            amountRaw: "322100000000"
+          }]
+        },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 116,
+          totalIncomingAmountRaw: "437600000000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          contractDrivenIncomingTxCount: 101,
+          contractDrivenIncomingAmountRaw: "322100000000",
+          wrapperDrivenIncomingTxCount: 101,
+          verify20WrapperTxCount: 101,
+          uniqueSourceCount: 101,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const summaryJson = JSON.stringify(result.graph.summary);
+    expect(summaryJson).toContain("incomingTxTotal");
+    expect(summaryJson).toContain("txInfoEnrichedIncomingTx");
+    expect(summaryJson).toContain("wrapperDrivenIncomingTxCount");
+    expect(summaryJson).toContain("plainUsdtTransferTxCount");
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.contractDrivenReceiverCampaign)
+      .toMatchObject({
+        txInfoEnrichedIncomingTx: 116,
+        campaignClassificationStatus: "complete",
+        countsAreLowerBounds: false,
+        plainUsdtTransferTxCount: 15,
+        wrapperDrivenIncomingTxCount: 101,
+        verify20WrapperTxCount: 101
+      });
+  });
+
+  it("marks TPdr-like Verify20 campaign receiver and wrapper contract as drainers and sources as victims", () => {
+    const subject = "TTPdrLikeReceiver111111111111111";
+    const contract = "TTPdrVerify20Wrapper111111111111";
+    const victims = [
+      "TTPdrVictimSourceA1111111111111",
+      "TTPdrVictimSourceB1111111111111"
+    ];
+    const profiles = victims.map((sourceAddress, index) => ({
+      txHash: `tpdr-like-verify20-${index}`,
+      timestamp: `2026-06-28T00:0${index + 1}:00.000Z`,
+      amountRaw: "816000000",
+      method: "Verify20",
+      callerAddress: `TTPdrCaller${index}111111111111111`,
+      contractAddress: contract,
+      sourceAddress,
+      receiverAddress: subject
+    }));
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 116,
+          totalIncomingAmountRaw: "437600000000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          contractDrivenIncomingTxCount: 101,
+          contractDrivenIncomingAmountRaw: "322100000000",
+          wrapperDrivenIncomingTxCount: 101,
+          verify20WrapperTxCount: 101,
+          uniqueSourceCount: 101,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: profiles,
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
+      source: "contract_driven_evidence",
+      evidenceStrength: "behavior"
+    });
+    expect(result.graph.nodes.find((node) => node.address === contract)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer contract",
+      source: "contract_driven_evidence",
+      evidenceStrength: "behavior"
+    });
+    for (const victim of victims) {
+      expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
+        role: "victim",
+        label: "Victim",
+        source: "contract_driven_evidence"
+      });
+    }
   });
 
   it("projects contract-driven debits as source-to-contract trigger context", () => {
@@ -7950,6 +8263,7 @@ describe("projectForensicJobGraph", () => {
 
     expect(triggerEdge).toMatchObject({
       type: "transfer",
+      displayRole: "profile_context",
       amountRaw: "9370000000",
       txHash,
       metadata: {
@@ -8537,6 +8851,91 @@ describe("projectForensicJobGraph", () => {
       edge.amountRaw === amountRaw &&
       edge.metadata.evidenceType === "contract_driven_transfer"
     )).toBeDefined();
+  });
+
+  it("suppresses reversed extended-path projection for the same contract-driven transfer", () => {
+    const subject = "TContractExtendedSubject11111111111";
+    const operator = "TContractExtendedOperator111111111111";
+    const contract = "TContractExtendedContract111111111111";
+    const source = "TContractExtendedSource1111111111111";
+    const txHash = "same-extended-contract-tx";
+    const amountRaw = "15000000000";
+    const timestamp = "2026-06-25T09:48:57.000Z";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "Verify20",
+          callerAddress: operator,
+          contractAddress: contract,
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        extendedProvenanceProfiles: [{
+          direction: "outbound",
+          score: 0,
+          paths: [{
+            pathAddresses: [subject, source],
+            txHashes: [txHash],
+            amountRaw,
+            firstTransferAt: timestamp,
+            lastTransferAt: timestamp,
+            evidenceStrength: "context"
+          }]
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.find((edge) =>
+      edge.txHash === txHash &&
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${source}` &&
+      edge.metadata.evidenceType === "deepcheck_extended_path"
+    )).toBeUndefined();
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${contract}`,
+        metadata: expect.objectContaining({ evidenceType: "contract_trigger_context" })
+      }),
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${contract}`,
+        toNodeId: `addr:${subject}`,
+        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
+      })
+    ]));
   });
 
   it("suppresses counterparty and boundary direct edges when contract-driven route explains them", () => {
@@ -9181,7 +9580,19 @@ describe("projectForensicJobGraph", () => {
     )).toMatchObject({
       fromNodeId: `addr:${operator}`,
       toNodeId: `addr:${spenderContract}`,
+      displayRole: "profile_context",
       metadata: {
+        evidenceKind: "route_linked_exact_root"
+      }
+    });
+    expect(result.graph.edges.find((edge) =>
+      edge.metadata.evidenceType === "approval_drain_spender_authority"
+    )).toMatchObject({
+      fromNodeId: `addr:${victim}`,
+      toNodeId: `addr:${spenderContract}`,
+      displayRole: "profile_context",
+      metadata: {
+        boundaryContextOnly: true,
         evidenceKind: "route_linked_exact_root"
       }
     });

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: scoring
 code_refs:
   - src/risk/unifiedWalletRisk.ts
@@ -34,10 +34,17 @@ If `score_valid=false`, the result should include:
 - supporting coverage/progress details.
 
 For ordinary Where source provenance, `sourceProvenanceMateriality` records
-whether unresolved funding-source entries are material. Current local
-thresholds are 1% and 100 USDT. Below-threshold unresolved source provenance
-with no hard evidence is a caveat and can keep `score_valid=true`; above
-threshold unresolved source provenance remains a coverage blocker.
+whether unresolved funding-source entries are material. Residual unresolved
+source provenance uses current local thresholds of 1% and 100 USDT. Dense-hop
+provider-cap tails use 1% per branch, 2% aggregate, and 10,000 USDT per branch.
+Below-threshold unresolved source provenance with no hard evidence is a caveat
+and can keep `score_valid=true`; above-threshold unresolved source provenance
+or hard evidence remains a coverage blocker.
+
+Dense-hop provider-capped unresolved source can also keep `score_valid=true`
+only below its branch and aggregate thresholds and without hard evidence. This
+is a score-valid caveat, not a clean verdict; Admin and Telegram keep it
+visible, and scoring excludes it from decisive clean/bad evidence.
 
 ## Floors
 
@@ -50,6 +57,12 @@ Floors protect strong signals from being diluted:
 
 These floors should be used only when their required evidence is actually
 present.
+
+Wrapper-driven campaign context is not the same as exact approval-drain proof.
+A broad Verify20 campaign can increase review pressure, but hard evidence
+floors require exact approval/provenance profiles or another deterministic hard
+evidence source. Plain canonical USDT transfers do not count as drainer-like
+contract-driven evidence.
 
 ## Dampener
 
@@ -71,8 +84,11 @@ when there is no hard evidence and coverage is incomplete.
 For ordinary Where materiality caveats, `REVIEW` must also not collapse into
 `ACCEPTABLE` just because the unified scoring matrix has only coverage
 uncertainty. If `score_valid=true` and the Where result is
-`residual_unresolved_below_materiality`, user-facing surfaces show the real
-Where score and `REVIEW` decision.
+`residual_unresolved_below_materiality` or
+`dense_hop_unresolved_below_materiality`, user-facing surfaces show the real
+Where score and `REVIEW` decision. Dense-hop materiality is not a clean verdict:
+the unresolved branch stays visible in Admin and Telegram and is excluded from
+decisive clean or bad evidence.
 
 ## Current Direction
 
@@ -80,7 +96,8 @@ For `Where is money` and `Incoming deposit`, incomplete main-path coverage
 blocks final scoring. The product should keep indexing where possible instead
 of publishing a score on partial data.
 
-Exception for ordinary Where: residual unresolved source provenance can be
-scored when it is below materiality and has no hard evidence. This does not make
-the unresolved branch exact or clean; it only prevents a tiny residual gap from
-blocking the whole report.
+Exception for ordinary Where: low-materiality source-provenance caveats can be
+scored when they are below their thresholds and have no hard evidence. This
+includes residual unresolved source provenance and dense-hop provider-cap tails.
+It does not make the unresolved branch exact or clean; it only prevents an
+immaterial gap from blocking the whole report.

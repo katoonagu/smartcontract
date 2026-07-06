@@ -118,9 +118,9 @@ export function adminConsoleHtml(): string {
       background: rgba(20, 15, 30, .78);
       color: var(--semantic-grouped);
     }
-    .graph-legend { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-    .graph-legend-chip { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; white-space: normal; }
-    .legend-chip { display: inline-flex; gap: 5px; align-items: center; }
+    .graph-legend { display: grid; gap: 6px; min-width: 0; }
+    .graph-legend-card { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; min-width: 0; }
+    .legend-chip { display: inline-flex; gap: 5px; align-items: center; min-width: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.25; }
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
     .legend-swatch.direct { border-color: #8fe9af; }
     .legend-swatch.direct-context { border-color: var(--semantic-context); border-top-style: dashed; opacity: .78; }
@@ -170,7 +170,7 @@ export function adminConsoleHtml(): string {
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px);
+      grid-template-columns: minmax(260px, 1fr) minmax(240px, 360px);
       gap: 10px;
       align-items: center;
       pointer-events: none;
@@ -186,87 +186,151 @@ export function adminConsoleHtml(): string {
       box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
       backdrop-filter: blur(10px);
     }
-    .active-job-summary { padding: 10px 12px; display: grid; gap: 4px; }
-    .active-job-summary strong { font-size: 13px; overflow-wrap: anywhere; }
-    .graph-topbar input { width: 100%; background: rgba(12, 15, 18, .92); }
+    .active-job-summary { min-width: 0; padding: 7px 10px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, auto); gap: 3px 10px; align-items: center; }
+    .active-job-summary strong { min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .active-job-summary .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .active-job-summary .stats { grid-column: 2; grid-row: 1 / span 2; justify-content: flex-end; overflow: hidden; }
+    .graph-search-box {
+      display: grid;
+      gap: 3px;
+      padding: 7px 9px;
+      border: 1px solid rgba(58, 67, 77, .82);
+      border-radius: 8px;
+      background: rgba(13, 17, 22, .86);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
+      backdrop-filter: blur(10px);
+    }
+    .graph-search-label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+    .graph-search-box input {
+      width: 100%;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
     .graph-action-row {
       position: absolute;
-      top: 64px;
+      top: 76px;
       left: calc(var(--left-rail-width) + 24px);
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
       min-height: 40px;
-      max-height: 108px;
       box-sizing: border-box;
-      overflow-y: auto;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      gap: 10px;
-      align-items: center;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
       pointer-events: auto;
       border: 1px solid rgba(58, 67, 77, .82);
       border-radius: 8px;
       background: rgba(13, 17, 22, .86);
       box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
       backdrop-filter: blur(10px);
-      padding: 5px 8px;
+      padding: 7px 8px;
     }
     .workbench-control-rail {
       align-content: start;
     }
     .graph-control-group {
       display: flex;
-      gap: 8px;
-      align-items: center;
+      gap: 6px;
+      align-items: stretch;
       flex-wrap: wrap;
       min-width: 0;
     }
-    .graph-action-row button, .graph-action-row select {
-      height: 30px;
-      padding: 0 10px;
-      background: rgba(12, 15, 18, .92);
+    .graph-control-section {
+      min-width: 0;
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px;
+      flex: 0 1 auto;
+      padding: 3px;
+      border: 1px solid rgba(58, 67, 77, .68);
+      border-radius: 8px;
+      background: rgba(8, 11, 15, .5);
+    }
+    .graph-control-section.is-wide { flex: 1 1 360px; }
+    .control-label {
+      padding: 0 5px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1;
+      letter-spacing: 0;
+      text-transform: uppercase;
       white-space: nowrap;
+    }
+    .graph-action-row button, .graph-action-row select {
+      height: 28px;
+      padding: 0 9px;
+      background: rgba(12, 15, 18, .92);
+      max-width: 100%;
+      white-space: nowrap;
+    }
+    .graph-action-row button.active {
+      border-color: rgba(127, 169, 221, .78);
+      background: rgba(28, 48, 78, .6);
+      color: #eef5ff;
     }
     .graph-action-row #txLabelMode { width: 160px; }
     .graph-action-row #walletLabelMode { width: 180px; }
-    .graph-action-row #flowMode { width: 140px; }
-    .graph-action-row .graph-meta {
-      grid-column: 2;
-      min-height: 30px;
+    .graph-action-row #flowMode { width: 128px; }
+    .analytics-graph-context {
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      border: 1px solid rgba(58, 67, 77, .72);
+      border-radius: 8px;
+      background: rgba(8, 11, 15, .46);
+    }
+    .analytics-graph-context[hidden] { display: none; }
+    .analytics-graph-context .graph-meta {
+      min-height: 0;
       padding: 0;
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
+      display: grid;
+      grid-template-columns: 1fr;
       gap: 6px;
-      flex-wrap: nowrap;
+      align-items: start;
       border: 0;
       background: transparent;
       box-shadow: none;
       backdrop-filter: none;
-      pointer-events: none;
     }
-    .graph-action-row .graph-legend {
-      grid-column: 1 / -1;
+    .analytics-graph-context .graph-meta .chip {
       min-width: 0;
-      max-width: 100%;
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 6px;
-      pointer-events: none;
+      border-radius: 6px;
+      padding: 5px 7px;
+      background: rgba(12, 17, 22, .72);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: normal;
     }
-    .graph-action-row .graph-legend:empty { display: none; }
+    .analytics-graph-context .graph-legend {
+      display: grid;
+      justify-content: stretch;
+      gap: 6px;
+    }
+    .analytics-graph-context .graph-legend:empty,
+    .analytics-graph-context .graph-meta:empty { display: none; }
     .overlay-panel {
       position: absolute;
       z-index: 5;
-      top: 116px;
+      top: 12px;
+      bottom: 12px;
       width: min(390px, calc(100vw - 24px));
-      max-height: calc(100dvh - 132px);
       display: none;
       overflow: hidden;
       border: 1px solid rgba(58, 67, 77, .88);
       border-radius: 8px;
-      background: rgba(21, 25, 29, .94);
+      background: rgba(21, 25, 29, .9);
       box-shadow: 0 22px 60px rgba(0, 0, 0, .36);
       backdrop-filter: blur(12px);
     }
@@ -293,16 +357,22 @@ export function adminConsoleHtml(): string {
     .overlay-body { min-height: 0; overflow: auto; }
     .analytics-body {
       display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
       gap: 10px;
       align-content: start;
+      overflow: hidden;
       padding: 12px;
     }
     .analytics-body .details-body {
       padding: 0;
+      min-height: 0;
+      overflow: auto;
     }
     .selection-card.analytics-selection-card {
       position: static;
       width: 100%;
+      max-height: min(40dvh, 420px);
+      overflow: auto;
       display: none;
       border: 1px solid #28364a;
       border-radius: 8px;
@@ -312,10 +382,11 @@ export function adminConsoleHtml(): string {
     }
     .selection-card.analytics-selection-card.open { display: block; }
     .selection-card h3 { margin: 0 0 8px; font-size: 14px; }
-    .selection-card .card-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
+    .selection-card .card-line { display: grid; grid-template-columns: minmax(92px, .72fr) minmax(0, 1.28fr); align-items: start; gap: 10px; padding: 6px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
     .selection-card .card-line:first-of-type { border-top: 0; }
-    .selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }
-    .selection-card .card-line.card-block { display: grid; gap: 8px; }
+    .selection-card .card-line > span { min-width: 0; }
+    .selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
+    .selection-card .card-line.card-block { display: grid; grid-template-columns: 1fr; gap: 8px; }
     .selection-card .card-line.card-block strong { text-align: left; font-weight: 600; }
     .selection-card .card-block-body { min-width: 0; }
     .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
@@ -488,33 +559,61 @@ export function adminConsoleHtml(): string {
     }
     .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .filters .wide { grid-column: 1 / -1; }
+    .jobs-queue-head { display: grid; gap: 10px; }
+    .jobs-queue-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .jobs-queue-tab {
+      min-width: 0;
+      height: 30px;
+      padding: 0 7px;
+      color: var(--text-secondary);
+      background: rgba(8, 11, 15, .72);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .jobs-queue-tab.active {
+      border-color: rgba(122, 162, 247, .78);
+      background: rgba(28, 48, 78, .54);
+      color: #eef5ff;
+    }
+    .jobs-search-row { display: grid; grid-template-columns: minmax(0, 1fr); }
+    .jobs-filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .jobs-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .jobs-result-summary { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .toolbar-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
     .toolbar-row button { flex: 1; }
-    .job-list { padding: 10px; }
+    .job-list { display: grid; gap: 8px; padding: 10px; }
     .job {
       width: 100%;
       display: grid;
-      gap: 6px;
+      gap: 7px;
       text-align: left;
       background: #12161a;
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 7px;
       padding: 10px;
-      margin-bottom: 8px;
       cursor: pointer;
     }
     .job:hover, .job.active { border-color: var(--accent); background: #161d26; }
     .job-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
-    .job strong { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
-    .job span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .job-address { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 760; color: var(--text); }
+    .job-meta-row { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+    .job-pill { display: inline-flex; max-width: 100%; border: 1px solid rgba(58, 67, 77, .76); border-radius: 999px; padding: 2px 7px; color: var(--text-secondary); background: rgba(8, 11, 15, .46); font-size: 11px; line-height: 1.35; }
+    .job-pill strong { font-weight: 750; color: var(--text); }
+    .job-kind-pill { border-color: rgba(122, 162, 247, .42); color: #bcd1ff; }
+    .job-risk-high { border-color: rgba(240, 138, 149, .5); color: var(--semantic-risk); }
+    .job-risk-low { border-color: rgba(139, 213, 166, .44); color: var(--semantic-ok); }
+    .job-line { color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+    .job-line strong { color: var(--text-secondary); font-weight: 650; }
+    .job-id-line { color: var(--text-tertiary); font-size: 10.5px; }
     .status { font-size: 11px; border: 1px solid var(--line-strong); border-radius: 999px; padding: 2px 7px; text-transform: uppercase; }
     .status.completed, .status.partial { color: var(--good); border-color: rgba(139, 213, 166, .45); }
     .status.failed { color: var(--bad); border-color: rgba(255, 107, 107, .45); }
     .status.running, .status.queued { color: var(--warn); border-color: rgba(246, 193, 119, .45); }
     .graph-tool-rail {
       position: absolute;
-      top: 136px;
+      top: 150px;
       right: 12px;
       z-index: 4;
       display: flex;
@@ -527,10 +626,8 @@ export function adminConsoleHtml(): string {
     .graph-meta { min-height: 40px; padding: 8px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .graph-stage {
       position: absolute;
-      top: 184px;
-      right: calc(var(--right-rail-width) + 24px);
-      bottom: 164px;
-      left: calc(var(--left-rail-width) + 24px);
+      inset: 0;
+      z-index: 1;
       min-width: 0;
       overflow: hidden;
     }
@@ -543,26 +640,62 @@ export function adminConsoleHtml(): string {
       right: calc(var(--right-rail-width) + 24px);
       bottom: 12px;
       z-index: 4;
-      padding: 10px 12px;
+      padding: 12px 14px;
     }
     .timeline-region {
-      min-height: 92px;
+      min-height: 124px;
     }
     .timeline-head {
       display: flex;
       justify-content: space-between;
       gap: 12px;
       align-items: center;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
     }
-    .activity-timeline { height: 54px; display: flex; align-items: end; gap: 4px; overflow: hidden; }
-    .activity-timeline .timeline-bar { flex: 1 1 10px; min-width: 6px; padding: 0; border: 0; align-self: end; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--accent), var(--bridge)); }
-    .activity-timeline .timeline-bar.active { outline: 2px solid rgba(237, 241, 244, .88); outline-offset: 1px; }
+    .activity-timeline {
+      position: relative;
+      height: 76px;
+      display: flex;
+      align-items: end;
+      gap: 3px;
+      overflow: hidden;
+      padding: 16px 0 3px;
+      border-top: 1px solid rgba(58, 67, 77, .58);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, .045) 1px, transparent 1px) 0 16px / 100% 18px,
+        linear-gradient(90deg, transparent, rgba(122, 162, 247, .08), transparent);
+    }
+    .activity-timeline .timeline-bar {
+      flex: 1 1 8px;
+      min-width: 5px;
+      height: var(--bucket-height, 6px);
+      padding: 0;
+      align-self: end;
+      border: 1px solid rgba(123, 180, 215, .24);
+      border-radius: 4px 4px 1px 1px;
+      background: rgba(84, 143, 175, .36);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+      opacity: .74;
+    }
+    .activity-timeline .timeline-bar.empty {
+      border-color: rgba(111, 125, 137, .18);
+      background: rgba(111, 125, 137, .18);
+      opacity: .42;
+    }
+    .activity-timeline .timeline-bar.low { background: linear-gradient(180deg, rgba(106, 177, 206, .52), rgba(66, 129, 158, .5)); }
+    .activity-timeline .timeline-bar.medium { background: linear-gradient(180deg, rgba(122, 162, 247, .72), rgba(91, 199, 216, .62)); opacity: .9; }
+    .activity-timeline .timeline-bar.hot { background: linear-gradient(180deg, rgba(139, 213, 166, .9), rgba(91, 199, 216, .8)); opacity: 1; }
+    .activity-timeline .timeline-bar.active {
+      outline: 2px solid rgba(237, 241, 244, .92);
+      outline-offset: 1px;
+      border-color: rgba(237, 241, 244, .78);
+      opacity: 1;
+    }
     .transfer-panel {
       position: absolute;
       left: calc(var(--left-rail-width) + 24px);
       right: calc(var(--right-rail-width) + 24px);
-      bottom: 96px;
+      bottom: 132px;
       z-index: 5;
       height: min(320px, calc(100dvh - 220px));
       border: 1px solid rgba(58, 67, 77, .88);
@@ -593,6 +726,16 @@ export function adminConsoleHtml(): string {
       stroke: #87919b;
       opacity: .88;
       cursor: pointer;
+      vector-effect: non-scaling-stroke;
+      stroke-linecap: round;
+    }
+    .edge-hitbox {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 16;
+      opacity: 0;
+      cursor: pointer;
+      pointer-events: stroke;
       vector-effect: non-scaling-stroke;
       stroke-linecap: round;
     }
@@ -649,6 +792,10 @@ export function adminConsoleHtml(): string {
     .edge.review { opacity: .92; }
     .edge.clean, .edge.acceptable { opacity: .9; }
     .edge.dim, .node.dim { opacity: .16; }
+    .edge.timeline-context { opacity: .18; }
+    .edge.timeline-focus { opacity: 1; filter: drop-shadow(0 0 13px rgba(125, 190, 220, .5)); }
+    .node.timeline-context { opacity: .28; }
+    .node.timeline-focus { opacity: 1; }
     .edge.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)); }
     .edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }
     .edge.edge-speed-medium { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .42)); }
@@ -752,6 +899,18 @@ export function adminConsoleHtml(): string {
     .type-chip.bundle { color: var(--bundle); border-color: rgba(215, 178, 255, .58); }
     .list-lines { display: grid; gap: 6px; }
     .list-lines div, .list-lines span { font-size: 12px; color: var(--text); }
+    .counterparty-lines { display: grid; gap: 7px; }
+    .counterparty-row {
+      display: grid;
+      grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      font-size: 12px;
+    }
+    .counterparty-row strong { color: var(--text); font-size: 12px; white-space: nowrap; }
+    .counterparty-row span { min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+    .counterparty-row .link { font-weight: 650; }
+    .counterparty-row small { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
     .tx-lines { display: grid; gap: 8px; }
     .tx-line { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
     .tx-line:first-child { padding-top: 0; border-top: 0; }
@@ -779,38 +938,40 @@ export function adminConsoleHtml(): string {
     .muted { color: var(--muted); }
     .json-block { white-space: pre-wrap; overflow: auto; max-height: 380px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; line-height: 1.45; }
     details.metric summary { cursor: pointer; color: var(--muted); }
+    details.compact-details summary {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    details.compact-details summary span {
+      color: var(--text-tertiary);
+      font-weight: 600;
+      letter-spacing: 0;
+      text-transform: none;
+      white-space: nowrap;
+    }
+    details.compact-details .list-lines { margin-top: 8px; display: grid; gap: 5px; }
     .error { color: var(--bad); padding: 10px; }
     .empty { color: var(--muted); padding: 16px 10px; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compat-hidden { display: none; }
     @media (max-width: 1680px) {
-      .graph-action-row { gap: 6px; padding: 4px 6px; }
-      .graph-control-group { gap: 5px; flex-wrap: wrap; }
+      .graph-action-row { gap: 6px; padding: 6px; }
+      .graph-control-group { gap: 5px; }
+      .graph-control-section { gap: 4px; padding: 2px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #txLabelMode { width: 160px; }
-      .graph-action-row #walletLabelMode { width: 180px; }
-      .graph-action-row #flowMode { width: 120px; }
-      .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
-    }
-    @media (max-width: 1560px) {
-      .graph-action-row {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
+      .graph-action-row #txLabelMode { width: 150px; }
+      .graph-action-row #walletLabelMode { width: 166px; }
+      .graph-action-row #flowMode { width: 116px; }
     }
     @media (max-width: 1280px) {
-      .graph-action-row {
-        grid-template-columns: 1fr;
-      }
-      .graph-action-row .graph-meta,
-      .graph-action-row .graph-legend {
-        justify-content: flex-start;
-      }
+      .control-label { display: none; }
+      .graph-control-section.is-wide { flex-basis: 280px; }
     }
     @media (max-width: 1180px) {
       body { overflow: auto; }
@@ -830,26 +991,21 @@ export function adminConsoleHtml(): string {
         top: 128px;
         left: 12px;
         right: 12px;
-        max-height: 84px;
         grid-template-columns: minmax(0, 1fr);
       }
-      .graph-stage { top: 224px; left: 12px; right: 12px; }
+      .graph-stage { inset: 0; }
       .timeline-panel, .transfer-panel {
         left: 12px;
         right: 12px;
       }
       .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
-      .overlay-panel { top: 224px; max-height: 360px; }
+      .graph-control-section { flex: 1 1 260px; }
+      .overlay-panel { top: 264px; bottom: auto; max-height: 360px; }
       .overlay-panel.jobs-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { left: 12px; right: auto; }
-      .overlay-panel.analytics-panel { top: calc(224px + 372px); }
-      .overlay-panel.scoring-audit-panel { left: 12px; width: var(--left-rail-width); top: calc(224px + 744px); }
-      .graph-tool-rail { top: 224px; }
+      .overlay-panel.analytics-panel { top: calc(264px + 372px); }
+      .overlay-panel.scoring-audit-panel { left: 12px; width: var(--left-rail-width); top: calc(264px + 744px); }
+      .graph-tool-rail { top: 264px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }
     }
@@ -875,42 +1031,58 @@ export function adminConsoleHtml(): string {
             <strong>Case brief</strong>
             <div class="hint" id="selectionHint">Select a completed or partial job to inspect evidence.</div>
           </div>
-          <input id="graphSearch" placeholder="find node / tx / label">
+          <label class="graph-search-box">
+            <span class="graph-search-label">Find</span>
+            <input id="graphSearch" placeholder="node / tx / label">
+          </label>
         </div>
         <div class="graph-action-row workbench-control-rail" data-control-rail>
           <div class="graph-control-group">
-            <button id="toggleJobs" type="button">Jobs</button>
-            <button id="toggleAnalytics" type="button">Analytics</button>
-            <button id="toggleScoringAudit" type="button">Scoring audit</button>
-            <select id="flowMode">
-              <option value="all">All flows</option>
-              <option value="incoming">Incoming</option>
-              <option value="outgoing">Outgoing</option>
-              <option value="self">Self</option>
-            </select>
-            <select id="txLabelMode">
-              <option value="auto">Tx labels: auto</option>
-              <option value="all">Tx labels: all</option>
-              <option value="important">Tx labels: important</option>
-              <option value="selected">Tx labels: selected</option>
-              <option value="off">Tx labels: off</option>
-            </select>
-            <select id="walletLabelMode">
-              <option value="smart">Wallet labels: smart</option>
-              <option value="all">Wallet labels: all</option>
-              <option value="important">Wallet labels: important</option>
-              <option value="off">Wallet labels: off</option>
-            </select>
-            <button id="roleMarksMode" type="button">Role marks on</button>
-            <button id="densityMode" type="button">Fan overview</button>
-            <button id="expandSelected" type="button">Expand selected</button>
-            <button id="refreshSecondLayer" type="button">Refresh 2nd layer</button>
-            <button id="peerLinksMode" type="button">Peer links on</button>
-            <button id="servicesMode" type="button">Services on</button>
-            <button id="toolResetLayout" type="button">Reset layout</button>
+            <div class="graph-control-section">
+              <span class="control-label">Panels</span>
+              <button id="toggleJobs" type="button">Jobs</button>
+              <button id="toggleAnalytics" type="button">Analytics</button>
+              <button id="toggleScoringAudit" type="button">Scoring audit</button>
+            </div>
+            <div class="graph-control-section">
+              <span class="control-label">Flow</span>
+              <select id="flowMode">
+                <option value="all">All flows</option>
+                <option value="incoming">Incoming</option>
+                <option value="outgoing">Outgoing</option>
+                <option value="self">Self</option>
+              </select>
+            </div>
+            <div class="graph-control-section is-wide">
+              <span class="control-label">Labels</span>
+              <select id="txLabelMode">
+                <option value="auto">Tx labels: auto</option>
+                <option value="all">Tx labels: all</option>
+                <option value="important">Tx labels: important</option>
+                <option value="selected">Tx labels: selected</option>
+                <option value="off">Tx labels: off</option>
+              </select>
+              <select id="walletLabelMode">
+                <option value="smart">Wallet labels: smart</option>
+                <option value="all">Wallet labels: all</option>
+                <option value="important">Wallet labels: important</option>
+                <option value="off">Wallet labels: off</option>
+              </select>
+            </div>
+            <div class="graph-control-section">
+              <span class="control-label">View</span>
+              <button id="densityMode" type="button">View: Fan overview</button>
+              <button id="roleMarksMode" type="button">Role marks on</button>
+              <button id="peerLinksMode" type="button">Peer links on</button>
+              <button id="servicesMode" type="button">Services on</button>
+            </div>
+            <div class="graph-control-section">
+              <span class="control-label">Graph</span>
+              <button id="expandSelected" type="button">Expand selected</button>
+              <button id="refreshSecondLayer" type="button">Refresh 2nd layer</button>
+              <button id="toolResetLayout" type="button">Reset layout</button>
+            </div>
           </div>
-          <div id="graphStats" class="graph-meta"></div>
-          <div id="graphLegend" class="graph-legend"></div>
         </div>
         <aside id="jobsPanel" class="overlay-panel jobs-panel open" data-overlay="jobs">
           <div class="overlay-head">
@@ -919,9 +1091,18 @@ export function adminConsoleHtml(): string {
           </div>
           <div class="overlay-body">
             <div class="compact-section-head">
-              <div class="filters">
+              <div class="jobs-queue-head">
+                <div class="jobs-queue-tabs" role="group" aria-label="Job queue view">
+                  <button id="jobsModeAll" class="jobs-queue-tab active" type="button">All</button>
+                  <button id="jobsModeRunning" class="jobs-queue-tab" type="button">Running</button>
+                  <button id="jobsModeReview" class="jobs-queue-tab" type="button">Needs review</button>
+                </div>
+                <div class="jobs-search-row">
+                  <input id="subject" placeholder="Find address, tx, or job id">
+                </div>
+                <div class="jobs-filter-row">
                 <select id="status">
-                  <option value="">all statuses</option>
+                  <option value="">Status: all</option>
                   <option value="completed">completed</option>
                   <option value="partial">partial</option>
                   <option value="failed">failed</option>
@@ -930,27 +1111,24 @@ export function adminConsoleHtml(): string {
                   <option value="cancelled">cancelled</option>
                 </select>
                 <select id="kind">
-                  <option value="">all kinds</option>
-                  <option value="address_fast_check">address fast</option>
-                  <option value="where_is_money_check">where-is-money</option>
-                  <option value="address_deep_check">address deep</option>
-                  <option value="incoming_deposit_check">incoming deposit</option>
+                  <option value="">Check: all</option>
+                  <option value="address_fast_check">Fast check</option>
+                  <option value="where_is_money_check">Where is money</option>
+                  <option value="address_deep_check">DeepCheck</option>
+                  <option value="incoming_deposit_check">Incoming deposit</option>
                 </select>
-                <input id="subject" class="wide" placeholder="job id / address / tx hash / watched wallet">
+                </div>
+                <div class="jobs-action-row">
                 <select id="limit">
                   <option value="20">20 latest</option>
                   <option value="50" selected>50 latest</option>
                   <option value="100">100 latest</option>
                 </select>
                 <button id="refresh" type="button">Refresh</button>
-              </div>
-              <div class="toolbar-row">
                 <button id="autoRefresh" type="button">Auto off</button>
                 <button id="clearFilters" type="button">Clear</button>
-              </div>
-              <div class="toolbar-row strict-benchmark-row">
-                <input id="strictBenchmarkAddress" class="wide" placeholder="TRON wallet for strict benchmark">
-                <button id="startStrictBenchmark" type="button">Strict benchmark</button>
+                </div>
+                <div id="jobsResultSummary" class="jobs-result-summary">No jobs loaded.</div>
               </div>
             </div>
             <div id="jobs" class="job-list"></div>
@@ -963,6 +1141,10 @@ export function adminConsoleHtml(): string {
           </div>
           <div class="overlay-body analytics-body">
             <div class="selection-card analytics-selection-card" id="selectionCard"></div>
+            <div class="analytics-graph-context" hidden>
+              <div id="graphStats" class="graph-meta"></div>
+              <div id="graphLegend" class="graph-legend"></div>
+            </div>
             <div id="caseBrief" class="details-body empty">Select a completed or partial job to inspect evidence.</div>
           </div>
         </aside>
@@ -1056,6 +1238,7 @@ export function adminConsoleHtml(): string {
       jobsRequestSeq: 0,
       graphRequestSeq: 0,
       jobsSearchTimer: null,
+      jobQueueMode: "all",
       pendingOpenJobId: null,
       nodeDrag: null,
       lastNodeClick: null,
@@ -1104,6 +1287,18 @@ export function adminConsoleHtml(): string {
         metric("Decision status", clarityLine(clarity.decisionStatus, "unknown")) +
         metric("Policy", clarityLine(clarity.policyVersion, "unknown")) +
         listMetric("Risk clarity notes", Array.isArray(clarity.displayNotes) ? clarity.displayNotes : [], "No clarity notes.");
+    }
+    function caseBriefClarityHtml(clarity) {
+      if (!clarity) {
+        return metric("Coverage", "unknown") +
+          metric("Evidence strength", "unknown") +
+          metric("Confidence", "n/a") +
+          metric("Policy result", "unknown");
+      }
+      return metric("Coverage", clarityLine(clarity.coverageStatus, "unknown")) +
+        metric("Evidence strength", clarityLine(clarity.evidenceClass, "unknown")) +
+        metric("Confidence", typeof clarity.confidenceScore === "number" && Number.isFinite(clarity.confidenceScore) ? String(clarity.confidenceScore) : "n/a") +
+        metric("Policy result", clarityLine(clarity.decisionStatus, "unknown"));
     }
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const short = (value, size = 6) => {
@@ -1292,16 +1487,6 @@ export function adminConsoleHtml(): string {
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;
     }
-    function strictBenchmarkAddressForJob(job) {
-      if (!job) return "";
-      return String(job.watchedWallet || job.subjectAddress || "").trim();
-    }
-    function fillStrictBenchmarkAddressFromJob(job) {
-      const input = el("strictBenchmarkAddress");
-      if (!input || input.value.trim()) return;
-      const address = strictBenchmarkAddressForJob(job);
-      if (address) input.value = address;
-    }
     function requesterText(job) {
       return job.requesterUsername ? "@" + job.requesterUsername + " / " + (job.requestedBy || "no id") : job.requestedBy ? "tg:" + job.requestedBy : "system";
     }
@@ -1365,7 +1550,10 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";
+        const label = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";
+        densityButton.textContent = "View: " + label;
+        densityButton.classList.toggle("active", mode === "full_evidence" || mode === "wallet_clusters" || mode === "step_orbit" || mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all");
+        densityButton.title = label + ". Click to cycle graph presentation modes; current flow/service filters still apply.";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1416,12 +1604,35 @@ export function adminConsoleHtml(): string {
     function caseHeaderStatusChips(graph, summary) {
       const clarity = graphRiskClarity(graph);
       const coverage = clarityLine(clarity?.coverageStatus || percent(summary.coverageRatio), analystMissingCopy("coverage"));
+      const evidence = clarityLine(clarity?.evidenceClass, String(graphEvidence(graph).length));
       return '<div class="stats">' +
         caseStatusChip("Decision", summary.decision || "UNKNOWN", "decision") +
         caseStatusChip("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown"), "risk") +
-        caseStatusChip("Evidence", graphEvidence(graph).length, "evidence") +
+        caseStatusChip("Evidence", evidence, "evidence") +
         caseStatusChip("Coverage", coverage, "coverage") +
         '</div>';
+    }
+    function humanCheckKind(kind) {
+      if (kind === "address_fast_check") return "Fast check";
+      if (kind === "address_deep_check") return "DeepCheck";
+      if (kind === "where_is_money_check") return "Where is money";
+      if (kind === "incoming_deposit_check") return "Incoming deposit";
+      return String(kind || "unknown").replace(/_/g, " ");
+    }
+    function caseBriefIntroText(graph) {
+      if (graph?.job?.kind === "address_deep_check") {
+        return "Shows the wallet profile, campaign context, and contract-triggered evidence. Money amounts belong to real transfer edges; contract context explains why those transfers matter.";
+      }
+      if (graph?.job?.kind === "where_is_money_check") {
+        return "Traces where the wallet's balance-forming funds came from. Service boundaries and caveats explain where the trace legitimately stops.";
+      }
+      if (graph?.job?.kind === "incoming_deposit_check") {
+        return "Traces the selected deposit and the sender path that funded it.";
+      }
+      if (graph?.job?.kind === "address_fast_check") {
+        return "Fast triage view. It shows direct counterparties from the bounded first pass; use DeepCheck or Where is money for provenance.";
+      }
+      return "Select a node, edge, group, service, or boundary to inspect the supporting facts.";
     }
     function renderCaseBrief() {
       const root = el("caseBrief");
@@ -1445,22 +1656,20 @@ export function adminConsoleHtml(): string {
       summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
         '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>' +
         caseHeaderStatusChips(graph, summary);
-      const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected", "Select a node, edge, group, service, or boundary to inspect what it means and which raw facts support it.", [
-        analystBadge("case summary", "context")
+      const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", caseBriefIntroText(graph), [
+        analystBadge(caseBriefModeLine(graph), "context")
       ]);
       root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
         metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide") +
-        metric("Job", jobKind + " / " + jobStatus, "wide") +
+        metric("Check", humanCheckKind(jobKind) + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
         metric("Decision", summary.decision || "UNKNOWN") +
-        clarityMetricHtml(graphRiskClarity(graph)) +
-        metric("Graph meaning", "Graph is evidence navigation, not proof by itself.", "wide") +
-        metric("Mode", caseBriefModeLine(graph), "wide") +
-        listMetric("Top incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
-        listMetric("Top outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
+        caseBriefClarityHtml(graphRiskClarity(graph)) +
+        htmlListMetric("Largest incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
+        htmlListMetric("Largest outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
         listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
         metric("Boundary stops", String(caseBriefStopCount())) +
-        listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        detailsMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         strictProvenanceLines(summary) +
         targetedIndexLines(summary) +
         whereFundingCandidateLines(summary) +
@@ -1542,55 +1751,37 @@ export function adminConsoleHtml(): string {
         setStatus("Scoring audit failed.");
       }
     }
-    async function startStrictBenchmark() {
-      state.token = el("token").value.trim();
-      localStorage.setItem("adminForensicsToken", state.token);
-      el("sessionState").textContent = state.token ? "session active" : "token missing";
-      const selectedAddress = strictBenchmarkAddressForJob(activeJob());
-      const subjectAddress = el("strictBenchmarkAddress").value.trim() || selectedAddress;
-      if (!subjectAddress) {
-        setStatus("Strict benchmark needs a TRON wallet. Select a job or paste an address.");
-        return;
-      }
-      el("strictBenchmarkAddress").value = subjectAddress;
-      try {
-        setStatus("Creating strict benchmark for " + short(subjectAddress, 10) + "...");
-        const body = await api("/admin/api/strict-provenance-benchmark", {
-          method: "POST",
-          body: JSON.stringify({ subjectAddress })
-        });
-        state.pendingOpenJobId = body.job?.id || null;
-        el("status").value = "";
-        el("kind").value = "";
-        el("subject").value = subjectAddress;
-        setStatus("Strict benchmark queued: " + short(body.job?.id || "", 8));
-        await loadJobs();
-      } catch (error) {
-        setStatus(error?.message || "Strict benchmark creation failed.");
-      }
-    }
     function briefEdgeAmountValue(edge) {
       const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw || edge?.metadata?.amountRaw);
       return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
     }
-    function formatBriefEdge(edge) {
+    function formatBriefEdgeHtml(edge) {
       const amount = edgeCanvasAmountLabel(edge) || edgeDetailedAmountLabel(edge) || "amount n/a";
       const address = edgeFlowDirection(edge) === "incoming" ? edgeFromAddress(edge) : edgeToAddress(edge);
-      return amount + " - " + short(address, 7);
+      const direction = edgeFlowDirection(edge) === "incoming" ? "from " : "to ";
+      const linkedAddress = address ? explorerLink(tronscanAddressUrl(address), short(address, 7)) : '<span class="muted">address n/a</span>';
+      const time = edgeTime(edge) || canvasTimestampLabel(edge?.timestamp || edge?.timestampIso || edge?.time);
+      const txHash = edgePrimaryTxHash(edge);
+      const tx = txHash ? "tx " + short(txHash, 5) : "";
+      const detail = [time, tx].filter(Boolean).join(" · ");
+      return '<div class="counterparty-row"><strong>' + escapeHtml(amount) + '</strong><span>' +
+        escapeHtml(direction) + linkedAddress +
+        (detail ? '<small>' + escapeHtml(detail) + '</small>' : "") +
+        '</span></div>';
     }
     function caseBriefTopIncoming() {
       return filteredTransferEdges()
         .filter((edge) => edgeFlowDirection(edge) === "incoming")
         .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a))
         .slice(0, 5)
-        .map(formatBriefEdge);
+        .map(formatBriefEdgeHtml);
     }
     function caseBriefTopOutgoing() {
       return filteredTransferEdges()
         .filter((edge) => edgeFlowDirection(edge) === "outgoing")
         .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a))
         .slice(0, 5)
-        .map(formatBriefEdge);
+        .map(formatBriefEdgeHtml);
     }
     function caseBriefTopServices() {
       return graphNodes(state.graph)
@@ -1602,10 +1793,10 @@ export function adminConsoleHtml(): string {
       return graphPaths(state.graph).filter((path) => path.stopReason).length;
     }
     function caseBriefModeLine(graph) {
-      if (graph?.job?.kind === "address_deep_check") return "Profile/context graph. This is not money-origin proof.";
-      if (graph?.job?.kind === "where_is_money_check") return "Money-origin trace.";
-      if (graph?.job?.kind === "incoming_deposit_check") return "Deposit-origin trace.";
-      if (graph?.job?.kind === "address_fast_check") return "Fast direct-neighborhood profile.";
+      if (graph?.job?.kind === "address_deep_check") return "DeepCheck profile";
+      if (graph?.job?.kind === "where_is_money_check") return "Money-origin trace";
+      if (graph?.job?.kind === "incoming_deposit_check") return "Deposit trace";
+      if (graph?.job?.kind === "address_fast_check") return "Fast triage";
       return projectionMode(graph);
     }
     function edgeTimestampMs(edge) {
@@ -1642,7 +1833,7 @@ export function adminConsoleHtml(): string {
         edgePassesPeerLinkFilter(edge)
       ));
     }
-    function activityTimelineBuckets(edges, bucketCount = 32) {
+    function activityTimelineBuckets(edges, bucketCount = 48) {
       const dated = edges
         .map((edge) => ({ edge, timestamp: edgeTimestampMs(edge) }))
         .filter((item) => item.timestamp !== null);
@@ -1678,6 +1869,9 @@ export function adminConsoleHtml(): string {
       if (timestamp < range.start) return false;
       return range.isLast ? timestamp <= range.end : timestamp < range.end;
     }
+    function edgeIsTimelineFocused(edge) {
+      return Boolean(state.timelineRange && edgePassesTimelineRange(edge));
+    }
     function filteredTransferEdges() {
       return presentationTransferEdges(filteredGraphEdges());
     }
@@ -1685,7 +1879,6 @@ export function adminConsoleHtml(): string {
       const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
       const bucket = buckets[index];
       state.timelineRange = bucket && state.timelineRange?.index !== index ? { start: bucket.start, end: bucket.end, index, isLast: bucket.isLast } : null;
-      reconcileSelectionWithFilters();
       renderGraph();
       renderCaseBrief();
       renderDetails();
@@ -1710,20 +1903,109 @@ export function adminConsoleHtml(): string {
       const maxValue = Math.max(1, ...buckets.map((bucket) => bucket.amount || bucket.count));
       root.innerHTML = buckets.map((bucket) => {
         const value = bucket.amount || bucket.count;
-        const height = bucket.count === 0 ? 4 : Math.max(8, Math.round((value / maxValue) * 48));
+        const normalized = bucket.count === 0 ? 0 : Math.sqrt(value / maxValue);
+        const height = bucket.count === 0 ? 6 : Math.max(14, Math.round(12 + normalized * 56));
         const active = state.timelineRange?.index === bucket.index ? " active" : "";
+        const volume = bucket.count === 0 ? " empty" : value >= maxValue * .78 ? " hot" : value >= maxValue * .32 ? " medium" : " low";
         const title = new Date(bucket.start).toISOString() + " / " + bucket.count + " transfer" + (bucket.count === 1 ? "" : "s");
-        return '<button type="button" class="timeline-bar' + active + '" data-timeline-index="' + bucket.index + '" style="height:' + height + 'px" title="' + escapeHtml(title) + '"></button>';
+        return '<button type="button" class="timeline-bar' + volume + active + '" data-timeline-index="' + bucket.index + '" style="--bucket-height:' + height + 'px" title="' + escapeHtml(title) + '" aria-label="' + escapeHtml(title) + '"></button>';
       }).join("");
       root.querySelectorAll("[data-timeline-index]").forEach((button) => {
         button.addEventListener("click", () => selectTimelineBucket(Number(button.getAttribute("data-timeline-index"))));
       });
       if (state.timelineRange) {
-        hint.textContent = "Timeline filter: " + new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString() + ".";
+        hint.textContent = "Timeline focus: " + new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString() + ". Context stays visible.";
       } else {
         const count = timelineSourceTransferEdges().length;
-        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to filter.";
+        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to focus graph flow.";
       }
+    }
+    function jobQueueModeLabel(mode) {
+      if (mode === "running") return "Running";
+      if (mode === "review") return "Needs review";
+      return "All";
+    }
+    function jobPassesQueueMode(job) {
+      if (state.jobQueueMode === "running") {
+        return job.status === "running" || job.status === "queued" || isWaitingForTargetedIndex(job);
+      }
+      if (state.jobQueueMode === "review") {
+        return job.status === "partial" || job.status === "failed" || job.status === "cancelled";
+      }
+      return true;
+    }
+    function visibleJobsForQueue() {
+      return state.jobs.filter(jobPassesQueueMode);
+    }
+    function syncJobQueueModeControls() {
+      const all = el("jobsModeAll");
+      const running = el("jobsModeRunning");
+      const review = el("jobsModeReview");
+      if (all) all.classList.toggle("active", state.jobQueueMode === "all");
+      if (running) running.classList.toggle("active", state.jobQueueMode === "running");
+      if (review) review.classList.toggle("active", state.jobQueueMode === "review");
+    }
+    function setJobQueueMode(mode) {
+      state.jobQueueMode = ["all", "running", "review"].includes(mode) ? mode : "all";
+      renderJobs();
+    }
+    function formatJobTime(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return iso(value);
+      const now = new Date();
+      const sameDay = date.toDateString() === now.toDateString();
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      const day = sameDay ? "today" : date.toDateString() === yesterday.toDateString() ? "yesterday" : date.toLocaleDateString([], { month: "short", day: "2-digit" });
+      return day + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    function formatJobDuration(ms) {
+      if (!Number.isFinite(ms) || ms < 0) return "";
+      const minutes = Math.max(1, Math.round(ms / 60000));
+      if (minutes < 60) return minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      const rest = minutes % 60;
+      return hours + "h" + (rest ? " " + rest + "m" : "");
+    }
+    function jobDurationLabel(job) {
+      const started = job.startedAt ? new Date(job.startedAt).getTime() : null;
+      if (!started || !Number.isFinite(started)) return "";
+      const endValue = job.completedAt || job.updatedAt || null;
+      const ended = endValue ? new Date(endValue).getTime() : Date.now();
+      const duration = formatJobDuration(ended - started);
+      if (!duration) return "";
+      return (job.status === "running" || job.status === "queued") ? "running " + duration : "duration " + duration;
+    }
+    function jobRiskClass(job) {
+      const level = String(job.riskLevel || "").toLowerCase();
+      if (level === "high" || level === "critical" || Number(job.riskScore) >= 60) return " job-risk-high";
+      if (level === "low" || Number(job.riskScore) <= 30) return " job-risk-low";
+      return "";
+    }
+    function jobRiskLabel(job) {
+      if (typeof job.riskScore === "number" && Number.isFinite(job.riskScore)) {
+        return "Risk " + job.riskScore + (job.riskLevel ? " / " + job.riskLevel : "");
+      }
+      if (job.status === "running" || job.status === "queued") return "Risk pending";
+      return "Risk n/a";
+    }
+    function jobCoverageLabel(job) {
+      const value = job.coverageStatus || job.technicalStatus || "";
+      if (value) return "Coverage " + value;
+      if (job.status === "completed") return "Coverage complete";
+      if (job.status === "partial") return "Coverage partial";
+      return "";
+    }
+    function jobProgressLine(job, liveProgress, searchContext) {
+      if (liveProgress.length > 0) return "<strong>Current step:</strong> " + escapeHtml(liveProgress[0]);
+      if (job.lastError) return "<strong>Why here:</strong> " + escapeHtml(job.lastError);
+      if (job.status === "partial") return "<strong>Why here:</strong> Partial evidence or coverage limit. Open Analytics for details.";
+      if (job.status === "failed") return "<strong>Why here:</strong> Job failed before a graph could be completed.";
+      if (job.status === "running" || job.status === "queued") return "<strong>Current step:</strong> waiting for worker progress.";
+      if (searchContext) return "<strong>Context:</strong> " + escapeHtml(searchContext);
+      if (job.decision) return "<strong>Decision:</strong> " + escapeHtml(job.decision);
+      return "";
     }
     function renderStats() {
       const counts = state.jobs.reduce((acc, job) => {
@@ -1741,11 +2023,23 @@ export function adminConsoleHtml(): string {
     function renderJobs() {
       const root = el("jobs");
       renderStats();
+      syncJobQueueModeControls();
+      const visibleJobs = visibleJobsForQueue();
+      const summary = el("jobsResultSummary");
+      if (summary) {
+        summary.textContent = state.jobs.length === 0
+          ? "No jobs loaded."
+          : jobQueueModeLabel(state.jobQueueMode) + ": " + visibleJobs.length + " of " + state.jobs.length + " loaded jobs";
+      }
       if (state.jobs.length === 0) {
         root.innerHTML = '<div class="empty">No jobs found. Check filters or run wallet checks first.</div>';
         return;
       }
-      root.innerHTML = state.jobs.map((job) => {
+      if (visibleJobs.length === 0) {
+        root.innerHTML = '<div class="empty">No jobs match this queue view.</div>';
+        return;
+      }
+      root.innerHTML = visibleJobs.map((job) => {
         const active = job.id === state.activeJobId ? " active" : "";
         const displayStatus = jobDisplayStatus(job);
         const liveProgress = jobLiveProgressLines(job);
@@ -1755,14 +2049,23 @@ export function adminConsoleHtml(): string {
           job.sender ? "sender " + short(job.sender, 8) : "",
           job.depositTxHash ? "tx " + short(job.depositTxHash, 8) : ""
         ].filter(Boolean).join(" · ");
+        const updated = formatJobTime(job.completedAt || job.updatedAt || job.createdAt);
+        const started = formatJobTime(job.startedAt || job.createdAt);
+        const duration = jobDurationLabel(job);
+        const coverage = jobCoverageLabel(job);
+        const progressLine = jobProgressLine(job, liveProgress, searchContext);
         return '<button type="button" class="job' + active + '" data-job-id="' + escapeHtml(job.id) + '">' +
-          '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(displayStatus.classValue) + '">' + escapeHtml(displayStatus.label) + '</span></div>' +
-          '<span>' + escapeHtml(job.kind) + '</span>' +
-          (searchContext ? '<span>' + escapeHtml(searchContext) + '</span>' : '') +
-          liveProgress.map((line) => '<span>' + escapeHtml(line) + '</span>').join("") +
-          '<span>requested by ' + escapeHtml(requester) + '</span>' +
-          '<span>' + escapeHtml(iso(job.completedAt || job.updatedAt || job.createdAt)) + '</span>' +
-          '<span>' + escapeHtml(job.id) + '</span>' +
+          '<div class="job-title"><span class="job-address">' + escapeHtml(short(job.subjectAddress, 10)) + '</span><span class="' + classifyStatus(displayStatus.classValue) + '">' + escapeHtml(displayStatus.label) + '</span></div>' +
+          '<div class="job-meta-row">' +
+            '<span class="job-pill job-kind-pill">' + escapeHtml(humanCheckKind(job.kind)) + '</span>' +
+            '<span class="job-pill' + jobRiskClass(job) + '">' + escapeHtml(jobRiskLabel(job)) + '</span>' +
+            (coverage ? '<span class="job-pill">' + escapeHtml(coverage) + '</span>' : '') +
+            (duration ? '<span class="job-pill">' + escapeHtml(duration) + '</span>' : '') +
+          '</div>' +
+          '<div class="job-line"><strong>Updated:</strong> ' + escapeHtml(updated || "time n/a") + (started ? ' · <strong>Started:</strong> ' + escapeHtml(started) : "") + '</div>' +
+          '<div class="job-line"><strong>Requested by:</strong> ' + escapeHtml(requester) + '</div>' +
+          (progressLine ? '<div class="job-line">' + progressLine + '</div>' : '') +
+          '<div class="job-id-line">job ' + escapeHtml(short(job.id, 8)) + '</div>' +
           '</button>';
       }).join("");
       root.querySelectorAll("[data-job-id]").forEach((button) => button.addEventListener("click", () => loadGraph(button.getAttribute("data-job-id"))));
@@ -1870,7 +2173,6 @@ export function adminConsoleHtml(): string {
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
-        fillStrictBenchmarkAddressFromJob(activeJob());
         state.expandedBundleNodeIds.clear();
         state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };
@@ -2382,49 +2684,36 @@ export function adminConsoleHtml(): string {
       });
 
       const visibleIds = new Set([...kept, ...groups].map((node) => node.id));
-      const edges = [];
-      const collapsedEdgeByKey = new Map();
-      rawEdges.forEach((edge) => {
-        const fromVisible = visibleIds.has(edge.fromNodeId);
-        const toVisible = visibleIds.has(edge.toNodeId);
-        if (fromVisible && toVisible) {
-          edges.push(edge);
-          return;
-        }
-        const fromNodeId = fromVisible ? edge.fromNodeId : hiddenNodeToGroupId.get(edge.fromNodeId);
-        const toNodeId = toVisible ? edge.toNodeId : hiddenNodeToGroupId.get(edge.toNodeId);
-        if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
-        const groupKind = groupKindById.get(fromNodeId) || groupKindById.get(toNodeId) || "context";
-        const aggregateKey = fromNodeId + "->" + toNodeId + ":collapsed_group";
-        const current = collapsedEdgeByKey.get(aggregateKey);
-        if (current) {
-          current.weight += edge.weight || 1;
-          current.metadata.sourceEdgeIds.push(edge.id);
-          current.metadata.sourceEdgeCount = current.metadata.sourceEdgeIds.length;
-          const sourceRole = edge.displayRole || edge.type || null;
-          if (sourceRole && !current.metadata.sourceDisplayRoles.includes(sourceRole)) current.metadata.sourceDisplayRoles.push(sourceRole);
-          return;
-        }
-        collapsedEdgeByKey.set(aggregateKey, {
-          id: "collapsed-edge:wallet_cluster:" + aggregateKey.replace(/[^a-zA-Z0-9:_-]/g, "_"),
-          fromNodeId,
-          toNodeId,
-          type: "collapsed_group",
-          displayRole: "collapsed_group",
-          verdict: "review",
-          weight: edge.weight || 1,
-          metadata: {
-            groupKind,
-            sourceEdgeId: edge.id,
-            sourceEdgeIds: [edge.id],
-            sourceEdgeCount: 1,
-            walletClusterSummary: true,
-            sourceDisplayRole: edge.displayRole || edge.type || null,
-            sourceDisplayRoles: [edge.displayRole || edge.type || null].filter(Boolean)
-          }
+      const edges = rawEdges.filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId));
+      const sourceEdgeById = new Map(rawEdges.filter((edge) => edge?.id).map((edge) => [edge.id, edge]));
+      const aggregateEdges = collapsedGroupAggregateEdges(rawEdges, visibleIds, hiddenNodeToGroupId, groupKindById)
+        .map((edge) => {
+          const sourceEdgeIds = Array.isArray(edge?.metadata?.sourceEdgeIds)
+            ? edge.metadata.sourceEdgeIds
+            : Array.isArray(edge?.metadata?.hiddenEdgeIds)
+              ? edge.metadata.hiddenEdgeIds
+              : [];
+          const sourceDisplayRoles = [...new Set(sourceEdgeIds
+            .map((edgeId) => {
+              const sourceEdge = sourceEdgeById.get(edgeId);
+              return sourceEdge?.displayRole || sourceEdge?.type || null;
+            })
+            .filter(Boolean))];
+          const id = String(edge?.id || "").startsWith("collapsed-edge:wallet_cluster:")
+            ? edge.id
+            : String(edge?.id || "").replace(/^collapsed-edge:/, "collapsed-edge:wallet_cluster:");
+          return {
+            ...edge,
+            id,
+            metadata: {
+              ...edge.metadata,
+              walletClusterSummary: true,
+              sourceDisplayRole: sourceDisplayRoles[0] || null,
+              sourceDisplayRoles
+            }
+          };
         });
-      });
-      collapsedEdgeByKey.forEach((edge) => edges.push(edge));
+      aggregateEdges.forEach((edge) => edges.push(edge));
       return { nodes: [...kept, ...groups], edges };
     }
     function applyBundleMemberVisibility(nodes, edges) {
@@ -3728,6 +4017,14 @@ export function adminConsoleHtml(): string {
     function edgeHasTransferRows(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
       if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (
+        evidenceType === "contract_trigger_context" ||
+        evidenceType === "contract_call_context" ||
+        evidenceType === "debit_authority_context" ||
+        evidenceType === "approval_drain_contract_call" ||
+        evidenceType === "approval_drain_spender_authority"
+      ) return false;
       if (edgeHasAggregatedTxEvidence(edge) && edgeTxHashes(edge).length > 0) return true;
       if (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) return true;
       return Boolean(edge?.txHash && edge.txHash !== "inferred");
@@ -3845,7 +4142,27 @@ export function adminConsoleHtml(): string {
         : Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
       return Boolean(count && count > 1);
     }
+    function edgeIsDeepCheckRelationshipProjection(edge) {
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      const source = String(edge?.metadata?.source || "");
+      return evidenceType === "deepcheck_relationship_second_hop" ||
+        evidenceType === "deepcheck_extended_path" ||
+        source === "deepcheck_relationship_second_hop" ||
+        source === "deepcheck_extended_path";
+    }
+    function edgeIsContractContextProjection(edge) {
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      return evidenceType === "contract_trigger_context" ||
+        evidenceType === "contract_call_context" ||
+        evidenceType === "debit_authority_context" ||
+        evidenceType === "approval_drain_contract_call" ||
+        evidenceType === "approval_drain_spender_authority";
+    }
+    function edgeIsCanvasContextProjection(edge) {
+      return edgeIsDeepCheckRelationshipProjection(edge) || edgeIsContractContextProjection(edge);
+    }
     function edgeHasCanvasAmountLabel(edge) {
+      if (edgeIsCanvasContextProjection(edge)) return false;
       return Boolean(edgeCanvasLabel(edge) || edgeBoundarySummaryLabel(edge) || edgeContextCanvasLabel(edge));
     }
     function edgeShouldShowAmount(edge) {
@@ -3855,6 +4172,7 @@ export function adminConsoleHtml(): string {
       if (!edgeShouldShowAmount(edge)) return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
+      if (edgeIsCanvasContextProjection(edge)) return false;
       return true;
     }
     function edgeShouldShowImportantCanvasAmount(edge) {
@@ -3864,6 +4182,7 @@ export function adminConsoleHtml(): string {
       if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
+      if (edgeIsCanvasContextProjection(edge)) return false;
       return true;
     }
     function edgeDetailedAmountLabel(edge) {
@@ -4080,12 +4399,14 @@ export function adminConsoleHtml(): string {
         return nodesVisible && edgesVisible;
       }).length;
     }
+    function setGraphContextVisible(visible) {
+      const context = el("graphStats").closest(".analytics-graph-context");
+      if (context) context.hidden = !visible;
+    }
     function filteredGraphEdges() {
-      if (graphFullEvidenceModeActive()) return graphEdges(state.graph);
       return graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
-        edgePassesTimelineRange(edge) &&
         edgePassesPeerLinkFilter(edge)
       );
     }
@@ -4485,7 +4806,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "contract_trigger_context") return "Source wallet -> spender contract";
       if (evidenceType === "approval_drain_transfer") return "Victim -> receiver via smart contract";
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
-      if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
+      if (evidenceType === "approval_drain_spender_authority") return "Victim -> spender contract authority";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
       if (evidenceType === "deepcheck_extended_path") return edge?.metadata?.relationship === "cross_wallet_edge" ? "Wallet-to-wallet extended path" : "Subject extended path";
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
@@ -4564,7 +4885,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "debit_authority_context") return "spender contract -> source";
       if (evidenceType === "approval_drain_transfer") return "victim -> receiver";
       if (evidenceType === "approval_drain_contract_call") return "operator -> spender contract";
-      if (evidenceType === "approval_drain_spender_authority") return "spender contract -> victim";
+      if (evidenceType === "approval_drain_spender_authority") return "victim -> spender contract";
       if (role === "profile_context" && metadataDirection === "outbound") return "subject -> counterparty";
       if (role === "profile_context" && metadataDirection === "inbound") return "counterparty -> subject";
       return metadataDirection || edge?.direction || "n/a";
@@ -4770,27 +5091,27 @@ export function adminConsoleHtml(): string {
     function graphLegendHtml(mode) {
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
       if (state.graph?.job?.kind === "where_is_money_check") {
-        return '<span class="chip graph-legend-chip" data-graph-legend="where_funding_candidates">' +
+        return '<div class="graph-legend-card" data-graph-legend="where_funding_candidates">' +
           item("where-route", "Selected route") +
           item("where-exact", "Exact funding") +
           item("where-probable", "Probable funding context") +
           item("where-caveat", "Unresolved / pre-existing caveat") +
           item("where-service", "Service boundary") +
           item("where-grouped", "Grouped candidates") +
-          '</span>';
+          '</div>';
       }
       if (mode === "wallet_clusters") {
-        return '<span class="chip graph-legend-chip" data-graph-legend="wallet_clusters">' +
+        return '<div class="graph-legend-card" data-graph-legend="wallet_clusters">' +
           item("direct", "Real money flow") +
           item("group", "Grouped transfers") +
           item("inferred", "Context / peer") +
           item("service", "Service / CEX") +
           item("boundary", "Boundary stop") +
           item("contract", "Contract context") +
-          '</span>';
+          '</div>';
       }
       if (mode !== "deep_branch_map") return "";
-      return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
+      return '<div class="graph-legend-card" data-graph-legend="deep_branch_map">' +
         item("direct-context", "Direct subject context") +
         item("second-hop", "Second-hop edge") +
         item("extended", "Extended path edge") +
@@ -4799,7 +5120,7 @@ export function adminConsoleHtml(): string {
         item("queued", "Queued / not indexed") +
         item("boundary", "Service / stopped edge") +
         item("contract", "Contract context") +
-        '</span>';
+        '</div>';
     }
     function edgeSemanticAttrs(edge, visualRole) {
       return ' data-edge-role="' + escapeHtml(visualRole) + '" data-edge-display-role="' + escapeHtml(edgeDisplayRole(edge)) + '" data-edge-directness="' + escapeHtml(edgeDirectness(edge)) + '"';
@@ -4875,21 +5196,34 @@ export function adminConsoleHtml(): string {
         svg.innerHTML = "";
         el("graphStats").innerHTML = "";
         el("graphLegend").innerHTML = "";
+        setGraphContextVisible(false);
         return;
       }
+      setGraphContextVisible(true);
       const graph = state.graph;
-      const fullEvidence = graphFullEvidenceModeActive();
-      const rawVisibleEdges = fullEvidence ? graphEdges(graph) : filteredGraphEdges();
+      const rawVisibleEdges = filteredGraphEdges();
       const rawConnectedNodeIds = new Set();
       rawVisibleEdges.forEach((edge) => {
         if (edge?.fromNodeId) rawConnectedNodeIds.add(edge.fromNodeId);
         if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
       });
-      const rawVisibleNodes = fullEvidence ? graphNodes(graph) : graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
+      const rawVisibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
       const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
       const visibleEdges = presentation.edges;
       const visibleNodes = presentation.nodes;
       const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges, presentation.mode, presentation.dense));
+      const timelineFocusEdgeIds = new Set();
+      const timelineFocusNodeIds = new Set();
+      if (state.timelineRange) {
+        visibleEdges.forEach((edge) => {
+          if (!edgeIsTimelineFocused(edge)) return;
+          timelineFocusEdgeIds.add(edge.id);
+          if (edge?.fromNodeId) timelineFocusNodeIds.add(edge.fromNodeId);
+          if (edge?.toNodeId) timelineFocusNodeIds.add(edge.toNodeId);
+        });
+        const subject = visibleNodes.find((node) => node.kind === "subject");
+        if (subject?.id) timelineFocusNodeIds.add(subject.id);
+      }
       state.renderedNodePositions = new Map(placed.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
       state.renderedNodesById = new Map(placed.nodes.map((node) => [node.id, node]));
       state.renderedEdgesById = new Map(visibleEdges.map((edge) => [edge.id, edge]));
@@ -4908,7 +5242,8 @@ export function adminConsoleHtml(): string {
         const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);
         const visualRole = edgeVisualRole(edge);
         const speedClass = edgeSpeedClass(edge);
-        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const timelineClass = state.timelineRange ? (timelineFocusEdgeIds.has(edge.id) ? " timeline-focus" : " timeline-context") : "";
+        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + timelineClass + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -4943,7 +5278,7 @@ export function adminConsoleHtml(): string {
         const labelItem = placedEdgeLabelById.get(edge.id) || item;
         const marker = ' marker-end="url(#' + edgeMarkerId(edge, visualRole) + ')"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);
-        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
+        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="edge-hitbox" d="' + pathD + '"></path><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
           amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
@@ -4951,7 +5286,8 @@ export function adminConsoleHtml(): string {
         const visible = matchesSearch(node) && isSelectedConnected(node.id);
         const role = nodeRole(node);
         const roleClass = state.roleMarksVisible && role ? " role-marked node-role-" + escapeHtml(role) : "";
-        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
+        const timelineClass = state.timelineRange ? (timelineFocusNodeIds.has(node.id) ? " timeline-focus" : " timeline-context") : "";
+        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + timelineClass + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
         return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '"' + nodeSemanticAttrs(node) + ' transform="translate(' + node.x + ' ' + node.y + ')">' +
@@ -5002,25 +5338,28 @@ export function adminConsoleHtml(): string {
       const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");
       const placedNodeIds = new Set(placed.nodes.map((node) => node.id));
       const visibleEdgeIds = new Set(visibleEdges.map((edge) => edge.id));
-      const visiblePathCount = fullEvidence ? graphPaths(graph).length : visibleGraphPathCount(graphPaths(graph), placedNodeIds, visibleEdgeIds);
+      const visiblePathCount = visibleGraphPathCount(graphPaths(graph), placedNodeIds, visibleEdgeIds);
       const hiddenNodeCount = Math.max(0, graphNodes(graph).length - placed.nodes.length);
       const hiddenEdgeCount = Math.max(0, graphEdges(graph).length - visibleEdges.length);
       const hiddenGraphStatsText = hiddenNodeCount > 0 || hiddenEdgeCount > 0 ? "Hidden by view/filter: " + hiddenNodeCount + " nodes / " + hiddenEdgeCount + " edges" : "";
-      const totalGraphStatsText = "Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length;
-      const visibleGraphStatsText = "Visible N" + placed.nodes.length + "/E" + visibleEdges.length + "/P" + visiblePathCount;
+      const totalGraphStatsText = "Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "link") + ", " + statLabel(graphPaths(graph).length, "path");
+      const visibleGraphStatsText = "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "link") + ", " + statLabel(visiblePathCount, "path");
+      const weightStatsText = "Score weights: " + graphWeights(graph).length;
       const graphStatsTitle = [
-        "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "edge") + ", " + statLabel(visiblePathCount, "path"),
-        "Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "edge") + ", " + statLabel(graphPaths(graph).length, "path"),
-        ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
-        statLabel(graphWeights(graph).length, "weight")
-      ].join(" · ");
-      const graphStatsText = [
         visibleGraphStatsText,
         totalGraphStatsText,
         ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
-        "W" + graphWeights(graph).length
+        weightStatsText
       ].join(" · ");
-      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
+      const graphStatsChips = [
+        visibleGraphStatsText,
+        totalGraphStatsText,
+        ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
+        weightStatsText
+      ];
+      el("graphStats").innerHTML = graphStatsChips
+        .map((text) => '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(text) + '</span>')
+        .join("");
       el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);
     }
     function isCollapsedGroupNodeId(nodeId) {
@@ -5214,6 +5553,7 @@ export function adminConsoleHtml(): string {
       if (state.transferTab === "selected" && !state.selected) return "Select an edge, node, or path to inspect related transfers.";
       if (state.transferTab === "selected") return "No transfer evidence is stored for this selection.";
       if (state.transferTab === "stops") return "No boundary stops are stored for this graph.";
+      if (state.timelineRange) return "No transfers are stored in the selected timeline bucket.";
       return "No transfers match the current filters.";
     }
     function timelineEmptyCopy() {
@@ -5227,7 +5567,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.transferTab === "stops") return renderBoundaryStops(root);
-      const filteredEdges = filteredTransferEdges().filter(edgeHasTransferRows);
+      const filteredEdges = filteredTransferEdges().filter(edgePassesTimelineRange).filter(edgeHasTransferRows);
       const selected = selectedEdgeIds();
       if (state.transferTab === "selected" && state.selected?.type === "edge") {
         const selectedEdge = edgeById(state.selected.id);
@@ -6083,6 +6423,18 @@ export function adminConsoleHtml(): string {
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
     }
+    function htmlListMetric(label, items, empty) {
+      const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+      if (values.length === 0) return metricHtml(label, '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>', "wide");
+      return metricHtml(label, '<div class="counterparty-lines">' + values.map((item) => String(item)).join("") + '</div>', "wide");
+    }
+    function detailsMetric(label, items, empty) {
+      const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+      if (values.length === 0) return "";
+      return '<details class="metric wide compact-details"><summary>' + escapeHtml(label) + '<span>' + values.length + '</span></summary>' +
+        listHtml(values, empty) +
+        '</details>';
+    }
     function strictProvenanceLines(summary) {
       const layer = summary?.layerSummary || {};
       const strict = layer.strictProvenance || null;
@@ -6106,7 +6458,7 @@ export function adminConsoleHtml(): string {
         if (metrics.traceMs !== null && metrics.traceMs !== undefined) lines.push("Trace time: " + trimNumber(metrics.traceMs / 1000) + "s");
         if (metrics.scoringMs !== null && metrics.scoringMs !== undefined) lines.push("Scoring time: " + trimNumber(metrics.scoringMs / 1000) + "s");
       }
-      return listMetric("Strict benchmark", lines, "");
+      return detailsMetric("Strict benchmark", lines, "");
     }
     function targetedIndexLines(summary) {
       const layer = summary?.layerSummary || {};
@@ -6194,7 +6546,7 @@ export function adminConsoleHtml(): string {
         });
         if (states.length > 8) lines.push("More states: " + (states.length - 8));
       }
-      return listMetric("Targeted history", lines, "");
+      return detailsMetric("Targeted history", lines, "");
     }
     function whereFundingCandidateLines(summary) {
       const layer = summary?.layerSummary || {};
@@ -6208,7 +6560,7 @@ export function adminConsoleHtml(): string {
       lines.push("Pre-existing balance caveats " + (visibility.preExistingBalanceCaveatCount ?? 0));
       lines.push("Service boundaries " + (visibility.serviceBoundaryCount ?? 0));
       lines.push("Max proven route depth " + (visibility.maxProvenRouteDepth ?? 0));
-      return listMetric("Where funding candidates", lines, "");
+      return detailsMetric("Where funding candidates", lines, "");
     }
     function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
@@ -7266,7 +7618,10 @@ export function adminConsoleHtml(): string {
         const geometry = edgeGeometry(edge, placedById, edgeRouteIndex);
         if (!geometry) return;
         const path = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] path.edge');
-        if (path) path.setAttribute("d", edgeCurvePath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, edge, geometry.route));
+        const pathD = edgeCurvePath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, edge, geometry.route);
+        if (path) path.setAttribute("d", pathD);
+        const hitbox = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] path.edge-hitbox');
+        if (hitbox) hitbox.setAttribute("d", pathD);
         const pill = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] .amount-pill');
         const width = Number(pill?.querySelector("rect")?.getAttribute("width") || 0);
         if (pill && Number.isFinite(width)) pill.setAttribute("transform", "translate(" + (geometry.labelX - width / 2) + " " + (geometry.labelY - 10) + ")");
@@ -7454,8 +7809,10 @@ export function adminConsoleHtml(): string {
     el("selectionCard").addEventListener("click", handleSelectedFlowTxRowClick);
     el("selectionCard").addEventListener("keydown", handleSelectedFlowTxRowKeydown);
     el("load").addEventListener("click", loadJobs);
-    el("startStrictBenchmark").addEventListener("click", startStrictBenchmark);
     el("refresh").addEventListener("click", loadJobs);
+    el("jobsModeAll").addEventListener("click", () => setJobQueueMode("all"));
+    el("jobsModeRunning").addEventListener("click", () => setJobQueueMode("running"));
+    el("jobsModeReview").addEventListener("click", () => setJobQueueMode("review"));
     el("status").addEventListener("change", loadJobs);
     el("kind").addEventListener("change", loadJobs);
     el("limit").addEventListener("change", loadJobs);
@@ -7470,6 +7827,7 @@ export function adminConsoleHtml(): string {
       el("status").value = "";
       el("kind").value = "";
       el("subject").value = "";
+      state.jobQueueMode = "all";
       loadJobs();
     });
     el("zoomIn").addEventListener("click", () => zoom(1.18));

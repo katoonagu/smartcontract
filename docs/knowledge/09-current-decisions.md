@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -65,11 +65,30 @@ of these decisions, update this file in the same work.
   are grouped. This is not DeepCheck relationship expansion and does not add
   arbitrary wallet neighbors.
 - Ordinary `Where is money` can publish a valid `REVIEW` score when the only
-  unresolved source-provenance residue is below materiality and has no hard
-  evidence. Current local thresholds are 1% and 100 USDT. The unresolved residue
-  must remain visible as a caveat.
+  unresolved source-provenance residue or dense-hop provider-cap tail is below
+  its materiality thresholds and has no hard evidence. Residual thresholds are
+  1% and 100 USDT; dense-hop thresholds are 1% per branch, 2% aggregate, and
+  10,000 USDT per branch. The unresolved branch must remain visible as a caveat.
+- A fresh ordinary Where job resumed from targeted `partial_provider_cap`
+  progress must run the report builder and materiality assessment before
+  deciding score validity. It must not complete directly from
+  `provider_limited` progress with a minimal `provider_cap_unresolved` result.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
+
+### 2026-07-05 Dense-Hop Materiality For Where
+
+- Dense-hop materiality changes scoring interpretation only; it does not change
+  TronScan indexing or provider fetching.
+- A provider-capped dense-hop unresolved source tail can be a score-valid caveat
+  only below branch and aggregate thresholds and with no hard evidence.
+- The tail stays visible in Admin and Telegram and is excluded from decisive
+  clean/bad evidence. It is not a clean verdict.
+- Material unresolved source, threshold failure, or hard evidence still blocks
+  final scoring or drives the result.
+- Old cached failed jobs are not silently recalculated. A fresh check must build
+  a new result before Admin, bot, or support treats the dense-hop materiality
+  policy as applied.
 
 ### Planned Behavior
 
@@ -78,8 +97,8 @@ of these decisions, update this file in the same work.
 - A service boundary is a legitimate stop.
 - A local page-budget stop is not a legitimate source-of-funds conclusion.
 - Final score should not be published as valid when the main money path is not
-  covered, except for explicit low-materiality residual source-provenance
-  caveats with no hard evidence.
+  covered, except for explicit low-materiality source-provenance caveats with no
+  hard evidence.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
 - `Incoming deposit` still needs the same resumable indexing flow before this
@@ -114,6 +133,16 @@ of these decisions, update this file in the same work.
   complete and materializable.
 - Direct hard-evidence checks for direct counterparties work.
 - Second-layer metrics can still be empty even with a configured budget.
+
+### 2026-07-05 DeepCheck Drainer-Campaign Visibility
+
+- DeepCheck separates broad drainer-campaign context from exact approval-drain
+  proof.
+- Canonical USDT transfers stay plain; Verify20 and similar non-USDT wrapper
+  calls are campaign context until exact approval/provenance proof is
+  established.
+- Reports include enrichment denominators and complete/lower-bound status so
+  partial campaign counts are not presented as complete totals.
 
 ### Planned Behavior
 

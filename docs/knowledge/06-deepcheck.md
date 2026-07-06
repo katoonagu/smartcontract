@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
@@ -56,6 +56,13 @@ graphs. It uses the full graph API payload rather than the compact summary
 projection, so second-layer nodes and edges remain visible when the backend has
 saved them. Manual `Investigative view` and `Compact summary` remain available
 for reading dense graphs at lower detail.
+
+DeepCheck separates canonical USDT transfers from wrapper-driven incoming
+activity in its contract-driven campaign summary. When the subject incoming set
+is within transaction-info enrichment budget, DeepCheck reports denominator
+counters such as total incoming tx, enriched incoming tx, plain USDT transfer
+tx, wrapper-driven tx, Verify20 tx, exact approval-drain profile count, and
+campaign clusters. Partial enrichment is marked as lower-bound context.
 
 ## Planned Behavior
 

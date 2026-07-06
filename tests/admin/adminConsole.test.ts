@@ -31,11 +31,14 @@ function adminTargetedIndexHelpers() {
     String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
   const listMetric = (label: unknown, values: unknown[], fallback: unknown) =>
     '<div data-list="' + escapeHtml(label) + '">' + (values.length ? values : [fallback]).map(escapeHtml).join("|") + "</div>";
+  const detailsMetric = (label: unknown, values: unknown[], fallback: unknown) =>
+    '<details data-list="' + escapeHtml(label) + '">' + (values.length ? values : [fallback]).map(escapeHtml).join("|") + "</details>";
 
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
-  return new Function("listMetric", "asArray", helperBlock + "\nreturn { targetedIndexLines };")(
+  return new Function("listMetric", "detailsMetric", "asArray", helperBlock + "\nreturn { targetedIndexLines };")(
     listMetric,
+    detailsMetric,
     (value: unknown) => Array.isArray(value) ? value : []
   ) as {
     targetedIndexLines(summary: unknown): string;
@@ -95,9 +98,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".overlay-panel.jobs-panel { left: 12px;");
     expect(html).toContain(".overlay-panel.analytics-panel { right: 12px;");
     expect(html).toContain(".graph-action-row");
-    expect(html).toContain("grid-template-columns: minmax(0, 1fr) max-content");
-    expect(html).toContain(".graph-control-group { gap: 5px; flex-wrap: wrap; }");
-    expect(html).toContain(".graph-action-row .graph-meta");
+    expect(html).toContain(".graph-control-section");
+    expect(html).toContain(".analytics-graph-context");
     expect(html).toContain("pointer-events: none;");
     expect(html).not.toContain('id="groupSmallWallets"');
     expect(html).not.toContain("adminForensicsGroupSmallWallets");
@@ -465,16 +467,34 @@ describe("adminConsoleHtml", () => {
     expect(lines).toContain("Indexing history: TWkvff...q98cdn");
   });
 
-  it("renders strict provenance benchmark controls", () => {
+  it("keeps strict provenance diagnostics out of the Jobs launcher", () => {
     const html = adminConsoleHtml();
 
-    expect(html).toContain("Strict benchmark");
-    expect(html).toContain("strictBenchmarkAddress");
-    expect(html).toContain("/admin/api/strict-provenance-benchmark");
-    expect(html).toContain("startStrictBenchmark");
-    expect(html).toContain("strictBenchmarkAddressForJob");
-    expect(html).toContain("Select a job or paste an address.");
-    expect(html).toContain('el("kind").value = ""');
+    expect(html).not.toContain("strictBenchmarkAddress");
+    expect(html).not.toContain("/admin/api/strict-provenance-benchmark");
+    expect(html).not.toContain("startStrictBenchmark");
+    expect(html).not.toContain("strictBenchmarkAddressForJob");
+    expect(html).toContain('detailsMetric("Strict benchmark"');
+  });
+
+  it("renders Jobs as an analyst queue with readable cards", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('id="jobsModeAll"');
+    expect(html).toContain('id="jobsModeRunning"');
+    expect(html).toContain('id="jobsModeReview"');
+    expect(html).toContain("Needs review");
+    expect(html).toContain("Find address, tx, or job id");
+    expect(html).toContain("Status: all");
+    expect(html).toContain("Check: all");
+    expect(html).toContain("function jobPassesQueueMode");
+    expect(html).toContain("function jobRiskLabel");
+    expect(html).toContain("function formatJobTime");
+    expect(html).toContain("function jobProgressLine");
+    expect(html).toContain('humanCheckKind(job.kind)');
+    expect(html).toContain("Risk pending");
+    expect(html).toContain("<strong>Updated:</strong>");
+    expect(html).toContain("jobsResultSummary");
   });
 
   it("renders strict provenance benchmark status copy", () => {
@@ -576,14 +596,19 @@ describe("adminConsoleHtml", () => {
   it("contains case brief summary helpers", () => {
     const html = adminConsoleHtml();
 
+    expect(html).toContain("function caseBriefIntroText");
+    expect(html).toContain("function htmlListMetric");
+    expect(html).toContain("function formatBriefEdgeHtml");
     expect(html).toContain("function caseBriefTopIncoming");
     expect(html).toContain("function caseBriefTopOutgoing");
     expect(html).toContain("function caseBriefTopServices");
-    expect(html).toContain("Top incoming");
-    expect(html).toContain("Top outgoing");
+    expect(html).toContain("Largest incoming");
+    expect(html).toContain("Largest outgoing");
     expect(html).toContain("Top services");
     expect(html).toContain("Boundary stops");
-    expect(html).toContain("Profile/context graph");
+    expect(html).toContain("DeepCheck profile");
+    expect(html).toContain("Fast triage view. It shows direct counterparties");
+    expect(html).toContain("explorerLink(tronscanAddressUrl(address), short(address, 7))");
   });
 
   it("contains semantic edge and node visual helpers", () => {
@@ -706,13 +731,19 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function edgeTimestampMs");
     expect(html).toContain("function activityTimelineBuckets");
+    expect(html).toContain("function activityTimelineBuckets(edges, bucketCount = 48)");
     expect(html).toContain("function selectedTimelineBucket");
     expect(html).toContain("function selectTimelineBucket");
+    expect(html).toContain("function edgeIsTimelineFocused");
     expect(html).toContain("state.timelineRange");
     expect(html).toContain("timestamp === null) return false");
     expect(html).toContain("timestamp < range.end");
     expect(html).toContain("range.isLast");
     expect(html).toContain("isLast: index === bucketCount - 1");
+    expect(html).toContain("Math.sqrt(value / maxValue)");
+    expect(html).toContain("timeline-focus");
+    expect(html).toContain("timeline-context");
+    expect(html).toContain("Context stays visible.");
     expect(html).toContain("timeline-bar");
     expect(html).toContain("data-timeline-index");
   });
@@ -954,7 +985,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('metricHtml("To", endpointDetailLink(edge, "to"), "wide")');
     expect(html).toContain('metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide")');
     expect(html).toContain('metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide")');
-    expect(html).toContain("return amount + \" - \" + short(address, 7);");
+    expect(html).toContain('return \'<div class="counterparty-row"><strong>\' + escapeHtml(amount)');
+    expect(html).toContain("explorerLink(tronscanAddressUrl(address), short(address, 7))");
     expect(html).toContain("function edgeEvidenceEndpoint");
     expect(html).toContain('transfer?.fromAddress || transfer?.sourceAddress');
     expect(html).toContain('transfer?.toAddress || transfer?.receiverAddress');
@@ -1526,77 +1558,87 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("@media (max-width: 1440px)");
     expect(html).toContain("@media (max-width: 1180px)");
     expect(html).toContain(`@media (max-width: 1680px) {
-      .graph-action-row { gap: 6px; padding: 4px 6px; }
-      .graph-control-group { gap: 5px; flex-wrap: wrap; }
+      .graph-action-row { gap: 6px; padding: 6px; }
+      .graph-control-group { gap: 5px; }
+      .graph-control-section { gap: 4px; padding: 2px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #txLabelMode { width: 160px; }
-      .graph-action-row #walletLabelMode { width: 180px; }
-      .graph-action-row #flowMode { width: 120px; }
-      .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
-    }`);
-    expect(html).toContain(`@media (max-width: 1560px) {
-      .graph-action-row {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
+      .graph-action-row #txLabelMode { width: 150px; }
+      .graph-action-row #walletLabelMode { width: 166px; }
+      .graph-action-row #flowMode { width: 116px; }
     }`);
     expect(html).not.toContain(`@media (max-width: 1680px) {
       .graph-action-row {
         grid-template-columns: minmax(0, 1fr);
       }`);
+    expect(html).not.toContain("@media (max-width: 1560px)");
     expect(html).toContain(".overlay-panel.jobs-panel { left: 12px; width: var(--left-rail-width); }");
     expect(html).toContain(".overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }");
     expect(html).toContain('const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");');
-    expect(html).toContain("const graphStatsText = [");
+    expect(html).toContain("const graphStatsChips = [");
     expect(html).not.toContain(".graph-action-row #amountMode");
     expect(html).toContain('const graphStatsTitle = [');
-    expect(html).toContain('"Visible N" + placed.nodes.length + "/E" + visibleEdges.length');
-    expect(html).toContain('"Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length');
-    expect(html).toContain('"W" + graphWeights(graph).length');
+    expect(html).toContain('"Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "link")');
+    expect(html).toContain('"Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "link")');
+    expect(html).toContain('"Score weights: " + graphWeights(graph).length');
     expect(html).toContain('title="\' + escapeHtml(graphStatsTitle) + \'"');
-    expect(html).toContain(".graph-stage {\n      position: absolute;\n      top: 184px;");
-    expect(html).toContain("right: calc(var(--right-rail-width) + 24px);\n      bottom: 164px;\n      left: calc(var(--left-rail-width) + 24px);");
+    expect(html).toContain(".graph-stage {\n      position: absolute;\n      inset: 0;");
+    expect(html).toContain("z-index: 1;\n      min-width: 0;");
     expect(html).toContain(".timeline-panel {\n      position: absolute;\n      left: calc(var(--left-rail-width) + 24px);");
     expect(html).toContain(".transfer-panel {\n      position: absolute;\n      left: calc(var(--left-rail-width) + 24px);");
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
-    expect(html).toContain(".graph-stage { top: 224px; left: 12px; right: 12px; }");
+    expect(html).toContain(".graph-stage { inset: 0; }");
     expect(html).toContain(".timeline-panel, .transfer-panel {\n        left: 12px;\n        right: 12px;\n      }");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");
-    expect(html).toContain(".overlay-panel { top: 224px; max-height: 360px; }");
+    expect(html).toContain(".overlay-panel { top: 264px; bottom: auto; max-height: 360px; }");
     expect(html).toContain(".overlay-panel.analytics-panel { left: 12px; right: auto; }");
-    expect(html).toContain(".overlay-panel.analytics-panel { top: calc(224px + 372px); }");
+    expect(html).toContain(".overlay-panel.analytics-panel { top: calc(264px + 372px); }");
     expect(html).toContain('class="overlay-body analytics-body"');
     expect(html).toContain('class="selection-card analytics-selection-card" id="selectionCard"');
   });
 
-  it("keeps graph stats and legend from overlapping topbar controls", () => {
+  it("keeps graph stats and legend in the analytics rail, not the topbar controls", () => {
     const html = adminConsoleHtml();
     const actionRowCss = html.slice(html.indexOf(".graph-action-row {"), html.indexOf(".overlay-panel {"));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
+    expect(html).toContain('<div class="analytics-graph-context" hidden>');
     expect(html).toContain('<div id="graphStats" class="graph-meta"></div>');
     expect(html).toContain('<div id="graphLegend" class="graph-legend"></div>');
     expect(actionRowCss).toContain(".graph-control-group");
     expect(actionRowCss).toContain("min-width: 0;");
     expect(actionRowCss).toContain("flex-wrap: wrap;");
-    expect(actionRowCss).toContain("max-height: 108px;");
-    expect(actionRowCss).toContain("overflow-y: auto;");
-    expect(actionRowCss).toContain(".graph-action-row .graph-legend {");
-    expect(actionRowCss).toContain(".graph-action-row .graph-legend:empty { display: none; }");
+    expect(actionRowCss).toContain(`.graph-control-section {
+      min-width: 0;
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;`);
+    expect(actionRowCss).toContain("max-width: 100%;");
+    expect(actionRowCss).not.toContain("max-height: 108px;");
+    expect(actionRowCss).not.toContain("overflow-y: auto;");
+    expect(actionRowCss).not.toContain(".graph-action-row .graph-legend {");
+    expect(actionRowCss).toContain(".analytics-graph-context .graph-legend {");
     expect(html).toContain("@media (max-width: 1280px)");
-    expect(html).toContain(".graph-action-row .graph-meta,\n      .graph-action-row .graph-legend");
     expect(html).toContain("@media (max-width: 1180px)");
-    expect(html).toContain("max-height: 84px;");
+    expect(html).not.toContain("max-height: 84px;");
+    expect(renderBlock).toContain("setGraphContextVisible(false);");
+    expect(renderBlock).toContain("setGraphContextVisible(true);");
     expect(renderBlock).toContain('el("graphStats").innerHTML = "";');
     expect(renderBlock).toContain('el("graphLegend").innerHTML = "";');
-    expect(renderBlock).toContain('el("graphStats").innerHTML = \'<span class="chip"');
+    expect(renderBlock).toContain("const graphStatsChips = [");
+    expect(renderBlock).toContain(".map((text) => '<span class=\"chip\"");
     expect(renderBlock).toContain('el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);');
+  });
+
+  it("renders a wide invisible hit target for graph edges", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain(".edge-hitbox");
+    expect(html).toContain("stroke-width: 16;");
+    expect(renderBlock).toContain('class="edge-hitbox"');
+    expect(renderBlock).toContain('d="\' + pathD + \'"');
   });
 
   it("keeps selected details inside the analytics rail", () => {
@@ -1606,7 +1648,9 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('<div class="selection-card analytics-selection-card" id="selectionCard"></div>');
     expect(html).toContain(".analytics-selection-card {");
     expect(html).toContain(".analytics-selection-card.open { display: block;");
-    expect(html).toContain(".selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }");
+    expect(html).toContain(".selection-card .card-line { display: grid; grid-template-columns: minmax(92px, .72fr) minmax(0, 1.28fr);");
+    expect(html).toContain(".selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }");
+    expect(html).toContain("max-height: min(40dvh, 420px);");
     expect(html).not.toContain("right: 82px;");
     expect(html).not.toContain("top: 112px;");
     expect(html).not.toContain("max-height: calc(100dvh - 330px)");
@@ -2000,7 +2044,7 @@ describe("adminConsoleHtml", () => {
     expect(helperStart).toBeGreaterThan(-1);
     expect(helperEnd).toBeGreaterThan(helperStart);
     expect(rowBlock).toContain("edgeHasTransferRows(edge)");
-    expect(renderTabsBlock).toContain("filteredTransferEdges().filter(edgeHasTransferRows)");
+    expect(renderTabsBlock).toContain("filteredTransferEdges().filter(edgePassesTimelineRange).filter(edgeHasTransferRows)");
     expect(selectedNodeBlock).toContain(".filter(edgeHasTransferRows)");
     if (helperStart < 0 || helperEnd <= helperStart) return;
 
@@ -2026,7 +2070,11 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({
       txHash: "debit-tx",
       metadata: { evidenceType: "contract_trigger_context", underlyingTransfers: [{ txHash: "stored" }] }
-    })).toBe(true);
+    })).toBe(false);
+    expect(api.edgeHasTransferRows({
+      txHash: "approval-tx",
+      metadata: { evidenceType: "approval_drain_spender_authority" }
+    })).toBe(false);
     expect(api.edgeHasTransferRows({
       metadata: { evidenceType: "contract_driven_transfer", underlyingTransfers: [{ txHash: "stored" }] }
     })).toBe(true);
@@ -2040,24 +2088,25 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({ txHash: "real-tx", metadata: {} })).toBe(true);
   });
 
-  it("renders contract trigger source debit amount chips", () => {
+  it("keeps transfer amount chips but hides context-projection canvas labels", () => {
     const html = adminConsoleHtml();
-    const amountVisibilityBlock = html.slice(html.indexOf("function edgeShouldShowAmount"), html.indexOf("function edgeShouldShowImportantCanvasAmount"));
+    const amountVisibilityBlock = html.slice(html.indexOf("function edgeIsDeepCheckRelationshipProjection"), html.indexOf("function edgeDetailedAmountLabel"));
 
     expect(amountVisibilityBlock).not.toBe("");
 
     const api = new Function(
       "function edgeDisplayRole(edge) { return edge?.displayRole || 'context'; }\n" +
         amountVisibilityBlock +
-        "\nreturn { edgeShouldShowCanvasAmount };"
+        "\nreturn { edgeShouldShowCanvasAmount, edgeShouldShowCanvasTime };"
     )() as {
       edgeShouldShowCanvasAmount(edge: unknown): boolean;
+      edgeShouldShowCanvasTime(edge: unknown): boolean;
     };
 
     expect(api.edgeShouldShowCanvasAmount({
       amountRaw: "1000000",
       metadata: { evidenceType: "contract_trigger_context" }
-    })).toBe(true);
+    })).toBe(false);
     expect(api.edgeShouldShowCanvasAmount({
       amountRaw: "1000000",
       metadata: { evidenceType: "contract_driven_transfer" }
@@ -2066,6 +2115,18 @@ describe("adminConsoleHtml", () => {
       amountRaw: "1000000",
       metadata: { evidenceType: "approval_drain_transfer" }
     })).toBe(true);
+    expect(api.edgeShouldShowCanvasTime({
+      timestamp: "2026-06-05T12:54:00.000Z",
+      metadata: { evidenceType: "approval_drain_spender_authority" }
+    })).toBe(false);
+    expect(api.edgeShouldShowCanvasAmount({
+      amountRaw: "1000000",
+      metadata: { evidenceType: "deepcheck_relationship_second_hop" }
+    })).toBe(false);
+    expect(api.edgeShouldShowCanvasTime({
+      timestamp: "2026-06-05T12:54:00.000Z",
+      metadata: { source: "deepcheck_extended_path" }
+    })).toBe(false);
   });
 
   it("keeps grouped aggregate transaction evidence visible in transfer rows", () => {
@@ -2729,7 +2790,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (mode === "full_evidence") return deepFullEvidenceLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";');
+    expect(html).toContain('densityButton.textContent = "View: " + label;');
+    expect(html).toContain('densityButton.classList.toggle("active"');
     expect(html).toContain('"Investigative view"');
 
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
@@ -2815,7 +2877,7 @@ describe("adminConsoleHtml", () => {
     expect(clickBlock).toContain('setDensityMode(mode === "full_evidence" ? "deep_branch_map" : mode === "deep_branch_map" ? "compact_summary" : "full_evidence");');
   });
 
-  it("full evidence mode bypasses stale filters and separates visible from total counters", () => {
+  it("full evidence mode keeps filters active and separates visible from total counters", () => {
     const html = adminConsoleHtml();
     const stateBlock = html.slice(html.indexOf("const state = {"), html.indexOf("const el ="));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
@@ -2823,13 +2885,15 @@ describe("adminConsoleHtml", () => {
     const presentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
 
     expect(stateBlock).toContain('["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)');
-    expect(filterBlock).toContain("if (graphFullEvidenceModeActive()) return graphEdges(state.graph);");
-    expect(renderBlock).toContain("const fullEvidence = graphFullEvidenceModeActive();");
-    expect(renderBlock).toContain("const rawVisibleEdges = fullEvidence ? graphEdges(graph) : filteredGraphEdges();");
-    expect(renderBlock).toContain("const rawVisibleNodes = fullEvidence ? graphNodes(graph) : graphNodes(graph).filter");
+    expect(filterBlock).not.toContain("if (graphFullEvidenceModeActive()) return graphEdges(state.graph);");
+    expect(filterBlock).toContain("edgePassesFlowFilter(edge)");
+    expect(renderBlock).not.toContain("const fullEvidence = graphFullEvidenceModeActive();");
+    expect(renderBlock).toContain("const rawVisibleEdges = filteredGraphEdges();");
+    expect(renderBlock).toContain("const rawVisibleNodes = graphNodes(graph).filter");
     expect(renderBlock).toContain("const totalGraphStatsText =");
-    expect(renderBlock).toContain('"Visible N" + placed.nodes.length + "/E" + visibleEdges.length');
-    expect(renderBlock).toContain('"Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length');
+    expect(renderBlock).toContain('"Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "link")');
+    expect(renderBlock).toContain('"Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "link")');
+    expect(renderBlock).toContain('"Score weights: " + graphWeights(graph).length');
     expect(presentationBlock).toContain('if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };');
   });
 
@@ -2892,7 +2956,7 @@ describe("adminConsoleHtml", () => {
 
     api.setState({ densityMode: "full_evidence", flowMode: "incoming", servicesVisible: false, peerLinksVisible: false, timelineRange: null, graph });
     expect(api.graphFullEvidenceModeActive()).toBe(true);
-    expect(api.filteredGraphEdges().map((edge: { id: string }) => edge.id)).toEqual(["incoming", "service", "peer"]);
+    expect(api.filteredGraphEdges().map((edge: { id: string }) => edge.id)).toEqual(["incoming"]);
     expect(api.graphPresentation(graph.nodes, graph.edges)).toEqual({ nodes: graph.nodes, edges: graph.edges, mode: "full_evidence", dense: false });
 
     expect(presentationBlock).toContain('if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };');
@@ -3366,8 +3430,13 @@ describe("adminConsoleHtml", () => {
       function edgeDisplayRole(edge) {
         return edge?.displayRole || "real_transfer";
       }
-      function rawBigInt() {
-        return null;
+      function rawBigInt(value) {
+        if (value === null || value === undefined || value === "") return null;
+        try {
+          return BigInt(value);
+        } catch {
+          return null;
+        }
       }
       function nodeImportanceScore(node) {
         return Number(node.weight || node.score || 0);
@@ -3424,8 +3493,18 @@ describe("adminConsoleHtml", () => {
         id: "small-" + index + "-intermediate",
         fromNodeId: "small-" + index,
         toNodeId: "intermediate",
+        txHash: "tx-small-" + index,
+        amountRaw: "1000000",
+        metadata: { moneyDirection: "inbound_to_subject" },
       })),
-      { id: "small-76-intermediate-duplicate", fromNodeId: "small-76", toNodeId: "intermediate" },
+      {
+        id: "small-76-intermediate-duplicate",
+        fromNodeId: "small-76",
+        toNodeId: "intermediate",
+        txHash: "tx-small-76b",
+        amountRaw: "1000000",
+        metadata: { moneyDirection: "inbound_to_subject" },
+      },
     ];
 
     expect(api.walletClusterNodeRole(nodes[1], "subject", edges)).toBe("source");
@@ -3474,10 +3553,16 @@ describe("adminConsoleHtml", () => {
       },
     });
     expect(collapsedEdges).toHaveLength(1);
-    expect(collapsedEdge.metadata.sourceEdgeIds).toEqual(expect.arrayContaining(["small-76-intermediate-duplicate", "small-77-intermediate"]));
+    expect(collapsedEdge.metadata.sourceEdgeIds.every((edgeId: string) => edgeId.startsWith("small-"))).toBe(true);
     expect(collapsedEdge.metadata.sourceEdgeCount).toBe(collapsedEdge.metadata.sourceEdgeIds.length);
     expect(collapsedEdge.metadata.sourceEdgeCount).toBeGreaterThan(1);
     expect(collapsedEdge.metadata.sourceEdgeId).toBe(collapsedEdge.metadata.sourceEdgeIds[0]);
+    expect(collapsedEdge.txHash).toBe(collapsedEdge.metadata.txHashes[0]);
+    expect(collapsedEdge.amountRaw).toBe(String(collapsedEdge.metadata.sourceEdgeIds.length * 1000000));
+    expect(collapsedEdge.metadata.amountRaw).toBe(collapsedEdge.amountRaw);
+    expect(collapsedEdge.metadata.moneyDirection).toBe("inbound_to_subject");
+    expect(collapsedEdge.metadata.txHashes).toHaveLength(collapsedEdge.metadata.sourceEdgeIds.length);
+    expect(collapsedEdge.metadata.txHashes.every((txHash: string) => txHash.startsWith("tx-small-"))).toBe(true);
     expect(presentation.nodes.some((node: { metadata?: { groupReason?: string } }) => node.metadata?.groupReason === "deep_branch_overview")).toBe(false);
 
     const placed = api.walletClusterLayout(nodes.slice(0, 8), edges.slice(0, 7));
@@ -4635,6 +4720,7 @@ describe("adminConsoleHtml", () => {
     expect(api.walletClusterRelationshipLabel({ type: "transfer", txHash: "ctx-transfer", metadata: { evidenceType: "contract_driven_transfer" } })).toBe("Smart contract -> receiver transfer");
     expect(api.walletClusterEdgeLabel({ type: "transfer", txHash: "ctx-trigger", metadata: { evidenceType: "contract_trigger_context" } })).toBe("Contract trigger context");
     expect(api.walletClusterRelationshipLabel({ type: "transfer", txHash: "ctx-trigger", metadata: { evidenceType: "contract_trigger_context" } })).toBe("Source wallet -> spender contract");
+    expect(api.walletClusterRelationshipLabel({ metadata: { evidenceType: "approval_drain_spender_authority" } })).toBe("Victim -> spender contract authority");
     expect(api.walletClusterEdgeLabel({ displayRole: "collapsed_group", metadata: { walletClusterSummary: true } })).toBe("Grouped/collapsed transfers");
     expect(api.walletClusterEdgeLabel({ displayRole: "profile_context" })).toBe("Peer/context");
     expect(api.walletClusterEdgeLabel({ type: "service_boundary" })).toBe("Service/boundary context");
@@ -4997,8 +5083,12 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('caseStatusChip("Risk"');
     expect(html).toContain('caseStatusChip("Evidence"');
     expect(html).toContain('caseStatusChip("Coverage"');
-    expect(renderCaseBriefBlock).toContain('const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected",');
-    expect(renderCaseBriefBlock).toContain('analystIntroBlock("No graph evidence is selected",');
+    expect(renderCaseBriefBlock).toContain('const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", caseBriefIntroText(graph),');
+    expect(renderCaseBriefBlock).toContain("caseBriefClarityHtml(graphRiskClarity(graph))");
+    expect(renderCaseBriefBlock).toContain('metric("Check", humanCheckKind(jobKind) + " / " + jobStatus, "wide")');
+    expect(renderCaseBriefBlock).toContain('htmlListMetric("Largest incoming"');
+    expect(renderCaseBriefBlock).toContain('htmlListMetric("Largest outgoing"');
+    expect(renderCaseBriefBlock).toContain('detailsMetric("Projection gaps"');
     expect(renderCaseBriefBlock).toContain("root.innerHTML = noSelectionIntro + '<div class=\"metric-grid\">");
     expect(renderCaseBriefBlock.indexOf("const noSelectionIntro")).toBeLessThan(renderCaseBriefBlock.indexOf("root.innerHTML = noSelectionIntro"));
     expect(renderDetailsBlock).toContain("Select a completed or partial job to inspect evidence.");
@@ -5213,6 +5303,9 @@ describe("adminConsoleHtml", () => {
     expect(timelineSourceBlock).toContain("return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>");
     expect(timelineSourceBlock).toContain("edgePassesPeerLinkFilter(edge)");
     expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
+    const filteredGraphBlock = html.slice(html.indexOf("function filteredGraphEdges"), html.indexOf("function visibleGraphNodeIds"));
+    expect(filteredGraphBlock).not.toContain("edgePassesTimelineRange(edge)");
+    expect(html).toContain("filteredTransferEdges().filter(edgePassesTimelineRange).filter(edgeHasTransferRows)");
   });
 
   it("branches direct counterparty edge styling between single and grouped transfers", () => {

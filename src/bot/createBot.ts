@@ -1918,6 +1918,9 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
   const counterpartyRiskProfiles = arrayField(job.resultJson, "counterpartyRiskProfiles");
   const approvalDrainProvenanceProfiles = arrayField(job.resultJson, "approvalDrainProvenanceProfiles");
   const missingChecks = arrayField<string>(job.resultJson, "missingChecks");
+  const contractDrivenCampaignSummary = isRecord(job.resultJson.contractDrivenCampaignSummary)
+    ? job.resultJson.contractDrivenCampaignSummary
+    : null;
   if (!serviceExposureProfiles || !addressBehaviorProfiles || !inboundProvenanceProfiles || !counterpartyRiskProfiles || !approvalDrainProvenanceProfiles || !missingChecks) {
     return null;
   }
@@ -1937,6 +1940,7 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     counterpartyRiskProfiles: counterpartyRiskProfiles as DeepAddressForensicReport["counterpartyRiskProfiles"],
     directCounterpartyInteractionProfiles: optionalArrayField(job.resultJson, "directCounterpartyInteractionProfiles") as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
     approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
+    contractDrivenCampaignSummary: contractDrivenCampaignSummary as DeepAddressForensicReport["contractDrivenCampaignSummary"],
     assetContinuationProfiles: optionalArrayField(job.resultJson, "assetContinuationProfiles") as DeepAddressForensicReport["assetContinuationProfiles"],
     stablecoinRestrictionProfiles: optionalArrayField(job.resultJson, "stablecoinRestrictionProfiles") as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
     boundaryExposureProfiles: optionalArrayField(job.resultJson, "boundaryExposureProfiles") as DeepAddressForensicReport["boundaryExposureProfiles"],
@@ -2426,6 +2430,14 @@ function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotL
   return lines;
 }
 
+function whereSourceProvenanceMaterialityCaveat(report: WhereIsMoneyReport, locale: BotLocale): string | null {
+  const materiality = report.sourceProvenanceMateriality ?? report.assessment.sourceProvenanceMateriality ?? null;
+  if (materiality?.outcome !== "dense_hop_unresolved_below_materiality") return null;
+  return locale === "en"
+    ? `Small dense-hop source tail remains unresolved (${materiality.unresolvedAmountUsdt} USDT). It is below materiality and was not used as clean or bad evidence.`
+    : `Небольшой dense-hop хвост источника остался неразрешённым (${materiality.unresolvedAmountUsdt} USDT). Он ниже materiality и не использован как доказательство чистоты или риска.`;
+}
+
 function finalScoreExplanationLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
   const lines = [
     locale === "en"
@@ -2561,8 +2573,10 @@ function finalFindingLines(
   deepReport: DeepAddressForensicReport | null | undefined,
   locale: BotLocale
 ): string[] {
+  const materialityCaveat = whereSourceProvenanceMaterialityCaveat(whereReport, locale);
   const hardEvidence = whereReport.assessment.hardBadEvidence.find(isDeterministicWhereHardEvidence) ?? null;
-  const whereReason = hardEvidence?.message
+  const whereReason = materialityCaveat
+    ?? hardEvidence?.message
     ?? whereReport.decisionReasons[0]
     ?? whereReport.assessment.reasons[0]
     ?? null;

@@ -813,6 +813,45 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.warnings.join(" ")).toContain("LLM contract verdict unavailable");
   });
 
+  it("keeps LLM-unavailable safe default ahead of below-materiality source provenance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "incomplete",
+          stoppedReason: "unlabeled_service_boundary",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches unknown contract boundary."],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-small-unresolved",
+            targetAmountRaw: "14776543"
+          })]
+        })
+      ],
+      contractLlmVerdicts: [legitimateServiceVerdict({
+        source: "unavailable",
+        verdict: "unknown_insufficient_data",
+        confidence: 0,
+        contractRiskScore: 65,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Clean contract intent could not be verified automatically."],
+        citedEvidenceIds: [],
+        error: "llm timed out"
+      })],
+      coverage: coverage({
+        currentBalanceRaw: "11175801645",
+        targetAmountRaw: "11175801645",
+        selectedAmountRaw: "11175801645",
+        partial: true
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(65);
+    expect(assessment.reasons.join(" ")).toContain("LLM unavailable: llm timed out");
+    expect(assessment.warnings.join(" ")).not.toContain("Residual unresolved source");
+  });
+
   it("declines exact approval-drain provenance as hard bad evidence", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       approvalDrainProvenanceProfiles: [approvalDrainProfile()]
@@ -1330,6 +1369,167 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       hardEvidenceInUnresolved: false
     });
     expect((assessment as any).sourceProvenanceMateriality.unresolvedShareOfCheckedBalance).toBeCloseTo(0.001322, 6);
+  });
+
+  it("keeps score valid for a small-relative dense-hop provider-cap tail above dust amount", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-large-clean",
+          balanceShare: 0.998438,
+          txHashes: ["tx-large-clean"],
+          steps: [{
+            txHash: "tx-large-clean",
+            fromAddress: funding,
+            toAddress: subject,
+            amountRaw: "998438000000",
+            timestamp: "2026-05-22T09:00:00.000Z"
+          }]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-dense-tail",
+          balanceShare: 0.001562,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-dense-tail"],
+          steps: [{
+            txHash: "tx-dense-tail",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "1562000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-dense-tail",
+            targetAmountRaw: "1562000000",
+            reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"],
+            stopReason: "incoming_history_not_fetched"
+          })],
+          reasons: ["Dense-hop source remains unresolved after provider-cap terminal state."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true,
+        notes: ["Dense-hop source unresolved below relative materiality."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.scoreBlockedReason).toBeNull();
+    expect(assessment.technicalStatus).toBe("completed");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      unresolvedAmountRaw: "1562000000",
+      unresolvedAmountUsdt: 1562,
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: true
+    });
+    expect((assessment as any).sourceProvenanceMateriality.unresolvedShareOfCheckedBalance).toBeCloseTo(0.001562, 6);
+    expect(assessment.warnings.join(" ")).toContain("Dense-hop unresolved source");
+  });
+
+  it("keeps score invalid when the same dense-hop unresolved amount is material for the checked amount", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-dense-material",
+          balanceShare: 0.781,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-dense-material"],
+          steps: [{
+            txHash: "tx-dense-material",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "1562000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-dense-material",
+            targetAmountRaw: "1562000000",
+            reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"],
+            stopReason: "incoming_history_not_fetched"
+          })]
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "2000000000",
+        targetAmountRaw: "2000000000",
+        selectedAmountRaw: "2000000000",
+        partial: true,
+        notes: ["Dense-hop source unresolved but material."]
+      })
+    }));
+
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "material_unresolved_source",
+      materialityTier: "material_unresolved_source",
+      unresolvedAmountRaw: "1562000000",
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: false
+    });
+  });
+
+  it("keeps score invalid when aggregate dense-hop tails exceed aggregate materiality", () => {
+    const unresolvedPaths = Array.from({ length: 3 }, (_, index) => reviewPath({
+      balanceTransferTxHash: `tx-dense-tail-${index}`,
+      balanceShare: 0.008,
+      stoppedReason: "incoming_history_not_fetched",
+      verdict: "REVIEW",
+      riskScoreContribution: 45,
+      txHashes: [`tx-dense-tail-${index}`],
+      steps: [{
+        txHash: `tx-dense-tail-${index}`,
+        fromAddress: sender,
+        toAddress: subject,
+        amountRaw: "8000000000",
+        timestamp: `2026-05-22T10:0${index}:00.000Z`
+      }],
+      sourceProvenance: [unresolvedSourceProvenance({
+        targetTxHash: `tx-dense-tail-${index}`,
+        targetAmountRaw: "8000000000",
+        reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"],
+        stopReason: "incoming_history_not_fetched"
+      })]
+    }));
+
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-large-clean",
+          balanceShare: 0.976
+        }),
+        ...unresolvedPaths
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true,
+        notes: ["Several dense-hop source tails unresolved."]
+      })
+    }));
+
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "aggregate_unresolved_above_materiality",
+      materialityTier: "material_unresolved_source",
+      unresolvedAmountRaw: "24000000000",
+      unresolvedPathCount: 3,
+      excludedFromDecisiveScore: false
+    });
   });
 
   it("keeps score invalid when unresolved source provenance is above materiality", () => {

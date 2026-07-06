@@ -61,6 +61,10 @@ type AdminForensicJobSummary = Pick<
   depositTxHash?: string;
   watchedWallet?: string;
   sender?: string;
+  decision?: string;
+  riskScore?: number;
+  riskLevel?: string;
+  coverageStatus?: string;
   jobPhase?: string;
   targetedIndex?: Record<string, unknown>;
   targetedHistory?: Record<string, unknown>;
@@ -193,6 +197,35 @@ function recordProgressField(job: ForensicCheckJob, key: string): Record<string,
   return isRecord(value) ? value : undefined;
 }
 
+function jobResultRecord(job: ForensicCheckJob): Record<string, unknown> {
+  return isRecord(job.resultJson) ? job.resultJson : {};
+}
+
+function nestedRecord(source: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = source[key];
+  return isRecord(value) ? value : {};
+}
+
+function firstStringField(records: Record<string, unknown>[], keys: string[]): string | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.length > 0) return value;
+    }
+  }
+  return undefined;
+}
+
+function firstNumberField(records: Record<string, unknown>[], keys: string[]): number | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+  }
+  return undefined;
+}
+
 function safeDecodeUriComponent(value: string): ParseResult<string> {
   try {
     return { ok: true, value: decodeURIComponent(value) };
@@ -216,6 +249,13 @@ function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action
 }
 
 function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
+  const result = jobResultRecord(job);
+  const assessment = nestedRecord(result, "assessment");
+  const riskClarity = nestedRecord(result, "riskClarity");
+  const policy = nestedRecord(result, "policy");
+  const fastRiskReport = nestedRecord(result, "fastRiskReport");
+  const fastRiskSnapshot = recordProgressField(job, "fastRiskSnapshot") ?? {};
+  const resultRecords = [result, assessment, riskClarity, policy, fastRiskReport, fastRiskSnapshot];
   return {
     id: job.id,
     kind: job.kind,
@@ -232,6 +272,10 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
     depositTxHash: stringProgressField(job, "depositTxHash"),
     watchedWallet: stringProgressField(job, "watchedWallet"),
     sender: stringProgressField(job, "sender"),
+    decision: firstStringField(resultRecords, ["decision", "verdict", "finalDecision", "decisionStatus"]),
+    riskScore: firstNumberField(resultRecords, ["riskScore", "score", "finalRiskScore"]),
+    riskLevel: firstStringField(resultRecords, ["riskLevel", "riskBand", "level"]),
+    coverageStatus: firstStringField(resultRecords, ["coverageStatus", "technicalStatus", "status"]),
     jobPhase: stringProgressField(job, "jobPhase"),
     targetedIndex: recordProgressField(job, "targetedIndex"),
     targetedHistory: recordProgressField(job, "targetedHistory")

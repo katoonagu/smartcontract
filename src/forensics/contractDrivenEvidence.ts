@@ -2,7 +2,10 @@ import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type {
   ApprovalDrainProvenanceProfile,
+  ContractDrivenCampaignCluster,
+  ContractDrivenCampaignSummary,
   ContractDrivenReceiverProfile,
+  ContractDrivenTransferClassification,
   ContractDrivenTransferProfile,
   ForensicRouteEdge,
   ServiceClassification
@@ -314,11 +317,26 @@ export type BuildContractDrivenEvidenceProfilesInput = {
   fetchEdgesForAddress?: (address: string) => Promise<ForensicRouteEdge[]>;
   maxTransactionInfoFetches?: number;
   maxSourceActivityChecks?: number;
+  incomingClassificationMode?: "all_incoming" | "method_prefiltered";
 };
 
 export type BuildContractDrivenEvidenceProfilesResult = {
   receiverProfile: ContractDrivenReceiverProfile | null;
   transferProfiles: ContractDrivenTransferProfile[];
+  campaignSummary: ContractDrivenCampaignSummary | null;
+};
+
+type ClassifiedIncomingEdge = {
+  edge: ForensicRouteEdge;
+  txInfo: unknown | null;
+  txInfoFetched: boolean;
+  classification: ContractDrivenTransferClassification;
+  method: string | null;
+  contractAddress: string | null;
+  contractName: string | null;
+  callerAddress: string | null;
+  movement: { sourceAddress: string; receiverAddress: string; amountRaw: string };
+  countsAsDrainerContext: boolean;
 };
 
 export async function buildContractDrivenEvidenceProfiles(
@@ -328,13 +346,25 @@ export async function buildContractDrivenEvidenceProfiles(
   const incomingEdges = input.edges.filter((edge) =>
     normalizeAddress(edge.toAddress) === subject && amountRaw(edge.amountRaw) > 0n
   );
-  const contractDrivenEdges = incomingEdges.filter(methodLooksContractDriven);
-  if (contractDrivenEdges.length === 0) {
-    return { receiverProfile: null, transferProfiles: [] };
+  if (incomingEdges.length === 0) {
+    return { receiverProfile: null, transferProfiles: [], campaignSummary: null };
+  }
+  const incomingClassificationMode = input.incomingClassificationMode ?? "all_incoming";
+  const classificationCandidateEdges = incomingClassificationMode === "method_prefiltered"
+    ? incomingEdges.filter(methodLooksContractDriven)
+    : incomingEdges;
+  if (classificationCandidateEdges.length === 0) {
+    return { receiverProfile: null, transferProfiles: [], campaignSummary: null };
   }
 
-  const sortedContractEdges = [...contractDrivenEdges].sort(compareEdgesForProfile);
   const maxTxInfo = Math.max(0, input.maxTransactionInfoFetches ?? 30);
+  const enriched = await classifyIncomingEdges({
+    incomingEdges: classificationCandidateEdges,
+    classifications: input.classifications,
+    getTransaction: input.getTransaction,
+    maxTxInfo
+  });
+  const wrapperDriven = enriched.filter((item) => item.countsAsDrainerContext);
   const maxSourceChecks = Math.max(0, input.maxSourceActivityChecks ?? Math.min(20, maxTxInfo));
   const exactApprovalDrainCount = exactApprovalCountForSubject(
     input.approvalDrainProvenanceProfiles ?? [],
@@ -343,59 +373,53 @@ export async function buildContractDrivenEvidenceProfiles(
 
   let sourceChecks = 0;
   const transferProfiles: ContractDrivenTransferProfile[] = [];
-  let txInfoFetches = 0;
-  for (const edge of sortedContractEdges) {
-    const txInfo = input.getTransaction && txInfoFetches < maxTxInfo
-      ? await input.getTransaction(edge.txHash).catch(() => null)
-      : null;
-    if (input.getTransaction && txInfoFetches < maxTxInfo) {
-      txInfoFetches += 1;
-    }
-    const movement = matchingUsdtMovement(txInfo, edge) ?? {
-      sourceAddress: edge.fromAddress,
-      receiverAddress: edge.toAddress,
-      amountRaw: edge.amountRaw
-    };
-    const method = methodDisplay(methodText(txInfo) || edge.method);
-    const contractAddress = calledContractAddress(txInfo);
-    const contractClassification = contractAddress
-      ? classificationFor(input.classifications, contractAddress)
-      : null;
-    const contractName = contractDisplayName(txInfo, contractClassification);
+  for (const item of wrapperDriven) {
     let sourcePostDebitActivity: ContractDrivenTransferProfile["sourcePostDebitActivity"];
     if (input.fetchEdgesForAddress && sourceChecks < maxSourceChecks) {
       sourceChecks += 1;
       // ponytail: post-debit activity is budget/page limited; upgrade to indexed full-history windows for final victim confidence.
-      const sourceEdges = await input.fetchEdgesForAddress(movement.sourceAddress).catch(() => []);
+      const sourceEdges = await input.fetchEdgesForAddress(item.movement.sourceAddress).catch(() => []);
       sourcePostDebitActivity = buildSourcePostDebitActivity({
-        sourceAddress: movement.sourceAddress,
-        receiverAddress: movement.receiverAddress,
-        currentTxHash: edge.txHash,
-        currentTimestamp: edge.timestamp,
-        debitAmountRaw: movement.amountRaw,
+        sourceAddress: item.movement.sourceAddress,
+        receiverAddress: item.movement.receiverAddress,
+        currentTxHash: item.edge.txHash,
+        currentTimestamp: item.edge.timestamp,
+        debitAmountRaw: item.movement.amountRaw,
         edges: sourceEdges
       });
     }
     transferProfiles.push({
-      txHash: edge.txHash,
-      timestamp: edge.timestamp.toISOString(),
-      amountRaw: movement.amountRaw,
-      amount: formatUsdtAmount(movement.amountRaw),
-      method,
-      callerAddress: transferCaller(txInfo),
-      operatorAddress: transferCaller(txInfo),
-      contractAddress,
-      spenderAddress: contractAddress,
-      contractName,
-      sourceAddress: movement.sourceAddress,
-      victimAddress: movement.sourceAddress,
-      receiverAddress: movement.receiverAddress,
+      txHash: item.edge.txHash,
+      timestamp: item.edge.timestamp.toISOString(),
+      amountRaw: item.movement.amountRaw,
+      amount: formatUsdtAmount(item.movement.amountRaw),
+      classification: item.classification,
+      countsAsDrainerContext: item.countsAsDrainerContext,
+      method: item.method,
+      callerAddress: item.callerAddress,
+      operatorAddress: item.callerAddress,
+      contractAddress: item.contractAddress,
+      spenderAddress: item.contractAddress,
+      contractName: item.contractName,
+      sourceAddress: item.movement.sourceAddress,
+      victimAddress: item.movement.sourceAddress,
+      receiverAddress: item.movement.receiverAddress,
       sourcePostDebitActivity
     });
   }
 
-  const methods = contractDrivenEdges
-    .map((edge) => methodDisplay(edge.method))
+  const campaignSummary = buildCampaignSummary({
+    incomingEdges,
+    enriched,
+    transferProfiles,
+    exactApprovalDrainCount
+  });
+  if (wrapperDriven.length === 0) {
+    return { receiverProfile: null, transferProfiles: [], campaignSummary };
+  }
+
+  const methods = wrapperDriven
+    .map((item) => item.method)
     .filter((method): method is string => Boolean(method));
   const dominantMethod = dominantString(methods);
   const contractNames = uniqueStrings(transferProfiles
@@ -414,16 +438,272 @@ export async function buildContractDrivenEvidenceProfiles(
     receiverProfile: {
       totalIncomingTxCount: incomingEdges.length,
       totalIncomingAmountRaw: sumEdgeAmounts(incomingEdges).toString(),
-      contractDrivenIncomingTxCount: contractDrivenEdges.length,
-      contractDrivenIncomingAmountRaw: sumEdgeAmounts(contractDrivenEdges).toString(),
-      uniqueSourceCount: new Set(contractDrivenEdges.map((edge) => normalizeAddress(edge.fromAddress))).size,
+      txInfoEnrichedIncomingTx: campaignSummary.txInfoEnrichedIncomingTx,
+      campaignClassificationStatus: campaignSummary.campaignClassificationStatus,
+      countsAreLowerBounds: campaignSummary.countsAreLowerBounds,
+      plainUsdtTransferTxCount: campaignSummary.plainUsdtTransferTxCount,
+      contractDrivenIncomingTxCount: campaignSummary.wrapperDrivenIncomingTxCount,
+      contractDrivenIncomingAmountRaw: campaignSummary.wrapperDrivenIncomingAmountRaw,
+      wrapperDrivenIncomingTxCount: campaignSummary.wrapperDrivenIncomingTxCount,
+      verify20WrapperTxCount: campaignSummary.verify20WrapperTxCount,
+      uniqueSourceCount: new Set(wrapperDriven.map((item) => normalizeAddress(item.movement.sourceAddress))).size,
       dominantMethod,
       contractNames,
       knownServiceIdentity,
       exactApprovalDrainCount
     },
-    transferProfiles
+    transferProfiles,
+    campaignSummary
   };
+}
+
+async function classifyIncomingEdges(input: {
+  incomingEdges: ForensicRouteEdge[];
+  classifications?: Map<string, ServiceClassification | null>;
+  getTransaction?: (txHash: string) => Promise<unknown | null>;
+  maxTxInfo: number;
+}): Promise<ClassifiedIncomingEdge[]> {
+  const sortedEdges = [...input.incomingEdges].sort(compareEdgesForClassification);
+  const classified: ClassifiedIncomingEdge[] = [];
+  let txInfoFetches = 0;
+  for (const edge of sortedEdges) {
+    let txInfo: unknown | null = null;
+    let txInfoFetched = false;
+    if (input.getTransaction && txInfoFetches < input.maxTxInfo) {
+      txInfoFetched = true;
+      txInfoFetches += 1;
+      txInfo = await input.getTransaction(edge.txHash).catch(() => null);
+    }
+    const movement = matchingUsdtMovement(txInfo, edge) ?? {
+      sourceAddress: edge.fromAddress,
+      receiverAddress: edge.toAddress,
+      amountRaw: edge.amountRaw
+    };
+    const contractAddress = calledContractAddress(txInfo);
+    const contractClassification = contractAddress
+      ? classificationFor(input.classifications, contractAddress)
+      : null;
+    const contractName = contractDisplayName(txInfo, contractClassification);
+    const method = methodDisplay(methodText(txInfo) || edge.method);
+    const callerAddress = transferCaller(txInfo);
+    const classification = classifyContractDrivenIncoming({
+      edge,
+      txInfo,
+      txInfoFetched,
+      method,
+      contractAddress
+    });
+    classified.push({
+      edge,
+      txInfo,
+      txInfoFetched,
+      classification,
+      method,
+      contractAddress,
+      contractName,
+      callerAddress,
+      movement,
+      countsAsDrainerContext: classificationCountsAsDrainerContext(classification)
+    });
+  }
+  return classified.sort((left, right) => compareEdgesForProfile(left.edge, right.edge));
+}
+
+function classifyContractDrivenIncoming(input: {
+  edge: ForensicRouteEdge;
+  txInfo: unknown | null;
+  txInfoFetched: boolean;
+  method: string | null;
+  contractAddress: string | null;
+}): ContractDrivenTransferClassification {
+  const method = input.method ?? input.edge.method;
+  const normalizedMethod = normalizeTransferMethod(method);
+  const contractAddress = input.contractAddress ? normalizeAddress(input.contractAddress) : null;
+  const canonicalUsdtContract = normalizeAddress(TRON_USDT_CONTRACT_ADDRESS);
+
+  if (contractAddress === canonicalUsdtContract && methodLooksPlainTransfer(method)) {
+    return "plain_usdt_transfer";
+  }
+  if (normalizedMethod.includes("verify20")) {
+    return "verify20_wrapper";
+  }
+  if (
+    normalizedMethod.includes("transferfrom") ||
+    normalizedMethod.includes("23b872dd") ||
+    input.edge.edgeType === "transfer_from"
+  ) {
+    return "transfer_from_wrapper";
+  }
+  if (normalizedMethod.includes("permit")) {
+    return "permit_wrapper";
+  }
+  if (input.txInfoFetched && input.txInfo === null && methodLooksPlainTransfer(method)) {
+    return "tx_info_unavailable";
+  }
+  if (methodLooksPlainTransfer(method)) {
+    return "plain_usdt_transfer";
+  }
+  if (normalizedMethod.length > 0) {
+    return "other_contract_method";
+  }
+  return "unknown_unenriched";
+}
+
+function classificationCountsAsDrainerContext(classification: ContractDrivenTransferClassification): boolean {
+  return classification === "verify20_wrapper" ||
+    classification === "transfer_from_wrapper" ||
+    classification === "permit_wrapper" ||
+    classification === "other_contract_method";
+}
+
+function buildCampaignSummary(input: {
+  incomingEdges: ForensicRouteEdge[];
+  enriched: ClassifiedIncomingEdge[];
+  transferProfiles: ContractDrivenTransferProfile[];
+  exactApprovalDrainCount: number;
+}): ContractDrivenCampaignSummary {
+  const txInfoFetchedIncomingTx = input.enriched.filter((item) => item.txInfoFetched).length;
+  const txInfoEnrichedIncomingTx = txInfoFetchedIncomingTx;
+  const txInfoUnavailableTxCount = input.enriched.filter((item) => item.txInfoFetched && item.txInfo === null).length;
+  const campaignClassificationStatus = txInfoFetchedIncomingTx === 0
+    ? "not_enriched"
+    : txInfoFetchedIncomingTx === input.incomingEdges.length && txInfoUnavailableTxCount === 0
+      ? "complete"
+      : "partial";
+  const countsAreLowerBounds = campaignClassificationStatus !== "complete";
+
+  return {
+    incomingTxTotal: input.incomingEdges.length,
+    incomingAmountRaw: sumEdgeAmounts(input.incomingEdges).toString(),
+    txInfoEnrichedIncomingTx,
+    campaignClassificationStatus,
+    countsAreLowerBounds,
+    plainUsdtTransferTxCount: countClassified(input.enriched, "plain_usdt_transfer"),
+    plainUsdtTransferAmountRaw: sumClassifiedAmounts(input.enriched, "plain_usdt_transfer").toString(),
+    wrapperDrivenIncomingTxCount: input.enriched.filter((item) => item.countsAsDrainerContext).length,
+    wrapperDrivenIncomingAmountRaw: input.enriched
+      .filter((item) => item.countsAsDrainerContext)
+      .reduce((sum, item) => sum + amountRaw(item.movement.amountRaw), 0n)
+      .toString(),
+    verify20WrapperTxCount: countClassified(input.enriched, "verify20_wrapper"),
+    transferFromWrapperTxCount: countClassified(input.enriched, "transfer_from_wrapper"),
+    permitWrapperTxCount: countClassified(input.enriched, "permit_wrapper"),
+    otherContractMethodTxCount: countClassified(input.enriched, "other_contract_method"),
+    unknownUnenrichedTxCount: countClassified(input.enriched, "unknown_unenriched"),
+    txInfoUnavailableTxCount,
+    exactApprovalDrainProfileCount: input.exactApprovalDrainCount,
+    campaignClusters: buildCampaignClusters(input.transferProfiles)
+  };
+}
+
+function buildCampaignClusters(transferProfiles: ContractDrivenTransferProfile[]): ContractDrivenCampaignCluster[] {
+  type ClusterDraft = {
+    contractAddress: string | null;
+    operatorAddress: string | null;
+    method: string | null;
+    receiverAddress: string;
+    amountRaw: bigint;
+    sourceAddresses: Set<string>;
+    firstSeenAt: string | null;
+    lastSeenAt: string | null;
+    contextOnlyCount: number;
+  };
+
+  const drafts = new Map<string, ClusterDraft>();
+  for (const profile of transferProfiles) {
+    const key = [
+      normalizeNullableAddress(profile.contractAddress) ?? "",
+      normalizeNullableAddress(profile.operatorAddress) ?? "",
+      profile.method ?? "",
+      normalizeAddress(profile.receiverAddress)
+    ].join("\u0000");
+    const existing = drafts.get(key);
+    if (existing) {
+      existing.amountRaw += amountRaw(profile.amountRaw);
+      existing.sourceAddresses.add(normalizeAddress(profile.sourceAddress));
+      existing.contextOnlyCount += 1;
+      existing.firstSeenAt = earlierTimestamp(existing.firstSeenAt, profile.timestamp);
+      existing.lastSeenAt = laterTimestamp(existing.lastSeenAt, profile.timestamp);
+      continue;
+    }
+    drafts.set(key, {
+      contractAddress: profile.contractAddress ?? null,
+      operatorAddress: profile.operatorAddress ?? null,
+      method: profile.method ?? null,
+      receiverAddress: profile.receiverAddress,
+      amountRaw: amountRaw(profile.amountRaw),
+      sourceAddresses: new Set([normalizeAddress(profile.sourceAddress)]),
+      firstSeenAt: profile.timestamp,
+      lastSeenAt: profile.timestamp,
+      contextOnlyCount: 1
+    });
+  }
+
+  return [...drafts.values()]
+    .map((draft) => ({
+      contractAddress: draft.contractAddress,
+      operatorAddress: draft.operatorAddress,
+      method: draft.method,
+      receiverAddress: draft.receiverAddress,
+      txCount: draft.contextOnlyCount,
+      amountRaw: draft.amountRaw.toString(),
+      uniqueSourceCount: draft.sourceAddresses.size,
+      firstSeenAt: draft.firstSeenAt,
+      lastSeenAt: draft.lastSeenAt,
+      knownServiceIdentity: null,
+      exactProofCount: 0,
+      contextOnlyCount: draft.contextOnlyCount
+    }))
+    .sort(compareCampaignClusters);
+}
+
+function countClassified(
+  items: ClassifiedIncomingEdge[],
+  classification: ContractDrivenTransferClassification
+): number {
+  return items.filter((item) => item.classification === classification).length;
+}
+
+function sumClassifiedAmounts(
+  items: ClassifiedIncomingEdge[],
+  classification: ContractDrivenTransferClassification
+): bigint {
+  return items
+    .filter((item) => item.classification === classification)
+    .reduce((sum, item) => sum + amountRaw(item.movement.amountRaw), 0n);
+}
+
+function compareCampaignClusters(left: ContractDrivenCampaignCluster, right: ContractDrivenCampaignCluster): number {
+  if (left.contextOnlyCount !== right.contextOnlyCount) return right.contextOnlyCount - left.contextOnlyCount;
+  const amountOrder = compareBigintDesc(amountRaw(left.amountRaw), amountRaw(right.amountRaw));
+  if (amountOrder !== 0) return amountOrder;
+  return timestampMs(right.lastSeenAt) - timestampMs(left.lastSeenAt);
+}
+
+function earlierTimestamp(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return timestampMs(left) <= timestampMs(right) ? left : right;
+}
+
+function laterTimestamp(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return timestampMs(left) >= timestampMs(right) ? left : right;
+}
+
+function timestampMs(value: string | null): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeNullableAddress(address: string | null | undefined): string | null {
+  return address ? normalizeAddress(address) : null;
+}
+
+function compareEdgesForClassification(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
+  return compareEdgesForProfile(left, right);
 }
 
 function compareEdgesForProfile(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
@@ -440,13 +720,21 @@ function methodLooksContractDriven(edge: ForensicRouteEdge): boolean {
 }
 
 function methodLooksPlainTransfer(method: string): boolean {
-  const compact = method.replace(/\s+/g, "");
-  const canonical = compact.replace(/transfer\(address[a-z0-9_]*,uint256[a-z0-9_]*\)/i, "transfer(address,uint256)");
-  return canonical === "transfer" ||
-    canonical === "transfer(address,uint256)" ||
-    canonical === "a9059cbb" ||
-    canonical === "transfera9059cbb" ||
-    canonical === "transfer(address,uint256)a9059cbb";
+  const normalized = normalizeTransferMethod(method);
+  return normalized === "transfer" ||
+    normalized === "transfer(address,uint256)" ||
+    normalized === "a9059cbb" ||
+    normalized === "transfera9059cbb" ||
+    normalized === "transfer(address,uint256)a9059cbb";
+}
+
+function normalizeTransferMethod(method: string): string {
+  const compact = method.trim().toLowerCase().replace(/\s+/g, "");
+  const withoutNamedParams = compact.replace(
+    /transfer\(address[a-z0-9_]*,uint256[a-z0-9_]*\)/g,
+    "transfer(address,uint256)"
+  );
+  return withoutNamedParams.replace(/^transfertransfer\(/, "transfer(");
 }
 
 function methodDisplay(value: string | null | undefined): string | null {

@@ -17,6 +17,7 @@ import type {
   CounterpartyRiskProfile,
   ExtendedProvenanceProfile,
   InboundProvenanceProfile,
+  MoneyOriginSourceProvenanceMaterialitySummary,
   OperationalFlowProfile,
   RiskLabel,
   RiskLayerScore,
@@ -1665,6 +1666,72 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.dampener).toBe(0);
   });
 
+  it("does not treat wrapper campaign context without exact profiles as approval-drain hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        approvalDrainProvenanceProfiles: [],
+        contractDrivenCampaignSummary: {
+          incomingTxTotal: 116,
+          incomingAmountRaw: "440672340000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          plainUsdtTransferAmountRaw: "115542340000",
+          wrapperDrivenIncomingTxCount: 101,
+          wrapperDrivenIncomingAmountRaw: "325130000000",
+          verify20WrapperTxCount: 101,
+          transferFromWrapperTxCount: 0,
+          permitWrapperTxCount: 0,
+          otherContractMethodTxCount: 0,
+          unknownUnenrichedTxCount: 0,
+          txInfoUnavailableTxCount: 0,
+          exactApprovalDrainProfileCount: 0,
+          campaignClusters: []
+        }
+      })
+    });
+
+    expect(result.finalDecision).not.toBe("DECLINE");
+    expect(result.hardEvidenceFloor).toBe(0);
+  });
+
+  it("keeps exact approval-drain profiles as hard evidence even when campaign context is partial", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        approvalDrainProvenanceProfiles: [approvalDrainProfile({ score: 92 })],
+        contractDrivenCampaignSummary: {
+          incomingTxTotal: 2400,
+          incomingAmountRaw: "9000000000000",
+          txInfoEnrichedIncomingTx: 200,
+          campaignClassificationStatus: "partial",
+          countsAreLowerBounds: true,
+          plainUsdtTransferTxCount: 126,
+          plainUsdtTransferAmountRaw: "1000000000000",
+          wrapperDrivenIncomingTxCount: 74,
+          wrapperDrivenIncomingAmountRaw: "400000000000",
+          verify20WrapperTxCount: 74,
+          transferFromWrapperTxCount: 0,
+          permitWrapperTxCount: 0,
+          otherContractMethodTxCount: 0,
+          unknownUnenrichedTxCount: 2200,
+          txInfoUnavailableTxCount: 0,
+          exactApprovalDrainProfileCount: 1,
+          campaignClusters: []
+        }
+      })
+    });
+
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
+  });
+
   it("keeps fast-only approval-drain provenance at the 90 hard floor", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -1855,6 +1922,57 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("ACCEPTABLE");
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.policyFloor).toBe(0);
+  });
+
+  it("keeps score-valid dense-hop where materiality caveats in review", () => {
+    const denseHopMateriality = {
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      unresolvedAmountRaw: "45000000",
+      unresolvedAmountUsdt: 45,
+      unresolvedShareOfCheckedBalance: 0.0045,
+      unresolvedShareOfSelectedAmount: 0.0045,
+      largestUnresolvedAmountRaw: "45000000",
+      largestUnresolvedAmountUsdt: 45,
+      aggregateUnresolvedShareOfCheckedBalance: 0.0045,
+      aggregateUnresolvedShareOfSelectedAmount: 0.0045,
+      unresolvedPathCount: 1,
+      denseHopUnresolvedPathCount: 1,
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: true,
+      unresolvedReasonCounts: {
+        incoming_history_not_fetched: 1
+      },
+      thresholds: {
+        maxResidualUnresolvedShare: 0.01,
+        maxResidualUnresolvedAmountUsdt: 100,
+        maxResidualUnresolvedAmountRaw: "100000000",
+        maxDenseHopUnresolvedShare: 0.01,
+        maxDenseHopAggregateUnresolvedShare: 0.02,
+        maxDenseHopUnresolvedAmountUsdt: 10000,
+        maxDenseHopUnresolvedAmountRaw: "10000000000"
+      }
+    } satisfies MoneyOriginSourceProvenanceMaterialitySummary;
+
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(45, {
+        decision: "REVIEW",
+        userDecision: "REVIEW",
+        internalDecision: "REVIEW",
+        proofLevel: "insufficient_coverage",
+        scoreValid: true,
+        sourceProvenanceMateriality: denseHopMateriality,
+        assessment: whereAssessment(45, {
+          decision: "REVIEW",
+          scoreValid: true,
+          sourceProvenanceMateriality: denseHopMateriality
+        })
+      })
+    });
+
+    expect(result.finalDecision).toBe("REVIEW");
+    expect(result.finalScore).toBeGreaterThan(0);
   });
 
   it("does not turn where-is-money LLM suspicion context into deterministic hard evidence", () => {

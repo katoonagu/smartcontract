@@ -47,6 +47,7 @@ export type AdminForensicsSummary = {
   episodeCoverageRatio: number | null;
   drainEpisode: Record<string, unknown> | null;
   layerSummary: Record<string, unknown> | null;
+  contractDrivenCampaign: Record<string, unknown> | null;
   selectedAmountRaw: string | null;
   targetAmountRaw: string | null;
   topReasons: string[];
@@ -634,6 +635,24 @@ function appendContractDrivenEvidence(input: {
         totalIncomingAmountRaw: stringField(receiverProfile, "totalIncomingAmountRaw"),
         contractDrivenIncomingTxCount: firstNumber(numberField(receiverProfile, "contractDrivenIncomingTxCount")) ?? 0,
         contractDrivenIncomingAmountRaw: stringField(receiverProfile, "contractDrivenIncomingAmountRaw"),
+        ...(numberField(receiverProfile, "txInfoEnrichedIncomingTx") !== null
+          ? { txInfoEnrichedIncomingTx: numberField(receiverProfile, "txInfoEnrichedIncomingTx") }
+          : {}),
+        ...(stringField(receiverProfile, "campaignClassificationStatus")
+          ? { campaignClassificationStatus: stringField(receiverProfile, "campaignClassificationStatus") }
+          : {}),
+        ...(booleanField(receiverProfile, "countsAreLowerBounds") !== null
+          ? { countsAreLowerBounds: booleanField(receiverProfile, "countsAreLowerBounds") }
+          : {}),
+        ...(numberField(receiverProfile, "plainUsdtTransferTxCount") !== null
+          ? { plainUsdtTransferTxCount: numberField(receiverProfile, "plainUsdtTransferTxCount") }
+          : {}),
+        ...(numberField(receiverProfile, "wrapperDrivenIncomingTxCount") !== null
+          ? { wrapperDrivenIncomingTxCount: numberField(receiverProfile, "wrapperDrivenIncomingTxCount") }
+          : {}),
+        ...(numberField(receiverProfile, "verify20WrapperTxCount") !== null
+          ? { verify20WrapperTxCount: numberField(receiverProfile, "verify20WrapperTxCount") }
+          : {}),
         uniqueSourceCount: firstNumber(numberField(receiverProfile, "uniqueSourceCount")) ?? 0,
         dominantMethod: stringField(receiverProfile, "dominantMethod"),
         contractNames,
@@ -1140,9 +1159,10 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     const authorityEdgeId = `edge:approval_drain:${index}:spender_authority`;
     input.edges.push({
       id: authorityEdgeId,
-      fromNodeId: spenderNodeId,
-      toNodeId: victimNodeId,
+      fromNodeId: victimNodeId,
+      toNodeId: spenderNodeId,
       type: "approval",
+      displayRole: "profile_context",
       amountRaw: null,
       amountShare: null,
       txHash: approvalTxHash,
@@ -1154,16 +1174,19 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         source: "approvalDrainProvenanceProfile",
         evidenceType: "approval_drain_spender_authority",
         evidenceTypeLabel: "Approval-drain authority",
-        evidenceMeaning: "The spender/contract is linked to the victim by approval-drain evidence. This line explains authority context and is not a normal money transfer.",
+        evidenceMeaning: "The victim is linked to the spender/contract by approval-drain evidence. This line explains debit authority context and is not a normal money transfer.",
         pathId,
         approvalTxHash,
         drainTxHash,
         victimAddress,
         spenderAddress,
+        fromAddress: victimAddress,
+        toAddress: spenderAddress,
         operatorAddress,
         receiverAddress,
         spenderResolution,
-        evidenceKind
+        evidenceKind,
+        boundaryContextOnly: true
       }
     });
     edgeIds.push(authorityEdgeId);
@@ -3425,8 +3448,19 @@ function suppressFundingBundleDuplicateEdges(
 }
 
 function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["kind"]): AdminForensicsEdgeDisplayRole {
+  const evidenceType = stringField(edge.metadata, "evidenceType");
   if (edge.type === "stop") return "stop";
+  if (edge.displayRole === "profile_context") return "profile_context";
   if (edge.type === "approval") return "profile_context";
+  if (
+    evidenceType === "contract_trigger_context" ||
+    evidenceType === "contract_call_context" ||
+    evidenceType === "debit_authority_context" ||
+    evidenceType === "approval_drain_contract_call" ||
+    evidenceType === "approval_drain_spender_authority"
+  ) {
+    return "profile_context";
+  }
   if (
     jobKind === "address_deep_check" &&
     edge.type !== "transfer" &&
@@ -3611,6 +3645,11 @@ function annotateGraphDerivedMetrics(
   });
 }
 
+function sourceProvenanceMaterialityOutcomeIsScoreValidCaveat(outcome: string | null): boolean {
+  return outcome === "residual_unresolved_below_materiality" ||
+    outcome === "dense_hop_unresolved_below_materiality";
+}
+
 function projectWhereIsMoneyJob(
   job: ForensicCheckJob,
   summary: AdminForensicsJobSummary
@@ -3632,8 +3671,9 @@ function projectWhereIsMoneyJob(
   const sourceProvenanceMateriality =
     recordField(result, "sourceProvenanceMateriality") ??
     recordField(assessment, "sourceProvenanceMateriality");
-  const residualSourceBelowMateriality =
-    stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality";
+  const sourceProvenanceMaterialityOutcome = stringField(sourceProvenanceMateriality ?? {}, "outcome");
+  const sourceProvenanceMaterialityScoreValidCaveat =
+    sourceProvenanceMaterialityOutcomeIsScoreValidCaveat(sourceProvenanceMaterialityOutcome);
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -4246,18 +4286,28 @@ function projectWhereIsMoneyJob(
         diagnostics,
         lastRealEdge
       });
-      const residualCaveatStop = residualSourceBelowMateriality && stoppedReason === "incoming_history_not_fetched";
-      const stopSemantics = residualCaveatStop
-        ? {
-            category: "data_quality" as const,
-            title: "Residual source caveat",
-            canvasLabel: "Residual caveat",
-            meaning: "This residual source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
-            scoreLabel: "Residual caveat",
-            scoreMeaning: "This is not a terminal coverage failure for the job-level score."
-          }
+      const sourceProvenanceCaveatStop =
+        sourceProvenanceMaterialityScoreValidCaveat && stoppedReason === "incoming_history_not_fetched";
+      const stopSemantics = sourceProvenanceCaveatStop
+        ? sourceProvenanceMaterialityOutcome === "dense_hop_unresolved_below_materiality"
+          ? {
+              category: "data_quality" as const,
+              title: "Dense hop caveat",
+              canvasLabel: "Dense hop caveat",
+              meaning: "Dense hop caveat: this dense-hop source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
+              scoreLabel: "Dense hop caveat",
+              scoreMeaning: "This is not a terminal coverage failure for the job-level score."
+            }
+          : {
+              category: "data_quality" as const,
+              title: "Residual source caveat",
+              canvasLabel: "Residual caveat",
+              meaning: "This residual source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
+              scoreLabel: "Residual caveat",
+              scoreMeaning: "This is not a terminal coverage failure for the job-level score."
+            }
         : stopDisplaySemantics(stoppedReason);
-      const stopMetadata = residualCaveatStop
+      const stopMetadata = sourceProvenanceCaveatStop
         ? {
             ...stopMetadataBase,
             stopTitle: stopSemantics.title,
@@ -4265,7 +4315,9 @@ function projectWhereIsMoneyJob(
             stopMeaning: stopSemantics.meaning,
             scoreLabel: stopSemantics.scoreLabel,
             scoreMeaning: stopSemantics.scoreMeaning,
-            residualUnresolvedBelowMateriality: true
+            ...(sourceProvenanceMaterialityOutcome === "dense_hop_unresolved_below_materiality"
+              ? { denseHopUnresolvedBelowMateriality: true }
+              : { residualUnresolvedBelowMateriality: true })
           }
         : stopMetadataBase;
       stopReasonLabel = stopSemantics.title;
@@ -4585,17 +4637,27 @@ function projectWhereIsMoneyJob(
     "source_bundle_unresolved_boundary",
     "subject_exposure_context_not_source_proof"
   ]);
-  if (stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality") {
+  if (sourceProvenanceMaterialityScoreValidCaveat) {
     const amountUsdt = numberField(sourceProvenanceMateriality ?? {}, "unresolvedAmountUsdt");
     const checkedShare = numberField(sourceProvenanceMateriality ?? {}, "unresolvedShareOfCheckedBalance");
     const shareText = checkedShare !== null ? ` / ${shareLabel(checkedShare)} of checked balance` : "";
-    limitations.push({
-      code: "residual_unresolved_source",
-      label: "Residual unresolved source",
-      severity: "info",
-      pathId: null,
-      explanation: `Residual unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below materiality, shown as a caveat rather than a terminal coverage block.`
-    });
+    if (sourceProvenanceMaterialityOutcome === "dense_hop_unresolved_below_materiality") {
+      limitations.push({
+        code: "dense_hop_unresolved_source",
+        label: "Dense hop caveat",
+        severity: "info",
+        pathId: null,
+        explanation: `Dense hop caveat: dense-hop unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below relative materiality, shown as a caveat rather than a terminal coverage block.`
+      });
+    } else {
+      limitations.push({
+        code: "residual_unresolved_source",
+        label: "Residual unresolved source",
+        severity: "info",
+        pathId: null,
+        explanation: `Residual unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below materiality, shown as a caveat rather than a terminal coverage block.`
+      });
+    }
   }
 
   dedupeGroupedProfileContextEdges(edges, paths);
@@ -4654,6 +4716,7 @@ function projectWhereIsMoneyJob(
         episodeCoverageRatio: numberField(coverage, "episodeCoverageRatio"),
         drainEpisode: recordField(coverage, "drainEpisode"),
         layerSummary,
+        contractDrivenCampaign: null,
         selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
         targetAmountRaw: stringField(coverage, "targetAmountRaw"),
         topReasons: stringArrayField(assessment, "reasons")
@@ -4874,6 +4937,7 @@ function projectWhereTargetedIndexProgressJob(
         episodeCoverageRatio: null,
         drainEpisode: null,
         layerSummary,
+        contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: [explanation]
@@ -5009,6 +5073,15 @@ function projectAddressDeepJob(
     const key = contractDrivenTransferDuplicateKey(txHash, fromAddress, toAddress, amountRaw);
     return key !== null && contractDrivenDirectTransferKeys.has(key);
   };
+  const isContractDrivenExtendedPathDuplicate = (
+    txHash: string | null,
+    fromAddress: string | null,
+    toAddress: string | null,
+    amountRaw: string | null
+  ): boolean => Boolean(txHash && (
+    isContractDrivenDirectDuplicate(txHash, fromAddress, toAddress, amountRaw) ||
+    isContractDrivenDirectDuplicate(txHash, toAddress, fromAddress, amountRaw)
+  ));
   const isContractDrivenProfileContextDuplicate = (
     fromAddress: string | null,
     toAddress: string | null,
@@ -5536,6 +5609,14 @@ function projectAddressDeepJob(
       const addressChain = deepCheckPathAddresses(path, subjectAddress);
       if (addressChain.length < 2) return;
 
+      const txHashes = stringArrayField(path, "txHashes");
+      const amountRaw = stringField(path, "amountRaw");
+      const duplicatesContractDrivenTransfer = addressChain.some((fromAddress, edgeIndex) => {
+        const toAddress = addressChain[edgeIndex + 1] ?? null;
+        return isContractDrivenExtendedPathDuplicate(txHashes[edgeIndex] ?? null, fromAddress, toAddress, amountRaw);
+      });
+      if (duplicatesContractDrivenTransfer) return;
+
       const depth = deepCheckPathDepth(path, addressChain);
       const stopReason = deepCheckPathStopReason(path);
       const stopSemantics = stopReason ? stopDisplaySemantics(stopReason) : null;
@@ -5569,7 +5650,6 @@ function projectAddressDeepJob(
             : {})
         });
       });
-      const txHashes = stringArrayField(path, "txHashes");
       const edgeIds: string[] = [];
 
       for (let edgeIndex = 0; edgeIndex < addressChain.length - 1; edgeIndex += 1) {
@@ -6350,6 +6430,7 @@ function projectAddressDeepJob(
             secondLayerRelationshipGroups
           }
         },
+        contractDrivenCampaign: recordField(result, "contractDrivenCampaignSummary") ?? null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: [
@@ -6628,6 +6709,7 @@ function projectAddressFastCheckJob(
             addressDeepCheckJobId: stringField(followUpJobs, "addressDeepCheckJobId")
           }
         },
+        contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: riskReasonMessagesField(riskReport, "reasons")
@@ -7407,6 +7489,7 @@ function projectIncomingDepositJob(
         episodeCoverageRatio: null,
         drainEpisode: null,
         layerSummary,
+        contractDrivenCampaign: null,
         selectedAmountRaw: stringField(progress, "amountRaw"),
         targetAmountRaw: null,
         topReasons: stringArrayField(result, "reasons")

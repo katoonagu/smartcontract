@@ -101,6 +101,14 @@ done or terminal may the job queue the older broad targeted fallback. Ordinary
 Where uses `where_candidate_window` and `where_hop`; Incoming deposit uses
 `incoming_candidate_window` and `incoming_hop` / `incoming_deposit_hop`.
 
+For ordinary `Where is money`, a resumed parent job whose targeted terminal
+reason is `partial_provider_cap` is not completed from `provider_limited`
+progress alone. The parent reruns the Where report builder against cached
+indexed transfers so `moneyOriginOperationalAssessment` can apply materiality
+rules. Non-provider-cap terminal reasons still use the technical terminal path,
+and provider-cap with no usable cached evidence can still finish as an invalid
+technical stop.
+
 ## Planned Behavior
 
 Long provenance checks should expose a product-level lifecycle like this:

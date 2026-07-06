@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-06
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -156,6 +156,10 @@ Candidate-window coverage is narrow proof material only. It is not returned by
 broad covering-history lookups, and it does not satisfy broad targeted coverage
 for the same address. Parent waits use the full candidate-window identity, so
 multiple candidate windows can coexist for one address and end timestamp.
+
+Targeted index states and forensic waits reserve that durable request identity,
+so `candidate_window` rows do not collide with broad targeted coverage for the
+same address and target timestamp.
 
 ## What We Need From TronScan
 

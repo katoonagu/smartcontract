@@ -727,9 +727,13 @@ function allowedDampener(input: {
   return Math.min(input.raw, input.contextScore - input.floorScore, 25);
 }
 
-function hasResidualUnresolvedMaterialityCaveat(report: WhereIsMoneyReport): boolean {
-  return report.sourceProvenanceMateriality?.outcome === "residual_unresolved_below_materiality" ||
-    report.assessment.sourceProvenanceMateriality?.outcome === "residual_unresolved_below_materiality";
+function hasScoreValidWhereMaterialityCaveat(report: WhereIsMoneyReport): boolean {
+  const reportOutcome = report.sourceProvenanceMateriality?.outcome;
+  const assessmentOutcome = report.assessment.sourceProvenanceMateriality?.outcome;
+  return reportOutcome === "residual_unresolved_below_materiality" ||
+    reportOutcome === "dense_hop_unresolved_below_materiality" ||
+    assessmentOutcome === "residual_unresolved_below_materiality" ||
+    assessmentOutcome === "dense_hop_unresolved_below_materiality";
 }
 
 function finalScoreFromMatrix(matrixScore: MatrixScoringResult, options: { whereReport: WhereIsMoneyReport }): number {
@@ -737,7 +741,7 @@ function finalScoreFromMatrix(matrixScore: MatrixScoringResult, options: { where
   if (
     options.whereReport.scoreValid !== false &&
     options.whereReport.decision === "REVIEW" &&
-    hasResidualUnresolvedMaterialityCaveat(options.whereReport)
+    hasScoreValidWhereMaterialityCaveat(options.whereReport)
   ) {
     return clampScore(options.whereReport.riskScore);
   }
@@ -755,7 +759,7 @@ function finalDecisionFromMatrix(matrixScore: MatrixScoringResult, options: {
   if (
     matrixScore.matrixDecision === "INSUFFICIENT_EVIDENCE" &&
     options.whereReport.decision === "REVIEW" &&
-    hasResidualUnresolvedMaterialityCaveat(options.whereReport) &&
+    hasScoreValidWhereMaterialityCaveat(options.whereReport) &&
     clampScore(options.whereReport.riskScore) > 0
   ) {
     return "REVIEW";

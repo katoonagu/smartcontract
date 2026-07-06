@@ -96,8 +96,52 @@ create table if not exists tron_address_usdt_index_states (
   completed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  primary key (address, token_contract, coverage_mode, target_timestamp_ms)
+  request_kind text not null default 'broad_targeted',
+  window_start_timestamp_ms bigint not null default 0,
+  window_start_timestamp timestamptz,
+  window_end_timestamp_ms bigint not null default 0,
+  window_end_timestamp timestamptz,
+  related_hop_tx_hash text,
+  candidate_tx_hash text not null default '',
+  primary key (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash)
 );
+
+alter table tron_address_usdt_index_states
+  add column if not exists request_kind text not null default 'broad_targeted',
+  add column if not exists window_start_timestamp_ms bigint not null default 0,
+  add column if not exists window_start_timestamp timestamptz,
+  add column if not exists window_end_timestamp_ms bigint not null default 0,
+  add column if not exists window_end_timestamp timestamptz,
+  add column if not exists related_hop_tx_hash text,
+  add column if not exists candidate_tx_hash text not null default '';
+
+update tron_address_usdt_index_states
+set request_kind = 'broad_targeted',
+  window_start_timestamp_ms = 0,
+  window_start_timestamp = null,
+  window_end_timestamp_ms = 0,
+  window_end_timestamp = null,
+  related_hop_tx_hash = null,
+  candidate_tx_hash = ''
+where request_kind is null
+  or request_kind not in ('broad_targeted', 'candidate_window')
+  or request_kind = 'broad_targeted'
+  or (
+    request_kind = 'candidate_window'
+    and (
+      window_start_timestamp_ms is null
+      or window_start_timestamp_ms <= 0
+      or window_end_timestamp_ms is null
+      or window_end_timestamp_ms <= 0
+      or candidate_tx_hash is null
+      or candidate_tx_hash = ''
+    )
+  );
+
+alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_pkey;
+alter table tron_address_usdt_index_states
+  add constraint tron_address_usdt_index_states_pkey
+  primary key (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash);
 
 alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_coverage_mode_check;
 alter table tron_address_usdt_index_states
@@ -142,11 +186,27 @@ alter table tron_address_usdt_index_states
   add constraint tron_address_usdt_index_states_provider_check
   check (provider is null or provider in ('tronscan', 'trongrid_fallback', 'mixed'));
 
-create index if not exists tron_address_usdt_index_states_queue_idx
-  on tron_address_usdt_index_states(coverage_mode, status, priority desc, next_run_at, created_at);
+alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_request_kind_check;
+alter table tron_address_usdt_index_states
+  add constraint tron_address_usdt_index_states_request_kind_check
+  check (request_kind in ('broad_targeted', 'candidate_window'));
 
-create index if not exists tron_address_usdt_index_states_lock_idx
-  on tron_address_usdt_index_states(coverage_mode, status, locked_until, heartbeat_at);
+alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_window_check;
+alter table tron_address_usdt_index_states
+  add constraint tron_address_usdt_index_states_window_check
+  check (
+    (request_kind = 'broad_targeted' and window_start_timestamp_ms = 0 and window_end_timestamp_ms = 0 and candidate_tx_hash = '')
+    or
+    (request_kind = 'candidate_window' and window_start_timestamp_ms > 0 and window_end_timestamp_ms > 0 and candidate_tx_hash <> '')
+  );
+
+drop index if exists tron_address_usdt_index_states_queue_idx;
+create index tron_address_usdt_index_states_queue_idx
+  on tron_address_usdt_index_states(coverage_mode, request_kind, status, priority desc, next_run_at, created_at);
+
+drop index if exists tron_address_usdt_index_states_lock_idx;
+create index tron_address_usdt_index_states_lock_idx
+  on tron_address_usdt_index_states(coverage_mode, request_kind, status, locked_until, heartbeat_at);
 
 create table if not exists tron_address_usdt_coverage_intervals (
   address text not null,

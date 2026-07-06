@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -149,6 +149,16 @@ supersedes:
   with raw/Admin/bot/support all showing `REVIEW 45`, `scoreValid=true`,
   `technicalStatus=completed`, and the residual caveat. Admin no longer labels
   those residual path stops as terminal `History not fully fetched`.
+- Stage 1.13g implements dense-hop materiality for ordinary Where. A
+  provider-capped dense-hop source tail can be `scoreValid=true` only when it is
+  below branch and aggregate thresholds and has no hard evidence. It remains a
+  visible caveat and is not used as clean or bad evidence.
+- Stage 1.13g lifecycle follow-up fixes the fresh ordinary Where parent path
+  that could complete directly from `provider_limited` progress after targeted
+  `partial_provider_cap`. Fresh jobs now run report building and
+  `moneyOriginOperationalAssessment` first, so below-materiality dense-hop tails
+  can become completed caveated `REVIEW` results. Old cached failed jobs remain
+  old evidence until a new check is run.
 - Stage 1.14 fixes Admin full-evidence visibility for completed DeepCheck and
   ordinary Where graphs. Completed `address_deep_check` graphs now default to
   `Full evidence`, which renders the full graph API node and edge payload and
@@ -169,21 +179,37 @@ supersedes:
 
 ## Provenance Coverage
 
+- Live THJ manual review showed a stricter-than-useful Where outcome: one
+  dense `broad_targeted` hop on `TYCBsKvJSrLoj6pudJCLFNFYdBcntNP1gU` fetched 26
+  pages / 1,297 transfers / 1,191 counterparties over only about 1h44m and
+  ended as `partial_provider_cap`, which made the whole parent Where job
+  `score_valid=false`. The chosen audit direction is a tiered materiality
+  policy: dust residual, small-relative dense-hop tail, material unresolved
+  source, and hard-evidence unresolved source. A below-materiality dense-hop
+  tail with no hard evidence should become a visible caveat rather than a
+  job-level no-score, while material or hard-evidence branches still block or
+  decide the result. See
+  `docs/audit/2026-07-knowledge-deep-audit/09-where-dense-hop-materiality-finding.md`.
+  Fresh ordinary Where jobs now exercise that materiality path after targeted
+  `partial_provider_cap`; historical cached failed jobs are not rewritten.
 - Targeted hop history can still stop on configured local budgets or provider
   caps if the heavy address needs more work than the current safety ceiling.
 - The current inline page budget is 4 pages. Where background hop indexing can
   requeue retryable partials with a larger budget, but only inside the current
   code-level ceilings.
 - `History not fully fetched` still appears in graph UI for old and partial
-  jobs, but ordinary Where residual-below-materiality paths now use caveat
-  labeling instead.
+  jobs, but ordinary Where residual-below-materiality and
+  dense-hop-below-materiality paths now use caveat labeling instead.
 - Funding-first exact-window repair is still not a dedicated queued indexing
   stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
   but a promising probable candidate does not yet queue a resumable narrow
   repair task when that inline window is still capped.
-- Materiality thresholds for residual unresolved source provenance are local
-  code constants, currently 1% and 100 USDT. They need product/runtime config
-  after more live calibration.
+- Materiality thresholds for unresolved source provenance are local code
+  constants: residual uses 1% and 100 USDT; dense-hop uses 1% per branch, 2%
+  aggregate, and 10,000 USDT per branch. Remaining open work is live calibration
+  and product/runtime config.
+- Dense-hop tails above branch or aggregate thresholds, or with hard evidence,
+  remain material coverage/evidence problems rather than score-valid caveats.
 - Ordinary Where can now analyze saved targeted-cache transfers after a terminal
   provider-cap state, but this does not make the history exact. Capped cached
   findings must stay `probable` or `unresolved` until a covered candidate window
@@ -223,6 +249,11 @@ supersedes:
 
 ## DeepCheck
 
+- DeepCheck now separates plain USDT transfers from wrapper-driven campaign
+  context and reports enrichment denominators for contract-driven campaign
+  summaries. Remaining open work: calibrate enrichment budgets on very large
+  wallets and decide whether campaign clusters should get a dedicated product
+  severity tier beyond the current review-context behavior.
 - Second-layer metrics can show an empty queue even when a budget exists. Treat
   this as planned/partial until real queue work is implemented.
 - Direct counterparty hard-evidence checks should become wider and clearer.

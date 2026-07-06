@@ -100,14 +100,14 @@ describe("startAdminServer", () => {
     expect(html).toContain("function renderCaseBrief");
     expect(html).toContain("function renderActivityTimeline");
     expect(html).toContain("/admin/api/forensic-jobs");
-    expect(html).toContain("job id / address / tx hash / watched wallet");
+    expect(html).toContain("Find address, tx, or job id");
     expect(html).toContain("function scheduleLoadJobs");
     expect(html).toContain("function applyInitialUrlFilters");
     expect(html).toContain("pendingOpenJobId");
     expect(html).toContain('el("subject").addEventListener("input"');
     expect(html).toContain('event.key !== "Enter"');
     expect(html).toContain('<option value="cancelled">cancelled</option>');
-    expect(html).toContain('<option value="address_fast_check">address fast</option>');
+    expect(html).toContain('<option value="address_fast_check">Fast check</option>');
     expect(html).toContain("Clear selection");
     expect(html).toContain("function nodeIntelligenceBlock");
     expect(html).toContain("Node role");
@@ -255,7 +255,9 @@ describe("startAdminServer", () => {
         createdAt: "2026-06-01T00:00:00.000Z",
         updatedAt: "2026-06-01T01:00:00.000Z",
         startedAt: "2026-06-01T00:00:01.000Z",
-        completedAt: "2026-06-01T01:00:00.000Z"
+        completedAt: "2026-06-01T01:00:00.000Z",
+        decision: "ACCEPTABLE",
+        riskScore: 20
       }]
     });
     expect(receivedInput).toEqual({
@@ -264,6 +266,44 @@ describe("startAdminServer", () => {
       status: "completed",
       kind: "where_is_money_check",
       subjectAddress: "TSubject111111111111111111111111111111"
+    });
+  });
+
+  it("summarizes fast-check risk fields for Jobs queue cards", async () => {
+    const fixture = job({
+      kind: "address_fast_check",
+      status: "partial",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        fastRiskReport: {
+          score: 80,
+          level: "HIGH"
+        }
+      },
+      progressJson: {
+        fastRiskSnapshot: {
+          score: 75,
+          level: "HIGH"
+        }
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fixture]
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?limit=1`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      jobs: [{
+        kind: "address_fast_check",
+        status: "partial",
+        riskScore: 80,
+        riskLevel: "HIGH"
+      }]
     });
   });
 

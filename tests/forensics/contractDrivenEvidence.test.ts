@@ -4,6 +4,7 @@ import {
   classifyContractDrivenReceiver,
   classifySourcePostDebitActivity
 } from "../../src/forensics/contractDrivenEvidence";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { ForensicRouteEdge } from "../../src/types";
 
 describe("contract-driven evidence", () => {
@@ -277,6 +278,45 @@ describe("contract-driven evidence", () => {
     expect(getTransaction).toHaveBeenCalledTimes(2);
     expect(fetchEdgesForAddress).toHaveBeenCalledTimes(2);
     expect(result.transferProfiles.map((profile) => profile.method)).toEqual(Array(40).fill("Verify20"));
+    expect(result.campaignSummary).toMatchObject({
+      incomingTxTotal: 40,
+      txInfoEnrichedIncomingTx: 2,
+      campaignClassificationStatus: "partial",
+      countsAreLowerBounds: true,
+      txInfoUnavailableTxCount: 2,
+      wrapperDrivenIncomingTxCount: 40
+    });
+  });
+
+  it("keeps all-fetched null tx-info campaign counts as lower bounds", async () => {
+    const subjectAddress = "TNullTxInfoCampaignReceiver111111";
+    const edges: ForensicRouteEdge[] = [0, 1].map((index) => ({
+      id: `edge-null-tx-info-${index}`,
+      fromAddress: `TNullTxInfoCampaignSource${index}`,
+      toAddress: subjectAddress,
+      txHash: `tx-null-info-${index}`,
+      amountRaw: `${(index + 1) * 1_000_000}`,
+      timestamp: new Date(Date.UTC(2026, 0, 1, 0, index)),
+      method: "Verify20(address,address,uint256)",
+      edgeType: "transfer_from"
+    }));
+    const getTransaction = vi.fn(async () => null);
+
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges,
+      getTransaction,
+      maxTransactionInfoFetches: 2
+    });
+
+    expect(getTransaction).toHaveBeenCalledTimes(2);
+    expect(result.campaignSummary).toMatchObject({
+      incomingTxTotal: 2,
+      txInfoEnrichedIncomingTx: 2,
+      txInfoUnavailableTxCount: 2,
+      campaignClassificationStatus: "partial",
+      countsAreLowerBounds: true
+    });
   });
 
   it("treats any non-transfer smart-contract method as contract-driven incoming evidence", async () => {
@@ -369,5 +409,195 @@ describe("contract-driven evidence", () => {
 
     expect(result.receiverProfile).toBeNull();
     expect(result.transferProfiles).toEqual([]);
+  });
+
+  it("does not treat doubled standard transfer method text as contract-driven evidence", async () => {
+    const subjectAddress = "TPlainTransferReceiver222222222222";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "edge-transfer-doubled-method",
+        fromAddress: "TPlainTransferSource22222222222222",
+        toAddress: subjectAddress,
+        txHash: "tx-transfer-doubled-method",
+        amountRaw: "1500000",
+        timestamp: new Date("2026-06-29T10:03:00.000Z"),
+        method: "transfer transfer(address _to,uint256 _value)",
+        edgeType: "normal_transfer"
+      }],
+      getTransaction: async () => ({
+        ownerAddress: "TPlainTransferSource22222222222222",
+        contractData: {
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          function_selector: "transfer(address _to,uint256 _value)"
+        },
+        trigger_info: {
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          methodName: "transfer"
+        },
+        trc20TransferInfo: [{
+          from_address: "TPlainTransferSource22222222222222",
+          to_address: subjectAddress,
+          quant: "1500000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: {
+            tokenAbbr: "USDT",
+            tokenId: TRON_USDT_CONTRACT_ADDRESS,
+            tokenType: "trc20"
+          }
+        }]
+      })
+    });
+
+    expect(result.receiverProfile).toBeNull();
+    expect(result.transferProfiles).toEqual([]);
+    expect(result).toMatchObject({
+      campaignSummary: {
+        incomingTxTotal: 1,
+        txInfoEnrichedIncomingTx: 1,
+        plainUsdtTransferTxCount: 1,
+        wrapperDrivenIncomingTxCount: 0,
+        countsAreLowerBounds: false,
+        campaignClassificationStatus: "complete"
+      }
+    });
+  });
+
+  it("classifies canonical USDT transaction-info transfer as plain, not wrapper-driven", async () => {
+    const subjectAddress = "TPlainTransferReceiver333333333333";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "edge-canonical-usdt",
+        fromAddress: "TPlainTransferSource33333333333333",
+        toAddress: subjectAddress,
+        txHash: "tx-canonical-usdt-transfer",
+        amountRaw: "4200000",
+        timestamp: new Date("2026-06-29T10:04:00.000Z"),
+        method: "transfer",
+        edgeType: "normal_transfer"
+      }],
+      getTransaction: async () => ({
+        ownerAddress: "TPlainTransferSource33333333333333",
+        contractData: {
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          function_selector: "transfer(address,uint256)"
+        },
+        trigger_info: {
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          methodName: "transfer"
+        },
+        trc20TransferInfo: [{
+          from_address: "TPlainTransferSource33333333333333",
+          to_address: subjectAddress,
+          quant: "4200000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: {
+            tokenAbbr: "USDT",
+            tokenId: TRON_USDT_CONTRACT_ADDRESS,
+            tokenType: "trc20"
+          }
+        }]
+      })
+    });
+
+    expect(result.receiverProfile).toBeNull();
+    expect(result.transferProfiles).toEqual([]);
+    expect(result).toMatchObject({
+      campaignSummary: {
+        incomingTxTotal: 1,
+        plainUsdtTransferTxCount: 1,
+        wrapperDrivenIncomingTxCount: 0
+      }
+    });
+  });
+
+  it("marks plain-looking incoming tx as unavailable when transaction info fetch returns null", async () => {
+    const subjectAddress = "TUnavailableTransferReceiver111111";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "edge-unavailable-transfer",
+        fromAddress: "TUnavailableTransferSource1111111",
+        toAddress: subjectAddress,
+        txHash: "tx-unavailable-transfer",
+        amountRaw: "1200000",
+        timestamp: new Date("2026-06-29T10:04:30.000Z"),
+        method: "transfer",
+        edgeType: "normal_transfer"
+      }],
+      getTransaction: async () => null
+    });
+
+    expect(result.receiverProfile).toBeNull();
+    expect(result.transferProfiles).toEqual([]);
+    expect(result).toMatchObject({
+      campaignSummary: {
+        incomingTxTotal: 1,
+        txInfoEnrichedIncomingTx: 1,
+        plainUsdtTransferTxCount: 0,
+        wrapperDrivenIncomingTxCount: 0,
+        txInfoUnavailableTxCount: 1,
+        countsAreLowerBounds: true,
+        campaignClassificationStatus: "partial"
+      }
+    });
+  });
+
+  it("preserves method-prefiltered mode while default tx-info classification covers plain-looking wrapper calls", async () => {
+    const subjectAddress = "TLegacyWhereReceiver11111111111";
+    const sourceAddress = "TLegacyWhereSource11111111111111";
+    const contractAddress = "TVerify20Contract111111111111111";
+    const edge: ForensicRouteEdge = {
+      id: "edge-plain-looking-verify20",
+      fromAddress: sourceAddress,
+      toAddress: subjectAddress,
+      txHash: "tx-plain-looking-verify20",
+      amountRaw: "9100000",
+      timestamp: new Date("2026-06-29T10:05:00.000Z"),
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    const getTransaction = vi.fn(async () => ({
+      ownerAddress: "TLegacyCaller11111111111111111",
+      contractData: {
+        contract_address: contractAddress,
+        function_selector: "Verify20(address,address,uint256)"
+      },
+      trigger_info: {
+        contract_address: contractAddress,
+        methodName: "Verify20"
+      },
+      trc20TransferInfo: [{
+        from_address: sourceAddress,
+        to_address: subjectAddress,
+        quant: "9100000",
+        tokenInfo: { tokenAbbr: "USDT", tokenType: "trc20" }
+      }]
+    }));
+
+    const defaultResult = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [edge],
+      getTransaction
+    });
+
+    expect(defaultResult.receiverProfile).toMatchObject({
+      contractDrivenIncomingTxCount: 1,
+      dominantMethod: "Verify20"
+    });
+
+    getTransaction.mockClear();
+    const methodPrefilteredResult = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [edge],
+      getTransaction,
+      incomingClassificationMode: "method_prefiltered"
+    });
+
+    expect(getTransaction).not.toHaveBeenCalled();
+    expect(methodPrefilteredResult.receiverProfile).toBeNull();
+    expect(methodPrefilteredResult.transferProfiles).toEqual([]);
+    expect(methodPrefilteredResult.campaignSummary).toBeNull();
   });
 });

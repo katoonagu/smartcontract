@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-06
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -29,9 +29,11 @@ metrics when present.
 
 For completed `address_deep_check` graphs, Admin defaults to `Full evidence`.
 That mode renders all nodes and edges returned by the graph API, including
-second-layer relationship edges, and bypasses stale local flow, peer-link, and
-service filters. DeepCheck still keeps manual reading modes for
-`Investigative view` and `Compact summary`.
+second-layer relationship edges, without applying density collapse. The local
+flow, peer-link, service, and timeline filters still apply to the visible
+canvas, so `Incoming`, `Outgoing`, and `Self` remain meaningful in Full
+evidence. DeepCheck still keeps manual reading modes for `Investigative view`
+and `Compact summary`.
 
 Completed ordinary `where_is_money_check` graphs default to a route-focused
 `Investigative view` in Admin. The main/highest-coverage provenance route is the
@@ -40,13 +42,59 @@ caveat lane instead of replacing the route. Manual `Full evidence` is also
 available for ordinary Where; it renders the full graph API node/edge payload,
 including origin paths, route steps, funding/source provenance context,
 service/contract boundaries, residual caveats, and peer/context links. In Full
-evidence, local flow, peer-link, and service filters do not hide evidence.
+evidence, density collapse is disabled but local flow, peer-link, service, and
+timeline filters still define the visible canvas.
 `Compact summary` remains a manual reduced reading mode. Incoming deposit
 provenance keeps the compact flow-map default.
+
+DeepCheck Admin campaign displays show denominator counters instead of a single
+ambiguous contract-driven count: incoming tx total, tx-info enriched, plain USDT
+transfers, wrapper-driven incoming, Verify20 wrapper tx, exact proof count, and
+whether counts are complete or lower bounds. Drainer receiver and wrapper
+contract role marks, plus victim source role marks, are driven by graph payload
+node metadata. Contract trigger/call/authority lines, second-hop relationship
+lines, and extended-path relationship lines stay visible as contextual evidence,
+but the canvas labels money amounts/times on the actual transfer edge instead
+of duplicating the same transaction label on context projections.
+Approval-drain authority context is drawn from victim/source to spender contract
+so it does not visually imply that the drainer topped up the victim; these
+contract-context projections are also kept out of transfer-row lists.
+DeepCheck extended-path context that reuses the same transaction and amount as a
+contract-driven receiver transfer is suppressed in the Admin graph, including
+reversed subject-to-source projections. The visible route stays source/victim to
+spender contract to receiver, so contextual path evidence cannot look like a
+separate direct wallet transfer from the receiver back to the source.
 
 The graph counter separates the current canvas from the graph API payload:
 `Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or
 filters hide evidence, Admin shows `Hidden by view/filter: X nodes / Y edges`.
+These graph counters and legend chips live in the Analytics rail, not over the
+graph canvas controls.
+The Analytics rail is compact-first: selected node/edge details are shown above
+the case summary but capped so they cannot consume the whole rail, graph
+counters use readable labels such as visible nodes/links/paths instead of raw
+N/E/P/W codes, and long operational diagnostics such as projection gaps,
+targeted history, and funding-candidate visibility are collapsed by default.
+The case summary starts with the analyst meaning of the active check, then shows
+risk, coverage, evidence strength, and the largest incoming/outgoing
+counterparties with TronScan links.
+
+The Admin graph canvas is a full-workspace background layer behind the Jobs,
+Analytics, controls, and timeline overlays. Side rails anchor from the top of
+the workbench instead of floating in the middle, while the canvas remains
+visible behind them. Graph edges include a wide invisible hit target, so thin
+or unlabeled context lines can still be selected without adding duplicate amount
+labels. The activity timeline is a focus control: selecting a time bucket
+highlights matching transfer edges and dims surrounding context on the canvas,
+while the transfer drawer can still list only rows from the selected bucket.
+
+The Jobs rail is an analyst queue, not a raw database dump. It uses queue
+shortcuts for all jobs, running jobs, and jobs that need review; job cards show
+plain check names, status, risk score when saved in the job result, coverage,
+requester, human-readable started/updated times, a short progress or failure
+reason, and only a shortened job id. The strict provenance benchmark launcher is
+not shown in Jobs; strict benchmark diagnostics remain visible inside Analytics
+when a job already contains them.
 
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in
@@ -119,6 +167,11 @@ Telegram and support formatting now preserve the same meaning for ordinary
 Where materiality caveats: `REVIEW`, the real Where risk score, score valid,
 technical status `completed`, and the residual caveat. They must not show a
 final `DECLINE` or a fake `ACCEPTABLE` 0/100 result for this outcome.
+Fresh ordinary Where dense-hop provider-cap caveat jobs also save top-level
+`score_valid=true` and `technical_status=completed` mirrors alongside the full
+`whereIsMoneyReport`. Old cached failed jobs can still show historical
+`provider_cap_unresolved`; Admin and support should treat those as old evidence
+unless a fresh check was run.
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
@@ -194,10 +247,13 @@ valid score, show a technical stop. Do not present technical stops as decline.
 - Ordinary Where residual unresolved source provenance below materiality is
   visible as a caveat, not as a terminal provider-cap failure. Admin and bot
   formatting keep it as `REVIEW` with the real Where score.
+- Fresh ordinary Where dense-hop provider-cap materiality results are full
+  completed reports with caveat copy. Historical cached failures remain
+  historical and are not rewritten silently.
 - Completed ordinary Where graphs default to route-focused `Investigative view`
   in Admin. Manual `Full evidence` renders the full graph API payload and
-  bypasses local hiding filters; `Compact summary` remains available for a
-  reduced view.
+  disables density collapse while preserving local flow, peer-link, service,
+  and timeline filters; `Compact summary` remains available for a reduced view.
 - Completed DeepCheck graphs default to `Full evidence`, with
   `Investigative view` and `Compact summary` available as manual views. Visible,
   total, and hidden-by-view graph counters are shown separately so dense

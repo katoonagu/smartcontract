@@ -11,7 +11,7 @@ import type { SmartContractCheckReport } from "../../src/check/smartContractChec
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -1243,6 +1243,7 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
     counterpartyRiskProfiles: report.counterpartyRiskProfiles,
     directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
     approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+    contractDrivenCampaignSummary: report.contractDrivenCampaignSummary ?? null,
     assetContinuationProfiles: report.assetContinuationProfiles ?? [],
     stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
     boundaryExposureProfiles: report.boundaryExposureProfiles,
@@ -4050,7 +4051,26 @@ describe("bot command and inline UX smoke coverage", () => {
       },
       assetContinuationProfiles: [
         assetContinuationProfileForTest()
-      ]
+      ],
+      contractDrivenCampaignSummary: {
+        incomingTxTotal: 2,
+        incomingAmountRaw: "3000000",
+        txInfoEnrichedIncomingTx: 2,
+        campaignClassificationStatus: "complete",
+        countsAreLowerBounds: false,
+        plainUsdtTransferTxCount: 1,
+        plainUsdtTransferAmountRaw: "1000000",
+        wrapperDrivenIncomingTxCount: 1,
+        wrapperDrivenIncomingAmountRaw: "2000000",
+        verify20WrapperTxCount: 1,
+        transferFromWrapperTxCount: 0,
+        permitWrapperTxCount: 0,
+        otherContractMethodTxCount: 0,
+        unknownUnenrichedTxCount: 0,
+        txInfoUnavailableTxCount: 0,
+        exactApprovalDrainProfileCount: 0,
+        campaignClusters: []
+      }
     });
     const matchingJob = whereIsMoneyJobForTest({
       id: "deep-job",
@@ -4065,6 +4085,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const legacyResultJson = persistedDeepResultJsonForTest(deepReport);
     delete legacyResultJson.runProfile;
     delete legacyResultJson.providerBudget;
+    delete legacyResultJson.contractDrivenCampaignSummary;
     const legacyJob = whereIsMoneyJobForTest({
       id: "deep-job-legacy",
       kind: "address_deep_check",
@@ -4089,6 +4110,7 @@ describe("bot command and inline UX smoke coverage", () => {
         score: 82
       })
     ]);
+    expect(extractedReport?.contractDrivenCampaignSummary).toEqual(deepReport.contractDrivenCampaignSummary);
     expect(extractedReport?.runProfile).toBe("bounded_rerun");
     expect(extractedReport?.providerBudget).toEqual({
       providerCallBudget: 20,
@@ -4099,6 +4121,7 @@ describe("bot command and inline UX smoke coverage", () => {
       exhausted: false
     });
     expect(extractDeepForensicReportFromJob(legacyJob, walletAddress)).toMatchObject({
+      contractDrivenCampaignSummary: null,
       runProfile: "production_full",
       providerBudget: {
         providerCallBudget: null,
@@ -5388,19 +5411,30 @@ describe("bot command and inline UX smoke coverage", () => {
         ],
         sourceProvenanceMateriality: {
           outcome: "residual_unresolved_below_materiality",
+          materialityTier: "dust_residual",
           unresolvedAmountRaw: "14776543",
           unresolvedAmountUsdt: 14.776543,
           unresolvedShareOfCheckedBalance: 0.001322,
           unresolvedShareOfSelectedAmount: 0.000006,
+          largestUnresolvedAmountRaw: "14776543",
+          largestUnresolvedAmountUsdt: 14.776543,
+          aggregateUnresolvedShareOfCheckedBalance: 0.001322,
+          aggregateUnresolvedShareOfSelectedAmount: 0.000006,
           unresolvedPathCount: 5,
+          denseHopUnresolvedPathCount: 0,
           hardEvidenceInUnresolved: false,
+          excludedFromDecisiveScore: true,
           unresolvedReasonCounts: {
             funding_source_unresolved: 5
           },
           thresholds: {
             maxResidualUnresolvedShare: 0.01,
             maxResidualUnresolvedAmountUsdt: 100,
-            maxResidualUnresolvedAmountRaw: "100000000"
+            maxResidualUnresolvedAmountRaw: "100000000",
+            maxDenseHopUnresolvedShare: 0.01,
+            maxDenseHopAggregateUnresolvedShare: 0.02,
+            maxDenseHopUnresolvedAmountUsdt: 10000,
+            maxDenseHopUnresolvedAmountRaw: "10000000000"
           }
         }
       }
@@ -5427,6 +5461,87 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(supportText).toContain("Where risk: ");
     expect(supportText).toContain("45/100");
     expect(supportText).not.toContain("Decision: DECLINE");
+  });
+
+  it("shows dense-hop materiality caveat without converting where review to acceptable", () => {
+    const denseHopMateriality = {
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      unresolvedAmountRaw: "45000000",
+      unresolvedAmountUsdt: 45,
+      unresolvedShareOfCheckedBalance: 0.0045,
+      unresolvedShareOfSelectedAmount: 0.0045,
+      largestUnresolvedAmountRaw: "45000000",
+      largestUnresolvedAmountUsdt: 45,
+      aggregateUnresolvedShareOfCheckedBalance: 0.0045,
+      aggregateUnresolvedShareOfSelectedAmount: 0.0045,
+      unresolvedPathCount: 1,
+      denseHopUnresolvedPathCount: 1,
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: true,
+      unresolvedReasonCounts: {
+        incoming_history_not_fetched: 1,
+        dense_hop_provider_cap: 1
+      },
+      thresholds: {
+        maxResidualUnresolvedShare: 0.01,
+        maxResidualUnresolvedAmountUsdt: 100,
+        maxResidualUnresolvedAmountRaw: "100000000",
+        maxDenseHopUnresolvedShare: 0.01,
+        maxDenseHopAggregateUnresolvedShare: 0.02,
+        maxDenseHopUnresolvedAmountUsdt: 10000,
+        maxDenseHopUnresolvedAmountRaw: "10000000000"
+      }
+    } satisfies MoneyOriginSourceProvenanceMaterialitySummary;
+    const report = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      proofLevel: "insufficient_coverage",
+      riskScore: 45,
+      scoreValid: true,
+      technicalStatus: "completed",
+      scoreBlockedReason: null,
+      decisionReasons: ["History not fully fetched"],
+      sourceProvenanceMateriality: denseHopMateriality,
+      coverage: {
+        selectedInboundTxCount: 3,
+        selectedInboundVolumeRaw: "10000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 20,
+        fetchedAddressCount: 9,
+        partial: true,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45, decisionReasons: ["History not fully fetched"] }),
+        decision: "REVIEW",
+        riskScore: 45,
+        riskBand: "MEDIUM",
+        scoreValid: true,
+        technicalStatus: "completed",
+        scoreBlockedReason: null,
+        sourceProvenanceMateriality: denseHopMateriality,
+        reasons: ["History not fully fetched"]
+      }
+    });
+    const finalText = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(finalText).toContain("Decision: REVIEW");
+    expect(finalText).toContain("45/100");
+    expect(finalText).toContain("Small dense-hop source tail remains unresolved");
+    expect(finalText).toContain("45 USDT");
+    expect(finalText).toContain("below materiality");
+    expect(finalText).toContain("not used as clean or bad evidence");
+    expect(finalText).not.toContain("Decision: ACCEPTABLE");
+    expect(finalText).not.toContain("0/100");
+    expect(finalText).not.toContain("History not fully fetched");
   });
 
   it("formats AI contract verdicts in where-is-money results", () => {

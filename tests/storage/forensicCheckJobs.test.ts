@@ -575,6 +575,26 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).not.toContain("and not (");
   });
 
+  it("upserts targeted job waits using the current expanded wait identity", async () => {
+    const { db, queries } = createMockDb([{ rows: [], rowCount: 1 }]);
+
+    await upsertForensicJobWait(db, {
+      jobId: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      requiredFor: "where_hop",
+      statusReason: "partial_provider_cap",
+      lastError: null
+    });
+
+    expect(queries[0].sql).toContain(
+      "on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set"
+    );
+    expect(queries[0].params[0]).toBe("job-1");
+    expect(queries[0].params[2]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
+    expect(queries[0].params[4]).toBe("where_hop");
+  });
+
   it("marks a waiting strict job ready after targeted index completion", async () => {
     const queries: Array<{ sql: string; params: unknown[] }> = [];
     const db = {

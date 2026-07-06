@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -143,6 +143,23 @@ Admin graph, bot final report, and support report. It must not be converted to
 Admin keeps unresolved residual paths visible but labels their stop as a
 caveat, not as terminal `History not fully fetched`.
 
+Stage 1.13g extends materiality handling to provider-capped dense-hop source
+tails. If unresolved dense-hop branches are below both branch and aggregate
+materiality thresholds and there is no hard evidence, ordinary Where can publish
+a valid covered-part `REVIEW` score with
+`dense_hop_unresolved_below_materiality`. The unresolved dense-hop tail remains
+visible in Admin and Telegram as a caveat and is excluded from decisive clean or
+bad evidence. Material unresolved source, aggregate unresolved source above the
+threshold, or hard evidence still blocks or drives the result.
+
+Stage 1.13g lifecycle follow-up closes the early parent terminal path for
+ordinary Where. A fresh job resumed from targeted `partial_provider_cap` progress
+now continues into report building and `moneyOriginOperationalAssessment` before
+deciding whether the dense-hop tail is below materiality. The job stores a full
+`whereIsMoneyReport`, source-provenance materiality, and top-level
+`score_valid`/`technical_status` mirrors. Old cached failed jobs are not
+silently reinterpreted; run a fresh Where check to get the new result.
+
 Ordinary Where and Incoming deposit now try candidate-window targeted indexing
 before broad targeted fallback for `probable` funding-first source provenance.
 After source provenance is computed, the trace selects narrow candidate-to-hop
@@ -250,6 +267,13 @@ system must not publish a final user-facing `DECLINE`.
 Residual unresolved source provenance below materiality is different from an
 uncovered main money path. It is still shown as a caveat, not exact proof, but
 it does not make the whole Where score invalid when hard evidence is absent.
+Provider-capped dense-hop source tails get the same treatment only when they
+are below branch and aggregate materiality thresholds; the unresolved tail is
+not treated as clean or bad evidence.
+
+Dense-hop provider-capped unresolved source below branch and aggregate
+materiality thresholds follows the same score-valid caveat rule. It is not
+clean evidence, bad evidence, or proof of covered history.
 
 If `score_valid=false`, Admin and Telegram must show that this is a technical
 coverage block, not a verdict.
@@ -270,7 +294,11 @@ coverage block, not a verdict.
   only the candidate-to-target window. Stage 1.13d allows low-materiality
   residual unresolved source provenance to remain a caveat instead of a
   job-level technical blocker. Stage 1.13f keeps that caveated result as
-  user-facing `REVIEW` consistently across Admin and bot formatting.
+  user-facing `REVIEW` consistently across Admin and bot formatting. Stage
+  1.13g does the same for below-threshold dense-hop provider-cap tails while
+  keeping material and hard-evidence branches blocking. The lifecycle follow-up
+  makes resumed `partial_provider_cap` parents run the materiality assessment
+  instead of completing directly from `provider_limited` progress.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Ordinary Where can still use cached indexed transfers after a terminal
