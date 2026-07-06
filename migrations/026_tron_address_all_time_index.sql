@@ -115,6 +115,29 @@ alter table tron_address_usdt_index_states
   add column if not exists related_hop_tx_hash text,
   add column if not exists candidate_tx_hash text not null default '';
 
+update tron_address_usdt_index_states
+set request_kind = 'broad_targeted',
+  window_start_timestamp_ms = 0,
+  window_start_timestamp = null,
+  window_end_timestamp_ms = 0,
+  window_end_timestamp = null,
+  related_hop_tx_hash = null,
+  candidate_tx_hash = ''
+where request_kind is null
+  or request_kind not in ('broad_targeted', 'candidate_window')
+  or request_kind = 'broad_targeted'
+  or (
+    request_kind = 'candidate_window'
+    and (
+      window_start_timestamp_ms is null
+      or window_start_timestamp_ms <= 0
+      or window_end_timestamp_ms is null
+      or window_end_timestamp_ms <= 0
+      or candidate_tx_hash is null
+      or candidate_tx_hash = ''
+    )
+  );
+
 alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_pkey;
 alter table tron_address_usdt_index_states
   add constraint tron_address_usdt_index_states_pkey
