@@ -217,6 +217,7 @@ describe("wallet intelligence repositories", () => {
     expect(queries[0].sql).toContain("kind in ('address_deep_check', 'where_is_money_check', 'incoming_deposit_check')");
     expect(queries[0].sql).toContain("status in ('completed', 'partial')");
     expect(queries[0].sql).toContain("result_json <> '{}'::jsonb");
+    expect(queries[0].sql).toContain("order by job.completed_at asc nulls last, job.created_at asc, job.id asc");
     expect(queries[0].params).toEqual([25, 5]);
   });
 
@@ -252,6 +253,23 @@ describe("wallet intelligence repositories", () => {
     });
     expect(queries[0].sql).toContain("from telegram_users");
     expect(queries[0].params).toEqual(["42"]);
+  });
+
+  it("returns null for a missing Telegram user profile", async () => {
+    const { db } = createMockDb([[]]);
+
+    await expect(getTelegramUserProfile(db, "missing")).resolves.toBeNull();
+  });
+
+  it("falls back to Russian locale for null or invalid Telegram profile locales", async () => {
+    const createdAt = new Date("2026-07-06T10:00:00.000Z");
+    const { db } = createMockDb([
+      [{ telegram_user_id: "42", username: null, locale: null, created_at: createdAt }],
+      [{ telegram_user_id: "43", username: null, locale: "de", created_at: createdAt }]
+    ]);
+
+    await expect(getTelegramUserProfile(db, "42")).resolves.toMatchObject({ locale: "ru" });
+    await expect(getTelegramUserProfile(db, "43")).resolves.toMatchObject({ locale: "ru" });
   });
 
   it("lists address summaries ranked by unique subjects then requesters", async () => {

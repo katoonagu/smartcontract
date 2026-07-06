@@ -6556,7 +6556,7 @@ export async function listWalletIntelligenceBackfillJobs(
      where job.kind in ('address_deep_check', 'where_is_money_check', 'incoming_deposit_check')
        and job.status in ('completed', 'partial')
        and job.result_json <> '{}'::jsonb
-     order by job.completed_at asc nulls last, job.created_at asc
+     order by job.completed_at asc nulls last, job.created_at asc, job.id asc
      limit $1 offset $2`,
     [limit, offset]
   );
