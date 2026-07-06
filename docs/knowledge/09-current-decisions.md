@@ -65,6 +65,10 @@ of these decisions, update this file in the same work.
   branches; below-materiality unresolved exposure remains a completed caveat.
   Service/CEX boundaries stop before candidate-window or broad
   fallback work for that boundary address.
+- Ordinary `Where is money` post-assessment broad fallback batches aggregate
+  material and hard-evidence broad targets: all deduped waits are queued/upserted
+  before the parent job is released once. Trace-local broad fallback remains a
+  single-target request.
 - Ordinary `Where is money` Admin graphs render saved funding candidates only
   when they attach to concrete route hops. Exact candidates can be shown as
   funding edges; probable candidates remain context; over-limit candidate tails
@@ -107,8 +111,10 @@ of these decisions, update this file in the same work.
   hard evidence.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
-- `Incoming deposit` still needs the same resumable indexing flow before this
-  decision is fully implemented across provenance modes.
+- `Incoming deposit` uses the shared candidate-window-first targeted
+  wait/resume primitive, but still has separate gaps around terminal
+  provider/budget stops and product progress visibility before provenance
+  completeness is fully implemented across modes.
 
 ## Data Source
 
@@ -157,8 +163,9 @@ of these decisions, update this file in the same work.
 
 ## Known Gaps
 
-- `Incoming deposit` still does not have a general resumable indexing flow to
-  full main-path coverage.
+- `Incoming deposit` has the shared candidate-window-first targeted
+  wait/resume primitive, but full main-path coverage and progress visibility are
+  still less complete than ordinary Where.
 - Budget escalation exists for ordinary Where targeted indexing, but the limits
   are still code constants rather than job-level/runtime product config.
 - DeepCheck second-layer work is still partial/planned.

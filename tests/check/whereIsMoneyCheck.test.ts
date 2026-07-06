@@ -1498,8 +1498,11 @@ describe("runWhereIsMoneyCheck", () => {
           }
         };
       },
-      ensureBroadTargetedHistory: async (input) => {
-        broadTargets.push(input);
+      ensureBroadTargetedHistory: async () => {
+        throw new Error("aggregate broad fallback should use batch ensure");
+      },
+      ensureBroadTargetedHistories: async (requests) => {
+        broadTargets.push(...requests);
         return true;
       }
     }, {

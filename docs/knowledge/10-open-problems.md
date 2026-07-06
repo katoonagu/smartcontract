@@ -214,9 +214,9 @@ supersedes:
   provider-cap state, but this does not make the history exact. Capped cached
   findings must stay `probable` or `unresolved` until a covered candidate window
   is proven.
-- Incoming still needs the normal "continue indexing, then resume trace" flow.
-- Parent job wakeup now uses generic targeted waiters for Stage 1 Where, but
-  Incoming is not wired to those waiters yet.
+- Incoming now uses the shared candidate-window-first targeted wait/resume
+  primitive, but full main-path coverage and product progress remain less
+  complete than ordinary Where.
 
 ## TronScan Indexing
 
@@ -235,7 +235,8 @@ supersedes:
   retryable and there is remaining page-budget headroom. The parent Where
   coordinator now respects the same page ceiling as the background worker, so a
   ceiling-level budget partial becomes a technical terminal instead of an
-  unbounded larger retry. Incoming is not wired to the same flow yet.
+  unbounded larger retry. Incoming uses the shared targeted wait primitive, but
+  its product progress and terminal-stop handling remain more limited.
 - Scheduler metrics should make clear whether 4, 10, or more keys are actually
   improving throughput.
 - Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for

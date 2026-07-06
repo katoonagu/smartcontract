@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ensureCandidateWindowsOrWait,
+  ensureTargetedHistoriesOrWait,
   ensureTargetedHistoryOrWait,
   TargetedHistoryTerminalError,
   TargetedHistoryWaitingForIndex
@@ -606,6 +607,108 @@ describe("ensureTargetedHistoryOrWait", () => {
     expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
       budgetPages: 12000,
       maxAttempts: 8
+    }));
+  });
+});
+
+describe("ensureTargetedHistoriesOrWait", () => {
+  it("queues every broad target and releases once for aggregate fallback", async () => {
+    const firstTarget = new Date("2026-07-04T12:05:00.000Z");
+    const secondTarget = new Date("2026-07-04T12:00:00.000Z");
+    const queued: unknown[] = [];
+    const waits: unknown[] = [];
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoriesOrWait({
+      jobId: "where-job-aggregate",
+      requests: [
+        {
+          address: "TAggregateOne111111111111111111111",
+          targetTimestamp: firstTarget,
+          queuedReason: "where_is_money_hop",
+          requiredFor: "where_hop",
+          reason: "material_unresolved_after_candidate_windows"
+        },
+        {
+          address: "TAggregateOne111111111111111111111",
+          targetTimestamp: firstTarget,
+          queuedReason: "where_is_money_hop",
+          requiredFor: "where_hop",
+          reason: "material_unresolved_after_candidate_windows"
+        },
+        {
+          address: "TAggregateTwo111111111111111111111",
+          targetTimestamp: secondTarget,
+          queuedReason: "where_is_money_hop",
+          requiredFor: "where_hop",
+          reason: "material_unresolved_after_candidate_windows"
+        }
+      ],
+      progressJson: {},
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState: async () => null,
+        getCoveringAddressUsdtIndexState: async () => null,
+        queueAddressUsdtHistory: async (input) => {
+          queued.push(input);
+          return targetedState({
+            address: input.address,
+            requestKind: "broad_targeted",
+            targetTimestamp: input.targetTimestamp ?? null,
+            status: "queued",
+            queuedReason: input.queuedReason,
+            requestedByJobId: input.requestedByJobId ?? null
+          });
+        },
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: async (input) => {
+          waits.push(input);
+        }
+      }
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queued).toEqual([
+      expect.objectContaining({
+        address: "TAggregateOne111111111111111111111",
+        requestKind: "broad_targeted",
+        queuedReason: "where_is_money_hop",
+        targetTimestamp: firstTarget
+      }),
+      expect.objectContaining({
+        address: "TAggregateTwo111111111111111111111",
+        requestKind: "broad_targeted",
+        queuedReason: "where_is_money_hop",
+        targetTimestamp: secondTarget
+      })
+    ]);
+    expect(waits).toEqual([
+      expect.objectContaining({
+        address: "TAggregateOne111111111111111111111",
+        requestKind: "broad_targeted",
+        requiredFor: "where_hop",
+        targetTimestamp: firstTarget
+      }),
+      expect.objectContaining({
+        address: "TAggregateTwo111111111111111111111",
+        requestKind: "broad_targeted",
+        requiredFor: "where_hop",
+        targetTimestamp: secondTarget
+      })
+    ]);
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledOnce();
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+      id: "where-job-aggregate",
+      progressJson: expect.objectContaining({
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: expect.objectContaining({
+          phase: "waiting_for_targeted_index",
+          broadFallback: "queued",
+          broadFallbackBatch: expect.objectContaining({
+            total: 2,
+            waiting: 2
+          })
+        })
+      })
     }));
   });
 });

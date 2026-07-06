@@ -185,6 +185,11 @@ before candidate-window or broad fallback work for that boundary address.
 Candidate windows do not change scoring math and do not become hard proof unless
 the existing funding-first rules classify the repaired window as `exact`.
 
+For ordinary Where post-assessment broad fallback, aggregate material unresolved
+exposure and hard-evidence coverage requirements queue the full deduped broad
+target batch before the parent job is released to `waiting_for_targeted_index`.
+Trace-local broad fallback remains a single-target request.
+
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
 funding edges only when they attach to a concrete route hop

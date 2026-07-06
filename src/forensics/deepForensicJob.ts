@@ -1,5 +1,5 @@
 import { runDeepAddressForensicCheck, type DeepAddressForensicDeps, type DeepAddressForensicReport } from "../check/deepForensicCheck";
-import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
+import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
@@ -12,6 +12,7 @@ import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import {
   ensureCandidateWindowsOrWait,
+  ensureTargetedHistoriesOrWait,
   ensureTargetedHistoryOrWait,
   TargetedHistoryTerminalError,
   TargetedHistoryWaitingForIndex,
@@ -1137,6 +1138,42 @@ async function runWhereIsMoneyJob(
         })
     : undefined;
 
+  const ensureBroadTargetedHistories = canWaitForTargetedIndex
+    ? (requests: BroadTargetedHistoryRequest[]): Promise<true> => ensureTargetedHistoriesOrWait({
+        jobId: job.id,
+        requests: requests.map((request) => ({
+          ...request,
+          requiredFor: "where_hop" as const
+        })),
+        maxRetryBudgetPages: options.targetedHistoryMaxBudgetPages,
+        progressJson: currentProgress,
+        deps: {
+          getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,
+          getCoveringAddressUsdtIndexState: deps.getCoveringAddressUsdtIndexState,
+          queueAddressUsdtHistory: deps.queueAddressUsdtHistory!,
+          releaseForensicCheckJobToWaiting: deps.releaseForensicCheckJobToWaiting!,
+          upsertForensicJobWait: deps.upsertForensicJobWait,
+          markWaitingForensicJobsReadyAfterTargetedIndex: deps.markWaitingForensicJobsReadyAfterTargetedIndex
+        },
+        persistProgress,
+        afterWaitingPatch: strictBenchmark && requests.length > 0
+          ? strictWaitingProgressPatch({
+              address: requests[0].address,
+              targetTimestamp: requests[0].targetTimestamp,
+              queuedReason: requests[0].queuedReason
+            })
+          : undefined,
+        onTerminalTarget: async ({ request, error }) => {
+          if (!deps.listIndexedUsdtTransfersForAddress) throw error;
+          const cacheKey = edgeCacheKey(request.address, request.targetTimestamp);
+          edgeCache.delete(cacheKey);
+          historyCoverageCache.delete(cacheKey);
+          targetedEdgeCacheKeys.delete(cacheKey);
+          await fetchEdgesForAddress(request.address, { latestTimestamp: request.targetTimestamp });
+        }
+      })
+    : undefined;
+
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
   let report: WhereIsMoneyReport;
   try {
@@ -1151,6 +1188,7 @@ async function runWhereIsMoneyJob(
       repairSourceProvenanceWindow,
       requestCandidateWindows,
       ensureBroadTargetedHistory,
+      ensureBroadTargetedHistories,
       fetchLatestEdgesForAddress,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress,

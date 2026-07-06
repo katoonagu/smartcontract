@@ -1763,6 +1763,106 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("queues aggregate broad fallback targets before one waiting release", async () => {
+    vi.resetModules();
+    const firstTarget = new Date("2026-07-04T12:05:00.000Z");
+    const secondTarget = new Date("2026-07-04T12:00:00.000Z");
+    const firstAddress = "TAggregateOne111111111111111111111";
+    const secondAddress = "TAggregateTwo111111111111111111111";
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.ensureBroadTargetedHistories([
+        {
+          address: firstAddress,
+          targetTimestamp: firstTarget,
+          queuedReason: "where_is_money_hop",
+          reason: "material_unresolved_after_candidate_windows"
+        },
+        {
+          address: secondAddress,
+          targetTimestamp: secondTarget,
+          queuedReason: "where_is_money_hop",
+          reason: "material_unresolved_after_candidate_windows"
+        }
+      ]);
+      throw new Error("aggregate broad fallback wait should abort before scoring");
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile" }
+      };
+      const queueAddressUsdtHistory = vi.fn(async (input: any) => ({
+        ...queuedIndexState(input.address),
+        coverageMode: "targeted",
+        requestKind: input.requestKind ?? "broad_targeted",
+        status: "queued",
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: input.requestedByJobId ?? null,
+        queuedReason: input.queuedReason
+      } as any));
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const upsertForensicJobWait = vi.fn(async () => undefined);
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        upsertForensicJobWait,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        listIndexedUsdtTransfersForAddress: vi.fn(async () => []),
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(queueAddressUsdtHistory).toHaveBeenCalledTimes(2);
+      expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        address: firstAddress,
+        requestKind: "broad_targeted",
+        queuedReason: "where_is_money_hop",
+        targetTimestamp: firstTarget
+      }));
+      expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        address: secondAddress,
+        requestKind: "broad_targeted",
+        queuedReason: "where_is_money_hop",
+        targetTimestamp: secondTarget
+      }));
+      expect(upsertForensicJobWait).toHaveBeenCalledTimes(2);
+      expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledOnce();
+      expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+        id: sourceJob.id,
+        progressJson: expect.objectContaining({
+          jobPhase: "waiting_for_targeted_index",
+          targetedIndex: expect.objectContaining({
+            broadFallback: "queued",
+            broadFallbackBatch: expect.objectContaining({
+              total: 2,
+              waiting: 2
+            })
+          })
+        })
+      }));
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("keeps where jobs in result flow when broad fallback is terminal after candidate windows", async () => {
     vi.resetModules();
     const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");

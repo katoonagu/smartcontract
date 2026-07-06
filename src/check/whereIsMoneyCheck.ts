@@ -81,12 +81,8 @@ export type WhereIsMoneyDeps = {
   ): Promise<MoneyOriginTraceHistoryCoverage>;
   repairSourceProvenanceWindow?: Parameters<typeof traceMoneyOriginPath>[0]["repairSourceProvenanceWindow"];
   requestCandidateWindows?(requests: WhereCandidateWindowRequest[]): Promise<true>;
-  ensureBroadTargetedHistory?(input: {
-    address: string;
-    targetTimestamp: Date;
-    queuedReason: "where_is_money_hop";
-    reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
-  }): Promise<true>;
+  ensureBroadTargetedHistory?(input: BroadTargetedHistoryRequest): Promise<true>;
+  ensureBroadTargetedHistories?(requests: BroadTargetedHistoryRequest[]): Promise<true>;
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -101,8 +97,12 @@ export type WhereIsMoneyDeps = {
   evmEvidenceProvider?: EvmEvidenceProvider;
 };
 
-type EnsureBroadTargetedHistory = NonNullable<WhereIsMoneyDeps["ensureBroadTargetedHistory"]>;
-type BroadTargetedHistoryRequest = Parameters<EnsureBroadTargetedHistory>[0];
+export type BroadTargetedHistoryRequest = {
+  address: string;
+  targetTimestamp: Date;
+  queuedReason: "where_is_money_hop";
+  reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
+};
 
 export type RunWhereIsMoneyCheckInput = {
   sourceAddress?: string;
@@ -1033,6 +1033,16 @@ function broadTargetedHistoryKey(input: BroadTargetedHistoryRequest): string {
   ].join(":");
 }
 
+function dedupeBroadTargetedHistoryTargets(
+  targets: BroadTargetedHistoryRequest[]
+): BroadTargetedHistoryRequest[] {
+  const byKey = new Map<string, BroadTargetedHistoryRequest>();
+  for (const target of targets) {
+    byKey.set(broadTargetedHistoryKey(target), target);
+  }
+  return [...byKey.values()];
+}
+
 function pathIntersectsHardEvidence(
   path: MoneyOriginPath,
   hardBadEvidence: WhereIsMoneyAssessment["hardBadEvidence"]
@@ -1600,8 +1610,13 @@ export async function runWhereIsMoneyCheck(
     sourceBundleExposure,
     subjectExposureProfile
   });
-  if (ensureBroadTargetedHistory) {
-    for (const target of postAssessmentBroadFallbackTargets({ originPaths, assessment: initialAssessment })) {
+  const broadFallbackTargets = dedupeBroadTargetedHistoryTargets(
+    postAssessmentBroadFallbackTargets({ originPaths, assessment: initialAssessment })
+  );
+  if (broadFallbackTargets.length > 0 && deps.ensureBroadTargetedHistories) {
+    await deps.ensureBroadTargetedHistories(broadFallbackTargets);
+  } else if (ensureBroadTargetedHistory) {
+    for (const target of broadFallbackTargets) {
       await ensureBroadTargetedHistory(target);
     }
   }

@@ -111,6 +111,29 @@ export type TargetedHistoryWaitInput = {
   afterWaitingPatch?: ForensicJobProgressPatch;
 };
 
+export type TargetedHistoryBatchRequest = {
+  address: string;
+  targetTimestamp: Date;
+  queuedReason: string;
+  requiredFor: TargetedHistoryRequiredFor;
+  reason?: string;
+};
+
+export type TargetedHistoryBatchWaitInput = {
+  jobId: string;
+  requests: TargetedHistoryBatchRequest[];
+  maxRetryBudgetPages?: number | null;
+  progressJson: Record<string, unknown>;
+  deps: TargetedHistoryWaiterDeps;
+  persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
+  afterWaitingPatch?: ForensicJobProgressPatch;
+  onTerminalTarget?(input: {
+    request: TargetedHistoryBatchRequest;
+    state: TronAddressUsdtIndexState;
+    error: TargetedHistoryTerminalError;
+  }): Promise<void>;
+};
+
 export type CandidateWindowWaitInput = {
   jobId: string;
   requests: WhereCandidateWindowRequest[];
@@ -174,6 +197,32 @@ export function targetedHistoryReadyProgressPatch(input: {
       ...targetedIndexStateProgress(input.state, input.lastError)
     }
   };
+}
+
+function targetedHistoryBatchKey(request: TargetedHistoryBatchRequest): string {
+  return [
+    request.address.toLowerCase(),
+    request.targetTimestamp.getTime().toString(),
+    request.reason ?? ""
+  ].join(":");
+}
+
+function dedupeTargetedHistoryBatchRequests(
+  requests: TargetedHistoryBatchRequest[]
+): TargetedHistoryBatchRequest[] {
+  const byKey = new Map<string, TargetedHistoryBatchRequest>();
+  for (const request of requests) {
+    byKey.set(targetedHistoryBatchKey(request), request);
+  }
+  return [...byKey.values()];
+}
+
+function terminalErrorForState(state: TronAddressUsdtIndexState): TargetedHistoryTerminalError {
+  const mapped = targetedHistoryTerminalStatus(state.statusReason, state.lastError);
+  return new TargetedHistoryTerminalError({
+    message: `targeted_history_terminal:${state.status}:${state.statusReason ?? "unknown"}`,
+    ...mapped
+  });
 }
 
 export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInput): Promise<true> {
@@ -260,6 +309,167 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
       lastError: afterRelease.lastError,
       state: afterRelease
     });
+  }
+
+  throw new TargetedHistoryWaitingForIndex();
+}
+
+type PendingTargetedHistoryWait = {
+  request: TargetedHistoryBatchRequest;
+  state: TronAddressUsdtIndexState;
+  queueTargetTimestamp: Date;
+};
+
+function targetedHistoryBatchWaitingProgressPatch(input: {
+  total: number;
+  pending: PendingTargetedHistoryWait[];
+}): ForensicJobProgressPatch {
+  const first = input.pending[0];
+  const base = targetedHistoryWaitingProgressPatch({
+    address: first.request.address,
+    targetTimestamp: first.queueTargetTimestamp,
+    queuedReason: first.request.queuedReason,
+    requiredFor: first.request.requiredFor,
+    state: first.state
+  });
+  return {
+    ...base,
+    targetedIndex: {
+      ...(base.targetedIndex ?? {}),
+      broadFallback: "queued",
+      broadFallbackBatch: {
+        total: input.total,
+        waiting: input.pending.length
+      },
+      broadFallbackTargets: input.pending.map((item) => ({
+        address: item.request.address,
+        targetTimestamp: item.request.targetTimestamp.toISOString(),
+        queuedReason: item.request.queuedReason,
+        reason: item.request.reason ?? null,
+        lastIndexStatus: item.state.status,
+        statusReason: item.state.statusReason
+      }))
+    }
+  };
+}
+
+export async function ensureTargetedHistoriesOrWait(input: TargetedHistoryBatchWaitInput): Promise<true> {
+  const requests = dedupeTargetedHistoryBatchRequests(input.requests);
+  if (requests.length === 0) return true;
+
+  const pending: PendingTargetedHistoryWait[] = [];
+  for (const request of requests) {
+    const existing = await input.deps.getAddressUsdtIndexState({
+      address: request.address,
+      coverageMode: "targeted",
+      targetTimestamp: request.targetTimestamp,
+      requestKind: "broad_targeted"
+    });
+    if (isTargetedHistoryCovered(existing)) continue;
+    const covering = (await input.deps.getCoveringAddressUsdtIndexState?.({
+      address: request.address,
+      coverageMode: "targeted",
+      targetTimestamp: request.targetTimestamp
+    }) ?? null);
+    if (isTargetedHistoryCovered(covering)) continue;
+
+    const terminal = [covering, existing].find((state): state is TronAddressUsdtIndexState =>
+      Boolean(state && (state.status === "failed_terminal" || isTerminalPartialState(state, input.maxRetryBudgetPages)))
+    );
+    if (terminal) {
+      const error = terminalErrorForState(terminal);
+      if (!input.onTerminalTarget) throw error;
+      await input.onTerminalTarget({
+        request,
+        state: terminal,
+        error
+      });
+      continue;
+    }
+
+    const retryablePartial = existing && isRetryablePartialState(existing, input.maxRetryBudgetPages)
+      ? existing
+      : covering && isRetryablePartialState(covering, input.maxRetryBudgetPages)
+        ? covering
+        : null;
+    const queueTargetTimestamp = covering?.targetTimestamp ?? request.targetTimestamp;
+    const queued = isTargetedHistoryAlreadyInFlight(existing)
+      ? existing!
+      : isTargetedHistoryAlreadyInFlight(covering)
+        ? covering!
+        : await input.deps.queueAddressUsdtHistory({
+            address: request.address,
+            coverageMode: "targeted",
+            targetTimestamp: queueTargetTimestamp,
+            requestKind: "broad_targeted",
+            requestedByJobId: input.jobId,
+            queuedReason: request.queuedReason,
+            budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial, input.maxRetryBudgetPages) : undefined,
+            maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
+          });
+    if (isTargetedHistoryCovered(queued)) continue;
+    if (queued.status === "failed_terminal" || isTerminalPartialState(queued, input.maxRetryBudgetPages)) {
+      const error = terminalErrorForState(queued);
+      if (!input.onTerminalTarget) throw error;
+      await input.onTerminalTarget({
+        request,
+        state: queued,
+        error
+      });
+      continue;
+    }
+
+    await input.deps.upsertForensicJobWait?.({
+      jobId: input.jobId,
+      address: request.address,
+      targetTimestamp: request.targetTimestamp,
+      requestKind: "broad_targeted",
+      requiredFor: request.requiredFor,
+      statusReason: queued.statusReason,
+      lastError: queued.lastError
+    });
+    pending.push({ request, state: queued, queueTargetTimestamp });
+  }
+
+  if (pending.length === 0) return true;
+  const persisted = await input.persistProgress({
+    ...targetedHistoryBatchWaitingProgressPatch({
+      total: requests.length,
+      pending
+    }),
+    ...(input.afterWaitingPatch ?? {})
+  });
+  const released = await input.deps.releaseForensicCheckJobToWaiting({
+    id: input.jobId,
+    progressJson: persisted ?? input.progressJson,
+    lastError: null
+  });
+  if (!released) throw new Error("targeted_history_batch_wait_release_failed");
+
+  const afterReleaseStates = await Promise.all(pending.map(async (item) =>
+    (await input.deps.getAddressUsdtIndexState({
+      address: item.request.address,
+      coverageMode: "targeted",
+      targetTimestamp: item.queueTargetTimestamp,
+      requestKind: "broad_targeted"
+    })) ?? (await input.deps.getCoveringAddressUsdtIndexState?.({
+      address: item.request.address,
+      coverageMode: "targeted",
+      targetTimestamp: item.request.targetTimestamp
+    }) ?? null)
+  ));
+  for (const state of afterReleaseStates) {
+    if (state && isTargetedHistoryFinished(state)) {
+      await input.deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+        address: state.address,
+        targetTimestamp: state.targetTimestamp,
+        requestKind: "broad_targeted",
+        indexStatus: state.status,
+        statusReason: state.statusReason,
+        lastError: state.lastError,
+        state
+      });
+    }
   }
 
   throw new TargetedHistoryWaitingForIndex();
