@@ -23,6 +23,7 @@ import { classifyServiceAddress } from "./forensics/serviceClassifier";
 import { addStrictBenchmarkCounters, addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress, type CounterPatch } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
+import { extractWalletIntelligenceFromJob } from "./forensics/walletIntelligence";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
@@ -47,6 +48,7 @@ import {
   getApprovalPollState,
   getAddressMetadata,
   getForensicCheckJob,
+  getTelegramUserProfile,
   getStaleAddressMetadata,
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
@@ -97,6 +99,7 @@ import {
   getLatestDeepForensicCheckJobForAddress,
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
+  indexWalletIntelligenceJobPayload,
   queueTronAddressUsdtIndexState,
   updateForensicCheckJobProgress,
   updateCompletedDeepCheckResultPatch,
@@ -844,6 +847,35 @@ async function refreshDeepCheckSecondLayerOnce(limit = 5): Promise<number> {
   return refreshed;
 }
 
+async function indexWalletIntelligenceCompletedJob(input: {
+  job: ForensicCheckJob;
+  progressJson: Record<string, unknown>;
+  resultJson: Record<string, unknown>;
+  status: "completed" | "partial";
+}): Promise<void> {
+  const completedJob: ForensicCheckJob = {
+    ...input.job,
+    status: input.status,
+    progressJson: input.progressJson,
+    resultJson: input.resultJson,
+    completedAt: input.job.completedAt ?? new Date(),
+    updatedAt: new Date()
+  };
+  const extracted = extractWalletIntelligenceFromJob(completedJob);
+  const profile = completedJob.requestedBy
+    ? await getTelegramUserProfile(db, completedJob.requestedBy).catch(() => null)
+    : null;
+  await indexWalletIntelligenceJobPayload(db, {
+    ...extracted,
+    run: {
+      ...extracted.run,
+      telegramUserId: profile?.telegramUserId ?? completedJob.requestedBy,
+      telegramUsername: profile?.username ?? null,
+      telegramLocale: profile?.locale ?? null
+    }
+  });
+}
+
 async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: number): Promise<number> {
   await recoverStaleForensicJobsOnce();
   const processed = await runForensicJobBatch({
@@ -852,6 +884,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       tronClient,
       claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
       completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
+      indexWalletIntelligenceJob: indexWalletIntelligenceCompletedJob,
       updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
       releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
@@ -1059,6 +1092,7 @@ async function incomingDepositOnce(): Promise<void> {
       runSingleCycle: () => runSingleIncomingDepositJobCycle({
         claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds: ["incoming_deposit_check"] }),
         completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
+        indexWalletIntelligenceJob: indexWalletIntelligenceCompletedJob,
         updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
         markUserAlertSent: (input) => markUserAlertSent(db, input),
         markUserAlertFailed: (input) => markUserAlertFailed(db, input),

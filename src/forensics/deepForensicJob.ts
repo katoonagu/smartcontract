@@ -49,6 +49,12 @@ export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddres
     observationIds: string[];
     lastError: string | null;
   }): Promise<boolean>;
+  indexWalletIntelligenceJob?(input: {
+    job: ForensicCheckJob;
+    progressJson: Record<string, unknown>;
+    resultJson: Record<string, unknown>;
+    status: "completed" | "partial";
+  }): Promise<void>;
   updateForensicCheckJobProgress?(input: {
     id: string;
     progressJson: Record<string, unknown>;
@@ -279,6 +285,24 @@ async function sendWhereIsMoneyJobResultBestEffort(
       subject_address: job.subjectAddress,
       chat_id: job.chatId,
       status,
+      error: errorMessage(error)
+    });
+  }
+}
+
+async function indexWalletIntelligenceBestEffort(
+  deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
+  input: { progressJson: Record<string, unknown>; resultJson: Record<string, unknown>; status: "completed" | "partial" }
+): Promise<void> {
+  if (!deps.indexWalletIntelligenceJob) return;
+  try {
+    await deps.indexWalletIntelligenceJob({ job, ...input });
+  } catch (error) {
+    (deps.logger ?? defaultLogger).warn("wallet_intelligence_index_failed", {
+      job_id: job.id,
+      kind: job.kind,
+      subject_address: job.subjectAddress,
       error: errorMessage(error)
     });
   }
@@ -1269,7 +1293,7 @@ async function runWhereIsMoneyJob(
         }
       }
     : {};
-  await deps.completeForensicCheckJob({
+  const completion = {
     id: job.id,
     status,
     progressJson: {
@@ -1289,7 +1313,15 @@ async function runWhereIsMoneyJob(
     rawEvidenceIds: [],
     observationIds: [],
     lastError: null
-  });
+  } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
+  const completed = await deps.completeForensicCheckJob(completion);
+  if (completed) {
+    await indexWalletIntelligenceBestEffort(deps, job, {
+      progressJson: completion.progressJson,
+      resultJson: completion.resultJson,
+      status
+    });
+  }
   await sendWhereIsMoneyJobResultBestEffort(deps, job, report, status);
   return true;
 }
@@ -1469,7 +1501,7 @@ export async function runSingleDeepForensicJobCycle(
     const derivedLabel = derivedLabels[0] ?? null;
     const status = "completed";
     const { allTime: allTimeCoverage, ...progressCoverage } = report.coverage;
-    await deps.completeForensicCheckJob({
+    const completion = {
       id: job.id,
       status,
       progressJson: {
@@ -1509,7 +1541,15 @@ export async function runSingleDeepForensicJobCycle(
       rawEvidenceIds: report.rawEvidence.map((evidence) => evidence.id),
       observationIds: report.observations.map((observation) => observation.id),
       lastError: null
-    });
+    } satisfies Parameters<DeepForensicJobRunnerDeps["completeForensicCheckJob"]>[0];
+    const completed = await deps.completeForensicCheckJob(completion);
+    if (completed) {
+      await indexWalletIntelligenceBestEffort(deps, job, {
+        progressJson: completion.progressJson,
+        resultJson: completion.resultJson,
+        status
+      });
+    }
     await sendDeepForensicJobResultBestEffort(deps, job, report, status);
     return true;
   } catch (error) {

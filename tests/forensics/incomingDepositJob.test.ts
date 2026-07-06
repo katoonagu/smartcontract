@@ -180,6 +180,35 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(events).toEqual(["send", "markSent", "complete:completed"]);
   });
 
+  it("does not fail an incoming job when wallet intelligence indexing fails", async () => {
+    const completeForensicCheckJob = vi.fn(async () => true);
+    const indexWalletIntelligenceJob = vi.fn(async () => {
+      throw new Error("wallet intelligence unavailable");
+    });
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob,
+      updateForensicCheckJobProgress: vi.fn(async () => true),
+      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertFailed: vi.fn(async () => true),
+      recordObservedTransactionRisk: vi.fn(async () => true),
+      sendUserAlert: vi.fn(async () => undefined),
+      formatIncomingDepositRiskAlert: () => ({ text: "ok", parseMode: "HTML" }),
+      buildReport: async () => report(),
+      indexWalletIntelligenceJob,
+      logger
+    });
+
+    expect(handled).toBe(true);
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith("wallet_intelligence_index_failed", expect.objectContaining({
+      error: "wallet intelligence unavailable"
+    }));
+  });
+
   it("leaves incoming deposit job waiting when targeted indexing is queued", async () => {
     const complete = vi.fn(async () => true);
     const markFailed = vi.fn(async () => true);

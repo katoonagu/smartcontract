@@ -96,6 +96,11 @@ of these decisions, update this file in the same work.
   `provider_limited` progress with a minimal `provider_cap_unresolved` result.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
+- Completed or partial DeepCheck, Where, and Incoming jobs are best-effort
+  indexed into wallet intelligence only after the job completion update
+  succeeds. Index failures are logged as Admin investigative telemetry and must
+  not change scoring, labels, risk observations, Telegram output, or the
+  original job result.
 
 ### 2026-07-05 Dense-Hop Materiality For Where
 
