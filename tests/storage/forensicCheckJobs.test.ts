@@ -91,6 +91,10 @@ function assertRecoverySql(sql: string): void {
   expect(sql).not.toContain("jobHeartbeatAt')::timestamptz");
 }
 
+function compactSql(sql: string): string {
+  return sql.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
+}
+
 function simulateRecoveredRows(rows: Record<string, unknown>[], params: unknown[]): Record<string, unknown>[] {
   const staleRunningBefore = params[0] as Date;
   const staleRunningBeforeIso = params[1] as string;
@@ -587,7 +591,7 @@ describe("forensic check job repositories", () => {
       lastError: null
     });
 
-    expect(queries[0].sql).toContain(
+    expect(compactSql(queries[0].sql)).toContain(
       "on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set"
     );
     expect(queries[0].params[0]).toBe("job-1");

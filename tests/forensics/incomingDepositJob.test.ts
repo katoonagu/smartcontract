@@ -1535,9 +1535,18 @@ describe("buildIncomingDepositReport", () => {
 
     expect(result.contractDrivenSubjectAddress).toBe(validProgressJson.sender);
     expect(result.contractDrivenReceiverProfile).toEqual(expect.objectContaining({
+      totalIncomingTxCount: 1,
+      totalIncomingAmountRaw: amountRaw,
       contractDrivenIncomingTxCount: 1,
       contractDrivenIncomingAmountRaw: amountRaw,
-      dominantMethod: "transferFrom"
+      txInfoEnrichedIncomingTx: 1,
+      campaignClassificationStatus: "complete",
+      countsAreLowerBounds: false,
+      plainUsdtTransferTxCount: 0,
+      wrapperDrivenIncomingTxCount: 1,
+      verify20WrapperTxCount: 1,
+      dominantMethod: "Verify20",
+      contractNames: ["VerifyAccount"]
     }));
     expect(result.contractDrivenTransferProfiles).toEqual(expect.arrayContaining([
       expect.objectContaining({

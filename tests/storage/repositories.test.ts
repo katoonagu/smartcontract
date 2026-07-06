@@ -79,6 +79,10 @@ import {
 import type { Db } from "../../src/storage/db";
 import type { RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent } from "../../src/types";
 
+function compactSql(sql: string): string {
+  return sql.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
+}
+
 function createMockDb(rowCount = 0, rows: Record<string, unknown>[] = []): { db: Db; queries: { sql: string; params: unknown[] }[] } {
   const queries: { sql: string; params: unknown[] }[] = [];
   return {
@@ -1346,7 +1350,7 @@ describe("TRON address USDT index repositories", () => {
     expect(state.lockOwner).toBe("worker-a");
     expect(queuedDb.queries).toHaveLength(1);
     expect(queuedDb.queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
-    expect(queuedDb.queries[0].sql).toContain(
+    expect(compactSql(queuedDb.queries[0].sql)).toContain(
       "on conflict (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set"
     );
     expect(queuedDb.queries[0].sql).toContain("status not in ('complete', 'running', 'failed_terminal')");
@@ -1782,7 +1786,7 @@ describe("TRON address USDT index repositories", () => {
     });
 
     expect(queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
-    expect(queries[0].sql).toContain(
+    expect(compactSql(queries[0].sql)).toContain(
       "on conflict (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash)"
     );
     expect(queries[0].params).toContain("targeted");
