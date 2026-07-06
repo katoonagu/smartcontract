@@ -16,7 +16,8 @@
     "forensic:operational": "node --import tsx scripts/forensicOperationalReport.ts",
     "forensic:where-is-money": "node --import tsx scripts/forensicWhereIsMoney.ts",
     "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts",
-    "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts"
+    "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts",
+    "wallet-intelligence:backfill": "node --import tsx scripts/backfillWalletIntelligence.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",

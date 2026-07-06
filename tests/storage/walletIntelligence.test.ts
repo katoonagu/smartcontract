@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  getTelegramUserProfile,
   getWalletIntelligenceAddressDetail,
   getWalletIntelligenceRunState,
   indexWalletIntelligenceJobPayload,
@@ -233,6 +234,24 @@ describe("wallet intelligence repositories", () => {
     });
     expect(queries[0].sql).toContain("from wallet_intelligence_runs");
     expect(queries[0].params).toEqual(["job-1"]);
+  });
+
+  it("loads Telegram user profile context for backfill attribution", async () => {
+    const createdAt = new Date("2026-07-06T10:00:00.000Z");
+    const { db, queries } = createMockDb([[
+      { telegram_user_id: "42", username: "client_user", locale: "en", created_at: createdAt }
+    ]]);
+
+    const profile = await getTelegramUserProfile(db, "42");
+
+    expect(profile).toEqual({
+      telegramUserId: "42",
+      username: "client_user",
+      locale: "en",
+      createdAt
+    });
+    expect(queries[0].sql).toContain("from telegram_users");
+    expect(queries[0].params).toEqual(["42"]);
   });
 
   it("lists address summaries ranked by unique subjects then requesters", async () => {

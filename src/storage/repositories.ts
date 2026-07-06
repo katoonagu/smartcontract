@@ -2029,6 +2029,21 @@ export async function getTelegramUserLocale(db: Db, telegramUserId: string): Pro
   return parseBotLocale(result.rows[0]?.locale);
 }
 
+export async function getTelegramUserProfile(db: Db, telegramUserId: string): Promise<TelegramUserProfile | null> {
+  const result = await db.query(
+    `select telegram_user_id, username, locale, created_at
+     from telegram_users
+     where telegram_user_id = $1`,
+    [telegramUserId]
+  );
+  return result.rows[0] ? {
+    telegramUserId: result.rows[0].telegram_user_id,
+    username: result.rows[0].username ?? null,
+    locale: parseBotLocale(result.rows[0].locale),
+    createdAt: result.rows[0].created_at
+  } : null;
+}
+
 export async function updateTelegramUserLocale(db: Db, telegramUserId: string, locale: BotLocale): Promise<void> {
   parseBotLocale(locale);
   await db.query(
