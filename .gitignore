@@ -7,6 +7,7 @@ artifacts/
 .worktrees/
 .codegraph/
 .tmp/
+tmp/
 .gstack/
 .runtime/
 .superpowers/
