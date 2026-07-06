@@ -1081,6 +1081,22 @@ export function adminConsoleHtml(): string {
       .control-label { display: none; }
       .graph-control-section.is-wide { flex-basis: 280px; }
     }
+    @media (max-width: 900px) {
+      .wallet-intel-workspace {
+        height: auto;
+        min-height: calc(100dvh - 56px);
+        overflow: visible;
+      }
+      .wallet-intel-title-row {
+        display: grid;
+      }
+      .wallet-intel-filters {
+        grid-template-columns: 1fr;
+      }
+      .wallet-intel-body {
+        grid-template-columns: 1fr;
+      }
+    }
     @media (max-width: 1180px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
@@ -1704,7 +1720,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       const rows = state.walletIntel.addresses.map((item) => {
-        const active = item.address === state.walletIntel.activeAddress ? " class=\"active\"" : "";
+        const active = item.address === state.walletIntel.activeAddress ? ' class="active"' : "";
         return '<tr' + active + ' data-wallet-intel-address="' + escapeHtml(item.address) + '">' +
           '<td><button type="button" class="wallet-intel-address-button" data-wallet-intel-address="' + escapeHtml(item.address) + '">' + escapeHtml(short(item.address, 8)) + '</button><div class="muted">' + escapeHtml(item.address) + '</div></td>' +
           '<td>' + tagPills(item.tags, "No tags") + '</td>' +

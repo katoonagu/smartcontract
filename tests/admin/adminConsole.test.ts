@@ -69,6 +69,26 @@ function adminJobCardHelpers() {
 }
 
 describe("adminConsoleHtml", () => {
+  it("serves syntactically valid embedded browser script", () => {
+    const html = adminConsoleHtml();
+    const script = html.match(/<script>\n([\s\S]*)\n  <\/script>/)?.[1] || "";
+
+    expect(script).not.toBe("");
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("collapses the wallet intelligence workspace on narrow viewports", () => {
+    const html = adminConsoleHtml();
+    const mediaStart = html.indexOf("@media (max-width: 900px)");
+    const mediaEnd = html.indexOf("</style>", mediaStart);
+    const mediaBlock = html.slice(mediaStart, mediaEnd);
+
+    expect(mediaStart).toBeGreaterThanOrEqual(0);
+    expect(mediaBlock).toContain(".wallet-intel-filters");
+    expect(mediaBlock).toContain("grid-template-columns: 1fr;");
+    expect(mediaBlock).toContain(".wallet-intel-body");
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 
