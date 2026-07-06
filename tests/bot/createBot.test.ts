@@ -4460,7 +4460,7 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "en"
     });
 
-    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Decision: REVIEW");
     expect(text.match(/\d+\/100/g)).toEqual(["80/100"]);
     expect(text).toContain("Matrix row: route_linked_approval_pattern; matrix decision: REVIEW.");
     expect(text).toContain("Route-linked approval-drain context found without exact approval-drain proof.");
@@ -5544,6 +5544,73 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(finalText).not.toContain("History not fully fetched");
   });
 
+  it("localizes review final decision copy in Russian where-is-money results", () => {
+    const report = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      proofLevel: "exchange_policy_context",
+      riskScore: 55,
+      decisionReasons: ["Unknown contract source boundary needs review."],
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1300000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 20,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 55 }),
+        decision: "REVIEW",
+        riskScore: 55,
+        riskBand: "MEDIUM",
+        reasons: ["Unknown contract source boundary needs review."],
+        sourcePolicyEvidence: [],
+        riskLayers: [
+          {
+            evidenceClass: "source_policy",
+            kind: "unknown_contract",
+            sourceExposureKind: "unknown_contract",
+            score: 55,
+            rawScore: 55,
+            adjustedScore: 55,
+            proofLevel: "exchange_policy_context",
+            canBeDampened: false,
+            reasons: ["Unknown contract source boundary needs review."],
+            warnings: [],
+            evidenceIds: ["source-policy-unknown-contract"]
+          }
+        ],
+        dominantRiskLayer: {
+          evidenceClass: "source_policy",
+          kind: "unknown_contract",
+          sourceExposureKind: "unknown_contract",
+          score: 55,
+          rawScore: 55,
+          adjustedScore: 55,
+          proofLevel: "exchange_policy_context",
+          canBeDampened: false,
+          reasons: ["Unknown contract source boundary needs review."],
+          warnings: [],
+          evidenceIds: ["source-policy-unknown-contract"]
+        }
+      }
+    });
+    const finalText = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      { locale: "ru" }
+    ).text);
+
+    expect(finalText).toContain("Решение: REVIEW — Нужна ручная проверка.");
+    expect(finalText).not.toContain("Manual review is required.");
+    expect(finalText).not.toContain("Решение: ACCEPTABLE");
+  });
+
   it("formats AI contract verdicts in where-is-money results", () => {
     const message = formatWhereIsMoneyReport(
       {
@@ -5636,7 +5703,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check — final");
-    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Decision: REVIEW");
     expect(text).not.toContain("Deterministic high-risk provenance evidence was found.");
     expect(text).toContain("AI contract verdict");
     expect(text).toContain("drainer_like");

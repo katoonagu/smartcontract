@@ -51,6 +51,57 @@ function noCriticalRiskText(locale: BotLocale): string {
     : "No critical risk signals were found.";
 }
 
+function normalizedCodeText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s/-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function rawActionOrReasonText(message: string, locale: BotLocale): string | null {
+  const code = normalizedCodeText(message);
+  switch (code) {
+    case "edd_sof":
+    case "edd_source_of_funds":
+    case "enhanced_due_diligence_source_of_funds":
+      return locale === "ru"
+        ? "Нужна расширенная проверка источника средств (EDD/SOF): запросить подтверждение происхождения денег перед решением."
+        : "Enhanced due diligence is required: request source-of-funds evidence before deciding.";
+    case "manual_review":
+    case "manual_review_required":
+      return manualReviewText(locale);
+    case "do_not_accept":
+    case "block":
+    case "decline":
+      return locale === "ru"
+        ? "Не принимать без дополнительного решения: найден высокий policy-риск."
+        : "Do not accept without an additional decision: high policy risk was found.";
+    case "hold":
+    case "freeze_or_hold":
+    case "hold_or_freeze_if_applicable":
+      return locale === "ru"
+        ? "Нужна пауза/hold: не двигать средства до проверки источника и policy-риска."
+        : "Hold is required: do not move funds until source and policy risk are reviewed.";
+    case "provider_cap_unresolved":
+      return locale === "ru"
+        ? "Проверка уперлась в лимит данных провайдера; финальный риск нельзя считать полностью доказанным."
+        : "Provider data limit was reached; the final risk cannot be treated as fully proven.";
+    case "incoming_history_not_fetched":
+    case "history_not_fully_fetched":
+      return locale === "ru"
+        ? "Не загружена нужная входящая история по одному из адресов; это техническое ограничение покрытия, не доказательство риска."
+        : "Required incoming history was not fetched for one address; this is a coverage limit, not risk proof.";
+    case "service_boundary":
+    case "service_boundary_reached":
+    case "unlabeled_service_boundary":
+      return locale === "ru"
+        ? "Маршрут дошёл до сервисной границы. Через биржу/сервис нельзя надёжно продолжать on-chain трассировку."
+        : "The path reached a service boundary. On-chain tracing cannot reliably continue through an exchange/service.";
+  }
+  return null;
+}
+
 function replaceManualReviewRequired(message: string, locale: BotLocale): string {
   if (locale === "ru") return manualReviewText(locale);
   return message
@@ -126,15 +177,40 @@ export function displayDecision(value: UserExchangeDecision): UserExchangeDecisi
 
 export function displayDecisionFromRiskScore(score: number): UserExchangeDecision {
   if (!Number.isFinite(score)) return "DECLINE";
-  return score >= 60 ? "DECLINE" : "ACCEPTABLE";
+  if (score >= 60) return "DECLINE";
+  if (score >= 45) return "REVIEW";
+  return "ACCEPTABLE";
+}
+
+function sanctionedServiceText(message: string, locale: BotLocale): string | null {
+  const russianMatch = message.match(/Найдена связь с санкционной биржей\/криптосервисом\s+(.+?):\s+доля\s+(.+?)\s+проверяемого происхождения;\s+орган:\s+([A-Z]+);\s+дата включения:\s+(\d{4}-\d{2}-\d{2})/i);
+  if (russianMatch) {
+    const [, service, share, authority, date] = russianMatch;
+    return locale === "ru"
+      ? `Найдена связь с санкционной биржей/криптосервисом ${service}: доля ${share}, ${authority}, дата включения ${date}. Это санкционный policy-риск; это не доказательство scam/drain.`
+      : `The source path reaches sanctioned crypto service ${service}: ${share}, ${authority}, designated on ${date}. This is sanctions policy risk, not scam/drain proof.`;
+  }
+
+  const match = message.match(/reaches sanctioned crypto service\s+(.+?)\s+\([^)]*\);\s+designated by\s+([A-Z]+)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
+  if (!match) return null;
+  const [, service, authority, date] = match;
+  return locale === "ru"
+    ? `Маршрут происхождения дошёл до санкционного криптосервиса ${service}: ${authority}, дата включения ${date}. Это санкционный policy-риск; это не доказательство scam/drain.`
+    : `The source path reaches sanctioned crypto service ${service}: ${authority}, designated on ${date}. This is sanctions policy risk, not scam/drain proof.`;
 }
 
 export function normalizeNotificationReason(message: string, locale: BotLocale): string {
   const normalized = message.trim().toLowerCase();
 
+  const rawText = rawActionOrReasonText(message, locale);
+  if (rawText) return rawText;
+
   if (isCleanSourceNotProven(message.trim())) {
     return cleanSourceText(locale);
   }
+
+  const sanctionedText = sanctionedServiceText(message, locale);
+  if (sanctionedText) return sanctionedText;
 
   const htxPercent = message.match(/(\d+(?:[.,]\d+)?)\s*%.*\b(?:htx|huobi)\b/i);
   if (htxPercent) {

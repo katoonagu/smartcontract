@@ -14,7 +14,9 @@ describe("notification text helpers", () => {
     expect(decisionLabel("en")).toBe("Decision");
     expect(riskObjectLabel("deposit", "ru")).toBe("Риск депозита");
     expect(riskObjectLabel("tx", "en")).toBe("Tx risk");
-    expect(displayDecisionFromRiskScore(59)).toBe("ACCEPTABLE");
+    expect(displayDecisionFromRiskScore(44)).toBe("ACCEPTABLE");
+    expect(displayDecisionFromRiskScore(45)).toBe("REVIEW");
+    expect(displayDecisionFromRiskScore(59)).toBe("REVIEW");
     expect(displayDecisionFromRiskScore(60)).toBe("DECLINE");
   });
 
@@ -43,6 +45,11 @@ describe("notification text helpers", () => {
   it("normalizes common internal reason text", () => {
     expect(normalizeNotificationReason("clean_source_not_fully_proven", "ru")).toBe("Чистый источник денег доказан не полностью, поэтому риск не нулевой.");
     expect(normalizeNotificationReason("15% checked funds came from HTX", "ru")).toBe("15% проверенной суммы пришло от HTX.");
+    expect(normalizeNotificationReason("Найдена связь с санкционной биржей/криптосервисом EXMO: доля 15% проверяемого происхождения; орган: UK; дата включения: 2026-05-26. Решение по политике: DECLINE; это санкционный/source-policy risk, не доказательство scam/drain. EN: Balance-forming path reaches sanctioned crypto service EXMO (15% of selected provenance target); designated by UK on 2026-05-26. This is sanctions/source-policy risk, not direct scam or approval-drain proof.", "ru")).toBe("Найдена связь с санкционной биржей/криптосервисом EXMO: доля 15%, UK, дата включения 2026-05-26. Это санкционный policy-риск; это не доказательство scam/drain.");
+    expect(normalizeNotificationReason("EDD_SOF", "ru")).toBe("Нужна расширенная проверка источника средств (EDD/SOF): запросить подтверждение происхождения денег перед решением.");
+    expect(normalizeNotificationReason("EDD_SOF", "en")).toBe("Enhanced due diligence is required: request source-of-funds evidence before deciding.");
+    expect(normalizeNotificationReason("service_boundary_reached", "ru")).toBe("Маршрут дошёл до сервисной границы. Через биржу/сервис нельзя надёжно продолжать on-chain трассировку.");
+    expect(normalizeNotificationReason("provider_cap_unresolved", "ru")).toBe("Проверка уперлась в лимит данных провайдера; финальный риск нельзя считать полностью доказанным.");
     expect(normalizeNotificationReason("manual review required", "en")).toBe("Additional context was found, but no exact bad evidence was proven.");
     expect(normalizeNotificationReason("Balance-forming path reaches service boundary bridge; manual review required.", "en")).not.toContain("manual review required");
     expect(normalizeNotificationReason("Balance-forming path reaches service boundary bridge; manual review required.", "ru")).not.toContain("manual review required");

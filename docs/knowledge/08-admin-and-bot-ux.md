@@ -179,11 +179,25 @@ Telegram and support formatting now preserve the same meaning for ordinary
 Where materiality caveats: `REVIEW`, the real Where risk score, score valid,
 technical status `completed`, and the residual caveat. They must not show a
 final `DECLINE` or a fake `ACCEPTABLE` 0/100 result for this outcome.
+Telegram final address reports also preserve unified matrix `REVIEW` outcomes
+as `REVIEW`; Russian output uses plain text such as `Нужна ручная проверка.`
+instead of raw English fallback copy.
 Fresh ordinary Where dense-hop provider-cap caveat jobs also save top-level
 `score_valid=true` and `technical_status=completed` mirrors alongside the full
 `whereIsMoneyReport`. Old cached failed jobs can still show historical
 `provider_cap_unresolved`; Admin and support should treat those as old evidence
 unless a fresh check was run.
+
+Sanctions/source-policy copy is Russian-first in the generated reason for
+sanctioned crypto-service exposure and normalized for Telegram. The reason
+includes the service name, authority, and official designation date. Telegram
+source-exposure lines for HTX/Huobi and source-boundary caveats have Russian
+copy when the locale is `ru`, with English retained for `en`.
+Telegram reason formatting also normalizes common raw action/coverage codes
+such as `EDD_SOF`, `manual_review_required`, `provider_cap_unresolved`,
+`incoming_history_not_fetched`, and `service_boundary_reached` into
+human-readable RU/EN text. Raw codes can remain in Admin/debug details, but
+user-facing Telegram copy should explain the requested action or coverage limit.
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but

@@ -11,6 +11,7 @@ import type {
   WhereIsMoneyWalletRole
 } from "../types";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
+import { matchSanctionedCryptoService } from "./sanctionedServiceRegistry";
 
 const MIN_LINK_STRENGTH = 0.25;
 const MAX_LINK_STRENGTH = 1.25;
@@ -91,7 +92,7 @@ export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposur
     .toLowerCase();
   const text = rawText.replace(/[_:-]+/g, " ");
 
-  if (text.includes("sanctioned") || text.includes("ofac")) return "sanctioned_service";
+  if (text.includes("sanctioned") || text.includes("ofac") || matchSanctionedCryptoService(text)) return "sanctioned_service";
   if (text.includes("mixer") || text.includes("tornado")) return "mixer";
   if (/\bno name\b/.test(text) && text.includes("liquidity")) return "no_name_token_liquidity";
   if (text.includes("htx") || text.includes("huobi")) return "htx_huobi";

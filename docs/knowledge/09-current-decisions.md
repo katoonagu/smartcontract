@@ -79,6 +79,17 @@ of these decisions, update this file in the same work.
   its materiality thresholds and has no hard evidence. Residual thresholds are
   1% and 100 USDT; dense-hop thresholds are 1% per branch, 2% aggregate, and
   10,000 USDT per branch. The unresolved branch must remain visible as a caveat.
+- Sanctioned crypto-service labels from explorer/service text are matched
+  through a local registry with aliases, authority, and official designation
+  date. A traced event is treated as `sanctioned_service` only on or after that
+  service's designation date; before that date, HTX/Huobi remains ordinary
+  `htx_huobi` source-policy context.
+- Medium source-policy context must not be flattened to `ACCEPTABLE`.
+  Low-score HTX/Huobi policy exposure remains user-facing `REVIEW`, and simple
+  alert score display maps 45-59 to `REVIEW` instead of `ACCEPTABLE`.
+- Unified final scoring preserves matrix `REVIEW` as user-facing `REVIEW`.
+  Review-only source-policy, contract-suspicion, and pattern rows should give a
+  clear final state plus review requirement, not a final `ACCEPTABLE` label.
 - A fresh ordinary Where job resumed from targeted `partial_provider_cap`
   progress must run the report builder and materiality assessment before
   deciding score validity. It must not complete directly from

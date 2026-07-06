@@ -764,6 +764,7 @@ function finalDecisionFromMatrix(matrixScore: MatrixScoringResult, options: {
   ) {
     return "REVIEW";
   }
+  if (matrixScore.matrixDecision === "REVIEW") return "REVIEW";
   return "ACCEPTABLE";
 }
 

@@ -138,6 +138,30 @@ describe("forensic service classifier", () => {
     expect(whitebit).toMatchObject({ category: "cex", identity: "WhiteBIT", isBoundary: true });
   });
 
+  it("classifies sanctioned exchange tags with designation evidence", () => {
+    const result = classifyServiceAddress({
+      address: "TNobitex1111111111111111111111111111",
+      metadata: {
+        address: "TNobitex1111111111111111111111111111",
+        name: "Nobitex Hot Wallet",
+        tag: "Nobitex",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "cex",
+      identity: "Nobitex",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("sanctioned_service:nobitex");
+    expect(result.evidence).toContain("sanctions_authority:OFAC");
+    expect(result.evidence).toContain("sanctioned_at:2026-06-02");
+  });
+
   it("lets OKX DEX bridge registry phrases win over OKX exchange identity", () => {
     const result = classifyServiceAddress({
       address: "TOKXDexBridge1111111111111111111111",

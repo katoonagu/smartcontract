@@ -57,7 +57,7 @@ describe("risk policy engine", () => {
 
     expect(decision).toMatchObject({
       internalDecision: "REVIEW",
-      userDecision: "ACCEPTABLE",
+      userDecision: "REVIEW",
       proofLevel: "exchange_policy_context",
       riskScore: 45
     });

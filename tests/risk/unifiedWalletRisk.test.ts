@@ -1081,6 +1081,33 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.matrixScore.riskVector.behavior_only_prior?.[0].caps).toContain("behavior_only_cap_59");
   });
 
+  it("does not hide matrix review as an acceptable final decision", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport(),
+      whereReport: whereReport(55, {
+        assessment: whereAssessment(55, {
+          decision: "REVIEW",
+          sourcePolicyEvidence: [sourcePolicyEvidence(55)],
+          riskLayers: [sourcePolicyLayer(55)]
+        }),
+        decision: "REVIEW",
+        userDecision: "REVIEW",
+        internalDecision: "REVIEW",
+        proofLevel: "exchange_policy_context"
+      })
+    });
+
+    expect(result.matrixScore).toMatchObject({
+      policyScore: 55,
+      matrixDecision: "REVIEW",
+      winningRow: "source_policy"
+    });
+    expect(result.finalScore).toBe(55);
+    expect(result.finalDecision).toBe("REVIEW");
+  });
+
   it("does not turn limited coverage into a decline after matrix switch", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -1996,7 +2023,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.finalScore).toBe(59);
     expect(result.finalLevel).toBe("MEDIUM");
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalDecision).toBe("REVIEW");
     expect(result.matrixScore).toMatchObject({
       policyScore: 59,
       matrixDecision: "REVIEW",
@@ -2131,7 +2158,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.weightedLayerScore).toBeGreaterThanOrEqual(85);
     expect(result.finalScore).toBe(59);
     expect(result.finalLevel).toBe("MEDIUM");
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalDecision).toBe("REVIEW");
     expect(result.matrixScore.matrixDecision).toBe("REVIEW");
   });
 

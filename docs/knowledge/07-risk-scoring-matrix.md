@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-05
+last_verified: 2026-07-06
 owner_area: scoring
 code_refs:
   - src/risk/unifiedWalletRisk.ts
@@ -58,6 +58,14 @@ Floors protect strong signals from being diluted:
 These floors should be used only when their required evidence is actually
 present.
 
+Sanctioned crypto-service exposure is a hard policy floor only after the
+official designation date recorded for that service. The local sanctions
+registry stores date-only official notices as UTC day starts. For example,
+HTX/Huobi Global is treated as normal `htx_huobi` source-policy context before
+2026-05-26, but as `sanctioned_service` for traced events on or after
+2026-05-26. This prevents old historical exchange interaction from being
+reinterpreted as current sanctions exposure.
+
 Wrapper-driven campaign context is not the same as exact approval-drain proof.
 A broad Verify20 campaign can increase review pressure, but hard evidence
 floors require exact approval/provenance profiles or another deterministic hard
@@ -80,6 +88,13 @@ Possible user-facing outcomes:
 
 `REVIEW` internally must not accidentally map to a final user-facing `DECLINE`
 when there is no hard evidence and coverage is incomplete.
+
+`REVIEW` must also not be hidden as user-facing `ACCEPTABLE` when the score is
+medium source-policy context. The unified final decision preserves
+`matrixDecision=REVIEW` as user-facing `REVIEW`; it must not flatten review-only
+matrix rows to `ACCEPTABLE`. Low-score HTX/Huobi source-policy exposure now
+stays user-facing `REVIEW`; simple score-derived alert display maps 45-59 to
+`REVIEW`, 60+ to `DECLINE`, and below 45 to `ACCEPTABLE`.
 
 For ordinary Where materiality caveats, `REVIEW` must also not collapse into
 `ACCEPTABLE` just because the unified scoring matrix has only coverage

@@ -141,7 +141,7 @@ export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
 
     return decision(
       isDecline ? "DECLINE" : "REVIEW",
-      isDecline ? "DECLINE" : "ACCEPTABLE",
+      isDecline ? "DECLINE" : "REVIEW",
       isDecline ? "exchange_policy_decline" : "exchange_policy_context",
       score,
       [reason(input, "htx_huobi_source", "HTX/Huobi exposure is source-policy risk, not scam or drain proof.")]

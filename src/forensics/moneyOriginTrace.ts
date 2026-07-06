@@ -528,7 +528,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         address: state.currentAddress,
         labels,
         classification,
-        balanceShare: clampShare(state.balanceShare * amountUsageCoverageShare(input.balanceTransfer.amountUsage))
+        balanceShare: clampShare(state.balanceShare * amountUsageCoverageShare(input.balanceTransfer.amountUsage)),
+        eventTimestamp: state.latestTimestamp
       });
       if (stop) {
         terminals.push(pathFromState({

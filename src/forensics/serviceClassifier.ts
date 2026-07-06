@@ -10,6 +10,7 @@ import {
   type ServiceRouteCategory,
   type ServiceRouteRegistryEntry
 } from "./serviceRouteRegistry";
+import { matchSanctionedCryptoService, sanctionsDate } from "./sanctionedServiceRegistry";
 
 export type ServiceAddressMetadata = {
   address: string;
@@ -201,6 +202,20 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   const serviceRoutePhraseMatch = matchServiceRouteRegistryPhrase(text);
   if (serviceRoutePhraseMatch) {
     return serviceRouteClassification(input, serviceRoutePhraseMatch, evidence);
+  }
+
+  const sanctionedService = matchSanctionedCryptoService(text);
+  if (sanctionedService) {
+    evidence.push(`sanctioned_service:${sanctionedService.key}`);
+    evidence.push(`sanctions_authority:${sanctionedService.authority}`);
+    evidence.push(`sanctioned_at:${sanctionsDate(sanctionedService)}`);
+    return classification(
+      input,
+      sanctionedService.category,
+      identityFor(input, sanctionedService.displayName),
+      confidenceFor(input, true),
+      evidence
+    );
   }
 
   if (hasAny(text, ["htx", "huobi"])) {

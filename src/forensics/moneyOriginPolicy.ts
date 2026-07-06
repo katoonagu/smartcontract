@@ -11,6 +11,12 @@ import type {
 } from "../types";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { baseShareScore } from "./provenanceScoring";
+import {
+  matchSanctionedCryptoService,
+  sanctionedCryptoServiceActiveAt,
+  sanctionsDate,
+  type SanctionedCryptoService
+} from "./sanctionedServiceRegistry";
 
 export type MoneyOriginStopClassification = {
   verdict: ExchangeDecision;
@@ -28,6 +34,7 @@ export type ClassifyMoneyOriginStopInput = {
   labels: AddressLabel[];
   classification: ServiceClassification | null;
   balanceShare: number;
+  eventTimestamp?: Date | string | null;
 };
 
 export type CombinedMoneyOriginDecision = {
@@ -109,6 +116,15 @@ function hasWhitebitIdentity(text: string): boolean {
   return WHITEBIT_IDENTITY_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
+function activeSanctionedService(
+  classification: ServiceClassification | null,
+  eventTimestamp: Date | string | null | undefined
+): SanctionedCryptoService | null {
+  const match = matchSanctionedCryptoService(identityText(classification));
+  if (!match || !sanctionedCryptoServiceActiveAt(match, eventTimestamp)) return null;
+  return match;
+}
+
 function exactRiskLabel(labels: AddressLabel[]): AddressLabel | null {
   return labels.find((label) => EXACT_RISK_LABELS.has(label.label)) ?? null;
 }
@@ -142,6 +158,21 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
 
   const classification = input.classification;
   const text = identityText(classification);
+  const sanctionedService = activeSanctionedService(classification, input.eventTimestamp);
+  if (sanctionedService) {
+    const score = baseShareScore("sanctioned_service", input.balanceShare);
+    return {
+      verdict: "DECLINE",
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: score,
+      exposureSourceKey: sanctionedService.key,
+      exposureSourceLabel: sanctionedService.displayName,
+      sourceExposureKind: "sanctioned_service",
+      reasons: [`Найдена связь с санкционной биржей/криптосервисом ${sanctionedService.displayName}: доля ${formatShare(input.balanceShare)} проверяемого происхождения; орган: ${sanctionedService.authority}; дата включения: ${sanctionsDate(sanctionedService)}. Решение по политике: DECLINE; это санкционный/source-policy risk, не доказательство scam/drain. EN: Balance-forming path reaches sanctioned crypto service ${sanctionedService.displayName} (${formatShare(input.balanceShare)} of selected provenance target); designated by ${sanctionedService.authority} on ${sanctionsDate(sanctionedService)}. This is sanctions/source-policy risk, not direct scam or approval-drain proof.`]
+    };
+  }
+
   if (hasWhitebitLabel(input.labels) || hasWhitebitIdentity(text)) {
     const score = baseShareScore("whitebit", input.balanceShare);
     return {

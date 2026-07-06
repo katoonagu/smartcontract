@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-05
+last_verified: 2026-07-06
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -219,6 +219,13 @@ supersedes:
 - Incoming now uses the shared candidate-window-first targeted wait/resume
   primitive, but full main-path coverage and product progress remain less
   complete than ordinary Where.
+- Real HTX/Huobi live-case testing found a DeepCheck/Where interpretation gap:
+  DeepCheck can surface a minority multihop HTX boundary share on a historical
+  route while transaction-seeded ordinary Where selects a different clean or
+  unknown funding-first route and reports `htxHuobiShare=0`. Where should
+  either surface competing material source-boundary candidates for the selected
+  transfer or clearly state that it explains only the selected top route while
+  DeepCheck may contain additional historical/boundary context.
 
 ## TronScan Indexing
 
@@ -249,6 +256,13 @@ supersedes:
   target timestamps may still be present. Stage 1.10 prevents finished covering
   states from being hidden by those old exact states, but it does not hide old
   states while the covering state is still running.
+- The `forensic:where-is-money` smoke CLI can miss live TronScan rows when an
+  address has a partial local `tron_usdt_transfers` window but no matching
+  coverage interval/state. In that situation the smoke run may use the local
+  partial row set and skip a later live HTX/Huobi transfer, producing a coverage
+  or unknown-source result that differs from a direct live TronScan query. The
+  smoke harness needs an explicit coverage check or a force-live mode before it
+  is used as product evidence.
 
 ## DeepCheck
 

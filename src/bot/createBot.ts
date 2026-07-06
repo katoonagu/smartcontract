@@ -2045,7 +2045,7 @@ function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: Bo
 
   switch (decision) {
     case "REVIEW":
-      return "Manual review is required.";
+      return "Нужна ручная проверка.";
     case "DECLINE":
       return "Адрес нельзя принять автоматически.";
     case "ACCEPTABLE":
@@ -2398,34 +2398,42 @@ function unifiedBehaviorContextLines(report: DeepAddressForensicReport | null | 
   return [];
 }
 
-function sourceUnresolvedBoundaryLabel(kind: NonNullable<NonNullable<WhereIsMoneyReport["sourceBundleExposure"]>["unresolvedBoundary"]>["kind"]): string {
+function sourceUnresolvedBoundaryLabel(
+  kind: NonNullable<NonNullable<WhereIsMoneyReport["sourceBundleExposure"]>["unresolvedBoundary"]>["kind"],
+  locale: BotLocale
+): string {
   switch (kind) {
     case "htx_huobi":
-      return "HTX/Huobi source boundary";
+      return locale === "en" ? "HTX/Huobi source boundary" : "граница источника HTX/Huobi";
     case "bridge_router_dex":
-      return "bridge/router/DEX boundary";
+      return locale === "en" ? "bridge/router/DEX boundary" : "граница bridge/router/DEX";
     case "unknown_contract":
-      return "unknown contract boundary";
+      return locale === "en" ? "unknown contract boundary" : "граница неизвестного контракта";
     case "unknown":
-      return "unknown source boundary";
+      return locale === "en" ? "unknown source boundary" : "неизвестная граница источника";
     case "clean_cex":
     default:
-      return "source boundary";
+      return locale === "en" ? "source boundary" : "граница источника";
   }
 }
 
 function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
-  void locale;
   const lines: string[] = [];
   const sourceExposure = report.sourceBundleExposure;
   if (sourceExposure && isFiniteNumber(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
-    lines.push(`HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+    lines.push(locale === "en"
+      ? `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
+      : `HTX/Huobi финансирует ${formatPercent(sourceExposure.htxHuobiShare)} выбранной суммы.`);
   }
   if (report.subjectExposureProfile && isFiniteNumber(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
-    lines.push("Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+    lines.push(locale === "en"
+      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
+      : "Историческая связь с HTX/Huobi — это контекст, а не доказательство источника выбранной суммы.");
   }
   if (sourceExposure?.unresolvedBoundary) {
-    lines.push(`The graph stopped before resolving a material ${sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind)}.`);
+    lines.push(locale === "en"
+      ? `The graph stopped before resolving a material ${sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind, locale)}.`
+      : `Граф остановился на материальной границе: ${sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind, locale)}.`);
   }
   return lines;
 }

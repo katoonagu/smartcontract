@@ -173,7 +173,8 @@ describe("money origin policy", () => {
       address,
       labels: [],
       classification: service("cex", "HTX"),
-      balanceShare: 0.15
+      balanceShare: 0.15,
+      eventTimestamp: "2026-05-25T23:59:59.000Z"
     });
 
     expect(result).toMatchObject({
@@ -190,12 +191,35 @@ describe("money origin policy", () => {
     expect(result?.reasons.join(" ")).toContain("not direct scam/blacklist proof");
   });
 
+  it("declines sanctioned HTX exposure after the UK designation date", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("cex", "HTX"),
+      balanceShare: 0.15,
+      eventTimestamp: "2026-05-26T00:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: baseShareScore("sanctioned_service", 0.15),
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX/Huobi Global",
+      sourceExposureKind: "sanctioned_service"
+    });
+    expect(result?.reasons.join(" ")).toContain("дата включения: 2026-05-26");
+    expect(result?.reasons.join(" ")).toContain("sanctions/source-policy risk");
+  });
+
   it("declines majority HTX Huobi exposure with weighted source-policy score", () => {
     expect(classifyMoneyOriginStop({
       address,
       labels: [],
       classification: service("cex", "Huobi"),
-      balanceShare: 0.62
+      balanceShare: 0.62,
+      eventTimestamp: "2026-05-25T23:59:59.000Z"
     })).toMatchObject({
       verdict: "DECLINE",
       riskScoreContribution: baseShareScore("htx_huobi", 0.62),
@@ -319,6 +343,44 @@ describe("money origin policy", () => {
       riskScore: baseShareScore("whitebit", 0.2)
     });
     expect(decision.decisionReasons[0]).toContain("combined WhiteBIT exposure (20% of selected provenance target)");
+  });
+
+  it("declines newly sanctioned exchange labels from explorer service text", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("cex", "EXMO Hot Wallet"),
+      balanceShare: 0.08,
+      eventTimestamp: "2026-05-27T00:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      verdict: "DECLINE",
+      riskScoreContribution: baseShareScore("sanctioned_service", 0.08),
+      exposureSourceKey: "exmo",
+      exposureSourceLabel: "EXMO",
+      sourceExposureKind: "sanctioned_service"
+    });
+  });
+
+  it("normalizes Rapira label variants to a sanctioned service result", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("cex", "Rapira24"),
+      balanceShare: 0.27,
+      eventTimestamp: "2026-05-27T00:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      verdict: "DECLINE",
+      exposureSourceKey: "rapira",
+      exposureSourceLabel: "Rapira",
+      sourceExposureKind: "sanctioned_service"
+    });
+    expect(result?.reasons.join(" ")).toContain("Найдена связь с санкционной биржей/криптосервисом Rapira");
+    expect(result?.reasons.join(" ")).toContain("доля 27%");
+    expect(result?.reasons.join(" ")).toContain("дата включения: 2026-05-26");
   });
 
   it("aggregates WhiteBIT exposure by selected amount share", () => {
