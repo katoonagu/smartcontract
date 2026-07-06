@@ -96,6 +96,24 @@ export function adminConsoleHtml(): string {
     }
     .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
     .brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0; }
+    .top-nav { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .top-nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 12px;
+      background: #111519;
+    }
+    .top-nav a:hover, .top-nav a.active {
+      border-color: var(--accent);
+      color: var(--text);
+      background: #1c2636;
+    }
     .stats { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
     .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; background: #111519; white-space: nowrap; }
     .status-chip-decision {
@@ -148,6 +166,96 @@ export function adminConsoleHtml(): string {
       min-height: 0;
       display: block;
     }
+    .wallet-intel-workspace {
+      height: calc(100dvh - 56px);
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      padding: 12px;
+      background: var(--surface-canvas);
+    }
+    .wallet-intel-head {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .wallet-intel-title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+    .wallet-intel-title-row h2 { margin: 0; font-size: 16px; }
+    .wallet-intel-warning { color: var(--warn); font-size: 12px; }
+    .wallet-intel-filters {
+      display: grid;
+      grid-template-columns: minmax(190px, 1.3fr) minmax(150px, .8fr) minmax(170px, .9fr) minmax(150px, .8fr) minmax(190px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .wallet-intel-filters label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+    .wallet-intel-filters input, .wallet-intel-filters select { width: 100%; }
+    .wallet-intel-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+      gap: 12px;
+    }
+    .wallet-intel-table, .wallet-intel-drawer {
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .wallet-intel-table table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+    .wallet-intel-table th, .wallet-intel-table td {
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .wallet-intel-table th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .wallet-intel-table tr[data-wallet-intel-address] { cursor: pointer; }
+    .wallet-intel-table tr[data-wallet-intel-address]:hover, .wallet-intel-table tr.active { background: rgba(122, 162, 247, .08); }
+    .wallet-intel-address-button {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+    .wallet-intel-drawer { padding: 12px; display: grid; align-content: start; gap: 12px; font-size: 12px; }
+    .wallet-intel-section { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .wallet-intel-section:first-child { padding-top: 0; border-top: 0; }
+    .wallet-intel-section h3 { margin: 0; font-size: 13px; }
+    .wallet-intel-meta { display: grid; gap: 5px; }
+    .wallet-intel-line { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.3fr); gap: 8px; }
+    .wallet-intel-line span:first-child { color: var(--muted); }
+    .wallet-intel-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+    .wallet-intel-pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; background: var(--panel-2); color: var(--text-secondary); font-size: 11px; }
+    .wallet-intel-list { display: grid; gap: 6px; }
+    .wallet-intel-item { display: grid; gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+    .wallet-intel-tx { display: grid; gap: 3px; }
     .graph-workspace {
       --left-rail-width: 330px;
       --right-rail-width: 380px;
@@ -973,6 +1081,22 @@ export function adminConsoleHtml(): string {
       .control-label { display: none; }
       .graph-control-section.is-wide { flex-basis: 280px; }
     }
+    @media (max-width: 900px) {
+      .wallet-intel-workspace {
+        height: auto;
+        min-height: calc(100dvh - 56px);
+        overflow: visible;
+      }
+      .wallet-intel-title-row {
+        display: grid;
+      }
+      .wallet-intel-filters {
+        grid-template-columns: 1fr;
+      }
+      .wallet-intel-body {
+        grid-template-columns: 1fr;
+      }
+    }
     @media (max-width: 1180px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
@@ -1016,6 +1140,10 @@ export function adminConsoleHtml(): string {
     <header class="topbar">
       <div class="brand">
         <h1>Admin Forensics Console</h1>
+        <nav class="top-nav" aria-label="Admin workspaces">
+          <a href="/admin/forensics" data-workspace-link>Forensics</a>
+          <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>
+        </nav>
         <div class="stats" id="jobStats"></div>
       </div>
       <div class="token">
@@ -1194,6 +1322,54 @@ export function adminConsoleHtml(): string {
           <div id="details" class="details-body empty">Select a completed or partial job to inspect evidence.</div>
         </aside>
       </section>
+      <section id="walletIntelligenceWorkspace" class="wallet-intel-workspace" data-wallet-intelligence-workspace hidden>
+        <div class="wallet-intel-head">
+          <div class="wallet-intel-title-row">
+            <div>
+              <h2>Wallet Intelligence</h2>
+              <div class="hint" id="walletIntelStatus">Load indexed wallet intelligence addresses.</div>
+            </div>
+            <div class="wallet-intel-warning">This is analyst context, not scoring evidence.</div>
+          </div>
+          <div class="wallet-intel-filters">
+            <label>Address
+              <input id="walletIntelAddress" placeholder="Address contains">
+            </label>
+            <label>Mode
+              <select id="walletIntelMode">
+                <option value="">All modes</option>
+                <option value="address_deep_check">DeepCheck</option>
+                <option value="where_is_money_check">Where is money</option>
+                <option value="incoming_deposit_check">Incoming deposit</option>
+              </select>
+            </label>
+            <label>Tag
+              <select id="walletIntelTag">
+                <option value="">All tags</option>
+                <option value="repeated_cross_run_address">repeated_cross_run_address</option>
+                <option value="high_activity_wallet">high_activity_wallet</option>
+                <option value="large_liquidity_wallet">large_liquidity_wallet</option>
+                <option value="possible_service_or_exchange_like">possible_service_or_exchange_like</option>
+                <option value="known_service_or_exchange">known_service_or_exchange</option>
+                <option value="cross_mode_seen">cross_mode_seen</option>
+              </select>
+            </label>
+            <label>Requester
+              <input id="walletIntelRequester" placeholder="user or id">
+            </label>
+            <label>Subject address
+              <input id="walletIntelSubjectAddress" placeholder="Checked subject">
+            </label>
+            <button id="walletIntelReload" type="button">Reload</button>
+          </div>
+        </div>
+        <div class="wallet-intel-body">
+          <div id="walletIntelTable" class="wallet-intel-table"></div>
+          <aside id="walletIntelDrawer" class="wallet-intel-drawer">
+            <div class="empty">Select an address to inspect requesters, source jobs, and first edges.</div>
+          </aside>
+        </div>
+      </section>
     </section>
   </main>
   <script>
@@ -1248,7 +1424,8 @@ export function adminConsoleHtml(): string {
       renderedNodesById: new Map(),
       renderedEdgesById: new Map(),
       expandedBundleNodeIds: new Set(),
-      expandedSelectedFlowEdgeIds: new Set()
+      expandedSelectedFlowEdgeIds: new Set(),
+      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -1483,6 +1660,217 @@ export function adminConsoleHtml(): string {
     }
     function setStatus(message) {
       el("selectionHint").textContent = message;
+    }
+    function walletIntelligenceActive() {
+      return window.location.pathname === "/admin/wallet-intelligence";
+    }
+    function syncWorkspaceVisibility() {
+      const walletActive = walletIntelligenceActive();
+      const graphShell = document.querySelector("[data-workbench-shell]");
+      const walletShell = document.querySelector("[data-wallet-intelligence-workspace]");
+      if (graphShell) graphShell.hidden = walletActive;
+      if (walletShell) walletShell.hidden = !walletActive;
+      document.querySelectorAll("[data-workspace-link]").forEach((link) => {
+        const active = link.getAttribute("href") === (walletActive ? "/admin/wallet-intelligence" : "/admin/forensics");
+        link.classList.toggle("active", active);
+        if (active) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      });
+    }
+    function setWalletIntelligenceStatus(message) {
+      el("walletIntelStatus").textContent = message;
+      if (walletIntelligenceActive()) setStatus(message);
+    }
+    function walletIntelText(value, fallback = "n/a") {
+      return value === null || value === undefined || value === "" ? fallback : String(value);
+    }
+    function walletIntelAmount(rawValue) {
+      if (rawValue === null || rawValue === undefined || rawValue === "") return "n/a";
+      return formatRawUsdt(rawValue) || String(rawValue);
+    }
+    function walletIntelTime(value) {
+      return formatJobTime(value) || walletIntelText(value);
+    }
+    function walletIntelAddressLink(address) {
+      return address ? explorerLink(tronscanAddressUrl(address), short(address, 8)) : '<span class="muted">address n/a</span>';
+    }
+    function walletIntelJobLink(jobId) {
+      return jobId ? '<a class="link" href="/admin/forensics?job=' + encodeURIComponent(jobId) + '">' + escapeHtml(short(jobId, 8)) + '</a>' : '<span class="muted">job n/a</span>';
+    }
+    function tagPills(values, empty = "none") {
+      const items = asArray(values).filter((value) => value !== null && value !== undefined && value !== "");
+      if (items.length === 0) return '<span class="muted">' + escapeHtml(empty) + '</span>';
+      return '<div class="wallet-intel-pills">' + items.map((value) => '<span class="wallet-intel-pill">' + escapeHtml(value) + '</span>').join("") + '</div>';
+    }
+    function walletIntelLine(label, value) {
+      return '<div class="wallet-intel-line"><span>' + escapeHtml(label) + '</span><strong>' + value + '</strong></div>';
+    }
+    function renderWalletIntelligenceTable() {
+      const root = el("walletIntelTable");
+      if (state.walletIntel.loading) {
+        root.innerHTML = '<div class="empty">Loading wallet intelligence addresses...</div>';
+        return;
+      }
+      if (state.walletIntel.error && state.walletIntel.addresses.length === 0) {
+        root.innerHTML = '<div class="error">' + escapeHtml(state.walletIntel.error) + '</div>';
+        return;
+      }
+      if (state.walletIntel.addresses.length === 0) {
+        root.innerHTML = '<div class="empty">No wallet intelligence addresses loaded.</div>';
+        return;
+      }
+      const rows = state.walletIntel.addresses.map((item) => {
+        const active = item.address === state.walletIntel.activeAddress ? ' class="active"' : "";
+        return '<tr' + active + ' data-wallet-intel-address="' + escapeHtml(item.address) + '">' +
+          '<td><button type="button" class="wallet-intel-address-button" data-wallet-intel-address="' + escapeHtml(item.address) + '">' + escapeHtml(short(item.address, 8)) + '</button><div class="muted">' + escapeHtml(item.address) + '</div></td>' +
+          '<td>' + tagPills(item.tags, "No tags") + '</td>' +
+          '<td>' + escapeHtml(walletIntelText(item.uniqueSubjectCount, "0")) + '</td>' +
+          '<td>' + escapeHtml(walletIntelText(item.uniqueRequesterCount, "0")) + '</td>' +
+          '<td>' + escapeHtml(walletIntelText(item.jobCount, "0") + " / " + walletIntelText(item.occurrenceCount, "0")) + '</td>' +
+          '<td>' + escapeHtml(walletIntelText(item.maxDepth)) + '</td>' +
+          '<td>' + escapeHtml(walletIntelText(item.distinctTxCount, "0")) + '</td>' +
+          '<td>' + escapeHtml(walletIntelAmount(item.distinctAmountRaw)) + '</td>' +
+          '</tr>';
+      }).join("");
+      root.innerHTML = '<table><thead><tr>' +
+        '<th>Address</th><th>Tags</th><th>Unique subjects</th><th>Unique requesters</th><th>Jobs / occurrences</th><th>Max depth</th><th>Distinct tx</th><th>Distinct amount</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+    async function loadWalletIntelligenceAddresses() {
+      state.token = el("token").value.trim();
+      localStorage.setItem("adminForensicsToken", state.token);
+      el("sessionState").textContent = state.token ? "session active" : "token missing";
+      const params = new URLSearchParams();
+      params.set("limit", "50");
+      const filters = [
+        ["address", el("walletIntelAddress").value.trim()],
+        ["mode", el("walletIntelMode").value],
+        ["tag", el("walletIntelTag").value],
+        ["requester", el("walletIntelRequester").value.trim()],
+        ["subjectAddress", el("walletIntelSubjectAddress").value.trim()]
+      ];
+      filters.forEach(([key, value]) => {
+        if (value) params.set(key, value);
+      });
+      state.walletIntel.loading = true;
+      state.walletIntel.error = null;
+      renderWalletIntelligenceTable();
+      renderWalletIntelligenceDrawer();
+      try {
+        setWalletIntelligenceStatus("Loading wallet intelligence addresses...");
+        const body = await api("/admin/api/wallet-intelligence/addresses?" + params.toString());
+        state.walletIntel.addresses = asArray(body.addresses);
+        if (!state.walletIntel.addresses.some((item) => item.address === state.walletIntel.activeAddress)) {
+          state.walletIntel.activeAddress = null;
+          state.walletIntel.detail = null;
+        }
+        state.walletIntel.loading = false;
+        renderWalletIntelligenceTable();
+        renderWalletIntelligenceDrawer();
+        setWalletIntelligenceStatus(state.walletIntel.addresses.length + " wallet intelligence addresses loaded.");
+      } catch (error) {
+        state.walletIntel.loading = false;
+        state.walletIntel.error = error?.message || "Wallet intelligence load failed.";
+        state.walletIntel.addresses = [];
+        state.walletIntel.activeAddress = null;
+        state.walletIntel.detail = null;
+        renderWalletIntelligenceTable();
+        renderWalletIntelligenceDrawer();
+        setWalletIntelligenceStatus("Wallet intelligence load failed.");
+      }
+    }
+    async function openWalletIntelligenceAddress(address) {
+      if (!address) return;
+      state.walletIntel.activeAddress = address;
+      state.walletIntel.detail = null;
+      state.walletIntel.error = null;
+      renderWalletIntelligenceTable();
+      renderWalletIntelligenceDrawer();
+      try {
+        setWalletIntelligenceStatus("Loading wallet intelligence address detail...");
+        const body = await api("/admin/api/wallet-intelligence/addresses/" + encodeURIComponent(address));
+        state.walletIntel.detail = body.detail || null;
+        renderWalletIntelligenceDrawer();
+        setWalletIntelligenceStatus("Wallet intelligence address loaded.");
+      } catch (error) {
+        state.walletIntel.error = error?.message || "Wallet intelligence detail failed.";
+        renderWalletIntelligenceDrawer();
+        setWalletIntelligenceStatus("Wallet intelligence detail failed.");
+      }
+    }
+    function renderWalletIntelligenceDrawer() {
+      const root = el("walletIntelDrawer");
+      const address = state.walletIntel.activeAddress;
+      if (!address) {
+        root.innerHTML = '<div class="empty">Select an address to inspect requesters, source jobs, and first edges.</div>';
+        return;
+      }
+      if (state.walletIntel.error && !state.walletIntel.detail) {
+        root.innerHTML = '<div class="error">' + escapeHtml(state.walletIntel.error) + '</div>';
+        return;
+      }
+      const detail = state.walletIntel.detail;
+      if (!detail) {
+        root.innerHTML = '<div class="empty">Loading address detail...</div>';
+        return;
+      }
+      const summary = detail.summary || {};
+      const requesters = asArray(detail.requesters);
+      const jobs = asArray(detail.jobs);
+      const edges = asArray(detail.edges).slice(0, 25);
+      const summaryHtml = '<section class="wallet-intel-section"><h3>Summary</h3><div class="wallet-intel-meta">' +
+        walletIntelLine("Address", walletIntelAddressLink(summary.address || address)) +
+        walletIntelLine("Unique subjects", escapeHtml(walletIntelText(summary.uniqueSubjectCount, "0"))) +
+        walletIntelLine("Unique requesters", escapeHtml(walletIntelText(summary.uniqueRequesterCount, "0"))) +
+        walletIntelLine("Jobs", escapeHtml(walletIntelText(summary.jobCount, "0") + " (" + walletIntelText(summary.completedJobCount, "0") + " completed, " + walletIntelText(summary.partialJobCount, "0") + " partial)")) +
+        walletIntelLine("Occurrences", escapeHtml(walletIntelText(summary.occurrenceCount, "0"))) +
+        walletIntelLine("Depth", escapeHtml(walletIntelText(summary.minDepth) + " - " + walletIntelText(summary.maxDepth))) +
+        walletIntelLine("Distinct tx", escapeHtml(walletIntelText(summary.distinctTxCount, "0"))) +
+        walletIntelLine("Distinct amount", escapeHtml(walletIntelAmount(summary.distinctAmountRaw))) +
+        walletIntelLine("First seen", escapeHtml(walletIntelTime(summary.firstSeenAt))) +
+        walletIntelLine("Last seen", escapeHtml(walletIntelTime(summary.lastSeenAt))) +
+        walletIntelLine("Modes", tagPills(summary.modes, "No modes")) +
+        walletIntelLine("Tags", tagPills(summary.tags, "No tags")) +
+        walletIntelLine("Services", tagPills(summary.serviceCategories, "No service categories")) +
+        walletIntelLine("Labels", tagPills(summary.labelHints, "No labels")) +
+        '</div></section>';
+      const requesterHtml = '<section class="wallet-intel-section"><h3>Requesters</h3><div class="wallet-intel-list">' +
+        (requesters.length ? requesters.map((requester) => '<div class="wallet-intel-item">' +
+          walletIntelLine("requestedBy", escapeHtml(walletIntelText(requester.requestedBy))) +
+          walletIntelLine("telegramUserId", escapeHtml(walletIntelText(requester.telegramUserId))) +
+          walletIntelLine("username", escapeHtml(walletIntelText(requester.username))) +
+          walletIntelLine("chatId", escapeHtml(walletIntelText(requester.chatId))) +
+          walletIntelLine("messageId", escapeHtml(walletIntelText(requester.messageId))) +
+          walletIntelLine("locale", escapeHtml(walletIntelText(requester.locale))) +
+          walletIntelLine("jobCount", escapeHtml(walletIntelText(requester.jobCount, "0"))) +
+          '</div>').join("") : '<div class="empty">No requesters stored.</div>') +
+        '</div></section>';
+      const jobsHtml = '<section class="wallet-intel-section"><h3>Source jobs</h3><div class="wallet-intel-list">' +
+        (jobs.length ? jobs.map((job) => '<div class="wallet-intel-item">' +
+          walletIntelLine("Job", walletIntelJobLink(job.jobId)) +
+          walletIntelLine("Mode", escapeHtml(humanCheckKind(job.jobKind))) +
+          walletIntelLine("Status", escapeHtml(walletIntelText(job.jobStatus))) +
+          walletIntelLine("Subject", walletIntelAddressLink(job.subjectAddress)) +
+          walletIntelLine("Completed", escapeHtml(walletIntelTime(job.completedAt))) +
+          '</div>').join("") : '<div class="empty">No source jobs stored.</div>') +
+        '</div></section>';
+      const edgesHtml = '<section class="wallet-intel-section"><h3>First edges</h3><div class="wallet-intel-list wallet-intel-tx">' +
+        (edges.length ? edges.map((edge) => {
+          const tx = edge.txHash ? explorerLink(tronscanTxUrl(edge.txHash), short(edge.txHash, 8)) : '<span class="muted">tx n/a</span>';
+          return '<div class="wallet-intel-item">' +
+            walletIntelLine("Tx", tx) +
+            walletIntelLine("From", walletIntelAddressLink(edge.fromAddress)) +
+            walletIntelLine("To", walletIntelAddressLink(edge.toAddress)) +
+            walletIntelLine("Amount", escapeHtml(walletIntelAmount(edge.amountRaw))) +
+            walletIntelLine("Time", escapeHtml(walletIntelTime(edge.timestamp))) +
+            walletIntelLine("Mode", escapeHtml(humanCheckKind(edge.jobKind))) +
+            walletIntelLine("Role", escapeHtml(walletIntelText(edge.edgeRole))) +
+            walletIntelLine("Source", escapeHtml(walletIntelText(edge.sourceKind))) +
+            walletIntelLine("Depth/path", escapeHtml(walletIntelText(edge.depth) + " / " + walletIntelText(edge.pathId))) +
+            '</div>';
+        }).join("") : '<div class="empty">No edges stored.</div>') +
+        '</div></section>';
+      root.innerHTML = summaryHtml + requesterHtml + jobsHtml + edgesHtml;
     }
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;
@@ -2154,6 +2542,13 @@ export function adminConsoleHtml(): string {
       setSelectFromUrl("status", params.get("status") || "");
       setSelectFromUrl("kind", params.get("kind") || "");
       setSelectFromUrl("limit", params.get("limit") || "");
+      if (walletIntelligenceActive()) {
+        el("walletIntelAddress").value = params.get("address") || params.get("q") || "";
+        el("walletIntelRequester").value = params.get("requester") || "";
+        el("walletIntelSubjectAddress").value = params.get("subjectAddress") || "";
+        setSelectFromUrl("walletIntelMode", params.get("mode") || "");
+        setSelectFromUrl("walletIntelTag", params.get("tag") || "");
+      }
       const jobId = params.get("jobId") || params.get("job") || "";
       if (jobId) state.pendingOpenJobId = jobId;
     }
@@ -7813,6 +8208,7 @@ export function adminConsoleHtml(): string {
     el("txLabelMode").value = state.txLabelMode;
     el("walletLabelMode").value = state.walletLabelMode;
     el("flowMode").value = state.flowMode;
+    syncWorkspaceVisibility();
     syncDenseGraphControls();
     syncGraphFirstControls();
     renderScoringAudit();
@@ -7820,7 +8216,17 @@ export function adminConsoleHtml(): string {
     el("selectionCard").addEventListener("click", handleDetailActionClick);
     el("selectionCard").addEventListener("click", handleSelectedFlowTxRowClick);
     el("selectionCard").addEventListener("keydown", handleSelectedFlowTxRowKeydown);
-    el("load").addEventListener("click", loadJobs);
+    el("load").addEventListener("click", () => {
+      syncWorkspaceVisibility();
+      if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
+      else loadJobs();
+    });
+    el("walletIntelReload").addEventListener("click", loadWalletIntelligenceAddresses);
+    el("walletIntelTable").addEventListener("click", (event) => {
+      const row = event.target instanceof Element ? event.target.closest("[data-wallet-intel-address]") : null;
+      if (!row) return;
+      openWalletIntelligenceAddress(row.getAttribute("data-wallet-intel-address") || "");
+    });
     el("refresh").addEventListener("click", loadJobs);
     el("jobsModeAll").addEventListener("click", () => setJobQueueMode("all"));
     el("jobsModeRunning").addEventListener("click", () => setJobQueueMode("running"));
@@ -7966,9 +8372,14 @@ export function adminConsoleHtml(): string {
     });
     initPanZoom();
     renderTransferTabs();
+    renderWalletIntelligenceTable();
+    renderWalletIntelligenceDrawer();
     el("sessionState").textContent = state.token ? "session active" : "token missing";
     applyInitialUrlFilters();
-    if (state.token) loadJobs();
+    if (state.token) {
+      if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
+      else loadJobs();
+    }
   </script>
 </body>
 </html>`;

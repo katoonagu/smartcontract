@@ -156,6 +156,12 @@ export type BuildIncomingDepositReportInput = {
 export type RunSingleIncomingDepositJobCycleDeps = {
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: CompleteJobInput): Promise<boolean>;
+  indexWalletIntelligenceJob?(input: {
+    job: ForensicCheckJob;
+    progressJson: Record<string, unknown>;
+    resultJson: Record<string, unknown>;
+    status: "completed" | "partial";
+  }): Promise<void>;
   updateForensicCheckJobProgress?(input: {
     id: string;
     progressJson: Record<string, unknown>;
@@ -1865,6 +1871,24 @@ function safeLoggerWarn(logger: Logger, event: string, fields: Record<string, un
   }
 }
 
+async function indexWalletIntelligenceBestEffort(
+  deps: RunSingleIncomingDepositJobCycleDeps,
+  job: ForensicCheckJob,
+  input: { progressJson: Record<string, unknown>; resultJson: Record<string, unknown>; status: "completed" | "partial" }
+): Promise<void> {
+  if (!deps.indexWalletIntelligenceJob) return;
+  try {
+    await deps.indexWalletIntelligenceJob({ job, ...input });
+  } catch (error) {
+    safeLoggerWarn(deps.logger ?? defaultLogger, "wallet_intelligence_index_failed", {
+      job_id: job.id,
+      kind: job.kind,
+      subject_address: job.subjectAddress,
+      error: formatErrorMessage(error)
+    });
+  }
+}
+
 export async function runSingleIncomingDepositJobCycle(
   deps: RunSingleIncomingDepositJobCycleDeps
 ): Promise<boolean> {
@@ -2012,7 +2036,7 @@ export async function runSingleIncomingDepositJobCycle(
     await timing.measure("mark_alert_sent", () => deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId }));
     await persistProgress({ jobPhase: "completing" }, "persist_phase_completing");
     await persistPerformanceTiming();
-    await timing.measure("complete_job", () => deps.completeForensicCheckJob({
+    const completion = {
       id: job.id,
       status: "completed",
       progressJson: currentProgress,
@@ -2020,7 +2044,15 @@ export async function runSingleIncomingDepositJobCycle(
       rawEvidenceIds: [],
       observationIds: [],
       lastError: null
-    }));
+    } satisfies CompleteJobInput;
+    const completed = await timing.measure("complete_job", () => deps.completeForensicCheckJob(completion));
+    if (completed) {
+      await indexWalletIntelligenceBestEffort(deps, job, {
+        progressJson: completion.progressJson,
+        resultJson: completion.resultJson,
+        status: completion.status
+      });
+    }
     logTiming("completed");
     return true;
   } catch (error) {

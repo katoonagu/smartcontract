@@ -286,6 +286,9 @@ supersedes:
   forensic result and historical debug state.
 - Buttons that start jobs should show which address they used and which job id
   was queued.
+- Wallet Intelligence V1 intentionally defers per-job "seen elsewhere" hints
+  and global graph visualization until analysts validate the separate
+  table/drawer workflow.
 
 ## Planned Behavior
 

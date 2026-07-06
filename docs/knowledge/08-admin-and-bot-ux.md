@@ -227,6 +227,13 @@ Admin is the analyst workbench. It should show jobs, graphs, selected flows,
 technical coverage, evidence, and progress.
 
 Admin can show more diagnostic detail than Telegram.
+Admin also has a separate Wallet Intelligence workspace and authenticated API
+for cross-run address sightings and relationship analytics. It indexes
+completed/partial DeepCheck, Where is Money, and Incoming Deposit jobs from
+saved payloads only. The view is global investigative context: repeated
+appearances, requesters, source jobs, and normalized edges for triage. It is not
+a forensic verdict, not Telegram output, and not per-job graph evidence or
+scoring.
 
 ## Bot Purpose
 

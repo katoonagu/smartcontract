@@ -12,7 +12,13 @@ import type {
   ForensicCheckJobKind,
   ForensicCheckJobStatus,
   ListAdminForensicCheckJobsInput,
-  SavedWalletRiskSummary
+  ListWalletIntelligenceAddressSummariesInput,
+  SavedWalletRiskSummary,
+  WalletIntelligenceAddressDetail,
+  WalletIntelligenceAddressSummary,
+  WalletIntelligenceJobStatus,
+  WalletIntelligenceSupportedJobKind,
+  WalletIntelligenceTag
 } from "../storage/repositories";
 import type { IndexedTronUsdtTransfer } from "../types";
 
@@ -33,6 +39,8 @@ export type AdminServerDeps = {
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
   refreshDeepCheckSecondLayer?(jobId: string): Promise<unknown>;
+  listWalletIntelligenceAddressSummaries?(input: ListWalletIntelligenceAddressSummariesInput): Promise<WalletIntelligenceAddressSummary[]>;
+  getWalletIntelligenceAddressDetail?(address: string): Promise<WalletIntelligenceAddressDetail | null>;
 };
 
 export type RunningAdminServer = {
@@ -84,6 +92,20 @@ const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
   "where_is_money_check",
   "incoming_deposit_check"
 ]);
+const walletIntelligenceModes = new Set<WalletIntelligenceSupportedJobKind>([
+  "address_deep_check",
+  "where_is_money_check",
+  "incoming_deposit_check"
+]);
+const walletIntelligenceTags = new Set<WalletIntelligenceTag>([
+  "repeated_cross_run_address",
+  "high_activity_wallet",
+  "large_liquidity_wallet",
+  "possible_service_or_exchange_like",
+  "known_service_or_exchange",
+  "cross_mode_seen"
+]);
+const walletIntelligenceJobStatuses = new Set<WalletIntelligenceJobStatus>(["completed", "partial"]);
 const nodeRoleAssetUrls = new Map<string, URL>([
   ["drainer", new URL("./assets/node-role/drainer.png", import.meta.url)],
   ["victim", new URL("./assets/node-role/victim.png", import.meta.url)],
@@ -165,6 +187,111 @@ function parseKind(value: string | undefined): ParseResult<ForensicCheckJobKind 
   return { ok: false, message: "Invalid forensic job kind filter." };
 }
 
+function parsePositiveIntegerQuery(url: URL, key: string): ParseResult<number | undefined> {
+  const value = firstQueryValue(url, key);
+  if (value === undefined) return { ok: true, value: undefined };
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0
+    ? { ok: true, value: parsed }
+    : { ok: false, message: `Invalid wallet intelligence ${key}.` };
+}
+
+function parseWalletIntelligenceMode(url: URL): ParseResult<WalletIntelligenceSupportedJobKind | undefined> {
+  const value = firstQueryValue(url, "mode");
+  if (value === undefined) return { ok: true, value: undefined };
+  if (walletIntelligenceModes.has(value as WalletIntelligenceSupportedJobKind)) {
+    return { ok: true, value: value as WalletIntelligenceSupportedJobKind };
+  }
+  return { ok: false, message: "Invalid wallet intelligence mode." };
+}
+
+function parseWalletIntelligenceTag(url: URL): ParseResult<WalletIntelligenceTag | undefined> {
+  const value = firstQueryValue(url, "tag");
+  if (value === undefined) return { ok: true, value: undefined };
+  if (walletIntelligenceTags.has(value as WalletIntelligenceTag)) {
+    return { ok: true, value: value as WalletIntelligenceTag };
+  }
+  return { ok: false, message: "Invalid wallet intelligence tag." };
+}
+
+function parseWalletIntelligenceJobStatus(url: URL): ParseResult<WalletIntelligenceJobStatus | undefined> {
+  const value = firstQueryValue(url, "jobStatus");
+  if (value === undefined) return { ok: true, value: undefined };
+  if (walletIntelligenceJobStatuses.has(value as WalletIntelligenceJobStatus)) {
+    return { ok: true, value: value as WalletIntelligenceJobStatus };
+  }
+  return { ok: false, message: "Invalid wallet intelligence jobStatus." };
+}
+
+function parseWalletIntelligenceDateQuery(url: URL, key: "startDate" | "endDate"): ParseResult<Date | undefined> {
+  const value = firstQueryValue(url, key);
+  if (value === undefined) return { ok: true, value: undefined };
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? { ok: false, message: `Invalid wallet intelligence ${key}.` }
+    : { ok: true, value: parsed };
+}
+
+function parseWalletIntelligenceRawAmountQuery(url: URL, key: "minDistinctAmountRaw" | "maxDistinctAmountRaw"): ParseResult<string | undefined> {
+  const value = firstQueryValue(url, key);
+  if (value === undefined) return { ok: true, value: undefined };
+  return /^\d+$/.test(value)
+    ? { ok: true, value }
+    : { ok: false, message: `Invalid wallet intelligence ${key}.` };
+}
+
+function parseWalletIntelligenceListInput(url: URL): ParseResult<ListWalletIntelligenceAddressSummariesInput> {
+  const limit = parsePositiveIntegerQuery(url, "limit");
+  if (!limit.ok) return limit;
+  const offset = parsePositiveIntegerQuery(url, "offset");
+  if (!offset.ok) return offset;
+  const mode = parseWalletIntelligenceMode(url);
+  if (!mode.ok) return mode;
+  const tag = parseWalletIntelligenceTag(url);
+  if (!tag.ok) return tag;
+  const minUniqueSubjects = parsePositiveIntegerQuery(url, "minUniqueSubjects");
+  if (!minUniqueSubjects.ok) return minUniqueSubjects;
+  const minUniqueRequesters = parsePositiveIntegerQuery(url, "minUniqueRequesters");
+  if (!minUniqueRequesters.ok) return minUniqueRequesters;
+  const startDate = parseWalletIntelligenceDateQuery(url, "startDate");
+  if (!startDate.ok) return startDate;
+  const endDate = parseWalletIntelligenceDateQuery(url, "endDate");
+  if (!endDate.ok) return endDate;
+  const minDepth = parsePositiveIntegerQuery(url, "minDepth");
+  if (!minDepth.ok) return minDepth;
+  const maxDepth = parsePositiveIntegerQuery(url, "maxDepth");
+  if (!maxDepth.ok) return maxDepth;
+  const minDistinctAmountRaw = parseWalletIntelligenceRawAmountQuery(url, "minDistinctAmountRaw");
+  if (!minDistinctAmountRaw.ok) return minDistinctAmountRaw;
+  const maxDistinctAmountRaw = parseWalletIntelligenceRawAmountQuery(url, "maxDistinctAmountRaw");
+  if (!maxDistinctAmountRaw.ok) return maxDistinctAmountRaw;
+  const jobStatus = parseWalletIntelligenceJobStatus(url);
+  if (!jobStatus.ok) return jobStatus;
+
+  return {
+    ok: true,
+    value: {
+      limit: limit.value,
+      offset: offset.value,
+      mode: mode.value,
+      tag: tag.value,
+      minUniqueSubjects: minUniqueSubjects.value,
+      minUniqueRequesters: minUniqueRequesters.value,
+      startDate: startDate.value,
+      endDate: endDate.value,
+      addressQuery: firstQueryValue(url, "address"),
+      minDepth: minDepth.value,
+      maxDepth: maxDepth.value,
+      minDistinctAmountRaw: minDistinctAmountRaw.value,
+      maxDistinctAmountRaw: maxDistinctAmountRaw.value,
+      serviceCategory: firstQueryValue(url, "serviceCategory"),
+      requesterQuery: firstQueryValue(url, "requester"),
+      subjectAddress: firstQueryValue(url, "subjectAddress"),
+      jobStatus: jobStatus.value
+    }
+  };
+}
+
 function parseListJobsInput(url: URL): ParseResult<ListAdminForensicCheckJobsInput> {
   const limit = parseNonNegativeInteger(firstQueryValue(url, "limit"), "limit");
   if (!limit.ok) return limit;
@@ -226,11 +353,11 @@ function firstNumberField(records: Record<string, unknown>[], keys: string[]): n
   return undefined;
 }
 
-function safeDecodeUriComponent(value: string): ParseResult<string> {
+function safeDecodeUriComponent(value: string, message = "Invalid forensic job id."): ParseResult<string> {
   try {
     return { ok: true, value: decodeURIComponent(value) };
   } catch {
-    return { ok: false, message: "Invalid forensic job id." };
+    return { ok: false, message };
   }
 }
 
@@ -500,6 +627,52 @@ async function handleApiRequest(
     return;
   }
 
+  if (url.pathname === "/admin/api/wallet-intelligence/addresses") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    const input = parseWalletIntelligenceListInput(url);
+    if (!input.ok) {
+      writeJson(response, 400, { error: input.message });
+      return;
+    }
+    if (!deps.listWalletIntelligenceAddressSummaries) {
+      writeJson(response, 501, { error: "Wallet intelligence address summaries are not configured." });
+      return;
+    }
+
+    const addresses = await deps.listWalletIntelligenceAddressSummaries(input.value);
+    writeJson(response, 200, { addresses });
+    return;
+  }
+
+  const walletIntelligenceAddressMatch = /^\/admin\/api\/wallet-intelligence\/addresses\/([^/]+)$/.exec(url.pathname);
+  if (walletIntelligenceAddressMatch) {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.getWalletIntelligenceAddressDetail) {
+      writeJson(response, 501, { error: "Wallet intelligence address detail is not configured." });
+      return;
+    }
+    const address = safeDecodeUriComponent(walletIntelligenceAddressMatch[1], "Invalid wallet intelligence address.");
+    if (!address.ok) {
+      writeJson(response, 400, { error: address.message });
+      return;
+    }
+
+    const detail = await deps.getWalletIntelligenceAddressDetail(address.value);
+    if (!detail) {
+      writeJson(response, 404, { error: "Wallet intelligence address not found." });
+      return;
+    }
+
+    writeJson(response, 200, { detail });
+    return;
+  }
+
   const jobMatch = forensicJobApiMatch(url.pathname);
   if (!jobMatch.ok) {
     writeJson(response, 400, { error: jobMatch.message });
@@ -604,7 +777,7 @@ async function handleRequest(
     return;
   }
 
-  if (url.pathname === "/admin/forensics") {
+  if (url.pathname === "/admin/forensics" || url.pathname === "/admin/wallet-intelligence") {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;

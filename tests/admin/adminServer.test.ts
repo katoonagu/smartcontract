@@ -103,6 +103,15 @@ describe("startAdminServer", () => {
     expect(html).toContain("Find address, tx, or job id");
     expect(html).toContain("function scheduleLoadJobs");
     expect(html).toContain("function applyInitialUrlFilters");
+    expect(html).toContain("Wallet Intelligence");
+    expect(html).toContain("data-wallet-intelligence-workspace");
+    expect(html).toContain("/admin/api/wallet-intelligence/addresses");
+    expect(html).toContain("function loadWalletIntelligenceAddresses");
+    expect(html).toContain("function renderWalletIntelligenceTable");
+    expect(html).toContain("function renderWalletIntelligenceDrawer");
+    expect(html).toContain("Unique subjects");
+    expect(html).toContain("Distinct amount");
+    expect(html).toContain("This is analyst context, not scoring evidence.");
     expect(html).toContain("pendingOpenJobId");
     expect(html).toContain('el("subject").addEventListener("input"');
     expect(html).toContain('event.key !== "Enter"');
@@ -194,6 +203,17 @@ describe("startAdminServer", () => {
     expect(html).not.toContain("TSubject111111111111111111111111111111");
   });
 
+  it("serves wallet intelligence console shell", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/wallet-intelligence`);
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("data-wallet-intelligence-workspace");
+    expect(html).toContain("Wallet Intelligence");
+  });
+
   it("keeps node role marks inline in the graph renderer", () => {
     const html = adminConsoleHtml();
 
@@ -223,6 +243,157 @@ describe("startAdminServer", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: "Admin authorization required."
     });
+  });
+
+  it("lists wallet intelligence summaries for authorized admins", async () => {
+    let receivedInput: unknown = null;
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async (input) => {
+        receivedInput = input;
+        return [{
+          address: "TSeen1111111111111111111111111111111",
+          uniqueSubjectCount: 2,
+          uniqueRequesterCount: 2,
+          jobCount: 3,
+          completedJobCount: 2,
+          partialJobCount: 1,
+          occurrenceCount: 4,
+          distinctTxCount: 2,
+          distinctAmountRaw: "3000000",
+          minDepth: 1,
+          maxDepth: 2,
+          firstSeenAt: new Date("2026-07-06T09:00:00.000Z"),
+          lastSeenAt: new Date("2026-07-06T10:00:00.000Z"),
+          modes: ["address_deep_check"],
+          tags: ["repeated_cross_run_address"],
+          serviceCategories: ["cex"],
+          labelHints: ["Binance"]
+        }];
+      },
+      getWalletIntelligenceAddressDetail: async () => null
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/addresses?limit=20&offset=5&mode=address_deep_check&tag=repeated_cross_run_address&minUniqueSubjects=2&minUniqueRequesters=2&requester=client_user`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      addresses: [{
+        address: "TSeen1111111111111111111111111111111",
+        uniqueSubjectCount: 2,
+        uniqueRequesterCount: 2,
+        distinctAmountRaw: "3000000"
+      }]
+    });
+    expect(receivedInput).toMatchObject({
+      limit: 20,
+      offset: 5,
+      mode: "address_deep_check",
+      tag: "repeated_cross_run_address",
+      minUniqueSubjects: 2,
+      minUniqueRequesters: 2,
+      requesterQuery: "client_user"
+    });
+  });
+
+  it("returns wallet intelligence address detail", async () => {
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async () => [],
+      getWalletIntelligenceAddressDetail: async (address) => ({
+        summary: {
+          address,
+          uniqueSubjectCount: 1,
+          uniqueRequesterCount: 1,
+          jobCount: 1,
+          completedJobCount: 1,
+          partialJobCount: 0,
+          occurrenceCount: 1,
+          distinctTxCount: 1,
+          distinctAmountRaw: "1000000",
+          minDepth: 1,
+          maxDepth: 1,
+          firstSeenAt: new Date("2026-07-06T09:00:00.000Z"),
+          lastSeenAt: new Date("2026-07-06T09:00:00.000Z"),
+          modes: ["address_deep_check"],
+          tags: ["repeated_cross_run_address"],
+          serviceCategories: [],
+          labelHints: []
+        },
+        requesters: [{ requestedBy: "42", telegramUserId: "42", username: "client_user", locale: "ru", chatId: "42", messageId: "77", jobCount: 1 }],
+        jobs: [{ jobId: "job-1", jobKind: "address_deep_check", jobStatus: "completed", subjectAddress: "TSubject111111111111111111111111111111", completedAt: new Date("2026-07-06T10:00:00.000Z") }],
+        sightings: [],
+        edges: []
+      })
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/addresses/TSeen1111111111111111111111111111111`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      detail: {
+        summary: { address: "TSeen1111111111111111111111111111111" },
+        requesters: [{ username: "client_user" }]
+      }
+    });
+  });
+
+  it("rejects wallet intelligence requests without bearer token", async () => {
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async () => [],
+      getWalletIntelligenceAddressDetail: async () => null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/wallet-intelligence/addresses`);
+
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 404 for missing wallet intelligence address detail", async () => {
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async () => [],
+      getWalletIntelligenceAddressDetail: async () => null
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/addresses/TMissing1111111111111111111111111111`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("rejects invalid wallet intelligence filters", async () => {
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async () => [],
+      getWalletIntelligenceAddressDetail: async () => null
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/addresses?mode=address_fast_check`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 501 when wallet intelligence list dependency is not configured", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/wallet-intelligence/addresses`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(501);
   });
 
   it("lists forensic jobs for authorized admins", async () => {

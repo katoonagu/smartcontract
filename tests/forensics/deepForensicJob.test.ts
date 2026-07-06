@@ -4503,4 +4503,39 @@ describe("deep forensic job runner", () => {
       error: "Network request for 'sendMessage' failed!"
     }));
   });
+
+  it("does not fail a completed deep job when wallet intelligence indexing fails", async () => {
+    const completeForensicCheckJob = vi.fn(async () => true);
+    const indexWalletIntelligenceJob = vi.fn(async () => {
+      throw new Error("wallet intelligence unavailable");
+    });
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      completeForensicCheckJob,
+      indexWalletIntelligenceJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      upsertAddressLabelAssertion: vi.fn(async () => undefined),
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+      logger
+    }, {
+      pageLimit: 1,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 1
+    });
+
+    expect(handled).toBe(true);
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(indexWalletIntelligenceJob).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith("wallet_intelligence_index_failed", expect.objectContaining({
+      job_id: "job-1",
+      error: "wallet intelligence unavailable"
+    }));
+  });
 });
