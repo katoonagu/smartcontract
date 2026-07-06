@@ -3026,6 +3026,191 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("target amount");
   });
 
+  it("renders matrix REVIEW as a user REVIEW without matrix/debug copy", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      decisionReasons: ["Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."],
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({
+        level: "MEDIUM",
+        score: 55,
+        taintScore: 0,
+        launderingPatternScore: 55,
+        dominantRiskType: "laundering_pattern",
+        reasons: [
+          {
+            code: "forensic_address_behavior",
+            message: "Address shows high-volume transit-like behavior.",
+            scoreImpact: 55
+          }
+        ]
+      }),
+      deepReport: deepReportForTest({
+        boundaryExposureProfiles: [boundaryExposureProfile()]
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Решение: REVIEW");
+    expect(text).toContain("Что делать");
+    expect(text).toContain("Почему");
+    expect(text).toContain("Что важно учесть");
+    expect(text).toContain("Нужна ручная проверка");
+    expect(text).toContain("Чистый CEX-источник не доказан полностью.");
+    expect(text).toContain("Цепочка дошла до биржи или сервиса");
+    expect(text).toContain("Проверили 100% выбранной суммы");
+    expect(text).not.toContain("ACCEPTABLE — Сильных риск-сигналов не найдено");
+    expect(text).not.toContain("Scoring Signal Matrix");
+    expect(text).not.toContain("behavior_only_prior");
+    expect(text).not.toContain("Weighted layer score");
+    expect(text).not.toContain("Dampener");
+    expect(text).not.toContain("production_full");
+    expect(text).not.toContain("Beta/internal");
+  });
+
+  it("deduplicates exact approval-drain evidence in Russian final reports", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      decisionReasons: ["Exact approval-drain provenance reaches checked wallet via 0 hop(s)."],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            evidenceIds: ["tx-transferfrom-drain"],
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      },
+      approvalDrainProvenanceProfiles: [
+        {
+          victimAddress: "TVictim111111111111111111111111111111",
+          approvalTxHash: "tx-approval-root-cause",
+          drainTxHash: "tx-transferfrom-drain",
+          spenderAddress: "TSpender11111111111111111111111111111",
+          firstReceiverAddress: walletAddress,
+          subjectAddress: walletAddress,
+          hopDepth: 0,
+          amountRaw: "309000000000",
+          amountPreservationRatio: 0.991,
+          approvalAt: "2026-05-20T09:50:00.000Z",
+          drainAt: "2026-05-20T10:00:00.000Z",
+          pathTxHashes: ["tx-transferfrom-drain"],
+          pathAddresses: ["TVictim111111111111111111111111111111", walletAddress],
+          score: 95,
+          evidenceStrength: "exact_approval_and_transfer_from",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }
+      ],
+      coverage: {
+        selectedInboundTxCount: 5,
+        selectedInboundVolumeRaw: "24213000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 8,
+        partial: true,
+        notes: ["provider coverage partial"]
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 95,
+        taintScore: 95,
+        launderingPatternScore: 0,
+        dominantRiskType: "taint",
+        reasons: [
+          {
+            code: "internal_label_approval_drain_proximity",
+            message: "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.",
+            scoreImpact: 95
+          }
+        ]
+      }),
+      deepReport: deepReportForTest({
+        approvalDrainProvenanceProfiles: whereReport.approvalDrainProvenanceProfiles
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Решение: DECLINE");
+    expect(text).toContain("Не принимать автоматически.");
+    expect(text).toContain("Найдена точная approval-drain цепочка");
+    expect(text).toContain("Ранее система уже сохраняла этот адрес как связанный с exact approval-drain.");
+    expect(text).toContain("Проверили 100% выбранной суммы");
+    expect(text).toContain("это не означает полную историю адреса");
+    expect((text.match(/Найдена точная approval-drain цепочка/g) ?? []).length).toBe(1);
+    expect(text).not.toContain("Exact approval-drain provenance reaches checked wallet");
+    expect(text).not.toContain("Derived high-risk marker");
+    expect(text).not.toContain("Scoring Signal Matrix");
+    expect(text).not.toContain("matrix:hard_proof");
+    expect(text).not.toContain("Beta/internal");
+  });
+
+  it("keeps final diagnostics only when beta diagnostics are requested", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            evidenceIds: ["tx-transferfrom-drain"],
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      }
+    });
+
+    const normalText = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+    const debugText = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en",
+      showBetaDiagnostics: true
+    });
+
+    expect(normalText).not.toContain("Beta/internal");
+    expect(normalText).not.toContain("Weighted layer score");
+    expect(debugText).toContain("Beta/internal");
+    expect(debugText).toContain("Weighted layer score");
+  });
+
   it("formats the Russian unified final report as a user-first summary", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "DECLINE",
