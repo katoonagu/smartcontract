@@ -77,6 +77,7 @@ import {
   listIndexedTronUsdtTransfersByHashes,
   listCompletedDeepCheckJobsWithPendingSecondLayer,
   findLatestSavedWalletRiskByAddresses,
+  getWalletIntelligenceAddressDetail,
   listAddressLabels,
   markDigestSent,
   markUserAlertAnalyzing,
@@ -100,6 +101,7 @@ import {
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
   indexWalletIntelligenceJobPayload,
+  listWalletIntelligenceAddressSummaries,
   queueTronAddressUsdtIndexState,
   updateForensicCheckJobProgress,
   updateCompletedDeepCheckResultPatch,
@@ -221,6 +223,8 @@ const adminDashboard = await maybeStartAdminDashboard({
   startAdminServer: (adminDeps) => startAdminServer({
     ...adminDeps,
     refreshDeepCheckSecondLayer: (jobId) => refreshDeepCheckSecondLayerJob(jobId),
+    listWalletIntelligenceAddressSummaries: (input) => listWalletIntelligenceAddressSummaries(db, input),
+    getWalletIntelligenceAddressDetail: (address) => getWalletIntelligenceAddressDetail(db, address),
     createStrictProvenanceBenchmarkJob: async ({ subjectAddress }) => {
       const now = new Date();
       return createOrReuseForensicCheckJob(db, {

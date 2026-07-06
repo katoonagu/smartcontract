@@ -213,6 +213,9 @@ Admin is the analyst workbench. It should show jobs, graphs, selected flows,
 technical coverage, evidence, and progress.
 
 Admin can show more diagnostic detail than Telegram.
+The authenticated Admin API also exposes wallet intelligence address summary
+and detail endpoints for analyst investigation only; these endpoints do not
+change scoring, labels, Telegram output, or risk signal observations.
 
 ## Bot Purpose
 
