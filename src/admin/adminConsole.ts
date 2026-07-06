@@ -1504,9 +1504,21 @@ export function adminConsoleHtml(): string {
       if (state.txLabelMode === "auto") return "important";
       return state.txLabelMode;
     }
+    function edgeIsWhereSelectedRouteTransfer(edge) {
+      if (state.graph?.job?.kind !== "where_is_money_check") return false;
+      if (edge?.type !== "transfer") return false;
+      const role = edgeDisplayRole(edge);
+      if (role !== "real_transfer" && role !== "allocated_transfer") return false;
+      if (!edgeShouldShowCanvasAmount(edge)) return false;
+      const metadata = edge?.metadata || {};
+      return metadata.graphDirection === "path_step" ||
+        metadata.amountRole === "funding_candidate" ||
+        metadata.whereFundingRole === "exact_funding_candidate" ||
+        metadata.visibilityReason === "selected_exact_funding_candidate";
+    }
     function selectedEdgeLabelVisible(edge) {
       const selected = selectedEdgeIds();
-      return selected.has(edge.id) || selected.has(edge?.metadata?.pathId);
+      return selected.has(edge.id) || selected.has(edge?.metadata?.pathId) || edgeIsWhereSelectedRouteTransfer(edge);
     }
     function setTransferTab(tab) {
       state.transferTab = tab;

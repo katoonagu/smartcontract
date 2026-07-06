@@ -2739,6 +2739,57 @@ describe("adminConsoleHtml", () => {
     expect(kindBlock).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
   });
 
+  it("shows where selected route transfer labels without requiring an edge click", () => {
+    const html = adminConsoleHtml();
+    const labelBlock = html.slice(html.indexOf("function selectedEdgeIds"), html.indexOf("function setTransferTab"));
+
+    const api = new Function(`
+      let state = {
+        graph: { job: { kind: "where_is_money_check" }, edges: [] },
+        selected: null,
+        renderedEdgesById: new Map()
+      };
+      function graphEdges(graph) { return graph?.edges || []; }
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeShouldShowCanvasAmount(edge) { return edge?.canShowAmount !== false; }
+      ${labelBlock}
+      return {
+        selectedEdgeLabelVisible,
+        setState(next) { state = next; }
+      };
+    `)() as {
+      selectedEdgeLabelVisible(edge: unknown): boolean;
+      setState(next: unknown): void;
+    };
+
+    expect(api.selectedEdgeLabelVisible({
+      id: "edge:where:path",
+      type: "transfer",
+      displayRole: "real_transfer",
+      metadata: { graphDirection: "path_step" }
+    })).toBe(true);
+    expect(api.selectedEdgeLabelVisible({
+      id: "edge:where:exact",
+      type: "transfer",
+      displayRole: "allocated_transfer",
+      metadata: { whereFundingRole: "exact_funding_candidate" }
+    })).toBe(true);
+    expect(api.selectedEdgeLabelVisible({
+      id: "edge:where:context",
+      type: "inferred_provenance",
+      displayRole: "profile_context",
+      metadata: { graphDirection: "path_step" }
+    })).toBe(false);
+
+    api.setState({ graph: { job: { kind: "address_deep_check" }, edges: [] }, selected: null, renderedEdgesById: new Map() });
+    expect(api.selectedEdgeLabelVisible({
+      id: "edge:deep:path",
+      type: "transfer",
+      displayRole: "real_transfer",
+      metadata: { graphDirection: "path_step" }
+    })).toBe(false);
+  });
+
   it("keeps provenance flow map controls compatible with raw expansion services and bundles", () => {
     const html = adminConsoleHtml();
 

@@ -3194,6 +3194,8 @@ describe("projectForensicJobGraph", () => {
 
     const stopEdge = result.graph.edges.find((item) => item.type === "stop");
     expect(stopEdge).toMatchObject({
+      fromNodeId: stopNode?.id,
+      toNodeId: "addr:TGKDVrSource111111111111111111111111",
       displayRole: "stop",
       amountRaw: null,
       txHash: null,
@@ -3207,6 +3209,12 @@ describe("projectForensicJobGraph", () => {
     });
 
     expect(result.graph.paths[0]).toMatchObject({
+      nodeIds: [
+        stopNode?.id,
+        "addr:TGKDVrSource111111111111111111111111",
+        "addr:TPxymRMiddle11111111111111111111111",
+        "addr:TSubject111111111111111111111111111111"
+      ],
       stopReason: "incoming_history_not_fetched",
       stoppedAtNodeId: stopNode?.id,
       stopReasonLabel: "History not fully fetched",
@@ -6053,6 +6061,103 @@ describe("projectForensicJobGraph", () => {
         lastSeen: "2026-06-01T00:05:00.000Z"
       })
     });
+  });
+
+  it("suppresses relationship subject-to-source context when contract-driven evidence explains the source", () => {
+    const subject = "TSubjectSecondLayerDrainer11111111";
+    const source = "TSourceSecondLayerVictim1111111111";
+    const service = "TServiceSecondLayerBybit111111111";
+    const contract = "TContractSecondLayerWrapper1111111";
+    const txHash = "contract-driven-source-debit";
+    const serviceTxHash = "source-to-service-second-hop";
+    const amountRaw = "15000000000";
+    const timestamp = "2026-06-25T09:48:57.000Z";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["Wrapper"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "Verify20",
+          contractAddress: contract,
+          contractName: "Wrapper",
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        secondLayerRelationshipProfiles: {
+          paths: [{
+            id: "source-service-context",
+            depth: 2,
+            subjectAddress: subject,
+            directWalletAddress: source,
+            secondHopAddress: service,
+            pathAddresses: [subject, source, service],
+            txHashes: [serviceTxHash],
+            amountRaw,
+            txCount: 1,
+            firstSeen: "2026-06-25T09:41:15.000Z",
+            lastSeen: "2026-06-25T09:41:15.000Z",
+            selectionReason: "top_amount_or_activity"
+          }]
+        },
+        approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        walletRoleProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${contract}`,
+        txHash,
+        metadata: expect.objectContaining({ evidenceType: "contract_trigger_context" })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${contract}`,
+        toNodeId: `addr:${subject}`,
+        txHash,
+        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${service}`,
+        txHash: serviceTxHash,
+        metadata: expect.objectContaining({
+          evidenceType: "deepcheck_relationship_second_hop",
+          relationship: "second_hop_edge"
+        })
+      })
+    ]));
+    expect(result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${source}` &&
+      edge.metadata.evidenceType === "deepcheck_relationship_second_hop"
+    )).toBeUndefined();
   });
 
   it("preserves duplicate relationship second-hop path facts", () => {

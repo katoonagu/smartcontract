@@ -4334,12 +4334,12 @@ function projectWhereIsMoneyJob(
         weight: riskContribution,
         metadata: stopMetadata
       });
-      const priorNodeId = pathNodeIds[pathNodeIds.length - 1] ?? subjectNodeId;
+      const upstreamNodeId = pathNodeIds[0] ?? subjectNodeId;
       const edgeId = `edge:${pathIndex}:stop`;
       edges.push({
         id: edgeId,
-        fromNodeId: priorNodeId,
-        toNodeId: stoppedAtNodeId,
+        fromNodeId: stoppedAtNodeId,
+        toNodeId: upstreamNodeId,
         type: "stop",
         amountRaw: null,
         amountShare: null,
@@ -4401,7 +4401,7 @@ function projectWhereIsMoneyJob(
     });
     paths.push({
       id: pathId,
-      nodeIds: stoppedAtNodeId ? [...pathNodeIds, ...bundleNodeIds, stoppedAtNodeId] : [...pathNodeIds, ...bundleNodeIds],
+      nodeIds: stoppedAtNodeId ? [stoppedAtNodeId, ...pathNodeIds, ...bundleNodeIds] : [...pathNodeIds, ...bundleNodeIds],
       edgeIds: pathEdgeIds,
       verdict,
       riskContribution,
@@ -5089,6 +5089,15 @@ function projectAddressDeepJob(
   ): boolean => {
     const key = contractDrivenAddressAmountDuplicateKey(fromAddress, toAddress, amountRaw);
     return key !== null && contractDrivenAddressAmountKeys.has(key);
+  };
+  const isContractDrivenPairContextDuplicate = (
+    fromAddress: string | null,
+    toAddress: string | null
+  ): boolean => {
+    const forwardKey = contractDrivenAddressPairKey(fromAddress, toAddress);
+    const reverseKey = contractDrivenAddressPairKey(toAddress, fromAddress);
+    return (forwardKey !== null && contractDrivenAddressPairAmounts.has(forwardKey)) ||
+      (reverseKey !== null && contractDrivenAddressPairAmounts.has(reverseKey));
   };
   serviceProfiles.forEach((profile) => {
     const profileAddress = stringField(profile, "serviceAddress") ?? stringField(profile, "address");
@@ -5796,6 +5805,9 @@ function projectAddressDeepJob(
         const txHash = isSecondHopEdge ? txHashes.at(-1) ?? null : null;
         const amountRaw = isSecondHopEdge ? secondLayerRelationshipPathAmountRaw(path) : null;
         const amountShare = isSecondHopEdge ? numberField(path, "amountPreservationRatio") : null;
+        if (relationship === "direct_subject_edge" && isContractDrivenPairContextDuplicate(fromAddress, toAddress)) {
+          continue;
+        }
         const edgeId = `edge:second_layer_relationship:${pathIndex}:${edgeIndex}`;
         edges.push({
           id: edgeId,
@@ -5831,6 +5843,7 @@ function projectAddressDeepJob(
         });
         edgeIds.push(edgeId);
       }
+      if (edgeIds.length === 0) return;
 
       paths.push({
         id: pathId,

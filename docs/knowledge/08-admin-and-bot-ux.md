@@ -64,6 +64,11 @@ contract-driven receiver transfer is suppressed in the Admin graph, including
 reversed subject-to-source projections. The visible route stays source/victim to
 spender contract to receiver, so contextual path evidence cannot look like a
 separate direct wallet transfer from the receiver back to the source.
+DeepCheck second-layer relationship context also suppresses the artificial
+direct subject-to-source edge when the same source/receiver pair is already
+explained by a contract-driven or approval-drain profile. The source-to-service
+second hop remains visible as context, but it cannot imply that the receiver
+funded the victim/source wallet.
 
 The graph counter separates the current canvas from the graph API payload:
 `Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or
@@ -155,6 +160,13 @@ When several Where paths allocate different portions of the same physical
 transfer, Admin graph keeps one transfer edge and stores the per-path portions in
 `allocationDetails`. This avoids duplicate dashed lines and duplicate
 Counterparty transfer rows while preserving the allocation evidence.
+Where stop/boundary edges are diagnostic context, not money movement. They are
+anchored from the upstream stop node into the first route node instead of from
+the subject wallet, so a CEX/source boundary cannot look like an outgoing
+transfer from the checked wallet. In `Tx labels: selected`, ordinary Where
+shows labels on the selected money-origin route transfers and exact funding
+candidate transfers without requiring the analyst to click every edge; context
+and stop lines stay unlabeled unless explicitly inspected.
 
 When ordinary Where finishes with residual unresolved source provenance below
 materiality, Admin graph shows `residual_unresolved_source` as an informational
