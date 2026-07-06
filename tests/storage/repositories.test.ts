@@ -1226,6 +1226,12 @@ describe("TRON address USDT index repositories", () => {
   it("migration normalizes broad candidate hashes before identity constraints", () => {
     const sql = readFileSync("migrations/028_candidate_window_indexing.sql", "utf8");
 
+    expect(sql.indexOf("drop constraint if exists tron_address_usdt_index_states_window_check")).toBeLessThan(
+      sql.indexOf("update tron_address_usdt_index_states")
+    );
+    expect(sql.indexOf("drop constraint if exists forensic_job_waits_window_check")).toBeLessThan(
+      sql.indexOf("update forensic_job_waits")
+    );
     expect(sql).toContain("set candidate_tx_hash = ''");
     expect(sql).toContain("alter column candidate_tx_hash set default ''");
     expect(sql).toContain("alter column candidate_tx_hash set not null");

@@ -7,6 +7,8 @@ alter table tron_address_usdt_index_states
   add column if not exists related_hop_tx_hash text,
   add column if not exists candidate_tx_hash text not null default '';
 
+alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_window_check;
+
 update tron_address_usdt_index_states
 set request_kind = 'broad_targeted',
   window_start_timestamp_ms = case when coverage_mode = 'targeted' then 0 else 0 end,
@@ -30,7 +32,6 @@ alter table tron_address_usdt_index_states
   add constraint tron_address_usdt_index_states_request_kind_check
   check (request_kind in ('broad_targeted', 'candidate_window'));
 
-alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_window_check;
 alter table tron_address_usdt_index_states
   add constraint tron_address_usdt_index_states_window_check
   check (
@@ -78,6 +79,8 @@ alter table forensic_job_waits
   add column if not exists related_hop_tx_hash text,
   add column if not exists candidate_tx_hash text not null default '';
 
+alter table forensic_job_waits drop constraint if exists forensic_job_waits_window_check;
+
 update forensic_job_waits
 set request_kind = 'broad_targeted',
   window_end_timestamp_ms = target_timestamp_ms,
@@ -99,7 +102,6 @@ alter table forensic_job_waits
   add constraint forensic_job_waits_request_kind_check
   check (request_kind in ('broad_targeted', 'candidate_window'));
 
-alter table forensic_job_waits drop constraint if exists forensic_job_waits_window_check;
 alter table forensic_job_waits
   add constraint forensic_job_waits_window_check
   check (
