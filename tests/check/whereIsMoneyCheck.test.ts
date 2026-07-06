@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
 import { createContractLlmVerdictAnalyzer } from "../../src/forensics/contractLlmVerdict";
+import { repairFundingSourceExactWindow } from "../../src/forensics/fundingFirstSourceProvenance";
 import {
   createFixtureCrossChainDiscoveryProvider,
   type CrossChainDiscoveryProvider,
@@ -1152,7 +1153,147 @@ describe("runWhereIsMoneyCheck", () => {
     expect(broadTargets).toEqual([]);
   });
 
-  it("allows broad targeted fallback after candidate windows finish for unresolved provenance", async () => {
+  it("stops at known service boundary before candidate windows or broad fallback", async () => {
+    const serviceHopAddress = "TBybitHop111111111111111111111111";
+    const hop = edge("hop-tx-boundary", serviceHopAddress, subject, "100000000", "2026-07-04T12:00:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [hop]],
+      [serviceHopAddress, [hop]]
+    ]);
+    const candidateWindows: unknown[] = [];
+    const broadTargets: unknown[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 1,
+        oldestFetchedTransferAt: "2026-07-04T12:00:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) =>
+        address === serviceHopAddress
+          ? service("cex", "Bybit")
+          : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        return true;
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:01:00.000Z")
+    });
+
+    expect(report.originPaths.some((path) => path.rootSourceType === "allowlist_cex")).toBe(true);
+    expect(candidateWindows).toEqual([]);
+    expect(broadTargets).toEqual([]);
+  });
+
+  it("does not queue broad fallback after candidate windows for below-materiality unresolved provenance", async () => {
+    const hopAddress = "THopSmall111111111111111111111111111";
+    const candidateFunder = "TFunderSmall11111111111111111111111";
+    const largeSender = "TLargeSender111111111111111111111111";
+    const hop = edge("hop-tx-small", hopAddress, subject, "500000", "2026-07-04T12:00:00.000Z");
+    const large = edge("hop-tx-large", largeSender, subject, "99500000", "2026-07-04T11:00:00.000Z");
+    const funding = edge("candidate-tx-small", candidateFunder, hopAddress, "500000", "2026-07-04T11:59:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [large, hop]],
+      [largeSender, [edge("tx-binance-large", binance, largeSender, "99500000", "2026-07-04T10:30:00.000Z")]],
+      [hopAddress, [funding, hop]]
+    ]);
+    const candidateWindows: unknown[] = [];
+    const broadTargets: unknown[] = [];
+    let repairCalled = false;
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-04T11:59:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) =>
+        address === largeSender || address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        return true;
+      },
+      repairSourceProvenanceWindow: async (input) => {
+        repairCalled = true;
+        return repairFundingSourceExactWindow({
+          target: input.target,
+          windowEdges: [hop],
+          windowCoverage: {
+            complete: false,
+            capped: true,
+            statusReason: "partial_provider_cap",
+            fetchedTransferCount: 1,
+            oldestFetchedTransferAt: hop.timestamp.toISOString(),
+            source: "local_index"
+          },
+          downstreamAmountRaw: input.downstreamAmountRaw,
+          minCoverageRatio: input.minCoverageRatio,
+          maxFunders: input.maxFunders
+        });
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:01:00.000Z"),
+      maxDepth: 3,
+      beamWidth: 4
+    });
+
+    expect(report.originPaths.find((path) => path.balanceTransferTxHash === "hop-tx-small")?.stoppedReason)
+      .toBe("funding_first_unresolved");
+    expect(repairCalled).toBe(true);
+    expect(report.scoreValid).not.toBe(false);
+    expect(report.sourceProvenanceMateriality).toMatchObject({
+      outcome: "residual_unresolved_below_materiality"
+    });
+    expect(candidateWindows).toEqual([
+      expect.objectContaining({
+        address: hopAddress,
+        candidateTxHash: "candidate-tx-small",
+        relatedHopTxHash: "hop-tx-small"
+      })
+    ]);
+    expect(broadTargets).toEqual([]);
+  });
+
+  it("allows broad targeted fallback after candidate windows leave material unresolved provenance", async () => {
     const hopAddress = "THop222222222222222222222222222222";
     const candidateFunder = "TFunder222222222222222222222222222";
     const hop = edge("hop-tx-2", hopAddress, subject, "100000000", "2026-07-04T12:00:00.000Z");
@@ -1204,7 +1345,77 @@ describe("runWhereIsMoneyCheck", () => {
       {
         address: hopAddress,
         targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
-        queuedReason: "where_is_money_hop"
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
+      }
+    ]);
+  });
+
+  it("queues broad fallback after candidate windows when unresolved amount exceeds the raw materiality cap", async () => {
+    const hopAddress = "THopRawMaterial11111111111111111111";
+    const candidateFunder = "TFunderRawMaterial111111111111111";
+    const largeSender = "TLargeRawMaterial11111111111111111";
+    const hop = edge("hop-tx-raw-material", hopAddress, subject, "5000000000", "2026-07-04T12:00:00.000Z");
+    const large = edge("hop-tx-raw-large", largeSender, subject, "995000000000", "2026-07-04T11:00:00.000Z");
+    const funding = edge("candidate-tx-raw-material", candidateFunder, hopAddress, "5000000000", "2026-07-04T11:59:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [large, hop]],
+      [largeSender, [edge("tx-binance-raw-large", binance, largeSender, "995000000000", "2026-07-04T10:30:00.000Z")]],
+      [hopAddress, [funding, hop]]
+    ]);
+    const candidateWindows: unknown[] = [];
+    const broadTargets: unknown[] = [];
+
+    await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-04T11:59:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) =>
+        address === largeSender || address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        return true;
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "1000000000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:01:00.000Z"),
+      maxDepth: 3,
+      beamWidth: 4
+    });
+
+    expect(candidateWindows).toEqual([
+      expect.objectContaining({
+        address: hopAddress,
+        candidateTxHash: "candidate-tx-raw-material",
+        relatedHopTxHash: "hop-tx-raw-material"
+      })
+    ]);
+    expect(broadTargets).toEqual([
+      {
+        address: hopAddress,
+        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
       }
     ]);
   });

@@ -1121,6 +1121,7 @@ async function runWhereIsMoneyJob(
         address: string;
         targetTimestamp: Date;
         queuedReason: "where_is_money_hop";
+        reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
       }): Promise<true> => ensureTargetedHistory(input.address, input.targetTimestamp, {
         latestTimestamp: input.targetTimestamp
       })

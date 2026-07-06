@@ -1785,7 +1785,8 @@ describe("deep forensic job runner", () => {
       await deps.ensureBroadTargetedHistory({
         address: hopAddress,
         targetTimestamp: hopTimestamp,
-        queuedReason: "where_is_money_hop"
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
       });
       coverageSnapshots.push(await deps.getHistoryCoverageForAddress(hopAddress, {
         latestTimestamp: hopTimestamp

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-05
+last_verified: 2026-07-06
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -163,10 +163,14 @@ silently reinterpreted; run a fresh Where check to get the new result.
 Ordinary Where and Incoming deposit now try candidate-window targeted indexing
 before broad targeted fallback for `probable` funding-first source provenance.
 After source provenance is computed, the trace selects narrow candidate-to-hop
-windows and waits for those targeted states first. If the candidate windows are
-already done or terminal, Where may then request the older broad
-`where_is_money_hop` targeted fallback, and Incoming may request
-`incoming_deposit_hop`, before returning an unresolved incomplete path.
+windows and waits for those targeted states first. Requesting or waiting on
+candidate windows does not itself queue broad targeted history. If the
+candidate windows are already done or terminal and the rerun still leaves
+material unresolved exposure, Where may then request the older broad
+`where_is_money_hop` targeted fallback. Hard-evidence branches can also require
+broad fallback. Below-materiality unresolved exposure remains a completed
+caveated Where result instead of a broad-history request. Incoming keeps its
+separate `incoming_deposit_hop` fallback path.
 
 Candidate-window waits are durable and resumable. They use the exact
 candidate-window identity (`address`, target timestamp, window start, and
@@ -174,10 +178,12 @@ candidate tx hash), so several funding candidates for the same hop can be
 indexed independently. When all candidate windows for a waiting job are ready
 or terminal, the parent job resumes and re-runs funding-first provenance. If
 the exact candidate windows cover the material hop amount, broad targeted
-fallback is not needed. If they do not, Where or Incoming can still queue the
-broad `genesis -> targetTimestamp` targeted fallback. Candidate windows do not
-change scoring math and do not become hard proof unless the existing
-funding-first rules classify the repaired window as `exact`.
+fallback is not needed. If they do not, Where can still queue the broad
+`genesis -> targetTimestamp` targeted fallback only when the unresolved branch
+is material or hard-evidence relevant. Service/CEX/high-degree boundaries stop
+before candidate-window or broad fallback work for that boundary address.
+Candidate windows do not change scoring math and do not become hard proof unless
+the existing funding-first rules classify the repaired window as `exact`.
 
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as

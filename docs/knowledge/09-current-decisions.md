@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-05
+last_verified: 2026-07-06
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -59,6 +59,12 @@ of these decisions, update this file in the same work.
   before broad targeted fallback for probable source-provenance candidates. A
   candidate window has a lower and upper timestamp plus candidate identity; it
   does not count as broad address-history coverage.
+- Ordinary `Where is money` does not queue broad targeted history just because
+  candidate windows were requested or are pending. After candidate-window rerun,
+  broad fallback is gated to material unresolved exposure or hard-evidence
+  branches; below-materiality unresolved exposure remains a completed caveat.
+  Service/CEX/high-degree boundaries stop before candidate-window or broad
+  fallback work for that boundary address.
 - Ordinary `Where is money` Admin graphs render saved funding candidates only
   when they attach to concrete route hops. Exact candidates can be shown as
   funding edges; probable candidates remain context; over-limit candidate tails

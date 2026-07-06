@@ -29,12 +29,12 @@ import {
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 
 // ponytail: local policy constants until forensic config is centralized; upgrade path: move to config after live calibration.
-const MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE = 0.01;
-const MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW = 100_000_000n;
+export const MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE = 0.01;
+export const MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW = 100_000_000n;
 const USDT_RAW_SCALE = 1_000_000n;
-const MAX_DENSE_HOP_UNRESOLVED_SOURCE_SHARE = 0.01;
+export const MAX_DENSE_HOP_UNRESOLVED_SOURCE_SHARE = 0.01;
 const MAX_DENSE_HOP_AGGREGATE_UNRESOLVED_SOURCE_SHARE = 0.02;
-const MAX_DENSE_HOP_UNRESOLVED_SOURCE_RAW = 10_000n * USDT_RAW_SCALE;
+export const MAX_DENSE_HOP_UNRESOLVED_SOURCE_RAW = 10_000n * USDT_RAW_SCALE;
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
   fastWalletRisk: RiskReport | null;

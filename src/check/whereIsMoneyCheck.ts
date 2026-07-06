@@ -85,6 +85,7 @@ export type WhereIsMoneyDeps = {
     address: string;
     targetTimestamp: Date;
     queuedReason: "where_is_money_hop";
+    reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
   }): Promise<true>;
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;

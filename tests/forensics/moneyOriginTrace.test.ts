@@ -802,7 +802,8 @@ describe("traceMoneyOriginPath", () => {
       {
         address: partialWallet,
         targetTimestamp: targetHop.timestamp,
-        queuedReason: "where_is_money_hop"
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
       }
     ]);
   });
