@@ -37,24 +37,36 @@ describe("wallet intelligence extraction", () => {
     expect(supportedWalletIntelligenceJob(baseJob())).toBe(true);
     expect(supportedWalletIntelligenceJob(baseJob({ kind: "where_is_money_check" }))).toBe(true);
     expect(supportedWalletIntelligenceJob(baseJob({ kind: "incoming_deposit_check" }))).toBe(true);
+    expect(supportedWalletIntelligenceJob(baseJob({ status: "partial" }))).toBe(true);
     expect(supportedWalletIntelligenceJob(baseJob({ kind: "address_fast_check" }))).toBe(false);
     expect(supportedWalletIntelligenceJob(baseJob({ status: "running" }))).toBe(false);
     expect(WALLET_INTELLIGENCE_INDEX_VERSION).toBe(1);
   });
 
   it("hashes result payload plus relevant incoming progress fields", () => {
-    const first = sourcePayloadHash(baseJob({
+    const progressJson = {
+      depositTxHash: "tx-1",
+      watchedWallet: "TWallet",
+      sender: "TSender",
+      amountRaw: "1000000",
+      timestamp: "2026-07-06T00:10:00.000Z"
+    };
+    const hashForProgress = (progress: Record<string, unknown>) => sourcePayloadHash(baseJob({
       kind: "incoming_deposit_check",
       resultJson: { originPaths: [] },
-      progressJson: { depositTxHash: "tx-1", sender: "TSender", watchedWallet: "TWallet" }
+      progressJson: progress
     }));
-    const second = sourcePayloadHash(baseJob({
-      kind: "incoming_deposit_check",
-      resultJson: { originPaths: [] },
-      progressJson: { depositTxHash: "tx-2", sender: "TSender", watchedWallet: "TWallet" }
-    }));
+    const baseline = hashForProgress(progressJson);
 
-    expect(first).not.toBe(second);
+    for (const [field, value] of Object.entries({
+      depositTxHash: "tx-2",
+      watchedWallet: "TWallet2",
+      sender: "TSender2",
+      amountRaw: "2000000",
+      timestamp: "2026-07-06T00:11:00.000Z"
+    })) {
+      expect(hashForProgress({ ...progressJson, [field]: value })).not.toBe(baseline);
+    }
   });
 
   it("extracts DeepCheck direct counterparties and second-layer paths", () => {
