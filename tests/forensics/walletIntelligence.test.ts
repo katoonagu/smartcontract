@@ -172,6 +172,49 @@ describe("wallet intelligence extraction", () => {
     expect(extracted.edges[0]).toMatchObject({ txHash: "tx-where", edgeRole: "transfer" });
   });
 
+  it("extracts Where origin paths from saved whereIsMoneyReport payloads", () => {
+    const extracted = extractWalletIntelligenceFromJob(baseJob({
+      kind: "where_is_money_check",
+      resultJson: {
+        whereIsMoneyReport: {
+          originPaths: [{
+            pathAddresses: ["TNestedSource11111111111111111111111", "TSubject111111111111111111111111111111"],
+            txHashes: ["tx-where-nested"],
+            steps: [{
+              txHash: "tx-where-nested",
+              fromAddress: "TNestedSource11111111111111111111111",
+              toAddress: "TSubject111111111111111111111111111111",
+              amountRaw: "3100000",
+              timestamp: "2026-07-06T00:31:00.000Z",
+              method: "transfer",
+              edgeType: "normal_transfer"
+            }],
+            sourceProvenance: [{
+              targetTxHash: "tx-where-nested",
+              targetFromAddress: "TNestedSource11111111111111111111111",
+              targetToAddress: "TSubject111111111111111111111111111111",
+              targetTimestamp: "2026-07-06T00:31:00.000Z",
+              targetAmountRaw: "3100000",
+              proofClass: "probable",
+              amountContinuity: "strong",
+              stopReason: null,
+              coverageRatio: 1,
+              reasons: ["capped_window"]
+            }]
+          }]
+        }
+      }
+    }));
+
+    expect(extracted.sightings.some((item) => item.sourceKind === "where_source_provenance")).toBe(true);
+    expect(extracted.edges).toContainEqual(expect.objectContaining({
+      txHash: "tx-where-nested",
+      fromAddress: "TNestedSource11111111111111111111111",
+      toAddress: "TSubject111111111111111111111111111111",
+      sourceKind: "where_origin_path"
+    }));
+  });
+
   it("extracts Incoming origin paths and funding bundles", () => {
     const extracted = extractWalletIntelligenceFromJob(baseJob({
       kind: "incoming_deposit_check",

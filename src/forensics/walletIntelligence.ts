@@ -361,16 +361,18 @@ function extractWhere(
   sightings: WalletIntelligenceSightingInput[],
   edges: WalletIntelligenceEdgeInput[]
 ): void {
+  const originPaths = whereOriginPaths(job);
   extractOriginPaths({
     job,
     sightings,
     edges,
     sourceKind: "where_origin_path",
     fallbackRole: "source",
-    pathPrefix: "where-origin-path"
+    pathPrefix: "where-origin-path",
+    originPaths
   });
 
-  recordArray(job.resultJson.originPaths).forEach((path, pathIndex) => {
+  originPaths.forEach((path, pathIndex) => {
     const id = pathId(path, `where-origin-path-${pathIndex}`);
     const pathAddresses = addressArray(path.pathAddresses);
     recordArray(path.sourceProvenance).forEach((sourceProvenance) => {
@@ -378,6 +380,13 @@ function extractWhere(
       addSourceProvenanceSighting(job, sightings, sourceProvenance, "targetToAddress", id, pathAddresses);
     });
   });
+}
+
+function whereOriginPaths(job: ForensicCheckJob): Record<string, unknown>[] {
+  const topLevelPaths = recordArray(job.resultJson.originPaths);
+  if (topLevelPaths.length > 0) return topLevelPaths;
+  const report = recordField(job.resultJson, "whereIsMoneyReport");
+  return report ? recordArray(report.originPaths) : [];
 }
 
 function extractIncoming(
@@ -502,8 +511,9 @@ function extractOriginPaths(input: {
   sourceKind: "where_origin_path" | "incoming_origin_path";
   fallbackRole: WalletIntelligenceSightingInput["role"];
   pathPrefix: string;
+  originPaths?: Record<string, unknown>[];
 }): void {
-  recordArray(input.job.resultJson.originPaths).forEach((path, pathIndex) => {
+  (input.originPaths ?? recordArray(input.job.resultJson.originPaths)).forEach((path, pathIndex) => {
     const id = pathId(path, `${input.pathPrefix}-${pathIndex}`);
     const txHashes = stringArray(path.txHashes);
     addressArray(path.pathAddresses).forEach((address, depth) => {
