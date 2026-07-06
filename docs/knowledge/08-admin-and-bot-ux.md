@@ -67,9 +67,12 @@ These graph counters and legend chips live in the Analytics rail, not over the
 graph canvas controls.
 The Analytics rail is compact-first: selected node/edge details are shown above
 the case summary but capped so they cannot consume the whole rail, graph
-counters and legends use rectangular dense rows, and long operational
-diagnostics such as projection gaps, targeted history, and funding-candidate
-visibility are collapsed by default.
+counters use readable labels such as visible nodes/links/paths instead of raw
+N/E/P/W codes, and long operational diagnostics such as projection gaps,
+targeted history, and funding-candidate visibility are collapsed by default.
+The case summary starts with the analyst meaning of the active check, then shows
+risk, coverage, evidence strength, and the largest incoming/outgoing
+counterparties with TronScan links.
 
 The Admin graph canvas is a full-workspace background layer behind the Jobs,
 Analytics, controls, and timeline overlays. Side rails anchor from the top of
@@ -78,6 +81,14 @@ visible behind them. The activity timeline is a focus control: selecting a time
 bucket highlights matching transfer edges and dims surrounding context on the
 canvas, while the transfer drawer can still list only rows from the selected
 bucket.
+
+The Jobs rail is an analyst queue, not a raw database dump. It uses queue
+shortcuts for all jobs, running jobs, and jobs that need review; job cards show
+plain check names, status, risk score when saved in the job result, coverage,
+requester, human-readable started/updated times, a short progress or failure
+reason, and only a shortened job id. The strict provenance benchmark launcher is
+not shown in Jobs; strict benchmark diagnostics remain visible inside Analytics
+when a job already contains them.
 
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in

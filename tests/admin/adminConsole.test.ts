@@ -404,16 +404,34 @@ describe("adminConsoleHtml", () => {
     expect(lines).toContain("provider errors 429/403/5xx: 0/0/0");
   });
 
-  it("renders strict provenance benchmark controls", () => {
+  it("keeps strict provenance diagnostics out of the Jobs launcher", () => {
     const html = adminConsoleHtml();
 
-    expect(html).toContain("Strict benchmark");
-    expect(html).toContain("strictBenchmarkAddress");
-    expect(html).toContain("/admin/api/strict-provenance-benchmark");
-    expect(html).toContain("startStrictBenchmark");
-    expect(html).toContain("strictBenchmarkAddressForJob");
-    expect(html).toContain("Select a job or paste an address.");
-    expect(html).toContain('el("kind").value = ""');
+    expect(html).not.toContain("strictBenchmarkAddress");
+    expect(html).not.toContain("/admin/api/strict-provenance-benchmark");
+    expect(html).not.toContain("startStrictBenchmark");
+    expect(html).not.toContain("strictBenchmarkAddressForJob");
+    expect(html).toContain('detailsMetric("Strict benchmark"');
+  });
+
+  it("renders Jobs as an analyst queue with readable cards", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('id="jobsModeAll"');
+    expect(html).toContain('id="jobsModeRunning"');
+    expect(html).toContain('id="jobsModeReview"');
+    expect(html).toContain("Needs review");
+    expect(html).toContain("Find address, tx, or job id");
+    expect(html).toContain("Status: all");
+    expect(html).toContain("Check: all");
+    expect(html).toContain("function jobPassesQueueMode");
+    expect(html).toContain("function jobRiskLabel");
+    expect(html).toContain("function formatJobTime");
+    expect(html).toContain("function jobProgressLine");
+    expect(html).toContain('humanCheckKind(job.kind)');
+    expect(html).toContain("Risk pending");
+    expect(html).toContain("<strong>Updated:</strong>");
+    expect(html).toContain("jobsResultSummary");
   });
 
   it("renders strict provenance benchmark status copy", () => {
@@ -515,14 +533,19 @@ describe("adminConsoleHtml", () => {
   it("contains case brief summary helpers", () => {
     const html = adminConsoleHtml();
 
+    expect(html).toContain("function caseBriefIntroText");
+    expect(html).toContain("function htmlListMetric");
+    expect(html).toContain("function formatBriefEdgeHtml");
     expect(html).toContain("function caseBriefTopIncoming");
     expect(html).toContain("function caseBriefTopOutgoing");
     expect(html).toContain("function caseBriefTopServices");
-    expect(html).toContain("Top incoming");
-    expect(html).toContain("Top outgoing");
+    expect(html).toContain("Largest incoming");
+    expect(html).toContain("Largest outgoing");
     expect(html).toContain("Top services");
     expect(html).toContain("Boundary stops");
-    expect(html).toContain("Profile/context graph");
+    expect(html).toContain("DeepCheck profile");
+    expect(html).toContain("Fast triage view. It shows direct counterparties");
+    expect(html).toContain("explorerLink(tronscanAddressUrl(address), short(address, 7))");
   });
 
   it("contains semantic edge and node visual helpers", () => {
@@ -899,7 +922,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('metricHtml("To", endpointDetailLink(edge, "to"), "wide")');
     expect(html).toContain('metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide")');
     expect(html).toContain('metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide")');
-    expect(html).toContain("return amount + \" - \" + short(address, 7);");
+    expect(html).toContain('return \'<div class="counterparty-row"><strong>\' + escapeHtml(amount)');
+    expect(html).toContain("explorerLink(tronscanAddressUrl(address), short(address, 7))");
     expect(html).toContain("function edgeEvidenceEndpoint");
     expect(html).toContain('transfer?.fromAddress || transfer?.sourceAddress');
     expect(html).toContain('transfer?.toAddress || transfer?.receiverAddress');
@@ -1490,9 +1514,9 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const graphStatsChips = [");
     expect(html).not.toContain(".graph-action-row #amountMode");
     expect(html).toContain('const graphStatsTitle = [');
-    expect(html).toContain('"Visible N" + placed.nodes.length + "/E" + visibleEdges.length');
-    expect(html).toContain('"Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length');
-    expect(html).toContain('"W" + graphWeights(graph).length');
+    expect(html).toContain('"Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "link")');
+    expect(html).toContain('"Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "link")');
+    expect(html).toContain('"Score weights: " + graphWeights(graph).length');
     expect(html).toContain('title="\' + escapeHtml(graphStatsTitle) + \'"');
     expect(html).toContain(".graph-stage {\n      position: absolute;\n      inset: 0;");
     expect(html).toContain("z-index: 1;\n      min-width: 0;");
@@ -2794,8 +2818,9 @@ describe("adminConsoleHtml", () => {
     expect(renderBlock).toContain("const rawVisibleEdges = filteredGraphEdges();");
     expect(renderBlock).toContain("const rawVisibleNodes = graphNodes(graph).filter");
     expect(renderBlock).toContain("const totalGraphStatsText =");
-    expect(renderBlock).toContain('"Visible N" + placed.nodes.length + "/E" + visibleEdges.length');
-    expect(renderBlock).toContain('"Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length');
+    expect(renderBlock).toContain('"Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "link")');
+    expect(renderBlock).toContain('"Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "link")');
+    expect(renderBlock).toContain('"Score weights: " + graphWeights(graph).length');
     expect(presentationBlock).toContain('if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };');
   });
 
@@ -4985,9 +5010,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('caseStatusChip("Risk"');
     expect(html).toContain('caseStatusChip("Evidence"');
     expect(html).toContain('caseStatusChip("Coverage"');
-    expect(renderCaseBriefBlock).toContain('const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary",');
-    expect(renderCaseBriefBlock).toContain("Select a node, edge, group, service, or boundary to inspect the supporting facts.");
+    expect(renderCaseBriefBlock).toContain('const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", caseBriefIntroText(graph),');
     expect(renderCaseBriefBlock).toContain("caseBriefClarityHtml(graphRiskClarity(graph))");
+    expect(renderCaseBriefBlock).toContain('metric("Check", humanCheckKind(jobKind) + " / " + jobStatus, "wide")');
+    expect(renderCaseBriefBlock).toContain('htmlListMetric("Largest incoming"');
+    expect(renderCaseBriefBlock).toContain('htmlListMetric("Largest outgoing"');
     expect(renderCaseBriefBlock).toContain('detailsMetric("Projection gaps"');
     expect(renderCaseBriefBlock).toContain("root.innerHTML = noSelectionIntro + '<div class=\"metric-grid\">");
     expect(renderCaseBriefBlock.indexOf("const noSelectionIntro")).toBeLessThan(renderCaseBriefBlock.indexOf("root.innerHTML = noSelectionIntro"));

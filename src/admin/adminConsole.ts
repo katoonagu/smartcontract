@@ -186,7 +186,7 @@ export function adminConsoleHtml(): string {
       box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
       backdrop-filter: blur(10px);
     }
-    .active-job-summary { min-width: 0; padding: 8px 10px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, auto); gap: 4px 10px; align-items: center; }
+    .active-job-summary { min-width: 0; padding: 7px 10px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, auto); gap: 3px 10px; align-items: center; }
     .active-job-summary strong { min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .active-job-summary .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .active-job-summary .stats { grid-column: 2; grid-row: 1 / span 2; justify-content: flex-end; overflow: hidden; }
@@ -217,7 +217,7 @@ export function adminConsoleHtml(): string {
     }
     .graph-action-row {
       position: absolute;
-      top: 104px;
+      top: 76px;
       left: calc(var(--left-rail-width) + 24px);
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
@@ -296,7 +296,7 @@ export function adminConsoleHtml(): string {
       min-height: 0;
       padding: 0;
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr;
       gap: 6px;
       align-items: start;
       border: 0;
@@ -311,6 +311,7 @@ export function adminConsoleHtml(): string {
       background: rgba(12, 17, 22, .72);
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: normal;
     }
     .analytics-graph-context .graph-legend {
       display: grid;
@@ -558,26 +559,54 @@ export function adminConsoleHtml(): string {
     }
     .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .filters .wide { grid-column: 1 / -1; }
+    .jobs-queue-head { display: grid; gap: 10px; }
+    .jobs-queue-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .jobs-queue-tab {
+      min-width: 0;
+      height: 30px;
+      padding: 0 7px;
+      color: var(--text-secondary);
+      background: rgba(8, 11, 15, .72);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .jobs-queue-tab.active {
+      border-color: rgba(122, 162, 247, .78);
+      background: rgba(28, 48, 78, .54);
+      color: #eef5ff;
+    }
+    .jobs-search-row { display: grid; grid-template-columns: minmax(0, 1fr); }
+    .jobs-filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .jobs-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .jobs-result-summary { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .toolbar-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
     .toolbar-row button { flex: 1; }
-    .job-list { padding: 10px; }
+    .job-list { display: grid; gap: 8px; padding: 10px; }
     .job {
       width: 100%;
       display: grid;
-      gap: 6px;
+      gap: 7px;
       text-align: left;
       background: #12161a;
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 7px;
       padding: 10px;
-      margin-bottom: 8px;
       cursor: pointer;
     }
     .job:hover, .job.active { border-color: var(--accent); background: #161d26; }
     .job-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
-    .job strong { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
-    .job span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .job-address { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 760; color: var(--text); }
+    .job-meta-row { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+    .job-pill { display: inline-flex; max-width: 100%; border: 1px solid rgba(58, 67, 77, .76); border-radius: 999px; padding: 2px 7px; color: var(--text-secondary); background: rgba(8, 11, 15, .46); font-size: 11px; line-height: 1.35; }
+    .job-pill strong { font-weight: 750; color: var(--text); }
+    .job-kind-pill { border-color: rgba(122, 162, 247, .42); color: #bcd1ff; }
+    .job-risk-high { border-color: rgba(240, 138, 149, .5); color: var(--semantic-risk); }
+    .job-risk-low { border-color: rgba(139, 213, 166, .44); color: var(--semantic-ok); }
+    .job-line { color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+    .job-line strong { color: var(--text-secondary); font-weight: 650; }
+    .job-id-line { color: var(--text-tertiary); font-size: 10.5px; }
     .status { font-size: 11px; border: 1px solid var(--line-strong); border-radius: 999px; padding: 2px 7px; text-transform: uppercase; }
     .status.completed, .status.partial { color: var(--good); border-color: rgba(139, 213, 166, .45); }
     .status.failed { color: var(--bad); border-color: rgba(255, 107, 107, .45); }
@@ -860,6 +889,18 @@ export function adminConsoleHtml(): string {
     .type-chip.bundle { color: var(--bundle); border-color: rgba(215, 178, 255, .58); }
     .list-lines { display: grid; gap: 6px; }
     .list-lines div, .list-lines span { font-size: 12px; color: var(--text); }
+    .counterparty-lines { display: grid; gap: 7px; }
+    .counterparty-row {
+      display: grid;
+      grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      font-size: 12px;
+    }
+    .counterparty-row strong { color: var(--text); font-size: 12px; white-space: nowrap; }
+    .counterparty-row span { min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+    .counterparty-row .link { font-weight: 650; }
+    .counterparty-row small { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
     .tx-lines { display: grid; gap: 8px; }
     .tx-line { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
     .tx-line:first-child { padding-top: 0; border-top: 0; }
@@ -1040,9 +1081,18 @@ export function adminConsoleHtml(): string {
           </div>
           <div class="overlay-body">
             <div class="compact-section-head">
-              <div class="filters">
+              <div class="jobs-queue-head">
+                <div class="jobs-queue-tabs" role="group" aria-label="Job queue view">
+                  <button id="jobsModeAll" class="jobs-queue-tab active" type="button">All</button>
+                  <button id="jobsModeRunning" class="jobs-queue-tab" type="button">Running</button>
+                  <button id="jobsModeReview" class="jobs-queue-tab" type="button">Needs review</button>
+                </div>
+                <div class="jobs-search-row">
+                  <input id="subject" placeholder="Find address, tx, or job id">
+                </div>
+                <div class="jobs-filter-row">
                 <select id="status">
-                  <option value="">all statuses</option>
+                  <option value="">Status: all</option>
                   <option value="completed">completed</option>
                   <option value="partial">partial</option>
                   <option value="failed">failed</option>
@@ -1051,27 +1101,24 @@ export function adminConsoleHtml(): string {
                   <option value="cancelled">cancelled</option>
                 </select>
                 <select id="kind">
-                  <option value="">all kinds</option>
-                  <option value="address_fast_check">address fast</option>
-                  <option value="where_is_money_check">where-is-money</option>
-                  <option value="address_deep_check">address deep</option>
-                  <option value="incoming_deposit_check">incoming deposit</option>
+                  <option value="">Check: all</option>
+                  <option value="address_fast_check">Fast check</option>
+                  <option value="where_is_money_check">Where is money</option>
+                  <option value="address_deep_check">DeepCheck</option>
+                  <option value="incoming_deposit_check">Incoming deposit</option>
                 </select>
-                <input id="subject" class="wide" placeholder="job id / address / tx hash / watched wallet">
+                </div>
+                <div class="jobs-action-row">
                 <select id="limit">
                   <option value="20">20 latest</option>
                   <option value="50" selected>50 latest</option>
                   <option value="100">100 latest</option>
                 </select>
                 <button id="refresh" type="button">Refresh</button>
-              </div>
-              <div class="toolbar-row">
                 <button id="autoRefresh" type="button">Auto off</button>
                 <button id="clearFilters" type="button">Clear</button>
-              </div>
-              <div class="toolbar-row strict-benchmark-row">
-                <input id="strictBenchmarkAddress" class="wide" placeholder="TRON wallet for strict benchmark">
-                <button id="startStrictBenchmark" type="button">Strict benchmark</button>
+                </div>
+                <div id="jobsResultSummary" class="jobs-result-summary">No jobs loaded.</div>
               </div>
             </div>
             <div id="jobs" class="job-list"></div>
@@ -1181,6 +1228,7 @@ export function adminConsoleHtml(): string {
       jobsRequestSeq: 0,
       graphRequestSeq: 0,
       jobsSearchTimer: null,
+      jobQueueMode: "all",
       pendingOpenJobId: null,
       nodeDrag: null,
       lastNodeClick: null,
@@ -1233,14 +1281,14 @@ export function adminConsoleHtml(): string {
     function caseBriefClarityHtml(clarity) {
       if (!clarity) {
         return metric("Coverage", "unknown") +
-          metric("Evidence", "unknown") +
+          metric("Evidence strength", "unknown") +
           metric("Confidence", "n/a") +
-          metric("Decision status", "unknown");
+          metric("Policy result", "unknown");
       }
       return metric("Coverage", clarityLine(clarity.coverageStatus, "unknown")) +
-        metric("Evidence", clarityLine(clarity.evidenceClass, "unknown")) +
+        metric("Evidence strength", clarityLine(clarity.evidenceClass, "unknown")) +
         metric("Confidence", typeof clarity.confidenceScore === "number" && Number.isFinite(clarity.confidenceScore) ? String(clarity.confidenceScore) : "n/a") +
-        metric("Decision status", clarityLine(clarity.decisionStatus, "unknown"));
+        metric("Policy result", clarityLine(clarity.decisionStatus, "unknown"));
     }
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const short = (value, size = 6) => {
@@ -1410,16 +1458,6 @@ export function adminConsoleHtml(): string {
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;
     }
-    function strictBenchmarkAddressForJob(job) {
-      if (!job) return "";
-      return String(job.watchedWallet || job.subjectAddress || "").trim();
-    }
-    function fillStrictBenchmarkAddressFromJob(job) {
-      const input = el("strictBenchmarkAddress");
-      if (!input || input.value.trim()) return;
-      const address = strictBenchmarkAddressForJob(job);
-      if (address) input.value = address;
-    }
     function requesterText(job) {
       return job.requesterUsername ? "@" + job.requesterUsername + " / " + (job.requestedBy || "no id") : job.requestedBy ? "tg:" + job.requestedBy : "system";
     }
@@ -1545,6 +1583,28 @@ export function adminConsoleHtml(): string {
         caseStatusChip("Coverage", coverage, "coverage") +
         '</div>';
     }
+    function humanCheckKind(kind) {
+      if (kind === "address_fast_check") return "Fast check";
+      if (kind === "address_deep_check") return "DeepCheck";
+      if (kind === "where_is_money_check") return "Where is money";
+      if (kind === "incoming_deposit_check") return "Incoming deposit";
+      return String(kind || "unknown").replace(/_/g, " ");
+    }
+    function caseBriefIntroText(graph) {
+      if (graph?.job?.kind === "address_deep_check") {
+        return "Shows the wallet profile, campaign context, and contract-triggered evidence. Money amounts belong to real transfer edges; contract context explains why those transfers matter.";
+      }
+      if (graph?.job?.kind === "where_is_money_check") {
+        return "Traces where the wallet's balance-forming funds came from. Service boundaries and caveats explain where the trace legitimately stops.";
+      }
+      if (graph?.job?.kind === "incoming_deposit_check") {
+        return "Traces the selected deposit and the sender path that funded it.";
+      }
+      if (graph?.job?.kind === "address_fast_check") {
+        return "Fast triage view. It shows direct counterparties from the bounded first pass; use DeepCheck or Where is money for provenance.";
+      }
+      return "Select a node, edge, group, service, or boundary to inspect the supporting facts.";
+    }
     function renderCaseBrief() {
       const root = el("caseBrief");
       const summaryRoot = el("activeJobSummary");
@@ -1567,17 +1627,17 @@ export function adminConsoleHtml(): string {
       summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
         '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>' +
         caseHeaderStatusChips(graph, summary);
-      const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", "Select a node, edge, group, service, or boundary to inspect the supporting facts.", [
+      const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", caseBriefIntroText(graph), [
         analystBadge(caseBriefModeLine(graph), "context")
       ]);
       root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
         metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide") +
-        metric("Check", jobKind + " / " + jobStatus, "wide") +
+        metric("Check", humanCheckKind(jobKind) + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
         metric("Decision", summary.decision || "UNKNOWN") +
         caseBriefClarityHtml(graphRiskClarity(graph)) +
-        listMetric("Top incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
-        listMetric("Top outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
+        htmlListMetric("Largest incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
+        htmlListMetric("Largest outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
         listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
         metric("Boundary stops", String(caseBriefStopCount())) +
         detailsMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
@@ -1662,55 +1722,37 @@ export function adminConsoleHtml(): string {
         setStatus("Scoring audit failed.");
       }
     }
-    async function startStrictBenchmark() {
-      state.token = el("token").value.trim();
-      localStorage.setItem("adminForensicsToken", state.token);
-      el("sessionState").textContent = state.token ? "session active" : "token missing";
-      const selectedAddress = strictBenchmarkAddressForJob(activeJob());
-      const subjectAddress = el("strictBenchmarkAddress").value.trim() || selectedAddress;
-      if (!subjectAddress) {
-        setStatus("Strict benchmark needs a TRON wallet. Select a job or paste an address.");
-        return;
-      }
-      el("strictBenchmarkAddress").value = subjectAddress;
-      try {
-        setStatus("Creating strict benchmark for " + short(subjectAddress, 10) + "...");
-        const body = await api("/admin/api/strict-provenance-benchmark", {
-          method: "POST",
-          body: JSON.stringify({ subjectAddress })
-        });
-        state.pendingOpenJobId = body.job?.id || null;
-        el("status").value = "";
-        el("kind").value = "";
-        el("subject").value = subjectAddress;
-        setStatus("Strict benchmark queued: " + short(body.job?.id || "", 8));
-        await loadJobs();
-      } catch (error) {
-        setStatus(error?.message || "Strict benchmark creation failed.");
-      }
-    }
     function briefEdgeAmountValue(edge) {
       const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw || edge?.metadata?.amountRaw);
       return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
     }
-    function formatBriefEdge(edge) {
+    function formatBriefEdgeHtml(edge) {
       const amount = edgeCanvasAmountLabel(edge) || edgeDetailedAmountLabel(edge) || "amount n/a";
       const address = edgeFlowDirection(edge) === "incoming" ? edgeFromAddress(edge) : edgeToAddress(edge);
-      return amount + " - " + short(address, 7);
+      const direction = edgeFlowDirection(edge) === "incoming" ? "from " : "to ";
+      const linkedAddress = address ? explorerLink(tronscanAddressUrl(address), short(address, 7)) : '<span class="muted">address n/a</span>';
+      const time = edgeTime(edge) || canvasTimestampLabel(edge?.timestamp || edge?.timestampIso || edge?.time);
+      const txHash = edgePrimaryTxHash(edge);
+      const tx = txHash ? "tx " + short(txHash, 5) : "";
+      const detail = [time, tx].filter(Boolean).join(" · ");
+      return '<div class="counterparty-row"><strong>' + escapeHtml(amount) + '</strong><span>' +
+        escapeHtml(direction) + linkedAddress +
+        (detail ? '<small>' + escapeHtml(detail) + '</small>' : "") +
+        '</span></div>';
     }
     function caseBriefTopIncoming() {
       return filteredTransferEdges()
         .filter((edge) => edgeFlowDirection(edge) === "incoming")
         .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a))
         .slice(0, 5)
-        .map(formatBriefEdge);
+        .map(formatBriefEdgeHtml);
     }
     function caseBriefTopOutgoing() {
       return filteredTransferEdges()
         .filter((edge) => edgeFlowDirection(edge) === "outgoing")
         .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a))
         .slice(0, 5)
-        .map(formatBriefEdge);
+        .map(formatBriefEdgeHtml);
     }
     function caseBriefTopServices() {
       return graphNodes(state.graph)
@@ -1722,10 +1764,10 @@ export function adminConsoleHtml(): string {
       return graphPaths(state.graph).filter((path) => path.stopReason).length;
     }
     function caseBriefModeLine(graph) {
-      if (graph?.job?.kind === "address_deep_check") return "Profile/context graph. This is not money-origin proof.";
-      if (graph?.job?.kind === "where_is_money_check") return "Money-origin trace.";
-      if (graph?.job?.kind === "incoming_deposit_check") return "Deposit-origin trace.";
-      if (graph?.job?.kind === "address_fast_check") return "Fast direct-neighborhood profile.";
+      if (graph?.job?.kind === "address_deep_check") return "DeepCheck profile";
+      if (graph?.job?.kind === "where_is_money_check") return "Money-origin trace";
+      if (graph?.job?.kind === "incoming_deposit_check") return "Deposit trace";
+      if (graph?.job?.kind === "address_fast_check") return "Fast triage";
       return projectionMode(graph);
     }
     function edgeTimestampMs(edge) {
@@ -1849,6 +1891,93 @@ export function adminConsoleHtml(): string {
         hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to focus graph flow.";
       }
     }
+    function jobQueueModeLabel(mode) {
+      if (mode === "running") return "Running";
+      if (mode === "review") return "Needs review";
+      return "All";
+    }
+    function jobPassesQueueMode(job) {
+      if (state.jobQueueMode === "running") {
+        return job.status === "running" || job.status === "queued" || isWaitingForTargetedIndex(job);
+      }
+      if (state.jobQueueMode === "review") {
+        return job.status === "partial" || job.status === "failed" || job.status === "cancelled";
+      }
+      return true;
+    }
+    function visibleJobsForQueue() {
+      return state.jobs.filter(jobPassesQueueMode);
+    }
+    function syncJobQueueModeControls() {
+      const all = el("jobsModeAll");
+      const running = el("jobsModeRunning");
+      const review = el("jobsModeReview");
+      if (all) all.classList.toggle("active", state.jobQueueMode === "all");
+      if (running) running.classList.toggle("active", state.jobQueueMode === "running");
+      if (review) review.classList.toggle("active", state.jobQueueMode === "review");
+    }
+    function setJobQueueMode(mode) {
+      state.jobQueueMode = ["all", "running", "review"].includes(mode) ? mode : "all";
+      renderJobs();
+    }
+    function formatJobTime(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return iso(value);
+      const now = new Date();
+      const sameDay = date.toDateString() === now.toDateString();
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      const day = sameDay ? "today" : date.toDateString() === yesterday.toDateString() ? "yesterday" : date.toLocaleDateString([], { month: "short", day: "2-digit" });
+      return day + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    function formatJobDuration(ms) {
+      if (!Number.isFinite(ms) || ms < 0) return "";
+      const minutes = Math.max(1, Math.round(ms / 60000));
+      if (minutes < 60) return minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      const rest = minutes % 60;
+      return hours + "h" + (rest ? " " + rest + "m" : "");
+    }
+    function jobDurationLabel(job) {
+      const started = job.startedAt ? new Date(job.startedAt).getTime() : null;
+      if (!started || !Number.isFinite(started)) return "";
+      const endValue = job.completedAt || job.updatedAt || null;
+      const ended = endValue ? new Date(endValue).getTime() : Date.now();
+      const duration = formatJobDuration(ended - started);
+      if (!duration) return "";
+      return (job.status === "running" || job.status === "queued") ? "running " + duration : "duration " + duration;
+    }
+    function jobRiskClass(job) {
+      const level = String(job.riskLevel || "").toLowerCase();
+      if (level === "high" || level === "critical" || Number(job.riskScore) >= 60) return " job-risk-high";
+      if (level === "low" || Number(job.riskScore) <= 30) return " job-risk-low";
+      return "";
+    }
+    function jobRiskLabel(job) {
+      if (typeof job.riskScore === "number" && Number.isFinite(job.riskScore)) {
+        return "Risk " + job.riskScore + (job.riskLevel ? " / " + job.riskLevel : "");
+      }
+      if (job.status === "running" || job.status === "queued") return "Risk pending";
+      return "Risk n/a";
+    }
+    function jobCoverageLabel(job) {
+      const value = job.coverageStatus || job.technicalStatus || "";
+      if (value) return "Coverage " + value;
+      if (job.status === "completed") return "Coverage complete";
+      if (job.status === "partial") return "Coverage partial";
+      return "";
+    }
+    function jobProgressLine(job, liveProgress, searchContext) {
+      if (liveProgress.length > 0) return "<strong>Current step:</strong> " + escapeHtml(liveProgress[0]);
+      if (job.lastError) return "<strong>Why here:</strong> " + escapeHtml(job.lastError);
+      if (job.status === "partial") return "<strong>Why here:</strong> Partial evidence or coverage limit. Open Analytics for details.";
+      if (job.status === "failed") return "<strong>Why here:</strong> Job failed before a graph could be completed.";
+      if (job.status === "running" || job.status === "queued") return "<strong>Current step:</strong> waiting for worker progress.";
+      if (searchContext) return "<strong>Context:</strong> " + escapeHtml(searchContext);
+      if (job.decision) return "<strong>Decision:</strong> " + escapeHtml(job.decision);
+      return "";
+    }
     function renderStats() {
       const counts = state.jobs.reduce((acc, job) => {
         acc.total += 1;
@@ -1865,11 +1994,23 @@ export function adminConsoleHtml(): string {
     function renderJobs() {
       const root = el("jobs");
       renderStats();
+      syncJobQueueModeControls();
+      const visibleJobs = visibleJobsForQueue();
+      const summary = el("jobsResultSummary");
+      if (summary) {
+        summary.textContent = state.jobs.length === 0
+          ? "No jobs loaded."
+          : jobQueueModeLabel(state.jobQueueMode) + ": " + visibleJobs.length + " of " + state.jobs.length + " loaded jobs";
+      }
       if (state.jobs.length === 0) {
         root.innerHTML = '<div class="empty">No jobs found. Check filters or run wallet checks first.</div>';
         return;
       }
-      root.innerHTML = state.jobs.map((job) => {
+      if (visibleJobs.length === 0) {
+        root.innerHTML = '<div class="empty">No jobs match this queue view.</div>';
+        return;
+      }
+      root.innerHTML = visibleJobs.map((job) => {
         const active = job.id === state.activeJobId ? " active" : "";
         const displayStatus = jobDisplayStatus(job);
         const liveProgress = jobLiveProgressLines(job);
@@ -1879,14 +2020,23 @@ export function adminConsoleHtml(): string {
           job.sender ? "sender " + short(job.sender, 8) : "",
           job.depositTxHash ? "tx " + short(job.depositTxHash, 8) : ""
         ].filter(Boolean).join(" · ");
+        const updated = formatJobTime(job.completedAt || job.updatedAt || job.createdAt);
+        const started = formatJobTime(job.startedAt || job.createdAt);
+        const duration = jobDurationLabel(job);
+        const coverage = jobCoverageLabel(job);
+        const progressLine = jobProgressLine(job, liveProgress, searchContext);
         return '<button type="button" class="job' + active + '" data-job-id="' + escapeHtml(job.id) + '">' +
-          '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(displayStatus.classValue) + '">' + escapeHtml(displayStatus.label) + '</span></div>' +
-          '<span>' + escapeHtml(job.kind) + '</span>' +
-          (searchContext ? '<span>' + escapeHtml(searchContext) + '</span>' : '') +
-          liveProgress.map((line) => '<span>' + escapeHtml(line) + '</span>').join("") +
-          '<span>requested by ' + escapeHtml(requester) + '</span>' +
-          '<span>' + escapeHtml(iso(job.completedAt || job.updatedAt || job.createdAt)) + '</span>' +
-          '<span>' + escapeHtml(job.id) + '</span>' +
+          '<div class="job-title"><span class="job-address">' + escapeHtml(short(job.subjectAddress, 10)) + '</span><span class="' + classifyStatus(displayStatus.classValue) + '">' + escapeHtml(displayStatus.label) + '</span></div>' +
+          '<div class="job-meta-row">' +
+            '<span class="job-pill job-kind-pill">' + escapeHtml(humanCheckKind(job.kind)) + '</span>' +
+            '<span class="job-pill' + jobRiskClass(job) + '">' + escapeHtml(jobRiskLabel(job)) + '</span>' +
+            (coverage ? '<span class="job-pill">' + escapeHtml(coverage) + '</span>' : '') +
+            (duration ? '<span class="job-pill">' + escapeHtml(duration) + '</span>' : '') +
+          '</div>' +
+          '<div class="job-line"><strong>Updated:</strong> ' + escapeHtml(updated || "time n/a") + (started ? ' · <strong>Started:</strong> ' + escapeHtml(started) : "") + '</div>' +
+          '<div class="job-line"><strong>Requested by:</strong> ' + escapeHtml(requester) + '</div>' +
+          (progressLine ? '<div class="job-line">' + progressLine + '</div>' : '') +
+          '<div class="job-id-line">job ' + escapeHtml(short(job.id, 8)) + '</div>' +
           '</button>';
       }).join("");
       root.querySelectorAll("[data-job-id]").forEach((button) => button.addEventListener("click", () => loadGraph(button.getAttribute("data-job-id"))));
@@ -1994,7 +2144,6 @@ export function adminConsoleHtml(): string {
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
-        fillStrictBenchmarkAddressFromJob(activeJob());
         state.expandedBundleNodeIds.clear();
         state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };
@@ -5164,19 +5313,20 @@ export function adminConsoleHtml(): string {
       const hiddenNodeCount = Math.max(0, graphNodes(graph).length - placed.nodes.length);
       const hiddenEdgeCount = Math.max(0, graphEdges(graph).length - visibleEdges.length);
       const hiddenGraphStatsText = hiddenNodeCount > 0 || hiddenEdgeCount > 0 ? "Hidden by view/filter: " + hiddenNodeCount + " nodes / " + hiddenEdgeCount + " edges" : "";
-      const totalGraphStatsText = "Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length;
-      const visibleGraphStatsText = "Visible N" + placed.nodes.length + "/E" + visibleEdges.length + "/P" + visiblePathCount;
+      const totalGraphStatsText = "Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "link") + ", " + statLabel(graphPaths(graph).length, "path");
+      const visibleGraphStatsText = "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "link") + ", " + statLabel(visiblePathCount, "path");
+      const weightStatsText = "Score weights: " + graphWeights(graph).length;
       const graphStatsTitle = [
-        "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "edge") + ", " + statLabel(visiblePathCount, "path"),
-        "Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "edge") + ", " + statLabel(graphPaths(graph).length, "path"),
+        visibleGraphStatsText,
+        totalGraphStatsText,
         ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
-        statLabel(graphWeights(graph).length, "weight")
+        weightStatsText
       ].join(" · ");
       const graphStatsChips = [
         visibleGraphStatsText,
         totalGraphStatsText,
         ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
-        "W" + graphWeights(graph).length
+        weightStatsText
       ];
       el("graphStats").innerHTML = graphStatsChips
         .map((text) => '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(text) + '</span>')
@@ -6243,6 +6393,11 @@ export function adminConsoleHtml(): string {
     }
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
+    }
+    function htmlListMetric(label, items, empty) {
+      const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+      if (values.length === 0) return metricHtml(label, '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>', "wide");
+      return metricHtml(label, '<div class="counterparty-lines">' + values.map((item) => String(item)).join("") + '</div>', "wide");
     }
     function detailsMetric(label, items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
@@ -7614,8 +7769,10 @@ export function adminConsoleHtml(): string {
     el("selectionCard").addEventListener("click", handleSelectedFlowTxRowClick);
     el("selectionCard").addEventListener("keydown", handleSelectedFlowTxRowKeydown);
     el("load").addEventListener("click", loadJobs);
-    el("startStrictBenchmark").addEventListener("click", startStrictBenchmark);
     el("refresh").addEventListener("click", loadJobs);
+    el("jobsModeAll").addEventListener("click", () => setJobQueueMode("all"));
+    el("jobsModeRunning").addEventListener("click", () => setJobQueueMode("running"));
+    el("jobsModeReview").addEventListener("click", () => setJobQueueMode("review"));
     el("status").addEventListener("change", loadJobs);
     el("kind").addEventListener("change", loadJobs);
     el("limit").addEventListener("change", loadJobs);
@@ -7630,6 +7787,7 @@ export function adminConsoleHtml(): string {
       el("status").value = "";
       el("kind").value = "";
       el("subject").value = "";
+      state.jobQueueMode = "all";
       loadJobs();
     });
     el("zoomIn").addEventListener("click", () => zoom(1.18));
