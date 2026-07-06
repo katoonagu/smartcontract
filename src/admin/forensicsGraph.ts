@@ -1157,9 +1157,10 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     const authorityEdgeId = `edge:approval_drain:${index}:spender_authority`;
     input.edges.push({
       id: authorityEdgeId,
-      fromNodeId: spenderNodeId,
-      toNodeId: victimNodeId,
+      fromNodeId: victimNodeId,
+      toNodeId: spenderNodeId,
       type: "approval",
+      displayRole: "profile_context",
       amountRaw: null,
       amountShare: null,
       txHash: approvalTxHash,
@@ -1171,16 +1172,19 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         source: "approvalDrainProvenanceProfile",
         evidenceType: "approval_drain_spender_authority",
         evidenceTypeLabel: "Approval-drain authority",
-        evidenceMeaning: "The spender/contract is linked to the victim by approval-drain evidence. This line explains authority context and is not a normal money transfer.",
+        evidenceMeaning: "The victim is linked to the spender/contract by approval-drain evidence. This line explains debit authority context and is not a normal money transfer.",
         pathId,
         approvalTxHash,
         drainTxHash,
         victimAddress,
         spenderAddress,
+        fromAddress: victimAddress,
+        toAddress: spenderAddress,
         operatorAddress,
         receiverAddress,
         spenderResolution,
-        evidenceKind
+        evidenceKind,
+        boundaryContextOnly: true
       }
     });
     edgeIds.push(authorityEdgeId);
@@ -3416,8 +3420,19 @@ function suppressFundingBundleDuplicateEdges(
 }
 
 function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["kind"]): AdminForensicsEdgeDisplayRole {
+  const evidenceType = stringField(edge.metadata, "evidenceType");
   if (edge.type === "stop") return "stop";
+  if (edge.displayRole === "profile_context") return "profile_context";
   if (edge.type === "approval") return "profile_context";
+  if (
+    evidenceType === "contract_trigger_context" ||
+    evidenceType === "contract_call_context" ||
+    evidenceType === "debit_authority_context" ||
+    evidenceType === "approval_drain_contract_call" ||
+    evidenceType === "approval_drain_spender_authority"
+  ) {
+    return "profile_context";
+  }
   if (
     jobKind === "address_deep_check" &&
     edge.type !== "transfer" &&

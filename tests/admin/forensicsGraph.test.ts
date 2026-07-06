@@ -7793,11 +7793,35 @@ describe("projectForensicJobGraph", () => {
     );
     expect(callEdge).toMatchObject({
       type: "approval",
+      displayRole: "profile_context",
       metadata: {
         method: "contract-driven token transfer",
         spenderResolution: "wrapper_contract"
       }
     });
+
+    const authorityEdge = result.graph.edges.find((edge) =>
+      edge.metadata.evidenceType === "approval_drain_spender_authority"
+    );
+    expect(authorityEdge).toMatchObject({
+      fromNodeId: `addr:${victim}`,
+      toNodeId: `addr:${spenderContract}`,
+      type: "approval",
+      displayRole: "profile_context",
+      amountRaw: null,
+      metadata: {
+        boundaryContextOnly: true,
+        fromAddress: victim,
+        toAddress: spenderContract,
+        victimAddress: victim,
+        spenderAddress: spenderContract
+      }
+    });
+    expect(result.graph.edges.some((edge) =>
+      edge.fromNodeId === `addr:${spenderContract}` &&
+      edge.toNodeId === `addr:${victim}` &&
+      edge.metadata.evidenceType === "approval_drain_spender_authority"
+    )).toBe(false);
   });
 
   it("projects repeated Verify20 contract-driven inflows as a drainer-like receiver campaign", () => {
@@ -7915,6 +7939,7 @@ describe("projectForensicJobGraph", () => {
       edge.metadata.evidenceType === "contract_trigger_context"
     );
     expect(triggerEdge).toMatchObject({
+      displayRole: "profile_context",
       amountRaw: "9370000000",
       txHash,
       metadata: {
@@ -8173,6 +8198,7 @@ describe("projectForensicJobGraph", () => {
 
     expect(triggerEdge).toMatchObject({
       type: "transfer",
+      displayRole: "profile_context",
       amountRaw: "9370000000",
       txHash,
       metadata: {
@@ -9404,7 +9430,19 @@ describe("projectForensicJobGraph", () => {
     )).toMatchObject({
       fromNodeId: `addr:${operator}`,
       toNodeId: `addr:${spenderContract}`,
+      displayRole: "profile_context",
       metadata: {
+        evidenceKind: "route_linked_exact_root"
+      }
+    });
+    expect(result.graph.edges.find((edge) =>
+      edge.metadata.evidenceType === "approval_drain_spender_authority"
+    )).toMatchObject({
+      fromNodeId: `addr:${victim}`,
+      toNodeId: `addr:${spenderContract}`,
+      displayRole: "profile_context",
+      metadata: {
+        boundaryContextOnly: true,
         evidenceKind: "route_linked_exact_root"
       }
     });

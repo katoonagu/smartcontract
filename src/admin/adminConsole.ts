@@ -118,9 +118,9 @@ export function adminConsoleHtml(): string {
       background: rgba(20, 15, 30, .78);
       color: var(--semantic-grouped);
     }
-    .graph-legend { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-    .graph-legend-chip { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; white-space: normal; }
-    .legend-chip { display: inline-flex; gap: 5px; align-items: center; }
+    .graph-legend { display: grid; gap: 6px; min-width: 0; }
+    .graph-legend-card { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; min-width: 0; }
+    .legend-chip { display: inline-flex; gap: 5px; align-items: center; min-width: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.25; }
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
     .legend-swatch.direct { border-color: #8fe9af; }
     .legend-swatch.direct-context { border-color: var(--semantic-context); border-top-style: dashed; opacity: .78; }
@@ -170,7 +170,7 @@ export function adminConsoleHtml(): string {
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px);
+      grid-template-columns: minmax(260px, 1fr) minmax(240px, 360px);
       gap: 10px;
       align-items: center;
       pointer-events: none;
@@ -186,12 +186,38 @@ export function adminConsoleHtml(): string {
       box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
       backdrop-filter: blur(10px);
     }
-    .active-job-summary { padding: 10px 12px; display: grid; gap: 4px; }
-    .active-job-summary strong { font-size: 13px; overflow-wrap: anywhere; }
-    .graph-topbar input { width: 100%; background: rgba(12, 15, 18, .92); }
+    .active-job-summary { min-width: 0; padding: 8px 10px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, auto); gap: 4px 10px; align-items: center; }
+    .active-job-summary strong { min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .active-job-summary .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .active-job-summary .stats { grid-column: 2; grid-row: 1 / span 2; justify-content: flex-end; overflow: hidden; }
+    .graph-search-box {
+      display: grid;
+      gap: 3px;
+      padding: 7px 9px;
+      border: 1px solid rgba(58, 67, 77, .82);
+      border-radius: 8px;
+      background: rgba(13, 17, 22, .86);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
+      backdrop-filter: blur(10px);
+    }
+    .graph-search-label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+    .graph-search-box input {
+      width: 100%;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
     .graph-action-row {
       position: absolute;
-      top: 64px;
+      top: 104px;
       left: calc(var(--left-rail-width) + 24px);
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
@@ -260,27 +286,35 @@ export function adminConsoleHtml(): string {
     .analytics-graph-context {
       display: grid;
       gap: 7px;
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(58, 67, 77, .74);
-      background: rgba(8, 11, 15, .42);
+      padding: 9px;
+      border: 1px solid rgba(58, 67, 77, .72);
+      border-radius: 8px;
+      background: rgba(8, 11, 15, .46);
     }
     .analytics-graph-context[hidden] { display: none; }
     .analytics-graph-context .graph-meta {
       min-height: 0;
       padding: 0;
-      display: flex;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 6px;
-      flex-wrap: wrap;
-      justify-content: flex-start;
+      align-items: start;
       border: 0;
       background: transparent;
       box-shadow: none;
       backdrop-filter: none;
     }
+    .analytics-graph-context .graph-meta .chip {
+      min-width: 0;
+      border-radius: 6px;
+      padding: 5px 7px;
+      background: rgba(12, 17, 22, .72);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .analytics-graph-context .graph-legend {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-start;
+      display: grid;
+      justify-content: stretch;
       gap: 6px;
     }
     .analytics-graph-context .graph-legend:empty,
@@ -288,14 +322,14 @@ export function adminConsoleHtml(): string {
     .overlay-panel {
       position: absolute;
       z-index: 5;
-      top: 116px;
+      top: 12px;
+      bottom: 12px;
       width: min(390px, calc(100vw - 24px));
-      max-height: calc(100dvh - 132px);
       display: none;
       overflow: hidden;
       border: 1px solid rgba(58, 67, 77, .88);
       border-radius: 8px;
-      background: rgba(21, 25, 29, .94);
+      background: rgba(21, 25, 29, .9);
       box-shadow: 0 22px 60px rgba(0, 0, 0, .36);
       backdrop-filter: blur(12px);
     }
@@ -322,16 +356,22 @@ export function adminConsoleHtml(): string {
     .overlay-body { min-height: 0; overflow: auto; }
     .analytics-body {
       display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
       gap: 10px;
       align-content: start;
+      overflow: hidden;
       padding: 12px;
     }
     .analytics-body .details-body {
       padding: 0;
+      min-height: 0;
+      overflow: auto;
     }
     .selection-card.analytics-selection-card {
       position: static;
       width: 100%;
+      max-height: min(40dvh, 420px);
+      overflow: auto;
       display: none;
       border: 1px solid #28364a;
       border-radius: 8px;
@@ -341,10 +381,11 @@ export function adminConsoleHtml(): string {
     }
     .selection-card.analytics-selection-card.open { display: block; }
     .selection-card h3 { margin: 0 0 8px; font-size: 14px; }
-    .selection-card .card-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
+    .selection-card .card-line { display: grid; grid-template-columns: minmax(92px, .72fr) minmax(0, 1.28fr); align-items: start; gap: 10px; padding: 6px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
     .selection-card .card-line:first-of-type { border-top: 0; }
-    .selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }
-    .selection-card .card-line.card-block { display: grid; gap: 8px; }
+    .selection-card .card-line > span { min-width: 0; }
+    .selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
+    .selection-card .card-line.card-block { display: grid; grid-template-columns: 1fr; gap: 8px; }
     .selection-card .card-line.card-block strong { text-align: left; font-weight: 600; }
     .selection-card .card-block-body { min-width: 0; }
     .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
@@ -556,10 +597,8 @@ export function adminConsoleHtml(): string {
     .graph-meta { min-height: 40px; padding: 8px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .graph-stage {
       position: absolute;
-      top: 164px;
-      right: calc(var(--right-rail-width) + 24px);
-      bottom: 164px;
-      left: calc(var(--left-rail-width) + 24px);
+      inset: 0;
+      z-index: 1;
       min-width: 0;
       overflow: hidden;
     }
@@ -572,26 +611,62 @@ export function adminConsoleHtml(): string {
       right: calc(var(--right-rail-width) + 24px);
       bottom: 12px;
       z-index: 4;
-      padding: 10px 12px;
+      padding: 12px 14px;
     }
     .timeline-region {
-      min-height: 92px;
+      min-height: 124px;
     }
     .timeline-head {
       display: flex;
       justify-content: space-between;
       gap: 12px;
       align-items: center;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
     }
-    .activity-timeline { height: 54px; display: flex; align-items: end; gap: 4px; overflow: hidden; }
-    .activity-timeline .timeline-bar { flex: 1 1 10px; min-width: 6px; padding: 0; border: 0; align-self: end; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--accent), var(--bridge)); }
-    .activity-timeline .timeline-bar.active { outline: 2px solid rgba(237, 241, 244, .88); outline-offset: 1px; }
+    .activity-timeline {
+      position: relative;
+      height: 76px;
+      display: flex;
+      align-items: end;
+      gap: 3px;
+      overflow: hidden;
+      padding: 16px 0 3px;
+      border-top: 1px solid rgba(58, 67, 77, .58);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, .045) 1px, transparent 1px) 0 16px / 100% 18px,
+        linear-gradient(90deg, transparent, rgba(122, 162, 247, .08), transparent);
+    }
+    .activity-timeline .timeline-bar {
+      flex: 1 1 8px;
+      min-width: 5px;
+      height: var(--bucket-height, 6px);
+      padding: 0;
+      align-self: end;
+      border: 1px solid rgba(123, 180, 215, .24);
+      border-radius: 4px 4px 1px 1px;
+      background: rgba(84, 143, 175, .36);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+      opacity: .74;
+    }
+    .activity-timeline .timeline-bar.empty {
+      border-color: rgba(111, 125, 137, .18);
+      background: rgba(111, 125, 137, .18);
+      opacity: .42;
+    }
+    .activity-timeline .timeline-bar.low { background: linear-gradient(180deg, rgba(106, 177, 206, .52), rgba(66, 129, 158, .5)); }
+    .activity-timeline .timeline-bar.medium { background: linear-gradient(180deg, rgba(122, 162, 247, .72), rgba(91, 199, 216, .62)); opacity: .9; }
+    .activity-timeline .timeline-bar.hot { background: linear-gradient(180deg, rgba(139, 213, 166, .9), rgba(91, 199, 216, .8)); opacity: 1; }
+    .activity-timeline .timeline-bar.active {
+      outline: 2px solid rgba(237, 241, 244, .92);
+      outline-offset: 1px;
+      border-color: rgba(237, 241, 244, .78);
+      opacity: 1;
+    }
     .transfer-panel {
       position: absolute;
       left: calc(var(--left-rail-width) + 24px);
       right: calc(var(--right-rail-width) + 24px);
-      bottom: 96px;
+      bottom: 132px;
       z-index: 5;
       height: min(320px, calc(100dvh - 220px));
       border: 1px solid rgba(58, 67, 77, .88);
@@ -678,6 +753,10 @@ export function adminConsoleHtml(): string {
     .edge.review { opacity: .92; }
     .edge.clean, .edge.acceptable { opacity: .9; }
     .edge.dim, .node.dim { opacity: .16; }
+    .edge.timeline-context { opacity: .18; }
+    .edge.timeline-focus { opacity: 1; filter: drop-shadow(0 0 13px rgba(125, 190, 220, .5)); }
+    .node.timeline-context { opacity: .28; }
+    .node.timeline-focus { opacity: 1; }
     .edge.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)); }
     .edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }
     .edge.edge-speed-medium { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .42)); }
@@ -808,6 +887,24 @@ export function adminConsoleHtml(): string {
     .muted { color: var(--muted); }
     .json-block { white-space: pre-wrap; overflow: auto; max-height: 380px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; line-height: 1.45; }
     details.metric summary { cursor: pointer; color: var(--muted); }
+    details.compact-details summary {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    details.compact-details summary span {
+      color: var(--text-tertiary);
+      font-weight: 600;
+      letter-spacing: 0;
+      text-transform: none;
+      white-space: nowrap;
+    }
+    details.compact-details .list-lines { margin-top: 8px; display: grid; gap: 5px; }
     .error { color: var(--bad); padding: 10px; }
     .empty { color: var(--muted); padding: 16px 10px; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
@@ -845,14 +942,14 @@ export function adminConsoleHtml(): string {
         right: 12px;
         grid-template-columns: minmax(0, 1fr);
       }
-      .graph-stage { top: 264px; left: 12px; right: 12px; }
+      .graph-stage { inset: 0; }
       .timeline-panel, .transfer-panel {
         left: 12px;
         right: 12px;
       }
       .graph-control-group { flex-wrap: wrap; }
       .graph-control-section { flex: 1 1 260px; }
-      .overlay-panel { top: 264px; max-height: 360px; }
+      .overlay-panel { top: 264px; bottom: auto; max-height: 360px; }
       .overlay-panel.jobs-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { top: calc(264px + 372px); }
@@ -883,7 +980,10 @@ export function adminConsoleHtml(): string {
             <strong>Case brief</strong>
             <div class="hint" id="selectionHint">Select a completed or partial job to inspect evidence.</div>
           </div>
-          <input id="graphSearch" placeholder="find node / tx / label">
+          <label class="graph-search-box">
+            <span class="graph-search-label">Find</span>
+            <input id="graphSearch" placeholder="node / tx / label">
+          </label>
         </div>
         <div class="graph-action-row workbench-control-rail" data-control-rail>
           <div class="graph-control-group">
@@ -1129,6 +1229,18 @@ export function adminConsoleHtml(): string {
         metric("Decision status", clarityLine(clarity.decisionStatus, "unknown")) +
         metric("Policy", clarityLine(clarity.policyVersion, "unknown")) +
         listMetric("Risk clarity notes", Array.isArray(clarity.displayNotes) ? clarity.displayNotes : [], "No clarity notes.");
+    }
+    function caseBriefClarityHtml(clarity) {
+      if (!clarity) {
+        return metric("Coverage", "unknown") +
+          metric("Evidence", "unknown") +
+          metric("Confidence", "n/a") +
+          metric("Decision status", "unknown");
+      }
+      return metric("Coverage", clarityLine(clarity.coverageStatus, "unknown")) +
+        metric("Evidence", clarityLine(clarity.evidenceClass, "unknown")) +
+        metric("Confidence", typeof clarity.confidenceScore === "number" && Number.isFinite(clarity.confidenceScore) ? String(clarity.confidenceScore) : "n/a") +
+        metric("Decision status", clarityLine(clarity.decisionStatus, "unknown"));
     }
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const short = (value, size = 6) => {
@@ -1425,10 +1537,11 @@ export function adminConsoleHtml(): string {
     function caseHeaderStatusChips(graph, summary) {
       const clarity = graphRiskClarity(graph);
       const coverage = clarityLine(clarity?.coverageStatus || percent(summary.coverageRatio), analystMissingCopy("coverage"));
+      const evidence = clarityLine(clarity?.evidenceClass, String(graphEvidence(graph).length));
       return '<div class="stats">' +
         caseStatusChip("Decision", summary.decision || "UNKNOWN", "decision") +
         caseStatusChip("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown"), "risk") +
-        caseStatusChip("Evidence", graphEvidence(graph).length, "evidence") +
+        caseStatusChip("Evidence", evidence, "evidence") +
         caseStatusChip("Coverage", coverage, "coverage") +
         '</div>';
     }
@@ -1454,22 +1567,20 @@ export function adminConsoleHtml(): string {
       summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
         '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>' +
         caseHeaderStatusChips(graph, summary);
-      const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected", "Select a node, edge, group, service, or boundary to inspect what it means and which raw facts support it.", [
-        analystBadge("case summary", "context")
+      const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", "Select a node, edge, group, service, or boundary to inspect the supporting facts.", [
+        analystBadge(caseBriefModeLine(graph), "context")
       ]);
       root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
         metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide") +
-        metric("Job", jobKind + " / " + jobStatus, "wide") +
+        metric("Check", jobKind + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
         metric("Decision", summary.decision || "UNKNOWN") +
-        clarityMetricHtml(graphRiskClarity(graph)) +
-        metric("Graph meaning", "Graph is evidence navigation, not proof by itself.", "wide") +
-        metric("Mode", caseBriefModeLine(graph), "wide") +
+        caseBriefClarityHtml(graphRiskClarity(graph)) +
         listMetric("Top incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
         listMetric("Top outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
         listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
         metric("Boundary stops", String(caseBriefStopCount())) +
-        listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        detailsMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         strictProvenanceLines(summary) +
         targetedIndexLines(summary) +
         whereFundingCandidateLines(summary) +
@@ -1651,7 +1762,7 @@ export function adminConsoleHtml(): string {
         edgePassesPeerLinkFilter(edge)
       ));
     }
-    function activityTimelineBuckets(edges, bucketCount = 32) {
+    function activityTimelineBuckets(edges, bucketCount = 48) {
       const dated = edges
         .map((edge) => ({ edge, timestamp: edgeTimestampMs(edge) }))
         .filter((item) => item.timestamp !== null);
@@ -1687,6 +1798,9 @@ export function adminConsoleHtml(): string {
       if (timestamp < range.start) return false;
       return range.isLast ? timestamp <= range.end : timestamp < range.end;
     }
+    function edgeIsTimelineFocused(edge) {
+      return Boolean(state.timelineRange && edgePassesTimelineRange(edge));
+    }
     function filteredTransferEdges() {
       return presentationTransferEdges(filteredGraphEdges());
     }
@@ -1694,7 +1808,6 @@ export function adminConsoleHtml(): string {
       const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
       const bucket = buckets[index];
       state.timelineRange = bucket && state.timelineRange?.index !== index ? { start: bucket.start, end: bucket.end, index, isLast: bucket.isLast } : null;
-      reconcileSelectionWithFilters();
       renderGraph();
       renderCaseBrief();
       renderDetails();
@@ -1719,19 +1832,21 @@ export function adminConsoleHtml(): string {
       const maxValue = Math.max(1, ...buckets.map((bucket) => bucket.amount || bucket.count));
       root.innerHTML = buckets.map((bucket) => {
         const value = bucket.amount || bucket.count;
-        const height = bucket.count === 0 ? 4 : Math.max(8, Math.round((value / maxValue) * 48));
+        const normalized = bucket.count === 0 ? 0 : Math.sqrt(value / maxValue);
+        const height = bucket.count === 0 ? 6 : Math.max(14, Math.round(12 + normalized * 56));
         const active = state.timelineRange?.index === bucket.index ? " active" : "";
+        const volume = bucket.count === 0 ? " empty" : value >= maxValue * .78 ? " hot" : value >= maxValue * .32 ? " medium" : " low";
         const title = new Date(bucket.start).toISOString() + " / " + bucket.count + " transfer" + (bucket.count === 1 ? "" : "s");
-        return '<button type="button" class="timeline-bar' + active + '" data-timeline-index="' + bucket.index + '" style="height:' + height + 'px" title="' + escapeHtml(title) + '"></button>';
+        return '<button type="button" class="timeline-bar' + volume + active + '" data-timeline-index="' + bucket.index + '" style="--bucket-height:' + height + 'px" title="' + escapeHtml(title) + '" aria-label="' + escapeHtml(title) + '"></button>';
       }).join("");
       root.querySelectorAll("[data-timeline-index]").forEach((button) => {
         button.addEventListener("click", () => selectTimelineBucket(Number(button.getAttribute("data-timeline-index"))));
       });
       if (state.timelineRange) {
-        hint.textContent = "Timeline filter: " + new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString() + ".";
+        hint.textContent = "Timeline focus: " + new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString() + ". Context stays visible.";
       } else {
         const count = timelineSourceTransferEdges().length;
-        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to filter.";
+        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to focus graph flow.";
       }
     }
     function renderStats() {
@@ -3724,6 +3839,14 @@ export function adminConsoleHtml(): string {
     function edgeHasTransferRows(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
       if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (
+        evidenceType === "contract_trigger_context" ||
+        evidenceType === "contract_call_context" ||
+        evidenceType === "debit_authority_context" ||
+        evidenceType === "approval_drain_contract_call" ||
+        evidenceType === "approval_drain_spender_authority"
+      ) return false;
       if (edgeHasAggregatedTxEvidence(edge) && edgeTxHashes(edge).length > 0) return true;
       if (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) return true;
       return Boolean(edge?.txHash && edge.txHash !== "inferred");
@@ -4106,7 +4229,6 @@ export function adminConsoleHtml(): string {
       return graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
-        edgePassesTimelineRange(edge) &&
         edgePassesPeerLinkFilter(edge)
       );
     }
@@ -4506,7 +4628,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "contract_trigger_context") return "Source wallet -> spender contract";
       if (evidenceType === "approval_drain_transfer") return "Victim -> receiver via smart contract";
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
-      if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
+      if (evidenceType === "approval_drain_spender_authority") return "Victim -> spender contract authority";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
       if (evidenceType === "deepcheck_extended_path") return edge?.metadata?.relationship === "cross_wallet_edge" ? "Wallet-to-wallet extended path" : "Subject extended path";
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
@@ -4585,7 +4707,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "debit_authority_context") return "spender contract -> source";
       if (evidenceType === "approval_drain_transfer") return "victim -> receiver";
       if (evidenceType === "approval_drain_contract_call") return "operator -> spender contract";
-      if (evidenceType === "approval_drain_spender_authority") return "spender contract -> victim";
+      if (evidenceType === "approval_drain_spender_authority") return "victim -> spender contract";
       if (role === "profile_context" && metadataDirection === "outbound") return "subject -> counterparty";
       if (role === "profile_context" && metadataDirection === "inbound") return "counterparty -> subject";
       return metadataDirection || edge?.direction || "n/a";
@@ -4791,27 +4913,27 @@ export function adminConsoleHtml(): string {
     function graphLegendHtml(mode) {
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
       if (state.graph?.job?.kind === "where_is_money_check") {
-        return '<span class="chip graph-legend-chip" data-graph-legend="where_funding_candidates">' +
+        return '<div class="graph-legend-card" data-graph-legend="where_funding_candidates">' +
           item("where-route", "Selected route") +
           item("where-exact", "Exact funding") +
           item("where-probable", "Probable funding context") +
           item("where-caveat", "Unresolved / pre-existing caveat") +
           item("where-service", "Service boundary") +
           item("where-grouped", "Grouped candidates") +
-          '</span>';
+          '</div>';
       }
       if (mode === "wallet_clusters") {
-        return '<span class="chip graph-legend-chip" data-graph-legend="wallet_clusters">' +
+        return '<div class="graph-legend-card" data-graph-legend="wallet_clusters">' +
           item("direct", "Real money flow") +
           item("group", "Grouped transfers") +
           item("inferred", "Context / peer") +
           item("service", "Service / CEX") +
           item("boundary", "Boundary stop") +
           item("contract", "Contract context") +
-          '</span>';
+          '</div>';
       }
       if (mode !== "deep_branch_map") return "";
-      return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
+      return '<div class="graph-legend-card" data-graph-legend="deep_branch_map">' +
         item("direct-context", "Direct subject context") +
         item("second-hop", "Second-hop edge") +
         item("extended", "Extended path edge") +
@@ -4820,7 +4942,7 @@ export function adminConsoleHtml(): string {
         item("queued", "Queued / not indexed") +
         item("boundary", "Service / stopped edge") +
         item("contract", "Contract context") +
-        '</span>';
+        '</div>';
     }
     function edgeSemanticAttrs(edge, visualRole) {
       return ' data-edge-role="' + escapeHtml(visualRole) + '" data-edge-display-role="' + escapeHtml(edgeDisplayRole(edge)) + '" data-edge-directness="' + escapeHtml(edgeDirectness(edge)) + '"';
@@ -4912,6 +5034,18 @@ export function adminConsoleHtml(): string {
       const visibleEdges = presentation.edges;
       const visibleNodes = presentation.nodes;
       const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges, presentation.mode, presentation.dense));
+      const timelineFocusEdgeIds = new Set();
+      const timelineFocusNodeIds = new Set();
+      if (state.timelineRange) {
+        visibleEdges.forEach((edge) => {
+          if (!edgeIsTimelineFocused(edge)) return;
+          timelineFocusEdgeIds.add(edge.id);
+          if (edge?.fromNodeId) timelineFocusNodeIds.add(edge.fromNodeId);
+          if (edge?.toNodeId) timelineFocusNodeIds.add(edge.toNodeId);
+        });
+        const subject = visibleNodes.find((node) => node.kind === "subject");
+        if (subject?.id) timelineFocusNodeIds.add(subject.id);
+      }
       state.renderedNodePositions = new Map(placed.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
       state.renderedNodesById = new Map(placed.nodes.map((node) => [node.id, node]));
       state.renderedEdgesById = new Map(visibleEdges.map((edge) => [edge.id, edge]));
@@ -4930,7 +5064,8 @@ export function adminConsoleHtml(): string {
         const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);
         const visualRole = edgeVisualRole(edge);
         const speedClass = edgeSpeedClass(edge);
-        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const timelineClass = state.timelineRange ? (timelineFocusEdgeIds.has(edge.id) ? " timeline-focus" : " timeline-context") : "";
+        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + timelineClass + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -4973,7 +5108,8 @@ export function adminConsoleHtml(): string {
         const visible = matchesSearch(node) && isSelectedConnected(node.id);
         const role = nodeRole(node);
         const roleClass = state.roleMarksVisible && role ? " role-marked node-role-" + escapeHtml(role) : "";
-        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
+        const timelineClass = state.timelineRange ? (timelineFocusNodeIds.has(node.id) ? " timeline-focus" : " timeline-context") : "";
+        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + timelineClass + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
         return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '"' + nodeSemanticAttrs(node) + ' transform="translate(' + node.x + ' ' + node.y + ')">' +
@@ -5238,6 +5374,7 @@ export function adminConsoleHtml(): string {
       if (state.transferTab === "selected" && !state.selected) return "Select an edge, node, or path to inspect related transfers.";
       if (state.transferTab === "selected") return "No transfer evidence is stored for this selection.";
       if (state.transferTab === "stops") return "No boundary stops are stored for this graph.";
+      if (state.timelineRange) return "No transfers are stored in the selected timeline bucket.";
       return "No transfers match the current filters.";
     }
     function timelineEmptyCopy() {
@@ -5251,7 +5388,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.transferTab === "stops") return renderBoundaryStops(root);
-      const filteredEdges = filteredTransferEdges().filter(edgeHasTransferRows);
+      const filteredEdges = filteredTransferEdges().filter(edgePassesTimelineRange).filter(edgeHasTransferRows);
       const selected = selectedEdgeIds();
       if (state.transferTab === "selected" && state.selected?.type === "edge") {
         const selectedEdge = edgeById(state.selected.id);
@@ -6107,6 +6244,13 @@ export function adminConsoleHtml(): string {
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
     }
+    function detailsMetric(label, items, empty) {
+      const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+      if (values.length === 0) return "";
+      return '<details class="metric wide compact-details"><summary>' + escapeHtml(label) + '<span>' + values.length + '</span></summary>' +
+        listHtml(values, empty) +
+        '</details>';
+    }
     function strictProvenanceLines(summary) {
       const layer = summary?.layerSummary || {};
       const strict = layer.strictProvenance || null;
@@ -6130,7 +6274,7 @@ export function adminConsoleHtml(): string {
         if (metrics.traceMs !== null && metrics.traceMs !== undefined) lines.push("Trace time: " + trimNumber(metrics.traceMs / 1000) + "s");
         if (metrics.scoringMs !== null && metrics.scoringMs !== undefined) lines.push("Scoring time: " + trimNumber(metrics.scoringMs / 1000) + "s");
       }
-      return listMetric("Strict benchmark", lines, "");
+      return detailsMetric("Strict benchmark", lines, "");
     }
     function targetedIndexLines(summary) {
       const layer = summary?.layerSummary || {};
@@ -6210,7 +6354,7 @@ export function adminConsoleHtml(): string {
         });
         if (states.length > 8) lines.push("More states: " + (states.length - 8));
       }
-      return listMetric("Targeted history", lines, "");
+      return detailsMetric("Targeted history", lines, "");
     }
     function whereFundingCandidateLines(summary) {
       const layer = summary?.layerSummary || {};
@@ -6224,7 +6368,7 @@ export function adminConsoleHtml(): string {
       lines.push("Pre-existing balance caveats " + (visibility.preExistingBalanceCaveatCount ?? 0));
       lines.push("Service boundaries " + (visibility.serviceBoundaryCount ?? 0));
       lines.push("Max proven route depth " + (visibility.maxProvenRouteDepth ?? 0));
-      return listMetric("Where funding candidates", lines, "");
+      return detailsMetric("Where funding candidates", lines, "");
     }
     function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);

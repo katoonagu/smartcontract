@@ -56,12 +56,28 @@ node metadata. Contract trigger/call/authority lines, second-hop relationship
 lines, and extended-path relationship lines stay visible as contextual evidence,
 but the canvas labels money amounts/times on the actual transfer edge instead
 of duplicating the same transaction label on context projections.
+Approval-drain authority context is drawn from victim/source to spender contract
+so it does not visually imply that the drainer topped up the victim; these
+contract-context projections are also kept out of transfer-row lists.
 
 The graph counter separates the current canvas from the graph API payload:
 `Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or
 filters hide evidence, Admin shows `Hidden by view/filter: X nodes / Y edges`.
 These graph counters and legend chips live in the Analytics rail, not over the
 graph canvas controls.
+The Analytics rail is compact-first: selected node/edge details are shown above
+the case summary but capped so they cannot consume the whole rail, graph
+counters and legends use rectangular dense rows, and long operational
+diagnostics such as projection gaps, targeted history, and funding-candidate
+visibility are collapsed by default.
+
+The Admin graph canvas is a full-workspace background layer behind the Jobs,
+Analytics, controls, and timeline overlays. Side rails anchor from the top of
+the workbench instead of floating in the middle, while the canvas remains
+visible behind them. The activity timeline is a focus control: selecting a time
+bucket highlights matching transfer edges and dims surrounding context on the
+canvas, while the transfer drawer can still list only rows from the selected
+bucket.
 
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in
