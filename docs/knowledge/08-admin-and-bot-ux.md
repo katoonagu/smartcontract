@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-05
+last_verified: 2026-07-06
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -29,9 +29,11 @@ metrics when present.
 
 For completed `address_deep_check` graphs, Admin defaults to `Full evidence`.
 That mode renders all nodes and edges returned by the graph API, including
-second-layer relationship edges, and bypasses stale local flow, peer-link, and
-service filters. DeepCheck still keeps manual reading modes for
-`Investigative view` and `Compact summary`.
+second-layer relationship edges, without applying density collapse. The local
+flow, peer-link, service, and timeline filters still apply to the visible
+canvas, so `Incoming`, `Outgoing`, and `Self` remain meaningful in Full
+evidence. DeepCheck still keeps manual reading modes for `Investigative view`
+and `Compact summary`.
 
 Completed ordinary `where_is_money_check` graphs default to a route-focused
 `Investigative view` in Admin. The main/highest-coverage provenance route is the
@@ -40,7 +42,8 @@ caveat lane instead of replacing the route. Manual `Full evidence` is also
 available for ordinary Where; it renders the full graph API node/edge payload,
 including origin paths, route steps, funding/source provenance context,
 service/contract boundaries, residual caveats, and peer/context links. In Full
-evidence, local flow, peer-link, and service filters do not hide evidence.
+evidence, density collapse is disabled but local flow, peer-link, service, and
+timeline filters still define the visible canvas.
 `Compact summary` remains a manual reduced reading mode. Incoming deposit
 provenance keeps the compact flow-map default.
 
@@ -49,11 +52,16 @@ ambiguous contract-driven count: incoming tx total, tx-info enriched, plain USDT
 transfers, wrapper-driven incoming, Verify20 wrapper tx, exact proof count, and
 whether counts are complete or lower bounds. Drainer receiver and wrapper
 contract role marks, plus victim source role marks, are driven by graph payload
-node metadata.
+node metadata. Contract trigger/call/authority lines, second-hop relationship
+lines, and extended-path relationship lines stay visible as contextual evidence,
+but the canvas labels money amounts/times on the actual transfer edge instead
+of duplicating the same transaction label on context projections.
 
 The graph counter separates the current canvas from the graph API payload:
 `Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or
 filters hide evidence, Admin shows `Hidden by view/filter: X nodes / Y edges`.
+These graph counters and legend chips live in the Analytics rail, not over the
+graph canvas controls.
 
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in
@@ -201,8 +209,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
   historical and are not rewritten silently.
 - Completed ordinary Where graphs default to route-focused `Investigative view`
   in Admin. Manual `Full evidence` renders the full graph API payload and
-  bypasses local hiding filters; `Compact summary` remains available for a
-  reduced view.
+  disables density collapse while preserving local flow, peer-link, service,
+  and timeline filters; `Compact summary` remains available for a reduced view.
 - Completed DeepCheck graphs default to `Full evidence`, with
   `Investigative view` and `Compact summary` available as manual views. Visible,
   total, and hidden-by-view graph counters are shown separately so dense

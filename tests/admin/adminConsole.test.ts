@@ -95,9 +95,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".overlay-panel.jobs-panel { left: 12px;");
     expect(html).toContain(".overlay-panel.analytics-panel { right: 12px;");
     expect(html).toContain(".graph-action-row");
-    expect(html).toContain("grid-template-columns: minmax(0, 1fr) max-content");
-    expect(html).toContain(".graph-control-group { gap: 5px; flex-wrap: wrap; }");
-    expect(html).toContain(".graph-action-row .graph-meta");
+    expect(html).toContain(".graph-control-section");
+    expect(html).toContain(".analytics-graph-context");
     expect(html).toContain("pointer-events: none;");
     expect(html).not.toContain('id="groupSmallWallets"');
     expect(html).not.toContain("adminForensicsGroupSmallWallets");
@@ -1463,76 +1462,69 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("@media (max-width: 1440px)");
     expect(html).toContain("@media (max-width: 1180px)");
     expect(html).toContain(`@media (max-width: 1680px) {
-      .graph-action-row { gap: 6px; padding: 4px 6px; }
-      .graph-control-group { gap: 5px; flex-wrap: wrap; }
+      .graph-action-row { gap: 6px; padding: 6px; }
+      .graph-control-group { gap: 5px; }
+      .graph-control-section { gap: 4px; padding: 2px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #txLabelMode { width: 160px; }
-      .graph-action-row #walletLabelMode { width: 180px; }
-      .graph-action-row #flowMode { width: 120px; }
-      .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
-    }`);
-    expect(html).toContain(`@media (max-width: 1560px) {
-      .graph-action-row {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
+      .graph-action-row #txLabelMode { width: 150px; }
+      .graph-action-row #walletLabelMode { width: 166px; }
+      .graph-action-row #flowMode { width: 116px; }
     }`);
     expect(html).not.toContain(`@media (max-width: 1680px) {
       .graph-action-row {
         grid-template-columns: minmax(0, 1fr);
       }`);
+    expect(html).not.toContain("@media (max-width: 1560px)");
     expect(html).toContain(".overlay-panel.jobs-panel { left: 12px; width: var(--left-rail-width); }");
     expect(html).toContain(".overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }");
     expect(html).toContain('const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");');
-    expect(html).toContain("const graphStatsText = [");
+    expect(html).toContain("const graphStatsChips = [");
     expect(html).not.toContain(".graph-action-row #amountMode");
     expect(html).toContain('const graphStatsTitle = [');
     expect(html).toContain('"Visible N" + placed.nodes.length + "/E" + visibleEdges.length');
     expect(html).toContain('"Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length');
     expect(html).toContain('"W" + graphWeights(graph).length');
     expect(html).toContain('title="\' + escapeHtml(graphStatsTitle) + \'"');
-    expect(html).toContain(".graph-stage {\n      position: absolute;\n      top: 184px;");
+    expect(html).toContain(".graph-stage {\n      position: absolute;\n      top: 164px;");
     expect(html).toContain("right: calc(var(--right-rail-width) + 24px);\n      bottom: 164px;\n      left: calc(var(--left-rail-width) + 24px);");
     expect(html).toContain(".timeline-panel {\n      position: absolute;\n      left: calc(var(--left-rail-width) + 24px);");
     expect(html).toContain(".transfer-panel {\n      position: absolute;\n      left: calc(var(--left-rail-width) + 24px);");
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
-    expect(html).toContain(".graph-stage { top: 224px; left: 12px; right: 12px; }");
+    expect(html).toContain(".graph-stage { top: 264px; left: 12px; right: 12px; }");
     expect(html).toContain(".timeline-panel, .transfer-panel {\n        left: 12px;\n        right: 12px;\n      }");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");
-    expect(html).toContain(".overlay-panel { top: 224px; max-height: 360px; }");
+    expect(html).toContain(".overlay-panel { top: 264px; max-height: 360px; }");
     expect(html).toContain(".overlay-panel.analytics-panel { left: 12px; right: auto; }");
-    expect(html).toContain(".overlay-panel.analytics-panel { top: calc(224px + 372px); }");
+    expect(html).toContain(".overlay-panel.analytics-panel { top: calc(264px + 372px); }");
     expect(html).toContain('class="overlay-body analytics-body"');
     expect(html).toContain('class="selection-card analytics-selection-card" id="selectionCard"');
   });
 
-  it("keeps graph stats and legend from overlapping topbar controls", () => {
+  it("keeps graph stats and legend in the analytics rail, not the topbar controls", () => {
     const html = adminConsoleHtml();
     const actionRowCss = html.slice(html.indexOf(".graph-action-row {"), html.indexOf(".overlay-panel {"));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
+    expect(html).toContain('<div class="analytics-graph-context" hidden>');
     expect(html).toContain('<div id="graphStats" class="graph-meta"></div>');
     expect(html).toContain('<div id="graphLegend" class="graph-legend"></div>');
     expect(actionRowCss).toContain(".graph-control-group");
     expect(actionRowCss).toContain("min-width: 0;");
     expect(actionRowCss).toContain("flex-wrap: wrap;");
-    expect(actionRowCss).toContain("max-height: 108px;");
-    expect(actionRowCss).toContain("overflow-y: auto;");
-    expect(actionRowCss).toContain(".graph-action-row .graph-legend {");
-    expect(actionRowCss).toContain(".graph-action-row .graph-legend:empty { display: none; }");
+    expect(actionRowCss).not.toContain("max-height: 108px;");
+    expect(actionRowCss).not.toContain("overflow-y: auto;");
+    expect(actionRowCss).not.toContain(".graph-action-row .graph-legend {");
+    expect(actionRowCss).toContain(".analytics-graph-context .graph-legend {");
     expect(html).toContain("@media (max-width: 1280px)");
-    expect(html).toContain(".graph-action-row .graph-meta,\n      .graph-action-row .graph-legend");
     expect(html).toContain("@media (max-width: 1180px)");
-    expect(html).toContain("max-height: 84px;");
+    expect(html).not.toContain("max-height: 84px;");
+    expect(renderBlock).toContain("setGraphContextVisible(false);");
+    expect(renderBlock).toContain("setGraphContextVisible(true);");
     expect(renderBlock).toContain('el("graphStats").innerHTML = "";');
     expect(renderBlock).toContain('el("graphLegend").innerHTML = "";');
-    expect(renderBlock).toContain('el("graphStats").innerHTML = \'<span class="chip"');
+    expect(renderBlock).toContain("const graphStatsChips = [");
+    expect(renderBlock).toContain(".map((text) => '<span class=\"chip\"");
     expect(renderBlock).toContain('el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);');
   });
 
@@ -1977,24 +1969,25 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({ txHash: "real-tx", metadata: {} })).toBe(true);
   });
 
-  it("renders contract trigger source debit amount chips", () => {
+  it("keeps transfer amount chips but hides context-projection canvas labels", () => {
     const html = adminConsoleHtml();
-    const amountVisibilityBlock = html.slice(html.indexOf("function edgeShouldShowAmount"), html.indexOf("function edgeShouldShowImportantCanvasAmount"));
+    const amountVisibilityBlock = html.slice(html.indexOf("function edgeIsDeepCheckRelationshipProjection"), html.indexOf("function edgeDetailedAmountLabel"));
 
     expect(amountVisibilityBlock).not.toBe("");
 
     const api = new Function(
       "function edgeDisplayRole(edge) { return edge?.displayRole || 'context'; }\n" +
         amountVisibilityBlock +
-        "\nreturn { edgeShouldShowCanvasAmount };"
+        "\nreturn { edgeShouldShowCanvasAmount, edgeShouldShowCanvasTime };"
     )() as {
       edgeShouldShowCanvasAmount(edge: unknown): boolean;
+      edgeShouldShowCanvasTime(edge: unknown): boolean;
     };
 
     expect(api.edgeShouldShowCanvasAmount({
       amountRaw: "1000000",
       metadata: { evidenceType: "contract_trigger_context" }
-    })).toBe(true);
+    })).toBe(false);
     expect(api.edgeShouldShowCanvasAmount({
       amountRaw: "1000000",
       metadata: { evidenceType: "contract_driven_transfer" }
@@ -2003,6 +1996,18 @@ describe("adminConsoleHtml", () => {
       amountRaw: "1000000",
       metadata: { evidenceType: "approval_drain_transfer" }
     })).toBe(true);
+    expect(api.edgeShouldShowCanvasTime({
+      timestamp: "2026-06-05T12:54:00.000Z",
+      metadata: { evidenceType: "approval_drain_spender_authority" }
+    })).toBe(false);
+    expect(api.edgeShouldShowCanvasAmount({
+      amountRaw: "1000000",
+      metadata: { evidenceType: "deepcheck_relationship_second_hop" }
+    })).toBe(false);
+    expect(api.edgeShouldShowCanvasTime({
+      timestamp: "2026-06-05T12:54:00.000Z",
+      metadata: { source: "deepcheck_extended_path" }
+    })).toBe(false);
   });
 
   it("keeps grouped aggregate transaction evidence visible in transfer rows", () => {
@@ -2666,7 +2671,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (mode === "full_evidence") return deepFullEvidenceLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";');
+    expect(html).toContain('densityButton.textContent = "View: " + label;');
+    expect(html).toContain('densityButton.classList.toggle("active"');
     expect(html).toContain('"Investigative view"');
 
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
@@ -2752,7 +2758,7 @@ describe("adminConsoleHtml", () => {
     expect(clickBlock).toContain('setDensityMode(mode === "full_evidence" ? "deep_branch_map" : mode === "deep_branch_map" ? "compact_summary" : "full_evidence");');
   });
 
-  it("full evidence mode bypasses stale filters and separates visible from total counters", () => {
+  it("full evidence mode keeps filters active and separates visible from total counters", () => {
     const html = adminConsoleHtml();
     const stateBlock = html.slice(html.indexOf("const state = {"), html.indexOf("const el ="));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
@@ -2760,10 +2766,11 @@ describe("adminConsoleHtml", () => {
     const presentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
 
     expect(stateBlock).toContain('["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)');
-    expect(filterBlock).toContain("if (graphFullEvidenceModeActive()) return graphEdges(state.graph);");
-    expect(renderBlock).toContain("const fullEvidence = graphFullEvidenceModeActive();");
-    expect(renderBlock).toContain("const rawVisibleEdges = fullEvidence ? graphEdges(graph) : filteredGraphEdges();");
-    expect(renderBlock).toContain("const rawVisibleNodes = fullEvidence ? graphNodes(graph) : graphNodes(graph).filter");
+    expect(filterBlock).not.toContain("if (graphFullEvidenceModeActive()) return graphEdges(state.graph);");
+    expect(filterBlock).toContain("edgePassesFlowFilter(edge)");
+    expect(renderBlock).not.toContain("const fullEvidence = graphFullEvidenceModeActive();");
+    expect(renderBlock).toContain("const rawVisibleEdges = filteredGraphEdges();");
+    expect(renderBlock).toContain("const rawVisibleNodes = graphNodes(graph).filter");
     expect(renderBlock).toContain("const totalGraphStatsText =");
     expect(renderBlock).toContain('"Visible N" + placed.nodes.length + "/E" + visibleEdges.length');
     expect(renderBlock).toContain('"Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length');
@@ -2829,7 +2836,7 @@ describe("adminConsoleHtml", () => {
 
     api.setState({ densityMode: "full_evidence", flowMode: "incoming", servicesVisible: false, peerLinksVisible: false, timelineRange: null, graph });
     expect(api.graphFullEvidenceModeActive()).toBe(true);
-    expect(api.filteredGraphEdges().map((edge: { id: string }) => edge.id)).toEqual(["incoming", "service", "peer"]);
+    expect(api.filteredGraphEdges().map((edge: { id: string }) => edge.id)).toEqual(["incoming"]);
     expect(api.graphPresentation(graph.nodes, graph.edges)).toEqual({ nodes: graph.nodes, edges: graph.edges, mode: "full_evidence", dense: false });
 
     expect(presentationBlock).toContain('if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };');
@@ -3303,8 +3310,13 @@ describe("adminConsoleHtml", () => {
       function edgeDisplayRole(edge) {
         return edge?.displayRole || "real_transfer";
       }
-      function rawBigInt() {
-        return null;
+      function rawBigInt(value) {
+        if (value === null || value === undefined || value === "") return null;
+        try {
+          return BigInt(value);
+        } catch {
+          return null;
+        }
       }
       function nodeImportanceScore(node) {
         return Number(node.weight || node.score || 0);
@@ -3361,8 +3373,18 @@ describe("adminConsoleHtml", () => {
         id: "small-" + index + "-intermediate",
         fromNodeId: "small-" + index,
         toNodeId: "intermediate",
+        txHash: "tx-small-" + index,
+        amountRaw: "1000000",
+        metadata: { moneyDirection: "inbound_to_subject" },
       })),
-      { id: "small-76-intermediate-duplicate", fromNodeId: "small-76", toNodeId: "intermediate" },
+      {
+        id: "small-76-intermediate-duplicate",
+        fromNodeId: "small-76",
+        toNodeId: "intermediate",
+        txHash: "tx-small-76b",
+        amountRaw: "1000000",
+        metadata: { moneyDirection: "inbound_to_subject" },
+      },
     ];
 
     expect(api.walletClusterNodeRole(nodes[1], "subject", edges)).toBe("source");
@@ -3411,10 +3433,16 @@ describe("adminConsoleHtml", () => {
       },
     });
     expect(collapsedEdges).toHaveLength(1);
-    expect(collapsedEdge.metadata.sourceEdgeIds).toEqual(expect.arrayContaining(["small-76-intermediate-duplicate", "small-77-intermediate"]));
+    expect(collapsedEdge.metadata.sourceEdgeIds.every((edgeId: string) => edgeId.startsWith("small-"))).toBe(true);
     expect(collapsedEdge.metadata.sourceEdgeCount).toBe(collapsedEdge.metadata.sourceEdgeIds.length);
     expect(collapsedEdge.metadata.sourceEdgeCount).toBeGreaterThan(1);
     expect(collapsedEdge.metadata.sourceEdgeId).toBe(collapsedEdge.metadata.sourceEdgeIds[0]);
+    expect(collapsedEdge.txHash).toBe(collapsedEdge.metadata.txHashes[0]);
+    expect(collapsedEdge.amountRaw).toBe(String(collapsedEdge.metadata.sourceEdgeIds.length * 1000000));
+    expect(collapsedEdge.metadata.amountRaw).toBe(collapsedEdge.amountRaw);
+    expect(collapsedEdge.metadata.moneyDirection).toBe("inbound_to_subject");
+    expect(collapsedEdge.metadata.txHashes).toHaveLength(collapsedEdge.metadata.sourceEdgeIds.length);
+    expect(collapsedEdge.metadata.txHashes.every((txHash: string) => txHash.startsWith("tx-small-"))).toBe(true);
     expect(presentation.nodes.some((node: { metadata?: { groupReason?: string } }) => node.metadata?.groupReason === "deep_branch_overview")).toBe(false);
 
     const placed = api.walletClusterLayout(nodes.slice(0, 8), edges.slice(0, 7));

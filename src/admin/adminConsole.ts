@@ -196,66 +196,93 @@ export function adminConsoleHtml(): string {
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
       min-height: 40px;
-      max-height: 108px;
       box-sizing: border-box;
-      overflow-y: auto;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      gap: 10px;
-      align-items: center;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
       pointer-events: auto;
       border: 1px solid rgba(58, 67, 77, .82);
       border-radius: 8px;
       background: rgba(13, 17, 22, .86);
       box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
       backdrop-filter: blur(10px);
-      padding: 5px 8px;
+      padding: 7px 8px;
     }
     .workbench-control-rail {
       align-content: start;
     }
     .graph-control-group {
       display: flex;
-      gap: 8px;
-      align-items: center;
+      gap: 6px;
+      align-items: stretch;
       flex-wrap: wrap;
       min-width: 0;
     }
+    .graph-control-section {
+      min-width: 0;
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      flex: 0 1 auto;
+      padding: 3px;
+      border: 1px solid rgba(58, 67, 77, .68);
+      border-radius: 8px;
+      background: rgba(8, 11, 15, .5);
+    }
+    .graph-control-section.is-wide { flex: 1 1 360px; }
+    .control-label {
+      padding: 0 5px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
     .graph-action-row button, .graph-action-row select {
-      height: 30px;
-      padding: 0 10px;
+      height: 28px;
+      padding: 0 9px;
       background: rgba(12, 15, 18, .92);
       white-space: nowrap;
     }
+    .graph-action-row button.active {
+      border-color: rgba(127, 169, 221, .78);
+      background: rgba(28, 48, 78, .6);
+      color: #eef5ff;
+    }
     .graph-action-row #txLabelMode { width: 160px; }
     .graph-action-row #walletLabelMode { width: 180px; }
-    .graph-action-row #flowMode { width: 140px; }
-    .graph-action-row .graph-meta {
-      grid-column: 2;
-      min-height: 30px;
+    .graph-action-row #flowMode { width: 128px; }
+    .analytics-graph-context {
+      display: grid;
+      gap: 7px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(58, 67, 77, .74);
+      background: rgba(8, 11, 15, .42);
+    }
+    .analytics-graph-context[hidden] { display: none; }
+    .analytics-graph-context .graph-meta {
+      min-height: 0;
       padding: 0;
       display: flex;
-      align-items: center;
-      justify-content: flex-end;
       gap: 6px;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
+      justify-content: flex-start;
       border: 0;
       background: transparent;
       box-shadow: none;
       backdrop-filter: none;
-      pointer-events: none;
     }
-    .graph-action-row .graph-legend {
-      grid-column: 1 / -1;
-      min-width: 0;
-      max-width: 100%;
+    .analytics-graph-context .graph-legend {
       display: flex;
       flex-wrap: wrap;
-      justify-content: flex-end;
+      justify-content: flex-start;
       gap: 6px;
-      pointer-events: none;
     }
-    .graph-action-row .graph-legend:empty { display: none; }
+    .analytics-graph-context .graph-legend:empty,
+    .analytics-graph-context .graph-meta:empty { display: none; }
     .overlay-panel {
       position: absolute;
       z-index: 5;
@@ -514,7 +541,7 @@ export function adminConsoleHtml(): string {
     .status.running, .status.queued { color: var(--warn); border-color: rgba(246, 193, 119, .45); }
     .graph-tool-rail {
       position: absolute;
-      top: 136px;
+      top: 150px;
       right: 12px;
       z-index: 4;
       display: flex;
@@ -527,7 +554,7 @@ export function adminConsoleHtml(): string {
     .graph-meta { min-height: 40px; padding: 8px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .graph-stage {
       position: absolute;
-      top: 184px;
+      top: 164px;
       right: calc(var(--right-rail-width) + 24px);
       bottom: 164px;
       left: calc(var(--left-rail-width) + 24px);
@@ -784,33 +811,17 @@ export function adminConsoleHtml(): string {
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compat-hidden { display: none; }
     @media (max-width: 1680px) {
-      .graph-action-row { gap: 6px; padding: 4px 6px; }
-      .graph-control-group { gap: 5px; flex-wrap: wrap; }
+      .graph-action-row { gap: 6px; padding: 6px; }
+      .graph-control-group { gap: 5px; }
+      .graph-control-section { gap: 4px; padding: 2px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #txLabelMode { width: 160px; }
-      .graph-action-row #walletLabelMode { width: 180px; }
-      .graph-action-row #flowMode { width: 120px; }
-      .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
-    }
-    @media (max-width: 1560px) {
-      .graph-action-row {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
+      .graph-action-row #txLabelMode { width: 150px; }
+      .graph-action-row #walletLabelMode { width: 166px; }
+      .graph-action-row #flowMode { width: 116px; }
     }
     @media (max-width: 1280px) {
-      .graph-action-row {
-        grid-template-columns: 1fr;
-      }
-      .graph-action-row .graph-meta,
-      .graph-action-row .graph-legend {
-        justify-content: flex-start;
-      }
+      .control-label { display: none; }
+      .graph-control-section.is-wide { flex-basis: 280px; }
     }
     @media (max-width: 1180px) {
       body { overflow: auto; }
@@ -830,26 +841,21 @@ export function adminConsoleHtml(): string {
         top: 128px;
         left: 12px;
         right: 12px;
-        max-height: 84px;
         grid-template-columns: minmax(0, 1fr);
       }
-      .graph-stage { top: 224px; left: 12px; right: 12px; }
+      .graph-stage { top: 264px; left: 12px; right: 12px; }
       .timeline-panel, .transfer-panel {
         left: 12px;
         right: 12px;
       }
       .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
-      .overlay-panel { top: 224px; max-height: 360px; }
+      .graph-control-section { flex: 1 1 260px; }
+      .overlay-panel { top: 264px; max-height: 360px; }
       .overlay-panel.jobs-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { left: 12px; right: auto; }
-      .overlay-panel.analytics-panel { top: calc(224px + 372px); }
-      .overlay-panel.scoring-audit-panel { left: 12px; width: var(--left-rail-width); top: calc(224px + 744px); }
-      .graph-tool-rail { top: 224px; }
+      .overlay-panel.analytics-panel { top: calc(264px + 372px); }
+      .overlay-panel.scoring-audit-panel { left: 12px; width: var(--left-rail-width); top: calc(264px + 744px); }
+      .graph-tool-rail { top: 264px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }
     }
@@ -879,38 +885,51 @@ export function adminConsoleHtml(): string {
         </div>
         <div class="graph-action-row workbench-control-rail" data-control-rail>
           <div class="graph-control-group">
-            <button id="toggleJobs" type="button">Jobs</button>
-            <button id="toggleAnalytics" type="button">Analytics</button>
-            <button id="toggleScoringAudit" type="button">Scoring audit</button>
-            <select id="flowMode">
-              <option value="all">All flows</option>
-              <option value="incoming">Incoming</option>
-              <option value="outgoing">Outgoing</option>
-              <option value="self">Self</option>
-            </select>
-            <select id="txLabelMode">
-              <option value="auto">Tx labels: auto</option>
-              <option value="all">Tx labels: all</option>
-              <option value="important">Tx labels: important</option>
-              <option value="selected">Tx labels: selected</option>
-              <option value="off">Tx labels: off</option>
-            </select>
-            <select id="walletLabelMode">
-              <option value="smart">Wallet labels: smart</option>
-              <option value="all">Wallet labels: all</option>
-              <option value="important">Wallet labels: important</option>
-              <option value="off">Wallet labels: off</option>
-            </select>
-            <button id="roleMarksMode" type="button">Role marks on</button>
-            <button id="densityMode" type="button">Fan overview</button>
-            <button id="expandSelected" type="button">Expand selected</button>
-            <button id="refreshSecondLayer" type="button">Refresh 2nd layer</button>
-            <button id="peerLinksMode" type="button">Peer links on</button>
-            <button id="servicesMode" type="button">Services on</button>
-            <button id="toolResetLayout" type="button">Reset layout</button>
+            <div class="graph-control-section">
+              <span class="control-label">Panels</span>
+              <button id="toggleJobs" type="button">Jobs</button>
+              <button id="toggleAnalytics" type="button">Analytics</button>
+              <button id="toggleScoringAudit" type="button">Scoring audit</button>
+            </div>
+            <div class="graph-control-section">
+              <span class="control-label">Flow</span>
+              <select id="flowMode">
+                <option value="all">All flows</option>
+                <option value="incoming">Incoming</option>
+                <option value="outgoing">Outgoing</option>
+                <option value="self">Self</option>
+              </select>
+            </div>
+            <div class="graph-control-section is-wide">
+              <span class="control-label">Labels</span>
+              <select id="txLabelMode">
+                <option value="auto">Tx labels: auto</option>
+                <option value="all">Tx labels: all</option>
+                <option value="important">Tx labels: important</option>
+                <option value="selected">Tx labels: selected</option>
+                <option value="off">Tx labels: off</option>
+              </select>
+              <select id="walletLabelMode">
+                <option value="smart">Wallet labels: smart</option>
+                <option value="all">Wallet labels: all</option>
+                <option value="important">Wallet labels: important</option>
+                <option value="off">Wallet labels: off</option>
+              </select>
+            </div>
+            <div class="graph-control-section">
+              <span class="control-label">View</span>
+              <button id="densityMode" type="button">View: Fan overview</button>
+              <button id="roleMarksMode" type="button">Role marks on</button>
+              <button id="peerLinksMode" type="button">Peer links on</button>
+              <button id="servicesMode" type="button">Services on</button>
+            </div>
+            <div class="graph-control-section">
+              <span class="control-label">Graph</span>
+              <button id="expandSelected" type="button">Expand selected</button>
+              <button id="refreshSecondLayer" type="button">Refresh 2nd layer</button>
+              <button id="toolResetLayout" type="button">Reset layout</button>
+            </div>
           </div>
-          <div id="graphStats" class="graph-meta"></div>
-          <div id="graphLegend" class="graph-legend"></div>
         </div>
         <aside id="jobsPanel" class="overlay-panel jobs-panel open" data-overlay="jobs">
           <div class="overlay-head">
@@ -963,6 +982,10 @@ export function adminConsoleHtml(): string {
           </div>
           <div class="overlay-body analytics-body">
             <div class="selection-card analytics-selection-card" id="selectionCard"></div>
+            <div class="analytics-graph-context" hidden>
+              <div id="graphStats" class="graph-meta"></div>
+              <div id="graphLegend" class="graph-legend"></div>
+            </div>
             <div id="caseBrief" class="details-body empty">Select a completed or partial job to inspect evidence.</div>
           </div>
         </aside>
@@ -1346,7 +1369,10 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";
+        const label = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";
+        densityButton.textContent = "View: " + label;
+        densityButton.classList.toggle("active", mode === "full_evidence" || mode === "wallet_clusters" || mode === "step_orbit" || mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all");
+        densityButton.title = label + ". Click to cycle graph presentation modes; current flow/service filters still apply.";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -2363,49 +2389,36 @@ export function adminConsoleHtml(): string {
       });
 
       const visibleIds = new Set([...kept, ...groups].map((node) => node.id));
-      const edges = [];
-      const collapsedEdgeByKey = new Map();
-      rawEdges.forEach((edge) => {
-        const fromVisible = visibleIds.has(edge.fromNodeId);
-        const toVisible = visibleIds.has(edge.toNodeId);
-        if (fromVisible && toVisible) {
-          edges.push(edge);
-          return;
-        }
-        const fromNodeId = fromVisible ? edge.fromNodeId : hiddenNodeToGroupId.get(edge.fromNodeId);
-        const toNodeId = toVisible ? edge.toNodeId : hiddenNodeToGroupId.get(edge.toNodeId);
-        if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
-        const groupKind = groupKindById.get(fromNodeId) || groupKindById.get(toNodeId) || "context";
-        const aggregateKey = fromNodeId + "->" + toNodeId + ":collapsed_group";
-        const current = collapsedEdgeByKey.get(aggregateKey);
-        if (current) {
-          current.weight += edge.weight || 1;
-          current.metadata.sourceEdgeIds.push(edge.id);
-          current.metadata.sourceEdgeCount = current.metadata.sourceEdgeIds.length;
-          const sourceRole = edge.displayRole || edge.type || null;
-          if (sourceRole && !current.metadata.sourceDisplayRoles.includes(sourceRole)) current.metadata.sourceDisplayRoles.push(sourceRole);
-          return;
-        }
-        collapsedEdgeByKey.set(aggregateKey, {
-          id: "collapsed-edge:wallet_cluster:" + aggregateKey.replace(/[^a-zA-Z0-9:_-]/g, "_"),
-          fromNodeId,
-          toNodeId,
-          type: "collapsed_group",
-          displayRole: "collapsed_group",
-          verdict: "review",
-          weight: edge.weight || 1,
-          metadata: {
-            groupKind,
-            sourceEdgeId: edge.id,
-            sourceEdgeIds: [edge.id],
-            sourceEdgeCount: 1,
-            walletClusterSummary: true,
-            sourceDisplayRole: edge.displayRole || edge.type || null,
-            sourceDisplayRoles: [edge.displayRole || edge.type || null].filter(Boolean)
-          }
+      const edges = rawEdges.filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId));
+      const sourceEdgeById = new Map(rawEdges.filter((edge) => edge?.id).map((edge) => [edge.id, edge]));
+      const aggregateEdges = collapsedGroupAggregateEdges(rawEdges, visibleIds, hiddenNodeToGroupId, groupKindById)
+        .map((edge) => {
+          const sourceEdgeIds = Array.isArray(edge?.metadata?.sourceEdgeIds)
+            ? edge.metadata.sourceEdgeIds
+            : Array.isArray(edge?.metadata?.hiddenEdgeIds)
+              ? edge.metadata.hiddenEdgeIds
+              : [];
+          const sourceDisplayRoles = [...new Set(sourceEdgeIds
+            .map((edgeId) => {
+              const sourceEdge = sourceEdgeById.get(edgeId);
+              return sourceEdge?.displayRole || sourceEdge?.type || null;
+            })
+            .filter(Boolean))];
+          const id = String(edge?.id || "").startsWith("collapsed-edge:wallet_cluster:")
+            ? edge.id
+            : String(edge?.id || "").replace(/^collapsed-edge:/, "collapsed-edge:wallet_cluster:");
+          return {
+            ...edge,
+            id,
+            metadata: {
+              ...edge.metadata,
+              walletClusterSummary: true,
+              sourceDisplayRole: sourceDisplayRoles[0] || null,
+              sourceDisplayRoles
+            }
+          };
         });
-      });
-      collapsedEdgeByKey.forEach((edge) => edges.push(edge));
+      aggregateEdges.forEach((edge) => edges.push(edge));
       return { nodes: [...kept, ...groups], edges };
     }
     function applyBundleMemberVisibility(nodes, edges) {
@@ -3826,7 +3839,27 @@ export function adminConsoleHtml(): string {
         : Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
       return Boolean(count && count > 1);
     }
+    function edgeIsDeepCheckRelationshipProjection(edge) {
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      const source = String(edge?.metadata?.source || "");
+      return evidenceType === "deepcheck_relationship_second_hop" ||
+        evidenceType === "deepcheck_extended_path" ||
+        source === "deepcheck_relationship_second_hop" ||
+        source === "deepcheck_extended_path";
+    }
+    function edgeIsContractContextProjection(edge) {
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      return evidenceType === "contract_trigger_context" ||
+        evidenceType === "contract_call_context" ||
+        evidenceType === "debit_authority_context" ||
+        evidenceType === "approval_drain_contract_call" ||
+        evidenceType === "approval_drain_spender_authority";
+    }
+    function edgeIsCanvasContextProjection(edge) {
+      return edgeIsDeepCheckRelationshipProjection(edge) || edgeIsContractContextProjection(edge);
+    }
     function edgeHasCanvasAmountLabel(edge) {
+      if (edgeIsCanvasContextProjection(edge)) return false;
       return Boolean(edgeCanvasLabel(edge) || edgeBoundarySummaryLabel(edge) || edgeContextCanvasLabel(edge));
     }
     function edgeShouldShowAmount(edge) {
@@ -3836,6 +3869,7 @@ export function adminConsoleHtml(): string {
       if (!edgeShouldShowAmount(edge)) return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
+      if (edgeIsCanvasContextProjection(edge)) return false;
       return true;
     }
     function edgeShouldShowImportantCanvasAmount(edge) {
@@ -3845,6 +3879,7 @@ export function adminConsoleHtml(): string {
       if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
+      if (edgeIsCanvasContextProjection(edge)) return false;
       return true;
     }
     function edgeDetailedAmountLabel(edge) {
@@ -4061,8 +4096,11 @@ export function adminConsoleHtml(): string {
         return nodesVisible && edgesVisible;
       }).length;
     }
+    function setGraphContextVisible(visible) {
+      const context = el("graphStats").closest(".analytics-graph-context");
+      if (context) context.hidden = !visible;
+    }
     function filteredGraphEdges() {
-      if (graphFullEvidenceModeActive()) return graphEdges(state.graph);
       return graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
@@ -4856,17 +4894,18 @@ export function adminConsoleHtml(): string {
         svg.innerHTML = "";
         el("graphStats").innerHTML = "";
         el("graphLegend").innerHTML = "";
+        setGraphContextVisible(false);
         return;
       }
+      setGraphContextVisible(true);
       const graph = state.graph;
-      const fullEvidence = graphFullEvidenceModeActive();
-      const rawVisibleEdges = fullEvidence ? graphEdges(graph) : filteredGraphEdges();
+      const rawVisibleEdges = filteredGraphEdges();
       const rawConnectedNodeIds = new Set();
       rawVisibleEdges.forEach((edge) => {
         if (edge?.fromNodeId) rawConnectedNodeIds.add(edge.fromNodeId);
         if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
       });
-      const rawVisibleNodes = fullEvidence ? graphNodes(graph) : graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
+      const rawVisibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
       const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
       const visibleEdges = presentation.edges;
       const visibleNodes = presentation.nodes;
@@ -4983,7 +5022,7 @@ export function adminConsoleHtml(): string {
       const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");
       const placedNodeIds = new Set(placed.nodes.map((node) => node.id));
       const visibleEdgeIds = new Set(visibleEdges.map((edge) => edge.id));
-      const visiblePathCount = fullEvidence ? graphPaths(graph).length : visibleGraphPathCount(graphPaths(graph), placedNodeIds, visibleEdgeIds);
+      const visiblePathCount = visibleGraphPathCount(graphPaths(graph), placedNodeIds, visibleEdgeIds);
       const hiddenNodeCount = Math.max(0, graphNodes(graph).length - placed.nodes.length);
       const hiddenEdgeCount = Math.max(0, graphEdges(graph).length - visibleEdges.length);
       const hiddenGraphStatsText = hiddenNodeCount > 0 || hiddenEdgeCount > 0 ? "Hidden by view/filter: " + hiddenNodeCount + " nodes / " + hiddenEdgeCount + " edges" : "";
@@ -4995,13 +5034,15 @@ export function adminConsoleHtml(): string {
         ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
         statLabel(graphWeights(graph).length, "weight")
       ].join(" · ");
-      const graphStatsText = [
+      const graphStatsChips = [
         visibleGraphStatsText,
         totalGraphStatsText,
         ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
         "W" + graphWeights(graph).length
-      ].join(" · ");
-      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
+      ];
+      el("graphStats").innerHTML = graphStatsChips
+        .map((text) => '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(text) + '</span>')
+        .join("");
       el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);
     }
     function isCollapsedGroupNodeId(nodeId) {
