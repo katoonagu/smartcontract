@@ -317,6 +317,7 @@ describe("theft report repositories", () => {
     expect(compactSql(queries[0].sql)).toContain("admin_status = $1");
     expect(compactSql(queries[0].sql)).toContain("status = $2");
     expect(compactSql(queries[0].sql)).toContain("reported_scam_address ilike $3");
+    expect(compactSql(queries[0].sql)).toContain("order by coalesce(admin_updated_at, updated_at) desc, created_at desc, id desc");
     expect(compactSql(queries[0].sql)).toContain("limit $4 offset $5");
     expect(queries[0].params).toEqual([
       "awaiting_documents",
@@ -325,6 +326,20 @@ describe("theft report repositories", () => {
       20,
       5
     ]);
+  });
+
+  it("sanitizes theft report list pagination values", async () => {
+    const { db, queries } = createMockDb();
+
+    await listTheftReports(db, { limit: Number.NaN, offset: Number.POSITIVE_INFINITY });
+    await listTheftReports(db, { limit: 12.9, offset: 5.8 });
+    await listTheftReports(db, { limit: -1, offset: -4 });
+    await listTheftReports(db, { limit: 1000, offset: 2 });
+
+    expect(queries[0].params).toEqual([50, 0]);
+    expect(queries[1].params).toEqual([12, 5]);
+    expect(queries[2].params).toEqual([1, 0]);
+    expect(queries[3].params).toEqual([100, 2]);
   });
 
   it("updates theft report admin state without changing bot status fields", async () => {

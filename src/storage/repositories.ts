@@ -2208,6 +2208,16 @@ export async function getTheftReport(db: Db, id: string): Promise<TheftReport | 
   return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
 }
 
+function sanitizeTheftReportListLimit(value: number | undefined): number {
+  const limit = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 50;
+  return Math.min(Math.max(limit, 1), 100);
+}
+
+function sanitizeTheftReportListOffset(value: number | undefined): number {
+  const offset = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 0;
+  return Math.max(offset, 0);
+}
+
 export async function listTheftReports(db: Db, input: ListTheftReportsInput = {}): Promise<TheftReport[]> {
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -2239,8 +2249,8 @@ export async function listTheftReports(db: Db, input: ListTheftReportsInput = {}
     )`);
   }
 
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
-  const offset = Math.max(input.offset ?? 0, 0);
+  const limit = sanitizeTheftReportListLimit(input.limit);
+  const offset = sanitizeTheftReportListOffset(input.offset);
   params.push(limit, offset);
   const limitIndex = params.length - 1;
   const offsetIndex = params.length;
@@ -2250,7 +2260,7 @@ export async function listTheftReports(db: Db, input: ListTheftReportsInput = {}
     `select ${theftReportColumns}
      from theft_reports
      ${where}
-     order by coalesce(admin_updated_at, updated_at) desc, created_at desc
+     order by coalesce(admin_updated_at, updated_at) desc, created_at desc, id desc
      limit $${limitIndex} offset $${offsetIndex}`,
     params
   );
