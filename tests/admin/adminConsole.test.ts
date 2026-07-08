@@ -181,6 +181,20 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("walletIntelPresetFilters");
   });
 
+  it("renders Wallet Intelligence table columns for intersections", () => {
+    const html = adminConsoleHtml();
+    const tableStart = html.indexOf("function renderWalletIntelligenceTable()");
+    const tableEnd = html.indexOf("async function loadWalletIntelligenceAddresses()", tableStart);
+    const tableBlock = html.slice(tableStart, tableEnd);
+
+    expect(tableBlock).toContain("Why interesting");
+    expect(tableBlock).toContain("Modes");
+    expect(tableBlock).toContain("First seen");
+    expect(tableBlock).toContain("Last seen");
+    expect(tableBlock).toContain("walletIntelWhyInteresting(item)");
+    expect(tableBlock).toContain("walletIntelKnownInfrastructure(item)");
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 

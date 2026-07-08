@@ -255,6 +255,24 @@ export function adminConsoleHtml(): string {
       text-align: left;
       overflow-wrap: anywhere;
     }
+    .wallet-intel-kind {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      border: 1px solid var(--border-muted, var(--line));
+      color: var(--text-secondary);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .wallet-intel-kind.unknown {
+      border-color: rgba(127, 169, 221, .6);
+      color: var(--accent);
+    }
+    .wallet-intel-kind.infra {
+      border-color: rgba(214, 177, 95, .55);
+      color: var(--semantic-boundary);
+    }
     .wallet-intel-drawer { padding: 12px; display: grid; align-content: start; gap: 12px; font-size: 12px; }
     .wallet-intel-section { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--line); }
     .wallet-intel-section:first-child { padding-top: 0; border-top: 0; }
@@ -1867,20 +1885,26 @@ export function adminConsoleHtml(): string {
         return;
       }
       const rows = state.walletIntel.addresses.map((item) => {
+        const infra = walletIntelKnownInfrastructure(item);
         const active = item.address === state.walletIntel.activeAddress ? ' class="active"' : "";
         return '<tr' + active + ' data-wallet-intel-address="' + escapeHtml(item.address) + '">' +
           '<td><button type="button" class="wallet-intel-address-button" data-wallet-intel-address="' + escapeHtml(item.address) + '">' + escapeHtml(short(item.address, 8)) + '</button><div class="muted">' + escapeHtml(item.address) + '</div></td>' +
+          '<td><span class="wallet-intel-kind ' + (infra ? "infra" : "unknown") + '">' + escapeHtml(infra ? "Known infrastructure" : "Investigate") + '</span><div class="muted">' + tagPills(item.serviceCategories, "No service") + '</div></td>' +
+          '<td>' + escapeHtml(walletIntelWhyInteresting(item)) + '</td>' +
           '<td>' + tagPills(item.tags, "No tags") + '</td>' +
+          '<td>' + tagPills(item.modes, "No modes") + '</td>' +
           '<td>' + escapeHtml(walletIntelText(item.uniqueSubjectCount, "0")) + '</td>' +
           '<td>' + escapeHtml(walletIntelText(item.uniqueRequesterCount, "0")) + '</td>' +
           '<td>' + escapeHtml(walletIntelText(item.jobCount, "0") + " / " + walletIntelText(item.occurrenceCount, "0")) + '</td>' +
-          '<td>' + escapeHtml(walletIntelText(item.maxDepth)) + '</td>' +
+          '<td>' + escapeHtml(walletIntelText(item.minDepth) + " - " + walletIntelText(item.maxDepth)) + '</td>' +
           '<td>' + escapeHtml(walletIntelText(item.distinctTxCount, "0")) + '</td>' +
           '<td>' + escapeHtml(walletIntelAmount(item.distinctAmountRaw)) + '</td>' +
+          '<td>' + escapeHtml(walletIntelTime(item.firstSeenAt)) + '</td>' +
+          '<td>' + escapeHtml(walletIntelTime(item.lastSeenAt)) + '</td>' +
           '</tr>';
       }).join("");
       root.innerHTML = '<table><thead><tr>' +
-        '<th>Address</th><th>Tags</th><th>Unique subjects</th><th>Unique requesters</th><th>Jobs / occurrences</th><th>Max depth</th><th>Distinct tx</th><th>Distinct amount</th>' +
+        '<th>Address</th><th>Class</th><th>Why interesting</th><th>Tags</th><th>Modes</th><th>Subjects</th><th>Requesters</th><th>Jobs / occurrences</th><th>Depth</th><th>Distinct tx</th><th>Distinct amount</th><th>First seen</th><th>Last seen</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table>';
     }
     async function loadWalletIntelligenceAddresses() {
