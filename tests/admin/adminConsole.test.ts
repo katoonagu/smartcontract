@@ -152,6 +152,11 @@ describe("adminConsoleHtml", () => {
       serviceCategories: [],
       labelHints: []
     })).toBe(false);
+    expect(helpers.walletIntelKnownInfrastructure({
+      tags: ["possible_service_or_exchange_like"],
+      serviceCategories: [],
+      labelHints: []
+    })).toBe(false);
   });
 
   it("maps Wallet Intelligence presets to API filters", () => {

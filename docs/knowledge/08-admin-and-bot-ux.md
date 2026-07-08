@@ -260,6 +260,9 @@ saved payloads only. The view is global investigative context: repeated
 appearances, requesters, source jobs, and normalized edges for triage. It is not
 a forensic verdict, not Telegram output, and not per-job graph evidence or
 scoring.
+Wallet Intelligence known-infrastructure copy is reserved for known service
+tags, service categories, or strong label hints; possible-service heuristic tags
+remain investigative context and must not be rendered as known infrastructure.
 
 ## Bot Purpose
 

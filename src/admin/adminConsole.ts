@@ -1755,7 +1755,6 @@ export function adminConsoleHtml(): string {
       const services = asArray(item?.serviceCategories);
       const labels = asArray(item?.labelHints);
       if (tags.includes("known_service_or_exchange")) return true;
-      if (tags.includes("possible_service_or_exchange_like")) return true;
       if (services.length > 0) return true;
       return labels.some((label) => /binance|bybit|bitget|bridge|router|exchange|cex/i.test(String(label || "")));
     }
