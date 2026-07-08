@@ -249,7 +249,7 @@ describe("startAdminServer", () => {
     expect(html).toContain('id="theftReportDetail"');
     expect(html).toContain("data-workbench-shell");
     expect(html).toContain("function theftReportsActive()");
-    expect(html).toContain("else if (!theftReportsActive()) loadJobs();");
+    expect(html).toContain("else if (theftReportsActive()) loadTheftReports();");
     expect(html).not.toContain("Рабочее место заявок будет подключено");
     expect(html).not.toContain("theft-reports-placeholder");
   });
