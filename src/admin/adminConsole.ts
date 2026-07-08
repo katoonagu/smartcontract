@@ -2207,8 +2207,10 @@ export function adminConsoleHtml(): string {
         state.theftReports.reports = asArray(body.reports);
         const activeReport = state.theftReports.reports.find((report) => report.id === state.theftReports.activeId);
         if (activeReport) {
+          state.theftReports.detailRequestSeq += 1;
           state.theftReports.detail = activeReport;
         } else {
+          state.theftReports.detailRequestSeq += 1;
           state.theftReports.activeId = state.theftReports.reports[0]?.id || null;
           state.theftReports.detail = state.theftReports.reports[0] || null;
         }
