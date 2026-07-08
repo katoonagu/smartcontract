@@ -4,7 +4,10 @@ import type {
   ForensicCheckJob,
   ForensicCheckJobKind,
   ForensicCheckJobStatus,
-  SavedWalletRiskSummary
+  ListTheftReportsInput,
+  SavedWalletRiskSummary,
+  TheftReport,
+  UpdateTheftReportAdminStateInput
 } from "../storage/repositories";
 import type { IndexedTronUsdtTransfer } from "../types";
 
@@ -20,6 +23,9 @@ export type AdminRuntimeDeps = {
     query?: string;
   }): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  listTheftReports?(input: ListTheftReportsInput): Promise<TheftReport[]>;
+  getTheftReport?(id: string): Promise<TheftReport | null>;
+  updateTheftReportAdminState?(input: UpdateTheftReportAdminStateInput): Promise<TheftReport | null>;
   getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
@@ -38,6 +44,9 @@ export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<
     },
     listJobs: deps.listJobs,
     getJob: deps.getJob,
+    listTheftReports: deps.listTheftReports,
+    getTheftReport: deps.getTheftReport,
+    updateTheftReportAdminState: deps.updateTheftReportAdminState,
     getTargetedHistoryProgressForJob: deps.getTargetedHistoryProgressForJob,
     listIndexedUsdtTransfersByHashes: deps.listIndexedUsdtTransfersByHashes,
     findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { adminConsoleHtml } from "../../src/admin/adminConsole";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
-import type { ForensicCheckJob } from "../../src/storage/repositories";
+import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositories";
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -33,6 +33,28 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
     updatedAt: new Date("2026-06-01T01:00:00.000Z"),
     startedAt: new Date("2026-06-01T00:00:01.000Z"),
     completedAt: new Date("2026-06-01T01:00:00.000Z"),
+    ...overrides
+  };
+}
+
+function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
+  return {
+    id: "report-1",
+    telegramUserId: "42",
+    txHash: "a".repeat(64),
+    victimAddress: "TSender111111111111111111111111111111",
+    reportedScamAddress: "TReceiver11111111111111111111111111111",
+    amountRaw: "123456789",
+    amountUsdt: "123.456789",
+    comment: "Пользователь сообщил о фишинге",
+    status: "documents_requested",
+    depositAddress: "T999999999999999999999999999999999",
+    depositAmountUsdt: "1000",
+    adminStatus: "awaiting_documents",
+    adminNote: "Проверить документы",
+    adminUpdatedAt: new Date("2026-07-08T10:00:00.000Z"),
+    createdAt: new Date("2026-07-08T09:00:00.000Z"),
+    updatedAt: new Date("2026-07-08T10:00:00.000Z"),
     ...overrides
   };
 }
@@ -214,6 +236,18 @@ describe("startAdminServer", () => {
     expect(html).toContain("Wallet Intelligence");
   });
 
+  it("serves the theft reports workspace shell", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/theft-reports`);
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Заявки о краже");
+    expect(html).toContain("data-theft-reports-workspace");
+    expect(html).toContain("/admin/api/theft-reports");
+  });
+
   it("keeps node role marks inline in the graph renderer", () => {
     const html = adminConsoleHtml();
 
@@ -390,6 +424,124 @@ describe("startAdminServer", () => {
     const server = await start();
 
     const response = await fetch(`${server.url}/admin/api/wallet-intelligence/addresses`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(501);
+  });
+
+  it("lists theft reports for authorized admins", async () => {
+    let receivedInput: unknown = null;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async (input) => {
+        receivedInput = input;
+        return [theftReport()];
+      },
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async () => null
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/theft-reports?limit=20&offset=5&adminStatus=awaiting_documents&botStatus=documents_requested&query=TReceiver`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      reports: [{
+        id: "report-1",
+        telegramUserId: "42",
+        adminStatus: "awaiting_documents",
+        status: "documents_requested"
+      }]
+    });
+    expect(receivedInput).toMatchObject({
+      limit: 20,
+      offset: 5,
+      adminStatus: "awaiting_documents",
+      botStatus: "documents_requested",
+      query: "TReceiver"
+    });
+  });
+
+  it("returns theft report detail for authorized admins", async () => {
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => [],
+      getTheftReport: async (id) => id === "report-1" ? theftReport() : null,
+      updateTheftReportAdminState: async () => null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports/report-1`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      report: {
+        id: "report-1",
+        victimAddress: "TSender111111111111111111111111111111",
+        reportedScamAddress: "TReceiver11111111111111111111111111111"
+      }
+    });
+  });
+
+  it("updates theft report admin state for authorized admins", async () => {
+    let receivedInput: unknown = null;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => [],
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async (input) => {
+        receivedInput = input;
+        return theftReport({ adminStatus: input.adminStatus, adminNote: input.adminNote });
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports/report-1/admin-state`, {
+      method: "PATCH",
+      headers: {
+        authorization: "Bearer secret-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ adminStatus: "in_progress", adminNote: "Взято в работу" })
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      report: {
+        id: "report-1",
+        adminStatus: "in_progress",
+        adminNote: "Взято в работу"
+      }
+    });
+    expect(receivedInput).toEqual({
+      id: "report-1",
+      adminStatus: "in_progress",
+      adminNote: "Взято в работу"
+    });
+  });
+
+  it("rejects invalid theft report admin status filters", async () => {
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => [],
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async () => null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports?adminStatus=paid`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 501 when theft reports dependencies are not configured", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports`, {
       headers: { authorization: "Bearer secret-token" }
     });
 

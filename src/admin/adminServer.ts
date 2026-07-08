@@ -12,8 +12,13 @@ import type {
   ForensicCheckJobKind,
   ForensicCheckJobStatus,
   ListAdminForensicCheckJobsInput,
+  ListTheftReportsInput,
   ListWalletIntelligenceAddressSummariesInput,
   SavedWalletRiskSummary,
+  TheftReport,
+  TheftReportAdminStatus,
+  TheftReportStatus,
+  UpdateTheftReportAdminStateInput,
   WalletIntelligenceAddressDetail,
   WalletIntelligenceAddressSummary,
   WalletIntelligenceJobStatus,
@@ -32,6 +37,9 @@ export type AdminServerDeps = {
   config: AdminServerConfig;
   listJobs(input: ListAdminForensicCheckJobsInput): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  listTheftReports?(input: ListTheftReportsInput): Promise<TheftReport[]>;
+  getTheftReport?(id: string): Promise<TheftReport | null>;
+  updateTheftReportAdminState?(input: UpdateTheftReportAdminStateInput): Promise<TheftReport | null>;
   createStrictProvenanceBenchmarkJob?(input: {
     subjectAddress: string;
   }): Promise<ForensicCheckJob>;
@@ -92,6 +100,22 @@ const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
   "where_is_money_check",
   "incoming_deposit_check"
 ]);
+const theftReportAdminStatuses = new Set<TheftReportAdminStatus>([
+  "new",
+  "awaiting_payment",
+  "awaiting_documents",
+  "in_progress",
+  "escalated",
+  "closed",
+  "cancelled"
+]);
+const theftReportBotStatuses = new Set<TheftReportStatus>([
+  "draft",
+  "awaiting_deposit",
+  "deposit_confirmed",
+  "documents_requested",
+  "cancelled"
+]);
 const walletIntelligenceModes = new Set<WalletIntelligenceSupportedJobKind>([
   "address_deep_check",
   "where_is_money_check",
@@ -136,6 +160,27 @@ function writeRedirect(response: ServerResponse, location: string): void {
     "cache-control": "no-store"
   });
   response.end();
+}
+
+function adminShellHtml(): string {
+  const html = adminConsoleHtml();
+  if (html.includes("data-theft-reports-workspace")) return html;
+
+  const navNeedle = '          <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>';
+  const theftReportsNav = '          <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>';
+  const withNav = html.includes("/admin/theft-reports")
+    ? html
+    : html.replace(navNeedle, `${navNeedle}\n${theftReportsNav}`);
+  const workspace = [
+    "",
+    "<!-- ponytail: server-side placeholder keeps this task inside the assigned files; move into adminConsole when the real theft-report UI lands. -->",
+    '<section id="theftReportsWorkspace" data-theft-reports-workspace data-api="/admin/api/theft-reports" hidden>',
+    "  <h2>Заявки о краже</h2>",
+    "</section>"
+  ].join("\n");
+  return withNav.includes("</body>")
+    ? withNav.replace("</body>", `${workspace}\n</body>`)
+    : `${withNav}${workspace}`;
 }
 
 async function writeNodeRoleAsset(response: ServerResponse, pathname: string): Promise<boolean> {
@@ -292,6 +337,46 @@ function parseWalletIntelligenceListInput(url: URL): ParseResult<ListWalletIntel
   };
 }
 
+function parseTheftReportAdminStatusFilter(url: URL): ParseResult<TheftReportAdminStatus | undefined> {
+  const value = firstQueryValue(url, "adminStatus");
+  if (value === undefined) return { ok: true, value: undefined };
+  if (theftReportAdminStatuses.has(value as TheftReportAdminStatus)) {
+    return { ok: true, value: value as TheftReportAdminStatus };
+  }
+  return { ok: false, message: "Invalid theft report adminStatus filter." };
+}
+
+function parseTheftReportBotStatusFilter(url: URL): ParseResult<TheftReportStatus | undefined> {
+  const value = firstQueryValue(url, "botStatus");
+  if (value === undefined) return { ok: true, value: undefined };
+  if (theftReportBotStatuses.has(value as TheftReportStatus)) {
+    return { ok: true, value: value as TheftReportStatus };
+  }
+  return { ok: false, message: "Invalid theft report botStatus filter." };
+}
+
+function parseTheftReportsListInput(url: URL): ParseResult<ListTheftReportsInput> {
+  const limit = parsePositiveIntegerQuery(url, "limit");
+  if (!limit.ok) return { ok: false, message: "Invalid theft report limit." };
+  const offset = parsePositiveIntegerQuery(url, "offset");
+  if (!offset.ok) return { ok: false, message: "Invalid theft report offset." };
+  const adminStatus = parseTheftReportAdminStatusFilter(url);
+  if (!adminStatus.ok) return adminStatus;
+  const botStatus = parseTheftReportBotStatusFilter(url);
+  if (!botStatus.ok) return botStatus;
+
+  return {
+    ok: true,
+    value: {
+      limit: limit.value,
+      offset: offset.value,
+      adminStatus: adminStatus.value,
+      botStatus: botStatus.value,
+      query: firstQueryValue(url, "query")
+    }
+  };
+}
+
 function parseListJobsInput(url: URL): ParseResult<ListAdminForensicCheckJobsInput> {
   const limit = parseNonNegativeInteger(firstQueryValue(url, "limit"), "limit");
   if (!limit.ok) return limit;
@@ -434,6 +519,20 @@ function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action
     value: {
       id: id.value,
       action: match[2] as "graph" | "raw" | "refresh-second-layer"
+    }
+  };
+}
+
+function theftReportApiMatch(pathname: string): ParseResult<{ id: string; action: "detail" | "admin-state" } | null> {
+  const match = /^\/admin\/api\/theft-reports\/([^/]+)(?:\/(admin-state))?$/.exec(pathname);
+  if (!match) return { ok: true, value: null };
+  const id = safeDecodeUriComponent(match[1], "Invalid theft report id.");
+  if (!id.ok) return id;
+  return {
+    ok: true,
+    value: {
+      id: id.value,
+      action: match[2] === "admin-state" ? "admin-state" : "detail"
     }
   };
 }
@@ -686,6 +785,83 @@ async function handleApiRequest(
     return;
   }
 
+  if (url.pathname === "/admin/api/theft-reports") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    const input = parseTheftReportsListInput(url);
+    if (!input.ok) {
+      writeJson(response, 400, { error: input.message });
+      return;
+    }
+    if (!deps.listTheftReports) {
+      writeJson(response, 501, { error: "Theft reports are not configured." });
+      return;
+    }
+    const reports = await deps.listTheftReports(input.value);
+    writeJson(response, 200, { reports });
+    return;
+  }
+
+  const theftReportMatch = theftReportApiMatch(url.pathname);
+  if (!theftReportMatch.ok) {
+    writeJson(response, 400, { error: theftReportMatch.message });
+    return;
+  }
+  if (theftReportMatch.value) {
+    if (theftReportMatch.value.action === "admin-state") {
+      if (request.method !== "PATCH") {
+        writeJson(response, 405, { error: "Method not allowed." });
+        return;
+      }
+      if (!deps.updateTheftReportAdminState) {
+        writeJson(response, 501, { error: "Theft report admin updates are not configured." });
+        return;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = await readJsonBody(request);
+      } catch {
+        writeJson(response, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      const adminStatus = stringField(body.adminStatus);
+      if (!adminStatus || !theftReportAdminStatuses.has(adminStatus as TheftReportAdminStatus)) {
+        writeJson(response, 400, { error: "Invalid theft report admin status." });
+        return;
+      }
+      const adminNote = typeof body.adminNote === "string" ? body.adminNote : "";
+      const report = await deps.updateTheftReportAdminState({
+        id: theftReportMatch.value.id,
+        adminStatus: adminStatus as TheftReportAdminStatus,
+        adminNote
+      });
+      if (!report) {
+        writeJson(response, 404, { error: "Theft report not found." });
+        return;
+      }
+      writeJson(response, 200, { report });
+      return;
+    }
+
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.getTheftReport) {
+      writeJson(response, 501, { error: "Theft report detail is not configured." });
+      return;
+    }
+    const report = await deps.getTheftReport(theftReportMatch.value.id);
+    if (!report) {
+      writeJson(response, 404, { error: "Theft report not found." });
+      return;
+    }
+    writeJson(response, 200, { report });
+    return;
+  }
+
   if (url.pathname === "/admin/api/wallet-intelligence/addresses") {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
@@ -836,12 +1012,12 @@ async function handleRequest(
     return;
   }
 
-  if (url.pathname === "/admin/forensics" || url.pathname === "/admin/wallet-intelligence") {
+  if (url.pathname === "/admin/forensics" || url.pathname === "/admin/wallet-intelligence" || url.pathname === "/admin/theft-reports") {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;
     }
-    writeHtml(response, adminConsoleHtml());
+    writeHtml(response, adminShellHtml());
     return;
   }
 
