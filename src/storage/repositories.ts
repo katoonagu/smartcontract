@@ -82,6 +82,15 @@ export type TelegramUserSession = {
 
 export type TheftReportStatus = "draft" | "awaiting_deposit" | "deposit_confirmed" | "documents_requested" | "cancelled";
 
+export type TheftReportAdminStatus =
+  | "new"
+  | "awaiting_payment"
+  | "awaiting_documents"
+  | "in_progress"
+  | "escalated"
+  | "closed"
+  | "cancelled";
+
 export type TheftReport = {
   id: string;
   telegramUserId: string;
@@ -94,6 +103,9 @@ export type TheftReport = {
   status: TheftReportStatus;
   depositAddress: string | null;
   depositAmountUsdt: string;
+  adminStatus: TheftReportAdminStatus;
+  adminNote: string | null;
+  adminUpdatedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -108,6 +120,20 @@ export type TheftReportDraftInput = {
   amountUsdt: string;
   depositAddress: string | null;
   depositAmountUsdt: string;
+};
+
+export type ListTheftReportsInput = {
+  limit?: number;
+  offset?: number;
+  adminStatus?: TheftReportAdminStatus;
+  botStatus?: TheftReportStatus;
+  query?: string;
+};
+
+export type UpdateTheftReportAdminStateInput = {
+  id: string;
+  adminStatus: TheftReportAdminStatus;
+  adminNote: string;
 };
 
 export type CustomerAlertRecipient = {
@@ -728,6 +754,15 @@ const theftReportStatuses = new Set<TheftReportStatus>([
   "documents_requested",
   "cancelled"
 ]);
+const theftReportAdminStatuses = new Set<TheftReportAdminStatus>([
+  "new",
+  "awaiting_payment",
+  "awaiting_documents",
+  "in_progress",
+  "escalated",
+  "closed",
+  "cancelled"
+]);
 const customerAlertModes = new Set<CustomerAlertMode>(["all", "suspicious_only"]);
 const walletApprovalStatuses = new Set<WalletApprovalStatus>(["active", "revoked", "unknown"]);
 const walletApprovalSpenderTypes = new Set<WalletApprovalSpenderType>(["eoa", "contract", "unknown"]);
@@ -878,6 +913,13 @@ function parseTheftReportStatus(value: string): TheftReportStatus {
     throw new Error(`Invalid theft report status from database: ${value}`);
   }
   return value as TheftReportStatus;
+}
+
+function parseTheftReportAdminStatus(value: string): TheftReportAdminStatus {
+  if (!theftReportAdminStatuses.has(value as TheftReportAdminStatus)) {
+    throw new Error(`Invalid theft report admin status from database: ${value}`);
+  }
+  return value as TheftReportAdminStatus;
 }
 
 function parseCustomerAlertMode(value: string): CustomerAlertMode {
@@ -1634,6 +1676,25 @@ function mapTelegramUserSessionRow(row: Record<string, any>): TelegramUserSessio
   };
 }
 
+const theftReportColumns = [
+  "id",
+  "telegram_user_id",
+  "tx_hash",
+  "victim_address",
+  "reported_scam_address",
+  "amount_raw",
+  "amount_usdt",
+  "comment",
+  "status",
+  "deposit_address",
+  "deposit_amount_usdt",
+  "admin_status",
+  "admin_note",
+  "admin_updated_at",
+  "created_at",
+  "updated_at"
+].join(", ");
+
 function mapTheftReportRow(row: Record<string, any>): TheftReport {
   return {
     id: row.id,
@@ -1647,6 +1708,9 @@ function mapTheftReportRow(row: Record<string, any>): TheftReport {
     status: parseTheftReportStatus(row.status),
     depositAddress: row.deposit_address ?? null,
     depositAmountUsdt: row.deposit_amount_usdt,
+    adminStatus: parseTheftReportAdminStatus(row.admin_status ?? "new"),
+    adminNote: row.admin_note ?? null,
+    adminUpdatedAt: row.admin_updated_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -2118,9 +2182,7 @@ export async function upsertTheftReportDraft(db: Db, input: TheftReportDraftInpu
        updated_at = now()
      where theft_reports.telegram_user_id = excluded.telegram_user_id
        and theft_reports.status in ('draft', 'awaiting_deposit')
-     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
-       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
-       created_at, updated_at`,
+     returning ${theftReportColumns}`,
     [
       id,
       input.telegramUserId,
@@ -2138,12 +2200,78 @@ export async function upsertTheftReportDraft(db: Db, input: TheftReportDraftInpu
 
 export async function getTheftReport(db: Db, id: string): Promise<TheftReport | null> {
   const result = await db.query(
-    `select id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
-       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
-       created_at, updated_at
+    `select ${theftReportColumns}
      from theft_reports
      where id = $1`,
     [id]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function listTheftReports(db: Db, input: ListTheftReportsInput = {}): Promise<TheftReport[]> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (input.adminStatus) {
+    parseTheftReportAdminStatus(input.adminStatus);
+    params.push(input.adminStatus);
+    conditions.push(`admin_status = $${params.length}`);
+  }
+
+  if (input.botStatus) {
+    parseTheftReportStatus(input.botStatus);
+    params.push(input.botStatus);
+    conditions.push(`status = $${params.length}`);
+  }
+
+  const query = input.query?.trim();
+  if (query) {
+    params.push(`%${query}%`);
+    const index = params.length;
+    conditions.push(`(
+      id ilike $${index}
+      or telegram_user_id ilike $${index}
+      or tx_hash ilike $${index}
+      or victim_address ilike $${index}
+      or reported_scam_address ilike $${index}
+      or coalesce(comment, '') ilike $${index}
+      or coalesce(admin_note, '') ilike $${index}
+    )`);
+  }
+
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const offset = Math.max(input.offset ?? 0, 0);
+  params.push(limit, offset);
+  const limitIndex = params.length - 1;
+  const offsetIndex = params.length;
+  const where = conditions.length ? `where ${conditions.join(" and ")}` : "";
+
+  const result = await db.query(
+    `select ${theftReportColumns}
+     from theft_reports
+     ${where}
+     order by coalesce(admin_updated_at, updated_at) desc, created_at desc
+     limit $${limitIndex} offset $${offsetIndex}`,
+    params
+  );
+  return result.rows.map(mapTheftReportRow);
+}
+
+export async function updateTheftReportAdminState(
+  db: Db,
+  input: UpdateTheftReportAdminStateInput
+): Promise<TheftReport | null> {
+  parseTheftReportAdminStatus(input.adminStatus);
+  const adminNote = input.adminNote.trim().slice(0, 2000);
+  const result = await db.query(
+    `update theft_reports
+     set admin_status = $2,
+       admin_note = $3,
+       admin_updated_at = now(),
+       updated_at = now()
+     where id = $1
+     returning ${theftReportColumns}`,
+    [input.id, input.adminStatus, adminNote]
   );
   return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
 }
@@ -2157,9 +2285,7 @@ export async function updateTheftReportComment(
      set comment = $3,
        updated_at = now()
      where id = $1 and telegram_user_id = $2
-     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
-       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
-       created_at, updated_at`,
+     returning ${theftReportColumns}`,
     [input.id, input.telegramUserId, input.comment.trim().slice(0, 1000)]
   );
   return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
@@ -2176,9 +2302,7 @@ export async function markTheftReportAwaitingDeposit(
      where id = $1
        and telegram_user_id = $2
        and status in ('draft', 'awaiting_deposit')
-     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
-       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
-       created_at, updated_at`,
+     returning ${theftReportColumns}`,
     [input.id, input.telegramUserId]
   );
   return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
@@ -2195,9 +2319,7 @@ export async function confirmTheftReportDeposit(
      where id = $1
        and telegram_user_id = $2
        and status in ('awaiting_deposit', 'deposit_confirmed', 'documents_requested')
-     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
-       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
-       created_at, updated_at`,
+     returning ${theftReportColumns}`,
     [input.id, input.telegramUserId]
   );
   return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
@@ -2211,9 +2333,7 @@ export async function cancelTheftReport(db: Db, input: { id: string; telegramUse
      where id = $1
        and telegram_user_id = $2
        and status in ('draft', 'awaiting_deposit')
-     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
-       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
-       created_at, updated_at`,
+     returning ${theftReportColumns}`,
     [input.id, input.telegramUserId]
   );
   return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
