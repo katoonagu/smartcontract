@@ -1993,6 +1993,7 @@ export function adminConsoleHtml(): string {
       const summary = detail.summary || {};
       const requesters = asArray(detail.requesters);
       const jobs = asArray(detail.jobs);
+      const sightings = asArray(detail.sightings).slice(0, 50);
       const edges = asArray(detail.edges).slice(0, 25);
       const summaryHtml = '<section class="wallet-intel-section"><h3>Summary</h3><div class="wallet-intel-meta">' +
         walletIntelLine("Address", walletIntelAddressLink(summary.address || address)) +
@@ -2030,6 +2031,23 @@ export function adminConsoleHtml(): string {
           walletIntelLine("Completed", escapeHtml(walletIntelTime(job.completedAt))) +
           '</div>').join("") : '<div class="empty">No source jobs stored.</div>') +
         '</div></section>';
+      const sightingsHtml = '<section class="wallet-intel-section"><h3>Sightings</h3><div class="wallet-intel-list wallet-intel-tx">' +
+        (sightings.length ? sightings.map((sighting) => {
+          const tx = sighting.txHash ? explorerLink(tronscanTxUrl(sighting.txHash), short(sighting.txHash, 8)) : '<span class="muted">tx n/a</span>';
+          return '<div class="wallet-intel-item">' +
+            walletIntelLine("Source job", walletIntelJobLink(sighting.jobId)) +
+            walletIntelLine("Subject", walletIntelAddressLink(sighting.subjectAddress)) +
+            walletIntelLine("Tx", tx) +
+            walletIntelLine("Amount", escapeHtml(walletIntelAmount(sighting.amountRaw))) +
+            walletIntelLine("Mode", escapeHtml(humanCheckKind(sighting.jobKind))) +
+            walletIntelLine("Role", escapeHtml(walletIntelText(sighting.role))) +
+            walletIntelLine("Source", escapeHtml(walletIntelText(sighting.sourceKind))) +
+            walletIntelLine("Depth/path", escapeHtml(walletIntelText(sighting.depth) + " / " + walletIntelText(sighting.pathId))) +
+            walletIntelLine("First seen", escapeHtml(walletIntelTime(sighting.firstSeenAt))) +
+            walletIntelLine("Last seen", escapeHtml(walletIntelTime(sighting.lastSeenAt))) +
+            '</div>';
+        }).join("") : '<div class="empty">No sightings stored.</div>') +
+        '</div></section>';
       const edgesHtml = '<section class="wallet-intel-section"><h3>First edges</h3><div class="wallet-intel-list wallet-intel-tx">' +
         (edges.length ? edges.map((edge) => {
           const tx = edge.txHash ? explorerLink(tronscanTxUrl(edge.txHash), short(edge.txHash, 8)) : '<span class="muted">tx n/a</span>';
@@ -2046,7 +2064,7 @@ export function adminConsoleHtml(): string {
             '</div>';
         }).join("") : '<div class="empty">No edges stored.</div>') +
         '</div></section>';
-      root.innerHTML = summaryHtml + requesterHtml + jobsHtml + edgesHtml;
+      root.innerHTML = summaryHtml + requesterHtml + jobsHtml + sightingsHtml + edgesHtml;
     }
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;

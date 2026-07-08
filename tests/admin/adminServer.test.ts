@@ -334,7 +334,23 @@ describe("startAdminServer", () => {
         },
         requesters: [{ requestedBy: "42", telegramUserId: "42", username: "client_user", locale: "ru", chatId: "42", messageId: "77", jobCount: 1 }],
         jobs: [{ jobId: "job-1", jobKind: "address_deep_check", jobStatus: "completed", subjectAddress: "TSubject111111111111111111111111111111", completedAt: new Date("2026-07-06T10:00:00.000Z") }],
-        sightings: [],
+        sightings: [{
+          id: "sighting-1",
+          address,
+          jobId: "job-1",
+          jobKind: "address_deep_check",
+          subjectAddress: "TSubject111111111111111111111111111111",
+          requestedBy: "42",
+          sourceKind: "deep_direct_counterparty",
+          role: "direct_counterparty",
+          depth: 1,
+          pathId: "p",
+          txHash: "tx-1",
+          amountRaw: "1000000",
+          firstSeenAt: new Date("2026-07-06T09:00:00.000Z"),
+          lastSeenAt: new Date("2026-07-06T09:00:00.000Z"),
+          metadataJson: {}
+        }],
         edges: []
       })
     });
@@ -348,7 +364,8 @@ describe("startAdminServer", () => {
     await expect(response.json()).resolves.toMatchObject({
       detail: {
         summary: { address: "TSeen1111111111111111111111111111111" },
-        requesters: [{ username: "client_user" }]
+        requesters: [{ username: "client_user" }],
+        sightings: [{ sourceKind: "deep_direct_counterparty", depth: 1, txHash: "tx-1" }]
       }
     });
   });

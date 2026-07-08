@@ -195,6 +195,19 @@ describe("adminConsoleHtml", () => {
     expect(tableBlock).toContain("walletIntelKnownInfrastructure(item)");
   });
 
+  it("renders Wallet Intelligence sightings in the detail drawer", () => {
+    const html = adminConsoleHtml();
+    const drawerStart = html.indexOf("function renderWalletIntelligenceDrawer()");
+    const drawerEnd = html.indexOf("function activeJob()", drawerStart);
+    const drawerBlock = html.slice(drawerStart, drawerEnd);
+
+    expect(drawerBlock).toContain("const sightings = asArray(detail.sightings).slice(0, 50)");
+    expect(drawerBlock).toContain("<h3>Sightings</h3>");
+    expect(drawerBlock).toContain('walletIntelLine("Source job"');
+    expect(drawerBlock).toContain('walletIntelLine("Subject"');
+    expect(drawerBlock).toContain('walletIntelLine("Depth/path"');
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 
