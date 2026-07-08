@@ -256,6 +256,83 @@ export function adminConsoleHtml(): string {
     .wallet-intel-list { display: grid; gap: 6px; }
     .wallet-intel-item { display: grid; gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
     .wallet-intel-tx { display: grid; gap: 3px; }
+    .theft-reports-workspace {
+      height: calc(100dvh - 56px);
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      padding: 12px;
+      background: var(--surface-canvas);
+    }
+    .theft-reports-head {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .theft-reports-title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+    .theft-reports-title-row h2 { margin: 0; font-size: 16px; }
+    .theft-reports-warning { color: var(--warn); font-size: 12px; max-width: 460px; text-align: right; }
+    .theft-reports-filters {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.5fr) minmax(170px, .8fr) minmax(170px, .8fr) minmax(120px, .5fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .theft-reports-filters label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+    .theft-reports-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(360px, 480px) minmax(0, 1fr);
+      gap: 12px;
+    }
+    .theft-reports-list, .theft-report-detail {
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .theft-report-row {
+      display: grid;
+      gap: 7px;
+      width: 100%;
+      padding: 10px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .theft-report-row:hover, .theft-report-row.active { background: rgba(122, 162, 247, .08); }
+    .theft-report-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+    .theft-report-amount { font-weight: 700; color: var(--text-primary); }
+    .theft-report-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+    .theft-report-card { display: grid; gap: 12px; padding: 12px; }
+    .theft-report-section {
+      display: grid;
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .theft-report-section:first-child { padding-top: 0; border-top: 0; }
+    .theft-report-section h3 { margin: 0; font-size: 13px; }
+    .theft-report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .theft-report-field { display: grid; gap: 3px; font-size: 12px; min-width: 0; }
+    .theft-report-field span { color: var(--muted); font-size: 11px; }
+    .theft-report-field strong, .theft-report-field code { overflow-wrap: anywhere; }
+    .theft-report-note { width: 100%; min-height: 92px; resize: vertical; }
+    .theft-report-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .graph-workspace {
       --left-rail-width: 330px;
       --right-rail-width: 380px;
@@ -1133,6 +1210,10 @@ export function adminConsoleHtml(): string {
       .wallet-intel-body {
         grid-template-columns: 1fr;
       }
+      .theft-reports-filters, .theft-reports-body, .theft-report-grid {
+        grid-template-columns: 1fr;
+      }
+      .theft-reports-warning { text-align: left; }
     }
     @media (max-width: 1180px) {
       body { overflow: auto; }
@@ -1180,6 +1261,7 @@ export function adminConsoleHtml(): string {
         <nav class="top-nav" aria-label="Admin workspaces">
           <a href="/admin/forensics" data-workspace-link>Forensics</a>
           <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>
+          <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>
         </nav>
         <div class="stats" id="jobStats"></div>
       </div>
@@ -1407,6 +1489,59 @@ export function adminConsoleHtml(): string {
           </aside>
         </div>
       </section>
+      <section id="theftReportsWorkspace" class="theft-reports-workspace" data-theft-reports-workspace hidden>
+        <div class="theft-reports-head">
+          <div class="theft-reports-title-row">
+            <div>
+              <h2>Заявки о краже</h2>
+              <div class="hint" id="theftReportsStatus">Предварительные сообщения пользователей. Загрузите заявки для внутренней обработки.</div>
+            </div>
+            <div class="theft-reports-warning">Внутренняя обработка. Заявка не является доказательством кражи.</div>
+          </div>
+          <div id="theftReportsStats" class="stats"></div>
+          <div class="theft-reports-filters">
+            <label>Поиск
+              <input id="theftReportsSearch" placeholder="Адрес, tx, user id, комментарий">
+            </label>
+            <label>Статус обработки
+              <select id="theftReportsAdminStatus">
+                <option value="">Все статусы</option>
+                <option value="new">Новая</option>
+                <option value="awaiting_payment">Ждет оплату</option>
+                <option value="awaiting_documents">Ждет документы</option>
+                <option value="in_progress">В работе</option>
+                <option value="escalated">Передано / эскалация</option>
+                <option value="closed">Закрыта</option>
+                <option value="cancelled">Отменена</option>
+              </select>
+            </label>
+            <label>Статус бота
+              <select id="theftReportsBotStatus">
+                <option value="">Все bot status</option>
+                <option value="draft">draft</option>
+                <option value="awaiting_deposit">awaiting_deposit</option>
+                <option value="deposit_confirmed">deposit_confirmed</option>
+                <option value="documents_requested">documents_requested</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+            </label>
+            <label>Лимит
+              <select id="theftReportsLimit">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button id="theftReportsReload" type="button">Обновить</button>
+          </div>
+        </div>
+        <div class="theft-reports-body">
+          <div id="theftReportsList" class="theft-reports-list"></div>
+          <aside id="theftReportDetail" class="theft-report-detail">
+            <div class="empty">Выберите заявку для просмотра и внутренней обработки.</div>
+          </aside>
+        </div>
+      </section>
     </section>
   </main>
   <script>
@@ -1462,7 +1597,8 @@ export function adminConsoleHtml(): string {
       renderedEdgesById: new Map(),
       expandedBundleNodeIds: new Set(),
       expandedSelectedFlowEdgeIds: new Set(),
-      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null }
+      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null },
+      theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -1723,14 +1859,25 @@ export function adminConsoleHtml(): string {
     function walletIntelligenceActive() {
       return window.location.pathname === "/admin/wallet-intelligence";
     }
+    function theftReportsActive() {
+      return window.location.pathname === "/admin/theft-reports";
+    }
+    function activeWorkspacePath() {
+      if (walletIntelligenceActive()) return "/admin/wallet-intelligence";
+      if (theftReportsActive()) return "/admin/theft-reports";
+      return "/admin/forensics";
+    }
     function syncWorkspaceVisibility() {
       const walletActive = walletIntelligenceActive();
+      const theftActive = theftReportsActive();
       const graphShell = document.querySelector("[data-workbench-shell]");
       const walletShell = document.querySelector("[data-wallet-intelligence-workspace]");
-      if (graphShell) graphShell.hidden = walletActive;
+      const theftShell = document.querySelector("[data-theft-reports-workspace]");
+      if (graphShell) graphShell.hidden = walletActive || theftActive;
       if (walletShell) walletShell.hidden = !walletActive;
+      if (theftShell) theftShell.hidden = !theftActive;
       document.querySelectorAll("[data-workspace-link]").forEach((link) => {
-        const active = link.getAttribute("href") === (walletActive ? "/admin/wallet-intelligence" : "/admin/forensics");
+        const active = link.getAttribute("href") === activeWorkspacePath();
         link.classList.toggle("active", active);
         if (active) link.setAttribute("aria-current", "page");
         else link.removeAttribute("aria-current");
@@ -8390,7 +8537,7 @@ export function adminConsoleHtml(): string {
     el("load").addEventListener("click", () => {
       syncWorkspaceVisibility();
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
-      else loadJobs();
+      else if (!theftReportsActive()) loadJobs();
     });
     el("walletIntelReload").addEventListener("click", loadWalletIntelligenceAddresses);
     el("walletIntelTable").addEventListener("click", (event) => {
@@ -8549,7 +8696,7 @@ export function adminConsoleHtml(): string {
     applyInitialUrlFilters();
     if (state.token) {
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
-      else loadJobs();
+      else if (!theftReportsActive()) loadJobs();
     }
   </script>
 </body>

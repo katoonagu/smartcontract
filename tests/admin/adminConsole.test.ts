@@ -89,6 +89,22 @@ describe("adminConsoleHtml", () => {
     expect(mediaBlock).toContain(".wallet-intel-body");
   });
 
+  it("renders the Russian theft reports workspace shell", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('<a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>');
+    expect(html).toContain("data-theft-reports-workspace");
+    expect(html).toContain('id="theftReportsSearch"');
+    expect(html).toContain('id="theftReportsAdminStatus"');
+    expect(html).toContain('id="theftReportsBotStatus"');
+    expect(html).toContain('id="theftReportsList"');
+    expect(html).toContain('id="theftReportDetail"');
+    expect(html).toContain("Предварительные сообщения пользователей");
+    expect(html).toContain("Внутренняя обработка");
+    expect(html).toContain("Заявка не является доказательством кражи");
+    expect(html).not.toContain("кража подтверждена");
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 
