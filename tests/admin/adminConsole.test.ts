@@ -105,6 +105,27 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("кража подтверждена");
   });
 
+  it("loads and updates theft reports through the Admin API", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function loadTheftReports");
+    expect(html).toContain("function renderTheftReportsList");
+    expect(html).toContain("function renderTheftReportDetail");
+    expect(html).toContain("function saveTheftReportAdminState");
+    expect(html).toContain('/admin/api/theft-reports?" + params.toString()');
+    expect(html).toContain('/admin/api/theft-reports/" + encodeURIComponent(report.id) + "/admin-state');
+    expect(html).toContain('method: "PATCH"');
+    expect(html).toContain("Внутренняя заметка");
+    expect(html).toContain("Копировать данные");
+    expect(html).toContain("Victim в Forensics");
+    expect(html).toContain("Получатель в Wallet Intelligence");
+    expect(html).toContain("/admin/forensics?subjectAddress=");
+    expect(html).toContain("/admin/wallet-intelligence?subjectAddress=");
+    expect(html).toContain("https://tronscan.org/#/transaction/");
+    expect(html).not.toContain("/admin/api/forensic-jobs?theftReport");
+    expect(html).not.toContain("createTheftReportForensicJob");
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 

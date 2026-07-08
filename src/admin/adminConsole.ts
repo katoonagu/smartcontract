@@ -331,8 +331,30 @@ export function adminConsoleHtml(): string {
     .theft-report-field { display: grid; gap: 3px; font-size: 12px; min-width: 0; }
     .theft-report-field span { color: var(--muted); font-size: 11px; }
     .theft-report-field strong, .theft-report-field code { overflow-wrap: anywhere; }
-    .theft-report-note { width: 100%; min-height: 92px; resize: vertical; }
+    .theft-report-note {
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      padding: 8px 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-control);
+      background: var(--panel-2);
+      color: var(--text);
+      font: inherit;
+    }
     .theft-report-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .button-like {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      background: #121820;
+      text-decoration: none;
+      font-size: 12px;
+    }
     .graph-workspace {
       --left-rail-width: 330px;
       --right-rail-width: 380px;
@@ -2078,6 +2100,217 @@ export function adminConsoleHtml(): string {
         '</div></section>';
       root.innerHTML = summaryHtml + requesterHtml + jobsHtml + edgesHtml;
     }
+    const theftReportAdminStatusLabels = {
+      new: "Новая",
+      awaiting_payment: "Ждет оплату",
+      awaiting_documents: "Ждет документы",
+      in_progress: "В работе",
+      escalated: "Передано / эскалация",
+      closed: "Закрыта",
+      cancelled: "Отменена"
+    };
+    function theftReportAdminStatusLabel(value) {
+      return theftReportAdminStatusLabels[value] || value || "n/a";
+    }
+    function setTheftReportsStatus(message) {
+      el("theftReportsStatus").textContent = message;
+      if (theftReportsActive()) setStatus(message);
+    }
+    function theftReportTime(value) {
+      return formatJobTime(value) || (value ? String(value) : "n/a");
+    }
+    function theftReportAddressLink(address) {
+      return address ? explorerLink(tronscanAddressUrl(address), short(address, 8)) : '<span class="muted">адрес не указан</span>';
+    }
+    function theftReportTxLink(txHash) {
+      return txHash ? explorerLink(tronscanTxUrl(txHash), short(txHash, 8)) : '<span class="muted">tx не указан</span>';
+    }
+    function theftReportField(label, value) {
+      return '<div class="theft-report-field"><span>' + escapeHtml(label) + '</span><strong>' + value + '</strong></div>';
+    }
+    function theftReportCopyBlock(report) {
+      return [
+        "Заявка о краже: " + (report.id || ""),
+        "Статус обработки: " + theftReportAdminStatusLabel(report.adminStatus),
+        "Bot status: " + (report.status || ""),
+        "Telegram user: " + (report.telegramUserId || ""),
+        "Victim: " + (report.victimAddress || ""),
+        "Получатель: " + (report.reportedScamAddress || ""),
+        "Сумма: " + (report.amountUsdt || "") + " USDT",
+        "Tx: " + (report.txHash || ""),
+        "Комментарий: " + (report.comment || ""),
+        "Внутренняя заметка: " + (report.adminNote || "")
+      ].join("\\n");
+    }
+    function renderTheftReportsStats() {
+      const counts = state.theftReports.reports.reduce((acc, report) => {
+        const key = report.adminStatus || "unknown";
+        acc.total += 1;
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, { total: 0 });
+      el("theftReportsStats").innerHTML = [
+        ["Всего", counts.total],
+        ["Новые", counts.new || 0],
+        ["Ждут документы", counts.awaiting_documents || 0],
+        ["В работе", counts.in_progress || 0],
+        ["Закрыты", counts.closed || 0]
+      ].map(([label, value]) => '<span class="chip">' + escapeHtml(label) + ': ' + escapeHtml(value) + '</span>').join("");
+    }
+    function renderTheftReportsList() {
+      const root = el("theftReportsList");
+      renderTheftReportsStats();
+      if (state.theftReports.loading) {
+        root.innerHTML = '<div class="empty">Загружаем заявки...</div>';
+        return;
+      }
+      if (state.theftReports.error && state.theftReports.reports.length === 0) {
+        root.innerHTML = '<div class="error">' + escapeHtml(state.theftReports.error) + '</div>';
+        return;
+      }
+      if (state.theftReports.reports.length === 0) {
+        root.innerHTML = '<div class="empty">Заявок по текущим фильтрам нет.</div>';
+        return;
+      }
+      root.innerHTML = state.theftReports.reports.map((report) => {
+        const active = report.id === state.theftReports.activeId ? " active" : "";
+        const statusClass = classifyStatus(report.adminStatus === "closed" ? "completed" : report.adminStatus === "cancelled" ? "failed" : "review");
+        return '<button type="button" class="theft-report-row' + active + '" data-theft-report-id="' + escapeHtml(report.id) + '">' +
+          '<div class="theft-report-title"><span class="theft-report-amount">' + escapeHtml((report.amountUsdt || "0") + " USDT") + '</span><span class="' + statusClass + '">' + escapeHtml(theftReportAdminStatusLabel(report.adminStatus)) + '</span></div>' +
+          '<div class="theft-report-meta"><span>bot: ' + escapeHtml(report.status || "n/a") + '</span><span>tg:' + escapeHtml(report.telegramUserId || "n/a") + '</span><span>' + escapeHtml(theftReportTime(report.adminUpdatedAt || report.updatedAt || report.createdAt)) + '</span></div>' +
+          '<div class="job-line"><strong>Victim:</strong> ' + escapeHtml(short(report.victimAddress, 8)) + '</div>' +
+          '<div class="job-line"><strong>Получатель:</strong> ' + escapeHtml(short(report.reportedScamAddress, 8)) + '</div>' +
+          '</button>';
+      }).join("");
+      root.querySelectorAll("[data-theft-report-id]").forEach((button) => {
+        button.addEventListener("click", () => openTheftReport(button.getAttribute("data-theft-report-id") || ""));
+      });
+    }
+    async function loadTheftReports() {
+      state.token = el("token").value.trim();
+      localStorage.setItem("adminForensicsToken", state.token);
+      el("sessionState").textContent = state.token ? "session active" : "token missing";
+      const params = new URLSearchParams();
+      if (el("theftReportsSearch").value.trim()) params.set("query", el("theftReportsSearch").value.trim());
+      if (el("theftReportsAdminStatus").value) params.set("adminStatus", el("theftReportsAdminStatus").value);
+      if (el("theftReportsBotStatus").value) params.set("botStatus", el("theftReportsBotStatus").value);
+      params.set("limit", el("theftReportsLimit").value || "50");
+      state.theftReports.loading = true;
+      state.theftReports.error = null;
+      renderTheftReportsList();
+      renderTheftReportDetail();
+      try {
+        setTheftReportsStatus("Загружаем заявки...");
+        const body = await api("/admin/api/theft-reports?" + params.toString());
+        state.theftReports.reports = asArray(body.reports);
+        if (!state.theftReports.reports.some((report) => report.id === state.theftReports.activeId)) {
+          state.theftReports.activeId = state.theftReports.reports[0]?.id || null;
+          state.theftReports.detail = state.theftReports.reports[0] || null;
+        }
+        state.theftReports.loading = false;
+        renderTheftReportsList();
+        renderTheftReportDetail();
+        setTheftReportsStatus(state.theftReports.reports.length + " заявок загружено.");
+      } catch (error) {
+        state.theftReports.loading = false;
+        state.theftReports.error = error?.message || "Не удалось загрузить заявки.";
+        state.theftReports.reports = [];
+        state.theftReports.activeId = null;
+        state.theftReports.detail = null;
+        renderTheftReportsList();
+        renderTheftReportDetail();
+        setTheftReportsStatus("Не удалось загрузить заявки.");
+      }
+    }
+    async function openTheftReport(reportId) {
+      if (!reportId) return;
+      state.theftReports.activeId = reportId;
+      state.theftReports.detail = state.theftReports.reports.find((report) => report.id === reportId) || null;
+      renderTheftReportsList();
+      renderTheftReportDetail();
+      try {
+        const body = await api("/admin/api/theft-reports/" + encodeURIComponent(reportId));
+        state.theftReports.detail = body.report || state.theftReports.detail;
+        renderTheftReportDetail();
+      } catch (error) {
+        state.theftReports.error = error?.message || "Не удалось загрузить заявку.";
+        renderTheftReportDetail();
+      }
+    }
+    function renderTheftReportDetail() {
+      const root = el("theftReportDetail");
+      const report = state.theftReports.detail;
+      if (state.theftReports.loading && !report) {
+        root.innerHTML = '<div class="empty">Загружаем выбранную заявку...</div>';
+        return;
+      }
+      if (!report) {
+        root.innerHTML = '<div class="empty">Выберите заявку для просмотра и внутренней обработки.</div>';
+        return;
+      }
+      const copyText = escapeHtml(theftReportCopyBlock(report));
+      root.innerHTML = '<div class="theft-report-card">' +
+        '<section class="theft-report-section"><h3>Факты транзакции</h3><div class="theft-report-grid">' +
+          theftReportField("Victim", theftReportAddressLink(report.victimAddress)) +
+          theftReportField("Заявленный получатель", theftReportAddressLink(report.reportedScamAddress)) +
+          theftReportField("Tx", theftReportTxLink(report.txHash)) +
+          theftReportField("Сумма", escapeHtml((report.amountUsdt || "0") + " USDT")) +
+        '</div></section>' +
+        '<section class="theft-report-section"><h3>Пользователь</h3><div class="theft-report-grid">' +
+          theftReportField("Telegram user id", escapeHtml(report.telegramUserId || "n/a")) +
+          theftReportField("Комментарий", escapeHtml(report.comment || "не указан")) +
+        '</div></section>' +
+        '<section class="theft-report-section"><h3>Оплата / бот</h3><div class="theft-report-grid">' +
+          theftReportField("Bot status", escapeHtml(report.status || "n/a")) +
+          theftReportField("Deposit wallet", report.depositAddress ? theftReportAddressLink(report.depositAddress) : escapeHtml("не настроен")) +
+          theftReportField("Deposit amount", escapeHtml((report.depositAmountUsdt || "0") + " USDT")) +
+          theftReportField("Создана", escapeHtml(theftReportTime(report.createdAt))) +
+          theftReportField("Обновлена", escapeHtml(theftReportTime(report.updatedAt))) +
+          theftReportField("Admin updated", escapeHtml(theftReportTime(report.adminUpdatedAt))) +
+        '</div></section>' +
+        '<section class="theft-report-section"><h3>Внутренняя обработка</h3>' +
+          '<label class="theft-report-field"><span>Статус обработки</span><select id="theftReportAdminStateSelect">' +
+            Object.entries(theftReportAdminStatusLabels).map(([value, label]) => '<option value="' + escapeHtml(value) + '"' + (report.adminStatus === value ? " selected" : "") + '>' + escapeHtml(label) + '</option>').join("") +
+          '</select></label>' +
+          '<label class="theft-report-field"><span>Внутренняя заметка</span><textarea id="theftReportAdminNote" class="theft-report-note" maxlength="2000">' + escapeHtml(report.adminNote || "") + '</textarea></label>' +
+          '<div class="theft-report-actions"><button id="theftReportSaveState" type="button">Сохранить</button></div>' +
+        '</section>' +
+        '<section class="theft-report-section"><h3>Действия</h3><div class="theft-report-actions">' +
+          '<button type="button" data-copy-text="' + copyText + '">Копировать данные</button>' +
+          '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Victim в Forensics</a>' +
+          '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Forensics</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Victim в Wallet Intelligence</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Wallet Intelligence</a>' +
+          '<a class="button-like" href="' + escapeHtml(tronscanTxUrl(report.txHash || "")) + '" target="_blank" rel="noopener noreferrer">Tx в TronScan</a>' +
+        '</div></section>' +
+      '</div>';
+      const saveButton = document.getElementById("theftReportSaveState");
+      if (saveButton) saveButton.addEventListener("click", saveTheftReportAdminState);
+    }
+    async function saveTheftReportAdminState() {
+      const report = state.theftReports.detail;
+      if (!report || state.theftReports.savePending) return;
+      const select = el("theftReportAdminStateSelect");
+      const note = el("theftReportAdminNote");
+      state.theftReports.savePending = true;
+      try {
+        setTheftReportsStatus("Сохраняем внутренний статус...");
+        const body = await api("/admin/api/theft-reports/" + encodeURIComponent(report.id) + "/admin-state", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adminStatus: select.value, adminNote: note.value })
+        });
+        state.theftReports.detail = body.report || report;
+        state.theftReports.reports = state.theftReports.reports.map((item) => item.id === report.id ? state.theftReports.detail : item);
+        renderTheftReportsList();
+        renderTheftReportDetail();
+        setTheftReportsStatus("Внутренний статус сохранен.");
+      } catch (error) {
+        setTheftReportsStatus(error?.message || "Не удалось сохранить внутренний статус.");
+      } finally {
+        state.theftReports.savePending = false;
+      }
+    }
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;
     }
@@ -2851,6 +3084,12 @@ export function adminConsoleHtml(): string {
         el("walletIntelSubjectAddress").value = params.get("subjectAddress") || "";
         setSelectFromUrl("walletIntelMode", params.get("mode") || "");
         setSelectFromUrl("walletIntelTag", params.get("tag") || "");
+      }
+      if (theftReportsActive()) {
+        el("theftReportsSearch").value = params.get("query") || params.get("q") || "";
+        setSelectFromUrl("theftReportsAdminStatus", params.get("adminStatus") || "");
+        setSelectFromUrl("theftReportsBotStatus", params.get("botStatus") || "");
+        setSelectFromUrl("theftReportsLimit", params.get("limit") || "");
       }
       const jobId = params.get("jobId") || params.get("job") || "";
       if (jobId) state.pendingOpenJobId = jobId;
@@ -8537,13 +8776,30 @@ export function adminConsoleHtml(): string {
     el("load").addEventListener("click", () => {
       syncWorkspaceVisibility();
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
-      else if (!theftReportsActive()) loadJobs();
+      else if (theftReportsActive()) loadTheftReports();
+      else loadJobs();
     });
     el("walletIntelReload").addEventListener("click", loadWalletIntelligenceAddresses);
     el("walletIntelTable").addEventListener("click", (event) => {
       const row = event.target instanceof Element ? event.target.closest("[data-wallet-intel-address]") : null;
       if (!row) return;
       openWalletIntelligenceAddress(row.getAttribute("data-wallet-intel-address") || "");
+    });
+    el("theftReportsReload").addEventListener("click", loadTheftReports);
+    el("theftReportsAdminStatus").addEventListener("change", loadTheftReports);
+    el("theftReportsBotStatus").addEventListener("change", loadTheftReports);
+    el("theftReportsLimit").addEventListener("change", loadTheftReports);
+    el("theftReportsSearch").addEventListener("input", () => {
+      if (state.theftReports.searchTimer) clearTimeout(state.theftReports.searchTimer);
+      state.theftReports.searchTimer = setTimeout(() => {
+        state.theftReports.searchTimer = null;
+        loadTheftReports();
+      }, 250);
+    });
+    el("theftReportsSearch").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      loadTheftReports();
     });
     el("refresh").addEventListener("click", loadJobs);
     el("jobsModeAll").addEventListener("click", () => setJobQueueMode("all"));
@@ -8692,11 +8948,14 @@ export function adminConsoleHtml(): string {
     renderTransferTabs();
     renderWalletIntelligenceTable();
     renderWalletIntelligenceDrawer();
+    renderTheftReportsList();
+    renderTheftReportDetail();
     el("sessionState").textContent = state.token ? "session active" : "token missing";
     applyInitialUrlFilters();
     if (state.token) {
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
-      else if (!theftReportsActive()) loadJobs();
+      else if (theftReportsActive()) loadTheftReports();
+      else loadJobs();
     }
   </script>
 </body>
