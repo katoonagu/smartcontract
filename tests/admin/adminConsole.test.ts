@@ -22,6 +22,29 @@ function adminClarityHelpers() {
   };
 }
 
+function adminWalletIntelHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function walletIntelKnownInfrastructure(item)");
+  const end = html.indexOf("function walletIntelAddressLink(address)", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return new Function("escapeHtml", "asArray", "walletIntelText", "humanCheckKind", helperBlock + "\nreturn { walletIntelKnownInfrastructure, walletIntelWhyInteresting, walletIntelPresetFilters };")(
+    escapeHtml,
+    (value: unknown) => Array.isArray(value) ? value : [],
+    (value: unknown, fallback = "n/a") => value === null || value === undefined || value === "" ? fallback : String(value),
+    (kind: unknown) => kind === "address_deep_check" ? "DeepCheck" : kind === "where_is_money_check" ? "Where is money" : kind === "incoming_deposit_check" ? "Incoming deposit" : String(kind ?? "unknown")
+  ) as {
+    walletIntelKnownInfrastructure(item: Record<string, unknown>): boolean;
+    walletIntelWhyInteresting(item: Record<string, unknown>): string;
+    walletIntelPresetFilters(preset: string): Record<string, string>;
+  };
+}
+
 function adminTargetedIndexHelpers() {
   const html = adminConsoleHtml();
   const start = html.indexOf("function targetedIndexLines(summary)");
@@ -87,6 +110,56 @@ describe("adminConsoleHtml", () => {
     expect(mediaBlock).toContain(".wallet-intel-filters");
     expect(mediaBlock).toContain("grid-template-columns: 1fr;");
     expect(mediaBlock).toContain(".wallet-intel-body");
+  });
+
+  it("explains Wallet Intelligence rows with neutral intersection copy", () => {
+    const helpers = adminWalletIntelHelpers();
+
+    expect(helpers.walletIntelWhyInteresting({
+      uniqueSubjectCount: 3,
+      uniqueRequesterCount: 2,
+      modes: ["address_deep_check", "where_is_money_check"],
+      minDepth: 1,
+      maxDepth: 3,
+      tags: ["repeated_cross_run_address"]
+    })).toBe("Seen in 3 subjects, 2 requesters, DeepCheck + Where is money, depth 1-3");
+
+    expect(helpers.walletIntelWhyInteresting({
+      uniqueSubjectCount: 1,
+      uniqueRequesterCount: 1,
+      modes: ["incoming_deposit_check"],
+      minDepth: null,
+      maxDepth: null,
+      tags: []
+    })).toBe("Single-context sighting, Incoming deposit, depth n/a");
+  });
+
+  it("classifies known Wallet Intelligence infrastructure without risk language", () => {
+    const helpers = adminWalletIntelHelpers();
+
+    expect(helpers.walletIntelKnownInfrastructure({
+      tags: ["known_service_or_exchange"],
+      serviceCategories: [],
+      labelHints: []
+    })).toBe(true);
+    expect(helpers.walletIntelKnownInfrastructure({
+      tags: [],
+      serviceCategories: ["bridge"],
+      labelHints: []
+    })).toBe(true);
+    expect(helpers.walletIntelKnownInfrastructure({
+      tags: ["repeated_cross_run_address"],
+      serviceCategories: [],
+      labelHints: []
+    })).toBe(false);
+  });
+
+  it("maps Wallet Intelligence presets to API filters", () => {
+    const helpers = adminWalletIntelHelpers();
+
+    expect(helpers.walletIntelPresetFilters("intersections")).toEqual({ minUniqueSubjects: "2" });
+    expect(helpers.walletIntelPresetFilters("known_infrastructure")).toEqual({ tag: "known_service_or_exchange" });
+    expect(helpers.walletIntelPresetFilters("all")).toEqual({});
   });
 
   it("renders the graph-first investigation shell", () => {

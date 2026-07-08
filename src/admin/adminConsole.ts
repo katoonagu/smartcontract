@@ -1750,6 +1750,47 @@ export function adminConsoleHtml(): string {
     function walletIntelTime(value) {
       return formatJobTime(value) || walletIntelText(value);
     }
+    function walletIntelKnownInfrastructure(item) {
+      const tags = asArray(item?.tags);
+      const services = asArray(item?.serviceCategories);
+      const labels = asArray(item?.labelHints);
+      if (tags.includes("known_service_or_exchange")) return true;
+      if (tags.includes("possible_service_or_exchange_like")) return true;
+      if (services.length > 0) return true;
+      return labels.some((label) => /binance|bybit|bitget|bridge|router|exchange|cex/i.test(String(label || "")));
+    }
+    function walletIntelDepthText(item) {
+      const minDepth = item?.minDepth;
+      const maxDepth = item?.maxDepth;
+      if (minDepth === null || minDepth === undefined || maxDepth === null || maxDepth === undefined) return "n/a";
+      return String(minDepth) === String(maxDepth) ? String(minDepth) : String(minDepth) + "-" + String(maxDepth);
+    }
+    function walletIntelModesText(item) {
+      const modes = asArray(item?.modes).map(humanCheckKind).filter(Boolean);
+      return modes.length ? modes.join(" + ") : "mode n/a";
+    }
+    function walletIntelWhyInteresting(item) {
+      const subjectCount = Number(item?.uniqueSubjectCount || 0);
+      const requesterCount = Number(item?.uniqueRequesterCount || 0);
+      const prefix = walletIntelKnownInfrastructure(item)
+        ? "Known infrastructure context"
+        : subjectCount >= 2
+          ? "Seen in " + subjectCount + " subjects"
+          : requesterCount >= 2
+            ? "Seen across " + requesterCount + " requesters"
+            : "Single-context sighting";
+      const requesterText = subjectCount >= 2 ? ", " + requesterCount + " requesters" : "";
+      return prefix + requesterText + ", " + walletIntelModesText(item) + ", depth " + walletIntelDepthText(item);
+    }
+    function walletIntelPresetFilters(preset) {
+      if (preset === "intersections") return { minUniqueSubjects: "2" };
+      if (preset === "requesters") return { minUniqueRequesters: "2" };
+      if (preset === "unknown_repeated") return { minUniqueSubjects: "2", tag: "repeated_cross_run_address" };
+      if (preset === "known_infrastructure") return { tag: "known_service_or_exchange" };
+      if (preset === "cross_mode") return { tag: "cross_mode_seen" };
+      if (preset === "low_depth") return { maxDepth: "2", minUniqueSubjects: "2" };
+      return {};
+    }
     function walletIntelAddressLink(address) {
       return address ? explorerLink(tronscanAddressUrl(address), short(address, 8)) : '<span class="muted">address n/a</span>';
     }
