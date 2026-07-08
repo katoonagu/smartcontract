@@ -1620,7 +1620,7 @@ export function adminConsoleHtml(): string {
       expandedBundleNodeIds: new Set(),
       expandedSelectedFlowEdgeIds: new Set(),
       walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null },
-      theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null }
+      theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null, listRequestSeq: 0, detailRequestSeq: 0 }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -2187,6 +2187,7 @@ export function adminConsoleHtml(): string {
       });
     }
     async function loadTheftReports() {
+      const requestSeq = ++state.theftReports.listRequestSeq;
       state.token = el("token").value.trim();
       localStorage.setItem("adminForensicsToken", state.token);
       el("sessionState").textContent = state.token ? "session active" : "token missing";
@@ -2202,8 +2203,12 @@ export function adminConsoleHtml(): string {
       try {
         setTheftReportsStatus("Загружаем заявки...");
         const body = await api("/admin/api/theft-reports?" + params.toString());
+        if (requestSeq !== state.theftReports.listRequestSeq) return;
         state.theftReports.reports = asArray(body.reports);
-        if (!state.theftReports.reports.some((report) => report.id === state.theftReports.activeId)) {
+        const activeReport = state.theftReports.reports.find((report) => report.id === state.theftReports.activeId);
+        if (activeReport) {
+          state.theftReports.detail = activeReport;
+        } else {
           state.theftReports.activeId = state.theftReports.reports[0]?.id || null;
           state.theftReports.detail = state.theftReports.reports[0] || null;
         }
@@ -2212,6 +2217,7 @@ export function adminConsoleHtml(): string {
         renderTheftReportDetail();
         setTheftReportsStatus(state.theftReports.reports.length + " заявок загружено.");
       } catch (error) {
+        if (requestSeq !== state.theftReports.listRequestSeq) return;
         state.theftReports.loading = false;
         state.theftReports.error = error?.message || "Не удалось загрузить заявки.";
         state.theftReports.reports = [];
@@ -2224,15 +2230,18 @@ export function adminConsoleHtml(): string {
     }
     async function openTheftReport(reportId) {
       if (!reportId) return;
+      const requestSeq = ++state.theftReports.detailRequestSeq;
       state.theftReports.activeId = reportId;
       state.theftReports.detail = state.theftReports.reports.find((report) => report.id === reportId) || null;
       renderTheftReportsList();
       renderTheftReportDetail();
       try {
         const body = await api("/admin/api/theft-reports/" + encodeURIComponent(reportId));
+        if (requestSeq !== state.theftReports.detailRequestSeq || state.theftReports.activeId !== reportId) return;
         state.theftReports.detail = body.report || state.theftReports.detail;
         renderTheftReportDetail();
       } catch (error) {
+        if (requestSeq !== state.theftReports.detailRequestSeq || state.theftReports.activeId !== reportId) return;
         state.theftReports.error = error?.message || "Не удалось загрузить заявку.";
         renderTheftReportDetail();
       }
@@ -2300,8 +2309,11 @@ export function adminConsoleHtml(): string {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ adminStatus: select.value, adminNote: note.value })
         });
-        state.theftReports.detail = body.report || report;
-        state.theftReports.reports = state.theftReports.reports.map((item) => item.id === report.id ? state.theftReports.detail : item);
+        const updatedReport = body.report || report;
+        state.theftReports.reports = state.theftReports.reports.map((item) => item.id === report.id ? updatedReport : item);
+        if (state.theftReports.activeId === report.id) {
+          state.theftReports.detail = updatedReport;
+        }
         renderTheftReportsList();
         renderTheftReportDetail();
         setTheftReportsStatus("Внутренний статус сохранен.");
