@@ -162,25 +162,69 @@ function writeRedirect(response: ServerResponse, location: string): void {
   response.end();
 }
 
-function adminShellHtml(): string {
+function adminShellHtml(pathname = "/admin/forensics"): string {
   const html = adminConsoleHtml();
-  if (html.includes("data-theft-reports-workspace")) return html;
+  const isTheftReportsRoute = pathname === "/admin/theft-reports";
 
   const navNeedle = '          <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>';
   const theftReportsNav = '          <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>';
-  const withNav = html.includes("/admin/theft-reports")
+  let shell = html.includes("/admin/theft-reports")
     ? html
     : html.replace(navNeedle, `${navNeedle}\n${theftReportsNav}`);
+  if (!isTheftReportsRoute && shell.includes("data-theft-reports-workspace")) return shell;
+
+  if (isTheftReportsRoute) {
+    shell = shell.replace("<body>", '<body data-admin-route="theft-reports">');
+    const routeStyle = [
+      "<style data-theft-reports-route-style>",
+      "body[data-admin-route=\"theft-reports\"] [data-workbench-shell] { display: none !important; }",
+      "body[data-admin-route=\"theft-reports\"] [data-wallet-intelligence-workspace] { display: none !important; }",
+      "body[data-admin-route=\"theft-reports\"] [data-theft-reports-workspace] { display: block !important; }",
+      "body[data-admin-route=\"theft-reports\"] .theft-reports-placeholder { height: calc(100dvh - 56px); padding: 24px; background: var(--surface-canvas); }",
+      "body[data-admin-route=\"theft-reports\"] .theft-reports-placeholder h2 { margin: 0 0 8px; font-size: 18px; }",
+      "</style>"
+    ].join("\n");
+    shell = shell.includes("</head>")
+      ? shell.replace("</head>", `${routeStyle}\n</head>`)
+      : `${routeStyle}\n${shell}`;
+  }
+
   const workspace = [
     "",
-    "<!-- ponytail: server-side placeholder keeps this task inside the assigned files; move into adminConsole when the real theft-report UI lands. -->",
-    '<section id="theftReportsWorkspace" data-theft-reports-workspace data-api="/admin/api/theft-reports" hidden>',
+    "<!-- ponytail: server-side route placeholder is capped at static visibility/nav fixes; Task 3 should move the real theft-report workspace into adminConsole. -->",
+    `<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports"${isTheftReportsRoute ? "" : " hidden"}>`,
     "  <h2>Заявки о краже</h2>",
+    isTheftReportsRoute ? '  <p class="hint">Рабочее место заявок будет подключено в следующем UI task.</p>' : "",
     "</section>"
-  ].join("\n");
-  return withNav.includes("</body>")
-    ? withNav.replace("</body>", `${workspace}\n</body>`)
-    : `${withNav}${workspace}`;
+  ].filter(Boolean).join("\n");
+  const routeScript = isTheftReportsRoute
+    ? [
+        '<script data-theft-reports-route-script>',
+        "(function () {",
+        "  function syncTheftReportsRoute() {",
+        "    var graphShell = document.querySelector('[data-workbench-shell]');",
+        "    var walletShell = document.querySelector('[data-wallet-intelligence-workspace]');",
+        "    var theftShell = document.querySelector('[data-theft-reports-workspace]');",
+        "    if (graphShell) graphShell.hidden = true;",
+        "    if (walletShell) walletShell.hidden = true;",
+        "    if (theftShell) theftShell.hidden = false;",
+        "    document.querySelectorAll('[data-workspace-link]').forEach(function (link) {",
+        "      var active = link.getAttribute('href') === '/admin/theft-reports';",
+        "      link.classList.toggle('active', active);",
+        "      if (active) link.setAttribute('aria-current', 'page');",
+        "      else link.removeAttribute('aria-current');",
+        "    });",
+        "  }",
+        "  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncTheftReportsRoute);",
+        "  else syncTheftReportsRoute();",
+        "}());",
+        "</script>"
+      ].join("\n")
+    : "";
+  const routeMarkup = routeScript ? `${workspace}\n${routeScript}` : workspace;
+  return shell.includes("</body>")
+    ? shell.replace("</body>", `${routeMarkup}\n</body>`)
+    : `${shell}${routeMarkup}`;
 }
 
 async function writeNodeRoleAsset(response: ServerResponse, pathname: string): Promise<boolean> {
@@ -831,11 +875,14 @@ async function handleApiRequest(
         writeJson(response, 400, { error: "Invalid theft report admin status." });
         return;
       }
-      const adminNote = typeof body.adminNote === "string" ? body.adminNote : "";
+      if (typeof body.adminNote !== "string") {
+        writeJson(response, 400, { error: "Invalid theft report admin note." });
+        return;
+      }
       const report = await deps.updateTheftReportAdminState({
         id: theftReportMatch.value.id,
         adminStatus: adminStatus as TheftReportAdminStatus,
-        adminNote
+        adminNote: body.adminNote
       });
       if (!report) {
         writeJson(response, 404, { error: "Theft report not found." });
@@ -1017,7 +1064,7 @@ async function handleRequest(
       writeJson(response, 405, { error: "Method not allowed." });
       return;
     }
-    writeHtml(response, adminShellHtml());
+    writeHtml(response, adminShellHtml(url.pathname));
     return;
   }
 

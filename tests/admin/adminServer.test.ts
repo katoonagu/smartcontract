@@ -246,6 +246,13 @@ describe("startAdminServer", () => {
     expect(html).toContain("Заявки о краже");
     expect(html).toContain("data-theft-reports-workspace");
     expect(html).toContain("/admin/api/theft-reports");
+    expect(html).toContain('data-admin-route="theft-reports"');
+    expect(html).toContain("data-theft-reports-route-style");
+    expect(html).toContain('[data-admin-route="theft-reports"] [data-workbench-shell] { display: none');
+    expect(html).toContain('[data-admin-route="theft-reports"] [data-theft-reports-workspace] { display: block');
+    expect(html).toContain("data-theft-reports-route-script");
+    expect(html).toContain('<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports">');
+    expect(html).not.toContain('<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports" hidden>');
   });
 
   it("keeps node role marks inline in the graph renderer", () => {
@@ -465,6 +472,22 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("rejects theft report list requests without bearer token", async () => {
+    let called = false;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => {
+        called = true;
+        return [];
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports`);
+
+    expect(response.status).toBe(401);
+    expect(called).toBe(false);
+  });
+
   it("returns theft report detail for authorized admins", async () => {
     const server = await start({
       ...deps(),
@@ -521,6 +544,61 @@ describe("startAdminServer", () => {
       adminStatus: "in_progress",
       adminNote: "Взято в работу"
     });
+  });
+
+  it("rejects invalid theft report admin status updates before calling dependency", async () => {
+    let called = false;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => [],
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async () => {
+        called = true;
+        return null;
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports/report-1/admin-state`, {
+      method: "PATCH",
+      headers: {
+        authorization: "Bearer secret-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ adminStatus: "paid", adminNote: "bad status" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it("rejects missing or non-string theft report admin notes before calling dependency", async () => {
+    let callCount = 0;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => [],
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async () => {
+        callCount += 1;
+        return null;
+      }
+    });
+
+    for (const body of [
+      { adminStatus: "in_progress" },
+      { adminStatus: "in_progress", adminNote: 123 }
+    ]) {
+      const response = await fetch(`${server.url}/admin/api/theft-reports/report-1/admin-state`, {
+        method: "PATCH",
+        headers: {
+          authorization: "Bearer secret-token",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+
+      expect(response.status).toBe(400);
+    }
+    expect(callCount).toBe(0);
   });
 
   it("rejects invalid theft report admin status filters", async () => {
