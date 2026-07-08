@@ -245,13 +245,13 @@ describe("startAdminServer", () => {
     const html = await response.text();
     expect(html).toContain("Заявки о краже");
     expect(html).toContain("data-theft-reports-workspace");
-    expect(html).toContain("/admin/api/theft-reports");
-    expect(html).toContain('data-admin-route="theft-reports"');
-    expect(html).toContain('href="/admin/theft-reports" class="active"');
-    expect(html).toContain('<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports">');
-    expect(html).not.toContain("data-workbench-shell");
-    expect(html).not.toContain("data-theft-reports-route-script");
-    expect(html).not.toContain("loadJobs()");
+    expect(html).toContain('id="theftReportsSearch"');
+    expect(html).toContain('id="theftReportDetail"');
+    expect(html).toContain("data-workbench-shell");
+    expect(html).toContain("function theftReportsActive()");
+    expect(html).toContain("else if (!theftReportsActive()) loadJobs();");
+    expect(html).not.toContain("Рабочее место заявок будет подключено");
+    expect(html).not.toContain("theft-reports-placeholder");
   });
 
   it("keeps node role marks inline in the graph renderer", () => {
