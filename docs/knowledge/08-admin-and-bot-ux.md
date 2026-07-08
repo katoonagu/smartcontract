@@ -257,9 +257,12 @@ Admin also has a separate Wallet Intelligence workspace and authenticated API
 for cross-run address sightings and relationship analytics. It indexes
 completed/partial DeepCheck, Where is Money, and Incoming Deposit jobs from
 saved payloads only. The view is global investigative context: repeated
-appearances, requesters, source jobs, and normalized edges for triage. It is not
-a forensic verdict, not Telegram output, and not per-job graph evidence or
-scoring.
+appearances, requesters, source jobs, normalized sightings, and normalized
+edges for triage. It defaults to repeated intersections across checked subjects,
+separates known infrastructure such as CEX, bridge, router, and service wallets,
+and exposes a selected-address detail drawer with source jobs, requester
+metadata, sightings, stored edges, and a focused graph. It is not a forensic
+verdict, not Telegram output, and not per-job graph evidence or scoring.
 
 ## Bot Purpose
 
