@@ -472,7 +472,7 @@ function parseTheftReportsListInput(url: URL): ParseResult<ListTheftReportsInput
       offset: offset.value,
       adminStatus: adminStatus.value,
       botStatus: botStatus.value,
-      query: firstQueryValue(url, "query")
+      query: firstQueryValue(url, "query") ?? firstQueryValue(url, "q")
     }
   };
 }

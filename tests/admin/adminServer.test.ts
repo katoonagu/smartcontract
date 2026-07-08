@@ -471,6 +471,26 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("accepts q as a theft report text filter alias", async () => {
+    let receivedInput: unknown = null;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async (input) => {
+        receivedInput = input;
+        return [];
+      },
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async () => null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports?q=TReceiver`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedInput).toMatchObject({ query: "TReceiver" });
+  });
+
   it("rejects theft report list requests without bearer token", async () => {
     let called = false;
     const server = await start({
