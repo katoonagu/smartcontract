@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-06
+last_verified: 2026-07-08
 owner_area: scoring
 code_refs:
   - src/risk/unifiedWalletRisk.ts
@@ -65,6 +65,15 @@ HTX/Huobi Global is treated as normal `htx_huobi` source-policy context before
 2026-05-26, but as `sanctioned_service` for traced events on or after
 2026-05-26. This prevents old historical exchange interaction from being
 reinterpreted as current sanctions exposure.
+
+Non-hard `bridge_router_dex` and `cross_chain_boundary` exposure is
+amount-aware. If there is no hard evidence, sanctions, mixer, no-name liquidity,
+exact approval-drain provenance, or exact bad provenance, affected selected
+amount `<5k USDT` caps at 58, `5k-25k USDT` caps at 59, and
+`25k-100k USDT` tapers up to 68 instead of jumping straight to the top of the
+band. This is source-policy review context, not direct scam/drain proof.
+Amounts `>100k USDT` or repeated material aggregate bridge/router/DEX exposure
+can still reach 70+.
 
 Wrapper-driven campaign context is not the same as exact approval-drain proof.
 A broad Verify20 campaign can increase review pressure, but hard evidence

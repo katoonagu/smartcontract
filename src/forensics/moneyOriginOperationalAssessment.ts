@@ -24,6 +24,7 @@ import type {
 import {
   aggregateLayerScores,
   scoreSourceExposures,
+  sourcePolicyAmountCap,
   sourceExposureKindFromPath
 } from "./provenanceScoring";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
@@ -131,6 +132,14 @@ function ratio(numerator: bigint, denominator: bigint): number {
 function ratioOrNull(numerator: bigint, denominator: bigint): number | null {
   if (denominator <= 0n) return null;
   return Number((numerator * 1_000_000n) / denominator) / 1_000_000;
+}
+
+function multiplyAmountByShare(amountRaw: string | null | undefined, share: number): string | null {
+  const amount = parseAmount(amountRaw);
+  if (amount <= 0n || !Number.isFinite(share) || share <= 0) return null;
+  const scale = 1_000_000n;
+  const scaledShare = BigInt(Math.round(Math.min(1, share) * Number(scale)));
+  return ((amount * scaledShare + scale / 2n) / scale).toString();
 }
 
 export function riskBandFromWhereScore(score: number): WhereIsMoneyRiskBand {
@@ -785,10 +794,19 @@ function sourceBundlePolicyExtra(input: {
 }): SourceBundlePolicyExtra {
   const evidenceIds = sourceBundleEvidenceIdsForKind(input.profile, input.originPaths, input.kind);
   const sharePercent = Math.round(input.share * 100);
+  const affectedAmountRaw = multiplyAmountByShare(input.profile.coveredAmountRaw || input.profile.targetAmountRaw, input.share);
+  const amountCap = sourcePolicyAmountCap(input.kind, affectedAmountRaw);
+  const amountCapApplied = Boolean(amountCap && amountCap.cap < input.score);
+  const score = amountCapApplied && amountCap ? amountCap.cap : input.score;
+  const proofLevel: ProofLevel = score >= 60 ? input.proofLevel : "exchange_policy_context";
+  const canBeDampened = score < 60 ? true : input.canBeDampened;
+  const amountCapReason = amountCapApplied && amountCap
+    ? ` ${amountCap.amountText} came through bridge/router/DEX or cross-chain boundary; this is source-policy review context, not scam/drain proof; amount-aware cap ${score < 60 ? "kept it below decline threshold" : "limited this non-hard policy score"}.`
+    : "";
   const reasons = [
-    `Selected amount source bundle has ${sharePercent}% ${input.kind} exposure.`
+    `Selected amount source bundle has ${sharePercent}% ${input.kind} exposure.${amountCapReason}`
   ];
-  const warnings = input.canBeDampened
+  const warnings = canBeDampened
     ? ["Selected-amount source exposure is contextual and can be dampened by stronger clean-source evidence."]
     : [];
   const evidence: SourcePolicyEvidence = {
@@ -796,10 +814,10 @@ function sourceBundlePolicyExtra(input: {
     aggregateShare: input.share,
     effectiveShare: input.share,
     pathCount: input.profile.coverageRatio > 0 ? 1 : 0,
-    score: input.score,
-    riskBand: riskBandFromWhereScore(input.score),
-    proofLevel: input.proofLevel,
-    canBeDampened: input.canBeDampened,
+    score,
+    riskBand: riskBandFromWhereScore(score),
+    proofLevel,
+    canBeDampened,
     reasons,
     warnings,
     evidenceIds
@@ -810,12 +828,12 @@ function sourceBundlePolicyExtra(input: {
       evidenceClass: "source_policy",
       kind: input.kind,
       sourceExposureKind: input.kind,
-      score: input.score,
+      score,
       rawScore: input.score,
-      adjustedScore: input.score,
-      proofLevel: input.proofLevel,
-      canBeDampened: input.canBeDampened,
-      floorApplied: input.score,
+      adjustedScore: score,
+      proofLevel,
+      canBeDampened,
+      ...(amountCapApplied ? { capApplied: score } : { floorApplied: score }),
       reasons,
       warnings,
       evidenceIds
@@ -1270,6 +1288,17 @@ function highestLayerScore(layers: RiskLayerScore[]): number {
 function topSourcePolicyReason(assessment: SourcePolicyAssessment): string | null {
   const top = [...assessment.sourcePolicyEvidence].sort((left, right) => right.score - left.score)[0] ?? null;
   return top?.reasons[0] ?? null;
+}
+
+function hasAmountAwareBridgePolicyContext(assessment: SourcePolicyAssessment): boolean {
+  return assessment.sourcePolicyEvidence.some((evidence) =>
+    (evidence.kind === "bridge_router_dex" || evidence.kind === "cross_chain_boundary") &&
+    evidence.score < 60 &&
+    (
+      evidence.shareDetail?.amountCapApplied === true ||
+      evidence.reasons.some((reason) => reason.includes("amount-aware cap"))
+    )
+  );
 }
 
 function topSourcePolicyPathReason(assessment: SourcePolicyAssessment, paths: MoneyOriginPath[]): string | null {
@@ -1950,6 +1979,43 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       reasons: [topSourcePolicyPathReason(sourcePolicyAssessment, input.originPaths) ?? topSourcePolicyReason(sourcePolicyAssessment) ?? "Minority source-policy exposure is contextual and below the decline threshold."],
       warnings: [
         "Minority source-policy exposure is contextual; clean CEX coverage remains the dominant balance source.",
+        ...sourcePolicyAssessment.warnings,
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
+
+  if (
+    hasAmountAwareBridgePolicyContext(sourcePolicyAssessment) &&
+    !sourcePolicyDecline &&
+    hardBadEvidence.length === 0 &&
+    input.approvalDrainReviewFindings.length === 0 &&
+    !safeDefaultReason
+  ) {
+    const riskScore = clampScore(Math.max(
+      45,
+      sourcePolicyAcceptableFloor,
+      Math.min(55, highestPathRisk(input.originPaths)),
+      Math.min(55, input.fastWalletRisk?.score ?? 0)
+    ));
+    return {
+      decision: "REVIEW",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      ...defaultLayerCollections([]),
+      reasons: [
+        topSourcePolicyReason(sourcePolicyAssessment) ??
+        "Bridge/router/DEX source-policy context is amount-capped below the decline threshold."
+      ],
+      warnings: [
+        "Bridge/router/DEX or cross-chain source-policy context is visible, but no hard scam/drain evidence was found.",
         ...sourcePolicyAssessment.warnings,
         ...approvalWarnings,
         ...llmWarnings

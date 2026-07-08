@@ -535,6 +535,229 @@ describe("provenanceScoring", () => {
     expect(result.sourcePolicyEvidence[0]?.riskBand).not.toBe("CRITICAL");
   });
 
+  it("keeps small full-share bridge/router/DEX selected amount below decline", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 1,
+          amountPreservationRatio: 1,
+          linkStrength: 1.25,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          amountUsage: {
+            anchorAmountRaw: "2094300000",
+            originalAmountRaw: "2094300000",
+            usedAmountRaw: "2094300000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          }
+        })
+      ],
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 1,
+      provenanceConfidence: 1,
+      ageSignals: { ...noAgeSignals, subjectAgeDays: 1 },
+      scope: "where_selected_amount",
+      targetAmountRaw: "2094300000"
+    });
+
+    const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridge?.score).toBeLessThan(60);
+    expect(bridge?.score).toBeGreaterThanOrEqual(55);
+    expect(bridge?.proofLevel).toBe("exchange_policy_context");
+    expect(bridge?.reasons.join(" ")).toContain("source-policy review context");
+    expect(bridge?.reasons.join(" ")).toContain("not scam/drain proof");
+    expect(bridge?.shareDetail).toMatchObject({
+      affectedAmountRaw: "2094300000",
+      amountCap: 58,
+      amountBand: "under_5k",
+      amountCapApplied: true
+    });
+  });
+
+  it("keeps 5k to 25k full-share bridge/router/DEX selected amount below decline", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 1,
+          amountPreservationRatio: 1,
+          linkStrength: 1.25,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          amountUsage: {
+            anchorAmountRaw: "12000000000",
+            originalAmountRaw: "12000000000",
+            usedAmountRaw: "12000000000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          }
+        })
+      ],
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 1,
+      provenanceConfidence: 1,
+      ageSignals: { ...noAgeSignals, subjectAgeDays: 1 },
+      scope: "where_selected_amount",
+      targetAmountRaw: "12000000000"
+    });
+
+    const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridge?.score).toBe(59);
+    expect(bridge?.proofLevel).toBe("exchange_policy_context");
+    expect(bridge?.shareDetail).toMatchObject({
+      affectedAmountRaw: "12000000000",
+      amountCap: 59,
+      amountBand: "5k_to_25k",
+      amountCapApplied: true
+    });
+  });
+
+  it("tapers the 25k to 100k bridge/router/DEX cap instead of jumping to 68", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 1,
+          amountPreservationRatio: 1,
+          linkStrength: 1.25,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          amountUsage: {
+            anchorAmountRaw: "26000000000",
+            originalAmountRaw: "26000000000",
+            usedAmountRaw: "26000000000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          }
+        })
+      ],
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 1,
+      provenanceConfidence: 1,
+      ageSignals: { ...noAgeSignals, subjectAgeDays: 1 },
+      scope: "where_selected_amount",
+      targetAmountRaw: "26000000000"
+    });
+
+    const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridge?.score).toBeGreaterThanOrEqual(60);
+    expect(bridge?.score).toBeLessThan(68);
+    expect(bridge?.shareDetail).toMatchObject({
+      amountBand: "25k_to_100k",
+      amountCapApplied: true
+    });
+  });
+
+  it("lets material aggregate bridge/router/DEX exposure reach 70 plus", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 1,
+          amountPreservationRatio: 1,
+          linkStrength: 1.25,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          amountUsage: {
+            anchorAmountRaw: "120000000000",
+            originalAmountRaw: "120000000000",
+            usedAmountRaw: "120000000000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          }
+        })
+      ],
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 1,
+      provenanceConfidence: 1,
+      ageSignals: { ...noAgeSignals, subjectAgeDays: 1 },
+      scope: "where_selected_amount",
+      targetAmountRaw: "120000000000"
+    });
+
+    expect(result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex")?.score)
+      .toBeGreaterThanOrEqual(70);
+  });
+
+  it("applies the same small-amount cap to cross-chain boundary context", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 1,
+          amountPreservationRatio: 1,
+          linkStrength: 1.25,
+          exposureSourceKey: "cross_chain_boundary",
+          exposureSourceLabel: "Bridge boundary",
+          sourceExposureKind: "cross_chain_boundary",
+          amountUsage: {
+            anchorAmountRaw: "3000000000",
+            originalAmountRaw: "3000000000",
+            usedAmountRaw: "3000000000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          }
+        })
+      ],
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 1,
+      provenanceConfidence: 1,
+      ageSignals: { ...noAgeSignals, subjectAgeDays: 1 },
+      scope: "where_selected_amount",
+      targetAmountRaw: "3000000000"
+    });
+
+    const crossChain = result.sourcePolicyEvidence.find((item) => item.kind === "cross_chain_boundary");
+    expect(crossChain?.score).toBeLessThan(60);
+    expect(crossChain?.proofLevel).toBe("exchange_policy_context");
+  });
+
+  it("does not dampen mixer or sanctioned source-policy floors with the bridge amount cap", () => {
+    for (const kind of ["mixer", "sanctioned_service"] as const) {
+      const result = scoreSourceExposures({
+        originPaths: [
+          path({
+            balanceShare: 1,
+            amountPreservationRatio: 1,
+            linkStrength: 1.25,
+            exposureSourceKey: kind,
+            exposureSourceLabel: kind,
+            sourceExposureKind: kind,
+            amountUsage: {
+              anchorAmountRaw: "2094300000",
+              originalAmountRaw: "2094300000",
+              usedAmountRaw: "2094300000",
+              coverageShare: 1,
+              role: "funding_candidate"
+            }
+          })
+        ],
+        walletRole: "risky_source_wallet",
+        operationalLiquidityScore: 0,
+        cleanCexCoverage: 0,
+        coverageCompleteness: 1,
+        provenanceConfidence: 1,
+        ageSignals: { ...noAgeSignals, subjectAgeDays: 1 },
+        scope: "where_selected_amount",
+        targetAmountRaw: "2094300000"
+      });
+
+      expect(result.sourcePolicyEvidence.find((item) => item.kind === kind)?.score)
+        .toBeGreaterThanOrEqual(kind === "mixer" ? 78 : 95);
+    }
+  });
+
   it("emits amount-weighted source-policy share details", () => {
     const result = scoreSourceExposures({
       originPaths: [

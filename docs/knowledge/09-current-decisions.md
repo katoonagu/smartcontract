@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-06
+last_verified: 2026-07-08
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -117,6 +117,22 @@ of these decisions, update this file in the same work.
   or assertions, does not write risk observations, and does not affect scoring,
   Telegram output, or the original job result. Index failures are logged as
   runtime warnings.
+
+### 2026-07-08 Amount-Aware Bridge/Router/DEX Scoring
+
+- Small ordinary Where traces that end at `bridge_router_dex` or
+  `cross_chain_boundary` stay visible, but they no longer become high policy
+  declines only because they cover 100% of a small selected amount.
+- For non-hard bridge/router/DEX or cross-chain source-policy exposure, affected
+  selected amount `<5k USDT` caps at 58, `5k-25k USDT` caps at 59, and
+  `25k-100k USDT` tapers up to 68. A single 26k transfer should not
+  automatically jump to 68.
+- This cap applies only when there is no hard evidence, sanctions, mixer,
+  no-name liquidity, exact approval-drain provenance, or exact bad provenance.
+  Those hard floors keep their existing behavior.
+- Reports should still say that the selected balance-forming amount came
+  through bridge/router/DEX or a cross-chain boundary. The wording must describe
+  it as source-policy review context, not direct scam/drain proof.
 
 ### 2026-07-05 Dense-Hop Materiality For Where
 

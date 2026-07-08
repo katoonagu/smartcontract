@@ -1187,6 +1187,9 @@ export type SourcePolicyShareDetail = {
   shareFloor: number;
   shareCap: number;
   finalContribution: number;
+  amountCap?: number;
+  amountBand?: "under_5k" | "5k_to_25k" | "25k_to_100k";
+  amountCapApplied?: boolean;
 };
 
 export type RiskLayerScore = {

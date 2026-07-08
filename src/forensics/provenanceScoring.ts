@@ -15,6 +15,16 @@ import { matchSanctionedCryptoService } from "./sanctionedServiceRegistry";
 
 const MIN_LINK_STRENGTH = 0.25;
 const MAX_LINK_STRENGTH = 1.25;
+const USDT_RAW_SCALE = 1_000_000n;
+const BRIDGE_AMOUNT_CAP_UNDER_5K_RAW = 5_000n * USDT_RAW_SCALE;
+const BRIDGE_AMOUNT_CAP_25K_RAW = 25_000n * USDT_RAW_SCALE;
+const BRIDGE_AMOUNT_CAP_100K_RAW = 100_000n * USDT_RAW_SCALE;
+
+export type SourcePolicyAmountCap = {
+  cap: number;
+  band: "under_5k" | "5k_to_25k" | "25k_to_100k";
+  amountText: string;
+};
 
 function clamp(value: number, min = 0, max = 100): number {
   if (!Number.isFinite(value)) return min;
@@ -202,6 +212,51 @@ function shareBandCap(kind: SourceExposureKind, share: number): number {
   if (kind === "sanctioned_service") return 100;
 
   return sourceSeverity(kind);
+}
+
+function amountAwareBridgeKind(kind: SourceExposureKind): boolean {
+  return kind === "bridge_router_dex" || kind === "cross_chain_boundary";
+}
+
+function formatScaledUsdt(amountRaw: bigint, divisorRaw: bigint, suffix: string): string {
+  const scaled = (amountRaw * 100n + divisorRaw / 2n) / divisorRaw;
+  const whole = scaled / 100n;
+  const fractional = scaled % 100n;
+  if (fractional === 0n) return `${whole.toString()}${suffix} USDT`;
+  const fractionalText = fractional.toString().padStart(2, "0").replace(/0$/, "");
+  return `${whole.toString()}.${fractionalText}${suffix} USDT`;
+}
+
+function formatUsdtRaw(amountRaw: string): string {
+  const amount = parseAmountRaw(amountRaw);
+  if (amount === null) return `${amountRaw} raw USDT`;
+  if (amount >= 1_000_000n * USDT_RAW_SCALE) return formatScaledUsdt(amount, 1_000_000n * USDT_RAW_SCALE, "M");
+  if (amount >= 1_000n * USDT_RAW_SCALE) return formatScaledUsdt(amount, 1_000n * USDT_RAW_SCALE, "K");
+  return formatScaledUsdt(amount, USDT_RAW_SCALE, "");
+}
+
+export function sourcePolicyAmountCap(
+  kind: SourceExposureKind,
+  affectedAmountRaw: string | null | undefined
+): SourcePolicyAmountCap | null {
+  if (!amountAwareBridgeKind(kind) || !affectedAmountRaw) return null;
+  const amount = parseAmountRaw(affectedAmountRaw);
+  if (amount === null || amount <= 0n) return null;
+
+  if (amount < BRIDGE_AMOUNT_CAP_UNDER_5K_RAW) {
+    return { cap: 58, band: "under_5k", amountText: formatUsdtRaw(affectedAmountRaw) };
+  }
+  if (amount < BRIDGE_AMOUNT_CAP_25K_RAW) {
+    return { cap: 59, band: "5k_to_25k", amountText: formatUsdtRaw(affectedAmountRaw) };
+  }
+  if (amount < BRIDGE_AMOUNT_CAP_100K_RAW) {
+    const numerator = Number(amount - BRIDGE_AMOUNT_CAP_25K_RAW);
+    const denominator = Number(BRIDGE_AMOUNT_CAP_100K_RAW - BRIDGE_AMOUNT_CAP_25K_RAW);
+    const cap = Math.max(60, Math.min(68, 60 + Math.round((numerator / denominator) * 8)));
+    return { cap, band: "25k_to_100k", amountText: formatUsdtRaw(affectedAmountRaw) };
+  }
+
+  return null;
 }
 
 function shareFloorForKind(kind: SourceExposureKind, share: number, amountContinuity: number): number {
@@ -501,6 +556,9 @@ function sourcePolicyShareDetail(input: {
   shareCap: number;
   finalContribution: number;
   affectedAmountRaw?: string | null;
+  amountCap?: number;
+  amountBand?: SourcePolicyAmountCap["band"];
+  amountCapApplied?: boolean;
 }): SourcePolicyShareDetail | undefined {
   if (!input.scope || !input.targetAmountRaw) return undefined;
 
@@ -521,7 +579,14 @@ function sourcePolicyShareDetail(input: {
     walletRoleAdjustment: input.walletRoleAdjustment,
     shareFloor: input.shareFloor,
     shareCap: input.shareCap,
-    finalContribution: input.finalContribution
+    finalContribution: input.finalContribution,
+    ...(input.amountCapApplied && input.amountCap !== undefined && input.amountBand
+      ? {
+          amountCap: input.amountCap,
+          amountBand: input.amountBand,
+          amountCapApplied: true
+        }
+      : {})
   };
 }
 
@@ -626,14 +691,24 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       exposureAgeAdjustment +
       exposureWalletRoleAdjustment;
 
+    const affectedAmountRaw = exactAffectedAmountRaw(deduped.map((item) => item.path), input.targetAmountRaw);
+    const amountCap = sourcePolicyAmountCap(kind, affectedAmountRaw);
     const bestContinuity = Math.max(...deduped.map((item) => item.continuity), 0);
-    const shareFloor = shareFloorForKind(kind, attributableShare, bestContinuity);
-    const shareCap = shareBandCap(kind, attributableShare);
+    const baseShareFloor = shareFloorForKind(kind, attributableShare, bestContinuity);
+    const baseShareCap = shareBandCap(kind, attributableShare);
+    const amountCapApplied = Boolean(amountCap && amountCap.cap < baseShareCap);
+    const shareCap = amountCapApplied && amountCap ? amountCap.cap : baseShareCap;
+    const shareFloor = amountCapApplied && amountCap && amountCap.cap < 60
+      ? 0
+      : Math.min(baseShareFloor, shareCap);
     const adjustedScore = clamp(Math.max(shareFloor, Math.min(shareCap, rawScore)));
     const proofLevel: ProofLevel = adjustedScore >= 60 ? "exchange_policy_decline" : "exchange_policy_context";
     const canBeDampened = !isNonDampenableSourceExposureKind(kind) && (kind !== "htx_huobi" || attributableShare < 0.5);
+    const amountCapReason = amountCapApplied && amountCap
+      ? ` ${amountCap.amountText} came through bridge/router/DEX or cross-chain boundary; this is source-policy review context, not scam/drain proof; amount-aware cap ${shareCap < 60 ? "kept it below decline threshold" : "limited this non-hard policy score"}.`
+      : "";
     const reasons = [
-      `${kind} exposure is ${Math.round(aggregateShare * 100)}% raw / ${Math.round(effectiveShare * 100)}% effective; this is source-policy risk, not scam/drain proof.`
+      `${kind} exposure is ${Math.round(aggregateShare * 100)}% raw / ${Math.round(effectiveShare * 100)}% effective; this is source-policy risk, not scam/drain proof.${amountCapReason}`
     ];
     const warnings = adjustedScore < 60
       ? ["Source-policy exposure is below decline threshold after path context and dampening."]
@@ -655,7 +730,10 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       shareFloor,
       shareCap,
       finalContribution: adjustedScore,
-      affectedAmountRaw: exactAffectedAmountRaw(deduped.map((item) => item.path), input.targetAmountRaw)
+      affectedAmountRaw,
+      amountCap: amountCap?.cap,
+      amountBand: amountCap?.band,
+      amountCapApplied
     });
 
     sourcePolicyEvidence.push({

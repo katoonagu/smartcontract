@@ -554,25 +554,85 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
-  it("floors selected bridge/router/dex source bundle share at 60 and declines", () => {
+  it("keeps small selected bridge/router/dex source bundle exposure as review context", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-subject-inbound",
+          rootSourceAddress: "TBridge111111111111111111111111111111",
+          rootSourceType: "decline_boundary",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          pathAddresses: ["TBridge111111111111111111111111111111", sender, subject],
+          txHashes: ["tx-bridge-hop", "tx-subject-inbound"],
+          steps: [
+            {
+              txHash: "tx-bridge-hop",
+              fromAddress: "TBridge111111111111111111111111111111",
+              toAddress: sender,
+              amountRaw: "2094300000",
+              timestamp: "2026-07-08T04:50:15.000Z"
+            },
+            {
+              txHash: "tx-subject-inbound",
+              fromAddress: sender,
+              toAddress: subject,
+              amountRaw: "2094300000",
+              timestamp: "2026-07-08T04:51:21.000Z"
+            }
+          ],
+          amountUsage: {
+            anchorAmountRaw: "2094300000",
+            originalAmountRaw: "2094300000",
+            usedAmountRaw: "2094300000",
+            coverageShare: 1,
+            role: "funding_candidate"
+          },
+          amountPreservationRatio: 1,
+          timeSpanMs: 66 * 1000,
+          stoppedReason: "service_boundary",
+          verdict: "REVIEW",
+          riskScoreContribution: 65,
+          reasons: ["Bridge source-policy exposure."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      coverage: coverage({
+        targetAmountRaw: "2094300000",
+        selectedAmountRaw: "2094300000",
+        selectedInboundVolumeRaw: "2094300000",
+        currentBalanceRaw: "2094300000"
+      }),
       sourceBundleExposure: sourceBundleExposureProfile({
-        bridgeRouterDexShare: 0.5,
-        cleanCexShare: 0.5,
+        targetAmountRaw: "2094300000",
+        coveredAmountRaw: "2094300000",
+        bridgeRouterDexShare: 1,
+        cleanCexShare: 0,
         dominantSource: "bridge_router_dex"
       })
     }));
+    const text = [
+      ...assessment.reasons,
+      ...assessment.sourcePolicyEvidence.flatMap((item) => item.reasons),
+      ...assessment.riskLayers.flatMap((layer) => layer.reasons)
+    ].join(" ");
 
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
-    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.riskScore).toBeLessThan(60);
+    expect(assessment.decision).toBe("REVIEW");
     expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "bridge_router_dex",
-        score: 60,
-        proofLevel: "exchange_policy_decline",
-        canBeDampened: false
+        score: 58,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
       })
     ]));
+    expect(text).toContain("2.09K USDT");
+    expect(text).toContain("source-policy review context");
+    expect(text).toContain("not scam/drain proof");
   });
 
   it("applies unresolved bridge source bundle boundary as coverage-limited context without exact source proof", () => {
