@@ -162,69 +162,125 @@ function writeRedirect(response: ServerResponse, location: string): void {
   response.end();
 }
 
+function theftReportsPlaceholderHtml(): string {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Заявки о краже</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1419;
+      --panel: #151b22;
+      --panel-2: #10161d;
+      --line: #2a3440;
+      --text: #edf2f7;
+      --muted: #9ba7b4;
+      --accent: #7aa7ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      height: 43px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 10px;
+      border-bottom: 1px solid #202a34;
+      background: #151a1f;
+    }
+    header strong {
+      font-size: 16px;
+      white-space: nowrap;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow-x: auto;
+    }
+    nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 12px;
+      white-space: nowrap;
+      background: var(--panel-2);
+    }
+    nav a.active {
+      border-color: var(--accent);
+      color: #ffffff;
+      background: #16253b;
+    }
+    main {
+      padding: 24px;
+    }
+    .theft-reports-placeholder {
+      min-height: calc(100vh - 91px);
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .theft-reports-placeholder h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    .theft-reports-placeholder p {
+      max-width: 680px;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body data-admin-route="theft-reports">
+  <header>
+    <strong>Admin Forensics Console</strong>
+    <nav aria-label="Admin workspaces">
+      <a href="/admin/forensics" data-workspace-link>Forensics</a>
+      <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>
+      <a href="/admin/theft-reports" class="active" aria-current="page" data-workspace-link>Заявки о краже</a>
+    </nav>
+  </header>
+  <main>
+    <!-- ponytail: static route placeholder avoids booting the Forensics console before Task 3 moves the real workspace into adminConsole. -->
+    <section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports">
+      <h1>Заявки о краже</h1>
+      <p>Рабочее место заявок будет подключено в следующем UI task.</p>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 function adminShellHtml(pathname = "/admin/forensics"): string {
+  if (pathname === "/admin/theft-reports") return theftReportsPlaceholderHtml();
+
   const html = adminConsoleHtml();
-  const isTheftReportsRoute = pathname === "/admin/theft-reports";
 
   const navNeedle = '          <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>';
   const theftReportsNav = '          <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>';
-  let shell = html.includes("/admin/theft-reports")
+  const shell = html.includes("/admin/theft-reports")
     ? html
     : html.replace(navNeedle, `${navNeedle}\n${theftReportsNav}`);
-  if (!isTheftReportsRoute && shell.includes("data-theft-reports-workspace")) return shell;
-
-  if (isTheftReportsRoute) {
-    shell = shell.replace("<body>", '<body data-admin-route="theft-reports">');
-    const routeStyle = [
-      "<style data-theft-reports-route-style>",
-      "body[data-admin-route=\"theft-reports\"] [data-workbench-shell] { display: none !important; }",
-      "body[data-admin-route=\"theft-reports\"] [data-wallet-intelligence-workspace] { display: none !important; }",
-      "body[data-admin-route=\"theft-reports\"] [data-theft-reports-workspace] { display: block !important; }",
-      "body[data-admin-route=\"theft-reports\"] .theft-reports-placeholder { height: calc(100dvh - 56px); padding: 24px; background: var(--surface-canvas); }",
-      "body[data-admin-route=\"theft-reports\"] .theft-reports-placeholder h2 { margin: 0 0 8px; font-size: 18px; }",
-      "</style>"
-    ].join("\n");
-    shell = shell.includes("</head>")
-      ? shell.replace("</head>", `${routeStyle}\n</head>`)
-      : `${routeStyle}\n${shell}`;
-  }
-
-  const workspace = [
-    "",
-    "<!-- ponytail: server-side route placeholder is capped at static visibility/nav fixes; Task 3 should move the real theft-report workspace into adminConsole. -->",
-    `<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports"${isTheftReportsRoute ? "" : " hidden"}>`,
-    "  <h2>Заявки о краже</h2>",
-    isTheftReportsRoute ? '  <p class="hint">Рабочее место заявок будет подключено в следующем UI task.</p>' : "",
-    "</section>"
-  ].filter(Boolean).join("\n");
-  const routeScript = isTheftReportsRoute
-    ? [
-        '<script data-theft-reports-route-script>',
-        "(function () {",
-        "  function syncTheftReportsRoute() {",
-        "    var graphShell = document.querySelector('[data-workbench-shell]');",
-        "    var walletShell = document.querySelector('[data-wallet-intelligence-workspace]');",
-        "    var theftShell = document.querySelector('[data-theft-reports-workspace]');",
-        "    if (graphShell) graphShell.hidden = true;",
-        "    if (walletShell) walletShell.hidden = true;",
-        "    if (theftShell) theftShell.hidden = false;",
-        "    document.querySelectorAll('[data-workspace-link]').forEach(function (link) {",
-        "      var active = link.getAttribute('href') === '/admin/theft-reports';",
-        "      link.classList.toggle('active', active);",
-        "      if (active) link.setAttribute('aria-current', 'page');",
-        "      else link.removeAttribute('aria-current');",
-        "    });",
-        "  }",
-        "  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncTheftReportsRoute);",
-        "  else syncTheftReportsRoute();",
-        "}());",
-        "</script>"
-      ].join("\n")
-    : "";
-  const routeMarkup = routeScript ? `${workspace}\n${routeScript}` : workspace;
-  return shell.includes("</body>")
-    ? shell.replace("</body>", `${routeMarkup}\n</body>`)
-    : `${shell}${routeMarkup}`;
+  return shell;
 }
 
 async function writeNodeRoleAsset(response: ServerResponse, pathname: string): Promise<boolean> {

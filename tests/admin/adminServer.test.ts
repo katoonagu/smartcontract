@@ -247,12 +247,11 @@ describe("startAdminServer", () => {
     expect(html).toContain("data-theft-reports-workspace");
     expect(html).toContain("/admin/api/theft-reports");
     expect(html).toContain('data-admin-route="theft-reports"');
-    expect(html).toContain("data-theft-reports-route-style");
-    expect(html).toContain('[data-admin-route="theft-reports"] [data-workbench-shell] { display: none');
-    expect(html).toContain('[data-admin-route="theft-reports"] [data-theft-reports-workspace] { display: block');
-    expect(html).toContain("data-theft-reports-route-script");
+    expect(html).toContain('href="/admin/theft-reports" class="active"');
     expect(html).toContain('<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports">');
-    expect(html).not.toContain('<section id="theftReportsWorkspace" class="theft-reports-placeholder" data-theft-reports-workspace data-api="/admin/api/theft-reports" hidden>');
+    expect(html).not.toContain("data-workbench-shell");
+    expect(html).not.toContain("data-theft-reports-route-script");
+    expect(html).not.toContain("loadJobs()");
   });
 
   it("keeps node role marks inline in the graph renderer", () => {
@@ -614,6 +613,26 @@ describe("startAdminServer", () => {
     });
 
     expect(response.status).toBe(400);
+  });
+
+  it("rejects invalid theft report bot status filters before calling dependency", async () => {
+    let called = false;
+    const server = await start({
+      ...deps(),
+      listTheftReports: async () => {
+        called = true;
+        return [];
+      },
+      getTheftReport: async () => null,
+      updateTheftReportAdminState: async () => null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/theft-reports?botStatus=paid`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    expect(called).toBe(false);
   });
 
   it("returns 501 when theft reports dependencies are not configured", async () => {
