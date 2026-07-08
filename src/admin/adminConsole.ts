@@ -2304,6 +2304,8 @@ export function adminConsoleHtml(): string {
       const select = el("theftReportAdminStateSelect");
       const note = el("theftReportAdminNote");
       state.theftReports.savePending = true;
+      state.theftReports.listRequestSeq += 1;
+      state.theftReports.detailRequestSeq += 1;
       try {
         setTheftReportsStatus("Сохраняем внутренний статус...");
         const body = await api("/admin/api/theft-reports/" + encodeURIComponent(report.id) + "/admin-state", {
