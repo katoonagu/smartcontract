@@ -1158,6 +1158,12 @@ function applyStrictPathSourcePolicyScores(
   return withSourcePolicyEvidenceUpdate(assessment, (evidence) => {
     const strictScore = strictScores.get(evidence.kind) ?? 0;
     if (strictScore < 60 || evidence.score >= strictScore) return evidence;
+    if (
+      (evidence.kind === "bridge_router_dex" || evidence.kind === "cross_chain_boundary") &&
+      evidence.shareDetail?.amountCapApplied === true
+    ) {
+      return evidence;
+    }
     return {
       ...evidence,
       score: strictScore,
@@ -1790,7 +1796,8 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
 
   if (
     legitimateServiceVerdict &&
-    canDampenUnknownContract
+    canDampenUnknownContract &&
+    !hasAmountAwareBridgePolicyContext(sourcePolicyAssessment)
   ) {
     const riskScore = clampScore(Math.max(
       20,

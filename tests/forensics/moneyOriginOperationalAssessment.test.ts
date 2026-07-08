@@ -387,6 +387,8 @@ describe("riskBandFromWhereScore", () => {
 });
 
 describe("buildMoneyOriginOperationalAssessment", () => {
+  const smallBridgeBoundary = "TBridge111111111111111111111111111111";
+
   it("floors selected risky-label source bundle share at 85 and declines", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       sourceBundleExposure: sourceBundleExposureProfile({
@@ -559,18 +561,18 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       originPaths: [
         reviewPath({
           balanceTransferTxHash: "tx-subject-inbound",
-          rootSourceAddress: "TBridge111111111111111111111111111111",
+          rootSourceAddress: smallBridgeBoundary,
           rootSourceType: "decline_boundary",
           balanceShare: 1,
           exposureSourceKey: "bridge_router_dex",
           exposureSourceLabel: "Bridge",
           sourceExposureKind: "bridge_router_dex",
-          pathAddresses: ["TBridge111111111111111111111111111111", sender, subject],
+          pathAddresses: [smallBridgeBoundary, sender, subject],
           txHashes: ["tx-bridge-hop", "tx-subject-inbound"],
           steps: [
             {
               txHash: "tx-bridge-hop",
-              fromAddress: "TBridge111111111111111111111111111111",
+              fromAddress: smallBridgeBoundary,
               toAddress: sender,
               amountRaw: "2094300000",
               timestamp: "2026-07-08T04:50:15.000Z"
@@ -593,12 +595,13 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           amountPreservationRatio: 1,
           timeSpanMs: 66 * 1000,
           stoppedReason: "service_boundary",
-          verdict: "REVIEW",
+          verdict: "DECLINE",
           riskScoreContribution: 65,
-          reasons: ["Bridge source-policy exposure."]
+          reasons: ["Balance-forming path reaches bridge boundary; public-chain continuity after the service boundary should not be assumed."]
         })
       ],
       senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict({ contractAddress: smallBridgeBoundary })],
       coverage: coverage({
         targetAmountRaw: "2094300000",
         selectedAmountRaw: "2094300000",
