@@ -27,6 +27,15 @@ Admin is the analyst workbench. It shows jobs, graph projections, selected
 flows, technical coverage details, raw evidence summaries, and strict benchmark
 metrics when present.
 
+Admin also has a Russian `Заявки о краже` workspace for preliminary theft
+reports submitted through the Telegram `Сообщить о краже` flow. This workspace
+is an intake and processing queue: it shows the transaction facts extracted by
+the bot, the user comment, bot/payment status, internal admin status, and one
+internal admin note. The internal admin status and note are not forensic proof,
+do not change the bot's technical theft-report status, and do not send Telegram
+notifications. The workspace links to Forensics, Wallet Intelligence, and
+TronScan, but it does not launch new forensic jobs in the MVP.
+
 For completed `address_deep_check` graphs, Admin defaults to `Full evidence`.
 That mode renders all nodes and edges returned by the graph API, including
 second-layer relationship edges, without applying density collapse. The local
@@ -260,6 +269,10 @@ saved payloads only. The view is global investigative context: repeated
 appearances, requesters, source jobs, and normalized edges for triage. It is not
 a forensic verdict, not Telegram output, and not per-job graph evidence or
 scoring.
+
+For theft reports, Admin should help operators process preliminary user claims
+without saying that theft is confirmed. Proof still lives in the forensic
+evidence surfaces.
 
 ## Bot Purpose
 
