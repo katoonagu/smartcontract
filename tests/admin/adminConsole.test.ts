@@ -167,6 +167,20 @@ describe("adminConsoleHtml", () => {
     expect(helpers.walletIntelPresetFilters("all")).toEqual({});
   });
 
+  it("renders Wallet Intelligence intersection tabs and filters", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('data-wallet-intel-preset="intersections"');
+    expect(html).toContain('data-wallet-intel-preset="known_infrastructure"');
+    expect(html).toContain('data-wallet-intel-preset="all"');
+    expect(html).toContain('id="walletIntelMinSubjects"');
+    expect(html).toContain('id="walletIntelMinRequesters"');
+    expect(html).toContain('id="walletIntelMaxDepth"');
+    expect(html).toContain('id="walletIntelServiceCategory"');
+    expect(html).toContain('id="walletIntelJobStatus"');
+    expect(html).toContain("walletIntelPresetFilters");
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 

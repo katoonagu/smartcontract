@@ -200,6 +200,17 @@ export function adminConsoleHtml(): string {
     }
     .wallet-intel-filters label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
     .wallet-intel-filters input, .wallet-intel-filters select { width: 100%; }
+    .wallet-intel-presets {
+      grid-column: 1 / -1;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .wallet-intel-presets button.active {
+      border-color: var(--accent);
+      color: var(--text-primary);
+      background: rgba(127, 169, 221, .14);
+    }
     .wallet-intel-body {
       min-height: 0;
       display: grid;
@@ -1369,6 +1380,13 @@ export function adminConsoleHtml(): string {
             <div class="wallet-intel-warning">This is analyst context, not scoring evidence.</div>
           </div>
           <div class="wallet-intel-filters">
+            <div class="wallet-intel-presets" role="group" aria-label="Wallet Intelligence presets">
+              <button type="button" data-wallet-intel-preset="intersections" class="active">Intersections</button>
+              <button type="button" data-wallet-intel-preset="requesters">By requesters</button>
+              <button type="button" data-wallet-intel-preset="unknown_repeated">Unknown repeated</button>
+              <button type="button" data-wallet-intel-preset="known_infrastructure">Known infrastructure</button>
+              <button type="button" data-wallet-intel-preset="all">All sightings</button>
+            </div>
             <label>Address
               <input id="walletIntelAddress" placeholder="Address contains">
             </label>
@@ -1396,6 +1414,25 @@ export function adminConsoleHtml(): string {
             </label>
             <label>Subject address
               <input id="walletIntelSubjectAddress" placeholder="Checked subject">
+            </label>
+            <label>Min subjects
+              <input id="walletIntelMinSubjects" inputmode="numeric" placeholder="2">
+            </label>
+            <label>Min requesters
+              <input id="walletIntelMinRequesters" inputmode="numeric" placeholder="2">
+            </label>
+            <label>Max depth
+              <input id="walletIntelMaxDepth" inputmode="numeric" placeholder="2">
+            </label>
+            <label>Service
+              <input id="walletIntelServiceCategory" placeholder="cex, bridge">
+            </label>
+            <label>Status
+              <select id="walletIntelJobStatus">
+                <option value="">Any status</option>
+                <option value="completed">Completed</option>
+                <option value="partial">Partial</option>
+              </select>
             </label>
             <button id="walletIntelReload" type="button">Reload</button>
           </div>
@@ -1462,7 +1499,7 @@ export function adminConsoleHtml(): string {
       renderedEdgesById: new Map(),
       expandedBundleNodeIds: new Set(),
       expandedSelectedFlowEdgeIds: new Set(),
-      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null }
+      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null, preset: "intersections" }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -1790,6 +1827,17 @@ export function adminConsoleHtml(): string {
       if (preset === "low_depth") return { maxDepth: "2", minUniqueSubjects: "2" };
       return {};
     }
+    function applyWalletIntelPreset(preset) {
+      state.walletIntel.preset = preset || "intersections";
+      const filters = walletIntelPresetFilters(state.walletIntel.preset);
+      el("walletIntelMinSubjects").value = filters.minUniqueSubjects || "";
+      el("walletIntelMinRequesters").value = filters.minUniqueRequesters || "";
+      el("walletIntelMaxDepth").value = filters.maxDepth || "";
+      el("walletIntelTag").value = filters.tag || "";
+      document.querySelectorAll("[data-wallet-intel-preset]").forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-wallet-intel-preset") === state.walletIntel.preset);
+      });
+    }
     function walletIntelAddressLink(address) {
       return address ? explorerLink(tronscanAddressUrl(address), short(address, 8)) : '<span class="muted">address n/a</span>';
     }
@@ -1846,7 +1894,12 @@ export function adminConsoleHtml(): string {
         ["mode", el("walletIntelMode").value],
         ["tag", el("walletIntelTag").value],
         ["requester", el("walletIntelRequester").value.trim()],
-        ["subjectAddress", el("walletIntelSubjectAddress").value.trim()]
+        ["subjectAddress", el("walletIntelSubjectAddress").value.trim()],
+        ["minUniqueSubjects", el("walletIntelMinSubjects").value.trim()],
+        ["minUniqueRequesters", el("walletIntelMinRequesters").value.trim()],
+        ["maxDepth", el("walletIntelMaxDepth").value.trim()],
+        ["serviceCategory", el("walletIntelServiceCategory").value.trim()],
+        ["jobStatus", el("walletIntelJobStatus").value]
       ];
       filters.forEach(([key, value]) => {
         if (value) params.set(key, value);
@@ -2739,11 +2792,17 @@ export function adminConsoleHtml(): string {
       setSelectFromUrl("kind", params.get("kind") || "");
       setSelectFromUrl("limit", params.get("limit") || "");
       if (walletIntelligenceActive()) {
+        applyWalletIntelPreset(params.get("preset") || "intersections");
         el("walletIntelAddress").value = params.get("address") || params.get("q") || "";
         el("walletIntelRequester").value = params.get("requester") || "";
         el("walletIntelSubjectAddress").value = params.get("subjectAddress") || "";
         setSelectFromUrl("walletIntelMode", params.get("mode") || "");
-        setSelectFromUrl("walletIntelTag", params.get("tag") || "");
+        if (params.has("tag")) setSelectFromUrl("walletIntelTag", params.get("tag") || "");
+        if (params.has("minUniqueSubjects")) el("walletIntelMinSubjects").value = params.get("minUniqueSubjects") || "";
+        if (params.has("minUniqueRequesters")) el("walletIntelMinRequesters").value = params.get("minUniqueRequesters") || "";
+        if (params.has("maxDepth")) el("walletIntelMaxDepth").value = params.get("maxDepth") || "";
+        el("walletIntelServiceCategory").value = params.get("serviceCategory") || "";
+        setSelectFromUrl("walletIntelJobStatus", params.get("jobStatus") || "");
       }
       const jobId = params.get("jobId") || params.get("job") || "";
       if (jobId) state.pendingOpenJobId = jobId;
@@ -8433,6 +8492,12 @@ export function adminConsoleHtml(): string {
       else loadJobs();
     });
     el("walletIntelReload").addEventListener("click", loadWalletIntelligenceAddresses);
+    document.querySelectorAll("[data-wallet-intel-preset]").forEach((button) => {
+      button.addEventListener("click", () => {
+        applyWalletIntelPreset(button.getAttribute("data-wallet-intel-preset") || "intersections");
+        loadWalletIntelligenceAddresses();
+      });
+    });
     el("walletIntelTable").addEventListener("click", (event) => {
       const row = event.target instanceof Element ? event.target.closest("[data-wallet-intel-address]") : null;
       if (!row) return;

@@ -275,7 +275,7 @@ describe("startAdminServer", () => {
     });
 
     const response = await fetch(
-      `${server.url}/admin/api/wallet-intelligence/addresses?limit=20&offset=5&mode=address_deep_check&tag=repeated_cross_run_address&minUniqueSubjects=2&minUniqueRequesters=2&requester=client_user`,
+      `${server.url}/admin/api/wallet-intelligence/addresses?limit=20&offset=5&mode=address_deep_check&tag=repeated_cross_run_address&minUniqueSubjects=2&minUniqueRequesters=2&requester=client_user&subjectAddress=TSubject111111111111111111111111111111&startDate=2026-07-01T00%3A00%3A00.000Z&endDate=2026-07-08T00%3A00%3A00.000Z&minDepth=1&maxDepth=2&minDistinctAmountRaw=1000000&maxDistinctAmountRaw=5000000&serviceCategory=cex&jobStatus=completed`,
       { headers: { authorization: "Bearer secret-token" } }
     );
 
@@ -295,8 +295,17 @@ describe("startAdminServer", () => {
       tag: "repeated_cross_run_address",
       minUniqueSubjects: 2,
       minUniqueRequesters: 2,
-      requesterQuery: "client_user"
+      requesterQuery: "client_user",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      minDepth: 1,
+      maxDepth: 2,
+      minDistinctAmountRaw: "1000000",
+      maxDistinctAmountRaw: "5000000",
+      serviceCategory: "cex",
+      jobStatus: "completed"
     });
+    expect((receivedInput as { startDate?: Date }).startDate?.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect((receivedInput as { endDate?: Date }).endDate?.toISOString()).toBe("2026-07-08T00:00:00.000Z");
   });
 
   it("returns wallet intelligence address detail", async () => {
