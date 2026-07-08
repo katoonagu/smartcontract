@@ -1998,11 +1998,15 @@ export function adminConsoleHtml(): string {
       return "var(--semantic-context)";
     }
     function renderWalletIntelFocusedGraph(detail, address) {
-      const edges = asArray(detail?.edges).filter((edge) => edge?.fromAddress && edge?.toAddress).slice(0, 12);
-      if (edges.length === 0) return '<div class="empty">No stored edges for focused graph.</div>';
-
       const centerAddress = walletIntelText(address, "selected");
       const centerKey = String(centerAddress).toLowerCase();
+      const edges = asArray(detail?.edges).filter((edge) => {
+        const fromKey = String(walletIntelText(edge?.fromAddress, "")).toLowerCase();
+        const toKey = String(walletIntelText(edge?.toAddress, "")).toLowerCase();
+        return fromKey && toKey && (fromKey === centerKey || toKey === centerKey);
+      }).slice(0, 12);
+      if (edges.length === 0) return '<div class="empty">No stored edges for focused graph.</div>';
+
       const nodes = [{ key: centerKey, value: centerAddress, selected: true }];
       const seen = new Set([centerKey]);
       edges.forEach((edge) => {

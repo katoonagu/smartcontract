@@ -241,10 +241,17 @@ describe("adminConsoleHtml", () => {
 
   it("renders a focused Wallet Intelligence graph from stored edges", () => {
     const helpers = adminWalletIntelGraphHelpers();
+    const unrelatedEdges = Array.from({ length: 12 }, (_, index) => ({
+      fromAddress: "TNoise" + index,
+      toAddress: "TUnrelatedPeer" + index,
+      amountRaw: "1000000",
+      edgeRole: "transfer",
+      sourceKind: "wallet_intelligence"
+    }));
 
     const html = helpers.renderWalletIntelFocusedGraph({
-      edges: [{
-        fromAddress: "TSelected",
+      edges: [...unrelatedEdges, {
+        fromAddress: "tselected",
         toAddress: "TPeer",
         amountRaw: "2500000",
         edgeRole: "transfer",
@@ -257,6 +264,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("TSelected");
     expect(html).toContain("TPeer");
     expect(html).toContain("2.5 USDT");
+    expect(html).not.toContain("TUnrelatedPeer0");
+    expect(html).not.toContain("TNoise0");
   });
 
   it("renders the graph-first investigation shell", () => {
