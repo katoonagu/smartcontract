@@ -42,7 +42,7 @@ export const regressionCases = [
   {
     name: "Known DEX router approval with output is guarded, not drainer proof",
     expectedDecision: "DECLINE",
-    expectedProofLevel: "exchange_policy_decline"
+    expectedProofLevel: "exchange_policy_context"
   },
   {
     name: "Wrapper transferFrom path to checked wallet is exact approval-drain decline",

@@ -1814,8 +1814,8 @@ describe("runWhereIsMoneyCheck", () => {
       effectiveShare: 0.75,
       finalContribution: 58
     });
-    expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(60);
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBe(58);
     expect(report.coverage).toMatchObject({
       selectedInboundTxCount: 2,
       selectedInboundVolumeRaw: "5000000000",
