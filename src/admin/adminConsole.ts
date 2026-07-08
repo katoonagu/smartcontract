@@ -285,6 +285,19 @@ export function adminConsoleHtml(): string {
     .wallet-intel-list { display: grid; gap: 6px; }
     .wallet-intel-item { display: grid; gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
     .wallet-intel-tx { display: grid; gap: 3px; }
+    .wallet-intel-ego-graph {
+      min-height: 180px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+    .wallet-intel-ego-graph svg { display: block; width: 100%; height: auto; }
+    .wallet-intel-ego-edge { stroke: var(--semantic-context); stroke-width: 2; stroke-linecap: round; opacity: .9; }
+    .wallet-intel-ego-edge-label { fill: var(--text-secondary); font-size: 10px; paint-order: stroke; stroke: var(--panel-2); stroke-width: 3px; }
+    .wallet-intel-ego-node circle { fill: var(--surface-panel); stroke: var(--accent); stroke-width: 1.5; }
+    .wallet-intel-ego-node.selected circle { fill: rgba(127, 169, 221, .16); stroke: var(--accent); }
+    .wallet-intel-ego-node text { fill: var(--text-primary); font-size: 10px; text-anchor: middle; }
     .graph-workspace {
       --left-rail-width: 330px;
       --right-rail-width: 380px;
@@ -1974,6 +1987,75 @@ export function adminConsoleHtml(): string {
         setWalletIntelligenceStatus("Wallet intelligence detail failed.");
       }
     }
+    function walletIntelGraphNodeLabel(value) {
+      return short(walletIntelText(value, "unknown"), 6);
+    }
+    function walletIntelGraphEdgeColor(edge) {
+      const direction = String(edge?.moneyDirection || edge?.direction || edge?.edgeRole || "").toLowerCase();
+      if (direction.includes("incoming") || direction === "in") return "var(--semantic-money-in)";
+      if (direction.includes("outgoing") || direction === "out") return "var(--semantic-money-out)";
+      if (String(edge?.sourceKind || "").toLowerCase().includes("service")) return "var(--semantic-service)";
+      return "var(--semantic-context)";
+    }
+    function renderWalletIntelFocusedGraph(detail, address) {
+      const edges = asArray(detail?.edges).filter((edge) => edge?.fromAddress && edge?.toAddress).slice(0, 12);
+      if (edges.length === 0) return '<div class="empty">No stored edges for focused graph.</div>';
+
+      const centerAddress = walletIntelText(address, "selected");
+      const centerKey = String(centerAddress).toLowerCase();
+      const nodes = [{ key: centerKey, value: centerAddress, selected: true }];
+      const seen = new Set([centerKey]);
+      edges.forEach((edge) => {
+        [edge.fromAddress, edge.toAddress].forEach((value) => {
+          const text = walletIntelText(value, "");
+          const key = String(text).toLowerCase();
+          if (!text || seen.has(key) || nodes.length >= 9) return;
+          seen.add(key);
+          nodes.push({ key, value: text, selected: false });
+        });
+      });
+
+      const width = 360;
+      const height = 190;
+      const center = { x: width / 2, y: height / 2 };
+      const positions = new Map();
+      const peerCount = Math.max(nodes.length - 1, 1);
+      nodes.forEach((node, index) => {
+        if (index === 0) {
+          positions.set(node.key, center);
+          return;
+        }
+        const angle = -Math.PI / 2 + (2 * Math.PI * (index - 1)) / peerCount;
+        positions.set(node.key, {
+          x: Math.round(center.x + Math.cos(angle) * 125),
+          y: Math.round(center.y + Math.sin(angle) * 62)
+        });
+      });
+
+      const edgeHtml = edges.map((edge) => {
+        const fromKey = String(walletIntelText(edge.fromAddress, "")).toLowerCase();
+        const toKey = String(walletIntelText(edge.toAddress, "")).toLowerCase();
+        const from = positions.get(fromKey);
+        const to = positions.get(toKey);
+        if (!from || !to || fromKey === toKey) return "";
+        const label = walletIntelAmount(edge.amountRaw);
+        const labelX = Math.round((from.x + to.x) / 2);
+        const labelY = Math.round((from.y + to.y) / 2) - 7;
+        return '<line class="wallet-intel-ego-edge" x1="' + from.x + '" y1="' + from.y + '" x2="' + to.x + '" y2="' + to.y + '" style="stroke: ' + walletIntelGraphEdgeColor(edge) + '"></line>' +
+          '<text class="wallet-intel-ego-edge-label" x="' + labelX + '" y="' + labelY + '" text-anchor="middle">' + escapeHtml(label) + '</text>';
+      }).join("");
+      const nodeHtml = nodes.map((node) => {
+        const point = positions.get(node.key);
+        return '<g class="wallet-intel-ego-node' + (node.selected ? " selected" : "") + '" transform="translate(' + point.x + " " + point.y + ')">' +
+          '<title>' + escapeHtml(node.value) + '</title>' +
+          '<circle r="18"></circle>' +
+          '<text y="4">' + escapeHtml(walletIntelGraphNodeLabel(node.value)) + '</text>' +
+          '</g>';
+      }).join("");
+      return '<div class="wallet-intel-ego-graph"><svg viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Focused Wallet Intelligence graph">' +
+        edgeHtml + nodeHtml +
+        '</svg></div>';
+    }
     function renderWalletIntelligenceDrawer() {
       const root = el("walletIntelDrawer");
       const address = state.walletIntel.activeAddress;
@@ -2011,6 +2093,9 @@ export function adminConsoleHtml(): string {
         walletIntelLine("Services", tagPills(summary.serviceCategories, "No service categories")) +
         walletIntelLine("Labels", tagPills(summary.labelHints, "No labels")) +
         '</div></section>';
+      const focusedGraphHtml = '<section class="wallet-intel-section"><h3>Focused graph</h3>' +
+        renderWalletIntelFocusedGraph(detail, summary.address || address) +
+        '</section>';
       const requesterHtml = '<section class="wallet-intel-section"><h3>Requesters</h3><div class="wallet-intel-list">' +
         (requesters.length ? requesters.map((requester) => '<div class="wallet-intel-item">' +
           walletIntelLine("requestedBy", escapeHtml(walletIntelText(requester.requestedBy))) +
@@ -2064,7 +2149,7 @@ export function adminConsoleHtml(): string {
             '</div>';
         }).join("") : '<div class="empty">No edges stored.</div>') +
         '</div></section>';
-      root.innerHTML = summaryHtml + requesterHtml + jobsHtml + sightingsHtml + edgesHtml;
+      root.innerHTML = summaryHtml + focusedGraphHtml + requesterHtml + jobsHtml + sightingsHtml + edgesHtml;
     }
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;

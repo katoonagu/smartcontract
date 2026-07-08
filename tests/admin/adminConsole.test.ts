@@ -45,6 +45,37 @@ function adminWalletIntelHelpers() {
   };
 }
 
+function adminWalletIntelGraphHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function walletIntelGraphNodeLabel(value)");
+  const end = html.indexOf("function renderWalletIntelligenceDrawer()", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const walletIntelAmount = (rawValue: unknown) => {
+    if (rawValue === null || rawValue === undefined || rawValue === "") return "n/a";
+    const amount = Number(rawValue) / 1000000;
+    if (!Number.isFinite(amount) || amount <= 0) return String(rawValue);
+    return String(amount).replace(/\.?0+$/, "") + " USDT";
+  };
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return new Function("escapeHtml", "asArray", "short", "walletIntelAmount", "walletIntelText", helperBlock + "\nreturn { renderWalletIntelFocusedGraph };")(
+    escapeHtml,
+    (value: unknown) => Array.isArray(value) ? value : [],
+    (value: unknown, size = 6) => {
+      const text = String(value ?? "");
+      return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text;
+    },
+    walletIntelAmount,
+    (value: unknown, fallback = "n/a") => value === null || value === undefined || value === "" ? fallback : String(value),
+  ) as {
+    renderWalletIntelFocusedGraph(detail: Record<string, unknown>, address: string): string;
+  };
+}
+
 function adminTargetedIndexHelpers() {
   const html = adminConsoleHtml();
   const start = html.indexOf("function targetedIndexLines(summary)");
@@ -206,6 +237,26 @@ describe("adminConsoleHtml", () => {
     expect(drawerBlock).toContain('walletIntelLine("Source job"');
     expect(drawerBlock).toContain('walletIntelLine("Subject"');
     expect(drawerBlock).toContain('walletIntelLine("Depth/path"');
+  });
+
+  it("renders a focused Wallet Intelligence graph from stored edges", () => {
+    const helpers = adminWalletIntelGraphHelpers();
+
+    const html = helpers.renderWalletIntelFocusedGraph({
+      edges: [{
+        fromAddress: "TSelected",
+        toAddress: "TPeer",
+        amountRaw: "2500000",
+        edgeRole: "transfer",
+        sourceKind: "wallet_intelligence"
+      }]
+    }, "TSelected");
+
+    expect(html).toContain("<svg");
+    expect(html).toContain("wallet-intel-ego-graph");
+    expect(html).toContain("TSelected");
+    expect(html).toContain("TPeer");
+    expect(html).toContain("2.5 USDT");
   });
 
   it("renders the graph-first investigation shell", () => {
