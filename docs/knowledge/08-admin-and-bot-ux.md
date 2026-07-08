@@ -82,7 +82,12 @@ N/E/P/W codes, and long operational diagnostics such as projection gaps,
 targeted history, and funding-candidate visibility are collapsed by default.
 The case summary starts with the analyst meaning of the active check, then shows
 risk, coverage, evidence strength, and the largest incoming/outgoing
-counterparties with TronScan links.
+counterparties with TronScan links. Largest incoming/outgoing rows are
+selectable graph-transfer rows: clicking the row selects the corresponding edge
+on the canvas, while clicking the nested transaction link opens that transfer in
+TronScan. Top services are shown as service-related transaction rows with
+service/wallet context, amount, transaction count, and the same row-to-edge
+selection behavior.
 
 The Admin graph canvas is a full-workspace background layer behind the Jobs,
 Analytics, controls, and timeline overlays. Side rails anchor from the top of
@@ -92,6 +97,10 @@ or unlabeled context lines can still be selected without adding duplicate amount
 labels. The activity timeline is a focus control: selecting a time bucket
 highlights matching transfer edges and dims surrounding context on the canvas,
 while the transfer drawer can still list only rows from the selected bucket.
+Timeline focus copy uses human-readable local date/time ranges, shows the
+active flow filter, and includes an axis/legend so analysts can tell that each
+bar is a time bucket and that bar height represents visible transfer volume or
+transfer count when amounts are missing.
 
 The Jobs rail is an analyst queue, not a raw database dump. It uses queue
 shortcuts for all jobs, running jobs, and jobs that need review; job cards show
@@ -100,6 +109,11 @@ requester, human-readable started/updated times, a short progress or failure
 reason, and only a shortened job id. The strict provenance benchmark launcher is
 not shown in Jobs; strict benchmark diagnostics remain visible inside Analytics
 when a job already contains them.
+Job card risk uses the score saved for that specific mode first: FastCheck uses
+`fastRiskReport`, DeepCheck uses explicit deep result/assessment or saved deep
+profile context, Where is Money uses `whereIsMoneyReport`, and Incoming Deposit
+uses `depositRiskScore`. A previous FastCheck snapshot is not used as the risk
+for DeepCheck, Where, or Incoming cards.
 
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in

@@ -353,6 +353,69 @@ function firstNumberField(records: Record<string, unknown>[], keys: string[]): n
   return undefined;
 }
 
+function riskLevelFromScore(score: number): string {
+  if (score >= 85) return "CRITICAL";
+  if (score >= 60) return "HIGH";
+  if (score >= 30) return "MEDIUM";
+  return "LOW";
+}
+
+function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function collectNumberFields(record: Record<string, unknown>, keys: string[], scores: number[]): void {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) scores.push(value);
+  }
+}
+
+function deepProfileContextRiskRecord(result: Record<string, unknown>): Record<string, unknown> {
+  const scores: number[] = [];
+  const collectArray = (key: string, scoreKeys: string[]): void => {
+    recordArrayField(result, key).forEach((record) => {
+      collectNumberFields(record, scoreKeys, scores);
+      recordArrayField(record, "paths").forEach((path) => {
+        collectNumberFields(path, ["score", "candidateScore", "riskScore", "riskScoreContribution", "scoreContribution"], scores);
+      });
+    });
+  };
+
+  collectArray("approvalDrainProvenanceProfiles", ["score"]);
+  collectArray("extendedProvenanceProfiles", ["score"]);
+  collectArray("inboundProvenanceProfiles", ["score"]);
+  collectArray("counterpartyRiskProfiles", ["score"]);
+  collectArray("directCounterpartyInteractionProfiles", ["scoreContribution"]);
+  collectArray("operationalFlowProfiles", ["operationalScore"]);
+  collectArray("serviceExposureProfiles", ["exposureScore", "score"]);
+  collectArray("boundaryExposureProfiles", ["contextScore", "score"]);
+  collectArray("addressBehaviorProfiles", ["riskScore", "score", "behaviorScore", "operationalScore"]);
+
+  return scores.length > 0 ? { riskScore: Math.max(...scores) } : {};
+}
+
+function jobRiskRecords(job: ForensicCheckJob, result: Record<string, unknown>): Record<string, unknown>[] {
+  const assessment = nestedRecord(result, "assessment");
+  const riskClarity = nestedRecord(result, "riskClarity");
+  const policy = nestedRecord(result, "policy");
+  const fastRiskReport = nestedRecord(result, "fastRiskReport");
+  const fastRiskSnapshot = recordProgressField(job, "fastRiskSnapshot") ?? {};
+
+  if (job.kind === "address_fast_check") {
+    return [fastRiskReport, result, assessment, riskClarity, policy, fastRiskSnapshot];
+  }
+  if (job.kind === "where_is_money_check") {
+    const whereReport = nestedRecord(result, "whereIsMoneyReport");
+    return [whereReport, nestedRecord(whereReport, "assessment"), result, assessment, riskClarity, policy];
+  }
+  if (job.kind === "incoming_deposit_check") {
+    return [result, nestedRecord(result, "assessment"), riskClarity, policy];
+  }
+  return [result, assessment, riskClarity, policy, deepProfileContextRiskRecord(result)];
+}
+
 function safeDecodeUriComponent(value: string, message = "Invalid forensic job id."): ParseResult<string> {
   try {
     return { ok: true, value: decodeURIComponent(value) };
@@ -377,12 +440,8 @@ function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action
 
 function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
   const result = jobResultRecord(job);
-  const assessment = nestedRecord(result, "assessment");
-  const riskClarity = nestedRecord(result, "riskClarity");
-  const policy = nestedRecord(result, "policy");
-  const fastRiskReport = nestedRecord(result, "fastRiskReport");
-  const fastRiskSnapshot = recordProgressField(job, "fastRiskSnapshot") ?? {};
-  const resultRecords = [result, assessment, riskClarity, policy, fastRiskReport, fastRiskSnapshot];
+  const resultRecords = jobRiskRecords(job, result);
+  const riskScore = firstNumberField(resultRecords, ["riskScore", "score", "finalRiskScore", "depositRiskScore"]);
   return {
     id: job.id,
     kind: job.kind,
@@ -400,8 +459,8 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
     watchedWallet: stringProgressField(job, "watchedWallet"),
     sender: stringProgressField(job, "sender"),
     decision: firstStringField(resultRecords, ["decision", "verdict", "finalDecision", "decisionStatus"]),
-    riskScore: firstNumberField(resultRecords, ["riskScore", "score", "finalRiskScore"]),
-    riskLevel: firstStringField(resultRecords, ["riskLevel", "riskBand", "level"]),
+    riskScore,
+    riskLevel: riskScore === undefined ? firstStringField(resultRecords, ["riskLevel", "riskBand", "level"]) : riskLevelFromScore(riskScore),
     coverageStatus: firstStringField(resultRecords, ["coverageStatus", "technicalStatus", "status"]),
     jobPhase: stringProgressField(job, "jobPhase"),
     targetedIndex: recordProgressField(job, "targetedIndex"),

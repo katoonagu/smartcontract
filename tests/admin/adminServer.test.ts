@@ -428,7 +428,8 @@ describe("startAdminServer", () => {
         startedAt: "2026-06-01T00:00:01.000Z",
         completedAt: "2026-06-01T01:00:00.000Z",
         decision: "ACCEPTABLE",
-        riskScore: 20
+        riskScore: 20,
+        riskLevel: "LOW"
       }]
     });
     expect(receivedInput).toEqual({
@@ -476,6 +477,78 @@ describe("startAdminServer", () => {
         riskLevel: "HIGH"
       }]
     });
+  });
+
+  it("summarizes mode-specific risk before fast-check fallback for Jobs queue cards", async () => {
+    const fast = job({
+      id: "job-fast",
+      kind: "address_fast_check",
+      status: "partial",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        fastRiskReport: {
+          score: 60,
+          level: "HIGH"
+        }
+      },
+      progressJson: {
+        fastRiskSnapshot: {
+          score: 60,
+          level: "HIGH"
+        }
+      }
+    });
+    const deep = job({
+      id: "job-deep",
+      kind: "address_deep_check",
+      status: "completed",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        operationalFlowProfiles: [{
+          operationalScore: 55
+        }]
+      },
+      progressJson: {
+        fastRiskSnapshot: {
+          score: 60,
+          level: "HIGH"
+        }
+      }
+    });
+    const where = job({
+      id: "job-where",
+      kind: "where_is_money_check",
+      status: "completed",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: {
+          decision: "DECLINE",
+          riskScore: 78,
+          technicalStatus: "completed"
+        }
+      },
+      progressJson: {
+        fastRiskSnapshot: {
+          score: 60,
+          level: "HIGH"
+        }
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fast, deep, where]
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?limit=3`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { jobs: Array<{ id: string; riskScore?: number; riskLevel?: string; decision?: string }> };
+    const summaries = new Map(body.jobs.map((item) => [item.id, item]));
+    expect(summaries.get("job-fast")).toMatchObject({ riskScore: 60, riskLevel: "HIGH" });
+    expect(summaries.get("job-deep")).toMatchObject({ riskScore: 55, riskLevel: "MEDIUM" });
+    expect(summaries.get("job-where")).toMatchObject({ riskScore: 78, riskLevel: "HIGH", decision: "DECLINE" });
   });
 
   it("creates strict provenance benchmark jobs for authorized admins", async () => {

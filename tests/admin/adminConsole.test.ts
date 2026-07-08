@@ -685,7 +685,10 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function caseBriefIntroText");
     expect(html).toContain("function htmlListMetric");
+    expect(html).toContain("function attachCaseBriefEdgeHandlers");
+    expect(html).toContain("function caseBriefTxLabelHtml");
     expect(html).toContain("function formatBriefEdgeHtml");
+    expect(html).toContain("function formatBriefServiceEdgeHtml");
     expect(html).toContain("function caseBriefTopIncoming");
     expect(html).toContain("function caseBriefTopOutgoing");
     expect(html).toContain("function caseBriefTopServices");
@@ -696,6 +699,27 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("DeepCheck profile");
     expect(html).toContain("Fast triage view. It shows direct counterparties");
     expect(html).toContain("explorerLink(tronscanAddressUrl(address), short(address, 7))");
+  });
+
+  it("makes case brief transfer and service rows selectable with transaction links", () => {
+    const html = adminConsoleHtml();
+    const renderCaseBriefBlock = html.slice(html.indexOf("function renderCaseBrief"), html.indexOf("function auditValue"));
+    const edgeRowBlock = html.slice(html.indexOf("function caseBriefTxLabelHtml"), html.indexOf("function caseBriefTopIncoming"));
+    const serviceBlock = html.slice(html.indexOf("function serviceEdgesForCaseBrief"), html.indexOf("function caseBriefStopCount"));
+    const handlerBlock = html.slice(html.indexOf("function attachCaseBriefEdgeHandlers"), html.indexOf("function auditValue"));
+
+    expect(renderCaseBriefBlock).toContain('htmlListMetric("Top services", caseBriefTopServices(), "No service transaction edges.")');
+    expect(renderCaseBriefBlock).toContain("attachCaseBriefEdgeHandlers(root);");
+    expect(edgeRowBlock).toContain('data-case-brief-edge-id="');
+    expect(edgeRowBlock).toContain('role="button"');
+    expect(edgeRowBlock).toContain('tabindex="0"');
+    expect(edgeRowBlock).toContain("caseBriefTxLabelHtml(edge)");
+    expect(edgeRowBlock).toContain("explorerLink(tronscanTxUrl(txHash)");
+    expect(serviceBlock).toContain("filteredTransferEdges()");
+    expect(serviceBlock).toContain("formatBriefServiceEdgeHtml(item.node, item.edge)");
+    expect(serviceBlock).toContain("caseBriefEdgeTxCountLabel(edge)");
+    expect(handlerBlock).toContain('event.target instanceof Element && event.target.closest("a")');
+    expect(handlerBlock).toContain('selectEdge(row.getAttribute("data-case-brief-edge-id"))');
   });
 
   it("contains semantic edge and node visual helpers", () => {
@@ -833,6 +857,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Context stays visible.");
     expect(html).toContain("timeline-bar");
     expect(html).toContain("data-timeline-index");
+  });
+
+  it("uses readable activity timeline labels instead of raw ISO ranges", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function timelineRangeLabel");
+    expect(html).toContain("function timelineBucketTitle");
+    expect(html).toContain("timeline-axis");
+    expect(html).toContain("timeline-legend");
+    expect(html).toContain("Each bar is a time bucket");
+    expect(html).not.toContain('new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString()');
   });
 
   it("contains graph-first selected node and flow cards", () => {
@@ -1072,7 +1107,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('metricHtml("To", endpointDetailLink(edge, "to"), "wide")');
     expect(html).toContain('metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide")');
     expect(html).toContain('metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide")');
-    expect(html).toContain('return \'<div class="counterparty-row"><strong>\' + escapeHtml(amount)');
+    expect(html).toContain('return \'<div role="button" tabindex="0" class="counterparty-row counterparty-edge-row');
+    expect(html).toContain('data-case-brief-edge-id="');
     expect(html).toContain("explorerLink(tronscanAddressUrl(address), short(address, 7))");
     expect(html).toContain("function edgeEvidenceEndpoint");
     expect(html).toContain('transfer?.fromAddress || transfer?.sourceAddress');

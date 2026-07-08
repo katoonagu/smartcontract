@@ -751,7 +751,7 @@ export function adminConsoleHtml(): string {
       padding: 12px 14px;
     }
     .timeline-region {
-      min-height: 124px;
+      min-height: 150px;
     }
     .timeline-head {
       display: flex;
@@ -762,18 +762,50 @@ export function adminConsoleHtml(): string {
     }
     .activity-timeline {
       position: relative;
-      height: 76px;
+      min-height: 102px;
+      display: grid;
+      grid-template-rows: minmax(64px, 1fr) auto auto;
+      gap: 5px;
+      overflow: hidden;
+      padding: 10px 0 2px;
+      border-top: 1px solid rgba(58, 67, 77, .58);
+    }
+    .timeline-bars {
+      min-height: 64px;
       display: flex;
       align-items: end;
       gap: 3px;
-      overflow: hidden;
-      padding: 16px 0 3px;
-      border-top: 1px solid rgba(58, 67, 77, .58);
       background:
         linear-gradient(180deg, rgba(255, 255, 255, .045) 1px, transparent 1px) 0 16px / 100% 18px,
         linear-gradient(90deg, transparent, rgba(122, 162, 247, .08), transparent);
     }
-    .activity-timeline .timeline-bar {
+    .timeline-axis, .timeline-legend {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--text-tertiary);
+      font-size: 11px;
+      line-height: 1.25;
+      min-width: 0;
+    }
+    .timeline-axis span, .timeline-legend span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .timeline-axis strong { color: var(--text-secondary); font-weight: 600; }
+    .timeline-legend { color: var(--text-secondary); justify-content: flex-start; }
+    .timeline-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 6px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, rgba(139, 213, 166, .9), rgba(91, 199, 216, .8));
+    }
+    .timeline-bars .timeline-bar {
       flex: 1 1 8px;
       min-width: 5px;
       height: var(--bucket-height, 6px);
@@ -785,15 +817,15 @@ export function adminConsoleHtml(): string {
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
       opacity: .74;
     }
-    .activity-timeline .timeline-bar.empty {
+    .timeline-bars .timeline-bar.empty {
       border-color: rgba(111, 125, 137, .18);
       background: rgba(111, 125, 137, .18);
       opacity: .42;
     }
-    .activity-timeline .timeline-bar.low { background: linear-gradient(180deg, rgba(106, 177, 206, .52), rgba(66, 129, 158, .5)); }
-    .activity-timeline .timeline-bar.medium { background: linear-gradient(180deg, rgba(122, 162, 247, .72), rgba(91, 199, 216, .62)); opacity: .9; }
-    .activity-timeline .timeline-bar.hot { background: linear-gradient(180deg, rgba(139, 213, 166, .9), rgba(91, 199, 216, .8)); opacity: 1; }
-    .activity-timeline .timeline-bar.active {
+    .timeline-bars .timeline-bar.low { background: linear-gradient(180deg, rgba(106, 177, 206, .52), rgba(66, 129, 158, .5)); }
+    .timeline-bars .timeline-bar.medium { background: linear-gradient(180deg, rgba(122, 162, 247, .72), rgba(91, 199, 216, .62)); opacity: .9; }
+    .timeline-bars .timeline-bar.hot { background: linear-gradient(180deg, rgba(139, 213, 166, .9), rgba(91, 199, 216, .8)); opacity: 1; }
+    .timeline-bars .timeline-bar.active {
       outline: 2px solid rgba(237, 241, 244, .92);
       outline-offset: 1px;
       border-color: rgba(237, 241, 244, .78);
@@ -1014,7 +1046,12 @@ export function adminConsoleHtml(): string {
       gap: 8px;
       align-items: baseline;
       font-size: 12px;
+      padding: 3px 4px;
+      border-radius: 6px;
     }
+    .counterparty-row[role="button"] { cursor: pointer; }
+    .counterparty-row[role="button"]:hover, .counterparty-row[role="button"]:focus-visible { background: rgba(122, 162, 247, .08); outline: 1px solid rgba(122, 162, 247, .32); }
+    .counterparty-row.selected { background: rgba(139, 213, 166, .08); outline: 1px solid rgba(139, 213, 166, .32); }
     .counterparty-row strong { color: var(--text); font-size: 12px; white-space: nowrap; }
     .counterparty-row span { min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
     .counterparty-row .link { font-weight: 650; }
@@ -2089,13 +2126,29 @@ export function adminConsoleHtml(): string {
         caseBriefClarityHtml(graphRiskClarity(graph)) +
         htmlListMetric("Largest incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
         htmlListMetric("Largest outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
-        listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
+        htmlListMetric("Top services", caseBriefTopServices(), "No service transaction edges.") +
         metric("Boundary stops", String(caseBriefStopCount())) +
         detailsMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         strictProvenanceLines(summary) +
         targetedIndexLines(summary) +
         whereFundingCandidateLines(summary) +
         '</div>';
+      attachCaseBriefEdgeHandlers(root);
+    }
+    function attachCaseBriefEdgeHandlers(root) {
+      root.querySelectorAll("[data-case-brief-edge-id]").forEach((row) => {
+        row.addEventListener("click", (event) => {
+          if (event.target instanceof Element && event.target.closest("a")) return;
+          selectEdge(row.getAttribute("data-case-brief-edge-id"));
+        });
+        row.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            if (event.target instanceof Element && event.target.closest("a")) return;
+            event.preventDefault();
+            selectEdge(row.getAttribute("data-case-brief-edge-id"));
+          }
+        });
+      });
     }
     function auditValue(source, keys) {
       const object = source && typeof source === "object" ? source : {};
@@ -2177,18 +2230,30 @@ export function adminConsoleHtml(): string {
       const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw || edge?.metadata?.amountRaw);
       return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
     }
+    function caseBriefEdgeTxCountLabel(edge) {
+      const count = edgeAggregateTransferCount(edge) || edgeTxHashes(edge).length || (edgePrimaryTxHash(edge) ? 1 : 0);
+      return count > 0 ? count + " tx" : "";
+    }
+    function caseBriefTxLabelHtml(edge) {
+      const hashes = edgeTxHashes(edge);
+      const txHash = edgePrimaryTxHash(edge) || hashes[0] || "";
+      const count = caseBriefEdgeTxCountLabel(edge);
+      if (!txHash) return count ? escapeHtml(count) : "";
+      const prefix = count && count !== "1 tx" ? count + " - tx " : "tx ";
+      return escapeHtml(prefix) + explorerLink(tronscanTxUrl(txHash), short(txHash, 5));
+    }
     function formatBriefEdgeHtml(edge) {
       const amount = edgeCanvasAmountLabel(edge) || edgeDetailedAmountLabel(edge) || "amount n/a";
       const address = edgeFlowDirection(edge) === "incoming" ? edgeFromAddress(edge) : edgeToAddress(edge);
       const direction = edgeFlowDirection(edge) === "incoming" ? "from " : "to ";
       const linkedAddress = address ? explorerLink(tronscanAddressUrl(address), short(address, 7)) : '<span class="muted">address n/a</span>';
       const time = edgeTime(edge) || canvasTimestampLabel(edge?.timestamp || edge?.timestampIso || edge?.time);
-      const txHash = edgePrimaryTxHash(edge);
-      const tx = txHash ? "tx " + short(txHash, 5) : "";
-      const detail = [time, tx].filter(Boolean).join(" · ");
-      return '<div class="counterparty-row"><strong>' + escapeHtml(amount) + '</strong><span>' +
+      const tx = caseBriefTxLabelHtml(edge);
+      const detail = [time ? escapeHtml(time) : "", tx].filter(Boolean).join(" - ");
+      const selected = state.selected?.type === "edge" && state.selected.id === edge?.id ? " selected" : "";
+      return '<div role="button" tabindex="0" class="counterparty-row counterparty-edge-row' + selected + '" data-case-brief-edge-id="' + escapeHtml(edge?.id || "") + '" title="Select this graph transfer"><strong>' + escapeHtml(amount) + '</strong><span>' +
         escapeHtml(direction) + linkedAddress +
-        (detail ? '<small>' + escapeHtml(detail) + '</small>' : "") +
+        (detail ? '<small>' + detail + '</small>' : "") +
         '</span></div>';
     }
     function caseBriefTopIncoming() {
@@ -2205,11 +2270,44 @@ export function adminConsoleHtml(): string {
         .slice(0, 5)
         .map(formatBriefEdgeHtml);
     }
+    function serviceEdgesForCaseBrief(node) {
+      return filteredTransferEdges()
+        .filter((edge) => edge?.fromNodeId === node?.id || edge?.toNodeId === node?.id)
+        .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a));
+    }
+    function formatBriefServiceEdgeHtml(node, edge) {
+      const amount = edgeAggregateAmountLabel(edge) || edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount n/a";
+      const serviceAddress = nodeAddress(node);
+      const serviceLabel = canvasNodeLabel(node) || short(serviceAddress || node?.id || "service", 7);
+      const service = serviceAddress
+        ? explorerLink(tronscanAddressUrl(serviceAddress), serviceLabel + " - " + short(serviceAddress, 6))
+        : escapeHtml(serviceLabel);
+      const counterpartyNodeId = edge?.fromNodeId === node?.id ? edge?.toNodeId : edge?.fromNodeId;
+      const counterpartyAddress = nodeAddress(nodeById(counterpartyNodeId)) || graphAddressFromNodeId(counterpartyNodeId) || counterpartyNodeId || "";
+      const direction = edge?.fromNodeId === node?.id ? "to " : "from ";
+      const counterparty = counterpartyAddress
+        ? explorerLink(tronscanAddressUrl(counterpartyAddress), short(counterpartyAddress, 7))
+        : '<span class="muted">counterparty n/a</span>';
+      const txCount = caseBriefEdgeTxCountLabel(edge) || "tx n/a";
+      const tx = caseBriefTxLabelHtml(edge);
+      const time = edgeTime(edge) || canvasTimestampLabel(edge?.timestamp || edge?.timestampIso || edge?.time);
+      const detail = [txCount, time ? escapeHtml(time) : "", tx].filter(Boolean).join(" - ");
+      const selected = state.selected?.type === "edge" && state.selected.id === edge?.id ? " selected" : "";
+      return '<div role="button" tabindex="0" class="counterparty-row counterparty-edge-row' + selected + '" data-case-brief-edge-id="' + escapeHtml(edge?.id || "") + '" title="Select this service transaction"><strong>' + escapeHtml(amount) + '</strong><span>' +
+        service + '<small>' + escapeHtml(direction) + counterparty + (detail ? ' - ' + detail : "") + '</small>' +
+        '</span></div>';
+    }
     function caseBriefTopServices() {
-      return graphNodes(state.graph)
-        .filter(nodeIsServiceLike)
+      const rows = new Map();
+      graphNodes(state.graph).filter(nodeIsServiceLike).forEach((node) => {
+        serviceEdgesForCaseBrief(node).forEach((edge) => {
+          if (!rows.has(edge.id)) rows.set(edge.id, { node, edge });
+        });
+      });
+      return Array.from(rows.values())
+        .sort((a, b) => briefEdgeAmountValue(b.edge) - briefEdgeAmountValue(a.edge))
         .slice(0, 8)
-        .map((node) => canvasNodeLabel(node) + " - " + short(nodeAddress(node) || node.id, 6));
+        .map((item) => formatBriefServiceEdgeHtml(item.node, item.edge));
     }
     function caseBriefStopCount() {
       return graphPaths(state.graph).filter((path) => path.stopReason).length;
@@ -2279,6 +2377,31 @@ export function adminConsoleHtml(): string {
       });
       return buckets;
     }
+    function timelineDateLabel(timestamp) {
+      return formatJobTime(new Date(timestamp).toISOString()) || new Date(timestamp).toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+    function timelineRangeLabel(start, end) {
+      const startLabel = timelineDateLabel(start);
+      const endLabel = timelineDateLabel(end);
+      return startLabel === endLabel ? startLabel : startLabel + " - " + endLabel;
+    }
+    function timelineBucketDurationLabel(start, end) {
+      const minutes = Math.max(1, Math.round((end - start) / 60000));
+      if (minutes < 60) return minutes + "m bucket";
+      const hours = Math.round(minutes / 60);
+      if (hours < 48) return hours + "h bucket";
+      return Math.round(hours / 24) + "d bucket";
+    }
+    function timelineBucketTitle(bucket) {
+      const amount = bucket.amount > 0 ? " / " + (formatRawUsdt(String(Math.round(bucket.amount))) || String(Math.round(bucket.amount))) : "";
+      return timelineRangeLabel(bucket.start, bucket.end) + " / " + bucket.count + " transfer" + (bucket.count === 1 ? "" : "s") + amount;
+    }
+    function flowModeLabel(mode) {
+      if (mode === "incoming") return "Incoming only";
+      if (mode === "outgoing") return "Outgoing only";
+      if (mode === "self") return "Self transfers";
+      return "All visible transfers";
+    }
     function selectedTimelineBucket() {
       if (!state.timelineRange) return null;
       return state.timelineRange;
@@ -2323,23 +2446,34 @@ export function adminConsoleHtml(): string {
         return;
       }
       const maxValue = Math.max(1, ...buckets.map((bucket) => bucket.amount || bucket.count));
-      root.innerHTML = buckets.map((bucket) => {
+      const bars = buckets.map((bucket) => {
         const value = bucket.amount || bucket.count;
         const normalized = bucket.count === 0 ? 0 : Math.sqrt(value / maxValue);
         const height = bucket.count === 0 ? 6 : Math.max(14, Math.round(12 + normalized * 56));
         const active = state.timelineRange?.index === bucket.index ? " active" : "";
         const volume = bucket.count === 0 ? " empty" : value >= maxValue * .78 ? " hot" : value >= maxValue * .32 ? " medium" : " low";
-        const title = new Date(bucket.start).toISOString() + " / " + bucket.count + " transfer" + (bucket.count === 1 ? "" : "s");
+        const title = timelineBucketTitle(bucket);
         return '<button type="button" class="timeline-bar' + volume + active + '" data-timeline-index="' + bucket.index + '" style="--bucket-height:' + height + 'px" title="' + escapeHtml(title) + '" aria-label="' + escapeHtml(title) + '"></button>';
       }).join("");
+      const firstBucket = buckets[0];
+      const lastBucket = buckets[buckets.length - 1];
+      const bucketLabel = timelineBucketDurationLabel(firstBucket.start, firstBucket.end);
+      root.innerHTML =
+        '<div class="timeline-bars">' + bars + '</div>' +
+        '<div class="timeline-axis" aria-label="Timeline axis">' +
+          '<span>Oldest <strong>' + escapeHtml(timelineDateLabel(firstBucket.start)) + '</strong></span>' +
+          '<span>Step <strong>' + escapeHtml(bucketLabel) + '</strong></span>' +
+          '<span>Newest <strong>' + escapeHtml(timelineDateLabel(lastBucket.end)) + '</strong></span>' +
+        '</div>' +
+        '<div class="timeline-legend"><span>Each bar is a time bucket; height shows visible transfer amount, or transfer count when amount is missing.</span></div>';
       root.querySelectorAll("[data-timeline-index]").forEach((button) => {
         button.addEventListener("click", () => selectTimelineBucket(Number(button.getAttribute("data-timeline-index"))));
       });
       if (state.timelineRange) {
-        hint.textContent = "Timeline focus: " + new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString() + ". Context stays visible.";
+        hint.textContent = "Timeline focus: " + timelineRangeLabel(state.timelineRange.start, state.timelineRange.end) + ". Flow filter: " + flowModeLabel(state.flowMode) + ". Context stays visible.";
       } else {
         const count = timelineSourceTransferEdges().length;
-        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to focus graph flow.";
+        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available. Flow filter: " + flowModeLabel(state.flowMode) + ". Click a time bucket to focus graph flow.";
       }
     }
     function jobQueueModeLabel(mode) {
