@@ -43,6 +43,8 @@ import {
   getAddressMetadata,
   getContractIntelligenceProfile,
   getForensicCheckJob,
+  getLatestDeepForensicCheckJobForAddressAnyStatus,
+  getLatestWhereIsMoneyCheckJobForAddress,
   getTelegramUserLocale,
   listCustomerAlertRecipients,
   listAddressLabels,
@@ -209,7 +211,31 @@ type CreateBotOptions = {
   queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   saveAddressFastCheckJob?: (input: AddressFastCheckJobInput) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
+  getLatestWhereIsMoneyCheckJobForAddress?: (input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }) => Promise<ForensicCheckJob | null>;
+  getLatestDeepForensicCheckJobForAddressAnyStatus?: (input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }) => Promise<ForensicCheckJob | null>;
 };
+
+function relatedJobLookupInput(job: ForensicCheckJob) {
+  return {
+    subjectAddress: job.subjectAddress,
+    chatId: job.chatId,
+    requestedBy: job.requestedBy,
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd
+  };
+}
 
 function telegramId(ctx: { from?: { id: number } }): string {
   if (!ctx.from?.id) throw new Error("Telegram user id is missing");
@@ -4237,6 +4263,12 @@ export function createBot(
   );
   const checkSmartContractAddress = options.checkSmartContractAddress;
   const resolveForensicCheckJob = options.getForensicCheckJob ?? ((id: string) => getForensicCheckJob(db, id));
+  const resolveLatestWhereIsMoneyCheckJobForAddress = options.getLatestWhereIsMoneyCheckJobForAddress
+    ?? ((input: Parameters<NonNullable<CreateBotOptions["getLatestWhereIsMoneyCheckJobForAddress"]>>[0]) =>
+      getLatestWhereIsMoneyCheckJobForAddress(db, input));
+  const resolveLatestDeepForensicCheckJobForAddressAnyStatus = options.getLatestDeepForensicCheckJobForAddressAnyStatus
+    ?? ((input: Parameters<NonNullable<CreateBotOptions["getLatestDeepForensicCheckJobForAddressAnyStatus"]>>[0]) =>
+      getLatestDeepForensicCheckJobForAddressAnyStatus(db, input));
 
   bot.catch((error) => {
     console.error("Telegram bot update failed", error.error);
@@ -4443,7 +4475,10 @@ export function createBot(
   bot.command("check_status", async (ctx) => {
     const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    const jobId = commandText(ctx.match);
+    const args = commandText(ctx.match).split(/\s+/).filter(Boolean);
+    const jobId = args[0] ?? "";
+    const detailedArg = args[1]?.toLowerCase();
+    const detailed = detailedArg === "detailed" || detailedArg === "подробно";
     if (!jobId) {
       await ctx.reply(locale === "en" ? "Usage: /check_status <deep-job-id>" : "Использование: /check_status <deep-job-id>");
       return;
@@ -4452,6 +4487,39 @@ export function createBot(
     const whereReport = job?.kind === "where_is_money_check"
       ? extractWhereIsMoneyReportFromJob(job, job.subjectAddress)
       : null;
+    if (detailed) {
+      const unavailableMessage = locale === "en"
+        ? "Detailed final report is available after Where Is Money has completed."
+        : "Подробный итоговый отчёт доступен после завершённой проверки “Откуда деньги”.";
+      if (job?.kind === "where_is_money_check" && whereReport) {
+        const deepJob = await resolveLatestDeepForensicCheckJobForAddressAnyStatus(relatedJobLookupInput(job));
+        await sendMessage(ctx, formatUnifiedAddressDetailedReport({
+          address: job.subjectAddress,
+          whereReport,
+          deepReport: extractDeepForensicReportFromJob(deepJob, job.subjectAddress),
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale
+        }));
+        return;
+      }
+      if (job?.kind === "address_deep_check") {
+        const deepReport = extractDeepForensicReportFromJob(job, job.subjectAddress);
+        const matchingWhereJob = await resolveLatestWhereIsMoneyCheckJobForAddress(relatedJobLookupInput(job));
+        const matchingWhereReport = extractWhereIsMoneyReportFromJob(matchingWhereJob, job.subjectAddress);
+        if (matchingWhereReport) {
+          await sendMessage(ctx, formatUnifiedAddressDetailedReport({
+            address: job.subjectAddress,
+            whereReport: matchingWhereReport,
+            deepReport,
+            runtimeLabel: config.runtimeInstanceLabel,
+            locale
+          }));
+          return;
+        }
+      }
+      await ctx.reply(unavailableMessage);
+      return;
+    }
     if (job?.kind === "where_is_money_check" && whereReport) {
       await sendMessage(ctx, formatWhereIsMoneySupportReport(job, whereReport, job.status === "partial" ? "partial" : "completed", {
         runtimeLabel: config.runtimeInstanceLabel,

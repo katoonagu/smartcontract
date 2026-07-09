@@ -1456,6 +1456,8 @@ async function createSmokeBot(options: {
   saveAddressFastCheckJob?: BotOptions["saveAddressFastCheckJob"];
   checkSmartContractAddress?: BotOptions["checkSmartContractAddress"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
+  getLatestWhereIsMoneyCheckJobForAddress?: BotOptions["getLatestWhereIsMoneyCheckJobForAddress"];
+  getLatestDeepForensicCheckJobForAddressAnyStatus?: BotOptions["getLatestDeepForensicCheckJobForAddressAnyStatus"];
   tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
@@ -1490,7 +1492,9 @@ async function createSmokeBot(options: {
       startedAt: new Date("2026-05-24T00:00:00.000Z"),
       completedAt: new Date("2026-05-24T00:00:00.000Z")
     })),
-    getForensicCheckJob: options.getForensicCheckJob
+    getForensicCheckJob: options.getForensicCheckJob,
+    getLatestWhereIsMoneyCheckJobForAddress: options.getLatestWhereIsMoneyCheckJobForAddress,
+    getLatestDeepForensicCheckJobForAddressAnyStatus: options.getLatestDeepForensicCheckJobForAddressAnyStatus
   });
   const calls: ReplyCall[] = [];
   bot.api.config.use(async (_prev, method, payload): Promise<any> => {
@@ -2848,6 +2852,121 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Operational liquidity behavior");
     expect(text).toContain("Runtime: worker-a");
     expect(text).not.toContain("Deep forensic status");
+  });
+
+  it("keeps where-is-money support details from check_status when detailed is not requested", async () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const { bot, calls } = await createSmokeBot({
+      getForensicCheckJob: async (id) => whereIsMoneyJobForTest({
+        id,
+        resultJson: {
+          subjectAddress: whereReport.subjectAddress,
+          whereIsMoneyReport: whereReport
+        }
+      })
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status where-job-1", userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Where-is-money — support/debug");
+    expect(text).toContain("Job: where-job-1");
+    expect(text).not.toContain("Расширенный отчёт по адресу");
+    expect(text).not.toContain("Detailed address report");
+  });
+
+  it("returns a detailed address report for a where-is-money job when requested by a Russian user", async () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const deepReport = deepReportForTest();
+    const whereJob = whereIsMoneyJobForTest({
+      id: "where-job-1",
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job-1",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      getForensicCheckJob: async () => whereJob,
+      getLatestDeepForensicCheckJobForAddressAnyStatus: async () => deepJob
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status where-job-1 detailed", userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Расширенный отчёт по адресу");
+    expect(text).toContain(walletAddress);
+    expect(text).not.toContain("Where-is-money — support/debug");
+  });
+
+  it("returns a detailed address report for a deep forensic job when a matching where-is-money job exists", async () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const deepReport = deepReportForTest();
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job-1",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+    const whereJob = whereIsMoneyJobForTest({
+      id: "where-job-1",
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const { bot, calls } = await createSmokeBot({
+      getForensicCheckJob: async () => deepJob,
+      getLatestWhereIsMoneyCheckJobForAddress: async () => whereJob
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status deep-job-1 detailed", userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Detailed address report");
+    expect(text).toContain(walletAddress);
+    expect(text).not.toContain("Deep forensic status");
+  });
+
+  it("explains that detailed final report needs a completed where-is-money job", async () => {
+    const deepReport = deepReportForTest();
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job-1",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      getForensicCheckJob: async () => deepJob,
+      getLatestWhereIsMoneyCheckJobForAddress: async () => null
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status deep-job-1 detailed", userId));
+
+    expect(lastPlainText(calls)).toContain("Подробный итоговый отчёт доступен после завершённой проверки “Откуда деньги”.");
+  });
+
+  it("supports Russian подробно alias for detailed check_status", async () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      getForensicCheckJob: async () => whereIsMoneyJobForTest({
+        id: "where-job-1",
+        resultJson: {
+          subjectAddress: whereReport.subjectAddress,
+          whereIsMoneyReport: whereReport
+        }
+      }),
+      getLatestDeepForensicCheckJobForAddressAnyStatus: async () => null
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status where-job-1 подробно", userId));
+
+    expect(lastPlainText(calls)).toContain("Расширенный отчёт по адресу");
   });
 
   it("falls back to generic status for malformed persisted where result", async () => {
