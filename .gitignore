@@ -13,3 +13,4 @@ tmp/
 .superpowers/
 runtime-logs/
 logs/tronscan-probe/
+output/
