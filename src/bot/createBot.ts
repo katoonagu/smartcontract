@@ -3170,14 +3170,22 @@ function compactDecisionLine(decision: RiskExplanationDecision, locale: BotLocal
 
 function detailedDecisionLine(decision: RiskExplanationDecision, locale: BotLocale): string {
   if (locale === "en") return `Decision: ${decision}.`;
-  return `Итог: ${decision}.`;
+  switch (decision) {
+    case "ACCEPTABLE":
+      return "Итог: можно принять автоматически.";
+    case "REVIEW":
+    case "DECLINE":
+      return "Итог: не принимать автоматически.";
+    case "NO_FINAL_DECISION":
+      return "Итог: без итогового решения.";
+  }
 }
 
 function summaryRiskLine(summary: RiskExplanationSummary, locale: BotLocale): string | null {
   if (summary.score === null || summary.level === null) return null;
   const level = locale === "en" ? summary.level : `${riskLevelText(locale, summary.level)} / ${summary.level}`;
   return locale === "en"
-    ? `Risk: ${summary.score}/100 — ${level} (Final risk: )`
+    ? `Risk: ${summary.score}/100 — ${level}`
     : `Риск: ${summary.score}/100 — ${level} (Итоговый риск)`;
 }
 
@@ -3189,7 +3197,7 @@ function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInpu
   });
   const reason = whereScoreBlockedReason(input.whereReport) ?? "insufficient_coverage";
   const technicalStatus = whereTechnicalStatus(input.whereReport) ?? "unknown";
-  const showTechnicalDiagnostics = input.showBetaDiagnostics === true || locale === "en";
+  const showTechnicalDiagnostics = input.showBetaDiagnostics === true;
   const diagnosticLines = showTechnicalDiagnostics
     ? [
         "Decision: NO_FINAL_DECISION",
@@ -3216,7 +3224,7 @@ function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInpu
     section(locale === "en" ? "Limits" : "Ограничения", [
       bulletList(summaryLimitations(summary, locale))
     ]),
-    showTechnicalDiagnostics ? section(input.showBetaDiagnostics === true ? "Beta/internal" : "Technical status", [
+    showTechnicalDiagnostics ? section("Beta/internal", [
       bulletList(diagnosticLines)
     ]) : null,
     runtimeMarkerLine(input.runtimeLabel)

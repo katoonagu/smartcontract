@@ -3359,6 +3359,7 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Расширенный отчёт по адресу");
+    expect(text).toContain("Итог: не принимать автоматически.");
     expect(text).toContain("Короткий вывод");
     expect(text).toContain("FastCheck");
     expect(text).toContain("Where Is Money");
@@ -3375,6 +3376,41 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Dampener");
     expect(text).not.toContain("Beta/internal");
     expect(text).not.toContain("source-policy threshold");
+  });
+
+  it("keeps high FastCheck score-only behavior as context, not hard evidence", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        reasons: [
+          {
+            code: "forensic_address_behavior",
+            message: "Address shows high-volume transit-like behavior.",
+            scoreImpact: 90
+          }
+        ]
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Быстрая проверка нашла поведенческий риск. Это контекст, не точное доказательство происхождения средств.");
+    expect(text).toContain("Точных признаков кражи, drainer-цепочки или USDT blacklist не найдено.");
+    expect(text).not.toContain("Hard evidence");
+    expect(text).not.toContain("Жёсткое доказательство");
   });
 
   it("attributes DeepCheck-only exact approval-drain evidence to the DeepCheck detailed section", () => {
@@ -4238,7 +4274,7 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "en"
     });
 
-    expect(text).toContain("Final risk");
+    expect(text).toContain("Risk:");
     const scores = text.match(/\d+\/100/g) ?? [];
     expect(scores).toHaveLength(1);
     expect(scores[0]).not.toBe("25/100");
@@ -4439,7 +4475,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Policy floor: 70");
     expect(text).toContain("Asset continuation floor: 82");
     expect(text).toContain("Context score: 78.");
-    expect(text).toContain("Final risk");
+    expect(text).toContain("Risk:");
     expect(text).toContain("82");
   });
 
@@ -4590,7 +4626,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check — final");
-    expect(text).toContain("Final risk");
+    expect(text).toContain("Risk:");
     const scores = text.match(/\d+\/100/g) ?? [];
     expect(scores).toHaveLength(1);
     expect(scores[0]).not.toBe("25/100");
@@ -4831,7 +4867,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check — final");
-    expect(text).toContain("Final risk");
+    expect(text).toContain("Risk:");
     const scores = text.match(/\d+\/100/g) ?? [];
     expect(scores).toHaveLength(1);
     expect(scores[0]).not.toBe("25/100");
@@ -4866,11 +4902,32 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check - no final decision");
-    expect(text).toContain("Decision: NO_FINAL_DECISION");
-    expect(text).toContain("Blocked reason: insufficient_coverage");
-    expect(text).toContain("Technical status: provider_cap_unresolved");
+    expect(text).not.toContain("Blocked reason");
+    expect(text).not.toContain("Technical status");
     expect(text).not.toContain("Decision: DECLINE");
     expect(text).not.toContain("Final risk");
+  });
+
+  it("keeps English no-final technical diagnostics behind beta flag", () => {
+    const whereReport = scoreInvalidWhereReportForTest();
+
+    const normalText = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+    const betaText = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en",
+      showBetaDiagnostics: true
+    });
+
+    expect(normalText).toContain("Address check - no final decision");
+    expect(normalText).not.toContain("Blocked reason");
+    expect(normalText).not.toContain("Technical status");
+    expect(betaText).toContain("Blocked reason: insufficient_coverage");
+    expect(betaText).toContain("Technical status: provider_cap_unresolved");
   });
 
   it("keeps score-invalid where-is-money support output technical, not final decline", () => {
@@ -4907,8 +4964,8 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check - no final decision");
-    expect(text).toContain("NO_FINAL_DECISION");
     expect(text).not.toContain("Decision: DECLINE");
+    expect(text).not.toContain("NO_FINAL_DECISION");
   });
 
   it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
@@ -5041,7 +5098,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check — final");
-    expect(text).toContain("Final risk");
+    expect(text).toContain("Risk:");
     expect(text).toContain("0/100");
     expect(text).not.toContain("Where-is-money — support/debug");
     expect(text).not.toContain("support/debug");
@@ -5177,6 +5234,8 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Risk: 95/100 — CRITICAL");
+    expect(text).not.toContain("(Final risk: )");
     expect(text.match(/\d+\/100/g)).toEqual(["95/100"]);
     expect(text).toContain("Exact approval-drain evidence was found");
     expect(text).not.toContain("Behavior risk");
@@ -5374,10 +5433,20 @@ describe("bot command and inline UX smoke coverage", () => {
       deepReport,
       locale: "en"
     });
+    const detailedText = formatUnifiedAddressDetailedReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+    const deepSection = plainSectionText(detailedText, "DeepCheck");
 
     expect(text).toContain("Decision: DECLINE");
     expect(text.match(/\d+\/100/g)).toEqual(["70/100"]);
+    expect(text).toContain("DeepCheck found a source-policy link to whitebit. This does not prove theft, but requires source-of-funds review.");
+    expect(deepSection).toContain("DeepCheck found a source-policy link to whitebit. This does not prove theft, but requires source-of-funds review.");
     expect(text).not.toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).not.toContain("DeepCheck found an exact on-chain link to a high-risk source.");
     expect(text).not.toContain("90/100");
     expect(text).not.toContain("Behavior risk");
   });
@@ -5951,7 +6020,7 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: DECLINE");
-    expect(text).toContain("Final risk: ");
+    expect(text).toContain("Risk:");
     expect(text).toContain("70/100");
     expect(text).toContain("Source-policy evidence reached the decline or manual-review threshold.");
     expect(text).not.toContain("Evidence type");
@@ -5996,7 +6065,7 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: ACCEPTABLE");
-    expect(text).toContain("Final risk: ");
+    expect(text).toContain("Risk:");
     expect(text).toContain("0/100");
     expect(text).toContain("LOW");
     expect(text).toContain("No deterministic bad evidence was found.");
@@ -6091,7 +6160,7 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: ACCEPTABLE");
-    expect(text).toContain("Final risk: ");
+    expect(text).toContain("Risk:");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("1. UNPROVEN");
     expect(text).not.toContain("Decision: DECLINE");

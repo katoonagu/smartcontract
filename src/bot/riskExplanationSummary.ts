@@ -88,6 +88,7 @@ const highRiskLabels = new Set([
   "risky_contract",
   "darknet_exchange"
 ]);
+const sourcePolicyProvenanceLabels = new Set(["whitebit"]);
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
@@ -216,9 +217,22 @@ function topDirectCounterparty(report: DeepAddressForensicReport | null | undefi
     .sort((left, right) => right.scoreContribution - left.scoreContribution || right.volumeRatio - left.volumeRatio)[0] ?? null;
 }
 
+function unifiedHardEvidenceCodes(result: UnifiedWalletRiskResult): Set<string> {
+  return new Set(result.reasons
+    .filter((reason) => reason.source === "hard_evidence")
+    .map((reason) => reason.code));
+}
+
 function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const fast = input.fastReport ?? input.whereReport.fastWalletRisk;
   if (!fast) return;
+  const hardEvidenceCodes = unifiedHardEvidenceCodes(input.unifiedRisk);
+  const hasExplicitHardEvidence = fast.reasons.some((reason) =>
+    reason.code === "stablecoin_usdt_blacklisted" ||
+    reason.code === "internal_label_approval_drain_proximity" ||
+    hasSavedApprovalDrainMarker(fast) ||
+    hardEvidenceCodes.has(reason.code)
+  );
   if (fast.reasons.some((reason) => reason.code === "stablecoin_usdt_blacklisted")) {
     pushFact(allFacts, sections, "fast", {
       kind: "hard_evidence",
@@ -242,9 +256,9 @@ function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
     });
   }
   const otherHardReason = fast.reasons.find((reason) =>
-    reason.scoreImpact >= 85 &&
     reason.code !== "stablecoin_usdt_blacklisted" &&
-    reason.code !== "internal_label_approval_drain_proximity"
+    reason.code !== "internal_label_approval_drain_proximity" &&
+    hardEvidenceCodes.has(reason.code)
   );
   if (otherHardReason) {
     pushFact(allFacts, sections, "fast", {
@@ -256,7 +270,7 @@ function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
       textEn: `Hard evidence: ${normalizeNotificationReason(otherHardReason.message, "en")}`
     });
   }
-  if (fast.score > 0 && !fast.reasons.some((reason) => reason.scoreImpact >= 85)) {
+  if (fast.score > 0 && !hasExplicitHardEvidence) {
     pushFact(allFacts, sections, "fast", {
       kind: "behavior_context",
       source: "fast",
@@ -266,6 +280,23 @@ function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
       textEn: "FastCheck found behavioral risk. This is context, not exact source-of-funds proof."
     });
   }
+}
+
+function deepSourcePolicyLabels(report: DeepAddressForensicReport): string[] {
+  const labels = new Set<string>();
+  for (const profile of report.inboundProvenanceProfiles) {
+    for (const path of profile.paths) {
+      if (sourcePolicyProvenanceLabels.has(path.label)) labels.add(path.label);
+    }
+  }
+  for (const profile of report.extendedProvenanceProfiles ?? []) {
+    for (const path of profile.paths) {
+      if (path.label && path.evidenceStrength === "exact_labeled_path" && sourcePolicyProvenanceLabels.has(path.label)) {
+        labels.add(path.label);
+      }
+    }
+  }
+  return [...labels].sort();
 }
 
 function sourceExposureFacts(exposure: SourceBundleExposureProfile | undefined): RiskExplanationFact[] {
@@ -534,6 +565,16 @@ function addDeepFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
       dedupeKey: "deep_high_risk_extended",
       textRu: "DeepCheck нашёл более длинную точную on-chain связь с высокорисковым источником.",
       textEn: "Deep Research found exact high-risk extended provenance. DeepCheck found a longer exact on-chain link to a high-risk source."
+    });
+  }
+  for (const label of deepSourcePolicyLabels(report)) {
+    pushFact(allFacts, sections, "deep", {
+      kind: "source_policy",
+      source: "deep",
+      priority: 41,
+      dedupeKey: `deep_source_policy:${label}`,
+      textRu: `DeepCheck нашёл source-policy связь с ${label}. Это не доказывает кражу, но требует проверки источника средств.`,
+      textEn: `DeepCheck found a source-policy link to ${label}. This does not prove theft, but requires source-of-funds review.`
     });
   }
   if (input.unifiedRisk.assetContinuationFloor > 0 || report.assetContinuationProfiles?.some((profile) => profile.score >= 65)) {
