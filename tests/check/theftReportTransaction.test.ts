@@ -59,6 +59,29 @@ describe("theft report transaction extraction", () => {
     expect(result?.amountUsdt).toBe("5");
   });
 
+  it("accepts real TronScan transfer rows that omit nested confirmed field", () => {
+    const txHash = "1ad9fc250d58d494bff4566e57cd6276adc0d66e03d2d1820c9dcbba712dfa2b";
+    const result = extractTheftReportTransferFromTransactionInfo(txHash, {
+      confirmed: true,
+      contractRet: "SUCCESS",
+      trc20TransferInfo: [{
+        from_address: "TKaaFU4XFMjVVA4dUgLeNPgYxjh1X3NWRo",
+        to_address: "TNQdfZSAvfTN6MhNYHLQBCgqE4rLVZdDAC",
+        amount_str: "2094300000",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        status: 0
+      }]
+    });
+
+    expect(result).toEqual({
+      txHash,
+      sender: "TKaaFU4XFMjVVA4dUgLeNPgYxjh1X3NWRo",
+      receiver: "TNQdfZSAvfTN6MhNYHLQBCgqE4rLVZdDAC",
+      amountRaw: "2094300000",
+      amountUsdt: "2094.3"
+    });
+  });
+
   it("rejects token abbreviation without the official contract", () => {
     expect(extractTheftReportTransferFromTransactionInfo("c".repeat(64), {
       confirmed: true,
@@ -74,14 +97,14 @@ describe("theft report transaction extraction", () => {
     })).toBeNull();
   });
 
-  it("rejects missing confirmed transaction or transfer info", () => {
+  it("rejects missing confirmed transaction or explicitly unconfirmed transfer info", () => {
     expect(extractTheftReportTransferFromTransactionInfo("e".repeat(64), {
       trc20TransferInfo: [officialTransfer()]
     })).toBeNull();
 
     expect(extractTheftReportTransferFromTransactionInfo("f".repeat(64), {
       confirmed: true,
-      trc20TransferInfo: [officialTransfer({ confirmed: undefined })]
+      trc20TransferInfo: [officialTransfer({ confirmed: false })]
     })).toBeNull();
   });
 

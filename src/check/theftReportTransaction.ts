@@ -71,6 +71,23 @@ function isSettledSuccessful(record: Record<string, unknown>): boolean {
   return isSuccessStatus(record.status);
 }
 
+function isTransferSettledSuccessful(transfer: TransactionInfoTransfer): boolean {
+  if (transfer.confirmed === false) return false;
+  if (transfer.revert === true) return false;
+
+  for (const field of ["contractRet", "finalResult", "result", "contract_ret"] as const) {
+    if (!isSuccessResult(transfer[field])) return false;
+  }
+  if (!isSuccessStatus(transfer.status)) return false;
+
+  return transfer.confirmed === true ||
+    transfer.status !== undefined ||
+    transfer.contractRet !== undefined ||
+    transfer.finalResult !== undefined ||
+    transfer.result !== undefined ||
+    transfer.contract_ret !== undefined;
+}
+
 export function formatRawUsdt(amountRaw: string): string {
   if (!/^\d+$/.test(amountRaw)) return amountRaw;
   const raw = BigInt(amountRaw);
@@ -89,7 +106,7 @@ export function extractTheftReportTransferFromTransactionInfo(txHash: string, ra
   if (!isSettledSuccessful(raw)) return null;
 
   const transfers = raw.trc20TransferInfo.filter(isRecord) as TransactionInfoTransfer[];
-  const transfer = transfers.find((item) => isOfficialUsdtTransfer(item) && isSettledSuccessful(item));
+  const transfer = transfers.find((item) => isOfficialUsdtTransfer(item) && isTransferSettledSuccessful(item));
   if (!transfer) return null;
 
   const sender = isNonEmptyString(transfer.from_address) ? transfer.from_address : null;
