@@ -287,6 +287,20 @@ function parseWalletIntelligenceRawAmountQuery(url: URL, key: "minDistinctAmount
     : { ok: false, message: `Invalid wallet intelligence ${key}.` };
 }
 
+function parseWalletIntelligenceAddressList(url: URL): ParseResult<string[]> {
+  const addresses = [...new Set(url.searchParams
+    .getAll("addresses")
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean))];
+  if (addresses.length === 0) return { ok: false, message: "At least one wallet intelligence address is required." };
+  if (addresses.length > 200) return { ok: false, message: "Too many wallet intelligence addresses." };
+  if (!addresses.every((address) => tronAddressPattern.test(address))) {
+    return { ok: false, message: "Invalid wallet intelligence address." };
+  }
+  return { ok: true, value: addresses };
+}
+
 function parseWalletIntelligenceListInput(url: URL): ParseResult<ListWalletIntelligenceAddressSummariesInput> {
   const limit = parsePositiveIntegerQuery(url, "limit");
   if (!limit.ok) return limit;
@@ -1391,6 +1405,30 @@ async function handleApiRequest(
       return;
     }
     writeJson(response, 200, { report });
+    return;
+  }
+
+  if (url.pathname === "/admin/api/wallet-intelligence/address-summaries") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    const addresses = parseWalletIntelligenceAddressList(url);
+    if (!addresses.ok) {
+      writeJson(response, 400, { error: addresses.message });
+      return;
+    }
+    if (!deps.listWalletIntelligenceAddressSummaries) {
+      writeJson(response, 501, { error: "Wallet intelligence address summaries are not configured." });
+      return;
+    }
+
+    const summaries = await deps.listWalletIntelligenceAddressSummaries({
+      addresses: addresses.value,
+      limit: addresses.value.length,
+      offset: 0
+    });
+    writeJson(response, 200, { addresses: summaries });
     return;
   }
 
