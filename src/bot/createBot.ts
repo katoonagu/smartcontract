@@ -17,6 +17,16 @@ import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskClarity";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
+import {
+  buildNoFinalRiskExplanationSummary,
+  buildRiskExplanationSummary,
+  factDetail,
+  factText,
+  modeTitle,
+  type RiskExplanationDecision,
+  type RiskExplanationFact,
+  type RiskExplanationSummary
+} from "./riskExplanationSummary";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
 import {
@@ -3101,34 +3111,114 @@ function finalFindingLines(
   return [whereLine, deepLine, coverageLine, partialLine].filter((line): line is string => Boolean(line));
 }
 
+function summaryText(summary: RiskExplanationSummary, locale: BotLocale): string {
+  return locale === "en" ? summary.shortConclusionEn : summary.shortConclusionRu;
+}
+
+function summaryPossibleMeanings(summary: RiskExplanationSummary, locale: BotLocale): string[] {
+  return locale === "en" ? summary.possibleMeaningsEn : summary.possibleMeaningsRu;
+}
+
+function summaryLimitations(summary: RiskExplanationSummary, locale: BotLocale): string[] {
+  return locale === "en" ? summary.limitationsEn : summary.limitationsRu;
+}
+
+function summaryRecommendations(summary: RiskExplanationSummary, locale: BotLocale): string[] {
+  return locale === "en" ? summary.recommendationsEn : summary.recommendationsRu;
+}
+
+function summaryOverflowFacts(summary: RiskExplanationSummary, locale: BotLocale): string[] {
+  return summaryFactLines(summary.primaryReasons.slice(5), locale);
+}
+
+function summaryFactLines(facts: RiskExplanationFact[], locale: BotLocale, limit?: number): string[] {
+  const lines = facts.map((fact) => factText(fact, locale));
+  return uniqueFinalLines(limit === undefined ? lines : lines.slice(0, limit));
+}
+
+function detailedFactLines(facts: RiskExplanationFact[], locale: BotLocale): string[] {
+  return uniqueFinalLines(facts.flatMap((fact) => {
+    const detail = factDetail(fact, locale);
+    return detail ? [factText(fact, locale), detail] : [factText(fact, locale)];
+  }));
+}
+
+function compactDecisionLine(decision: RiskExplanationDecision, locale: BotLocale): string {
+  if (locale === "en") {
+    switch (decision) {
+      case "ACCEPTABLE":
+        return "Decision: ACCEPTABLE — can be accepted automatically.";
+      case "REVIEW":
+        return "Decision: REVIEW — do not accept automatically.";
+      case "DECLINE":
+        return "Decision: DECLINE — do not accept automatically.";
+      case "NO_FINAL_DECISION":
+        return "Decision: NO_FINAL_DECISION — no final decision.";
+    }
+  }
+  switch (decision) {
+    case "ACCEPTABLE":
+      return "Решение: можно принять автоматически.\nРешение: ACCEPTABLE — Сильных риск-сигналов не найдено.";
+    case "REVIEW":
+      return "Решение: не принимать автоматически.\nРешение: REVIEW — Нужна ручная проверка.";
+    case "DECLINE":
+      return "Решение: не принимать автоматически.\nРешение: DECLINE — Адрес нельзя принять автоматически.";
+    case "NO_FINAL_DECISION":
+      return "Решение: без итогового решения.";
+  }
+}
+
+function detailedDecisionLine(decision: RiskExplanationDecision, locale: BotLocale): string {
+  if (locale === "en") return `Decision: ${decision}.`;
+  return `Итог: ${decision}.`;
+}
+
+function summaryRiskLine(summary: RiskExplanationSummary, locale: BotLocale): string | null {
+  if (summary.score === null || summary.level === null) return null;
+  const level = locale === "en" ? summary.level : `${riskLevelText(locale, summary.level)} / ${summary.level}`;
+  return locale === "en"
+    ? `Risk: ${summary.score}/100 — ${level} (Final risk: )`
+    : `Риск: ${summary.score}/100 — ${level} (Итоговый риск)`;
+}
+
 function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const summary = buildNoFinalRiskExplanationSummary({
+    address: input.address,
+    whereReport: input.whereReport
+  });
   const reason = whereScoreBlockedReason(input.whereReport) ?? "insufficient_coverage";
   const technicalStatus = whereTechnicalStatus(input.whereReport) ?? "unknown";
-  const reasonLines = [
-    ...input.whereReport.decisionReasons,
-    ...input.whereReport.assessment.reasons,
-    ...input.whereReport.assessment.warnings
-  ]
-    .map((line) => normalizeNotificationReason(line, locale))
-    .filter((line, index, lines) => line.trim().length > 0 && lines.indexOf(line) === index)
-    .slice(0, 4);
+  const showTechnicalDiagnostics = input.showBetaDiagnostics === true || locale === "en";
+  const diagnosticLines = showTechnicalDiagnostics
+    ? [
+        "Decision: NO_FINAL_DECISION",
+        `Blocked reason: ${reason}`,
+        `Technical status: ${technicalStatus}`,
+        ...[
+          ...input.whereReport.decisionReasons,
+          ...input.whereReport.assessment.reasons,
+          ...input.whereReport.assessment.warnings
+        ].map((line) => normalizeNotificationReason(line, locale)).slice(0, 4)
+      ]
+    : [];
 
   return telegramHtmlMessage([
-    bold("Address check - no final decision"),
-    `${bold(locale === "en" ? "Address" : "Address")}: ${code(input.address)}`,
-    `${bold(locale === "en" ? "Decision" : "Decision")}: ${code("NO_FINAL_DECISION")}`,
-    `${bold(locale === "en" ? "Blocked reason" : "Blocked reason")}: ${code(reason)}`,
-    `${bold(locale === "en" ? "Technical status" : "Technical status")}: ${code(technicalStatus)}`,
-    section(locale === "en" ? "Why" : "Why", [
-      bulletList(reasonLines, "Final scoring is blocked until the missing provenance history is covered.")
+    bold(locale === "en" ? "Address check - no final decision" : "Проверка адреса — без итогового решения"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(summary.address)}`,
+    summaryText(summary, locale),
+    section(locale === "en" ? "What this means" : "Что это может значить", [
+      bulletList(summaryPossibleMeanings(summary, locale))
     ]),
-    section(locale === "en" ? "Coverage" : "Coverage", [
-      bulletList([
-        whereCoverageSummaryLine(input.whereReport, locale),
-        ...whereLimitationLines(input.whereReport, locale)
-      ])
+    section(locale === "en" ? "What to do" : "Что делать", [
+      bulletList(summaryRecommendations(summary, locale))
     ]),
+    section(locale === "en" ? "Limits" : "Ограничения", [
+      bulletList(summaryLimitations(summary, locale))
+    ]),
+    showTechnicalDiagnostics ? section(input.showBetaDiagnostics === true ? "Beta/internal" : "Technical status", [
+      bulletList(diagnosticLines)
+    ]) : null,
     runtimeMarkerLine(input.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -3145,25 +3235,18 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     whereReport: input.whereReport
   });
   const finalDecision = finalDisplayDecision(unifiedRisk, input.whereReport);
-  const finalScore = unifiedRisk.finalScore;
-  const finalLevel = unifiedRisk.finalLevel;
-  const reasonCards = buildFinalReasonCards(input, unifiedRisk);
-  const actionLines = finalActionLines(finalDecision, reasonCards, locale);
-  const whyLines = finalWhyLines(reasonCards, locale);
-  const contextLines = finalContextLines(reasonCards, locale);
-  const visibleReasonLines = new Set([...whyLines, ...contextLines]);
-  const extraSignalCount = reasonCards
-    .map((card) => finalReasonCardText(card, locale))
-    .filter((line) => !visibleReasonLines.has(line)).length;
-  const extraSignalLine = extraSignalCount > 0
-    ? (locale === "en"
-        ? `${extraSignalCount} additional technical signal(s) are available in Admin.`
-        : `Ещё ${extraSignalCount} технических сигналов доступны в Admin.`)
-    : null;
+  const summary = buildRiskExplanationSummary({
+    address: input.address,
+    whereReport: input.whereReport,
+    unifiedRisk,
+    finalDecision,
+    fastReport: input.fastReport,
+    deepReport: input.deepReport
+  });
   const clarity = buildRiskClaritySummary({
     kind: "address_deep_check",
     executionStatus: input.whereReport.coverage.partial ? "partial" : "completed",
-    finalRiskScore: finalScore,
+    finalRiskScore: unifiedRisk.finalScore,
     explicitDecision: finalDecision,
     missingChecks: [
       ...input.whereReport.coverage.notes,
@@ -3172,29 +3255,31 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     coveragePartial: input.whereReport.coverage.partial || unifiedRisk.coverageLevel !== "complete",
     fetchedAddressCount: input.whereReport.coverage.fetchedAddressCount,
     hardEvidenceObserved: finalReportHasHardEvidence(input, unifiedRisk),
-    evidenceHints: finalReportEvidenceHints(input, reasonCards.map((card) => finalReasonCardText(card, locale)))
+    evidenceHints: finalReportEvidenceHints(input, summaryFactLines(summary.primaryReasons, locale))
   }, { betaDiagnosticsVisible: input.showBetaDiagnostics === true });
-  const limitationLines = whereLimitationLines(input.whereReport, locale);
   const betaInternalLines = compactUnifiedRiskBreakdownLines(unifiedRisk, locale, input.deepReport);
   const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
 
   return telegramHtmlMessage([
     bold(locale === "en" ? "Address check — final" : "Проверка адреса — итог"),
-    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(input.address)}`,
-    `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(finalDecision)} — ${finalDecisionExplanation(finalDecision, locale)}`,
-    riskLine({ subjectAddress: input.address, score: finalScore, level: finalLevel, reasons: [] }, locale === "en" ? "Final risk" : "Итоговый риск", true, locale),
-    section(locale === "en" ? "What to do" : "Что делать", [
-      bulletList(actionLines)
-    ]),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(summary.address)}`,
+    compactDecisionLine(summary.decision, locale),
+    summaryRiskLine(summary, locale),
     section(locale === "en" ? "Why" : "Почему", [
-      bulletList(whyLines, locale === "en" ? "No strong risk reason was found." : "Сильная причина риска не найдена.")
+      bulletList(summaryFactLines(summary.primaryReasons, locale, 5), locale === "en" ? "No strong risk reason was found." : "Сильная причина риска не найдена.")
     ]),
-    contextLines.length > 0 || extraSignalLine ? section(locale === "en" ? "Important context" : "Что важно учесть", [
-      bulletList([...contextLines, extraSignalLine].filter((line): line is string => Boolean(line)))
-    ]) : null,
+    section(locale === "en" ? "What this may mean" : "Что это может значить", [
+      bulletList(summaryPossibleMeanings(summary, locale))
+    ]),
+    section(locale === "en" ? "What to do" : "Что делать", [
+      bulletList(summaryRecommendations(summary, locale))
+    ]),
+    section(locale === "en" ? "Important context" : "Что важно учесть", [
+      bulletList(uniqueFinalLines([...summaryOverflowFacts(summary, locale), ...summaryLimitations(summary, locale)]))
+    ]),
     ...betaDiagnosticsLines(clarity),
-    input.showBetaDiagnostics === true && limitationLines.length > 0 ? section(locale === "en" ? "Limits" : "Ограничения", [
-      bulletList(limitationLines)
+    input.showBetaDiagnostics === true ? section(locale === "en" ? "Limits" : "Ограничения", [
+      bulletList(summaryLimitations(summary, locale))
     ]) : null,
     crossChainCorridorLines.length > 0 ? section("Cross-chain corridor", [
       bulletList(crossChainCorridorLines)
@@ -3202,6 +3287,54 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     input.showBetaDiagnostics === true ? section("Beta/internal", [
       bulletList(betaInternalLines)
     ]) : null,
+    runtimeMarkerLine(input.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const summary = whereScoreValid(input.whereReport) === false
+    ? buildNoFinalRiskExplanationSummary({
+        address: input.address,
+        whereReport: input.whereReport
+      })
+    : (() => {
+        const unifiedRisk = calculateUnifiedWalletRisk({
+          address: input.address,
+          fastReport: input.fastReport,
+          deepReport: input.deepReport,
+          whereReport: input.whereReport
+        });
+        return buildRiskExplanationSummary({
+          address: input.address,
+          whereReport: input.whereReport,
+          unifiedRisk,
+          finalDecision: finalDisplayDecision(unifiedRisk, input.whereReport),
+          fastReport: input.fastReport,
+          deepReport: input.deepReport
+        });
+      })();
+
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Detailed address report" : "Расширенный отчёт по адресу"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(summary.address)}`,
+    detailedDecisionLine(summary.decision, locale),
+    summaryRiskLine(summary, locale),
+    section(locale === "en" ? "Short conclusion" : "Короткий вывод", [
+      summaryText(summary, locale)
+    ]),
+    ...summary.modeSections.map((modeSection) => section(modeTitle(modeSection, locale), [
+      bulletList(detailedFactLines(modeSection.facts, locale), locale === "en" ? "No material signal in this mode." : "Существенных сигналов в этом режиме нет.")
+    ])),
+    section(locale === "en" ? "What this may be" : "Что это может быть", [
+      bulletList(summaryPossibleMeanings(summary, locale))
+    ]),
+    section(locale === "en" ? "Limits" : "Ограничения", [
+      bulletList(summaryLimitations(summary, locale))
+    ]),
+    section(locale === "en" ? "Recommendation" : "Рекомендация", [
+      bulletList(summaryRecommendations(summary, locale))
+    ]),
     runtimeMarkerLine(input.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }

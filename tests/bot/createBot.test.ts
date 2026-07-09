@@ -3148,7 +3148,8 @@ describe("bot command and inline UX smoke coverage", () => {
           skippedAddressCount: 0,
           exhausted: false,
           exhaustedPhase: null
-        }
+        },
+        unresolvedBoundary: null
       },
       coverage: {
         selectedInboundTxCount: 1,
@@ -3304,7 +3305,8 @@ describe("bot command and inline UX smoke coverage", () => {
           skippedAddressCount: 0,
           exhausted: false,
           exhaustedPhase: null
-        }
+        },
+        unresolvedBoundary: null
       },
       coverage: {
         selectedInboundTxCount: 1,
