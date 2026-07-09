@@ -117,11 +117,15 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('method: "PATCH"');
     expect(html).toContain("Внутренняя заметка");
     expect(html).toContain("Копировать данные");
-    expect(html).toContain("Victim в Forensics");
+    expect(html).toContain("Кошелек клиента");
+    expect(html).toContain("Статус бота");
+    expect(html).toContain("Клиент в Forensics");
     expect(html).toContain("Получатель в Wallet Intelligence");
     expect(html).toContain("/admin/forensics?subjectAddress=");
     expect(html).toContain("/admin/wallet-intelligence?subjectAddress=");
     expect(html).toContain("https://tronscan.org/#/transaction/");
+    const saveBlock = html.slice(html.indexOf("async function saveTheftReportAdminState"), html.indexOf("function activeJob"));
+    expect(saveBlock).toContain("state.theftReports.loading = false;");
     expect(html).not.toContain("/admin/api/forensic-jobs?theftReport");
     expect(html).not.toContain("createTheftReportForensicJob");
   });

@@ -2132,9 +2132,9 @@ export function adminConsoleHtml(): string {
       return [
         "Заявка о краже: " + (report.id || ""),
         "Статус обработки: " + theftReportAdminStatusLabel(report.adminStatus),
-        "Bot status: " + (report.status || ""),
-        "Telegram user: " + (report.telegramUserId || ""),
-        "Victim: " + (report.victimAddress || ""),
+        "Статус бота: " + (report.status || ""),
+        "Telegram ID: " + (report.telegramUserId || ""),
+        "Кошелек клиента: " + (report.victimAddress || ""),
         "Получатель: " + (report.reportedScamAddress || ""),
         "Сумма: " + (report.amountUsdt || "") + " USDT",
         "Tx: " + (report.txHash || ""),
@@ -2177,8 +2177,8 @@ export function adminConsoleHtml(): string {
         const statusClass = classifyStatus(report.adminStatus === "closed" ? "completed" : report.adminStatus === "cancelled" ? "failed" : "review");
         return '<button type="button" class="theft-report-row' + active + '" data-theft-report-id="' + escapeHtml(report.id) + '">' +
           '<div class="theft-report-title"><span class="theft-report-amount">' + escapeHtml((report.amountUsdt || "0") + " USDT") + '</span><span class="' + statusClass + '">' + escapeHtml(theftReportAdminStatusLabel(report.adminStatus)) + '</span></div>' +
-          '<div class="theft-report-meta"><span>bot: ' + escapeHtml(report.status || "n/a") + '</span><span>tg:' + escapeHtml(report.telegramUserId || "n/a") + '</span><span>' + escapeHtml(theftReportTime(report.adminUpdatedAt || report.updatedAt || report.createdAt)) + '</span></div>' +
-          '<div class="job-line"><strong>Victim:</strong> ' + escapeHtml(short(report.victimAddress, 8)) + '</div>' +
+          '<div class="theft-report-meta"><span>бот: ' + escapeHtml(report.status || "n/a") + '</span><span>tg:' + escapeHtml(report.telegramUserId || "n/a") + '</span><span>' + escapeHtml(theftReportTime(report.adminUpdatedAt || report.updatedAt || report.createdAt)) + '</span></div>' +
+          '<div class="job-line"><strong>Кошелек клиента:</strong> ' + escapeHtml(short(report.victimAddress, 8)) + '</div>' +
           '<div class="job-line"><strong>Получатель:</strong> ' + escapeHtml(short(report.reportedScamAddress, 8)) + '</div>' +
           '</button>';
       }).join("");
@@ -2262,22 +2262,22 @@ export function adminConsoleHtml(): string {
       const copyText = escapeHtml(theftReportCopyBlock(report));
       root.innerHTML = '<div class="theft-report-card">' +
         '<section class="theft-report-section"><h3>Факты транзакции</h3><div class="theft-report-grid">' +
-          theftReportField("Victim", theftReportAddressLink(report.victimAddress)) +
+          theftReportField("Кошелек клиента", theftReportAddressLink(report.victimAddress)) +
           theftReportField("Заявленный получатель", theftReportAddressLink(report.reportedScamAddress)) +
           theftReportField("Tx", theftReportTxLink(report.txHash)) +
           theftReportField("Сумма", escapeHtml((report.amountUsdt || "0") + " USDT")) +
         '</div></section>' +
         '<section class="theft-report-section"><h3>Пользователь</h3><div class="theft-report-grid">' +
-          theftReportField("Telegram user id", escapeHtml(report.telegramUserId || "n/a")) +
+          theftReportField("Telegram ID", escapeHtml(report.telegramUserId || "n/a")) +
           theftReportField("Комментарий", escapeHtml(report.comment || "не указан")) +
         '</div></section>' +
         '<section class="theft-report-section"><h3>Оплата / бот</h3><div class="theft-report-grid">' +
-          theftReportField("Bot status", escapeHtml(report.status || "n/a")) +
-          theftReportField("Deposit wallet", report.depositAddress ? theftReportAddressLink(report.depositAddress) : escapeHtml("не настроен")) +
-          theftReportField("Deposit amount", escapeHtml((report.depositAmountUsdt || "0") + " USDT")) +
+          theftReportField("Статус бота", escapeHtml(report.status || "n/a")) +
+          theftReportField("Кошелек оплаты", report.depositAddress ? theftReportAddressLink(report.depositAddress) : escapeHtml("не настроен")) +
+          theftReportField("Сумма к оплате", escapeHtml((report.depositAmountUsdt || "0") + " USDT")) +
           theftReportField("Создана", escapeHtml(theftReportTime(report.createdAt))) +
           theftReportField("Обновлена", escapeHtml(theftReportTime(report.updatedAt))) +
-          theftReportField("Admin updated", escapeHtml(theftReportTime(report.adminUpdatedAt))) +
+          theftReportField("Обновлено админом", escapeHtml(theftReportTime(report.adminUpdatedAt))) +
         '</div></section>' +
         '<section class="theft-report-section"><h3>Внутренняя обработка</h3>' +
           '<label class="theft-report-field"><span>Статус обработки</span><select id="theftReportAdminStateSelect">' +
@@ -2288,9 +2288,9 @@ export function adminConsoleHtml(): string {
         '</section>' +
         '<section class="theft-report-section"><h3>Действия</h3><div class="theft-report-actions">' +
           '<button type="button" data-copy-text="' + copyText + '">Копировать данные</button>' +
-          '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Victim в Forensics</a>' +
+          '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в Forensics</a>' +
           '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Forensics</a>' +
-          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Victim в Wallet Intelligence</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в Wallet Intelligence</a>' +
           '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Wallet Intelligence</a>' +
           '<a class="button-like" href="' + escapeHtml(tronscanTxUrl(report.txHash || "")) + '" target="_blank" rel="noopener noreferrer">Tx в TronScan</a>' +
         '</div></section>' +
@@ -2306,6 +2306,9 @@ export function adminConsoleHtml(): string {
       state.theftReports.savePending = true;
       state.theftReports.listRequestSeq += 1;
       state.theftReports.detailRequestSeq += 1;
+      state.theftReports.loading = false;
+      renderTheftReportsList();
+      renderTheftReportDetail();
       try {
         setTheftReportsStatus("Сохраняем внутренний статус...");
         const body = await api("/admin/api/theft-reports/" + encodeURIComponent(report.id) + "/admin-state", {
