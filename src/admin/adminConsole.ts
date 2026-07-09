@@ -298,6 +298,105 @@ export function adminConsoleHtml(): string {
     .wallet-intel-ego-node circle { fill: var(--surface-panel); stroke: var(--accent); stroke-width: 1.5; }
     .wallet-intel-ego-node.selected circle { fill: rgba(127, 169, 221, .16); stroke: var(--accent); }
     .wallet-intel-ego-node text { fill: var(--text-primary); font-size: 10px; text-anchor: middle; }
+    .theft-reports-workspace {
+      height: calc(100dvh - 56px);
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      padding: 12px;
+      background: var(--surface-canvas);
+    }
+    .theft-reports-head {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .theft-reports-title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+    .theft-reports-title-row h2 { margin: 0; font-size: 16px; }
+    .theft-reports-warning { color: var(--warn); font-size: 12px; max-width: 460px; text-align: right; }
+    .theft-reports-filters {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.5fr) minmax(170px, .8fr) minmax(170px, .8fr) minmax(120px, .5fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .theft-reports-filters label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+    .theft-reports-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(360px, 480px) minmax(0, 1fr);
+      gap: 12px;
+    }
+    .theft-reports-list, .theft-report-detail {
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .theft-report-row {
+      display: grid;
+      gap: 7px;
+      width: 100%;
+      padding: 10px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .theft-report-row:hover, .theft-report-row.active { background: rgba(122, 162, 247, .08); }
+    .theft-report-title { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+    .theft-report-amount { font-weight: 700; color: var(--text-primary); }
+    .theft-report-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+    .theft-report-card { display: grid; gap: 12px; padding: 12px; }
+    .theft-report-section {
+      display: grid;
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .theft-report-section:first-child { padding-top: 0; border-top: 0; }
+    .theft-report-section h3 { margin: 0; font-size: 13px; }
+    .theft-report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .theft-report-field { display: grid; gap: 3px; font-size: 12px; min-width: 0; }
+    .theft-report-field span { color: var(--muted); font-size: 11px; }
+    .theft-report-field strong, .theft-report-field code { overflow-wrap: anywhere; }
+    .theft-report-note {
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      padding: 8px 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-control);
+      background: var(--panel-2);
+      color: var(--text);
+      font: inherit;
+    }
+    .theft-report-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .button-like {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      background: #121820;
+      text-decoration: none;
+      font-size: 12px;
+    }
     .graph-workspace {
       --left-rail-width: 330px;
       --right-rail-width: 380px;
@@ -1175,6 +1274,10 @@ export function adminConsoleHtml(): string {
       .wallet-intel-body {
         grid-template-columns: 1fr;
       }
+      .theft-reports-filters, .theft-reports-body, .theft-report-grid {
+        grid-template-columns: 1fr;
+      }
+      .theft-reports-warning { text-align: left; }
     }
     @media (max-width: 1180px) {
       body { overflow: auto; }
@@ -1222,6 +1325,7 @@ export function adminConsoleHtml(): string {
         <nav class="top-nav" aria-label="Admin workspaces">
           <a href="/admin/forensics" data-workspace-link>Forensics</a>
           <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>
+          <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>
         </nav>
         <div class="stats" id="jobStats"></div>
       </div>
@@ -1475,6 +1579,59 @@ export function adminConsoleHtml(): string {
           </aside>
         </div>
       </section>
+      <section id="theftReportsWorkspace" class="theft-reports-workspace" data-theft-reports-workspace hidden>
+        <div class="theft-reports-head">
+          <div class="theft-reports-title-row">
+            <div>
+              <h2>Заявки о краже</h2>
+              <div class="hint" id="theftReportsStatus">Предварительные сообщения пользователей. Загрузите заявки для внутренней обработки.</div>
+            </div>
+            <div class="theft-reports-warning">Внутренняя обработка. Заявка не является доказательством кражи.</div>
+          </div>
+          <div id="theftReportsStats" class="stats"></div>
+          <div class="theft-reports-filters">
+            <label>Поиск
+              <input id="theftReportsSearch" placeholder="Адрес, tx, user id, комментарий">
+            </label>
+            <label>Статус обработки
+              <select id="theftReportsAdminStatus">
+                <option value="">Все статусы</option>
+                <option value="new">Новая</option>
+                <option value="awaiting_payment">Ждет оплату</option>
+                <option value="awaiting_documents">Ждет документы</option>
+                <option value="in_progress">В работе</option>
+                <option value="escalated">Передано / эскалация</option>
+                <option value="closed">Закрыта</option>
+                <option value="cancelled">Отменена</option>
+              </select>
+            </label>
+            <label>Статус бота
+              <select id="theftReportsBotStatus">
+                <option value="">Все bot status</option>
+                <option value="draft">draft</option>
+                <option value="awaiting_deposit">awaiting_deposit</option>
+                <option value="deposit_confirmed">deposit_confirmed</option>
+                <option value="documents_requested">documents_requested</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+            </label>
+            <label>Лимит
+              <select id="theftReportsLimit">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button id="theftReportsReload" type="button">Обновить</button>
+          </div>
+        </div>
+        <div class="theft-reports-body">
+          <div id="theftReportsList" class="theft-reports-list"></div>
+          <aside id="theftReportDetail" class="theft-report-detail">
+            <div class="empty">Выберите заявку для просмотра и внутренней обработки.</div>
+          </aside>
+        </div>
+      </section>
     </section>
   </main>
   <script>
@@ -1530,7 +1687,8 @@ export function adminConsoleHtml(): string {
       renderedEdgesById: new Map(),
       expandedBundleNodeIds: new Set(),
       expandedSelectedFlowEdgeIds: new Set(),
-      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null, preset: "intersections" }
+      walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null, preset: "intersections" },
+      theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null, listRequestSeq: 0, detailRequestSeq: 0 }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -1791,14 +1949,25 @@ export function adminConsoleHtml(): string {
     function walletIntelligenceActive() {
       return window.location.pathname === "/admin/wallet-intelligence";
     }
+    function theftReportsActive() {
+      return window.location.pathname === "/admin/theft-reports";
+    }
+    function activeWorkspacePath() {
+      if (walletIntelligenceActive()) return "/admin/wallet-intelligence";
+      if (theftReportsActive()) return "/admin/theft-reports";
+      return "/admin/forensics";
+    }
     function syncWorkspaceVisibility() {
       const walletActive = walletIntelligenceActive();
+      const theftActive = theftReportsActive();
       const graphShell = document.querySelector("[data-workbench-shell]");
       const walletShell = document.querySelector("[data-wallet-intelligence-workspace]");
-      if (graphShell) graphShell.hidden = walletActive;
+      const theftShell = document.querySelector("[data-theft-reports-workspace]");
+      if (graphShell) graphShell.hidden = walletActive || theftActive;
       if (walletShell) walletShell.hidden = !walletActive;
+      if (theftShell) theftShell.hidden = !theftActive;
       document.querySelectorAll("[data-workspace-link]").forEach((link) => {
-        const active = link.getAttribute("href") === (walletActive ? "/admin/wallet-intelligence" : "/admin/forensics");
+        const active = link.getAttribute("href") === activeWorkspacePath();
         link.classList.toggle("active", active);
         if (active) link.setAttribute("aria-current", "page");
         else link.removeAttribute("aria-current");
@@ -2154,6 +2323,236 @@ export function adminConsoleHtml(): string {
         }).join("") : '<div class="empty">No edges stored.</div>') +
         '</div></section>';
       root.innerHTML = summaryHtml + focusedGraphHtml + requesterHtml + jobsHtml + sightingsHtml + edgesHtml;
+    }
+    const theftReportAdminStatusLabels = {
+      new: "Новая",
+      awaiting_payment: "Ждет оплату",
+      awaiting_documents: "Ждет документы",
+      in_progress: "В работе",
+      escalated: "Передано / эскалация",
+      closed: "Закрыта",
+      cancelled: "Отменена"
+    };
+    function theftReportAdminStatusLabel(value) {
+      return theftReportAdminStatusLabels[value] || value || "n/a";
+    }
+    function setTheftReportsStatus(message) {
+      el("theftReportsStatus").textContent = message;
+      if (theftReportsActive()) setStatus(message);
+    }
+    function theftReportTime(value) {
+      return formatJobTime(value) || (value ? String(value) : "n/a");
+    }
+    function theftReportAddressLink(address) {
+      return address ? explorerLink(tronscanAddressUrl(address), short(address, 8)) : '<span class="muted">адрес не указан</span>';
+    }
+    function theftReportTxLink(txHash) {
+      return txHash ? explorerLink(tronscanTxUrl(txHash), short(txHash, 8)) : '<span class="muted">tx не указан</span>';
+    }
+    function theftReportField(label, value) {
+      return '<div class="theft-report-field"><span>' + escapeHtml(label) + '</span><strong>' + value + '</strong></div>';
+    }
+    function theftReportCopyBlock(report) {
+      return [
+        "Заявка о краже: " + (report.id || ""),
+        "Статус обработки: " + theftReportAdminStatusLabel(report.adminStatus),
+        "Статус бота: " + (report.status || ""),
+        "Telegram ID: " + (report.telegramUserId || ""),
+        "Кошелек клиента: " + (report.victimAddress || ""),
+        "Получатель: " + (report.reportedScamAddress || ""),
+        "Сумма: " + (report.amountUsdt || "") + " USDT",
+        "Tx: " + (report.txHash || ""),
+        "Комментарий: " + (report.comment || ""),
+        "Внутренняя заметка: " + (report.adminNote || "")
+      ].join("\\n");
+    }
+    function renderTheftReportsStats() {
+      const counts = state.theftReports.reports.reduce((acc, report) => {
+        const key = report.adminStatus || "unknown";
+        acc.total += 1;
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, { total: 0 });
+      el("theftReportsStats").innerHTML = [
+        ["Всего", counts.total],
+        ["Новые", counts.new || 0],
+        ["Ждут документы", counts.awaiting_documents || 0],
+        ["В работе", counts.in_progress || 0],
+        ["Закрыты", counts.closed || 0]
+      ].map(([label, value]) => '<span class="chip">' + escapeHtml(label) + ': ' + escapeHtml(value) + '</span>').join("");
+    }
+    function renderTheftReportsList() {
+      const root = el("theftReportsList");
+      renderTheftReportsStats();
+      if (state.theftReports.loading) {
+        root.innerHTML = '<div class="empty">Загружаем заявки...</div>';
+        return;
+      }
+      if (state.theftReports.error && state.theftReports.reports.length === 0) {
+        root.innerHTML = '<div class="error">' + escapeHtml(state.theftReports.error) + '</div>';
+        return;
+      }
+      if (state.theftReports.reports.length === 0) {
+        root.innerHTML = '<div class="empty">Заявок по текущим фильтрам нет.</div>';
+        return;
+      }
+      root.innerHTML = state.theftReports.reports.map((report) => {
+        const active = report.id === state.theftReports.activeId ? " active" : "";
+        const statusClass = classifyStatus(report.adminStatus === "closed" ? "completed" : report.adminStatus === "cancelled" ? "failed" : "review");
+        return '<button type="button" class="theft-report-row' + active + '" data-theft-report-id="' + escapeHtml(report.id) + '">' +
+          '<div class="theft-report-title"><span class="theft-report-amount">' + escapeHtml((report.amountUsdt || "0") + " USDT") + '</span><span class="' + statusClass + '">' + escapeHtml(theftReportAdminStatusLabel(report.adminStatus)) + '</span></div>' +
+          '<div class="theft-report-meta"><span>бот: ' + escapeHtml(report.status || "n/a") + '</span><span>tg:' + escapeHtml(report.telegramUserId || "n/a") + '</span><span>' + escapeHtml(theftReportTime(report.adminUpdatedAt || report.updatedAt || report.createdAt)) + '</span></div>' +
+          '<div class="job-line"><strong>Кошелек клиента:</strong> ' + escapeHtml(short(report.victimAddress, 8)) + '</div>' +
+          '<div class="job-line"><strong>Получатель:</strong> ' + escapeHtml(short(report.reportedScamAddress, 8)) + '</div>' +
+          '</button>';
+      }).join("");
+      root.querySelectorAll("[data-theft-report-id]").forEach((button) => {
+        button.addEventListener("click", () => openTheftReport(button.getAttribute("data-theft-report-id") || ""));
+      });
+    }
+    async function loadTheftReports() {
+      const requestSeq = ++state.theftReports.listRequestSeq;
+      state.token = el("token").value.trim();
+      localStorage.setItem("adminForensicsToken", state.token);
+      el("sessionState").textContent = state.token ? "session active" : "token missing";
+      const params = new URLSearchParams();
+      if (el("theftReportsSearch").value.trim()) params.set("query", el("theftReportsSearch").value.trim());
+      if (el("theftReportsAdminStatus").value) params.set("adminStatus", el("theftReportsAdminStatus").value);
+      if (el("theftReportsBotStatus").value) params.set("botStatus", el("theftReportsBotStatus").value);
+      params.set("limit", el("theftReportsLimit").value || "50");
+      state.theftReports.loading = true;
+      state.theftReports.error = null;
+      renderTheftReportsList();
+      renderTheftReportDetail();
+      try {
+        setTheftReportsStatus("Загружаем заявки...");
+        const body = await api("/admin/api/theft-reports?" + params.toString());
+        if (requestSeq !== state.theftReports.listRequestSeq) return;
+        state.theftReports.reports = asArray(body.reports);
+        const activeReport = state.theftReports.reports.find((report) => report.id === state.theftReports.activeId);
+        if (activeReport) {
+          state.theftReports.detailRequestSeq += 1;
+          state.theftReports.detail = activeReport;
+        } else {
+          state.theftReports.detailRequestSeq += 1;
+          state.theftReports.activeId = state.theftReports.reports[0]?.id || null;
+          state.theftReports.detail = state.theftReports.reports[0] || null;
+        }
+        state.theftReports.loading = false;
+        renderTheftReportsList();
+        renderTheftReportDetail();
+        setTheftReportsStatus(state.theftReports.reports.length + " заявок загружено.");
+      } catch (error) {
+        if (requestSeq !== state.theftReports.listRequestSeq) return;
+        state.theftReports.loading = false;
+        state.theftReports.error = error?.message || "Не удалось загрузить заявки.";
+        state.theftReports.reports = [];
+        state.theftReports.activeId = null;
+        state.theftReports.detail = null;
+        renderTheftReportsList();
+        renderTheftReportDetail();
+        setTheftReportsStatus("Не удалось загрузить заявки.");
+      }
+    }
+    async function openTheftReport(reportId) {
+      if (!reportId) return;
+      const requestSeq = ++state.theftReports.detailRequestSeq;
+      state.theftReports.activeId = reportId;
+      state.theftReports.detail = state.theftReports.reports.find((report) => report.id === reportId) || null;
+      renderTheftReportsList();
+      renderTheftReportDetail();
+      try {
+        const body = await api("/admin/api/theft-reports/" + encodeURIComponent(reportId));
+        if (requestSeq !== state.theftReports.detailRequestSeq || state.theftReports.activeId !== reportId) return;
+        state.theftReports.detail = body.report || state.theftReports.detail;
+        renderTheftReportDetail();
+      } catch (error) {
+        if (requestSeq !== state.theftReports.detailRequestSeq || state.theftReports.activeId !== reportId) return;
+        state.theftReports.error = error?.message || "Не удалось загрузить заявку.";
+        renderTheftReportDetail();
+      }
+    }
+    function renderTheftReportDetail() {
+      const root = el("theftReportDetail");
+      const report = state.theftReports.detail;
+      if (state.theftReports.loading && !report) {
+        root.innerHTML = '<div class="empty">Загружаем выбранную заявку...</div>';
+        return;
+      }
+      if (!report) {
+        root.innerHTML = '<div class="empty">Выберите заявку для просмотра и внутренней обработки.</div>';
+        return;
+      }
+      const copyText = escapeHtml(theftReportCopyBlock(report));
+      root.innerHTML = '<div class="theft-report-card">' +
+        '<section class="theft-report-section"><h3>Факты транзакции</h3><div class="theft-report-grid">' +
+          theftReportField("Кошелек клиента", theftReportAddressLink(report.victimAddress)) +
+          theftReportField("Заявленный получатель", theftReportAddressLink(report.reportedScamAddress)) +
+          theftReportField("Tx", theftReportTxLink(report.txHash)) +
+          theftReportField("Сумма", escapeHtml((report.amountUsdt || "0") + " USDT")) +
+        '</div></section>' +
+        '<section class="theft-report-section"><h3>Пользователь</h3><div class="theft-report-grid">' +
+          theftReportField("Telegram ID", escapeHtml(report.telegramUserId || "n/a")) +
+          theftReportField("Комментарий", escapeHtml(report.comment || "не указан")) +
+        '</div></section>' +
+        '<section class="theft-report-section"><h3>Оплата / бот</h3><div class="theft-report-grid">' +
+          theftReportField("Статус бота", escapeHtml(report.status || "n/a")) +
+          theftReportField("Кошелек оплаты", report.depositAddress ? theftReportAddressLink(report.depositAddress) : escapeHtml("не настроен")) +
+          theftReportField("Сумма к оплате", escapeHtml((report.depositAmountUsdt || "0") + " USDT")) +
+          theftReportField("Создана", escapeHtml(theftReportTime(report.createdAt))) +
+          theftReportField("Обновлена", escapeHtml(theftReportTime(report.updatedAt))) +
+          theftReportField("Обновлено админом", escapeHtml(theftReportTime(report.adminUpdatedAt))) +
+        '</div></section>' +
+        '<section class="theft-report-section"><h3>Внутренняя обработка</h3>' +
+          '<label class="theft-report-field"><span>Статус обработки</span><select id="theftReportAdminStateSelect">' +
+            Object.entries(theftReportAdminStatusLabels).map(([value, label]) => '<option value="' + escapeHtml(value) + '"' + (report.adminStatus === value ? " selected" : "") + '>' + escapeHtml(label) + '</option>').join("") +
+          '</select></label>' +
+          '<label class="theft-report-field"><span>Внутренняя заметка</span><textarea id="theftReportAdminNote" class="theft-report-note" maxlength="2000">' + escapeHtml(report.adminNote || "") + '</textarea></label>' +
+          '<div class="theft-report-actions"><button id="theftReportSaveState" type="button">Сохранить</button></div>' +
+        '</section>' +
+        '<section class="theft-report-section"><h3>Действия</h3><div class="theft-report-actions">' +
+          '<button type="button" data-copy-text="' + copyText + '">Копировать данные</button>' +
+          '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в Forensics</a>' +
+          '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Forensics</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в Wallet Intelligence</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Wallet Intelligence</a>' +
+          '<a class="button-like" href="' + escapeHtml(tronscanTxUrl(report.txHash || "")) + '" target="_blank" rel="noopener noreferrer">Tx в TronScan</a>' +
+        '</div></section>' +
+      '</div>';
+      const saveButton = document.getElementById("theftReportSaveState");
+      if (saveButton) saveButton.addEventListener("click", saveTheftReportAdminState);
+    }
+    async function saveTheftReportAdminState() {
+      const report = state.theftReports.detail;
+      if (!report || state.theftReports.savePending) return;
+      const select = el("theftReportAdminStateSelect");
+      const note = el("theftReportAdminNote");
+      state.theftReports.savePending = true;
+      state.theftReports.listRequestSeq += 1;
+      state.theftReports.detailRequestSeq += 1;
+      state.theftReports.loading = false;
+      renderTheftReportsList();
+      renderTheftReportDetail();
+      try {
+        setTheftReportsStatus("Сохраняем внутренний статус...");
+        const body = await api("/admin/api/theft-reports/" + encodeURIComponent(report.id) + "/admin-state", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adminStatus: select.value, adminNote: note.value })
+        });
+        const updatedReport = body.report || report;
+        state.theftReports.reports = state.theftReports.reports.map((item) => item.id === report.id ? updatedReport : item);
+        if (state.theftReports.activeId === report.id) {
+          state.theftReports.detail = updatedReport;
+        }
+        renderTheftReportsList();
+        renderTheftReportDetail();
+        setTheftReportsStatus("Внутренний статус сохранен.");
+      } catch (error) {
+        setTheftReportsStatus(error?.message || "Не удалось сохранить внутренний статус.");
+      } finally {
+        state.theftReports.savePending = false;
+      }
     }
     function activeJob() {
       return state.jobs.find((job) => job.id === state.activeJobId) || null;
@@ -2934,6 +3333,12 @@ export function adminConsoleHtml(): string {
         if (params.has("maxDepth")) el("walletIntelMaxDepth").value = params.get("maxDepth") || "";
         el("walletIntelServiceCategory").value = params.get("serviceCategory") || "";
         setSelectFromUrl("walletIntelJobStatus", params.get("jobStatus") || "");
+      }
+      if (theftReportsActive()) {
+        el("theftReportsSearch").value = params.get("query") || params.get("q") || "";
+        setSelectFromUrl("theftReportsAdminStatus", params.get("adminStatus") || "");
+        setSelectFromUrl("theftReportsBotStatus", params.get("botStatus") || "");
+        setSelectFromUrl("theftReportsLimit", params.get("limit") || "");
       }
       const jobId = params.get("jobId") || params.get("job") || "";
       if (jobId) state.pendingOpenJobId = jobId;
@@ -8620,6 +9025,7 @@ export function adminConsoleHtml(): string {
     el("load").addEventListener("click", () => {
       syncWorkspaceVisibility();
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
+      else if (theftReportsActive()) loadTheftReports();
       else loadJobs();
     });
     el("walletIntelReload").addEventListener("click", loadWalletIntelligenceAddresses);
@@ -8633,6 +9039,22 @@ export function adminConsoleHtml(): string {
       const row = event.target instanceof Element ? event.target.closest("[data-wallet-intel-address]") : null;
       if (!row) return;
       openWalletIntelligenceAddress(row.getAttribute("data-wallet-intel-address") || "");
+    });
+    el("theftReportsReload").addEventListener("click", loadTheftReports);
+    el("theftReportsAdminStatus").addEventListener("change", loadTheftReports);
+    el("theftReportsBotStatus").addEventListener("change", loadTheftReports);
+    el("theftReportsLimit").addEventListener("change", loadTheftReports);
+    el("theftReportsSearch").addEventListener("input", () => {
+      if (state.theftReports.searchTimer) clearTimeout(state.theftReports.searchTimer);
+      state.theftReports.searchTimer = setTimeout(() => {
+        state.theftReports.searchTimer = null;
+        loadTheftReports();
+      }, 250);
+    });
+    el("theftReportsSearch").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      loadTheftReports();
     });
     el("refresh").addEventListener("click", loadJobs);
     el("jobsModeAll").addEventListener("click", () => setJobQueueMode("all"));
@@ -8781,10 +9203,13 @@ export function adminConsoleHtml(): string {
     renderTransferTabs();
     renderWalletIntelligenceTable();
     renderWalletIntelligenceDrawer();
+    renderTheftReportsList();
+    renderTheftReportDetail();
     el("sessionState").textContent = state.token ? "session active" : "token missing";
     applyInitialUrlFilters();
     if (state.token) {
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
+      else if (theftReportsActive()) loadTheftReports();
       else loadJobs();
     }
   </script>

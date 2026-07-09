@@ -36,6 +36,7 @@ import {
   listRecentRiskSignalObservations,
   getObservedTransactionForIncomingDeposit,
   markDigestSent,
+  listTheftReports,
   markApprovalOwnerAlertFailed,
   markApprovalContextExpired,
   markApprovalContextFinalAlertSent,
@@ -59,6 +60,7 @@ import {
   claimQueuedTronAddressUsdtIndexStates,
   failTronAddressUsdtIndexState,
   queueTronAddressUsdtIndexState,
+  updateTheftReportAdminState,
   updateTheftReportComment,
   updateWatchedWalletAlertMode,
   updateWalletPollState,
@@ -168,6 +170,9 @@ const theftReportRow = {
   status: "draft",
   deposit_address: "T999999999999999999999999999999999",
   deposit_amount_usdt: "1000",
+  admin_status: "new",
+  admin_note: null,
+  admin_updated_at: null,
   created_at: theftReportCreatedAt,
   updated_at: theftReportCreatedAt
 };
@@ -266,6 +271,113 @@ describe("theft report repositories", () => {
     expect(report?.id).toBe("report-1");
     expect(queries[0].sql).toContain("from theft_reports");
     expect(queries[0].params).toEqual(["report-1"]);
+  });
+
+  it("maps admin state fields on theft reports", async () => {
+    const adminUpdatedAt = new Date("2026-07-08T10:00:00.000Z");
+    const { db } = createMockDb(1, [{
+      ...theftReportRow,
+      admin_status: "in_progress",
+      admin_note: "Ждем документы от пользователя",
+      admin_updated_at: adminUpdatedAt
+    }]);
+
+    const report = await getTheftReport(db, "report-1");
+
+    expect(report).toMatchObject({
+      id: "report-1",
+      adminStatus: "in_progress",
+      adminNote: "Ждем документы от пользователя",
+      adminUpdatedAt
+    });
+  });
+
+  it("lists theft reports with admin, bot, and text filters", async () => {
+    const { db, queries } = createMockDb(1, [{
+      ...theftReportRow,
+      admin_status: "awaiting_documents",
+      status: "documents_requested",
+      admin_note: "Проверить заявление"
+    }]);
+
+    const reports = await listTheftReports(db, {
+      limit: 20,
+      offset: 5,
+      adminStatus: "awaiting_documents",
+      botStatus: "documents_requested",
+      query: "TReceiver"
+    });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      adminStatus: "awaiting_documents",
+      status: "documents_requested"
+    });
+    expect(compactSql(queries[0].sql)).toContain("from theft_reports");
+    expect(compactSql(queries[0].sql)).toContain("admin_status = $1");
+    expect(compactSql(queries[0].sql)).toContain("status = $2");
+    expect(compactSql(queries[0].sql)).toContain("reported_scam_address ilike $3");
+    expect(compactSql(queries[0].sql)).toContain("order by coalesce(admin_updated_at, updated_at) desc, created_at desc, id desc");
+    expect(compactSql(queries[0].sql)).toContain("limit $4 offset $5");
+    expect(queries[0].params).toEqual([
+      "awaiting_documents",
+      "documents_requested",
+      "%TReceiver%",
+      20,
+      5
+    ]);
+  });
+
+  it("sanitizes theft report list pagination values", async () => {
+    const { db, queries } = createMockDb();
+
+    await listTheftReports(db, { limit: Number.NaN, offset: Number.POSITIVE_INFINITY });
+    await listTheftReports(db, { limit: 12.9, offset: 5.8 });
+    await listTheftReports(db, { limit: -1, offset: -4 });
+    await listTheftReports(db, { limit: 1000, offset: 2 });
+
+    expect(queries[0].params).toEqual([50, 0]);
+    expect(queries[1].params).toEqual([12, 5]);
+    expect(queries[2].params).toEqual([1, 0]);
+    expect(queries[3].params).toEqual([100, 2]);
+  });
+
+  it("updates theft report admin state without changing bot status fields", async () => {
+    const adminUpdatedAt = new Date("2026-07-08T10:00:00.000Z");
+    const { db, queries } = createMockDb(1, [{
+      ...theftReportRow,
+      admin_status: "escalated",
+      admin_note: "Передано юристу",
+      admin_updated_at: adminUpdatedAt
+    }]);
+
+    const report = await updateTheftReportAdminState(db, {
+      id: "report-1",
+      adminStatus: "escalated",
+      adminNote: "  Передано юристу  "
+    });
+
+    expect(report).toMatchObject({
+      adminStatus: "escalated",
+      adminNote: "Передано юристу",
+      status: "draft"
+    });
+    expect(compactSql(queries[0].sql)).toContain("set admin_status = $2");
+    expect(compactSql(queries[0].sql)).toContain("admin_note = $3");
+    expect(compactSql(queries[0].sql)).not.toMatch(/\bstatus = \$/);
+    expect(queries[0].params).toEqual(["report-1", "escalated", "Передано юристу"]);
+  });
+
+  it("rejects invalid theft report admin status before querying", async () => {
+    const { db, queries } = createMockDb();
+
+    await expect(updateTheftReportAdminState(db, {
+      id: "report-1",
+      adminStatus: "paid" as never,
+      adminNote: "bad status"
+    })).rejects.toThrow("Invalid theft report admin status");
+
+    expect(queries).toEqual([]);
   });
 });
 

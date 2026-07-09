@@ -268,6 +268,47 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("TNoise0");
   });
 
+  it("renders the Russian theft reports workspace shell", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('<a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>');
+    expect(html).toContain("data-theft-reports-workspace");
+    expect(html).toContain('id="theftReportsSearch"');
+    expect(html).toContain('id="theftReportsAdminStatus"');
+    expect(html).toContain('id="theftReportsBotStatus"');
+    expect(html).toContain('id="theftReportsList"');
+    expect(html).toContain('id="theftReportDetail"');
+    expect(html).toContain("Предварительные сообщения пользователей");
+    expect(html).toContain("Внутренняя обработка");
+    expect(html).toContain("Заявка не является доказательством кражи");
+    expect(html).not.toContain("кража подтверждена");
+  });
+
+  it("loads and updates theft reports through the Admin API", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function loadTheftReports");
+    expect(html).toContain("function renderTheftReportsList");
+    expect(html).toContain("function renderTheftReportDetail");
+    expect(html).toContain("function saveTheftReportAdminState");
+    expect(html).toContain('/admin/api/theft-reports?" + params.toString()');
+    expect(html).toContain('/admin/api/theft-reports/" + encodeURIComponent(report.id) + "/admin-state');
+    expect(html).toContain('method: "PATCH"');
+    expect(html).toContain("Внутренняя заметка");
+    expect(html).toContain("Копировать данные");
+    expect(html).toContain("Кошелек клиента");
+    expect(html).toContain("Статус бота");
+    expect(html).toContain("Клиент в Forensics");
+    expect(html).toContain("Получатель в Wallet Intelligence");
+    expect(html).toContain("/admin/forensics?subjectAddress=");
+    expect(html).toContain("/admin/wallet-intelligence?subjectAddress=");
+    expect(html).toContain("https://tronscan.org/#/transaction/");
+    const saveBlock = html.slice(html.indexOf("async function saveTheftReportAdminState"), html.indexOf("function activeJob"));
+    expect(saveBlock).toContain("state.theftReports.loading = false;");
+    expect(html).not.toContain("/admin/api/forensic-jobs?theftReport");
+    expect(html).not.toContain("createTheftReportForensicJob");
+  });
+
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 
