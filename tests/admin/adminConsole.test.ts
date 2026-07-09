@@ -414,6 +414,7 @@ describe("adminConsoleHtml", () => {
 
     expect(stateBlock).toContain("crossRunAddressSummaries: new Map()");
     expect(stateBlock).toContain("crossRunAddressDetailByAddress: new Map()");
+    expect(stateBlock).toContain("crossRunAddressDetailLoading: new Set()");
     expect(stateBlock).toContain("pendingHighlightAddress: null");
     expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries(jobId, requestSeq);");
     expect(summaryBlock).toContain("async function loadGraphCrossRunSummaries(jobId, requestSeq)");
