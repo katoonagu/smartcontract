@@ -108,12 +108,12 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Роль отправителя</b>");
     expect(message.text).not.toContain("Data quality");
     expect(message.text).toContain("<b>AI-оценка контракта</b>");
-    expect(message.text).toContain("unknown_suspicious 68/100 для");
+    expect(message.text).toContain("подозрительный неизвестный контракт 68/100 для");
     expect(message.text).not.toContain("<b>AI contract verdict</b>");
     expect(message.text).not.toContain("<b>Fast sender check</b>");
     expect(message.text).not.toContain("68/100 for");
-    expect(message.text).toContain("Unknown contract funded sender shortly before deposit.");
-    expect(message.text).toContain("Sender was funded shortly before this deposit by unknown smart contract.");
+    expect(message.text).toContain("Отправитель получил средства от неизвестного смарт-контракта незадолго до депозита.");
+    expect(message.text).toContain("Отправитель был пополнен неизвестным смарт-контрактом незадолго до этого депозита.");
     expect(message.text).not.toContain("Low risk: <code>0/100</code>");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
   });
@@ -552,8 +552,8 @@ describe("alert formatters", () => {
     });
 
     expect(message.text).toContain("<b>AI-оценка контракта</b>");
-    expect(message.text).toContain("legitimate_service 0/100");
-    expect(message.text).toContain("GasFree service contract matched deterministic allowlist.");
+    expect(message.text).toContain("легитимный сервис 0/100");
+    expect(message.text).toContain("Контракт сервиса совпал с локальным allowlist.");
   });
 
   it("formats admin alert with Telegram owner identity", () => {

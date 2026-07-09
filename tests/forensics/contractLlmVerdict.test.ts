@@ -370,7 +370,7 @@ describe("contract LLM verdict case files", () => {
 
     expect(contractCase).toBeDefined();
     expect(contractCase).toMatchObject({
-      policyVersion: "2026-05-31-contract-llm-v2",
+      policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
       contractAddress: tjpmjContract,
       approvalDrainProvenanceProfiles: [],
       approvalDrainReviewInterpretations: [
@@ -837,6 +837,8 @@ describe("contract LLM verdict case files", () => {
     expect(capturedInput.systemPrompt).toContain("approvalDrainReviewFindings are unresolved review candidates, not confirmed drains");
     expect(capturedInput.systemPrompt).toContain("approval_not_found means exact approval proof was not found");
     expect(capturedInput.systemPrompt).toContain("Do not call exact approval-drain unless the case file contains deterministic approve/spender/transferFrom/path proof");
+    expect(capturedInput.systemPrompt).toContain("Verify20 and similar wrapper methods have been observed across drainer-like campaigns");
+    expect(capturedInput.systemPrompt).toContain("Do not classify a contract as exact drainer proof from the Verify20 method name alone");
     expect(capturedInput.systemPrompt).toContain("include falsePositiveNotes explaining why the case may still be a normal bridge/router/service route");
     expect(JSON.parse(capturedInput.userPrompt)).toMatchObject({
       caseFile: {

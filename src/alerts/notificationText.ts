@@ -87,6 +87,18 @@ function rawActionOrReasonText(message: string, locale: BotLocale): string | nul
       return locale === "ru"
         ? "Проверка уперлась в лимит данных провайдера; финальный риск нельзя считать полностью доказанным."
         : "Provider data limit was reached; the final risk cannot be treated as fully proven.";
+    case "partial_budget_exhausted":
+      return locale === "ru"
+        ? "Проверка уперлась в локальный бюджет загрузки истории; финальный вывод требует догрузки данных."
+        : "The local history-fetch budget was exhausted; a final conclusion requires more coverage.";
+    case "insufficient_coverage":
+      return locale === "ru"
+        ? "Покрытия истории недостаточно для финального вывода."
+        : "History coverage is insufficient for a final conclusion.";
+    case "budget_limited":
+      return locale === "ru"
+        ? "Технический статус: проверка ограничена бюджетом загрузки истории."
+        : "Technical status: the check is limited by the history-fetch budget.";
     case "incoming_history_not_fetched":
     case "history_not_fully_fetched":
       return locale === "ru"
@@ -228,11 +240,197 @@ function approvalDrainText(message: string, locale: BotLocale): string | null {
   return null;
 }
 
+function incomingDepositCoverageText(message: string, locale: BotLocale): string | null {
+  const blockedMandatory = message.match(/final incoming-deposit scoring is blocked until mandatory hop history is covered:\s*([a-z0-9_/-]+)/i);
+  if (blockedMandatory) {
+    const reason = rawActionOrReasonText(blockedMandatory[1], locale) ?? blockedMandatory[1];
+    return locale === "ru"
+      ? `Финальный вывод по депозиту пока заблокирован: нужно покрыть обязательную историю одного из hop-адресов. ${reason}`
+      : `Final deposit scoring is blocked until mandatory hop history is covered. ${reason}`;
+  }
+
+  const blockedWhere = message.match(/final incoming-deposit scoring is blocked because where-is-money scoring is invalid:\s*([a-z0-9_/-]+)/i);
+  if (blockedWhere) {
+    const reason = rawActionOrReasonText(blockedWhere[1], locale) ?? blockedWhere[1];
+    return locale === "ru"
+      ? `Финальный вывод по депозиту пока заблокирован: режим “Откуда деньги” не дал валидную финальную оценку. ${reason}`
+      : `Final deposit scoring is blocked because Where Is Money did not produce a valid final score. ${reason}`;
+  }
+
+  const technicalStatus = message.match(/^technical status:\s*([a-z0-9_/-]+)\.?$/i);
+  if (technicalStatus) {
+    return rawActionOrReasonText(technicalStatus[1], locale) ?? null;
+  }
+
+  return null;
+}
+
+function sourceShareNounText(noun: string, locale: BotLocale): string {
+  const normalized = noun.trim().toLowerCase();
+  if (locale === "en") return noun;
+  if (normalized.includes("checked-deposit")) return "проверенного источника депозита";
+  if (normalized.includes("selected")) return "выбранного источника";
+  return "проверенного источника";
+}
+
+function sourceExposureText(message: string, locale: BotLocale): string | null {
+  const normalized = message.trim().toLowerCase();
+  const sourceMatch = message.match(/^(HTX\/Huobi|Clean CEX|Bridge\/router\/DEX|Unknown contract|Risky label) accounts for (\d+(?:[.,]\d+)?)% of (checked-deposit source share|selected source share)\.?$/i);
+  if (sourceMatch) {
+    const [, source, share, noun] = sourceMatch;
+    if (locale === "en") return `${source} accounts for ${normalizedPercent(share)}% of ${noun}.`;
+    const sourceText = source.toLowerCase() === "clean cex"
+      ? "чистый CEX"
+      : source.toLowerCase() === "bridge/router/dex"
+        ? "bridge/router/DEX"
+        : source.toLowerCase() === "unknown contract"
+          ? "неизвестный смарт-контракт"
+          : source.toLowerCase() === "risky label"
+            ? "адрес с риск-лейблом"
+            : source;
+    return `${normalizedPercent(share)}% ${sourceShareNounText(noun, locale)} относится к ${sourceText}.`;
+  }
+
+  const observedUnknown = message.match(/^observed unknown source paths account for (\d+(?:[.,]\d+)?)% of checked-deposit source share\.?$/i);
+  if (observedUnknown) {
+    return locale === "ru"
+      ? `${normalizedPercent(observedUnknown[1])}% проверенного источника депозита осталось в неизвестных ветках происхождения.`
+      : `${normalizedPercent(observedUnknown[1])}% of checked-deposit source share remains in observed unknown source paths.`;
+  }
+
+  const whitebit = message.match(/^WhiteBIT source-policy context accounts for (\d+(?:[.,]\d+)?)% of checked-deposit source share and is kept in unknown\.?$/i);
+  if (whitebit) {
+    return locale === "ru"
+      ? `${normalizedPercent(whitebit[1])}% проверенного источника депозита связано с WhiteBIT policy-контекстом; эта доля оставлена как неизвестная.`
+      : `WhiteBIT source-policy context accounts for ${normalizedPercent(whitebit[1])}% of checked-deposit source share and is kept in unknown.`;
+  }
+
+  const uncovered = message.match(/^uncovered (checked-deposit source share|selected source share) is assigned to unknown\.?$/i);
+  if (uncovered) {
+    return locale === "ru"
+      ? `Непокрытая часть ${sourceShareNounText(uncovered[1], locale)} отнесена к неизвестному источнику.`
+      : `Uncovered ${uncovered[1]} is assigned to unknown.`;
+  }
+
+  const bundleLimited = normalized === "source bundle coverage-limited: graph budget stopped before every material boundary was resolved.";
+  if (bundleLimited) {
+    return locale === "ru"
+      ? "Покрытие источников ограничено: граф остановился до того, как все существенные границы происхождения были разрешены."
+      : "Source bundle coverage is limited: the graph budget stopped before every material boundary was resolved.";
+  }
+
+  return null;
+}
+
+function senderHistoryText(message: string, locale: BotLocale): string | null {
+  const htx = message.match(/^Historical HTX\/Huobi sender inflow is (\d+(?:[.,]\d+)?)% of incoming wallet volume; background context only, not fresh deposit proof\.?$/i);
+  if (htx) {
+    return locale === "ru"
+      ? `Исторические входящие от HTX/Huobi составляют ${normalizedPercent(htx[1])}% входящего объёма отправителя. Это фоновый контекст, не доказательство источника именно этого депозита.`
+      : `Historical HTX/Huobi sender inflow is ${normalizedPercent(htx[1])}% of incoming wallet volume; background context only, not fresh deposit proof.`;
+  }
+
+  const cleanCex = message.match(/^Historical clean CEX sender inflow is (\d+(?:[.,]\d+)?)% of incoming wallet volume\.?$/i);
+  if (cleanCex) {
+    return locale === "ru"
+      ? `Исторические входящие от чистых CEX составляют ${normalizedPercent(cleanCex[1])}% входящего объёма отправителя.`
+      : `Historical clean CEX sender inflow is ${normalizedPercent(cleanCex[1])}% of incoming wallet volume.`;
+  }
+
+  const bridge = message.match(/^Sender history touches bridge\/router\/DEX volume at (\d+(?:[.,]\d+)?)% of total sender-related volume\.?$/i);
+  if (bridge) {
+    return locale === "ru"
+      ? `В истории отправителя есть bridge/router/DEX объём: ${normalizedPercent(bridge[1])}% всего связанного объёма.`
+      : `Sender history touches bridge/router/DEX volume at ${normalizedPercent(bridge[1])}% of total sender-related volume.`;
+  }
+
+  const unknownContract = message.match(/^Sender history touches unknown-contract volume at (\d+(?:[.,]\d+)?)% of total sender-related volume\.?$/i);
+  if (unknownContract) {
+    return locale === "ru"
+      ? `В истории отправителя есть объём через неизвестные смарт-контракты: ${normalizedPercent(unknownContract[1])}% всего связанного объёма.`
+      : `Sender history touches unknown-contract volume at ${normalizedPercent(unknownContract[1])}% of total sender-related volume.`;
+  }
+
+  const unknownCounterparty = message.match(/^Sender history includes unknown counterparty volume at (\d+(?:[.,]\d+)?)% of total sender-related volume\.?$/i);
+  if (unknownCounterparty) {
+    return locale === "ru"
+      ? `В истории отправителя ${normalizedPercent(unknownCounterparty[1])}% связанного объёма приходится на неизвестных контрагентов.`
+      : `Sender history includes unknown counterparty volume at ${normalizedPercent(unknownCounterparty[1])}% of total sender-related volume.`;
+  }
+
+  const whitebit = message.match(/^WhiteBIT wallet exposure is treated as background source-policy context at (\d+(?:[.,]\d+)?)% of total sender-related volume\.?$/i);
+  if (whitebit) {
+    return locale === "ru"
+      ? `WhiteBIT exposure в истории отправителя составляет ${normalizedPercent(whitebit[1])}% связанного объёма; это фоновый source-policy контекст.`
+      : `WhiteBIT wallet exposure is treated as background source-policy context at ${normalizedPercent(whitebit[1])}% of total sender-related volume.`;
+  }
+
+  if (message.trim().toLowerCase() === "sender has both incoming and outgoing volume inside the exposure window.") {
+    return locale === "ru"
+      ? "У отправителя были и входящие, и исходящие переводы внутри окна анализа: это похоже на рабочий/ликвидный транзитный кошелёк."
+      : "Sender has both incoming and outgoing volume inside the exposure window.";
+  }
+
+  return null;
+}
+
+function contractVerdictReasonText(message: string, locale: BotLocale): string | null {
+  const normalized = message.trim().toLowerCase();
+  if (normalized === "unknown contract funded sender shortly before deposit.") {
+    return locale === "ru"
+      ? "Отправитель получил средства от неизвестного смарт-контракта незадолго до депозита."
+      : message;
+  }
+  if (normalized === "sender was funded shortly before this deposit by unknown smart contract.") {
+    return locale === "ru"
+      ? "Отправитель был пополнен неизвестным смарт-контрактом незадолго до этого депозита."
+      : message;
+  }
+  if (normalized.includes("exact approval-drain profile with transferfrom root evidence")) {
+    return locale === "ru"
+      ? "Найден точный approval-drain профиль: после approve контракт списал USDT через transferFrom у исходного владельца."
+      : "Exact approval-drain profile was found: after approve, the contract moved USDT with transferFrom from the original owner.";
+  }
+  if (normalized === "clean contract intent could not be verified automatically.") {
+    return locale === "ru"
+      ? "Назначение контракта не удалось автоматически подтвердить как чистое."
+      : message;
+  }
+  if (/matched deterministic service metadata\.?$/i.test(message.trim())) {
+    return locale === "ru"
+      ? "Контракт совпал с локальными признаками известного сервиса."
+      : message;
+  }
+  if (/service contract matched deterministic allowlist\.?$/i.test(message.trim())) {
+    return locale === "ru"
+      ? "Контракт сервиса совпал с локальным allowlist."
+      : message;
+  }
+  if (normalized.includes("verify20")) {
+    return locale === "ru"
+      ? "В контрактном маршруте есть Verify20/wrapper-вызовы: это сильный drainer-campaign контекст, но не точное доказательство кражи без approve/transferFrom/provenance цепочки."
+      : message;
+  }
+  return null;
+}
+
 export function normalizeNotificationReason(message: string, locale: BotLocale): string {
   const normalized = message.trim().toLowerCase();
 
   const rawText = rawActionOrReasonText(message, locale);
   if (rawText) return rawText;
+
+  const incomingCoverage = incomingDepositCoverageText(message, locale);
+  if (incomingCoverage) return incomingCoverage;
+
+  const sourceExposure = sourceExposureText(message, locale);
+  if (sourceExposure) return sourceExposure;
+
+  const senderHistory = senderHistoryText(message, locale);
+  if (senderHistory) return senderHistory;
+
+  const contractReason = contractVerdictReasonText(message, locale);
+  if (contractReason) return contractReason;
 
   if (isCleanSourceNotProven(message.trim())) {
     return cleanSourceText(locale);

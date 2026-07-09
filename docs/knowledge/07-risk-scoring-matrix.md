@@ -80,6 +80,10 @@ A broad Verify20 campaign can increase review pressure, but hard evidence
 floors require exact approval/provenance profiles or another deterministic hard
 evidence source. Plain canonical USDT transfers do not count as drainer-like
 contract-driven evidence.
+Repeated live cases have shown similar Verify20 wrapper contracts across
+drainer-like flows. Treat that as strong drainer-campaign context for the
+contract AI/case-file layer and manual review, not as a standalone 95/100 hard
+floor unless exact approve -> transferFrom -> receiver provenance is present.
 
 Exact approval-drain evidence is a critical hard floor at 95/100. This includes
 `forensic_approval_drain_provenance` and the saved system

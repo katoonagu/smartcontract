@@ -209,8 +209,18 @@ of these decisions, update this file in the same work.
 - Canonical USDT transfers stay plain; Verify20 and similar non-USDT wrapper
   calls are campaign context until exact approval/provenance proof is
   established.
+- Similar Verify20 wrapper contracts seen across drainer-like cases should be
+  passed into contract AI/case-file interpretation as strong campaign context
+  and shown in plain language. They still must not become a 95/100 hard floor
+  without exact approve -> transferFrom -> receiver provenance.
 - Reports include enrichment denominators and complete/lower-bound status so
   partial campaign counts are not presented as complete totals.
+
+### 2026-07-09 Incoming Deposit Telegram Copy
+
+- Incoming Deposit Telegram output must translate coverage blockers,
+  source-share diagnostics, sender-history context, and common contract verdict
+  reasons into Russian-first wording instead of leaking raw scoring strings.
 
 ### Planned Behavior
 

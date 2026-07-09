@@ -266,6 +266,12 @@ such as `EDD_SOF`, `manual_review_required`, `provider_cap_unresolved`,
 `incoming_history_not_fetched`, and `service_boundary_reached` into
 human-readable RU/EN text. Raw codes can remain in Admin/debug details, but
 user-facing Telegram copy should explain the requested action or coverage limit.
+Incoming Deposit Telegram alerts also normalize coverage blocks, source-share
+diagnostics, sender-history exposure lines, and common contract-verdict reasons
+into Russian-first copy. The bot should not show raw phrases such as
+`Final incoming-deposit scoring is blocked...`, `Observed unknown source
+paths...`, `Sender history includes unknown counterparty volume...`, or raw
+`drainer_like`/`unknown_suspicious` verdict labels to Russian users.
 Telegram also normalizes approval-drain evidence. FastCheck preliminary output
 must show the reason that actually drives the score; if the score comes from
 `approval_drain_proximity`, the `Почему` block explains the saved exact

@@ -174,21 +174,21 @@ function incomingDepositCorridorContextText(locale: BotLocale): string {
     : "Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.";
 }
 
-function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind, locale: BotLocale): string {
   switch (kind) {
     case "bridge_router_dex":
-      return "bridge/router/DEX boundary";
+      return locale === "ru" ? "граница bridge/router/DEX" : "bridge/router/DEX boundary";
     case "htx_huobi":
-      return "HTX/Huobi source boundary";
+      return locale === "ru" ? "граница источника HTX/Huobi" : "HTX/Huobi source boundary";
     case "risky_label":
-      return "risky-label source boundary";
+      return locale === "ru" ? "граница источника с риск-лейблом" : "risky-label source boundary";
     case "unknown_contract":
-      return "unknown-contract source boundary";
+      return locale === "ru" ? "граница неизвестного смарт-контракта" : "unknown-contract source boundary";
     case "unknown":
-      return "unknown source boundary";
+      return locale === "ru" ? "неизвестная граница источника" : "unknown source boundary";
     case "clean_cex":
     default:
-      return "source boundary";
+      return locale === "ru" ? "граница источника" : "source boundary";
   }
 }
 
@@ -198,18 +198,18 @@ function sharedIncomingExposureContextLines(report: IncomingDepositRiskReport, l
   if (sourceExposure && Number.isFinite(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
     lines.push(locale === "en"
       ? `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
-      : `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+      : `HTX/Huobi покрывает ${clampedPercent(sourceExposure.htxHuobiShare)} выбранной суммы.`);
   }
   if (report.subjectExposureProfile && Number.isFinite(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
     lines.push(locale === "en"
       ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
-      : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+      : "Историческая связь с HTX/Huobi — это контекст по отправителю, а не доказательство источника выбранной суммы.");
   }
   if (sourceExposure?.unresolvedBoundary) {
-    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind);
+    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind, locale);
     lines.push(locale === "en"
       ? `The graph stopped before resolving a material ${boundaryLabel}.`
-      : `The graph stopped before resolving a material ${boundaryLabel}.`);
+      : `Граф остановился до разрешения существенной границы: ${boundaryLabel}.`);
   }
   return lines;
 }
@@ -271,12 +271,26 @@ function formatContractAddress(address: string | null): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function contractVerdictKindText(verdict: IncomingDepositRiskReport["contractVerdicts"][number]["verdict"], locale: BotLocale): string {
+  if (locale === "en") return verdict;
+  switch (verdict) {
+    case "legitimate_service":
+      return "легитимный сервис";
+    case "drainer_like":
+      return "похоже на drainer";
+    case "unknown_suspicious":
+      return "подозрительный неизвестный контракт";
+    case "unknown_insufficient_data":
+      return "недостаточно данных по контракту";
+  }
+}
+
 function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport, locale: BotLocale): string | null {
   if (report.contractVerdicts.length === 0) return null;
   const addressConnector = locale === "en" ? "for" : "для";
   return bulletList(report.contractVerdicts.slice(0, 3).map((verdict) => {
-    const reason = verdict.reasons[0] ? ` - ${verdict.reasons[0]}` : "";
-    return `${verdict.verdict} ${verdict.contractRiskScore}/100 ${addressConnector} ${formatContractAddress(verdict.contractAddress)}${reason}`;
+    const reason = verdict.reasons[0] ? ` - ${normalizeNotificationReason(verdict.reasons[0], locale)}` : "";
+    return `${contractVerdictKindText(verdict.verdict, locale)} ${verdict.contractRiskScore}/100 ${addressConnector} ${formatContractAddress(verdict.contractAddress)}${reason}`;
   }));
 }
 

@@ -15,7 +15,7 @@ import type {
   ServiceClassification
 } from "../types";
 
-export const CONTRACT_LLM_VERDICT_POLICY_VERSION = "2026-05-31-contract-llm-v2";
+export const CONTRACT_LLM_VERDICT_POLICY_VERSION = "2026-07-09-contract-llm-v3";
 
 export type BuildContractAnalysisCaseFilesInput = {
   subjectAddress: string;
@@ -590,6 +590,8 @@ const systemPrompt = [
   "approval_not_found means exact approval proof was not found and weakens exact approval-drain proof.",
   "Do not call exact approval-drain unless the case file contains deterministic approve/spender/transferFrom/path proof.",
   "Service classifications, receiver classifications, route adapters, bridge/router/DEX labels, and economic output are false-positive guards.",
+  "Verify20 and similar wrapper methods have been observed across drainer-like campaigns. Treat them as strong drainer-campaign context when they appear with approval/transferFrom evidence, repeated receiver patterns, or weak service guards.",
+  "Do not classify a contract as exact drainer proof from the Verify20 method name alone; exact proof still requires deterministic approve, spender, transferFrom, and receiver/path evidence.",
   "Dust/marker tokens, misleading method names, single-method proxies, unverified contracts, and low post-flow balance are supporting context only.",
   "If verdict is drainer_like or unknown_suspicious, include falsePositiveNotes explaining why the case may still be a normal bridge/router/service route."
 ].join("\n");

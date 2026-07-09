@@ -64,6 +64,38 @@ describe("notification text helpers", () => {
     );
   });
 
+  it("normalizes incoming deposit coverage and exposure reasons for Russian user text", () => {
+    expect(normalizeNotificationReason(
+      "Final incoming-deposit scoring is blocked until mandatory hop history is covered: partial_budget_exhausted.",
+      "ru"
+    )).toBe(
+      "Финальный вывод по депозиту пока заблокирован: нужно покрыть обязательную историю одного из hop-адресов. Проверка уперлась в локальный бюджет загрузки истории; финальный вывод требует догрузки данных."
+    );
+    expect(normalizeNotificationReason(
+      "Observed unknown source paths account for 100% of checked-deposit source share.",
+      "ru"
+    )).toBe("100% проверенного источника депозита осталось в неизвестных ветках происхождения.");
+    expect(normalizeNotificationReason(
+      "Sender history includes unknown counterparty volume at 88% of total sender-related volume.",
+      "ru"
+    )).toBe("В истории отправителя 88% связанного объёма приходится на неизвестных контрагентов.");
+    expect(normalizeNotificationReason(
+      "Sender has both incoming and outgoing volume inside the exposure window.",
+      "ru"
+    )).toBe("У отправителя были и входящие, и исходящие переводы внутри окна анализа: это похоже на рабочий/ликвидный транзитный кошелёк.");
+  });
+
+  it("normalizes common contract verdict reasons for Russian user text", () => {
+    expect(normalizeNotificationReason(
+      "Exact approval-drain profile with transferFrom root evidence from victim to spender contract.",
+      "ru"
+    )).toBe("Найден точный approval-drain профиль: после approve контракт списал USDT через transferFrom у исходного владельца.");
+    expect(normalizeNotificationReason(
+      "Unknown contract funded sender shortly before deposit.",
+      "ru"
+    )).toBe("Отправитель получил средства от неизвестного смарт-контракта незадолго до депозита.");
+  });
+
   it("normalizes clean CEX and source-boundary caveats", () => {
     expect(normalizeNotificationReason("Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found.", "ru")).toBe(
       "Чистый CEX-источник не доказан полностью. Кошелёк похож на операционный или ликвидный, жёстких плохих доказательств нет."
