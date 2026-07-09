@@ -129,11 +129,8 @@ function unique(lines: string[]): string[] {
   return lines.filter((line, index, all) => line.trim().length > 0 && all.indexOf(line) === index);
 }
 
-function exactApprovalDrainProfile(input: RiskExplanationInput): ApprovalDrainProvenanceProfile | null {
-  return [
-    ...input.whereReport.approvalDrainProvenanceProfiles,
-    ...(input.deepReport?.approvalDrainProvenanceProfiles ?? [])
-  ].find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from") ?? null;
+function exactApprovalDrainProfile(profiles: ApprovalDrainProvenanceProfile[] | undefined): ApprovalDrainProvenanceProfile | null {
+  return profiles?.find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from") ?? null;
 }
 
 function approvalDrainText(profile: ApprovalDrainProvenanceProfile | null): { ru: string; en: string } {
@@ -344,9 +341,9 @@ function sourceUnresolvedBoundaryLabel(
 
 function addWhereFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const report = input.whereReport;
-  const exactDrain = exactApprovalDrainProfile(input);
+  const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles);
   const hasApprovalDrain = report.assessment.hardBadEvidence.some((evidence) => evidence.kind === "approval_drain") ||
-    input.unifiedRisk.reasons.some((reason) => reason.code === "exact_approval_drain");
+    exactDrain !== null;
   if (hasApprovalDrain) {
     const text = approvalDrainText(exactDrain);
     pushFact(allFacts, sections, "where", {
@@ -481,6 +478,20 @@ function addWhereFacts(input: RiskExplanationInput, allFacts: RiskExplanationFac
 function addDeepFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const report = input.deepReport;
   if (!report) return;
+  const exactDrain = exactApprovalDrainProfile(report.approvalDrainProvenanceProfiles);
+  if (exactDrain) {
+    const text = approvalDrainText(exactDrain);
+    pushFact(allFacts, sections, "deep", {
+      kind: "hard_evidence",
+      source: "deep",
+      priority: 10,
+      dedupeKey: "approval_drain_exact",
+      textRu: text.ru,
+      textEn: text.en,
+      actionRu: "Не принимать депозит автоматически.",
+      actionEn: "Do not accept the deposit automatically."
+    });
+  }
   if (report.stablecoinRestrictionProfiles?.some((profile) => profile.isBlacklisted)) {
     pushFact(allFacts, sections, "deep", {
       kind: "hard_evidence",
@@ -579,6 +590,18 @@ function addDeepFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
 
 function addUnifiedFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact[], sections: MutableSections): void {
   const result = input.unifiedRisk;
+  if (result.coverageLevel !== "complete") {
+    const fact: RiskExplanationFact = {
+      kind: "coverage_limit",
+      source: "coverage",
+      priority: 89,
+      dedupeKey: "unified_coverage_incomplete",
+      textRu: "Проверка относится к выбранной сумме и доступным данным, а не ко всей истории адреса.",
+      textEn: "The check applies to the selected amount and available data, not the address's full history."
+    };
+    addFact(allFacts, fact);
+    addFact(sections.where, fact);
+  }
   if (result.reasons.some((reason) => reason.code === "where_source_policy_floor")) {
     const fact: RiskExplanationFact = {
       kind: "source_policy",
@@ -663,6 +686,8 @@ function recommendations(decision: RiskExplanationDecision, facts: RiskExplanati
     ru.push("Передать кейс на ручную проверку/compliance.");
     en.push("Send the case to manual compliance review.");
   } else if (decision === "REVIEW") {
+    ru.push("Нужна ручная проверка.");
+    en.push("Manual review is required.");
     ru.push("Запросить подтверждение происхождения средств.");
     en.push("Request source-of-funds evidence.");
     ru.push("Не принимать автоматически, если сумма существенная.");

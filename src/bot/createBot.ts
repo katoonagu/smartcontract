@@ -3158,11 +3158,11 @@ function compactDecisionLine(decision: RiskExplanationDecision, locale: BotLocal
   }
   switch (decision) {
     case "ACCEPTABLE":
-      return "Решение: можно принять автоматически.\nРешение: ACCEPTABLE — Сильных риск-сигналов не найдено.";
+      return "Решение: можно принять автоматически. Сильных риск-сигналов не найдено.";
     case "REVIEW":
-      return "Решение: не принимать автоматически.\nРешение: REVIEW — Нужна ручная проверка.";
+      return "Решение: не принимать автоматически.";
     case "DECLINE":
-      return "Решение: не принимать автоматически.\nРешение: DECLINE — Адрес нельзя принять автоматически.";
+      return "Решение: не принимать автоматически.";
     case "NO_FINAL_DECISION":
       return "Решение: без итогового решения.";
   }

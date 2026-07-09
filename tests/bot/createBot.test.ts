@@ -922,6 +922,14 @@ function plainTelegramText(text: string): string {
     .replace(/&#39;/g, "'");
 }
 
+function plainSectionText(text: string, title: string): string {
+  const start = text.indexOf(title);
+  if (start < 0) return "";
+  const afterTitle = text.slice(start + title.length);
+  const nextSection = afterTitle.search(/\n\n\S/);
+  return nextSection >= 0 ? afterTitle.slice(0, nextSection).trim() : afterTitle.trim();
+}
+
 function lastPlainText(calls: ReplyCall[]): string {
   return plainTelegramText(lastText(calls));
 }
@@ -3100,7 +3108,8 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "ru"
     });
 
-    expect(text).toContain("Решение: REVIEW");
+    expect(text).toContain("Решение: не принимать автоматически.");
+    expect(text).not.toContain("Решение: REVIEW");
     expect(text).toContain("Что делать");
     expect(text).toContain("Почему");
     expect(text).toContain("Что важно учесть");
@@ -3368,6 +3377,97 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("source-policy threshold");
   });
 
+  it("attributes DeepCheck-only exact approval-drain evidence to the DeepCheck detailed section", () => {
+    const deepApprovalProfile = {
+      victimAddress: "TVictim111111111111111111111111111111",
+      approvalTxHash: "tx-approval-root-cause",
+      drainTxHash: "tx-transferfrom-drain",
+      spenderAddress: "TSpender11111111111111111111111111111",
+      firstReceiverAddress: walletAddress,
+      subjectAddress: walletAddress,
+      hopDepth: 0 as const,
+      amountRaw: "309000000000",
+      amountPreservationRatio: 0.991,
+      approvalAt: "2026-05-20T09:50:00.000Z",
+      drainAt: "2026-05-20T10:00:00.000Z",
+      pathTxHashes: ["tx-transferfrom-drain"],
+      pathAddresses: ["TVictim111111111111111111111111111111", walletAddress],
+      score: 95,
+      evidenceStrength: "exact_approval_and_transfer_from" as const,
+      subjectTokenState: null,
+      victimTokenState: null,
+      features: []
+    };
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      approvalDrainProvenanceProfiles: [],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      },
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "100000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressDetailedReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport: deepReportForTest({
+        approvalDrainProvenanceProfiles: [deepApprovalProfile]
+      }),
+      locale: "ru"
+    });
+    const whereSection = plainSectionText(text, "Where Is Money");
+    const deepSection = plainSectionText(text, "DeepCheck");
+
+    expect(deepSection).toContain("Найдена точная drainer-цепочка");
+    expect(whereSection).not.toContain("Найдена точная drainer-цепочка");
+    expect((text.match(/Найдена точная drainer-цепочка/g) ?? []).length).toBe(1);
+  });
+
+  it("shows unified incomplete coverage in detailed mode even when Where coverage is complete", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "100000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressDetailedReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "ru"
+    });
+    const whereSection = plainSectionText(text, "Where Is Money");
+
+    expect(whereSection).toContain("Проверка относится к выбранной сумме и доступным данным, а не ко всей истории адреса.");
+  });
+
   it("formats a Russian no-final-decision report", () => {
     const whereReport = scoreInvalidWhereReportForTest();
 
@@ -3485,7 +3585,8 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "ru"
     });
 
-    expect(text).toContain("Решение: DECLINE");
+    expect(text).toContain("Решение: не принимать автоматически.");
+    expect(text).not.toContain("Решение: DECLINE");
     expect(text).toContain("Не принимать автоматически.");
     expect(text).toContain("Найдена точная approval-drain цепочка");
     expect(text).toContain("Ранее система уже сохраняла этот адрес как связанный с exact approval-drain.");
@@ -3589,8 +3690,8 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Проверка адреса — итог");
-    expect(text).toContain("Решение: DECLINE");
-    expect(text).toContain("Адрес нельзя принять автоматически.");
+    expect(text).toContain("Решение: не принимать автоматически.");
+    expect(text).not.toContain("Решение: DECLINE");
     expect(text).toContain("Итоговый риск");
     expect(text).toContain("95/100");
     expect(text).toContain("Что делать");
@@ -3640,7 +3741,8 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Проверка адреса — итог");
-    expect(text).toContain("Решение: ACCEPTABLE");
+    expect(text).toContain("Решение: можно принять автоматически.");
+    expect(text).not.toContain("Решение: ACCEPTABLE");
     expect(text).toContain("Сильных риск-сигналов не найдено.");
     expect(text).toContain("Итоговый риск");
     expect(text).toContain("Что делать");
@@ -4973,7 +5075,8 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "ru"
     });
 
-    expect(text).toContain("Решение: DECLINE");
+    expect(text).toContain("Решение: не принимать автоматически.");
+    expect(text).not.toContain("Решение: DECLINE");
     expect(text).toContain("95/100");
     expect(text).toContain("USDT blacklist");
   });
@@ -6227,7 +6330,8 @@ describe("bot command and inline UX smoke coverage", () => {
       { locale: "ru" }
     ).text);
 
-    expect(finalText).toContain("Решение: REVIEW — Нужна ручная проверка.");
+    expect(finalText).toContain("Решение: не принимать автоматически.");
+    expect(finalText).not.toContain("Решение: REVIEW");
     expect(finalText).not.toContain("Manual review is required.");
     expect(finalText).not.toContain("Решение: ACCEPTABLE");
   });
