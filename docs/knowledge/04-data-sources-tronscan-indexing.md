@@ -1,10 +1,11 @@
 ---
 status: current
-last_verified: 2026-07-06
+last_verified: 2026-07-09
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
   - src/tron/tronscanScheduler.ts
+  - src/check/theftReportTransaction.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/fundingFirstSourceProvenance.ts
   - src/forensics/targetedHistoryCoordinator.ts
@@ -16,6 +17,7 @@ code_refs:
   - scripts/repairTargetedIndexCoverage.ts
   - tests/config/config.test.ts
   - tests/tron/tronscanScheduler.test.ts
+  - tests/check/theftReportTransaction.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/fundingFirstSourceProvenance.test.ts
   - tests/forensics/addressIndexWorker.test.ts
@@ -34,6 +36,12 @@ supersedes:
 
 The project uses TronScan as the primary source for TRON USDT transfer history
 in this phase. There is no manual CSV product workflow.
+
+The Telegram theft-report transaction parser validates the parent TronScan
+transaction as confirmed/successful. Nested `trc20TransferInfo` rows can omit
+their own `confirmed` field on real successful transfers, so a row with official
+USDT contract, successful status/result fields, sender, receiver, and amount is
+accepted when the parent transaction is confirmed.
 
 The system supports a TronScan API key pool:
 
