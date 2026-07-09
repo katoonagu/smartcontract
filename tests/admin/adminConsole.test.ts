@@ -61,6 +61,20 @@ function adminWalletIntelIntersectionHelpers() {
   };
 }
 
+function adminGraphCrossRunHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function graphAddressBatches(addresses, batchSize)");
+  const end = html.indexOf("async function loadGraphCrossRunSummaries", start);
+  const helperBlock = html.slice(start, end);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return new Function(helperBlock + "\nreturn { graphAddressBatches };")() as {
+    graphAddressBatches(addresses: string[], batchSize: number): string[][];
+  };
+}
+
 function adminWalletIntelGraphHelpers() {
   const html = adminConsoleHtml();
   const start = html.indexOf("function walletIntelGraphNodeLabel(value)");
@@ -410,7 +424,8 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
     const stateBlock = html.slice(html.indexOf("const state = {"), html.indexOf("if (![\"all\", \"incoming\""));
     const loadGraphBlock = html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
-    const summaryBlock = html.slice(html.indexOf("async function loadGraphCrossRunSummaries"), html.indexOf("function crossRunSummaryForNode"));
+    const summaryBlock = html.slice(html.indexOf("function clearGraphCrossRunState"), html.indexOf("function crossRunSummaryForNode"));
+    const batchLoopBlock = summaryBlock.slice(summaryBlock.indexOf("for (const batch"), summaryBlock.indexOf("state.crossRunAddressSummaries = summaries;"));
     const clearBeforeRenderIndex = loadGraphBlock.indexOf("clearGraphCrossRunState();");
     const firstRenderGraphIndex = loadGraphBlock.indexOf("renderGraph();");
 
@@ -421,13 +436,30 @@ describe("adminConsoleHtml", () => {
     expect(clearBeforeRenderIndex).toBeGreaterThan(-1);
     expect(clearBeforeRenderIndex).toBeLessThan(firstRenderGraphIndex);
     expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries(jobId, requestSeq);");
+    expect(summaryBlock).toContain("function graphAddressBatches");
     expect(summaryBlock).toContain("async function loadGraphCrossRunSummaries(jobId, requestSeq)");
     expect(summaryBlock).toContain("clearGraphCrossRunState();");
+    expect(summaryBlock).toContain("graphAddressBatches(addresses, 200)");
+    expect(summaryBlock).toContain("for (const batch of graphAddressBatches(addresses, 200))");
+    expect(summaryBlock).toContain("const query = batch.map((address) => encodeURIComponent(address)).join(\",\");");
     expect(summaryBlock).toContain("requestSeq !== state.graphRequestSeq");
     expect(summaryBlock).toContain("state.activeJobId !== jobId");
+    expect(batchLoopBlock).toContain("requestSeq !== state.graphRequestSeq");
+    expect(batchLoopBlock).toContain("state.activeJobId !== jobId");
     expect(summaryBlock).toContain("/admin/api/wallet-intelligence/address-summaries?addresses=");
     expect(summaryBlock).toContain("graphNodes(state.graph)");
     expect(summaryBlock).toContain("nodeAddress(node)");
+  });
+
+  it("loads Wallet Intelligence graph summaries in 200-address batches", () => {
+    const helpers = adminGraphCrossRunHelpers();
+    const addresses = Array.from({ length: 201 }, (_, index) => "address-" + index);
+
+    const batches = helpers.graphAddressBatches(addresses, 200);
+
+    expect(batches.map((batch) => batch.length)).toEqual([200, 1]);
+    expect(batches[0][0]).toBe("address-0");
+    expect(batches[1][0]).toBe("address-200");
   });
 
   it("renders a focused Wallet Intelligence graph from stored edges", () => {

@@ -2312,6 +2312,14 @@ export function adminConsoleHtml(): string {
       state.crossRunAddressDetailByAddress = new Map();
       state.crossRunAddressDetailLoading = new Set();
     }
+    function graphAddressBatches(addresses, batchSize) {
+      const size = Math.max(1, Number(batchSize) || 200);
+      const batches = [];
+      for (let index = 0; index < addresses.length; index += size) {
+        batches.push(addresses.slice(index, index + size));
+      }
+      return batches;
+    }
     async function loadGraphCrossRunSummaries(jobId, requestSeq) {
       if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
       clearGraphCrossRunState();
@@ -2322,16 +2330,22 @@ export function adminConsoleHtml(): string {
         renderSelectionCard();
         return;
       }
-      try {
-        const query = addresses.map((address) => encodeURIComponent(address)).join(",");
-        const body = await api("/admin/api/wallet-intelligence/address-summaries?addresses=" + query);
+      const summaries = new Map();
+      for (const batch of graphAddressBatches(addresses, 200)) {
         if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
-        state.crossRunAddressSummaries = new Map(asArray(body.addresses).map((item) => [item.address, item]));
-      } catch (error) {
-        if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
-        state.crossRunAddressSummaries = new Map();
+        try {
+          const query = batch.map((address) => encodeURIComponent(address)).join(",");
+          const body = await api("/admin/api/wallet-intelligence/address-summaries?addresses=" + query);
+          if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
+          for (const item of asArray(body.addresses)) {
+            if (item?.address) summaries.set(item.address, item);
+          }
+        } catch (error) {
+          if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
+        }
       }
       if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
+      state.crossRunAddressSummaries = summaries;
       renderGraph();
       renderSelectionCard();
     }
