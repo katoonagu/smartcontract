@@ -1932,6 +1932,108 @@ function optionalArrayField<T = unknown>(record: Record<string, unknown>, key: s
   return Array.isArray(value) ? value as T[] : [];
 }
 
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function approvalDrainEvidenceStrength(value: unknown): boolean {
+  return value === "exact_approval_and_transfer_from" || value === "route_linked";
+}
+
+function normalizeDeepApprovalDrainProfiles(value: unknown, subjectAddress: string): Record<string, unknown>[] {
+  return recordArray(value).flatMap((profile) => {
+    if (
+      profile.subjectAddress !== subjectAddress ||
+      typeof profile.victimAddress !== "string" ||
+      typeof profile.approvalTxHash !== "string" ||
+      typeof profile.drainTxHash !== "string" ||
+      typeof profile.spenderAddress !== "string" ||
+      typeof profile.firstReceiverAddress !== "string" ||
+      !(profile.hopDepth === 0 || profile.hopDepth === 1 || profile.hopDepth === 2) ||
+      typeof profile.amountRaw !== "string" ||
+      !isFiniteNumber(profile.amountPreservationRatio) ||
+      typeof profile.approvalAt !== "string" ||
+      typeof profile.drainAt !== "string" ||
+      !isStringArray(profile.pathTxHashes) ||
+      profile.pathTxHashes.length === 0 ||
+      !isStringArray(profile.pathAddresses) ||
+      profile.pathAddresses.length === 0 ||
+      !isFiniteNumber(profile.score) ||
+      !approvalDrainEvidenceStrength(profile.evidenceStrength)
+    ) {
+      return [];
+    }
+    return [{
+      ...profile,
+      features: recordArray(profile.features),
+      falsePositiveGuards: recordArray(profile.falsePositiveGuards),
+      supportingFingerprints: recordArray(profile.supportingFingerprints)
+    }];
+  });
+}
+
+function stablecoinRestrictionMethod(value: unknown): boolean {
+  return value === "isBlackListed(address)" || value === "getBlackListStatus(address)";
+}
+
+function normalizeDeepStablecoinRestrictionProfiles(value: unknown, subjectAddress: string): Record<string, unknown>[] {
+  return recordArray(value).flatMap((profile) => {
+    const methods = isRecord(profile.methods) ? profile.methods : null;
+    if (
+      profile.subjectAddress !== subjectAddress ||
+      typeof profile.tokenContract !== "string" ||
+      profile.tokenSymbol !== "USDT" ||
+      profile.tokenStandard !== "TRC20" ||
+      !isFiniteNumber(profile.decimals) ||
+      typeof profile.isBlacklisted !== "boolean" ||
+      typeof profile.checkedAt !== "string" ||
+      profile.evidenceStrength !== "exact_contract_state" ||
+      !methods ||
+      !stablecoinRestrictionMethod(methods.blacklist)
+    ) {
+      return [];
+    }
+    return [{
+      ...profile,
+      methods: {
+        blacklist: methods.blacklist,
+        balance: methods.balance === "balanceOf(address)" ? methods.balance : null
+      }
+    }];
+  });
+}
+
+function assetContinuationTokenQuality(value: unknown): boolean {
+  return value === "verified" || value === "known" || value === "unknown";
+}
+
+function assetContinuationDestinationRisk(value: unknown): boolean {
+  return value === "provider_risk" ||
+    value === "internal_label" ||
+    value === "service_boundary" ||
+    value === "unknown";
+}
+
+function normalizeDeepAssetContinuationProfiles(value: unknown, subjectAddress: string): Record<string, unknown>[] {
+  return recordArray(value).flatMap((profile) => {
+    if (
+      profile.subjectAddress !== subjectAddress ||
+      profile.sourceAsset !== "USDT" ||
+      typeof profile.continuationAssetSymbol !== "string" ||
+      typeof profile.continuationTokenContract !== "string" ||
+      typeof profile.conversionTxHash !== "string" ||
+      !assetContinuationDestinationRisk(profile.destinationRisk) ||
+      !assetContinuationTokenQuality(profile.tokenQuality) ||
+      !isFiniteNumber(profile.score) ||
+      profile.evidenceClass !== "asset_continuation" ||
+      !isStringArray(profile.reasons)
+    ) {
+      return [];
+    }
+    return [profile];
+  });
+}
+
 function defaultDeepProviderBudget(): DeepAddressForensicReport["providerBudget"] {
   return {
     providerCallBudget: null,
@@ -1999,10 +2101,10 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     inboundProvenanceProfiles: inboundProvenanceProfiles as DeepAddressForensicReport["inboundProvenanceProfiles"],
     counterpartyRiskProfiles: counterpartyRiskProfiles as DeepAddressForensicReport["counterpartyRiskProfiles"],
     directCounterpartyInteractionProfiles: optionalArrayField(job.resultJson, "directCounterpartyInteractionProfiles") as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
-    approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
+    approvalDrainProvenanceProfiles: normalizeDeepApprovalDrainProfiles(approvalDrainProvenanceProfiles, subjectAddress) as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
     contractDrivenCampaignSummary: contractDrivenCampaignSummary as DeepAddressForensicReport["contractDrivenCampaignSummary"],
-    assetContinuationProfiles: optionalArrayField(job.resultJson, "assetContinuationProfiles") as DeepAddressForensicReport["assetContinuationProfiles"],
-    stablecoinRestrictionProfiles: optionalArrayField(job.resultJson, "stablecoinRestrictionProfiles") as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
+    assetContinuationProfiles: normalizeDeepAssetContinuationProfiles(job.resultJson.assetContinuationProfiles, subjectAddress) as DeepAddressForensicReport["assetContinuationProfiles"],
+    stablecoinRestrictionProfiles: normalizeDeepStablecoinRestrictionProfiles(job.resultJson.stablecoinRestrictionProfiles, subjectAddress) as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
     boundaryExposureProfiles: optionalArrayField(job.resultJson, "boundaryExposureProfiles") as DeepAddressForensicReport["boundaryExposureProfiles"],
     operationalFlowProfiles: optionalArrayField(job.resultJson, "operationalFlowProfiles") as DeepAddressForensicReport["operationalFlowProfiles"],
     walletRoleProfiles: optionalArrayField(job.resultJson, "walletRoleProfiles") as DeepAddressForensicReport["walletRoleProfiles"],

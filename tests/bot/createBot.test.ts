@@ -2932,6 +2932,51 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Deep forensic status");
   });
 
+  it("does not show malformed persisted Deep hard evidence in detailed check_status", async () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const deepReport = deepReportForTest();
+    const deepResult = persistedDeepResultJsonForTest(deepReport);
+    deepResult.approvalDrainProvenanceProfiles = [{
+      evidenceStrength: "exact_approval_and_transfer_from",
+      score: 95
+    }];
+    deepResult.stablecoinRestrictionProfiles = [{
+      isBlacklisted: true
+    }];
+    deepResult.assetContinuationProfiles = [{
+      evidenceClass: "asset_continuation",
+      tokenQuality: "verified",
+      score: 84,
+      reasons: ["Malformed asset continuation should be ignored."]
+    }];
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job-1",
+      kind: "address_deep_check",
+      resultJson: deepResult
+    });
+    const whereJob = whereIsMoneyJobForTest({
+      id: "where-job-1",
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      getForensicCheckJob: async () => deepJob,
+      getLatestWhereIsMoneyCheckJobForAddress: async () => whereJob
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status deep-job-1 detailed", userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Расширенный отчёт по адресу");
+    expect(text).not.toContain("Найдена точная drainer-цепочка");
+    expect(text).not.toContain("Адрес находится в активном TRC20 USDT blacklist");
+    expect(text).not.toContain("Найдена cross-chain или asset-continuation связь");
+    expect(text).not.toContain("Malformed asset continuation should be ignored");
+  });
+
   it("explains that detailed final report needs a completed where-is-money job", async () => {
     const deepReport = deepReportForTest();
     const deepJob = whereIsMoneyJobForTest({
@@ -4893,8 +4938,28 @@ describe("bot command and inline UX smoke coverage", () => {
         coverageDebug: {}
       }
     });
+    const malformedHardEvidenceResultJson = persistedDeepResultJsonForTest(deepReport);
+    malformedHardEvidenceResultJson.approvalDrainProvenanceProfiles = [{
+      evidenceStrength: "exact_approval_and_transfer_from",
+      score: 95
+    }];
+    malformedHardEvidenceResultJson.stablecoinRestrictionProfiles = [{
+      isBlacklisted: true
+    }];
+    malformedHardEvidenceResultJson.assetContinuationProfiles = [{
+      evidenceClass: "asset_continuation",
+      tokenQuality: "verified",
+      score: 84,
+      reasons: ["Malformed asset continuation should be ignored."]
+    }];
+    const malformedHardEvidenceJob = whereIsMoneyJobForTest({
+      id: "deep-job-malformed-hard",
+      kind: "address_deep_check",
+      resultJson: malformedHardEvidenceResultJson
+    });
 
     const extractedReport = extractDeepForensicReportFromJob(matchingJob, walletAddress);
+    const malformedHardEvidenceReport = extractDeepForensicReportFromJob(malformedHardEvidenceJob, walletAddress);
 
     expect(extractedReport?.subjectAddress).toBe(walletAddress);
     expect(extractedReport?.assetContinuationProfiles).toEqual([
@@ -4925,6 +4990,9 @@ describe("bot command and inline UX smoke coverage", () => {
         exhausted: false
       }
     });
+    expect(malformedHardEvidenceReport?.approvalDrainProvenanceProfiles).toEqual([]);
+    expect(malformedHardEvidenceReport?.stablecoinRestrictionProfiles).toEqual([]);
+    expect(malformedHardEvidenceReport?.assetContinuationProfiles).toEqual([]);
     expect(extractDeepForensicReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
   });
