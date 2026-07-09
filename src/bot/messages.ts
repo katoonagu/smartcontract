@@ -9,7 +9,7 @@ import {
   telegramHtmlMessage,
   type TelegramHtmlMessage
 } from "../alerts/telegramHtml";
-import type { CustomerAlertMode, CustomerAlertRecipient, ObservedApprovalDrainEvent, WalletApproval } from "../storage/repositories";
+import type { CustomerAlertMode, CustomerAlertRecipient, ObservedApprovalDrainEvent, TheftReport, WalletApproval } from "../storage/repositories";
 import type { BotLocale, WalletAlertMode, WatchedWallet } from "../types";
 import type { WalletDashboard } from "../wallet/dashboard";
 import { formatMicroUsdt, formatSunAsTrx } from "../wallet/dashboard";
@@ -738,8 +738,26 @@ export function myIdMessage(input: { telegramUserId: string; username: string | 
   ]);
 }
 
-export function profileMessage(input: { telegramUserId: string; username: string | null; walletCount: number; locale?: BotLocale | null }): TelegramHtmlMessage {
+function theftReportsProfileBlock(reports: TheftReport[], locale: BotLocale): string[] {
+  if (reports.length === 0) {
+    return [kv(locale === "en" ? "Theft reports" : "Заявок о краже", code("0"))];
+  }
+  const latest = reports[0];
+  return [
+    kv(locale === "en" ? "Theft reports" : "Заявок о краже", code(String(reports.length))),
+    bold(locale === "en" ? "Latest theft report" : "Последняя заявка о краже"),
+    [
+      kv(locale === "en" ? "Status" : "Статус", code(latest.status)),
+      kv(locale === "en" ? "Amount" : "Сумма", code(`${latest.amountUsdt} USDT`)),
+      kv(locale === "en" ? "Receiver" : "Получатель", code(latest.reportedScamAddress)),
+      kv(locale === "en" ? "Report ID" : "ID заявки", code(latest.id))
+    ].join("\n")
+  ];
+}
+
+export function profileMessage(input: { telegramUserId: string; username: string | null; walletCount: number; theftReports?: TheftReport[]; locale?: BotLocale | null }): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const theftReports = input.theftReports ?? [];
   if (locale === "en") {
     return msg([
       bold("👤 Profile"),
@@ -749,6 +767,7 @@ export function profileMessage(input: { telegramUserId: string; username: string
         kv("Watched wallets", code(String(input.walletCount))),
         kv("Language", languageName(locale))
       ].join("\n"),
+      theftReportsProfileBlock(theftReports, locale).join("\n"),
       `Use ${code("/my_id")} to connect an alert admin.`
     ]);
   }
@@ -761,6 +780,7 @@ export function profileMessage(input: { telegramUserId: string; username: string
         kv("Кошельков под наблюдением", code(String(input.walletCount))),
         kv("Язык", languageName(locale))
       ].join("\n"),
+      theftReportsProfileBlock(theftReports, locale).join("\n"),
       `Для подключения админа алертов используйте ${code("/my_id")}.`
     ]);
   }
@@ -773,6 +793,7 @@ export function profileMessage(input: { telegramUserId: string; username: string
       kv("Watched wallets", code(String(input.walletCount))),
       kv("Language", "RU / EN")
     ].join("\n"),
+    theftReportsProfileBlock(theftReports, locale).join("\n"),
     `Use ${code("/my_id")} to connect an alert admin.`
   ]);
 }

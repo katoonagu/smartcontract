@@ -36,6 +36,7 @@ import {
   getTelegramUserLocale,
   listCustomerAlertRecipients,
   listAddressLabels,
+  listTheftReportsForTelegramUser,
   listWatchedWallets,
   markTheftReportAwaitingDeposit,
   removeCustomerAlertRecipient,
@@ -3924,13 +3925,17 @@ async function showSettings(ctx: Context, db: Db, telegramUserId: string, locale
 }
 
 async function showProfile(ctx: Context, db: Db, telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): Promise<void> {
-  const wallets = await listWatchedWallets(db, telegramUserId);
+  const [wallets, theftReports] = await Promise.all([
+    listWatchedWallets(db, telegramUserId),
+    listTheftReportsForTelegramUser(db, telegramUserId, { limit: 3 })
+  ]);
   await replyOrEdit(
     ctx,
     profileMessage({
       telegramUserId,
       username: ctx.from?.username ?? null,
       walletCount: wallets.length,
+      theftReports,
       locale
     }),
     profileKeyboard(locale)

@@ -37,6 +37,7 @@ import {
   getObservedTransactionForIncomingDeposit,
   markDigestSent,
   listTheftReports,
+  listTheftReportsForTelegramUser,
   markApprovalOwnerAlertFailed,
   markApprovalContextExpired,
   markApprovalContextFinalAlertSent,
@@ -326,6 +327,23 @@ describe("theft report repositories", () => {
       20,
       5
     ]);
+  });
+
+  it("lists theft reports for one Telegram user newest first", async () => {
+    const { db, queries } = createMockDb(1, [{ ...theftReportRow, telegram_user_id: "42" }]);
+
+    const reports = await listTheftReportsForTelegramUser(db, "42", { limit: 3 });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      telegramUserId: "42",
+      id: "report-1"
+    });
+    expect(compactSql(queries[0].sql)).toContain("from theft_reports");
+    expect(compactSql(queries[0].sql)).toContain("telegram_user_id = $1");
+    expect(compactSql(queries[0].sql)).toContain("order by created_at desc, id desc");
+    expect(compactSql(queries[0].sql)).toContain("limit $2");
+    expect(queries[0].params).toEqual(["42", 3]);
   });
 
   it("sanitizes theft report list pagination values", async () => {

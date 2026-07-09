@@ -2267,6 +2267,23 @@ export async function listTheftReports(db: Db, input: ListTheftReportsInput = {}
   return result.rows.map(mapTheftReportRow);
 }
 
+export async function listTheftReportsForTelegramUser(
+  db: Db,
+  telegramUserId: string,
+  input: Pick<ListTheftReportsInput, "limit"> = {}
+): Promise<TheftReport[]> {
+  const limit = sanitizeTheftReportListLimit(input.limit);
+  const result = await db.query(
+    `select ${theftReportColumns}
+     from theft_reports
+     where telegram_user_id = $1
+     order by created_at desc, id desc
+     limit $2`,
+    [telegramUserId, limit]
+  );
+  return result.rows.map(mapTheftReportRow);
+}
+
 export async function updateTheftReportAdminState(
   db: Db,
   input: UpdateTheftReportAdminStateInput

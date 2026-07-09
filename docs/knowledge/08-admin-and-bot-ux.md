@@ -35,6 +35,12 @@ internal admin note. The internal admin status and note are not forensic proof,
 do not change the bot's technical theft-report status, and do not send Telegram
 notifications. The workspace links to Forensics, Wallet Intelligence, and
 TronScan, but it does not launch new forensic jobs in the MVP.
+The Admin shell explicitly enforces `[hidden]` sections as non-rendered so the
+Wallet Intelligence, Forensics, and theft-report workspaces cannot visually
+overlap when route-specific CSS also defines their display layout.
+Telegram `/profile` shows the user's recent theft-report intake state: report
+count plus the latest report status, amount, receiver, and report id. This is a
+receipt/status surface, not proof that the claim has been adjudicated.
 
 For completed `address_deep_check` graphs, Admin defaults to `Full evidence`.
 That mode renders all nodes and edges returned by the graph API, including

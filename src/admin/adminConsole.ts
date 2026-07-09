@@ -54,6 +54,7 @@ export function adminConsoleHtml(): string {
       --radius-control: 6px;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html, body { height: 100%; }
     body {
       margin: 0;
@@ -1096,6 +1097,8 @@ export function adminConsoleHtml(): string {
     .edge.review { opacity: .92; }
     .edge.clean, .edge.acceptable { opacity: .9; }
     .edge.dim, .node.dim { opacity: .16; }
+    .edge.dim.selection-dim { opacity: .035; filter: none; }
+    .node.dim.selection-dim { opacity: .10; }
     .edge.timeline-context { opacity: .18; }
     .edge.timeline-focus { opacity: 1; filter: drop-shadow(0 0 13px rgba(125, 190, 220, .5)); }
     .node.timeline-context { opacity: .28; }
@@ -6537,11 +6540,12 @@ export function adminConsoleHtml(): string {
         const route = edgeRouteFor(edge, edgeRouteIndex);
         const selected = state.selected?.type === "edge" && state.selected.id === edge.id;
         const relatedToSelection = edgeIsSelectionRelated(edge);
+        const selectionDimmed = Boolean(state.selected && !selected && !relatedToSelection);
         const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);
         const visualRole = edgeVisualRole(edge);
         const speedClass = edgeSpeedClass(edge);
         const timelineClass = state.timelineRange ? (timelineFocusEdgeIds.has(edge.id) ? " timeline-focus" : " timeline-context") : "";
-        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + timelineClass + (visible ? "" : " dim");
+        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + timelineClass + (selectionDimmed ? " selection-dim" : "") + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -6557,7 +6561,7 @@ export function adminConsoleHtml(): string {
         const selectedLabel = txLabelMode === "selected" && selectedEdgeLabelVisible(edge);
         const importantLabel = txLabelMode === "important" && edgeShouldShowImportantCanvasAmount(edge);
         const allLabel = txLabelMode === "all";
-        const labelEnabled = txLabelMode !== "off" && (allLabel || importantLabel || selectedLabel);
+        const labelEnabled = txLabelMode !== "off" && !selectionDimmed && (allLabel || importantLabel || selectedLabel);
         const shouldShowAmount = labelEnabled && edgeShouldShowCanvasAmount(edge);
         const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);
         const amountLines = labelEnabled ? [shouldShowAmount ? amountLabel : ""].filter(Boolean) : [];
@@ -6581,11 +6585,13 @@ export function adminConsoleHtml(): string {
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;
-        const visible = matchesSearch(node) && isSelectedConnected(node.id);
+        const relatedToSelection = isSelectedConnected(node.id);
+        const selectionDimmed = Boolean(state.selected && !selected && !relatedToSelection);
+        const visible = matchesSearch(node) && (!state.selected || selected || relatedToSelection);
         const role = nodeRole(node);
         const roleClass = state.roleMarksVisible && role ? " role-marked node-role-" + escapeHtml(role) : "";
         const timelineClass = state.timelineRange ? (timelineFocusNodeIds.has(node.id) ? " timeline-focus" : " timeline-context") : "";
-        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + timelineClass + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
+        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + timelineClass + (selectionDimmed ? " selection-dim" : "") + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
         return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '"' + nodeSemanticAttrs(node) + ' transform="translate(' + node.x + ' ' + node.y + ')">' +

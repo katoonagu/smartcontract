@@ -271,6 +271,7 @@ describe("adminConsoleHtml", () => {
   it("renders the Russian theft reports workspace shell", () => {
     const html = adminConsoleHtml();
 
+    expect(html).toContain("[hidden] { display: none !important; }");
     expect(html).toContain('<a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>');
     expect(html).toContain("data-theft-reports-workspace");
     expect(html).toContain('id="theftReportsSearch"');
@@ -2016,6 +2017,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("stroke-width: 16;");
     expect(renderBlock).toContain('class="edge-hitbox"');
     expect(renderBlock).toContain('d="\' + pathD + \'"');
+  });
+
+  it("strongly mutes unrelated graph edges and labels while a node is selected", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain(".edge.dim.selection-dim { opacity: .035; filter: none; }");
+    expect(html).toContain(".node.dim.selection-dim { opacity: .10; }");
+    expect((renderBlock.match(/const selectionDimmed = Boolean\(state\.selected && !selected && !relatedToSelection\);/g) || []).length).toBe(2);
+    expect(renderBlock).toContain('(selectionDimmed ? " selection-dim" : "") + (visible ? "" : " dim")');
+    expect(renderBlock).toContain('const labelEnabled = txLabelMode !== "off" && !selectionDimmed && (allLabel || importantLabel || selectedLabel);');
   });
 
   it("keeps selected details inside the analytics rail", () => {

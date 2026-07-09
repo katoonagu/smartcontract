@@ -663,6 +663,16 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
         return { rows: report ? [theftReportRow(report)] : [], rowCount: report ? 1 : 0 };
       }
 
+      if (sql.includes("from theft_reports") && sql.includes("telegram_user_id = $1")) {
+        const limit = Number(params[1] ?? 50);
+        const rows = theftReports
+          .filter((report) => report.telegramUserId === String(params[0]))
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
+          .slice(0, Number.isFinite(limit) ? limit : 50)
+          .map(theftReportRow);
+        return { rows, rowCount: rows.length };
+      }
+
       if (sql.includes("update theft_reports") && sql.includes("set comment = $3")) {
         const report = theftReports.find((item) => item.id === String(params[0]) && item.telegramUserId === String(params[1]));
         if (!report) return { rows: [], rowCount: 0 };
@@ -7487,8 +7497,15 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("reported_scam");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("📘 Guide");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("👤 Contact admin");
-
     const guideCallback = findCallbackData(lastMessagePayload(calls), "theft:guide:");
+
+    await bot.handleUpdate(messageUpdate("/profile", userId));
+    expect(lastPlainText(calls)).toContain("Theft reports: 1");
+    expect(lastPlainText(calls)).toContain("Latest theft report");
+    expect(lastPlainText(calls)).toContain("Status: documents_requested");
+    expect(lastPlainText(calls)).toContain(`${secondWalletAddress}`);
+    expect(lastPlainText(calls)).toContain("12.5 USDT");
+
     await bot.handleUpdate(callbackQueryUpdate(guideCallback, userId));
     expect(lastPlainText(calls)).toContain("Theft report guide");
 
