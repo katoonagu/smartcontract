@@ -4350,16 +4350,18 @@ describe("adminConsoleHtml", () => {
 
   it("hides stored funding bundle members while collapsed and shows them once when expanded", () => {
     const html = adminConsoleHtml();
-    const presentationBlock = html.slice(html.indexOf("function applyBundleMemberVisibility"), html.indexOf("function nodeImportanceScore"));
+    const presentationBlock = html.slice(html.indexOf("function collapsedEdgeTxHashes"), html.indexOf("function nodeImportanceScore"));
 
     expect(presentationBlock).toContain("function applyBundleMemberVisibility");
     expect(presentationBlock).toContain('edge?.metadata?.bundleRole === "top_funder"');
     expect(presentationBlock).toContain("state.expandedBundleNodeIds.has(bundleNodeId)");
     expect(presentationBlock).toContain("storedMemberEdgesByBundleId");
+    expect(presentationBlock).toContain("collapsedGroupAggregateEdges");
 
     const api = new Function(`
       const state = { expandedBundleNodeIds: new Set() };
       function asArray(value) { return Array.isArray(value) ? value : []; }
+      function rawBigInt(value) { return typeof value === "string" && /^\\d+$/.test(value) ? BigInt(value) : null; }
       ${presentationBlock}
       return { applyExpandedBundlePresentation, state };
     `)() as {
@@ -4400,6 +4402,36 @@ describe("adminConsoleHtml", () => {
     );
     expect(presentation.nodes.map((node) => node.id)).toEqual(["bundle", "target"]);
     expect(presentation.edges.map((edge) => edge.id)).toEqual(["target"]);
+
+    presentation = api.applyExpandedBundlePresentation(
+      [
+        ...nodes,
+        { id: "upstream", kind: "wallet", address: "TUpstream", metadata: {} }
+      ],
+      [
+        ...edges,
+        { id: "external", fromNodeId: "upstream", toNodeId: "funder", type: "transfer", amountRaw: "30", txHash: "tx-external", metadata: { direction: "inbound" } }
+      ]
+    );
+    expect(presentation.nodes.map((node) => node.id).sort()).toEqual(["bundle", "target", "upstream"]);
+    expect(presentation.edges.map((edge) => edge.id).sort()).toEqual([
+      "collapsed-edge:upstream-_bundle:collapsed_group",
+      "target"
+    ]);
+    const collapsedExternal = presentation.edges.find((edge) => edge.id === "collapsed-edge:upstream-_bundle:collapsed_group");
+    expect(collapsedExternal).toMatchObject({
+      fromNodeId: "upstream",
+      toNodeId: "bundle",
+      displayRole: "collapsed_group",
+      txHash: "tx-external",
+      amountRaw: "30",
+      metadata: {
+        aggregateExternalEdge: true,
+        hiddenNodeIds: ["funder"],
+        hiddenEdgeIds: ["external"],
+        sourceEdgeIds: ["external"]
+      }
+    });
 
     presentation = api.applyExpandedBundlePresentation(
       [
@@ -5034,6 +5066,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".edge-flow-outgoing { stroke: var(--semantic-money-out); }");
     expect(html).toContain(".edge.edge-deep-grouped-transfer");
     expect(html).toContain("stroke: var(--semantic-grouped);");
+    expect(html).toContain("stroke-dasharray: 4 7;");
   });
 
   it("styles relationship second-layer edges by role and status", () => {
@@ -5136,7 +5169,8 @@ describe("adminConsoleHtml", () => {
 
     expect(groupedReciprocalCssBlock).toContain(".edge.edge-deep-grouped-transfer.edge-reciprocal-flow");
     expect(groupedReciprocalCssBlock).toContain("stroke: var(--semantic-grouped);");
-    expect(groupedReciprocalCssBlock).toContain("opacity: .72;");
+    expect(groupedReciprocalCssBlock).toContain("stroke-dasharray: 4 7;");
+    expect(groupedReciprocalCssBlock).toContain("opacity: .66;");
   });
 
   it("explains wallet cluster evidence in legend and selected details", () => {
@@ -6066,6 +6100,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));");
     expect(html).toContain("function edgeStrokeWidth");
     expect(html).toContain('if (evidenceType === "contract_trigger_context") return 1.25;');
+    expect(html).toContain('if (edgeIsGroupedContextEvidence(edge)) return 1.15;');
     expect(html).toContain('if (role === "peer") return 1.2;');
     expect(html).toContain('if (role === "context") return 1.25;');
     expect(html).toContain('return Math.max(1.45, Math.min(2.8, scaled));');
@@ -6074,6 +6109,7 @@ describe("adminConsoleHtml", () => {
     const strokeBlock = html.slice(html.indexOf("function edgeStrokeWidth"), html.indexOf("function edgePairKey"));
     const strokeApi = new Function(
       "function edgeVisualRole(edge) { return edge?.visualRole || 'incoming'; }" +
+        "function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === 'grouped_transfers' || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }" +
         strokeBlock +
         "return { edgeStrokeWidth };"
     )() as { edgeStrokeWidth(edge: unknown): number };
@@ -6086,6 +6122,11 @@ describe("adminConsoleHtml", () => {
       visualRole: "incoming",
       amountRaw: "500000000000"
     })).toBeLessThanOrEqual(2.8);
+    expect(strokeApi.edgeStrokeWidth({
+      visualRole: "incoming",
+      amountRaw: "999999999999999999",
+      metadata: { evidenceType: "grouped_transfers", aggregateTransferCount: 120 }
+    })).toBe(1.15);
     expect(html).toContain("function edgeShouldShowCanvasAmount");
     expect(html).toContain("function edgeShouldShowCanvasTime");
     expect(html).toContain('if (edgeDisplayRole(edge) === "collapsed_group") return false;');

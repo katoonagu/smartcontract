@@ -1054,7 +1054,7 @@ export function adminConsoleHtml(): string {
     .edge.edge-deep-grouped-tail { stroke: var(--semantic-grouped); stroke-dasharray: 2 6; opacity: .74; }
     .edge.edge-second-layer-queued { stroke: rgba(246, 193, 119, .72); stroke-dasharray: 2 8; opacity: .64; }
     .edge.edge-second-layer-stopped { stroke: rgba(246, 193, 119, .78); stroke-dasharray: 4 8; opacity: .72; }
-    .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
+    .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 4 7; opacity: .66; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge.edge-contract-trigger-context { stroke: var(--semantic-contract); stroke-dasharray: 6 8; opacity: .72; }
     .edge.edge-contract-trigger-context.selected { stroke: #ffc0dc; stroke-dasharray: 6 8; opacity: .98; filter: drop-shadow(0 0 10px rgba(220, 102, 154, .34)); }
@@ -1070,7 +1070,7 @@ export function adminConsoleHtml(): string {
     .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
-    .edge.edge-deep-grouped-transfer.edge-reciprocal-flow { stroke: var(--semantic-grouped); stroke-dasharray: 8 8; opacity: .72; }
+    .edge.edge-deep-grouped-transfer.edge-reciprocal-flow { stroke: var(--semantic-grouped); stroke-dasharray: 4 7; opacity: .66; }
     .edge.edge-deep-grouped-transfer.edge-reciprocal-flow.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge-flow-service { stroke: #ffd36b; }
     .edge.edge-service-cex { stroke: rgba(226, 192, 101, .72); stroke-dasharray: 6 8; opacity: .74; }
@@ -1089,8 +1089,8 @@ export function adminConsoleHtml(): string {
     .edge.edge-flow-incoming.edge-deep-grouped-transfer,
     .edge.edge-flow-outgoing.edge-deep-grouped-transfer {
       stroke: var(--semantic-grouped);
-      stroke-dasharray: 8 8;
-      opacity: .72;
+      stroke-dasharray: 4 7;
+      opacity: .66;
     }
     .edge.risk, .edge.decline { opacity: .96; }
     .edge.review { opacity: .92; }
@@ -3962,36 +3962,48 @@ export function adminConsoleHtml(): string {
     }
     function applyBundleMemberVisibility(nodes, edges) {
       const hiddenMemberNodeIds = new Set();
+      const hiddenMemberNodeToBundleId = new Map();
+      const groupKindById = new Map();
       const keptEdges = [];
+      const hideMemberNode = (nodeId, bundleNodeId) => {
+        if (!nodeId || !bundleNodeId) return;
+        hiddenMemberNodeIds.add(nodeId);
+        hiddenMemberNodeToBundleId.set(nodeId, bundleNodeId);
+        groupKindById.set(bundleNodeId, "context");
+      };
       edges.forEach((edge) => {
         const bundleNodeId = edge?.metadata?.bundleNodeId || "";
         const isStoredMemberEdge = edge?.metadata?.bundleRole === "top_funder";
         const syntheticBundleNodeId = edge?.metadata?.parentBundleId || "";
         const isSyntheticMemberEdge = String(edge?.id || "").startsWith("bundle-member-edge:") || edge?.displayRole === "bundle_member";
         if (isSyntheticMemberEdge && !state.expandedBundleNodeIds.has(syntheticBundleNodeId)) {
-          if (edge?.fromNodeId) hiddenMemberNodeIds.add(edge.fromNodeId);
-          if (edge?.toNodeId && String(edge.toNodeId).startsWith("bundle-member:")) hiddenMemberNodeIds.add(edge.toNodeId);
+          if (edge?.fromNodeId) hideMemberNode(edge.fromNodeId, syntheticBundleNodeId);
+          if (edge?.toNodeId && String(edge.toNodeId).startsWith("bundle-member:")) hideMemberNode(edge.toNodeId, syntheticBundleNodeId);
           return;
         }
         if (!isStoredMemberEdge || state.expandedBundleNodeIds.has(bundleNodeId)) {
           keptEdges.push(edge);
           return;
         }
-        if (edge?.fromNodeId) hiddenMemberNodeIds.add(edge.fromNodeId);
+        if (edge?.fromNodeId) hideMemberNode(edge.fromNodeId, bundleNodeId);
       });
-      const connectedNodeIds = new Set();
-      keptEdges.forEach((edge) => {
-        if (edge?.fromNodeId) connectedNodeIds.add(edge.fromNodeId);
-        if (edge?.toNodeId) connectedNodeIds.add(edge.toNodeId);
+      nodes.forEach((node) => {
+        const syntheticBundleNodeId = node?.metadata?.parentBundleId || "";
+        const isSyntheticMemberNode = String(node?.id || "").startsWith("bundle-member:") || node?.metadata?.bundleMember === true;
+        if (isSyntheticMemberNode && !state.expandedBundleNodeIds.has(syntheticBundleNodeId)) hideMemberNode(node.id, syntheticBundleNodeId);
       });
+      const visibleNodes = nodes.filter((node) => {
+        const syntheticBundleNodeId = node?.metadata?.parentBundleId || "";
+        const isSyntheticMemberNode = String(node?.id || "").startsWith("bundle-member:") || node?.metadata?.bundleMember === true;
+        if (isSyntheticMemberNode && !state.expandedBundleNodeIds.has(syntheticBundleNodeId)) return false;
+        return !hiddenMemberNodeIds.has(node.id) || node.kind === "subject";
+      });
+      const visibleIds = new Set(visibleNodes.map((node) => node.id));
+      const visibleEdges = keptEdges.filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId));
+      const aggregateEdges = collapsedGroupAggregateEdges(keptEdges, visibleIds, hiddenMemberNodeToBundleId, groupKindById);
       return {
-        nodes: nodes.filter((node) => {
-          const syntheticBundleNodeId = node?.metadata?.parentBundleId || "";
-          const isSyntheticMemberNode = String(node?.id || "").startsWith("bundle-member:") || node?.metadata?.bundleMember === true;
-          if (isSyntheticMemberNode && !state.expandedBundleNodeIds.has(syntheticBundleNodeId)) return false;
-          return !hiddenMemberNodeIds.has(node.id) || connectedNodeIds.has(node.id) || node.kind === "subject";
-        }),
-        edges: keptEdges
+        nodes: visibleNodes,
+        edges: [...visibleEdges, ...aggregateEdges]
       };
     }
     function applyExpandedBundlePresentation(nodes, edges) {
@@ -5863,6 +5875,7 @@ export function adminConsoleHtml(): string {
       const role = edgeVisualRole(edge);
       const evidenceType = edge?.metadata?.evidenceType;
       if (evidenceType === "contract_trigger_context") return 1.25;
+      if (edgeIsGroupedContextEvidence(edge)) return 1.15;
       if (role === "peer") return 1.2;
       if (role === "context") return 1.25;
       if (role === "stop") return 1.45;

@@ -108,7 +108,12 @@ Analytics, controls, and timeline overlays. Side rails anchor from the top of
 the workbench instead of floating in the middle, while the canvas remains
 visible behind them. Graph edges include a wide invisible hit target, so thin
 or unlabeled context lines can still be selected without adding duplicate amount
-labels. The activity timeline is a focus control: selecting a time bucket
+labels. Collapsed funding bundles preserve external member-wallet links as
+aggregate edges from the bundle to the visible counterparty, so the analyst sees
+the objective relationship before expanding the bundle. Grouped aggregate
+transfer links use thin dashed styling so dense graphs stay readable while the
+wide invisible hit target keeps them selectable. The activity timeline is
+a focus control: selecting a time bucket
 highlights matching transfer edges and dims surrounding context on the canvas,
 while the transfer drawer can still list only rows from the selected bucket.
 Timeline focus copy uses human-readable local date/time ranges, shows the
