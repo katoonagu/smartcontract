@@ -1434,6 +1434,43 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("does not mix related human summary jobs across null and non-null requester scope", async () => {
+    const whereJob = job({
+      id: "job-where-legacy-scope",
+      chatId: null,
+      requestedBy: null,
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const otherRequesterDeepJob = deepJobForAdminSummaryTest({
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async (id: string) => id === whereJob.id ? whereJob : null,
+      listJobs: async () => [whereJob, otherRequesterDeepJob]
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(JSON.stringify(body.graph.summary.humanSummary)).not.toContain("whitebit");
+    expect(body.graph.summary.humanSummary.modeSections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "DeepCheck",
+        facts: []
+      })
+    ]));
+  });
+
   it("requires admin auth before refreshing DeepCheck second layer", async () => {
     let called = false;
     const server = await start({

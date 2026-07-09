@@ -840,8 +840,8 @@ function extractFastRiskReportFromAdminJob(
 
 function sameRelatedScope(primary: ForensicCheckJob, candidate: ForensicCheckJob): boolean {
   if (candidate.subjectAddress !== primary.subjectAddress) return false;
-  if (primary.chatId !== null && candidate.chatId !== primary.chatId) return false;
-  if (primary.requestedBy !== null && candidate.requestedBy !== primary.requestedBy) return false;
+  if (candidate.chatId !== primary.chatId) return false;
+  if (candidate.requestedBy !== primary.requestedBy) return false;
   if (candidate.windowStart.getTime() !== primary.windowStart.getTime()) return false;
   if (candidate.windowEnd.getTime() !== primary.windowEnd.getTime()) return false;
   return candidate.status === "completed" || candidate.status === "partial";
