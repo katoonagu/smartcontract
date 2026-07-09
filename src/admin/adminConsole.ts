@@ -2307,11 +2307,14 @@ export function adminConsoleHtml(): string {
         setWalletIntelligenceStatus("Не удалось загрузить детали пересечения.");
       }
     }
-    async function loadGraphCrossRunSummaries(jobId, requestSeq) {
-      if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
+    function clearGraphCrossRunState() {
       state.crossRunAddressSummaries = new Map();
       state.crossRunAddressDetailByAddress = new Map();
       state.crossRunAddressDetailLoading = new Set();
+    }
+    async function loadGraphCrossRunSummaries(jobId, requestSeq) {
+      if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
+      clearGraphCrossRunState();
       const addresses = graphNodeAddresses();
       if (addresses.length === 0) {
         if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
@@ -3677,6 +3680,7 @@ export function adminConsoleHtml(): string {
         state.expandedBundleNodeIds.clear();
         state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };
+        clearGraphCrossRunState();
         renderJobs();
         renderGraph();
         loadGraphCrossRunSummaries(jobId, requestSeq);

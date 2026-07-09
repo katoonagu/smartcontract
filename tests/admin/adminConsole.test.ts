@@ -411,13 +411,18 @@ describe("adminConsoleHtml", () => {
     const stateBlock = html.slice(html.indexOf("const state = {"), html.indexOf("if (![\"all\", \"incoming\""));
     const loadGraphBlock = html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
     const summaryBlock = html.slice(html.indexOf("async function loadGraphCrossRunSummaries"), html.indexOf("function crossRunSummaryForNode"));
+    const clearBeforeRenderIndex = loadGraphBlock.indexOf("clearGraphCrossRunState();");
+    const firstRenderGraphIndex = loadGraphBlock.indexOf("renderGraph();");
 
     expect(stateBlock).toContain("crossRunAddressSummaries: new Map()");
     expect(stateBlock).toContain("crossRunAddressDetailByAddress: new Map()");
     expect(stateBlock).toContain("crossRunAddressDetailLoading: new Set()");
     expect(stateBlock).toContain("pendingHighlightAddress: null");
+    expect(clearBeforeRenderIndex).toBeGreaterThan(-1);
+    expect(clearBeforeRenderIndex).toBeLessThan(firstRenderGraphIndex);
     expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries(jobId, requestSeq);");
     expect(summaryBlock).toContain("async function loadGraphCrossRunSummaries(jobId, requestSeq)");
+    expect(summaryBlock).toContain("clearGraphCrossRunState();");
     expect(summaryBlock).toContain("requestSeq !== state.graphRequestSeq");
     expect(summaryBlock).toContain("state.activeJobId !== jobId");
     expect(summaryBlock).toContain("/admin/api/wallet-intelligence/address-summaries?addresses=");
