@@ -5248,6 +5248,8 @@ function projectAddressDeepJob(
   const contractDrivenDirectTransferKeys = new Set<string>();
   const contractDrivenAddressAmountKeys = new Set<string>();
   const contractDrivenAddressPairAmounts = new Map<string, string[]>();
+  const directCounterpartyTransferKeys = new Set<string>();
+  const directCounterpartyAddressPairKeys = new Set<string>();
   recordArrayField(result, "contractDrivenTransferProfiles").forEach((profile) => {
     if (contractDrivenProfileLooksPlainUsdtTransfer(profile)) return;
     const sourceAddress = firstString(
@@ -5297,6 +5299,26 @@ function projectAddressDeepJob(
     isContractDrivenDirectDuplicate(txHash, fromAddress, toAddress, amountRaw) ||
     isContractDrivenDirectDuplicate(txHash, toAddress, fromAddress, amountRaw)
   ));
+  const isDirectCounterpartyExtendedPathDuplicate = (
+    txHash: string | null,
+    fromAddress: string | null,
+    toAddress: string | null,
+    amountRaw: string | null
+  ): boolean => {
+    const forwardKey = contractDrivenTransferDuplicateKey(txHash, fromAddress, toAddress, amountRaw);
+    const reverseKey = contractDrivenTransferDuplicateKey(txHash, toAddress, fromAddress, amountRaw);
+    return (forwardKey !== null && directCounterpartyTransferKeys.has(forwardKey)) ||
+      (reverseKey !== null && directCounterpartyTransferKeys.has(reverseKey));
+  };
+  const isDirectCounterpartyPairContextDuplicate = (
+    fromAddress: string | null,
+    toAddress: string | null
+  ): boolean => {
+    const forwardKey = contractDrivenAddressPairKey(fromAddress, toAddress);
+    const reverseKey = contractDrivenAddressPairKey(toAddress, fromAddress);
+    return (forwardKey !== null && directCounterpartyAddressPairKeys.has(forwardKey)) ||
+      (reverseKey !== null && directCounterpartyAddressPairKeys.has(reverseKey));
+  };
   const isContractDrivenProfileContextDuplicate = (
     fromAddress: string | null,
     toAddress: string | null,
@@ -5604,6 +5626,11 @@ function projectAddressDeepJob(
 
     const fromNodeId = direction === "inbound" ? counterpartyNodeId : subjectNodeId;
     const toNodeId = direction === "inbound" ? subjectNodeId : counterpartyNodeId;
+    const directPairKey = contractDrivenAddressPairKey(
+      direction === "inbound" ? counterpartyAddress : subjectAddress,
+      direction === "inbound" ? subjectAddress : counterpartyAddress
+    );
+    if (directPairKey) directCounterpartyAddressPairKeys.add(directPairKey);
     const basePathId = `path:direct_counterparty:${index}`;
     const baseEdgeId = `edge:direct_counterparty:${index}`;
     const txHashes = stringArrayField(profile, "txHashes");
@@ -5650,6 +5677,17 @@ function projectAddressDeepJob(
         transfer.amountRaw
       );
       return !key || !contractDrivenDirectTransferKeys.has(key);
+    });
+    projectedStoredTransfers.forEach((transfer) => {
+      const key = contractDrivenTransferDuplicateKey(
+        transfer.txHash,
+        transfer.fromAddress,
+        transfer.toAddress,
+        transfer.amountRaw
+      );
+      if (key) directCounterpartyTransferKeys.add(key);
+      const pairKey = contractDrivenAddressPairKey(transfer.fromAddress, transfer.toAddress);
+      if (pairKey) directCounterpartyAddressPairKeys.add(pairKey);
     });
     if (storedTransfers.length > 0 && projectedStoredTransfers.length === 0) return;
     const profileOnlyContractDrivenKey = txHashes.length === 1 && txCount === 1
@@ -5882,6 +5920,12 @@ function projectAddressDeepJob(
         const relationship = fromAddress === subjectAddress || toAddress === subjectAddress
           ? "direct_subject_edge"
           : "cross_wallet_edge";
+        if (
+          relationship === "direct_subject_edge" &&
+          isDirectCounterpartyExtendedPathDuplicate(txHashes[edgeIndex] ?? null, fromAddress, toAddress, amountRaw)
+        ) {
+          continue;
+        }
         const finalEdge = edgeIndex === addressChain.length - 2;
         const edgeId = `edge:extended_provenance:${profileIndex}:${pathIndex}:${edgeIndex}`;
         edges.push({
@@ -5918,6 +5962,7 @@ function projectAddressDeepJob(
         });
         edgeIds.push(edgeId);
       }
+      if (edgeIds.length === 0) return;
 
       paths.push({
         id: pathId,
@@ -6020,6 +6065,9 @@ function projectAddressDeepJob(
         const txHash = isSecondHopEdge ? txHashes.at(-1) ?? null : null;
         const amountRaw = isSecondHopEdge ? secondLayerRelationshipPathAmountRaw(path) : null;
         const amountShare = isSecondHopEdge ? numberField(path, "amountPreservationRatio") : null;
+        if (relationship === "direct_subject_edge" && isDirectCounterpartyPairContextDuplicate(fromAddress, toAddress)) {
+          continue;
+        }
         if (relationship === "direct_subject_edge" && isContractDrivenPairContextDuplicate(fromAddress, toAddress)) {
           continue;
         }

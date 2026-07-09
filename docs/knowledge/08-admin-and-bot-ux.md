@@ -75,7 +75,18 @@ projections are the exception when they carry stored money evidence (`txHash`,
 `underlyingTransfers`, or aggregate tx count plus amount): Admin treats them as
 grouped money-flow evidence for `Incoming`/`Outgoing` filtering, purple grouped
 styling, and clickable canvas amount pills. Context-only projections remain
-unlabeled context.
+unlabeled context. A single stored direct-counterparty transfer is also treated
+as money-flow evidence for canvas color and analyst wording, even when the
+larger direct-counterparty profile remains contextual. Contract-driven transfer
+evidence keeps contract styling even when multiple underlying transfer rows are
+stored under the same visible edge. DeepCheck extended-path direct-subject
+context is suppressed when it repeats the same tx hash, amount, and address pair
+as an already stored direct-counterparty transfer, including reverse-oriented
+projections, so the graph shows the factual transfer once. DeepCheck
+second-layer direct-subject context is also suppressed when the same subject and
+direct wallet are already connected by a direct-counterparty edge; the real
+second-hop wallet-to-wallet evidence remains visible without adding fake
+subject-to-wallet transfer-looking lines.
 Approval-drain authority context is drawn from victim/source to spender contract
 so it does not visually imply that the drainer topped up the victim; these
 contract-context projections are also kept out of transfer-row lists.
@@ -118,7 +129,12 @@ labels. Collapsed funding bundles preserve external member-wallet links as
 aggregate edges from the bundle to the visible counterparty, so the analyst sees
 the objective relationship before expanding the bundle. Grouped aggregate
 transfer links use thin dashed styling so dense graphs stay readable while the
-wide invisible hit target keeps them selectable. The activity timeline is
+wide invisible hit target keeps them selectable. Real money-flow edges use
+high-contrast teal/red incoming/outgoing tokens and keep a modest stroke cap so
+high-amount incoming/outgoing and contract-driven lines do not visually
+overpower dense DeepCheck evidence. When an analyst selects a node
+or edge, unrelated graph edges are heavily muted and their canvas labels are
+suppressed so the focus stays on direct transaction evidence. The activity timeline is
 a focus control: selecting a time bucket
 highlights matching transfer edges and dims surrounding context on the canvas,
 while the transfer drawer can still list only rows from the selected bucket.
@@ -299,9 +315,15 @@ saved payloads only. The view is global investigative context: repeated
 appearances, requesters, source jobs, normalized sightings, and normalized
 edges for triage. It defaults to repeated intersections across checked subjects,
 separates known infrastructure such as CEX, bridge, router, and service wallets,
-and exposes a selected-address detail drawer with source jobs, requester
-metadata, sightings, stored edges, and a focused graph. It is not a forensic
-verdict, not Telegram output, and not per-job graph evidence or scoring.
+and exposes a selected-address detail drawer with the source checks where the
+address appeared, requester metadata, raw sightings, stored edges, and a focused
+graph. The Russian Admin UI is intersection-first: the main list ranks repeated
+addresses across checked wallets/requesters, and the drawer starts with "where
+this address appeared" grouped by source check, subject wallet, mode, depth,
+transactions, and amount. Known exchanges and infrastructure can rank high
+because they recur often, but they must be labeled as infrastructure context,
+not as bad evidence. Wallet Intelligence is not a forensic verdict, not
+Telegram output, and not per-job graph evidence or scoring.
 
 For theft reports, Admin should help operators process preliminary user claims
 without saying that theft is confirmed. Proof still lives in the forensic

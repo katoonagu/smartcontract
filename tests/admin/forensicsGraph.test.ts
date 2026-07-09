@@ -5847,6 +5847,94 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("suppresses extended direct-subject edges that duplicate stored direct counterparty transfers", () => {
+    const subject = "TNQdfZSAvfTN6MhNYHLQBCgqE4rLVZdDAC";
+    const counterparty = "TUnfZ4Mg2s1Y6YVyR9BKxA6QW37yX4LPig";
+    const txHash = "0f6f5e09406119dcebe652b1186bc6549ebcef98ab8d5eb957c8115d5821fd70";
+    const amountRaw = "2388058950";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: counterparty,
+            direction: "inbound",
+            volumeRaw: amountRaw,
+            volumeRatio: 1,
+            txCount: 1,
+            txHashes: [txHash],
+            firstSeen: "2026-07-01T06:36:45.000Z",
+            lastSeen: "2026-07-01T06:36:45.000Z",
+            transfers: [
+              {
+                txHash,
+                fromAddress: counterparty,
+                toAddress: subject,
+                amountRaw,
+                timestamp: "2026-07-01T06:36:45.000Z",
+                method: "transfer",
+                edgeType: "normal_transfer"
+              }
+            ]
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 1
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        extendedProvenanceProfiles: [
+          {
+            direction: "inbound",
+            score: 0,
+            paths: [
+              {
+                pathAddresses: [subject, counterparty],
+                txHashes: [txHash],
+                amountRaw,
+                depth: 1,
+                candidateScore: 0,
+                evidenceStrength: "direct_transfer",
+                firstTransferAt: "2026-07-01T06:36:45.000Z",
+                lastTransferAt: "2026-07-01T06:36:45.000Z"
+              }
+            ]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${counterparty}`,
+        toNodeId: `addr:${subject}`,
+        txHash,
+        metadata: expect.objectContaining({
+          source: "directCounterpartyInteractionProfile",
+          evidenceType: "direct_counterparty_transfer"
+        })
+      })
+    ]));
+    expect(result.graph.edges.find((edge) =>
+      edge.txHash === txHash &&
+      edge.metadata.source === "deepcheck_extended_path"
+    )).toBeUndefined();
+    expect(result.graph.paths.find((path) =>
+      path.id.startsWith("path:extended_provenance:")
+    )).toBeUndefined();
+  });
+
   it("projects relationship second-layer paths, statuses, groups, and coverage", () => {
     const subject = "TSubject111111111111111111111111111111";
     const walletA = "TWalletA111111111111111111111111111111";
@@ -6115,6 +6203,103 @@ describe("projectForensicJobGraph", () => {
         lastSeen: "2026-06-01T00:05:00.000Z"
       })
     });
+  });
+
+  it("suppresses relationship direct-subject context when a direct counterparty edge already connects the wallet", () => {
+    const subject = "TNQdfZSAvfTN6MhNYHLQBCgqE4rLVZdDAC";
+    const directWallet = "TEucai57tVNvZhtc13fJG9pfYp92Vh1zck";
+    const secondHop = "TU4vEruvZwLLkSfV9bNw12EJTPvNr7Pvaa";
+    const subjectTxHash = "d6a7bafe6c0fc45b6ded000d33e8eb74f0c717a1a3e411078ebeebb763edb080";
+    const secondHopTxHash = "6f218bce296b0058679ecb793f37f8599f864a432345e8eca70084cde6484370";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: directWallet,
+            direction: "inbound",
+            volumeRaw: "1260400000",
+            volumeRatio: 0.0069,
+            txCount: 1,
+            txHashes: [subjectTxHash],
+            firstSeen: "2024-11-04T15:18:00.000Z",
+            lastSeen: "2024-11-04T15:18:00.000Z",
+            transfers: [
+              {
+                txHash: subjectTxHash,
+                fromAddress: directWallet,
+                toAddress: subject,
+                amountRaw: "1260400000",
+                timestamp: "2024-11-04T15:18:00.000Z",
+                method: "transfer",
+                edgeType: "normal_transfer"
+              }
+            ]
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 2
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "second-hop-duplicate-context",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: directWallet,
+              secondHopAddress: secondHop,
+              pathAddresses: [subject, directWallet, secondHop],
+              txHashes: [subjectTxHash, secondHopTxHash],
+              amountRaw: "13265000000",
+              txCount: 9,
+              firstSeen: "2024-11-04T15:18:00.000Z",
+              lastSeen: "2024-11-09T15:00:18.000Z",
+              selectionReason: "top_amount_or_activity"
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${directWallet}`,
+        toNodeId: `addr:${subject}`,
+        txHash: subjectTxHash,
+        metadata: expect.objectContaining({
+          source: "directCounterpartyInteractionProfile",
+          evidenceType: "direct_counterparty_transfer"
+        })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${directWallet}`,
+        toNodeId: `addr:${secondHop}`,
+        txHash: secondHopTxHash,
+        metadata: expect.objectContaining({
+          source: "deepcheck_relationship_second_hop",
+          relationship: "second_hop_edge"
+        })
+      })
+    ]));
+    expect(result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${directWallet}` &&
+      edge.metadata.source === "deepcheck_relationship_second_hop" &&
+      edge.metadata.relationship === "direct_subject_edge"
+    )).toBeUndefined();
   });
 
   it("suppresses relationship subject-to-source context when contract-driven evidence explains the source", () => {

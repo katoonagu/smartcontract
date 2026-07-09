@@ -37,11 +37,27 @@ function adminWalletIntelHelpers() {
     escapeHtml,
     (value: unknown) => Array.isArray(value) ? value : [],
     (value: unknown, fallback = "n/a") => value === null || value === undefined || value === "" ? fallback : String(value),
-    (kind: unknown) => kind === "address_deep_check" ? "DeepCheck" : kind === "where_is_money_check" ? "Where is money" : kind === "incoming_deposit_check" ? "Incoming deposit" : String(kind ?? "unknown")
+    (kind: unknown) => kind === "address_deep_check" ? "DeepCheck" : kind === "where_is_money_check" ? "Откуда деньги" : kind === "incoming_deposit_check" ? "Входящий депозит" : String(kind ?? "unknown")
   ) as {
     walletIntelKnownInfrastructure(item: Record<string, unknown>): boolean;
     walletIntelWhyInteresting(item: Record<string, unknown>): string;
     walletIntelPresetFilters(preset: string): Record<string, string>;
+  };
+}
+
+function adminWalletIntelIntersectionHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function walletIntelAddRawAmount(totalRaw");
+  const end = html.indexOf("function walletIntelGraphNodeLabel(value)", start);
+  const helperBlock = html.slice(start, end);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return new Function("asArray", helperBlock + "\nreturn { walletIntelIntersectionGroups };")(
+    (value: unknown) => Array.isArray(value) ? value : []
+  ) as {
+    walletIntelIntersectionGroups(detail: Record<string, unknown>): Array<Record<string, unknown>>;
   };
 }
 
@@ -197,7 +213,7 @@ describe("adminConsoleHtml", () => {
     expect(mediaBlock).toContain(".wallet-intel-body");
   });
 
-  it("explains Wallet Intelligence rows with neutral intersection copy", () => {
+  it("explains Wallet Intelligence rows with Russian neutral intersection copy", () => {
     const helpers = adminWalletIntelHelpers();
 
     expect(helpers.walletIntelWhyInteresting({
@@ -207,7 +223,7 @@ describe("adminConsoleHtml", () => {
       minDepth: 1,
       maxDepth: 3,
       tags: ["repeated_cross_run_address"]
-    })).toBe("Seen in 3 subjects, 2 requesters, DeepCheck + Where is money, depth 1-3");
+    })).toBe("Встречается в 3 проверяемых кошельках, 2 заявителя, DeepCheck + Откуда деньги, глубина 1-3");
 
     expect(helpers.walletIntelWhyInteresting({
       uniqueSubjectCount: 1,
@@ -216,7 +232,7 @@ describe("adminConsoleHtml", () => {
       minDepth: null,
       maxDepth: null,
       tags: []
-    })).toBe("Single-context sighting, Incoming deposit, depth n/a");
+    })).toBe("Единичное появление, Входящий депозит, глубина n/a");
   });
 
   it("classifies known Wallet Intelligence infrastructure without risk language", () => {
@@ -255,6 +271,8 @@ describe("adminConsoleHtml", () => {
   it("renders Wallet Intelligence intersection tabs and filters", () => {
     const html = adminConsoleHtml();
 
+    expect(html).toContain("<h2>Пересечения адресов</h2>");
+    expect(html).toContain("Контекст аналитика, не скоринговое доказательство.");
     expect(html).toContain('data-wallet-intel-preset="intersections"');
     expect(html).toContain('data-wallet-intel-preset="known_infrastructure"');
     expect(html).toContain('data-wallet-intel-preset="all"');
@@ -266,31 +284,126 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("walletIntelPresetFilters");
   });
 
-  it("renders Wallet Intelligence table columns for intersections", () => {
+  it("renders Wallet Intelligence as an intersection-first card list", () => {
     const html = adminConsoleHtml();
     const tableStart = html.indexOf("function renderWalletIntelligenceTable()");
     const tableEnd = html.indexOf("async function loadWalletIntelligenceAddresses()", tableStart);
     const tableBlock = html.slice(tableStart, tableEnd);
 
-    expect(tableBlock).toContain("Why interesting");
-    expect(tableBlock).toContain("Modes");
-    expect(tableBlock).toContain("First seen");
-    expect(tableBlock).toContain("Last seen");
+    expect(tableBlock).toContain("wallet-intel-intersection-list");
+    expect(tableBlock).toContain("wallet-intel-address-card");
+    expect(tableBlock).toContain("Проверяемые кошельки");
+    expect(tableBlock).toContain("Проверки");
+    expect(tableBlock).toContain("Последний раз");
     expect(tableBlock).toContain("walletIntelWhyInteresting(item)");
     expect(tableBlock).toContain("walletIntelKnownInfrastructure(item)");
   });
 
-  it("renders Wallet Intelligence sightings in the detail drawer", () => {
+  it("groups Wallet Intelligence sightings by source check for the detail drawer", () => {
+    const helpers = adminWalletIntelIntersectionHelpers();
+
+    const groups = helpers.walletIntelIntersectionGroups({
+      jobs: [
+        {
+          jobId: "job-a",
+          jobKind: "address_deep_check",
+          jobStatus: "completed",
+          subjectAddress: "TSubjectA",
+          completedAt: "2026-07-01T12:00:00.000Z"
+        },
+        {
+          jobId: "job-b",
+          jobKind: "where_is_money_check",
+          jobStatus: "partial",
+          subjectAddress: "TSubjectB",
+          completedAt: "2026-07-02T12:00:00.000Z"
+        }
+      ],
+      sightings: [
+        {
+          jobId: "job-a",
+          subjectAddress: "TSubjectA",
+          jobKind: "address_deep_check",
+          role: "direct_counterparty",
+          depth: 1,
+          txHash: "tx-1",
+          amountRaw: "1000000",
+          lastSeenAt: "2026-07-01T12:00:00.000Z"
+        },
+        {
+          jobId: "job-a",
+          subjectAddress: "TSubjectA",
+          jobKind: "address_deep_check",
+          role: "second_hop",
+          depth: 2,
+          txHash: "tx-2",
+          amountRaw: "2500000",
+          lastSeenAt: "2026-07-01T12:05:00.000Z"
+        },
+        {
+          jobId: "job-b",
+          subjectAddress: "TSubjectB",
+          jobKind: "where_is_money_check",
+          role: "source_path",
+          depth: 3,
+          txHash: "tx-3",
+          amountRaw: "500000",
+          lastSeenAt: "2026-07-02T12:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({
+      jobId: "job-a",
+      subjectAddress: "TSubjectA",
+      jobKind: "address_deep_check",
+      occurrences: 2,
+      amountRaw: "3500000",
+      txHashes: ["tx-1", "tx-2"],
+      roles: ["direct_counterparty", "second_hop"],
+      minDepth: 1,
+      maxDepth: 2
+    });
+    expect(groups[1]).toMatchObject({
+      jobId: "job-b",
+      subjectAddress: "TSubjectB",
+      jobKind: "where_is_money_check",
+      occurrences: 1,
+      amountRaw: "500000",
+      txHashes: ["tx-3"],
+      roles: ["source_path"],
+      minDepth: 3,
+      maxDepth: 3
+    });
+  });
+
+  it("renders Wallet Intelligence intersections in the detail drawer", () => {
     const html = adminConsoleHtml();
     const drawerStart = html.indexOf("function renderWalletIntelligenceDrawer()");
     const drawerEnd = html.indexOf("function activeJob()", drawerStart);
     const drawerBlock = html.slice(drawerStart, drawerEnd);
 
+    expect(drawerBlock).toContain("Выберите адрес, чтобы увидеть проверки, где он пересекся.");
+    expect(drawerBlock).toContain("const intersections = walletIntelIntersectionGroups(detail)");
+    expect(drawerBlock).toContain("<h3>Где встречается</h3>");
+    expect(drawerBlock).toContain("wallet-intel-check-card");
     expect(drawerBlock).toContain("const sightings = asArray(detail.sightings).slice(0, 50)");
-    expect(drawerBlock).toContain("<h3>Sightings</h3>");
-    expect(drawerBlock).toContain('walletIntelLine("Source job"');
-    expect(drawerBlock).toContain('walletIntelLine("Subject"');
-    expect(drawerBlock).toContain('walletIntelLine("Depth/path"');
+    expect(drawerBlock).toContain("<h3>Сырые появления</h3>");
+    expect(drawerBlock).toContain('walletIntelLine("Проверка"');
+    expect(drawerBlock).toContain('walletIntelLine("Проверяемый кошелек"');
+    expect(drawerBlock).toContain('walletIntelLine("Глубина/путь"');
+  });
+
+  it("opens the first Wallet Intelligence intersection after loading the list", () => {
+    const html = adminConsoleHtml();
+    const loadStart = html.indexOf("async function loadWalletIntelligenceAddresses()");
+    const loadEnd = html.indexOf("async function openWalletIntelligenceAddress(address)", loadStart);
+    const loadBlock = html.slice(loadStart, loadEnd);
+
+    expect(loadBlock).toContain("const firstAddress = state.walletIntel.addresses[0]?.address || null;");
+    expect(loadBlock).toContain("if (!state.walletIntel.activeAddress && firstAddress) {");
+    expect(loadBlock).toContain("openWalletIntelligenceAddress(firstAddress);");
   });
 
   it("renders a focused Wallet Intelligence graph from stored edges", () => {
@@ -354,7 +467,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Кошелек клиента");
     expect(html).toContain("Статус бота");
     expect(html).toContain("Клиент в Forensics");
-    expect(html).toContain("Получатель в Wallet Intelligence");
+    expect(html).toContain("Получатель в пересечениях");
     expect(html).toContain("/admin/forensics?subjectAddress=");
     expect(html).toContain("/admin/wallet-intelligence?subjectAddress=");
     expect(html).toContain("https://tronscan.org/#/transaction/");
@@ -408,8 +521,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("--surface-panel-strong: #11171d;");
     expect(html).toContain("--text-primary: #e3ebf2;");
     expect(html).toContain("--text-secondary: #a8b4bf;");
-    expect(html).toContain("--semantic-money-in: #6fcf97;");
-    expect(html).toContain("--semantic-money-out: #df6b75;");
+    expect(html).toContain("--semantic-money-in: #30f5ce;");
+    expect(html).toContain("--semantic-money-out: #f93e57;");
+    expect(html).toContain("rgba(48, 245, 206, .56)");
+    expect(html).not.toContain("rgba(123, 226, 166");
     expect(html).toContain("--semantic-grouped: #c4b1f2;");
     expect(html).toContain("--semantic-contract: #c982a6;");
     expect(html).toContain("--semantic-boundary: #d6b15f;");
@@ -4826,7 +4941,7 @@ describe("adminConsoleHtml", () => {
         source: "directCounterpartyInteractionProfile",
         aggregateTransferCount: 2
       }
-    }, "context")).toBe(" edge-contract-driven-transfer edge-deep-grouped-transfer");
+    }, "context")).toBe(" edge-contract-driven-transfer");
 
     const panelApi = new Function(`
       function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
@@ -5035,6 +5150,75 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeVisualRole(contextEdge)).toBe("context");
     expect(api.edgeFlowDirection(groupedStoredEdge)).toBe("incoming");
     expect(api.edgeVisualRole(groupedStoredEdge)).toBe("incoming");
+  });
+
+  it("renders stored direct counterparty transfers by money direction", () => {
+    const html = adminConsoleHtml();
+    const flowBlock = html.slice(html.indexOf("function edgePathId"), html.indexOf("function edgeExtraClass"));
+
+    const api = new Function(`
+      const state = {
+        graph: {
+          job: { kind: "address_deep_check" },
+          nodes: [
+            { id: "subject", kind: "subject", address: "TSubject" },
+            { id: "counterparty", kind: "wallet", address: "TCounterparty" }
+          ],
+          edges: [],
+          paths: []
+        }
+      };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function graphNodes(graph) { return graph?.nodes || []; }
+      function graphEdges(graph) { return graph?.edges || []; }
+      function graphPaths(graph) { return graph?.paths || []; }
+      function collapsedGroupLayoutSide(groupKind) {
+        return groupKind === "incoming" || groupKind === "outgoing" || groupKind === "service" || groupKind === "context" ? groupKind : "";
+      }
+      function nodeById(id) { return graphNodes(state.graph).find((node) => node.id === id) || null; }
+      function nodeDisplayKind(node) { return node?.displayKind || (node?.kind === "subject" ? "subject_wallet" : node?.kind || "wallet"); }
+      function nodeAddress(node) { return node?.address || ""; }
+      function graphAddressFromNodeId() { return ""; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || edge?.metadata?.txCount || null; }
+      function edgeHasStoredMoneyEvidence(edge) { return Boolean(edge?.txHash || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0)); }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1 || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 1); }
+      function edgeIsGroupedMoneyFlowEvidence(edge) { return edgeIsGroupedContextEvidence(edge) && edgeHasStoredMoneyEvidence(edge); }
+      ${flowBlock}
+      return { edgeFlowDirection, edgeVisualRole };
+    `)() as { edgeFlowDirection(edge: unknown): string; edgeVisualRole(edge: unknown): string };
+
+    const incoming = {
+      id: "edge:direct-counterparty-single-in",
+      fromNodeId: "counterparty",
+      toNodeId: "subject",
+      type: "inferred_provenance",
+      displayRole: "profile_context",
+      txHash: "tx-in",
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        evidenceType: "direct_counterparty_transfer",
+        direction: "inbound",
+        underlyingTransfers: [{ txHash: "tx-in" }]
+      }
+    };
+    const outgoing = {
+      ...incoming,
+      id: "edge:direct-counterparty-single-out",
+      fromNodeId: "subject",
+      toNodeId: "counterparty",
+      txHash: "tx-out",
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        evidenceType: "direct_counterparty_transfer",
+        direction: "outbound",
+        underlyingTransfers: [{ txHash: "tx-out" }]
+      }
+    };
+
+    expect(api.edgeFlowDirection(incoming)).toBe("incoming");
+    expect(api.edgeVisualRole(incoming)).toBe("incoming");
+    expect(api.edgeFlowDirection(outgoing)).toBe("outgoing");
+    expect(api.edgeVisualRole(outgoing)).toBe("outgoing");
   });
 
   it("labels where funding candidate roles in legend, classes, and selected details", () => {
@@ -5922,6 +6106,22 @@ describe("adminConsoleHtml", () => {
     }, "peer")).toBe(" edge-deep-grouped-transfer");
   });
 
+  it("explains grouped transfer evidence in the DeepCheck legend", () => {
+    const html = adminConsoleHtml();
+    const legendBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function edgeSemanticAttrs"));
+
+    const api = new Function(`
+      const state = { graph: { job: { kind: "address_deep_check" } } };
+      ${legendBlock}
+      return { graphLegendHtml };
+    `)() as { graphLegendHtml(mode: string): string };
+
+    const legend = api.graphLegendHtml("deep_branch_map");
+
+    expect(legend).toContain("Grouped transfers");
+    expect(legend).toContain("legend-swatch group");
+  });
+
   it("marks reciprocal flow edges as circular evidence in styling and selected details", () => {
     const html = adminConsoleHtml();
     const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
@@ -6043,7 +6243,8 @@ describe("adminConsoleHtml", () => {
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
     expect(html).toContain("function edgeLabelRoleClass");
-    expect(html).toContain(".amount-pill.label-role-incoming { --pill-accent: #8fe9af;");
+    expect(html).toContain(".amount-pill.label-role-incoming { --pill-accent: #30f5ce;");
+    expect(html).toContain(".amount-pill.label-role-outgoing { --pill-accent: #f93e57;");
     expect(html).toContain(".amount-pill.label-role-service { --pill-accent: #ffd36b;");
     expect(html).toContain(".amount-pill.label-role-stop { --pill-accent: #f6c177;");
     expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #c3ced9;");
@@ -6169,7 +6370,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (edgeIsGroupedContextEvidence(edge)) return 1.15;');
     expect(html).toContain('if (role === "peer") return 1.2;');
     expect(html).toContain('if (role === "context") return 1.25;');
-    expect(html).toContain('return Math.max(1.45, Math.min(2.8, scaled));');
+    expect(html).toContain('return Math.max(1.2, Math.min(1.9, scaled));');
     expect(html).not.toContain("Math.min(8, scaled)");
     expect(html).not.toContain("Math.min(4.4, scaled)");
     const strokeBlock = html.slice(html.indexOf("function edgeStrokeWidth"), html.indexOf("function edgePairKey"));
@@ -6187,7 +6388,12 @@ describe("adminConsoleHtml", () => {
     expect(strokeApi.edgeStrokeWidth({
       visualRole: "incoming",
       amountRaw: "500000000000"
-    })).toBeLessThanOrEqual(2.8);
+    })).toBeLessThanOrEqual(1.9);
+    expect(strokeApi.edgeStrokeWidth({
+      visualRole: "outgoing",
+      amountRaw: "9000000000",
+      metadata: { evidenceType: "approval_drain_transfer" }
+    })).toBeLessThanOrEqual(1.9);
     expect(strokeApi.edgeStrokeWidth({
       visualRole: "incoming",
       amountRaw: "999999999999999999",
@@ -6217,7 +6423,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".edge.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)); }");
     expect(html).toContain(".amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px var(--pill-glow)); }");
     expect(html).toContain("function edgeMarkerDefs");
-    expect(html).toContain('marker("edgeArrowIncoming", "#8fe9af")');
+    expect(html).toContain('marker("edgeArrowIncoming", "#30f5ce")');
+    expect(html).toContain('marker("edgeArrowOutgoing", "#f93e57")');
     expect(html).toContain('marker("edgeArrowPeer", "#c3ced9", ".72")');
     expect(html).toContain('marker("edgeArrowGrouped", "#d8c7ff", ".86")');
     expect(html).toContain('if (edgeIsGroupedContextEvidence(edge)) return "edgeArrowGrouped";');

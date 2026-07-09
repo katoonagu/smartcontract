@@ -37,8 +37,8 @@ export function adminConsoleHtml(): string {
       --text-primary: #e3ebf2;
       --text-secondary: #a8b4bf;
       --text-tertiary: #6f7d89;
-      --semantic-money-in: #6fcf97;
-      --semantic-money-out: #df6b75;
+      --semantic-money-in: #30f5ce;
+      --semantic-money-out: #f93e57;
       --semantic-context: #9aa6b3;
       --semantic-grouped: #c4b1f2;
       --semantic-contract: #c982a6;
@@ -141,7 +141,7 @@ export function adminConsoleHtml(): string {
     .graph-legend-card { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; min-width: 0; }
     .legend-chip { display: inline-flex; gap: 5px; align-items: center; min-width: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.25; }
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
-    .legend-swatch.direct { border-color: #8fe9af; }
+    .legend-swatch.direct { border-color: var(--semantic-money-in); }
     .legend-swatch.direct-context { border-color: var(--semantic-context); border-top-style: dashed; opacity: .78; }
     .legend-swatch.second-hop { border-color: #7fc8c0; border-top-style: dashed; }
     .legend-swatch.inferred { border-color: #aab5c2; border-top-style: dashed; }
@@ -152,7 +152,7 @@ export function adminConsoleHtml(): string {
     .legend-swatch.contract { border-color: var(--semantic-contract); border-top-style: dashed; }
     .legend-swatch.group { border-color: #d7b2ff; border-top-style: dashed; }
     .legend-swatch.where-route { border-color: var(--semantic-money-in); }
-    .legend-swatch.where-exact { border-color: #8fe9af; }
+    .legend-swatch.where-exact { border-color: var(--semantic-money-in); }
     .legend-swatch.where-probable { border-color: #aab5c2; border-top-style: dashed; opacity: .76; }
     .legend-swatch.where-caveat { border-color: #f6c177; border-top-style: dashed; opacity: .76; }
     .legend-swatch.where-service { border-color: #ffd36b; border-top-style: dashed; opacity: .78; }
@@ -225,6 +225,52 @@ export function adminConsoleHtml(): string {
       border-radius: 8px;
       background: var(--panel);
     }
+    .wallet-intel-table { padding: 10px; }
+    .wallet-intel-intersection-list { display: grid; gap: 8px; }
+    .wallet-intel-address-card {
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      cursor: pointer;
+    }
+    .wallet-intel-address-card:hover, .wallet-intel-address-card.active {
+      border-color: rgba(127, 169, 221, .58);
+      background: rgba(127, 169, 221, .08);
+    }
+    .wallet-intel-card-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .wallet-intel-address-main {
+      display: grid;
+      gap: 3px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text-primary);
+      text-align: left;
+      min-width: 0;
+    }
+    .wallet-intel-address-main strong { color: var(--accent); font-size: 13px; }
+    .wallet-intel-address-main code { color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+    .wallet-intel-card-reason { color: var(--text-primary); font-size: 12px; line-height: 1.35; }
+    .wallet-intel-card-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+    .wallet-intel-metric {
+      display: inline-grid;
+      gap: 2px;
+      min-width: 86px;
+      padding: 5px 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(21, 25, 29, .74);
+    }
+    .wallet-intel-metric span { color: var(--muted); font-size: 10px; }
+    .wallet-intel-metric strong { color: var(--text-primary); font-size: 12px; overflow-wrap: anywhere; }
     .wallet-intel-table table {
       width: 100%;
       border-collapse: collapse;
@@ -285,6 +331,23 @@ export function adminConsoleHtml(): string {
     .wallet-intel-pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; background: var(--panel-2); color: var(--text-secondary); font-size: 11px; }
     .wallet-intel-list { display: grid; gap: 6px; }
     .wallet-intel-item { display: grid; gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+    .wallet-intel-check-card {
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+    }
+    .wallet-intel-check-card header {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+    .wallet-intel-check-card header strong { overflow-wrap: anywhere; }
+    .wallet-intel-check-card .wallet-intel-line { grid-template-columns: minmax(95px, .62fr) minmax(0, 1.38fr); }
     .wallet-intel-tx { display: grid; gap: 3px; }
     .wallet-intel-ego-graph {
       min-height: 180px;
@@ -788,7 +851,7 @@ export function adminConsoleHtml(): string {
       font-weight: 650;
       white-space: nowrap;
     }
-    .analyst-badge-money { border-color: rgba(111, 207, 151, .38); color: var(--semantic-money-in); }
+    .analyst-badge-money { border-color: rgba(48, 245, 206, .38); color: var(--semantic-money-in); }
     .analyst-badge-context { border-color: rgba(154, 166, 179, .38); color: var(--semantic-context); }
     .analyst-badge-boundary { border-color: rgba(214, 177, 95, .42); color: var(--semantic-boundary); }
     .analyst-badge-contract { border-color: rgba(201, 130, 166, .42); color: var(--semantic-contract); }
@@ -1108,9 +1171,9 @@ export function adminConsoleHtml(): string {
     .edge.edge-speed-medium { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .42)); }
     .edge.edge-speed-soft { filter: drop-shadow(0 0 7px rgba(237, 244, 251, .26)); }
     .edge.edge-speed-faint { filter: drop-shadow(0 0 5px rgba(237, 244, 251, .16)); }
-    .edge.edge-flow-incoming.edge-speed-strong { filter: drop-shadow(0 0 11px rgba(123, 226, 166, .56)); }
-    .edge.edge-flow-incoming.edge-speed-medium { filter: drop-shadow(0 0 9px rgba(123, 226, 166, .38)); }
-    .edge.edge-flow-incoming.edge-speed-soft { filter: drop-shadow(0 0 7px rgba(123, 226, 166, .24)); }
+    .edge.edge-flow-incoming.edge-speed-strong { filter: drop-shadow(0 0 11px rgba(48, 245, 206, .56)); }
+    .edge.edge-flow-incoming.edge-speed-medium { filter: drop-shadow(0 0 9px rgba(48, 245, 206, .38)); }
+    .edge.edge-flow-incoming.edge-speed-soft { filter: drop-shadow(0 0 7px rgba(48, 245, 206, .24)); }
     .edge.edge-flow-service.edge-speed-strong,
     .edge.edge-flow-stop.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(246, 193, 119, .46)); }
     .edge.edge-flow-peer.edge-speed-strong { filter: drop-shadow(0 0 8px rgba(170, 181, 194, .28)); }
@@ -1121,8 +1184,8 @@ export function adminConsoleHtml(): string {
     .amount-pill text { font-size: 10.5px; font-weight: 500; paint-order: stroke; stroke: rgba(11, 14, 17, .7); stroke-width: 1.5px; stroke-linejoin: round; }
     .amount-pill .amount-line { fill: #ffffff; font-weight: 500; }
     .amount-pill .time-line { fill: var(--pill-accent); font-size: 9.5px; font-weight: 560; }
-    .amount-pill.label-role-incoming { --pill-accent: #8fe9af; --pill-glow: rgba(123, 226, 166, .32); }
-    .amount-pill.label-role-outgoing { --pill-accent: #ff9ba4; --pill-glow: rgba(255, 132, 142, .26); }
+    .amount-pill.label-role-incoming { --pill-accent: #30f5ce; --pill-glow: rgba(48, 245, 206, .32); }
+    .amount-pill.label-role-outgoing { --pill-accent: #f93e57; --pill-glow: rgba(249, 62, 87, .26); }
     .amount-pill.label-role-service { --pill-accent: #ffd36b; --pill-glow: rgba(255, 211, 107, .32); }
     .amount-pill.label-role-stop { --pill-accent: #f6c177; --pill-glow: rgba(246, 193, 119, .34); }
     .amount-pill.label-role-peer { --pill-accent: #c3ced9; --pill-glow: rgba(170, 181, 194, .2); }
@@ -1375,7 +1438,7 @@ export function adminConsoleHtml(): string {
         <h1>Admin Forensics Console</h1>
         <nav class="top-nav" aria-label="Admin workspaces">
           <a href="/admin/forensics" data-workspace-link>Forensics</a>
-          <a href="/admin/wallet-intelligence" data-workspace-link>Wallet Intelligence</a>
+          <a href="/admin/wallet-intelligence" data-workspace-link>Пересечения</a>
           <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>
         </nav>
         <div class="stats" id="jobStats"></div>
@@ -1560,33 +1623,33 @@ export function adminConsoleHtml(): string {
         <div class="wallet-intel-head">
           <div class="wallet-intel-title-row">
             <div>
-              <h2>Wallet Intelligence</h2>
-              <div class="hint" id="walletIntelStatus">Load indexed wallet intelligence addresses.</div>
+              <h2>Пересечения адресов</h2>
+              <div class="hint" id="walletIntelStatus">Загрузите сохраненные адреса из проверок, чтобы увидеть пересечения.</div>
             </div>
-            <div class="wallet-intel-warning">This is analyst context, not scoring evidence.</div>
+            <div class="wallet-intel-warning">Контекст аналитика, не скоринговое доказательство.</div>
           </div>
           <div class="wallet-intel-filters">
-            <div class="wallet-intel-presets" role="group" aria-label="Wallet Intelligence presets">
-              <button type="button" data-wallet-intel-preset="intersections" class="active">Intersections</button>
-              <button type="button" data-wallet-intel-preset="requesters">By requesters</button>
-              <button type="button" data-wallet-intel-preset="unknown_repeated">Unknown repeated</button>
-              <button type="button" data-wallet-intel-preset="known_infrastructure">Known infrastructure</button>
-              <button type="button" data-wallet-intel-preset="all">All sightings</button>
+            <div class="wallet-intel-presets" role="group" aria-label="Фильтры пересечений адресов">
+              <button type="button" data-wallet-intel-preset="intersections" class="active">Пересечения</button>
+              <button type="button" data-wallet-intel-preset="requesters">По заявителям</button>
+              <button type="button" data-wallet-intel-preset="unknown_repeated">Неизвестные повторы</button>
+              <button type="button" data-wallet-intel-preset="known_infrastructure">Биржи / инфраструктура</button>
+              <button type="button" data-wallet-intel-preset="all">Все появления</button>
             </div>
-            <label>Address
-              <input id="walletIntelAddress" placeholder="Address contains">
+            <label>Адрес
+              <input id="walletIntelAddress" placeholder="Фрагмент адреса">
             </label>
-            <label>Mode
+            <label>Режим проверки
               <select id="walletIntelMode">
-                <option value="">All modes</option>
+                <option value="">Все режимы</option>
                 <option value="address_deep_check">DeepCheck</option>
-                <option value="where_is_money_check">Where is money</option>
-                <option value="incoming_deposit_check">Incoming deposit</option>
+                <option value="where_is_money_check">Откуда деньги</option>
+                <option value="incoming_deposit_check">Входящий депозит</option>
               </select>
             </label>
             <label>Tag
               <select id="walletIntelTag">
-                <option value="">All tags</option>
+                <option value="">Все теги</option>
                 <option value="repeated_cross_run_address">repeated_cross_run_address</option>
                 <option value="high_activity_wallet">high_activity_wallet</option>
                 <option value="large_liquidity_wallet">large_liquidity_wallet</option>
@@ -1595,38 +1658,38 @@ export function adminConsoleHtml(): string {
                 <option value="cross_mode_seen">cross_mode_seen</option>
               </select>
             </label>
-            <label>Requester
-              <input id="walletIntelRequester" placeholder="user or id">
+            <label>Заявитель
+              <input id="walletIntelRequester" placeholder="user или id">
             </label>
-            <label>Subject address
-              <input id="walletIntelSubjectAddress" placeholder="Checked subject">
+            <label>Проверяемый кошелек
+              <input id="walletIntelSubjectAddress" placeholder="Адрес проверки">
             </label>
-            <label>Min subjects
+            <label>Мин. кошельков
               <input id="walletIntelMinSubjects" inputmode="numeric" placeholder="2">
             </label>
-            <label>Min requesters
+            <label>Мин. заявителей
               <input id="walletIntelMinRequesters" inputmode="numeric" placeholder="2">
             </label>
-            <label>Max depth
+            <label>Макс. глубина
               <input id="walletIntelMaxDepth" inputmode="numeric" placeholder="2">
             </label>
-            <label>Service
+            <label>Сервис
               <input id="walletIntelServiceCategory" placeholder="cex, bridge">
             </label>
-            <label>Status
+            <label>Статус
               <select id="walletIntelJobStatus">
-                <option value="">Any status</option>
-                <option value="completed">Completed</option>
-                <option value="partial">Partial</option>
+                <option value="">Любой статус</option>
+                <option value="completed">Завершена</option>
+                <option value="partial">Частичная</option>
               </select>
             </label>
-            <button id="walletIntelReload" type="button">Reload</button>
+            <button id="walletIntelReload" type="button">Обновить</button>
           </div>
         </div>
         <div class="wallet-intel-body">
           <div id="walletIntelTable" class="wallet-intel-table"></div>
           <aside id="walletIntelDrawer" class="wallet-intel-drawer">
-            <div class="empty">Select an address to inspect requesters, source jobs, and first edges.</div>
+            <div class="empty">Выберите адрес, чтобы увидеть проверки, где он пересекся.</div>
           </aside>
         </div>
       </section>
@@ -2052,22 +2115,41 @@ export function adminConsoleHtml(): string {
       if (minDepth === null || minDepth === undefined || maxDepth === null || maxDepth === undefined) return "n/a";
       return String(minDepth) === String(maxDepth) ? String(minDepth) : String(minDepth) + "-" + String(maxDepth);
     }
+    function walletIntelModeLabel(kind) {
+      if (kind === "address_deep_check") return "DeepCheck";
+      if (kind === "where_is_money_check") return "Откуда деньги";
+      if (kind === "incoming_deposit_check") return "Входящий депозит";
+      return String(kind || "unknown").replace(/_/g, " ");
+    }
+    function walletIntelJobStatusLabel(status) {
+      if (status === "completed") return "завершена";
+      if (status === "partial") return "частичная";
+      return walletIntelText(status);
+    }
     function walletIntelModesText(item) {
-      const modes = asArray(item?.modes).map(humanCheckKind).filter(Boolean);
-      return modes.length ? modes.join(" + ") : "mode n/a";
+      const modes = asArray(item?.modes).map(walletIntelModeLabel).filter(Boolean);
+      return modes.length ? modes.join(" + ") : "режим n/a";
+    }
+    function walletIntelRuPlural(count, one, few, many) {
+      const value = Math.abs(Number(count || 0));
+      const mod10 = value % 10;
+      const mod100 = value % 100;
+      if (mod10 === 1 && mod100 !== 11) return one;
+      if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+      return many;
     }
     function walletIntelWhyInteresting(item) {
       const subjectCount = Number(item?.uniqueSubjectCount || 0);
       const requesterCount = Number(item?.uniqueRequesterCount || 0);
       const prefix = walletIntelKnownInfrastructure(item)
-        ? "Known infrastructure context"
+        ? "Известная инфраструктура"
         : subjectCount >= 2
-          ? "Seen in " + subjectCount + " subjects"
+          ? "Встречается в " + subjectCount + " проверяемых кошельках"
           : requesterCount >= 2
-            ? "Seen across " + requesterCount + " requesters"
-            : "Single-context sighting";
-      const requesterText = subjectCount >= 2 ? ", " + requesterCount + " requesters" : "";
-      return prefix + requesterText + ", " + walletIntelModesText(item) + ", depth " + walletIntelDepthText(item);
+            ? "Встречается у " + requesterCount + " заявителей"
+            : "Единичное появление";
+      const requesterText = subjectCount >= 2 ? ", " + requesterCount + " " + walletIntelRuPlural(requesterCount, "заявитель", "заявителя", "заявителей") : "";
+      return prefix + requesterText + ", " + walletIntelModesText(item) + ", глубина " + walletIntelDepthText(item);
     }
     function walletIntelPresetFilters(preset) {
       if (preset === "intersections") return { minUniqueSubjects: "2" };
@@ -2103,10 +2185,13 @@ export function adminConsoleHtml(): string {
     function walletIntelLine(label, value) {
       return '<div class="wallet-intel-line"><span>' + escapeHtml(label) + '</span><strong>' + value + '</strong></div>';
     }
+    function walletIntelMetric(label, value) {
+      return '<span class="wallet-intel-metric"><span>' + escapeHtml(label) + '</span><strong>' + value + '</strong></span>';
+    }
     function renderWalletIntelligenceTable() {
       const root = el("walletIntelTable");
       if (state.walletIntel.loading) {
-        root.innerHTML = '<div class="empty">Loading wallet intelligence addresses...</div>';
+        root.innerHTML = '<div class="empty">Загружаем пересечения адресов...</div>';
         return;
       }
       if (state.walletIntel.error && state.walletIntel.addresses.length === 0) {
@@ -2114,31 +2199,38 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.walletIntel.addresses.length === 0) {
-        root.innerHTML = '<div class="empty">No wallet intelligence addresses loaded.</div>';
+        root.innerHTML = '<div class="empty">По текущим фильтрам пересечений нет.</div>';
         return;
       }
-      const rows = state.walletIntel.addresses.map((item) => {
+      const cards = state.walletIntel.addresses.map((item) => {
         const infra = walletIntelKnownInfrastructure(item);
-        const active = item.address === state.walletIntel.activeAddress ? ' class="active"' : "";
-        return '<tr' + active + ' data-wallet-intel-address="' + escapeHtml(item.address) + '">' +
-          '<td><button type="button" class="wallet-intel-address-button" data-wallet-intel-address="' + escapeHtml(item.address) + '">' + escapeHtml(short(item.address, 8)) + '</button><div class="muted">' + escapeHtml(item.address) + '</div></td>' +
-          '<td><span class="wallet-intel-kind ' + (infra ? "infra" : "unknown") + '">' + escapeHtml(infra ? "Known infrastructure" : "Investigate") + '</span><div class="muted">' + tagPills(item.serviceCategories, "No service") + '</div></td>' +
-          '<td>' + escapeHtml(walletIntelWhyInteresting(item)) + '</td>' +
-          '<td>' + tagPills(item.tags, "No tags") + '</td>' +
-          '<td>' + tagPills(item.modes, "No modes") + '</td>' +
-          '<td>' + escapeHtml(walletIntelText(item.uniqueSubjectCount, "0")) + '</td>' +
-          '<td>' + escapeHtml(walletIntelText(item.uniqueRequesterCount, "0")) + '</td>' +
-          '<td>' + escapeHtml(walletIntelText(item.jobCount, "0") + " / " + walletIntelText(item.occurrenceCount, "0")) + '</td>' +
-          '<td>' + escapeHtml(walletIntelText(item.minDepth) + " - " + walletIntelText(item.maxDepth)) + '</td>' +
-          '<td>' + escapeHtml(walletIntelText(item.distinctTxCount, "0")) + '</td>' +
-          '<td>' + escapeHtml(walletIntelAmount(item.distinctAmountRaw)) + '</td>' +
-          '<td>' + escapeHtml(walletIntelTime(item.firstSeenAt)) + '</td>' +
-          '<td>' + escapeHtml(walletIntelTime(item.lastSeenAt)) + '</td>' +
-          '</tr>';
+        const active = item.address === state.walletIntel.activeAddress ? " active" : "";
+        return '<article class="wallet-intel-address-card' + active + '" data-wallet-intel-address="' + escapeHtml(item.address) + '">' +
+          '<div class="wallet-intel-card-top">' +
+            '<button type="button" class="wallet-intel-address-main" data-wallet-intel-address="' + escapeHtml(item.address) + '">' +
+              '<strong>' + escapeHtml(short(item.address, 8)) + '</strong>' +
+              '<code>' + escapeHtml(item.address) + '</code>' +
+            '</button>' +
+            '<span class="wallet-intel-kind ' + (infra ? "infra" : "unknown") + '">' + escapeHtml(infra ? "инфраструктура" : "проверить") + '</span>' +
+          '</div>' +
+          '<div class="wallet-intel-card-reason">' + escapeHtml(walletIntelWhyInteresting(item)) + '</div>' +
+          '<div class="wallet-intel-card-metrics">' +
+            walletIntelMetric("Проверяемые кошельки", escapeHtml(walletIntelText(item.uniqueSubjectCount, "0"))) +
+            walletIntelMetric("Проверки", escapeHtml(walletIntelText(item.jobCount, "0") + " / " + walletIntelText(item.occurrenceCount, "0"))) +
+            walletIntelMetric("Заявители", escapeHtml(walletIntelText(item.uniqueRequesterCount, "0"))) +
+            walletIntelMetric("Глубина", escapeHtml(walletIntelDepthText(item))) +
+            walletIntelMetric("Tx", escapeHtml(walletIntelText(item.distinctTxCount, "0"))) +
+            walletIntelMetric("Сумма", escapeHtml(walletIntelAmount(item.distinctAmountRaw))) +
+            walletIntelMetric("Последний раз", escapeHtml(walletIntelTime(item.lastSeenAt))) +
+          '</div>' +
+          '<div class="wallet-intel-card-metrics">' +
+            tagPills(asArray(item.modes).map(walletIntelModeLabel), "Нет режимов") +
+            tagPills(item.serviceCategories, "Нет категории сервиса") +
+            tagPills(item.tags, "Нет тегов") +
+          '</div>' +
+          '</article>';
       }).join("");
-      root.innerHTML = '<table><thead><tr>' +
-        '<th>Address</th><th>Class</th><th>Why interesting</th><th>Tags</th><th>Modes</th><th>Subjects</th><th>Requesters</th><th>Jobs / occurrences</th><th>Depth</th><th>Distinct tx</th><th>Distinct amount</th><th>First seen</th><th>Last seen</th>' +
-        '</tr></thead><tbody>' + rows + '</tbody></table>';
+      root.innerHTML = '<div class="wallet-intel-intersection-list">' + cards + '</div>';
     }
     async function loadWalletIntelligenceAddresses() {
       state.token = el("token").value.trim();
@@ -2166,9 +2258,10 @@ export function adminConsoleHtml(): string {
       renderWalletIntelligenceTable();
       renderWalletIntelligenceDrawer();
       try {
-        setWalletIntelligenceStatus("Loading wallet intelligence addresses...");
+        setWalletIntelligenceStatus("Загружаем пересечения адресов...");
         const body = await api("/admin/api/wallet-intelligence/addresses?" + params.toString());
         state.walletIntel.addresses = asArray(body.addresses);
+        const firstAddress = state.walletIntel.addresses[0]?.address || null;
         if (!state.walletIntel.addresses.some((item) => item.address === state.walletIntel.activeAddress)) {
           state.walletIntel.activeAddress = null;
           state.walletIntel.detail = null;
@@ -2176,16 +2269,19 @@ export function adminConsoleHtml(): string {
         state.walletIntel.loading = false;
         renderWalletIntelligenceTable();
         renderWalletIntelligenceDrawer();
-        setWalletIntelligenceStatus(state.walletIntel.addresses.length + " wallet intelligence addresses loaded.");
+        setWalletIntelligenceStatus(state.walletIntel.addresses.length + " адресов загружено.");
+        if (!state.walletIntel.activeAddress && firstAddress) {
+          openWalletIntelligenceAddress(firstAddress);
+        }
       } catch (error) {
         state.walletIntel.loading = false;
-        state.walletIntel.error = error?.message || "Wallet intelligence load failed.";
+        state.walletIntel.error = error?.message || "Не удалось загрузить пересечения адресов.";
         state.walletIntel.addresses = [];
         state.walletIntel.activeAddress = null;
         state.walletIntel.detail = null;
         renderWalletIntelligenceTable();
         renderWalletIntelligenceDrawer();
-        setWalletIntelligenceStatus("Wallet intelligence load failed.");
+        setWalletIntelligenceStatus("Не удалось загрузить пересечения адресов.");
       }
     }
     async function openWalletIntelligenceAddress(address) {
@@ -2196,16 +2292,87 @@ export function adminConsoleHtml(): string {
       renderWalletIntelligenceTable();
       renderWalletIntelligenceDrawer();
       try {
-        setWalletIntelligenceStatus("Loading wallet intelligence address detail...");
+        setWalletIntelligenceStatus("Загружаем детали пересечения...");
         const body = await api("/admin/api/wallet-intelligence/addresses/" + encodeURIComponent(address));
         state.walletIntel.detail = body.detail || null;
         renderWalletIntelligenceDrawer();
-        setWalletIntelligenceStatus("Wallet intelligence address loaded.");
+        setWalletIntelligenceStatus("Детали пересечения загружены.");
       } catch (error) {
-        state.walletIntel.error = error?.message || "Wallet intelligence detail failed.";
+        state.walletIntel.error = error?.message || "Не удалось загрузить детали пересечения.";
         renderWalletIntelligenceDrawer();
-        setWalletIntelligenceStatus("Wallet intelligence detail failed.");
+        setWalletIntelligenceStatus("Не удалось загрузить детали пересечения.");
       }
+    }
+    function walletIntelAddRawAmount(totalRaw, nextRaw) {
+      const total = String(totalRaw || "0");
+      const next = String(nextRaw || "").trim();
+      if (!/^\\d+$/.test(next)) return total;
+      try {
+        return (BigInt(total) + BigInt(next)).toString();
+      } catch (_error) {
+        return total;
+      }
+    }
+    function walletIntelMergeDate(current, candidate, pickLatest) {
+      if (!candidate) return current || null;
+      if (!current) return candidate;
+      const currentTime = Date.parse(current);
+      const candidateTime = Date.parse(candidate);
+      if (!Number.isFinite(currentTime) || !Number.isFinite(candidateTime)) return current;
+      return pickLatest
+        ? (candidateTime > currentTime ? candidate : current)
+        : (candidateTime < currentTime ? candidate : current);
+    }
+    function walletIntelIntersectionGroups(detail) {
+      const jobsById = new Map();
+      asArray(detail?.jobs).forEach((job) => {
+        if (job?.jobId) jobsById.set(job.jobId, job);
+      });
+      const groups = new Map();
+      asArray(detail?.sightings).forEach((sighting) => {
+        const job = jobsById.get(sighting?.jobId) || {};
+        const jobId = sighting?.jobId || job.jobId || "";
+        const subjectAddress = sighting?.subjectAddress || job.subjectAddress || "";
+        const jobKind = sighting?.jobKind || job.jobKind || "";
+        const key = jobId || [subjectAddress, jobKind, sighting?.pathId || ""].join("|");
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            jobId,
+            subjectAddress,
+            jobKind,
+            jobStatus: job.jobStatus || "",
+            completedAt: job.completedAt || null,
+            requestedBy: sighting?.requestedBy || "",
+            occurrences: 0,
+            amountRaw: "0",
+            txHashes: [],
+            roles: [],
+            sources: [],
+            minDepth: null,
+            maxDepth: null,
+            firstSeenAt: null,
+            lastSeenAt: null,
+            sightings: []
+          });
+        }
+        const group = groups.get(key);
+        group.occurrences += 1;
+        group.amountRaw = walletIntelAddRawAmount(group.amountRaw, sighting?.amountRaw);
+        group.sightings.push(sighting);
+        if (sighting?.txHash && !group.txHashes.includes(sighting.txHash)) group.txHashes.push(sighting.txHash);
+        if (sighting?.role && !group.roles.includes(sighting.role)) group.roles.push(sighting.role);
+        if (sighting?.sourceKind && !group.sources.includes(sighting.sourceKind)) group.sources.push(sighting.sourceKind);
+        if (sighting?.requestedBy && !group.requestedBy) group.requestedBy = sighting.requestedBy;
+        const depth = Number(sighting?.depth);
+        if (Number.isFinite(depth)) {
+          group.minDepth = group.minDepth === null ? depth : Math.min(group.minDepth, depth);
+          group.maxDepth = group.maxDepth === null ? depth : Math.max(group.maxDepth, depth);
+        }
+        group.firstSeenAt = walletIntelMergeDate(group.firstSeenAt, sighting?.firstSeenAt, false);
+        group.lastSeenAt = walletIntelMergeDate(group.lastSeenAt, sighting?.lastSeenAt, true);
+      });
+      return Array.from(groups.values());
     }
     function walletIntelGraphNodeLabel(value) {
       return short(walletIntelText(value, "unknown"), 6);
@@ -2276,7 +2443,7 @@ export function adminConsoleHtml(): string {
           '<text y="4">' + escapeHtml(walletIntelGraphNodeLabel(node.value)) + '</text>' +
           '</g>';
       }).join("");
-      return '<div class="wallet-intel-ego-graph"><svg viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Focused Wallet Intelligence graph">' +
+      return '<div class="wallet-intel-ego-graph"><svg viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Локальный граф пересечения">' +
         edgeHtml + nodeHtml +
         '</svg></div>';
     }
@@ -2284,7 +2451,7 @@ export function adminConsoleHtml(): string {
       const root = el("walletIntelDrawer");
       const address = state.walletIntel.activeAddress;
       if (!address) {
-        root.innerHTML = '<div class="empty">Select an address to inspect requesters, source jobs, and first edges.</div>';
+        root.innerHTML = '<div class="empty">Выберите адрес, чтобы увидеть проверки, где он пересекся.</div>';
         return;
       }
       if (state.walletIntel.error && !state.walletIntel.detail) {
@@ -2293,7 +2460,7 @@ export function adminConsoleHtml(): string {
       }
       const detail = state.walletIntel.detail;
       if (!detail) {
-        root.innerHTML = '<div class="empty">Loading address detail...</div>';
+        root.innerHTML = '<div class="empty">Загружаем детали пересечения...</div>';
         return;
       }
       const summary = detail.summary || {};
@@ -2301,79 +2468,97 @@ export function adminConsoleHtml(): string {
       const jobs = asArray(detail.jobs);
       const sightings = asArray(detail.sightings).slice(0, 50);
       const edges = asArray(detail.edges).slice(0, 25);
-      const summaryHtml = '<section class="wallet-intel-section"><h3>Summary</h3><div class="wallet-intel-meta">' +
-        walletIntelLine("Address", walletIntelAddressLink(summary.address || address)) +
-        walletIntelLine("Unique subjects", escapeHtml(walletIntelText(summary.uniqueSubjectCount, "0"))) +
-        walletIntelLine("Unique requesters", escapeHtml(walletIntelText(summary.uniqueRequesterCount, "0"))) +
-        walletIntelLine("Jobs", escapeHtml(walletIntelText(summary.jobCount, "0") + " (" + walletIntelText(summary.completedJobCount, "0") + " completed, " + walletIntelText(summary.partialJobCount, "0") + " partial)")) +
-        walletIntelLine("Occurrences", escapeHtml(walletIntelText(summary.occurrenceCount, "0"))) +
-        walletIntelLine("Depth", escapeHtml(walletIntelText(summary.minDepth) + " - " + walletIntelText(summary.maxDepth))) +
-        walletIntelLine("Distinct tx", escapeHtml(walletIntelText(summary.distinctTxCount, "0"))) +
-        walletIntelLine("Distinct amount", escapeHtml(walletIntelAmount(summary.distinctAmountRaw))) +
-        walletIntelLine("First seen", escapeHtml(walletIntelTime(summary.firstSeenAt))) +
-        walletIntelLine("Last seen", escapeHtml(walletIntelTime(summary.lastSeenAt))) +
-        walletIntelLine("Modes", tagPills(summary.modes, "No modes")) +
-        walletIntelLine("Tags", tagPills(summary.tags, "No tags")) +
-        walletIntelLine("Services", tagPills(summary.serviceCategories, "No service categories")) +
-        walletIntelLine("Labels", tagPills(summary.labelHints, "No labels")) +
+      const intersections = walletIntelIntersectionGroups(detail);
+      const summaryHtml = '<section class="wallet-intel-section"><h3>Сводка пересечения</h3><div class="wallet-intel-meta">' +
+        walletIntelLine("Адрес", walletIntelAddressLink(summary.address || address)) +
+        walletIntelLine("Проверяемые кошельки", escapeHtml(walletIntelText(summary.uniqueSubjectCount, "0"))) +
+        walletIntelLine("Заявители", escapeHtml(walletIntelText(summary.uniqueRequesterCount, "0"))) +
+        walletIntelLine("Проверки", escapeHtml(walletIntelText(summary.jobCount, "0") + " (" + walletIntelText(summary.completedJobCount, "0") + " завершено, " + walletIntelText(summary.partialJobCount, "0") + " частично)")) +
+        walletIntelLine("Появления", escapeHtml(walletIntelText(summary.occurrenceCount, "0"))) +
+        walletIntelLine("Глубина", escapeHtml(walletIntelText(summary.minDepth) + " - " + walletIntelText(summary.maxDepth))) +
+        walletIntelLine("Уникальные tx", escapeHtml(walletIntelText(summary.distinctTxCount, "0"))) +
+        walletIntelLine("Сумма", escapeHtml(walletIntelAmount(summary.distinctAmountRaw))) +
+        walletIntelLine("Первый раз", escapeHtml(walletIntelTime(summary.firstSeenAt))) +
+        walletIntelLine("Последний раз", escapeHtml(walletIntelTime(summary.lastSeenAt))) +
+        walletIntelLine("Режимы", tagPills(asArray(summary.modes).map(walletIntelModeLabel), "Нет режимов")) +
+        walletIntelLine("Теги", tagPills(summary.tags, "Нет тегов")) +
+        walletIntelLine("Сервисы", tagPills(summary.serviceCategories, "Нет категории сервиса")) +
+        walletIntelLine("Лейблы", tagPills(summary.labelHints, "Нет лейблов")) +
         '</div></section>';
-      const focusedGraphHtml = '<section class="wallet-intel-section"><h3>Focused graph</h3>' +
+      const intersectionsHtml = '<section class="wallet-intel-section"><h3>Где встречается</h3><div class="wallet-intel-list">' +
+        (intersections.length ? intersections.map((group) => {
+          const txLinks = asArray(group.txHashes).slice(0, 3).map((tx) => explorerLink(tronscanTxUrl(tx), short(tx, 8))).join(" ") || '<span class="muted">tx нет</span>';
+          const depthText = group.minDepth === null || group.maxDepth === null ? "n/a" : (group.minDepth === group.maxDepth ? String(group.minDepth) : group.minDepth + "-" + group.maxDepth);
+          return '<article class="wallet-intel-check-card">' +
+            '<header><strong>' + walletIntelAddressLink(group.subjectAddress) + '</strong><span class="' + classifyStatus(group.jobStatus === "completed" ? "completed" : "review") + '">' + escapeHtml(walletIntelJobStatusLabel(group.jobStatus)) + '</span></header>' +
+            walletIntelLine("Проверка", walletIntelJobLink(group.jobId)) +
+            walletIntelLine("Режим", escapeHtml(walletIntelModeLabel(group.jobKind))) +
+            walletIntelLine("Появления", escapeHtml(String(group.occurrences || 0))) +
+            walletIntelLine("Глубина", escapeHtml(depthText)) +
+            walletIntelLine("Роли", tagPills(group.roles, "Нет ролей")) +
+            walletIntelLine("Tx", txLinks) +
+            walletIntelLine("Сумма", escapeHtml(walletIntelAmount(group.amountRaw))) +
+            walletIntelLine("Последний раз", escapeHtml(walletIntelTime(group.lastSeenAt || group.completedAt))) +
+          '</article>';
+        }).join("") : '<div class="empty">Для выбранного адреса нет сохраненных появлений в проверках.</div>') +
+        '</div></section>';
+      const focusedGraphHtml = '<section class="wallet-intel-section"><h3>Локальный граф</h3>' +
         renderWalletIntelFocusedGraph(detail, summary.address || address) +
         '</section>';
-      const requesterHtml = '<section class="wallet-intel-section"><h3>Requesters</h3><div class="wallet-intel-list">' +
+      const requesterHtml = '<section class="wallet-intel-section"><h3>Заявители</h3><div class="wallet-intel-list">' +
         (requesters.length ? requesters.map((requester) => '<div class="wallet-intel-item">' +
-          walletIntelLine("requestedBy", escapeHtml(walletIntelText(requester.requestedBy))) +
-          walletIntelLine("telegramUserId", escapeHtml(walletIntelText(requester.telegramUserId))) +
-          walletIntelLine("username", escapeHtml(walletIntelText(requester.username))) +
-          walletIntelLine("chatId", escapeHtml(walletIntelText(requester.chatId))) +
-          walletIntelLine("messageId", escapeHtml(walletIntelText(requester.messageId))) +
-          walletIntelLine("locale", escapeHtml(walletIntelText(requester.locale))) +
-          walletIntelLine("jobCount", escapeHtml(walletIntelText(requester.jobCount, "0"))) +
-          '</div>').join("") : '<div class="empty">No requesters stored.</div>') +
+          walletIntelLine("Заявитель", escapeHtml(walletIntelText(requester.requestedBy))) +
+          walletIntelLine("Telegram ID", escapeHtml(walletIntelText(requester.telegramUserId))) +
+          walletIntelLine("Username", escapeHtml(walletIntelText(requester.username))) +
+          walletIntelLine("Chat ID", escapeHtml(walletIntelText(requester.chatId))) +
+          walletIntelLine("Message ID", escapeHtml(walletIntelText(requester.messageId))) +
+          walletIntelLine("Язык", escapeHtml(walletIntelText(requester.locale))) +
+          walletIntelLine("Проверок", escapeHtml(walletIntelText(requester.jobCount, "0"))) +
+          '</div>').join("") : '<div class="empty">Заявители не сохранены.</div>') +
         '</div></section>';
-      const jobsHtml = '<section class="wallet-intel-section"><h3>Source jobs</h3><div class="wallet-intel-list">' +
+      const jobsHtml = '<section class="wallet-intel-section"><h3>Исходные проверки</h3><div class="wallet-intel-list">' +
         (jobs.length ? jobs.map((job) => '<div class="wallet-intel-item">' +
-          walletIntelLine("Job", walletIntelJobLink(job.jobId)) +
-          walletIntelLine("Mode", escapeHtml(humanCheckKind(job.jobKind))) +
-          walletIntelLine("Status", escapeHtml(walletIntelText(job.jobStatus))) +
-          walletIntelLine("Subject", walletIntelAddressLink(job.subjectAddress)) +
-          walletIntelLine("Completed", escapeHtml(walletIntelTime(job.completedAt))) +
-          '</div>').join("") : '<div class="empty">No source jobs stored.</div>') +
+          walletIntelLine("Проверка", walletIntelJobLink(job.jobId)) +
+          walletIntelLine("Режим", escapeHtml(walletIntelModeLabel(job.jobKind))) +
+          walletIntelLine("Статус", escapeHtml(walletIntelJobStatusLabel(job.jobStatus))) +
+          walletIntelLine("Проверяемый кошелек", walletIntelAddressLink(job.subjectAddress)) +
+          walletIntelLine("Завершена", escapeHtml(walletIntelTime(job.completedAt))) +
+          '</div>').join("") : '<div class="empty">Исходные проверки не сохранены.</div>') +
         '</div></section>';
-      const sightingsHtml = '<section class="wallet-intel-section"><h3>Sightings</h3><div class="wallet-intel-list wallet-intel-tx">' +
+      const sightingsHtml = '<section class="wallet-intel-section"><h3>Сырые появления</h3><div class="wallet-intel-list wallet-intel-tx">' +
         (sightings.length ? sightings.map((sighting) => {
-          const tx = sighting.txHash ? explorerLink(tronscanTxUrl(sighting.txHash), short(sighting.txHash, 8)) : '<span class="muted">tx n/a</span>';
+          const tx = sighting.txHash ? explorerLink(tronscanTxUrl(sighting.txHash), short(sighting.txHash, 8)) : '<span class="muted">tx нет</span>';
           return '<div class="wallet-intel-item">' +
-            walletIntelLine("Source job", walletIntelJobLink(sighting.jobId)) +
-            walletIntelLine("Subject", walletIntelAddressLink(sighting.subjectAddress)) +
+            walletIntelLine("Проверка", walletIntelJobLink(sighting.jobId)) +
+            walletIntelLine("Проверяемый кошелек", walletIntelAddressLink(sighting.subjectAddress)) +
             walletIntelLine("Tx", tx) +
-            walletIntelLine("Amount", escapeHtml(walletIntelAmount(sighting.amountRaw))) +
-            walletIntelLine("Mode", escapeHtml(humanCheckKind(sighting.jobKind))) +
-            walletIntelLine("Role", escapeHtml(walletIntelText(sighting.role))) +
-            walletIntelLine("Source", escapeHtml(walletIntelText(sighting.sourceKind))) +
-            walletIntelLine("Depth/path", escapeHtml(walletIntelText(sighting.depth) + " / " + walletIntelText(sighting.pathId))) +
-            walletIntelLine("First seen", escapeHtml(walletIntelTime(sighting.firstSeenAt))) +
-            walletIntelLine("Last seen", escapeHtml(walletIntelTime(sighting.lastSeenAt))) +
+            walletIntelLine("Сумма", escapeHtml(walletIntelAmount(sighting.amountRaw))) +
+            walletIntelLine("Режим", escapeHtml(walletIntelModeLabel(sighting.jobKind))) +
+            walletIntelLine("Роль", escapeHtml(walletIntelText(sighting.role))) +
+            walletIntelLine("Источник", escapeHtml(walletIntelText(sighting.sourceKind))) +
+            walletIntelLine("Глубина/путь", escapeHtml(walletIntelText(sighting.depth) + " / " + walletIntelText(sighting.pathId))) +
+            walletIntelLine("Первый раз", escapeHtml(walletIntelTime(sighting.firstSeenAt))) +
+            walletIntelLine("Последний раз", escapeHtml(walletIntelTime(sighting.lastSeenAt))) +
             '</div>';
-        }).join("") : '<div class="empty">No sightings stored.</div>') +
+        }).join("") : '<div class="empty">Сырые появления не сохранены.</div>') +
         '</div></section>';
-      const edgesHtml = '<section class="wallet-intel-section"><h3>First edges</h3><div class="wallet-intel-list wallet-intel-tx">' +
+      const edgesHtml = '<section class="wallet-intel-section"><h3>Связанные ребра</h3><div class="wallet-intel-list wallet-intel-tx">' +
         (edges.length ? edges.map((edge) => {
-          const tx = edge.txHash ? explorerLink(tronscanTxUrl(edge.txHash), short(edge.txHash, 8)) : '<span class="muted">tx n/a</span>';
+          const tx = edge.txHash ? explorerLink(tronscanTxUrl(edge.txHash), short(edge.txHash, 8)) : '<span class="muted">tx нет</span>';
           return '<div class="wallet-intel-item">' +
             walletIntelLine("Tx", tx) +
-            walletIntelLine("From", walletIntelAddressLink(edge.fromAddress)) +
-            walletIntelLine("To", walletIntelAddressLink(edge.toAddress)) +
-            walletIntelLine("Amount", escapeHtml(walletIntelAmount(edge.amountRaw))) +
-            walletIntelLine("Time", escapeHtml(walletIntelTime(edge.timestamp))) +
-            walletIntelLine("Mode", escapeHtml(humanCheckKind(edge.jobKind))) +
-            walletIntelLine("Role", escapeHtml(walletIntelText(edge.edgeRole))) +
-            walletIntelLine("Source", escapeHtml(walletIntelText(edge.sourceKind))) +
-            walletIntelLine("Depth/path", escapeHtml(walletIntelText(edge.depth) + " / " + walletIntelText(edge.pathId))) +
+            walletIntelLine("От", walletIntelAddressLink(edge.fromAddress)) +
+            walletIntelLine("К", walletIntelAddressLink(edge.toAddress)) +
+            walletIntelLine("Сумма", escapeHtml(walletIntelAmount(edge.amountRaw))) +
+            walletIntelLine("Время", escapeHtml(walletIntelTime(edge.timestamp))) +
+            walletIntelLine("Режим", escapeHtml(walletIntelModeLabel(edge.jobKind))) +
+            walletIntelLine("Роль", escapeHtml(walletIntelText(edge.edgeRole))) +
+            walletIntelLine("Источник", escapeHtml(walletIntelText(edge.sourceKind))) +
+            walletIntelLine("Глубина/путь", escapeHtml(walletIntelText(edge.depth) + " / " + walletIntelText(edge.pathId))) +
             '</div>';
-        }).join("") : '<div class="empty">No edges stored.</div>') +
+        }).join("") : '<div class="empty">Связанные ребра не сохранены.</div>') +
         '</div></section>';
-      root.innerHTML = summaryHtml + focusedGraphHtml + requesterHtml + jobsHtml + sightingsHtml + edgesHtml;
+      root.innerHTML = summaryHtml + intersectionsHtml + focusedGraphHtml + requesterHtml + jobsHtml + sightingsHtml + edgesHtml;
     }
     const theftReportAdminStatusLabels = {
       new: "Новая",
@@ -2565,8 +2750,8 @@ export function adminConsoleHtml(): string {
           '<button type="button" data-copy-text="' + copyText + '">Копировать данные</button>' +
           '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в Forensics</a>' +
           '<a class="button-like" href="/admin/forensics?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Forensics</a>' +
-          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в Wallet Intelligence</a>' +
-          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в Wallet Intelligence</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.victimAddress || "") + '">Клиент в пересечениях</a>' +
+          '<a class="button-like" href="/admin/wallet-intelligence?subjectAddress=' + encodeURIComponent(report.reportedScamAddress || "") + '">Получатель в пересечениях</a>' +
           '<a class="button-like" href="' + escapeHtml(tronscanTxUrl(report.txHash || "")) + '" target="_blank" rel="noopener noreferrer">Tx в TronScan</a>' +
         '</div></section>' +
       '</div>';
@@ -5795,6 +5980,11 @@ export function adminConsoleHtml(): string {
       if (state.selected.type === "node") return edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id;
       return true;
     }
+    function edgeIsStoredDirectCounterpartyTransfer(edge) {
+      return edge?.metadata?.source === "directCounterpartyInteractionProfile" &&
+        edge?.metadata?.evidenceType === "direct_counterparty_transfer" &&
+        edgeHasStoredMoneyEvidence(edge);
+    }
     function edgeVisualRole(edge) {
       const role = edgeDisplayRole(edge);
       const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
@@ -5803,6 +5993,10 @@ export function adminConsoleHtml(): string {
       if (edgeIsGroupedMoneyFlowEvidence(edge)) {
         const groupedFlowDirection = edgeFlowDirection(edge);
         if (groupedFlowDirection === "incoming" || groupedFlowDirection === "outgoing") return groupedFlowDirection;
+      }
+      if (edgeIsStoredDirectCounterpartyTransfer(edge)) {
+        const directCounterpartyDirection = edgeFlowDirection(edge);
+        if (directCounterpartyDirection === "incoming" || directCounterpartyDirection === "outgoing") return directCounterpartyDirection;
       }
       if (role === "profile_context" || role === "inferred_provenance") return "context";
       if (edge?.metadata?.evidenceType === "contract_driven_transfer") return "context";
@@ -5831,6 +6025,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
       const groupedContext = evidenceType !== "contract_trigger_context" &&
+        evidenceType !== "contract_driven_transfer" &&
         !isGroupedTail &&
         edgeIsGroupedContextEvidence(edge);
       if (groupedContext) classes.push("edge-deep-grouped-transfer");
@@ -5909,8 +6104,8 @@ export function adminConsoleHtml(): string {
       if (role === "stop") return 1.45;
       const raw = Number(edge?.amountRaw || edge?.metadata?.amountRaw || edge?.weight || 0);
       if (!Number.isFinite(raw) || raw <= 0) return 1.45;
-      const scaled = 1.25 + Math.log10(raw + 10) * 0.14;
-      return Math.max(1.45, Math.min(2.8, scaled));
+      const scaled = 1.05 + Math.log10(raw + 10) * 0.07;
+      return Math.max(1.2, Math.min(1.9, scaled));
     }
     function edgePairKey(edge) {
       const from = String(edge?.fromNodeId || "");
@@ -6052,6 +6247,7 @@ export function adminConsoleHtml(): string {
       if (whereFundingRole === "service_boundary") return "Service boundary";
       if (whereFundingRole === "grouped_candidate_tail") return "Grouped funding candidates";
       if (type === "direct_transfer") return "Direct transfer";
+      if (type === "direct_counterparty_transfer") return "Direct counterparty transfer";
       if (type === "contract_driven_transfer") return "Contract-driven USDT transfer";
       if (type === "contract_trigger_context") return "Contract trigger context";
       if (type === "contract_call_context") return "Contract call context";
@@ -6110,6 +6306,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "approval_drain_transfer") return "Contract-driven transfer";
       if (evidenceType === "approval_drain_contract_call" || evidenceType === "approval_drain_spender_authority") return "Drainer contract context";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
+      if (evidenceType === "direct_counterparty_transfer") return "Proven transaction";
       if (evidenceType === "deepcheck_extended_path") return edge?.metadata?.relationship === "cross_wallet_edge" ? "Extended cross-wallet path" : "Extended path";
       if (edgeType === "proven_transaction") return "Proven transaction";
       if (edgeType === "grouped_real_transfers" || edgeType === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge) ? "Grouped boundary evidence" : "Grouped/collapsed transfers";
@@ -6134,6 +6331,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
       if (evidenceType === "approval_drain_spender_authority") return "Victim -> spender contract authority";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
+      if (evidenceType === "direct_counterparty_transfer") return "Wallet-to-wallet";
       if (evidenceType === "deepcheck_extended_path") return edge?.metadata?.relationship === "cross_wallet_edge" ? "Wallet-to-wallet extended path" : "Subject extended path";
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
       if (relationship === "subject_neighborhood") return "Subject neighborhood";
@@ -6161,6 +6359,7 @@ export function adminConsoleHtml(): string {
       if (edge?.metadata?.evidenceMeaning) return String(edge.metadata.evidenceMeaning);
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer") return "A real on-chain transfer exists between these endpoints.";
+      if (type === "direct_counterparty_transfer") return "A real on-chain transfer was stored for this direct counterparty relationship.";
       if (type === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge)
         ? "DeepCheck stored grouped transfer evidence for this service or boundary relationship."
         : "Multiple real transfers are grouped into this visible connection.";
@@ -6405,8 +6604,8 @@ export function adminConsoleHtml(): string {
         '<path fill="' + color + '" opacity="' + opacity + '" d="M 0 0 L 7 3.5 L 0 7 z"></path>' +
         '</marker>';
       return '<defs>' +
-        marker("edgeArrowIncoming", "#8fe9af") +
-        marker("edgeArrowOutgoing", "#ff9ba4") +
+        marker("edgeArrowIncoming", "#30f5ce") +
+        marker("edgeArrowOutgoing", "#f93e57") +
         marker("edgeArrowService", "#ffd36b") +
         marker("edgeArrowStop", "#f6c177") +
         marker("edgeArrowPeer", "#c3ced9", ".72") +
@@ -6439,6 +6638,7 @@ export function adminConsoleHtml(): string {
       if (mode !== "deep_branch_map") return "";
       return '<div class="graph-legend-card" data-graph-legend="deep_branch_map">' +
         item("direct-context", "Direct subject context") +
+        item("group", "Grouped transfers") +
         item("second-hop", "Second-hop edge") +
         item("extended", "Extended path edge") +
         item("cross", "Cross-wallet edge") +
@@ -7133,6 +7333,7 @@ export function adminConsoleHtml(): string {
       if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context" || type === "approval_drain_contract_call" || type === "approval_drain_spender_authority") return "Contract context";
       if (edgeIsGroupedContextEvidence(edge)) return "Grouped transfers";
       if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") return "Service or boundary exposure";
+      if (type === "direct_counterparty_transfer") return "Money flow";
       if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") return "Context evidence";
       if (type === "direct_transfer" || edgeDisplayRole(edge) === "real_transfer") return "Money flow";
       return "Evidence";
@@ -7150,6 +7351,9 @@ export function adminConsoleHtml(): string {
       }
       if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") {
         return "This is service or boundary context. Public-chain continuity stops or changes meaning here unless stronger follow-on evidence exists.";
+      }
+      if (type === "direct_counterparty_transfer") {
+        return "This direct counterparty relationship includes a stored on-chain transfer, so the canvas treats it as money-flow evidence.";
       }
       if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") {
         return "This is behavioral or profile context, not a direct money-flow claim by itself.";
