@@ -1289,6 +1289,27 @@ function formatUnifiedAddressFinalReportForTest(input: {
   return plainTelegramText(formatter!(input).text);
 }
 
+function formatUnifiedAddressDetailedReportForTest(input: {
+  address: string;
+  whereReport: WhereIsMoneyReport;
+  fastReport?: RiskReport | null;
+  deepReport?: DeepAddressForensicReport | null;
+  locale?: BotLocale;
+}): string {
+  const formatter = (createBotModule as {
+    formatUnifiedAddressDetailedReport?: (input: {
+      address: string;
+      whereReport: WhereIsMoneyReport;
+      fastReport?: RiskReport | null;
+      deepReport?: DeepAddressForensicReport | null;
+      locale?: BotLocale;
+    }) => { text: string };
+  }).formatUnifiedAddressDetailedReport;
+
+  expect(formatter, "formatUnifiedAddressDetailedReport should be exported").toBeTypeOf("function");
+  return plainTelegramText(formatter!(input).text);
+}
+
 function riskReportForTest(overrides: Partial<RiskReport> = {}): RiskReport {
   return {
     subjectAddress: walletAddress,
@@ -3094,6 +3115,297 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Dampener");
     expect(text).not.toContain("production_full");
     expect(text).not.toContain("Beta/internal");
+  });
+
+  it("formats a compact Russian final report with HTX/Huobi source-policy risk", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      proofLevel: "exchange_policy_decline",
+      riskScore: 55,
+      decisionReasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "1000000000",
+        coverageRatio: 1,
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0,
+        dominantSource: "htx_huobi",
+        evidenceTxHashes: ["htx-source-tx"],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 3,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 3,
+          skippedAddressCount: 0,
+          exhausted: false,
+          exhaustedPhase: null
+        }
+      },
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 55 }),
+        sourcePolicyEvidence: [
+          {
+            kind: "htx_huobi",
+            aggregateShare: 0.7,
+            effectiveShare: 0.7,
+            pathCount: 1,
+            score: 55,
+            riskBand: "MEDIUM",
+            proofLevel: "exchange_policy_decline",
+            canBeDampened: true,
+            reasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+            warnings: [],
+            evidenceIds: ["htx-source-tx"]
+          }
+        ],
+        reasons: ["Material HTX/Huobi selected-amount source exposure was found."]
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport: deepReportForTest({
+        boundaryExposureProfiles: [boundaryExposureProfile()]
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).toContain("Решение: не принимать автоматически.");
+    expect(text).toContain("Риск:");
+    expect(text).toContain("В выбранной сумме найден источник HTX/Huobi: 70%.");
+    expect(text).toContain("Цепочка дошла до биржи или сервиса.");
+    expect(text).toContain("Точных признаков кражи, drainer-цепочки или USDT blacklist не найдено.");
+    expect(text).toContain("Запросить подтверждение происхождения средств.");
+    expect(text).not.toContain("matrix");
+    expect(text).not.toContain("Matrix");
+    expect(text).not.toContain("Weighted layer score");
+    expect(text).not.toContain("Dampener");
+    expect(text).not.toContain("Beta/internal");
+    expect(text).not.toContain("source-policy threshold");
+  });
+
+  it("formats a compact Russian final report with exact approval-drain", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      decisionReasons: ["Exact approval-drain provenance reaches checked wallet via 0 hop(s)."],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            evidenceIds: ["tx-transferfrom-drain"],
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      },
+      approvalDrainProvenanceProfiles: [
+        {
+          victimAddress: "TVictim111111111111111111111111111111",
+          approvalTxHash: "tx-approval-root-cause",
+          drainTxHash: "tx-transferfrom-drain",
+          spenderAddress: "TSpender11111111111111111111111111111",
+          firstReceiverAddress: walletAddress,
+          subjectAddress: walletAddress,
+          hopDepth: 0,
+          amountRaw: "309000000000",
+          amountPreservationRatio: 0.991,
+          approvalAt: "2026-05-20T09:50:00.000Z",
+          drainAt: "2026-05-20T10:00:00.000Z",
+          pathTxHashes: ["tx-transferfrom-drain"],
+          pathAddresses: ["TVictim111111111111111111111111111111", walletAddress],
+          score: 95,
+          evidenceStrength: "exact_approval_and_transfer_from",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }
+      ],
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "309000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 2,
+        partial: false,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport: deepReportForTest({
+        approvalDrainProvenanceProfiles: whereReport.approvalDrainProvenanceProfiles
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Найдена точная drainer-цепочка: approve USDT -> transferFrom -> проверяемый адрес получил средства.");
+    expect(text).toContain("Не принимать депозит автоматически.");
+    expect((text.match(/Найдена точная drainer-цепочка/g) ?? []).length).toBe(1);
+    expect(text).not.toContain("Exact approval-drain provenance reaches checked wallet");
+    expect(text).not.toContain("Scoring Signal Matrix");
+  });
+
+  it("formats a detailed Russian report grouped by modes", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      proofLevel: "exchange_policy_decline",
+      riskScore: 55,
+      decisionReasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "1000000000",
+        coverageRatio: 1,
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0,
+        dominantSource: "htx_huobi",
+        evidenceTxHashes: ["htx-source-tx"],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 3,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 3,
+          skippedAddressCount: 0,
+          exhausted: false,
+          exhaustedPhase: null
+        }
+      },
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 55 }),
+        sourcePolicyEvidence: [
+          {
+            kind: "htx_huobi",
+            aggregateShare: 0.7,
+            effectiveShare: 0.7,
+            pathCount: 1,
+            score: 55,
+            riskBand: "MEDIUM",
+            proofLevel: "exchange_policy_decline",
+            canBeDampened: true,
+            reasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+            warnings: [],
+            evidenceIds: ["htx-source-tx"]
+          }
+        ],
+        reasons: ["Material HTX/Huobi selected-amount source exposure was found."]
+      }
+    });
+
+    const text = formatUnifiedAddressDetailedReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest(),
+      deepReport: deepReportForTest({
+        boundaryExposureProfiles: [boundaryExposureProfile()]
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Расширенный отчёт по адресу");
+    expect(text).toContain("Короткий вывод");
+    expect(text).toContain("FastCheck");
+    expect(text).toContain("Where Is Money");
+    expect(text).toContain("DeepCheck");
+    expect(text).toContain("Что это может быть");
+    expect(text).toContain("Ограничения");
+    expect(text).toContain("Рекомендация");
+    expect(text).toContain("70% выбранной суммы связано с HTX/Huobi.");
+    expect(text).toContain("Exact approval-drain не найден.");
+    expect(text).toContain("USDT blacklist не найден.");
+    expect(text).not.toContain("matrix");
+    expect(text).not.toContain("Matrix");
+    expect(text).not.toContain("Weighted layer score");
+    expect(text).not.toContain("Dampener");
+    expect(text).not.toContain("Beta/internal");
+    expect(text).not.toContain("source-policy threshold");
+  });
+
+  it("formats a Russian no-final-decision report", () => {
+    const whereReport = scoreInvalidWhereReportForTest();
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверка адреса — без итогового решения");
+    expect(text).toContain("Итоговый риск не опубликован: не хватает данных по происхождению средств.");
+    expect(text).toContain("Что делать");
+    expect(text).toContain("Дождаться индексации или перезапустить проверку.");
+    expect(text).not.toContain("Blocked reason");
+    expect(text).not.toContain("Technical status");
+  });
+
+  it("formats Russian selected-anchor coverage without English copy", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        checkedScope: "selected_anchor",
+        maxDepth: 7,
+        fetchedAddressCount: 2,
+        partial: false,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверили 100% выбранного recent-flow anchor");
+    expect(text).not.toContain("Checked 100%");
   });
 
   it("deduplicates exact approval-drain evidence in Russian final reports", () => {
