@@ -1138,6 +1138,21 @@ describe("adminConsoleHtml", () => {
     expect(loadJobsBlock).not.toContain("state.jobs.length === 1 ? state.jobs[0] : null");
   });
 
+  it("parses highlightAddress and selects the matching rendered graph node", () => {
+    const html = adminConsoleHtml();
+    const urlBlock = html.slice(html.indexOf("function applyInitialUrlFilters"), html.indexOf("async function refreshSecondLayer"));
+    const loadGraphBlock = html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
+    const highlightBlock = html.slice(html.indexOf("function applyPendingHighlightAddress"), html.indexOf("function selectNode"));
+
+    expect(urlBlock).toContain('params.get("highlightAddress")');
+    expect(urlBlock).toContain("state.pendingHighlightAddress = highlightAddress");
+    expect(loadGraphBlock).toContain("applyPendingHighlightAddress();");
+    expect(highlightBlock).toContain("state.renderedNodesById.values()");
+    expect(highlightBlock).toContain("nodeAddress(node)");
+    expect(highlightBlock).toContain("selectNode(match.id)");
+    expect(highlightBlock).toContain("not visible in the current graph view");
+  });
+
   it("contains case brief summary helpers", () => {
     const html = adminConsoleHtml();
 

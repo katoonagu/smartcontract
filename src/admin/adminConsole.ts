@@ -3707,11 +3707,13 @@ export function adminConsoleHtml(): string {
         renderCaseBrief();
         renderActivityTimeline();
         fitGraph();
+        const hadPendingHighlightAddress = Boolean(state.pendingHighlightAddress);
+        const highlightApplied = applyPendingHighlightAddress();
         renderDetails();
         renderSelectionCard();
         renderTransferTabs();
         syncDenseGraphControls();
-        setStatus("Graph loaded. Wheel to zoom, drag to pan.");
+        if (!hadPendingHighlightAddress && !highlightApplied) setStatus("Graph loaded. Wheel to zoom, drag to pan.");
       } catch (error) {
         if (requestSeq !== state.graphRequestSeq) return;
         const message = error?.message || "Graph request failed";
@@ -7072,6 +7074,22 @@ export function adminConsoleHtml(): string {
       renderDetails();
       renderSelectionCard();
       renderTransferTabs();
+    }
+    function applyPendingHighlightAddress() {
+      const address = state.pendingHighlightAddress;
+      if (!address || !state.graph) return false;
+      const wanted = String(address).toLowerCase();
+      const match = [...state.renderedNodesById.values()].find((node) =>
+        String(nodeAddress(node)).toLowerCase() === wanted
+      );
+      state.pendingHighlightAddress = null;
+      if (!match?.id) {
+        setStatus("Graph loaded. Requested address is not visible in the current graph view.");
+        return false;
+      }
+      selectNode(match.id);
+      setStatus("Graph loaded. Highlighted address " + short(address, 10) + ".");
+      return true;
     }
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };
