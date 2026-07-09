@@ -104,6 +104,12 @@ of these decisions, update this file in the same work.
   scoring dumps. Matrix `REVIEW` displays as `REVIEW`, exact hard evidence is
   deduplicated into one clear reason, and raw scoring diagnostics stay in
   support/admin/debug surfaces.
+- Human risk explanations do not change scoring math. Normal Telegram output
+  stays short and user-facing; `/check_status detailed` and Admin graph right
+  rail show the detailed multi-mode explanation from saved FastCheck, Where Is
+  Money, and DeepCheck evidence. Detailed views may add recommendations,
+  limitations, and possible benign interpretations, but must not invent a new
+  risk verdict or clean verdict outside the unified scoring result.
 - A fresh ordinary Where job resumed from targeted `partial_provider_cap`
   progress must run the report builder and materiality assessment before
   deciding score validity. It must not complete directly from

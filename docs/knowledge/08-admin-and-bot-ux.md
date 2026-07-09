@@ -265,6 +265,19 @@ dampeners, run profiles, or raw layer weights. Those diagnostics remain
 available in support/admin output or when beta diagnostics are explicitly
 enabled.
 
+Final Telegram address reports are the short user-facing version. They show the
+decision, risk, recommended action, main reasons, and important limitations in
+Russian-first copy. Detailed explanations live in `/check_status <job-id>
+detailed` / `/check_status <job-id> подробно` and in the Admin graph right rail.
+Those detailed views can show FastCheck, Where Is Money, and DeepCheck sections,
+humanized evidence, limitations, possible benign interpretations, and
+recommendations. Raw codes may remain in Admin/debug areas, but the first screen
+should explain the analyst meaning before diagnostics.
+
+Admin graph summaries expose a human-readable `humanSummary` for the right rail
+so analysts do not need to read raw graph JSON first. This is a presentation
+layer over existing evidence and unified risk, not a scoring-math change.
+
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.

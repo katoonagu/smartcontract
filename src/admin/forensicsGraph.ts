@@ -35,6 +35,18 @@ export type AdminForensicsAddressSummary = {
   role: "checked_wallet" | "sender" | "receiver" | "unknown";
 };
 
+export type AdminForensicsHumanSummary = {
+  conclusion: string;
+  primaryReasons: string[];
+  modeSections: Array<{
+    title: string;
+    facts: string[];
+  }>;
+  possibleMeanings: string[];
+  limitations: string[];
+  recommendations: string[];
+};
+
 export type AdminForensicsSummary = {
   decision: AdminForensicsDecision;
   riskScore: number | null;
@@ -50,6 +62,7 @@ export type AdminForensicsSummary = {
   contractDrivenCampaign: Record<string, unknown> | null;
   selectedAmountRaw: string | null;
   targetAmountRaw: string | null;
+  humanSummary: AdminForensicsHumanSummary | null;
   topReasons: string[];
 };
 
@@ -4774,6 +4787,7 @@ function projectWhereIsMoneyJob(
         contractDrivenCampaign: null,
         selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
         targetAmountRaw: stringField(coverage, "targetAmountRaw"),
+        humanSummary: null,
         topReasons: stringArrayField(assessment, "reasons")
       },
       nodes: Array.from(nodesById.values()),
@@ -4995,6 +5009,7 @@ function projectWhereTargetedIndexProgressJob(
         contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
+        humanSummary: null,
         topReasons: [explanation]
       },
       nodes: [subjectNode, waitNode],
@@ -5140,6 +5155,7 @@ function projectWhereBalanceFormingSliceProgressJob(
         contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: stringField(slice, "targetAmountRaw"),
+        humanSummary: null,
         topReasons: [explanation]
       },
       nodes: [subjectNode, sliceNode],
@@ -6645,6 +6661,7 @@ function projectAddressDeepJob(
         contractDrivenCampaign: recordField(result, "contractDrivenCampaignSummary") ?? null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
+        humanSummary: null,
         topReasons: [
           ...stringArrayField(assessment, "reasons"),
           ...stringArrayField(result, "reasons"),
@@ -6924,6 +6941,7 @@ function projectAddressFastCheckJob(
         contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
+        humanSummary: null,
         topReasons: riskReasonMessagesField(riskReport, "reasons")
       },
       nodes: Array.from(nodesById.values()),
@@ -7704,6 +7722,7 @@ function projectIncomingDepositJob(
         contractDrivenCampaign: null,
         selectedAmountRaw: stringField(progress, "amountRaw"),
         targetAmountRaw: null,
+        humanSummary: null,
         topReasons: stringArrayField(result, "reasons")
       },
       nodes: Array.from(nodesById.values()),

@@ -59,6 +59,142 @@ function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
   };
 }
 
+function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const coverage = {
+    selectedInboundTxCount: 1,
+    selectedInboundVolumeRaw: "1000000000",
+    currentBalanceCoverageRatio: 1,
+    coverageRatio: 1,
+    maxDepth: 7,
+    fetchedAddressCount: 3,
+    partial: false,
+    checkedScope: "requested_amount",
+    notes: [],
+    ...(typeof overrides.coverage === "object" && overrides.coverage !== null ? overrides.coverage as Record<string, unknown> : {})
+  };
+  const assessment = {
+    decision: "REVIEW",
+    riskScore: 78,
+    riskBand: "HIGH",
+    provenanceConfidence: 80,
+    coverageCompleteness: 100,
+    walletRole: "operational_liquidity_wallet",
+    operationalLiquidityScore: 0,
+    ageSignals: null,
+    hardBadEvidence: [],
+    sourcePolicyEvidence: [{
+      kind: "htx_huobi",
+      aggregateShare: 0.7,
+      effectiveShare: 0.7,
+      pathCount: 1,
+      score: 78,
+      riskBand: "HIGH",
+      proofLevel: "exchange_policy_decline",
+      canBeDampened: false,
+      reasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+      warnings: [],
+      evidenceIds: ["tx-htx"]
+    }],
+    contractSuspicionEvidence: [],
+    unknownOriginEvidence: [],
+    riskLayers: [],
+    dominantRiskLayer: null,
+    reasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+    warnings: [],
+    ...(typeof overrides.assessment === "object" && overrides.assessment !== null ? overrides.assessment as Record<string, unknown> : {})
+  };
+  return {
+    subjectAddress: "TSubject111111111111111111111111111111",
+    currentUsdtBalanceRaw: "1000000000",
+    fastWalletRisk: null,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    contractLlmVerdicts: [],
+    assessment,
+    decision: "REVIEW",
+    userDecision: "REVIEW",
+    internalDecision: "REVIEW",
+    proofLevel: "exchange_policy_decline",
+    riskScore: 78,
+    decisionReasons: ["Material HTX/Huobi selected-amount source exposure was found."],
+    coverage,
+    sourceBundleExposure: {
+      scope: "where_requested_amount",
+      targetAmountRaw: "1000000000",
+      coveredAmountRaw: "1000000000",
+      coverageRatio: 1,
+      htxHuobiShare: 0.7,
+      cleanCexShare: 0,
+      bridgeRouterDexShare: 0,
+      unknownContractShare: 0,
+      riskyLabelShare: 0,
+      unknownShare: 0,
+      dominantSource: "htx_huobi",
+      evidenceTxHashes: ["tx-htx"],
+      reasons: [],
+      warnings: [],
+      budget: {
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        maxAddressFetches: 12,
+        liveTransferReadCount: 3,
+        skippedAddressCount: 0,
+        exhausted: false,
+        exhaustedPhase: null
+      },
+      unresolvedBoundary: null
+    },
+    ...overrides
+  };
+}
+
+function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
+  return job({
+    id: "job-deep-related",
+    kind: "address_deep_check",
+    resultJson: {
+      subjectAddress: "TSubject111111111111111111111111111111",
+      serviceExposureProfiles: [],
+      addressBehaviorProfiles: [],
+      inboundProvenanceProfiles: [{
+        subjectAddress: "TSubject111111111111111111111111111111",
+        score: 70,
+        paths: [{
+          label: "whitebit",
+          txHashes: ["tx-whitebit"],
+          evidenceStrength: "exact_labeled_path"
+        }],
+        boundaryNotes: []
+      }],
+      counterpartyRiskProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      directCounterpartyInteractionProfiles: [],
+      assetContinuationProfiles: [],
+      stablecoinRestrictionProfiles: [],
+      boundaryExposureProfiles: [{
+        subjectAddress: "TSubject111111111111111111111111111111",
+        contextScore: 12,
+        flows: [{ txHash: "tx-service-boundary" }],
+        coverage: { stoppedReasons: ["service_boundary"] }
+      }],
+      operationalFlowProfiles: [],
+      walletRoleProfiles: [{
+        primaryRole: "treasury_like",
+        roles: [{ role: "treasury_like", score: 55 }],
+        reasons: []
+      }],
+      extendedProvenanceProfiles: [],
+      missingChecks: [],
+      coverage: { transferEdges: 25 },
+      coverageDebug: { missingChecks: [] }
+    },
+    ...overrides
+  });
+}
+
 function deps(): AdminServerDeps {
   const fixture = job();
   return {
@@ -1178,6 +1314,122 @@ describe("startAdminServer", () => {
         job: { id: "job-1", status: "completed" },
         subject: { address: "TSubject111111111111111111111111111111" },
         summary: { decision: "ACCEPTABLE", riskScore: 20 }
+      }
+    });
+  });
+
+  it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {
+    const whereReport = whereReportForAdminTest();
+    const whereJob = job({
+      id: "job-where-summary",
+      chatId: "42",
+      requestedBy: "42",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const deepJob = deepJobForAdminSummaryTest({
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd
+    });
+    const unrelatedDeepJob = deepJobForAdminSummaryTest({
+      id: "job-deep-unrelated",
+      requestedBy: "other-user",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 25 },
+        coverageDebug: { missingChecks: [] }
+      }
+    });
+    const receivedInputs: unknown[] = [];
+    const server = await start({
+      ...deps(),
+      getJob: async (id: string) => id === whereJob.id ? whereJob : null,
+      listJobs: async (input) => {
+        receivedInputs.push(input);
+        return [whereJob, unrelatedDeepJob, deepJob];
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(receivedInputs).toContainEqual({
+      subjectAddress: "TSubject111111111111111111111111111111",
+      limit: 20
+    });
+    expect(body.graph.summary.humanSummary).toMatchObject({
+      conclusion: "Адрес нельзя принимать автоматически: найден сильный риск.",
+      primaryReasons: expect.arrayContaining([
+        "В выбранной сумме найден источник HTX/Huobi: 70%.",
+        "Цепочка дошла до биржи или сервиса. Дальше публичная on-chain трассировка ограничена.",
+        "DeepCheck нашёл source-policy связь с whitebit. Это не доказывает кражу, но требует проверки источника средств."
+      ]),
+      recommendations: expect.arrayContaining([
+        "Не принимать депозит автоматически.",
+        "Запросить подтверждение происхождения средств."
+      ])
+    });
+    expect(body.graph.summary.humanSummary.modeSections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "Where Is Money",
+        facts: expect.arrayContaining(["В выбранной сумме найден источник HTX/Huobi: 70%."])
+      }),
+      expect.objectContaining({
+        title: "DeepCheck",
+        facts: expect.arrayContaining(["DeepCheck нашёл source-policy связь с whitebit. Это не доказывает кражу, но требует проверки источника средств."])
+      })
+    ]));
+    expect(JSON.stringify(body.graph.summary.humanSummary)).not.toContain("job-deep-unrelated");
+    expect(JSON.stringify(body.graph.summary.humanSummary)).not.toContain("DECLINE");
+  });
+
+  it("keeps graph API OK and human summary null when saved mode reports are malformed", async () => {
+    const malformedWhereJob = job({
+      id: "job-malformed-summary",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        riskScore: 20,
+        decision: "ACCEPTABLE",
+        coverage: {},
+        assessment: {},
+        originPaths: [],
+        whereIsMoneyReport: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          riskScore: "not-a-number"
+        }
+      }
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async (id: string) => id === malformedWhereJob.id ? malformedWhereJob : null,
+      listJobs: async () => {
+        throw new Error("related jobs should not be loaded for malformed saved reports");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${malformedWhereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      graph: {
+        summary: {
+          humanSummary: null
+        }
       }
     });
   });

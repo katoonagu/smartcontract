@@ -99,6 +99,31 @@ function adminTargetedIndexHelpers() {
   };
 }
 
+function adminHumanSummaryHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function humanSummaryBlock(summary)");
+  const end = html.indexOf("function analystMissingCopy", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const asArray = (value: unknown) => Array.isArray(value) ? value : [];
+  const listHtml = (items: unknown, empty: string) => {
+    const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+    if (values.length === 0) return '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>';
+    return '<div class="list-lines">' + values.map((item) => '<div>' + escapeHtml(item) + '</div>').join("") + '</div>';
+  };
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return new Function("escapeHtml", "asArray", "listHtml", helperBlock + "\nreturn { humanSummaryBlock };")(
+    escapeHtml,
+    asArray,
+    listHtml
+  ) as {
+    humanSummaryBlock(summary: Record<string, unknown>): string;
+  };
+}
+
 function adminJobCardHelpers() {
   const html = adminConsoleHtml();
   const start = html.indexOf("function targetedHistoryRecord(job)");
@@ -129,6 +154,35 @@ describe("adminConsoleHtml", () => {
 
     expect(script).not.toBe("");
     expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("renders escaped Russian human risk summary sections", () => {
+    const helpers = adminHumanSummaryHelpers();
+
+    const html = helpers.humanSummaryBlock({
+      humanSummary: {
+        conclusion: "Адрес нельзя принимать <автоматически>.",
+        primaryReasons: ["Причина <script>alert(1)</script>"],
+        modeSections: [{
+          title: "Where Is Money",
+          facts: ["Источник HTX/Huobi: 70% & service boundary."]
+        }],
+        possibleMeanings: ["Кошелёк может быть operational wallet."],
+        limitations: ["Проверка относится к выбранной сумме."],
+        recommendations: ["Запросить подтверждение происхождения средств."]
+      }
+    });
+
+    expect(html).toContain("Короткий вывод");
+    expect(html).toContain("Почему");
+    expect(html).toContain("По режимам");
+    expect(html).toContain("Что это может значить");
+    expect(html).toContain("Ограничения");
+    expect(html).toContain("Рекомендации");
+    expect(html).toContain("Адрес нельзя принимать &lt;автоматически&gt;.");
+    expect(html).toContain("Причина &lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).toContain("Источник HTX/Huobi: 70% &amp; service boundary.");
+    expect(html).not.toContain("<script>alert(1)</script>");
   });
 
   it("collapses the wallet intelligence workspace on narrow viewports", () => {
@@ -5604,7 +5658,7 @@ describe("adminConsoleHtml", () => {
     expect(renderCaseBriefBlock).toContain('htmlListMetric("Largest incoming"');
     expect(renderCaseBriefBlock).toContain('htmlListMetric("Largest outgoing"');
     expect(renderCaseBriefBlock).toContain('detailsMetric("Projection gaps"');
-    expect(renderCaseBriefBlock).toContain("root.innerHTML = noSelectionIntro + '<div class=\"metric-grid\">");
+    expect(renderCaseBriefBlock).toContain("root.innerHTML = noSelectionIntro + humanSummaryBlock(summary) + '<div class=\"metric-grid\">");
     expect(renderCaseBriefBlock.indexOf("const noSelectionIntro")).toBeLessThan(renderCaseBriefBlock.indexOf("root.innerHTML = noSelectionIntro"));
     expect(renderDetailsBlock).toContain("Select a completed or partial job to inspect evidence.");
     expect(renderDetailsBlock).toContain("No graph evidence is selected.");

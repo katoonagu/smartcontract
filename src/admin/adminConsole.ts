@@ -1185,6 +1185,31 @@ export function adminConsoleHtml(): string {
     .details h2 { margin: 0; font-size: 15px; }
     .details-body { padding: 12px; }
     .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .human-summary {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: rgba(13, 18, 23, .78);
+    }
+    .human-summary-section { display: grid; gap: 5px; }
+    .human-summary-section strong {
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .human-summary-section p {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .human-summary-section .list-lines { gap: 4px; }
+    .human-summary-mode { display: grid; gap: 3px; }
+    .human-summary-mode-title { color: var(--muted); font-size: 12px; }
     .metric {
       border: 1px solid var(--line);
       border-radius: 7px;
@@ -2767,7 +2792,7 @@ export function adminConsoleHtml(): string {
       const noSelectionIntro = state.selected ? "" : analystIntroBlock("Case summary", caseBriefIntroText(graph), [
         analystBadge(caseBriefModeLine(graph), "context")
       ]);
-      root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
+      root.innerHTML = noSelectionIntro + humanSummaryBlock(summary) + '<div class="metric-grid">' +
         metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide") +
         metric("Check", humanCheckKind(jobKind) + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
@@ -7027,7 +7052,7 @@ export function adminConsoleHtml(): string {
       const noSelectionIntro = analystIntroBlock("No graph evidence is selected.", "Select a node, edge, group, service, or boundary to inspect what it means and which raw facts support it.", [
         analystBadge("case summary", "context")
       ]);
-      root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
+      root.innerHTML = noSelectionIntro + humanSummaryBlock(summary) + '<div class="metric-grid">' +
         metric("Subject", subject.address || "unknown", "wide") +
         metric("Requested by", activeJob ? requesterText(activeJob) : "unknown", "wide") +
         metric("Decision", summary.decision || "UNKNOWN") +
@@ -7060,6 +7085,36 @@ export function adminConsoleHtml(): string {
         listMetric("Stop reasons", stopReasonLines(summary), "No stopped paths.") +
         listMetric("Risk layers", riskLayerLines(summary), "No risk layers stored.") +
         rawBlock("Summary JSON", summary) +
+        '</div>';
+    }
+    function humanSummaryBlock(summary) {
+      const human = summary && typeof summary.humanSummary === "object" ? summary.humanSummary : null;
+      if (!human) return "";
+      const section = (label, body) => {
+        if (!body) return "";
+        return '<div class="human-summary-section"><strong>' + escapeHtml(label) + '</strong>' + body + '</div>';
+      };
+      const paragraph = (value) => {
+        const text = String(value || "").trim();
+        return text ? '<p>' + escapeHtml(text) + '</p>' : "";
+      };
+      const lines = (values, empty) => listHtml(asArray(values), empty);
+      const modeSections = asArray(human.modeSections)
+        .map((mode) => {
+          const title = mode && typeof mode.title === "string" ? mode.title : "Режим";
+          const facts = mode && Array.isArray(mode.facts) ? mode.facts : [];
+          return '<div class="human-summary-mode"><div class="human-summary-mode-title">' + escapeHtml(title) + '</div>' +
+            lines(facts, "Существенных сигналов в этом режиме нет.") +
+            '</div>';
+        })
+        .join("");
+      return '<div class="human-summary">' +
+        section("Короткий вывод", paragraph(human.conclusion)) +
+        section("Почему", lines(human.primaryReasons, "Сильная причина риска не найдена.")) +
+        section("По режимам", modeSections) +
+        section("Что это может значить", lines(human.possibleMeanings, "Нет дополнительной интерпретации.")) +
+        section("Ограничения", lines(human.limitations, "Ограничения не указаны.")) +
+        section("Рекомендации", lines(human.recommendations, "Нет отдельной рекомендации.")) +
         '</div>';
     }
     function analystMissingCopy(kind = "value") {

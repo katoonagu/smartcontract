@@ -4,9 +4,21 @@ import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
 import { adminConsoleHtml } from "./adminConsole";
-import { projectForensicJobGraph, type AdminForensicsGraph, type AdminForensicsNode } from "./forensicsGraph";
+import { projectForensicJobGraph, type AdminForensicsGraph, type AdminForensicsHumanSummary, type AdminForensicsNode } from "./forensicsGraph";
+import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import {
+  buildNoFinalRiskExplanationSummary,
+  buildRiskExplanationSummary,
+  factAction,
+  factDetail,
+  factText,
+  modeTitle,
+  type RiskExplanationFact,
+  type RiskExplanationSummary
+} from "../bot/riskExplanationSummary";
 import { buildScoringAuditReport } from "../forensics/scoringAuditReport";
 import { buildScoringAuditRow } from "../risk/scoringAudit";
+import { calculateUnifiedWalletRisk, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import type {
   ForensicCheckJob,
   ForensicCheckJobKind,
@@ -25,7 +37,7 @@ import type {
   WalletIntelligenceSupportedJobKind,
   WalletIntelligenceTag
 } from "../storage/repositories";
-import type { IndexedTronUsdtTransfer } from "../types";
+import type { IndexedTronUsdtTransfer, RiskLevel, RiskReport, UserExchangeDecision, WhereIsMoneyReport } from "../types";
 
 export type AdminServerConfig = {
   host: string;
@@ -603,6 +615,352 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || isFiniteNumber(value);
+}
+
+function unknownArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return unknownArray(value).filter(isRecord);
+}
+
+function riskLevel(value: unknown): RiskLevel | null {
+  return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL" ? value : null;
+}
+
+function adminWhereScoreValid(report: WhereIsMoneyReport): boolean | undefined {
+  return report.scoreValid ?? report.assessment.scoreValid;
+}
+
+function finalDisplayDecisionForAdmin(
+  result: UnifiedWalletRiskResult,
+  whereReport: WhereIsMoneyReport
+): UserExchangeDecision {
+  if (adminWhereScoreValid(whereReport) === false) return "NO_FINAL_DECISION";
+  if (result.matrixScore.matrixDecision === "DECLINE") return "DECLINE";
+  if (result.matrixScore.matrixDecision === "REVIEW") return "REVIEW";
+  if (
+    result.matrixScore.matrixDecision === "INSUFFICIENT_EVIDENCE" &&
+    whereReport.decision === "REVIEW" &&
+    result.finalScore > 0
+  ) {
+    return "REVIEW";
+  }
+  return result.finalDecision;
+}
+
+function normalizeWhereIsMoneyReport(value: unknown, subjectAddress: string): WhereIsMoneyReport | null {
+  if (!isRecord(value)) return null;
+  const coverage = value.coverage;
+  const assessment = value.assessment;
+  if (!isRecord(coverage) || !isRecord(assessment)) return null;
+  const hasUsableCoverageRatio = isFiniteNumber(coverage.coverageRatio) || isFiniteNumber(coverage.currentBalanceCoverageRatio);
+  const hasValidPresentCoverageRatios = isOptionalFiniteNumber(coverage.coverageRatio) &&
+    isOptionalFiniteNumber(coverage.currentBalanceCoverageRatio);
+  if (
+    value.subjectAddress !== subjectAddress ||
+    !isFiniteNumber(value.riskScore) ||
+    typeof value.decision !== "string" ||
+    typeof value.userDecision !== "string" ||
+    typeof value.internalDecision !== "string" ||
+    typeof value.proofLevel !== "string" ||
+    !isStringArray(value.decisionReasons) ||
+    !Array.isArray(value.originPaths) ||
+    !value.originPaths.every(isRecord) ||
+    !isStringArray(coverage.notes) ||
+    !isFiniteNumber(coverage.selectedInboundTxCount) ||
+    !isFiniteNumber(coverage.fetchedAddressCount) ||
+    !isFiniteNumber(coverage.maxDepth) ||
+    coverage.partial !== true && coverage.partial !== false ||
+    !hasUsableCoverageRatio ||
+    !hasValidPresentCoverageRatios ||
+    !Array.isArray(assessment.hardBadEvidence) ||
+    !isStringArray(assessment.reasons) ||
+    typeof assessment.walletRole !== "string" ||
+    !isFiniteNumber(assessment.provenanceConfidence) ||
+    !isFiniteNumber(assessment.coverageCompleteness)
+  ) {
+    return null;
+  }
+
+  return {
+    ...value,
+    balanceFormingTransfers: unknownArray(value.balanceFormingTransfers),
+    senderInteractionProfiles: unknownArray(value.senderInteractionProfiles),
+    approvalDrainProvenanceProfiles: unknownArray(value.approvalDrainProvenanceProfiles),
+    approvalDrainReviewFindings: unknownArray(value.approvalDrainReviewFindings),
+    contractLlmVerdicts: unknownArray(value.contractLlmVerdicts),
+    assessment: {
+      ...assessment,
+      sourcePolicyEvidence: unknownArray(assessment.sourcePolicyEvidence),
+      contractSuspicionEvidence: unknownArray(assessment.contractSuspicionEvidence),
+      unknownOriginEvidence: unknownArray(assessment.unknownOriginEvidence),
+      riskLayers: unknownArray(assessment.riskLayers),
+      warnings: isStringArray(assessment.warnings) ? assessment.warnings : []
+    }
+  } as WhereIsMoneyReport;
+}
+
+function extractWhereIsMoneyReportFromAdminJob(
+  job: ForensicCheckJob | null | undefined,
+  subjectAddress: string
+): WhereIsMoneyReport | null {
+  if (!job || job.kind !== "where_is_money_check" || (job.status !== "completed" && job.status !== "partial")) return null;
+  const result = jobResultRecord(job);
+  const candidate = isRecord(result.whereIsMoneyReport) ? result.whereIsMoneyReport : result;
+  if ((stringField(result.subjectAddress) ?? stringField(candidate.subjectAddress)) !== subjectAddress) return null;
+  return normalizeWhereIsMoneyReport(candidate, subjectAddress);
+}
+
+function defaultDeepProviderBudget(): DeepAddressForensicReport["providerBudget"] {
+  return {
+    providerCallBudget: null,
+    transferCallBudget: null,
+    contractCallBudget: null,
+    approvalCallBudget: null,
+    elapsedTimeBudgetMs: null,
+    exhausted: false
+  };
+}
+
+function normalizeDeepProfilesWithArray(value: unknown, key: string): Record<string, unknown>[] {
+  return recordArray(value).map((profile) => ({
+    ...profile,
+    [key]: recordArray(profile[key])
+  }));
+}
+
+function normalizeDeepProfilesWithFeatures(value: unknown): Record<string, unknown>[] {
+  return recordArray(value).map((profile) => ({
+    ...profile,
+    features: recordArray(profile.features)
+  }));
+}
+
+function normalizeDeepWalletRoleProfiles(value: unknown): Record<string, unknown>[] {
+  return recordArray(value).map((profile) => ({
+    ...profile,
+    roles: recordArray(profile.roles),
+    features: recordArray(profile.features),
+    reasons: isStringArray(profile.reasons) ? profile.reasons : []
+  }));
+}
+
+function normalizeDeepBoundaryProfiles(value: unknown): Record<string, unknown>[] {
+  return recordArray(value).map((profile) => ({
+    ...profile,
+    flows: recordArray(profile.flows),
+    coverage: isRecord(profile.coverage) ? profile.coverage : {}
+  }));
+}
+
+function normalizeDeepDirectCounterpartyProfiles(value: unknown): Record<string, unknown>[] {
+  return recordArray(value).map((profile) => ({
+    ...profile,
+    snapshot: isRecord(profile.snapshot)
+      ? {
+          ...profile.snapshot,
+          partialNotes: isStringArray(profile.snapshot.partialNotes) ? profile.snapshot.partialNotes : []
+        }
+      : { partialNotes: [] }
+  }));
+}
+
+function extractDeepForensicReportFromAdminJob(
+  job: ForensicCheckJob | null | undefined,
+  subjectAddress: string
+): DeepAddressForensicReport | null {
+  if (!job || job.kind !== "address_deep_check" || (job.status !== "completed" && job.status !== "partial")) return null;
+  const result = jobResultRecord(job);
+  if (result.subjectAddress !== subjectAddress) return null;
+  return {
+    subjectAddress,
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd,
+    runProfile: result.runProfile === "bounded_rerun" ? "bounded_rerun" : "production_full",
+    providerBudget: defaultDeepProviderBudget(),
+    rawEvidence: [],
+    observations: [],
+    missingChecks: stringArrayField(result, "missingChecks"),
+    serviceExposureProfiles: normalizeDeepProfilesWithFeatures(result.serviceExposureProfiles) as DeepAddressForensicReport["serviceExposureProfiles"],
+    addressBehaviorProfiles: normalizeDeepProfilesWithFeatures(result.addressBehaviorProfiles) as DeepAddressForensicReport["addressBehaviorProfiles"],
+    inboundProvenanceProfiles: normalizeDeepProfilesWithArray(result.inboundProvenanceProfiles, "paths") as DeepAddressForensicReport["inboundProvenanceProfiles"],
+    counterpartyRiskProfiles: normalizeDeepProfilesWithFeatures(result.counterpartyRiskProfiles) as DeepAddressForensicReport["counterpartyRiskProfiles"],
+    directCounterpartyInteractionProfiles: normalizeDeepDirectCounterpartyProfiles(result.directCounterpartyInteractionProfiles) as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
+    approvalDrainProvenanceProfiles: unknownArray(result.approvalDrainProvenanceProfiles) as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
+    contractDrivenCampaignSummary: isRecord(result.contractDrivenCampaignSummary)
+      ? result.contractDrivenCampaignSummary as DeepAddressForensicReport["contractDrivenCampaignSummary"]
+      : null,
+    assetContinuationProfiles: unknownArray(result.assetContinuationProfiles) as DeepAddressForensicReport["assetContinuationProfiles"],
+    stablecoinRestrictionProfiles: unknownArray(result.stablecoinRestrictionProfiles) as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
+    boundaryExposureProfiles: normalizeDeepBoundaryProfiles(result.boundaryExposureProfiles) as DeepAddressForensicReport["boundaryExposureProfiles"],
+    operationalFlowProfiles: normalizeDeepProfilesWithFeatures(result.operationalFlowProfiles) as DeepAddressForensicReport["operationalFlowProfiles"],
+    walletRoleProfiles: normalizeDeepWalletRoleProfiles(result.walletRoleProfiles) as DeepAddressForensicReport["walletRoleProfiles"],
+    extendedProvenanceProfiles: normalizeDeepProfilesWithArray(result.extendedProvenanceProfiles, "paths") as DeepAddressForensicReport["extendedProvenanceProfiles"],
+    coverage: (isRecord(result.coverage) ? result.coverage : {}) as DeepAddressForensicReport["coverage"],
+    coverageDebug: (isRecord(result.coverageDebug) ? result.coverageDebug : {}) as DeepAddressForensicReport["coverageDebug"]
+  };
+}
+
+function extractFastRiskReportFromAdminJob(
+  job: ForensicCheckJob | null | undefined,
+  subjectAddress: string
+): RiskReport | null {
+  if (!job || job.kind !== "address_fast_check" || (job.status !== "completed" && job.status !== "partial")) return null;
+  const result = jobResultRecord(job);
+  if (result.subjectAddress !== subjectAddress && job.subjectAddress !== subjectAddress) return null;
+  const rawReport = isRecord(result.fastRiskReport) ? result.fastRiskReport : result;
+  const level = riskLevel(rawReport.level);
+  if (!isFiniteNumber(rawReport.score) || !level) return null;
+  const score = rawReport.score;
+  return {
+    subjectAddress,
+    score,
+    level,
+    reasons: unknownArray(rawReport.reasons)
+      .filter(isRecord)
+      .map((reason) => ({
+        code: typeof reason.code === "string" ? reason.code : "admin_fast_reason",
+        message: typeof reason.message === "string" ? reason.message : "FastCheck saved risk signal.",
+        scoreImpact: isFiniteNumber(reason.scoreImpact) ? reason.scoreImpact : score
+      }))
+  };
+}
+
+function sameRelatedScope(primary: ForensicCheckJob, candidate: ForensicCheckJob): boolean {
+  if (candidate.subjectAddress !== primary.subjectAddress) return false;
+  if (primary.chatId !== null && candidate.chatId !== primary.chatId) return false;
+  if (primary.requestedBy !== null && candidate.requestedBy !== primary.requestedBy) return false;
+  if (candidate.windowStart.getTime() !== primary.windowStart.getTime()) return false;
+  if (candidate.windowEnd.getTime() !== primary.windowEnd.getTime()) return false;
+  return candidate.status === "completed" || candidate.status === "partial";
+}
+
+async function loadRelatedHumanSummaryJobs(
+  job: ForensicCheckJob,
+  deps: AdminServerDeps
+): Promise<ForensicCheckJob[]> {
+  try {
+    return (await deps.listJobs({
+      subjectAddress: job.subjectAddress,
+      limit: 20
+    })).filter((candidate) => candidate.id !== job.id && sameRelatedScope(job, candidate));
+  } catch {
+    return [];
+  }
+}
+
+function uniqueLines(lines: string[]): string[] {
+  return lines.filter((line, index, all) => line.trim().length > 0 && all.indexOf(line) === index);
+}
+
+function adminFactLines(facts: RiskExplanationFact[]): string[] {
+  return uniqueLines(facts.flatMap((fact) => {
+    const lines = [factText(fact, "ru")];
+    const detail = factDetail(fact, "ru");
+    const action = factAction(fact, "ru");
+    if (detail && detail !== lines[0]) lines.push(detail);
+    if (action) lines.push(`Рекомендация: ${action}`);
+    return lines;
+  }));
+}
+
+function adminHumanSummaryFromRiskSummary(summary: RiskExplanationSummary): AdminForensicsHumanSummary {
+  const hasSourcePolicy = summary.primaryReasons.some((fact) => fact.kind === "source_policy");
+  return {
+    conclusion: summary.shortConclusionRu,
+    primaryReasons: summary.primaryReasons.map((fact) => factText(fact, "ru")),
+    modeSections: summary.modeSections.map((section) => ({
+      title: modeTitle(section, "ru"),
+      facts: adminFactLines(section.facts)
+    })),
+    possibleMeanings: summary.possibleMeaningsRu,
+    limitations: summary.limitationsRu,
+    recommendations: uniqueLines([
+      ...summary.recommendationsRu,
+      ...(hasSourcePolicy ? ["Запросить подтверждение происхождения средств."] : [])
+    ]).slice(0, 5)
+  };
+}
+
+function buildAdminHumanSummary(input: {
+  address: string;
+  whereReport: WhereIsMoneyReport;
+  fastReport: RiskReport | null;
+  deepReport: DeepAddressForensicReport | null;
+}): AdminForensicsHumanSummary {
+  if (adminWhereScoreValid(input.whereReport) === false) {
+    return adminHumanSummaryFromRiskSummary(buildNoFinalRiskExplanationSummary({
+      address: input.address,
+      whereReport: input.whereReport
+    }));
+  }
+  const unifiedRisk = calculateUnifiedWalletRisk({
+    address: input.address,
+    fastReport: input.fastReport,
+    deepReport: input.deepReport,
+    whereReport: input.whereReport
+  });
+  return adminHumanSummaryFromRiskSummary(buildRiskExplanationSummary({
+    address: input.address,
+    whereReport: input.whereReport,
+    unifiedRisk,
+    finalDecision: finalDisplayDecisionForAdmin(unifiedRisk, input.whereReport),
+    fastReport: input.fastReport,
+    deepReport: input.deepReport
+  }));
+}
+
+async function enrichHumanRiskSummary(
+  graph: AdminForensicsGraph,
+  job: ForensicCheckJob,
+  deps: AdminServerDeps
+): Promise<AdminForensicsGraph> {
+  const primaryWhereReport = extractWhereIsMoneyReportFromAdminJob(job, job.subjectAddress);
+  if (job.kind === "where_is_money_check" && !primaryWhereReport) {
+    return { ...graph, summary: { ...graph.summary, humanSummary: null } };
+  }
+
+  const relatedJobs = await loadRelatedHumanSummaryJobs(job, deps);
+  const jobs = [job, ...relatedJobs];
+  const whereReport = primaryWhereReport ??
+    jobs.map((candidate) => extractWhereIsMoneyReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ??
+    null;
+  if (!whereReport) return { ...graph, summary: { ...graph.summary, humanSummary: null } };
+
+  const deepReport = jobs.map((candidate) => extractDeepForensicReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
+  const fastReport = jobs.map((candidate) => extractFastRiskReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
+  let humanSummary: AdminForensicsHumanSummary | null = null;
+  try {
+    humanSummary = buildAdminHumanSummary({
+      address: job.subjectAddress,
+      whereReport,
+      fastReport,
+      deepReport
+    });
+  } catch {
+    humanSummary = null;
+  }
+  return {
+    ...graph,
+    summary: {
+      ...graph.summary,
+      humanSummary
+    }
+  };
+}
+
 function lowerAddress(value: string | null): string {
   return (value ?? "").toLowerCase();
 }
@@ -977,7 +1335,8 @@ async function handleApiRequest(
       return;
     }
 
-    const graph = await enrichSavedWalletRisk(projection.graph, job, deps);
+    const savedRiskGraph = await enrichSavedWalletRisk(projection.graph, job, deps);
+    const graph = await enrichHumanRiskSummary(savedRiskGraph, job, deps);
     writeJson(response, 200, { graph });
     return;
   }
