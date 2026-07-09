@@ -61,6 +61,20 @@ function adminWalletIntelIntersectionHelpers() {
   };
 }
 
+function adminGraphCrossRunHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function graphAddressBatches(addresses, batchSize)");
+  const end = html.indexOf("async function loadGraphCrossRunSummaries", start);
+  const helperBlock = html.slice(start, end);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return new Function(helperBlock + "\nreturn { graphAddressBatches };")() as {
+    graphAddressBatches(addresses: string[], batchSize: number): string[][];
+  };
+}
+
 function adminWalletIntelGraphHelpers() {
   const html = adminConsoleHtml();
   const start = html.indexOf("function walletIntelGraphNodeLabel(value)");
@@ -406,6 +420,59 @@ describe("adminConsoleHtml", () => {
     expect(loadBlock).toContain("openWalletIntelligenceAddress(firstAddress);");
   });
 
+  it("loads Wallet Intelligence graph summaries for visible graph addresses", () => {
+    const html = adminConsoleHtml();
+    const stateBlock = html.slice(html.indexOf("const state = {"), html.indexOf("if (![\"all\", \"incoming\""));
+    const loadGraphBlock = html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
+    const summaryBlock = html.slice(html.indexOf("function clearGraphCrossRunState"), html.indexOf("function crossRunSummaryForNode"));
+    const batchLoopBlock = summaryBlock.slice(summaryBlock.indexOf("for (const batch"), summaryBlock.indexOf("state.crossRunAddressSummaries = summaries;"));
+    const clearBeforeRenderIndex = loadGraphBlock.indexOf("clearGraphCrossRunState();");
+    const firstRenderGraphIndex = loadGraphBlock.indexOf("renderGraph();");
+
+    expect(stateBlock).toContain("crossRunAddressSummaries: new Map()");
+    expect(stateBlock).toContain("crossRunAddressDetailByAddress: new Map()");
+    expect(stateBlock).toContain("crossRunAddressDetailLoading: new Set()");
+    expect(stateBlock).toContain("pendingHighlightAddress: null");
+    expect(clearBeforeRenderIndex).toBeGreaterThan(-1);
+    expect(clearBeforeRenderIndex).toBeLessThan(firstRenderGraphIndex);
+    expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries(jobId, requestSeq);");
+    expect(summaryBlock).toContain("function graphAddressBatches");
+    expect(summaryBlock).toContain("async function loadGraphCrossRunSummaries(jobId, requestSeq)");
+    expect(summaryBlock).toContain("clearGraphCrossRunState();");
+    expect(summaryBlock).toContain("graphAddressBatches(addresses, 200)");
+    expect(summaryBlock).toContain("for (const batch of graphAddressBatches(addresses, 200))");
+    expect(summaryBlock).toContain("const query = batch.map((address) => encodeURIComponent(address)).join(\",\");");
+    expect(summaryBlock).toContain("requestSeq !== state.graphRequestSeq");
+    expect(summaryBlock).toContain("state.activeJobId !== jobId");
+    expect(batchLoopBlock).toContain("requestSeq !== state.graphRequestSeq");
+    expect(batchLoopBlock).toContain("state.activeJobId !== jobId");
+    expect(summaryBlock).toContain("/admin/api/wallet-intelligence/address-summaries?addresses=");
+    expect(summaryBlock).toContain("graphNodes(state.graph)");
+    expect(summaryBlock).toContain("nodeAddress(node)");
+  });
+
+  it("loads Wallet Intelligence graph summaries in 200-address batches", () => {
+    const helpers = adminGraphCrossRunHelpers();
+    const addresses = Array.from({ length: 201 }, (_, index) => "address-" + index);
+
+    const batches = helpers.graphAddressBatches(addresses, 200);
+
+    expect(batches.map((batch) => batch.length)).toEqual([200, 1]);
+    expect(batches[0][0]).toBe("address-0");
+    expect(batches[1][0]).toBe("address-200");
+  });
+
+  it("renders cross-run count badges on address graph nodes", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain(".cross-run-badge circle");
+    expect(html).toContain("function crossRunNodeBadge");
+    expect(renderBlock).toContain("crossRunNodeBadge(node, radius)");
+    expect(html).toContain("jobCount >= 2");
+    expect(html).toContain("99+");
+  });
+
   it("renders a focused Wallet Intelligence graph from stored edges", () => {
     const helpers = adminWalletIntelGraphHelpers();
     const unrelatedEdges = Array.from({ length: 12 }, (_, index) => ({
@@ -567,7 +634,8 @@ describe("adminConsoleHtml", () => {
 
   it("contains a DeepCheck second-layer refresh button and handler", () => {
     const html = adminConsoleHtml();
-    const handlerBlock = html.slice(html.indexOf("async function refreshSecondLayer"), html.indexOf("async function loadGraph"));
+    const handlerStart = html.indexOf("async function refreshSecondLayer");
+    const handlerBlock = html.slice(handlerStart, html.indexOf("async function loadGraph(jobId)", handlerStart));
 
     expect(html).toContain('id="refreshSecondLayer"');
     expect(html).toContain("Refresh 2nd layer");
@@ -1068,6 +1136,21 @@ describe("adminConsoleHtml", () => {
     expect(loadJobsBlock).toContain("state.activeJobId");
     expect(loadJobsBlock).toContain('state.jobs.find((job) => job.status === "completed" || job.status === "partial")');
     expect(loadJobsBlock).not.toContain("state.jobs.length === 1 ? state.jobs[0] : null");
+  });
+
+  it("parses highlightAddress and selects the matching rendered graph node", () => {
+    const html = adminConsoleHtml();
+    const urlBlock = html.slice(html.indexOf("function applyInitialUrlFilters"), html.indexOf("async function refreshSecondLayer"));
+    const loadGraphBlock = html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
+    const highlightBlock = html.slice(html.indexOf("function applyPendingHighlightAddress"), html.indexOf("function selectNode"));
+
+    expect(urlBlock).toContain('params.get("highlightAddress")');
+    expect(urlBlock).toContain("state.pendingHighlightAddress = highlightAddress");
+    expect(loadGraphBlock).toContain("applyPendingHighlightAddress();");
+    expect(highlightBlock).toContain("state.renderedNodesById.values()");
+    expect(highlightBlock).toContain("nodeAddress(node)");
+    expect(highlightBlock).toContain("selectNode(match.id)");
+    expect(highlightBlock).toContain("not visible in the current graph view");
   });
 
   it("contains case brief summary helpers", () => {
@@ -6468,12 +6551,25 @@ describe("adminConsoleHtml", () => {
     expect(selectedNodeCardBlock).toContain("function selectedNodeCard");
     expect(selectedNodeCardBlock).toContain(
       'cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +\n' +
+        '        selectedNodeCrossRunBlock(node) +\n' +
         '        cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +\n' +
         '        selectedNodeTransferBlock(node) +\n' +
         '        cardLine("Label", nodeDisplayLabel(node))'
     );
     expect(walletDetailBlock).toContain("function walletDetailBlock");
     expect(walletDetailBlock).not.toContain("Connected neighbors");
+  });
+
+  it("shows Wallet Intelligence source jobs in selected node details", () => {
+    const html = adminConsoleHtml();
+    const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function selectedEdgeCard"));
+
+    expect(html).toContain("function selectedNodeCrossRunBlock");
+    expect(html).toContain("function loadCrossRunAddressDetail");
+    expect(selectedNodeCardBlock).toContain("selectedNodeCrossRunBlock(node)");
+    expect(html).toContain("Встречается в прогонах");
+    expect(html).toContain("highlightAddress=");
+    expect(html).toContain("telegramUserId || requester?.requestedBy");
   });
 });
 

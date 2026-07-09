@@ -494,6 +494,87 @@ describe("startAdminServer", () => {
     expect((receivedInput as { endDate?: Date }).endDate?.toISOString()).toBe("2026-07-08T00:00:00.000Z");
   });
 
+  it("returns wallet intelligence summaries for requested graph addresses", async () => {
+    let receivedInput: unknown = null;
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async (input) => {
+        receivedInput = input;
+        return [{
+          address: "T111111111111111111111111111111111",
+          uniqueSubjectCount: 2,
+          uniqueRequesterCount: 1,
+          jobCount: 3,
+          completedJobCount: 3,
+          partialJobCount: 0,
+          occurrenceCount: 4,
+          distinctTxCount: 2,
+          distinctAmountRaw: "3000000",
+          minDepth: 1,
+          maxDepth: 2,
+          firstSeenAt: new Date("2026-07-06T09:00:00.000Z"),
+          lastSeenAt: new Date("2026-07-06T10:00:00.000Z"),
+          modes: ["address_deep_check"],
+          tags: ["repeated_cross_run_address"],
+          serviceCategories: [],
+          labelHints: []
+        }];
+      },
+      getWalletIntelligenceAddressDetail: async () => null
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/address-summaries?addresses=T111111111111111111111111111111111,T222222222222222222222222222222222`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      addresses: [{
+        address: "T111111111111111111111111111111111",
+        jobCount: 3,
+        uniqueSubjectCount: 2
+      }]
+    });
+    expect(receivedInput).toMatchObject({
+      addresses: [
+        "T111111111111111111111111111111111",
+        "T222222222222222222222222222222222"
+      ],
+      limit: 2,
+      offset: 0
+    });
+  });
+
+  it("rejects invalid wallet intelligence graph summary addresses", async () => {
+    const server = await start({
+      ...deps(),
+      listWalletIntelligenceAddressSummaries: async () => [],
+      getWalletIntelligenceAddressDetail: async () => null
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/address-summaries?addresses=not-a-tron-address`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid wallet intelligence address."
+    });
+  });
+
+  it("returns 501 when wallet intelligence graph summaries are not configured", async () => {
+    const server = await start();
+
+    const response = await fetch(
+      `${server.url}/admin/api/wallet-intelligence/address-summaries?addresses=T111111111111111111111111111111111`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(501);
+  });
+
   it("returns wallet intelligence address detail", async () => {
     const server = await start({
       ...deps(),

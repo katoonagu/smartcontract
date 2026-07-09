@@ -111,6 +111,12 @@ the case summary but capped so they cannot consume the whole rail, graph
 counters use readable labels such as visible nodes/links/paths instead of raw
 N/E/P/W codes, and long operational diagnostics such as projection gaps,
 targeted history, and funding-candidate visibility are collapsed by default.
+For address-backed graph nodes that appear in two or more Wallet Intelligence
+source jobs, Admin shows a neutral cross-run count badge on the node and a
+Russian `Встречается в прогонах` selected-node section with source job links,
+Telegram requester context, subject wallet, and human-readable time. These
+badges are investigative context only; they do not change scoring, labels,
+Telegram output, or the source job result.
 The case summary starts with the analyst meaning of the active check, then shows
 risk, coverage, evidence strength, and the largest incoming/outgoing
 counterparties with TronScan links. Largest incoming/outgoing rows are
