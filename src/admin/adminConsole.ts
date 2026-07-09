@@ -1196,6 +1196,12 @@ export function adminConsoleHtml(): string {
     .amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px var(--pill-glow)); }
     .stop-badge rect { fill: rgba(246, 193, 119, .95); stroke: #0b0e11; stroke-width: 1.5; rx: 4; vector-effect: non-scaling-stroke; }
     .stop-badge text { fill: #0b0e11; font-size: 9.5px; font-weight: 750; letter-spacing: 0; stroke: none; }
+    .cross-run-badge { pointer-events: none; }
+    .cross-run-badge circle { fill: rgba(246, 193, 119, .96); stroke: #0b0e11; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .cross-run-badge text { fill: #0b0e11; font-size: 9px; font-weight: 800; paint-order: normal; stroke: transparent; stroke-width: 0; letter-spacing: 0; }
+    .cross-run-source-row { display: block; text-decoration: none; color: var(--text); border: 1px solid var(--border); background: rgba(19, 29, 39, .92); border-radius: 6px; padding: 8px; margin-top: 6px; }
+    .cross-run-source-row:hover, .cross-run-source-row:focus { border-color: var(--accent); background: rgba(31, 47, 66, .96); }
+    .cross-run-source-row.current { opacity: .72; }
     .node { cursor: pointer; }
     .node circle { fill: #303846; stroke-width: 2.2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 8px 8px rgba(0, 0, 0, .36)); }
     .node.selected circle { stroke-width: 4; filter: drop-shadow(0 0 10px rgba(122, 162, 247, .5)); }
@@ -5380,6 +5386,22 @@ export function adminConsoleHtml(): string {
         '<text x="8" y="12.5">' + escapeHtml(label) + '</text>' +
         '</g>';
     }
+    function crossRunBadgeText(count) {
+      return count > 99 ? "99+" : String(count);
+    }
+    function crossRunNodeBadge(node, radius) {
+      const summary = crossRunSummaryForNode(node);
+      const jobCount = Number(summary?.jobCount || 0);
+      if (!(Number.isFinite(jobCount) && jobCount >= 2)) return "";
+      const text = crossRunBadgeText(jobCount);
+      const badgeRadius = text.length > 2 ? 11 : 9;
+      const x = radius - 2;
+      const y = -radius + 2;
+      return '<g class="cross-run-badge" aria-label="Seen in ' + escapeHtml(jobCount) + ' source checks" transform="translate(' + x + ' ' + y + ')">' +
+        '<circle r="' + badgeRadius + '"></circle>' +
+        '<text text-anchor="middle" dominant-baseline="central">' + escapeHtml(text) + '</text>' +
+        '</g>';
+    }
     function amountPillMetrics(label) {
       const lines = (Array.isArray(label) ? label : [label])
         .filter((value) => value !== null && value !== undefined && String(value).length > 0)
@@ -6887,6 +6909,7 @@ export function adminConsoleHtml(): string {
           nodeRoleMarkSvg(node, radius) +
           (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
+          crossRunNodeBadge(node, radius) +
           (() => {
             const label = nodeLabelAttrs(node, placed);
             const subLabel = nodeDisplayKind(node) === "funding_bundle" ? bundleSubLabel(node) : "";
@@ -7052,6 +7075,8 @@ export function adminConsoleHtml(): string {
     }
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };
+      const address = nodeAddress(nodeById(nodeId));
+      if (address) loadCrossRunAddressDetail(address);
       renderGraph();
       renderCaseBrief();
       renderDetails();
@@ -7874,6 +7899,55 @@ export function adminConsoleHtml(): string {
         cardLine("Stop reason", stopReason || "n/a") +
         cardLine("Limitation", limitationCode || "n/a"));
     }
+    async function loadCrossRunAddressDetail(address) {
+      if (!address || state.crossRunAddressDetailByAddress.has(address) || state.crossRunAddressDetailLoading.has(address)) return;
+      state.crossRunAddressDetailLoading.add(address);
+      if (state.selected?.type === "node" && nodeAddress(nodeById(state.selected.id)) === address) renderSelectionCard();
+      try {
+        const body = await api("/admin/api/wallet-intelligence/addresses/" + encodeURIComponent(address));
+        if (body.detail) state.crossRunAddressDetailByAddress.set(address, body.detail);
+      } catch (error) {
+        state.crossRunAddressDetailByAddress.set(address, { error: error?.message || "Не удалось загрузить прогоны." });
+      }
+      state.crossRunAddressDetailLoading.delete(address);
+      if (state.selected?.type === "node" && nodeAddress(nodeById(state.selected.id)) === address) renderSelectionCard();
+    }
+    function crossRunJobRequester(detail, job) {
+      const sighting = asArray(detail?.sightings).find((item) => item.jobId === job.jobId);
+      const requestedBy = sighting?.requestedBy || "";
+      return asArray(detail?.requesters).find((requester) => requester.requestedBy === requestedBy) || null;
+    }
+    function crossRunSourceJobRow(detail, job, address) {
+      const requester = crossRunJobRequester(detail, job);
+      const username = requester?.username ? "@" + requester.username : "без username";
+      const telegramUserId = requester?.telegramUserId || requester?.requestedBy || "n/a";
+      const time = formatJobTime(job.completedAt) || "time n/a";
+      const current = job.jobId === state.activeJobId;
+      const href = "/admin/forensics?job=" + encodeURIComponent(job.jobId) + "&highlightAddress=" + encodeURIComponent(address);
+      return '<a class="cross-run-source-row' + (current ? " current" : "") + '" href="' + href + '">' +
+        '<strong>' + escapeHtml(humanCheckKind(job.jobKind || job.kind)) + '</strong> <span class="muted">· ' + escapeHtml(time) + ' · ' + escapeHtml(short(job.jobId, 8)) + '</span>' +
+        '<div class="muted">' + escapeHtml(username) + ' · tg:' + escapeHtml(telegramUserId) + ' · subject ' + escapeHtml(short(job.subjectAddress, 10)) + '</div>' +
+        '</a>';
+    }
+    function selectedNodeCrossRunBlock(node) {
+      const address = nodeAddress(node);
+      if (!address) return "";
+      const summary = crossRunSummaryForAddress(address);
+      const jobCount = Number(summary?.jobCount || 0);
+      if (!(Number.isFinite(jobCount) && jobCount >= 2)) return "";
+      const detail = state.crossRunAddressDetailByAddress.get(address);
+      if (state.crossRunAddressDetailLoading.has(address)) {
+        return cardBlockHtml("Встречается в прогонах", '<div class="card-note">Загружаем source checks...</div>');
+      }
+      if (detail?.error) {
+        return cardBlockHtml("Встречается в прогонах", '<div class="card-note">' + escapeHtml(detail.error) + '</div>');
+      }
+      const jobs = asArray(detail?.jobs).slice(0, 8);
+      const rows = jobs.map((job) => crossRunSourceJobRow(detail, job, address)).join("");
+      return cardBlockHtml("Встречается в прогонах",
+        '<div class="card-note">Адрес встречается в ' + escapeHtml(jobCount) + ' уникальных прогонах. Это аналитический контекст для сопоставления проверок.</div>' +
+        (rows || '<div class="muted">Source checks пока не загружены.</div>'));
+    }
     function selectedNodeCard(node) {
       if (!node) return "";
       const type = nodeType(node);
@@ -7885,6 +7959,7 @@ export function adminConsoleHtml(): string {
       return '<h3>Selected node</h3>' +
         cardLine("Type", type.label) +
         cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +
+        selectedNodeCrossRunBlock(node) +
         cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +
         selectedNodeTransferBlock(node) +
         cardLine("Label", nodeDisplayLabel(node)) +

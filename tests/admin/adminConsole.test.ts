@@ -462,6 +462,17 @@ describe("adminConsoleHtml", () => {
     expect(batches[1][0]).toBe("address-200");
   });
 
+  it("renders cross-run count badges on address graph nodes", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain(".cross-run-badge circle");
+    expect(html).toContain("function crossRunNodeBadge");
+    expect(renderBlock).toContain("crossRunNodeBadge(node, radius)");
+    expect(html).toContain("jobCount >= 2");
+    expect(html).toContain("99+");
+  });
+
   it("renders a focused Wallet Intelligence graph from stored edges", () => {
     const helpers = adminWalletIntelGraphHelpers();
     const unrelatedEdges = Array.from({ length: 12 }, (_, index) => ({
@@ -6525,12 +6536,25 @@ describe("adminConsoleHtml", () => {
     expect(selectedNodeCardBlock).toContain("function selectedNodeCard");
     expect(selectedNodeCardBlock).toContain(
       'cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +\n' +
+        '        selectedNodeCrossRunBlock(node) +\n' +
         '        cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +\n' +
         '        selectedNodeTransferBlock(node) +\n' +
         '        cardLine("Label", nodeDisplayLabel(node))'
     );
     expect(walletDetailBlock).toContain("function walletDetailBlock");
     expect(walletDetailBlock).not.toContain("Connected neighbors");
+  });
+
+  it("shows Wallet Intelligence source jobs in selected node details", () => {
+    const html = adminConsoleHtml();
+    const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function selectedEdgeCard"));
+
+    expect(html).toContain("function selectedNodeCrossRunBlock");
+    expect(html).toContain("function loadCrossRunAddressDetail");
+    expect(selectedNodeCardBlock).toContain("selectedNodeCrossRunBlock(node)");
+    expect(html).toContain("Встречается в прогонах");
+    expect(html).toContain("highlightAddress=");
+    expect(html).toContain("telegramUserId || requester?.requestedBy");
   });
 });
 
