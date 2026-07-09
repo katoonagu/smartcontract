@@ -311,6 +311,46 @@ describe("wallet intelligence repositories", () => {
     expect(queries[0].sql).toContain("order by unique_subject_count desc, unique_requester_count desc, job_count desc, last_seen_at desc");
   });
 
+  it("filters address summaries by an explicit address list", async () => {
+    const { db, queries } = createMockDb([[
+      {
+        address: "TSeen1111111111111111111111111111111",
+        unique_subject_count: 3,
+        unique_requester_count: 2,
+        job_count: 5,
+        completed_job_count: 4,
+        partial_job_count: 1,
+        occurrence_count: 8,
+        distinct_tx_count: 2,
+        distinct_amount_raw: "3000000",
+        min_depth: 1,
+        max_depth: 2,
+        first_seen_at: new Date("2026-07-06T09:00:00.000Z"),
+        last_seen_at: new Date("2026-07-06T10:00:00.000Z"),
+        modes: ["address_deep_check"],
+        tags: ["repeated_cross_run_address"],
+        service_categories: [],
+        label_hints: []
+      }
+    ]]);
+
+    const rows = await listWalletIntelligenceAddressSummaries(db, {
+      addresses: [
+        "TSeen1111111111111111111111111111111",
+        "TOther111111111111111111111111111111"
+      ],
+      limit: 20,
+      offset: 0
+    });
+
+    expect(rows[0]?.address).toBe("TSeen1111111111111111111111111111111");
+    expect(queries[0].sql).toContain("address = any($1::text[])");
+    expect(queries[0].params).toEqual([[
+      "TSeen1111111111111111111111111111111",
+      "TOther111111111111111111111111111111"
+    ], 20, 0]);
+  });
+
   it("loads address detail with requesters, jobs, sightings, edges, and labels", async () => {
     const { db, queries } = createMockDb([
       [{

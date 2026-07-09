@@ -513,6 +513,7 @@ export type ListWalletIntelligenceAddressSummariesInput = {
   startDate?: Date;
   endDate?: Date;
   addressQuery?: string;
+  addresses?: string[];
   minDepth?: number;
   maxDepth?: number;
   minDistinctAmountRaw?: string;
@@ -6728,6 +6729,11 @@ export async function listWalletIntelligenceAddressSummaries(
   const offset = Math.max(input.offset ?? 0, 0);
   const params: unknown[] = [];
   const where: string[] = [];
+  const addresses = [...new Set((input.addresses || []).map((address) => address.trim()).filter(Boolean))];
+  if (addresses.length > 0) {
+    params.push(addresses);
+    where.push(`address = any($${params.length}::text[])`);
+  }
 
   if (input.minUniqueSubjects !== undefined) {
     params.push(input.minUniqueSubjects);
