@@ -1540,6 +1540,70 @@ describe("startAdminServer", () => {
     ]));
   });
 
+  it("ignores malformed Deep hard-evidence profiles when composing human summary facts", async () => {
+    const whereJob = job({
+      id: "job-where-malformed-deep-hard",
+      chatId: "42",
+      requestedBy: "42",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const malformedDeepJob = deepJobForAdminSummaryTest({
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd,
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        approvalDrainProvenanceProfiles: [{
+          evidenceStrength: "exact_approval_and_transfer_from",
+          score: 95
+        }],
+        directCounterpartyInteractionProfiles: [],
+        assetContinuationProfiles: [{
+          evidenceClass: "asset_continuation",
+          tokenQuality: "verified",
+          score: 84,
+          reasons: ["Malformed asset continuation should be ignored."]
+        }],
+        stablecoinRestrictionProfiles: [{
+          isBlacklisted: true
+        }],
+        boundaryExposureProfiles: [],
+        operationalFlowProfiles: [],
+        walletRoleProfiles: [],
+        extendedProvenanceProfiles: [],
+        missingChecks: [],
+        coverage: {},
+        coverageDebug: {}
+      }
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async (id: string) => id === whereJob.id ? whereJob : null,
+      listJobs: async () => [whereJob, malformedDeepJob]
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const text = JSON.stringify(body.graph.summary.humanSummary);
+    expect(body.graph.summary.humanSummary).not.toBeNull();
+    expect(text).not.toContain("Найдена точная drainer-цепочка");
+    expect(text).not.toContain("Адрес находится в активном TRC20 USDT blacklist");
+    expect(text).not.toContain("Найдена cross-chain или asset-continuation связь");
+    expect(text).not.toContain("Malformed asset continuation should be ignored");
+  });
+
   it("requires admin auth before refreshing DeepCheck second layer", async () => {
     let called = false;
     const server = await start({
