@@ -734,11 +734,89 @@ function defaultDeepProviderBudget(): DeepAddressForensicReport["providerBudget"
   };
 }
 
-function normalizeDeepProfilesWithArray(value: unknown, key: string): Record<string, unknown>[] {
-  return recordArray(value).map((profile) => ({
-    ...profile,
-    [key]: recordArray(profile[key])
-  }));
+function isInboundProvenancePathRecord(path: Record<string, unknown>): boolean {
+  return (path.depth === 1 || path.depth === 2) &&
+    typeof path.sourceAddress === "string" &&
+    isStringArray(path.viaAddresses) &&
+    typeof path.label === "string" &&
+    typeof path.amountRaw === "string" &&
+    isFiniteNumber(path.amountPreservationRatio) &&
+    typeof path.firstTransferAt === "string" &&
+    typeof path.lastTransferAt === "string" &&
+    isStringArray(path.txHashes) &&
+    path.txHashes.length > 0;
+}
+
+function normalizeDeepInboundProvenanceProfiles(value: unknown, subjectAddress: string): Record<string, unknown>[] {
+  return recordArray(value).flatMap((profile) => {
+    if (profile.subjectAddress !== subjectAddress || !isFiniteNumber(profile.score)) return [];
+    const paths = recordArray(profile.paths).filter(isInboundProvenancePathRecord);
+    if (paths.length === 0) return [];
+    return [{
+      ...profile,
+      incomingVolumeRaw: typeof profile.incomingVolumeRaw === "string" ? profile.incomingVolumeRaw : "0",
+      matchedInboundVolumeRaw: typeof profile.matchedInboundVolumeRaw === "string" ? profile.matchedInboundVolumeRaw : "0",
+      paths,
+      boundaryNotes: isStringArray(profile.boundaryNotes) ? profile.boundaryNotes : [],
+      features: recordArray(profile.features)
+    }];
+  });
+}
+
+function extendedDirection(value: unknown): value is "inbound" | "outbound" {
+  return value === "inbound" || value === "outbound";
+}
+
+function extendedEvidenceStrength(value: unknown): boolean {
+  return value === "exact_labeled_path" ||
+    value === "service_boundary_context" ||
+    value === "weak_inferred_candidate";
+}
+
+function isExtendedProvenancePathRecord(path: Record<string, unknown>): boolean {
+  return extendedDirection(path.direction) &&
+    isFiniteNumber(path.depth) &&
+    isStringArray(path.pathAddresses) &&
+    path.pathAddresses.length > 0 &&
+    isStringArray(path.txHashes) &&
+    path.txHashes.length > 0 &&
+    typeof path.amountRaw === "string" &&
+    isFiniteNumber(path.amountPreservationRatio) &&
+    typeof path.firstTransferAt === "string" &&
+    typeof path.lastTransferAt === "string" &&
+    (typeof path.label === "string" || path.label === null) &&
+    (typeof path.labelAddress === "string" || path.labelAddress === null) &&
+    (typeof path.boundaryCategory === "string" || path.boundaryCategory === null) &&
+    extendedEvidenceStrength(path.evidenceStrength) &&
+    isFiniteNumber(path.candidateScore);
+}
+
+function normalizeDeepExtendedProvenanceProfiles(value: unknown, subjectAddress: string): Record<string, unknown>[] {
+  return recordArray(value).flatMap((profile) => {
+    if (profile.subjectAddress !== subjectAddress || !extendedDirection(profile.direction) || !isFiniteNumber(profile.score)) return [];
+    const paths = recordArray(profile.paths).filter(isExtendedProvenancePathRecord)
+      .map((path) => ({ ...path, features: recordArray(path.features) }));
+    if (paths.length === 0) return [];
+    return [{
+      ...profile,
+      maxDepth: isFiniteNumber(profile.maxDepth) ? profile.maxDepth : 0,
+      paths,
+      matchedVolumeRaw: typeof profile.matchedVolumeRaw === "string" ? profile.matchedVolumeRaw : "0",
+      matchedVolumeRatio: isFiniteNumber(profile.matchedVolumeRatio) ? profile.matchedVolumeRatio : 0,
+      features: recordArray(profile.features),
+      coverage: isRecord(profile.coverage)
+        ? {
+            ...profile.coverage,
+            stoppedReasons: isStringArray(profile.coverage.stoppedReasons) ? profile.coverage.stoppedReasons : []
+          }
+        : {
+            expandedAddresses: 0,
+            fetchedAddressCount: 0,
+            stoppedReasons: [],
+            maxDepthReached: 0
+          }
+    }];
+  });
 }
 
 function normalizeDeepProfilesWithFeatures(value: unknown): Record<string, unknown>[] {
@@ -757,12 +835,17 @@ function normalizeDeepWalletRoleProfiles(value: unknown): Record<string, unknown
   }));
 }
 
-function normalizeDeepBoundaryProfiles(value: unknown): Record<string, unknown>[] {
-  return recordArray(value).map((profile) => ({
-    ...profile,
-    flows: recordArray(profile.flows),
-    coverage: isRecord(profile.coverage) ? profile.coverage : {}
-  }));
+function normalizeDeepBoundaryProfiles(value: unknown, subjectAddress: string): Record<string, unknown>[] {
+  return recordArray(value).flatMap((profile) => {
+    if (profile.subjectAddress !== subjectAddress || !isFiniteNumber(profile.contextScore)) return [];
+    const flows = recordArray(profile.flows).filter((flow) => typeof flow.txHash === "string");
+    if (profile.contextScore > 0 && flows.length === 0) return [];
+    return [{
+      ...profile,
+      flows,
+      coverage: isRecord(profile.coverage) ? profile.coverage : {}
+    }];
+  });
 }
 
 function normalizeDeepDirectCounterpartyProfiles(value: unknown): Record<string, unknown>[] {
@@ -795,7 +878,7 @@ function extractDeepForensicReportFromAdminJob(
     missingChecks: stringArrayField(result, "missingChecks"),
     serviceExposureProfiles: normalizeDeepProfilesWithFeatures(result.serviceExposureProfiles) as DeepAddressForensicReport["serviceExposureProfiles"],
     addressBehaviorProfiles: normalizeDeepProfilesWithFeatures(result.addressBehaviorProfiles) as DeepAddressForensicReport["addressBehaviorProfiles"],
-    inboundProvenanceProfiles: normalizeDeepProfilesWithArray(result.inboundProvenanceProfiles, "paths") as DeepAddressForensicReport["inboundProvenanceProfiles"],
+    inboundProvenanceProfiles: normalizeDeepInboundProvenanceProfiles(result.inboundProvenanceProfiles, subjectAddress) as DeepAddressForensicReport["inboundProvenanceProfiles"],
     counterpartyRiskProfiles: normalizeDeepProfilesWithFeatures(result.counterpartyRiskProfiles) as DeepAddressForensicReport["counterpartyRiskProfiles"],
     directCounterpartyInteractionProfiles: normalizeDeepDirectCounterpartyProfiles(result.directCounterpartyInteractionProfiles) as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
     approvalDrainProvenanceProfiles: unknownArray(result.approvalDrainProvenanceProfiles) as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
@@ -804,10 +887,10 @@ function extractDeepForensicReportFromAdminJob(
       : null,
     assetContinuationProfiles: unknownArray(result.assetContinuationProfiles) as DeepAddressForensicReport["assetContinuationProfiles"],
     stablecoinRestrictionProfiles: unknownArray(result.stablecoinRestrictionProfiles) as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
-    boundaryExposureProfiles: normalizeDeepBoundaryProfiles(result.boundaryExposureProfiles) as DeepAddressForensicReport["boundaryExposureProfiles"],
+    boundaryExposureProfiles: normalizeDeepBoundaryProfiles(result.boundaryExposureProfiles, subjectAddress) as DeepAddressForensicReport["boundaryExposureProfiles"],
     operationalFlowProfiles: normalizeDeepProfilesWithFeatures(result.operationalFlowProfiles) as DeepAddressForensicReport["operationalFlowProfiles"],
     walletRoleProfiles: normalizeDeepWalletRoleProfiles(result.walletRoleProfiles) as DeepAddressForensicReport["walletRoleProfiles"],
-    extendedProvenanceProfiles: normalizeDeepProfilesWithArray(result.extendedProvenanceProfiles, "paths") as DeepAddressForensicReport["extendedProvenanceProfiles"],
+    extendedProvenanceProfiles: normalizeDeepExtendedProvenanceProfiles(result.extendedProvenanceProfiles, subjectAddress) as DeepAddressForensicReport["extendedProvenanceProfiles"],
     coverage: (isRecord(result.coverage) ? result.coverage : {}) as DeepAddressForensicReport["coverage"],
     coverageDebug: (isRecord(result.coverageDebug) ? result.coverageDebug : {}) as DeepAddressForensicReport["coverageDebug"]
   };

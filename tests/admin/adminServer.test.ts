@@ -161,13 +161,23 @@ function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): 
       addressBehaviorProfiles: [],
       inboundProvenanceProfiles: [{
         subjectAddress: "TSubject111111111111111111111111111111",
+        incomingVolumeRaw: "1000000000",
+        matchedInboundVolumeRaw: "700000000",
         score: 70,
         paths: [{
+          depth: 1,
+          sourceAddress: "TWhitebitSource1111111111111111111111",
+          viaAddresses: [],
           label: "whitebit",
+          amountRaw: "700000000",
+          amountPreservationRatio: 0.98,
+          firstTransferAt: "2026-06-01T00:10:00.000Z",
+          lastTransferAt: "2026-06-01T00:20:00.000Z",
           txHashes: ["tx-whitebit"],
           evidenceStrength: "exact_labeled_path"
         }],
-        boundaryNotes: []
+        boundaryNotes: [],
+        features: []
       }],
       counterpartyRiskProfiles: [],
       approvalDrainProvenanceProfiles: [],
@@ -1454,6 +1464,65 @@ describe("startAdminServer", () => {
       ...deps(),
       getJob: async (id: string) => id === whereJob.id ? whereJob : null,
       listJobs: async () => [whereJob, otherRequesterDeepJob]
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(JSON.stringify(body.graph.summary.humanSummary)).not.toContain("whitebit");
+    expect(body.graph.summary.humanSummary.modeSections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "DeepCheck",
+        facts: []
+      })
+    ]));
+  });
+
+  it("ignores malformed Deep provenance paths when composing human summary facts", async () => {
+    const whereJob = job({
+      id: "job-where-malformed-deep",
+      chatId: "42",
+      requestedBy: "42",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const malformedDeepJob = deepJobForAdminSummaryTest({
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd,
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [{
+          subjectAddress: "TSubject111111111111111111111111111111",
+          score: 70,
+          paths: [{ label: "whitebit" }]
+        }],
+        counterpartyRiskProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        assetContinuationProfiles: [],
+        stablecoinRestrictionProfiles: [],
+        boundaryExposureProfiles: [],
+        operationalFlowProfiles: [],
+        walletRoleProfiles: [],
+        extendedProvenanceProfiles: [],
+        missingChecks: [],
+        coverage: {},
+        coverageDebug: {}
+      }
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async (id: string) => id === whereJob.id ? whereJob : null,
+      listJobs: async () => [whereJob, malformedDeepJob]
     });
 
     const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
