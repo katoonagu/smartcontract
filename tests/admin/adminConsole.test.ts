@@ -406,6 +406,21 @@ describe("adminConsoleHtml", () => {
     expect(loadBlock).toContain("openWalletIntelligenceAddress(firstAddress);");
   });
 
+  it("loads Wallet Intelligence graph summaries for visible graph addresses", () => {
+    const html = adminConsoleHtml();
+    const stateBlock = html.slice(html.indexOf("const state = {"), html.indexOf("if (![\"all\", \"incoming\""));
+    const loadGraphBlock = html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
+    const summaryBlock = html.slice(html.indexOf("async function loadGraphCrossRunSummaries"), html.indexOf("function crossRunSummaryForNode"));
+
+    expect(stateBlock).toContain("crossRunAddressSummaries: new Map()");
+    expect(stateBlock).toContain("crossRunAddressDetailByAddress: new Map()");
+    expect(stateBlock).toContain("pendingHighlightAddress: null");
+    expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries();");
+    expect(summaryBlock).toContain("/admin/api/wallet-intelligence/address-summaries?addresses=");
+    expect(summaryBlock).toContain("graphNodes(state.graph)");
+    expect(summaryBlock).toContain("nodeAddress(node)");
+  });
+
   it("renders a focused Wallet Intelligence graph from stored edges", () => {
     const helpers = adminWalletIntelGraphHelpers();
     const unrelatedEdges = Array.from({ length: 12 }, (_, index) => ({
@@ -567,7 +582,8 @@ describe("adminConsoleHtml", () => {
 
   it("contains a DeepCheck second-layer refresh button and handler", () => {
     const html = adminConsoleHtml();
-    const handlerBlock = html.slice(html.indexOf("async function refreshSecondLayer"), html.indexOf("async function loadGraph"));
+    const handlerStart = html.indexOf("async function refreshSecondLayer");
+    const handlerBlock = html.slice(handlerStart, html.indexOf("async function loadGraph(jobId)", handlerStart));
 
     expect(html).toContain('id="refreshSecondLayer"');
     expect(html).toContain("Refresh 2nd layer");

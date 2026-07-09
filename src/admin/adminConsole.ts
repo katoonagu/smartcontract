@@ -1802,6 +1802,10 @@ export function adminConsoleHtml(): string {
       expandedBundleNodeIds: new Set(),
       expandedSelectedFlowEdgeIds: new Set(),
       walletIntel: { addresses: [], activeAddress: null, detail: null, loading: false, error: null, preset: "intersections" },
+      crossRunAddressSummaries: new Map(),
+      crossRunAddressDetailByAddress: new Map(),
+      crossRunAddressDetailLoading: new Set(),
+      pendingHighlightAddress: null,
       theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null, listRequestSeq: 0, detailRequestSeq: 0 }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
@@ -2302,6 +2306,39 @@ export function adminConsoleHtml(): string {
         renderWalletIntelligenceDrawer();
         setWalletIntelligenceStatus("Не удалось загрузить детали пересечения.");
       }
+    }
+    async function loadGraphCrossRunSummaries() {
+      state.crossRunAddressSummaries = new Map();
+      state.crossRunAddressDetailByAddress = new Map();
+      state.crossRunAddressDetailLoading = new Set();
+      const addresses = graphNodeAddresses();
+      if (addresses.length === 0) {
+        renderGraph();
+        renderSelectionCard();
+        return;
+      }
+      try {
+        const query = addresses.map((address) => encodeURIComponent(address)).join(",");
+        const body = await api("/admin/api/wallet-intelligence/address-summaries?addresses=" + query);
+        state.crossRunAddressSummaries = new Map(asArray(body.addresses).map((item) => [item.address, item]));
+      } catch (error) {
+        state.crossRunAddressSummaries = new Map();
+      }
+      renderGraph();
+      renderSelectionCard();
+    }
+    function graphNodeAddresses() {
+      return [...new Set(graphNodes(state.graph)
+        .map((node) => nodeAddress(node))
+        .map((address) => String(address || "").trim())
+        .filter((address) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)))];
+    }
+    function crossRunSummaryForAddress(address) {
+      return state.crossRunAddressSummaries.get(address) || null;
+    }
+    function crossRunSummaryForNode(node) {
+      const address = nodeAddress(node);
+      return address ? crossRunSummaryForAddress(address) : null;
     }
     function walletIntelAddRawAmount(totalRaw, nextRaw) {
       const total = String(totalRaw || "0");
@@ -3601,6 +3638,8 @@ export function adminConsoleHtml(): string {
       }
       const jobId = params.get("jobId") || params.get("job") || "";
       if (jobId) state.pendingOpenJobId = jobId;
+      const highlightAddress = params.get("highlightAddress") || "";
+      if (highlightAddress) state.pendingHighlightAddress = highlightAddress;
     }
     async function refreshSecondLayer() {
       const jobId = state.activeJobId;
@@ -3635,6 +3674,7 @@ export function adminConsoleHtml(): string {
         state.transform = { x: 0, y: 0, scale: 1 };
         renderJobs();
         renderGraph();
+        loadGraphCrossRunSummaries();
         renderCaseBrief();
         renderActivityTimeline();
         fitGraph();
