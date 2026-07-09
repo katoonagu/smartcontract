@@ -57,6 +57,27 @@ console.log(res.status, html.includes("Strict benchmark"), html.includes("/admin
 Expected output should include status `200` and `true true`. Do not use the old
 page-name marker from earlier runbooks; it is not a stable current HTML marker.
 
+## Export Static Admin Snapshot
+
+Use this when you need to send a historical, read-only Admin forensics snapshot
+as a single HTML file:
+
+```powershell
+npm run admin:snapshot
+```
+
+The file is written to `artifacts/admin-snapshots/` and can be opened directly
+in a browser. It embeds the current Admin shell, captured job/graph API JSON,
+Wallet Intelligence list/detail JSON, and role-mark assets. It is read-only;
+live refresh and mutations are not part of the snapshot.
+
+To capture a narrower case:
+
+```powershell
+node --import tsx scripts/exportAdminSnapshot.ts --address T...
+node --import tsx scripts/exportAdminSnapshot.ts --job job-id
+```
+
 ## Run Tests
 
 ```powershell

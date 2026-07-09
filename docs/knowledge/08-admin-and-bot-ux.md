@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-06
+last_verified: 2026-07-09
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -64,7 +64,12 @@ contract role marks, plus victim source role marks, are driven by graph payload
 node metadata. Contract trigger/call/authority lines, second-hop relationship
 lines, and extended-path relationship lines stay visible as contextual evidence,
 but the canvas labels money amounts/times on the actual transfer edge instead
-of duplicating the same transaction label on context projections.
+of duplicating the same transaction label on context projections. Grouped
+projections are the exception when they carry stored money evidence (`txHash`,
+`underlyingTransfers`, or aggregate tx count plus amount): Admin treats them as
+grouped money-flow evidence for `Incoming`/`Outgoing` filtering, purple grouped
+styling, and clickable canvas amount pills. Context-only projections remain
+unlabeled context.
 Approval-drain authority context is drawn from victim/source to spender contract
 so it does not visually imply that the drainer topped up the victim; these
 contract-context projections are also kept out of transfer-row lists.
@@ -109,7 +114,8 @@ while the transfer drawer can still list only rows from the selected bucket.
 Timeline focus copy uses human-readable local date/time ranges, shows the
 active flow filter, and includes an axis/legend so analysts can tell that each
 bar is a time bucket and that bar height represents visible transfer volume or
-transfer count when amounts are missing.
+transfer count when amounts are missing. The timeline bar lane also shows
+compact day labels and month labels at month boundaries above the buckets.
 
 The Jobs rail is an analyst queue, not a raw database dump. It uses queue
 shortcuts for all jobs, running jobs, and jobs that need review; job cards show

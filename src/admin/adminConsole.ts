@@ -903,14 +903,37 @@ export function adminConsoleHtml(): string {
     }
     .activity-timeline {
       position: relative;
-      min-height: 102px;
+      min-height: 112px;
       display: grid;
-      grid-template-rows: minmax(64px, 1fr) auto auto;
+      grid-template-rows: auto minmax(64px, 1fr) auto auto;
       gap: 5px;
       overflow: hidden;
       padding: 10px 0 2px;
       border-top: 1px solid rgba(58, 67, 77, .58);
     }
+    .timeline-bucket-labels {
+      display: grid;
+      grid-template-columns: repeat(var(--timeline-bucket-count), minmax(0, 1fr));
+      gap: 3px;
+      align-items: end;
+      min-height: 14px;
+      color: var(--text-tertiary);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1;
+    }
+    .timeline-bucket-label {
+      min-width: 0;
+      overflow: hidden;
+      text-align: center;
+      text-overflow: clip;
+      white-space: nowrap;
+    }
+    .timeline-bucket-label.month {
+      color: var(--text-secondary);
+      font-weight: 700;
+    }
+    .timeline-bucket-label.empty { color: transparent; }
     .timeline-bars {
       min-height: 64px;
       display: flex;
@@ -1090,7 +1113,7 @@ export function adminConsoleHtml(): string {
     .edge.edge-flow-peer.edge-speed-strong { filter: drop-shadow(0 0 8px rgba(170, 181, 194, .28)); }
     .edge.selected.edge-speed-strong { filter: drop-shadow(0 0 12px rgba(237, 244, 251, .72)); }
     .edge-group { cursor: pointer; }
-    .amount-pill { --pill-accent: rgba(195, 206, 217, .8); --pill-glow: rgba(237, 244, 251, .18); }
+    .amount-pill { --pill-accent: rgba(195, 206, 217, .8); --pill-glow: rgba(237, 244, 251, .18); pointer-events: auto; cursor: pointer; }
     .amount-pill rect { fill: rgba(11, 14, 17, .9); stroke: transparent; stroke-width: 0; rx: 5; vector-effect: non-scaling-stroke; }
     .amount-pill text { font-size: 10.5px; font-weight: 500; paint-order: stroke; stroke: rgba(11, 14, 17, .7); stroke-width: 1.5px; stroke-linejoin: round; }
     .amount-pill .amount-line { fill: #ffffff; font-weight: 500; }
@@ -3003,6 +3026,23 @@ export function adminConsoleHtml(): string {
     function timelineDateLabel(timestamp) {
       return formatJobTime(new Date(timestamp).toISOString()) || new Date(timestamp).toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
     }
+    function timelineMonthLabel(timestamp) {
+      return String(new Date(timestamp).toLocaleString([], { month: "short" }) || "").replace(/\\.$/, "");
+    }
+    function timelineDayLabel(timestamp) {
+      return String(new Date(timestamp).getDate());
+    }
+    function timelineBucketAxisLabel(bucket, previousBucket, index, bucketCount) {
+      const date = new Date(bucket.start);
+      const previous = previousBucket ? new Date(previousBucket.start) : null;
+      const monthChanged = previous && (date.getMonth() !== previous.getMonth() || date.getFullYear() !== previous.getFullYear());
+      if (monthChanged) return { label: timelineMonthLabel(bucket.start), kind: "month" };
+      if (index === 0 || index === bucketCount - 1) return { label: timelineDayLabel(bucket.start), kind: "day" };
+      const dayChanged = !previous || date.getDate() !== previous.getDate() || date.getMonth() !== previous.getMonth() || date.getFullYear() !== previous.getFullYear();
+      const stride = bucketCount > 36 ? 2 : 1;
+      if (dayChanged && index % stride === 0) return { label: timelineDayLabel(bucket.start), kind: "day" };
+      return { label: "", kind: "empty" };
+    }
     function timelineRangeLabel(start, end) {
       const startLabel = timelineDateLabel(start);
       const endLabel = timelineDateLabel(end);
@@ -3078,10 +3118,16 @@ export function adminConsoleHtml(): string {
         const title = timelineBucketTitle(bucket);
         return '<button type="button" class="timeline-bar' + volume + active + '" data-timeline-index="' + bucket.index + '" style="--bucket-height:' + height + 'px" title="' + escapeHtml(title) + '" aria-label="' + escapeHtml(title) + '"></button>';
       }).join("");
+      const bucketLabels = buckets.map((bucket, index) => {
+        const axisLabel = timelineBucketAxisLabel(bucket, buckets[index - 1] || null, index, buckets.length);
+        const axisClass = axisLabel.label ? axisLabel.kind : "empty";
+        return '<span class="timeline-bucket-label ' + escapeHtml(axisClass) + '">' + escapeHtml(axisLabel.label) + '</span>';
+      }).join("");
       const firstBucket = buckets[0];
       const lastBucket = buckets[buckets.length - 1];
       const bucketLabel = timelineBucketDurationLabel(firstBucket.start, firstBucket.end);
       root.innerHTML =
+        '<div class="timeline-bucket-labels" style="--timeline-bucket-count:' + buckets.length + '" aria-hidden="true">' + bucketLabels + '</div>' +
         '<div class="timeline-bars">' + bars + '</div>' +
         '<div class="timeline-axis" aria-label="Timeline axis">' +
           '<span>Oldest <strong>' + escapeHtml(timelineDateLabel(firstBucket.start)) + '</strong></span>' +
@@ -5057,7 +5103,7 @@ export function adminConsoleHtml(): string {
       const yOffset = lines.length > 1 ? 17 : 10;
       return { lines, width, height, yOffset };
     }
-    function amountPill(label, x, y, speedClass = "", roleClass = "") {
+    function amountPill(label, x, y, speedClass = "", roleClass = "", edgeId = "") {
       const metrics = amountPillMetrics(label);
       if (!metrics) return "";
       const { lines, width, height, yOffset } = metrics;
@@ -5068,7 +5114,8 @@ export function adminConsoleHtml(): string {
         return '<text' + className + ' x="' + (width / 2) + '" y="' + textY + '" text-anchor="middle">' + escapeHtml(text) + '</text>';
       }).join("");
       const className = "amount-pill" + (speedClass ? " " + escapeHtml(speedClass) : "") + (roleClass ? " " + escapeHtml(roleClass) : "");
-      return '<g class="' + className + '" transform="translate(' + (x - width / 2) + ' ' + (y - 10) + ')">' +
+      const edgeAttr = edgeId ? ' data-edge-id="' + escapeHtml(edgeId) + '" data-edge-label-id="' + escapeHtml(edgeId) + '"' : "";
+      return '<g class="' + className + '"' + edgeAttr + ' transform="translate(' + (x - width / 2) + ' ' + (y - 10) + ')">' +
         '<title>' + escapeHtml(lines.join(" / ")) + '</title>' +
         '<rect width="' + width + '" height="' + height + '" y="' + (10 - yOffset) + '"></rect>' +
         textLines +
@@ -5340,6 +5387,9 @@ export function adminConsoleHtml(): string {
         : Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
       return Boolean(count && count > 1);
     }
+    function edgeIsGroupedMoneyFlowEvidence(edge) {
+      return edgeIsGroupedContextEvidence(edge) && edgeHasStoredMoneyEvidence(edge);
+    }
     function edgeIsDeepCheckRelationshipProjection(edge) {
       const evidenceType = String(edge?.metadata?.evidenceType || "");
       const source = String(edge?.metadata?.source || "");
@@ -5357,6 +5407,7 @@ export function adminConsoleHtml(): string {
         evidenceType === "approval_drain_spender_authority";
     }
     function edgeIsCanvasContextProjection(edge) {
+      if (edgeIsGroupedMoneyFlowEvidence(edge)) return false;
       return edgeIsDeepCheckRelationshipProjection(edge) || edgeIsContractContextProjection(edge);
     }
     function edgeHasCanvasAmountLabel(edge) {
@@ -5534,6 +5585,36 @@ export function adminConsoleHtml(): string {
       if (value === "context" || value === "service") return "self";
       return "";
     }
+    function sameGraphAddress(left, right) {
+      const a = String(left || "").trim().toLowerCase();
+      const b = String(right || "").trim().toLowerCase();
+      return Boolean(a && b && a === b);
+    }
+    function graphSubjectAddress() {
+      const subject = graphNodes(state.graph).find((node) => node.kind === "subject");
+      return nodeAddress(subject) || graphAddressFromNodeId(subject?.id) || "";
+    }
+    function edgeUsesMetadataSubjectFlow(edge) {
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      const source = String(edge?.metadata?.source || "");
+      return edgeIsGroupedMoneyFlowEvidence(edge) ||
+        evidenceType === "contract_trigger_context" ||
+        evidenceType === "contract_driven_transfer" ||
+        evidenceType === "approval_drain_transfer" ||
+        source === "contractDrivenTransferProfile" ||
+        source === "directCounterpartyInteractionProfile";
+    }
+    function edgeMetadataSubjectFlowDirection(edge) {
+      if (!edgeUsesMetadataSubjectFlow(edge)) return "";
+      const subjectAddress = graphSubjectAddress();
+      if (!subjectAddress) return "";
+      const metadata = edge?.metadata || {};
+      const sourceAddress = metadata?.sourceAddress || metadata?.victimAddress || metadata?.fromAddress || edge?.fromAddress || "";
+      const receiverAddress = metadata?.receiverAddress || metadata?.toAddress || edge?.toAddress || "";
+      if (sameGraphAddress(receiverAddress, subjectAddress) && !sameGraphAddress(sourceAddress, subjectAddress)) return "incoming";
+      if (sameGraphAddress(sourceAddress, subjectAddress) && !sameGraphAddress(receiverAddress, subjectAddress)) return "outgoing";
+      return "";
+    }
     function edgeFlowDirection(edge) {
       const metadata = edge?.metadata || {};
       const moneyDirection = edgeMoneyFlowDirection(edge);
@@ -5542,6 +5623,8 @@ export function adminConsoleHtml(): string {
       if (edgeDisplayRole(edge) === "collapsed_group") {
         return groupDirection === "incoming" || groupDirection === "outgoing" ? groupDirection : "self";
       }
+      const metadataSubjectDirection = edgeMetadataSubjectFlowDirection(edge);
+      if (metadataSubjectDirection) return metadataSubjectDirection;
       if (metadata?.direction === "inbound" || edge?.direction === "inbound" || edge?.direction === "incoming") return "incoming";
       if (metadata?.direction === "outbound" || edge?.direction === "outbound" || edge?.direction === "outgoing") return "outgoing";
       if (metadata?.direction === "service" || edge?.direction === "service") return "self";
@@ -5654,6 +5737,7 @@ export function adminConsoleHtml(): string {
       return graphNodes(state.graph).find((node) => node.kind === "subject")?.id || "";
     }
     function edgeIsPeerLink(edge) {
+      if (edgeIsGroupedMoneyFlowEvidence(edge)) return false;
       const subjectId = graphSubjectNodeId();
       if (!subjectId || !edge?.fromNodeId || !edge?.toNodeId) return false;
       const from = nodeById(edge.fromNodeId);
@@ -5676,6 +5760,10 @@ export function adminConsoleHtml(): string {
       const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
       if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";
+      if (edgeIsGroupedMoneyFlowEvidence(edge)) {
+        const groupedFlowDirection = edgeFlowDirection(edge);
+        if (groupedFlowDirection === "incoming" || groupedFlowDirection === "outgoing") return groupedFlowDirection;
+      }
       if (role === "profile_context" || role === "inferred_provenance") return "context";
       if (edge?.metadata?.evidenceType === "contract_driven_transfer") return "context";
       if (edgeIsPeerLink(edge)) return "peer";
@@ -5703,7 +5791,6 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
       const groupedContext = evidenceType !== "contract_trigger_context" &&
-        evidenceType !== "contract_driven_transfer" &&
         !isGroupedTail &&
         edgeIsGroupedContextEvidence(edge);
       if (groupedContext) classes.push("edge-deep-grouped-transfer");
@@ -6477,7 +6564,7 @@ export function adminConsoleHtml(): string {
         const marker = ' marker-end="url(#' + edgeMarkerId(edge, visualRole) + ')"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="edge-hitbox" d="' + pathD + '"></path><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
-          amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass) + '</g>';
+          amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass, edge.id) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;

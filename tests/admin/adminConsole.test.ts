@@ -1084,10 +1084,44 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function timelineRangeLabel");
     expect(html).toContain("function timelineBucketTitle");
+    expect(html).toContain("function timelineBucketAxisLabel");
+    expect(html).toContain("timeline-bucket-labels");
     expect(html).toContain("timeline-axis");
     expect(html).toContain("timeline-legend");
     expect(html).toContain("Each bar is a time bucket");
     expect(html).not.toContain('new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString()');
+  });
+
+  it("labels activity timeline buckets with day numbers and month changes", () => {
+    const html = adminConsoleHtml();
+    const start = html.indexOf("function timelineDateLabel");
+    const end = html.indexOf("function timelineRangeLabel", start);
+    const helperBlock = html.slice(start, end);
+    const api = new Function("formatJobTime", helperBlock + "\nreturn { timelineBucketAxisLabel };")(() => "");
+
+    const first = api.timelineBucketAxisLabel(
+      { start: Date.parse("2026-04-23T00:00:00.000Z") },
+      null,
+      0,
+      48
+    );
+    const monthChange = api.timelineBucketAxisLabel(
+      { start: Date.parse("2026-05-01T00:00:00.000Z") },
+      { start: Date.parse("2026-04-30T00:00:00.000Z") },
+      4,
+      48
+    );
+    const suppressed = api.timelineBucketAxisLabel(
+      { start: Date.parse("2026-05-02T00:00:00.000Z") },
+      { start: Date.parse("2026-05-01T00:00:00.000Z") },
+      5,
+      48
+    );
+
+    expect(first).toEqual({ label: "23", kind: "day" });
+    expect(monthChange.kind).toBe("month");
+    expect(monthChange.label.length).toBeGreaterThan(0);
+    expect(suppressed).toEqual({ label: "", kind: "empty" });
   });
 
   it("contains graph-first selected node and flow cards", () => {
@@ -2439,6 +2473,10 @@ describe("adminConsoleHtml", () => {
 
     const api = new Function(
       "function edgeDisplayRole(edge) { return edge?.displayRole || 'context'; }\n" +
+        "function edgeAggregateTransferCount(edge) { return Number(edge?.metadata?.aggregateTransferCount || 0) || (Array.isArray(edge?.metadata?.underlyingTransfers) ? edge.metadata.underlyingTransfers.length : null); }\n" +
+        "function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === 'grouped_transfers' || Number(edge?.metadata?.aggregateTransferCount || 0) > 1 || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 1); }\n" +
+        "function edgeHasStoredMoneyEvidence(edge) { return Boolean(edge?.txHash || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) || edge?.metadata?.evidenceType === 'approval_drain_transfer' || (edgeAggregateTransferCount(edge) && (edge?.metadata?.aggregateAmountFormatted || edge?.amountRaw))); }\n" +
+        "function edgeIsGroupedMoneyFlowEvidence(edge) { return edgeIsGroupedContextEvidence(edge) && edgeHasStoredMoneyEvidence(edge); }\n" +
         amountVisibilityBlock +
         "\nreturn { edgeShouldShowCanvasAmount, edgeShouldShowCanvasTime };"
     )() as {
@@ -2470,6 +2508,22 @@ describe("adminConsoleHtml", () => {
       timestamp: "2026-06-05T12:54:00.000Z",
       metadata: { source: "deepcheck_extended_path" }
     })).toBe(false);
+    expect(api.edgeShouldShowCanvasAmount({
+      metadata: {
+        evidenceType: "deepcheck_relationship_second_hop",
+        aggregateTransferCount: 15,
+        aggregateAmountFormatted: "115.54K USDT",
+        underlyingTransfers: [{ txHash: "tx-a" }, { txHash: "tx-b" }]
+      }
+    })).toBe(true);
+    expect(api.edgeShouldShowCanvasTime({
+      metadata: {
+        source: "deepcheck_extended_path",
+        aggregateTransferCount: 15,
+        aggregateAmountFormatted: "115.54K USDT",
+        underlyingTransfers: [{ txHash: "tx-a", timestamp: "2026-06-05T12:54:00.000Z" }]
+      }
+    })).toBe(true);
   });
 
   it("keeps grouped aggregate transaction evidence visible in transfer rows", () => {
@@ -4674,7 +4728,7 @@ describe("adminConsoleHtml", () => {
         source: "directCounterpartyInteractionProfile",
         aggregateTransferCount: 2
       }
-    }, "context")).not.toContain("edge-deep-grouped-transfer");
+    }, "context")).toBe(" edge-contract-driven-transfer edge-deep-grouped-transfer");
 
     const panelApi = new Function(`
       function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
@@ -4827,6 +4881,11 @@ describe("adminConsoleHtml", () => {
       }
       function nodeById(id) { return graphNodes(state.graph).find((node) => node.id === id) || null; }
       function nodeDisplayKind(node) { return node?.displayKind || (node?.kind === "subject" ? "subject_wallet" : node?.kind || "wallet"); }
+      function nodeAddress(node) { return node?.address || ""; }
+      function graphAddressFromNodeId() { return ""; }
+      function edgeHasStoredMoneyEvidence(edge) { return Boolean(edge?.txHash || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) || (Number(edge?.metadata?.aggregateTransferCount || 0) > 0 && (edge?.metadata?.aggregateAmountFormatted || edge?.amountRaw))); }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1 || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 1); }
+      function edgeIsGroupedMoneyFlowEvidence(edge) { return edgeIsGroupedContextEvidence(edge) && edgeHasStoredMoneyEvidence(edge); }
       ${flowBlock}
       return { edgeFlowDirection, edgeVisualRole };
     `)() as { edgeFlowDirection(edge: unknown): string; edgeVisualRole(edge: unknown): string };
@@ -4855,6 +4914,20 @@ describe("adminConsoleHtml", () => {
       displayRole: "profile_context",
       metadata: { moneyDirection: "inbound_to_subject", evidenceType: "grouped_transfers" }
     };
+    const groupedStoredEdge = {
+      id: "edge:grouped-stored-source-transfer",
+      fromNodeId: "source",
+      toNodeId: "subject",
+      type: "transfer",
+      displayRole: "profile_context",
+      metadata: {
+        moneyDirection: "inbound_to_subject",
+        evidenceType: "grouped_transfers",
+        aggregateTransferCount: 15,
+        aggregateAmountFormatted: "115.54K USDT",
+        underlyingTransfers: [{ txHash: "tx-a" }, { txHash: "tx-b" }]
+      }
+    };
 
     expect(api.edgeFlowDirection(inferredEdge)).toBe("incoming");
     expect(api.edgeVisualRole(inferredEdge)).toBe("context");
@@ -4862,6 +4935,8 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeVisualRole(realTransferEdge)).toBe("incoming");
     expect(api.edgeFlowDirection(contextEdge)).toBe("incoming");
     expect(api.edgeVisualRole(contextEdge)).toBe("context");
+    expect(api.edgeFlowDirection(groupedStoredEdge)).toBe("incoming");
+    expect(api.edgeVisualRole(groupedStoredEdge)).toBe("incoming");
   });
 
   it("labels where funding candidate roles in legend, classes, and selected details", () => {
@@ -5875,10 +5950,13 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".amount-pill.label-role-grouped { --pill-accent: #d8c7ff;");
     expect(html).toContain('if (edgeIsGroupedContextEvidence(edge)) return "label-role-grouped";');
     expect(html).not.toContain('class="pill-accent"');
-    expect(pillBlock).toContain('roleClass = ""');
+    expect(pillBlock).toContain('roleClass = "", edgeId = ""');
     expect(pillBlock).toContain('const className = "amount-pill" +');
+    expect(pillBlock).toContain('const edgeAttr = edgeId ? \' data-edge-id="\' + escapeHtml(edgeId) + \'" data-edge-label-id="\' + escapeHtml(edgeId) + \'"\' : "";');
+    expect(pillBlock).toContain('return \'<g class="\' + className + \'"\' + edgeAttr + \' transform="translate(\'');
+    expect(html).toContain(".amount-pill { --pill-accent: rgba(195, 206, 217, .8); --pill-glow: rgba(237, 244, 251, .18); pointer-events: auto; cursor: pointer; }");
     expect(renderBlock).toContain("const labelRoleClass = edgeLabelRoleClass(edge);");
-    expect(renderBlock).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
+    expect(renderBlock).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass, edge.id)");
   });
 
   it("places edge labels near the routed edge midpoint instead of floating far away", () => {
@@ -6046,7 +6124,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const amountLines = labelEnabled ? [shouldShowAmount ? amountLabel : ""].filter(Boolean) : [];');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
-    expect(html).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
+    expect(html).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass, edge.id)");
     expect(selectedEdgeCardBlock).not.toContain('cardLine("Full time", edgeTime(edge) || analystMissingCopy("time"))');
     expect(selectedEdgeCardBlock).not.toContain('cardLine("Tx gap", edgeTxGap(edge) || analystMissingCopy("time"))');
   });
