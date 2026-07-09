@@ -2307,12 +2307,14 @@ export function adminConsoleHtml(): string {
         setWalletIntelligenceStatus("Не удалось загрузить детали пересечения.");
       }
     }
-    async function loadGraphCrossRunSummaries() {
+    async function loadGraphCrossRunSummaries(jobId, requestSeq) {
+      if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
       state.crossRunAddressSummaries = new Map();
       state.crossRunAddressDetailByAddress = new Map();
       state.crossRunAddressDetailLoading = new Set();
       const addresses = graphNodeAddresses();
       if (addresses.length === 0) {
+        if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
         renderGraph();
         renderSelectionCard();
         return;
@@ -2320,10 +2322,13 @@ export function adminConsoleHtml(): string {
       try {
         const query = addresses.map((address) => encodeURIComponent(address)).join(",");
         const body = await api("/admin/api/wallet-intelligence/address-summaries?addresses=" + query);
+        if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
         state.crossRunAddressSummaries = new Map(asArray(body.addresses).map((item) => [item.address, item]));
       } catch (error) {
+        if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
         state.crossRunAddressSummaries = new Map();
       }
+      if (requestSeq !== state.graphRequestSeq || state.activeJobId !== jobId) return;
       renderGraph();
       renderSelectionCard();
     }
@@ -3674,7 +3679,7 @@ export function adminConsoleHtml(): string {
         state.transform = { x: 0, y: 0, scale: 1 };
         renderJobs();
         renderGraph();
-        loadGraphCrossRunSummaries();
+        loadGraphCrossRunSummaries(jobId, requestSeq);
         renderCaseBrief();
         renderActivityTimeline();
         fitGraph();

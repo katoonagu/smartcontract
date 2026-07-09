@@ -415,7 +415,10 @@ describe("adminConsoleHtml", () => {
     expect(stateBlock).toContain("crossRunAddressSummaries: new Map()");
     expect(stateBlock).toContain("crossRunAddressDetailByAddress: new Map()");
     expect(stateBlock).toContain("pendingHighlightAddress: null");
-    expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries();");
+    expect(loadGraphBlock).toContain("loadGraphCrossRunSummaries(jobId, requestSeq);");
+    expect(summaryBlock).toContain("async function loadGraphCrossRunSummaries(jobId, requestSeq)");
+    expect(summaryBlock).toContain("requestSeq !== state.graphRequestSeq");
+    expect(summaryBlock).toContain("state.activeJobId !== jobId");
     expect(summaryBlock).toContain("/admin/api/wallet-intelligence/address-summaries?addresses=");
     expect(summaryBlock).toContain("graphNodes(state.graph)");
     expect(summaryBlock).toContain("nodeAddress(node)");
