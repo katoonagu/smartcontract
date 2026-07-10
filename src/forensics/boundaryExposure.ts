@@ -7,6 +7,7 @@ import type {
   RouteScoreFeature,
   ServiceClassification
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import { isServiceBoundary } from "./serviceClassifier";
 
 export type BuildBoundaryExposureProfileInput = {
@@ -291,7 +292,8 @@ function buildFeatures(input: {
 }
 
 export function buildBoundaryExposureProfile(input: BuildBoundaryExposureProfileInput): BoundaryExposureProfile {
-  const sortedEdges = sortEdges(input.edges);
+  const grossSortedEdges = sortEdges(input.edges);
+  const sortedEdges = grossSortedEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
   const outgoingByAddress = new Map<string, ForensicRouteEdge[]>();
   const incomingByAddress = new Map<string, ForensicRouteEdge[]>();
   for (const edge of sortedEdges) {
@@ -381,10 +383,10 @@ export function buildBoundaryExposureProfile(input: BuildBoundaryExposureProfile
     };
   }
 
-  const incomingSubjectVolumeRaw = sortedEdges
+  const incomingSubjectVolumeRaw = grossSortedEdges
     .filter((edge) => edge.toAddress === input.subjectAddress)
     .reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
-  const outgoingSubjectVolumeRaw = sortedEdges
+  const outgoingSubjectVolumeRaw = grossSortedEdges
     .filter((edge) => edge.fromAddress === input.subjectAddress)
     .reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
   const incomingBoundaryVolumeRaw = flows

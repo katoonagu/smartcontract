@@ -54,6 +54,7 @@ type ForensicSearchDeps = {
 export type RunForensicRouteSearchInput = RouteSearchOptions & ForensicSearchDeps;
 export type RunForensicAddressExposureSearchInput = Omit<RouteSearchOptions, "targetAddress" | "amountUsdt"> & ForensicSearchDeps & {
   maxExpandedIntermediates?: number;
+  resolveEconomicEdges?: (edges: ForensicRouteEdge[]) => Promise<ForensicRouteEdge[]>;
 };
 type GraphSearchInput = (RunForensicRouteSearchInput | RunForensicAddressExposureSearchInput) & {
   maxExpandedIntermediates?: number;
@@ -908,7 +909,10 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
     input.maxDepth
   ]);
   const graphCollection = await collectGraph(input);
-  const graphEdges = [...graphCollection.edges.values()];
+  const collectedGraphEdges = [...graphCollection.edges.values()];
+  const graphEdges = input.resolveEconomicEdges
+    ? await input.resolveEconomicEdges(collectedGraphEdges)
+    : collectedGraphEdges;
   const metadataAddresses = addressExposureMetadataPriority(input.sourceAddress, graphEdges);
   const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata, {
     limit: input.metadataFetchLimit,

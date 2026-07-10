@@ -1362,6 +1362,7 @@ export async function runDeepAddressForensicCheck(
       contractProfileFetchLimit: input.contractProfileFetchLimit,
       metadataFetchLimit: input.metadataFetchLimit,
       maxExpandedIntermediates: input.maxExpandedIntermediates,
+      resolveEconomicEdges,
       recentFallbackMinTransferCount: input.recentFallbackMinTransferCount,
       recentFallbackTransferLimit: input.recentFallbackTransferLimit,
       abortSignal: input.abortSignal

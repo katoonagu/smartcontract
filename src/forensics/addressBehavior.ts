@@ -5,6 +5,7 @@ import type {
   ServiceClassification,
   ServiceExposureProfile
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import { isServiceBoundary } from "./serviceClassifier";
 
 export const ADDRESS_BEHAVIOR_DEFAULT_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
@@ -278,12 +279,16 @@ function scoreDampeners(input: {
 
 export function buildAddressBehaviorProfile(input: BuildAddressBehaviorProfileInput): AddressBehaviorProfile {
   const lookaheadMs = input.lookaheadMs ?? ADDRESS_BEHAVIOR_DEFAULT_LOOKAHEAD_MS;
-  const incoming = input.edges
+  const grossIncoming = input.edges
     .filter((edge) => edge.toAddress === input.subjectAddress && parseAmount(edge.amountRaw) !== null)
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  const outgoing = input.edges
+  const grossOutgoing = input.edges
     .filter((edge) => edge.fromAddress === input.subjectAddress && parseAmount(edge.amountRaw) !== null)
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  const incoming = grossIncoming.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const outgoing = grossOutgoing.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const grossIncomingVolumeRaw = volumeOf(grossIncoming);
+  const grossOutgoingVolumeRaw = volumeOf(grossOutgoing);
   const incomingVolumeRaw = volumeOf(incoming);
   const outgoingVolumeRaw = volumeOf(outgoing);
   const largestIncoming = largestAmount(incoming);
@@ -300,7 +305,7 @@ export function buildAddressBehaviorProfile(input: BuildAddressBehaviorProfileIn
     ? timeToFirstOutgoingMs + input.serviceExposureProfile.fastestServiceExitMs
     : null;
   const inflowToOutflowRatio = incomingVolumeRaw > 0n ? preservationRatio(outgoingVolumeRaw, incomingVolumeRaw) : null;
-  const serviceOutgoingRaw = scaledAmount(outgoingVolumeRaw, input.serviceExposureProfile?.combinedServiceVolumeRatio ?? 0);
+  const serviceOutgoingRaw = scaledAmount(grossOutgoingVolumeRaw, input.serviceExposureProfile?.combinedServiceVolumeRatio ?? 0);
   const drainToServiceRatio = incomingVolumeRaw > 0n ? preservationRatio(serviceOutgoingRaw, incomingVolumeRaw) : 0;
 
   const base = {
@@ -341,10 +346,10 @@ export function buildAddressBehaviorProfile(input: BuildAddressBehaviorProfileIn
 
   return {
     subjectAddress: input.subjectAddress,
-    incomingVolumeRaw: incomingVolumeRaw.toString(),
-    outgoingVolumeRaw: outgoingVolumeRaw.toString(),
-    incomingTxCount: incoming.length,
-    outgoingTxCount: outgoing.length,
+    incomingVolumeRaw: grossIncomingVolumeRaw.toString(),
+    outgoingVolumeRaw: grossOutgoingVolumeRaw.toString(),
+    incomingTxCount: grossIncoming.length,
+    outgoingTxCount: grossOutgoing.length,
     uniqueIncomingCounterparties: base.uniqueIncomingCounterparties,
     uniqueOutgoingCounterparties: base.uniqueOutgoingCounterparties,
     largestIncomingRaw: largestIncoming?.toString() ?? null,

@@ -1643,6 +1643,124 @@ describe("deep forensic address check", () => {
     )).not.toContain(gasFreeUser);
   });
 
+  it("filters an above-threshold exact GasFree fee before route-level risk profiles", async () => {
+    const fundingTxHash = "tx-deep-gasfree-high-fee-funding";
+    const settlementTxHash = "tx-deep-gasfree-high-fee-settlement";
+    const getTransactionCalls: string[] = [];
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        gasFreeReceiver,
+        [
+          transfer({
+            id: fundingTxHash,
+            from: gasFreeAccount,
+            to: gasFreeReceiver,
+            amountRaw: "1000000000",
+            at: "2026-07-10T00:00:00.000Z"
+          }),
+          transfer({
+            id: settlementTxHash,
+            from: gasFreeReceiver,
+            to: gasFreeAccount,
+            amountRaw: "700000000",
+            at: "2026-07-10T00:05:00.000Z",
+            triggerInfo: { methodName: "permitTransfer" }
+          }),
+          transfer({
+            id: settlementTxHash,
+            from: gasFreeReceiver,
+            to: gasFreeTlnt,
+            amountRaw: "300000000",
+            at: "2026-07-10T00:05:00.000Z",
+            triggerInfo: { methodName: "permitTransfer" }
+          })
+        ]
+      ]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        return txHash === settlementTxHash
+          ? gasFreeTransaction({
+              accountAddress: gasFreeReceiver,
+              receiverAddress: gasFreeAccount,
+              principalAmountRaw: "700000000",
+              feeAmountRaw: "300000000"
+            })
+          : null;
+      }
+    }, {
+      sourceAddress: gasFreeReceiver,
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-11T00:00:00.000Z"),
+      maxDepth: 1,
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 10,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled"
+    });
+
+    const serviceExposure = report.serviceExposureProfiles[0];
+    expect(serviceExposure).toMatchObject({
+      totalOutgoingRaw: "1000000000",
+      totalOutgoingCount: 2,
+      combinedServiceVolumeRatio: 0,
+      exposureScore: 0,
+      topServiceCounterparties: [],
+      categoryBreakdown: []
+    });
+    expect(report.fastCounterpartyTopsProfile).toMatchObject({
+      outgoingVolumeRaw: "1000000000",
+      outgoingTxCount: 2,
+      topOutgoingCounterparties: [expect.objectContaining({ address: gasFreeAccount, volumeRaw: "700000000" })],
+      topServiceCounterparties: [],
+      categoryBreakdown: []
+    });
+    expect(report.addressBehaviorProfiles[0]).toMatchObject({
+      outgoingVolumeRaw: "1000000000",
+      outgoingTxCount: 2,
+      uniqueOutgoingCounterparties: 1,
+      topOutgoingCounterpartyAddress: gasFreeAccount,
+      inflowToOutflowRatio: 0.7,
+      depositThenDrainScore: 30
+    });
+    expect(report.boundaryExposureProfiles.flatMap((profile) => profile.flows)).toEqual([]);
+    expect(report.boundaryExposureProfiles.every((profile) => profile.contextScore === 0)).toBe(true);
+    expect(report.rawEvidence.some((evidence) => "boundaryExposureProfile" in evidence.evidenceJson)).toBe(false);
+    expect(report.observations.some((observation) =>
+      observation.code === "forensic_service_exposure" ||
+      observation.code === "forensic_boundary_exposure_context"
+    )).toBe(false);
+    expect(JSON.stringify(report.rawEvidence)).not.toContain(settlementTxHash);
+    expect(report.operationalFlowProfiles?.[0]).toMatchObject({
+      outgoingVolumeRaw: "1000000000",
+      topOutgoingCounterparties: [expect.objectContaining({ address: gasFreeAccount, volumeRaw: "700000000" })]
+    });
+
+    const feeInteraction = report.directCounterpartyInteractionProfiles?.find(
+      (profile) => profile.counterpartyAddress === gasFreeTlnt
+    );
+    expect(feeInteraction).toMatchObject({ volumeRaw: "300000000", scoreContribution: 0 });
+    expect(feeInteraction?.transfers).toEqual([
+      expect.objectContaining({
+        txHash: settlementTxHash,
+        economicRole: "service_fee",
+        economicProtocol: "tron_gasfree"
+      })
+    ]);
+    expect(getTransactionCalls.filter((txHash) => txHash === settlementTxHash)).toHaveLength(1);
+    expect(getTransactionCalls.filter((txHash) => txHash === fundingTxHash)).toHaveLength(1);
+  });
+
   it("does not tag an unmatched direct TLnt movement as a GasFree service fee", async () => {
     const txHash = "tx-deep-unmatched-tlnt";
     const report = await runDeepAddressForensicCheck({
