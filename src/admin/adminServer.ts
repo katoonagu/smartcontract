@@ -1152,7 +1152,9 @@ async function enrichHumanRiskSummary(
   const relatedJobs = await loadRelatedHumanSummaryJobs(job, deps);
   const jobs = [job, ...relatedJobs];
   const whereReport = primaryWhereReport ??
-    jobs.map((candidate) => extractWhereIsMoneyReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ??
+    jobs
+      .map((candidate) => extractWhereIsMoneyReportFromAdminJob(candidate, job.subjectAddress))
+      .find((report) => report !== null && hasExplicitWhereScoreValidity(report)) ??
     null;
   if (!whereReport) return { ...graph, summary: { ...graph.summary, humanSummary: null } };
   if (!hasExplicitWhereScoreValidity(whereReport)) {

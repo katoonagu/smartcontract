@@ -3379,9 +3379,6 @@ function formatInvalidWhereScoreFinalReport(
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(summary.address)}`,
     compactDecisionLine(summary.decision, locale),
     locale === "en" ? "Technical stop / no final score." : "Техническая остановка / итоговый риск не опубликован.",
-    locale === "en"
-      ? `Observed context: ${input.unifiedRisk.observedContextScore}; it is not a final score.`
-      : `Наблюдаемый контекст: ${input.unifiedRisk.observedContextScore}; это не итоговый риск.`,
     summaryText(summary, locale),
     section(locale === "en" ? "What this means" : "Что это может значить", [
       bulletList(summaryPossibleMeanings(summary, locale))

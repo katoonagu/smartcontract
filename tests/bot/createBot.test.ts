@@ -3805,11 +3805,52 @@ describe("bot command and inline UX smoke coverage", () => {
       fastReport,
       locale: "en"
     });
+    const betaText = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport,
+      locale: "en",
+      showBetaDiagnostics: true
+    });
 
     expect(text).toContain("NO_FINAL_DECISION");
     expect(text).toContain("Technical stop / no final score");
     expect(text).toContain("Observed context: 59");
+    expect(text.match(/Observed context: 59/g)).toHaveLength(1);
+    expect(betaText.match(/Observed context: 59/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(betaText.match(/Observed context: 59/g)?.length ?? 0).toBeLessThanOrEqual(2);
     expect(text).not.toContain("Final risk: 59");
+  });
+
+  it("keeps raw coverage caveats out of Russian user-facing limits", () => {
+    const base = scoreInvalidWhereReportForTest();
+    const rawCaveats = [
+      "Provider cap stopped the first source branch.",
+      "Second branch needs an older transfer page.",
+      "Third branch returned an inconsistent cursor.",
+      "Fourth branch exceeded the local retry budget.",
+      "Fifth branch has incomplete provider history.",
+      "Sixth branch remains unresolved after retries."
+    ];
+    const whereReport: WhereIsMoneyReport = {
+      ...base,
+      coverage: { ...base.coverage, notes: rawCaveats.slice(0, 5) },
+      assessment: { ...base.assessment, warnings: rawCaveats.slice(5) }
+    };
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport: deepReportForTest({
+        boundaryExposureProfiles: [boundaryExposureProfile()]
+      }),
+      locale: "ru"
+    });
+
+    for (const caveat of rawCaveats) expect(text).not.toContain(caveat);
+    expect(text).toContain("Покрытие: неполное");
+    expect(text).toContain("это не означает полную историю адреса");
+    expect(text).toContain("Цепочка дошла до биржи или сервиса");
   });
 
   it("keeps exact hard decline while showing invalid partial Where limitations", () => {

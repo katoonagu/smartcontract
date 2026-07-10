@@ -1544,6 +1544,132 @@ describe("startAdminServer", () => {
     expect(JSON.stringify(fixture.resultJson)).toBe(before);
   });
 
+  it("does not overlay a related legacy Where conclusion on a Fast graph", async () => {
+    const fastJob = job({
+      id: "job-fast-with-legacy-related",
+      kind: "address_fast_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        fastRiskReport: {
+          decision: "DECLINE",
+          score: 80,
+          level: "HIGH",
+          confidence: "high",
+          reasons: [{ code: "fast-risk", message: "Stored Fast decline.", scoreImpact: 80 }]
+        },
+        fastCounterpartyTopsProfile: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          topIncomingCounterparties: [],
+          topOutgoingCounterparties: [],
+          topServiceCounterparties: []
+        }
+      }
+    });
+    const legacyReport = whereReportForAdminTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45,
+      assessment: { decision: "REVIEW", riskScore: 45, riskBand: "MEDIUM" }
+    });
+    delete legacyReport.scoreValid;
+    delete (legacyReport.assessment as Record<string, unknown>).scoreValid;
+    const legacyWhereJob = job({
+      id: "job-related-legacy-where",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: legacyReport
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [legacyWhereJob],
+      getJob: async (id) => id === fastJob.id ? fastJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${fastJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+
+    expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 80, humanSummary: null });
+    expect(JSON.stringify(graph)).not.toContain("Legacy result");
+  });
+
+  it("skips a first legacy related Where and selects a newer explicit sibling", async () => {
+    const fastJob = job({
+      id: "job-fast-with-new-related",
+      kind: "address_fast_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        fastRiskReport: {
+          decision: "DECLINE",
+          score: 80,
+          level: "HIGH",
+          confidence: "high",
+          reasons: [{ code: "fast-risk", message: "Stored Fast decline.", scoreImpact: 80 }]
+        },
+        fastCounterpartyTopsProfile: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          topIncomingCounterparties: [],
+          topOutgoingCounterparties: [],
+          topServiceCounterparties: []
+        }
+      }
+    });
+    const legacyReport = whereReportForAdminTest();
+    delete legacyReport.scoreValid;
+    delete (legacyReport.assessment as Record<string, unknown>).scoreValid;
+    const legacyWhereJob = job({
+      id: "job-related-legacy-first",
+      updatedAt: new Date("2026-06-01T00:30:00.000Z"),
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: legacyReport
+      }
+    });
+    const explicitWhereReport = whereReportForAdminTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      proofLevel: "exact_scam_or_taint_proof",
+      riskScore: 95,
+      assessment: {
+        decision: "DECLINE",
+        riskScore: 95,
+        riskBand: "CRITICAL",
+        hardBadEvidence: [{
+          kind: "scam_or_blacklist",
+          score: 95,
+          message: "Exact subject blacklist evidence.",
+          evidenceIds: ["hard:subject:blacklist"]
+        }]
+      }
+    });
+    const explicitWhereJob = job({
+      id: "job-related-explicit-newer",
+      updatedAt: new Date("2026-06-01T00:45:00.000Z"),
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: explicitWhereReport
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [legacyWhereJob, explicitWhereJob],
+      getJob: async (id) => id === fastJob.id ? fastJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${fastJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+
+    expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 95 });
+    expect(graph.summary.humanSummary.conclusion).toMatch(/сильный риск/i);
+    expect(JSON.stringify(graph.summary.humanSummary)).not.toContain("Legacy result");
+  });
+
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {
     const whereReport = whereReportForAdminTest();
     const whereJob = job({

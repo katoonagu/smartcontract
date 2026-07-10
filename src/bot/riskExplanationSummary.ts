@@ -790,7 +790,6 @@ export function buildRiskExplanationSummary(input: RiskExplanationInput): RiskEx
     "Проверка относится к выбранной сумме и доступным данным, а не ко всей истории адреса.",
     ...noFinalRu,
     ...partialRu,
-    ...input.unifiedRisk.coverage.caveats,
     ...materiality.ru,
     ...primaryReasons.filter((fact) => fact.kind === "coverage_limit" || fact.kind === "service_boundary").map((fact) => fact.textRu)
   ]).slice(0, 6);
@@ -798,7 +797,6 @@ export function buildRiskExplanationSummary(input: RiskExplanationInput): RiskEx
     "The check applies to the selected amount and available data, not the address's full history.",
     ...noFinalEn,
     ...partialEn,
-    ...input.unifiedRisk.coverage.caveats,
     ...materiality.en,
     ...primaryReasons.filter((fact) => fact.kind === "coverage_limit" || fact.kind === "service_boundary").map((fact) => fact.textEn)
   ]).slice(0, 6);
