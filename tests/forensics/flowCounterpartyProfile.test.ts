@@ -150,6 +150,36 @@ describe("buildOperationalFlowProfile", () => {
     expect(profile.features.map((feature) => feature.code)).not.toContain("operational_flow_unknown_contract_outgoing");
     expect(profile.operationalScore).toBeGreaterThan(0);
   });
+
+  it("keeps gross operational volume while excluding exact GasFree fees from flow risk", () => {
+    const principal: ForensicRouteEdge = {
+      ...edge("gasfree-principal", subject, normal, "97000000", "2026-05-10T10:00:00.000Z"),
+      economicRole: "principal",
+      economicProtocol: "tron_gasfree"
+    };
+    const fee: ForensicRouteEdge = {
+      ...edge("gasfree-fee", subject, bridge, "3000000", "2026-05-10T10:01:00.000Z"),
+      economicRole: "service_fee",
+      economicProtocol: "tron_gasfree"
+    };
+    const profile = buildOperationalFlowProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [principal, fee],
+      classifications: new Map([
+        [bridge, service("bridge", "GasFree provider")],
+        [normal, service("none", "normal wallet")]
+      ])
+    });
+
+    expect(profile.outgoingVolumeRaw).toBe("100000000");
+    expect(profile.outgoingTxCount).toBe(2);
+    expect(profile.topOutgoingCounterparties.map((item) => item.address)).toEqual([normal]);
+    expect(profile.terminalLiquidityOutgoingRatio).toBe(0);
+    expect(profile.bridgeDexRouterOutgoingRatio).toBe(0);
+    expect(profile.categoryBreakdown).toEqual([]);
+  });
 });
 
 describe("buildFastCounterpartyTopsProfile", () => {
@@ -273,5 +303,34 @@ describe("buildFastCounterpartyTopsProfile", () => {
 
     expect(profile.topOutgoingCounterparties.map((row) => row.address)).toContain(unknownContract);
     expect(profile.topServiceCounterparties.map((row) => row.address)).not.toContain(unknownContract);
+  });
+
+  it("keeps gross Fast totals while excluding an exact GasFree fee counterparty", () => {
+    const profile = buildFastCounterpartyTopsProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [
+        {
+          ...edge("gasfree-principal-fast", subject, normal, "97000000", "2026-05-10T10:00:00.000Z"),
+          economicRole: "principal",
+          economicProtocol: "tron_gasfree"
+        },
+        {
+          ...edge("gasfree-fee-fast", subject, bridge, "3000000", "2026-05-10T10:01:00.000Z"),
+          economicRole: "service_fee",
+          economicProtocol: "tron_gasfree"
+        }
+      ],
+      classifications: new Map([
+        [bridge, service("bridge", "GasFree provider")],
+        [normal, service("none", "normal wallet")]
+      ])
+    });
+
+    expect(profile).toMatchObject({ outgoingVolumeRaw: "100000000", outgoingTxCount: 2 });
+    expect(profile.topOutgoingCounterparties.map((row) => row.address)).toEqual([normal]);
+    expect(profile.topServiceCounterparties).toEqual([]);
+    expect(profile.categoryBreakdown).toEqual([]);
   });
 });

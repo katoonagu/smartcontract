@@ -1,4 +1,5 @@
 import type { AddressLabel, ForensicRouteEdge, InboundProvenancePath, InboundProvenanceProfile, RouteScoreFeature, ServiceClassification } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export type BuildInboundProvenanceProfileInput = {
   subjectAddress: string;
@@ -57,10 +58,13 @@ function addFeature(features: RouteScoreFeature[], code: string, label: string, 
 
 export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfileInput): InboundProvenanceProfile {
   const minPreservation = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
-  const incoming = input.edges
+  const riskEligibleEdges = input.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const incoming = riskEligibleEdges
     .filter((edge) => edge.toAddress === input.subjectAddress)
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  const incomingVolume = incoming.reduce((sum, edge) => sum + edgeAmount(edge), 0n);
+  const incomingVolume = input.edges
+    .filter((edge) => edge.toAddress === input.subjectAddress)
+    .reduce((sum, edge) => sum + edgeAmount(edge), 0n);
   const paths: InboundProvenancePath[] = [];
   const features: RouteScoreFeature[] = [];
   const boundaryNotes: string[] = [];
@@ -112,7 +116,7 @@ export function buildInboundProvenanceProfile(input: BuildInboundProvenanceProfi
       continue;
     }
 
-    const upstreamEdges = input.edges
+    const upstreamEdges = riskEligibleEdges
       .filter((edge) => edge.toAddress === directEdge.fromAddress && edge.timestamp.getTime() <= directEdge.timestamp.getTime())
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
     for (const upstreamEdge of upstreamEdges) {

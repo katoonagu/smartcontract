@@ -18,7 +18,9 @@ function edge(overrides: Partial<ForensicRouteEdge> = {}): ForensicRouteEdge {
     amountRaw: overrides.amountRaw ?? "100000000",
     timestamp: overrides.timestamp ?? new Date("2026-05-05T10:00:00.000Z"),
     method: overrides.method ?? "transfer",
-    edgeType: overrides.edgeType ?? "normal_transfer"
+    edgeType: overrides.edgeType ?? "normal_transfer",
+    economicRole: overrides.economicRole,
+    economicProtocol: overrides.economicProtocol
   };
 }
 
@@ -120,6 +122,44 @@ describe("service exposure profile", () => {
       "service_exposure_fast_exit",
       "service_exposure_unknown_contract"
     ]));
+  });
+
+  it("keeps gross outgoing totals but removes exact GasFree fees from service exposure", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({
+          id: "gasfree-principal",
+          txHash: "gasfree-principal",
+          toAddress: hop,
+          amountRaw: "97000000",
+          economicRole: "principal",
+          economicProtocol: "tron_gasfree"
+        }),
+        edge({
+          id: "gasfree-fee",
+          txHash: "gasfree-fee",
+          toAddress: bridge,
+          amountRaw: "3000000",
+          economicRole: "service_fee",
+          economicProtocol: "tron_gasfree"
+        })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [bridge, { category: "service", identity: "TronLink GasFree provider", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile).toMatchObject({
+      totalOutgoingRaw: "100000000",
+      totalOutgoingCount: 2,
+      directServiceVolumeRatio: 0,
+      combinedServiceVolumeRatio: 0,
+      exposureScore: 0
+    });
+    expect(profile.topServiceCounterparties).toEqual([]);
+    expect(profile.categoryBreakdown).toEqual([]);
   });
 
   it("scores meaningful unknown-contract exposure above absolute and relative thresholds", () => {

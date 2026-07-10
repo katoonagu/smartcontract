@@ -1,4 +1,5 @@
 import type { ForensicRouteEdge, RouteScoreFeature, ServiceCategory, ServiceClassification, ServiceExposureProfile } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import { isServiceBoundary } from "./serviceClassifier";
 
 export const SERVICE_EXPOSURE_DEFAULT_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
@@ -272,15 +273,17 @@ function buildMergedExposure(input: {
 export function buildServiceExposureProfile(input: BuildServiceExposureProfileInput): ServiceExposureProfile {
   const lookaheadMs = input.indirectLookaheadMs ?? SERVICE_EXPOSURE_DEFAULT_LOOKAHEAD_MS;
   const minAmountPreservation = input.minIndirectAmountPreservation ?? SERVICE_EXPOSURE_DEFAULT_MIN_AMOUNT_PRESERVATION;
-  const outgoing = input.edges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const grossOutgoing = input.edges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const riskEligibleEdges = input.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const outgoing = riskEligibleEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
   const outgoingByAddress = new Map<string, ForensicRouteEdge[]>();
-  for (const edge of input.edges) {
+  for (const edge of riskEligibleEdges) {
     const current = outgoingByAddress.get(edge.fromAddress) ?? [];
     current.push(edge);
     outgoingByAddress.set(edge.fromAddress, current);
   }
 
-  let totalOutgoingRaw = 0n;
+  const totalOutgoingRaw = grossOutgoing.reduce((sum, edge) => sum + (parseAmount(edge.amountRaw) ?? 0n), 0n);
   const directExposures: Exposure[] = [];
   const eligibleIndirectSources: SourceTransfer[] = [];
   const coveredSourceEdgeIds = new Set<string>();
@@ -289,7 +292,6 @@ export function buildServiceExposureProfile(input: BuildServiceExposureProfileIn
   for (const sourceEdge of outgoing) {
     const amount = parseAmount(sourceEdge.amountRaw);
     if (amount === null || amount <= 0n) continue;
-    totalOutgoingRaw += amount;
 
     const directService = input.classifications.get(sourceEdge.toAddress) ?? null;
     if (directService && isServiceBoundary(directService)) {
@@ -472,16 +474,16 @@ export function buildServiceExposureProfile(input: BuildServiceExposureProfileIn
   return {
     subjectAddress: input.subjectAddress,
     totalOutgoingRaw: totalOutgoingRaw.toString(),
-    totalOutgoingCount: outgoing.length,
+    totalOutgoingCount: grossOutgoing.length,
     directServiceVolumeRatio: numberRatio(directVolume, totalOutgoingRaw),
-    directServiceTxRatio: outgoing.length > 0 ? directExposures.length / outgoing.length : 0,
+    directServiceTxRatio: grossOutgoing.length > 0 ? directExposures.length / grossOutgoing.length : 0,
     indirectServiceVolumeRatio: numberRatio(indirectVolume, totalOutgoingRaw),
-    indirectServiceTxRatio: outgoing.length > 0 ? indirectExposures.length / outgoing.length : 0,
+    indirectServiceTxRatio: grossOutgoing.length > 0 ? indirectExposures.length / grossOutgoing.length : 0,
     mergedServiceVolumeRatio: mergedVolumeRatio,
     mergedServiceGroupCount: mergedExposures.length,
     combinedServiceVolumeRatio: combinedVolumeRatio,
-    combinedServiceTxRatio: outgoing.length > 0
-      ? (allExposures.length + mergedExposures.reduce((sum, item) => sum + item.sourceEdges.length, 0)) / outgoing.length
+    combinedServiceTxRatio: grossOutgoing.length > 0
+      ? (allExposures.length + mergedExposures.reduce((sum, item) => sum + item.sourceEdges.length, 0)) / grossOutgoing.length
       : 0,
     dominantCategory,
     categoryBreakdown,

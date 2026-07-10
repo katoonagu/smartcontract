@@ -7,6 +7,7 @@ import type {
   RouteScoreFeature,
   ServiceClassification
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export type BuildCounterpartyRiskProfilesInput = {
   subjectAddress: string;
@@ -154,10 +155,15 @@ function groupedProfiles(input: {
 }
 
 export function buildCounterpartyRiskProfiles(input: BuildCounterpartyRiskProfilesInput): CounterpartyRiskProfile[] {
-  const incoming = input.edges.filter((edge) => edge.toAddress === input.subjectAddress);
-  const outgoing = input.edges.filter((edge) => edge.fromAddress === input.subjectAddress);
-  const incomingVolumeRaw = incoming.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
-  const outgoingVolumeRaw = outgoing.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+  const riskEligibleEdges = input.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const incoming = riskEligibleEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const outgoing = riskEligibleEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const incomingVolumeRaw = input.edges
+    .filter((edge) => edge.toAddress === input.subjectAddress)
+    .reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+  const outgoingVolumeRaw = input.edges
+    .filter((edge) => edge.fromAddress === input.subjectAddress)
+    .reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
   const options = {
     subjectAddress: input.subjectAddress,
     labelsByAddress: input.labelsByAddress,

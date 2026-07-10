@@ -7,6 +7,7 @@ import type {
   RiskLevel,
   ServiceClassification
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export type CounterpartySnapshotCandidate = {
   counterpartyAddress: string;
@@ -192,9 +193,18 @@ function scoreContribution(input: {
 export function buildDirectCounterpartyInteractionProfiles(
   input: BuildDirectCounterpartyInteractionProfilesInput
 ): DirectCounterpartyInteractionProfile[] {
+  const riskEligibleEdges = input.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const eligibleIncoming = riskEligibleEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const eligibleOutgoing = riskEligibleEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const eligibleIncomingVolume = eligibleIncoming.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+  const eligibleOutgoingVolume = eligibleOutgoing.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
   return groupedEdges(input.subjectAddress, input.edges)
     .map((group): DirectCounterpartyInteractionProfile => {
       const amountRaw = group.edges.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+      const eligibleEdges = group.edges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+      const eligibleAmountRaw = eligibleEdges.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
+      const eligibleDirectionalVolume = group.direction === "inbound" ? eligibleIncomingVolume : eligibleOutgoingVolume;
+      const eligibleDirectionalTxCount = group.direction === "inbound" ? eligibleIncoming.length : eligibleOutgoing.length;
       const sorted = [...group.edges].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       const classification = input.classifications?.get(group.counterpartyAddress) ?? null;
       const serviceCategory =
@@ -202,13 +212,15 @@ export function buildDirectCounterpartyInteractionProfiles(
           ? classification.category
           : null;
       const snapshot = input.snapshotsByAddress.get(group.counterpartyAddress) ?? emptySnapshot(group.counterpartyAddress, classification);
-      const weight = interactionWeight({
-        amountRaw,
-        volumeRatio: ratio(amountRaw, group.directionalVolumeRaw),
-        txCount: group.edges.length,
-        directionalTxCount: group.directionalTxCount,
-        direction: group.direction
-      });
+      const weight = eligibleEdges.length === 0
+        ? 0
+        : interactionWeight({
+            amountRaw: eligibleAmountRaw,
+            volumeRatio: ratio(eligibleAmountRaw, eligibleDirectionalVolume),
+            txCount: eligibleEdges.length,
+            directionalTxCount: eligibleDirectionalTxCount,
+            direction: group.direction
+          });
       const contribution = scoreContribution({ snapshot, weight });
 
       return {
@@ -228,7 +240,9 @@ export function buildDirectCounterpartyInteractionProfiles(
           amountRaw: edge.amountRaw,
           timestamp: edge.timestamp.toISOString(),
           method: edge.method,
-          edgeType: edge.edgeType
+          edgeType: edge.edgeType,
+          ...(edge.economicRole ? { economicRole: edge.economicRole } : {}),
+          ...(edge.economicProtocol ? { economicProtocol: edge.economicProtocol } : {})
         })),
         serviceCategory,
         identity: classification?.identity ?? null,

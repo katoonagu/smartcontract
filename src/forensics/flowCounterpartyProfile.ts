@@ -12,6 +12,7 @@ import type {
   ServiceClassification
 } from "../types";
 import { calculateHistoricalTransitBreakdown } from "./historicalTransitScore";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import { isServiceBoundary } from "./serviceClassifier";
 
 export type BuildOperationalFlowProfileInput = {
@@ -285,10 +286,13 @@ function isFastServiceCategory(category: ServiceCategory | null): boolean {
 
 export function buildFastCounterpartyTopsProfile(input: BuildFastCounterpartyTopsProfileInput): FastCounterpartyTopsProfile {
   const windowEdges = input.edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
-  const incoming = windowEdges.filter((edge) => edge.toAddress === input.subjectAddress);
-  const outgoing = windowEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
-  const incomingVolumeRaw = incoming.reduce((sum, edge) => sum + amount(edge), 0n);
-  const outgoingVolumeRaw = outgoing.reduce((sum, edge) => sum + amount(edge), 0n);
+  const riskEligibleEdges = windowEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const incoming = riskEligibleEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const outgoing = riskEligibleEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const grossIncoming = windowEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const grossOutgoing = windowEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const incomingVolumeRaw = grossIncoming.reduce((sum, edge) => sum + amount(edge), 0n);
+  const outgoingVolumeRaw = grossOutgoing.reduce((sum, edge) => sum + amount(edge), 0n);
   const incomingCounterparties = summarizeFastCounterparties({
     direction: "incoming",
     edges: incoming,
@@ -314,8 +318,8 @@ export function buildFastCounterpartyTopsProfile(input: BuildFastCounterpartyTop
     windowEnd: input.windowEnd.toISOString(),
     incomingVolumeRaw: incomingVolumeRaw.toString(),
     outgoingVolumeRaw: outgoingVolumeRaw.toString(),
-    incomingTxCount: incoming.length,
-    outgoingTxCount: outgoing.length,
+    incomingTxCount: grossIncoming.length,
+    outgoingTxCount: grossOutgoing.length,
     topIncomingCounterparties,
     topOutgoingCounterparties,
     topServiceCounterparties: outgoingCounterparties
@@ -343,10 +347,13 @@ export function buildFastCounterpartyTopsProfile(input: BuildFastCounterpartyTop
 
 export function buildOperationalFlowProfile(input: BuildOperationalFlowProfileInput): OperationalFlowProfile {
   const windowEdges = input.edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
-  const incoming = windowEdges.filter((edge) => edge.toAddress === input.subjectAddress);
-  const outgoing = windowEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
-  const incomingVolumeRaw = incoming.reduce((sum, edge) => sum + amount(edge), 0n);
-  const outgoingVolumeRaw = outgoing.reduce((sum, edge) => sum + amount(edge), 0n);
+  const riskEligibleEdges = windowEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const incoming = riskEligibleEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const outgoing = riskEligibleEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const grossIncoming = windowEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const grossOutgoing = windowEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const incomingVolumeRaw = grossIncoming.reduce((sum, edge) => sum + amount(edge), 0n);
+  const outgoingVolumeRaw = grossOutgoing.reduce((sum, edge) => sum + amount(edge), 0n);
 
   const topIncomingCounterparties = summarizeCounterparties({
     direction: "incoming",
@@ -444,8 +451,8 @@ export function buildOperationalFlowProfile(input: BuildOperationalFlowProfileIn
     windowEnd: input.windowEnd.toISOString(),
     incomingVolumeRaw: incomingVolumeRaw.toString(),
     outgoingVolumeRaw: outgoingVolumeRaw.toString(),
-    incomingTxCount: incoming.length,
-    outgoingTxCount: outgoing.length,
+    incomingTxCount: grossIncoming.length,
+    outgoingTxCount: grossOutgoing.length,
     inflowToOutflowRatio,
     topIncomingCounterparties,
     topOutgoingCounterparties,

@@ -7,9 +7,16 @@ import type {
   ContractDrivenReceiverProfile,
   ContractDrivenTransferClassification,
   ContractDrivenTransferProfile,
+  ForensicEconomicProtocol,
+  ForensicEconomicRole,
   ForensicRouteEdge,
   ServiceClassification
 } from "../types";
+import {
+  extractGasFreeSettlement,
+  gasFreeMovementForEdge,
+  type GasFreeSettlement
+} from "./gasFreeSettlement";
 
 export type ContractDrivenReceiverLevel =
   | "none"
@@ -337,6 +344,8 @@ type ClassifiedIncomingEdge = {
   callerAddress: string | null;
   movement: { sourceAddress: string; receiverAddress: string; amountRaw: string };
   countsAsDrainerContext: boolean;
+  economicRole?: ForensicEconomicRole;
+  economicProtocol?: ForensicEconomicProtocol;
 };
 
 export async function buildContractDrivenEvidenceProfiles(
@@ -365,6 +374,11 @@ export async function buildContractDrivenEvidenceProfiles(
     maxTxInfo
   });
   const wrapperDriven = enriched.filter((item) => item.countsAsDrainerContext);
+  const profiled = enriched.filter((item) =>
+    item.countsAsDrainerContext ||
+    item.classification === "gasfree_principal" ||
+    item.classification === "gasfree_service_fee"
+  );
   const maxSourceChecks = Math.max(0, input.maxSourceActivityChecks ?? Math.min(20, maxTxInfo));
   const exactApprovalDrainCount = exactApprovalCountForSubject(
     input.approvalDrainProvenanceProfiles ?? [],
@@ -373,9 +387,9 @@ export async function buildContractDrivenEvidenceProfiles(
 
   let sourceChecks = 0;
   const transferProfiles: ContractDrivenTransferProfile[] = [];
-  for (const item of wrapperDriven) {
+  for (const item of profiled) {
     let sourcePostDebitActivity: ContractDrivenTransferProfile["sourcePostDebitActivity"];
-    if (input.fetchEdgesForAddress && sourceChecks < maxSourceChecks) {
+    if (item.countsAsDrainerContext && input.fetchEdgesForAddress && sourceChecks < maxSourceChecks) {
       sourceChecks += 1;
       // ponytail: post-debit activity is budget/page limited; upgrade to indexed full-history windows for final victim confidence.
       const sourceEdges = await input.fetchEdgesForAddress(item.movement.sourceAddress).catch(() => []);
@@ -395,6 +409,8 @@ export async function buildContractDrivenEvidenceProfiles(
       amount: formatUsdtAmount(item.movement.amountRaw),
       classification: item.classification,
       countsAsDrainerContext: item.countsAsDrainerContext,
+      economicRole: item.economicRole,
+      economicProtocol: item.economicProtocol,
       method: item.method,
       callerAddress: item.callerAddress,
       operatorAddress: item.callerAddress,
@@ -415,7 +431,7 @@ export async function buildContractDrivenEvidenceProfiles(
     exactApprovalDrainCount
   });
   if (wrapperDriven.length === 0) {
-    return { receiverProfile: null, transferProfiles: [], campaignSummary };
+    return { receiverProfile: null, transferProfiles, campaignSummary };
   }
 
   const methods = wrapperDriven
@@ -466,19 +482,41 @@ async function classifyIncomingEdges(input: {
   const sortedEdges = [...input.incomingEdges].sort(compareEdgesForClassification);
   const classified: ClassifiedIncomingEdge[] = [];
   let txInfoFetches = 0;
+  const txInfoCache = new Map<string, Promise<unknown | null>>();
+  const gasFreeSettlementCache = new Map<string, GasFreeSettlement | null>();
   for (const edge of sortedEdges) {
     let txInfo: unknown | null = null;
     let txInfoFetched = false;
-    if (input.getTransaction && txInfoFetches < input.maxTxInfo) {
+    let txInfoPromise = txInfoCache.get(edge.txHash);
+    if (input.getTransaction && !txInfoPromise && txInfoFetches < input.maxTxInfo) {
       txInfoFetched = true;
       txInfoFetches += 1;
-      txInfo = await input.getTransaction(edge.txHash).catch(() => null);
+      txInfoPromise = input.getTransaction(edge.txHash).catch(() => null);
+      txInfoCache.set(edge.txHash, txInfoPromise);
+    } else if (txInfoPromise) {
+      txInfoFetched = true;
     }
-    const movement = matchingUsdtMovement(txInfo, edge) ?? {
-      sourceAddress: edge.fromAddress,
-      receiverAddress: edge.toAddress,
-      amountRaw: edge.amountRaw
-    };
+    if (txInfoPromise) txInfo = await txInfoPromise;
+    const gasFreeSettlement = txInfoFetched
+      ? gasFreeSettlementCache.has(edge.txHash)
+        ? gasFreeSettlementCache.get(edge.txHash) ?? null
+        : extractGasFreeSettlement(txInfo)
+      : null;
+    if (txInfoFetched && !gasFreeSettlementCache.has(edge.txHash)) {
+      gasFreeSettlementCache.set(edge.txHash, gasFreeSettlement);
+    }
+    const gasFreeMovement = gasFreeSettlement ? gasFreeMovementForEdge(gasFreeSettlement, edge) : null;
+    const movement = gasFreeMovement
+      ? {
+          sourceAddress: gasFreeMovement.fromAddress,
+          receiverAddress: gasFreeMovement.toAddress,
+          amountRaw: gasFreeMovement.amountRaw
+        }
+      : matchingUsdtMovement(txInfo, edge) ?? {
+          sourceAddress: edge.fromAddress,
+          receiverAddress: edge.toAddress,
+          amountRaw: edge.amountRaw
+        };
     const contractAddress = calledContractAddress(txInfo);
     const contractClassification = contractAddress
       ? classificationFor(input.classifications, contractAddress)
@@ -491,7 +529,8 @@ async function classifyIncomingEdges(input: {
       txInfo,
       txInfoFetched,
       method,
-      contractAddress
+      contractAddress,
+      gasFreeRole: gasFreeMovement?.role
     });
     classified.push({
       edge,
@@ -503,7 +542,9 @@ async function classifyIncomingEdges(input: {
       contractName,
       callerAddress,
       movement,
-      countsAsDrainerContext: classificationCountsAsDrainerContext(classification)
+      countsAsDrainerContext: classificationCountsAsDrainerContext(classification),
+      economicRole: gasFreeMovement?.role,
+      economicProtocol: gasFreeMovement ? "tron_gasfree" : undefined
     });
   }
   return classified.sort((left, right) => compareEdgesForProfile(left.edge, right.edge));
@@ -515,12 +556,16 @@ function classifyContractDrivenIncoming(input: {
   txInfoFetched: boolean;
   method: string | null;
   contractAddress: string | null;
+  gasFreeRole?: ForensicEconomicRole;
 }): ContractDrivenTransferClassification {
   const method = input.method ?? input.edge.method;
   const normalizedMethod = normalizeTransferMethod(method);
   const contractAddress = input.contractAddress ? normalizeAddress(input.contractAddress) : null;
   const canonicalUsdtContract = normalizeAddress(TRON_USDT_CONTRACT_ADDRESS);
 
+  if (input.gasFreeRole) {
+    return input.gasFreeRole === "principal" ? "gasfree_principal" : "gasfree_service_fee";
+  }
   if (contractAddress === canonicalUsdtContract && methodLooksPlainTransfer(method)) {
     return "plain_usdt_transfer";
   }
@@ -611,6 +656,7 @@ function buildCampaignClusters(transferProfiles: ContractDrivenTransferProfile[]
 
   const drafts = new Map<string, ClusterDraft>();
   for (const profile of transferProfiles) {
+    if (profile.countsAsDrainerContext !== true) continue;
     const key = [
       normalizeNullableAddress(profile.contractAddress) ?? "",
       normalizeNullableAddress(profile.operatorAddress) ?? "",
@@ -866,13 +912,18 @@ function matchingUsdtMovement(
 
 function tokenTransferRows(transactionInfo: unknown): unknown[] {
   const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
-  return [
-    ...arrayField(tx?.trc20TransferInfo),
-    ...arrayField(tx?.trc20TransferInfoList),
-    ...arrayField(tx?.tokenTransferInfo),
-    ...arrayField(tx?.tokenTransferInfoList),
-    ...arrayField(tx?.transfers)
-  ];
+  for (const key of [
+    "trc20TransferInfo",
+    "trc20TransferInfoList",
+    "tokenTransferInfo",
+    "tokenTransferInfoList",
+    "transfersAllList",
+    "transfers"
+  ] as const) {
+    const rows = arrayField(tx?.[key]);
+    if (rows.length > 0) return rows;
+  }
+  return [];
 }
 
 function transferCaller(transactionInfo: unknown): string | null {
@@ -941,7 +992,7 @@ function rowAddress(row: unknown, direction: "from" | "to"): string | null {
 function transferRawAmount(row: unknown): bigint | null {
   const record = objectField(row);
   if (!record) return null;
-  const value = record.quant ?? record.amount ?? record.value ?? record.rawAmount;
+  const value = record.amount_str ?? record.amountStr ?? record.quant ?? record.amount ?? record.value ?? record.rawAmount;
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === "bigint" && value >= 0n) return value;
   if (typeof value === "string" && /^\d+$/.test(value.trim())) return BigInt(value.trim());

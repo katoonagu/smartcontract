@@ -1,5 +1,48 @@
 import { describe, expect, it } from "vitest";
+import { TronWeb } from "tronweb";
 import { extractServiceRouteEvidence } from "../../src/forensics/serviceRouteEvidence";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
+
+const gasFreeController = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
+const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+const gasFreeUser = "TW2Py9fWGc1HVXhejufX1stuwQ9N42Y8RE";
+const gasFreeReceiver = "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq";
+const gasFreeTlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+
+const gasFreeUintWord = (value: bigint): string => value.toString(16).padStart(64, "0");
+const gasFreeAddressWord = (address: string): string => TronWeb.address.toHex(address).slice(2).padStart(64, "0");
+
+function gasFreeTransaction() {
+  const signature = "11".repeat(65);
+  const data = [
+    "6f21b898",
+    gasFreeAddressWord(TRON_USDT_CONTRACT_ADDRESS),
+    gasFreeAddressWord(gasFreeUser),
+    gasFreeAddressWord(gasFreeReceiver),
+    gasFreeUintWord(97_000_000n),
+    gasFreeUintWord(3_000_000n),
+    gasFreeUintWord(1_800_000_000n),
+    gasFreeUintWord(1n),
+    gasFreeUintWord(9n),
+    gasFreeUintWord(0x120n),
+    gasFreeUintWord(65n),
+    signature.padEnd(192, "0")
+  ].join("");
+  const row = (toAddress: string, amountRaw: string) => ({
+    from_address: gasFreeAccount,
+    to_address: toAddress,
+    amount_str: amountRaw,
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenType: "trc20" }
+  });
+  return {
+    confirmed: true,
+    contractRet: "SUCCESS",
+    revert: false,
+    contractData: { contract_address: gasFreeController, data },
+    trc20TransferInfo: [row(gasFreeReceiver, "97000000"), row(gasFreeTlnt, "3000000")]
+  };
+}
 
 describe("service route evidence extraction", () => {
   it("detects LayerZero/OFT delivery without confirmed approval-drain proof", () => {
@@ -224,9 +267,40 @@ describe("service route evidence extraction", () => {
       kind: "known_service_route",
       category: "gasless_or_smart_account_service",
       identity: "GasFree",
+      confidence: "medium",
       policyRiskFloor: 25,
       policyRiskCeiling: 55
     });
+    expect(result.guardCodes).not.toContain("gasfree_controller_exact");
+  });
+
+  it.each([
+    [gasFreeReceiver, "gasfree_principal"],
+    [gasFreeTlnt, "gasfree_service_fee"]
+  ])("emits exact GasFree controller and %s role evidence", (subjectAddress, roleCode) => {
+    const result = extractServiceRouteEvidence({
+      subjectAddress,
+      transactionInfo: gasFreeTransaction(),
+      approvalDrainProof: {
+        approveFound: false,
+        transferFromConfirmed: false,
+        spenderMatched: false
+      }
+    });
+
+    expect(result).toMatchObject({
+      kind: "known_service_route",
+      confidence: "high",
+      category: "gasless_or_smart_account_service",
+      identity: "GasFree",
+      policyRiskFloor: 25,
+      policyRiskCeiling: 55
+    });
+    expect(result.guardCodes).toEqual(expect.arrayContaining([
+      "gasfree_controller_exact",
+      roleCode,
+      "no_confirmed_approval_drain"
+    ]));
   });
 
   it("does not treat a Binance Gateway CEX label as service-route evidence without bridge context", () => {

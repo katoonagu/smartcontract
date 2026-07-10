@@ -20,6 +20,12 @@ import {
   buildDirectHardEvidenceSnapshots
 } from "../forensics/directHardEvidence";
 import { buildSecondLayerRelationshipProfiles } from "../forensics/deepSecondLayerRelationship";
+import {
+  extractGasFreeSettlement,
+  gasFreeMovementForEdge,
+  isGasFreeServiceFeeEdge,
+  type GasFreeSettlement
+} from "../forensics/gasFreeSettlement";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
@@ -459,6 +465,7 @@ function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: Forensic
 }
 
 function contractDrivenSignalRank(edge: ForensicRouteEdge): number {
+  if (edge.economicProtocol === "tron_gasfree" && edge.economicRole) return 4;
   const method = edge.method.trim().toLowerCase();
   if (edge.edgeType === "transfer_from") return 3;
   if (method.includes("verify20") || method.includes("permit") || method.includes("transferfrom")) return 2;
@@ -582,6 +589,7 @@ async function buildOperationalIndexedProfiles(input: {
   runInput: RunDeepAddressForensicCheckInput;
   sourceEdges: ForensicRouteEdge[];
   classifications: Map<string, ServiceClassification | null>;
+  resolveEconomicEdges?: (edges: ForensicRouteEdge[]) => Promise<ForensicRouteEdge[]>;
 }): Promise<{
   boundaryProfiles: BoundaryExposureProfile[];
   flowProfiles: OperationalFlowProfile[];
@@ -612,7 +620,7 @@ async function buildOperationalIndexedProfiles(input: {
     ? await fetchEdgesForAddress(input.runInput.sourceAddress)
     : [];
   const coveredTxHashes = coveredSubjectTxHashes(boundaryProfiles);
-  const operationalEdges = dedupeEdges([
+  const dedupedOperationalEdges = dedupeEdges([
     ...input.sourceEdges,
     ...sourceIndexedEdges.filter((edge) => !coveredTxHashes.has(edge.txHash)),
     ...boundaryProfilesToOperationalEdges({
@@ -620,6 +628,9 @@ async function buildOperationalIndexedProfiles(input: {
       profiles: boundaryProfiles
     })
   ]);
+  const operationalEdges = input.resolveEconomicEdges
+    ? await input.resolveEconomicEdges(dedupedOperationalEdges)
+    : dedupedOperationalEdges;
   if (operationalEdges.length === 0) return { boundaryProfiles, flowProfiles: [] };
   const flowProfile = buildOperationalFlowProfile({
     subjectAddress: input.runInput.sourceAddress,
@@ -1307,6 +1318,34 @@ export async function runDeepAddressForensicCheck(
   deps: DeepAddressForensicDeps,
   input: RunDeepAddressForensicCheckInput
 ): Promise<DeepAddressForensicReport> {
+  const transactionCache = new Map<string, Promise<unknown | null>>();
+  const gasFreeSettlementCache = new Map<string, Promise<GasFreeSettlement | null>>();
+  const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
+    const cached = transactionCache.get(txHash);
+    if (cached) return cached;
+    const pending = deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
+    transactionCache.set(txHash, pending);
+    return pending;
+  };
+  const resolveEconomicEdges = async (edges: ForensicRouteEdge[]): Promise<ForensicRouteEdge[]> => {
+    if (!deps.getTransaction) return edges;
+    return Promise.all(edges.map(async (edge) => {
+      let settlement = gasFreeSettlementCache.get(edge.txHash);
+      if (!settlement) {
+        settlement = getCachedTransaction(edge.txHash).then(extractGasFreeSettlement);
+        gasFreeSettlementCache.set(edge.txHash, settlement);
+      }
+      const resolvedSettlement = await settlement;
+      const movement = resolvedSettlement ? gasFreeMovementForEdge(resolvedSettlement, edge) : null;
+      return movement
+        ? {
+            ...edge,
+            economicRole: movement.role,
+            economicProtocol: "tron_gasfree" as const
+          }
+        : edge;
+    }));
+  };
   let exposureReport: AddressExposureReport;
   try {
     exposureReport = await runForensicAddressExposureSearch({
@@ -1396,10 +1435,11 @@ export async function runDeepAddressForensicCheck(
       getLabelsForAddress: deps.getLabelsForAddress
     })
     : [];
-  const allDirectCounterpartyAddresses = directCounterpartyAddresses(input.sourceAddress, sourceTransfers.edges);
-  const directBoundaryEdges = sourceTransfers.edges;
-  const directBoundaryAddresses = allDirectCounterpartyAddresses;
-  const senders = topIncomingSenders(input.sourceAddress, sourceTransfers.edges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
+  const directBoundaryEdges = await resolveEconomicEdges(sourceTransfers.edges);
+  const riskEligibleDirectEdges = directBoundaryEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge));
+  const allDirectCounterpartyAddresses = directCounterpartyAddresses(input.sourceAddress, directBoundaryEdges);
+  const directBoundaryAddresses = directCounterpartyAddresses(input.sourceAddress, riskEligibleDirectEdges);
+  const senders = topIncomingSenders(input.sourceAddress, riskEligibleDirectEdges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
   const upstreamEdges: ForensicRouteEdge[] = [];
   const approvalDrainRootEdges: ForensicRouteEdge[] = [];
   const expandedAddresses = new Set<string>();
@@ -1432,7 +1472,7 @@ export async function runDeepAddressForensicCheck(
       alreadyFetched.add(candidate);
     }
   }
-  const provenanceEdges = dedupeEdges([...sourceTransfers.edges, ...upstreamEdges, ...approvalDrainRootEdges]);
+  const provenanceEdges = dedupeEdges([...directBoundaryEdges, ...upstreamEdges, ...approvalDrainRootEdges]);
   const provenanceAddresses = new Set<string>();
   for (const edge of provenanceEdges) {
     provenanceAddresses.add(edge.fromAddress);
@@ -1496,7 +1536,7 @@ export async function runDeepAddressForensicCheck(
     : await buildCounterpartyFastSnapshots({
       deps,
       runInput: input,
-      sourceEdges: sourceTransfers.edges,
+      sourceEdges: riskEligibleDirectEdges,
       labelsByAddress,
       classifications
     });
@@ -1557,7 +1597,7 @@ export async function runDeepAddressForensicCheck(
       edges: provenanceEdges,
       classifications,
       deps: {
-        getTransaction: deps.getTransaction,
+        getTransaction: getCachedTransaction,
         listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
@@ -1599,10 +1639,10 @@ export async function runDeepAddressForensicCheck(
   });
   const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
     subjectAddress: input.sourceAddress,
-    edges: sourceTransfers.edges,
+    edges: directBoundaryEdges,
     classifications,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
-    getTransaction: deps.getTransaction,
+    getTransaction: deps.getTransaction ? getCachedTransaction : undefined,
     fetchEdgesForAddress: async (address) => {
       const result = await fetchEdgesForAddress(deps.tronClient, input, address, 1, { allowRecentFallback: true });
       return result.edges;
@@ -1619,8 +1659,9 @@ export async function runDeepAddressForensicCheck(
   const operationalIndexedProfiles = await buildOperationalIndexedProfiles({
     deps,
     runInput: input,
-    sourceEdges: sourceTransfers.edges,
-    classifications
+    sourceEdges: directBoundaryEdges,
+    classifications,
+    resolveEconomicEdges
   });
   const boundaryExposureProfiles = [
     directBoundaryExposureProfile,

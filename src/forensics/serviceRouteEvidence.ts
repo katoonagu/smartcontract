@@ -1,4 +1,5 @@
 import type { RiskConfidence } from "../types";
+import { extractGasFreeSettlement } from "./gasFreeSettlement";
 import { matchServiceRouteRegistry, matchServiceRouteRegistryPhrase, serviceRoutePolicyBounds, type ServiceRouteCategory } from "./serviceRouteRegistry";
 
 export type { ServiceRouteCategory } from "./serviceRouteRegistry";
@@ -248,6 +249,34 @@ export function extractServiceRouteEvidence(input: ExtractServiceRouteEvidenceIn
   const endpointPresent = lowerText.includes("layerzero") && (lowerText.includes("endpoint") || lowerText.includes("endpointv2"));
   const executorPresent = lowerText.includes("executor");
   const oftPresent = lowerText.includes("usdtoft") || lowerText.includes("usdt oft") || lowerText.includes("omnichain fungible token") || /\boft\b/.test(lowerText);
+
+  const gasFreeSettlement = extractGasFreeSettlement(input.transactionInfo);
+  const gasFreeRoles = new Set(gasFreeSettlement?.movements
+    .filter((movement) => addressEqual(movement.toAddress, input.subjectAddress))
+    .map((movement) => movement.role) ?? []);
+  if (gasFreeSettlement && gasFreeRoles.size === 1) {
+    const role = [...gasFreeRoles][0];
+    const roleCode = role === "principal" ? "gasfree_principal" : "gasfree_service_fee";
+    const guardCodes = ["service_route_boundary_present", "gasfree_controller_exact", roleCode];
+    if (noConfirmedDrain) guardCodes.push("no_confirmed_approval_drain");
+    const policyBounds = serviceRoutePolicyBounds("gasless_or_smart_account_service");
+    return {
+      kind: "known_service_route",
+      confidence: "high",
+      category: "gasless_or_smart_account_service",
+      identity: "GasFree",
+      policyRiskFloor: policyBounds.policyRiskFloor,
+      policyRiskCeiling: policyBounds.policyRiskCeiling,
+      drainProof,
+      guardCodes,
+      signals: [
+        "service_route:gasless_or_smart_account_service",
+        "service_route_identity:GasFree",
+        roleCode
+      ],
+      contracts
+    };
+  }
 
   if (incoming.found && incoming.fromIsContract && endpointPresent && executorPresent && oftPresent) {
     const guardCodes = ["usdt_from_address_is_contract", "layerzero_endpoint_present", "oft_contract_present"];

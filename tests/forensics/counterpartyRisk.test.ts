@@ -52,4 +52,59 @@ describe("counterparty risk profiles", () => {
     expect(profile?.features.map((feature) => feature.code)).toContain("counterparty_direct_darknet_exchange");
     expect(profile?.features.map((feature) => feature.code)).not.toContain("counterparty_service_boundary_context");
   });
+
+  it("excludes exact GasFree fees while keeping principal counterparty risk", () => {
+    const subjectAddress = "TSubjectGasFreeRisk1111111111111111";
+    const tlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+    const principalPeer = "TPrincipalRisk111111111111111111111";
+    const at = new Date("2026-07-10T00:00:00.000Z");
+    const riskyLabel = (address: string): AddressLabel => ({
+      address,
+      label: "darknet_exchange",
+      source: "system",
+      createdByTelegramId: null,
+      createdAt: at
+    });
+    const profiles = buildCounterpartyRiskProfiles({
+      subjectAddress,
+      edges: [
+        {
+          id: "fee",
+          txHash: "fee",
+          fromAddress: subjectAddress,
+          toAddress: tlnt,
+          amountRaw: "3000000",
+          timestamp: at,
+          method: "permitTransfer",
+          edgeType: "transfer_from",
+          economicRole: "service_fee",
+          economicProtocol: "tron_gasfree"
+        },
+        {
+          id: "principal",
+          txHash: "principal",
+          fromAddress: subjectAddress,
+          toAddress: principalPeer,
+          amountRaw: "97000000",
+          timestamp: at,
+          method: "permitTransfer",
+          edgeType: "transfer_from",
+          economicRole: "principal",
+          economicProtocol: "tron_gasfree"
+        }
+      ],
+      labelsByAddress: new Map([
+        [tlnt, [riskyLabel(tlnt)]],
+        [principalPeer, [riskyLabel(principalPeer)]]
+      ]),
+      minMeaningfulRaw: 1n,
+      minMeaningfulRatio: 0,
+      absoluteMeaningfulRaw: 1n
+    });
+
+    expect(profiles.some((profile) => profile.counterpartyAddress === tlnt)).toBe(false);
+    expect(profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ counterpartyAddress: principalPeer, amountRaw: "97000000", score: 80 })
+    ]));
+  });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TronWeb } from "tronweb";
 import { runDeepAddressForensicCheck } from "../../src/check/deepForensicCheck";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type {
@@ -16,6 +17,57 @@ const victim = "TVictim111111111111111111111111111111";
 const spender = "TSpender11111111111111111111111111111";
 const protocol = "TProtocol111111111111111111111111111";
 const wrappedToken = "TWrappedToken1111111111111111111111";
+const gasFreeController = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
+const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+const gasFreeUser = "TW2Py9fWGc1HVXhejufX1stuwQ9N42Y8RE";
+const gasFreeReceiver = "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq";
+const gasFreeTlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+
+const gasFreeUintWord = (value: bigint): string => value.toString(16).padStart(64, "0");
+const gasFreeAddressWord = (address: string): string => TronWeb.address.toHex(address).slice(2).padStart(64, "0");
+
+function gasFreeTransaction(input: {
+  accountAddress: string;
+  receiverAddress: string;
+  principalAmountRaw?: string;
+  feeAmountRaw?: string;
+}) {
+  const principalAmountRaw = input.principalAmountRaw ?? "97000000";
+  const feeAmountRaw = input.feeAmountRaw ?? "3000000";
+  const signature = "11".repeat(65);
+  const data = [
+    "6f21b898",
+    gasFreeAddressWord(TRON_USDT_CONTRACT_ADDRESS),
+    gasFreeAddressWord(gasFreeUser),
+    gasFreeAddressWord(input.receiverAddress),
+    gasFreeUintWord(BigInt(principalAmountRaw)),
+    gasFreeUintWord(BigInt(feeAmountRaw)),
+    gasFreeUintWord(1_800_000_000n),
+    gasFreeUintWord(1n),
+    gasFreeUintWord(9n),
+    gasFreeUintWord(0x120n),
+    gasFreeUintWord(65n),
+    signature.padEnd(192, "0")
+  ].join("");
+  const row = (toAddress: string, amountRaw: string) => ({
+    from_address: input.accountAddress,
+    to_address: toAddress,
+    amount_str: amountRaw,
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenType: "trc20" }
+  });
+  return {
+    confirmed: true,
+    contractRet: "SUCCESS",
+    revert: false,
+    contractData: { contract_address: gasFreeController, data },
+    trigger_info: { methodName: "permitTransfer" },
+    trc20TransferInfo: [
+      row(input.receiverAddress, principalAmountRaw),
+      row(gasFreeTlnt, feeAmountRaw)
+    ]
+  };
+}
 
 function transfer(input: {
   id: string;
@@ -1493,6 +1545,144 @@ describe("deep forensic address check", () => {
         })
       })
     ]));
+  });
+
+  it("keeps exact GasFree roles visible without propagating service-fee risk", async () => {
+    const principalTxHash = "tx-deep-gasfree-principal";
+    const feeTxHash = "tx-deep-gasfree-outgoing";
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        gasFreeReceiver,
+        [
+          transfer({
+            id: principalTxHash,
+            from: gasFreeAccount,
+            to: gasFreeReceiver,
+            amountRaw: "97000000",
+            at: "2026-07-10T00:00:00.000Z",
+            triggerInfo: { methodName: "permitTransfer" }
+          }),
+          transfer({
+            id: feeTxHash,
+            from: gasFreeReceiver,
+            to: gasFreeAccount,
+            amountRaw: "97000000",
+            at: "2026-07-10T00:05:00.000Z",
+            triggerInfo: { methodName: "permitTransfer" }
+          }),
+          transfer({
+            id: feeTxHash,
+            from: gasFreeReceiver,
+            to: gasFreeTlnt,
+            amountRaw: "3000000",
+            at: "2026-07-10T00:05:00.000Z",
+            triggerInfo: { methodName: "permitTransfer" }
+          })
+        ]
+      ]
+    ]);
+    const transactions = new Map<string, unknown>([
+      [principalTxHash, gasFreeTransaction({ accountAddress: gasFreeAccount, receiverAddress: gasFreeReceiver })],
+      [feeTxHash, gasFreeTransaction({ accountAddress: gasFreeReceiver, receiverAddress: gasFreeAccount })]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async (address) =>
+        address === gasFreeAccount || address === gasFreeTlnt ? [label(address)] : [],
+      getAddressMetadata: async () => null,
+      getTransaction: async (txHash) => transactions.get(txHash) ?? null
+    }, {
+      sourceAddress: gasFreeReceiver,
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-11T00:00:00.000Z"),
+      maxDepth: 1,
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 10,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled"
+    });
+
+    expect(report.contractDrivenTransferProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash: principalTxHash,
+        classification: "gasfree_principal",
+        economicRole: "principal",
+        economicProtocol: "tron_gasfree",
+        countsAsDrainerContext: false
+      })
+    ]));
+    expect(report.contractDrivenCampaignSummary?.campaignClusters).toHaveLength(0);
+    expect(report.counterpartyRiskProfiles.some((profile) => profile.counterpartyAddress === gasFreeTlnt)).toBe(false);
+    const feeInteraction = report.directCounterpartyInteractionProfiles?.find(
+      (profile) => profile.counterpartyAddress === gasFreeTlnt
+    );
+    expect(feeInteraction).toMatchObject({ scoreContribution: 0 });
+    expect(feeInteraction?.transfers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash: feeTxHash,
+        economicRole: "service_fee",
+        economicProtocol: "tron_gasfree"
+      })
+    ]));
+    expect(report.serviceExposureProfiles[0]?.exposureScore ?? 0).toBe(0);
+    const inboundPaths = report.inboundProvenanceProfiles.flatMap((profile) => profile.paths);
+    expect(inboundPaths.every((path) => !path.txHashes.includes(feeTxHash))).toBe(true);
+    expect(inboundPaths.some((path) => path.txHashes.includes(principalTxHash))).toBe(true);
+    expect(report.operationalFlowProfiles?.[0]?.outgoingVolumeRaw).toBe("100000000");
+    expect(report.directCounterpartyInteractionProfiles?.some(
+      (profile) => profile.counterpartyAddress === gasFreeUser
+    )).toBe(false);
+    expect(report.contractDrivenTransferProfiles?.flatMap(
+      (profile) => [profile.sourceAddress, profile.receiverAddress]
+    )).not.toContain(gasFreeUser);
+  });
+
+  it("does not tag an unmatched direct TLnt movement as a GasFree service fee", async () => {
+    const txHash = "tx-deep-unmatched-tlnt";
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === gasFreeReceiver
+          ? [transfer({
+              id: txHash,
+              from: gasFreeReceiver,
+              to: gasFreeTlnt,
+              amountRaw: "2000000",
+              at: "2026-07-10T00:05:00.000Z",
+              triggerInfo: { methodName: "transfer" }
+            })]
+          : []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getTransaction: async (requestedTxHash) => requestedTxHash === txHash
+        ? gasFreeTransaction({ accountAddress: gasFreeReceiver, receiverAddress: gasFreeAccount })
+        : null
+    }, {
+      sourceAddress: gasFreeReceiver,
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-11T00:00:00.000Z"),
+      maxDepth: 1,
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled"
+    });
+
+    const transferRow = report.directCounterpartyInteractionProfiles
+      ?.find((profile) => profile.counterpartyAddress === gasFreeTlnt)
+      ?.transfers?.find((item) => item.txHash === txHash);
+    expect(transferRow).toBeDefined();
+    expect(transferRow?.economicRole).toBeUndefined();
+    expect(transferRow?.economicProtocol).toBeUndefined();
   });
 
   it("preserves multiple exact Verify20 approval-drain profiles in DeepCheck", async () => {

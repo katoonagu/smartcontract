@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { TronWeb } from "tronweb";
 import {
   buildContractDrivenEvidenceProfiles,
   classifyContractDrivenReceiver,
@@ -6,6 +7,75 @@ import {
 } from "../../src/forensics/contractDrivenEvidence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { ForensicRouteEdge } from "../../src/types";
+
+const gasFreeController = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
+const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+const gasFreeUser = "TW2Py9fWGc1HVXhejufX1stuwQ9N42Y8RE";
+const gasFreeReceiver = "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq";
+const gasFreeTlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+
+const gasFreeUintWord = (value: bigint): string => value.toString(16).padStart(64, "0");
+const gasFreeAddressWord = (address: string): string => TronWeb.address.toHex(address).slice(2).padStart(64, "0");
+
+function gasFreePermitData(receiverAddress: string, value: bigint, maxFee: bigint): string {
+  const signature = "11".repeat(65);
+  return [
+    "6f21b898",
+    gasFreeAddressWord(TRON_USDT_CONTRACT_ADDRESS),
+    gasFreeAddressWord(gasFreeUser),
+    gasFreeAddressWord(receiverAddress),
+    gasFreeUintWord(value),
+    gasFreeUintWord(maxFee),
+    gasFreeUintWord(1_800_000_000n),
+    gasFreeUintWord(1n),
+    gasFreeUintWord(9n),
+    gasFreeUintWord(0x120n),
+    gasFreeUintWord(65n),
+    signature.padEnd(192, "0")
+  ].join("");
+}
+
+function gasFreeTransferRow(toAddress: string, amountRaw: string) {
+  return {
+    from_address: gasFreeAccount,
+    to_address: toAddress,
+    amount_str: amountRaw,
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenType: "trc20" }
+  };
+}
+
+function gasFreeTransaction(rows: unknown[], value = 97_000_000n, maxFee = 3_000_000n) {
+  return {
+    confirmed: true,
+    contractRet: "SUCCESS",
+    revert: false,
+    contractData: {
+      contract_address: gasFreeController,
+      data: gasFreePermitData(gasFreeReceiver, value, maxFee)
+    },
+    trc20TransferInfo: rows,
+    tokenTransferInfo: rows.map((row) => ({ ...(row as Record<string, unknown>) }))
+  };
+}
+
+function gasFreeEdge(input: {
+  id: string;
+  toAddress: string;
+  amountRaw: string;
+  at?: string;
+}): ForensicRouteEdge {
+  return {
+    id: input.id,
+    txHash: "tx-gasfree-settlement",
+    fromAddress: gasFreeAccount,
+    toAddress: input.toAddress,
+    amountRaw: input.amountRaw,
+    timestamp: new Date(input.at ?? "2026-07-10T00:00:00.000Z"),
+    method: "permitTransfer",
+    edgeType: "transfer_from"
+  };
+}
 
 describe("contract-driven evidence", () => {
   it("classifies the TS3ga Verify20 receiver campaign as drainer-like", () => {
@@ -286,6 +356,114 @@ describe("contract-driven evidence", () => {
       txInfoUnavailableTxCount: 2,
       wrapperDrivenIncomingTxCount: 40
     });
+  });
+
+  it("classifies exact GasFree principal and fee movements without campaign context", async () => {
+    const transaction = gasFreeTransaction([
+      gasFreeTransferRow(gasFreeReceiver, "97000000"),
+      gasFreeTransferRow(gasFreeTlnt, "3000000")
+    ]);
+    const getTransaction = vi.fn(async () => transaction);
+    const principal = await buildContractDrivenEvidenceProfiles({
+      subjectAddress: gasFreeReceiver,
+      edges: [
+        gasFreeEdge({ id: "principal-1", toAddress: gasFreeReceiver, amountRaw: "97000000" }),
+        gasFreeEdge({ id: "principal-2", toAddress: gasFreeReceiver, amountRaw: "97000000", at: "2026-07-10T00:00:01.000Z" })
+      ],
+      getTransaction
+    });
+    const fee = await buildContractDrivenEvidenceProfiles({
+      subjectAddress: gasFreeTlnt,
+      edges: [gasFreeEdge({ id: "fee", toAddress: gasFreeTlnt, amountRaw: "3000000" })],
+      getTransaction: async () => transaction
+    });
+
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+    expect(principal.transferProfiles[0]).toMatchObject({
+      classification: "gasfree_principal",
+      economicRole: "principal",
+      economicProtocol: "tron_gasfree",
+      countsAsDrainerContext: false
+    });
+    expect(fee.transferProfiles[0]).toMatchObject({
+      classification: "gasfree_service_fee",
+      economicRole: "service_fee",
+      economicProtocol: "tron_gasfree",
+      countsAsDrainerContext: false
+    });
+    expect(principal.campaignSummary?.campaignClusters).toHaveLength(0);
+    expect(fee.campaignSummary?.campaignClusters).toHaveLength(0);
+    expect([
+      ...principal.transferProfiles,
+      ...fee.transferProfiles
+    ].flatMap((profile) => [profile.sourceAddress, profile.receiverAddress])).not.toContain(gasFreeUser);
+  });
+
+  it("reads amount_str from contract-driven transfer rows", async () => {
+    const subjectAddress = "TAmountStrReceiver11111111111111111";
+    const sourceAddress = "TAmountStrSource1111111111111111111";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "amount-str-edge",
+        txHash: "amount-str-tx",
+        fromAddress: sourceAddress,
+        toAddress: subjectAddress,
+        amountRaw: "1000000",
+        timestamp: new Date("2026-07-10T00:00:00.000Z"),
+        method: "Verify20",
+        edgeType: "transfer_from"
+      }],
+      getTransaction: async () => ({
+        contractData: { contract_address: "TAmountStrContract111111111111111" },
+        trigger_info: { methodName: "Verify20" },
+        trc20TransferInfo: [{
+          from_address: sourceAddress,
+          to_address: subjectAddress,
+          amount_str: "2000000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT" }
+        }]
+      })
+    });
+
+    expect(result.transferProfiles[0]?.amountRaw).toBe("2000000");
+  });
+
+  it("uses the first non-empty transfer alias instead of concatenating fallback rows", async () => {
+    const subjectAddress = "TAliasReceiver11111111111111111111";
+    const authoritativeSource = "TAuthoritativeSource111111111111111";
+    const fallbackSource = "TFallbackSource111111111111111111111";
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "alias-edge",
+        txHash: "alias-tx",
+        fromAddress: authoritativeSource,
+        toAddress: subjectAddress,
+        amountRaw: "1000000",
+        timestamp: new Date("2026-07-10T00:00:00.000Z"),
+        method: "Verify20",
+        edgeType: "transfer_from"
+      }],
+      getTransaction: async () => {
+        const row = (fromAddress: string) => ({
+          from_address: fromAddress,
+          to_address: subjectAddress,
+          amount_str: "1000000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT" }
+        });
+        return {
+          contractData: { contract_address: "TAliasContract111111111111111111" },
+          trigger_info: { methodName: "Verify20" },
+          transfersAllList: [row(authoritativeSource)],
+          transfers: [row(fallbackSource)]
+        };
+      }
+    });
+
+    expect(result.transferProfiles[0]).toMatchObject({ sourceAddress: authoritativeSource });
   });
 
   it("keeps all-fetched null tx-info campaign counts as lower bounds", async () => {

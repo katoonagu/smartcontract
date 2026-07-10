@@ -170,4 +170,31 @@ describe("inbound provenance", () => {
     expect(profile.boundaryNotes[0]).toContain("service/CEX/bridge boundary");
     expect(profile.features.map((feature) => feature.code)).toContain("inbound_provenance_service_boundary");
   });
+
+  it("excludes exact GasFree fees from provenance while retaining principal and gross volume", () => {
+    const principalSource = "TPrincipalSource11111111111111111111";
+    const fee = {
+      ...edge({ id: "gasfree-fee", from: risky, to: subject, amountRaw: "3000000", at: "2026-05-20T09:59:00.000Z" }),
+      economicRole: "service_fee" as const,
+      economicProtocol: "tron_gasfree" as const
+    };
+    const principal = {
+      ...edge({ id: "gasfree-principal", from: principalSource, to: subject, amountRaw: "97000000", at: "2026-05-20T10:00:00.000Z" }),
+      economicRole: "principal" as const,
+      economicProtocol: "tron_gasfree" as const
+    };
+    const profile = buildInboundProvenanceProfile({
+      subjectAddress: subject,
+      edges: [fee, principal],
+      labelsByAddress: new Map([
+        [risky, [label(risky, "phishing")]],
+        [principalSource, [label(principalSource, "phishing")]]
+      ])
+    });
+
+    expect(profile.incomingVolumeRaw).toBe("100000000");
+    expect(profile.matchedInboundVolumeRaw).toBe("97000000");
+    expect(profile.paths.every((path) => !path.txHashes.includes("gasfree-fee"))).toBe(true);
+    expect(profile.paths.some((path) => path.txHashes.includes("gasfree-principal"))).toBe(true);
+  });
 });

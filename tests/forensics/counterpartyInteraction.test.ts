@@ -186,6 +186,59 @@ describe("direct counterparty interaction profiles", () => {
     expect(profile?.scoreContribution).toBeGreaterThan(0);
   });
 
+  it("keeps fee-only GasFree interactions visible but unscored with economic role details", () => {
+    const feeEdge: ForensicRouteEdge = {
+      ...edge({ id: "tx-gasfree-fee", from: subject, to: gasFree, amountRaw: "3000000" }),
+      economicRole: "service_fee",
+      economicProtocol: "tron_gasfree"
+    };
+    const profiles = buildDirectCounterpartyInteractionProfiles({
+      subjectAddress: subject,
+      edges: [feeEdge],
+      snapshotsByAddress: new Map([[gasFree, snapshot(gasFree)]]),
+      classifications: new Map()
+    });
+
+    expect(profiles[0]).toMatchObject({
+      counterpartyAddress: gasFree,
+      volumeRaw: "3000000",
+      scoreContribution: 0,
+      interactionWeight: 0
+    });
+    expect(profiles[0]?.transfers).toEqual([
+      expect.objectContaining({
+        txHash: "tx-gasfree-fee",
+        economicRole: "service_fee",
+        economicProtocol: "tron_gasfree"
+      })
+    ]);
+  });
+
+  it("scores a mixed GasFree counterparty only from its ordinary movement while reporting gross volume", () => {
+    const profiles = buildDirectCounterpartyInteractionProfiles({
+      subjectAddress: subject,
+      edges: [
+        edge({ id: "tx-ordinary-gasfree-peer", from: subject, to: gasFree, amountRaw: "10000000" }),
+        {
+          ...edge({ id: "tx-gasfree-fee-mixed", from: subject, to: gasFree, amountRaw: "90000000" }),
+          economicRole: "service_fee",
+          economicProtocol: "tron_gasfree"
+        },
+        edge({ id: "tx-ordinary-normal-peer", from: subject, to: normal, amountRaw: "90000000" })
+      ],
+      snapshotsByAddress: new Map([[gasFree, snapshot(gasFree)]]),
+      classifications: new Map()
+    });
+
+    expect(profiles.find((profile) => profile.counterpartyAddress === gasFree)).toMatchObject({
+      volumeRaw: "100000000",
+      volumeRatio: 0.5263,
+      txCount: 2,
+      interactionWeight: 0.2375,
+      scoreContribution: 19
+    });
+  });
+
   it("keeps provider-partial snapshots at zero score", () => {
     const profiles = buildDirectCounterpartyInteractionProfiles({
       subjectAddress: subject,
