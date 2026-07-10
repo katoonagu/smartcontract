@@ -367,41 +367,42 @@ function walletProfileZeroBalanceReport(input: {
   anchorCoverageRatio?: number | null;
   episodeCoverageRatio?: number | null;
 }): WhereIsMoneyReport {
-  const labelScore = Math.max(0, ...input.labels.map((label) => walletProfileLabelScore(label.label)));
-  const fastScore = input.fastWalletRisk?.score ?? 0;
-  const riskScore = Math.max(fastScore, labelScore);
-  const hasHardLabel = input.labels.some((label) =>
-    walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label)
-  );
-  const decision: ExchangeDecision = hasHardLabel || riskScore >= 60
-    ? "DECLINE"
-    : riskScore >= 45
-      ? "REVIEW"
-      : "ACCEPTABLE";
   const labelReasons = input.labels
     .map((label) => ({ label: label.label, score: walletProfileLabelScore(label.label) }))
     .filter((label) => label.score > 0)
     .map((label) => `Internal label: ${label.label}.`);
-  const fastRiskReason = fastScore > 0 && input.fastWalletRisk
-    ? [`Fast wallet risk is ${input.fastWalletRisk.score}/100 (${input.fastWalletRisk.level}).`]
-    : [];
-  const decisionReasons = [
-    WALLET_PROFILE_ZERO_BALANCE_REASON,
-    ...fastRiskReason,
-    ...labelReasons
-  ];
+  const hardBadEvidence = input.labels
+    .filter((label) =>
+      walletProfileCriticalLabels.has(label.label) || label.label === "approval_drain_proximity"
+    )
+    .map((label) => ({
+      kind: "scam_or_blacklist" as const,
+      score: walletProfileLabelScore(label.label),
+      message: `Internal label: ${label.label}`,
+      evidenceIds: []
+    }));
+  const exactHard = hardBadEvidence.length > 0;
+  const decision: ExchangeDecision = exactHard ? "DECLINE" : "REVIEW";
+  const riskScore = exactHard ? Math.max(...hardBadEvidence.map((item) => item.score)) : 0;
+  const decisionFields = exactHard
+    ? {
+        decision,
+        internalDecision: decision,
+        userDecision: "DECLINE" as const,
+        proofLevel: "exact_scam_or_taint_proof" as const
+      }
+    : {
+        decision,
+        internalDecision: decision,
+        userDecision: "NO_FINAL_DECISION" as const,
+        proofLevel: "insufficient_coverage" as const
+      };
+  const decisionReasons = [WALLET_PROFILE_ZERO_BALANCE_REASON, ...labelReasons];
   const checkedScope = input.checkedScope ?? checkedScopeFor(input.provenanceScope, input.drainEpisode ?? null, input.anchorTransfer);
-  const hardBadEvidence = hasHardLabel
-    ? input.labels
-        .filter((label) => walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label))
-        .map((label) => ({
-          kind: "scam_or_blacklist" as const,
-          score: walletProfileLabelScore(label.label),
-          message: `Internal label: ${label.label}`,
-          evidenceIds: []
-        }))
-    : [];
   const assessment: WhereIsMoneyAssessment = {
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     decision,
     riskScore,
     riskBand: riskBandFromWhereScore(riskScore),
@@ -422,6 +423,9 @@ function walletProfileZeroBalanceReport(input: {
 
   return {
     subjectAddress: input.sourceAddress,
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     currentUsdtBalanceRaw: input.currentBalanceRaw,
     fastWalletRisk: input.fastWalletRisk,
     balanceFormingTransfers: [],
@@ -431,13 +435,7 @@ function walletProfileZeroBalanceReport(input: {
     approvalDrainReviewFindings: [],
     contractLlmVerdicts: [],
     assessment,
-    decision,
-    ...whereDecisionFields({
-      decision,
-      decisionReasons,
-      approvalDrainProvenanceProfileCount: 0,
-      assessment
-    }),
+    ...decisionFields,
     riskScore,
     decisionReasons,
     coverage: {
@@ -457,6 +455,7 @@ function walletProfileZeroBalanceReport(input: {
       anchorTransfer: input.anchorTransfer ?? null,
       maxDepth: input.maxDepth,
       fetchedAddressCount: 0,
+      questionStatus: "not_applicable",
       partial: false,
       notes: [WALLET_PROFILE_ZERO_BALANCE_REASON]
     },
@@ -560,6 +559,7 @@ function fallbackReviewReport(input: {
       dataScopeNote: input.dataScopeNote ?? null,
       maxDepth: input.maxDepth,
       fetchedAddressCount: input.fetchedAddressCount ?? 0,
+      questionStatus: "applicable",
       partial: true,
       notes: input.notes
     },
@@ -1708,6 +1708,7 @@ export async function runWhereIsMoneyCheck(
     dataScopeNote: selection.dataScopeNote ?? null,
     maxDepth,
     fetchedAddressCount: fetchedAddresses.size,
+    questionStatus: "applicable",
     partial: selection.partial || globalAddressBudgetExhausted || provenanceOriginPaths.some((path) => path.verdict === "REVIEW"),
     notes: [
       selection.provenanceScope === "recent_flow"

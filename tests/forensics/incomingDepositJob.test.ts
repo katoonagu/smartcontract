@@ -111,7 +111,11 @@ const validProgressJson = {
 function report(overrides: Partial<IncomingDepositRiskReport> = {}): IncomingDepositRiskReport {
   return {
     decision: "ACCEPTABLE",
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     depositRiskScore: 32,
+    observedContextScore: 32,
     riskBand: "LOW-MEDIUM",
     fastSenderRisk: null,
     originPaths: [],
@@ -394,6 +398,45 @@ describe("runSingleIncomingDepositJobCycle", () => {
       locale: "en"
     }));
     expect(events).toEqual(["send", "markSent", "complete:completed"]);
+  });
+
+  it("does not persist a generic observed risk for a completed no-final incoming result", async () => {
+    const complete = vi.fn(async () => true);
+    const send = vi.fn(async () => undefined);
+    const recordObservedTransactionRisk = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk,
+      sendUserAlert: send,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => report({
+        decision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved",
+        depositRiskScore: null,
+        observedContextScore: 45,
+        riskBand: null
+      })
+    });
+
+    expect(handled).toBe(true);
+    expect(recordObservedTransactionRisk).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      resultJson: expect.objectContaining({
+        decision: "NO_FINAL_DECISION",
+        depositRiskScore: null
+      })
+    }));
   });
 
   it("does not fail an incoming job when wallet intelligence indexing fails", async () => {
@@ -1747,8 +1790,14 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched")).toBe(true);
+    expect(result.originPaths
+      .filter((path) => path.stoppedReason === "incoming_history_not_fetched")
+      .every((path) => path.verdict === "REVIEW")).toBe(true);
     expect(result.decision).toBe("NO_FINAL_DECISION");
     expect(result.scoreValid).toBe(false);
+    expect(result.depositRiskScore).toBeNull();
+    expect(result.riskBand).toBeNull();
+    expect(result.observedContextScore).toEqual(expect.any(Number));
     expect(result.scoreBlockedReason).toBe("rate_limited_after_retries");
     expect(result.technicalStatus).toBe("provider_limited");
     expect(result.targetedHistoryCoverage).toMatchObject({
@@ -2042,12 +2091,13 @@ describe("buildIncomingDepositReport", () => {
     expect(result.sourceBundleExposure).toBeUndefined();
     expect(result.walletExposureProfile).toBeUndefined();
     expect(result.subjectExposureProfile).toBeUndefined();
-    expect(result.depositRiskScore).toBe(0);
+    expect(result.depositRiskScore).toBeNull();
+    expect(result.riskBand).toBeNull();
     expect(result.unifiedRiskSummary).toMatchObject({
-      finalScore: 0,
+      finalScore: null,
       backgroundScore: 0
     });
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("NO_FINAL_DECISION");
     expect(result.hardBadEvidence).toEqual([]);
     expect([...result.reasons, ...result.warnings].join(" ")).not.toMatch(
       /observed unknown source|uncovered checked-deposit source share|sender wallet historical exposure/i
@@ -2463,7 +2513,7 @@ describe("buildIncomingDepositReport", () => {
     expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
     expect(result.fundingCoverage.exactContinuityCoverageRatio).toBe(result.originCoverage);
     expect(result.fundingCoverage.exactContinuityCoverageRatio).toBeLessThan(0.2);
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("REVIEW");
   });
 
   it("records funding bundle context for a large intermediate transfer without changing decision", async () => {
@@ -2551,7 +2601,7 @@ describe("buildIncomingDepositReport", () => {
         fundingTxHashes: ["bundle-funding-1", "bundle-funding-2", "bundle-funding-3"]
       })
     ]));
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("REVIEW");
     expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
     expect(result.reasons.join(" ")).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
   });
@@ -2682,7 +2732,7 @@ describe("buildIncomingDepositReport", () => {
     }));
     expect(bundle?.deepExpansion?.fetchedAddressCount).toBeGreaterThanOrEqual(20);
     expect(bundle?.deepExpansion?.reasons).toContain("traced_edges:2");
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("REVIEW");
     expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
     expect(result.reasons.join(" ")).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
   });
@@ -2944,7 +2994,7 @@ describe("buildIncomingDepositReport", () => {
     expect(result.warnings.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
   });
 
-  it("keeps minority contextual source-policy paths acceptable when shared provenance is acceptable", async () => {
+  it("preserves minority contextual source-policy paths as review", async () => {
     const whitebit = "TWhitebitMinority11111111111111111";
     const cleanCex = "TBinanceMajority1111111111111111111";
     const whitebitRaw = "38406400131";
@@ -2995,12 +3045,12 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("REVIEW");
     expect(result.depositRiskScore).toBeLessThan(60);
     expect(result.hardBadEvidence).toEqual([]);
     expect(result.originPaths[0]).toEqual(expect.objectContaining({
       stoppedReason: "whitebit_reached",
-      verdict: "ACCEPTABLE",
+      verdict: "REVIEW",
       sourcePolicy: "medium_policy"
     }));
     expect(result.originPaths[0]?.verdict).not.toBe("DECLINE");
@@ -3795,7 +3845,7 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("REVIEW");
     expect(result.depositRiskScore).toBe(35);
     expect(result.originPaths[0]?.stoppedReason).toBe("unknown_contract_reached");
     expect(result.freshBundleExposure).toMatchObject({
@@ -3952,7 +4002,7 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.depositRiskScore).toBeLessThan(60);
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.decision).toBe("REVIEW");
     expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
     expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
     expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({

@@ -4985,10 +4985,15 @@ describe("deep forensic job runner", () => {
     const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
     expect(result.whereIsMoneyReport).toMatchObject({
       currentUsdtBalanceRaw: "0",
-      decision: "ACCEPTABLE",
+      decision: "REVIEW",
+      internalDecision: "REVIEW",
+      userDecision: "NO_FINAL_DECISION",
+      proofLevel: "insufficient_coverage",
+      scoreValid: true,
       riskScore: 0,
       coverage: expect.objectContaining({
         selectedInboundTxCount: 0,
+        questionStatus: "not_applicable",
         partial: false
       })
     });

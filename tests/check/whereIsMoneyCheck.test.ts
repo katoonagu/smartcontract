@@ -3902,12 +3902,47 @@ describe("runWhereIsMoneyCheck", () => {
 
     expect(report.currentUsdtBalanceRaw).toBe("0");
     expect(report.coverage.coverageRatio).toBe(0);
-    expect(report.decision).toBe("ACCEPTABLE");
-    expect(report.userDecision).toBe("ACCEPTABLE");
-    expect(report.proofLevel).toBe("clean_source_proven");
+    expect(report.coverage.questionStatus).toBe("not_applicable");
+    expect(report.coverage.partial).toBe(false);
+    expect(report.scoreValid).toBe(true);
+    expect(report.decision).toBe("REVIEW");
+    expect(report.internalDecision).toBe("REVIEW");
+    expect(report.userDecision).toBe("NO_FINAL_DECISION");
+    expect(report.proofLevel).toBe("insufficient_coverage");
     expect(report.assessment.reasons.join(" ")).toContain("Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.");
     expect(report.assessment.reasons.join(" ")).not.toContain("Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds.");
-    expect(report.riskScore).toBeLessThan(45);
+    expect(report.riskScore).toBe(0);
+  });
+
+  it("does not promote zero-balance darknet proximity context to exact hard proof", async () => {
+    const sourceAddress = "TZeroBalanceDarknetProximity111111111";
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async () => [],
+      fetchLatestEdgesForAddress: async () => [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [{
+        address: sourceAddress,
+        label: "darknet_exchange_proximity",
+        source: "system",
+        createdByTelegramId: null,
+        createdAt: new Date("2026-07-10T00:00:00.000Z")
+      }],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-04-29T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      mode: "wallet_profile"
+    });
+
+    expect(report).toMatchObject({
+      decision: "REVIEW",
+      userDecision: "NO_FINAL_DECISION",
+      proofLevel: "insufficient_coverage",
+      riskScore: 0
+    });
+    expect(report.assessment.hardBadEvidence).toEqual([]);
   });
 
   it("does not run cross-chain providers or attach a corridor when Stage 2 is disabled", async () => {

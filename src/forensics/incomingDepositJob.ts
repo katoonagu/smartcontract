@@ -30,6 +30,7 @@ import type {
   BotLocale,
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
+  DecisionCoverage,
   ForensicScoreBlockedReason,
   ForensicTechnicalStatus,
   ForensicRouteEdge,
@@ -900,7 +901,11 @@ function incomingPathFromWhere(
     ?? sourcePolicyEvidence.find((evidence) => evidence.kind === sourcePolicyKind)?.shareDetail;
 
   return {
-    verdict: path.verdict === "DECLINE" && path.riskScoreContribution >= 60 ? "DECLINE" : "ACCEPTABLE",
+    verdict: path.verdict === "DECLINE" && path.riskScoreContribution >= 60
+      ? "DECLINE"
+      : path.verdict === "REVIEW"
+        ? "REVIEW"
+        : "ACCEPTABLE",
     score: path.riskScoreContribution,
     sourcePolicy: incomingSourcePolicy(path),
     stoppedReason: incomingStoppedReason(path),
@@ -1102,6 +1107,22 @@ type IncomingTargetedCoverageBlock = {
   address: string | null;
 };
 
+function incomingDecisionCoverage(
+  whereReport: WhereIsMoneyReport,
+  targetedBlock: IncomingTargetedCoverageBlock | null
+): DecisionCoverage {
+  const invalid = targetedBlock !== null || whereReport.scoreValid !== true;
+  return {
+    required: invalid ? "invalid" : "valid",
+    overall: invalid || whereReport.coverage.partial ? "partial" : "complete",
+    invalidModes: invalid ? ["incoming_deposit_provenance"] : [],
+    caveats: [
+      ...whereReport.coverage.notes,
+      ...(targetedBlock ? [`${targetedBlock.scoreBlockedReason}:${targetedBlock.technicalStatus}`] : [])
+    ]
+  };
+}
+
 function targetedCoverageMapKey(address: string, targetTimestamp: string | Date | null | undefined): string {
   const raw = targetTimestamp instanceof Date ? targetTimestamp.toISOString() : targetTimestamp ?? "";
   const parsed = Date.parse(raw);
@@ -1285,6 +1306,10 @@ function incomingReportFromWhere(input: {
     subjectAddress: input.deposit.fromAddress,
     walletExposureProfile
   });
+  const decisionCoverage = incomingDecisionCoverage(
+    input.whereReport,
+    input.targetedCoverageBlock ?? null
+  );
   const unifiedRisk = calculateUnifiedIncomingDepositRisk({
     senderAddress: input.deposit.fromAddress,
     receiverAddress: input.deposit.toAddress,
@@ -1295,27 +1320,23 @@ function incomingReportFromWhere(input: {
     senderStablecoinState: input.senderStablecoinState,
     whereReport: input.whereReport,
     freshBundleExposure,
-    walletExposureProfile: walletExposureProfile ?? null
+    walletExposureProfile: walletExposureProfile ?? null,
+    decisionCoverage
   });
+  const decision: IncomingDepositDecision = unifiedRisk.finalDecision;
+  const scoreInvalid = !unifiedRisk.scoreValid;
   const depositRiskScore = unifiedRisk.finalScore;
-  const whereScoreInvalid = input.whereReport.scoreValid === false || unifiedRisk.finalDecision === "NO_FINAL_DECISION";
-  const scoreBlockedReason = input.targetedCoverageBlock?.scoreBlockedReason ??
-    input.whereReport.scoreBlockedReason ??
-    (whereScoreInvalid ? "insufficient_coverage" : null);
-  const technicalStatus = input.targetedCoverageBlock?.technicalStatus ??
-    input.whereReport.technicalStatus ??
-    (whereScoreInvalid ? "provider_cap_unresolved" : "completed");
-  const targetedScoreInvalid = input.targetedCoverageBlock !== null && input.targetedCoverageBlock !== undefined;
-  const scoreInvalid = targetedScoreInvalid || whereScoreInvalid;
-  const decision: IncomingDepositDecision = scoreInvalid
-    ? "NO_FINAL_DECISION"
-    : unifiedRisk.finalDecision === "DECLINE"
-      ? "DECLINE"
-      : "ACCEPTABLE";
+  const scoreBlockedReason = scoreInvalid
+    ? input.targetedCoverageBlock?.scoreBlockedReason ??
+      input.whereReport.scoreBlockedReason ??
+      "insufficient_coverage"
+    : null;
+  const technicalStatus = scoreInvalid
+    ? input.targetedCoverageBlock?.technicalStatus ??
+      input.whereReport.technicalStatus ??
+      "provider_cap_unresolved"
+    : "completed";
   const unifiedRiskSummary = incomingUnifiedRiskSummary(unifiedRisk);
-  if (scoreInvalid) {
-    unifiedRiskSummary.finalDecision = "NO_FINAL_DECISION";
-  }
   const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
     ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
     : null;
@@ -1326,7 +1347,8 @@ function incomingReportFromWhere(input: {
     scoreBlockedReason,
     technicalStatus,
     depositRiskScore,
-    riskBand: incomingRiskBandFromUnifiedScore(depositRiskScore),
+    observedContextScore: unifiedRisk.observedContextScore,
+    riskBand: depositRiskScore === null ? null : incomingRiskBandFromUnifiedScore(depositRiskScore),
     fastSenderRisk: input.fastSenderRisk,
     originPaths,
     originCoverage: incomingOriginCoverage(input.whereReport, input.deposit),
@@ -1346,9 +1368,9 @@ function incomingReportFromWhere(input: {
     ...(subjectExposureProfile ? { subjectExposureProfile } : {}),
     unifiedRiskSummary,
     reasons: uniqueStrings([
-      ...(input.targetedCoverageBlock
+      ...(scoreInvalid && input.targetedCoverageBlock
         ? [`Final incoming-deposit scoring is blocked until mandatory hop history is covered: ${input.targetedCoverageBlock.scoreBlockedReason}.`]
-        : whereScoreInvalid
+        : scoreInvalid
           ? [`Final incoming-deposit scoring is blocked because where-is-money scoring is invalid: ${scoreBlockedReason}.`]
         : []),
       ...hardBadEvidence.map((evidence) => evidence.message),
@@ -2085,10 +2107,14 @@ function riskLevelFromIncoming(report: IncomingDepositRiskReport): RiskLevel {
   return "LOW";
 }
 
-function riskReportFromIncoming(subjectAddress: string, report: IncomingDepositRiskReport): RiskReport {
+function riskReportFromIncoming(
+  subjectAddress: string,
+  report: IncomingDepositRiskReport,
+  depositRiskScore: number
+): RiskReport {
   return {
     subjectAddress,
-    score: report.depositRiskScore,
+    score: depositRiskScore,
     level: riskLevelFromIncoming(report),
     reasons: report.reasons.map((reason, index) => ({
       code: `incoming_deposit_reason_${index + 1}`,
@@ -2283,11 +2309,13 @@ export async function runSingleIncomingDepositJobCycle(
       timing,
       persistProgress
     }));
-    const riskReport = riskReportFromIncoming(sender, report);
-    await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
-    await timing.measure("record_risk", () =>
-      deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
-    );
+    if (report.depositRiskScore !== null) {
+      const riskReport = riskReportFromIncoming(sender, report, report.depositRiskScore);
+      await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
+      await timing.measure("record_risk", () =>
+        deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
+      );
+    }
 
     if (shouldSend(alertMode, report)) {
       const message = await timing.measure("format_alert", async () => deps.formatIncomingDepositRiskAlert({

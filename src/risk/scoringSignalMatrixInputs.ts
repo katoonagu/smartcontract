@@ -542,6 +542,7 @@ function whereCandidates(
   requireIncomingEvidenceLink = false
 ): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
+  const notApplicable = report.coverage.questionStatus === "not_applicable";
   const admits = (ids: string[]): boolean =>
     !requireIncomingEvidenceLink || evidenceLinkedToIncoming(report, ids, incomingTxHash);
 
@@ -551,6 +552,7 @@ function whereCandidates(
     const ids = evidenceIds(item.evidenceIds, `where_hard:${item.kind}`);
     const exact = hasExactWhereHardProof(context, report, item.kind) &&
       evidenceLinkedToIncoming(report, item.evidenceIds, incomingTxHash);
+    if (notApplicable && !exact) continue;
     const authority: MatrixEvidenceAuthority = exact
       ? { kind: "exact_hard", proofSource: incomingTxHash === null ? "where_exact_hard" : "incoming_exact_hard" }
       : item.kind === "sanctioned_service"
@@ -569,6 +571,8 @@ function whereCandidates(
       caveats: []
     }));
   }
+
+  if (notApplicable) return candidates;
 
   for (const item of report.assessment.hardBadEvidence) {
     if (deterministicWhereHardKinds.has(item.kind)) continue;

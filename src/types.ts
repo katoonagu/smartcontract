@@ -604,7 +604,7 @@ export type RiskCaseMode =
   | "deep_research"
   | "approval_monitoring";
 
-export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE" | "NO_FINAL_DECISION";
+export type IncomingDepositDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION";
 export type IncomingDepositRiskBand = "LOW" | "LOW-MEDIUM" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type IncomingDepositDataQuality = "low" | "medium" | "high";
 export type IncomingDepositSourcePolicy = "clean" | "medium_policy" | "hard_decline" | "unknown";
@@ -851,9 +851,13 @@ export type SubjectExposureProfile = {
 };
 
 export type IncomingDepositUnifiedRiskSummary = {
-  finalScore: number;
-  finalLevel: RiskLevel;
+  finalScore: number | null;
+  finalLevel: RiskLevel | null;
   finalDecision: UserExchangeDecision;
+  observedContextScore: number;
+  scoreValid: boolean;
+  decisionBasis: FinalDecisionBasis;
+  coverage: DecisionCoverage;
   matrixDecision?: "ACCEPTABLE" | "REVIEW" | "DECLINE" | "INSUFFICIENT_EVIDENCE";
   winningRow?: string;
   policyScore?: number | null;
@@ -889,8 +893,9 @@ export type IncomingDepositTargetedCoverageSummary = {
 
 export type IncomingDepositRiskReport = ForensicScoreValidity & {
   decision: IncomingDepositDecision;
-  depositRiskScore: number;
-  riskBand: IncomingDepositRiskBand;
+  depositRiskScore: number | null;
+  observedContextScore: number;
+  riskBand: IncomingDepositRiskBand | null;
   fastSenderRisk: RiskReport | null;
   originPaths: IncomingDepositOriginPath[];
   originCoverage: number;
@@ -1649,6 +1654,7 @@ export type WhereIsMoneyCoverage = {
   dataScopeNote?: string | null;
   maxDepth: number;
   fetchedAddressCount: number;
+  questionStatus?: "applicable" | "not_applicable";
   partial: boolean;
   notes: string[];
 };

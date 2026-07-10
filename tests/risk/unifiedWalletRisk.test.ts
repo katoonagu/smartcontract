@@ -109,6 +109,9 @@ function whereReport(score: number, overrides: Partial<WhereIsMoneyReport> = {})
   const assessment = overrides.assessment ?? whereAssessment(score);
   return {
     subjectAddress: address,
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     currentUsdtBalanceRaw: "0",
     fastWalletRisk: null,
     balanceFormingTransfers: [],
@@ -132,6 +135,7 @@ function whereReport(score: number, overrides: Partial<WhereIsMoneyReport> = {})
       checkedScope: "current_balance",
       maxDepth: 20,
       fetchedAddressCount: 10,
+      questionStatus: "applicable",
       partial: false,
       notes: []
     },
@@ -564,6 +568,44 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     expect(result.reasons.map((reason) => reason.code)).toContain("stablecoin_usdt_blacklisted");
   });
 
+  it("keeps exact incoming hard proof decisive through invalid provenance coverage", () => {
+    const senderAddress = "TBlacklistedSender111111111111111111";
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress,
+      receiverAddress: "TWatchedWallet1111111111111111111",
+      txHash: "tx-blacklisted-invalid-incoming",
+      amountRaw: "1000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: {
+        ...blacklistProfile(),
+        subjectAddress: senderAddress
+      },
+      whereReport: whereReport(45, {
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved"
+      }),
+      decisionCoverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: ["incoming_deposit_provenance"],
+        caveats: ["provider_cap_unresolved"]
+      }
+    });
+
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 95,
+      scoreValid: true,
+      decisionBasis: "exact_hard_proof",
+      coverage: {
+        overall: "partial",
+        invalidModes: ["incoming_deposit_provenance"]
+      }
+    });
+  });
+
   it("preserves no-final-decision when where scoring is technically invalid", () => {
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress: address,
@@ -590,7 +632,42 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       })
     });
 
-    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      finalLevel: null,
+      scoreValid: false,
+      observedContextScore: expect.any(Number),
+      decisionBasis: "technical_stop"
+    });
+  });
+
+  it("does not use unrelated Deep exact evidence as the incoming decision basis", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: address,
+      receiverAddress: `T${"2".repeat(33)}`,
+      txHash: "tx-incoming-unrelated-deep-hard",
+      amountRaw: "1000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        stablecoinRestrictionProfiles: [{
+          ...blacklistProfile(),
+          subjectAddress: "TUnrelatedDeepSubject111111111111111"
+        }]
+      }),
+      decisionCoverage: {
+        required: "valid",
+        overall: "complete",
+        invalidModes: [],
+        caveats: []
+      }
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result).not.toMatchObject({ decisionBasis: "exact_hard_proof" });
   });
 
   it("uses deposit-scoped matrix source policy for fresh HTX/Huobi bundle", () => {
@@ -651,6 +728,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
     expect(result.matrixScore.policyScore).toBeLessThan(60);
     expect(result.matrixScore.matrixDecision).toBe("REVIEW");
+    expect(result.finalDecision).toBe("REVIEW");
   });
 
   it("floors incoming deposit risk when HTX/Huobi materially funds the fresh bundle", () => {
@@ -755,7 +833,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     expect(result.finalLevel).toBe("HIGH");
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
-      applied: true,
+      applied: false,
       maxScore: 84
     });
   });
@@ -795,7 +873,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     expect(result.finalDecision).toBe("ACCEPTABLE");
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
-      applied: false,
+      applied: true,
       maxScore: 84
     });
     expect(incomingUnifiedRiskSummary(result)).toMatchObject({
@@ -861,7 +939,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
 
     expect(result.finalScore).toBe(45);
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalDecision).toBe("REVIEW");
     expect(result.reasons.map((reason) => reason.code)).toContain("incoming_fresh_unknown_contract_source");
     expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_service_corridor_context");
     expect(incomingUnifiedRiskSummary(result)).toMatchObject({
@@ -895,7 +973,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
 
     expect(result.finalScore).toBe(40);
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalDecision).toBe("REVIEW");
     expect(result.reasons.map((reason) => reason.code)).toContain("incoming_htx_huobi_corridor_context");
     expect(incomingUnifiedRiskSummary(result)).toMatchObject({
       freshBundleFloor: 0,
@@ -991,8 +1069,10 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.hardEvidenceFloor).toBe(0);
-    expect(result.finalScore).toBeLessThan(60);
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalScore).toBeNull();
+    expect(result.finalLevel).toBeNull();
+    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
+    expect(result.scoreValid).toBe(false);
     expect(result.layerBreakdown.deep.weightedContribution).toBe(0);
   });
 
@@ -1136,8 +1216,8 @@ describe("calculateUnifiedWalletRisk", () => {
 
     expect(result.matrixScore.policyScore).toBeNull();
     expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
-    expect(result.finalScore).toBe(0);
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalScore).toBeNull();
+    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
   });
 
   it("uses matrix source-policy score as final score after switch", () => {
@@ -1672,9 +1752,35 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.hardEvidenceFloor).toBe(0);
-    expect(result.finalDecision).not.toBe("DECLINE");
+    expect(result.finalDecision).toBe("REVIEW");
     expect(result.reasons.map((reason) => reason.code)).not.toContain("fast_critical");
     expect(result.reasons.map((reason) => reason.code)).not.toContain("scam_or_blacklist");
+  });
+
+  it("uses applicable Fast context when zero-balance Where is not applicable", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(90, [{
+        code: "critical_context_only",
+        message: "Fast Check found critical context only.",
+        scoreImpact: 90
+      }]),
+      whereReport: whereReport(0, {
+        decision: "REVIEW",
+        internalDecision: "REVIEW",
+        userDecision: "NO_FINAL_DECISION",
+        proofLevel: "insufficient_coverage",
+        coverage: {
+          ...whereReport(0).coverage,
+          questionStatus: "not_applicable",
+          partial: false
+        }
+      })
+    });
+
+    expect(result.finalDecision).toBe("REVIEW");
+    expect(result.coverage.required).toBe("not_applicable");
+    expect(result.matrixScore.riskVector.clean_or_operational ?? []).toEqual([]);
   });
 
   it.each([
@@ -1904,9 +2010,9 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.reasons.some((reason) => reason.code === "weighted_layer_score")).toBe(false);
     expect(result.matrixScore.policyScore).toBeNull();
     expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
-    expect(result.finalScore).toBe(0);
-    expect(result.finalLevel).toBe("LOW");
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalScore).toBeNull();
+    expect(result.finalLevel).toBeNull();
+    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
     expect(result.coverageLevel).toBe("partial");
   });
 
@@ -1979,9 +2085,9 @@ describe("calculateUnifiedWalletRisk", () => {
 
     expect(result.matrixScore.policyScore).toBeNull();
     expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
-    expect(result.finalScore).toBe(0);
-    expect(result.finalLevel).toBe("LOW");
-    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.finalScore).toBeNull();
+    expect(result.finalLevel).toBeNull();
+    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.policyFloor).toBe(0);
   });
@@ -2296,7 +2402,7 @@ describe("calculateUnifiedWalletRisk", () => {
       expect(result.finalLevel).toBe("HIGH");
       expect(result.finalDecision).toBe("DECLINE");
       expect(result.scoreBreakdown.activeAnchor).toMatchObject({
-        code: "asset_continuation_floor",
+        code: "asset_continuation",
         score: 84,
         source: "asset_continuation"
       });
@@ -2555,10 +2661,46 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeLessThan(60);
   });
 
+  it("keeps exact Wallet hard proof decisive through invalid Where coverage", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(90, [{
+        code: "stablecoin_usdt_blacklisted",
+        message: "Official USDT blacklist state is active.",
+        scoreImpact: 90,
+        evidenceRef: "fast-blacklist-invalid-where"
+      }]),
+      whereReport: whereReport(0, {
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved",
+        coverage: {
+          ...whereReport(0).coverage,
+          partial: true,
+          notes: ["provider limit"]
+        }
+      })
+    });
+
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 95,
+      scoreValid: true,
+      decisionBasis: "exact_hard_proof",
+      coverage: {
+        overall: "partial",
+        invalidModes: ["where_is_money"]
+      }
+    });
+  });
+
   it("reports limited coverage with no evidence as insufficient instead of adding badness", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(0, {
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved",
         assessment: whereAssessment(0, { coverageCompleteness: 0 }),
         coverage: {
           selectedInboundTxCount: 0,
@@ -2568,6 +2710,7 @@ describe("calculateUnifiedWalletRisk", () => {
           checkedScope: "recent_flow",
           maxDepth: 20,
           fetchedAddressCount: 1,
+          questionStatus: "applicable",
           partial: true,
           notes: ["provider limit"]
         }
@@ -2590,8 +2733,13 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.contextScore).toBeGreaterThanOrEqual(30);
     expect(result.matrixScore.policyScore).toBeNull();
     expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
-    expect(result.finalScore).toBe(0);
-    expect(result.finalLevel).toBe("LOW");
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      finalLevel: null,
+      scoreValid: false,
+      observedContextScore: expect.any(Number)
+    });
   });
 
   it("keeps limited coverage insufficient even when legacy dampeners apply", () => {
@@ -2629,18 +2777,20 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.coverageLevel).toBe("limited");
     expect(result.matrixScore.policyScore).toBeNull();
     expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
-    expect(result.finalScore).toBe(0);
-    expect(result.finalLevel).toBe("LOW");
+    expect(result.finalScore).toBeNull();
+    expect(result.finalLevel).toBeNull();
   });
 
-  it("treats mixer-like inbound provenance as hard evidence", () => {
+  it("keeps mixer-like inbound provenance as a matrix pattern rather than exact hard proof", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(0),
       deepReport: deepReport({ inboundProvenanceProfiles: [inboundProvenanceProfile("mixer_like")] })
     });
 
-    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(85);
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.patternFloor).toBeGreaterThanOrEqual(85);
+    expect(result.decisionBasis).toBe("matrix");
   });
 
   it("does not treat darknet-exchange proximity inbound provenance as hard evidence", () => {
