@@ -84,19 +84,40 @@ function uintWord(word: string): bigint | null {
   }
 }
 
-function selectedTransfers(transaction: Record<string, unknown>): Record<string, unknown>[] {
+function selectedTransfers(transaction: Record<string, unknown>): unknown[] {
   for (const key of TRANSFER_LIST_KEYS) {
     const rows = transaction[key];
     if (!Array.isArray(rows) || rows.length === 0) continue;
-    return rows.map(record).filter((row): row is Record<string, unknown> => row !== null);
+    return rows;
   }
   return [];
 }
 
-function rowToken(row: Record<string, unknown>): string | null {
-  const tokenInfo = record(row.tokenInfo) ?? record(row.token_info);
-  return text(row, "contract_address", "contractAddress", "token_id", "tokenId")
-    ?? text(tokenInfo, "tokenId", "token_id");
+type RowTokenClassification = "official_usdt" | "explicit_other_token" | "invalid_or_conflicting";
+
+function rowToken(row: Record<string, unknown>): RowTokenClassification {
+  const tokenInfoValue = row.tokenInfo;
+  const tokenInfo = tokenInfoValue === undefined || tokenInfoValue === null
+    ? null
+    : record(tokenInfoValue);
+  if (tokenInfoValue !== undefined && tokenInfoValue !== null && !tokenInfo) return "invalid_or_conflicting";
+
+  const aliases: unknown[] = [];
+  for (const key of ["contract_address", "contractAddress", "tokenId"] as const) {
+    if (Object.prototype.hasOwnProperty.call(row, key)) aliases.push(row[key]);
+  }
+  if (tokenInfo) {
+    for (const key of ["tokenId", "token_id"] as const) {
+      if (Object.prototype.hasOwnProperty.call(tokenInfo, key)) aliases.push(tokenInfo[key]);
+    }
+  }
+  if (aliases.length === 0) return "invalid_or_conflicting";
+
+  const normalized = aliases.map(normalizedAddress);
+  if (normalized.some((address) => address === null)) return "invalid_or_conflicting";
+  const canonical = normalized[0]!;
+  if (normalized.some((address) => address !== canonical)) return "invalid_or_conflicting";
+  return sameAddress(canonical, TRON_USDT_CONTRACT_ADDRESS) ? "official_usdt" : "explicit_other_token";
 }
 
 function rowAmount(row: Record<string, unknown>): string | null {
@@ -111,18 +132,32 @@ function sameAddress(left: unknown, right: unknown): boolean {
 
 function hasSuccessfulResult(transaction: Record<string, unknown>): boolean {
   let found = false;
-  for (const key of ["contractRet", "contract_ret", "finalResult"] as const) {
+  for (const key of ["contractRet", "contract_ret", "finalResult", "result"] as const) {
     const value = transaction[key];
-    if (value === undefined || value === null || (typeof value === "string" && value.trim().length === 0)) continue;
-    if (typeof value !== "string" || value.trim().toUpperCase() !== "SUCCESS") return false;
+    if (value === undefined || value === null) continue;
+    if (value !== true && (typeof value !== "string" || value.trim().toUpperCase() !== "SUCCESS")) return false;
     found = true;
   }
   return found;
 }
 
+function hasSuccessfulStatus(transaction: Record<string, unknown>): boolean {
+  const value = transaction.status;
+  if (value === undefined || value === null) return true;
+  if (value === true || value === 0) return true;
+  if (typeof value !== "string") return false;
+  return ["0", "SUCCESS", "CONFIRMED"].includes(value.trim().toUpperCase());
+}
+
 export function extractGasFreeSettlement(transactionInfo: unknown): GasFreeSettlement | null {
   const transaction = record(transactionInfo);
-  if (!transaction || transaction.confirmed !== true || transaction.revert === true || !hasSuccessfulResult(transaction)) {
+  if (
+    !transaction ||
+    transaction.confirmed !== true ||
+    (transaction.revert !== undefined && transaction.revert !== null && transaction.revert !== false) ||
+    !hasSuccessfulResult(transaction) ||
+    !hasSuccessfulStatus(transaction)
+  ) {
     return null;
   }
 
@@ -171,12 +206,19 @@ export function extractGasFreeSettlement(transactionInfo: unknown): GasFreeSettl
     return null;
   }
 
-  const transferRows = selectedTransfers(transaction)
-    .filter((row) => sameAddress(rowToken(row), TRON_USDT_CONTRACT_ADDRESS));
+  const transferRows: Record<string, unknown>[] = [];
+  for (const value of selectedTransfers(transaction)) {
+    const row = record(value);
+    if (!row) return null;
+    const token = rowToken(row);
+    if (token === "invalid_or_conflicting") return null;
+    if (token === "official_usdt") transferRows.push(row);
+  }
   if (transferRows.length === 0) return null;
 
   let accountAddress: string | null = null;
   const movements: GasFreeSettlementMovement[] = [];
+  const movementKeys = new Set<string>();
   for (const row of transferRows) {
     const fromAddress = normalizedAddress(text(row, "from_address", "fromAddress", "from"));
     const toAddress = normalizedAddress(text(row, "to_address", "toAddress", "to"));
@@ -184,6 +226,10 @@ export function extractGasFreeSettlement(transactionInfo: unknown): GasFreeSettl
     if (!fromAddress || !toAddress || !amountRaw || !/^\d+$/.test(amountRaw)) return null;
     if (accountAddress !== null && accountAddress !== fromAddress) return null;
     accountAddress ??= fromAddress;
+    const movementKey = `${fromAddress}|${toAddress}|${amountRaw}`;
+    // ponytail: edges lack provider eventIndex/logIndex, so identical tuples are ambiguous; carry stable event identity through movement + edge before allowing them.
+    if (movementKeys.has(movementKey)) return null;
+    movementKeys.add(movementKey);
     movements.push({
       role: sameAddress(toAddress, receiverAddress) ? "principal" : "service_fee",
       fromAddress,
@@ -227,11 +273,12 @@ export function gasFreeMovementForEdge(
   settlement: GasFreeSettlement,
   edge: Pick<ForensicRouteEdge, "fromAddress" | "toAddress" | "amountRaw">
 ): GasFreeSettlementMovement | null {
-  return settlement.movements.find((movement) =>
+  const matches = settlement.movements.filter((movement) =>
     movement.amountRaw === edge.amountRaw &&
     sameAddress(movement.fromAddress, edge.fromAddress) &&
     sameAddress(movement.toAddress, edge.toAddress)
-  ) ?? null;
+  );
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export function extractGasFreeEdgeContext(

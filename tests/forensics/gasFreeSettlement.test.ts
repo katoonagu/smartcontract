@@ -118,6 +118,40 @@ describe("extractGasFreeSettlement", () => {
   });
 
   it.each([
+    ["non-record entry", [row(RECEIVER, "97000000"), null]],
+    ["empty record", [row(RECEIVER, "97000000"), {}]],
+    ["tokenless transfer-looking row", [
+      row(RECEIVER, "97000000"),
+      { from_address: ACCOUNT, to_address: OTHER_FEE, amount_str: "3000000" }
+    ]],
+    ["conflicting token aliases", [{
+      ...row(RECEIVER, "97000000"),
+      tokenInfo: { tokenId: ACCOUNT, tokenAbbr: "USDT", tokenType: "trc20" }
+    }]]
+  ])("rejects malformed authoritative rows: %s", (_name, rows) => {
+    expect(extractGasFreeSettlement(transaction(rows))).toBeNull();
+  });
+
+  it("ignores an explicit valid non-USDT row whose token aliases agree", () => {
+    const nonUsdtRow = {
+      from_address: ACCOUNT,
+      to_address: OTHER_FEE,
+      amount_str: "3000000",
+      contract_address: ACCOUNT,
+      contractAddress: TronWeb.address.toHex(ACCOUNT),
+      tokenId: ACCOUNT,
+      tokenInfo: {
+        tokenId: ACCOUNT,
+        token_id: `0x${TronWeb.address.toHex(ACCOUNT).slice(2)}`
+      }
+    };
+    expect(extractGasFreeSettlement(transaction([
+      row(RECEIVER, "97000000"),
+      nonUsdtRow
+    ]))).toMatchObject({ principalAmountRaw: "97000000", serviceFeeAmountRaw: "0" });
+  });
+
+  it.each([
     ["15000000", "2000000"],
     ["42000000", "1000000"]
   ])("accepts later value %s with dynamic fee %s", (valueRaw, feeRaw) => {
@@ -129,6 +163,35 @@ describe("extractGasFreeSettlement", () => {
     expect(result).toMatchObject({ principalAmountRaw: valueRaw, serviceFeeAmountRaw: feeRaw });
   });
 
+  it("rejects duplicate indistinguishable canonical USDT movements", () => {
+    const fee = row(OTHER_FEE, "1000000");
+    expect(extractGasFreeSettlement(transaction([
+      row(RECEIVER, "97000000"),
+      fee,
+      { ...fee }
+    ]))).toBeNull();
+  });
+
+  it.each([true, "SUCCESS"])("accepts successful result form %s as the required result evidence", (result) => {
+    const input = { ...transaction([row(RECEIVER, "97000000")]) } as Record<string, unknown>;
+    delete input.contractRet;
+    input.result = result;
+    expect(extractGasFreeSettlement(input)).not.toBeNull();
+  });
+
+  it.each([true, 0, "0", "SUCCESS", "CONFIRMED"])("accepts successful status form %s", (status) => {
+    expect(extractGasFreeSettlement({
+      ...transaction([row(RECEIVER, "97000000")]),
+      status
+    })).not.toBeNull();
+  });
+
+  it("allows a missing revert field", () => {
+    const input = { ...transaction([row(RECEIVER, "97000000")]) } as Record<string, unknown>;
+    delete input.revert;
+    expect(extractGasFreeSettlement(input)).not.toBeNull();
+  });
+
   it.each([
     ["fee exceeds maxFee", transaction([row(RECEIVER, "97000000"), row(TLNT, "3000001")], 97_000_000n, 3_000_000n)],
     ["principal does not equal value", transaction([row(RECEIVER, "96000000"), row(TLNT, "1000000")])],
@@ -138,7 +201,10 @@ describe("extractGasFreeSettlement", () => {
     ["malformed calldata", { ...transaction([row(RECEIVER, "97000000")]), contractData: { contract_address: CONTROLLER, data: "0x6f21b898zz" } }],
     ["unconfirmed transaction", { ...transaction([row(RECEIVER, "97000000")]), confirmed: false }],
     ["failed transaction", { ...transaction([row(RECEIVER, "97000000")]), contractRet: "REVERT" }],
-    ["conflicting success aliases", { ...transaction([row(RECEIVER, "97000000")]), finalResult: "REVERT" }]
+    ["conflicting success aliases", { ...transaction([row(RECEIVER, "97000000")]), finalResult: "REVERT" }],
+    ["failed result alias", { ...transaction([row(RECEIVER, "97000000")]), result: "FAILED" }],
+    ["failed status", { ...transaction([row(RECEIVER, "97000000")]), status: "FAILED" }],
+    ["malformed revert", { ...transaction([row(RECEIVER, "97000000")]), revert: "false" }]
   ])("rejects %s", (_name, input) => {
     expect(extractGasFreeSettlement(input)).toBeNull();
   });
@@ -184,6 +250,26 @@ describe("extractGasFreeSettlement", () => {
       settlement: { protocol: "tron_gasfree" },
       movement: { role: "principal" }
     });
+  });
+
+  it("does not guess when duplicate settlement movements match one edge", () => {
+    const settlement = extractGasFreeSettlement(transaction([
+      row(RECEIVER, "97000000"),
+      row(OTHER_FEE, "1000000")
+    ]));
+    expect(settlement).not.toBeNull();
+
+    for (const role of ["principal", "service_fee"] as const) {
+      const movement = settlement!.movements.find((item) => item.role === role)!;
+      expect(gasFreeMovementForEdge({
+        ...settlement!,
+        movements: [...settlement!.movements, { ...movement }]
+      }, {
+        fromAddress: movement.fromAddress,
+        toAddress: movement.toAddress,
+        amountRaw: movement.amountRaw
+      })).toBeNull();
+    }
   });
 
   it("identifies only GasFree service-fee edges", () => {
