@@ -87,6 +87,18 @@ function rawActionOrReasonText(message: string, locale: BotLocale): string | nul
       return locale === "ru"
         ? "Проверка уперлась в лимит данных провайдера; финальный риск нельзя считать полностью доказанным."
         : "Provider data limit was reached; the final risk cannot be treated as fully proven.";
+    case "local_budget_limited":
+      return locale === "ru"
+        ? "Достигнут локальный лимит чтения истории; итоговый риск не опубликован."
+        : "The local history read limit was reached; no final risk score was published.";
+    case "local_index_read_failed":
+      return locale === "ru"
+        ? "Локальную индексированную историю не удалось прочитать; итоговый риск не опубликован."
+        : "The local indexed history could not be read; no final risk score was published.";
+    case "local_data_error":
+      return locale === "ru"
+        ? "Локальные данные происхождения средств временно недоступны."
+        : "Local provenance data is temporarily unavailable.";
     case "partial_budget_exhausted":
       return locale === "ru"
         ? "Проверка уперлась в локальный бюджет загрузки истории; финальный вывод требует догрузки данных."

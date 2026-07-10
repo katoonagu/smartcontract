@@ -188,6 +188,141 @@ function liveTransfer(overrides: Partial<RawTronscanTrc20Transfer>): RawTronscan
   };
 }
 
+async function runCompleteIncomingTargetedMaterializationScenario(input: {
+  hopRows: IndexedTronUsdtTransfer[] | ((context: {
+    hub: string;
+    upstreamSource: string;
+    fundingTimestamp: Date;
+  }) => IndexedTronUsdtTransfer[]);
+  throwOnHopRead?: boolean;
+  localIndexMaterializationMaxRows?: number;
+}) {
+  const hub = "TIncomingMaterializedHub111111111111111";
+  const upstreamSource = "TIncomingMaterializedCex111111111111111";
+  const fundingTimestamp = new Date("2026-05-29T13:30:00.000Z");
+  const hopRows = typeof input.hopRows === "function"
+    ? input.hopRows({ hub, upstreamSource, fundingTimestamp })
+    : input.hopRows;
+  const indexOffsets: number[] = [];
+  const indexDirections: string[] = [];
+  let targetedLiveProviderCalls = 0;
+  const queueAddressUsdtHistory = vi.fn(async (
+    request: Parameters<NonNullable<IncomingDepositRuntimeDeps["queueAddressUsdtHistory"]>>[0]
+  ) => queuedTargetedIndexState({
+    address: request.address,
+    targetTimestamp: request.targetTimestamp,
+    requestedByJobId: request.requestedByJobId,
+    queuedReason: request.queuedReason
+  }));
+  const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+  const listIndexedUsdtTransfersForAddress = vi.fn(async (
+    address: string,
+    options: Parameters<IncomingDepositRuntimeDeps["listIndexedUsdtTransfersForAddress"]>[1]
+  ) => {
+    if (address === validProgressJson.sender) {
+      return [indexedTransfer({
+        txHash: "materialized-hub-funded-sender",
+        fromAddress: hub,
+        toAddress: validProgressJson.sender,
+        amountRaw: validProgressJson.amountRaw,
+        blockTimestamp: fundingTimestamp
+      })];
+    }
+    if (address !== hub || options.maxTimestamp?.getTime() !== fundingTimestamp.getTime()) return [];
+    indexOffsets.push(options.offset ?? 0);
+    indexDirections.push(options.direction);
+    if (input.throwOnHopRead) throw new Error("local index temporarily unavailable");
+    const offset = options.offset ?? 0;
+    return hopRows.slice(offset, offset + options.limit);
+  });
+  const listRelatedTrc20Transfers = vi.fn(async (
+    address: string,
+    options: Parameters<IncomingDepositRuntimeDeps["listRelatedTrc20Transfers"]>[1]
+  ) => {
+    if (address === hub && options.endTimestamp === fundingTimestamp.getTime()) {
+      targetedLiveProviderCalls += 1;
+    }
+    return [];
+  });
+
+  const result = await buildIncomingDepositReport({
+    deps: {
+      listIndexedUsdtTransfersForAddress,
+      listRelatedTrc20Transfers,
+      getAddressUsdtIndexState: async (request) => request.address === hub &&
+        request.targetTimestamp?.getTime() === fundingTimestamp.getTime()
+        ? {
+            ...queuedTargetedIndexState({
+              address: hub,
+              targetTimestamp: fundingTimestamp,
+              requestedByJobId: "job-incoming-1",
+              queuedReason: "incoming_deposit_hop"
+            }),
+            requestKind: "broad_targeted",
+            status: "complete",
+            statusReason: "complete_provider_windowed",
+            completedAt: new Date("2026-07-02T00:00:00.000Z")
+          }
+        : null,
+      queueAddressUsdtHistory,
+      releaseForensicCheckJobToWaiting,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+        address === upstreamSource
+          ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+          : null,
+      getContractIntelligenceProfile: async () => null,
+      getTransaction: async () => ({}),
+      getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+    },
+    job: job(validProgressJson),
+    depositTxHash,
+    watchedWallet: validProgressJson.watchedWallet,
+    sender: validProgressJson.sender,
+    amountRaw: validProgressJson.amountRaw,
+    timestamp: new Date(validProgressJson.timestamp),
+    localIndexMaterializationMaxRows: input.localIndexMaterializationMaxRows,
+    persistProgress: async (patch) => patch
+  });
+
+  return {
+    result,
+    hub,
+    upstreamSource,
+    fundingTimestamp,
+    indexOffsets,
+    indexDirections,
+    targetedLiveProviderCalls,
+    queueAddressUsdtHistory,
+    releaseForensicCheckJobToWaiting
+  };
+}
+
+function incomingMaterializationRows(input: {
+  hub: string;
+  upstreamSource: string;
+  fundingTimestamp: Date;
+}): IndexedTronUsdtTransfer[] {
+  return [
+    ...Array.from({ length: 200 }, (_, index) => indexedTransfer({
+      txHash: `materialized-filler-${index}`,
+      eventIndex: index,
+      fromAddress: `TIncomingFiller${index}`,
+      toAddress: input.hub,
+      amountRaw: "1",
+      blockTimestamp: new Date(input.fundingTimestamp.getTime() - ((index + 1) * 1_000))
+    })),
+    indexedTransfer({
+      txHash: "materialized-row-201-upstream",
+      eventIndex: 200,
+      fromAddress: input.upstreamSource,
+      toAddress: input.hub,
+      amountRaw: validProgressJson.amountRaw,
+      blockTimestamp: new Date("2026-05-29T13:20:00.000Z")
+    })
+  ];
+}
+
 describe("runSingleIncomingDepositJobCycle", () => {
   it("completes an incoming deposit job and sends one final alert", async () => {
     const events: string[] = [];
@@ -1367,6 +1502,73 @@ describe("buildIncomingDepositReport", () => {
       read.maxTimestamp?.getTime() === new Date(validProgressJson.timestamp).getTime()
     );
     expect(senderWindowReads).toHaveLength(2);
+  });
+
+  it("materializes row 201 from a complete targeted index", async () => {
+    const scenario = await runCompleteIncomingTargetedMaterializationScenario({
+      hopRows: incomingMaterializationRows
+    });
+
+    expect(scenario.indexOffsets).toEqual([0, 200]);
+    expect(scenario.indexDirections).toEqual(["both", "both"]);
+    expect(scenario.targetedLiveProviderCalls).toBe(0);
+    expect(scenario.queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(scenario.releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+    expect(scenario.result.originPaths.flatMap((path) => path.pathAddresses)).toContain(scenario.upstreamSource);
+    expect(scenario.result).toMatchObject({ scoreValid: true });
+    expect(scenario.result.targetedHistoryCoverage).toMatchObject({
+      pagesFetched: 2,
+      transfersFetched: 201,
+      partialHopCount: 0
+    });
+  });
+
+  it("maps a complete-index read failure to local_data_error", async () => {
+    const scenario = await runCompleteIncomingTargetedMaterializationScenario({
+      hopRows: [],
+      throwOnHopRead: true
+    });
+
+    expect(scenario.indexOffsets).toEqual([0]);
+    expect(scenario.indexDirections).toEqual(["both"]);
+    expect(scenario.targetedLiveProviderCalls).toBe(0);
+    expect(scenario.queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(scenario.releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+    expect(scenario.result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      scoreBlockedReason: "local_index_read_failed",
+      technicalStatus: "local_data_error"
+    });
+    expect(scenario.result.targetedHistoryCoverage).toMatchObject({
+      firstBlockingReason: "local_index_read_failed",
+      firstBlockingTechnicalStatus: "local_data_error"
+    });
+    expect(scenario.result.warnings.join(" ").toLowerCase()).not.toContain("provider cap");
+  });
+
+  it("maps a complete-index local row limit before provider acquisition status", async () => {
+    const scenario = await runCompleteIncomingTargetedMaterializationScenario({
+      hopRows: incomingMaterializationRows,
+      localIndexMaterializationMaxRows: 200
+    });
+
+    expect(scenario.indexOffsets).toEqual([0, 200]);
+    expect(scenario.indexDirections).toEqual(["both", "both"]);
+    expect(scenario.targetedLiveProviderCalls).toBe(0);
+    expect(scenario.queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(scenario.result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      scoreBlockedReason: "local_budget_limited",
+      technicalStatus: "local_budget_limited"
+    });
+    expect(scenario.result.targetedHistoryCoverage).toMatchObject({
+      transfersFetched: 200,
+      firstBlockingReason: "local_budget_limited",
+      firstBlockingTechnicalStatus: "local_budget_limited"
+    });
+    expect(scenario.result.warnings.join(" ").toLowerCase()).not.toContain("provider cap");
   });
 
   it("queues incoming candidate windows before broad targeted fallback", async () => {

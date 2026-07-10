@@ -70,9 +70,18 @@ import {
   buildIncomingFreshBundleExposure,
   buildIncomingWalletExposureProfile
 } from "./incomingDepositExposureProfile";
-import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
+import { buildBalanceFormingSlice } from "./balanceFormingSlice";
+import {
+  DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
+  indexedTransferToRouteEdge,
+  materializeIndexedTransferWindow
+} from "./localTronUsdtIndex";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { isExactGasFreeServiceFeePath, traceMoneyOriginPath } from "./moneyOriginTrace";
+import {
+  DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
+  DEFAULT_MAX_BUNDLE_FUNDERS
+} from "./provenanceTracingConfig";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
 import { buildSourceBundleExposure, unresolvedBoundaryFromFindings } from "./sourceBundleExposure";
@@ -97,6 +106,13 @@ type CompleteJobInput = {
 };
 
 type IncomingDepositRiskReportBase = Omit<IncomingDepositRiskReport, "fundingCoverage" | "corridorSummary">;
+
+type IncomingTraceFetchOptions = {
+  latestTimestamp?: Date;
+  deferBroadTargetedHistory?: boolean;
+  targetEdge?: ForensicRouteEdge | null;
+  expectedAmountRaw?: string | null;
+};
 
 export type IncomingDepositRuntimeDeps = {
   listIndexedUsdtTransfersForAddress(
@@ -151,6 +167,7 @@ export type BuildIncomingDepositReportInput = {
   sender: string;
   amountRaw: string;
   timestamp: Date;
+  localIndexMaterializationMaxRows?: number;
   timing?: IncomingDepositTimingRecorder;
   persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
 };
@@ -709,7 +726,7 @@ function fundingBundleExpansionReasons(input: {
 async function buildFundingBundleDeepExpansion(input: {
   bundle: IncomingDepositFundingBundle;
   edgesForTargetFromAddress: ForensicRouteEdge[];
-  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: IncomingTraceFetchOptions): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
   resolveEconomicContext(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
@@ -747,7 +764,7 @@ async function buildFundingBundleDeepExpansion(input: {
   const fetchedAddresses = new Set<string>();
   const fetchEdgesForExpansion = async (
     address: string,
-    options?: { latestTimestamp?: Date }
+    options?: IncomingTraceFetchOptions
   ): Promise<ForensicRouteEdge[]> => {
     fetchedAddresses.add(address);
     return input.fetchEdgesForAddress(address, options);
@@ -785,7 +802,7 @@ async function buildFundingBundleDeepExpansion(input: {
 
 async function buildFundingBundlesByTxHash(input: {
   whereReport: WhereIsMoneyReport;
-  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: IncomingTraceFetchOptions): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
   resolveEconomicContext(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
@@ -1146,11 +1163,23 @@ function buildIncomingTargetedCoverageSummary(input: {
   const firstKey = firstPartial ? targetedCoverageMapKey(firstPartial.address, firstPartial.targetTimestamp) : null;
   const firstState = firstKey ? input.ensureStates.get(firstKey) ?? null : null;
   const firstError = firstKey ? input.ensureErrors.get(firstKey) ?? null : null;
-  const block = firstPartial
-    ? {
-        ...targetedBlockFromStatusReason(firstState?.statusReason, firstState?.lastError ?? firstError),
-        address: firstPartial.address
-      }
+  const block: IncomingTargetedCoverageBlock | null = firstPartial
+    ? firstPartial.localMaterializationStatus === "local_limit"
+      ? {
+          address: firstPartial.address,
+          scoreBlockedReason: "local_budget_limited",
+          technicalStatus: "local_budget_limited"
+        }
+      : firstPartial.localMaterializationStatus === "read_failed"
+        ? {
+            address: firstPartial.address,
+            scoreBlockedReason: "local_index_read_failed",
+            technicalStatus: "local_data_error"
+          }
+        : {
+            ...targetedBlockFromStatusReason(firstState?.statusReason, firstState?.lastError ?? firstError),
+            address: firstPartial.address
+          }
     : null;
 
   return {
@@ -1444,7 +1473,7 @@ export async function buildIncomingDepositReport(
   const seedDeposit = depositEdge(input);
   const minTimestamp = input.job.windowStart;
   const maxTimestamp = input.timestamp;
-  const maxTimestampForFetch = (fetchOptions: { latestTimestamp?: Date } = {}): Date =>
+  const maxTimestampForFetch = (fetchOptions: IncomingTraceFetchOptions = {}): Date =>
     fetchOptions.latestTimestamp && fetchOptions.latestTimestamp < maxTimestamp
       ? fetchOptions.latestTimestamp
       : maxTimestamp;
@@ -1494,7 +1523,7 @@ export async function buildIncomingDepositReport(
   const ensureTargetedHistory = async (
     address: string,
     fetchMaxTimestamp: Date,
-    fetchOptions: { latestTimestamp?: Date; deferBroadTargetedHistory?: boolean }
+    fetchOptions: IncomingTraceFetchOptions
   ): Promise<boolean> => {
     if (!fetchOptions.latestTimestamp || !input.deps.ensureAddressUsdtHistory) return true;
     const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
@@ -1557,15 +1586,94 @@ export async function buildIncomingDepositReport(
   };
   const fetchEdgesForAddress = async (
     address: string,
-    fetchOptions: { latestTimestamp?: Date; deferBroadTargetedHistory?: boolean } = {}
+    fetchOptions: IncomingTraceFetchOptions = {}
   ): Promise<ForensicRouteEdge[]> => {
     const fetchMaxTimestamp = maxTimestampForFetch(fetchOptions);
     const fetchMinTimestamp = minTimestamp <= fetchMaxTimestamp ? minTimestamp : new Date(0);
     const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
     const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
     const requestedBroadTargetedDefer = isTargetedHopFetch && fetchOptions.deferBroadTargetedHistory === true;
-    const broadTargetedHistoryDeferred = requestedBroadTargetedDefer &&
-      !(await hasCompleteBroadTargetedHistory(address, fetchMaxTimestamp));
+    const completeBroadTargetedHistory = requestedBroadTargetedDefer &&
+      await hasCompleteBroadTargetedHistory(address, fetchMaxTimestamp);
+    if (completeBroadTargetedHistory) {
+      const cached = edgeCache.get(cacheKey);
+      if (cached && targetedEdgeCacheKeys.has(cacheKey)) return cached;
+      const expectedAmountRaw = fetchOptions.expectedAmountRaw && /^\d+$/.test(fetchOptions.expectedAmountRaw)
+        ? fetchOptions.expectedAmountRaw
+        : null;
+      const target = fetchOptions.targetEdge
+        ? {
+            ...fetchOptions.targetEdge,
+            amountRaw: expectedAmountRaw ?? fetchOptions.targetEdge.amountRaw
+          }
+        : null;
+      const local = await materializeIndexedTransferWindow({
+        address,
+        minTimestamp: fetchMinTimestamp,
+        maxTimestamp: fetchMaxTimestamp,
+        pageSize: RUNTIME_TRANSFER_LIMIT,
+        maxRows: input.localIndexMaterializationMaxRows ?? DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
+        ...(target
+          ? {
+              // ponytail: recompute the bounded slice per page; upgrade to incremental cashflow accounting if dense local windows make this hot.
+              isSatisfied: (rows: readonly unknown[]) => buildBalanceFormingSlice({
+                target,
+                edges: mergeEdges([target, ...asIndexedTransfers([...rows]).map(indexedTransferToRouteEdge)]),
+                minCoverageRatio: DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
+                maxFunders: DEFAULT_MAX_BUNDLE_FUNDERS,
+                fetchedPageCount: 0,
+                pageBudgetExhausted: false,
+                providerCapHit: false,
+                providerInconsistent: false
+              }).status === "covered"
+            }
+          : {}),
+        onPage: async ({ rowCount, pageReadCount }) => {
+          if (pageReadCount !== 1 && pageReadCount % 10 !== 0) return;
+          await persistTargetedProgress({
+            jobPhase: "reading_local_index",
+            targetedIndex: { phase: "reading_local_index", address, rowCount, pageReadCount }
+          });
+        },
+        readPage: (pageAddress, options) => input.deps.listIndexedUsdtTransfersForAddress(pageAddress, {
+          minTimestamp: options.minTimestamp,
+          maxTimestamp: options.maxTimestamp,
+          limit: options.limit,
+          offset: options.offset,
+          orderBy: options.orderBy,
+          direction: options.direction
+        })
+      });
+      const indexedEdges = asIndexedTransfers(local.rows).map(indexedTransferToRouteEdge);
+      const edges = mergeEdges([
+        ...indexedEdges,
+        ...(address === input.sender && fetchMaxTimestamp.getTime() === maxTimestamp.getTime() ? [seedDeposit] : [])
+      ]).filter((edge) => edge.timestamp <= fetchMaxTimestamp);
+      const localComplete = local.status === "complete";
+      const localLimit = local.status === "local_limit";
+      edgeCache.set(cacheKey, edges);
+      targetedEdgeCacheKeys.add(cacheKey);
+      historyCoverageCache.set(cacheKey, {
+        address,
+        targetTimestamp: fetchMaxTimestamp.toISOString(),
+        fetchedTransferCount: indexedEdges.length,
+        fetchedPageCount: local.pageReadCount,
+        oldestFetchedTransferAt: oldestRouteEdgeTimestamp(indexedEdges)?.toISOString() ?? null,
+        reachedTargetHop: localComplete,
+        source: "local_index",
+        coverageComplete: localComplete,
+        providerCapHit: false,
+        budgetExhausted: localLimit,
+        providerInconsistent: false,
+        statusReason: null,
+        localMaterializationStatus: local.status,
+        localMaterializationCompletionReason: local.completionReason,
+        localMaterializationKnownZero: local.knownZero,
+        localMaterializationError: local.error
+      });
+      return edges;
+    }
+    const broadTargetedHistoryDeferred = requestedBroadTargetedDefer;
     const targetedEnsureSucceeded = broadTargetedHistoryDeferred
       ? false
       : await ensureTargetedHistory(address, fetchMaxTimestamp, fetchOptions);
@@ -1636,7 +1744,7 @@ export async function buildIncomingDepositReport(
 
   const getHistoryCoverageForAddress = async (
     address: string,
-    fetchOptions: { latestTimestamp?: Date } = {}
+    fetchOptions: IncomingTraceFetchOptions = {}
   ): Promise<MoneyOriginTraceHistoryCoverage> => {
     const fetchMaxTimestamp = maxTimestampForFetch(fetchOptions);
     const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);

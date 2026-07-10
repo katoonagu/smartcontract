@@ -55,6 +55,27 @@ describe("notification text helpers", () => {
     expect(normalizeNotificationReason("Balance-forming path reaches service boundary bridge; manual review required.", "ru")).not.toContain("manual review required");
   });
 
+  it("normalizes local Incoming coverage failures", () => {
+    expect(normalizeNotificationReason("local_budget_limited", "ru")).toBe(
+      "Достигнут локальный лимит чтения истории; итоговый риск не опубликован."
+    );
+    expect(normalizeNotificationReason("local_budget_limited", "en")).toBe(
+      "The local history read limit was reached; no final risk score was published."
+    );
+    expect(normalizeNotificationReason("local_index_read_failed", "ru")).toBe(
+      "Локальную индексированную историю не удалось прочитать; итоговый риск не опубликован."
+    );
+    expect(normalizeNotificationReason("local_index_read_failed", "en")).toBe(
+      "The local indexed history could not be read; no final risk score was published."
+    );
+    expect(normalizeNotificationReason("local_data_error", "ru")).toBe(
+      "Локальные данные происхождения средств временно недоступны."
+    );
+    expect(normalizeNotificationReason("local_data_error", "en")).toBe(
+      "Local provenance data is temporarily unavailable."
+    );
+  });
+
   it("normalizes approval-drain evidence for Russian user text", () => {
     expect(normalizeNotificationReason("Exact approval-drain provenance reaches checked wallet via 0 hop(s).", "ru")).toBe(
       "Найдена точная approval-drain цепочка: после approve USDT были списаны через transferFrom, а проверяемый адрес стал первым получателем средств."
