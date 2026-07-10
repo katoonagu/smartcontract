@@ -120,6 +120,8 @@ export type RiskSignalObservationInput = {
 export type ForensicCaseStatus = "completed" | "partial" | "failed";
 export type ForensicRouteConfidence = "low" | "medium" | "high";
 export type ForensicRouteEdgeType = "normal_transfer" | "transfer_from" | "unknown";
+export type ForensicEconomicRole = "principal" | "service_fee";
+export type ForensicEconomicProtocol = "tron_gasfree";
 export type ServiceCategory =
   | "bridge"
   | "bridge_pool"
@@ -167,6 +169,8 @@ export type ForensicRouteEdge = {
   timestamp: Date;
   method: string;
   edgeType: ForensicRouteEdgeType;
+  economicRole?: ForensicEconomicRole;
+  economicProtocol?: ForensicEconomicProtocol;
 };
 
 export type IndexedTronUsdtTransfer = {
@@ -975,6 +979,8 @@ export type BalanceFormingTransfer = {
   timestamp: string;
   method?: string;
   edgeType?: ForensicRouteEdgeType;
+  economicRole?: ForensicEconomicRole;
+  economicProtocol?: ForensicEconomicProtocol;
   coverageShare: number;
   amountUsage?: BalanceTransferAmountUsage | null;
   selectedReason:
@@ -995,6 +1001,8 @@ export type ContractDrivenSourcePostDebitActivityProfile = {
 
 export type ContractDrivenTransferClassification =
   | "plain_usdt_transfer"
+  | "gasfree_principal"
+  | "gasfree_service_fee"
   | "verify20_wrapper"
   | "transfer_from_wrapper"
   | "permit_wrapper"
@@ -1048,6 +1056,8 @@ export type ContractDrivenTransferProfile = {
   amountRaw: string;
   amount?: string | null;
   classification?: ContractDrivenTransferClassification;
+  economicRole?: ForensicEconomicRole;
+  economicProtocol?: ForensicEconomicProtocol;
   countsAsDrainerContext?: boolean;
   method: string | null;
   callerAddress?: string | null;
@@ -2235,6 +2245,8 @@ export type DirectCounterpartyInteractionProfile = {
     timestamp: string;
     method: string;
     edgeType: ForensicRouteEdgeType;
+    economicRole?: ForensicEconomicRole;
+    economicProtocol?: ForensicEconomicProtocol;
   }>;
   serviceCategory: ServiceCategory | null;
   identity: string | null;
