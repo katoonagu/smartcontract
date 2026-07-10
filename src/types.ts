@@ -500,9 +500,13 @@ export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type UserExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION";
 
+export type LocalIndexMaterializationStatus = "complete" | "local_limit" | "read_failed";
+
 export type ForensicScoreBlockedReason =
   | "insufficient_coverage"
   | "partial_budget_exhausted"
+  | "local_budget_limited"
+  | "local_index_read_failed"
   | "provider_error"
   | "rate_limited_after_retries"
   | "provider_inconsistent"
@@ -512,6 +516,8 @@ export type ForensicScoreBlockedReason =
 export type ForensicTechnicalStatus =
   | "completed"
   | "budget_limited"
+  | "local_budget_limited"
+  | "local_data_error"
   | "provider_error"
   | "provider_limited"
   | "provider_cap_unresolved"
@@ -1446,6 +1452,10 @@ export type MoneyOriginTraceHistoryCoverage = {
   budgetExhausted?: boolean | null;
   providerInconsistent?: boolean | null;
   statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  localMaterializationStatus?: LocalIndexMaterializationStatus | null;
+  localMaterializationCompletionReason?: "proof_satisfied" | "window_exhausted" | null;
+  localMaterializationKnownZero?: boolean | null;
+  localMaterializationError?: string | null;
   balanceFormingSlice?: {
     status: "covered" | "partial" | "dense_unresolved" | "provider_inconsistent";
     reason: string | null;

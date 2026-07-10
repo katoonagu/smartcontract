@@ -523,8 +523,9 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     minTimestamp: options.minTimestamp,
     maxTimestamp: options.maxTimestamp,
     limit: options.limit,
+    offset: options.offset,
     orderBy: options.orderBy,
-    direction: "both"
+    direction: options.direction
   }),
   listRelatedTrc20Transfers: (address, options) => tronClient.listRelatedTrc20Transfers(address, options),
   getLabelsForAddress: (address) => listAddressLabels(db, address),

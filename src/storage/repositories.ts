@@ -4806,8 +4806,8 @@ export async function listIndexedTronUsdtTransfersForAddress(
   params.push(input.offset ?? 0);
   const offsetParam = params.length;
   const orderBy = input.orderBy === "amount_desc"
-    ? "length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc"
-    : "block_timestamp desc, block_number desc, event_index desc";
+    ? "length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc, transfer_id desc"
+    : "block_timestamp desc, block_number desc, event_index desc, transfer_id desc";
   const result = await db.query(
     `select transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
        provider_row_ordinal_in_tx, from_address, to_address, amount_raw, method,

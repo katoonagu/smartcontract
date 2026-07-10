@@ -105,6 +105,7 @@ export type IncomingDepositRuntimeDeps = {
       minTimestamp?: Date;
       maxTimestamp?: Date;
       limit: number;
+      offset?: number;
       orderBy: "newest";
       direction: "both";
     }

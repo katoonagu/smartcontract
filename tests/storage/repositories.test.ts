@@ -2191,7 +2191,8 @@ describe("offline TRON USDT index repositories", () => {
       minTimestamp: new Date("2026-05-20T00:00:00.000Z"),
       maxTimestamp: new Date("2026-05-21T00:00:00.000Z"),
       direction: "incoming",
-      limit: 50
+      limit: 50,
+      offset: 7
     });
 
     expect(transfers[0]).toMatchObject({
@@ -2202,6 +2203,9 @@ describe("offline TRON USDT index repositories", () => {
     });
     expect(queries[0].sql).toContain("from tron_usdt_transfers");
     expect(queries[0].sql).toContain("to_address = $1");
+    expect(compactSql(queries[0].sql)).toContain(
+      "order by block_timestamp desc, block_number desc, event_index desc, transfer_id desc limit $4 offset $5"
+    );
   });
 
   it("can prioritize indexed transfers by amount for bounded forensic expansion", async () => {
@@ -2213,10 +2217,13 @@ describe("offline TRON USDT index repositories", () => {
       maxTimestamp: new Date("2026-05-21T00:00:00.000Z"),
       direction: "both",
       limit: 50,
+      offset: 7,
       orderBy: "amount_desc"
     });
 
-    expect(queries[0].sql).toContain("order by length(amount_raw) desc, amount_raw desc");
+    expect(compactSql(queries[0].sql)).toContain(
+      "order by length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc, transfer_id desc limit $4 offset $5"
+    );
   });
 
   it("counts distinct indexed USDT counterparties for an address", async () => {
