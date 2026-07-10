@@ -1461,6 +1461,109 @@ describe("deep forensic address check", () => {
     ]));
   });
 
+  it.each([
+    ["with one ordinary slot", 3, 2, 1, true],
+    ["when the configured reserve exceeds the total", 1, 5, 0, false]
+  ] as const)("reserves the shared transaction budget for exact approval-drain evidence %s", async (
+    _label,
+    totalLimit,
+    maxApprovalDrainCandidates,
+    ordinaryAllowance,
+    expectsReceiverLookup
+  ) => {
+    const noiseEdges = Array.from({ length: 4 }, (_, index) => transfer({
+      id: `tx-hard-reserve-noise-${index}`,
+      from: transit,
+      to: `THardReserveNoise${index}11111111111111111111`,
+      amountRaw: `${1_000_000 + index}`,
+      at: `2026-05-20T09:0${index}:00.000Z`
+    }));
+    const receiverEdge = transfer({
+      id: "tx-hard-reserve-receiver-subject",
+      from: transit,
+      to: subject,
+      amountRaw: "309000000000",
+      at: "2026-05-20T10:05:00.000Z"
+    });
+    const drainEdge = transfer({
+      id: "tx-hard-reserve-drain",
+      from: victim,
+      to: transit,
+      amountRaw: "311851000000",
+      at: "2026-05-20T10:00:00.000Z",
+      triggerInfo: { methodName: "transferFrom", methodId: "23b872dd" }
+    });
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [transit, [...noiseEdges, drainEdge, receiverEdge]]
+    ]);
+    const getTransactionCalls: string[] = [];
+    const stablecoinCalls: string[] = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        return txHash === "tx-hard-reserve-drain" ? { ownerAddress: spender } : {};
+      },
+      listTrc20ApprovalChanges: async () => [approval({
+        txHash: "tx-hard-reserve-approval",
+        ownerAddress: victim,
+        spenderAddress: spender
+      })],
+      getUsdtRestrictionStatus: async (address) => {
+        stablecoinCalls.push(address);
+        return usdtRestriction(address, address === victim ? "1500000000" : "2200000000");
+      }
+    }, {
+      sourceAddress: transit,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 20,
+      maxPagesPerAddress: 1,
+      maxDepth: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 1,
+      maxApprovalDrainCandidates,
+      approvalChangeLookupLimit: 5,
+      economicEdgeTransactionInfoFetchLimit: totalLimit,
+      extendedSearchMode: "disabled"
+    });
+
+    expect(new Set(getTransactionCalls).size).toBeLessThanOrEqual(totalLimit);
+    expect(getTransactionCalls).toEqual(expect.arrayContaining(["tx-hard-reserve-drain"]));
+    expect(getTransactionCalls.filter((txHash) => txHash === "tx-hard-reserve-drain")).toHaveLength(1);
+    expect(getTransactionCalls.filter((txHash) => txHash === "tx-hard-reserve-receiver-subject"))
+      .toHaveLength(expectsReceiverLookup ? 1 : 0);
+    expect(report.approvalDrainProvenanceProfiles[0]).toMatchObject({
+      victimAddress: victim,
+      spenderAddress: spender,
+      firstReceiverAddress: transit,
+      subjectAddress: transit,
+      hopDepth: 0,
+      score: 90,
+      approvalTxHash: "tx-hard-reserve-approval",
+      drainTxHash: "tx-hard-reserve-drain",
+      evidenceStrength: "exact_approval_and_transfer_from"
+    });
+    expect(report.rawEvidence.some((evidence) => "approvalDrainProvenanceProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "forensic_approval_drain_provenance",
+        signalGroup: "approval",
+        scoreImpact: 90
+      })
+    ]));
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining(`limited to ${ordinaryAllowance} ordinary transaction-detail calls within the ${totalLimit} run-wide limit`)
+    ]));
+    expect(stablecoinCalls).toEqual(expect.arrayContaining([transit, victim]));
+  });
+
   it("produces contract-driven receiver and transfer profiles for Verify20 incoming funds", async () => {
     const secondVictim = "TVictim2222222222222222222222222222";
     const wrapperContract = "TWrapper11111111111111111111111111";
@@ -1932,6 +2035,99 @@ describe("deep forensic address check", () => {
       expect(ordinaryInteraction).toBeDefined();
       expect(ordinaryInteraction?.transfers?.[0]?.economicRole).toBeUndefined();
     }
+  });
+
+  it("uses exact Base58 equality when prioritizing subject-adjacent economic candidates", async () => {
+    const caseMutatedSubject = gasFreeReceiver.toLowerCase();
+    const getTransactionCalls: string[] = [];
+
+    await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === gasFreeReceiver
+          ? [
+              transfer({
+                id: "tx-base58-case-mutated",
+                from: caseMutatedSubject,
+                to: "TBase58CaseMutatedNoise111111111111111",
+                amountRaw: "1000000",
+                at: "2026-07-10T00:00:00.000Z"
+              }),
+              transfer({
+                id: "tx-base58-exact-subject",
+                from: gasFreeReceiver,
+                to: "TBase58ExactSubjectNoise111111111111111",
+                amountRaw: "2000000",
+                at: "2026-07-10T00:01:00.000Z"
+              })
+            ]
+          : []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        return null;
+      }
+    }, {
+      sourceAddress: gasFreeReceiver,
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-11T00:00:00.000Z"),
+      maxDepth: 1,
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      economicEdgeTransactionInfoFetchLimit: 1
+    });
+
+    expect(getTransactionCalls).toEqual(["tx-base58-exact-subject"]);
+  });
+
+  it.each([
+    ["zero", 0, 0, 2],
+    ["negative", -1, 0, 2],
+    ["NaN", Number.NaN, 250, 251]
+  ])("keeps a %s transaction budget bounded", async (_label, limit, expectedCalls, edgeCount) => {
+    const getTransactionCalls: string[] = [];
+    const edges = Array.from({ length: edgeCount }, (_, index) => transfer({
+      id: `tx-budget-normalization-${index}`,
+      from: gasFreeReceiver,
+      to: `TBudgetNormalization${index}11111111111111111`,
+      amountRaw: `${1_000_000 + index}`,
+      at: "2026-07-10T00:00:00.000Z"
+    }));
+
+    await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === gasFreeReceiver ? edges : []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        return null;
+      }
+    }, {
+      sourceAddress: gasFreeReceiver,
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-11T00:00:00.000Z"),
+      maxDepth: 1,
+      pageLimit: Math.max(edgeCount, 1),
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      counterpartyFastSnapshotLimit: 0,
+      counterpartyFastSnapshotActiveLimit: 0,
+      extendedSearchMode: "disabled",
+      economicEdgeTransactionInfoFetchLimit: limit
+    });
+
+    expect(new Set(getTransactionCalls).size).toBe(expectedCalls);
   });
 
   it("does not tag an unmatched direct TLnt movement as a GasFree service fee", async () => {
