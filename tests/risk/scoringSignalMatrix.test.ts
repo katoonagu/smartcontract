@@ -37,6 +37,43 @@ const matrixDraft = (
 });
 
 describe("scoreMatrixCandidates", () => {
+  it("materializes an empty Incoming matrix as classified insufficient coverage", () => {
+    const incomingContext: MatrixCandidateContext = {
+      decisionScope: "incoming_unified",
+      subjectAddress: "TIncomingMatrixSubject11111111111111111",
+      subjectTxHash: "incoming-matrix-tx",
+      requiredCoverage: "deposit_provenance"
+    };
+    const result = scoreMatrixCandidates([], incomingContext);
+
+    expect(result).toMatchObject({
+      policyScore: null,
+      matrixDecision: "INSUFFICIENT_EVIDENCE",
+      winningRow: "coverage_uncertainty",
+      actionUnit: "incoming_deposit",
+      uncertaintyState: {
+        coverage: "insufficient",
+        provider: "partial",
+        caveats: ["No matrix candidates were produced."]
+      }
+    });
+    expect(result.riskVector.coverage_uncertainty).toEqual([
+      expect.objectContaining({
+        evidenceClass: "coverage",
+        proofLevel: "coverage",
+        decisionEligibility: "insufficient_only",
+        coverageDependency: "deposit_provenance",
+        actionUnit: "incoming_deposit",
+        caps: ["no_candidates"],
+        subject: {
+          decisionScope: "incoming_unified",
+          address: incomingContext.subjectAddress,
+          txHash: incomingContext.subjectTxHash
+        }
+      })
+    ]);
+  });
+
   it("preserves authoritative hard proof and emits null calibration products", () => {
     const result = scoreMatrixCandidates([
       matrixDraft({ kind: "clean", coverageDependency: "wallet_provenance" }, {

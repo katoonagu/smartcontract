@@ -317,8 +317,11 @@ export function scoreMatrixCandidates(
   }
   const capped = classified.map(applyRowCaps);
   const deduped = dedupeByEpisode(capped);
-  const riskVector = buildRiskVector(deduped);
-  const winner = winningCandidate(deduped, context);
+  const effectiveCandidates = deduped.length > 0
+    ? deduped
+    : [winningCandidate([], context)];
+  const riskVector = buildRiskVector(effectiveCandidates);
+  const winner = winningCandidate(effectiveCandidates, context);
   const matrixDecision = candidateDecision(winner);
   const policyScore = winner.evidenceClass === "coverage" ? null : winner.score;
 
@@ -330,7 +333,7 @@ export function scoreMatrixCandidates(
     winningCandidate: winner,
     actionUnit: winner.actionUnit,
     riskVector,
-    uncertaintyState: uncertaintyState(deduped),
+    uncertaintyState: uncertaintyState(effectiveCandidates),
     queuePriorityScore: null,
     calibratedRiskProbability: null
   };

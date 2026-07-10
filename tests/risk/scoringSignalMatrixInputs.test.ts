@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { buildIncomingDepositMatrixCandidates, buildWalletMatrixCandidates } from "../../src/risk/scoringSignalMatrixInputs";
 import { scoreMatrixCandidates, type MatrixCandidateContext } from "../../src/risk/scoringSignalMatrix";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
-import type { IncomingFreshBundleExposure, RiskReport, WhereIsMoneyReport } from "../../src/types";
+import type {
+  AssetContinuationProfile,
+  InboundProvenanceProfile,
+  IncomingFreshBundleExposure,
+  OperationalFlowProfile,
+  RiskReport,
+  WhereIsMoneyReport
+} from "../../src/types";
 
 const address = `T${"1".repeat(33)}`;
 
@@ -185,6 +192,84 @@ function deepReportWithExactPaths(
       }
     }]
   });
+}
+
+function inboundWhitebitProfile(txHash: string): InboundProvenanceProfile {
+  return {
+    subjectAddress: address,
+    incomingVolumeRaw: "100000000000",
+    matchedInboundVolumeRaw: "100000000000",
+    paths: [{
+      depth: 1,
+      sourceAddress: "TWhitebitSource1111111111111111111111",
+      viaAddresses: [],
+      label: "whitebit",
+      amountRaw: "100000000000",
+      amountPreservationRatio: 1,
+      firstTransferAt: "2026-05-01T00:00:00.000Z",
+      lastTransferAt: "2026-05-01T00:00:01.000Z",
+      txHashes: [txHash]
+    }],
+    boundaryNotes: [],
+    score: 86,
+    features: []
+  };
+}
+
+function assetContinuationProfile(txHash: string): AssetContinuationProfile {
+  return {
+    subjectAddress: address,
+    sourceAsset: "USDT",
+    continuationAssetSymbol: "WRAPPED",
+    continuationTokenContract: "TWrappedToken1111111111111111111111",
+    conversionTxHash: txHash,
+    outgoingTxHash: `${txHash}:out`,
+    protocolAddress: "TProtocol111111111111111111111111111",
+    destinationAddress: "TRiskyDestination1111111111111111111",
+    destinationRisk: "provider_risk",
+    elapsedMs: 12_000,
+    sourceAmountRaw: "101607508600",
+    continuationAmountRaw: "101607508600",
+    tokenQuality: "verified",
+    score: 82,
+    evidenceClass: "asset_continuation",
+    reasons: ["Verified continuation reached a provider-risk destination."]
+  };
+}
+
+function operationalFlowProfile(): OperationalFlowProfile {
+  return {
+    subjectAddress: address,
+    windowStart: "2026-04-24T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    incomingVolumeRaw: "7541408440000",
+    outgoingVolumeRaw: "7541406950000",
+    incomingTxCount: 12,
+    outgoingTxCount: 27,
+    inflowToOutflowRatio: 0.999,
+    topIncomingCounterparties: [],
+    topOutgoingCounterparties: [],
+    categoryBreakdown: [],
+    terminalLiquidityIncomingRatio: 0,
+    terminalLiquidityOutgoingRatio: 0,
+    htxHuobiIncomingRatio: 0,
+    htxHuobiOutgoingRatio: 0,
+    bridgeDexRouterOutgoingRatio: 0.25,
+    unknownContractOutgoingRatio: 0,
+    historicalTransitScore: 81,
+    historicalTransitBreakdown: {
+      eligible: true,
+      flowUsdt: 7541408,
+      volumeScore: 20,
+      passThrough: 0.999,
+      passThroughScore: 20,
+      serviceShare: 0.25,
+      serviceShareScore: 6,
+      score: 81
+    },
+    operationalScore: 65,
+    features: []
+  };
 }
 
 const walletContext = (subjectAddress = address): MatrixCandidateContext => ({
@@ -463,6 +548,96 @@ describe("scoring signal matrix input mappers", () => {
     });
   });
 
+  it("keeps only transaction-linked inbound WhiteBIT evidence decline-capable for Incoming", () => {
+    const txHash = "incoming-inbound-policy";
+    const linkedTxHash = "inbound-whitebit-linked";
+    const unrelatedTxHash = "inbound-whitebit-unrelated";
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: deepReport({
+        inboundProvenanceProfiles: [
+          inboundWhitebitProfile(linkedTxHash),
+          inboundWhitebitProfile(unrelatedTxHash)
+        ]
+      }),
+      whereReport: whereReport({
+        subjectAddress: address,
+        originPaths: [originPath([txHash, linkedTxHash])]
+      })
+    });
+
+    expect(candidates.find((item) => item.evidenceIds.includes(linkedTxHash))).toMatchObject({
+      row: "source_policy",
+      authority: { kind: "policy", decisionEligibility: "can_decline" }
+    });
+    expect(candidates.find((item) => item.evidenceIds.includes(unrelatedTxHash))).toMatchObject({
+      row: "counterparty_context",
+      authority: { kind: "context" }
+    });
+  });
+
+  it("keeps only transaction-linked asset continuation decline-capable for Incoming", () => {
+    const txHash = "incoming-asset-continuation";
+    const linkedTxHash = "asset-continuation-linked";
+    const unrelatedTxHash = "asset-continuation-unrelated";
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: deepReport({
+        assetContinuationProfiles: [
+          assetContinuationProfile(linkedTxHash),
+          assetContinuationProfile(unrelatedTxHash)
+        ]
+      }),
+      whereReport: whereReport({
+        subjectAddress: address,
+        originPaths: [originPath([txHash, linkedTxHash])]
+      })
+    });
+
+    expect(candidates.find((item) => item.evidenceIds.includes(linkedTxHash))).toMatchObject({
+      row: "asset_continuation",
+      authority: { kind: "pattern", decisionEligibility: "can_decline" }
+    });
+    expect(candidates.find((item) => item.evidenceIds.includes(unrelatedTxHash))).toMatchObject({
+      row: "counterparty_context",
+      authority: { kind: "context" }
+    });
+  });
+
+  it("keeps historical operational flow contextual for Incoming and decline-capable for Wallet", () => {
+    const profile = operationalFlowProfile();
+    const deep = deepReport({ operationalFlowProfiles: [profile] });
+    const incoming = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "incoming-operational-flow",
+      fastReport: null,
+      deepReport: deep,
+      whereReport: whereReport({ subjectAddress: address })
+    }).find((item) => item.atomicSignals.includes("historical_transit_pattern"));
+    const wallet = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: deep,
+      whereReport: whereReport()
+    }).find((item) => item.atomicSignals.includes("historical_transit_pattern"));
+
+    expect(incoming).toMatchObject({
+      row: "behavior_only_prior",
+      authority: { kind: "context" }
+    });
+    expect(wallet).toMatchObject({
+      row: "service_linked_pattern",
+      authority: { kind: "pattern", decisionEligibility: "can_decline" }
+    });
+  });
+
   it("matches exact Where proof levels to their evidence kind", () => {
     const candidates = buildWalletMatrixCandidates({
       address,
@@ -608,6 +783,7 @@ describe("scoring signal matrix input mappers", () => {
     expect(candidates).toContainEqual(expect.objectContaining({
       authority: { kind: "coverage", coverageDependency: "deposit_provenance" },
       subject: { decisionScope: "incoming_unified", address: senderAddress, txHash },
+      actionUnit: "incoming_deposit",
       evidenceIds: ["coverage:where_subject_mismatch"]
     }));
   });

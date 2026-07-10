@@ -48,7 +48,9 @@ export function resolveFinalDisposition(input: {
   coverage: DecisionCoverage;
   observedContextScore: number;
 }): FinalDisposition {
-  const observedContextScore = Math.max(0, Math.min(100, Math.round(input.observedContextScore)));
+  const observedContextScore = Number.isFinite(input.observedContextScore)
+    ? Math.max(0, Math.min(100, Math.round(input.observedContextScore)))
+    : 0;
   const hard = exactHardCandidate(input.matrixScore, input.subject);
   if (hard) {
     return {
@@ -64,6 +66,7 @@ export function resolveFinalDisposition(input: {
 
   const matrixDecision = input.matrixScore.matrixDecision;
   if (
+    !sameSubject(input.matrixScore.winningCandidate, input.subject) ||
     input.coverage.required === "invalid" ||
     matrixDecision === "INSUFFICIENT_EVIDENCE" ||
     input.matrixScore.policyScore === null

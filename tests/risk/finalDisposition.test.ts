@@ -157,6 +157,24 @@ describe("resolveFinalDisposition", () => {
     expect(result.hardProofEvidenceIds).toEqual([]);
   });
 
+  it.each([
+    ["review context", contextMatrix(otherAddress, 45)],
+    ["decline policy", matrixResult(otherAddress, "DECLINE", 70)]
+  ])("rejects a valid-coverage matrix %s linked to another subject", (_label, matrixScore) => {
+    expect(resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore,
+      coverage: coverage("valid"),
+      observedContextScore: 55
+    })).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      finalScore: null,
+      scoreValid: false,
+      decisionBasis: "technical_stop",
+      hardProofEvidenceIds: []
+    });
+  });
+
   it("clamps observed context without changing a valid matrix result", () => {
     const result = resolveFinalDisposition({
       subject: { decisionScope: "wallet_unified", address, txHash: null },
@@ -173,4 +191,16 @@ describe("resolveFinalDisposition", () => {
       decisionBasis: "matrix"
     });
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "normalizes non-finite observed context %s to zero",
+    (observedContextScore) => {
+      expect(resolveFinalDisposition({
+        subject: { decisionScope: "wallet_unified", address, txHash: null },
+        matrixScore: matrixResult(address, "REVIEW", 45),
+        coverage: coverage("valid"),
+        observedContextScore
+      }).observedContextScore).toBe(0);
+    }
+  );
 });

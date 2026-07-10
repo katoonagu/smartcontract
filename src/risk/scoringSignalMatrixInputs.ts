@@ -78,7 +78,7 @@ function contextScore(value: number, max = 59): number {
 function coverageCandidate(context: MatrixCandidateContext, reason: string): MatrixCandidate {
   return candidate(context, { kind: "coverage", coverageDependency: context.requiredCoverage }, {
     row: "coverage_uncertainty",
-    actionUnit: "wallet",
+    actionUnit: context.decisionScope === "incoming_unified" ? "incoming_deposit" : "wallet",
     score: 0,
     evidenceIds: [reason],
     evidenceEpisodeIds: [reason],
@@ -234,23 +234,32 @@ function deepCandidates(
   for (const profile of arrayOrEmpty(report.inboundProvenanceProfiles)) {
     const paths = profile.paths.filter((path) => sourcePolicyProvenanceLabels.has(path.label));
     if (paths.length === 0) continue;
-    const ids = paths.flatMap((path) => path.txHashes);
-    candidates.push(candidate(context, {
-      kind: "policy",
-      decisionEligibility: "can_decline",
-      coverageDependency: context.requiredCoverage
-    }, {
-      row: "source_policy",
-      actionUnit: "source_path",
-      score: 70,
-      evidenceIds: evidenceIds(ids, `inbound_source_policy:${profile.subjectAddress}`),
-      evidenceEpisodeIds: [`inbound_source_policy:${profile.subjectAddress}`],
-      atomicSignals: ["deep_source_policy_inbound_provenance"],
-      modifiers: paths.map((path) => `label_${path.label}`),
-      caps: [],
-      dampeners: [],
-      caveats: profile.boundaryNotes
-    }));
+    const groups = [
+      { linked: true, paths: paths.filter((path) => isIncomingLinked(path.txHashes)) },
+      { linked: false, paths: paths.filter((path) => !isIncomingLinked(path.txHashes)) }
+    ];
+    for (const group of groups) {
+      if (group.paths.length === 0) continue;
+      const ids = group.paths.flatMap((path) => path.txHashes);
+      candidates.push(candidate(context, group.linked
+        ? {
+            kind: "policy",
+            decisionEligibility: "can_decline",
+            coverageDependency: context.requiredCoverage
+          }
+        : { kind: "context" }, {
+        row: group.linked ? "source_policy" : "counterparty_context",
+        actionUnit: "source_path",
+        score: group.linked ? 70 : contextScore(70),
+        evidenceIds: evidenceIds(ids, `inbound_source_policy:${profile.subjectAddress}`),
+        evidenceEpisodeIds: [`inbound_source_policy:${profile.subjectAddress}${group.linked ? "" : ":context"}`],
+        atomicSignals: ["deep_source_policy_inbound_provenance"],
+        modifiers: group.paths.map((path) => `label_${path.label}`),
+        caps: [],
+        dampeners: [],
+        caveats: profile.boundaryNotes
+      }));
+    }
   }
 
   for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
@@ -301,15 +310,19 @@ function deepCandidates(
 
   for (const profile of arrayOrEmpty(report.assetContinuationProfiles)) {
     if (profile.evidenceClass !== "asset_continuation" || profile.tokenQuality === "unknown" || profile.score < 65) continue;
-    candidates.push(candidate(context, {
-      kind: "pattern",
-      decisionEligibility: "can_decline",
-      coverageDependency: context.requiredCoverage
-    }, {
-      row: "asset_continuation",
+    const ids = [profile.conversionTxHash, profile.outgoingTxHash ?? profile.conversionTxHash];
+    const linked = isIncomingLinked(ids);
+    candidates.push(candidate(context, linked
+      ? {
+          kind: "pattern",
+          decisionEligibility: "can_decline",
+          coverageDependency: context.requiredCoverage
+        }
+      : { kind: "context" }, {
+      row: linked ? "asset_continuation" : "counterparty_context",
       actionUnit: "transaction",
-      score: Math.min(84, profile.score),
-      evidenceIds: [profile.conversionTxHash, profile.outgoingTxHash ?? profile.conversionTxHash],
+      score: linked ? Math.min(84, profile.score) : contextScore(profile.score),
+      evidenceIds: ids,
       evidenceEpisodeIds: [`asset_continuation:${profile.conversionTxHash}`],
       atomicSignals: ["asset_continuation"],
       modifiers: [`token_quality_${profile.tokenQuality}`],
@@ -335,18 +348,21 @@ function deepCandidates(
       : calculatedBreakdown.score;
     const score = Math.min(calculatedBreakdown.score, storedScore, storedBreakdownScore);
     if (!calculatedBreakdown.eligible || score < 60) continue;
-    candidates.push(candidate(context, {
-      kind: "pattern",
-      decisionEligibility: "can_decline",
-      coverageDependency: context.requiredCoverage
-    }, {
-      row: "service_linked_pattern",
+    const walletPattern = incomingTxHash === null;
+    candidates.push(candidate(context, walletPattern
+      ? {
+          kind: "pattern",
+          decisionEligibility: "can_decline",
+          coverageDependency: context.requiredCoverage
+        }
+      : { kind: "context" }, {
+      row: walletPattern ? "service_linked_pattern" : "behavior_only_prior",
       actionUnit: "wallet",
-      score: Math.min(84, score),
+      score: walletPattern ? Math.min(84, score) : contextScore(score),
       evidenceIds: [`operational_flow:${profile.subjectAddress}`],
       evidenceEpisodeIds: [`operational_flow:${profile.subjectAddress}`],
       atomicSignals: ["historical_transit_pattern"],
-      modifiers: ["service_anchor"],
+      modifiers: walletPattern ? ["service_anchor"] : [],
       caps: [],
       dampeners: [],
       caveats: profile.features.map((feature) => feature.code)
