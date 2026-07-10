@@ -53,10 +53,6 @@ function methodTextOriginal(profile: ContractRiskContext | null | undefined): st
     .join(" ");
 }
 
-function methodMapText(profile: ContractRiskContext | null | undefined): string {
-  return Object.values(profile?.methodMap ?? {}).join(" ");
-}
-
 function profileTagText(profile: ContractRiskContext | null | undefined): string {
   const providerTags = (profile?.providerTags ?? []).map((tag) => tag.label).join(" ");
   const publicTags = (profile?.publicTags ?? []).map((tag) => [tag.label, tag.description].filter(Boolean).join(" ")).join(" ");
@@ -90,6 +86,13 @@ const KNOWN_CEX_IDENTITIES = [
   { keywords: ["bitstamp"], identity: "Bitstamp" },
   { keywords: ["crypto.com", "cryptocom"], identity: "Crypto.com" }
 ];
+
+const KNOWN_POOLED_SERVICE_ADDRESSES = new Map([
+  [
+    "tlntw9z59lyy5kei9cmwk3pkjqga828ird",
+    { category: "service" as const, identity: "TronLink GasFree provider", evidence: "registry:tronlink_gasfree_provider" }
+  ]
+]);
 
 function knownCexIdentity(text: string): string | null {
   return KNOWN_CEX_IDENTITIES.find((item) => hasAny(text, item.keywords))?.identity ?? null;
@@ -128,15 +131,10 @@ function classification(
   category: ServiceCategory,
   identity: string | null,
   confidence: RiskConfidence,
-  evidence: string[]
+  evidence: string[],
+  isBoundary = category !== "none" && category !== "unknown_contract"
 ): ServiceClassification {
-  return {
-    category,
-    identity,
-    confidence,
-    evidence,
-    isBoundary: category !== "none"
-  };
+  return { category, identity, confidence, evidence, isBoundary };
 }
 
 function serviceRouteClassification(
@@ -171,6 +169,11 @@ function weakContract(input: ClassifyServiceAddressInput): boolean {
 }
 
 export function classifyServiceAddress(input: ClassifyServiceAddressInput): ServiceClassification {
+  const registered = KNOWN_POOLED_SERVICE_ADDRESSES.get(input.address.toLowerCase());
+  if (registered) {
+    return classification(input, registered.category, registered.identity, "high", [registered.evidence], true);
+  }
+
   const metadataText = lowerText(
     classificationTextPart(input.metadata?.name, input.address),
     classificationTextPart(input.metadata?.tag, input.address)
@@ -178,7 +181,6 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   const tagText = profileTagText(input.contractProfile);
   const methods = methodText(input.contractProfile);
   const methodsOriginal = methodTextOriginal(input.contractProfile);
-  const supportingMethods = [methodsOriginal, methodMapText(input.contractProfile)].filter(Boolean).join(" ").toLowerCase();
   const identityText = [metadataText, tagText].join(" ");
   const text = [metadataText, tagText, methods].join(" ");
   const evidence: string[] = [];
@@ -193,10 +195,22 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     return classification(input, "bridge_pool", identityFor(input, "bridge pool"), confidenceFor(input, true), evidence);
   }
 
-  if (hasAny(identityText, ["gasfree", "gas free"])) {
-    evidence.push("tag:gasfree_service");
-    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
-    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
+  const gasFreeAccount = /\bgas\s*free account\b/.test(identityText);
+  const gasFreeEndpoint = /\bgas\s*free (endpoint|controller)\b/.test(identityText);
+  if (gasFreeAccount || gasFreeEndpoint || /\bgas\s*free\b/.test(identityText)) {
+    const roleEvidence = gasFreeAccount
+      ? "role:gasfree_account"
+      : gasFreeEndpoint
+        ? "role:gasfree_endpoint"
+        : "role:gasfree_unresolved";
+    return classification(
+      input,
+      "service",
+      identityFor(input, "GasFree service"),
+      confidenceFor(input, true),
+      ["tag:gasfree_service", roleEvidence],
+      gasFreeEndpoint
+    );
   }
 
   const serviceRoutePhraseMatch = matchServiceRouteRegistryPhrase(text);

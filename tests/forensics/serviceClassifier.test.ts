@@ -257,30 +257,24 @@ describe("forensic service classifier", () => {
     expect(result.evidence).toContain("tag:okx");
   });
 
-  it("classifies GasFree Account contracts as service boundaries", () => {
+  it.each([
+    "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
+    "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD"
+  ])("classifies real GasFree Account %s as a non-boundary contract account", (address) => {
     const result = classifyServiceAddress({
-      address: "TGasFree1111111111111111111111111111",
-      metadata: {
-        address: "TGasFree1111111111111111111111111111",
-        name: "CreatedByContract",
-        tag: null,
-        isContract: true,
-        verified: false
-      },
+      address,
+      metadata: { address, name: "CreatedByContract", tag: null, isContract: true, verified: false },
       contractProfile: {
         providerTags: [{ kind: "greyTag", label: "GasFree Account", url: null }],
         verified: false,
         providerRisk: false,
-        methodMap: {
-          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
-        },
+        methodMap: { "6f21b898": "permitTransfer(address,address,address,uint256,uint256,uint256,uint256,uint256,bytes)" },
         topMethods: []
       }
     });
 
-    expect(result.category).toBe("service");
-    expect(result.identity).toContain("GasFree");
-    expect(result.isBoundary).toBe(true);
+    expect(result).toMatchObject({ category: "service", isBoundary: false });
+    expect(result.evidence).toContain("role:gasfree_account");
   });
 
   it("classifies SunSwap Router contracts as DEX service routes", () => {
@@ -306,36 +300,24 @@ describe("forensic service classifier", () => {
     expect(result.evidence).toContain("service_route_identity:SunSwap");
   });
 
-  it("prefers GasFree provider identity over generic proxy/router keywords", () => {
+  it("keeps GasFree Endpoint as a boundary", () => {
+    const address = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
     const result = classifyServiceAddress({
-      address: "TGasFreeEndpoint1111111111111111111111",
-      metadata: {
-        address: "TGasFreeEndpoint1111111111111111111111",
-        name: "UpgradableProxy",
-        tag: "GasFree Endpoint",
-        isContract: true,
-        verified: false
-      },
-      contractProfile: {
-        providerTags: [
-          { kind: "tag1", label: "GasFree Endpoint", url: null },
-          { kind: "blueTag", label: "GasFree", url: "gasfree.io" }
-        ],
-        verified: false,
-        providerRisk: false,
-        methodMap: {
-          "6f21b898": "permitTransfer(address,address,address,uint256,uint256,uint256,uint256,uint256,bytes)"
-        },
-        topMethods: []
-      }
+      address,
+      metadata: { address, name: "GasFree Endpoint", tag: "GasFree Endpoint", isContract: true, verified: true }
     });
+    expect(result).toMatchObject({ category: "service", isBoundary: true });
+    expect(result.evidence).toContain("role:gasfree_endpoint");
+  });
 
-    expect(result).toMatchObject({
-      category: "service",
-      identity: "GasFree Endpoint",
-      isBoundary: true
+  it("keeps an unresolved generic GasFree tag traceable", () => {
+    const address = "TGenericGasFree1111111111111111111111";
+    const result = classifyServiceAddress({
+      address,
+      metadata: { address, name: "GasFree", tag: "GasFree", isContract: true, verified: false }
     });
-    expect(result.evidence).toContain("tag:gasfree_service");
+    expect(result).toMatchObject({ category: "service", isBoundary: false });
+    expect(result.evidence).toContain("role:gasfree_unresolved");
   });
 
   it("does not classify method-only permitTransfer contracts as GasFree service boundaries", () => {
@@ -368,7 +350,7 @@ describe("forensic service classifier", () => {
     expect(result).toMatchObject({
       category: "unknown_contract",
       confidence: "medium",
-      isBoundary: true
+      isBoundary: false
     });
   });
 
@@ -404,7 +386,7 @@ describe("forensic service classifier", () => {
     expect(result).toMatchObject({
       category: "unknown_contract",
       confidence: "medium",
-      isBoundary: true
+      isBoundary: false
     });
   });
 
@@ -428,32 +410,27 @@ describe("forensic service classifier", () => {
     });
   });
 
-  it("classifies weak unverified contracts without service tags as unknown contracts", () => {
+  it("keeps a weak unknown contract traceable", () => {
+    const address = "TUnknownContract111111111111111111111";
     const result = classifyServiceAddress({
-      address: "TUnknownContract111111111111111111111",
-      metadata: {
-        address: "TUnknownContract111111111111111111111",
-        name: null,
-        tag: null,
-        isContract: true,
-        verified: false
-      },
-      contractProfile: {
-        serviceTag: null,
-        publicTag: null,
-        verified: false,
-        providerRisk: false,
-        hasTransferFromSelector: true,
-        lowMetadata: true,
-        activityLevel: "low",
-        topMethods: []
-      }
+      address,
+      metadata: { address, name: null, tag: null, isContract: true, verified: false },
+      contractProfile: { verified: false, providerRisk: false, lowMetadata: true, topMethods: [] }
     });
 
+    expect(result).toMatchObject({ category: "unknown_contract", isBoundary: false });
+  });
+
+  it("recognizes the TronLink GasFree provider as pooled infrastructure without metadata", () => {
+    const result = classifyServiceAddress({
+      address: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird"
+    });
     expect(result).toMatchObject({
-      category: "unknown_contract",
-      confidence: "medium",
+      category: "service",
+      identity: "TronLink GasFree provider",
+      confidence: "high",
       isBoundary: true
     });
+    expect(result.evidence).toContain("registry:tronlink_gasfree_provider");
   });
 });
