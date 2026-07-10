@@ -1761,6 +1761,179 @@ describe("deep forensic address check", () => {
     expect(getTransactionCalls.filter((txHash) => txHash === fundingTxHash)).toHaveLength(1);
   });
 
+  it("bounds dense-graph economic enrichment while prioritizing exact GasFree candidates", async () => {
+    const settlementTxHash = "tx-deep-gasfree-budget-settlement";
+    const duplicateTxHash = "tx-deep-gasfree-budget-duplicate";
+    const errorTxHash = "tx-deep-gasfree-budget-error";
+    const budgetSkippedTxHash = "tx-deep-gasfree-budget-skipped";
+    const contractDrivenSkippedTxHash = "tx-deep-gasfree-budget-contract-driven-skipped";
+    const duplicateRecipients = [
+      "TDuplicateBudgetRecipient111111111111111",
+      "TDuplicateBudgetRecipient222222222222222"
+    ];
+    const errorAddress = "TErrorBudgetRecipient111111111111111111";
+    const budgetSkippedAddress = "TSkippedBudgetRecipient111111111111111";
+    const contractDrivenSkippedAddress = "TSkippedBudgetSender111111111111111111";
+    const intermediates = Array.from(
+      { length: 8 },
+      (_, index) => index === 0 ? budgetSkippedAddress : `TNoiseBudgetIntermediate${index}111111111111111`
+    );
+    const sourceEdges = [
+      ...intermediates.map((address, index) => transfer({
+        id: index === 0 ? budgetSkippedTxHash : `tx-deep-gasfree-budget-noise-${index}`,
+        from: gasFreeReceiver,
+        to: address,
+        amountRaw: `${10_000_000 + index}`,
+        at: `2026-07-10T00:${String(index).padStart(2, "0")}:00.000Z`
+      })),
+      transfer({
+        id: contractDrivenSkippedTxHash,
+        from: contractDrivenSkippedAddress,
+        to: gasFreeReceiver,
+        amountRaw: "20000000",
+        at: "2026-07-10T00:09:00.000Z"
+      }),
+      transfer({
+        id: errorTxHash,
+        from: gasFreeReceiver,
+        to: errorAddress,
+        amountRaw: "21000000",
+        at: "2026-07-10T00:10:00.000Z",
+        triggerInfo: { methodName: "permitTransfer" }
+      }),
+      transfer({
+        id: duplicateTxHash,
+        from: duplicateRecipients[0],
+        to: gasFreeReceiver,
+        amountRaw: "22000000",
+        at: "2026-07-10T00:11:00.000Z"
+      }),
+      transfer({
+        id: duplicateTxHash,
+        from: gasFreeReceiver,
+        to: duplicateRecipients[1],
+        amountRaw: "23000000",
+        at: "2026-07-10T00:11:00.000Z"
+      }),
+      transfer({
+        id: settlementTxHash,
+        from: gasFreeReceiver,
+        to: gasFreeAccount,
+        amountRaw: "700000000",
+        at: "2026-07-10T00:12:00.000Z",
+        triggerInfo: { methodName: "permitTransfer" }
+      }),
+      transfer({
+        id: settlementTxHash,
+        from: gasFreeReceiver,
+        to: gasFreeTlnt,
+        amountRaw: "300000000",
+        at: "2026-07-10T00:12:00.000Z",
+        triggerInfo: { methodName: "permitTransfer" }
+      })
+    ];
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [gasFreeReceiver, sourceEdges],
+      ...intermediates.map((address, addressIndex): [string, RawTronscanTrc20Transfer[]] => [
+        address,
+        Array.from({ length: 2 }, (_, edgeIndex) => transfer({
+          id: `tx-deep-gasfree-budget-layer2-${addressIndex}-${edgeIndex}`,
+          from: address,
+          to: `TNoiseBudgetSink${addressIndex}${edgeIndex}11111111111111111`,
+          amountRaw: `${30_000_000 + addressIndex * 10 + edgeIndex}`,
+          at: `2026-07-10T01:${String(addressIndex * 2 + edgeIndex).padStart(2, "0")}:00.000Z`
+        }))
+      ])
+    ]);
+    const indexedSourceEdges = sourceEdges.map((edge, index) => indexed({
+      id: edge.transaction_id,
+      from: edge.from_address,
+      to: edge.to_address,
+      amountRaw: edge.quant,
+      at: new Date(edge.block_ts).toISOString(),
+      eventIndex: index
+    }));
+    const getTransactionCalls: string[] = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      listIndexedUsdtTransfersForAddress: async (address, options) => address === gasFreeReceiver
+        ? indexedSourceEdges.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit)
+        : [],
+      getLabelsForAddress: async (address) =>
+        address === gasFreeTlnt || address === errorAddress || address === budgetSkippedAddress
+          ? [label(address)]
+          : [],
+      getAddressMetadata: async () => null,
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        if (txHash === errorTxHash) throw new Error("transaction detail unavailable");
+        return txHash === settlementTxHash
+          ? gasFreeTransaction({
+              accountAddress: gasFreeReceiver,
+              receiverAddress: gasFreeAccount,
+              principalAmountRaw: "700000000",
+              feeAmountRaw: "300000000"
+            })
+          : null;
+      }
+    }, {
+      sourceAddress: gasFreeReceiver,
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-11T00:00:00.000Z"),
+      maxDepth: 2,
+      pageLimit: 50,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 20,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      economicEdgeTransactionInfoFetchLimit: 3,
+      allTimeSubjectIndexState: completeIndexState(
+        gasFreeReceiver,
+        indexedSourceEdges.length,
+        new Set(indexedSourceEdges.flatMap((edge) => [edge.fromAddress, edge.toAddress])).size - 1
+      ),
+      allTimeMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 0
+    });
+
+    expect(new Set(getTransactionCalls).size).toBeLessThanOrEqual(3);
+    expect(getTransactionCalls.filter((txHash) => txHash === settlementTxHash)).toHaveLength(1);
+    expect(getTransactionCalls.filter((txHash) => txHash === duplicateTxHash)).toHaveLength(1);
+    expect(getTransactionCalls.filter((txHash) => txHash === errorTxHash)).toHaveLength(1);
+    expect(getTransactionCalls).not.toContain(budgetSkippedTxHash);
+    expect(getTransactionCalls).not.toContain(contractDrivenSkippedTxHash);
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("Economic edge transaction enrichment limited to 3")
+    ]));
+
+    expect(report.counterpartyRiskProfiles.some((profile) => profile.counterpartyAddress === gasFreeTlnt)).toBe(false);
+    expect(report.directCounterpartyInteractionProfiles?.find(
+      (profile) => profile.counterpartyAddress === gasFreeTlnt
+    )?.transfers).toEqual([
+      expect.objectContaining({
+        txHash: settlementTxHash,
+        economicRole: "service_fee",
+        economicProtocol: "tron_gasfree"
+      })
+    ]);
+    expect(report.boundaryExposureProfiles.flatMap((profile) => profile.flows).some(
+      (flow) => flow.boundaryAddress === gasFreeTlnt
+    )).toBe(false);
+
+    for (const ordinaryAddress of [errorAddress, budgetSkippedAddress, contractDrivenSkippedAddress]) {
+      const ordinaryInteraction = report.directCounterpartyInteractionProfiles?.find(
+        (profile) => profile.counterpartyAddress === ordinaryAddress
+      );
+      expect(ordinaryInteraction).toBeDefined();
+      expect(ordinaryInteraction?.transfers?.[0]?.economicRole).toBeUndefined();
+    }
+  });
+
   it("does not tag an unmatched direct TLnt movement as a GasFree service fee", async () => {
     const txHash = "tx-deep-unmatched-tlnt";
     const report = await runDeepAddressForensicCheck({

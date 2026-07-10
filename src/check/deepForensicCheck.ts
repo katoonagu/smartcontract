@@ -160,6 +160,7 @@ export type RunDeepAddressForensicCheckInput = {
   maxInboundSenders?: number;
   maxApprovalDrainCandidates?: number;
   approvalChangeLookupLimit?: number;
+  economicEdgeTransactionInfoFetchLimit?: number;
   extendedSearchMode?: "disabled" | "auto" | "always";
   extendedSearchMaxDepth?: number;
   extendedSearchBeamWidth?: number;
@@ -187,10 +188,10 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_MAX_INBOUND_SENDERS = 15;
 const DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT = 100;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
-// ponytail: 2000 preserves current mass Verify20 enrichment; 250 documents the
-// modest-wallet complete-enrichment policy already covered by that default. If
-// provider throttling forces a lower default, keep <=250 incoming tx complete.
-const DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT = 2000;
+// ponytail: 250 preserves complete modest-wallet campaign enrichment while
+// bounding live transaction-detail calls; upgrade by persisting economic roles
+// or locally materializing transaction details instead of raising this ceiling.
+export const DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT = 250;
 const COMPLETE_CONTRACT_DRIVEN_CAMPAIGN_ENRICHMENT_MAX_INCOMING_TX = 250;
 
 function contractDrivenCampaignTxInfoFetchLimit(input: {
@@ -200,7 +201,7 @@ function contractDrivenCampaignTxInfoFetchLimit(input: {
 }): number {
   const defaultLimit = Math.max(
     input.maxApprovalDrainCandidates ?? 0,
-    DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT
+    DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT
   );
   const subject = input.sourceAddress.toLowerCase();
   const incomingTxCount = new Set(input.edges
@@ -211,6 +212,49 @@ function contractDrivenCampaignTxInfoFetchLimit(input: {
     incomingTxCount <= COMPLETE_CONTRACT_DRIVEN_CAMPAIGN_ENRICHMENT_MAX_INCOMING_TX
     ? Math.max(defaultLimit, incomingTxCount)
     : defaultLimit;
+}
+
+function rankedEconomicEdgeCandidateHashes(input: {
+  subjectAddress: string;
+  edges: ForensicRouteEdge[];
+}): string[] {
+  const subject = input.subjectAddress.toLowerCase();
+  const groups = new Map<string, {
+    txHash: string;
+    firstIndex: number;
+    movementKeys: Set<string>;
+    hasMethodHint: boolean;
+    subjectAdjacent: boolean;
+  }>();
+  input.edges.forEach((edge, index) => {
+    const group = groups.get(edge.txHash) ?? {
+      txHash: edge.txHash,
+      firstIndex: index,
+      movementKeys: new Set<string>(),
+      hasMethodHint: false,
+      subjectAdjacent: false
+    };
+    group.movementKeys.add(`${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`);
+    group.hasMethodHint ||= edge.method.toLowerCase().replace(/\s+/g, "").includes("permittransfer");
+    group.subjectAdjacent ||= edge.fromAddress.toLowerCase() === subject || edge.toAddress.toLowerCase() === subject;
+    groups.set(edge.txHash, group);
+  });
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      hasMultipleMovements: group.movementKeys.size > 1
+    }))
+    .filter((group) => group.hasMultipleMovements || group.subjectAdjacent || group.hasMethodHint)
+    .sort((left, right) =>
+      Number(right.hasMultipleMovements) - Number(left.hasMultipleMovements) ||
+      right.movementKeys.size - left.movementKeys.size ||
+      Number(right.subjectAdjacent) - Number(left.subjectAdjacent) ||
+      Number(right.hasMethodHint) - Number(left.hasMethodHint) ||
+      left.firstIndex - right.firstIndex ||
+      left.txHash.localeCompare(right.txHash)
+    )
+    .map((group) => group.txHash);
 }
 
 function stableId(parts: unknown[]): string {
@@ -595,8 +639,12 @@ async function buildOperationalIndexedProfiles(input: {
   flowProfiles: OperationalFlowProfile[];
 }> {
   const classificationCache = new Map(input.classifications);
-  const fetchEdgesForAddress = (address: string): Promise<ForensicRouteEdge[]> =>
-    fetchIndexedRouteEdges(input.deps, input.runInput, address, 200, "amount_desc");
+  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
+    const edges = await fetchIndexedRouteEdges(input.deps, input.runInput, address, 200, "amount_desc");
+    return input.resolveEconomicEdges ? input.resolveEconomicEdges(edges) : edges;
+  };
+  const fetchRiskEligibleEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> =>
+    (await fetchEdgesForAddress(address)).filter((edge) => !isGasFreeServiceFeeEdge(edge));
   const getClassificationForAddress = (address: string): Promise<ServiceClassification | null> =>
     getServiceClassificationForAddress(address, input.deps, classificationCache);
   const boundaryProfiles = input.deps.listIndexedUsdtTransfersForAddress
@@ -610,7 +658,7 @@ async function buildOperationalIndexedProfiles(input: {
         beamWidth: input.runInput.extendedSearchBeamWidth ?? 12,
         maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 150,
         minAmountPreservationRatio: 0.7,
-        fetchEdgesForAddress,
+        fetchEdgesForAddress: fetchRiskEligibleEdgesForAddress,
         getClassificationForAddress
       })
     ))).filter((profile) => profile.flows.length > 0 || profile.contextScore > 0)
@@ -799,6 +847,7 @@ async function buildCounterpartyFastSnapshots(input: {
   sourceEdges: ForensicRouteEdge[];
   labelsByAddress: Map<string, AddressLabel[]>;
   classifications: Map<string, ServiceClassification | null>;
+  resolveEconomicEdges?: (edges: ForensicRouteEdge[]) => Promise<ForensicRouteEdge[]>;
 }): Promise<Map<string, CounterpartyRiskSnapshot>> {
   const seedProfiles = buildDirectCounterpartyInteractionProfiles({
     subjectAddress: input.runInput.sourceAddress,
@@ -860,6 +909,7 @@ async function buildCounterpartyFastSnapshots(input: {
       contractProfileFetchLimit: Math.min(input.runInput.contractProfileFetchLimit ?? 2, 2),
       metadataFetchLimit: Math.min(input.runInput.metadataFetchLimit ?? 4, 4),
       maxExpandedIntermediates: 0,
+      resolveEconomicEdges: input.resolveEconomicEdges,
       recentFallbackMinTransferCount: input.runInput.recentFallbackMinTransferCount,
       recentFallbackTransferLimit: input.runInput.recentFallbackTransferLimit,
       abortSignal: input.runInput.abortSignal
@@ -1320,21 +1370,52 @@ export async function runDeepAddressForensicCheck(
 ): Promise<DeepAddressForensicReport> {
   const transactionCache = new Map<string, Promise<unknown | null>>();
   const gasFreeSettlementCache = new Map<string, Promise<GasFreeSettlement | null>>();
+  const requestedEconomicEdgeTransactionInfoFetchLimit = input.economicEdgeTransactionInfoFetchLimit
+    ?? DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT;
+  const economicEdgeTransactionInfoFetchLimit = Number.isFinite(requestedEconomicEdgeTransactionInfoFetchLimit)
+    ? Math.max(0, Math.floor(requestedEconomicEdgeTransactionInfoFetchLimit))
+    : DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT;
+  const skippedEconomicCandidateHashes = new Set<string>();
+  const budgetSkippedTransactionHashes = new Set<string>();
+  let transactionInfoFetches = 0;
   const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
     const cached = transactionCache.get(txHash);
     if (cached) return cached;
+    if (transactionInfoFetches >= economicEdgeTransactionInfoFetchLimit) {
+      budgetSkippedTransactionHashes.add(txHash);
+      const skipped = Promise.resolve(null);
+      transactionCache.set(txHash, skipped);
+      return skipped;
+    }
+    transactionInfoFetches += 1;
     const pending = deps.getTransaction?.(txHash).catch(() => null) ?? Promise.resolve(null);
     transactionCache.set(txHash, pending);
     return pending;
   };
   const resolveEconomicEdges = async (edges: ForensicRouteEdge[]): Promise<ForensicRouteEdge[]> => {
     if (!deps.getTransaction) return edges;
-    return Promise.all(edges.map(async (edge) => {
-      let settlement = gasFreeSettlementCache.get(edge.txHash);
-      if (!settlement) {
-        settlement = getCachedTransaction(edge.txHash).then(extractGasFreeSettlement);
-        gasFreeSettlementCache.set(edge.txHash, settlement);
+    for (const txHash of rankedEconomicEdgeCandidateHashes({
+      subjectAddress: input.sourceAddress,
+      edges
+    })) {
+      if (gasFreeSettlementCache.has(txHash)) {
+        skippedEconomicCandidateHashes.delete(txHash);
+        continue;
       }
+      if (budgetSkippedTransactionHashes.has(txHash)) {
+        skippedEconomicCandidateHashes.add(txHash);
+        continue;
+      }
+      if (!transactionCache.has(txHash) && transactionInfoFetches >= economicEdgeTransactionInfoFetchLimit) {
+        skippedEconomicCandidateHashes.add(txHash);
+        continue;
+      }
+      gasFreeSettlementCache.set(txHash, getCachedTransaction(txHash).then(extractGasFreeSettlement));
+      skippedEconomicCandidateHashes.delete(txHash);
+    }
+    return Promise.all(edges.map(async (edge) => {
+      const settlement = gasFreeSettlementCache.get(edge.txHash);
+      if (!settlement) return edge;
       const resolvedSettlement = await settlement;
       const movement = resolvedSettlement ? gasFreeMovementForEdge(resolvedSettlement, edge) : null;
       return movement
@@ -1539,7 +1620,8 @@ export async function runDeepAddressForensicCheck(
       runInput: input,
       sourceEdges: riskEligibleDirectEdges,
       labelsByAddress,
-      classifications
+      classifications,
+      resolveEconomicEdges
     });
   const directCounterpartyInteractionProfiles = buildDirectCounterpartyInteractionProfiles({
     subjectAddress: input.sourceAddress,
@@ -1855,6 +1937,9 @@ export async function runDeepAddressForensicCheck(
     ...exposureReport.missingChecks,
     ...transferCoverageNotes,
     ...(directHardEvidence?.missingChecks ?? []),
+    ...(skippedEconomicCandidateHashes.size > 0
+      ? [`Economic edge transaction enrichment limited to ${economicEdgeTransactionInfoFetchLimit} unique candidate transaction hashes; ${skippedEconomicCandidateHashes.size} plausible GasFree candidate transaction hashes remained ordinary and untagged.`]
+      : []),
   ])];
   const coverage = {
     sourceTransferPages: sourceTransfers.pages,

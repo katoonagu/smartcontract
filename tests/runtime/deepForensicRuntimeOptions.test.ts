@@ -18,6 +18,7 @@ describe("deepForensicRuntimeOptions", () => {
       maxInboundSenders: 15,
       maxApprovalDrainCandidates: 15,
       approvalChangeLookupLimit: 20,
+      economicEdgeTransactionInfoFetchLimit: 250,
       extendedSearchMode: "always",
       extendedSearchMaxDepth: 6,
       extendedSearchBeamWidth: 12,

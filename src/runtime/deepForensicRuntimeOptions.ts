@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config";
+import { DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT } from "../check/deepForensicCheck";
 import {
   DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
   DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
@@ -27,6 +28,7 @@ export function deepForensicRuntimeOptions(
     maxInboundSenders: 15,
     maxApprovalDrainCandidates: 15,
     approvalChangeLookupLimit: 20,
+    economicEdgeTransactionInfoFetchLimit: DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT,
     extendedSearchMode: "always",
     extendedSearchMaxDepth: 6,
     extendedSearchBeamWidth: 12,

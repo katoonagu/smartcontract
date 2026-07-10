@@ -1,4 +1,9 @@
-import { runDeepAddressForensicCheck, type DeepAddressForensicDeps, type DeepAddressForensicReport } from "../check/deepForensicCheck";
+import {
+  DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT,
+  runDeepAddressForensicCheck,
+  type DeepAddressForensicDeps,
+  type DeepAddressForensicReport
+} from "../check/deepForensicCheck";
 import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
@@ -166,6 +171,7 @@ export type DeepForensicJobRunnerOptions = {
   maxInboundSenders?: number;
   maxApprovalDrainCandidates?: number;
   approvalChangeLookupLimit?: number;
+  economicEdgeTransactionInfoFetchLimit?: number;
   extendedSearchMode?: "disabled" | "auto" | "always";
   extendedSearchMaxDepth?: number;
   extendedSearchBeamWidth?: number;
@@ -1690,6 +1696,7 @@ export async function runSingleDeepForensicJobCycle(
       maxInboundSenders: options.maxInboundSenders ?? 15,
       maxApprovalDrainCandidates: options.maxApprovalDrainCandidates ?? 15,
       approvalChangeLookupLimit: options.approvalChangeLookupLimit ?? 20,
+      economicEdgeTransactionInfoFetchLimit: options.economicEdgeTransactionInfoFetchLimit ?? DEFAULT_DEEP_ECONOMIC_EDGE_TRANSACTION_INFO_FETCH_LIMIT,
       extendedSearchMode: options.extendedSearchMode ?? "always",
       extendedSearchMaxDepth: options.extendedSearchMaxDepth ?? 6,
       extendedSearchBeamWidth: options.extendedSearchBeamWidth ?? 12,
