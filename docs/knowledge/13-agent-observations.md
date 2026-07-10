@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -72,3 +72,20 @@ Fixed in:
 - A numeric score does not imply hard evidence.
 - Fee/service roles require transaction structure; address identity alone is insufficient.
 - Coverage failure changes certainty, not badness.
+
+## 2026-07-11: Do Not Turn Every Fact Into A Theft Disclaimer
+
+Agent mistake:
+
+The agent repeatedly appended phrases such as `this does not prove theft` or
+`this is not proof of dirty funds` to bridge, collector, service, victim, and
+counterparty facts. The disclaimers made the report longer and framed ordinary
+wallet behavior as presumptively criminal.
+
+Correct rule:
+
+State the observed fact, the address role, and the required action. Add a
+boundary of knowledge only when it prevents a concrete overclaim. A victim is
+simply called a victim. Collector behavior is described as a wallet role.
+Bridge exposure is described as cross-chain AML risk without claiming that
+every bridge transfer, or every laundering scheme, has the same meaning.
