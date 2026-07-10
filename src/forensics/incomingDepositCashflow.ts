@@ -1,4 +1,5 @@
 import type { ForensicRouteEdge, IncomingDepositFundingBundle } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export type IncomingDepositFundingCandidate = {
   edge: ForensicRouteEdge;
@@ -141,6 +142,7 @@ export function buildFundingBundleForTraceHop(
       spendOverhang += amount;
       continue;
     }
+    if (isGasFreeServiceFeeEdge(edge)) continue;
     if (edge.toAddress !== input.target.fromAddress) continue;
 
     const consumed = spendOverhang > amount ? amount : spendOverhang;
@@ -214,6 +216,7 @@ export function buildFundingBundleForOutbound(
     .filter((edge) => {
       if (edge.txHash === input.target.txHash) return false;
       if (edge.toAddress !== input.target.fromAddress) return false;
+      if (isGasFreeServiceFeeEdge(edge)) return false;
       const timestampMs = safeTimestampMs(edge.timestamp);
       if (timestampMs === null || timestampMs >= targetTimestampMs || timestampMs < windowStartMs) return false;
       return parseRaw(edge.amountRaw) > 0n;
@@ -299,6 +302,7 @@ export function selectIncomingDepositFundingCandidates(
       spendOverhang += parseRaw(edge.amountRaw);
       continue;
     }
+    if (isGasFreeServiceFeeEdge(edge)) continue;
     if (edge.toAddress !== input.sender) continue;
 
     const amount = parseRaw(edge.amountRaw);

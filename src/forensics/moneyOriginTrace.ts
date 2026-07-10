@@ -6,6 +6,8 @@ import { selectCandidateWindowsForSourceProvenance } from "./candidateWindowTarg
 import type {
   AddressLabel,
   BalanceFormingTransfer,
+  ForensicEconomicProtocol,
+  ForensicEconomicRole,
   ForensicRouteEdge,
   MoneyOriginFundingBundle,
   MoneyOriginFundingSourceProvenance,
@@ -17,7 +19,8 @@ import type {
   WhereCandidateWindowRequest
 } from "../types";
 import { buildFundingBundleForTraceHop } from "./incomingDepositCashflow";
-import { classifyMoneyOriginStop } from "./moneyOriginPolicy";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
+import { classifyMoneyOriginStop, type MoneyOriginStopClassification } from "./moneyOriginPolicy";
 import {
   DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
   DEFAULT_MAX_BUNDLE_FUNDERS
@@ -66,6 +69,7 @@ export type TraceMoneyOriginPathInput = {
     queuedReason: "where_is_money_hop";
     reason: "material_unresolved_after_candidate_windows";
   }): Promise<true>;
+  resolveEconomicContext?(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
 };
@@ -84,6 +88,8 @@ type TraceState = {
   minPreservation: number;
   balanceShare: number;
   attributionBasis: "initial_transfer" | "funding_bundle" | "single_candidate";
+  incomingEconomicRole: ForensicEconomicRole | null;
+  incomingEconomicProtocol: ForensicEconomicProtocol | null;
   depth: number;
   score: number;
 };
@@ -246,7 +252,125 @@ function targetEdgeFromState(state: TraceState): ForensicRouteEdge | null {
     amountRaw: state.expectedAmountRaw.toString(),
     timestamp: state.latestTimestamp,
     method: "transfer",
-    edgeType: "normal_transfer"
+    edgeType: "normal_transfer",
+    economicRole: state.incomingEconomicRole ?? undefined,
+    economicProtocol: state.incomingEconomicProtocol ?? undefined
+  };
+}
+
+async function withEconomicContext(
+  input: TraceMoneyOriginPathInput,
+  edge: ForensicRouteEdge
+): Promise<ForensicRouteEdge> {
+  return input.resolveEconomicContext ? input.resolveEconomicContext(edge) : edge;
+}
+
+function traceEdgeKey(edge: ForensicRouteEdge): string {
+  return [
+    edge.id,
+    edge.txHash,
+    edge.fromAddress,
+    edge.toAddress,
+    edge.amountRaw,
+    edge.timestamp.getTime()
+  ].join(":");
+}
+
+async function buildResolvedFundingBundle(input: {
+  traceInput: TraceMoneyOriginPathInput;
+  target: ForensicRouteEdge;
+  edges: ForensicRouteEdge[];
+  minCoverageRatio: number;
+  maxFunders: number;
+}): Promise<{
+  bundle: NonNullable<ReturnType<typeof buildFundingBundleForTraceHop>>;
+  edges: ForensicRouteEdge[];
+} | null> {
+  let edges = input.edges;
+  const resolvedKeys = new Set<string>();
+  while (true) {
+    const bundle = buildFundingBundleForTraceHop({
+      target: input.target,
+      edges,
+      minCoverageRatio: input.minCoverageRatio,
+      maxFunders: input.maxFunders
+    });
+    if (!bundle) return null;
+    const unresolvedMembers = bundle.members.filter((member) => !resolvedKeys.has(traceEdgeKey(member.edge)));
+    if (unresolvedMembers.length === 0) return { bundle, edges };
+
+    const resolvedMembers: Array<{ key: string; edge: ForensicRouteEdge }> = [];
+    for (const member of unresolvedMembers) {
+      resolvedMembers.push({
+        key: traceEdgeKey(member.edge),
+        edge: await withEconomicContext(input.traceInput, member.edge)
+      });
+    }
+    const replacements = new Map(resolvedMembers.map((member) => [member.key, member.edge]));
+    for (const member of resolvedMembers) resolvedKeys.add(member.key);
+    edges = edges.map((edge) => replacements.get(traceEdgeKey(edge)) ?? edge);
+  }
+}
+
+async function resolveFundingBundleMembers(
+  input: TraceMoneyOriginPathInput,
+  bundle: NonNullable<ReturnType<typeof buildFundingBundleForTraceHop>>,
+  minCoverageRatio: number,
+  maxFunders: number
+): Promise<NonNullable<ReturnType<typeof buildFundingBundleForTraceHop>>> {
+  const resolvedMembers: typeof bundle.members = [];
+  for (const member of bundle.members) {
+    resolvedMembers.push({
+      ...member,
+      edge: await withEconomicContext(input, member.edge)
+    });
+  }
+  const targetAmount = parseAmount(bundle.expectedAmountRaw);
+  let coveredAmount = 0n;
+  const members: typeof resolvedMembers = [];
+  for (const member of resolvedMembers) {
+    if (isGasFreeServiceFeeEdge(member.edge)) continue;
+    const originalAmount = parseAmount(member.edge.amountRaw);
+    const spentBeforeHop = parseAmount(member.spentBeforeHopRaw);
+    const usableAmount = originalAmount > spentBeforeHop ? originalAmount - spentBeforeHop : 0n;
+    const remaining = targetAmount > coveredAmount ? targetAmount - coveredAmount : 0n;
+    const usedAmount = usableAmount > remaining ? remaining : usableAmount;
+    if (usedAmount <= 0n) continue;
+    members.push({
+      ...member,
+      usedAmountRaw: usedAmount.toString(),
+      coverageRatio: fundingCoverageRatio(usedAmount, targetAmount)
+    });
+    coveredAmount += usedAmount;
+    if (coveredAmount >= targetAmount || fundingCoverageRatio(coveredAmount, targetAmount) >= minCoverageRatio) break;
+  }
+  const coverageRatio = fundingCoverageRatio(coveredAmount, parseAmount(bundle.expectedAmountRaw));
+  const funders = new Map<string, { amountRaw: bigint; txHashes: string[] }>();
+  for (const member of members) {
+    const funder = funders.get(member.edge.fromAddress) ?? { amountRaw: 0n, txHashes: [] };
+    funder.amountRaw += parseAmount(member.usedAmountRaw);
+    funder.txHashes.push(member.edge.txHash);
+    funders.set(member.edge.fromAddress, funder);
+  }
+  return {
+    ...bundle,
+    coveredAmountRaw: coveredAmount.toString(),
+    coverageRatio,
+    meetsThreshold: coverageRatio >= minCoverageRatio,
+    members,
+    funders: [...funders.entries()]
+      .map(([address, funder]) => ({
+        address,
+        amountRaw: funder.amountRaw.toString(),
+        txHashes: funder.txHashes
+      }))
+      .sort((left, right) => {
+        const leftAmount = parseAmount(left.amountRaw);
+        const rightAmount = parseAmount(right.amountRaw);
+        if (leftAmount !== rightAmount) return rightAmount > leftAmount ? 1 : -1;
+        return left.address.localeCompare(right.address);
+      })
+      .slice(0, maxFunders)
   };
 }
 
@@ -337,6 +461,28 @@ function pathFromState(input: {
   };
 }
 
+function appendStopPath(input: {
+  terminals: MoneyOriginPath[];
+  traceInput: TraceMoneyOriginPathInput;
+  state: TraceState;
+  stop: MoneyOriginStopClassification;
+}): void {
+  input.terminals.push(pathFromState({
+    state: input.state,
+    balanceTransferTxHash: input.traceInput.balanceTransfer.txHash,
+    balanceShare: input.state.balanceShare,
+    amountUsage: input.traceInput.balanceTransfer.amountUsage ?? null,
+    rootSourceType: input.stop.rootSourceType,
+    stoppedReason: input.stop.stoppedReason,
+    verdict: input.stop.verdict,
+    riskScoreContribution: input.stop.riskScoreContribution,
+    exposureSourceKey: input.stop.exposureSourceKey,
+    exposureSourceLabel: input.stop.exposureSourceLabel,
+    sourceExposureKind: input.stop.sourceExposureKind,
+    reasons: input.stop.reasons
+  }));
+}
+
 function incompletePath(input: {
   state: TraceState;
   balanceTransferTxHash: string;
@@ -422,19 +568,31 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
   const maxTimeDeltaMs = input.maxTimeDeltaMs ?? DEFAULT_MAX_TIME_DELTA_MS;
   const bundleCoverageThreshold = input.bundleCoverageThreshold ?? DEFAULT_BUNDLE_COVERAGE_THRESHOLD;
   const maxBundleFunders = input.maxBundleFunders ?? DEFAULT_MAX_BUNDLE_FUNDERS;
-  const initialTimestamp = new Date(input.balanceTransfer.timestamp);
+  const resolvedSeed = await withEconomicContext(input, {
+    id: input.balanceTransfer.txHash,
+    txHash: input.balanceTransfer.txHash,
+    fromAddress: input.balanceTransfer.fromAddress,
+    toAddress: input.balanceTransfer.toAddress,
+    amountRaw: input.balanceTransfer.amountRaw,
+    timestamp: new Date(input.balanceTransfer.timestamp),
+    method: input.balanceTransfer.method ?? "transfer",
+    edgeType: input.balanceTransfer.edgeType ?? "normal_transfer",
+    economicRole: input.balanceTransfer.economicRole,
+    economicProtocol: input.balanceTransfer.economicProtocol
+  });
+  const initialTimestamp = resolvedSeed.timestamp;
   const initialState: TraceState = {
-    currentAddress: input.balanceTransfer.fromAddress,
-    expectedAmountRaw: parseAmount(input.balanceTransfer.amountRaw),
+    currentAddress: resolvedSeed.fromAddress,
+    expectedAmountRaw: parseAmount(resolvedSeed.amountRaw),
     latestTimestamp: initialTimestamp,
-    addressesFromSubject: [input.subjectAddress, input.balanceTransfer.fromAddress],
-    txHashesFromSubject: [input.balanceTransfer.txHash],
+    addressesFromSubject: [input.subjectAddress, resolvedSeed.fromAddress],
+    txHashesFromSubject: [resolvedSeed.txHash],
     stepsFromSubject: [{
-      txHash: input.balanceTransfer.txHash,
-      fromAddress: input.balanceTransfer.fromAddress,
+      txHash: resolvedSeed.txHash,
+      fromAddress: resolvedSeed.fromAddress,
       toAddress: input.subjectAddress,
-      amountRaw: input.balanceTransfer.amountRaw,
-      timestamp: input.balanceTransfer.timestamp
+      amountRaw: resolvedSeed.amountRaw,
+      timestamp: resolvedSeed.timestamp.toISOString()
     }],
     timestampsFromSubject: [initialTimestamp],
     fundingBundles: [],
@@ -443,6 +601,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
     minPreservation: 1,
     balanceShare: 1,
     attributionBasis: "initial_transfer",
+    incomingEconomicRole: resolvedSeed.economicRole ?? null,
+    incomingEconomicProtocol: resolvedSeed.economicProtocol ?? null,
     depth: 0,
     score: 0
   };
@@ -463,21 +623,33 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         balanceShare: clampShare(state.balanceShare * amountUsageCoverageShare(input.balanceTransfer.amountUsage)),
         eventTimestamp: state.latestTimestamp
       });
-      if (stop) {
-        terminals.push(pathFromState({
+      const hardStop = stop && (
+        stop.rootSourceType === "risky_label" || stop.sourceExposureKind === "sanctioned_service"
+      ) ? stop : null;
+      if (hardStop) {
+        appendStopPath({ terminals, traceInput: input, state, stop: hardStop });
+        continue;
+      }
+      if (
+        state.incomingEconomicRole === "service_fee" &&
+        state.incomingEconomicProtocol === "tron_gasfree"
+      ) {
+        appendStopPath({
+          terminals,
+          traceInput: input,
           state,
-          balanceTransferTxHash: input.balanceTransfer.txHash,
-          balanceShare: state.balanceShare,
-          amountUsage: input.balanceTransfer.amountUsage ?? null,
-          rootSourceType: stop.rootSourceType,
-          stoppedReason: stop.stoppedReason,
-          verdict: stop.verdict,
-          riskScoreContribution: stop.riskScoreContribution,
-          exposureSourceKey: stop.exposureSourceKey,
-          exposureSourceLabel: stop.exposureSourceLabel,
-          sourceExposureKind: stop.sourceExposureKind,
-          reasons: stop.reasons
-        }));
+          stop: {
+            verdict: "REVIEW",
+            rootSourceType: "unknown",
+            stoppedReason: "service_boundary",
+            riskScoreContribution: 0,
+            reasons: ["Exact GasFree service-fee movement; not payer provenance."]
+          }
+        });
+        continue;
+      }
+      if (stop) {
+        appendStopPath({ terminals, traceInput: input, state, stop });
         continue;
       }
 
@@ -514,14 +686,17 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         expectedAmountRaw: state.expectedAmountRaw.toString()
       };
       const edges = await input.fetchEdgesForAddress(state.currentAddress, hopFetchOptions);
-      const bundle = targetEdge
-        ? buildFundingBundleForTraceHop({
+      const resolvedBundle = targetEdge
+        ? await buildResolvedFundingBundle({
+          traceInput: input,
           target: targetEdge,
           edges,
           minCoverageRatio: bundleCoverageThreshold,
           maxFunders: maxBundleFunders
         })
         : null;
+      const traceEdges = resolvedBundle?.edges ?? edges;
+      const bundle = resolvedBundle?.bundle ?? null;
       const moneyOriginBundle = bundle?.meetsThreshold ? toMoneyOriginFundingBundle(bundle) : null;
       const bundleHasOnlyNormalTransfers = bundle?.members.every((member) =>
         member.edge.edgeType === "normal_transfer"
@@ -532,7 +707,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           : fallbackHistoryCoverage({
             address: state.currentAddress,
             latestTimestamp: state.latestTimestamp,
-            edges
+            edges: traceEdges
           });
         const stateWithHistory: TraceState = {
           ...state,
@@ -540,7 +715,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         };
         const sourceProvenance = evaluateFundingFirstSourceProvenance({
           target: targetEdge,
-          edges,
+          edges: traceEdges,
           historyCoverage,
           downstreamAmountRaw: input.balanceTransfer.amountRaw,
           minCoverageRatio: bundleCoverageThreshold,
@@ -561,9 +736,33 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           minCoverageRatio: bundleCoverageThreshold,
           maxFunders: maxBundleFunders
         });
-        const effectiveSourceProvenance = repaired?.provenance ?? sourceProvenance;
-        const effectiveTraceBundle = repaired?.traceBundle ?? bundle;
-        const effectiveMoneyOriginBundle = effectiveSourceProvenance.fundingBundle ?? moneyOriginBundle;
+        const effectiveTraceBundle = repaired?.traceBundle
+          ? await resolveFundingBundleMembers(
+              input,
+              repaired.traceBundle,
+              bundleCoverageThreshold,
+              maxBundleFunders
+            )
+          : bundle;
+        const effectiveMoneyOriginBundle = effectiveTraceBundle?.meetsThreshold
+          ? toMoneyOriginFundingBundle(effectiveTraceBundle)
+          : null;
+        const repairedSourceProvenance = repaired
+          ? {
+              ...repaired.provenance,
+              proofClass: effectiveTraceBundle?.meetsThreshold ? repaired.provenance.proofClass : "unresolved" as const,
+              coveredAmountRaw: effectiveTraceBundle?.coveredAmountRaw ?? "0",
+              coverageRatio: effectiveTraceBundle?.coverageRatio ?? 0,
+              stopReason: effectiveTraceBundle?.meetsThreshold
+                ? repaired.provenance.stopReason
+                : "funding_first_unresolved" as const,
+              fundingBundle: effectiveMoneyOriginBundle,
+              reasons: effectiveTraceBundle?.meetsThreshold
+                ? repaired.provenance.reasons
+                : [...new Set([...repaired.provenance.reasons, "gasfree_service_fee_excluded"])]
+            }
+          : null;
+        const effectiveSourceProvenance = repairedSourceProvenance ?? sourceProvenance;
         const effectiveBundleHasOnlyNormalTransfers = effectiveTraceBundle?.members.every((member) =>
           member.edge.edgeType === "normal_transfer"
         ) ?? false;
@@ -602,6 +801,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         for (const funder of effectiveTraceBundle.funders) {
           const funderMembers = effectiveTraceBundle.members.filter((member) => member.edge.fromAddress === funder.address);
           if (funderMembers.length === 0) continue;
+          const economicRoles = [...new Set(funderMembers.map((member) => member.edge.economicRole).filter(Boolean))];
+          const economicProtocols = [...new Set(funderMembers.map((member) => member.edge.economicProtocol).filter(Boolean))];
           const oldestTimestamp = new Date(Math.min(...funderMembers.map((member) => member.edge.timestamp.getTime())));
           const funderCoverageShare = fundingCoverageRatio(parseAmount(funder.amountRaw), state.expectedAmountRaw);
           nextFrontier.push({
@@ -630,9 +831,11 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             fundingBundles: stateWithBundle.fundingBundles,
             sourceProvenance: stateWithBundle.sourceProvenance,
             historyCoverage: stateWithBundle.historyCoverage,
-            minPreservation: Math.min(stateWithBundle.minPreservation, bundle.coverageRatio),
+            minPreservation: Math.min(stateWithBundle.minPreservation, effectiveTraceBundle.coverageRatio),
             balanceShare: clampShare(stateWithBundle.balanceShare * funderCoverageShare),
             attributionBasis: "funding_bundle",
+            incomingEconomicRole: economicRoles.length === 1 ? economicRoles[0] ?? null : null,
+            incomingEconomicProtocol: economicProtocols.length === 1 ? economicProtocols[0] ?? null : null,
             depth: stateWithBundle.depth + 1,
             score: stateWithBundle.score + funderCoverageShare * 100
           });
@@ -640,22 +843,26 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         continue;
       }
 
-      const candidates = candidateIncomingEdges({
+      const candidateEdges = candidateIncomingEdges({
         currentAddress: state.currentAddress,
         expectedAmountRaw: state.expectedAmountRaw,
         latestTimestamp: state.latestTimestamp,
-        edges,
+        edges: traceEdges,
         minPreservation,
         maxTimeDeltaMs,
         maxEdges: input.maxEdgesPerAddress
       });
+      const candidates: ForensicRouteEdge[] = [];
+      for (const edge of candidateEdges) {
+        candidates.push(await withEconomicContext(input, edge));
+      }
 
       if (candidates.length === 0) {
         const rejectedCandidates = rejectedIncomingCandidates({
           currentAddress: state.currentAddress,
           expectedAmountRaw: state.expectedAmountRaw,
           latestTimestamp: state.latestTimestamp,
-          edges,
+          edges: traceEdges,
           minPreservation,
           maxTimeDeltaMs,
           maxCandidates: 5
@@ -665,7 +872,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           : fallbackHistoryCoverage({
             address: state.currentAddress,
             latestTimestamp: state.latestTimestamp,
-            edges
+            edges: traceEdges
           });
         const stateWithHistory: TraceState = {
           ...state,
@@ -674,7 +881,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         const sourceProvenance = targetEdge
           ? evaluateFundingFirstSourceProvenance({
               target: targetEdge,
-              edges,
+              edges: traceEdges,
               historyCoverage,
               downstreamAmountRaw: input.balanceTransfer.amountRaw,
               minCoverageRatio: bundleCoverageThreshold,
@@ -731,7 +938,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           continue;
         }
 
-        const hasAnyPreviousIncoming = edges.some((edge) =>
+        const hasAnyPreviousIncoming = traceEdges.some((edge) =>
           edge.toAddress === state.currentAddress &&
           edge.timestamp <= state.latestTimestamp &&
           parseAmount(edge.amountRaw) > 0n
@@ -811,6 +1018,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           minPreservation: Math.min(state.minPreservation, preservation),
           balanceShare: state.balanceShare,
           attributionBasis: "single_candidate",
+          incomingEconomicRole: edge.economicRole ?? null,
+          incomingEconomicProtocol: edge.economicProtocol ?? null,
           depth: state.depth + 1,
           score: state.score + preservation * 100
         });

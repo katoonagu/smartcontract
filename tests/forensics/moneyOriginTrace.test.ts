@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { repairFundingSourceExactWindow } from "../../src/forensics/fundingFirstSourceProvenance";
+import { extractGasFreeEdgeContext } from "../../src/forensics/gasFreeSettlement";
 import { traceMoneyOriginPath } from "../../src/forensics/moneyOriginTrace";
 import { baseShareScore } from "../../src/forensics/provenanceScoring";
 import type { AddressLabel, BalanceFormingTransfer, ForensicRouteEdge, ServiceClassification } from "../../src/types";
@@ -14,10 +15,19 @@ const binance = "TBinance111111111111111111111111111";
 const bridge = "TBridge1111111111111111111111111111";
 const whitebit = "TWhiteBIT11111111111111111111111111";
 const gasFreeHop1 = "TGasFreeHop111111111111111111111111";
+const gasFreeHop2 = "TGasFreeHop222222222222222222222222";
 const unknownHop2 = "TUnknownHop222222222222222222222222";
 const gasFreeHop3 = "TGasFreeHop333333333333333333333333";
+const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+const tlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
 
-function edge(id: string, fromAddress: string, toAddress: string, amountRaw: string, timestamp: string): ForensicRouteEdge {
+function edge(
+  id: string,
+  fromAddress: string,
+  toAddress: string,
+  amountRaw = "100000000",
+  timestamp = "2026-07-10T00:00:00.000Z"
+): ForensicRouteEdge {
   return {
     id,
     txHash: id,
@@ -62,6 +72,14 @@ function traceableContract(identity: string): ServiceClassification {
   };
 }
 
+function gasFreePrincipal(value: ForensicRouteEdge): ForensicRouteEdge {
+  return { ...value, economicRole: "principal", economicProtocol: "tron_gasfree" };
+}
+
+function gasFreeFee(value: ForensicRouteEdge): ForensicRouteEdge {
+  return { ...value, economicRole: "service_fee", economicProtocol: "tron_gasfree" };
+}
+
 function whitebitLabel(): AddressLabel {
   return {
     address: whitebit,
@@ -73,6 +91,151 @@ function whitebitLabel(): AddressLabel {
 }
 
 describe("traceMoneyOriginPath", () => {
+  it("resolves principal roles across GasFree accounts until the Binance boundary", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [gasFreeHop1, [edge("tx-gasfree-2-gasfree-1", gasFreeHop2, gasFreeHop1)]],
+      [gasFreeHop2, [edge("tx-gasfree-3-gasfree-2", gasFreeHop3, gasFreeHop2)]],
+      [gasFreeHop3, [edge("tx-binance-gasfree-3", binance, gasFreeHop3)]]
+    ]);
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => gasFreePrincipal(value));
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeHop1, "tx-gasfree-1-subject"),
+        amountRaw: "100000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        if ([gasFreeHop1, gasFreeHop2, gasFreeHop3].includes(address)) return traceableContract("GasFree Account");
+        return service("none", null);
+      },
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext.mock.calls.map(([value]) => value.txHash)).toEqual([
+      "tx-gasfree-1-subject",
+      "tx-gasfree-2-gasfree-1",
+      "tx-gasfree-3-gasfree-2",
+      "tx-binance-gasfree-3"
+    ]);
+    expect(path.pathAddresses).toEqual([binance, gasFreeHop3, gasFreeHop2, gasFreeHop1, subject]);
+    expect(path.stoppedReason).toBe("allowlist_cex_reached");
+  });
+
+  it("stops an exact GasFree fee seed without fetching payer history", async () => {
+    const fetchEdgesForAddress = vi.fn(async () => [] as ForensicRouteEdge[]);
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => gasFreeFee(value));
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeAccount, "tx-exact-fee"),
+        amountRaw: "3000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => traceableContract("GasFree Account"),
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(1);
+    expect(fetchEdgesForAddress).not.toHaveBeenCalled();
+    expect(path).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceType: "unknown",
+      stoppedReason: "service_boundary",
+      riskScoreContribution: 0,
+      reasons: ["Exact GasFree service-fee movement; not payer provenance."]
+    });
+  });
+
+  it("keeps an exact hard label authoritative over GasFree fee context", async () => {
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => gasFreeFee(value));
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeAccount, "tx-labeled-exact-fee"),
+        amountRaw: "3000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async (address) => address === gasFreeAccount ? [{
+        address,
+        label: "reported_scam",
+        source: "system",
+        createdByTelegramId: null,
+        createdAt: new Date("2026-07-10T00:00:00.000Z")
+      }] : [],
+      getClassificationForAddress: async () => traceableContract("GasFree Account"),
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(1);
+    expect(path).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceType: "risky_label",
+      stoppedReason: "risky_label_reached"
+    });
+    expect(path.reasons).not.toContain("Exact GasFree service-fee movement; not payer provenance.");
+  });
+
+  it("does not infer GasFree fee context from an ordinary transfer to TLnt", async () => {
+    const transaction = {
+      confirmed: true,
+      contractRet: "SUCCESS",
+      revert: false,
+      contractData: { contract_address: gasFreeAccount, data: "a9059cbb" },
+      trc20TransferInfo: [{
+        from_address: gasFreeAccount,
+        to_address: tlnt,
+        amount_str: "3000000"
+      }]
+    };
+    const resolveEconomicContext = vi.fn(async (value: ForensicRouteEdge) => {
+      const context = extractGasFreeEdgeContext(transaction, value);
+      return context ? gasFreeFee(value) : value;
+    });
+
+    expect(extractGasFreeEdgeContext(transaction, edge("tx-ordinary-tlnt", gasFreeAccount, tlnt, "3000000"))).toBeNull();
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(gasFreeAccount, "tx-ordinary-tlnt"),
+        amountRaw: "3000000",
+        timestamp: "2026-07-10T00:05:00.000Z"
+      },
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null),
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(1);
+    expect(path.reasons.join(" ")).not.toContain("GasFree service-fee");
+  });
+
   it("accepts a clean multi-hop EOA chain from an allowlisted CEX", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [walletD, [edge("tx-c-d", walletC, walletD, "5000000000", "2026-05-22T10:10:00.000Z")]],
@@ -856,6 +1019,80 @@ describe("traceMoneyOriginPath", () => {
     expect(path.sourceProvenance?.[0]).toMatchObject({
       proofClass: "exact",
       stopReason: null
+    });
+  });
+
+  it("removes an exact GasFree fee member and recomputes a repaired funding window", async () => {
+    const repairWallet = "TRepairGasFreeFeeWallet111111111111";
+    const repairSubject = "TRepairGasFreeFeeSubject11111111111";
+    const broadFunder = "TBroadRepairFunder11111111111111111";
+    const targetHop = edge("tx-repair-gasfree-hop", repairWallet, repairSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const broadFunding = edge("tx-repair-broad-funder", broadFunder, repairWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const repairedFee = edge("tx-repair-exact-fee", gasFreeAccount, repairWallet, "600000000", "2026-05-22T10:12:00.000Z");
+    const repairedPrincipal = edge("tx-repair-exact-principal", binance, repairWallet, "1000000000", "2026-05-22T10:11:00.000Z");
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: repairSubject,
+      balanceTransfer: {
+        ...balanceTransfer(repairWallet, targetHop.txHash),
+        toAddress: repairSubject,
+        amountRaw: targetHop.amountRaw,
+        timestamp: targetHop.timestamp.toISOString()
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => address === repairWallet ? [targetHop, broadFunding] : [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: broadFunding.timestamp.toISOString(),
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      requestCandidateWindows: async () => true,
+      repairSourceProvenanceWindow: async (input) => repairFundingSourceExactWindow({
+        target: input.target,
+        windowEdges: [repairedFee, repairedPrincipal, targetHop],
+        windowCoverage: {
+          complete: true,
+          fetchedTransferCount: 3,
+          oldestFetchedTransferAt: repairedPrincipal.timestamp.toISOString(),
+          source: "local_index"
+        },
+        downstreamAmountRaw: input.downstreamAmountRaw,
+        minCoverageRatio: input.minCoverageRatio,
+        maxFunders: input.maxFunders
+      }),
+      resolveEconomicContext: async (value) => value.txHash === repairedFee.txHash ? gasFreeFee(value) : value,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("allowlist_cex_reached");
+    expect(path.pathAddresses).toEqual([binance, repairWallet, repairSubject]);
+    expect(path.pathAddresses).not.toContain(gasFreeAccount);
+    expect(path.fundingBundles?.[0]?.members).toEqual([
+      expect.objectContaining({
+        txHash: repairedPrincipal.txHash,
+        usedAmountRaw: "1000000000"
+      })
+    ]);
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      proofClass: "exact",
+      stopReason: null,
+      fundingBundle: expect.objectContaining({
+        coveredAmountRaw: "1000000000",
+        members: [expect.objectContaining({ txHash: repairedPrincipal.txHash })]
+      })
     });
   });
 

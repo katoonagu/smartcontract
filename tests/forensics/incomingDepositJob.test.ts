@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 import {
@@ -41,6 +42,58 @@ const stage2GaryActor = "0x3333333333333333333333333333333333333333";
 const stage2SanctionedActor = "0x5555555555555555555555555555555555555555";
 const stage2UniswapV3Npm = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
 const stage2DecreaseLiquidityTopic = "0x26f6a8ec6d85944b0b35836d2ca9c7468e4bf0b1f2a1c23f0b6d3c673dbc8f2";
+const gasFreeController = "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U";
+const gasFreeAccount = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
+const gasFreeUser = "TW2Py9fWGc1HVXhejufX1stuwQ9N42Y8RE";
+const gasFreeReceiver = "TMwjbNHpsVSjn93vtWtLnThHwhAJAnrWNq";
+const gasFreeTlnt = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+
+const gasFreeUintWord = (value: bigint): string => value.toString(16).padStart(64, "0");
+const gasFreeAddressWord = (address: string): string => TronWeb.address.toHex(address).slice(2).padStart(64, "0");
+
+function gasFreePermitData(receiverAddress: string, value: bigint, maxFee: bigint): string {
+  return [
+    "6f21b898",
+    gasFreeAddressWord(TRON_USDT_CONTRACT_ADDRESS),
+    gasFreeAddressWord(gasFreeUser),
+    gasFreeAddressWord(receiverAddress),
+    gasFreeUintWord(value),
+    gasFreeUintWord(maxFee),
+    gasFreeUintWord(1_800_000_000n),
+    gasFreeUintWord(1n),
+    gasFreeUintWord(9n),
+    gasFreeUintWord(0x120n),
+    gasFreeUintWord(65n),
+    "11".repeat(65).padEnd(192, "0")
+  ].join("");
+}
+
+function gasFreeTransaction(
+  receiverAddress = gasFreeReceiver,
+  principalAmountRaw = "97000000",
+  feeAmountRaw = "3000000"
+) {
+  const row = (toAddress: string, amountRaw: string) => ({
+    from_address: gasFreeAccount,
+    to_address: toAddress,
+    amount_str: amountRaw,
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    status: 0,
+    tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenType: "trc20" }
+  });
+  const rows = [row(receiverAddress, principalAmountRaw), row(gasFreeTlnt, feeAmountRaw)];
+  return {
+    confirmed: true,
+    contractRet: "SUCCESS",
+    revert: false,
+    contractData: {
+      contract_address: gasFreeController,
+      data: gasFreePermitData(receiverAddress, BigInt(principalAmountRaw), BigInt(feeAmountRaw))
+    },
+    trc20TransferInfo: rows,
+    tokenTransferInfo: rows.map((item) => ({ ...item }))
+  };
+}
 
 const validProgressJson = {
   depositTxHash,
@@ -1622,6 +1675,233 @@ describe("buildIncomingDepositReport", () => {
       })
     ]));
     expect(result.originPaths.flatMap((path) => path.reasons).join(" ")).not.toContain("unlabeled_service_boundary");
+  });
+
+  it("keeps an exact GasFree principal deposit funding-first and reaches Binance", async () => {
+    const principalTxHash = "tx-incoming-gasfree-principal";
+    const binance = "TBinanceBoundary11111111111111111111";
+    const getTransaction = vi.fn(async (txHash: string) =>
+      txHash === principalTxHash ? gasFreeTransaction() : null
+    );
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => address === gasFreeAccount
+          ? [indexedTransfer({
+              txHash: "tx-binance-gasfree-funding",
+              fromAddress: binance,
+              toAddress: gasFreeAccount,
+              amountRaw: "100000000",
+              blockTimestamp: new Date("2026-07-10T00:00:00.000Z")
+            })]
+          : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === binance) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true };
+          }
+          if (address === gasFreeAccount) {
+            return { category: "unknown_contract", identity: "GasFree Account", confidence: "high", evidence: ["metadata:gasfree"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction,
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash: principalTxHash,
+      watchedWallet: gasFreeReceiver,
+      sender: gasFreeAccount,
+      amountRaw: "97000000",
+      timestamp: new Date("2026-07-10T00:05:00.000Z")
+    });
+
+    expect(result.fundingCoverage.depositFundingCoverageRatio).toBe(1);
+    expect(result.originPaths[0]).toMatchObject({
+      stoppedReason: "clean_cex_reached",
+      pathAddresses: [binance, gasFreeAccount, gasFreeReceiver]
+    });
+    expect(result.originPaths[0]?.reasons.join(" ")).not.toContain("GasFree service-fee");
+    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === principalTxHash)).toHaveLength(1);
+  });
+
+  it("keeps an exact GasFree fee deposit transaction-seeded and caches its transaction lookup", async () => {
+    const feeTxHash = "tx-incoming-gasfree-fee";
+    const riskyPayer = "TRiskyPayer1111111111111111111111111";
+    const getTransaction = vi.fn(async (txHash: string) =>
+      txHash === feeTxHash ? gasFreeTransaction() : null
+    );
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => address === gasFreeAccount
+          ? [indexedTransfer({
+              txHash: "tx-risky-payer-funding",
+              fromAddress: riskyPayer,
+              toAddress: gasFreeAccount,
+              amountRaw: "100000000",
+              blockTimestamp: new Date("2026-07-10T00:00:00.000Z")
+            })]
+          : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async (address) => address === riskyPayer ? [{
+          address,
+          label: "reported_scam",
+          source: "system",
+          createdByTelegramId: null,
+          createdAt: new Date("2026-07-10T00:00:00.000Z")
+        }] : [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => address === gasFreeAccount
+          ? { category: "unknown_contract", identity: "GasFree Account", confidence: "high", evidence: ["metadata:gasfree"], isBoundary: true }
+          : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction,
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash: feeTxHash,
+      watchedWallet: gasFreeTlnt,
+      sender: gasFreeAccount,
+      amountRaw: "3000000",
+      timestamp: new Date("2026-07-10T00:05:00.000Z")
+    });
+
+    expect(result.fundingCoverage.depositFundingCoverageRatio).toBe(1);
+    expect(result.originPaths[0]).toMatchObject({
+      pathAddresses: [gasFreeAccount, gasFreeTlnt],
+      txHashes: [feeTxHash]
+    });
+    expect(result.originPaths[0]?.pathAddresses).not.toContain(riskyPayer);
+    expect(result.originPaths[0]?.reasons.join(" ")).toContain("GasFree service-fee");
+    expect(result.originPaths[0]?.score).toBe(0);
+    expect(result.freshBundleExposure?.riskyLabelShare).toBe(0);
+    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === feeTxHash)).toHaveLength(1);
+  });
+
+  it("removes a raw exact GasFree fee before selecting the real incoming-deposit funder", async () => {
+    const ordinaryDepositTxHash = "tx-service-revenue-out";
+    const historicalFeeTxHash = "tx-raw-historical-gasfree-fee";
+    const watchedWallet = "TWatchedServiceRevenue111111111111111";
+    const binance = "TBinanceServiceRevenue111111111111111";
+    const getTransaction = vi.fn(async (txHash: string) =>
+      txHash === historicalFeeTxHash ? gasFreeTransaction() : null
+    );
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => address === gasFreeTlnt
+          ? [
+              indexedTransfer({
+                txHash: historicalFeeTxHash,
+                fromAddress: gasFreeAccount,
+                toAddress: gasFreeTlnt,
+                amountRaw: "3000000",
+                blockTimestamp: new Date("2026-07-10T00:05:00.000Z")
+              }),
+              indexedTransfer({
+                txHash: "tx-real-service-revenue-funder",
+                fromAddress: binance,
+                toAddress: gasFreeTlnt,
+                amountRaw: "3000000",
+                blockTimestamp: new Date("2026-07-10T00:00:00.000Z")
+              })
+            ]
+          : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => address === binance
+          ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+          : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction,
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash: ordinaryDepositTxHash,
+      watchedWallet,
+      sender: gasFreeTlnt,
+      amountRaw: "3000000",
+      timestamp: new Date("2026-07-10T00:10:00.000Z")
+    });
+
+    expect(result.originPaths[0]).toMatchObject({
+      stoppedReason: "clean_cex_reached",
+      pathAddresses: [binance, gasFreeTlnt, watchedWallet]
+    });
+    expect(result.originPaths[0]?.txHashes).not.toContain(historicalFeeTxHash);
+    expect(getTransaction.mock.calls.filter(([txHash]) => txHash === historicalFeeTxHash)).toHaveLength(1);
+  });
+
+  it("removes a raw exact GasFree fee from large corridor funding bundles", async () => {
+    const amountRaw = "500000000000";
+    const sender = "TLargeCorridorSender11111111111111111";
+    const watchedWallet = "TLargeCorridorWatched111111111111111";
+    const binance = "TBinanceLargeCorridor111111111111111";
+    const corridorTxHash = "tx-large-corridor-sender";
+    const feeTxHash = "tx-large-corridor-gasfree-fee";
+    const depositHash = "tx-large-corridor-deposit";
+    const targetTransfer = indexedTransfer({
+      txHash: corridorTxHash,
+      fromAddress: gasFreeTlnt,
+      toAddress: sender,
+      amountRaw,
+      blockTimestamp: new Date("2026-07-10T00:15:00.000Z")
+    });
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === sender) return [targetTransfer];
+          if (address === gasFreeTlnt) {
+            return [
+              targetTransfer,
+              indexedTransfer({
+                txHash: feeTxHash,
+                fromAddress: gasFreeAccount,
+                toAddress: gasFreeTlnt,
+                amountRaw,
+                blockTimestamp: new Date("2026-07-10T00:10:00.000Z")
+              }),
+              indexedTransfer({
+                txHash: "tx-large-corridor-binance-funding",
+                fromAddress: binance,
+                toAddress: gasFreeTlnt,
+                amountRaw,
+                blockTimestamp: new Date("2026-07-10T00:00:00.000Z")
+              })
+            ];
+          }
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => address === binance
+          ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+          : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async (txHash) => txHash === feeTxHash
+          ? gasFreeTransaction(gasFreeReceiver, "1", amountRaw)
+          : null,
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash: depositHash,
+      watchedWallet,
+      sender,
+      amountRaw,
+      timestamp: new Date("2026-07-10T00:20:00.000Z")
+    });
+
+    const corridorBundle = result.originPaths
+      .flatMap((path) => path.fundingBundles ?? [])
+      .find((bundle) => bundle.targetTxHash === corridorTxHash);
+    expect(corridorBundle).toMatchObject({
+      fundingTxHashes: ["tx-large-corridor-binance-funding"],
+      fundingAddresses: [binance]
+    });
+    expect(corridorBundle?.fundingTxHashes).not.toContain(feeTxHash);
   });
 
   it("preserves contract-driven profiles from nested where-is-money reports", async () => {

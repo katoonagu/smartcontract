@@ -84,6 +84,7 @@ import {
   type TargetedHistoryWaiterDeps
 } from "./targetedHistoryCoordinator";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
+import { extractGasFreeEdgeContext } from "./gasFreeSettlement";
 
 type CompleteJobInput = {
   id: string;
@@ -381,6 +382,8 @@ function fundingCandidateSeedTransfers(input: {
     timestamp: candidate.edge.timestamp.toISOString(),
     method: candidate.edge.method,
     edgeType: candidate.edge.edgeType,
+    economicRole: candidate.edge.economicRole,
+    economicProtocol: candidate.edge.economicProtocol,
     coverageShare: candidate.coverageRatio,
     amountUsage: {
       anchorAmountRaw: input.depositAmountRaw,
@@ -391,6 +394,85 @@ function fundingCandidateSeedTransfers(input: {
     },
     selectedReason: "covers_requested_amount"
   }));
+}
+
+function economicEdgeKey(edge: ForensicRouteEdge): string {
+  return [
+    edge.id,
+    edge.txHash,
+    edge.fromAddress,
+    edge.toAddress,
+    edge.amountRaw,
+    edge.timestamp.getTime()
+  ].join(":");
+}
+
+async function selectResolvedIncomingDepositFundingCandidates(input: {
+  sender: string;
+  watchedWallet: string;
+  depositTxHash: string;
+  depositAmountRaw: string;
+  depositTimestamp: Date;
+  edges: ForensicRouteEdge[];
+  resolveEconomicContext(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
+}): Promise<{
+  selection: ReturnType<typeof selectIncomingDepositFundingCandidates>;
+  edges: ForensicRouteEdge[];
+}> {
+  let edges = input.edges;
+  const resolvedKeys = new Set<string>();
+  while (true) {
+    const selection = selectIncomingDepositFundingCandidates({ ...input, edges });
+    const unresolved = selection.candidates
+      .map((candidate) => candidate.edge)
+      .filter((edge) => !resolvedKeys.has(economicEdgeKey(edge)));
+    if (unresolved.length === 0) return { selection, edges };
+
+    const replacements = new Map<string, ForensicRouteEdge>();
+    for (const edge of unresolved) {
+      const key = economicEdgeKey(edge);
+      const resolved = await input.resolveEconomicContext(edge);
+      resolvedKeys.add(key);
+      resolvedKeys.add(economicEdgeKey(resolved));
+      replacements.set(key, resolved);
+    }
+    edges = edges.map((edge) => replacements.get(economicEdgeKey(edge)) ?? edge);
+  }
+}
+
+async function buildResolvedFundingBundleForOutbound(input: {
+  target: ForensicRouteEdge;
+  edges: ForensicRouteEdge[];
+  lookbackWindowMs: number;
+  minCoverageRatio: number;
+  resolveEconomicContext(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
+}): Promise<{
+  bundle: IncomingDepositFundingBundle | null;
+  edges: ForensicRouteEdge[];
+}> {
+  let edges = input.edges;
+  const resolvedKeys = new Set<string>();
+  while (true) {
+    const bundle = buildFundingBundleForOutbound({ ...input, edges });
+    if (!bundle) return { bundle: null, edges };
+    const selectedTxHashes = new Set(bundle.fundingTxHashes);
+    const unresolved = edges.filter((edge) =>
+      edge.toAddress === input.target.fromAddress &&
+      selectedTxHashes.has(edge.txHash) &&
+      !resolvedKeys.has(economicEdgeKey(edge))
+    );
+    if (unresolved.length === 0) return { bundle, edges };
+
+    const replacements = new Map<string, ForensicRouteEdge>();
+    for (const edge of unresolved) {
+      const key = economicEdgeKey(edge);
+      const resolved = await input.resolveEconomicContext(edge);
+      resolvedKeys.add(key);
+      resolvedKeys.add(economicEdgeKey(resolved));
+      replacements.set(key, resolved);
+    }
+    edges = edges.map((edge) => replacements.get(economicEdgeKey(edge)) ?? edge);
+  }
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -584,6 +666,10 @@ function fundingEdgeToBalanceTransfer(edge: ForensicRouteEdge): BalanceFormingTr
     toAddress: edge.toAddress,
     amountRaw: edge.amountRaw,
     timestamp: edge.timestamp.toISOString(),
+    method: edge.method,
+    edgeType: edge.edgeType,
+    economicRole: edge.economicRole,
+    economicProtocol: edge.economicProtocol,
     coverageShare: 0,
     selectedReason: "covers_requested_amount"
   };
@@ -625,6 +711,7 @@ async function buildFundingBundleDeepExpansion(input: {
   fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+  resolveEconomicContext(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
 }): Promise<IncomingDepositFundingBundleDeepExpansion> {
   const topExpandedFunders = selectFundingBundleFundersForExpansion({
     bundle: input.bundle,
@@ -676,7 +763,8 @@ async function buildFundingBundleDeepExpansion(input: {
       minAmountPreservationRatio: ADAPTIVE_CORRIDOR_EXPANSION_MIN_AMOUNT_PRESERVATION_RATIO,
       fetchEdgesForAddress: fetchEdgesForExpansion,
       getLabelsForAddress: input.getLabelsForAddress,
-      getClassificationForAddress: input.getClassificationForAddress
+      getClassificationForAddress: input.getClassificationForAddress,
+      resolveEconomicContext: input.resolveEconomicContext
     }));
   }
 
@@ -699,6 +787,7 @@ async function buildFundingBundlesByTxHash(input: {
   fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+  resolveEconomicContext(edge: ForensicRouteEdge): Promise<ForensicRouteEdge>;
 }): Promise<Map<string, IncomingDepositFundingBundle>> {
   const bundlesByTxHash = new Map<string, IncomingDepositFundingBundle>();
   const inspectedTxHashes = new Set<string>();
@@ -710,21 +799,24 @@ async function buildFundingBundlesByTxHash(input: {
     if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) return;
     inspectedTxHashes.add(target.txHash);
 
-    const edges = await input.fetchEdgesForAddress(target.fromAddress, { latestTimestamp: target.timestamp });
-    const bundle = buildFundingBundleForOutbound({
+    const fetchedEdges = await input.fetchEdgesForAddress(target.fromAddress, { latestTimestamp: target.timestamp });
+    const resolved = await buildResolvedFundingBundleForOutbound({
       target,
-      edges,
+      edges: fetchedEdges,
       lookbackWindowMs: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS,
-      minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE
+      minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE,
+      resolveEconomicContext: input.resolveEconomicContext
     });
+    const bundle = resolved.bundle;
     if (!bundle) return;
 
     const deepExpansion = await buildFundingBundleDeepExpansion({
       bundle,
-      edgesForTargetFromAddress: edges,
+      edgesForTargetFromAddress: resolved.edges,
       fetchEdgesForAddress: input.fetchEdgesForAddress,
       getLabelsForAddress: input.getLabelsForAddress,
-      getClassificationForAddress: input.getClassificationForAddress
+      getClassificationForAddress: input.getClassificationForAddress,
+      resolveEconomicContext: input.resolveEconomicContext
     });
     bundlesByTxHash.set(target.txHash, { ...bundle, deepExpansion });
   };
@@ -1309,6 +1401,24 @@ export async function buildIncomingDepositReport(
   const targetedEnsureErrors = new Map<string, string>();
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
+  const transactionCache = new Map<string, Promise<unknown | null>>();
+  const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
+    const cached = transactionCache.get(txHash);
+    if (cached) return cached;
+    const fetched = input.deps.getTransaction(txHash).catch(() => null);
+    transactionCache.set(txHash, fetched);
+    return fetched;
+  };
+  const resolveEconomicContext = async (routeEdge: ForensicRouteEdge): Promise<ForensicRouteEdge> => {
+    const context = extractGasFreeEdgeContext(await getCachedTransaction(routeEdge.txHash), routeEdge);
+    return context
+      ? {
+          ...routeEdge,
+          economicRole: context.movement.role,
+          economicProtocol: "tron_gasfree"
+        }
+      : routeEdge;
+  };
   const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
   const deterministicLegitimateServiceClassifications = new Map<string, ServiceClassification>();
   const fetchWarnings: string[] = [];
@@ -1602,23 +1712,49 @@ export async function buildIncomingDepositReport(
   const senderStablecoinState = await measureReportStage("sender_stablecoin_state", () =>
     getStablecoinState(input.sender)
   );
-  const senderEdges = await measureReportStage("fetch_sender_edges", () =>
+  let senderEdges = await measureReportStage("fetch_sender_edges", () =>
     fetchEdgesForAddress(input.sender)
   );
-  const fundingSelection = selectIncomingDepositFundingCandidates({
-    sender: input.sender,
-    watchedWallet: input.watchedWallet,
-    depositTxHash: input.depositTxHash,
-    depositAmountRaw: input.amountRaw,
-    depositTimestamp: input.timestamp,
-    edges: senderEdges
-  });
+  const depositSeed = incomingSeedTransfer(input);
+  const depositEconomicContext = extractGasFreeEdgeContext(
+    await getCachedTransaction(input.depositTxHash),
+    seedDeposit
+  );
+  const forceTransactionSeed = depositEconomicContext?.movement.role === "service_fee";
+  const resolvedDepositSeed: BalanceFormingTransfer = depositEconomicContext
+    ? {
+        ...depositSeed,
+        economicRole: depositEconomicContext.movement.role,
+        economicProtocol: "tron_gasfree"
+      }
+    : depositSeed;
+  const resolvedFundingSelection = forceTransactionSeed
+    ? null
+    : await selectResolvedIncomingDepositFundingCandidates({
+        sender: input.sender,
+        watchedWallet: input.watchedWallet,
+        depositTxHash: input.depositTxHash,
+        depositAmountRaw: input.amountRaw,
+        depositTimestamp: input.timestamp,
+        edges: senderEdges,
+        resolveEconomicContext
+      });
+  if (resolvedFundingSelection) senderEdges = resolvedFundingSelection.edges;
+  edgeCache.set(edgeCacheKey(input.sender, maxTimestamp), senderEdges);
+  const fundingSelection = forceTransactionSeed
+    ? {
+        candidates: [],
+        coverageRaw: input.amountRaw,
+        coverageRatio: 1,
+        amountContinuity: "strong" as const
+      }
+    : resolvedFundingSelection!.selection;
   const seedTransfers = fundingSelection.candidates.length > 0
     ? fundingCandidateSeedTransfers({
         candidates: fundingSelection.candidates,
         depositAmountRaw: input.amountRaw
       })
-    : [incomingSeedTransfer(input)];
+    : [resolvedDepositSeed];
   const whereSubjectAddress = fundingSelection.candidates.length > 0
     ? input.sender
     : input.watchedWallet;
@@ -1679,7 +1815,7 @@ export async function buildIncomingDepositReport(
       getClassificationForAddress,
       // The transaction seed subject is the watched wallet; the fast risk needed for this report is the sender risk.
       getFastWalletRisk: async () => fastSenderRisk,
-      getTransaction: input.deps.getTransaction,
+      getTransaction: getCachedTransaction,
       listTrc20ApprovalChanges: input.deps.listTrc20ApprovalChanges,
       getUsdtRestrictionStatus: async (address, options) => {
         const state = await getStablecoinState(address, options);
@@ -1739,7 +1875,8 @@ export async function buildIncomingDepositReport(
       whereReport,
       fetchEdgesForAddress,
       getLabelsForAddress: input.deps.getLabelsForAddress,
-      getClassificationForAddress
+      getClassificationForAddress,
+      resolveEconomicContext
     })
   );
   const walletExposureProfile = await measureReportStage("build_wallet_exposure_profile", () =>

@@ -20,7 +20,39 @@ function edge(id: string, fromAddress: string, toAddress: string, amountRaw: str
   };
 }
 
+function gasFreePrincipal(value: ForensicRouteEdge): ForensicRouteEdge {
+  return { ...value, economicRole: "principal", economicProtocol: "tron_gasfree" };
+}
+
+function gasFreeFee(value: ForensicRouteEdge): ForensicRouteEdge {
+  return { ...value, economicRole: "service_fee", economicProtocol: "tron_gasfree" };
+}
+
 describe("selectIncomingDepositFundingCandidates", () => {
+  it("does not select an inbound exact GasFree fee as payer provenance", () => {
+    const sender = "TSender111111111111111111111111111111";
+    const watchedWallet = "TWatched1111111111111111111111111111";
+
+    const result = selectIncomingDepositFundingCandidates({
+      sender,
+      watchedWallet,
+      depositTxHash: "deposit",
+      depositAmountRaw: "3000000",
+      depositTimestamp: new Date("2026-07-10T00:05:00.000Z"),
+      edges: [
+        gasFreeFee(edge("exact-fee-in", "TGasFreeAccount", sender, "3000000", "2026-07-10T00:00:00.000Z")),
+        edge("deposit", sender, watchedWallet, "3000000", "2026-07-10T00:05:00.000Z")
+      ]
+    });
+
+    expect(result).toMatchObject({
+      candidates: [],
+      coverageRaw: "0",
+      coverageRatio: 0,
+      amountContinuity: "weak"
+    });
+  });
+
   it("uses sender cashflow before the deposit timestamp instead of current balance", () => {
     const sender = "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs";
     const watchedWallet = "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM";
@@ -164,6 +196,23 @@ describe("selectIncomingDepositFundingCandidates", () => {
 });
 
 describe("buildFundingBundleForOutbound", () => {
+  it("does not treat an exact GasFree fee as inbound corridor funding", () => {
+    const corridorWallet = "TCorridor1111111111111111111111111111";
+    const target = edge("large-out", corridorWallet, "TReceiver", "3000000", "2026-07-10T00:05:00.000Z");
+
+    const result = buildFundingBundleForOutbound({
+      target,
+      lookbackWindowMs: 60 * 60 * 1_000,
+      minCoverageRatio: 0.95,
+      edges: [
+        gasFreeFee(edge("exact-fee-in", "TGasFreeAccount", corridorWallet, "3000000", "2026-07-10T00:00:00.000Z")),
+        target
+      ]
+    });
+
+    expect(result).toBeNull();
+  });
+
   it("records recent inbound liquidity that covers a large outbound transfer", () => {
     const corridorWallet = "TCorridor1111111111111111111111111111";
     const receiver = "TReceiver11111111111111111111111111111";
@@ -303,6 +352,50 @@ describe("selectFundingBundleFundersForExpansion", () => {
 });
 
 describe("trace hop funding bundles", () => {
+  it("keeps an exact outgoing GasFree fee in spend-before-hop arithmetic", () => {
+    const gasFreeAccount = "TGasFreeAccount";
+    const target = gasFreePrincipal(edge(
+      "principal-out",
+      gasFreeAccount,
+      "TReceiver",
+      "97000000",
+      "2026-07-10T00:05:00.000Z"
+    ));
+
+    const bundle = buildFundingBundleForTraceHop({
+      target,
+      edges: [
+        edge("funding-in", "TFunder", gasFreeAccount, "100000000", "2026-07-10T00:00:00.000Z"),
+        gasFreeFee(edge("service-fee-out", gasFreeAccount, "TFeeCollector", "3000000", "2026-07-10T00:01:00.000Z")),
+        target
+      ],
+      minCoverageRatio: 1,
+      maxFunders: 3
+    });
+
+    expect(bundle?.members).toEqual([
+      expect.objectContaining({
+        edge: expect.objectContaining({ txHash: "funding-in" }),
+        usedAmountRaw: "97000000",
+        spentBeforeHopRaw: "3000000"
+      })
+    ]);
+  });
+
+  it("does not treat an exact GasFree fee as trace-hop funding", () => {
+    const target = edge("target-out", "TCorridor", "TReceiver", "3000000", "2026-07-10T00:05:00.000Z");
+
+    expect(buildFundingBundleForTraceHop({
+      target,
+      edges: [
+        gasFreeFee(edge("exact-fee-in", "TGasFreeAccount", "TCorridor", "3000000", "2026-07-10T00:00:00.000Z")),
+        target
+      ],
+      minCoverageRatio: 0.95,
+      maxFunders: 3
+    })).toBeNull();
+  });
+
   it("builds a multi-input bundle by usable contribution", () => {
     const target = edge(
       "out-850k",

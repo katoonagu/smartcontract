@@ -25,6 +25,8 @@ import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDriven
 import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
 import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
 import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
+import { extractGasFreeEdgeContext } from "../forensics/gasFreeSettlement";
+import { matchSanctionedCryptoService } from "../forensics/sanctionedServiceRegistry";
 import { runCrossChainCorridorAnalysis } from "../forensics/crossChainCorridor";
 import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProviders";
 import type { ChainContinuationProvider } from "../forensics/crossChainContinuationTypes";
@@ -739,7 +741,9 @@ function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteE
     amountRaw: transfer.amountRaw,
     timestamp: new Date(transfer.timestamp),
     method: transfer.method ?? "transfer",
-    edgeType: transfer.edgeType ?? "normal_transfer"
+    edgeType: transfer.edgeType ?? "normal_transfer",
+    economicRole: transfer.economicRole,
+    economicProtocol: transfer.economicProtocol
   };
 }
 
@@ -1119,6 +1123,34 @@ export async function runWhereIsMoneyCheck(
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const classifications = new Map<string, ServiceClassification | null>();
+  const transactionCache = new Map<string, Promise<unknown | null>>();
+  const exactGasFreeAccounts = new Set<string>();
+  const getCachedTransaction = (txHash: string): Promise<unknown | null> => {
+    if (!deps.getTransaction) return Promise.resolve(null);
+    const existing = transactionCache.get(txHash);
+    if (existing) return existing;
+    const request = deps.getTransaction(txHash).catch(() => null);
+    transactionCache.set(txHash, request);
+    return request;
+  };
+  const resolveEconomicContext = async (routeEdge: ForensicRouteEdge): Promise<ForensicRouteEdge> => {
+    const context = extractGasFreeEdgeContext(await getCachedTransaction(routeEdge.txHash), routeEdge);
+    if (!context) return routeEdge;
+    exactGasFreeAccounts.add(context.settlement.accountAddress);
+    return {
+      ...routeEdge,
+      economicRole: context.movement.role,
+      economicProtocol: "tron_gasfree"
+    };
+  };
+  const resolveBalanceTransfer = async (transfer: BalanceFormingTransfer): Promise<BalanceFormingTransfer> => {
+    const resolvedEdge = await resolveEconomicContext(balanceTransferToEdge(transfer));
+    return {
+      ...transfer,
+      economicRole: resolvedEdge.economicRole,
+      economicProtocol: resolvedEdge.economicProtocol
+    };
+  };
   const broadTargetedHistoryRequests = new Map<string, Promise<true>>();
   const ensureBroadTargetedHistory: WhereIsMoneyDeps["ensureBroadTargetedHistory"] = deps.ensureBroadTargetedHistory
     ? (request) => {
@@ -1150,7 +1182,7 @@ export async function runWhereIsMoneyCheck(
       }
     });
   };
-  const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
+  const getBaseCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
     throwIfAborted(input.abortSignal);
     const cacheKey = classificationCacheKey(address);
     if (classifications.has(cacheKey)) return classifications.get(cacheKey) ?? null;
@@ -1158,6 +1190,23 @@ export async function runWhereIsMoneyCheck(
     throwIfAborted(input.abortSignal);
     classifications.set(cacheKey, classification);
     return classification;
+  };
+  const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
+    const base = await getBaseCachedClassification(address);
+    const hardPolicyIdentity = matchSanctionedCryptoService([
+      base?.identity ?? "",
+      ...(base?.evidence ?? [])
+    ].join(" "));
+    if (exactGasFreeAccounts.has(address) && !hardPolicyIdentity) {
+      return {
+        category: "service",
+        identity: "GasFree Account",
+        confidence: "high",
+        evidence: ["gasfree_settlement:exact_account"],
+        isBoundary: false
+      };
+    }
+    return base;
   };
   type WhereTraceEdgeFetchOptions = {
     latestTimestamp?: Date;
@@ -1244,6 +1293,10 @@ export async function runWhereIsMoneyCheck(
           edges: sourceEdges
         });
   }
+  const balanceFormingTransfers: BalanceFormingTransfer[] = [];
+  for (const transfer of selection.transfers) {
+    balanceFormingTransfers.push(await resolveBalanceTransfer(transfer));
+  }
   const crossChainStage2Enabled = input.crossChainStage2Enabled === true;
   const crossChainManualDeepMode = input.crossChainManualDeepMode === true;
   await emitProgress({
@@ -1294,7 +1347,7 @@ export async function runWhereIsMoneyCheck(
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
       selectedAmountRaw: selection.selectedAmountRaw,
-      selectedFundingTxHashes: selection.transfers.map((transfer) => transfer.txHash),
+      selectedFundingTxHashes: balanceFormingTransfers.map((transfer) => transfer.txHash),
       edges: sourceEdges,
       serviceAddresses
     });
@@ -1351,8 +1404,9 @@ export async function runWhereIsMoneyCheck(
   };
 
   throwIfAborted(input.abortSignal);
-  const originPaths = await Promise.all(selection.transfers.map((balanceTransfer) =>
-    traceMoneyOriginPath({
+  const originPaths: MoneyOriginPath[] = [];
+  for (const balanceTransfer of balanceFormingTransfers) {
+    originPaths.push(await traceMoneyOriginPath({
       subjectAddress: sourceAddress,
       balanceTransfer,
       maxDepth,
@@ -1366,11 +1420,12 @@ export async function runWhereIsMoneyCheck(
       requestCandidateWindows: deps.requestCandidateWindows,
       ensureBroadTargetedHistory,
       getLabelsForAddress: deps.getLabelsForAddress,
-      getClassificationForAddress: deps.getClassificationForAddress
-    })
-  ));
+      getClassificationForAddress: getCachedClassification,
+      resolveEconomicContext
+    }));
+  }
   throwIfAborted(input.abortSignal);
-  const senderInteractionProfiles = await Promise.all(selection.transfers.map(async (balanceTransfer) =>
+  const senderInteractionProfiles = await Promise.all(balanceFormingTransfers.map(async (balanceTransfer) =>
     buildMoneyOriginSenderInteractionProfile({
       subjectAddress: sourceAddress,
       balanceTransfer,
@@ -1388,7 +1443,7 @@ export async function runWhereIsMoneyCheck(
   );
   const effectiveApprovalCandidateLimit = Math.max(0, Math.min(maxApprovalCandidates, maxTxInfoFetches));
   const allFetchedEdges = dedupeEdges([
-    ...selection.transfers.map(balanceTransferToEdge),
+    ...balanceFormingTransfers.map(balanceTransferToEdge),
     ...edgeCache.values()
   ].flat());
   const selectedApprovalEdges = selectApprovalEnrichmentEdges({
@@ -1427,7 +1482,7 @@ export async function runWhereIsMoneyCheck(
         const waitMs = lastTransactionInfoCompletedAt + txInfoMinIntervalMs - Date.now();
         if (waitMs > 0) await sleep(waitMs);
         throwIfAborted(input.abortSignal);
-        const transaction = await (deps.getTransaction?.(txHash).catch(() => null) ?? null);
+        const transaction = await getCachedTransaction(txHash);
         lastTransactionInfoCompletedAt = Date.now();
         if (transaction === null) {
           transactionInfoFailures += 1;
@@ -1478,7 +1533,7 @@ export async function runWhereIsMoneyCheck(
     edges: allFetchedEdges,
     classifications,
     approvalDrainProvenanceProfiles,
-    getTransaction: deps.getTransaction,
+    getTransaction: deps.getTransaction ? getCachedTransaction : undefined,
     fetchEdgesForAddress,
     maxTransactionInfoFetches: maxTxInfoFetches,
     maxSourceActivityChecks: Math.min(20, maxTxInfoFetches),
@@ -1507,7 +1562,7 @@ export async function runWhereIsMoneyCheck(
     const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
-      balanceFormingTransfers: selection.transfers,
+      balanceFormingTransfers,
       originPaths,
       senderInteractionProfiles,
       approvalDrainProvenanceProfiles,
@@ -1521,7 +1576,7 @@ export async function runWhereIsMoneyCheck(
     const caseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
-      balanceFormingTransfers: selection.transfers,
+      balanceFormingTransfers,
       originPaths,
       senderInteractionProfiles,
       approvalDrainProvenanceProfiles,
@@ -1538,7 +1593,7 @@ export async function runWhereIsMoneyCheck(
     }
   }
   const coverage: WhereIsMoneyCoverage = {
-    selectedInboundTxCount: selection.transfers.length,
+    selectedInboundTxCount: balanceFormingTransfers.length,
     currentBalanceRaw,
     requestedAmountRaw: selection.requestedAmountRaw,
     targetAmountRaw: selection.targetAmountRaw,
@@ -1576,7 +1631,7 @@ export async function runWhereIsMoneyCheck(
   };
   const ageSignals = buildMoneyOriginAgeSignals({
     subjectAddress: sourceAddress,
-    balanceFormingTransfers: selection.transfers,
+    balanceFormingTransfers,
     edgesByAddress: edgeCache,
     now: input.windowEnd,
     largeBalanceRaw: currentBalanceRaw
@@ -1721,6 +1776,29 @@ export async function runWhereIsMoneyCheck(
       extraHardBadEvidence: crossChainAnalysis.extraHardBadEvidence
     });
   }
+  const exactGasFreeFeeOnly = originPaths.length > 0 && originPaths.every((path) =>
+    path.stoppedReason === "service_boundary" &&
+    path.riskScoreContribution === 0 &&
+    path.reasons.includes("Exact GasFree service-fee movement; not payer provenance.")
+  );
+  if (exactGasFreeFeeOnly && assessment.hardBadEvidence.length === 0) {
+    assessment = {
+      ...assessment,
+      decision: "REVIEW",
+      riskScore: 0,
+      riskBand: riskBandFromWhereScore(0),
+      hardBadEvidence: [],
+      sourcePolicyEvidence: [],
+      contractSuspicionEvidence: [],
+      unknownOriginEvidence: [],
+      riskLayers: [],
+      dominantRiskLayer: null,
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: null,
+      reasons: ["Exact GasFree service-fee movement; not payer provenance."]
+    };
+  }
   const decision = assessment.decision;
   const riskScore = assessment.riskScore;
   const decisionReasons = assessment.reasons;
@@ -1730,7 +1808,7 @@ export async function runWhereIsMoneyCheck(
     subjectAddress: sourceAddress,
     currentUsdtBalanceRaw: currentBalanceRaw,
     fastWalletRisk,
-    balanceFormingTransfers: selection.transfers,
+    balanceFormingTransfers,
     originPaths,
     senderInteractionProfiles,
     approvalDrainProvenanceProfiles,
