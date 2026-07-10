@@ -14,6 +14,7 @@ const subject = "TSubject111111111111111111111111111";
 const walletA = "TWalletA111111111111111111111111111";
 const walletB = "TWalletB111111111111111111111111111";
 const walletC = "TWalletC111111111111111111111111111";
+const gasFree = "TGasFreeHop111111111111111111111111";
 
 function ordinary(address: string, volumeRaw = "1000", txCount = 1): DirectCounterpartyInteractionProfile {
   return {
@@ -174,6 +175,17 @@ describe("deep second-layer relationship builder", () => {
     ]);
     expect(profile.directWalletStatuses.map((status) => status.stopReason)).toEqual(["service_boundary", "high_degree"]);
     expect(profile.counters.stopped).toBe(2);
+  });
+
+  it("does not stop a non-boundary contract account as a service boundary", async () => {
+    const secondLayer = await build({
+      directCounterpartyProfiles: [ordinary(gasFree)],
+      classifications: new Map([[gasFree, classification("service", false)]]),
+      listIndexedEdges: () => [{ txHash: "tx-gasfree-b", fromAddress: gasFree, toAddress: walletB, amountRaw: "100" }]
+    });
+
+    expect(secondLayer.directWalletStatuses.find((item) => item.address === gasFree)?.status).not.toBe("stopped_service_boundary");
+    expect(secondLayer.paths[0]?.pathAddresses).toEqual([subject, gasFree, walletB]);
   });
 
   it("emits a queue request when an ordinary wallet index is missing", async () => {

@@ -696,7 +696,10 @@ function snapshotForLabels(address: string, labels: AddressLabel[] | undefined):
 }
 
 function snapshotForService(address: string, classification: ServiceClassification | null): CounterpartyRiskSnapshot | null {
-  const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
+  const serviceCategory =
+    classification?.isBoundary === true && classification.category !== "none"
+      ? classification.category
+      : null;
   if (!serviceCategory) return null;
   return {
     address,

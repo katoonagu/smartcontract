@@ -325,7 +325,7 @@ describe("address exposure risk signal provider", () => {
     expect(signals.graphSignals.map((signal) => signal.code)).not.toContain("forensic_service_exposure");
     expect(signals.serviceExposureProfiles?.[0]).toMatchObject({
       exposureScore: 0,
-      dominantCategory: "unknown_contract"
+      dominantCategory: null
     });
   });
 

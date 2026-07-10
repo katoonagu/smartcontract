@@ -793,7 +793,7 @@ function sourceClassFromPath(
 function sourceClassFromClassification(
   classification: ServiceClassification | null | undefined
 ): SourceBundleExposureSourceKind {
-  if (!classification || classification.category === "none") return "unknown";
+  if (!classification?.isBoundary || classification.category === "none") return "unknown";
   const evidenceText = [classification.identity, ...classification.evidence].filter(Boolean).join(" ").toLowerCase();
   if (evidenceText.includes("htx") || evidenceText.includes("huobi")) return "htx_huobi";
   if (evidenceText.includes("whitebit")) return "unknown";

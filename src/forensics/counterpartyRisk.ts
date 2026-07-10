@@ -100,7 +100,10 @@ function groupedProfiles(input: {
     const volumeRatio = ratio(amountRaw, input.directionalVolumeRaw);
     const label = selectedLabel(input.labelsByAddress.get(counterpartyAddress));
     const classification = input.classifications?.get(counterpartyAddress) ?? null;
-    const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
+    const serviceCategory =
+      classification?.isBoundary === true && classification.category !== "none"
+        ? classification.category
+        : null;
     const identity = classification?.identity ?? null;
     const meaningful = isMeaningful({
       amountRaw,

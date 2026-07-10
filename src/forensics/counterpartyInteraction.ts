@@ -54,7 +54,10 @@ export function riskLevelFromScore(score: number): RiskLevel {
 }
 
 function emptySnapshot(address: string, classification: ServiceClassification | null): CounterpartyRiskSnapshot {
-  const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
+  const serviceCategory =
+    classification?.isBoundary === true && classification.category !== "none"
+      ? classification.category
+      : null;
   if (serviceCategory !== null) {
     return {
       address,
@@ -194,7 +197,10 @@ export function buildDirectCounterpartyInteractionProfiles(
       const amountRaw = group.edges.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n);
       const sorted = [...group.edges].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       const classification = input.classifications?.get(group.counterpartyAddress) ?? null;
-      const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
+      const serviceCategory =
+        classification?.isBoundary === true && classification.category !== "none"
+          ? classification.category
+          : null;
       const snapshot = input.snapshotsByAddress.get(group.counterpartyAddress) ?? emptySnapshot(group.counterpartyAddress, classification);
       const weight = interactionWeight({
         amountRaw,

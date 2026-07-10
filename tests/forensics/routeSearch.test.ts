@@ -334,6 +334,50 @@ describe("forensic route search", () => {
     expect(report.missingChecks).toContain(`Expansion stopped at service boundary ${bridgePool} (bridge_pool)`);
   });
 
+  it("expands through a GasFree Account but stops at the registered pooled provider", async () => {
+    const gasFreeAccount = "TGasFreeHop111111111111111111111111";
+    const tronLinkProvider = "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({ transaction_id: "source-gasfree", from_address: source, to_address: gasFreeAccount, quant: "100000000" }),
+            transfer({ transaction_id: "source-provider", from_address: source, to_address: tronLinkProvider, quant: "100000000" })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === gasFreeAccount
+        ? {
+            address,
+            name: "CreatedByContract",
+            tag: "GasFree Account",
+            isContract: true,
+            verified: false
+          }
+        : null
+    });
+
+    expect(report.fastCounterpartyTopsProfile?.topOutgoingCounterparties.map((row) => row.address)).toEqual(
+      expect.arrayContaining([gasFreeAccount, tronLinkProvider])
+    );
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([address]) => address === gasFreeAccount)).toBe(true);
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([address]) => address === tronLinkProvider)).toBe(false);
+    expect(report.missingChecks).not.toContain(`Expansion stopped at service boundary ${gasFreeAccount} (service)`);
+    expect(report.missingChecks).toContain(`Expansion stopped at service boundary ${tronLinkProvider} (service)`);
+  });
+
   it("does not complete a route by traversing beyond an intermediate service boundary", async () => {
     const bridgePool = "TPool111111111111111111111111111111";
     const downstreamTarget = target;

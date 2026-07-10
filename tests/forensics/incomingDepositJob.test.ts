@@ -1537,6 +1537,93 @@ describe("buildIncomingDepositReport", () => {
     expect(result.decision).toBe("ACCEPTABLE");
   });
 
+  it("traces an incoming deposit through non-boundary contract accounts to Binance", async () => {
+    const gasFreeHop1 = "TGasFreeHop111111111111111111111111";
+    const unknownHop2 = "TUnknownHop222222222222222222222222";
+    const gasFreeHop3 = "TGasFreeHop333333333333333333333333";
+    const binance = "TBinanceBoundary11111111111111111111";
+    const transfersByAddress = new Map<string, IndexedTronUsdtTransfer[]>([
+      [validProgressJson.sender, [indexedTransfer({
+        txHash: "gasfree-1-sender",
+        fromAddress: gasFreeHop1,
+        toAddress: validProgressJson.sender,
+        amountRaw: validProgressJson.amountRaw,
+        blockTimestamp: new Date("2026-05-29T13:50:00.000Z")
+      })]],
+      [gasFreeHop1, [indexedTransfer({
+        txHash: "unknown-gasfree-1",
+        fromAddress: unknownHop2,
+        toAddress: gasFreeHop1,
+        amountRaw: validProgressJson.amountRaw,
+        blockTimestamp: new Date("2026-05-29T13:40:00.000Z")
+      })]],
+      [unknownHop2, [indexedTransfer({
+        txHash: "gasfree-3-unknown",
+        fromAddress: gasFreeHop3,
+        toAddress: unknownHop2,
+        amountRaw: validProgressJson.amountRaw,
+        blockTimestamp: new Date("2026-05-29T13:30:00.000Z")
+      })]],
+      [gasFreeHop3, [indexedTransfer({
+        txHash: "binance-gasfree-3",
+        fromAddress: binance,
+        toAddress: gasFreeHop3,
+        amountRaw: validProgressJson.amountRaw,
+        blockTimestamp: new Date("2026-05-29T13:20:00.000Z")
+      })]]
+    ]);
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => transfersByAddress.get(address) ?? [],
+        listRelatedTrc20Transfers: async (address) => (transfersByAddress.get(address) ?? []).map((transfer) => liveTransfer({
+          transaction_id: transfer.txHash,
+          from_address: transfer.fromAddress,
+          to_address: transfer.toAddress,
+          quant: transfer.amountRaw,
+          block_ts: transfer.blockTimestamp.getTime()
+        })),
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === binance) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true };
+          }
+          if (address === unknownHop2) {
+            return { category: "unknown_contract", identity: "unknown", confidence: "high", evidence: ["test:traceable_contract"], isBoundary: false };
+          }
+          if (address === gasFreeHop1 || address === gasFreeHop3) {
+            return { category: "service", identity: "GasFree Account", confidence: "high", evidence: ["test:traceable_contract"], isBoundary: false };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stoppedReason: "clean_cex_reached",
+        pathAddresses: [
+          binance,
+          gasFreeHop3,
+          unknownHop2,
+          gasFreeHop1,
+          validProgressJson.sender,
+          validProgressJson.watchedWallet
+        ]
+      })
+    ]));
+    expect(result.originPaths.flatMap((path) => path.reasons).join(" ")).not.toContain("unlabeled_service_boundary");
+  });
+
   it("preserves contract-driven profiles from nested where-is-money reports", async () => {
     const source = "TVictimSource111111111111111111111111";
     const contract = "TVerifyContract11111111111111111111";

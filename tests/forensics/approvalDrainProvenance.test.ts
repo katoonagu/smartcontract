@@ -132,6 +132,7 @@ describe("approval-drain provenance", () => {
           contract_address: wrapperContract,
           function_selector: "Verify20(address,address,uint256)"
         },
+        contract_map: { [victim]: true },
         trigger_info: {
           methodName: "Verify20"
         },
@@ -200,7 +201,14 @@ describe("approval-drain provenance", () => {
           method: "Verify20"
         })
       ],
-      deps: lookup
+      deps: lookup,
+      classifications: new Map([[victim, {
+        category: "service",
+        identity: "GasFree Account",
+        confidence: "high",
+        evidence: ["test:gasfree_account"],
+        isBoundary: false
+      }]])
     });
 
     expect(lookup.listTrc20ApprovalChanges).toHaveBeenCalledWith(expect.objectContaining({
@@ -215,6 +223,7 @@ describe("approval-drain provenance", () => {
       score: 90,
       falsePositiveGuards: []
     });
+    expect(profiles[0]?.evidenceStrength).toBe("exact_approval_and_transfer_from");
     expect(profiles[0]?.supportingFingerprints).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "misleading_wrapper_method" }),
       expect.objectContaining({ code: "nearby_non_usdt_token_transfer", value: "BTTOLD" })
@@ -690,13 +699,15 @@ describe("approval-drain provenance", () => {
         firstReceiverAddress: subject,
         falsePositiveGuards: expect.arrayContaining([
           expect.objectContaining({
-            code: "service_boundary_route",
+            code: "spender_service_boundary",
             address: layerZeroExecutor,
             category: "bridge",
             identity: "LayerZero/OFT"
           })
         ]),
-        supportingFingerprints: []
+        supportingFingerprints: expect.arrayContaining([
+          expect.objectContaining({ code: "misleading_wrapper_method", value: "lzReceive" })
+        ])
       })
     ]);
   });

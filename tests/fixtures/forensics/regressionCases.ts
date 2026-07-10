@@ -35,9 +35,9 @@ export const regressionCases = [
     expectedProofLevel: "exchange_policy_context"
   },
   {
-    name: "Unknown contract boundary is policy decline not scam proof",
-    expectedDecision: "DECLINE",
-    expectedProofLevel: "exchange_policy_decline"
+    name: "Unknown contract hop continues to the final Binance boundary",
+    expectedDecision: "ACCEPTABLE",
+    expectedProofLevel: "clean_source_proven"
   },
   {
     name: "Known DEX router approval with output is guarded, not drainer proof",

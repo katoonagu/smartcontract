@@ -107,6 +107,16 @@ const classifications = new Map<string, ServiceClassification>([
   ]
 ]);
 
+function traceableContract(identity: string): ServiceClassification {
+  return {
+    category: identity === "unknown" ? "unknown_contract" : "service",
+    identity,
+    confidence: "high",
+    evidence: ["test:traceable_contract"],
+    isBoundary: false
+  };
+}
+
 describe("incoming deposit exposure profile types", () => {
   it("supports persisted fresh source and wallet background breakdowns", () => {
     const fresh: IncomingFreshBundleExposure = {
@@ -403,6 +413,23 @@ describe("buildIncomingWalletExposureProfile", () => {
     expect(profile.bridgeRouterDexVolumeShare).toBeCloseTo(0.4);
     expect(profile.unknownContractVolumeShare).toBeCloseTo(0.2);
     expect(profile.unknownSourceShare).toBeCloseTo(0.2);
+  });
+
+  it("counts a non-boundary unknown contract as ordinary unknown exposure", async () => {
+    const profile = await buildIncomingWalletExposureProfile({
+      sender: "TSender",
+      watchedWallet: "TWatched",
+      windowStart: new Date("2026-06-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-06-04T12:58:54.000Z"),
+      edges: [
+        edge({ txHash: "traceable-contract-in", fromAddress: "TTraceableContract", toAddress: "TSender", amountRaw: "100000000" })
+      ],
+      getClassificationForAddress: async (address) => address === "TTraceableContract" ? traceableContract("unknown") : null
+    });
+
+    expect(profile.unknownContractVolumeShare).toBe(0);
+    expect(profile.unknownSourceShare).toBe(1);
+    expect(profile.scoreContribution).toBeGreaterThan(0);
   });
 
   it("caps score contribution at twenty for heavy mixed exposure", async () => {

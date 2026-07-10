@@ -35,7 +35,7 @@ describe("forensic regression corpus", () => {
       "Binance through clean EOA is acceptable",
       "HTX through clean EOA is high policy decline",
       "WhiteBIT small share is medium policy decline",
-      "Unknown contract boundary is policy decline not scam proof",
+      "Unknown contract hop continues to the final Binance boundary",
       "Known DEX router approval with output is guarded, not drainer proof",
       "Wrapper transferFrom path to checked wallet is exact approval-drain decline",
       "LLM timeout on uncertain contract is user decline with no cache",

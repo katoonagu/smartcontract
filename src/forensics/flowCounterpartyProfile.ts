@@ -158,7 +158,7 @@ function summarizeCounterparties(input: {
         category: classification?.category ?? null,
         identity: classification?.identity ?? null,
         isTerminalLiquidity: isTerminalLiquidityClassification(classification),
-        isHtxHuobi: isHtxHuobiClassification(classification)
+        isHtxHuobi: classification?.isBoundary === true && isHtxHuobiClassification(classification)
       } satisfies FlowCounterpartySummary;
     })
     .sort((left, right) =>
@@ -319,7 +319,7 @@ export function buildFastCounterpartyTopsProfile(input: BuildFastCounterpartyTop
     topIncomingCounterparties,
     topOutgoingCounterparties,
     topServiceCounterparties: outgoingCounterparties
-      .filter((row) => isFastServiceCategory(row.category))
+      .filter((row) => classificationFor(input.classifications, row.address)?.isBoundary === true && isFastServiceCategory(row.category))
       .slice(0, 10)
       .map((row) => ({ ...row, direction: "service" })),
     categoryBreakdown: buildCategoryBreakdown({
@@ -374,8 +374,12 @@ export function buildOperationalFlowProfile(input: BuildOperationalFlowProfileIn
   const terminalLiquidityOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) => item.isTerminalLiquidity);
   const htxHuobiIncomingRatio = sumRatio(topIncomingCounterparties, (item) => item.isHtxHuobi);
   const htxHuobiOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) => item.isHtxHuobi);
-  const bridgeDexRouterOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) => isBridgeDexRouterCategory(item.category));
-  const unknownContractOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) => item.category === "unknown_contract");
+  const bridgeDexRouterOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) =>
+    classificationFor(input.classifications, item.address)?.isBoundary === true && isBridgeDexRouterCategory(item.category)
+  );
+  const unknownContractOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) =>
+    classificationFor(input.classifications, item.address)?.isBoundary === true && item.category === "unknown_contract"
+  );
   const inflowToOutflowRatio = preservation(incomingVolumeRaw, outgoingVolumeRaw);
   const historicalTransitBreakdown = calculateHistoricalTransitBreakdown({
     incomingVolumeRaw: incomingVolumeRaw.toString(),

@@ -82,6 +82,16 @@ function service(category: ServiceClassification["category"], identity: string |
   };
 }
 
+function traceableContract(identity: string): ServiceClassification {
+  return {
+    category: identity === "unknown" ? "unknown_contract" : "service",
+    identity,
+    confidence: "high",
+    evidence: ["test:traceable_contract"],
+    isBoundary: false
+  };
+}
+
 function addressLabel(address: string, label: AddressLabel["label"]): AddressLabel {
   return {
     address,
@@ -1828,13 +1838,15 @@ describe("runWhereIsMoneyCheck", () => {
     const whitebit = "TWhitebit111111111111111111111111111";
     const htx = "THTX111111111111111111111111111111";
     const cleanSource = "TCleanSource111111111111111111111111";
+    const unknownContract = "TUnknownHop222222222222222222222222";
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [
         subject,
         [
           edge("tx-whitebit-subject", whitebit, subject, "700000000", "2026-05-22T10:10:00.000Z"),
           edge("tx-htx-subject", htx, subject, "300000000", "2026-05-22T10:15:00.000Z"),
-          edge("tx-clean-subject", cleanSource, subject, "1", "2026-05-22T10:20:00.000Z")
+          edge("tx-clean-subject", cleanSource, subject, "1", "2026-05-22T10:20:00.000Z"),
+          edge("tx-unknown-history", unknownContract, subject, "100000000", "2026-05-22T10:00:00.000Z")
         ]
       ],
       [whitebit, [edge("tx-whitebit-loop", whitebit, whitebit, "700000000", "2026-05-22T10:00:00.000Z")]],
@@ -1850,6 +1862,7 @@ describe("runWhereIsMoneyCheck", () => {
         if (address === whitebit) return service("cex", "WhiteBIT");
         if (address === htx) return service("cex", "HTX");
         if (address === binance) return service("cex", "Binance");
+        if (address === unknownContract) return traceableContract("unknown");
         return service("none", null);
       },
       getFastWalletRisk: async () => lowFastRisk,
@@ -1866,10 +1879,11 @@ describe("runWhereIsMoneyCheck", () => {
       approvalEnrichmentMode: "always"
     });
 
-    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("1000000001");
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("1100000001");
     expect(report.subjectExposureProfile?.cleanCexIncomingShare).toBe(0);
-    expect(report.subjectExposureProfile?.unknownSourceShare).toBeCloseTo(0.7);
-    expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(0.3);
+    expect(report.subjectExposureProfile?.unknownContractVolumeShare).toBe(0);
+    expect(report.subjectExposureProfile?.unknownSourceShare).toBeCloseTo(800000000 / 1100000001);
+    expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(300000000 / 1100000001);
   });
 
   it("classifies direct historical HTX source-edge counterparties with approval enrichment off", async () => {

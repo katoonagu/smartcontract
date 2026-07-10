@@ -13,6 +13,7 @@ const subject = "TSubject111111111111111111111111111111";
 const highRisk = "THighRisk111111111111111111111111111";
 const lowerShare = "TLowerShare11111111111111111111111111";
 const service = "TService11111111111111111111111111111";
+const gasFree = "TGasFree111111111111111111111111111";
 const partial = "TPartial11111111111111111111111111111";
 const normal = "TNormal111111111111111111111111111111";
 
@@ -55,6 +56,16 @@ function classification(category: ServiceClassification["category"], identity: s
     confidence: "high",
     evidence: identity ? [`name:${identity}`] : [],
     isBoundary: category !== "none"
+  };
+}
+
+function traceableContract(identity: string): ServiceClassification {
+  return {
+    category: identity === "unknown" ? "unknown_contract" : "service",
+    identity,
+    confidence: "high",
+    evidence: ["test:traceable_contract"],
+    isBoundary: false
   };
 }
 
@@ -158,6 +169,19 @@ describe("direct counterparty interaction profiles", () => {
       scoreContribution: 0,
       skippedReason: "service_boundary_context"
     });
+  });
+
+  it("keeps a non-boundary contract available for ordinary counterparty checks", () => {
+    const profiles = buildDirectCounterpartyInteractionProfiles({
+      subjectAddress: subject,
+      edges: [edge({ id: "tx-gasfree", from: subject, to: gasFree, amountRaw: "1000000000000" })],
+      snapshotsByAddress: new Map(),
+      classifications: new Map([[gasFree, traceableContract("GasFree Account")]])
+    });
+
+    const profile = profiles[0];
+    expect(profile?.snapshot.source).not.toBe("service_boundary");
+    expect(profile?.serviceCategory).toBeNull();
   });
 
   it("keeps provider-partial snapshots at zero score", () => {

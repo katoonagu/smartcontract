@@ -225,6 +225,7 @@ function hasTokenLike(text: string, token: string): boolean {
 }
 
 function isHtxHuobiClassification(classification: ServiceClassification | null | undefined): boolean {
+  if (classification?.isBoundary !== true) return false;
   const text = classificationText(classification);
   return hasTokenLike(text, "htx") || hasTokenLike(text, "huobi") || hasTokenLike(text, "htx huobi");
 }
@@ -246,6 +247,7 @@ function isBridgeRouterDexCategory(
   category: ServiceCategory | null | undefined,
   classification: ServiceClassification | null | undefined
 ): boolean {
+  if (classification?.isBoundary !== true) return false;
   return category === "bridge" ||
     category === "bridge_pool" ||
     category === "dex" ||
@@ -255,7 +257,8 @@ function isBridgeRouterDexCategory(
 }
 
 function isCleanCexClassification(classification: ServiceClassification | null | undefined): boolean {
-  return classification?.category === "cex" &&
+  return classification?.isBoundary === true &&
+    classification.category === "cex" &&
     !isHtxHuobiClassification(classification) &&
     !isWhitebitClassification(classification);
 }
@@ -391,9 +394,9 @@ export async function buildIncomingWalletExposureProfile(
       unknownSourceRaw += amountRaw;
     } else if (isBridgeRouterDexCategory(classification?.category, classification)) {
       bridgeRouterDexRaw += amountRaw;
-    } else if (classification?.category === "unknown_contract") {
+    } else if (classification?.isBoundary === true && classification.category === "unknown_contract") {
       unknownContractRaw += amountRaw;
-    } else if (!classification || classification.category === "none") {
+    } else if (!classification?.isBoundary || classification.category === "none") {
       unknownSourceRaw += amountRaw;
     }
   }

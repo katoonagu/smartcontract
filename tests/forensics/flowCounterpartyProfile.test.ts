@@ -11,6 +11,7 @@ const htx = "THTX11111111111111111111111111111111";
 const bridge = "TBridge111111111111111111111111111111";
 const dex = "TDex11111111111111111111111111111111";
 const normal = "TNormal11111111111111111111111111111";
+const unknownContract = "TUnknownHop222222222222222222222222";
 
 function edge(id: string, fromAddress: string, toAddress: string, amountRaw: string, timestamp: string): ForensicRouteEdge {
   return {
@@ -27,6 +28,16 @@ function edge(id: string, fromAddress: string, toAddress: string, amountRaw: str
 
 function service(category: ServiceClassification["category"], identity: string): ServiceClassification {
   return { category, identity, confidence: "high", evidence: [`tag:${identity}`], isBoundary: category !== "none" };
+}
+
+function traceableContract(identity: string): ServiceClassification {
+  return {
+    category: identity === "unknown" ? "unknown_contract" : "service",
+    identity,
+    confidence: "high",
+    evidence: ["test:traceable_contract"],
+    isBoundary: false
+  };
 }
 
 describe("buildOperationalFlowProfile", () => {
@@ -121,6 +132,23 @@ describe("buildOperationalFlowProfile", () => {
     expect(profile.terminalLiquidityOutgoingRatio).toBe(1);
     expect(profile.htxHuobiOutgoingRatio).toBeGreaterThan(0);
     expect(profile.features.map((feature) => feature.code)).toContain("operational_flow_htx_huobi_outgoing");
+  });
+
+  it("keeps a non-boundary unknown contract out of boundary-flow ratios", () => {
+    const profile = buildOperationalFlowProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [
+        edge("in", normal, subject, "100000000", "2026-05-10T10:00:00.000Z"),
+        edge("out", subject, unknownContract, "100000000", "2026-05-10T10:05:00.000Z")
+      ],
+      classifications: new Map([[unknownContract, traceableContract("unknown")]])
+    });
+
+    expect(profile.unknownContractOutgoingRatio).toBe(0);
+    expect(profile.features.map((feature) => feature.code)).not.toContain("operational_flow_unknown_contract_outgoing");
+    expect(profile.operationalScore).toBeGreaterThan(0);
   });
 });
 
@@ -232,5 +260,18 @@ describe("buildFastCounterpartyTopsProfile", () => {
     expect(profile.categoryBreakdown).toEqual(expect.arrayContaining([
       expect.objectContaining({ direction: "outgoing", category: "bridge", volumeRaw: "1" })
     ]));
+  });
+
+  it("does not list a non-boundary unknown contract as a Fast service counterparty", () => {
+    const profile = buildFastCounterpartyTopsProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [edge("out-unknown", subject, unknownContract, "100000000", "2026-05-10T10:00:00.000Z")],
+      classifications: new Map([[unknownContract, traceableContract("unknown")]])
+    });
+
+    expect(profile.topOutgoingCounterparties.map((row) => row.address)).toContain(unknownContract);
+    expect(profile.topServiceCounterparties.map((row) => row.address)).not.toContain(unknownContract);
   });
 });

@@ -394,22 +394,6 @@ function hasMatchingUsdtMovement(input: {
   });
 }
 
-function addressIsContractInTransaction(transactionInfo: unknown, address: string): boolean {
-  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
-  const normalizedAddress = address.toLowerCase();
-  const contractMap = objectField(tx?.contract_map);
-  const mapped = contractMap?.[address] ?? contractMap?.[normalizedAddress];
-  if (mapped === true) return true;
-
-  return arrayField(tx?.contractInfo).some((item) => {
-    const record = objectField(item);
-    if (!record) return false;
-    const contractAddress = stringField(record.address ?? record.contractAddress ?? record.contract_address ?? record.owner_address);
-    if (contractAddress?.toLowerCase() !== normalizedAddress) return false;
-    return record.isContract === true || record.contract === true || record.is_contract === true;
-  });
-}
-
 function hasPairedAssetOutputToVictim(input: {
   transactionInfo: unknown;
   victimAddress: string;
@@ -817,9 +801,7 @@ export async function buildApprovalDrainProvenanceAnalysis(
     });
     const spenderMatched = Boolean(approval && approval.spenderAddress === resolution.spenderAddress);
     const matchingUsdtMovement = hasMatchingUsdtMovement({ transactionInfo, drainEdge });
-    const sourceIsContractOrServiceBoundary =
-      addressIsContractInTransaction(transactionInfo, drainEdge.fromAddress) ||
-      isBoundary(input.classifications?.get(drainEdge.fromAddress));
+    const sourceIsBoundary = isBoundary(input.classifications?.get(drainEdge.fromAddress));
     const transferFromConfirmed =
       (
         drainEdge.edgeType === "transfer_from" &&
@@ -829,7 +811,7 @@ export async function buildApprovalDrainProvenanceAnalysis(
         resolution.spenderResolution === "wrapper_contract" &&
         spenderMatched &&
         matchingUsdtMovement &&
-        !sourceIsContractOrServiceBoundary
+        !sourceIsBoundary
       );
     const serviceRouteEvidence = extractServiceRouteEvidence({
       subjectAddress: input.subjectAddress,

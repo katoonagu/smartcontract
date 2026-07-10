@@ -13,6 +13,9 @@ const htx = "THTX111111111111111111111111111111";
 const binance = "TBinance111111111111111111111111111";
 const bridge = "TBridge1111111111111111111111111111";
 const whitebit = "TWhiteBIT11111111111111111111111111";
+const gasFreeHop1 = "TGasFreeHop111111111111111111111111";
+const unknownHop2 = "TUnknownHop222222222222222222222222";
+const gasFreeHop3 = "TGasFreeHop333333333333333333333333";
 
 function edge(id: string, fromAddress: string, toAddress: string, amountRaw: string, timestamp: string): ForensicRouteEdge {
   return {
@@ -46,6 +49,16 @@ function service(category: ServiceClassification["category"], identity: string |
     confidence: "high",
     evidence: identity ? [`tag:${identity}`] : [],
     isBoundary: category !== "none"
+  };
+}
+
+function traceableContract(identity: string): ServiceClassification {
+  return {
+    category: identity === "unknown" ? "unknown_contract" : "service",
+    identity,
+    confidence: "high",
+    evidence: ["test:traceable_contract"],
+    isBoundary: false
   };
 }
 
@@ -89,6 +102,35 @@ describe("traceMoneyOriginPath", () => {
       txHashes: ["tx-binance-b", "tx-b-c", "tx-c-d", "tx-balance"],
       amountPreservationRatio: 1
     });
+  });
+
+  it("traces through non-boundary contract accounts to the final Binance boundary", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [gasFreeHop1, [edge("tx-unknown-gasfree-1", unknownHop2, gasFreeHop1, "5000000000", "2026-05-22T10:10:00.000Z")]],
+      [unknownHop2, [edge("tx-gasfree-3-unknown", gasFreeHop3, unknownHop2, "5000000000", "2026-05-22T10:05:00.000Z")]],
+      [gasFreeHop3, [edge("tx-binance-gasfree-3", binance, gasFreeHop3, "5000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(gasFreeHop1),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        if (address === unknownHop2) return traceableContract("unknown");
+        if (address === gasFreeHop1 || address === gasFreeHop3) return traceableContract("GasFree Account");
+        return service("none", null);
+      }
+    });
+
+    expect(path.pathAddresses).toEqual([binance, gasFreeHop3, unknownHop2, gasFreeHop1, subject]);
+    expect(path.stoppedReason).toBe("allowlist_cex_reached");
+    expect(path.reasons.join(" ")).not.toContain("unlabeled_service_boundary");
   });
 
   it("declines when the balance-forming path reaches a bridge boundary", async () => {
