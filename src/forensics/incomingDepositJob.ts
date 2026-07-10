@@ -72,7 +72,7 @@ import {
 } from "./incomingDepositExposureProfile";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
-import { traceMoneyOriginPath } from "./moneyOriginTrace";
+import { isExactGasFreeServiceFeePath, traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
 import { buildSourceBundleExposure, unresolvedBoundaryFromFindings } from "./sourceBundleExposure";
@@ -1222,21 +1222,38 @@ function incomingReportFromWhere(input: {
       input.whereReport.assessment.sourcePolicyEvidence
     )
   );
+  const provenanceWhereOriginPaths = input.whereReport.originPaths.filter((path) =>
+    !isExactGasFreeServiceFeePath(path)
+  );
+  const exactGasFreeFeeOnly = originPaths.length > 0 && provenanceWhereOriginPaths.length === 0;
+  const provenanceOriginPaths = provenanceWhereOriginPaths.map((path) =>
+    incomingPathFromWhere(
+      path,
+      input.deposit,
+      input.fundingBundlesByTxHash,
+      input.whereReport.assessment.sourcePolicyEvidence
+    )
+  );
   const freshExposureOriginPaths = freshExposurePathsWithLegitimateServices({
-    originPaths,
+    originPaths: provenanceOriginPaths,
     contractVerdicts: input.whereReport.contractLlmVerdicts
   });
-  const freshBundleExposure = buildIncomingFreshBundleExposure({
-    targetAmountRaw: input.deposit.amountRaw,
-    originPaths: freshExposureOriginPaths
-  });
-  const sourceBundleExposure = buildIncomingSourceBundleExposure({
-    targetAmountRaw: input.deposit.amountRaw,
-    originPaths: freshExposureOriginPaths
-  });
+  const freshBundleExposure = freshExposureOriginPaths.length > 0
+    ? buildIncomingFreshBundleExposure({
+        targetAmountRaw: input.deposit.amountRaw,
+        originPaths: freshExposureOriginPaths
+      })
+    : undefined;
+  const sourceBundleExposure = freshExposureOriginPaths.length > 0
+    ? buildIncomingSourceBundleExposure({
+        targetAmountRaw: input.deposit.amountRaw,
+        originPaths: freshExposureOriginPaths
+      })
+    : undefined;
+  const walletExposureProfile = exactGasFreeFeeOnly ? undefined : input.walletExposureProfile;
   const subjectExposureProfile = incomingSubjectExposureProfile({
     subjectAddress: input.deposit.fromAddress,
-    walletExposureProfile: input.walletExposureProfile
+    walletExposureProfile
   });
   const unifiedRisk = calculateUnifiedIncomingDepositRisk({
     senderAddress: input.deposit.fromAddress,
@@ -1248,7 +1265,7 @@ function incomingReportFromWhere(input: {
     senderStablecoinState: input.senderStablecoinState,
     whereReport: input.whereReport,
     freshBundleExposure,
-    walletExposureProfile: input.walletExposureProfile ?? null
+    walletExposureProfile: walletExposureProfile ?? null
   });
   const depositRiskScore = unifiedRisk.finalScore;
   const whereScoreInvalid = input.whereReport.scoreValid === false || unifiedRisk.finalDecision === "NO_FINAL_DECISION";
@@ -1293,10 +1310,10 @@ function incomingReportFromWhere(input: {
     contractDrivenReceiverProfile: input.whereReport.contractDrivenReceiverProfile ?? null,
     contractDrivenTransferProfiles: input.whereReport.contractDrivenTransferProfiles ?? [],
     contractDrivenSubjectAddress: input.whereReport.subjectAddress,
-    freshBundleExposure,
-    walletExposureProfile: input.walletExposureProfile ?? undefined,
-    sourceBundleExposure,
-    subjectExposureProfile,
+    ...(freshBundleExposure ? { freshBundleExposure } : {}),
+    ...(walletExposureProfile ? { walletExposureProfile } : {}),
+    ...(sourceBundleExposure ? { sourceBundleExposure } : {}),
+    ...(subjectExposureProfile ? { subjectExposureProfile } : {}),
     unifiedRiskSummary,
     reasons: uniqueStrings([
       ...(input.targetedCoverageBlock
@@ -1306,8 +1323,8 @@ function incomingReportFromWhere(input: {
         : []),
       ...hardBadEvidence.map((evidence) => evidence.message),
       ...input.whereReport.decisionReasons,
-      ...userFacingFreshBundleReasons(freshBundleExposure),
-      ...(input.walletExposureProfile?.reasons ?? [])
+      ...(freshBundleExposure ? userFacingFreshBundleReasons(freshBundleExposure) : []),
+      ...(walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
       ...(scoreInvalid ? [`Technical status: ${technicalStatus}.`] : []),
@@ -1712,9 +1729,6 @@ export async function buildIncomingDepositReport(
   const senderStablecoinState = await measureReportStage("sender_stablecoin_state", () =>
     getStablecoinState(input.sender)
   );
-  let senderEdges = await measureReportStage("fetch_sender_edges", () =>
-    fetchEdgesForAddress(input.sender)
-  );
   const depositSeed = incomingSeedTransfer(input);
   const depositEconomicContext = extractGasFreeEdgeContext(
     await getCachedTransaction(input.depositTxHash),
@@ -1728,6 +1742,9 @@ export async function buildIncomingDepositReport(
         economicProtocol: "tron_gasfree"
       }
     : depositSeed;
+  let senderEdges = forceTransactionSeed
+    ? [seedDeposit]
+    : await measureReportStage("fetch_sender_edges", () => fetchEdgesForAddress(input.sender));
   const resolvedFundingSelection = forceTransactionSeed
     ? null
     : await selectResolvedIncomingDepositFundingCandidates({
@@ -1879,19 +1896,21 @@ export async function buildIncomingDepositReport(
       resolveEconomicContext
     })
   );
-  const walletExposureProfile = await measureReportStage("build_wallet_exposure_profile", () =>
-    buildIncomingWalletExposureProfile({
-      sender: input.sender,
-      watchedWallet: input.watchedWallet,
-      windowStart: minTimestamp,
-      windowEnd: maxTimestamp,
-      edges: senderEdges,
-      getClassificationForAddress: async (address) => {
-        const classification = await getClassificationForAddress(address);
-        return deterministicLegitimateServiceClassifications.get(address) ?? classification;
-      }
-    })
-  );
+  const walletExposureProfile = forceTransactionSeed
+    ? undefined
+    : await measureReportStage("build_wallet_exposure_profile", () =>
+        buildIncomingWalletExposureProfile({
+          sender: input.sender,
+          watchedWallet: input.watchedWallet,
+          windowStart: minTimestamp,
+          windowEnd: maxTimestamp,
+          edges: senderEdges,
+          getClassificationForAddress: async (address) => {
+            const classification = await getClassificationForAddress(address);
+            return deterministicLegitimateServiceClassifications.get(address) ?? classification;
+          }
+        })
+      );
   const reportFromWhere = incomingReportFromWhere({
     whereReport,
     fastSenderRisk,

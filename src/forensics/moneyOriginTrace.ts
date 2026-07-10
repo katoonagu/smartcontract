@@ -96,6 +96,15 @@ type TraceState = {
 
 const DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO = 0.7;
 const DEFAULT_MAX_TIME_DELTA_MS = 365 * 24 * 60 * 60 * 1000;
+const EXACT_GASFREE_SERVICE_FEE_REASON = "Exact GasFree service-fee movement; not payer provenance.";
+
+export function isExactGasFreeServiceFeePath(
+  path: Pick<MoneyOriginPath, "stoppedReason" | "riskScoreContribution" | "reasons">
+): boolean {
+  return path.stoppedReason === "service_boundary" &&
+    path.riskScoreContribution === 0 &&
+    path.reasons.includes(EXACT_GASFREE_SERVICE_FEE_REASON);
+}
 
 function parseAmount(value: string): bigint {
   return /^\d+$/.test(value) ? BigInt(value) : 0n;
@@ -643,7 +652,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             rootSourceType: "unknown",
             stoppedReason: "service_boundary",
             riskScoreContribution: 0,
-            reasons: ["Exact GasFree service-fee movement; not payer provenance."]
+            reasons: [EXACT_GASFREE_SERVICE_FEE_REASON]
           }
         });
         continue;

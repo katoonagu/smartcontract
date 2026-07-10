@@ -24,8 +24,8 @@ import {
 import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDrivenEvidence";
 import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
 import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
-import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
-import { extractGasFreeEdgeContext } from "../forensics/gasFreeSettlement";
+import { isExactGasFreeServiceFeePath, traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
+import { extractGasFreeEdgeContext, isGasFreeServiceFeeEdge } from "../forensics/gasFreeSettlement";
 import { matchSanctionedCryptoService } from "../forensics/sanctionedServiceRegistry";
 import { runCrossChainCorridorAnalysis } from "../forensics/crossChainCorridor";
 import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProviders";
@@ -847,16 +847,6 @@ function rawAmountShare(amountRaw: string, share: number): string {
   return ((amount * scaledShare) / 1_000_000n).toString();
 }
 
-function selectedSourceBundleTargetRaw(input: {
-  selection: BalanceFormingSelection;
-  coverage: WhereIsMoneyCoverage;
-}): string {
-  return input.selection.targetAmountRaw ??
-    input.coverage.targetAmountRaw ??
-    input.selection.selectedAmountRaw ??
-    "0";
-}
-
 function sourceBundleFindingsFromOriginPaths(input: {
   originPaths: MoneyOriginPath[];
   targetAmountRaw: string;
@@ -1002,6 +992,32 @@ function selectApprovalEnrichmentEdges(input: {
 
 function sumRawAmounts(values: string[]): string {
   return values.reduce((sum, value) => sum + (/^\d+$/.test(value) ? BigInt(value) : 0n), 0n).toString();
+}
+
+function selectedTransferAmountRaw(transfer: BalanceFormingTransfer): bigint {
+  return parseRawBigInt(transfer.amountUsage?.usedAmountRaw ?? transfer.amountRaw);
+}
+
+function rawCoverageRatio(numerator: bigint, denominator: bigint): number {
+  if (denominator <= 0n) return 1;
+  return Number((numerator * 1_000_000_000n) / denominator) / 1_000_000_000;
+}
+
+function rebaseTransferAmountUsage(
+  transfer: BalanceFormingTransfer,
+  denominatorShare: number,
+  provenanceTargetAmountRaw: string
+): BalanceFormingTransfer {
+  if (!transfer.amountUsage || denominatorShare <= 0) return transfer;
+  return {
+    ...transfer,
+    coverageShare: clampUnitShare(transfer.coverageShare / denominatorShare),
+    amountUsage: {
+      ...transfer.amountUsage,
+      anchorAmountRaw: provenanceTargetAmountRaw,
+      coverageShare: clampUnitShare(transfer.amountUsage.coverageShare / denominatorShare)
+    }
+  };
 }
 
 function seededBalanceFormingSelection(input: {
@@ -1297,6 +1313,38 @@ export async function runWhereIsMoneyCheck(
   for (const transfer of selection.transfers) {
     balanceFormingTransfers.push(await resolveBalanceTransfer(transfer));
   }
+  const selectedTargetAmount = parseRawBigInt(selection.targetAmountRaw);
+  const exactFeeSelectedAmount = balanceFormingTransfers.reduce((sum, transfer) =>
+    isGasFreeServiceFeeEdge(transfer) ? sum + selectedTransferAmountRaw(transfer) : sum
+  , 0n);
+  const cappedExactFeeSelectedAmount = exactFeeSelectedAmount > selectedTargetAmount
+    ? selectedTargetAmount
+    : exactFeeSelectedAmount;
+  const provenanceTargetAmount = selectedTargetAmount - cappedExactFeeSelectedAmount;
+  const provenanceTargetAmountRaw = provenanceTargetAmount.toString();
+  const provenanceDenominatorShare = selectedTargetAmount > 0n
+    ? rawCoverageRatio(provenanceTargetAmount, selectedTargetAmount)
+    : 0;
+  const traceBalanceFormingTransfers = balanceFormingTransfers.map((transfer) =>
+    isGasFreeServiceFeeEdge(transfer)
+      ? transfer
+      : rebaseTransferAmountUsage(transfer, provenanceDenominatorShare, provenanceTargetAmountRaw)
+  );
+  const provenanceSelectedAmount = (() => {
+    const selectedAmount = parseRawBigInt(selection.selectedAmountRaw);
+    return selectedAmount > cappedExactFeeSelectedAmount
+      ? selectedAmount - cappedExactFeeSelectedAmount
+      : 0n;
+  })();
+  const roleFilteredProvenanceSelection: BalanceFormingSelection = {
+    ...selection,
+    transfers: traceBalanceFormingTransfers.filter((transfer) => !isGasFreeServiceFeeEdge(transfer)),
+    targetAmountRaw: provenanceTargetAmountRaw,
+    selectedAmountRaw: provenanceSelectedAmount.toString(),
+    selectedVolumeRaw: provenanceSelectedAmount.toString(),
+    coverageRatio: rawCoverageRatio(provenanceSelectedAmount, provenanceTargetAmount),
+    partial: selection.partial || (provenanceTargetAmount > 0n && provenanceSelectedAmount < provenanceTargetAmount)
+  };
   const crossChainStage2Enabled = input.crossChainStage2Enabled === true;
   const crossChainManualDeepMode = input.crossChainManualDeepMode === true;
   await emitProgress({
@@ -1346,8 +1394,8 @@ export async function runWhereIsMoneyCheck(
     drainEpisode = detectDrainEpisode({
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
-      selectedAmountRaw: selection.selectedAmountRaw,
-      selectedFundingTxHashes: balanceFormingTransfers.map((transfer) => transfer.txHash),
+      selectedAmountRaw: roleFilteredProvenanceSelection.selectedAmountRaw,
+      selectedFundingTxHashes: roleFilteredProvenanceSelection.transfers.map((transfer) => transfer.txHash),
       edges: sourceEdges,
       serviceAddresses
     });
@@ -1405,7 +1453,7 @@ export async function runWhereIsMoneyCheck(
 
   throwIfAborted(input.abortSignal);
   const originPaths: MoneyOriginPath[] = [];
-  for (const balanceTransfer of balanceFormingTransfers) {
+  for (const balanceTransfer of traceBalanceFormingTransfers) {
     originPaths.push(await traceMoneyOriginPath({
       subjectAddress: sourceAddress,
       balanceTransfer,
@@ -1424,8 +1472,19 @@ export async function runWhereIsMoneyCheck(
       resolveEconomicContext
     }));
   }
+  const provenanceOriginPaths = originPaths.filter((path) => !isExactGasFreeServiceFeePath(path));
+  const exactGasFreeFeeOnly = originPaths.length > 0 && originPaths.every(isExactGasFreeServiceFeePath);
   throwIfAborted(input.abortSignal);
-  const senderInteractionProfiles = await Promise.all(balanceFormingTransfers.map(async (balanceTransfer) =>
+  const provenanceBalanceFormingTransfers = traceBalanceFormingTransfers.filter((_, index) =>
+    !isExactGasFreeServiceFeePath(originPaths[index])
+  );
+  const provenanceSelection: BalanceFormingSelection = {
+    ...roleFilteredProvenanceSelection,
+    transfers: roleFilteredProvenanceSelection.transfers.filter((transfer) =>
+      provenanceBalanceFormingTransfers.some((candidate) => candidate.txHash === transfer.txHash)
+    )
+  };
+  const senderInteractionProfiles = await Promise.all(provenanceBalanceFormingTransfers.map(async (balanceTransfer) =>
     buildMoneyOriginSenderInteractionProfile({
       subjectAddress: sourceAddress,
       balanceTransfer,
@@ -1539,7 +1598,7 @@ export async function runWhereIsMoneyCheck(
     maxSourceActivityChecks: Math.min(20, maxTxInfoFetches),
     incomingClassificationMode: "method_prefiltered"
   });
-  const combined = combineMoneyOriginDecision(originPaths);
+  const combined = combineMoneyOriginDecision(provenanceOriginPaths.length > 0 ? provenanceOriginPaths : originPaths);
   const fastScore = fastRiskDecisionScore(fastWalletRisk);
   const approvalDrainScore = approvalDrainProvenanceProfiles[0]?.score ?? 0;
   const fastDecline = fastScore >= 85;
@@ -1548,12 +1607,13 @@ export async function runWhereIsMoneyCheck(
   let contractLlmVerdicts: ContractLlmVerdictSummary[] = [];
   const needsContractLlmForDecision = !fastDecline &&
     !approvalDrainDecline &&
+    !exactGasFreeFeeOnly &&
     (deterministicDecision === "REVIEW" || approvalDrainReviewFindings.length > 0);
   const shouldBuildContractLlmReport = Boolean(deps.analyzeContractLlmCaseFiles || needsContractLlmForDecision);
   if (shouldBuildContractLlmReport) {
     throwIfAborted(input.abortSignal);
     const candidateAddresses = contractLlmCandidateAddresses({
-      originPaths,
+      originPaths: provenanceOriginPaths,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings
     });
@@ -1562,8 +1622,8 @@ export async function runWhereIsMoneyCheck(
     const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
-      balanceFormingTransfers,
-      originPaths,
+      balanceFormingTransfers: provenanceBalanceFormingTransfers,
+      originPaths: provenanceOriginPaths,
       senderInteractionProfiles,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings,
@@ -1576,8 +1636,8 @@ export async function runWhereIsMoneyCheck(
     const caseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
-      balanceFormingTransfers,
-      originPaths,
+      balanceFormingTransfers: provenanceBalanceFormingTransfers,
+      originPaths: provenanceOriginPaths,
       senderInteractionProfiles,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings,
@@ -1613,7 +1673,7 @@ export async function runWhereIsMoneyCheck(
     dataScopeNote: selection.dataScopeNote ?? null,
     maxDepth,
     fetchedAddressCount: fetchedAddresses.size,
-    partial: selection.partial || globalAddressBudgetExhausted || originPaths.some((path) => path.verdict === "REVIEW"),
+    partial: selection.partial || globalAddressBudgetExhausted || provenanceOriginPaths.some((path) => path.verdict === "REVIEW"),
     notes: [
       selection.provenanceScope === "recent_flow"
         ? "Recent-flow approximation: current balance is low, so the report analyzes recent meaningful wallet flow rather than current balance origin."
@@ -1624,22 +1684,23 @@ export async function runWhereIsMoneyCheck(
       ...(globalAddressBudgetExhausted ? [`Trace reached global maxAddressFetches=${maxAddressFetches}; source remains partially proven.`] : []),
       approvalBudgetNote,
       ...(approvalEnrichmentOutcomeNote ? [approvalEnrichmentOutcomeNote] : []),
-      ...originPaths
+      ...provenanceOriginPaths
         .filter((path) => path.verdict === "REVIEW")
         .map((path) => `${path.balanceTransferTxHash}: ${path.reasons[0]}`)
     ]
   };
   const ageSignals = buildMoneyOriginAgeSignals({
     subjectAddress: sourceAddress,
-    balanceFormingTransfers,
+    balanceFormingTransfers: provenanceBalanceFormingTransfers,
     edgesByAddress: edgeCache,
     now: input.windowEnd,
     largeBalanceRaw: currentBalanceRaw
   });
   const buildWhereSourceBundleExposure = (assessmentCoverage: WhereIsMoneyCoverage) => {
-    const sourceBundleTargetAmountRaw = selectedSourceBundleTargetRaw({ selection, coverage: assessmentCoverage });
+    if (provenanceOriginPaths.length === 0 || provenanceTargetAmount <= 0n) return undefined;
+    const sourceBundleTargetAmountRaw = provenanceTargetAmountRaw;
     const findings = sourceBundleFindingsFromOriginPaths({
-      originPaths,
+      originPaths: provenanceOriginPaths,
       targetAmountRaw: sourceBundleTargetAmountRaw
     });
     const budget = {
@@ -1682,7 +1743,7 @@ export async function runWhereIsMoneyCheck(
   });
   const initialAssessment = buildMoneyOriginOperationalAssessment({
     fastWalletRisk,
-    originPaths,
+    originPaths: provenanceOriginPaths,
     senderInteractionProfiles,
     approvalDrainProvenanceProfiles,
     approvalDrainReviewFindings,
@@ -1693,7 +1754,7 @@ export async function runWhereIsMoneyCheck(
     subjectExposureProfile
   });
   const broadFallbackTargets = dedupeBroadTargetedHistoryTargets(
-    postAssessmentBroadFallbackTargets({ originPaths, assessment: initialAssessment })
+    postAssessmentBroadFallbackTargets({ originPaths: provenanceOriginPaths, assessment: initialAssessment })
   );
   if (broadFallbackTargets.length > 0 && deps.ensureBroadTargetedHistories) {
     await deps.ensureBroadTargetedHistories(broadFallbackTargets);
@@ -1705,7 +1766,7 @@ export async function runWhereIsMoneyCheck(
   let assessment = initialAssessment;
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
   let finalCoverage = coverage;
-  if (crossChainStage2Enabled) {
+  if (crossChainStage2Enabled && provenanceOriginPaths.length > 0 && provenanceTargetAmount > 0n) {
     throwIfAborted(input.abortSignal);
     const explicitDeepBridgeExposure = input.deepBridgeExposure && sameAddress(input.deepBridgeExposure.subjectAddress, sourceAddress)
       ? input.deepBridgeExposure
@@ -1717,8 +1778,8 @@ export async function runWhereIsMoneyCheck(
       deepBridgeExposureFromServiceProfiles(scopedServiceProfiles) ??
       null;
     const crossChainTrigger = evaluateCrossChainStage2Trigger({
-      selection,
-      originPaths,
+      selection: provenanceSelection,
+      originPaths: provenanceOriginPaths,
       assessment: initialAssessment,
       manualDeepMode: input.crossChainManualDeepMode,
       drainEpisode: coverage.drainEpisode ?? drainEpisode ?? null,
@@ -1740,7 +1801,7 @@ export async function runWhereIsMoneyCheck(
     const crossChainAnalysis = await runCrossChainCorridorAnalysis({
       trigger: crossChainTrigger,
       subjectAddress: sourceAddress,
-      originPaths,
+      originPaths: provenanceOriginPaths,
       discoveryProvider: deps.crossChainDiscoveryProvider,
       evmProvider: deps.evmEvidenceProvider,
       continuationEnabled: input.crossChainManualDeepMode === true,
@@ -1762,7 +1823,7 @@ export async function runWhereIsMoneyCheck(
     sourceBundleExposure = buildWhereSourceBundleExposure(finalCoverage);
     assessment = buildMoneyOriginOperationalAssessment({
       fastWalletRisk,
-      originPaths,
+      originPaths: provenanceOriginPaths,
       senderInteractionProfiles,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings,
@@ -1775,12 +1836,21 @@ export async function runWhereIsMoneyCheck(
       extraRiskLayers: crossChainAnalysis.extraRiskLayers,
       extraHardBadEvidence: crossChainAnalysis.extraHardBadEvidence
     });
+  } else if (crossChainStage2Enabled) {
+    await emitProgress({
+      jobPhase: "money_origin_trace",
+      crossChainStage2Progress: {
+        enabled: true,
+        manualDeepMode: crossChainManualDeepMode,
+        status: "skipped",
+        triggered: false,
+        reason: "Exact service-fee paths are excluded from provenance analysis.",
+        selectedAmountRaw: provenanceSelection.selectedAmountRaw,
+        targetAmountRaw: provenanceSelection.targetAmountRaw,
+        providerCalls: 0
+      }
+    });
   }
-  const exactGasFreeFeeOnly = originPaths.length > 0 && originPaths.every((path) =>
-    path.stoppedReason === "service_boundary" &&
-    path.riskScoreContribution === 0 &&
-    path.reasons.includes("Exact GasFree service-fee movement; not payer provenance.")
-  );
   if (exactGasFreeFeeOnly && assessment.hardBadEvidence.length === 0) {
     assessment = {
       ...assessment,
@@ -1798,6 +1868,7 @@ export async function runWhereIsMoneyCheck(
       technicalStatus: null,
       reasons: ["Exact GasFree service-fee movement; not payer provenance."]
     };
+    sourceBundleExposure = undefined;
   }
   const decision = assessment.decision;
   const riskScore = assessment.riskScore;

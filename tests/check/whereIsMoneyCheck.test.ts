@@ -542,6 +542,7 @@ describe("runWhereIsMoneyCheck", () => {
 
   it("reports an exact GasFree fee without risky payer share", async () => {
     const feeTxHash = "tx-exact-gasfree-fee";
+    const crossChainProvider = countingDiscoveryProvider({});
     const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "3000000",
       fetchEdgesForAddress: async () => [],
@@ -549,7 +550,8 @@ describe("runWhereIsMoneyCheck", () => {
       getClassificationForAddress: async (address) => address === gasFreeAccount
         ? service("unknown_contract", "GasFree Account")
         : service("none", null),
-      getTransaction: async (txHash) => txHash === feeTxHash ? gasFreeTransaction() : null
+      getTransaction: async (txHash) => txHash === feeTxHash ? gasFreeTransaction() : null,
+      crossChainDiscoveryProvider: crossChainProvider
     }, {
       mode: "transaction_check",
       subjectAddress: gasFreeTlnt,
@@ -566,7 +568,9 @@ describe("runWhereIsMoneyCheck", () => {
       windowStart: new Date("2026-07-09T00:00:00.000Z"),
       windowEnd: new Date("2026-07-10T01:00:00.000Z"),
       approvalEnrichmentMode: "off",
-      maxContractTransactionInfoFetches: 0
+      maxContractTransactionInfoFetches: 0,
+      crossChainStage2Enabled: true,
+      crossChainManualDeepMode: true
     });
 
     expect(report.originPaths[0]).toMatchObject({
@@ -576,9 +580,146 @@ describe("runWhereIsMoneyCheck", () => {
       pathAddresses: [gasFreeAccount, gasFreeTlnt]
     });
     expect(report.originPaths[0]?.reasons.join(" ")).toContain("GasFree service-fee");
-    expect(report.sourceBundleExposure?.riskyLabelShare).toBe(0);
+    expect(report.senderInteractionProfiles).toEqual([]);
+    expect(report.coverage.partial).toBe(false);
+    expect(report.sourceBundleExposure).toBeUndefined();
+    expect(report.crossChainCorridor).toBeUndefined();
+    expect(crossChainProvider.calls).toEqual([]);
+    expect([...report.coverage.notes, ...report.decisionReasons].join(" ")).not.toMatch(
+      /uncovered selected source share|coverage-limited unknown boundary/i
+    );
     expect(report.decision).toBe("REVIEW");
     expect(report.riskScore).toBe(0);
+  });
+
+  it("rebases mixed provenance to the non-fee selected amount", async () => {
+    const feeTxHash = "tx-mixed-exact-gasfree-fee";
+    const principalTxHash = "tx-mixed-clean-principal";
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === gasFreeAccount) return service("unknown_contract", "GasFree Account");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getTransaction: async (txHash) => txHash === feeTxHash ? gasFreeTransaction() : null
+    }, {
+      mode: "transaction_check",
+      subjectAddress: gasFreeTlnt,
+      requestedAmountRaw: "100000000",
+      seedTransfers: [
+        {
+          txHash: feeTxHash,
+          fromAddress: gasFreeAccount,
+          toAddress: gasFreeTlnt,
+          amountRaw: "3000000",
+          timestamp: "2026-07-10T00:05:00.000Z",
+          coverageShare: 0.03,
+          amountUsage: {
+            anchorAmountRaw: "100000000",
+            originalAmountRaw: "3000000",
+            usedAmountRaw: "3000000",
+            coverageShare: 0.03,
+            role: "anchor"
+          },
+          selectedReason: "covers_requested_amount"
+        },
+        {
+          txHash: principalTxHash,
+          fromAddress: binance,
+          toAddress: gasFreeTlnt,
+          amountRaw: "97000000",
+          timestamp: "2026-07-10T00:04:00.000Z",
+          coverageShare: 0.97,
+          amountUsage: {
+            anchorAmountRaw: "100000000",
+            originalAmountRaw: "97000000",
+            usedAmountRaw: "97000000",
+            coverageShare: 0.97,
+            role: "anchor"
+          },
+          selectedReason: "covers_requested_amount"
+        }
+      ],
+      windowStart: new Date("2026-07-09T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-10T01:00:00.000Z"),
+      approvalEnrichmentMode: "off",
+      maxContractTransactionInfoFetches: 0
+    });
+
+    expect(report.originPaths).toHaveLength(2);
+    expect(report.originPaths.find((path) => path.balanceTransferTxHash === feeTxHash)).toMatchObject({
+      verdict: "REVIEW",
+      riskScoreContribution: 0,
+      stoppedReason: "service_boundary"
+    });
+    expect(report.originPaths.find((path) => path.balanceTransferTxHash === feeTxHash)?.reasons.join(" ")).toContain(
+      "GasFree service-fee"
+    );
+    expect(report.senderInteractionProfiles.map((profile) => profile.balanceTransferTxHash)).toEqual([principalTxHash]);
+    expect(report.coverage.partial).toBe(false);
+    expect(report.sourceBundleExposure).toMatchObject({
+      targetAmountRaw: "97000000",
+      coveredAmountRaw: "97000000",
+      coverageRatio: 1,
+      cleanCexShare: 1,
+      unknownShare: 0,
+      dominantSource: "clean_cex",
+      unresolvedBoundary: null,
+      budget: { exhausted: false }
+    });
+    expect(report.sourceBundleExposure?.evidenceTxHashes).toEqual([principalTxHash]);
+    expect(report.sourceBundleExposure?.reasons.join(" ")).not.toContain("Uncovered");
+  });
+
+  it("preserves an independent non-fee coverage gap after excluding a mixed fee", async () => {
+    const feeTxHash = "tx-mixed-fee-with-unresolved-principal";
+    const principalTxHash = "tx-mixed-unresolved-principal";
+    const unresolvedPrincipal = "TUnresolvedMixedPrincipal111111111111";
+    const selectedEdges = [
+      edge(feeTxHash, gasFreeAccount, gasFreeTlnt, "3000000", "2026-07-10T00:05:00.000Z"),
+      edge(principalTxHash, unresolvedPrincipal, gasFreeTlnt, "97000000", "2026-07-10T00:04:00.000Z")
+    ];
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => address === gasFreeTlnt ? selectedEdges : [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === gasFreeAccount
+        ? service("unknown_contract", "GasFree Account")
+        : service("none", null),
+      getTransaction: async (txHash) => txHash === feeTxHash ? gasFreeTransaction() : null
+    }, {
+      sourceAddress: gasFreeTlnt,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-09T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-10T01:00:00.000Z"),
+      approvalEnrichmentMode: "off",
+      maxContractTransactionInfoFetches: 0
+    });
+
+    expect(report.originPaths.find((path) => path.balanceTransferTxHash === feeTxHash)?.reasons.join(" ")).toContain(
+      "GasFree service-fee"
+    );
+    expect(report.coverage.partial).toBe(true);
+    expect(report.coverage.notes.join(" ")).toContain(principalTxHash);
+    expect(report.coverage.notes.join(" ")).not.toContain(`${feeTxHash}:`);
+    expect(report.sourceBundleExposure).toMatchObject({
+      targetAmountRaw: "97000000",
+      coveredAmountRaw: "97000000",
+      coverageRatio: 1,
+      unknownShare: 1,
+      dominantSource: "unknown",
+      budget: { exhausted: true },
+      unresolvedBoundary: {
+        kind: "unknown",
+        affectedShare: 1,
+        scoreFloor: 35
+      }
+    });
+    expect(report.sourceBundleExposure?.evidenceTxHashes).toEqual([principalTxHash]);
+    expect(report.sourceBundleExposure?.reasons.join(" ")).not.toContain("Uncovered");
   });
 
   it("keeps an active sanctioned-service classification authoritative over an exact GasFree fee", async () => {

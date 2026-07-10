@@ -1733,18 +1733,20 @@ describe("buildIncomingDepositReport", () => {
     const getTransaction = vi.fn(async (txHash: string) =>
       txHash === feeTxHash ? gasFreeTransaction() : null
     );
+    const listIndexedUsdtTransfersForAddress = vi.fn(async (address: string) => address === gasFreeAccount
+      ? [indexedTransfer({
+          txHash: "tx-risky-payer-funding",
+          fromAddress: riskyPayer,
+          toAddress: gasFreeAccount,
+          amountRaw: "100000000",
+          blockTimestamp: new Date("2026-07-10T00:00:00.000Z")
+        })]
+      : []
+    );
 
     const result = await buildIncomingDepositReport({
       deps: {
-        listIndexedUsdtTransfersForAddress: async (address) => address === gasFreeAccount
-          ? [indexedTransfer({
-              txHash: "tx-risky-payer-funding",
-              fromAddress: riskyPayer,
-              toAddress: gasFreeAccount,
-              amountRaw: "100000000",
-              blockTimestamp: new Date("2026-07-10T00:00:00.000Z")
-            })]
-          : [],
+        listIndexedUsdtTransfersForAddress,
         listRelatedTrc20Transfers: async () => [],
         getLabelsForAddress: async (address) => address === riskyPayer ? [{
           address,
@@ -1776,8 +1778,66 @@ describe("buildIncomingDepositReport", () => {
     expect(result.originPaths[0]?.pathAddresses).not.toContain(riskyPayer);
     expect(result.originPaths[0]?.reasons.join(" ")).toContain("GasFree service-fee");
     expect(result.originPaths[0]?.score).toBe(0);
-    expect(result.freshBundleExposure?.riskyLabelShare).toBe(0);
+    expect(result.freshBundleExposure).toBeUndefined();
+    expect(result.sourceBundleExposure).toBeUndefined();
+    expect(result.walletExposureProfile).toBeUndefined();
+    expect(result.subjectExposureProfile).toBeUndefined();
+    expect(result.depositRiskScore).toBe(0);
+    expect(result.unifiedRiskSummary).toMatchObject({
+      finalScore: 0,
+      backgroundScore: 0
+    });
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.hardBadEvidence).toEqual([]);
+    expect([...result.reasons, ...result.warnings].join(" ")).not.toMatch(
+      /observed unknown source|uncovered checked-deposit source share|sender wallet historical exposure/i
+    );
+    expect(listIndexedUsdtTransfersForAddress).not.toHaveBeenCalled();
     expect(getTransaction.mock.calls.filter(([txHash]) => txHash === feeTxHash)).toHaveLength(1);
+  });
+
+  it("keeps an exact hard sender label authoritative for a GasFree fee deposit", async () => {
+    const feeTxHash = "tx-incoming-hard-labeled-gasfree-fee";
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => {
+          throw new Error("fee-only sender history must not be fetched");
+        },
+        listRelatedTrc20Transfers: async () => {
+          throw new Error("fee-only sender history must not be fetched");
+        },
+        getLabelsForAddress: async (address) => address === gasFreeAccount ? [{
+          address,
+          label: "reported_scam",
+          source: "system",
+          createdByTelegramId: null,
+          createdAt: new Date("2026-07-10T00:00:00.000Z")
+        }] : [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => address === gasFreeAccount
+          ? { category: "unknown_contract", identity: "GasFree Account", confidence: "high", evidence: ["metadata:gasfree"], isBoundary: true }
+          : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async (txHash) => txHash === feeTxHash ? gasFreeTransaction() : null,
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash: feeTxHash,
+      watchedWallet: gasFreeTlnt,
+      sender: gasFreeAccount,
+      amountRaw: "3000000",
+      timestamp: new Date("2026-07-10T00:05:00.000Z")
+    });
+
+    expect(result.originPaths[0]?.reasons.join(" ")).toContain("GasFree service-fee");
+    expect(result.freshBundleExposure).toBeUndefined();
+    expect(result.sourceBundleExposure).toBeUndefined();
+    expect(result.walletExposureProfile).toBeUndefined();
+    expect(result.subjectExposureProfile).toBeUndefined();
+    expect(result.decision).toBe("DECLINE");
+    expect(result.depositRiskScore).toBeGreaterThanOrEqual(85);
+    expect(result.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "scam_or_blacklist" })
+    ]));
   });
 
   it("removes a raw exact GasFree fee before selecting the real incoming-deposit funder", async () => {
