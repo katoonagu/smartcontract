@@ -29,6 +29,35 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
 }
 
 describe("projectForensicJobGraph", () => {
+  it("preserves an explicit technical no-final decision instead of converting it to UNKNOWN", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        decision: "NO_FINAL_DECISION",
+        riskScore: null,
+        scoreValid: false,
+        coverage: { partial: true, notes: ["provider cap"] },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          scoreValid: false,
+          reasons: [],
+          warnings: ["provider cap"]
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      riskScore: null,
+      riskLevel: null,
+      riskClarity: { finalRiskScore: null, decisionStatus: "insufficient_coverage" }
+    });
+  });
+
   it("projects a waiting Where targeted index job as progress, not final failure", () => {
     const waitingAddress = "TWaitingHop111111111111111111111111111";
     const result = projectForensicJobGraph(job({

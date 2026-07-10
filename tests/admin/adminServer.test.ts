@@ -73,6 +73,9 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
     ...(typeof overrides.coverage === "object" && overrides.coverage !== null ? overrides.coverage as Record<string, unknown> : {})
   };
   const assessment = {
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     decision: "REVIEW",
     riskScore: 78,
     riskBand: "HIGH",
@@ -104,6 +107,9 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
     ...(typeof overrides.assessment === "object" && overrides.assessment !== null ? overrides.assessment as Record<string, unknown> : {})
   };
   return {
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     subjectAddress: "TSubject111111111111111111111111111111",
     currentUsdtBalanceRaw: "1000000000",
     fastWalletRisk: null,
@@ -113,14 +119,12 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
     approvalDrainProvenanceProfiles: [],
     approvalDrainReviewFindings: [],
     contractLlmVerdicts: [],
-    assessment,
     decision: "REVIEW",
     userDecision: "REVIEW",
     internalDecision: "REVIEW",
     proofLevel: "exchange_policy_decline",
     riskScore: 78,
     decisionReasons: ["Material HTX/Huobi selected-amount source exposure was found."],
-    coverage,
     sourceBundleExposure: {
       scope: "where_requested_amount",
       targetAmountRaw: "1000000000",
@@ -147,7 +151,9 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
       },
       unresolvedBoundary: null
     },
-    ...overrides
+    ...overrides,
+    coverage,
+    assessment
   };
 }
 
@@ -1407,6 +1413,135 @@ describe("startAdminServer", () => {
         summary: { decision: "ACCEPTABLE", riskScore: 20 }
       }
     });
+  });
+
+  it("keeps exact hard decline and partial limitations in the canonical Admin graph", async () => {
+    const whereReport = whereReportForAdminTest({
+      scoreValid: false,
+      scoreBlockedReason: "provider_cap_unresolved",
+      technicalStatus: "provider_cap_unresolved",
+      proofLevel: "exact_scam_or_taint_proof",
+      coverage: { partial: true, notes: ["provider cap"] },
+      assessment: {
+        scoreValid: false,
+        scoreBlockedReason: "provider_cap_unresolved",
+        technicalStatus: "provider_cap_unresolved",
+        hardBadEvidence: [{
+          kind: "scam_or_blacklist",
+          score: 95,
+          message: "Exact subject blacklist evidence.",
+          evidenceIds: ["hard:subject:blacklist"]
+        }]
+      }
+    });
+    const fixture = job({
+      id: "job-hard-partial",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReport,
+        score_valid: false
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fixture],
+      getJob: async (id) => id === fixture.id ? fixture : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${fixture.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+
+    expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 95, riskLevel: "CRITICAL" });
+    expect(graph.summary.humanSummary.limitations.join(" ")).toMatch(/provider cap|partial|покрыт/i);
+  });
+
+  it("preserves null canonical score and observed context for a new technical-stop graph", async () => {
+    const whereReport = whereReportForAdminTest({
+      scoreValid: false,
+      scoreBlockedReason: "provider_cap_unresolved",
+      technicalStatus: "provider_cap_unresolved",
+      proofLevel: "insufficient_coverage",
+      decision: "REVIEW",
+      userDecision: "NO_FINAL_DECISION",
+      internalDecision: "REVIEW",
+      riskScore: 45,
+      coverage: { partial: true, notes: ["provider cap"] },
+      assessment: {
+        scoreValid: false,
+        scoreBlockedReason: "provider_cap_unresolved",
+        technicalStatus: "provider_cap_unresolved",
+        decision: "REVIEW",
+        riskScore: 45,
+        riskBand: "MEDIUM",
+        hardBadEvidence: [],
+        sourcePolicyEvidence: [],
+        riskLayers: []
+      }
+    });
+    const fixture = job({
+      id: "job-technical-stop",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReport,
+        score_valid: false
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fixture],
+      getJob: async (id) => id === fixture.id ? fixture : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${fixture.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const subjectNode = graph.nodes.find((node: { kind: string }) => node.kind === "subject");
+
+    expect(graph.summary).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      riskScore: null,
+      riskLevel: null,
+      riskClarity: { finalRiskScore: null, decisionStatus: "insufficient_coverage" }
+    });
+    expect(subjectNode).toMatchObject({
+      riskLevel: null,
+      metadata: {
+        finalDecision: "NO_FINAL_DECISION",
+        finalScore: null,
+        observedContextScore: expect.any(Number)
+      }
+    });
+  });
+
+  it("keeps a legacy Admin result byte-for-byte unchanged while reading its stored semantics", async () => {
+    const whereReport = whereReportForAdminTest();
+    delete whereReport.scoreValid;
+    delete (whereReport.assessment as Record<string, unknown>).scoreValid;
+    const fixture = job({
+      id: "job-legacy-read",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const before = JSON.stringify(fixture.resultJson);
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fixture],
+      getJob: async (id) => id === fixture.id ? fixture : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${fixture.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+
+    expect(graph.summary).toMatchObject({ decision: "REVIEW", riskScore: 78 });
+    expect(graph.summary.humanSummary.limitations.join(" ")).toMatch(/legacy|fresh check/i);
+    expect(JSON.stringify(fixture.resultJson)).toBe(before);
   });
 
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {

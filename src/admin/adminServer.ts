@@ -7,7 +7,6 @@ import { adminConsoleHtml } from "./adminConsole";
 import { projectForensicJobGraph, type AdminForensicsGraph, type AdminForensicsHumanSummary, type AdminForensicsNode } from "./forensicsGraph";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import {
-  buildNoFinalRiskExplanationSummary,
   buildRiskExplanationSummary,
   factAction,
   factDetail,
@@ -37,7 +36,7 @@ import type {
   WalletIntelligenceSupportedJobKind,
   WalletIntelligenceTag
 } from "../storage/repositories";
-import type { IndexedTronUsdtTransfer, RiskLevel, RiskReport, UserExchangeDecision, WhereIsMoneyReport } from "../types";
+import type { IndexedTronUsdtTransfer, RiskLevel, RiskReport, WhereIsMoneyReport } from "../types";
 
 export type AdminServerConfig = {
   host: string;
@@ -633,6 +632,13 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function adminConfidenceFromScore(score: number | null): "low" | "medium" | "high" | null {
+  if (score === null) return null;
+  if (score >= 70) return "high";
+  if (score >= 40) return "medium";
+  return "low";
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
@@ -653,25 +659,8 @@ function riskLevel(value: unknown): RiskLevel | null {
   return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL" ? value : null;
 }
 
-function adminWhereScoreValid(report: WhereIsMoneyReport): boolean | undefined {
-  return report.scoreValid ?? report.assessment.scoreValid;
-}
-
-function finalDisplayDecisionForAdmin(
-  result: UnifiedWalletRiskResult,
-  whereReport: WhereIsMoneyReport
-): UserExchangeDecision {
-  if (adminWhereScoreValid(whereReport) === false) return "NO_FINAL_DECISION";
-  if (result.matrixScore.matrixDecision === "DECLINE") return "DECLINE";
-  if (result.matrixScore.matrixDecision === "REVIEW") return "REVIEW";
-  if (
-    result.matrixScore.matrixDecision === "INSUFFICIENT_EVIDENCE" &&
-    whereReport.decision === "REVIEW" &&
-    result.finalScore > 0
-  ) {
-    return "REVIEW";
-  }
-  return result.finalDecision;
+function hasExplicitWhereScoreValidity(report: WhereIsMoneyReport): boolean {
+  return typeof report.scoreValid === "boolean" || typeof report.assessment.scoreValid === "boolean";
 }
 
 function normalizeWhereIsMoneyReport(value: unknown, subjectAddress: string): WhereIsMoneyReport | null {
@@ -1089,32 +1078,54 @@ function adminHumanSummaryFromRiskSummary(summary: RiskExplanationSummary): Admi
   };
 }
 
-function buildAdminHumanSummary(input: {
+function buildAdminRiskPresentation(input: {
   address: string;
   whereReport: WhereIsMoneyReport;
   fastReport: RiskReport | null;
   deepReport: DeepAddressForensicReport | null;
-}): AdminForensicsHumanSummary {
-  if (adminWhereScoreValid(input.whereReport) === false) {
-    return adminHumanSummaryFromRiskSummary(buildNoFinalRiskExplanationSummary({
-      address: input.address,
-      whereReport: input.whereReport
-    }));
-  }
+}): { unifiedRisk: UnifiedWalletRiskResult; humanSummary: AdminForensicsHumanSummary } {
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,
     deepReport: input.deepReport,
     whereReport: input.whereReport
   });
-  return adminHumanSummaryFromRiskSummary(buildRiskExplanationSummary({
-    address: input.address,
-    whereReport: input.whereReport,
+  return {
     unifiedRisk,
-    finalDecision: finalDisplayDecisionForAdmin(unifiedRisk, input.whereReport),
-    fastReport: input.fastReport,
-    deepReport: input.deepReport
-  }));
+    humanSummary: adminHumanSummaryFromRiskSummary(buildRiskExplanationSummary({
+      address: input.address,
+      whereReport: input.whereReport,
+      unifiedRisk,
+      finalDecision: unifiedRisk.finalDecision,
+      fastReport: input.fastReport,
+      deepReport: input.deepReport
+    }))
+  };
+}
+
+function legacyAdminHumanSummary(whereReport: WhereIsMoneyReport): AdminForensicsHumanSummary {
+  const limitation = "Legacy result — run a fresh check to apply the current scoring policy.";
+  return {
+    conclusion: `Legacy result: ${whereReport.userDecision} (${whereReport.riskScore}/100).`,
+    primaryReasons: whereReport.assessment.reasons.slice(0, 5),
+    modeSections: [],
+    possibleMeanings: [],
+    limitations: [limitation],
+    recommendations: ["Run a fresh check to apply the current scoring policy."]
+  };
+}
+
+function graphWithLegacyHumanSummary(
+  graph: AdminForensicsGraph,
+  whereReport: WhereIsMoneyReport
+): AdminForensicsGraph {
+  return {
+    ...graph,
+    summary: {
+      ...graph.summary,
+      humanSummary: legacyAdminHumanSummary(whereReport)
+    }
+  };
 }
 
 async function enrichHumanRiskSummary(
@@ -1122,9 +1133,20 @@ async function enrichHumanRiskSummary(
   job: ForensicCheckJob,
   deps: AdminServerDeps
 ): Promise<AdminForensicsGraph> {
+  if (
+    job.kind !== "address_fast_check" &&
+    job.kind !== "address_deep_check" &&
+    job.kind !== "where_is_money_check"
+  ) {
+    return graph;
+  }
+
   const primaryWhereReport = extractWhereIsMoneyReportFromAdminJob(job, job.subjectAddress);
   if (job.kind === "where_is_money_check" && !primaryWhereReport) {
     return { ...graph, summary: { ...graph.summary, humanSummary: null } };
+  }
+  if (primaryWhereReport && !hasExplicitWhereScoreValidity(primaryWhereReport)) {
+    return graphWithLegacyHumanSummary(graph, primaryWhereReport);
   }
 
   const relatedJobs = await loadRelatedHumanSummaryJobs(job, deps);
@@ -1133,25 +1155,73 @@ async function enrichHumanRiskSummary(
     jobs.map((candidate) => extractWhereIsMoneyReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ??
     null;
   if (!whereReport) return { ...graph, summary: { ...graph.summary, humanSummary: null } };
+  if (!hasExplicitWhereScoreValidity(whereReport)) {
+    return graphWithLegacyHumanSummary(graph, whereReport);
+  }
 
   const deepReport = jobs.map((candidate) => extractDeepForensicReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
   const fastReport = jobs.map((candidate) => extractFastRiskReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
-  let humanSummary: AdminForensicsHumanSummary | null = null;
+  let presentation: ReturnType<typeof buildAdminRiskPresentation> | null = null;
   try {
-    humanSummary = buildAdminHumanSummary({
+    presentation = buildAdminRiskPresentation({
       address: job.subjectAddress,
       whereReport,
       fastReport,
       deepReport
     });
   } catch {
-    humanSummary = null;
+    presentation = null;
   }
+  if (!presentation) return { ...graph, summary: { ...graph.summary, humanSummary: null } };
+
+  const finalScore = presentation.unifiedRisk.finalScore;
+  const finalLevel = presentation.unifiedRisk.finalLevel;
+  const finalDecision = presentation.unifiedRisk.finalDecision;
+  const decisionStatus = finalDecision === "NO_FINAL_DECISION"
+    ? "insufficient_coverage"
+    : finalDecision === "DECLINE"
+      ? "decline"
+      : finalDecision === "REVIEW"
+        ? "review"
+        : "acceptable";
   return {
     ...graph,
+    nodes: graph.nodes.map((node) => node.kind === "subject"
+      ? {
+          ...node,
+          riskLevel: finalLevel,
+          confidence: adminConfidenceFromScore(finalScore),
+          weight: finalScore,
+          metadata: {
+            ...node.metadata,
+            finalDecision,
+            finalScore,
+            observedContextScore: presentation.unifiedRisk.observedContextScore
+          }
+        }
+      : node),
     summary: {
       ...graph.summary,
-      humanSummary
+      decision: finalDecision,
+      riskScore: finalScore,
+      riskLevel: finalLevel,
+      confidence: adminConfidenceFromScore(finalScore),
+      riskClarity: {
+        ...graph.summary.riskClarity,
+        finalRiskScore: finalScore,
+        riskLevel: finalLevel,
+        confidenceScore: finalScore === null ? null : graph.summary.riskClarity.confidenceScore,
+        decisionStatus,
+        hardEvidenceObserved: presentation.unifiedRisk.decisionBasis === "exact_hard_proof",
+        evidenceClass: presentation.unifiedRisk.decisionBasis === "exact_hard_proof"
+          ? "hard"
+          : graph.summary.riskClarity.evidenceClass,
+        limitations: Array.from(new Set([
+          ...graph.summary.riskClarity.limitations,
+          ...presentation.unifiedRisk.coverage.caveats
+        ]))
+      },
+      humanSummary: presentation.humanSummary
     }
   };
 }

@@ -152,6 +152,15 @@ describe("incoming deposit exposure profile types", () => {
       finalScore: 42,
       finalLevel: "MEDIUM",
       finalDecision: "ACCEPTABLE",
+      observedContextScore: 42,
+      scoreValid: true,
+      decisionBasis: "matrix",
+      coverage: {
+        required: "valid",
+        overall: "complete",
+        invalidModes: [],
+        caveats: []
+      },
       hardEvidenceFloor: 0,
       policyFloor: 0,
       assetContinuationFloor: 0,
@@ -166,6 +175,7 @@ describe("incoming deposit exposure profile types", () => {
     const report: IncomingDepositRiskReport = {
       decision: "ACCEPTABLE",
       depositRiskScore: 42,
+      observedContextScore: 42,
       riskBand: "MEDIUM",
       fastSenderRisk: null,
       originPaths: [],

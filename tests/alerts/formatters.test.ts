@@ -32,6 +32,7 @@ const incomingDepositBaseInput = {
   report: {
     decision: "DECLINE" as const,
     depositRiskScore: 68,
+    observedContextScore: 68,
     riskBand: "HIGH" as const,
     fastSenderRisk: {
       subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
@@ -132,6 +133,43 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
     expect(message.text).toContain("<b>origin confidence</b>: <code>medium</code>");
     expect(message.text).not.toContain("Data quality");
+  });
+
+  it("renders an Incoming technical stop without inventing a numeric final risk", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        decision: "NO_FINAL_DECISION",
+        depositRiskScore: null,
+        observedContextScore: 59,
+        riskBand: null
+      }
+    });
+
+    expect(message.text).toContain("NO_FINAL_DECISION");
+    expect(message.text).toContain("no final score");
+    expect(message.text).toContain("Observed context");
+    expect(message.text).toContain("59");
+    expect(message.text).not.toContain("null/100");
+  });
+
+  it("renders the canonical Incoming REVIEW decision", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        decision: "REVIEW",
+        depositRiskScore: 45,
+        observedContextScore: 45,
+        riskBand: "MEDIUM"
+      }
+    });
+
+    expect(message.text).toContain("<b>Decision</b>: <code>REVIEW</code>");
+    expect(message.text).toContain("<code>45/100</code>");
   });
 
   it("shows historical HTX/Huobi context without source-proof wording in incoming deposit alerts", () => {
@@ -478,6 +516,7 @@ describe("alert formatters", () => {
       report: {
         decision: "ACCEPTABLE",
         depositRiskScore: 8,
+        observedContextScore: 8,
         riskBand: "LOW",
         fastSenderRisk: null,
         originPaths: [],
@@ -513,6 +552,7 @@ describe("alert formatters", () => {
       report: {
         decision: "ACCEPTABLE",
         depositRiskScore: 12,
+        observedContextScore: 12,
         riskBand: "LOW",
         fastSenderRisk: null,
         originPaths: [],

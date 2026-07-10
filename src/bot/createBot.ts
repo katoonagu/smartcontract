@@ -18,7 +18,6 @@ import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskCl
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import {
-  buildNoFinalRiskExplanationSummary,
   buildRiskExplanationSummary,
   factDetail,
   factText,
@@ -2300,23 +2299,6 @@ function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: Bo
   return "Final scoring is blocked by incomplete technical coverage.";
 }
 
-function finalDisplayDecision(
-  result: UnifiedWalletRiskResult,
-  whereReport: WhereIsMoneyReport
-): UnifiedRiskFinalDecision {
-  if (whereScoreValid(whereReport) === false) return "NO_FINAL_DECISION";
-  if (result.matrixScore.matrixDecision === "DECLINE") return "DECLINE";
-  if (result.matrixScore.matrixDecision === "REVIEW") return "REVIEW";
-  if (
-    result.matrixScore.matrixDecision === "INSUFFICIENT_EVIDENCE" &&
-    whereReport.decision === "REVIEW" &&
-    result.finalScore > 0
-  ) {
-    return "REVIEW";
-  }
-  return result.finalDecision;
-}
-
 function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: BotLocale): string {
   const labels: Record<UnifiedRiskReasonSource, { en: string; ru: string }> = {
     fast_check: { en: "Fast Check", ru: "Быстрая проверка" },
@@ -3073,11 +3055,21 @@ function finalActionLines(decision: UnifiedRiskFinalDecision, cards: FinalReason
 }
 
 function finalScoreExplanationLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
-  const lines = [
-    locale === "en"
-      ? `Weighted/background score is ${result.weightedLayerScore}; final risk is ${result.finalScore}.`
-      : `Взвешенная/фоновая оценка: ${result.weightedLayerScore}; итоговый риск: ${result.finalScore}.`
-  ];
+  const lines = result.finalScore === null
+    ? [locale === "en"
+        ? "Technical stop / no final score."
+        : "Техническая остановка / итоговый риск не опубликован.",
+      locale === "en"
+        ? `Observed context: ${result.observedContextScore}; it is not a final score.`
+        : `Наблюдаемый контекст: ${result.observedContextScore}; это не итоговый риск.`]
+    : [locale === "en"
+        ? `Weighted/background score is ${result.weightedLayerScore}; final risk is ${result.finalScore}.`
+        : `Взвешенная/фоновая оценка: ${result.weightedLayerScore}; итоговый риск: ${result.finalScore}.`];
+  if (result.coverage.overall === "partial") {
+    lines.push(locale === "en"
+      ? `Coverage: partial; invalid modes: ${result.coverage.invalidModes.join(", ") || "none"}.`
+      : `Покрытие: неполное; режимы с ограничениями: ${result.coverage.invalidModes.join(", ") || "нет"}.`);
+  }
   lines.push(locale === "en"
     ? `Matrix row: ${result.matrixScore.winningRow}; matrix decision: ${result.matrixScore.matrixDecision}.`
     : `Строка матрицы: ${result.matrixScore.winningRow}; решение матрицы: ${result.matrixScore.matrixDecision}.`);
@@ -3315,15 +3307,60 @@ function summaryRiskLine(summary: RiskExplanationSummary, locale: BotLocale): st
     : `Риск: ${summary.score}/100 — ${level} (Итоговый риск)`;
 }
 
-function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
+function hasExplicitWhereScoreValidity(report: WhereIsMoneyReport): boolean {
+  return typeof report.scoreValid === "boolean" || typeof report.assessment.scoreValid === "boolean";
+}
+
+function formatLegacyUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  const summary = buildNoFinalRiskExplanationSummary({
+  const decision = input.whereReport.userDecision;
+  const score = input.whereReport.riskScore;
+  const level = levelFromScore(score);
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Address check — legacy result" : "Проверка адреса — устаревший результат"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(input.address)}`,
+    compactDecisionLine(decision, locale),
+    locale === "en"
+      ? `Risk: ${score}/100 — ${level}`
+      : `Риск: ${score}/100 — ${riskLevelText(locale, level)} / ${level}`,
+    locale === "en"
+      ? "Legacy result — run a fresh check to apply the current scoring policy."
+      : "Устаревший результат — запустите свежую проверку, чтобы применить текущую политику оценки.",
+    runtimeMarkerLine(input.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+function formatInvalidWhereScoreFinalReport(
+  input: UnifiedAddressFinalReportInput & { unifiedRisk: UnifiedWalletRiskResult }
+): TelegramHtmlMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const summary = buildRiskExplanationSummary({
     address: input.address,
-    whereReport: input.whereReport
+    whereReport: input.whereReport,
+    unifiedRisk: input.unifiedRisk,
+    finalDecision: input.unifiedRisk.finalDecision,
+    fastReport: input.fastReport,
+    deepReport: input.deepReport
   });
   const reason = whereScoreBlockedReason(input.whereReport) ?? "insufficient_coverage";
   const technicalStatus = whereTechnicalStatus(input.whereReport) ?? "unknown";
   const showTechnicalDiagnostics = input.showBetaDiagnostics === true;
+  const clarity = buildRiskClaritySummary({
+    kind: "address_deep_check",
+    executionStatus: input.whereReport.coverage.partial ? "partial" : "completed",
+    finalRiskScore: input.unifiedRisk.finalScore,
+    explicitDecision: input.unifiedRisk.finalDecision,
+    missingChecks: [
+      ...input.whereReport.coverage.notes,
+      ...(input.deepReport?.missingChecks ?? [])
+    ],
+    coveragePartial: input.whereReport.coverage.partial || input.unifiedRisk.coverageLevel !== "complete",
+    fetchedAddressCount: input.whereReport.coverage.fetchedAddressCount,
+    hardEvidenceObserved: finalReportHasHardEvidence(input, input.unifiedRisk),
+    evidenceHints: finalReportEvidenceHints(input, summaryFactLines(summary.primaryReasons, locale))
+  }, { betaDiagnosticsVisible: showTechnicalDiagnostics });
+  const betaInternalLines = compactUnifiedRiskBreakdownLines(input.unifiedRisk, locale, input.deepReport);
+  const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
   const diagnosticLines = showTechnicalDiagnostics
     ? [
         "Decision: NO_FINAL_DECISION",
@@ -3340,6 +3377,11 @@ function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInpu
   return telegramHtmlMessage([
     bold(locale === "en" ? "Address check - no final decision" : "Проверка адреса — без итогового решения"),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(summary.address)}`,
+    compactDecisionLine(summary.decision, locale),
+    locale === "en" ? "Technical stop / no final score." : "Техническая остановка / итоговый риск не опубликован.",
+    locale === "en"
+      ? `Observed context: ${input.unifiedRisk.observedContextScore}; it is not a final score.`
+      : `Наблюдаемый контекст: ${input.unifiedRisk.observedContextScore}; это не итоговый риск.`,
     summaryText(summary, locale),
     section(locale === "en" ? "What this means" : "Что это может значить", [
       bulletList(summaryPossibleMeanings(summary, locale))
@@ -3350,8 +3392,12 @@ function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInpu
     section(locale === "en" ? "Limits" : "Ограничения", [
       bulletList(summaryLimitations(summary, locale))
     ]),
+    ...betaDiagnosticsLines(clarity),
+    crossChainCorridorLines.length > 0 ? section("Cross-chain corridor", [
+      bulletList(crossChainCorridorLines)
+    ]) : null,
     showTechnicalDiagnostics ? section("Beta/internal", [
-      bulletList(diagnosticLines)
+      bulletList([...betaInternalLines, ...diagnosticLines])
     ]) : null,
     runtimeMarkerLine(input.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
@@ -3359,8 +3405,8 @@ function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInpu
 
 export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  if (whereScoreValid(input.whereReport) === false) {
-    return formatInvalidWhereScoreFinalReport(input);
+  if (!hasExplicitWhereScoreValidity(input.whereReport)) {
+    return formatLegacyUnifiedAddressFinalReport(input);
   }
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
@@ -3368,7 +3414,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     deepReport: input.deepReport,
     whereReport: input.whereReport
   });
-  const finalDecision = finalDisplayDecision(unifiedRisk, input.whereReport);
+  if (unifiedRisk.finalDecision === "NO_FINAL_DECISION") {
+    return formatInvalidWhereScoreFinalReport({ ...input, unifiedRisk });
+  }
+  const finalDecision = unifiedRisk.finalDecision;
   const summary = buildRiskExplanationSummary({
     address: input.address,
     whereReport: input.whereReport,
@@ -3427,27 +3476,23 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
 
 export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  const summary = whereScoreValid(input.whereReport) === false
-    ? buildNoFinalRiskExplanationSummary({
-        address: input.address,
-        whereReport: input.whereReport
-      })
-    : (() => {
-        const unifiedRisk = calculateUnifiedWalletRisk({
-          address: input.address,
-          fastReport: input.fastReport,
-          deepReport: input.deepReport,
-          whereReport: input.whereReport
-        });
-        return buildRiskExplanationSummary({
-          address: input.address,
-          whereReport: input.whereReport,
-          unifiedRisk,
-          finalDecision: finalDisplayDecision(unifiedRisk, input.whereReport),
-          fastReport: input.fastReport,
-          deepReport: input.deepReport
-        });
-      })();
+  if (!hasExplicitWhereScoreValidity(input.whereReport)) {
+    return formatLegacyUnifiedAddressFinalReport(input);
+  }
+  const unifiedRisk = calculateUnifiedWalletRisk({
+    address: input.address,
+    fastReport: input.fastReport,
+    deepReport: input.deepReport,
+    whereReport: input.whereReport
+  });
+  const summary = buildRiskExplanationSummary({
+    address: input.address,
+    whereReport: input.whereReport,
+    unifiedRisk,
+    finalDecision: unifiedRisk.finalDecision,
+    fastReport: input.fastReport,
+    deepReport: input.deepReport
+  });
 
   return telegramHtmlMessage([
     bold(locale === "en" ? "Detailed address report" : "Расширенный отчёт по адресу"),

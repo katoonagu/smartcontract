@@ -295,6 +295,7 @@ function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport
 }
 
 function incomingDepositRiskIcon(band: IncomingDepositRiskReport["riskBand"]): string {
+  if (band === null) return "⚪️";
   switch (band) {
     case "LOW":
       return "🟢";
@@ -324,10 +325,17 @@ export function formatIncomingDepositRiskAlert(input: {
     ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`
     : `Входящий USDT${eventTime ? ` — ${eventTime}` : ""}`;
   const aiSection = formatIncomingDepositContractVerdicts(input.report, locale);
+  const riskLine = input.report.depositRiskScore === null
+    ? `${bold(locale === "en" ? "Deposit risk" : "Риск депозита")}: ${code(locale === "en" ? "no final score" : "нет итоговой оценки")}`
+    : `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(input.report.riskBand)} ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand ?? "unknown")})`;
+  const contextLine = input.report.depositRiskScore === null
+    ? `${bold(locale === "en" ? "Observed context" : "Наблюдаемый контекст")}: ${code(String(input.report.observedContextScore))}`
+    : null;
   const message = telegramHtmlMessage([
     bold(title),
     `${bold(decisionLabel(locale))}: ${code(input.report.decision)}`,
-    `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(input.report.riskBand)} ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
+    riskLine,
+    contextLine,
     [
       `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(`${input.amount} USDT`)}`,
       `${bold(locale === "en" ? "Watched wallet" : "Кошелек")}: ${code(input.watchedWallet)}`,

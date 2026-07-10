@@ -12,7 +12,7 @@ import {
   type WhereFundingCandidateItem
 } from "./whereFundingCandidateVisibility";
 
-export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "UNKNOWN";
+export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION" | "UNKNOWN";
 export type AdminForensicsRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type AdminForensicsConfidence = "low" | "medium" | "high";
 
@@ -285,7 +285,9 @@ function riskClarityExecutionStatus(
 }
 
 function decision(value: unknown): AdminForensicsDecision {
-  return value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE" ? value : "UNKNOWN";
+  return value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE" || value === "NO_FINAL_DECISION"
+    ? value
+    : "UNKNOWN";
 }
 
 function summaryDecisionFromRisk(score: number | null): AdminForensicsDecision {
@@ -3741,7 +3743,15 @@ function projectWhereIsMoneyJob(
   const sourceProvenanceMaterialityScoreValidCaveat =
     sourceProvenanceMaterialityOutcomeIsScoreValidCaveat(sourceProvenanceMaterialityOutcome);
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
-  const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
+  const reportedDecision = decision(
+    result["userDecision"] ?? result["decision"] ?? assessment["userDecision"] ?? assessment["decision"]
+  );
+  const explicitScoreValidity = booleanField(result, "scoreValid") ?? booleanField(assessment, "scoreValid");
+  const summaryDecision = explicitScoreValidity === false && reportedDecision !== "DECLINE"
+    ? "NO_FINAL_DECISION"
+    : reportedDecision;
+  const storedRiskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
+  const riskScore = summaryDecision === "NO_FINAL_DECISION" ? null : storedRiskScore;
   const confidence = confidenceFromNumber(firstNumber(
     numberField(assessment, "provenanceConfidence"),
     numberField(result, "provenanceConfidence")
@@ -4733,7 +4743,6 @@ function projectWhereIsMoneyJob(
   annotateReciprocalDirectCounterpartyFlows(edges);
   attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
-  const summaryDecision = decision(result["decision"] ?? assessment["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
     executionStatus: riskClarityExecutionStatus(summary.status),
@@ -4745,6 +4754,9 @@ function projectWhereIsMoneyJob(
     hardEvidenceObserved: hardEvidenceObserved(result, assessment),
     evidenceHints: evidenceHintsFromResult(result, assessment)
   });
+  if (summaryDecision === "NO_FINAL_DECISION") {
+    riskClarity.decisionStatus = "insufficient_coverage";
+  }
   const strictProvenance = strictProvenanceSummary(progress, resultForStrictStatus);
   const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
   const balanceFormingSlice = balanceFormingSliceSummary(progress, result);

@@ -984,6 +984,9 @@ function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIs
   const decision = overrides.decision ?? "ACCEPTABLE";
   const riskScore = overrides.riskScore ?? 0;
   return {
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     decision,
     riskScore,
     riskBand: whereRiskBandForTest(riskScore),
@@ -1002,6 +1005,9 @@ function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIs
 function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyReport {
   const assessment = overrides.assessment ?? whereAssessmentForTest(overrides);
   return {
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
     subjectAddress: walletAddress,
     currentUsdtBalanceRaw: "0",
     fastWalletRisk: null,
@@ -1023,7 +1029,7 @@ function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}):
       selectedInboundVolumeRaw: "0",
       currentBalanceCoverageRatio: 0,
       maxDepth: 7,
-      fetchedAddressCount: 1,
+      fetchedAddressCount: 3,
       partial: false,
       notes: []
     },
@@ -3249,13 +3255,13 @@ describe("bot command and inline UX smoke coverage", () => {
 
     const text = plainTelegramText(formatWhereIsMoneyReport(whereIsMoneyJobForTest(), report, "partial", { locale: "ru" }).text);
 
-    expect(text).toContain("Проверка адреса — итог");
-    expect(text).toContain("Итоговый риск");
-    expect(text.match(/\d+\/100/g)).toEqual(["0/100"]);
+    expect(text).toContain("Проверка адреса — без итогового решения");
+    expect(text).toContain("Техническая остановка / итоговый риск не опубликован.");
+    expect(text).toContain("Наблюдаемый контекст: 30");
+    expect(text.match(/\d+\/100/g)).toBeNull();
     expect(text).toContain("Проверили 95% выбранной суммы");
     expect(text).toContain("32 входящих");
-    expect(text).toContain("Что важно учесть");
-    expect(text).not.toContain("Ограничения");
+    expect(text).toContain("Ограничения");
     expect(text).not.toContain("Технические детали");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("Sender interactions");
@@ -3784,6 +3790,84 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Technical status");
   });
 
+  it("keeps contextual Fast risk diagnostic when new Where coverage blocks a final score", () => {
+    const whereReport = scoreInvalidWhereReportForTest();
+    const fastReport: RiskReport = {
+      subjectAddress: whereReport.subjectAddress,
+      score: 90,
+      level: "CRITICAL",
+      reasons: [{ code: "critical_context_only", message: "context only", scoreImpact: 90 }]
+    };
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("NO_FINAL_DECISION");
+    expect(text).toContain("Technical stop / no final score");
+    expect(text).toContain("Observed context: 59");
+    expect(text).not.toContain("Final risk: 59");
+  });
+
+  it("keeps exact hard decline while showing invalid partial Where limitations", () => {
+    const base = scoreInvalidWhereReportForTest();
+    const whereReport: WhereIsMoneyReport = {
+      ...base,
+      proofLevel: "exact_scam_or_taint_proof",
+      assessment: {
+        ...base.assessment,
+        hardBadEvidence: [{
+          kind: "scam_or_blacklist",
+          score: 95,
+          message: "Exact subject blacklist evidence.",
+          evidenceIds: ["hard:subject:blacklist"]
+        }]
+      }
+    };
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("DECLINE");
+    expect(text).toContain("95/100");
+    expect(text).toContain("Coverage: partial");
+    expect(text).toContain("where_is_money");
+  });
+
+  it("renders an unversioned legacy Where result without rescoring it", () => {
+    const legacy = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45 }),
+        decision: "REVIEW",
+        riskScore: 45,
+        riskBand: "MEDIUM"
+      }
+    });
+    delete legacy.scoreValid;
+    delete legacy.assessment.scoreValid;
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: legacy.subjectAddress,
+      whereReport: legacy,
+      locale: "en"
+    });
+
+    expect(text).toContain("Legacy result");
+    expect(text).toContain("REVIEW");
+    expect(text).toContain("45/100");
+    expect(text).toContain("run a fresh check");
+  });
+
   it("formats Russian selected-anchor coverage without English copy", () => {
     const whereReport = whereIsMoneyReportForTest({
       coverage: {
@@ -4110,7 +4194,9 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "en"
     });
 
-    expect(text).toContain("Important context");
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("Observed context: 30");
+    expect(text).toContain("Limits");
     expect(text).toContain("this does not mean the full address history is complete");
     expect(text).not.toContain("Coverage is limited; review the evidence before treating this result as final.");
     expect(text).not.toContain("guaranteed clean");
@@ -4136,7 +4222,8 @@ describe("bot command and inline UX smoke coverage", () => {
       showBetaDiagnostics: true
     });
 
-    expect(text).toContain("Matrix row: coverage_uncertainty; matrix decision: INSUFFICIENT_EVIDENCE.");
+    expect(text).toContain("Risk: 29/100");
+    expect(text).toContain("Matrix row: clean_or_operational; matrix decision: ACCEPTABLE.");
     expect(text).not.toContain("High contextual risk; no hard evidence observed.");
   });
 
@@ -4160,7 +4247,8 @@ describe("bot command and inline UX smoke coverage", () => {
       showBetaDiagnostics: true
     });
 
-    expect(text).toContain("Matrix row: coverage_uncertainty; matrix decision: INSUFFICIENT_EVIDENCE.");
+    expect(text).toContain("Риск: 29/100");
+    expect(text).toContain("Matrix row: clean_or_operational; matrix decision: ACCEPTABLE.");
     expect(text).not.toContain("Высокий контекстный риск; жестких доказательств не найдено.");
     expect(text).not.toContain("High contextual risk; no hard evidence observed.");
   });
@@ -4579,7 +4667,9 @@ describe("bot command and inline UX smoke coverage", () => {
       showBetaDiagnostics: true
     });
 
-    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Decision: NO_FINAL_DECISION");
+    expect(text).toContain("Technical stop / no final score.");
+    expect(text).toContain("Observed context: 30");
     expect(text).toContain("Matrix row: coverage_uncertainty; matrix decision: INSUFFICIENT_EVIDENCE.");
     expect(text).toContain("Weighted layer score: 0.");
     expect(text).toContain("Coverage-adjusted context score: 30.");
@@ -5251,7 +5341,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check - no final decision");
     expect(text).not.toContain("Decision: DECLINE");
-    expect(text).not.toContain("NO_FINAL_DECISION");
+    expect(text).toContain("NO_FINAL_DECISION");
   });
 
   it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
@@ -5383,9 +5473,10 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Address check — final");
-    expect(text).toContain("Risk:");
-    expect(text).toContain("0/100");
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("Technical stop / no final score.");
+    expect(text).toContain("Observed context: 30");
+    expect(text).not.toContain("0/100");
     expect(text).not.toContain("Where-is-money — support/debug");
     expect(text).not.toContain("support/debug");
     expect(text).not.toContain("Job:");
@@ -5875,16 +5966,18 @@ describe("bot command and inline UX smoke coverage", () => {
       { locale: "ru" }
     );
 
-    expect(message.text).toContain("Проверка адреса — итог");
+    expect(message.text).toContain("Проверка адреса — без итогового решения");
+    expect(message.text).toContain("Техническая остановка / итоговый риск не опубликован.");
+    expect(message.text).toContain("Наблюдаемый контекст: 60");
     expect(message.text).not.toContain("готово, есть ограничения");
     expect(message.text).not.toContain("частично");
     expect(message.text).toContain("Решение");
     expect(message.text).toContain("Проверили 76% выбранной суммы");
-    expect(message.text).toContain("Почему");
+    expect(message.text).toContain("Ограничения");
     expect(message.text).not.toContain("Data quality");
     expect(message.text).not.toContain("Технические детали");
     expect(message.text).not.toContain("Job:");
-    expect(message.text).toContain("Жёстких плохих доказательств не найдено.");
+    expect(message.text).not.toContain("60/100");
     expect(message.text).not.toContain("manual review required");
   });
 
@@ -5912,6 +6005,9 @@ describe("bot command and inline UX smoke coverage", () => {
         completedAt: new Date("2026-05-24T00:01:00.000Z")
       },
       {
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
         subjectAddress: walletAddress,
         currentUsdtBalanceRaw: "2576000000",
         fastWalletRisk: {
@@ -5959,6 +6055,9 @@ describe("bot command and inline UX smoke coverage", () => {
           }
         ],
         assessment: {
+          scoreValid: true,
+          scoreBlockedReason: null,
+          technicalStatus: "completed",
           decision: "DECLINE",
           riskScore: 90,
           riskBand: "CRITICAL",
@@ -6038,6 +6137,9 @@ describe("bot command and inline UX smoke coverage", () => {
         completedAt: new Date("2026-05-24T00:01:00.000Z")
       },
       {
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
         subjectAddress: walletAddress,
         currentUsdtBalanceRaw: "1123000000",
         fastWalletRisk: null,
@@ -6048,6 +6150,9 @@ describe("bot command and inline UX smoke coverage", () => {
         approvalDrainReviewFindings: [],
         contractLlmVerdicts: [],
         assessment: {
+          scoreValid: true,
+          scoreBlockedReason: null,
+          technicalStatus: "completed",
           decision: "DECLINE",
           riskScore: 55,
           riskBand: "MEDIUM",
@@ -6352,7 +6457,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Decision: ACCEPTABLE");
     expect(text).toContain("Risk:");
-    expect(text).toContain("0/100");
+    expect(text).toContain("29/100");
     expect(text).toContain("LOW");
     expect(text).toContain("No deterministic bad evidence was found.");
     expect(text).not.toContain("Provenance confidence: 58/100");
@@ -6394,8 +6499,9 @@ describe("bot command and inline UX smoke coverage", () => {
       { locale: "en" }
     ).text);
 
-    expect(text).toContain("Address check — final");
-    expect(text).toContain("Important context");
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("Observed context: 30");
+    expect(text).toContain("Limits");
     expect(text).toContain("this does not mean the full address history is complete");
     expect(text).not.toContain("Recent flow provenance");
     expect(text).not.toContain("Current balance is below the low-balance threshold");
@@ -6445,8 +6551,10 @@ describe("bot command and inline UX smoke coverage", () => {
       ]
     });
 
-    expect(text).toContain("Decision: ACCEPTABLE");
-    expect(text).toContain("Risk:");
+    expect(text).toContain("Decision: NO_FINAL_DECISION");
+    expect(text).toContain("Technical stop / no final score.");
+    expect(text).toContain("Observed context: 45");
+    expect(text).not.toContain("Final risk: 45");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("1. UNPROVEN");
     expect(text).not.toContain("Decision: DECLINE");
@@ -6715,6 +6823,9 @@ describe("bot command and inline UX smoke coverage", () => {
         completedAt: new Date("2026-05-24T00:01:00.000Z")
       },
       {
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
         subjectAddress: walletAddress,
         currentUsdtBalanceRaw: "1100000000",
         fastWalletRisk: null,
@@ -6741,6 +6852,9 @@ describe("bot command and inline UX smoke coverage", () => {
           }
         ],
         assessment: {
+          scoreValid: true,
+          scoreBlockedReason: null,
+          technicalStatus: "completed",
           decision: "DECLINE",
           riskScore: 88,
           riskBand: "CRITICAL",

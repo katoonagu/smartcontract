@@ -199,13 +199,6 @@ function coverageFact(report: WhereIsMoneyReport, priority: number): RiskExplana
   };
 }
 
-function hasSavedApprovalDrainMarker(report: RiskReport | null | undefined): boolean {
-  return report?.reasons.some((reason) =>
-    reason.code === "internal_label_approval_drain_proximity" ||
-    reason.message.toLowerCase().includes("exact upstream approval-drain provenance linked to this address")
-  ) === true;
-}
-
 function firstBoundary(report: DeepAddressForensicReport | null | undefined): BoundaryExposureProfile | null {
   const profile = report?.boundaryExposureProfiles?.[0] ?? null;
   return profile && profile.contextScore > 0 && profile.flows.length > 0 ? profile : null;
@@ -227,13 +220,10 @@ function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
   const fast = input.fastReport ?? input.whereReport.fastWalletRisk;
   if (!fast) return;
   const hardEvidenceCodes = unifiedHardEvidenceCodes(input.unifiedRisk);
-  const hasExplicitHardEvidence = fast.reasons.some((reason) =>
-    reason.code === "stablecoin_usdt_blacklisted" ||
-    reason.code === "internal_label_approval_drain_proximity" ||
-    hasSavedApprovalDrainMarker(fast) ||
-    hardEvidenceCodes.has(reason.code)
-  );
-  if (fast.reasons.some((reason) => reason.code === "stablecoin_usdt_blacklisted")) {
+  const hasExplicitHardEvidence = fast.reasons.some((reason) => hardEvidenceCodes.has(reason.code));
+  if (fast.reasons.some((reason) =>
+    reason.code === "stablecoin_usdt_blacklisted" && hardEvidenceCodes.has(reason.code)
+  )) {
     pushFact(allFacts, sections, "fast", {
       kind: "hard_evidence",
       source: "fast",
@@ -245,7 +235,9 @@ function addFastFacts(input: RiskExplanationInput, allFacts: RiskExplanationFact
       actionEn: "Do not accept the deposit automatically."
     });
   }
-  if (hasSavedApprovalDrainMarker(fast)) {
+  if (fast.reasons.some((reason) =>
+    reason.code === "internal_label_approval_drain_proximity" && hardEvidenceCodes.has(reason.code)
+  )) {
     pushFact(allFacts, sections, "fast", {
       kind: "hard_evidence",
       source: "fast",
@@ -643,7 +635,7 @@ function addUnifiedFacts(input: RiskExplanationInput, allFacts: RiskExplanationF
     addFact(allFacts, fact);
     addFact(sections.where, fact);
   }
-  if (result.reasons.some((reason) => reason.code === "where_source_policy_floor")) {
+  if (result.reasons.some((reason) => reason.source === "policy_floor")) {
     const fact: RiskExplanationFact = {
       kind: "source_policy",
       source: "unified",
@@ -782,13 +774,31 @@ export function buildRiskExplanationSummary(input: RiskExplanationInput): RiskEx
   const meanings = possibleMeanings(input.finalDecision, primaryReasons);
   const recs = recommendations(input.finalDecision, primaryReasons);
   const materiality = materialityLimitations(input.whereReport);
+  const noFinalRu = input.unifiedRisk.finalScore === null
+    ? [`Наблюдаемый контекст: ${input.unifiedRisk.observedContextScore}; это не итоговый риск.`]
+    : [];
+  const noFinalEn = input.unifiedRisk.finalScore === null
+    ? [`Observed context: ${input.unifiedRisk.observedContextScore}; it is not a final score.`]
+    : [];
+  const partialRu = input.unifiedRisk.coverage.overall === "partial"
+    ? [`Покрытие: неполное; режимы с ограничениями: ${input.unifiedRisk.coverage.invalidModes.join(", ") || "нет"}.`]
+    : [];
+  const partialEn = input.unifiedRisk.coverage.overall === "partial"
+    ? [`Coverage: partial; invalid modes: ${input.unifiedRisk.coverage.invalidModes.join(", ") || "none"}.`]
+    : [];
   const limitationsRu = unique([
     "Проверка относится к выбранной сумме и доступным данным, а не ко всей истории адреса.",
+    ...noFinalRu,
+    ...partialRu,
+    ...input.unifiedRisk.coverage.caveats,
     ...materiality.ru,
     ...primaryReasons.filter((fact) => fact.kind === "coverage_limit" || fact.kind === "service_boundary").map((fact) => fact.textRu)
   ]).slice(0, 6);
   const limitationsEn = unique([
     "The check applies to the selected amount and available data, not the address's full history.",
+    ...noFinalEn,
+    ...partialEn,
+    ...input.unifiedRisk.coverage.caveats,
     ...materiality.en,
     ...primaryReasons.filter((fact) => fact.kind === "coverage_limit" || fact.kind === "service_boundary").map((fact) => fact.textEn)
   ]).slice(0, 6);
