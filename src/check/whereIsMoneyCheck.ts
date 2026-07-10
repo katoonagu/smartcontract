@@ -219,11 +219,15 @@ function isRecoverableEdgeFetchError(error: unknown): boolean {
   ].some((needle) => message.includes(needle));
 }
 
-async function fetchEdgesOrPartial(read: () => Promise<ForensicRouteEdge[]>): Promise<ForensicRouteEdge[]> {
+async function fetchEdgesOrPartial(
+  read: () => Promise<ForensicRouteEdge[]>,
+  onRecoverableError?: () => void
+): Promise<ForensicRouteEdge[]> {
   try {
     return await read();
   } catch (error) {
     if (!isRecoverableEdgeFetchError(error)) throw error;
+    onRecoverableError?.();
     return [];
   }
 }
@@ -1106,11 +1110,8 @@ function postAssessmentBroadFallbackTargets(input: {
   originPaths: MoneyOriginPath[];
   assessment: WhereIsMoneyAssessment;
 }): BroadTargetedHistoryRequest[] {
-  const outcome = input.assessment.sourceProvenanceMateriality?.outcome;
-  const reason = outcome === "unresolved_source_with_hard_evidence"
-    ? "hard_evidence_requires_full_coverage"
-    : null;
-  if (!reason) return [];
+  if (input.assessment.hardBadEvidence.length === 0) return [];
+  const reason = "hard_evidence_requires_full_coverage" as const;
 
   const targets: BroadTargetedHistoryRequest[] = [];
   for (const path of input.originPaths) {
@@ -1196,6 +1197,7 @@ export async function runWhereIsMoneyCheck(
       }
     : undefined;
   let globalAddressBudgetExhausted = false;
+  let recoverableEdgeFetchFailed = false;
   let lastTraceProgressAt = Date.now();
   const emitTraceProgress = async (): Promise<void> => {
     const now = Date.now();
@@ -1279,20 +1281,31 @@ export async function runWhereIsMoneyCheck(
     }
     fetchedAddresses.add(address);
     await emitTraceProgress();
-    const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address, options));
+    const fetchedEdges = await fetchEdgesOrPartial(
+      () => deps.fetchEdgesForAddress(address, options),
+      () => {
+        recoverableEdgeFetchFailed = true;
+      }
+    );
     throwIfAborted(input.abortSignal);
     const windowedEdges = windowEdges(fetchedEdges, input);
-    const localHistoryCoverage = options.latestTimestamp &&
-      options.deferBroadTargetedHistory === true &&
-      deps.getHistoryCoverageForAddress
+    const historyCoverage = deps.getHistoryCoverageForAddress
       ? await deps.getHistoryCoverageForAddress(address, options).catch(() => null)
       : null;
+    if (historyCoverage?.providerInconsistent === true) {
+      recoverableEdgeFetchFailed = true;
+    }
     const shouldUseFallback = fallbackMinTransferCount > 0 &&
       fallbackTransferLimit > 0 &&
-      localHistoryCoverage?.localMaterializationStatus == null &&
+      historyCoverage?.localMaterializationStatus == null &&
       windowedEdges.length < fallbackMinTransferCount;
     const latestEdges = shouldUseFallback
-      ? await fetchEdgesOrPartial(() => deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges))
+      ? await fetchEdgesOrPartial(
+          () => deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges),
+          () => {
+            recoverableEdgeFetchFailed = true;
+          }
+        )
       : [];
     throwIfAborted(input.abortSignal);
     const edges = dedupeEdges([...windowedEdges, ...latestEdges]);
@@ -1462,6 +1475,9 @@ export async function runWhereIsMoneyCheck(
       checkedScope,
       anchorCoverageRatio: selection.coverageRatio,
       episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null,
+      technicalFailure: recoverableEdgeFetchFailed
+        ? { scoreBlockedReason: "provider_error", technicalStatus: "provider_error" }
+        : null,
       notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."]
     });
   }

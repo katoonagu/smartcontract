@@ -1589,6 +1589,58 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.warnings.join(" ")).toContain("tx-review-drain");
   });
 
+  it.each(["source_materiality", "source_policy", "llm"] as const)(
+    "locks exact hard evidence before $s interpretation",
+    (phase) => {
+      const input = assessmentInput({
+        originPaths: [reviewPath({
+          historyCoverage: [{
+            address: sender,
+            targetTimestamp: "2026-05-22T10:00:00.000Z",
+            fetchedTransferCount: 0,
+            fetchedPageCount: 1,
+            oldestFetchedTransferAt: null,
+            reachedTargetHop: false,
+            source: "local_index",
+            coverageComplete: false,
+            providerCapHit: false,
+            budgetExhausted: false,
+            providerInconsistent: false,
+            statusReason: null,
+            localMaterializationStatus: "read_failed",
+            localMaterializationCompletionReason: null,
+            localMaterializationKnownZero: false,
+            localMaterializationError: "local index unavailable"
+          }]
+        })],
+        approvalDrainProvenanceProfiles: [approvalDrainProfile()],
+        coverage: coverage({ partial: true })
+      });
+      let interpretationReadCount = 0;
+      const readInterpretationInput = () => {
+        interpretationReadCount += 1;
+        return [];
+      };
+      if (phase === "source_materiality") {
+        Object.defineProperty(input.originPaths[0], "sourceProvenance", { get: readInterpretationInput });
+      } else if (phase === "source_policy") {
+        Object.defineProperty(input, "extraSourcePolicyEvidence", { get: readInterpretationInput });
+      } else {
+        Object.defineProperty(input, "contractLlmVerdicts", { get: readInterpretationInput });
+      }
+
+      const assessment = buildMoneyOriginOperationalAssessment(input);
+      expect(interpretationReadCount).toBe(0);
+      expect(assessment).toMatchObject({
+        decision: "DECLINE",
+        scoreValid: false,
+        scoreBlockedReason: "local_index_read_failed",
+        technicalStatus: "local_data_error"
+      });
+      expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    }
+  );
+
   it("marks completed assessments explicitly valid outside local materialization failures", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [cleanCexPath()],
@@ -1855,10 +1907,11 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "scam_or_blacklist" })
     ]));
-    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
-      hardEvidenceInUnresolved: true,
-      outcome: "unresolved_source_with_hard_evidence"
-    });
+    expect(assessment.sourceProvenanceMateriality).toBeUndefined();
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "hard_proof",
+      kind: "scam_or_blacklist"
+    }));
   });
 
   it("does not publish a final decline from probable source provenance alone", () => {
@@ -2258,7 +2311,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
-  it("keeps exact approval-drain hard proof ahead of LLM suspicion", () => {
+  it("returns exact approval-drain hard proof without evaluating LLM suspicion", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       approvalDrainProvenanceProfiles: [
         approvalDrainProfile({
@@ -2292,9 +2345,11 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       expect.objectContaining({ kind: "approval_drain", evidenceIds: ["tx-exact-approve", "tx-exact-drain", "tx-exact-drain"] })
     ]));
     expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
-    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "drainer_like", proofLevel: "llm_assisted_suspicion" })
-    ]));
+    expect(assessment.contractSuspicionEvidence).toEqual([]);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      kind: "approval_drain",
+      proofLevel: "exact_approval_drain_provenance"
+    }));
   });
 
   it("floors exact approval-drain hard proof at 95", () => {

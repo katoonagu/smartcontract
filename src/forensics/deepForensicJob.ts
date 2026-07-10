@@ -52,7 +52,18 @@ const WHERE_BALANCE_SLICE_MAX_PAGES = 20;
 const WHERE_BALANCE_SLICE_MIN_COVERAGE_RATIO = 0.95;
 const WHERE_BALANCE_SLICE_PROVIDER_CAP_RANGE_TOTAL = 10_000;
 
-export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddressUsdtIndexState"> & {
+export type DeepForensicJobRunnerDeps = Omit<
+  DeepAddressForensicDeps,
+  "getAddressUsdtIndexState" | "listIndexedUsdtTransfersForAddress"
+> & {
+  listIndexedUsdtTransfersForAddress?(address: string, options: {
+    minTimestamp: Date;
+    maxTimestamp: Date;
+    limit: number;
+    offset?: number;
+    orderBy?: "newest" | "amount_desc";
+    direction?: "both";
+  }): Promise<IndexedTronUsdtTransfer[]>;
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
@@ -1173,7 +1184,8 @@ async function runWhereIsMoneyJob(
             maxTimestamp: pageOptions.maxTimestamp,
             limit: pageOptions.limit,
             offset: pageOptions.offset,
-            orderBy: pageOptions.orderBy
+            orderBy: pageOptions.orderBy,
+            direction: pageOptions.direction
           });
         }
       }));
@@ -1184,7 +1196,7 @@ async function runWhereIsMoneyJob(
       historyCoverageCache.set(cacheKey, {
         address,
         targetTimestamp: maxTimestamp.toISOString(),
-        fetchedTransferCount: localEdges.length,
+        fetchedTransferCount: materialized.rows.length,
         fetchedPageCount: materialized.pageReadCount,
         oldestFetchedTransferAt: oldestRouteEdgeTimestamp(localEdges)?.toISOString() ?? null,
         reachedTargetHop: localComplete,

@@ -215,6 +215,7 @@ async function runCompleteTargetedWhereMaterializationScenario(input: {
     }))
   ];
   const targetedOffsets: number[] = [];
+  const targetedDirections: Array<"both" | undefined> = [];
   let completion: DeepForensicCompletionInput | undefined;
   const completeForensicCheckJob = vi.fn(async (input: DeepForensicCompletionInput) => {
     completion = input;
@@ -241,6 +242,7 @@ async function runCompleteTargetedWhereMaterializationScenario(input: {
     maxTimestamp: Date;
     limit: number;
     offset?: number;
+    direction?: "both";
   }) => {
     if (address === subject) {
       const offset = options.offset ?? 0;
@@ -249,6 +251,7 @@ async function runCompleteTargetedWhereMaterializationScenario(input: {
     if (address !== hopAddress) return [];
     if (options.maxTimestamp.getTime() === hopTimestamp.getTime() && options.offset !== undefined) {
       targetedOffsets.push(options.offset);
+      targetedDirections.push(options.direction);
       if (input.throwOnTargetedHopRead) throw new Error("local index unavailable");
     }
     const offset = options.offset ?? 0;
@@ -298,6 +301,7 @@ async function runCompleteTargetedWhereMaterializationScenario(input: {
     hopAddress,
     hopTimestamp,
     targetedOffsets,
+    targetedDirections,
     getAddressUsdtIndexState,
     listIndexedUsdtTransfersForAddress,
     liveProvider,
@@ -376,8 +380,8 @@ describe("deep forensic job runner", () => {
     const hopAddress = "THopLocalMaterialization11111111111111";
     const hopTimestamp = new Date("2026-05-20T12:00:00.000Z");
     const noiseRows = Array.from({ length: 150 }, (_, index) => indexedTransfer({
-      txHash: `tx-local-noise-${index}`,
-      eventIndex: index,
+      txHash: index < 2 ? "tx-local-duplicate-noise" : `tx-local-noise-${index}`,
+      eventIndex: index < 2 ? 0 : index,
       blockTimestamp: new Date(hopTimestamp.getTime() - (index + 1) * 1_000),
       fromAddress: hopAddress,
       toAddress: transit,
@@ -403,6 +407,7 @@ describe("deep forensic job runner", () => {
       requestKind: "broad_targeted"
     }));
     expect(result.targetedOffsets).toEqual([0, 150]);
+    expect(result.targetedDirections).toEqual(["both", "both"]);
     expect(result.liveProvider).not.toHaveBeenCalled();
     expect(result.queueAddressUsdtHistory).not.toHaveBeenCalled();
     expect(result.releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
@@ -424,6 +429,7 @@ describe("deep forensic job runner", () => {
     expect(report.originPaths.flatMap((path) => path.historyCoverage ?? [])).toEqual(expect.arrayContaining([
       expect.objectContaining({
         address: result.hopAddress,
+        fetchedTransferCount: 151,
         reachedTargetHop: true,
         coverageComplete: true,
         source: "local_index",
@@ -556,6 +562,59 @@ describe("deep forensic job runner", () => {
       score_blocked_reason: "local_index_read_failed",
       technical_status: "local_data_error"
     });
+  });
+
+  it("persists provider error when runner edge acquisition fails before balance selection", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      progressJson: { mode: "wallet_profile", requestedAmountRaw: "100000000" }
+    };
+    let completion: DeepForensicCompletionInput | undefined;
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob: async (input) => {
+        completion = input;
+        return true;
+      },
+      recordRiskEvaluation: async () => undefined,
+      listIndexedUsdtTransfersForAddress: async () => {
+        throw new Error("local index read unavailable");
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async () => {
+          throw new Error("503 provider temporarily unavailable");
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "100000000" : null
+      })
+    }, {
+      maxEdgesPerAddress: 1,
+      recentFallbackTransferLimit: 2
+    });
+
+    expect(handled).toBe(true);
+    expect(completion).toBeDefined();
+    const report = (completion!.resultJson as { whereIsMoneyReport: WhereIsMoneyReport }).whereIsMoneyReport;
+    expect(report).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "provider_error",
+      technicalStatus: "provider_error",
+      userDecision: "NO_FINAL_DECISION"
+    });
+    expect(completion!.resultJson).toMatchObject({
+      score_valid: false,
+      score_blocked_reason: "provider_error",
+      technical_status: "provider_error"
+    });
+    expect(report.assessment.warnings.join(" ")).toContain("technical");
   });
 
   it("waits for all-time subject indexing before strict Admin DeepCheck", async () => {

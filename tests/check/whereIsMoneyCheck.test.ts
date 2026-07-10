@@ -2144,10 +2144,8 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
-    expect(report.sourceProvenanceMateriality).toMatchObject({
-      outcome: "unresolved_source_with_hard_evidence",
-      hardEvidenceInUnresolved: true
-    });
+    expect(report.sourceProvenanceMateriality).toBeNull();
+    expect(report.decision).toBe("DECLINE");
     expect(broadTargets).toEqual([
       {
         address: victim,
@@ -3764,6 +3762,33 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decisionReasons.join(" ")).toContain("Current USDT balance is zero or unavailable");
     expect(report.decisionReasons.join(" ")).not.toContain("safe default");
     expect(report.assessment.warnings.join(" ")).toContain("technical");
+  });
+
+  it("returns technical review when recoverable provider edge fetch fails", async () => {
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async () => {
+        throw new Error("503 provider temporarily unavailable");
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "provider_error",
+      technicalStatus: "provider_error",
+      userDecision: "NO_FINAL_DECISION"
+    });
+    expect(report.assessment.warnings.join(" ")).toContain("technical");
+    expect(report.assessment.warnings.join(" ")).not.toContain("Covered history");
   });
 
   it("returns semantic review when covered history has no usable source", async () => {

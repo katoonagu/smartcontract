@@ -1456,17 +1456,32 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
   const role = walletRole({ hardBadEvidence, originPaths: input.originPaths, operationalScore });
   const topHardEvidence = hardBadEvidence[0] ?? null;
   const approvalWarnings = approvalDrainReviewWarnings(input.approvalDrainReviewFindings);
-  if (localMaterializationFailure && !topHardEvidence) {
-    const riskScore = clampScore(Math.max(
-      30,
-      Math.min(59, highestPathRisk(input.originPaths)),
-      Math.min(59, input.fastWalletRisk?.score ?? 0)
-    ));
+  const buildLockedHardEvidenceAssessment = (): WhereIsMoneyAssessment => {
+    if (!topHardEvidence) throw new Error("hard evidence is required");
+    const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
+    const precomputedRiskLayers = input.extraRiskLayers ?? [];
+    const extraSourcePolicyLayers = precomputedRiskLayers.filter((layer) => layer.evidenceClass === "source_policy");
+    const extraContractSuspicionLayers = precomputedRiskLayers.filter((layer) => layer.evidenceClass === "contract_suspicion");
+    const extraUnknownOriginLayers = precomputedRiskLayers.filter((layer) =>
+      layer.evidenceClass === "unknown_origin" || layer.evidenceClass === "data_quality"
+    );
+    const extraHardProofLayers = precomputedRiskLayers.filter((layer) => layer.evidenceClass === "hard_proof");
+    const extraContextLayers = precomputedRiskLayers.filter((layer) =>
+      layer.evidenceClass !== "source_policy" &&
+      layer.evidenceClass !== "contract_suspicion" &&
+      layer.evidenceClass !== "unknown_origin" &&
+      layer.evidenceClass !== "data_quality" &&
+      layer.evidenceClass !== "hard_proof"
+    );
     return {
-      decision: "REVIEW",
-      scoreValid: false,
-      scoreBlockedReason: localMaterializationFailure.scoreBlockedReason,
-      technicalStatus: localMaterializationFailure.technicalStatus,
+      decision: "DECLINE",
+      ...(localMaterializationFailure
+        ? {
+            scoreValid: false,
+            scoreBlockedReason: localMaterializationFailure.scoreBlockedReason,
+            technicalStatus: localMaterializationFailure.technicalStatus
+          }
+        : {}),
       riskScore,
       riskBand: riskBandFromWhereScore(riskScore),
       provenanceConfidence: provenanceScore,
@@ -1474,16 +1489,27 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
       walletRole: role,
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
-      hardBadEvidence: [],
-      sourcePolicyEvidence: [],
-      contractSuspicionEvidence: [],
-      unknownOriginEvidence: [],
-      riskLayers: [],
-      dominantRiskLayer: null,
-      reasons: [localMaterializationFailure.reason],
-      warnings: [localMaterializationFailure.warning, ...approvalWarnings]
+      hardBadEvidence,
+      ...buildRiskLayerCollections({
+        sourcePolicyEvidence: [],
+        sourcePolicyLayers: extraSourcePolicyLayers,
+        contractSuspicionEvidence: extraContractSuspicionLayers,
+        unknownOriginEvidence: extraUnknownOriginLayers,
+        behaviorContextLayers: extraContextLayers,
+        hardProofLayers: dedupeHardProofLayers([
+          ...hardBadEvidence.map(hardEvidenceToLayer),
+          ...extraHardProofLayers
+        ])
+      }),
+      reasons: [topHardEvidence.message],
+      warnings: [
+        ...(input.coverage.partial ? ["Coverage is partial; hard bad evidence takes priority."] : []),
+        ...(localMaterializationFailure ? [localMaterializationFailure.warning] : []),
+        ...approvalWarnings
+      ]
     };
-  }
+  };
+  const buildInterpretiveAssessment = (): WhereIsMoneyAssessment => {
   const sourceProvenanceMateriality = buildSourceProvenanceMaterialitySummary(input, hardBadEvidence);
   const extraSourcePolicyEvidence = input.extraSourcePolicyEvidence ?? [];
   const extraRiskLayers = input.extraRiskLayers ?? [];
@@ -1589,37 +1615,6 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
   const sourcePolicyAcceptableFloor = !sourcePolicyDecline
     ? sourcePolicyAssessment.sourcePolicyScore
     : 0;
-
-  if (topHardEvidence) {
-    const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
-    return {
-      decision: "DECLINE",
-      ...(localMaterializationFailure
-        ? {
-            scoreValid: false,
-            scoreBlockedReason: localMaterializationFailure.scoreBlockedReason,
-            technicalStatus: localMaterializationFailure.technicalStatus
-          }
-        : {}),
-      riskScore,
-      riskBand: riskBandFromWhereScore(riskScore),
-      provenanceConfidence: provenanceScore,
-      coverageCompleteness: coverageScore,
-      walletRole: role,
-      operationalLiquidityScore: operationalScore,
-      ageSignals: input.ageSignals ?? null,
-      hardBadEvidence,
-      ...defaultLayerCollections(),
-      sourceProvenanceMateriality,
-      reasons: [topHardEvidence.message],
-      warnings: [
-        ...(input.coverage.partial ? ["Coverage is partial; hard bad evidence takes priority."] : []),
-        ...(localMaterializationFailure ? [localMaterializationFailure.warning] : []),
-        ...approvalWarnings,
-        ...llmWarnings
-      ]
-    };
-  }
 
   const guardedDeclinePaths = input.originPaths.filter((path) =>
     (path.rootSourceType === "decline_boundary" ||
@@ -2173,6 +2168,42 @@ function buildMoneyOriginOperationalAssessmentInternal(input: BuildMoneyOriginOp
       ...llmWarnings
     ]
   };
+  };
+
+  if (topHardEvidence) {
+    return buildLockedHardEvidenceAssessment();
+  }
+
+  if (localMaterializationFailure) {
+    const riskScore = clampScore(Math.max(
+      30,
+      Math.min(59, highestPathRisk(input.originPaths)),
+      Math.min(59, input.fastWalletRisk?.score ?? 0)
+    ));
+    return {
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: localMaterializationFailure.scoreBlockedReason,
+      technicalStatus: localMaterializationFailure.technicalStatus,
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      sourcePolicyEvidence: [],
+      contractSuspicionEvidence: [],
+      unknownOriginEvidence: [],
+      riskLayers: [],
+      dominantRiskLayer: null,
+      reasons: [localMaterializationFailure.reason],
+      warnings: [localMaterializationFailure.warning, ...approvalWarnings]
+    };
+  }
+
+  return buildInterpretiveAssessment();
 }
 
 export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOperationalAssessmentInput): WhereIsMoneyAssessment {
