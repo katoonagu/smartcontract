@@ -2,7 +2,7 @@ import { Bot, type Context, type InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config";
 import { checkAddress, checkTransactionHash } from "../check/manualCheck";
 import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck";
-import type { SmartContractCheckReport } from "../check/smartContractCheck";
+import { mergeContractSafetyContext, type SmartContractCheckReport } from "../check/smartContractCheck";
 import { loadTheftReportTransfer } from "../check/theftReportTransaction";
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
@@ -194,9 +194,14 @@ type QueueAddressForensicJobInput = {
   windowStart?: Date;
   windowEnd?: Date;
   fastRiskSnapshot?: FastRiskSnapshot;
+  contractSafetyAnalysis?: ContractSafetyAnalysis;
   crossChainManualDeepMode?: boolean;
   locale?: BotLocale;
 };
+type ContractSafetyAnalysis =
+  | { status: "not_applicable" }
+  | { status: "completed"; report: SmartContractCheckReport }
+  | { status: "unavailable"; error: string | null };
 type SmartContractCheckOutcome =
   | { kind: "not_contract" }
   | { kind: "report"; report: SmartContractCheckReport }
@@ -1262,6 +1267,7 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
 type AddressCheckStartedOptions = {
   whereIsMoneyJob?: ForensicCheckJob | null;
   deepJob?: ForensicCheckJob | null;
+  contractSafetyAnalysis?: ContractSafetyAnalysis;
   runtimeLabel?: string;
   locale?: BotLocale;
 };
@@ -1343,8 +1349,15 @@ export function formatAddressCheckStarted(
   options: AddressCheckStartedOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  const analysis = options.contractSafetyAnalysis ?? { status: "not_applicable" };
+  const contractSafetyLine = analysis.status === "completed"
+    ? "Contract safety completed; transfer analysis continues and will produce the final decision."
+    : analysis.status === "unavailable"
+      ? "Contract safety unavailable; transfer analysis continues and the limitation is preserved."
+      : null;
   if (hasUnifiedFastHardEvidence(result.report)) {
-    return formatManualReport(result, options);
+    const message = formatManualReport(result, options);
+    return contractSafetyLine ? telegramHtmlMessage([message.text, contractSafetyLine]) : message;
   }
 
   const runningLines = locale === "en"
@@ -1366,6 +1379,7 @@ export function formatAddressCheckStarted(
     locale === "en"
       ? "Final risk appears after provenance analysis."
       : "Итоговый риск появится после анализа происхождения средств.",
+    contractSafetyLine,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -1499,22 +1513,6 @@ function normalizeSmartContractCheckOutcome(result: SmartContractCheckReturn): S
   if (!result) return { kind: "not_contract" };
   if ("kind" in result) return result;
   return { kind: "report", report: result };
-}
-
-function formatSmartContractCheckUnavailable(
-  address: string,
-  options: { runtimeLabel?: string; locale?: BotLocale; error?: string | null } = {}
-): TelegramHtmlMessage {
-  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  return telegramHtmlMessage([
-    bold(locale === "en" ? "Smart contract check unavailable" : "Проверка смарт-контракта недоступна"),
-    `${bold(locale === "en" ? "Contract address" : "Адрес контракта")}: ${code(address)}`,
-    locale === "en"
-      ? "The address may be a smart contract, but the contract-safety check failed. I did not run the regular wallet check to avoid a misleading result."
-      : "Адрес может быть смарт-контрактом, но проверка безопасности контракта не сработала. Обычную wallet-проверку я не запускаю, чтобы не дать вводящий в заблуждение результат.",
-    options.error ? `${bold(locale === "en" ? "Reason" : "Причина")}: ${escapeHtml(options.error)}` : null,
-    runtimeMarkerLine(options.runtimeLabel)
-  ].filter((line): line is string => Boolean(line)));
 }
 
 function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string; locale?: BotLocale } = {}): TelegramHtmlMessage {
@@ -3879,6 +3877,7 @@ async function replyWithCheck(
   }
 
   if (classified.kind === "tron_address") {
+    let contractSafetyAnalysis: ContractSafetyAnalysis = { status: "not_applicable" };
     if (options.checkSmartContractAddress) {
       const smartContractOutcome = normalizeSmartContractCheckOutcome(await options.checkSmartContractAddress({
         address: classified.value,
@@ -3889,16 +3888,9 @@ async function replyWithCheck(
         error: error instanceof Error ? error.message : String(error)
       })));
       if (smartContractOutcome.kind === "report") {
-        await sendMessage(ctx, formatSmartContractCheckReport(smartContractOutcome.report, { runtimeLabel: options.runtimeLabel, locale }));
-        return;
-      }
-      if (smartContractOutcome.kind === "unavailable") {
-        await sendMessage(ctx, formatSmartContractCheckUnavailable(classified.value, {
-          runtimeLabel: options.runtimeLabel,
-          locale,
-          error: smartContractOutcome.error
-        }));
-        return;
+        contractSafetyAnalysis = { status: "completed", report: smartContractOutcome.report };
+      } else if (smartContractOutcome.kind === "unavailable") {
+        contractSafetyAnalysis = { status: "unavailable", error: smartContractOutcome.error ?? null };
       }
     }
 
@@ -3907,6 +3899,9 @@ async function replyWithCheck(
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
     });
+    const fastResult = contractSafetyAnalysis.status === "completed"
+      ? { ...result, report: mergeContractSafetyContext(result.report, contractSafetyAnalysis.report) }
+      : result;
     const forensicWindowEnd = new Date();
     const forensicWindowStart = new Date(forensicWindowEnd.getTime() - ADDRESS_PROFILE_HISTORY_MS);
     const queueInput = {
@@ -3917,10 +3912,11 @@ async function replyWithCheck(
       windowStart: forensicWindowStart,
       windowEnd: forensicWindowEnd,
       fastRiskSnapshot: {
-        score: result.report.score,
-        level: result.report.level,
-        reasons: result.report.reasons
+        score: fastResult.report.score,
+        level: fastResult.report.level,
+        reasons: fastResult.report.reasons
       },
+      contractSafetyAnalysis,
       locale
     };
     const [whereJobResult, deepJobResult] = await Promise.allSettled([
@@ -3932,8 +3928,8 @@ async function replyWithCheck(
     const resultWindowStart = forensicWindowStart.toISOString();
     const resultWindowEnd = forensicWindowEnd.toISOString();
     await options.saveAddressFastCheckJob?.({
-      subjectAddress: result.subjectAddress,
-      status: result.missingChecks.length > 0 ? "partial" : "completed",
+      subjectAddress: fastResult.subjectAddress,
+      status: fastResult.missingChecks.length > 0 ? "partial" : "completed",
       windowStart: forensicWindowStart,
       windowEnd: forensicWindowEnd,
       chatId: queueInput.chatId,
@@ -3944,12 +3940,13 @@ async function replyWithCheck(
         ...(parsedInput.requestedAmountRaw ? { requestedAmountRaw: parsedInput.requestedAmountRaw } : {})
       },
       resultJson: {
-        subjectAddress: result.subjectAddress,
+        subjectAddress: fastResult.subjectAddress,
         windowStart: resultWindowStart,
         windowEnd: resultWindowEnd,
-        fastRiskReport: result.report,
-        fastCounterpartyTopsProfile: result.fastCounterpartyTopsProfile ?? {
-          subjectAddress: result.subjectAddress,
+        fastRiskReport: fastResult.report,
+        contractSafetyAnalysis,
+        fastCounterpartyTopsProfile: fastResult.fastCounterpartyTopsProfile ?? {
+          subjectAddress: fastResult.subjectAddress,
           windowStart: resultWindowStart,
           windowEnd: resultWindowEnd,
           incomingVolumeRaw: "0",
@@ -3961,14 +3958,14 @@ async function replyWithCheck(
           topServiceCounterparties: [],
           categoryBreakdown: []
         },
-        missingChecks: result.missingChecks,
+        missingChecks: fastResult.missingChecks,
         followUpJobs: {
           whereIsMoneyJobId: whereIsMoneyJob?.id ?? null,
           deepJobId: deepJob?.id ?? null
         }
       },
-      rawEvidenceIds: result.rawEvidence.map((evidence) => evidence.id),
-      observationIds: result.observations.map((observation) => observation.id),
+      rawEvidenceIds: fastResult.rawEvidence.map((evidence) => evidence.id),
+      observationIds: fastResult.observations.map((observation) => observation.id),
       lastError: null
     }).catch((error) => {
       console.error("Address fast check admin job save failed", error);
@@ -3976,7 +3973,7 @@ async function replyWithCheck(
     });
     await sendMessage(
       ctx,
-      formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }),
+      formatAddressCheckStarted(fastResult, { whereIsMoneyJob, deepJob, contractSafetyAnalysis, runtimeLabel: options.runtimeLabel, locale }),
       addressCheckResultKeyboard(classified.value, locale)
     );
     return;
@@ -4347,6 +4344,7 @@ export function createBot(
         } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
+        ...(input.contractSafetyAnalysis ? { contractSafetyAnalysis: input.contractSafetyAnalysis } : {}),
         ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
         ...(input.seedTransfers ? { seedTransfers: input.seedTransfers } : {}),
         ...(input.crossChainManualDeepMode ? { crossChainManualDeepMode: true } : {}),

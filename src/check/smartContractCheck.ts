@@ -10,6 +10,7 @@ import type {
   ContractLlmVerdictSummary,
   ExchangeDecision,
   RiskLevel,
+  RiskReport,
   StandaloneContractApprovalContext
 } from "../types";
 
@@ -55,6 +56,30 @@ export type CheckSmartContractAddressInput = {
   relatedApprovals: WalletApprovalSpenderRelation[];
   analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
 };
+
+export function mergeContractSafetyContext(
+  fastReport: RiskReport,
+  contractReport: SmartContractCheckReport
+): RiskReport {
+  const contextScore = Math.min(59, Math.max(0, contractReport.riskScore));
+  return {
+    ...fastReport,
+    score: Math.max(fastReport.score, contextScore),
+    level: contextScore >= 30 && fastReport.level === "LOW" ? "MEDIUM" : fastReport.level,
+    reasons: [
+      ...fastReport.reasons,
+      ...contractReport.reasons.map((reason) => ({
+        code: `contract_safety_${reason}`,
+        message: `Contract safety context: ${reason}`,
+        scoreImpact: contextScore,
+        source: "contract_safety",
+        confidence: "medium" as const,
+        severity: contextScore >= 45 ? "medium" as const : "low" as const,
+        evidenceRef: `contract_safety:${contractReport.subjectAddress}:${reason}`
+      }))
+    ]
+  };
+}
 
 const EXACT_DRAIN_NOT_PROVEN = "exact_drain_not_proven_in_standalone_check";
 const STANDALONE_CONTRACT_POLICY_VERSION = "2026-06-01-standalone-contract-check-v1";

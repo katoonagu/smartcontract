@@ -2358,64 +2358,88 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("where-crossbridge-job-1");
   });
 
-  it("routes contract address checks to the smart contract report", async () => {
+  it("runs contract safety Fast Where and Deep for a contract address", async () => {
+    const queued: string[] = [];
+    const queuedAnalyses: unknown[] = [];
+    const queuedSnapshots: unknown[] = [];
+    const saved: Array<Record<string, unknown>> = [];
     const { bot, calls } = await createSmokeBot({
-      checkSmartContractAddress: async () => smartContractReportForTest()
-    });
-
-    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
-
-    const sentText = lastPlainText(calls);
-    expect(sentText).toContain("Smart contract check");
-    expect(sentText).toContain(`Contract address: ${walletAddress}`);
-    expect(sentText).toContain("Decision: DECLINE");
-  });
-
-  it("does not queue where-is-money or deep forensic jobs for contract address checks", async () => {
-    let whereQueueCalls = 0;
-    let deepQueueCalls = 0;
-    const { bot } = await createSmokeBot({
       checkSmartContractAddress: async () => smartContractReportForTest(),
-      queueWhereIsMoneyJob: async () => {
-        whereQueueCalls += 1;
-        throw new Error("should not queue where-is-money for contract address");
+      queueWhereIsMoneyJob: async (input) => {
+        queued.push("where");
+        queuedAnalyses.push(input.contractSafetyAnalysis);
+        queuedSnapshots.push(input.fastRiskSnapshot);
+        return whereIsMoneyJobForTest({ id: "where-contract" });
       },
-      queueDeepForensicJob: async () => {
-        deepQueueCalls += 1;
-        throw new Error("should not queue deep forensic for contract address");
+      queueDeepForensicJob: async (input) => {
+        queued.push("deep");
+        queuedAnalyses.push(input.contractSafetyAnalysis);
+        queuedSnapshots.push(input.fastRiskSnapshot);
+        return whereIsMoneyJobForTest({ id: "deep-contract", kind: "address_deep_check" });
+      },
+      saveAddressFastCheckJob: async (input) => {
+        saved.push(input.resultJson);
+        return whereIsMoneyJobForTest({ id: "fast-contract", kind: "address_fast_check" });
       }
     });
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
-    expect(whereQueueCalls).toBe(0);
-    expect(deepQueueCalls).toBe(0);
+    expect(queued).toEqual(["where", "deep"]);
+    expect(queuedAnalyses).toEqual([
+      expect.objectContaining({ status: "completed", report: expect.objectContaining({ subjectAddress: walletAddress }) }),
+      expect.objectContaining({ status: "completed", report: expect.objectContaining({ subjectAddress: walletAddress }) })
+    ]);
+    expect(queuedSnapshots).toEqual([
+      expect.objectContaining({ score: 59, level: "MEDIUM", reasons: expect.arrayContaining([expect.objectContaining({ code: "contract_safety_address_is_smart_contract" })]) }),
+      expect.objectContaining({ score: 59, level: "MEDIUM", reasons: expect.arrayContaining([expect.objectContaining({ code: "contract_safety_address_is_smart_contract" })]) })
+    ]);
+    expect(saved[0]).toMatchObject({
+      fastRiskReport: expect.objectContaining({ score: 59, level: "MEDIUM" }),
+      contractSafetyAnalysis: {
+        status: "completed",
+        report: expect.objectContaining({ subjectAddress: walletAddress })
+      }
+    });
+    expect(lastPlainText(calls)).toContain("transfer analysis continues");
   });
 
-  it("does not fall back to the normal wallet check when smart contract checking fails", async () => {
-    let whereQueueCalls = 0;
-    let deepQueueCalls = 0;
+  it("continues Fast Where and Deep when contract safety is unavailable", async () => {
+    let queueCalls = 0;
+    const queuedAnalyses: unknown[] = [];
+    const saved: Array<Record<string, unknown>> = [];
     const { bot, calls } = await createSmokeBot({
       checkSmartContractAddress: async () => {
-        throw new Error("approval relation lookup failed");
+        throw new Error("contract metadata unavailable");
       },
-      queueWhereIsMoneyJob: async () => {
-        whereQueueCalls += 1;
-        throw new Error("should not queue where-is-money after contract check failure");
+      queueWhereIsMoneyJob: async (input) => {
+        queueCalls += 1;
+        queuedAnalyses.push(input.contractSafetyAnalysis);
+        return whereIsMoneyJobForTest({ id: "where-unavailable" });
       },
-      queueDeepForensicJob: async () => {
-        deepQueueCalls += 1;
-        throw new Error("should not queue deep forensic after contract check failure");
+      queueDeepForensicJob: async (input) => {
+        queueCalls += 1;
+        queuedAnalyses.push(input.contractSafetyAnalysis);
+        return whereIsMoneyJobForTest({ id: "deep-unavailable", kind: "address_deep_check" });
+      },
+      saveAddressFastCheckJob: async (input) => {
+        saved.push(input.resultJson);
+        return whereIsMoneyJobForTest({ id: "fast-unavailable", kind: "address_fast_check" });
       }
     });
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
-    const sentText = lastPlainText(calls);
-    expect(sentText).toContain("Smart contract check unavailable");
-    expect(sentText).toContain("approval relation lookup failed");
-    expect(whereQueueCalls).toBe(0);
-    expect(deepQueueCalls).toBe(0);
+    expect(queueCalls).toBe(2);
+    expect(queuedAnalyses).toEqual([
+      { status: "unavailable", error: "contract metadata unavailable" },
+      { status: "unavailable", error: "contract metadata unavailable" }
+    ]);
+    expect(saved[0]).toMatchObject({
+      contractSafetyAnalysis: { status: "unavailable", error: "contract metadata unavailable" }
+    });
+    expect(lastPlainText(calls)).toContain("Contract safety unavailable");
+    expect(lastPlainText(calls)).toContain("transfer analysis continues");
   });
 
   it("still queues where-is-money and deep forensic jobs for normal EOA address checks", async () => {

@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildStandaloneContractAnalysisCaseFile,
   checkSmartContractAddress,
-  evaluateSmartContractAddress
+  evaluateSmartContractAddress,
+  mergeContractSafetyContext
 } from "../../src/check/smartContractCheck";
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
-import type { ContractAnalysisCaseFile, ContractLlmVerdictSummary, ServiceClassification } from "../../src/types";
+import type { ContractAnalysisCaseFile, ContractLlmVerdictSummary, RiskReport, ServiceClassification } from "../../src/types";
 
 const subjectAddress = "TContract11111111111111111111111111111";
 
@@ -130,6 +131,97 @@ function service(category: ServiceClassification["category"], identity: string |
     isBoundary: category !== "none"
   };
 }
+
+function contractSafetyReportForMerge(overrides: Partial<ReturnType<typeof evaluateSmartContractAddress>> = {}) {
+  return {
+    ...evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      relatedApprovals: []
+    }),
+    ...overrides
+  };
+}
+
+describe("merge contract safety context", () => {
+  it("caps standalone contract safety below the decline threshold", () => {
+    const fastReport: RiskReport = {
+      subjectAddress,
+      level: "LOW",
+      score: 0,
+      reasons: []
+    };
+
+    const merged = mergeContractSafetyContext(
+      fastReport,
+      contractSafetyReportForMerge({ riskScore: 90, reasons: ["provider_risk_contract"] })
+    );
+
+    expect(merged).toMatchObject({ score: 59, level: "MEDIUM" });
+    expect(merged.reasons).toEqual([
+      expect.objectContaining({
+        code: "contract_safety_provider_risk_contract",
+        scoreImpact: 59,
+        source: "contract_safety",
+        confidence: "medium",
+        severity: "medium",
+        evidenceRef: `contract_safety:${subjectAddress}:provider_risk_contract`
+      })
+    ]);
+  });
+
+  it("raises a low Fast level to medium at contract context score 30", () => {
+    const merged = mergeContractSafetyContext(
+      { subjectAddress, level: "LOW", score: 12, reasons: [] },
+      contractSafetyReportForMerge({ riskScore: 30, reasons: ["unknown_weak_contract_metadata"] })
+    );
+
+    expect(merged.score).toBe(30);
+    expect(merged.level).toBe("MEDIUM");
+  });
+
+  it("preserves an existing higher Fast score, level, and reasons", () => {
+    const existingReason: RiskReport["reasons"][number] = {
+      code: "stablecoin_usdt_blacklisted",
+      message: "Exact hard evidence",
+      scoreImpact: 90,
+      source: "stablecoin_contract",
+      confidence: "high",
+      severity: "critical",
+      evidenceRef: "usdt:blacklist"
+    };
+    const merged = mergeContractSafetyContext(
+      { subjectAddress, level: "CRITICAL", score: 90, reasons: [existingReason] },
+      contractSafetyReportForMerge({ riskScore: 45, reasons: ["active_unlimited_usdt_approval_spender"] })
+    );
+
+    expect(merged.score).toBe(90);
+    expect(merged.level).toBe("CRITICAL");
+    expect(merged.reasons[0]).toEqual(existingReason);
+    expect(merged.reasons[1]).toMatchObject({ code: "contract_safety_active_unlimited_usdt_approval_spender" });
+  });
+
+  it("handles empty contract reasons without mutating either report", () => {
+    const fastReport: RiskReport = {
+      subjectAddress,
+      level: "LOW",
+      score: 10,
+      reasons: []
+    };
+    const contractReport = contractSafetyReportForMerge({ riskScore: -20, reasons: [] });
+    const fastBefore = structuredClone(fastReport);
+    const contractBefore = structuredClone(contractReport);
+
+    const merged = mergeContractSafetyContext(fastReport, contractReport);
+
+    expect(merged).not.toBe(fastReport);
+    expect(merged).toEqual(fastReport);
+    expect(merged.reasons).not.toBe(fastReport.reasons);
+    expect(fastReport).toEqual(fastBefore);
+    expect(contractReport).toEqual(contractBefore);
+  });
+});
 
 describe("smart contract check", () => {
   it("declines a TNKG-style unverified active unlimited approval spender without exact drain proof", () => {
