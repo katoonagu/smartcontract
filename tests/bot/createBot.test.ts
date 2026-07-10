@@ -1448,6 +1448,53 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Pro
   }
 }
 
+function createQueuedForensicJobCaptureDb(defaultLocale: BotLocale = "en"): {
+  db: Db;
+  progressByKind: Map<ForensicCheckJob["kind"], Record<string, unknown>>;
+} {
+  const baseDb = createFakeDb(defaultLocale);
+  const progressByKind = new Map<ForensicCheckJob["kind"], Record<string, unknown>>();
+  const db = {
+    async connect() {
+      return baseDb.connect();
+    },
+    async query(sql: string, params: unknown[] = []) {
+      if (sql.includes("insert into forensic_check_jobs") && sql.includes("'queued'")) {
+        const kind = String(params[1]) as ForensicCheckJob["kind"];
+        const progressJson = params[9] as Record<string, unknown>;
+        progressByKind.set(kind, progressJson);
+        const now = new Date("2026-05-24T00:00:00.000Z");
+        return {
+          rows: [{
+            id: params[0],
+            kind,
+            subject_address: params[2],
+            status: "queued",
+            window_start: params[3],
+            window_end: params[4],
+            priority: params[5],
+            chat_id: params[6],
+            message_id: params[7],
+            requested_by: params[8],
+            progress_json: progressJson,
+            result_json: {},
+            raw_evidence_ids: [],
+            observation_ids: [],
+            last_error: null,
+            created_at: now,
+            updated_at: now,
+            started_at: null,
+            completed_at: null
+          }],
+          rowCount: 1
+        };
+      }
+      return baseDb.query(sql, params);
+    }
+  } as unknown as Db;
+  return { db, progressByKind };
+}
+
 async function createSmokeBot(options: {
   failAnswerCallbackQuery?: boolean;
   addressRiskSignals?: (address: string) => Promise<any>;
@@ -1461,12 +1508,13 @@ async function createSmokeBot(options: {
   tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
+  db?: Db;
 } = {}) {
   const config = {
     ...createConfig(),
     runtimeInstanceLabel: options.runtimeInstanceLabel
   };
-  const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), options.tronClient ?? createTronClient(), {
+  const bot = createBot(config, options.db ?? createFakeDb(options.defaultLocale ?? "en"), options.tronClient ?? createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     checkSmartContractAddress: options.checkSmartContractAddress,
     queueDeepForensicJob: options.queueDeepForensicJob,
@@ -2442,65 +2490,92 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("transfer analysis continues");
   });
 
-  it("still queues where-is-money and deep forensic jobs for normal EOA address checks", async () => {
-    let whereQueueCalls = 0;
-    let deepQueueCalls = 0;
+  it("persists completed contract safety and merged Fast context in default Where and Deep queue progress", async () => {
+    const { db, progressByKind } = createQueuedForensicJobCaptureDb();
+    const report = smartContractReportForTest();
     const { bot } = await createSmokeBot({
-      checkSmartContractAddress: async () => null,
-      queueWhereIsMoneyJob: async (input) => {
-        whereQueueCalls += 1;
-        return {
-          id: "where-eoa-job",
-          kind: "where_is_money_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
-          priority: 120,
-          chatId: input.chatId,
-          messageId: null,
-          requestedBy: input.requestedBy,
-          progressJson: {},
-          resultJson: {},
-          rawEvidenceIds: [],
-          observationIds: [],
-          lastError: null,
-          createdAt: new Date("2026-05-24T00:00:00.000Z"),
-          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
-          startedAt: null,
-          completedAt: null
-        };
-      },
-      queueDeepForensicJob: async (input) => {
-        deepQueueCalls += 1;
-        return {
-          id: "deep-eoa-job",
-          kind: "address_deep_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
-          priority: 100,
-          chatId: input.chatId,
-          messageId: null,
-          requestedBy: input.requestedBy,
-          progressJson: {},
-          resultJson: {},
-          rawEvidenceIds: [],
-          observationIds: [],
-          lastError: null,
-          createdAt: new Date("2026-05-24T00:00:00.000Z"),
-          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
-          startedAt: null,
-          completedAt: null
-        };
+      db,
+      checkSmartContractAddress: async () => report
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect([...progressByKind.keys()].sort()).toEqual(["address_deep_check", "where_is_money_check"]);
+    for (const kind of ["where_is_money_check", "address_deep_check"] as const) {
+      const progress = progressByKind.get(kind);
+      expect(progress?.contractSafetyAnalysis).toEqual({ status: "completed", report });
+      expect(progress?.fastRiskSnapshot).toMatchObject({
+        score: 59,
+        level: "MEDIUM",
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ code: "contract_safety_address_is_smart_contract" })
+        ])
+      });
+    }
+  });
+
+  it("preserves contract safety errors in default Where and Deep queue progress", async () => {
+    const { db, progressByKind } = createQueuedForensicJobCaptureDb();
+    const { bot } = await createSmokeBot({
+      db,
+      checkSmartContractAddress: async () => {
+        throw new Error("contract metadata unavailable");
       }
     });
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
-    expect(whereQueueCalls).toBe(1);
-    expect(deepQueueCalls).toBe(1);
+    expect([...progressByKind.keys()].sort()).toEqual(["address_deep_check", "where_is_money_check"]);
+    for (const kind of ["where_is_money_check", "address_deep_check"] as const) {
+      const progress = progressByKind.get(kind);
+      expect(progress?.contractSafetyAnalysis).toEqual({
+        status: "unavailable",
+        error: "contract metadata unavailable"
+      });
+      expect(progress?.fastRiskSnapshot).toEqual({ score: 0, level: "LOW", reasons: [] });
+    }
+  });
+
+  it("keeps ordinary Fast, Where, and Deep behavior unchanged when contract safety is not applicable", async () => {
+    const queued: string[] = [];
+    const queuedAnalyses: unknown[] = [];
+    const queuedSnapshots: unknown[] = [];
+    const saved: Array<Record<string, unknown>> = [];
+    const { bot, calls } = await createSmokeBot({
+      checkSmartContractAddress: async () => null,
+      queueWhereIsMoneyJob: async (input) => {
+        queued.push("where");
+        queuedAnalyses.push(input.contractSafetyAnalysis);
+        queuedSnapshots.push(input.fastRiskSnapshot);
+        return whereIsMoneyJobForTest({ id: "where-eoa-job" });
+      },
+      queueDeepForensicJob: async (input) => {
+        queued.push("deep");
+        queuedAnalyses.push(input.contractSafetyAnalysis);
+        queuedSnapshots.push(input.fastRiskSnapshot);
+        return whereIsMoneyJobForTest({ id: "deep-eoa-job", kind: "address_deep_check" });
+      },
+      saveAddressFastCheckJob: async (input) => {
+        saved.push(input.resultJson);
+        return whereIsMoneyJobForTest({ id: "fast-eoa-job", kind: "address_fast_check" });
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(queued).toEqual(["where", "deep"]);
+    expect(queuedAnalyses).toEqual([{ status: "not_applicable" }, { status: "not_applicable" }]);
+    expect(queuedSnapshots).toEqual([
+      { score: 0, level: "LOW", reasons: [] },
+      { score: 0, level: "LOW", reasons: [] }
+    ]);
+    expect(saved[0]).toMatchObject({
+      fastRiskReport: { score: 0, level: "LOW", reasons: [] },
+      contractSafetyAnalysis: { status: "not_applicable" }
+    });
+    const text = lastPlainText(calls);
+    expect(text).not.toContain("Contract safety completed;");
+    expect(text).not.toContain("Contract safety unavailable;");
   });
 
   it("passes fast risk reasons into queued address forensic jobs", async () => {

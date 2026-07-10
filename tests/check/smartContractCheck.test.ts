@@ -162,6 +162,7 @@ describe("merge contract safety context", () => {
     expect(merged.reasons).toEqual([
       expect.objectContaining({
         code: "contract_safety_provider_risk_contract",
+        message: "Contract safety context: provider_risk_contract",
         scoreImpact: 59,
         source: "contract_safety",
         confidence: "medium",
@@ -169,6 +170,28 @@ describe("merge contract safety context", () => {
         evidenceRef: `contract_safety:${subjectAddress}:provider_risk_contract`
       })
     ]);
+  });
+
+  it.each([
+    { riskScore: 44, severity: "low" as const },
+    { riskScore: 45, severity: "medium" as const }
+  ])("uses $severity severity at bounded contract context score $riskScore", ({ riskScore, severity }) => {
+    const reason = "unknown_weak_contract_metadata";
+    const merged = mergeContractSafetyContext(
+      { subjectAddress, level: "LOW", score: 0, reasons: [] },
+      contractSafetyReportForMerge({ riskScore, reasons: [reason] })
+    );
+
+    expect(merged).toMatchObject({ score: riskScore, level: "MEDIUM" });
+    expect(merged.reasons).toEqual([{
+      code: `contract_safety_${reason}`,
+      message: `Contract safety context: ${reason}`,
+      scoreImpact: riskScore,
+      source: "contract_safety",
+      confidence: "medium",
+      severity,
+      evidenceRef: `contract_safety:${subjectAddress}:${reason}`
+    }]);
   });
 
   it("raises a low Fast level to medium at contract context score 30", () => {
