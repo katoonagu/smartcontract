@@ -132,6 +132,61 @@ function whereReport(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyR
   };
 }
 
+function originPath(txHashes: string[]): WhereIsMoneyReport["originPaths"][number] {
+  return {
+    balanceTransferTxHash: txHashes[0] ?? "missing-path-tx",
+    rootSourceAddress: "TOriginSource11111111111111111111111",
+    rootSourceType: "incomplete",
+    pathAddresses: ["TOriginSource11111111111111111111111", address],
+    txHashes,
+    steps: [],
+    amountPreservationRatio: 1,
+    timeSpanMs: null,
+    stoppedReason: "incoming_history_not_fetched",
+    verdict: "REVIEW",
+    riskScoreContribution: 45,
+    reasons: ["Transaction-seeded provenance path."]
+  };
+}
+
+function deepReportWithExactPaths(
+  paths: Array<{ txHash: string; label: "scam" | "whitebit" }>
+): DeepAddressForensicReport {
+  return deepReport({
+    extendedProvenanceProfiles: [{
+      subjectAddress: address,
+      direction: "inbound",
+      maxDepth: 2,
+      paths: paths.map(({ txHash, label }) => ({
+        direction: "inbound",
+        depth: 2,
+        pathAddresses: ["TExtendedSource111111111111111111111", address],
+        txHashes: [txHash],
+        amountRaw: "100000000",
+        amountPreservationRatio: 1,
+        firstTransferAt: "2026-05-01T00:00:00.000Z",
+        lastTransferAt: "2026-05-01T00:00:01.000Z",
+        label,
+        labelAddress: "TExtendedSource111111111111111111111",
+        boundaryCategory: null,
+        evidenceStrength: "exact_labeled_path",
+        candidateScore: 95,
+        features: []
+      })),
+      matchedVolumeRaw: "100000000",
+      matchedVolumeRatio: 1,
+      score: 95,
+      features: [],
+      coverage: {
+        expandedAddresses: 1,
+        fetchedAddressCount: 1,
+        stoppedReasons: [],
+        maxDepthReached: 2
+      }
+    }]
+  });
+}
+
 const walletContext = (subjectAddress = address): MatrixCandidateContext => ({
   decisionScope: "wallet_unified",
   subjectAddress,
@@ -354,6 +409,171 @@ describe("scoring signal matrix input mappers", () => {
     expect(Object.values(scored.riskVector).flat().some((item) =>
       item.atomicSignals.includes("deep_high_risk_extended_provenance") && item.evidenceClass === "context"
     )).toBe(true);
+  });
+
+  it("accepts exact Deep evidence joined through a proved transaction-seeded Where path", () => {
+    const txHash = "incoming-deposit-linked";
+    const upstreamTxHash = "deep-upstream-linked";
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: deepReportWithExactPaths([{ txHash: upstreamTxHash, label: "scam" }]),
+      whereReport: whereReport({
+        subjectAddress: address,
+        originPaths: [originPath([txHash, upstreamTxHash])]
+      })
+    });
+    const scored = scoreMatrixCandidates(candidates, incomingContext(address, txHash));
+
+    expect(scored.riskVector.hard_proof ?? []).toContainEqual(expect.objectContaining({
+      evidenceClass: "exact_hard",
+      proofLevel: "exact",
+      evidenceIds: [upstreamTxHash]
+    }));
+  });
+
+  it("keeps only transaction-linked exact Deep source-policy paths authoritative for Incoming", () => {
+    const txHash = "incoming-policy-deposit";
+    const linkedTxHash = "deep-whitebit-linked";
+    const unrelatedTxHash = "deep-whitebit-unrelated";
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: deepReportWithExactPaths([
+        { txHash: linkedTxHash, label: "whitebit" },
+        { txHash: unrelatedTxHash, label: "whitebit" }
+      ]),
+      whereReport: whereReport({
+        subjectAddress: address,
+        originPaths: [originPath([txHash, linkedTxHash])]
+      })
+    });
+
+    expect(candidates.find((item) => item.evidenceIds.includes(linkedTxHash))?.authority).toMatchObject({
+      kind: "policy",
+      decisionEligibility: "can_decline"
+    });
+    expect(candidates.find((item) => item.evidenceIds.includes(unrelatedTxHash))).toMatchObject({
+      row: "counterparty_context",
+      authority: { kind: "context" }
+    });
+  });
+
+  it("matches exact Where proof levels to their evidence kind", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({
+        proofLevel: "exact_approval_drain_provenance",
+        assessment: {
+          ...whereReport().assessment,
+          hardBadEvidence: [
+            { kind: "approval_drain", score: 95, message: "Exact approval drain.", evidenceIds: ["where-approval"] },
+            { kind: "sanctioned_service", score: 90, message: "Sanctioned service.", evidenceIds: ["where-sanction"] },
+            { kind: "scam_or_blacklist", score: 90, message: "Scam context.", evidenceIds: ["where-scam"] }
+          ]
+        }
+      })
+    });
+
+    expect(candidates.find((item) => item.evidenceIds.includes("where-approval"))?.authority).toEqual({
+      kind: "exact_hard",
+      proofSource: "where_exact_hard"
+    });
+    expect(candidates.find((item) => item.evidenceIds.includes("where-sanction"))?.authority).toMatchObject({
+      kind: "policy",
+      decisionEligibility: "can_decline"
+    });
+    expect(candidates.find((item) => item.evidenceIds.includes("where-scam"))?.authority).toEqual({ kind: "context" });
+  });
+
+  it("admits only deposit-path-linked evidence from a mismatched transaction-seeded Where report", () => {
+    const txHash = "incoming-mismatched-deposit";
+    const linkedPolicyTx = "where-linked-policy";
+    const unrelatedPolicyTx = "where-unrelated-policy";
+    const unrelatedRiskTx = "where-unrelated-risk";
+    const unrelatedHardTx = "where-unrelated-hard";
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress: address,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({
+        subjectAddress: "TOtherIncomingWhereSubject",
+        originPaths: [originPath([txHash, linkedPolicyTx])],
+        assessment: {
+          ...whereReport().assessment,
+          hardBadEvidence: [{
+            kind: "scam_or_blacklist",
+            score: 90,
+            message: "Unrelated hard evidence.",
+            evidenceIds: [unrelatedHardTx]
+          }],
+          sourcePolicyEvidence: [linkedPolicyTx, unrelatedPolicyTx].map((evidenceId) => ({
+            kind: "whitebit" as const,
+            aggregateShare: 0.8,
+            effectiveShare: 0.8,
+            pathCount: 1,
+            score: 80,
+            riskBand: "HIGH" as const,
+            proofLevel: "exchange_policy_decline" as const,
+            canBeDampened: false,
+            reasons: ["Source-policy evidence."],
+            warnings: [],
+            evidenceIds: [evidenceId]
+          })),
+          riskLayers: [{
+            evidenceClass: "source_policy",
+            kind: "whitebit",
+            sourceExposureKind: "whitebit",
+            score: 80,
+            rawScore: 80,
+            adjustedScore: 80,
+            proofLevel: "exchange_policy_decline",
+            canBeDampened: false,
+            reasons: ["Unrelated aggregate risk layer."],
+            warnings: [],
+            evidenceIds: [unrelatedRiskTx]
+          }]
+        },
+        coverage: {
+          ...whereReport().coverage,
+          drainEpisode: {
+            anchorTxHash: "where-unrelated-drain-anchor",
+            fundingTxHash: "where-unrelated-drain-funding",
+            fundingAmountRaw: "1885262475832",
+            fundingTimestamp: "2026-05-05T13:31:30.000Z",
+            startTimestamp: "2026-05-05T13:39:09.000Z",
+            endTimestamp: "2026-05-05T15:00:30.000Z",
+            episodeOutgoingRaw: "1885347470000",
+            episodeSelectedRaw: "135300000000",
+            episodeCoverageRatio: 0.071763,
+            outgoingTxHashes: ["where-unrelated-drain-out"],
+            bridgeOutgoingRaw: "1885347470000",
+            bridgeOutgoingShare: 1
+          }
+        }
+      })
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      evidenceIds: [linkedPolicyTx],
+      authority: expect.objectContaining({ kind: "policy" })
+    }));
+    expect(candidates).toContainEqual(expect.objectContaining({
+      evidenceIds: ["coverage:where_subject_mismatch"],
+      authority: { kind: "coverage", coverageDependency: "deposit_provenance" }
+    }));
+    expect(candidates.some((item) => item.evidenceIds.includes(unrelatedPolicyTx))).toBe(false);
+    expect(candidates.some((item) => item.evidenceIds.includes(unrelatedRiskTx))).toBe(false);
+    expect(candidates.some((item) => item.evidenceIds.includes(unrelatedHardTx))).toBe(false);
+    expect(candidates.some((item) => item.atomicSignals.includes("where_drain_episode_transit_pattern"))).toBe(false);
   });
 
   it("turns a Where subject mismatch into coverage evidence", () => {
