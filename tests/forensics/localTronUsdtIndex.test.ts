@@ -139,6 +139,22 @@ describe("materializeIndexedTransferWindow", () => {
     })).rejects.toThrow("proof failed");
   });
 
+  it("rejects pages longer than the requested limit before materializing them", async () => {
+    await expect(materializeIndexedTransferWindow({
+      ...base,
+      maxRows: 2,
+      readPage: async () => [1, 2, 3],
+      onPage: () => { throw new Error("oversized page reached onPage"); }
+    })).rejects.toThrow("readPage must return an array no longer than the requested limit");
+  });
+
+  it("rejects non-array page results as contract errors", async () => {
+    await expect(materializeIndexedTransferWindow<number>({
+      ...base,
+      readPage: async () => ({ length: 0 } as unknown as number[])
+    })).rejects.toThrow("readPage must return an array no longer than the requested limit");
+  });
+
   it.each([{ pageSize: 0, maxRows: 1 }, { pageSize: 1, maxRows: 0 }])("rejects invalid limits %#", async (limits) => {
     await expect(materializeIndexedTransferWindow({ ...base, ...limits, readPage: async () => [] }))
       .rejects.toThrow("pageSize and maxRows must be positive integers");

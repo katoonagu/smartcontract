@@ -47,21 +47,23 @@ export async function materializeIndexedTransferWindow<T>(input: {
   const rows: T[] = [];
   let pageReadCount = 0;
   const read = async (limit: number, offset: number): Promise<{ page: T[]; error: null } | { page: null; error: string }> => {
+    let page: T[];
     try {
-      return {
-        page: await input.readPage(input.address, {
-          minTimestamp: input.minTimestamp,
-          maxTimestamp: input.maxTimestamp,
-          limit,
-          offset,
-          orderBy: "newest",
-          direction: "both"
-        }),
-        error: null
-      };
+      page = await input.readPage(input.address, {
+        minTimestamp: input.minTimestamp,
+        maxTimestamp: input.maxTimestamp,
+        limit,
+        offset,
+        orderBy: "newest",
+        direction: "both"
+      });
     } catch (error) {
       return { page: null, error: error instanceof Error ? error.message : String(error) };
     }
+    if (!Array.isArray(page) || page.length > limit) {
+      throw new Error("readPage must return an array no longer than the requested limit");
+    }
+    return { page, error: null };
   };
   const failed = (error: string): LocalIndexMaterialization<T> => ({
     rows,
