@@ -1673,6 +1673,14 @@ export async function buildIncomingDepositReport(
       });
       return edges;
     }
+    const locallyMaterializedEdges = edgeCache.get(cacheKey);
+    if (
+      locallyMaterializedEdges &&
+      targetedEdgeCacheKeys.has(cacheKey) &&
+      historyCoverageCache.get(cacheKey)?.localMaterializationStatus != null
+    ) {
+      return locallyMaterializedEdges;
+    }
     const broadTargetedHistoryDeferred = requestedBroadTargetedDefer;
     const targetedEnsureSucceeded = broadTargetedHistoryDeferred
       ? false
