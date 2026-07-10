@@ -149,6 +149,7 @@ describe("extractGasFreeSettlement", () => {
       ["non-zero token address padding", replaceWord(data, 0, `01${data.slice(8 + 2, 8 + 64)}`)],
       ["non-zero user address padding", replaceWord(data, 1, `01${data.slice(8 + 64 + 2, 8 + 64 * 2)}`)],
       ["non-zero receiver address padding", replaceWord(data, 2, `01${data.slice(8 + 64 * 2 + 2, 8 + 64 * 3)}`)],
+      ["five-word calldata prefix", data.slice(0, 8 + 64 * 5)],
       ["missing dynamic tail", data.slice(0, 8 + 64 * 9)],
       ["truncated dynamic tail", data.slice(0, -2)],
       ["stray trailing byte", `${data}00`],
