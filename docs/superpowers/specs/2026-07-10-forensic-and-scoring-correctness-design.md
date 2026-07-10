@@ -1,7 +1,7 @@
 # Forensic and Scoring Correctness Design
 
 Date: 2026-07-10
-Status: approved in brainstorming; pending written-spec review
+Status: approved; implementation tracked by `docs/superpowers/plans/2026-07-10-forensic-and-scoring-correctness.md`
 
 ## Purpose
 
