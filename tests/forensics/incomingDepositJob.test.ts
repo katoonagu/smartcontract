@@ -203,6 +203,7 @@ async function runCompleteIncomingTargetedMaterializationScenario(input: {
   localIndexMaterializationMaxRows?: number;
   amountRaw?: string;
   coveringStateOnly?: boolean;
+  senderBlacklisted?: boolean;
 }) {
   const hub = "TIncomingMaterializedHub111111111111111";
   const upstreamSource = "TIncomingMaterializedCex111111111111111";
@@ -301,7 +302,11 @@ async function runCompleteIncomingTargetedMaterializationScenario(input: {
           : null,
       getContractIntelligenceProfile: async () => null,
       getTransaction: async () => ({}),
-      getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+      getUsdtRestrictionStatus: async (address) => ({
+        ...stablecoinProfile(address),
+        isBlacklisted: input.senderBlacklisted === true,
+        balanceRaw: "1000000"
+      })
     },
     job: job({ ...validProgressJson, amountRaw }),
     depositTxHash,
@@ -1616,6 +1621,35 @@ describe("buildIncomingDepositReport", () => {
       firstBlockingTechnicalStatus: "local_data_error"
     });
     expect(scenario.result.warnings.join(" ").toLowerCase()).not.toContain("provider cap");
+  });
+
+  it("keeps exact sender blacklist proof decisive through local targeted coverage failure", async () => {
+    const scenario = await runCompleteIncomingTargetedMaterializationScenario({
+      hopRows: [],
+      throwOnHopRead: true,
+      senderBlacklisted: true
+    });
+
+    expect(scenario.result).toMatchObject({
+      decision: "DECLINE",
+      depositRiskScore: 95,
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: "completed",
+      unifiedRiskSummary: {
+        finalDecision: "DECLINE",
+        decisionBasis: "exact_hard_proof",
+        coverage: {
+          overall: "partial",
+          invalidModes: ["incoming_deposit_provenance"],
+          caveats: expect.arrayContaining(["local_index_read_failed:local_data_error"])
+        }
+      }
+    });
+    expect(scenario.result.targetedHistoryCoverage).toMatchObject({
+      firstBlockingReason: "local_index_read_failed",
+      firstBlockingTechnicalStatus: "local_data_error"
+    });
   });
 
   it("reuses a covering-only local read failure for same-window enrichment", async () => {

@@ -371,25 +371,37 @@ function walletProfileZeroBalanceReport(input: {
     .map((label) => ({ label: label.label, score: walletProfileLabelScore(label.label) }))
     .filter((label) => label.score > 0)
     .map((label) => `Internal label: ${label.label}.`);
-  const hardBadEvidence = input.labels
-    .filter((label) =>
-      walletProfileCriticalLabels.has(label.label) || label.label === "approval_drain_proximity"
-    )
-    .map((label) => ({
-      kind: "scam_or_blacklist" as const,
-      score: walletProfileLabelScore(label.label),
+  const exactLabelEvidence = exactFastHardEvidence({
+    subjectAddress: input.sourceAddress,
+    score: 0,
+    level: "LOW",
+    reasons: input.labels.map((label) => ({
+      code: `internal_label_${label.label}`,
       message: `Internal label: ${label.label}`,
-      evidenceIds: []
-    }));
-  const exactHard = hardBadEvidence.length > 0;
+      scoreImpact: walletProfileLabelScore(label.label),
+      evidenceRef: `internal-label:${label.address}:${label.label}:${label.createdAt.toISOString()}`
+    }))
+  }).sort((left, right) => right.score - left.score);
+  const hardBadEvidence = exactLabelEvidence.map((item) => ({
+    kind: item.code === "internal_label_approval_drain_proximity"
+      ? "approval_drain" as const
+      : "scam_or_blacklist" as const,
+    score: item.score,
+    message: item.message,
+    evidenceIds: [item.evidenceId]
+  }));
+  const topExact = exactLabelEvidence[0] ?? null;
+  const exactHard = topExact !== null;
   const decision: ExchangeDecision = exactHard ? "DECLINE" : "REVIEW";
-  const riskScore = exactHard ? Math.max(...hardBadEvidence.map((item) => item.score)) : 0;
+  const riskScore = topExact?.score ?? 0;
   const decisionFields = exactHard
     ? {
         decision,
         internalDecision: decision,
         userDecision: "DECLINE" as const,
-        proofLevel: "exact_scam_or_taint_proof" as const
+        proofLevel: topExact.code === "internal_label_approval_drain_proximity"
+          ? "exact_approval_drain_provenance" as const
+          : "exact_scam_or_taint_proof" as const
       }
     : {
         decision,

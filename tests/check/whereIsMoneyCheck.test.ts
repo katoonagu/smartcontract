@@ -170,6 +170,23 @@ const lowFastRisk: RiskReport = {
   reasons: []
 };
 
+async function zeroBalanceWalletProfileWithLabel(label: AddressLabel["label"]) {
+  const sourceAddress = `TZeroBalance${label.replace(/_/g, "")}`;
+  return runWhereIsMoneyCheck({
+    getTrc20Balance: async () => "0",
+    fetchEdgesForAddress: async () => [],
+    fetchLatestEdgesForAddress: async () => [],
+    getLabelsForAddress: async (): Promise<AddressLabel[]> => [addressLabel(sourceAddress, label)],
+    getClassificationForAddress: async () => service("none", null),
+    getFastWalletRisk: async () => lowFastRisk
+  }, {
+    sourceAddress,
+    windowStart: new Date("2026-04-29T00:00:00.000Z"),
+    windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+    mode: "wallet_profile"
+  });
+}
+
 function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanApprovalChange {
   return {
     txHash: "tx-approval",
@@ -3914,27 +3931,11 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.riskScore).toBe(0);
   });
 
-  it("does not promote zero-balance darknet proximity context to exact hard proof", async () => {
-    const sourceAddress = "TZeroBalanceDarknetProximity111111111";
-    const report = await runWhereIsMoneyCheck({
-      getTrc20Balance: async () => "0",
-      fetchEdgesForAddress: async () => [],
-      fetchLatestEdgesForAddress: async () => [],
-      getLabelsForAddress: async (): Promise<AddressLabel[]> => [{
-        address: sourceAddress,
-        label: "darknet_exchange_proximity",
-        source: "system",
-        createdByTelegramId: null,
-        createdAt: new Date("2026-07-10T00:00:00.000Z")
-      }],
-      getClassificationForAddress: async () => service("none", null),
-      getFastWalletRisk: async () => lowFastRisk
-    }, {
-      sourceAddress,
-      windowStart: new Date("2026-04-29T00:00:00.000Z"),
-      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
-      mode: "wallet_profile"
-    });
+  it.each([
+    "darknet_exchange_proximity",
+    "mixer_like"
+  ] as const)("does not promote zero-balance context label %s to exact hard proof", async (label) => {
+    const report = await zeroBalanceWalletProfileWithLabel(label);
 
     expect(report).toMatchObject({
       decision: "REVIEW",
@@ -3943,6 +3944,34 @@ describe("runWhereIsMoneyCheck", () => {
       riskScore: 0
     });
     expect(report.assessment.hardBadEvidence).toEqual([]);
+  });
+
+  it("keeps zero-balance approval-drain proximity as canonical exact approval proof", async () => {
+    const report = await zeroBalanceWalletProfileWithLabel("approval_drain_proximity");
+
+    expect(report).toMatchObject({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      proofLevel: "exact_approval_drain_provenance",
+      riskScore: 95
+    });
+    expect(report.assessment.hardBadEvidence).toEqual([
+      expect.objectContaining({ kind: "approval_drain", score: 95 })
+    ]);
+  });
+
+  it("preserves zero-balance exact scam label hard proof", async () => {
+    const report = await zeroBalanceWalletProfileWithLabel("scam");
+
+    expect(report).toMatchObject({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      proofLevel: "exact_scam_or_taint_proof",
+      riskScore: 90
+    });
+    expect(report.assessment.hardBadEvidence).toEqual([
+      expect.objectContaining({ kind: "scam_or_blacklist", score: 90 })
+    ]);
   });
 
   it("does not run cross-chain providers or attach a corridor when Stage 2 is disabled", async () => {
