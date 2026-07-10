@@ -7,7 +7,11 @@ import {
 import { runWhereIsMoneyCheck, type BroadTargetedHistoryRequest } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
-import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
+import {
+  DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
+  indexedTransferToRouteEdge,
+  materializeIndexedTransferWindow
+} from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
 import { markSecondLayerQueued } from "./deepSecondLayerRelationship";
@@ -39,7 +43,7 @@ import {
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -192,6 +196,7 @@ export type DeepForensicJobRunnerOptions = {
   contractTransactionInfoMinIntervalMs?: number;
   targetedHistoryMaxBudgetPages?: number;
   sourceProvenanceExactWindowRepairLimit?: number;
+  localIndexMaterializationMaxRows?: number;
 };
 
 type DerivedLabelResult = {
@@ -578,7 +583,7 @@ function strictProviderLimitedProgressJson(
 
 function whereReportScoreValidityResultJson(report: WhereIsMoneyReport): Record<string, unknown> {
   return {
-    score_valid: report.scoreValid !== false,
+    score_valid: report.scoreValid === true,
     score_blocked_reason: report.scoreBlockedReason ?? null,
     technical_status: report.technicalStatus ?? "completed"
   };
@@ -743,6 +748,7 @@ async function runWhereIsMoneyJob(
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEdgeCacheKeys = new Set<string>();
   const balanceSliceEdgeCacheKeys = new Set<string>();
+  const locallyMaterializedAddresses = new Set<string>();
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const classificationCache = new Map<string, ServiceClassification | null>();
@@ -1114,6 +1120,89 @@ async function runWhereIsMoneyJob(
       balanceSliceEdgeCacheKeys.add(sliceCacheKey);
       return slice.edges;
     }
+    if (completeBroadTargetedHistory) {
+      if (edgeCache.has(cacheKey) && targetedEdgeCacheKeys.has(cacheKey)) {
+        return edgeCache.get(cacheKey) ?? [];
+      }
+      const expectedAmountRaw = rawAmountField(fetchOptions.expectedAmountRaw);
+      const target = fetchOptions.targetEdge
+        ? {
+            ...fetchOptions.targetEdge,
+            amountRaw: expectedAmountRaw ?? fetchOptions.targetEdge.amountRaw
+          }
+        : null;
+      const materialized = await measureJobStage("dbReadMs", () => materializeIndexedTransferWindow({
+        address,
+        minTimestamp,
+        maxTimestamp,
+        pageSize: edgeFetchLimit,
+        maxRows: options.localIndexMaterializationMaxRows ?? DEFAULT_LOCAL_INDEX_MATERIALIZATION_MAX_ROWS,
+        ...(target
+          ? {
+              // ponytail: recompute the bounded slice per page; upgrade to incremental cashflow accounting if dense local windows make this hot.
+              isSatisfied: (rows: readonly IndexedTronUsdtTransfer[]) => buildBalanceFormingSlice({
+                target,
+                edges: dedupeRouteEdges([target, ...rows.map(indexedTransferToRouteEdge)]),
+                minCoverageRatio: WHERE_BALANCE_SLICE_MIN_COVERAGE_RATIO,
+                maxFunders: DEFAULT_MAX_BUNDLE_FUNDERS,
+                fetchedPageCount: 0,
+                pageBudgetExhausted: false,
+                providerCapHit: false,
+                providerInconsistent: false
+              }).status === "covered"
+            }
+          : {}),
+        onPage: async ({ rowCount, pageReadCount }) => {
+          if (pageReadCount !== 1 && pageReadCount % 10 !== 0) return;
+          await persistProgress({
+            jobPhase: "reading_local_index",
+            targetedIndex: {
+              phase: "reading_local_index",
+              address,
+              rowCount,
+              pageReadCount
+            }
+          });
+        },
+        readPage: async (pageAddress, pageOptions) => {
+          if (!deps.listIndexedUsdtTransfersForAddress) {
+            throw new Error("local index reader unavailable");
+          }
+          return deps.listIndexedUsdtTransfersForAddress(pageAddress, {
+            minTimestamp: pageOptions.minTimestamp,
+            maxTimestamp: pageOptions.maxTimestamp,
+            limit: pageOptions.limit,
+            offset: pageOptions.offset,
+            orderBy: pageOptions.orderBy
+          });
+        }
+      }));
+      locallyMaterializedAddresses.add(address);
+      const localEdges = dedupeRouteEdges(materialized.rows.map(indexedTransferToRouteEdge));
+      const edges = target ? dedupeRouteEdges([target, ...localEdges]) : localEdges;
+      const localComplete = materialized.status === "complete";
+      historyCoverageCache.set(cacheKey, {
+        address,
+        targetTimestamp: maxTimestamp.toISOString(),
+        fetchedTransferCount: localEdges.length,
+        fetchedPageCount: materialized.pageReadCount,
+        oldestFetchedTransferAt: oldestRouteEdgeTimestamp(localEdges)?.toISOString() ?? null,
+        reachedTargetHop: localComplete,
+        source: "local_index",
+        coverageComplete: localComplete,
+        providerCapHit: false,
+        budgetExhausted: materialized.status === "local_limit",
+        providerInconsistent: false,
+        statusReason: null,
+        localMaterializationStatus: materialized.status,
+        localMaterializationCompletionReason: materialized.completionReason,
+        localMaterializationKnownZero: materialized.knownZero,
+        localMaterializationError: materialized.error
+      });
+      edgeCache.set(cacheKey, edges);
+      targetedEdgeCacheKeys.add(cacheKey);
+      return edges;
+    }
     const broadTargetedHistoryDeferred = requestedBroadTargetedDefer && !completeBroadTargetedHistory;
     let targetedEnsureSucceeded = !broadTargetedHistoryDeferred;
     let targetedTerminalError: TargetedHistoryTerminalError | null = null;
@@ -1148,7 +1237,9 @@ async function runWhereIsMoneyJob(
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     if (targetedTerminalError && indexedEdges.length === 0) throw targetedTerminalError;
-    const liveWasQueried = !completeBroadTargetedHistory && indexedEdges.length < maxEdgesPerAddress;
+    const liveWasQueried = !completeBroadTargetedHistory &&
+      !locallyMaterializedAddresses.has(address) &&
+      indexedEdges.length < maxEdgesPerAddress;
     const liveTransfers = liveWasQueried
       ? await deps.tronClient.listRelatedTrc20Transfers(address, {
           start: 0,
@@ -1360,7 +1451,7 @@ async function runWhereIsMoneyJob(
         )
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
-    const liveEdges = indexedEdges.length < limit
+    const liveEdges = !locallyMaterializedAddresses.has(address) && indexedEdges.length < limit
       ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit: liveLimit }).catch(() => []))
           .map(normalizeTransfer)
           .filter((edge): edge is ForensicRouteEdge => edge !== null)

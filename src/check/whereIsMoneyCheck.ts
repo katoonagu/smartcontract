@@ -45,6 +45,8 @@ import type {
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
   ExchangeDecision,
+  ForensicScoreBlockedReason,
+  ForensicTechnicalStatus,
   ForensicRouteEdge,
   MoneyOriginPath,
   MoneyOriginTraceHistoryCoverage,
@@ -473,18 +475,28 @@ function fallbackReviewReport(input: {
   checkedScope?: NonNullable<WhereIsMoneyCoverage["checkedScope"]>;
   anchorCoverageRatio?: number | null;
   episodeCoverageRatio?: number | null;
+  technicalFailure?: {
+    scoreBlockedReason: ForensicScoreBlockedReason;
+    technicalStatus: ForensicTechnicalStatus;
+  } | null;
   notes: string[];
 }): WhereIsMoneyReport {
-  const decision: ExchangeDecision = "DECLINE";
-  const decisionReasons = input.notes.map((note) =>
-    `Clean source could not be proven; exchange policy declines this wallet by safe default. ${note}`
-  );
-  const riskScore = Math.max(65, input.fastWalletRisk?.score ?? 0);
+  const decision: ExchangeDecision = "REVIEW";
+  const technicalFailure = input.currentBalanceRaw === null
+    ? { scoreBlockedReason: "provider_error" as const, technicalStatus: "provider_error" as const }
+    : input.technicalFailure ?? null;
+  const scoreBlockedReason = technicalFailure?.scoreBlockedReason ?? "insufficient_coverage";
+  const technicalStatus = technicalFailure?.technicalStatus ?? "completed";
+  const decisionReasons = input.notes;
+  const riskScore = Math.max(0, Math.min(59, input.fastWalletRisk?.score ?? 0));
   const checkedScope = input.checkedScope ?? checkedScopeFor(input.provenanceScope, input.drainEpisode ?? null, input.anchorTransfer);
   const assessment: WhereIsMoneyAssessment = {
     decision,
+    scoreValid: false,
+    scoreBlockedReason,
+    technicalStatus,
     riskScore,
-    riskBand: "HIGH",
+    riskBand: riskBandFromWhereScore(riskScore),
     provenanceConfidence: 0,
     coverageCompleteness: 0,
     walletRole: "unknown_wallet",
@@ -497,10 +509,15 @@ function fallbackReviewReport(input: {
     riskLayers: [],
     dominantRiskLayer: null,
     reasons: decisionReasons,
-    warnings: ["No balance-forming transfers were available."]
+    warnings: [technicalFailure
+      ? "A technical data failure prevented provenance scoring; no final risk decision is published."
+      : "Covered history did not contain a usable balance-forming source; provenance remains semantically unresolved."]
   };
   return {
     subjectAddress: input.sourceAddress,
+    scoreValid: false,
+    scoreBlockedReason,
+    technicalStatus,
     currentUsdtBalanceRaw: input.currentBalanceRaw,
     fastWalletRisk: input.fastWalletRisk,
     balanceFormingTransfers: [],
@@ -1265,8 +1282,14 @@ export async function runWhereIsMoneyCheck(
     const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address, options));
     throwIfAborted(input.abortSignal);
     const windowedEdges = windowEdges(fetchedEdges, input);
+    const localHistoryCoverage = options.latestTimestamp &&
+      options.deferBroadTargetedHistory === true &&
+      deps.getHistoryCoverageForAddress
+      ? await deps.getHistoryCoverageForAddress(address, options).catch(() => null)
+      : null;
     const shouldUseFallback = fallbackMinTransferCount > 0 &&
       fallbackTransferLimit > 0 &&
+      localHistoryCoverage?.localMaterializationStatus == null &&
       windowedEdges.length < fallbackMinTransferCount;
     const latestEdges = shouldUseFallback
       ? await fetchEdgesOrPartial(() => deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges))

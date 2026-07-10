@@ -3748,10 +3748,77 @@ describe("runWhereIsMoneyCheck", () => {
       windowEnd: new Date("2026-05-24T00:00:00.000Z")
     });
 
-    expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(65);
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBeLessThanOrEqual(59);
+    expect(report.scoreValid).toBe(false);
+    expect(report.scoreBlockedReason).toBe("provider_error");
+    expect(report.technicalStatus).toBe("provider_error");
+    expect(report.userDecision).toBe("NO_FINAL_DECISION");
+    expect(report.assessment).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "provider_error",
+      technicalStatus: "provider_error"
+    });
     expect(report.coverage.partial).toBe(true);
-    expect(report.decisionReasons).toEqual(["Clean source could not be proven; exchange policy declines this wallet by safe default. Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds."]);
+    expect(report.decisionReasons.join(" ")).toContain("Current USDT balance is zero or unavailable");
+    expect(report.decisionReasons.join(" ")).not.toContain("safe default");
+    expect(report.assessment.warnings.join(" ")).toContain("technical");
+  });
+
+  it("returns semantic review when covered history has no usable source", async () => {
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async () => [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-05-24T00:00:00.000Z",
+        fetchedTransferCount: 0,
+        fetchedPageCount: 1,
+        oldestFetchedTransferAt: null,
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: true,
+        providerCapHit: false,
+        budgetExhausted: false,
+        providerInconsistent: false,
+        statusReason: null,
+        localMaterializationStatus: "complete",
+        localMaterializationCompletionReason: "window_exhausted",
+        localMaterializationKnownZero: true,
+        localMaterializationError: null
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "insufficient_coverage",
+      technicalStatus: "completed",
+      userDecision: "NO_FINAL_DECISION"
+    });
+    expect(report.riskScore).toBeLessThanOrEqual(59);
+    expect(report.assessment).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "insufficient_coverage",
+      technicalStatus: "completed",
+      hardBadEvidence: [],
+      sourcePolicyEvidence: [],
+      contractSuspicionEvidence: [],
+      unknownOriginEvidence: [],
+      riskLayers: []
+    });
+    expect(report.assessment.warnings.join(" ")).toContain("Covered history");
+    expect(report.assessment.warnings.join(" ")).not.toContain("technical");
+    expect(report.assessment.warnings.join(" ")).not.toContain("provider");
   });
 
   it("does not treat zero current balance as medium risk in generic wallet profile context", async () => {

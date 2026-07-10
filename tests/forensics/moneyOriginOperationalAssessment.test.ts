@@ -1434,6 +1434,174 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect((assessment as any).sourceProvenanceMateriality.unresolvedShareOfCheckedBalance).toBeCloseTo(0.001322, 6);
   });
 
+  it.each([
+    {
+      status: "local_limit" as const,
+      error: null,
+      scoreBlockedReason: "local_budget_limited" as const,
+      technicalStatus: "local_budget_limited" as const
+    },
+    {
+      status: "read_failed" as const,
+      error: "local index unavailable",
+      scoreBlockedReason: "local_index_read_failed" as const,
+      technicalStatus: "local_data_error" as const
+    }
+  ])("blocks below-materiality bypass for $status local materialization", ({
+    status,
+    error,
+    scoreBlockedReason,
+    technicalStatus
+  }) => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-local-clean",
+          balanceShare: 0.999,
+          txHashes: ["tx-local-clean"],
+          steps: [{
+            txHash: "tx-local-clean",
+            fromAddress: funding,
+            toAddress: subject,
+            amountRaw: "9990000000",
+            timestamp: "2026-05-22T09:00:00.000Z"
+          }]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-local-unresolved",
+          balanceShare: 0.001,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-local-unresolved"],
+          steps: [{
+            txHash: "tx-local-unresolved",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "10000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-local-unresolved",
+            targetAmountRaw: "10000000"
+          })],
+          historyCoverage: [
+            ...(status === "read_failed" ? [{
+              address: funding,
+              targetTimestamp: "2026-05-22T10:00:00.000Z",
+              fetchedTransferCount: 2,
+              fetchedPageCount: 1,
+              oldestFetchedTransferAt: "2026-05-22T09:59:00.000Z",
+              reachedTargetHop: false,
+              source: "local_index" as const,
+              coverageComplete: false,
+              providerCapHit: false,
+              budgetExhausted: true,
+              providerInconsistent: false,
+              statusReason: null,
+              localMaterializationStatus: "local_limit" as const,
+              localMaterializationCompletionReason: null,
+              localMaterializationKnownZero: false,
+              localMaterializationError: null
+            }] : []),
+            {
+              address: sender,
+              targetTimestamp: "2026-05-22T10:00:00.000Z",
+              fetchedTransferCount: 2,
+              fetchedPageCount: 1,
+              oldestFetchedTransferAt: "2026-05-22T09:59:00.000Z",
+              reachedTargetHop: false,
+              source: "local_index",
+              coverageComplete: false,
+              providerCapHit: false,
+              budgetExhausted: status === "local_limit",
+              providerInconsistent: false,
+              statusReason: null,
+              localMaterializationStatus: status,
+              localMaterializationCompletionReason: null,
+              localMaterializationKnownZero: false,
+              localMaterializationError: error
+            }
+          ]
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "10000000000",
+        targetAmountRaw: "10000000000",
+        selectedAmountRaw: "10000000000",
+        partial: true,
+        notes: ["Residual source is below materiality, but the local index was not fully materialized."]
+      })
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason,
+      technicalStatus,
+      hardBadEvidence: [],
+      sourcePolicyEvidence: [],
+      contractSuspicionEvidence: [],
+      unknownOriginEvidence: [],
+      riskLayers: []
+    });
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(30);
+    expect(assessment.riskScore).toBeLessThanOrEqual(59);
+    expect(assessment.reasons.join(" ")).toContain("local index");
+    expect(assessment.warnings.join(" ")).toContain("technical");
+  });
+
+  it("preserves exact approval-drain evidence across a local materialization read failure", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [reviewPath({
+        historyCoverage: [{
+          address: sender,
+          targetTimestamp: "2026-05-22T10:00:00.000Z",
+          fetchedTransferCount: 0,
+          fetchedPageCount: 1,
+          oldestFetchedTransferAt: null,
+          reachedTargetHop: false,
+          source: "local_index",
+          coverageComplete: false,
+          providerCapHit: false,
+          budgetExhausted: false,
+          providerInconsistent: false,
+          statusReason: null,
+          localMaterializationStatus: "read_failed",
+          localMaterializationCompletionReason: null,
+          localMaterializationKnownZero: false,
+          localMaterializationError: "local index unavailable"
+        }]
+      })],
+      approvalDrainProvenanceProfiles: [approvalDrainProfile()],
+      approvalDrainReviewFindings: [approvalReviewFinding()],
+      coverage: coverage({ partial: true })
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "DECLINE",
+      scoreValid: false,
+      scoreBlockedReason: "local_index_read_failed",
+      technicalStatus: "local_data_error"
+    });
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    expect(assessment.warnings.join(" ")).toContain("local index");
+    expect(assessment.warnings.join(" ")).toContain("tx-review-drain");
+  });
+
+  it("marks completed assessments explicitly valid outside local materialization failures", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment).toMatchObject({
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: "completed"
+    });
+  });
+
   it("keeps score valid for a small-relative dense-hop provider-cap tail above dust amount", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
