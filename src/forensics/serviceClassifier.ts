@@ -89,7 +89,7 @@ const KNOWN_CEX_IDENTITIES = [
 
 const KNOWN_POOLED_SERVICE_ADDRESSES = new Map([
   [
-    "tlntw9z59lyy5kei9cmwk3pkjqga828ird",
+    "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
     { category: "service" as const, identity: "TronLink GasFree provider", evidence: "registry:tronlink_gasfree_provider" }
   ]
 ]);
@@ -169,7 +169,7 @@ function weakContract(input: ClassifyServiceAddressInput): boolean {
 }
 
 export function classifyServiceAddress(input: ClassifyServiceAddressInput): ServiceClassification {
-  const registered = KNOWN_POOLED_SERVICE_ADDRESSES.get(input.address.toLowerCase());
+  const registered = KNOWN_POOLED_SERVICE_ADDRESSES.get(input.address);
   if (registered) {
     return classification(input, registered.category, registered.identity, "high", [registered.evidence], true);
   }
