@@ -226,8 +226,8 @@ async function runCompleteTargetedWhereMaterializationScenario(input: {
     throw new Error("complete targeted history must not requeue");
   });
   const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
-  const liveProvider = vi.fn(async () => {
-    throw new Error("complete targeted history must not use live fallback");
+  const liveProvider = vi.fn(async (_address: string, _options?: { endTimestamp?: number }) => {
+    throw new Error("fixture live provider unavailable");
   });
   const getAddressUsdtIndexState = vi.fn(async (stateInput: { address: string; targetTimestamp?: Date | null }) => ({
     ...queuedIndexState(stateInput.address),
@@ -500,7 +500,10 @@ describe("deep forensic job runner", () => {
     });
 
     expect(result.targetedOffsets).toEqual([0]);
-    expect(result.liveProvider).not.toHaveBeenCalled();
+    expect(result.liveProvider).toHaveBeenCalledTimes(2);
+    expect(result.liveProvider.mock.calls.some(([, options]) =>
+      options?.endTimestamp === result.hopTimestamp.getTime()
+    )).toBe(false);
     expect(result.completion).toBeDefined();
     const report = (result.completion!.resultJson as { whereIsMoneyReport: WhereIsMoneyReport }).whereIsMoneyReport;
     const path = report.originPaths[0];
@@ -523,7 +526,7 @@ describe("deep forensic job runner", () => {
     ]));
   });
 
-  it("maps a complete-index local read failure to local data error without fallback", async () => {
+  it("maps a complete-index local read failure to local data error without same-window fallback", async () => {
     const result = await runCompleteTargetedWhereMaterializationScenario({
       hopRows: [],
       pageSize: 2,
@@ -531,7 +534,10 @@ describe("deep forensic job runner", () => {
     });
 
     expect(result.targetedOffsets).toEqual([0]);
-    expect(result.liveProvider).not.toHaveBeenCalled();
+    expect(result.liveProvider).toHaveBeenCalledTimes(2);
+    expect(result.liveProvider.mock.calls.some(([, options]) =>
+      options?.endTimestamp === result.hopTimestamp.getTime()
+    )).toBe(false);
     expect(result.queueAddressUsdtHistory).not.toHaveBeenCalled();
     expect(result.releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
     expect(result.completion).toBeDefined();
@@ -2837,6 +2843,98 @@ describe("deep forensic job runner", () => {
         statusReason: null,
         source: "local_index"
       });
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("does not suppress live acquisition for a different window on a locally materialized address", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopMaterializedWindow1111111111111111";
+    const listRelatedTrc20Transfers = vi.fn(async () => [transfer({
+      id: "tx-different-window-live",
+      from: "TDifferentWindowFunder111111111111111",
+      to: hopAddress,
+      amountRaw: "100000000",
+      at: "2026-07-04T13:00:00.000Z"
+    })]);
+    let targetedLiveCallCount = -1;
+    let secondWindowEdges: ForensicRouteEdge[] = [];
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      const targetedOptions = {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true
+      };
+      await deps.fetchEdgesForAddress(hopAddress, targetedOptions);
+      await deps.fetchEdgesForAddress(hopAddress, targetedOptions);
+      targetedLiveCallCount = listRelatedTrc20Transfers.mock.calls.length;
+      secondWindowEdges = await deps.fetchEdgesForAddress(hopAddress);
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const listIndexedUsdtTransfersForAddress = vi.fn(async (_address: string, options: { maxTimestamp: Date }) => {
+        if (options.maxTimestamp.getTime() === hopTimestamp.getTime()) {
+          throw new Error("targeted local window unavailable");
+        }
+        return [];
+      });
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+          ...queuedIndexState(input.address),
+          coverageMode: "targeted",
+          requestKind: "broad_targeted",
+          status: "complete",
+          statusReason: "complete_provider_windowed",
+          targetTimestamp: input.targetTimestamp ?? null
+        } as TronAddressUsdtIndexState)),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => {
+          throw new Error("complete targeted window must not requeue");
+        }),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        listIndexedUsdtTransfersForAddress,
+        tronClient: { listRelatedTrc20Transfers },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any, {
+        maxEdgesPerAddress: 2,
+        recentFallbackTransferLimit: 2
+      });
+
+      expect(handled).toBe(true);
+      expect(targetedLiveCallCount).toBe(0);
+      expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(1);
+      expect(listRelatedTrc20Transfers).toHaveBeenCalledWith(hopAddress, expect.objectContaining({
+        endTimestamp: sourceJob.windowEnd.getTime()
+      }));
+      expect(secondWindowEdges.map((edge) => edge.txHash)).toEqual(["tx-different-window-live"]);
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();

@@ -759,7 +759,6 @@ async function runWhereIsMoneyJob(
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEdgeCacheKeys = new Set<string>();
   const balanceSliceEdgeCacheKeys = new Set<string>();
-  const locallyMaterializedAddresses = new Set<string>();
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const classificationCache = new Map<string, ServiceClassification | null>();
@@ -1189,7 +1188,6 @@ async function runWhereIsMoneyJob(
           });
         }
       }));
-      locallyMaterializedAddresses.add(address);
       const localEdges = dedupeRouteEdges(materialized.rows.map(indexedTransferToRouteEdge));
       const edges = target ? dedupeRouteEdges([target, ...localEdges]) : localEdges;
       const localComplete = materialized.status === "complete";
@@ -1249,9 +1247,7 @@ async function runWhereIsMoneyJob(
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     if (targetedTerminalError && indexedEdges.length === 0) throw targetedTerminalError;
-    const liveWasQueried = !completeBroadTargetedHistory &&
-      !locallyMaterializedAddresses.has(address) &&
-      indexedEdges.length < maxEdgesPerAddress;
+    const liveWasQueried = !completeBroadTargetedHistory && indexedEdges.length < maxEdgesPerAddress;
     const liveTransfers = liveWasQueried
       ? await deps.tronClient.listRelatedTrc20Transfers(address, {
           start: 0,
@@ -1463,7 +1459,7 @@ async function runWhereIsMoneyJob(
         )
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
-    const liveEdges = !locallyMaterializedAddresses.has(address) && indexedEdges.length < limit
+    const liveEdges = indexedEdges.length < limit
       ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit: liveLimit }).catch(() => []))
           .map(normalizeTransfer)
           .filter((edge): edge is ForensicRouteEdge => edge !== null)
