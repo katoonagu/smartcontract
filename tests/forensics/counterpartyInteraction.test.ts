@@ -175,13 +175,15 @@ describe("direct counterparty interaction profiles", () => {
     const profiles = buildDirectCounterpartyInteractionProfiles({
       subjectAddress: subject,
       edges: [edge({ id: "tx-gasfree", from: subject, to: gasFree, amountRaw: "1000000000000" })],
-      snapshotsByAddress: new Map(),
+      snapshotsByAddress: new Map([[gasFree, snapshot(gasFree)]]),
       classifications: new Map([[gasFree, traceableContract("GasFree Account")]])
     });
 
     const profile = profiles[0];
     expect(profile?.snapshot.source).not.toBe("service_boundary");
     expect(profile?.serviceCategory).toBeNull();
+    expect(profile?.evidenceClass).toBe("counterparty_behavior_context");
+    expect(profile?.scoreContribution).toBeGreaterThan(0);
   });
 
   it("keeps provider-partial snapshots at zero score", () => {
