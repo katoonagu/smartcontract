@@ -96,17 +96,20 @@ function selectedTransfers(transaction: Record<string, unknown>): unknown[] {
 type RowTokenClassification = "official_usdt" | "explicit_other_token" | "invalid_or_conflicting";
 
 function rowToken(row: Record<string, unknown>): RowTokenClassification {
-  const tokenInfoValue = row.tokenInfo;
-  const tokenInfo = tokenInfoValue === undefined || tokenInfoValue === null
-    ? null
-    : record(tokenInfoValue);
-  if (tokenInfoValue !== undefined && tokenInfoValue !== null && !tokenInfo) return "invalid_or_conflicting";
+  const tokenInfos: Record<string, unknown>[] = [];
+  for (const key of ["tokenInfo", "token_info"] as const) {
+    const value = row[key];
+    if (value === undefined || value === null) continue;
+    const tokenInfo = record(value);
+    if (!tokenInfo) return "invalid_or_conflicting";
+    tokenInfos.push(tokenInfo);
+  }
 
   const aliases: unknown[] = [];
-  for (const key of ["contract_address", "contractAddress", "tokenId"] as const) {
+  for (const key of ["contract_address", "contractAddress", "tokenId", "token_id"] as const) {
     if (Object.prototype.hasOwnProperty.call(row, key)) aliases.push(row[key]);
   }
-  if (tokenInfo) {
+  for (const tokenInfo of tokenInfos) {
     for (const key of ["tokenId", "token_id"] as const) {
       if (Object.prototype.hasOwnProperty.call(tokenInfo, key)) aliases.push(tokenInfo[key]);
     }
@@ -121,7 +124,11 @@ function rowToken(row: Record<string, unknown>): RowTokenClassification {
 }
 
 function rowAmount(row: Record<string, unknown>): string | null {
-  return text(row, "amount_str", "amountStr", "quant", "amount", "value", "rawAmount");
+  for (const key of ["amount_str", "amountStr", "quant", "amount", "value", "rawAmount"] as const) {
+    const value = row[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
 }
 
 function sameAddress(left: unknown, right: unknown): boolean {
@@ -223,7 +230,9 @@ export function extractGasFreeSettlement(transactionInfo: unknown): GasFreeSettl
     const fromAddress = normalizedAddress(text(row, "from_address", "fromAddress", "from"));
     const toAddress = normalizedAddress(text(row, "to_address", "toAddress", "to"));
     const amountRaw = rowAmount(row);
-    if (!fromAddress || !toAddress || !amountRaw || !/^\d+$/.test(amountRaw)) return null;
+    if (!fromAddress || !toAddress || !amountRaw || !/^\d+$/.test(amountRaw) || BigInt(amountRaw).toString() !== amountRaw) {
+      return null;
+    }
     if (accountAddress !== null && accountAddress !== fromAddress) return null;
     accountAddress ??= fromAddress;
     const movementKey = `${fromAddress}|${toAddress}|${amountRaw}`;

@@ -132,6 +132,28 @@ describe("extractGasFreeSettlement", () => {
     expect(extractGasFreeSettlement(transaction(rows))).toBeNull();
   });
 
+  it.each([
+    ["conflicting top-level token_id", { ...row(RECEIVER, "97000000"), token_id: ACCOUNT }],
+    ["conflicting token_info.tokenId", { ...row(RECEIVER, "97000000"), token_info: { tokenId: ACCOUNT } }],
+    ["conflicting token_info.token_id", { ...row(RECEIVER, "97000000"), token_info: { token_id: ACCOUNT } }],
+    ["malformed token_info container", { ...row(RECEIVER, "97000000"), token_info: "USDT" }]
+  ])("rejects snake token identity mismatch: %s", (_name, transfer) => {
+    expect(extractGasFreeSettlement(transaction([transfer]))).toBeNull();
+  });
+
+  it("accepts a snake-only top-level token_id", () => {
+    const { contract_address: _contractAddress, tokenInfo: _tokenInfo, ...transfer } = row(RECEIVER, "97000000");
+    expect(extractGasFreeSettlement(transaction([{ ...transfer, token_id: USDT }]))).not.toBeNull();
+  });
+
+  it("accepts a snake-only nested token_info.token_id", () => {
+    const { contract_address: _contractAddress, tokenInfo: _tokenInfo, ...transfer } = row(RECEIVER, "97000000");
+    expect(extractGasFreeSettlement(transaction([{
+      ...transfer,
+      token_info: { token_id: USDT }
+    }]))).not.toBeNull();
+  });
+
   it("ignores an explicit valid non-USDT row whose token aliases agree", () => {
     const nonUsdtRow = {
       from_address: ACCOUNT,
@@ -169,6 +191,20 @@ describe("extractGasFreeSettlement", () => {
       row(RECEIVER, "97000000"),
       fee,
       { ...fee }
+    ]))).toBeNull();
+  });
+
+  it("rejects equivalent decimal spellings that bypass duplicate movement identity", () => {
+    expect(extractGasFreeSettlement(transaction([
+      row(RECEIVER, "97000000"),
+      row(OTHER_FEE, "1000000"),
+      row(OTHER_FEE, "01000000")
+    ]))).toBeNull();
+  });
+
+  it("rejects a single leading-zero movement amount", () => {
+    expect(extractGasFreeSettlement(transaction([
+      row(RECEIVER, "097000000")
     ]))).toBeNull();
   });
 
