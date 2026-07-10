@@ -8,7 +8,11 @@ import type {
   SourcePolicyEvidence,
   WhereIsMoneyReport
 } from "../types";
-import type { MatrixCandidate } from "./scoringSignalMatrix";
+import type {
+  MatrixCandidate,
+  MatrixCandidateContext,
+  MatrixEvidenceAuthority
+} from "./scoringSignalMatrix";
 import { exactFastHardEvidence } from "./fastEvidence";
 
 export type WalletMatrixCandidateInput = {
@@ -22,9 +26,11 @@ export type IncomingDepositMatrixCandidateInput = {
   senderAddress: string;
   receiverAddress: string;
   txHash: string;
+  fastReport?: RiskReport | null;
+  deepReport?: DeepAddressForensicReport | null;
+  whereReport: WhereIsMoneyReport;
   freshBundleExposure?: IncomingFreshBundleExposure | null;
   walletExposureProfile?: IncomingWalletExposureProfile | null;
-  baseCandidates: MatrixCandidate[];
 };
 
 const deterministicWhereHardKinds = new Set(["approval_drain", "scam_or_blacklist", "sanctioned_service"]);
@@ -39,8 +45,20 @@ const highRiskProvenanceLabels = new Set<RiskLabel>([
 ]);
 const sourcePolicyProvenanceLabels = new Set<RiskLabel>(["whitebit"]);
 
-function candidate(input: MatrixCandidate): MatrixCandidate {
-  return input;
+function candidate(
+  context: MatrixCandidateContext,
+  authority: MatrixEvidenceAuthority,
+  input: Omit<MatrixCandidate, "subject" | "authority">
+): MatrixCandidate {
+  return {
+    ...input,
+    subject: {
+      decisionScope: context.decisionScope,
+      address: context.subjectAddress,
+      txHash: context.subjectTxHash
+    },
+    authority
+  };
 }
 
 function arrayOrEmpty<T>(items: T[] | null | undefined): T[] {
@@ -57,12 +75,11 @@ function contextScore(value: number, max = 59): number {
   return Math.max(0, Math.min(max, Math.round(value)));
 }
 
-function coverageCandidate(reason: string): MatrixCandidate {
-  return candidate({
+function coverageCandidate(context: MatrixCandidateContext, reason: string): MatrixCandidate {
+  return candidate(context, { kind: "coverage", coverageDependency: context.requiredCoverage }, {
     row: "coverage_uncertainty",
     actionUnit: "wallet",
     score: 0,
-    decisionEligibility: "insufficient_only",
     evidenceIds: [reason],
     evidenceEpisodeIds: [reason],
     atomicSignals: ["insufficient_coverage"],
@@ -73,13 +90,15 @@ function coverageCandidate(reason: string): MatrixCandidate {
   });
 }
 
-function sourcePolicyCandidate(item: SourcePolicyEvidence): MatrixCandidate {
+function sourcePolicyCandidate(context: MatrixCandidateContext, item: SourcePolicyEvidence): MatrixCandidate {
   const ids = evidenceIds(item.evidenceIds, `source_policy:${item.kind}`);
-  return candidate({
+  const decisionEligibility = item.proofLevel === "exchange_policy_decline" && item.score >= 60
+    ? "can_decline" as const
+    : "review_only" as const;
+  return candidate(context, { kind: "policy", decisionEligibility, coverageDependency: context.requiredCoverage }, {
     row: "source_policy",
     actionUnit: "source_path",
     score: item.score,
-    decisionEligibility: item.proofLevel === "exchange_policy_decline" && item.score >= 60 ? "can_decline" : "review_only",
     evidenceIds: ids,
     evidenceEpisodeIds: ids,
     atomicSignals: [`source_policy_${item.kind}`],
@@ -90,12 +109,17 @@ function sourcePolicyCandidate(item: SourcePolicyEvidence): MatrixCandidate {
   });
 }
 
-function fastHardProofCandidates(report: RiskReport | null | undefined): MatrixCandidate[] {
-  return exactFastHardEvidence(report).map((item) => candidate({
+function fastHardProofCandidates(
+  context: MatrixCandidateContext,
+  report: RiskReport | null | undefined
+): MatrixCandidate[] {
+  return exactFastHardEvidence(report).map((item) => candidate(
+    context,
+    { kind: "exact_hard", proofSource: "fast_exact_code" },
+    {
       row: "hard_proof",
       actionUnit: "wallet",
       score: item.score,
-      decisionEligibility: "can_decline",
       evidenceIds: [item.evidenceId],
       evidenceEpisodeIds: [item.evidenceId],
       atomicSignals: [item.code],
@@ -103,16 +127,23 @@ function fastHardProofCandidates(report: RiskReport | null | undefined): MatrixC
       caps: [],
       dampeners: [],
       caveats: []
-    }));
+    }
+  ));
 }
 
-function fastContextCandidates(report: RiskReport | null | undefined): MatrixCandidate[] {
+function sameAddress(left: string | null | undefined, right: string): boolean {
+  return (left ?? "").toLowerCase() === right.toLowerCase();
+}
+
+function fastContextCandidates(
+  context: MatrixCandidateContext,
+  report: RiskReport | null | undefined
+): MatrixCandidate[] {
   if (!report || report.score <= 0 || exactFastHardEvidence(report).length > 0) return [];
-  return [candidate({
+  return [candidate(context, { kind: "context" }, {
     row: "behavior_only_prior",
     actionUnit: "wallet",
     score: contextScore(report.score),
-    decisionEligibility: "review_only",
     evidenceIds: [`fast_context:${report.subjectAddress}`],
     evidenceEpisodeIds: [`fast_context:${report.subjectAddress}`],
     atomicSignals: report.reasons.map((reason) => reason.code),
@@ -125,17 +156,21 @@ function fastContextCandidates(report: RiskReport | null | undefined): MatrixCan
   })];
 }
 
-function deepCandidates(report: DeepAddressForensicReport | null | undefined): MatrixCandidate[] {
+function deepCandidates(
+  context: MatrixCandidateContext,
+  report: DeepAddressForensicReport | null | undefined,
+  incomingTxHash: string | null = null
+): MatrixCandidate[] {
   if (!report) return [];
   const candidates: MatrixCandidate[] = [];
+  const isIncomingLinked = (ids: string[]): boolean => incomingTxHash === null || ids.includes(incomingTxHash);
 
   for (const profile of arrayOrEmpty(report.stablecoinRestrictionProfiles)) {
-    if (!profile.isBlacklisted) continue;
-    candidates.push(candidate({
+    if (!profile.isBlacklisted || !sameAddress(profile.subjectAddress, context.subjectAddress)) continue;
+    candidates.push(candidate(context, { kind: "exact_hard", proofSource: "stablecoin_restriction" }, {
       row: "hard_proof",
       actionUnit: "wallet",
       score: 95,
-      decisionEligibility: "can_decline",
       evidenceIds: [`stablecoin:${profile.subjectAddress}:${profile.tokenSymbol}`],
       evidenceEpisodeIds: [`stablecoin:${profile.subjectAddress}:${profile.tokenSymbol}`],
       atomicSignals: ["stablecoin_usdt_blacklisted"],
@@ -147,15 +182,26 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   }
 
   for (const profile of arrayOrEmpty(report.approvalDrainProvenanceProfiles)) {
-    const exact = profile.evidenceStrength === "exact_approval_and_transfer_from";
-    candidates.push(candidate({
-      row: exact ? "hard_proof" : "route_linked_approval_pattern",
+    const ids = [profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes];
+    const exact = profile.evidenceStrength === "exact_approval_and_transfer_from" &&
+      sameAddress(profile.subjectAddress, context.subjectAddress) &&
+      isIncomingLinked(ids);
+    const authority: MatrixEvidenceAuthority = exact
+      ? { kind: "exact_hard", proofSource: "approval_drain_exact" }
+      : profile.evidenceStrength === "route_linked"
+        ? { kind: "pattern", decisionEligibility: "review_only", coverageDependency: context.requiredCoverage }
+        : { kind: "context" };
+    candidates.push(candidate(context, authority, {
+      row: exact ? "hard_proof" : profile.evidenceStrength === "route_linked" ? "route_linked_approval_pattern" : "counterparty_context",
       actionUnit: "transaction",
-      score: exact ? 95 : Math.min(80, profile.score),
-      decisionEligibility: exact ? "can_decline" : "review_only",
-      evidenceIds: [profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes],
+      score: exact
+        ? 95
+        : profile.evidenceStrength === "route_linked"
+          ? Math.min(80, profile.score)
+          : contextScore(profile.score),
+      evidenceIds: ids,
       evidenceEpisodeIds: [`approval_drain:${profile.drainTxHash}`],
-      atomicSignals: [exact ? "approval_drain_exact_transfer_from" : "route_linked_approval_pattern"],
+      atomicSignals: [exact ? "approval_drain_exact_transfer_from" : profile.evidenceStrength === "route_linked" ? "route_linked_approval_pattern" : "historical_approval_drain_context"],
       modifiers: exact ? ["hard_anchor"] : [],
       caps: [],
       dampeners: [],
@@ -166,15 +212,17 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.inboundProvenanceProfiles)) {
     if (profile.score <= 0 || !profile.paths.some((path) => highRiskProvenanceLabels.has(path.label))) continue;
     const ids = profile.paths.flatMap((path) => path.txHashes);
-    candidates.push(candidate({
-      row: "hard_proof",
+    const walletPattern = incomingTxHash === null;
+    candidates.push(candidate(context, walletPattern
+      ? { kind: "pattern", decisionEligibility: "can_decline", coverageDependency: context.requiredCoverage }
+      : { kind: "context" }, {
+      row: walletPattern ? "service_linked_pattern" : "counterparty_context",
       actionUnit: "source_path",
-      score: Math.max(85, profile.score),
-      decisionEligibility: "can_decline",
+      score: walletPattern ? Math.max(85, profile.score) : contextScore(profile.score),
       evidenceIds: evidenceIds(ids, `inbound_provenance:${profile.subjectAddress}`),
       evidenceEpisodeIds: [`inbound_provenance:${profile.subjectAddress}`],
       atomicSignals: ["deep_high_risk_inbound_provenance"],
-      modifiers: ["hard_anchor"],
+      modifiers: walletPattern ? ["service_anchor"] : [],
       caps: [],
       dampeners: [],
       caveats: profile.boundaryNotes
@@ -185,11 +233,14 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
     const paths = profile.paths.filter((path) => sourcePolicyProvenanceLabels.has(path.label));
     if (paths.length === 0) continue;
     const ids = paths.flatMap((path) => path.txHashes);
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "source_policy",
       actionUnit: "source_path",
       score: 70,
-      decisionEligibility: "can_decline",
       evidenceIds: evidenceIds(ids, `inbound_source_policy:${profile.subjectAddress}`),
       evidenceEpisodeIds: [`inbound_source_policy:${profile.subjectAddress}`],
       atomicSignals: ["deep_source_policy_inbound_provenance"],
@@ -203,15 +254,17 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
     for (const path of profile.paths) {
       if (!path.label || path.evidenceStrength !== "exact_labeled_path" || !highRiskProvenanceLabels.has(path.label)) continue;
-      candidates.push(candidate({
-        row: "hard_proof",
+      const exact = isIncomingLinked(path.txHashes);
+      candidates.push(candidate(context, exact
+        ? { kind: "exact_hard", proofSource: "exact_labeled_path" }
+        : { kind: "context" }, {
+        row: exact ? "hard_proof" : "counterparty_context",
         actionUnit: "source_path",
-        score: Math.max(85, profile.score, path.candidateScore),
-        decisionEligibility: "can_decline",
+        score: exact ? Math.max(85, profile.score, path.candidateScore) : contextScore(Math.max(profile.score, path.candidateScore)),
         evidenceIds: evidenceIds(path.txHashes, `extended_provenance:${profile.subjectAddress}:${path.label}`),
         evidenceEpisodeIds: [`extended_provenance:${profile.subjectAddress}:${path.label}:${path.txHashes.join("|")}`],
         atomicSignals: ["deep_high_risk_extended_provenance"],
-        modifiers: ["hard_anchor"],
+        modifiers: exact ? ["hard_anchor"] : [],
         caps: [],
         dampeners: [],
         caveats: profile.coverage.stoppedReasons
@@ -222,11 +275,14 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
     for (const path of profile.paths) {
       if (!path.label || path.evidenceStrength !== "exact_labeled_path" || !sourcePolicyProvenanceLabels.has(path.label)) continue;
-      candidates.push(candidate({
+      candidates.push(candidate(context, {
+        kind: "policy",
+        decisionEligibility: "can_decline",
+        coverageDependency: context.requiredCoverage
+      }, {
         row: "source_policy",
         actionUnit: "source_path",
         score: 70,
-        decisionEligibility: "can_decline",
         evidenceIds: evidenceIds(path.txHashes, `extended_source_policy:${profile.subjectAddress}:${path.label}`),
         evidenceEpisodeIds: [`extended_source_policy:${profile.subjectAddress}:${path.label}:${path.txHashes.join("|")}`],
         atomicSignals: ["deep_source_policy_extended_provenance"],
@@ -240,11 +296,14 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
 
   for (const profile of arrayOrEmpty(report.assetContinuationProfiles)) {
     if (profile.evidenceClass !== "asset_continuation" || profile.tokenQuality === "unknown" || profile.score < 65) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "pattern",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "asset_continuation",
       actionUnit: "transaction",
       score: Math.min(84, profile.score),
-      decisionEligibility: "can_decline",
       evidenceIds: [profile.conversionTxHash, profile.outgoingTxHash ?? profile.conversionTxHash],
       evidenceEpisodeIds: [`asset_continuation:${profile.conversionTxHash}`],
       atomicSignals: ["asset_continuation"],
@@ -271,11 +330,14 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
       : calculatedBreakdown.score;
     const score = Math.min(calculatedBreakdown.score, storedScore, storedBreakdownScore);
     if (!calculatedBreakdown.eligible || score < 60) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "pattern",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "service_linked_pattern",
       actionUnit: "wallet",
       score: Math.min(84, score),
-      decisionEligibility: "can_decline",
       evidenceIds: [`operational_flow:${profile.subjectAddress}`],
       evidenceEpisodeIds: [`operational_flow:${profile.subjectAddress}`],
       atomicSignals: ["historical_transit_pattern"],
@@ -289,11 +351,10 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.serviceExposureProfiles)) {
     const score = contextScore(profile.exposureScore);
     if (score <= 0) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "counterparty_context",
       actionUnit: "wallet",
       score,
-      decisionEligibility: "review_only",
       evidenceIds: [`service_exposure:${profile.subjectAddress}`],
       evidenceEpisodeIds: [`service_exposure:${profile.subjectAddress}`],
       atomicSignals: ["deep_service_exposure_context"],
@@ -307,11 +368,10 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.addressBehaviorProfiles)) {
     const score = Math.max(profile.depositThenDrainScore, profile.transitScore);
     if (score <= 0) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "behavior_only_prior",
       actionUnit: "wallet",
       score,
-      decisionEligibility: "review_only",
       evidenceIds: [`address_behavior:${profile.subjectAddress}`],
       evidenceEpisodeIds: [`address_behavior:${profile.subjectAddress}`],
       atomicSignals: profile.features.map((feature) => feature.code),
@@ -325,11 +385,10 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.boundaryExposureProfiles)) {
     const score = contextScore(profile.contextScore, 29);
     if (score <= 0) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "counterparty_context",
       actionUnit: "wallet",
       score,
-      decisionEligibility: "review_only",
       evidenceIds: [`boundary_exposure:${profile.subjectAddress}`],
       evidenceEpisodeIds: [`boundary_exposure:${profile.subjectAddress}`],
       atomicSignals: ["deep_service_boundary_context"],
@@ -343,11 +402,10 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.counterpartyRiskProfiles)) {
     const score = contextScore(profile.score);
     if (score <= 0) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "counterparty_context",
       actionUnit: "wallet",
       score,
-      decisionEligibility: "review_only",
       evidenceIds: evidenceIds(profile.txHashes, `counterparty_risk:${profile.counterpartyAddress}`),
       evidenceEpisodeIds: [`counterparty_risk:${profile.counterpartyAddress}`],
       atomicSignals: ["deep_counterparty_risk_context"],
@@ -361,11 +419,10 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.walletRoleProfiles)) {
     const score = contextScore(Math.max(...profile.roles.map((role) => role.score), 0));
     if (score <= 0) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "behavior_only_prior",
       actionUnit: "wallet",
       score,
-      decisionEligibility: "review_only",
       evidenceIds: [`wallet_role:${profile.subjectAddress}:${profile.primaryRole}`],
       evidenceEpisodeIds: [`wallet_role:${profile.subjectAddress}:${profile.primaryRole}`],
       atomicSignals: [`deep_wallet_role_${profile.primaryRole}`],
@@ -379,11 +436,10 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
   for (const profile of arrayOrEmpty(report.directCounterpartyInteractionProfiles)) {
     const score = contextScore(profile.scoreContribution);
     if (score <= 0) continue;
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "counterparty_context",
       actionUnit: "wallet",
       score,
-      decisionEligibility: "review_only",
       evidenceIds: evidenceIds(profile.txHashes, `direct_counterparty:${profile.counterpartyAddress}`),
       evidenceEpisodeIds: [`direct_counterparty:${profile.counterpartyAddress}`],
       atomicSignals: [profile.evidenceClass],
@@ -407,21 +463,72 @@ function rawRatio(numerator: bigint, denominator: bigint): number | null {
   return Number((numerator * scale) / denominator) / Number(scale);
 }
 
-function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
+const exactWhereProofLevels = new Set(["exact_scam_or_taint_proof", "exact_approval_drain_provenance"]);
+const belowMaterialityOutcomes = new Set([
+  "residual_unresolved_below_materiality",
+  "dense_hop_unresolved_below_materiality"
+]);
+
+function hasBelowMaterialityCaveat(report: WhereIsMoneyReport): boolean {
+  const outcome = report.sourceProvenanceMateriality?.outcome ??
+    report.assessment.sourceProvenanceMateriality?.outcome ?? null;
+  return report.scoreValid === true && outcome !== null && belowMaterialityOutcomes.has(outcome);
+}
+
+function whereEvidenceLinkedToIncoming(
+  report: WhereIsMoneyReport,
+  evidence: { evidenceIds: string[] },
+  incomingTxHash: string | null
+): boolean {
+  if (incomingTxHash === null) return true;
+  if (evidence.evidenceIds.includes(incomingTxHash)) return true;
+  return report.originPaths
+    .filter((path) => path.txHashes.includes(incomingTxHash))
+    .some((path) => evidence.evidenceIds.some((id) => path.txHashes.includes(id)));
+}
+
+function whereReportLinkedToIncoming(report: WhereIsMoneyReport, incomingTxHash: string): boolean {
+  return report.balanceFormingTransfers.some((transfer) => transfer.txHash === incomingTxHash) ||
+    report.originPaths.some((path) => path.txHashes.includes(incomingTxHash));
+}
+
+function hasExactWhereHardProof(
+  context: MatrixCandidateContext,
+  report: WhereIsMoneyReport,
+  kind: string
+): boolean {
+  if (exactWhereProofLevels.has(report.proofLevel)) return true;
+  return kind === "approval_drain" && report.approvalDrainProvenanceProfiles.some((profile) =>
+    profile.evidenceStrength === "exact_approval_and_transfer_from" &&
+    sameAddress(profile.subjectAddress, context.subjectAddress)
+  );
+}
+
+function whereCandidates(
+  context: MatrixCandidateContext,
+  report: WhereIsMoneyReport,
+  incomingTxHash: string | null = null
+): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
 
   for (const item of report.assessment.hardBadEvidence) {
     if (!deterministicWhereHardKinds.has(item.kind)) continue;
     const ids = evidenceIds(item.evidenceIds, `where_hard:${item.kind}`);
-    candidates.push(candidate({
-      row: "hard_proof",
+    const exact = hasExactWhereHardProof(context, report, item.kind) &&
+      whereEvidenceLinkedToIncoming(report, item, incomingTxHash);
+    const authority: MatrixEvidenceAuthority = exact
+      ? { kind: "exact_hard", proofSource: incomingTxHash === null ? "where_exact_hard" : "incoming_exact_hard" }
+      : item.kind === "sanctioned_service"
+        ? { kind: "policy", decisionEligibility: "can_decline", coverageDependency: context.requiredCoverage }
+        : { kind: "context" };
+    candidates.push(candidate(context, authority, {
+      row: exact ? "hard_proof" : item.kind === "sanctioned_service" ? "source_policy" : "counterparty_context",
       actionUnit: "source_path",
-      score: item.kind === "approval_drain" ? 95 : Math.max(90, item.score),
-      decisionEligibility: "can_decline",
+      score: exact ? item.kind === "approval_drain" ? 95 : Math.max(90, item.score) : contextScore(item.score),
       evidenceIds: ids,
       evidenceEpisodeIds: ids,
       atomicSignals: [`where_${item.kind}`],
-      modifiers: ["hard_anchor"],
+      modifiers: exact ? ["hard_anchor"] : [],
       caps: [],
       dampeners: [],
       caveats: []
@@ -432,11 +539,10 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
     if (deterministicWhereHardKinds.has(item.kind)) continue;
     if (!item.kind.includes("contract_suspicion")) continue;
     const ids = evidenceIds(item.evidenceIds, `where_contract:${item.kind}`);
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "contract_suspicion",
       actionUnit: "source_path",
       score: contextScore(item.score),
-      decisionEligibility: "review_only",
       evidenceIds: ids,
       evidenceEpisodeIds: ids,
       atomicSignals: [`where_${item.kind}`],
@@ -447,18 +553,24 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
     }));
   }
 
-  candidates.push(...report.assessment.sourcePolicyEvidence.map(sourcePolicyCandidate));
+  candidates.push(...report.assessment.sourcePolicyEvidence.map((item) => sourcePolicyCandidate(context, item)));
 
   for (const layer of report.assessment.riskLayers) {
     const score = contextScore(Math.max(layer.adjustedScore, layer.score), 84);
     if (score <= 0) continue;
     if (layer.evidenceClass === "source_policy") {
       const ids = evidenceIds(layer.evidenceIds, `where_layer:${layer.kind}`);
-      candidates.push(candidate({
+      const decisionEligibility = layer.proofLevel === "exchange_policy_decline" && score >= 60
+        ? "can_decline" as const
+        : "review_only" as const;
+      candidates.push(candidate(context, {
+        kind: "policy",
+        decisionEligibility,
+        coverageDependency: context.requiredCoverage
+      }, {
         row: "source_policy",
         actionUnit: "source_path",
         score,
-        decisionEligibility: layer.proofLevel === "exchange_policy_decline" && score >= 60 ? "can_decline" : "review_only",
         evidenceIds: ids,
         evidenceEpisodeIds: ids,
         atomicSignals: [`source_policy_${layer.kind}`],
@@ -469,11 +581,10 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
       }));
     } else if (layer.evidenceClass === "contract_suspicion") {
       const ids = evidenceIds(layer.evidenceIds, `where_contract:${layer.kind}`);
-      candidates.push(candidate({
+      candidates.push(candidate(context, { kind: "context" }, {
         row: "contract_suspicion",
         actionUnit: "source_path",
         score: contextScore(score),
-        decisionEligibility: "review_only",
         evidenceIds: ids,
         evidenceEpisodeIds: ids,
         atomicSignals: [`where_contract_${layer.kind}`],
@@ -491,11 +602,14 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
     (report.decisionReasons.length > 0 || report.assessment.reasons.length > 0 || report.assessment.warnings.length > 0) &&
     !candidates.some((item) => item.row === "source_policy")
   ) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "source_policy",
       actionUnit: "source_path",
       score: Math.max(70, Math.min(84, Math.round(report.riskScore))),
-      decisionEligibility: "can_decline",
       evidenceIds: [`where_policy:${report.subjectAddress}`],
       evidenceEpisodeIds: [`where_policy:${report.subjectAddress}`],
       atomicSignals: ["where_exchange_policy_decline"],
@@ -506,8 +620,24 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
     }));
   }
 
-  if (report.coverage.partial || report.coverage.fetchedAddressCount <= 1) {
-    candidates.push(coverageCandidate("coverage:where_partial"));
+  const materialityOutcome = report.sourceProvenanceMateriality?.outcome ??
+    report.assessment.sourceProvenanceMateriality?.outcome ?? null;
+  const belowMateriality = hasBelowMaterialityCaveat(report);
+  if (belowMateriality && materialityOutcome) {
+    candidates.push(candidate(context, { kind: "context" }, {
+      row: "counterparty_context",
+      actionUnit: "source_path",
+      score: contextScore(report.riskScore),
+      evidenceIds: [`where_materiality:${materialityOutcome}`],
+      evidenceEpisodeIds: [`where_materiality:${materialityOutcome}`],
+      atomicSignals: [`where_${materialityOutcome}`],
+      modifiers: [],
+      caps: ["below_materiality_review_context"],
+      dampeners: [],
+      caveats: report.coverage.notes
+    }));
+  } else if (report.coverage.partial || report.coverage.fetchedAddressCount <= 1 || report.scoreValid === false) {
+    candidates.push(coverageCandidate(context, "coverage:where_partial"));
   }
 
   const episode = report.coverage.drainEpisode ?? null;
@@ -522,11 +652,14 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
       unknownContractOutgoingRatio: 0
     });
     if (breakdown.eligible && breakdown.score >= 60) {
-      candidates.push(candidate({
+      candidates.push(candidate(context, {
+        kind: "pattern",
+        decisionEligibility: "can_decline",
+        coverageDependency: context.requiredCoverage
+      }, {
         row: "service_linked_pattern",
         actionUnit: "wallet",
         score: Math.min(84, breakdown.score),
-        decisionEligibility: "can_decline",
         evidenceIds: [episode.anchorTxHash, episode.fundingTxHash ?? episode.anchorTxHash, ...episode.outgoingTxHashes],
         evidenceEpisodeIds: [`drain_episode:${episode.anchorTxHash}`],
         atomicSignals: ["where_drain_episode_transit_pattern"],
@@ -538,35 +671,88 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
     }
   }
 
+  if (
+    candidates.length === 0 &&
+    report.scoreValid !== false &&
+    !report.coverage.partial &&
+    (report.proofLevel === "clean_source_proven" || report.userDecision === "ACCEPTABLE")
+  ) {
+    candidates.push(candidate(context, { kind: "clean", coverageDependency: context.requiredCoverage }, {
+      row: "clean_or_operational",
+      actionUnit: "wallet",
+      score: contextScore(report.riskScore, 29),
+      evidenceIds: [`where_clean:${report.subjectAddress}`],
+      evidenceEpisodeIds: [`where_clean:${report.subjectAddress}`],
+      atomicSignals: ["where_clean_or_operational"],
+      modifiers: [],
+      caps: [],
+      dampeners: [],
+      caveats: report.coverage.notes
+    }));
+  }
+
+  return candidates;
+}
+
+function buildAddressEvidenceCandidates(
+  context: MatrixCandidateContext,
+  input: Pick<WalletMatrixCandidateInput, "fastReport" | "deepReport" | "whereReport">,
+  incomingTxHash: string | null = null
+): MatrixCandidate[] {
+  const fastReport = sameAddress(input.fastReport?.subjectAddress, context.subjectAddress) ? input.fastReport : null;
+  const deepReport = sameAddress(input.deepReport?.subjectAddress, context.subjectAddress) ? input.deepReport : null;
+  const candidates = [
+    ...fastHardProofCandidates(context, fastReport),
+    ...fastContextCandidates(context, fastReport),
+    ...deepCandidates(context, deepReport, incomingTxHash)
+  ];
+  if (!sameAddress(input.whereReport.subjectAddress, context.subjectAddress)) {
+    if (incomingTxHash !== null && whereReportLinkedToIncoming(input.whereReport, incomingTxHash)) {
+      candidates.push(...whereCandidates(context, input.whereReport, incomingTxHash));
+    }
+    candidates.push(coverageCandidate(context, "coverage:where_subject_mismatch"));
+    return candidates;
+  }
+  candidates.push(...whereCandidates(context, input.whereReport, incomingTxHash));
   return candidates;
 }
 
 export function buildWalletMatrixCandidates(input: WalletMatrixCandidateInput): MatrixCandidate[] {
-  const candidates = [
-    ...fastHardProofCandidates(input.fastReport),
-    ...fastContextCandidates(input.fastReport),
-    ...deepCandidates(input.deepReport),
-    ...whereCandidates(input.whereReport)
-  ];
+  const context: MatrixCandidateContext = {
+    decisionScope: "wallet_unified",
+    subjectAddress: input.address,
+    subjectTxHash: null,
+    requiredCoverage: "wallet_provenance"
+  };
+  if (!sameAddress(input.whereReport.subjectAddress, input.address)) {
+    return [coverageCandidate(context, "coverage:where_subject_mismatch")];
+  }
+  const candidates = buildAddressEvidenceCandidates(context, input);
 
-  const deepSparse = input.deepReport ? (input.deepReport.coverage?.transferEdges ?? 0) < 10 : true;
-  if (input.whereReport.coverage.partial && deepSparse) {
-    candidates.push(coverageCandidate("coverage:where_and_deep_limited"));
+  const deepReport = sameAddress(input.deepReport?.subjectAddress, input.address) ? input.deepReport : null;
+  const deepSparse = deepReport ? (deepReport.coverage?.transferEdges ?? 0) < 10 : true;
+  if (input.whereReport.coverage.partial && deepSparse && !hasBelowMaterialityCaveat(input.whereReport)) {
+    candidates.push(coverageCandidate(context, "coverage:where_and_deep_limited"));
   }
 
   return candidates;
 }
 
 export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatrixCandidateInput): MatrixCandidate[] {
-  const candidates = [...input.baseCandidates];
+  const context: MatrixCandidateContext = {
+    decisionScope: "incoming_unified",
+    subjectAddress: input.senderAddress,
+    subjectTxHash: input.txHash,
+    requiredCoverage: "deposit_provenance"
+  };
+  const candidates = buildAddressEvidenceCandidates(context, input, input.txHash);
   const exposure = input.freshBundleExposure;
   const backgroundScore = Math.max(0, Math.min(20, Math.round(input.walletExposureProfile?.scoreContribution ?? 0)));
   if (backgroundScore > 0) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "behavior_only_prior",
       actionUnit: "incoming_deposit",
       score: backgroundScore,
-      decisionEligibility: "review_only",
       evidenceIds: [`incoming:${input.txHash}:wallet_exposure_profile`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:wallet_exposure_profile`],
       atomicSignals: ["incoming_wallet_exposure_profile"],
@@ -579,11 +765,14 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
   if (!exposure) return candidates;
 
   if (exposure.riskyLabelShare >= 0.1) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 85,
-      decisionEligibility: "can_decline",
       evidenceIds: [`incoming:${input.txHash}:risky_label`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_fresh_risky_label_source"],
@@ -595,11 +784,14 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
   }
 
   if (exposure.htxHuobiShare >= 0.7) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 85,
-      decisionEligibility: "can_decline",
       evidenceIds: [`incoming:${input.txHash}:htx_huobi`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_fresh_htx_huobi_source"],
@@ -609,11 +801,14 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
       caveats: exposure.reasons
     }));
   } else if (exposure.htxHuobiShare >= 0.3) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 70,
-      decisionEligibility: "can_decline",
       evidenceIds: [`incoming:${input.txHash}:htx_huobi`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_fresh_htx_huobi_source"],
@@ -623,11 +818,14 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
       caveats: exposure.reasons
     }));
   } else if (exposure.htxHuobiShare >= 0.1) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "review_only",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 55,
-      decisionEligibility: "review_only",
       evidenceIds: [`incoming:${input.txHash}:htx_huobi_context`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_fresh_htx_huobi_context"],
@@ -639,11 +837,14 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
   }
 
   if (exposure.bridgeRouterDexShare >= 0.5) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, {
+      kind: "policy",
+      decisionEligibility: "can_decline",
+      coverageDependency: context.requiredCoverage
+    }, {
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 70,
-      decisionEligibility: "can_decline",
       evidenceIds: [`incoming:${input.txHash}:bridge_router_dex`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_fresh_bridge_router_dex_source"],
@@ -655,11 +856,10 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
   }
 
   if (exposure.unknownContractShare >= 0.5) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 45,
-      decisionEligibility: "review_only",
       evidenceIds: [`incoming:${input.txHash}:unknown_contract`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_fresh_unknown_contract_source"],
@@ -671,11 +871,10 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
   }
 
   if (exposure.htxHuobiShare > 0 && exposure.htxHuobiShare < 0.1) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "counterparty_context",
       actionUnit: "incoming_deposit",
       score: 40,
-      decisionEligibility: "review_only",
       evidenceIds: [`incoming:${input.txHash}:htx_huobi_corridor`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_htx_huobi_corridor_context"],
@@ -685,11 +884,10 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
       caveats: exposure.reasons
     }));
   } else if (exposure.bridgeRouterDexShare > 0 || exposure.unknownContractShare > 0) {
-    candidates.push(candidate({
+    candidates.push(candidate(context, { kind: "context" }, {
       row: "counterparty_context",
       actionUnit: "incoming_deposit",
       score: 35,
-      decisionEligibility: "review_only",
       evidenceIds: [`incoming:${input.txHash}:service_corridor`],
       evidenceEpisodeIds: [`incoming:${input.txHash}:fresh_bundle`],
       atomicSignals: ["incoming_service_corridor_context"],

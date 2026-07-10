@@ -737,14 +737,16 @@ function finalDecisionFromMatrix(matrixScore: MatrixScoringResult, options: {
   return "ACCEPTABLE";
 }
 
-function matrixAnchorSource(row: MatrixScoringResult["winningRow"]): UnifiedWalletRiskReason["source"] {
-  if (row === "hard_proof") return "hard_evidence";
-  if (row === "source_policy" || row === "incoming_deposit_source_policy") return "policy_floor";
-  if (row === "asset_continuation") return "asset_continuation";
-  if (row === "service_linked_pattern" || row === "route_linked_approval_pattern" || row === "typology_subgraph_pattern") {
+function matrixAnchorSource(
+  winner: MatrixScoringResult["winningCandidate"]
+): UnifiedWalletRiskReason["source"] {
+  if (winner.evidenceClass === "exact_hard") return "hard_evidence";
+  if (winner.evidenceClass === "policy") return "policy_floor";
+  if (winner.row === "asset_continuation") return "asset_continuation";
+  if (winner.evidenceClass === "pattern") {
     return "pattern_floor";
   }
-  if (row === "coverage_uncertainty") return "coverage";
+  if (winner.evidenceClass === "coverage") return "coverage";
   return "deep_research";
 }
 
@@ -754,7 +756,7 @@ function matrixAnchorReason(matrixScore: MatrixScoringResult): UnifiedWalletRisk
     code: `matrix:${matrixScore.winningRow}`,
     message: `Scoring Signal Matrix winning row is ${matrixScore.winningRow}.`,
     score: matrixScore.policyScore,
-    source: matrixAnchorSource(matrixScore.winningRow)
+    source: matrixAnchorSource(matrixScore.winningCandidate)
   };
 }
 
@@ -763,7 +765,12 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const deep = deepLayer(input.deepReport);
   const where = whereLayer(input.whereReport);
   const { weightedLayerScore, layerBreakdown } = normalizedWeightedLayers(input, { fast, deep, where });
-  const matrixScore = scoreMatrixCandidates(buildWalletMatrixCandidates(input));
+  const matrixScore = scoreMatrixCandidates(buildWalletMatrixCandidates(input), {
+    decisionScope: "wallet_unified",
+    subjectAddress: input.address,
+    subjectTxHash: null,
+    requiredCoverage: "wallet_provenance"
+  });
 
   const hardReasons = [
     fastHardEvidenceFloor(selectedFastReport(input)),

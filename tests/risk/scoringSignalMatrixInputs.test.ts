@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildIncomingDepositMatrixCandidates, buildWalletMatrixCandidates } from "../../src/risk/scoringSignalMatrixInputs";
+import { scoreMatrixCandidates, type MatrixCandidateContext } from "../../src/risk/scoringSignalMatrix";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type { IncomingFreshBundleExposure, RiskReport, WhereIsMoneyReport } from "../../src/types";
 
@@ -131,8 +132,34 @@ function whereReport(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyR
   };
 }
 
+const walletContext = (subjectAddress = address): MatrixCandidateContext => ({
+  decisionScope: "wallet_unified",
+  subjectAddress,
+  subjectTxHash: null,
+  requiredCoverage: "wallet_provenance"
+});
+
+const incomingContext = (senderAddress: string, txHash: string): MatrixCandidateContext => ({
+  decisionScope: "incoming_unified",
+  subjectAddress: senderAddress,
+  subjectTxHash: txHash,
+  requiredCoverage: "deposit_provenance"
+});
+
+const freshHtxExposure = (): IncomingFreshBundleExposure => ({
+  targetAmountRaw: "1000000000",
+  htxHuobiShare: 0.72,
+  cleanCexShare: 0,
+  bridgeRouterDexShare: 0,
+  unknownContractShare: 0,
+  riskyLabelShare: 0,
+  unknownShare: 0.28,
+  dominantFreshSource: "htx_huobi",
+  reasons: ["HTX/Huobi fresh bundle exposure"]
+});
+
 describe("scoring signal matrix input mappers", () => {
-  it("maps Where source-policy evidence to a source-policy candidate", () => {
+  it("maps Where source-policy evidence with explicit policy authority", () => {
     const candidates = buildWalletMatrixCandidates({
       address,
       fastReport: null,
@@ -161,13 +188,21 @@ describe("scoring signal matrix input mappers", () => {
       row: "source_policy",
       actionUnit: "source_path",
       score: 80,
-      decisionEligibility: "can_decline",
-      evidenceIds: ["source-policy:htx"],
-      evidenceEpisodeIds: ["source-policy:htx"]
+      authority: {
+        kind: "policy",
+        decisionEligibility: "can_decline",
+        coverageDependency: "wallet_provenance"
+      },
+      subject: {
+        decisionScope: "wallet_unified",
+        address,
+        txHash: null
+      },
+      evidenceIds: ["source-policy:htx"]
     }));
   });
 
-  it("maps limited coverage to uncertainty without badness authority", () => {
+  it("maps limited coverage to explicit coverage authority", () => {
     const candidates = buildWalletMatrixCandidates({
       address,
       fastReport: null,
@@ -193,37 +228,34 @@ describe("scoring signal matrix input mappers", () => {
 
     expect(candidates).toContainEqual(expect.objectContaining({
       row: "coverage_uncertainty",
-      decisionEligibility: "insufficient_only",
+      authority: { kind: "coverage", coverageDependency: "wallet_provenance" },
       atomicSignals: expect.arrayContaining(["insufficient_coverage"])
     }));
   });
 
   it("maps incoming fresh HTX/Huobi exposure to deposit-scoped source policy", () => {
-    const exposure: IncomingFreshBundleExposure = {
-      targetAmountRaw: "1000000000",
-      htxHuobiShare: 0.72,
-      cleanCexShare: 0,
-      bridgeRouterDexShare: 0,
-      unknownContractShare: 0,
-      riskyLabelShare: 0,
-      unknownShare: 0.28,
-      dominantFreshSource: "htx_huobi",
-      reasons: ["HTX/Huobi fresh bundle exposure"]
-    };
-
+    const senderAddress = "TSender1111111111111111111111111111";
+    const txHash = "tx-incoming";
     const candidates = buildIncomingDepositMatrixCandidates({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
-      txHash: "tx-incoming",
-      freshBundleExposure: exposure,
-      baseCandidates: []
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({ subjectAddress: senderAddress }),
+      freshBundleExposure: freshHtxExposure()
     });
 
     expect(candidates).toContainEqual(expect.objectContaining({
       row: "incoming_deposit_source_policy",
       actionUnit: "incoming_deposit",
       score: 85,
-      decisionEligibility: "can_decline",
+      authority: {
+        kind: "policy",
+        decisionEligibility: "can_decline",
+        coverageDependency: "deposit_provenance"
+      },
+      subject: { decisionScope: "incoming_unified", address: senderAddress, txHash },
       atomicSignals: ["incoming_fresh_htx_huobi_source"]
     }));
   });
@@ -236,6 +268,177 @@ describe("scoring signal matrix input mappers", () => {
       whereReport: whereReport()
     });
 
-    expect(candidates.some((item) => item.row === "hard_proof")).toBe(false);
+    expect(candidates.some((item) => item.authority.kind === "exact_hard")).toBe(false);
+  });
+
+  it("ignores exact Fast evidence linked to another address", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: {
+        ...fastReport(95, "stablecoin_usdt_blacklisted"),
+        subjectAddress: "TOtherFastAddress1111111111111111111"
+      },
+      deepReport: null,
+      whereReport: whereReport()
+    });
+    const scored = scoreMatrixCandidates(candidates, walletContext());
+
+    expect(scored.riskVector.hard_proof ?? []).toHaveLength(0);
+  });
+
+  it("does not turn generated context into exact proof when assigned the hard row", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: fastReport(77),
+      deepReport: null,
+      whereReport: whereReport()
+    });
+    const contextual = candidates.find((item) => item.authority.kind === "context");
+    expect(contextual).toBeDefined();
+    const scored = scoreMatrixCandidates([{ ...contextual!, row: "hard_proof", score: 100 }], walletContext());
+
+    expect(scored.riskVector.hard_proof?.[0]).toMatchObject({
+      evidenceClass: "context",
+      proofLevel: "context",
+      score: 59
+    });
+  });
+
+  it("does not give an Incoming hard floor to unrelated historical Deep exact evidence", () => {
+    const senderAddress = address;
+    const txHash = "incoming-deposit-tx";
+    const deep = deepReport({
+      extendedProvenanceProfiles: [{
+        subjectAddress: senderAddress,
+        direction: "inbound",
+        maxDepth: 2,
+        paths: [{
+          direction: "inbound",
+          depth: 2,
+          pathAddresses: ["THistoricalSource", senderAddress],
+          txHashes: ["historical-deep-tx"],
+          amountRaw: "100000000",
+          amountPreservationRatio: 1,
+          firstTransferAt: "2026-05-01T00:00:00.000Z",
+          lastTransferAt: "2026-05-01T00:00:01.000Z",
+          label: "scam",
+          labelAddress: "THistoricalSource",
+          boundaryCategory: null,
+          evidenceStrength: "exact_labeled_path",
+          candidateScore: 95,
+          features: []
+        }],
+        matchedVolumeRaw: "100000000",
+        matchedVolumeRatio: 1,
+        score: 95,
+        features: [],
+        coverage: {
+          expandedAddresses: 1,
+          fetchedAddressCount: 1,
+          stoppedReasons: [],
+          maxDepthReached: 2
+        }
+      }]
+    });
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: deep,
+      whereReport: whereReport({ subjectAddress: senderAddress })
+    });
+    const scored = scoreMatrixCandidates(candidates, incomingContext(senderAddress, txHash));
+
+    expect(scored.riskVector.hard_proof?.some((item) => item.evidenceClass === "exact_hard") ?? false).toBe(false);
+    expect(Object.values(scored.riskVector).flat().some((item) =>
+      item.atomicSignals.includes("deep_high_risk_extended_provenance") && item.evidenceClass === "context"
+    )).toBe(true);
+  });
+
+  it("turns a Where subject mismatch into coverage evidence", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({ subjectAddress: "TOtherWhereSubject111111111111111111" })
+    });
+
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        row: "coverage_uncertainty",
+        authority: { kind: "coverage", coverageDependency: "wallet_provenance" },
+        evidenceIds: ["coverage:where_subject_mismatch"]
+      })
+    ]);
+  });
+
+  it("uses deposit coverage when the Incoming Where subject mismatches the sender", () => {
+    const senderAddress = address;
+    const txHash = "incoming-subject-mismatch";
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress,
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({ subjectAddress: "TOtherIncomingWhereSubject" })
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      authority: { kind: "coverage", coverageDependency: "deposit_provenance" },
+      subject: { decisionScope: "incoming_unified", address: senderAddress, txHash },
+      evidenceIds: ["coverage:where_subject_mismatch"]
+    }));
+  });
+
+  it("keeps score-valid below-materiality Where residue as bounded review context", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({
+        scoreValid: true,
+        decision: "REVIEW",
+        userDecision: "REVIEW",
+        internalDecision: "REVIEW",
+        riskScore: 54,
+        coverage: { ...whereReport().coverage, partial: true },
+        sourceProvenanceMateriality: {
+          outcome: "residual_unresolved_below_materiality",
+          materialityTier: "dust_residual",
+          unresolvedAmountRaw: "1000000",
+          unresolvedAmountUsdt: 1,
+          unresolvedShareOfCheckedBalance: 0.001,
+          unresolvedShareOfSelectedAmount: 0.001,
+          largestUnresolvedAmountRaw: "1000000",
+          largestUnresolvedAmountUsdt: 1,
+          aggregateUnresolvedShareOfCheckedBalance: 0.001,
+          aggregateUnresolvedShareOfSelectedAmount: 0.001,
+          unresolvedPathCount: 1,
+          denseHopUnresolvedPathCount: 0,
+          hardEvidenceInUnresolved: false,
+          excludedFromDecisiveScore: true,
+          unresolvedReasonCounts: { residual: 1 },
+          thresholds: {
+            maxResidualUnresolvedShare: 0.01,
+            maxResidualUnresolvedAmountUsdt: 100,
+            maxResidualUnresolvedAmountRaw: "100000000",
+            maxDenseHopUnresolvedShare: 0.01,
+            maxDenseHopAggregateUnresolvedShare: 0.02,
+            maxDenseHopUnresolvedAmountUsdt: 10000,
+            maxDenseHopUnresolvedAmountRaw: "10000000000"
+          }
+        }
+      })
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "counterparty_context",
+      score: 54,
+      authority: { kind: "context" },
+      atomicSignals: ["where_residual_unresolved_below_materiality"]
+    }));
+    expect(candidates.some((item) => item.authority.kind === "coverage")).toBe(false);
   });
 });

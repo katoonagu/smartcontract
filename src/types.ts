@@ -500,6 +500,15 @@ export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type UserExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION";
 
+export type DecisionCoverage = {
+  required: "valid" | "invalid" | "not_applicable";
+  overall: "complete" | "partial";
+  invalidModes: string[];
+  caveats: string[];
+};
+
+export type FinalDecisionBasis = "exact_hard_proof" | "matrix" | "technical_stop";
+
 export type LocalIndexMaterializationStatus = "complete" | "local_limit" | "read_failed";
 
 export type ForensicScoreBlockedReason =

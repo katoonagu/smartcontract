@@ -32,11 +32,43 @@ export type MatrixDecisionEligibility =
   | "insufficient_only"
   | "acceptable_only";
 
+export type MatrixDecisionScope = "fast" | "deep" | "wallet_unified" | "incoming_unified" | "contract_transfer";
+export type MatrixEvidenceClass = "exact_hard" | "policy" | "pattern" | "context" | "coverage" | "clean";
+export type MatrixProofLevel = "exact" | "policy" | "corroborated_pattern" | "context" | "coverage" | "clean";
+export type MatrixCoverageDependency = "none" | "wallet_provenance" | "deposit_provenance";
+export type MatrixExactProofSource =
+  | "fast_exact_code"
+  | "stablecoin_restriction"
+  | "approval_drain_exact"
+  | "exact_labeled_path"
+  | "where_exact_hard"
+  | "incoming_exact_hard";
+
+export type MatrixEvidenceAuthority =
+  | { kind: "exact_hard"; proofSource: MatrixExactProofSource }
+  | { kind: "policy"; decisionEligibility: "can_decline" | "review_only"; coverageDependency: MatrixCoverageDependency }
+  | { kind: "pattern"; decisionEligibility: "can_decline" | "review_only"; coverageDependency: MatrixCoverageDependency }
+  | { kind: "context" }
+  | { kind: "coverage"; coverageDependency: MatrixCoverageDependency }
+  | { kind: "clean"; coverageDependency: MatrixCoverageDependency };
+
+export type MatrixCandidateContext = {
+  decisionScope: MatrixDecisionScope;
+  subjectAddress: string;
+  subjectTxHash: string | null;
+  requiredCoverage: MatrixCoverageDependency;
+};
+
+export type MatrixCandidateSubject = {
+  decisionScope: MatrixDecisionScope;
+  address: string;
+  txHash: string | null;
+};
+
 export type MatrixCandidate = {
   row: MatrixEvidenceRow;
   actionUnit: MatrixActionUnit;
   score: number;
-  decisionEligibility: MatrixDecisionEligibility;
   evidenceIds: string[];
   evidenceEpisodeIds: string[];
   atomicSignals: string[];
@@ -44,6 +76,16 @@ export type MatrixCandidate = {
   caps: string[];
   dampeners: string[];
   caveats: string[];
+  subject: MatrixCandidateSubject;
+  authority: MatrixEvidenceAuthority;
+};
+
+export type ClassifiedMatrixCandidate = Omit<MatrixCandidate, "authority"> & {
+  authority: MatrixEvidenceAuthority;
+  evidenceClass: MatrixEvidenceClass;
+  proofLevel: MatrixProofLevel;
+  decisionEligibility: MatrixDecisionEligibility;
+  coverageDependency: MatrixCoverageDependency;
 };
 
 export type MatrixUncertaintyState = {
@@ -54,13 +96,14 @@ export type MatrixUncertaintyState = {
   caveats: string[];
 };
 
-export type MatrixRiskVector = Partial<Record<MatrixEvidenceRow, MatrixCandidate[]>>;
+export type MatrixRiskVector = Partial<Record<MatrixEvidenceRow, ClassifiedMatrixCandidate[]>>;
 
 export type MatrixScoringResult = {
   policyVersion: "scoring-signal-matrix-v1";
   policyScore: number | null;
   matrixDecision: MatrixDecision;
   winningRow: MatrixEvidenceRow;
+  winningCandidate: ClassifiedMatrixCandidate;
   actionUnit: MatrixActionUnit;
   riskVector: MatrixRiskVector;
   uncertaintyState: MatrixUncertaintyState;
@@ -88,13 +131,71 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function hasAnchor(candidate: MatrixCandidate): boolean {
+function classifyCandidate(candidate: MatrixCandidate): ClassifiedMatrixCandidate {
+  const metadata = candidate.authority.kind === "exact_hard"
+    ? {
+        evidenceClass: "exact_hard" as const,
+        proofLevel: "exact" as const,
+        decisionEligibility: "can_decline" as const,
+        coverageDependency: "none" as const
+      }
+    : candidate.authority.kind === "policy"
+      ? {
+          evidenceClass: "policy" as const,
+          proofLevel: "policy" as const,
+          decisionEligibility: candidate.authority.decisionEligibility,
+          coverageDependency: candidate.authority.coverageDependency
+        }
+      : candidate.authority.kind === "pattern"
+        ? {
+            evidenceClass: "pattern" as const,
+            proofLevel: "corroborated_pattern" as const,
+            decisionEligibility: candidate.authority.decisionEligibility,
+            coverageDependency: candidate.authority.coverageDependency
+          }
+        : candidate.authority.kind === "coverage"
+          ? {
+              evidenceClass: "coverage" as const,
+              proofLevel: "coverage" as const,
+              decisionEligibility: "insufficient_only" as const,
+              coverageDependency: candidate.authority.coverageDependency
+            }
+          : candidate.authority.kind === "clean"
+            ? {
+                evidenceClass: "clean" as const,
+                proofLevel: "clean" as const,
+                decisionEligibility: "acceptable_only" as const,
+                coverageDependency: candidate.authority.coverageDependency
+              }
+            : {
+                evidenceClass: "context" as const,
+                proofLevel: "context" as const,
+                decisionEligibility: "review_only" as const,
+                coverageDependency: "none" as const
+              };
+  if (candidate.authority.kind === "exact_hard" && candidate.row !== "hard_proof") {
+    throw new Error("exact hard authority requires the hard_proof matrix row");
+  }
+  return { ...candidate, ...metadata };
+}
+
+function sameMatrixSubject(candidate: ClassifiedMatrixCandidate, context: MatrixCandidateContext): boolean {
+  return candidate.subject.decisionScope === context.decisionScope &&
+    candidate.subject.address.toLowerCase() === context.subjectAddress.toLowerCase() &&
+    candidate.subject.txHash === context.subjectTxHash;
+}
+
+function hasAnchor(candidate: ClassifiedMatrixCandidate): boolean {
   return candidate.modifiers.includes("hard_anchor") ||
     candidate.modifiers.includes("source_policy_anchor") ||
     candidate.modifiers.includes("service_anchor");
 }
 
-function withCap(candidate: MatrixCandidate, score: number, cap: string): MatrixCandidate {
+function withCap(
+  candidate: ClassifiedMatrixCandidate,
+  score: number,
+  cap: string
+): ClassifiedMatrixCandidate {
   return {
     ...candidate,
     score,
@@ -102,10 +203,16 @@ function withCap(candidate: MatrixCandidate, score: number, cap: string): Matrix
   };
 }
 
-function applyRowCaps(candidate: MatrixCandidate): MatrixCandidate {
+function applyRowCaps(candidate: ClassifiedMatrixCandidate): ClassifiedMatrixCandidate {
   const score = clampScore(candidate.score);
-  if (candidate.row === "coverage_uncertainty") {
+  if (candidate.evidenceClass === "coverage") {
     return withCap(candidate, 0, "coverage_uncertainty_no_badness");
+  }
+  if (candidate.evidenceClass === "context" && score >= 60) {
+    const capped = withCap(candidate, 59, "context_cap_59");
+    if (candidate.row === "behavior_only_prior") return withCap(capped, 59, "behavior_only_cap_59");
+    if (candidate.row === "contract_suspicion") return withCap(capped, 59, "contract_suspicion_cap_59");
+    return capped;
   }
   if (candidate.row === "behavior_only_prior" && score >= 60) {
     return withCap(candidate, 59, "behavior_only_cap_59");
@@ -119,18 +226,23 @@ function applyRowCaps(candidate: MatrixCandidate): MatrixCandidate {
   return { ...candidate, score };
 }
 
-function episodeKey(candidate: MatrixCandidate): string {
+function episodeKey(candidate: ClassifiedMatrixCandidate): string {
   if (candidate.evidenceEpisodeIds.length > 0) return [...candidate.evidenceEpisodeIds].sort().join("|");
   return [...candidate.evidenceIds].sort().join("|");
 }
 
-function betterCandidate(left: MatrixCandidate, right: MatrixCandidate): MatrixCandidate {
+function betterCandidate(
+  left: ClassifiedMatrixCandidate,
+  right: ClassifiedMatrixCandidate
+): ClassifiedMatrixCandidate {
+  if (left.evidenceClass === "exact_hard" && right.evidenceClass !== "exact_hard") return left;
+  if (right.evidenceClass === "exact_hard" && left.evidenceClass !== "exact_hard") return right;
   if (left.score !== right.score) return left.score > right.score ? left : right;
   return rowPriority.indexOf(left.row) <= rowPriority.indexOf(right.row) ? left : right;
 }
 
-function dedupeByEpisode(candidates: MatrixCandidate[]): MatrixCandidate[] {
-  const byEpisode = new Map<string, MatrixCandidate>();
+function dedupeByEpisode(candidates: ClassifiedMatrixCandidate[]): ClassifiedMatrixCandidate[] {
+  const byEpisode = new Map<string, ClassifiedMatrixCandidate>();
   for (const candidate of candidates) {
     const key = episodeKey(candidate);
     const existing = byEpisode.get(key);
@@ -139,7 +251,7 @@ function dedupeByEpisode(candidates: MatrixCandidate[]): MatrixCandidate[] {
   return [...byEpisode.values()];
 }
 
-function buildRiskVector(candidates: MatrixCandidate[]): MatrixRiskVector {
+function buildRiskVector(candidates: ClassifiedMatrixCandidate[]): MatrixRiskVector {
   const vector: MatrixRiskVector = {};
   for (const candidate of candidates) {
     vector[candidate.row] = [...(vector[candidate.row] ?? []), candidate];
@@ -147,7 +259,7 @@ function buildRiskVector(candidates: MatrixCandidate[]): MatrixRiskVector {
   return vector;
 }
 
-function candidateDecision(candidate: MatrixCandidate): MatrixDecision {
+function candidateDecision(candidate: ClassifiedMatrixCandidate): MatrixDecision {
   if (candidate.decisionEligibility === "insufficient_only") return "INSUFFICIENT_EVIDENCE";
   if (candidate.decisionEligibility === "acceptable_only") return "ACCEPTABLE";
   if (candidate.score >= 60 && candidate.decisionEligibility === "can_decline") return "DECLINE";
@@ -155,29 +267,37 @@ function candidateDecision(candidate: MatrixCandidate): MatrixDecision {
   return "ACCEPTABLE";
 }
 
-function winningCandidate(candidates: MatrixCandidate[]): MatrixCandidate {
+function winningCandidate(
+  candidates: ClassifiedMatrixCandidate[],
+  context: MatrixCandidateContext
+): ClassifiedMatrixCandidate {
   const sorted = [...candidates].sort((left, right) => {
     const scoreDelta = right.score - left.score;
     if (scoreDelta !== 0) return scoreDelta;
     return rowPriority.indexOf(left.row) - rowPriority.indexOf(right.row);
   });
-  return sorted[0] ?? {
+  return sorted[0] ?? classifyCandidate({
     row: "coverage_uncertainty",
-    actionUnit: "wallet",
+    actionUnit: context.decisionScope === "incoming_unified" ? "incoming_deposit" : "wallet",
     score: 0,
-    decisionEligibility: "insufficient_only",
     evidenceIds: [],
     evidenceEpisodeIds: [],
     atomicSignals: [],
     modifiers: [],
     caps: ["no_candidates"],
     dampeners: [],
-    caveats: ["No matrix candidates were produced."]
-  };
+    caveats: ["No matrix candidates were produced."],
+    subject: {
+      decisionScope: context.decisionScope,
+      address: context.subjectAddress,
+      txHash: context.subjectTxHash
+    },
+    authority: { kind: "coverage", coverageDependency: context.requiredCoverage }
+  });
 }
 
-function uncertaintyState(candidates: MatrixCandidate[]): MatrixUncertaintyState {
-  const coverageCandidate = candidates.find((candidate) => candidate.row === "coverage_uncertainty");
+function uncertaintyState(candidates: ClassifiedMatrixCandidate[]): MatrixUncertaintyState {
+  const coverageCandidate = candidates.find((candidate) => candidate.evidenceClass === "coverage");
   return {
     coverage: coverageCandidate ? "insufficient" : "sufficient",
     continuity: "unknown",
@@ -187,19 +307,27 @@ function uncertaintyState(candidates: MatrixCandidate[]): MatrixUncertaintyState
   };
 }
 
-export function scoreMatrixCandidates(input: MatrixCandidate[]): MatrixScoringResult {
-  const capped = input.map(applyRowCaps);
+export function scoreMatrixCandidates(
+  input: MatrixCandidate[],
+  context: MatrixCandidateContext
+): MatrixScoringResult {
+  const classified = input.map(classifyCandidate);
+  if (classified.some((candidate) => !sameMatrixSubject(candidate, context))) {
+    throw new Error("matrix candidate subject does not match scoring context");
+  }
+  const capped = classified.map(applyRowCaps);
   const deduped = dedupeByEpisode(capped);
   const riskVector = buildRiskVector(deduped);
-  const winner = winningCandidate(deduped);
+  const winner = winningCandidate(deduped, context);
   const matrixDecision = candidateDecision(winner);
-  const policyScore = winner.row === "coverage_uncertainty" ? null : winner.score;
+  const policyScore = winner.evidenceClass === "coverage" ? null : winner.score;
 
   return {
     policyVersion: "scoring-signal-matrix-v1",
     policyScore,
     matrixDecision,
     winningRow: winner.row,
+    winningCandidate: winner,
     actionUnit: winner.actionUnit,
     riskVector,
     uncertaintyState: uncertaintyState(deduped),

@@ -15,8 +15,8 @@ import {
   type UnifiedForensicRiskResult,
   type UnifiedWalletRiskReason
 } from "./unifiedWalletRisk";
-import { scoreMatrixCandidates } from "./scoringSignalMatrix";
-import { buildIncomingDepositMatrixCandidates, buildWalletMatrixCandidates } from "./scoringSignalMatrixInputs";
+import { scoreMatrixCandidates, type MatrixScoringResult } from "./scoringSignalMatrix";
+import { buildIncomingDepositMatrixCandidates } from "./scoringSignalMatrixInputs";
 
 export type CalculateUnifiedIncomingDepositRiskInput = {
   senderAddress: string;
@@ -197,6 +197,28 @@ function incomingFreshFloorBypassesNoHardEvidenceCap(freshFloor: IncomingOverlay
     );
 }
 
+function incomingMatrixAnchorReason(matrixScore: MatrixScoringResult): UnifiedWalletRiskReason | null {
+  if (matrixScore.policyScore === null) return null;
+  const winner = matrixScore.winningCandidate;
+  const source: UnifiedWalletRiskReason["source"] = winner.evidenceClass === "exact_hard"
+    ? "hard_evidence"
+    : winner.evidenceClass === "policy"
+      ? "policy_floor"
+      : winner.row === "asset_continuation"
+        ? "asset_continuation"
+        : winner.evidenceClass === "pattern"
+          ? "pattern_floor"
+          : winner.evidenceClass === "coverage"
+            ? "coverage"
+            : "deep_research";
+  return {
+    code: `matrix:${winner.row}`,
+    message: `Scoring Signal Matrix winning row is ${winner.row}.`,
+    score: matrixScore.policyScore,
+    source
+  };
+}
+
 export function calculateUnifiedIncomingDepositRisk(
   input: CalculateUnifiedIncomingDepositRiskInput
 ): UnifiedForensicRiskResult {
@@ -222,15 +244,17 @@ export function calculateUnifiedIncomingDepositRisk(
     senderAddress: input.senderAddress,
     receiverAddress: input.receiverAddress,
     txHash: input.txHash,
+    fastReport: fastSenderRisk,
+    deepReport: input.deepReport,
+    whereReport: input.whereReport,
     freshBundleExposure: input.freshBundleExposure,
-    walletExposureProfile: input.walletExposureProfile,
-    baseCandidates: buildWalletMatrixCandidates({
-      address: input.senderAddress,
-      fastReport: fastSenderRisk,
-      deepReport: input.deepReport,
-      whereReport: input.whereReport
-    })
-  }));
+    walletExposureProfile: input.walletExposureProfile
+  }), {
+    decisionScope: "incoming_unified",
+    subjectAddress: input.senderAddress,
+    subjectTxHash: input.txHash,
+    requiredCoverage: "deposit_provenance"
+  });
 
   const freshFloor = incomingFreshBundleFloor(input.freshBundleExposure);
   const corridorFloor = freshFloor ? null : incomingCorridorFloor(input.freshBundleExposure);
@@ -261,9 +285,13 @@ export function calculateUnifiedIncomingDepositRisk(
     base.scoreBreakdown.activeAnchor?.score ?? 0,
     base.finalScore
   );
-  const activeAnchor = strongestIncomingFloor && strongestIncomingFloor.score > baseAnchorScore
-    ? strongestIncomingFloor
+  const matrixAnchor = incomingMatrixAnchorReason(matrixScore);
+  const baseOrMatrixAnchor = matrixAnchor && matrixAnchor.score >= baseAnchorScore
+    ? matrixAnchor
     : base.scoreBreakdown.activeAnchor;
+  const activeAnchor = strongestIncomingFloor && strongestIncomingFloor.score >= (baseOrMatrixAnchor?.score ?? 0)
+    ? strongestIncomingFloor
+    : baseOrMatrixAnchor;
   const finalDecision = base.finalDecision === "NO_FINAL_DECISION"
     ? "NO_FINAL_DECISION"
     : matrixScore.matrixDecision === "DECLINE"
