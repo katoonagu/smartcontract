@@ -1,9 +1,12 @@
 ---
 status: current
-last_verified: 2026-07-06
+last_verified: 2026-07-10
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
+  - src/forensics/gasFreeSettlement.ts
+  - src/forensics/serviceClassifier.ts
+  - src/forensics/localTronUsdtIndex.ts
   - src/forensics/moneyOriginTrace.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/incomingDepositJob.ts
@@ -11,6 +14,7 @@ code_refs:
   - src/forensics/targetedHistoryCoordinator.ts
   - src/index.ts
   - tests/forensics/fundingFirstSourceProvenance.test.ts
+  - tests/forensics/gasFreeSettlement.test.ts
   - tests/forensics/moneyOriginTrace.test.ts
   - tests/forensics/moneyOriginOperationalAssessment.test.ts
   - tests/forensics/incomingDepositJob.test.ts
@@ -38,6 +42,32 @@ Do not merge these modes. They use similar provenance logic but answer
 different user questions.
 
 ## Current Behavior
+
+GasFree Accounts and unknown or unlabeled contracts are traceable addresses at
+the first, second, third, and later hops. Their contract fact does not create a
+service stop. Positively identified pooled infrastructure still does: the
+GasFree Endpoint/controller and the registered TronLink/GasFree provider
+`TLntW9Z59LYY5KEi9cmwk3PKjQga828ird` remain boundaries after their direct
+interaction is recorded.
+
+GasFree principal and service-fee roles are transaction-local facts. They are
+assigned only when a successful registered-controller settlement, exact
+calldata, official-USDT transfer list, decoded receiver/value, and fee bound all
+match. Fee amount and collector are dynamic; address identity or a familiar
+amount is insufficient. An unmatched transfer to TLnt remains a visible direct
+transfer and is not relabeled as a fee. A structurally exact fee remains in
+gross debit/accounting facts but is removed from payer provenance selection.
+
+Complete indexed history is consumed through paged local materialization for
+the concrete provenance window. A local row ceiling or database read failure is
+a technical local limitation, not a TronScan provider cap and not risk
+evidence.
+
+A known-zero current wallet balance makes the current-balance origin question
+`not_applicable`; a separately selected recent-flow anchor is an explicitly
+different provenance scope. Incoming Deposit does not switch to balance-origin
+mode: it remains seeded by the concrete deposit transaction even when the
+sender's current balance is zero after sending it.
 
 The trace can stop with `incoming_history_not_fetched` when a hop address needs
 older incoming history and the available local/live data does not reach the
@@ -295,6 +325,10 @@ does not publish a final score.
 
 If hard evidence is absent and required provenance coverage is incomplete, the
 system must not publish a final user-facing `DECLINE`.
+
+An exact, subject-applicable hard proof is independent of an unrelated coverage
+failure. It remains a valid `DECLINE` while the result keeps
+`coverage=partial` and the technical limitation visible.
 
 Residual unresolved source provenance below materiality is different from an
 uncovered main money path. It is still shown as a caveat, not exact proof, but

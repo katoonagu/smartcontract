@@ -1,13 +1,17 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-10
 owner_area: forensics
 code_refs:
   - src/index.ts
+  - src/bot/createBot.ts
+  - src/check/smartContractCheck.ts
   - src/check/deepForensicCheck.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/incomingDepositJob.ts
   - src/risk/unifiedWalletRisk.ts
+  - tests/bot/createBot.test.ts
+  - tests/check/smartContractCheck.test.ts
 supersedes:
   - docs/project-walkthrough/06-check-modes-fast-deep-where-is-money.md
 ---
@@ -86,4 +90,12 @@ Unified `/check` composes the address-level result from fast check, deep check,
 and `Where is money`.
 
 It should not publish a final wallet risk score as fully valid if the main
-money-origin path required for that score is not covered.
+money-origin path required for that score is not covered. An independently
+applicable exact hard proof can still decide the address while the unrelated
+coverage limitation remains explicit.
+
+For a direct contract address, `/check` runs standalone contract-safety analysis
+and the ordinary Fast, Where, and Deep transfer modes independently. A contract
+safety failure or unavailable contract profile does not suppress transfer
+analysis. The `isContract` fact is context for those modes, not a replacement
+for address-boundary policy.

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-10
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -65,3 +65,10 @@ Fixed in:
 
 - `docs/knowledge/01-product-principles.md`
 - `AGENTS.md`
+
+## 2026-07-10: Contract And Score Are Facts, Not Policy Shortcuts
+
+- `isContract` does not imply service boundary or risk.
+- A numeric score does not imply hard evidence.
+- Fee/service roles require transaction structure; address identity alone is insufficient.
+- Coverage failure changes certainty, not badness.

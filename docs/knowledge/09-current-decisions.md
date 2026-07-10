@@ -1,10 +1,15 @@
 ---
 status: current
-last_verified: 2026-07-08
+last_verified: 2026-07-10
 owner_area: docs
 code_refs:
   - src/index.ts
+  - src/forensics/serviceClassifier.ts
+  - src/forensics/gasFreeSettlement.ts
+  - src/forensics/localTronUsdtIndex.ts
+  - src/risk/finalDisposition.ts
   - src/risk/unifiedWalletRisk.ts
+  - src/risk/unifiedIncomingDepositRisk.ts
   - src/check/deepForensicCheck.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/incomingDepositJob.ts
@@ -34,6 +39,56 @@ of these decisions, update this file in the same work.
 - `Where is money` explains where relevant wallet funds came from.
 - `Incoming deposit` explains one concrete deposit.
 - `DeepCheck` builds a wider forensic profile.
+
+## 2026-07-10 Forensic And Scoring Correctness
+
+### Address Boundaries
+
+- `isContract` is an on-chain fact, not service identity, risk, or a tracing
+  boundary.
+- GasFree Accounts and unknown or unlabeled contracts are non-boundaries and
+  remain traceable and scoreable at every hop.
+- Positively identified shared or pooled infrastructure remains a boundary.
+  This includes the GasFree Endpoint/controller and the registered
+  TronLink/GasFree provider `TLntW9Z59LYY5KEi9cmwk3PKjQga828ird`, as well as
+  known CEX, DEX, router, bridge, and pool infrastructure.
+- Direct contract `/check` runs contract safety and ordinary transfer analysis
+  independently; unavailable contract safety does not suppress Fast, Where, or
+  Deep work.
+
+### GasFree Settlement Roles
+
+- GasFree principal and service-fee roles require a successful structurally
+  matched registered-controller settlement. Provider identity, destination, or
+  a familiar fee amount alone is insufficient.
+- Fees and collectors are dynamic. Exact fees remain visible in gross debit and
+  accounting facts but are excluded from payer provenance, peer diversity,
+  campaign counts, and ordinary risk propagation.
+- An unmatched movement to TLnt remains a visible direct transfer and is not
+  relabeled as a fee; expansion still stops at the confirmed pooled boundary.
+
+### Local Materialization
+
+- A complete provider index means the required rows are locally available; it
+  does not make one limited repository query complete evidence.
+- Where and Incoming page the concrete local window until existing provenance
+  proof is satisfied, the window is exhausted, or a local ceiling/read failure
+  occurs.
+- A local limit or database read failure is a technical local limitation. It is
+  not a provider cap and does not create risk.
+
+### Canonical Final Disposition
+
+- Numeric score does not create hard proof. Exact authority requires explicit
+  evidence class, proof level, applicable subject, and decision eligibility.
+- Exact subject-applicable hard proof yields a valid `DECLINE` even when
+  unrelated coverage is partial; the coverage limitation remains visible.
+- Invalid required coverage without such proof yields
+  `NO_FINAL_DECISION`, `finalScore=null`, and a separate observed context score.
+- Matrix `REVIEW` remains `REVIEW`; `INSUFFICIENT_EVIDENCE` maps to
+  `NO_FINAL_DECISION`. Admin, Telegram, and alerts do not remap these outcomes.
+- Old unversioned jobs are not silently reinterpreted, mutated, or rescored. A
+  fresh check is required to apply the new policy.
 
 ## Provenance Completeness
 
@@ -162,7 +217,8 @@ of these decisions, update this file in the same work.
 - A local page-budget stop is not a legitimate source-of-funds conclusion.
 - Final score should not be published as valid when the main money path is not
   covered, except for explicit low-materiality source-provenance caveats with no
-  hard evidence.
+  hard evidence or an independently applicable exact hard proof. Exact hard
+  proof decides badness while the unrelated coverage caveat remains visible.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
 - `Incoming deposit` uses the shared candidate-window-first targeted

@@ -1,9 +1,13 @@
 ---
 status: current
-last_verified: 2026-07-06
+last_verified: 2026-07-10
 owner_area: docs
 code_refs:
   - src/index.ts
+  - src/forensics/serviceClassifier.ts
+  - src/forensics/gasFreeSettlement.ts
+  - src/forensics/localTronUsdtIndex.ts
+  - src/risk/finalDisposition.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -290,8 +294,12 @@ supersedes:
 
 ## UX
 
-- Telegram needs plain language for technical coverage blocks.
-- Admin should distinguish old cached jobs from fresh live runs.
+- Canonical Wallet/Incoming technical stops now have plain no-final copy, but
+  Telegram still needs plain language for technical coverage blocks in some
+  other and legacy paths.
+- Unversioned scoring-policy legacy results now show a fresh-check warning, but
+  Admin should still distinguish broader old cached/debug jobs from fresh live
+  runs.
 - Admin progress graph currently covers `waiting_for_targeted_index`,
   `checking_candidate_windows`, and `checking_balance_forming_slice`. Completed
   and failed historical jobs still need clearer separation between final
@@ -306,5 +314,4 @@ supersedes:
 ## Planned Behavior
 
 - Ordinary Where/Incoming resumable indexing to full main-path coverage.
-- Final scoring only after covered indexed history for required money paths.
 - Full user-facing progress for long targeted indexing in Telegram.

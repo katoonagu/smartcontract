@@ -1,15 +1,24 @@
 ---
 status: current
-last_verified: 2026-07-05
+last_verified: 2026-07-10
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
+  - src/forensics/gasFreeSettlement.ts
+  - src/forensics/counterpartyRisk.ts
+  - src/forensics/counterpartyInteraction.ts
+  - src/forensics/flowCounterpartyProfile.ts
+  - src/forensics/inboundProvenance.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/deepSecondLayerRelationship.ts
   - src/forensics/deepSecondLayerRefresh.ts
   - src/runtime/deepForensicRuntimeOptions.ts
   - src/risk/unifiedWalletRisk.ts
   - tests/check/deepForensicCheck.test.ts
+  - tests/forensics/counterpartyRisk.test.ts
+  - tests/forensics/counterpartyInteraction.test.ts
+  - tests/forensics/flowCounterpartyProfile.test.ts
+  - tests/forensics/inboundProvenance.test.ts
   - tests/forensics/deepForensicJob.test.ts
 supersedes:
   - docs/project-walkthrough/06-check-modes-fast-deep-where-is-money.md
@@ -34,6 +43,17 @@ It does not replace `Where is money`, because it does not always prove exact
 source of funds for a specific amount.
 
 ## Current Behavior
+
+DeepCheck scores non-boundary contracts as ordinary counterparties. A
+`service` or `unknown_contract` category alone does not zero direct or
+second-layer contribution; suppression requires `isBoundary=true` or another
+explicit evidence policy.
+
+DeepCheck resolves exact GasFree economic roles on direct edges. Principal and
+unmatched movements remain ordinary risk-eligible edges. Only a structurally
+exact `tron_gasfree` `service_fee` edge is excluded from counterparty diversity,
+campaign counts, service exposure, and ordinary risk propagation. The fee still
+remains visible in gross transfer and debit facts.
 
 DeepCheck can use a complete all-time subject index. When that index is
 available and small enough to materialize, it considers the full direct

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-09
+last_verified: 2026-07-10
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -11,6 +11,9 @@ code_refs:
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
+  - src/forensics/localTronUsdtIndex.ts
+  - src/forensics/deepForensicJob.ts
+  - src/forensics/incomingDepositJob.ts
   - src/storage/repositories.ts
   - src/index.ts
   - src/config.ts
@@ -23,6 +26,9 @@ code_refs:
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
+  - tests/forensics/localTronUsdtIndex.test.ts
+  - tests/forensics/deepForensicJob.test.ts
+  - tests/forensics/incomingDepositJob.test.ts
   - tests/storage/repositories.test.ts
 supersedes:
   - docs/provider-observations/tronscan-usdt-pagination.md
@@ -56,6 +62,29 @@ The system supports a TronScan API key pool:
 
 More keys increase throughput. They do not fix local page budgets or partial
 targeted-index states by themselves.
+
+### Complete Index Versus Local Materialization
+
+A complete provider index proves that the relevant rows are available locally.
+It does not prove that one bounded repository read contains the transfer needed
+for an exact provenance conclusion. Where and Incoming therefore materialize
+the concrete indexed time window page by page, using stable newest-first offset
+ordering.
+
+Materialization stops only when the existing amount/funding proof is satisfied,
+the local window is exhausted, or a local safety condition is reached. A short
+final page proves window exhaustion; an empty exhausted window is recorded as
+known zero. The bounded outcomes are distinct:
+
+- `complete`: proof satisfied or window exhausted;
+- `local_limit`: more local rows exist beyond the materialization ceiling;
+- `read_failed`: the local database read failed.
+
+`local_limit` and `read_failed` are local availability failures. They do not set
+`providerCapHit=true`, do not become provider-cap evidence, and do not create
+risk. A complete local state for the same materialized window is consumed
+without a new provider call; acquisition for a different window remains a
+separate question.
 
 The inline live targeted seed path is capped by:
 

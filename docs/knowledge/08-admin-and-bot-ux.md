@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-09
+last_verified: 2026-07-10
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -8,11 +8,14 @@ code_refs:
   - src/admin/adminServer.ts
   - src/storage/repositories.ts
   - src/bot/createBot.ts
+  - src/bot/riskExplanationSummary.ts
+  - src/alerts/formatters.ts
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminConsole.test.ts
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminServer.test.ts
   - tests/bot/createBot.test.ts
+  - tests/alerts/formatters.test.ts
 supersedes:
   - docs/project-walkthrough/08-admin-forensics-console-plain-language.md
   - docs/project-walkthrough/14-telegram-bot-plain-language.md
@@ -26,6 +29,23 @@ supersedes:
 Admin is the analyst workbench. It shows jobs, graph projections, selected
 flows, technical coverage details, raw evidence summaries, and strict benchmark
 metrics when present.
+
+For new canonical Wallet and Incoming results, Admin, Telegram, and alerts use
+the saved final disposition without score-threshold or presentation-layer
+remapping. An exact hard decline remains `DECLINE` when unrelated coverage is
+partial, and the limitation is shown beside it. A technical stop remains
+`NO_FINAL_DECISION` with a null final score; observed context is secondary and
+must not be rendered as the final risk.
+
+Admin projects those canonical fields into the graph summary and subject node.
+A technical stop has no final risk level or subject-node risk badge. Telegram
+and Incoming alerts say that there is no final score and never render
+`null/100`.
+
+Unversioned legacy Where results remain readable through an explicit
+compatibility path. Bot and Admin display their stored decision and score
+without calling the new resolver, mutating the job, or silently rescoring it,
+and tell the analyst to run a fresh check for the current policy.
 
 Admin also has a Russian `Заявки о краже` workspace for preliminary theft
 reports submitted through the Telegram `Сообщить о краже` flow. This workspace
@@ -310,8 +330,9 @@ Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.
 
-Telegram can show `NO_FINAL_DECISION`, blocked reason, and technical status for
-some invalid-score flows. It does not yet have a complete live progress UX for
+Telegram shows canonical `NO_FINAL_DECISION`, blocked reason, technical status,
+and observed context for new invalid-score final reports without inventing a
+numeric final risk. It does not yet have a complete live progress UX for
 ordinary long Where/Incoming indexing.
 
 ## Admin Purpose
@@ -418,8 +439,10 @@ valid score, show a technical stop. Do not present technical stops as decline.
   not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress
   model.
-- Telegram still uses raw technical phrases in some paths outside the ordinary
-  Where materiality-caveat path.
-- Admin should distinguish old cached jobs from fresh live runs more clearly.
+- Canonical Wallet/Incoming technical stops now have honest no-final copy, but
+  Telegram still uses raw technical phrases in some other and legacy paths.
+- Unversioned scoring-policy legacy results now carry an explicit fresh-check
+  warning, but Admin should distinguish broader old cached/debug jobs from fresh
+  live runs more clearly.
 - Job-start buttons should confirm the address and queued job id in a way that
   is obvious to the analyst.

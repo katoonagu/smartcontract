@@ -1,10 +1,12 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-10
 owner_area: docs
 code_refs:
   - src/risk/unifiedWalletRisk.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
+  - src/forensics/serviceClassifier.ts
+  - src/forensics/moneyOriginTrace.ts
 supersedes:
   - docs/project-walkthrough/00-purpose-and-clients.md
   - docs/project-walkthrough/15-limitations-and-honest-promises.md
@@ -44,11 +46,15 @@ A path may honestly stop at a service boundary:
 - DEX;
 - bridge;
 - router;
-- known contract or service wallet.
+- positively identified shared or pooled service contract/wallet.
 
 That is different from a local stop caused by a small page budget, timeout, or
 partial index state. Service boundary means the public chain may not expose the
 internal source. Budget stop means we did not collect enough public data.
+
+An unknown or unlabeled contract remains traceable. The on-chain `isContract`
+fact alone does not identify shared infrastructure and does not create a
+boundary.
 
 ## Long Checks Are Allowed
 

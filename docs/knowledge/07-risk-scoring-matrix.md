@@ -1,11 +1,20 @@
 ---
 status: current
-last_verified: 2026-07-08
+last_verified: 2026-07-10
 owner_area: scoring
 code_refs:
+  - src/risk/fastEvidence.ts
+  - src/risk/scoringSignalMatrix.ts
+  - src/risk/scoringSignalMatrixInputs.ts
+  - src/risk/finalDisposition.ts
   - src/risk/unifiedWalletRisk.ts
+  - src/risk/unifiedIncomingDepositRisk.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/moneyOriginPolicy.ts
+  - tests/risk/fastEvidence.test.ts
+  - tests/risk/scoringSignalMatrix.test.ts
+  - tests/risk/finalDisposition.test.ts
+  - tests/risk/unifiedWalletRisk.test.ts
   - tests/forensics/moneyOriginOperationalAssessment.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-01-scoring-signal-matrix-v1-design.md
@@ -22,6 +31,11 @@ The score must reflect evidence strength.
 Hard evidence can drive a strong decision. Weak context should remain bounded.
 Incomplete coverage must not be treated as clean and must not be silently
 converted into a final decline.
+
+A numeric score never creates hard proof. Proof authority comes from explicit
+evidence code, evidence class, proof level, decision scope, subject, and
+eligibility. A generic Fast score of 90 is context and produces at most
+`REVIEW`; only allowlisted exact Fast evidence codes enter the hard-proof row.
 
 ## Important Fields
 
@@ -45,6 +59,27 @@ Dense-hop provider-capped unresolved source can also keep `score_valid=true`
 only below its branch and aggregate thresholds and without hard evidence. This
 is a score-valid caveat, not a clean verdict; Admin and Telegram keep it
 visible, and scoring excludes it from decisive clean/bad evidence.
+
+## Evidence Authority And Final Disposition
+
+Matrix candidates carry their evidence class, proof level, decision subject,
+decision eligibility, and coverage dependency. Merely placing a contextual row
+in `hard_proof`, using a high score, or using hard-sounding text does not promote
+it. Same-episode deduplication preserves an exact hard candidate over contextual
+pattern candidates.
+
+One canonical resolver produces the final Wallet and Incoming disposition:
+
+- exact, subject-applicable hard proof with exact authority and no coverage
+  dependency yields `DECLINE`, even when unrelated coverage is partial;
+- the result remains `scoreValid=true` and retains `coverage=partial` and its
+  caveats;
+- invalid required coverage without applicable exact hard proof yields
+  `NO_FINAL_DECISION`, `finalScore=null`, and `scoreValid=false`;
+- the best bounded diagnostic remains available only as
+  `observedContextScore`, not as a substituted final score;
+- matrix `DECLINE`, `REVIEW`, and `ACCEPTABLE` map losslessly;
+- matrix `INSUFFICIENT_EVIDENCE` maps to `NO_FINAL_DECISION`.
 
 ## Floors
 
@@ -129,9 +164,11 @@ decisive clean or bad evidence.
 
 ## Current Direction
 
-For `Where is money` and `Incoming deposit`, incomplete main-path coverage
-blocks final scoring. The product should keep indexing where possible instead
-of publishing a score on partial data.
+For `Where is money` and `Incoming deposit`, incomplete required main-path
+coverage blocks final scoring when no exact subject-applicable hard proof is
+present. The product should keep indexing where possible instead of publishing
+a score on partial data. An independent exact hard proof can still produce a
+valid `DECLINE`; the unrelated coverage limitation remains explicit.
 
 Exception for ordinary Where: low-materiality source-provenance caveats can be
 scored when they are below their thresholds and have no hard evidence. This
