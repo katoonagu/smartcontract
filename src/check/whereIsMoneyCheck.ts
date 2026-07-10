@@ -1697,7 +1697,7 @@ export async function runWhereIsMoneyCheck(
     largeBalanceRaw: currentBalanceRaw
   });
   const buildWhereSourceBundleExposure = (assessmentCoverage: WhereIsMoneyCoverage) => {
-    if (provenanceOriginPaths.length === 0 || provenanceTargetAmount <= 0n) return undefined;
+    if (provenanceTargetAmount <= 0n) return undefined;
     const sourceBundleTargetAmountRaw = provenanceTargetAmountRaw;
     const findings = sourceBundleFindingsFromOriginPaths({
       originPaths: provenanceOriginPaths,
@@ -1712,12 +1712,20 @@ export async function runWhereIsMoneyCheck(
       exhausted: assessmentCoverage.partial,
       exhaustedPhase: assessmentCoverage.partial ? "trace" : null
     } as const;
+    const unresolvedBoundary = findings.length === 0 && budget.exhausted
+      ? {
+          kind: "unknown" as const,
+          affectedShare: 1,
+          reason: "Source bundle coverage-limited unknown boundary remains after the graph budget stopped.",
+          evidenceTxHashes: []
+        }
+      : unresolvedBoundaryFromFindings({ findings, budget });
     return buildSourceBundleExposure({
       scope: whereSourceBundleScope(assessmentCoverage.checkedScope),
       targetAmountRaw: sourceBundleTargetAmountRaw,
       findings,
       budget,
-      unresolvedBoundary: unresolvedBoundaryFromFindings({ findings, budget })
+      unresolvedBoundary
     });
   };
   let sourceBundleExposure = buildWhereSourceBundleExposure(coverage);
@@ -1851,7 +1859,12 @@ export async function runWhereIsMoneyCheck(
       }
     });
   }
-  if (exactGasFreeFeeOnly && assessment.hardBadEvidence.length === 0) {
+  const fullyCoveredExactGasFreeFeeOnly = exactGasFreeFeeOnly &&
+    provenanceTargetAmount === 0n &&
+    selection.coverageRatio >= 0.999 &&
+    !selection.partial &&
+    !finalCoverage.partial;
+  if (fullyCoveredExactGasFreeFeeOnly && assessment.hardBadEvidence.length === 0) {
     assessment = {
       ...assessment,
       decision: "REVIEW",
@@ -1869,6 +1882,21 @@ export async function runWhereIsMoneyCheck(
       reasons: ["Exact GasFree service-fee movement; not payer provenance."]
     };
     sourceBundleExposure = undefined;
+  } else if (exactGasFreeFeeOnly && provenanceTargetAmount > 0n && assessment.hardBadEvidence.length === 0) {
+    assessment = {
+      ...assessment,
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "insufficient_coverage",
+      technicalStatus: "provider_cap_unresolved",
+      reasons: [
+        "Exact GasFree service fee is visible, but the remaining requested amount has no selected provenance path."
+      ],
+      warnings: [
+        ...assessment.warnings,
+        "Final scoring is blocked until the remaining requested amount has source coverage."
+      ]
+    };
   }
   const decision = assessment.decision;
   const riskScore = assessment.riskScore;

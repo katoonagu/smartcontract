@@ -592,6 +592,59 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.riskScore).toBe(0);
   });
 
+  it("preserves an uncovered requested amount when only an exact GasFree fee was selected", async () => {
+    const feeTxHash = "tx-partial-requested-gasfree-fee";
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => address === gasFreeTlnt
+        ? [edge(feeTxHash, gasFreeAccount, gasFreeTlnt, "3000000", "2026-07-10T00:05:00.000Z")]
+        : [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === gasFreeAccount
+        ? service("unknown_contract", "GasFree Account")
+        : service("none", null),
+      getTransaction: async (txHash) => txHash === feeTxHash ? gasFreeTransaction() : null
+    }, {
+      sourceAddress: gasFreeTlnt,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-09T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-10T01:00:00.000Z"),
+      approvalEnrichmentMode: "off",
+      maxContractTransactionInfoFetches: 0
+    });
+
+    expect(report.originPaths).toHaveLength(1);
+    expect(report.originPaths[0]).toMatchObject({
+      verdict: "REVIEW",
+      stoppedReason: "service_boundary",
+      riskScoreContribution: 0
+    });
+    expect(report.originPaths[0]?.reasons.join(" ")).toContain("GasFree service-fee");
+    expect(report.coverage).toMatchObject({
+      targetAmountRaw: "100000000",
+      selectedAmountRaw: "3000000",
+      coverageRatio: 0.03,
+      partial: true
+    });
+    expect(report.sourceBundleExposure).toMatchObject({
+      targetAmountRaw: "97000000",
+      coveredAmountRaw: "0",
+      coverageRatio: 0,
+      unknownShare: 1,
+      dominantSource: "unknown",
+      evidenceTxHashes: [],
+      budget: { exhausted: true },
+      unresolvedBoundary: {
+        kind: "unknown",
+        affectedShare: 1,
+        scoreFloor: 35
+      }
+    });
+    expect(report.scoreValid).toBe(false);
+    expect(report.scoreBlockedReason).not.toBeNull();
+    expect(report.technicalStatus).not.toBeNull();
+  });
+
   it("rebases mixed provenance to the non-fee selected amount", async () => {
     const feeTxHash = "tx-mixed-exact-gasfree-fee";
     const principalTxHash = "tx-mixed-clean-principal";
