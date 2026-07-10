@@ -21,6 +21,7 @@ import type {
   WhereIsMoneyRiskBand,
   WhereIsMoneyWalletRole
 } from "../types";
+import { exactFastHardEvidence } from "../risk/fastEvidence";
 import {
   aggregateLayerScores,
   scoreSourceExposures,
@@ -181,13 +182,12 @@ function cleanCexCoverage(paths: MoneyOriginPath[]): number {
 }
 
 function hardEvidenceFromFastRisk(report: RiskReport | null): WhereIsMoneyHardBadEvidence[] {
-  if (!report || report.score < 85) return [];
-  return [{
+  return exactFastHardEvidence(report).map((item) => ({
     kind: "fast_critical",
-    score: report.score,
-    message: `Fast wallet check has critical score ${report.score}/100.`,
-    evidenceIds: report.reasons.map((reason) => reason.evidenceRef ?? reason.code)
-  }];
+    score: item.score,
+    message: item.message,
+    evidenceIds: [item.evidenceId]
+  }));
 }
 
 function hardEvidenceFromApprovalDrain(

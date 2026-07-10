@@ -4,12 +4,12 @@ import type {
   IncomingFreshBundleExposure,
   IncomingWalletExposureProfile,
   RiskLabel,
-  RiskReason,
   RiskReport,
   SourcePolicyEvidence,
   WhereIsMoneyReport
 } from "../types";
 import type { MatrixCandidate } from "./scoringSignalMatrix";
+import { exactFastHardEvidence } from "./fastEvidence";
 
 export type WalletMatrixCandidateInput = {
   address: string;
@@ -90,67 +90,24 @@ function sourcePolicyCandidate(item: SourcePolicyEvidence): MatrixCandidate {
   });
 }
 
-function isFastApprovalDrainHardEvidence(code: string): boolean {
-  return code === "forensic_approval_drain_provenance" ||
-    code === "internal_label_approval_drain_proximity" ||
-    code.includes("approval_drain_exact") ||
-    code.includes("exact_approval");
-}
-
-function isFastExactSelfHardEvidence(code: string): boolean {
-  return code.startsWith("internal_label_scam") ||
-    code.startsWith("internal_label_reported_scam") ||
-    code.startsWith("internal_label_stolen_funds") ||
-    code.startsWith("internal_label_phishing") ||
-    code.startsWith("internal_label_risky_contract") ||
-    code.startsWith("internal_label_whitebit") ||
-    (code.startsWith("internal_label_darknet_exchange") && !code.includes("proximity"));
-}
-
-function isFastHardEvidenceCode(code: string): boolean {
-  return code === "stablecoin_usdt_blacklisted" ||
-    isFastApprovalDrainHardEvidence(code) ||
-    isFastExactSelfHardEvidence(code);
-}
-
-function fastHardScore(reason: RiskReason): number {
-  if (reason.code === "stablecoin_usdt_blacklisted") return 95;
-  if (isFastApprovalDrainHardEvidence(reason.code)) return 95;
-  if (isFastExactSelfHardEvidence(reason.code)) {
-    return Math.max(90, reason.scoreImpact);
-  }
-  return Math.max(85, reason.scoreImpact);
-}
-
 function fastHardProofCandidates(report: RiskReport | null | undefined): MatrixCandidate[] {
-  if (!report) return [];
-  return report.reasons.flatMap((reason) => {
-    if (
-      reason.code !== "stablecoin_usdt_blacklisted" &&
-      !isFastApprovalDrainHardEvidence(reason.code) &&
-      !isFastExactSelfHardEvidence(reason.code)
-    ) {
-      return [];
-    }
-    const id = reason.evidenceRef ?? `fast:${reason.code}`;
-    return [candidate({
+  return exactFastHardEvidence(report).map((item) => candidate({
       row: "hard_proof",
       actionUnit: "wallet",
-      score: fastHardScore(reason),
+      score: item.score,
       decisionEligibility: "can_decline",
-      evidenceIds: [id],
-      evidenceEpisodeIds: [id],
-      atomicSignals: [reason.code],
+      evidenceIds: [item.evidenceId],
+      evidenceEpisodeIds: [item.evidenceId],
+      atomicSignals: [item.code],
       modifiers: ["hard_anchor"],
       caps: [],
       dampeners: [],
       caveats: []
-    })];
-  });
+    }));
 }
 
 function fastContextCandidates(report: RiskReport | null | undefined): MatrixCandidate[] {
-  if (!report || report.score <= 0 || report.reasons.some((reason) => isFastHardEvidenceCode(reason.code))) return [];
+  if (!report || report.score <= 0 || exactFastHardEvidence(report).length > 0) return [];
   return [candidate({
     row: "behavior_only_prior",
     actionUnit: "wallet",

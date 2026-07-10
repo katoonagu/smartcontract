@@ -39,6 +39,7 @@ import { detectDrainEpisode } from "../forensics/drainEpisode";
 import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingConfig";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ForensicJobProgressPatch } from "../forensics/forensicJobProgress";
+import { exactFastHardEvidence } from "../risk/fastEvidence";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   AddressLabel,
@@ -685,11 +686,6 @@ function unavailableVerdictsForCaseFiles(caseFiles: ContractAnalysisCaseFile[]):
     model: "disabled",
     error: "llm disabled"
   }));
-}
-
-function fastRiskDecisionScore(report: RiskReport | null): number {
-  if (!report) return 0;
-  return report.score >= 85 ? report.score : 0;
 }
 
 function contractLlmCandidateAddresses(input: {
@@ -1638,9 +1634,9 @@ export async function runWhereIsMoneyCheck(
     incomingClassificationMode: "method_prefiltered"
   });
   const combined = combineMoneyOriginDecision(provenanceOriginPaths.length > 0 ? provenanceOriginPaths : originPaths);
-  const fastScore = fastRiskDecisionScore(fastWalletRisk);
+  const exactFast = exactFastHardEvidence(fastWalletRisk);
   const approvalDrainScore = approvalDrainProvenanceProfiles[0]?.score ?? 0;
-  const fastDecline = fastScore >= 85;
+  const fastDecline = exactFast.length > 0;
   const approvalDrainDecline = approvalDrainScore >= 70;
   const deterministicDecision = fastDecline || approvalDrainDecline ? "DECLINE" : combined.decision;
   let contractLlmVerdicts: ContractLlmVerdictSummary[] = [];

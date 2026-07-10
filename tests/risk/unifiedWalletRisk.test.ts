@@ -1660,6 +1660,39 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
+  it("keeps generic Fast 90 context review-only without a hard decline", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(90, [{
+        code: "critical_context_only",
+        message: "Fast Check found critical context only.",
+        scoreImpact: 90
+      }]),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalDecision).not.toBe("DECLINE");
+    expect(result.reasons.map((reason) => reason.code)).not.toContain("fast_critical");
+    expect(result.reasons.map((reason) => reason.code)).not.toContain("scam_or_blacklist");
+  });
+
+  it.each([
+    "internal_label_scam_proximity",
+    "forensic_exact_approval_spoof",
+    "approval_drain_exactish"
+  ])("does not promote Fast hard-code lookalike %s", (code) => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(100, [{ code, message: code, scoreImpact: 100 }]),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalDecision).not.toBe("DECLINE");
+    expect(hasUnifiedFastHardEvidence(fastReport(100, [{ code, message: code, scoreImpact: 100 }]))).toBe(false);
+  });
+
   it("keeps fast blacklist at 95 when lower scam evidence appears first", () => {
     const result = calculateUnifiedWalletRisk({
       address,

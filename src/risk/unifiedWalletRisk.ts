@@ -2,6 +2,7 @@ import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { calculateHistoricalTransitBreakdown } from "../forensics/historicalTransitScore";
 import { scoreMatrixCandidates, type MatrixScoringResult } from "./scoringSignalMatrix";
 import { buildWalletMatrixCandidates } from "./scoringSignalMatrixInputs";
+import { exactFastHardEvidence } from "./fastEvidence";
 import type {
   RiskLabel,
   RiskLevel,
@@ -206,54 +207,19 @@ function selectedFastReport(input: UnifiedWalletRiskInput): RiskReport | null | 
   return input.fastReport ?? input.whereReport.fastWalletRisk;
 }
 
-function isFastApprovalDrainHardEvidence(code: string): boolean {
-  return code === "forensic_approval_drain_provenance" ||
-    code === "internal_label_approval_drain_proximity" ||
-    code.includes("approval_drain_exact") ||
-    code.includes("exact_approval");
-}
-
-function isFastExactSelfHardEvidence(code: string): boolean {
-  return code.startsWith("internal_label_scam") ||
-    code.startsWith("internal_label_reported_scam") ||
-    code.startsWith("internal_label_stolen_funds") ||
-    code.startsWith("internal_label_phishing") ||
-    code.startsWith("internal_label_risky_contract") ||
-    code.startsWith("internal_label_whitebit") ||
-    (code.startsWith("internal_label_darknet_exchange") && !code.includes("proximity"));
-}
-
-function isFastHardEvidenceCode(code: string): boolean {
-  return code === "stablecoin_usdt_blacklisted" ||
-    isFastApprovalDrainHardEvidence(code) ||
-    isFastExactSelfHardEvidence(code);
-}
-
-function fastHardEvidenceScore(reason: RiskReason): number {
-  if (reason.code === "stablecoin_usdt_blacklisted") return 95;
-  if (isFastApprovalDrainHardEvidence(reason.code)) {
-    return 95;
-  }
-  if (isFastExactSelfHardEvidence(reason.code)) {
-    return Math.max(90, clampScore(reason.scoreImpact));
-  }
-  return Math.max(85, clampScore(reason.scoreImpact));
-}
-
 function fastHardEvidenceFloor(fastReport: RiskReport | null | undefined): UnifiedWalletRiskReason | null {
-  return fastReport?.reasons
-    .filter((reason) => isFastHardEvidenceCode(reason.code))
-    .map((reason) => ({
-      code: reason.code,
-      message: reason.message,
-      score: fastHardEvidenceScore(reason),
+  return exactFastHardEvidence(fastReport)
+    .map((item) => ({
+      code: item.code,
+      message: item.message,
+      score: item.score,
       source: "hard_evidence" as const
     }))
     .sort((left, right) => right.score - left.score)[0] ?? null;
 }
 
 export function hasUnifiedFastHardEvidence(fastReport: RiskReport | null | undefined): boolean {
-  return fastHardEvidenceFloor(fastReport) !== null;
+  return exactFastHardEvidence(fastReport).length > 0;
 }
 
 function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undefined): UnifiedWalletRiskReason[] {

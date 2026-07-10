@@ -2488,6 +2488,40 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decision).toBe("DECLINE");
   });
 
+  it("does not promote generic Fast 90 context to hard evidence or decline", async () => {
+    const genericFastRisk: RiskReport = {
+      subjectAddress: subject,
+      level: "CRITICAL",
+      score: 90,
+      reasons: [{
+        code: "critical_context_only",
+        message: "Fast Check found critical context only.",
+        scoreImpact: 90,
+        evidenceRef: "fast-context-only"
+      }]
+    };
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-clean-subject", cleanSender, subject, "2000000000", "2026-05-22T10:15:00.000Z")]],
+      [cleanSender, [edge("tx-binance-clean", binance, cleanSender, "2000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => genericFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.decision).not.toBe("DECLINE");
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("fast_critical");
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("scam_or_blacklist");
+  });
+
   it("maps fast wallet exact critical declines to exact scam or taint proof", async () => {
     const exactFastRisk: RiskReport = {
       subjectAddress: subject,
@@ -2498,6 +2532,7 @@ describe("runWhereIsMoneyCheck", () => {
           code: "stablecoin_usdt_blacklisted",
           message: "Official TRON USDT contract blacklist state is active for this address.",
           scoreImpact: 90,
+          evidenceRef: "fast-blacklist",
           source: "stablecoin_contract",
           confidence: "high",
           severity: "critical"
@@ -2528,7 +2563,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.userDecision).toBe("DECLINE");
     expect(report.internalDecision).toBe("DECLINE");
     expect(report.proofLevel).toBe("exact_scam_or_taint_proof");
-    expect(report.decisionReasons[0]).toContain("critical score");
+    expect(report.decisionReasons[0]).toContain("blacklist");
     expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("fast_critical");
   });
 

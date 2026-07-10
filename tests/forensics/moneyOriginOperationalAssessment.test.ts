@@ -40,7 +40,19 @@ const criticalFastRisk: RiskReport = {
   subjectAddress: subject,
   level: "CRITICAL",
   score: 90,
-  reasons: [{ code: "critical_context", message: "Critical exact risk.", scoreImpact: 90, evidenceRef: "fast-evidence-1" }]
+  reasons: [{ code: "critical_context_only", message: "Critical contextual risk.", scoreImpact: 90, evidenceRef: "fast-context-1" }]
+};
+
+const exactBlacklistFastRisk: RiskReport = {
+  subjectAddress: subject,
+  level: "CRITICAL",
+  score: 90,
+  reasons: [{
+    code: "stablecoin_usdt_blacklisted",
+    message: "Official USDT blacklist state is active.",
+    scoreImpact: 90,
+    evidenceRef: "fast-blacklist-1"
+  }]
 };
 
 function coverage(overrides: Partial<WhereIsMoneyCoverage> = {}): WhereIsMoneyCoverage {
@@ -1160,15 +1172,29 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.riskScore).toBeGreaterThanOrEqual(assessment.dominantRiskLayer?.score ?? 0);
   });
 
-  it("declines fast critical evidence as hard bad evidence", () => {
+  it("does not promote generic Fast 90 context to hard evidence or decline", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
-      fastWalletRisk: criticalFastRisk
+      fastWalletRisk: criticalFastRisk,
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("fast_critical");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("scam_or_blacklist");
+  });
+
+  it("keeps exact Fast blacklist evidence hard and declining", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      fastWalletRisk: exactBlacklistFastRisk,
+      originPaths: [cleanCexPath()],
+      coverage: coverage({ partial: false })
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBe(90);
+    expect(assessment.riskScore).toBe(95);
     expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "fast_critical", evidenceIds: ["fast-evidence-1"] })
+      expect.objectContaining({ kind: "fast_critical", evidenceIds: ["fast-blacklist-1"] })
     ]));
   });
 
@@ -3424,7 +3450,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
   it("preserves extra risk layers in the top hard evidence branch", () => {
     const extraLayer = extraRiskLayer({ evidenceClass: "data_quality", kind: "extra_hard_branch_partial", score: 52 });
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
-      fastWalletRisk: criticalFastRisk,
+      fastWalletRisk: exactBlacklistFastRisk,
       extraRiskLayers: [extraLayer]
     }));
 

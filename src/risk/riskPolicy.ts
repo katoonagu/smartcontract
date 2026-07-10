@@ -1,4 +1,5 @@
 import type { RiskReason } from "../types";
+import { isExactFastHardEvidenceCode } from "./fastEvidence";
 
 export type RiskPolicyDimension =
   | "provenance"
@@ -36,24 +37,6 @@ export type RiskPolicyScoreBreakdown = {
 };
 
 export const RISK_POLICY_VERSION = "2026-05-25-phase-10a12-v1";
-
-function isExactSelfEvidence(code: string): boolean {
-  return code === "stablecoin_usdt_blacklisted" ||
-    code.startsWith("internal_label_scam") ||
-    code.startsWith("internal_label_reported_scam") ||
-    code.startsWith("internal_label_stolen_funds") ||
-    code.startsWith("internal_label_phishing") ||
-    code.startsWith("internal_label_risky_contract") ||
-    code.startsWith("internal_label_whitebit") ||
-    code.startsWith("internal_label_darknet_exchange") && !code.includes("proximity");
-}
-
-function isExactApprovalDrainEvidence(code: string): boolean {
-  return code === "forensic_approval_drain_provenance" ||
-    code === "internal_label_approval_drain_proximity" ||
-    code.includes("approval_drain_exact") ||
-    code.includes("exact_approval");
-}
 
 function isOperationalFlowPattern(code: string): boolean {
   return code === "forensic_operational_boundary_flow" ||
@@ -93,16 +76,16 @@ function isProvenanceContext(code: string): boolean {
 export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">): RiskPolicyClassification {
   const code = reason.code;
 
+  if (isExactFastHardEvidenceCode(code)) {
+    const exactApprovalDrain = code === "forensic_approval_drain_provenance" ||
+      code === "internal_label_approval_drain_proximity";
+    return exactApprovalDrain
+      ? { dimension: "approval_drain", evidenceClass: "exact_approval_drain", hardEvidence: true, cap: 95 }
+      : { dimension: "provider_label", evidenceClass: "exact_self", hardEvidence: true, cap: 95 };
+  }
+
   if (reason.scoreImpact < 0) {
     return { dimension: "dampener", evidenceClass: "dampener", hardEvidence: false, cap: 40 };
-  }
-
-  if (isExactSelfEvidence(code)) {
-    return { dimension: "provider_label", evidenceClass: "exact_self", hardEvidence: true, cap: 95 };
-  }
-
-  if (isExactApprovalDrainEvidence(code)) {
-    return { dimension: "approval_drain", evidenceClass: "exact_approval_drain", hardEvidence: true, cap: 95 };
   }
 
   if (isOperationalFlowPattern(code)) {
@@ -122,7 +105,7 @@ export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">
   }
 
   if (code === "internal_label_darknet_exchange_proximity") {
-    return { dimension: "provenance", evidenceClass: "exact_labeled_path", hardEvidence: true, cap: 60 };
+    return { dimension: "provenance", evidenceClass: "exact_labeled_path", hardEvidence: false, cap: 60 };
   }
 
   if (code === "forensic_counterparty_whitebit") {
@@ -183,6 +166,7 @@ function isOperationalProvenanceContext(reason: RiskReason, policy: RiskPolicyCl
 export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicyScoreBreakdown {
   let hardEvidenceScore = 0;
   let strongCounterpartyContextScore = 0;
+  let strongProvenanceContextScore = 0;
   let strongApprovalContextScore = 0;
   const buckets: Record<RiskPolicyDimension, number> = {
     provenance: 0,
@@ -206,6 +190,9 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
     const policy = policyForReason(reason);
     if (reason.code === "forensic_counterparty_fast_snapshot_context" || reason.code.startsWith("forensic_counterparty_")) {
       strongCounterpartyContextScore = Math.max(strongCounterpartyContextScore, reason.scoreImpact);
+    }
+    if (reason.code === "internal_label_darknet_exchange_proximity") {
+      strongProvenanceContextScore = Math.max(strongProvenanceContextScore, reason.scoreImpact);
     }
     if (reason.code === "forensic_route_linked_approval_pattern") {
       strongApprovalContextScore = Math.max(strongApprovalContextScore, reason.scoreImpact);
@@ -252,6 +239,7 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
         Math.min(40, operationalBuckets.dampener)
     ),
     strongCounterpartyContextScore,
+    strongProvenanceContextScore,
     strongApprovalContextScore
   ));
   const boundedPolicyScore = clampPolicyScore(Math.max(hardEvidenceScore, composite));

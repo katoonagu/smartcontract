@@ -48,6 +48,31 @@ describe("riskPolicy", () => {
     expect(boundedReasonImpact(reason("forensic_approval_drain_provenance", 90)).scoreImpact).toBe(95);
   });
 
+  it("uses exact Fast proof codes for hard-evidence membership", () => {
+    expect(policyForReason(reason("critical_context_only", 100)).hardEvidence).toBe(false);
+    expect(policyForReason(reason("stablecoin_usdt_blacklisted", 90)).hardEvidence).toBe(true);
+    expect(policyForReason(reason("internal_label_approval_drain_proximity", 80))).toMatchObject({
+      evidenceClass: "exact_approval_drain",
+      hardEvidence: true
+    });
+    expect(policyForReason(reason("internal_label_darknet_exchange_proximity", 95)).hardEvidence).toBe(false);
+  });
+
+  it("keeps darknet exchange proximity at HIGH as non-hard context", () => {
+    const proximity = reason("internal_label_darknet_exchange_proximity", 60);
+
+    expect(policyForReason(proximity)).toMatchObject({ hardEvidence: false, cap: 60 });
+    expect(calculateBoundedPolicyScore([proximity])).toBe(60);
+  });
+
+  it.each([
+    "internal_label_scam_proximity",
+    "forensic_exact_approval_spoof",
+    "approval_drain_exactish"
+  ])("does not classify proof-code lookalike %s as hard", (code) => {
+    expect(policyForReason(reason(code, 100)).hardEvidence).toBe(false);
+  });
+
   it("keeps route-linked approval-drain context below exact hard proof", () => {
     const breakdown = calculatePolicyScoreBreakdown([
       reason("forensic_route_linked_approval_pattern", 80)
