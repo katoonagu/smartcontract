@@ -2130,22 +2130,26 @@ describe("deep forensic address check", () => {
     expect(new Set(getTransactionCalls).size).toBe(expectedCalls);
   });
 
-  it("does not tag an unmatched direct TLnt movement as a GasFree service fee", async () => {
+  it("keeps an unmatched direct TLnt movement visible and scored while stopping at the provider boundary", async () => {
     const txHash = "tx-deep-unmatched-tlnt";
+    const transferCalls: string[] = [];
     const report = await runDeepAddressForensicCheck({
       tronClient: {
-        listRelatedTrc20Transfers: async (address) => address === gasFreeReceiver
-          ? [transfer({
-              id: txHash,
-              from: gasFreeReceiver,
-              to: gasFreeTlnt,
-              amountRaw: "2000000",
-              at: "2026-07-10T00:05:00.000Z",
-              triggerInfo: { methodName: "transfer" }
-            })]
-          : []
+        listRelatedTrc20Transfers: async (address) => {
+          transferCalls.push(address);
+          return address === gasFreeReceiver
+            ? [transfer({
+                id: txHash,
+                from: gasFreeReceiver,
+                to: gasFreeTlnt,
+                amountRaw: "100000000",
+                at: "2026-07-10T00:05:00.000Z",
+                triggerInfo: { methodName: "transfer" }
+              })]
+            : [];
+        }
       },
-      getLabelsForAddress: async () => [],
+      getLabelsForAddress: async (address) => address === gasFreeTlnt ? [darknetLabel(address)] : [],
       getAddressMetadata: async () => null,
       getTransaction: async (requestedTxHash) => requestedTxHash === txHash
         ? gasFreeTransaction({ accountAddress: gasFreeReceiver, receiverAddress: gasFreeAccount })
@@ -2154,10 +2158,10 @@ describe("deep forensic address check", () => {
       sourceAddress: gasFreeReceiver,
       windowStart: new Date("2026-07-01T00:00:00.000Z"),
       windowEnd: new Date("2026-07-11T00:00:00.000Z"),
-      maxDepth: 1,
+      maxDepth: 2,
       pageLimit: 10,
       maxPagesPerAddress: 1,
-      maxExpandedIntermediates: 0,
+      maxExpandedIntermediates: 1,
       metadataFetchLimit: 0,
       contractProfileFetchLimit: 0,
       maxInboundSenders: 0,
@@ -2170,6 +2174,18 @@ describe("deep forensic address check", () => {
     expect(transferRow).toBeDefined();
     expect(transferRow?.economicRole).toBeUndefined();
     expect(transferRow?.economicProtocol).toBeUndefined();
+    expect(transferCalls).not.toContain(gasFreeTlnt);
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining(`Expansion stopped at service boundary ${gasFreeTlnt}`)
+    ]));
+    expect(report.counterpartyRiskProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        counterpartyAddress: gasFreeTlnt,
+        label: "darknet_exchange",
+        amountRaw: "100000000",
+        score: 80
+      })
+    ]));
   });
 
   it("preserves multiple exact Verify20 approval-drain profiles in DeepCheck", async () => {
