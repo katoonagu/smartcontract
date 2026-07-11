@@ -56,11 +56,14 @@ export type NarrativeFact = {
   id: string;
   kind: NarrativeFactKind;
   evidenceIds?: string[];
+  scoreSignalKeys?: string[];
   role?: NarrativeAddressRole | null;
   proofStrength?: "exact" | "strong" | "context" | "limitation";
   priority?: number;
   factTextRu: string;
   factTextEn: string;
+  meaningTextRu?: string;
+  meaningTextEn?: string;
 };
 
 export type CoverageExplanation = {
@@ -203,6 +206,12 @@ export type WalletNarrativeEvidence = {
   coverageExplanation: CoverageExplanation | null;
 };
 
+type NarrativeFactOptions = {
+  meaningRu?: string;
+  meaningEn?: string;
+  scoreSignalKeys?: string[];
+};
+
 function narrativeFact(
   id: string,
   kind: NarrativeFactKind,
@@ -210,17 +219,21 @@ function narrativeFact(
   factTextEn: string,
   role: NarrativeAddressRole | null,
   proofStrength: NonNullable<NarrativeFact["proofStrength"]>,
-  evidenceIds: string[] = []
+  evidenceIds: string[] = [],
+  options: NarrativeFactOptions = {}
 ): NarrativeFact {
   return {
     id,
     kind,
     evidenceIds: [...new Set(evidenceIds.filter((id) => id.length > 0))].sort(compareLexical),
+    scoreSignalKeys: [...new Set(options.scoreSignalKeys ?? [])].sort(compareLexical),
     role,
     proofStrength,
     priority: factRank[kind],
     factTextRu: normalizeCopy(factTextRu),
-    factTextEn: normalizeCopy(factTextEn)
+    factTextEn: normalizeCopy(factTextEn),
+    ...(options.meaningRu ? { meaningTextRu: normalizeCopy(options.meaningRu) } : {}),
+    ...(options.meaningEn ? { meaningTextEn: normalizeCopy(options.meaningEn) } : {})
   };
 }
 
@@ -709,6 +722,10 @@ function aggregateSourceIdentity(
 }
 
 function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
+  const sanctionedMeaning = {
+    ru: "Это прямой санкционный источник выбранной части суммы.",
+    en: "This is a direct sanctioned source for the selected share."
+  };
   const sanctionedPaths = paths.filter((path) => path.sourceExposureKind === "sanctioned_service");
   if (sanctionedPaths.length === 0) return [];
   const matchedPaths = new Set<MoneyOriginPath>();
@@ -737,14 +754,15 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
       `sanctioned-source:${ids.join(",")}`,
       "sanctioned_source",
       htx
-        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. HTX/Huobi под санкциями Великобритании с 26 мая 2026 года. Это санкционный источник. Операцию не проводить.`
-        : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. Это подтверждённый санкционный источник. Операцию не проводить.`,
+        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. HTX/Huobi под санкциями Великобритании с 26 мая 2026 года.`
+        : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. Источник подтверждён как санкционный.`,
       htx
-        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. HTX/Huobi has been under UK sanctions since 26 May 2026. This is a sanctioned source. Do not proceed.`
-        : `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. This is a confirmed sanctioned source. Do not proceed.`,
+        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. HTX/Huobi has been under UK sanctions since 26 May 2026.`
+        : `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. The source is confirmed as sanctioned.`,
       null,
       "exact",
-      ids
+      ids,
+      { meaningRu: sanctionedMeaning.ru, meaningEn: sanctionedMeaning.en }
     )];
   });
   const unmatched = sanctionedPaths.filter((path) => !matchedPaths.has(path)).map((path) => {
@@ -1200,7 +1218,13 @@ function canonicalFacts(facts: NarrativeFact[]): NarrativeFact[] {
     proofRank[left.proofStrength ?? "context"] - proofRank[right.proofStrength ?? "context"] ||
     compareLexical(left.id, right.id) ||
     compareLexical(left.factTextRu, right.factTextRu) ||
-    compareLexical(left.factTextEn, right.factTextEn)
+    compareLexical(left.factTextEn, right.factTextEn) ||
+    compareLexical(left.meaningTextRu ?? "", right.meaningTextRu ?? "") ||
+    compareLexical(left.meaningTextEn ?? "", right.meaningTextEn ?? "") ||
+    compareLexical(
+      (left.scoreSignalKeys ?? []).join("\u0000"),
+      (right.scoreSignalKeys ?? []).join("\u0000")
+    )
   );
   const selected: NarrativeFact[] = [];
   for (const fact of ordered) {
@@ -1303,8 +1327,21 @@ export function buildWalletNarrativeEvidence(
   return { facts: canonicalFacts(facts), coverageExplanation };
 }
 
-function localizedFactText(fact: NarrativeFact, locale: WalletNarrativeLocale): string {
+function localizedFindingText(fact: NarrativeFact, locale: WalletNarrativeLocale): string {
   return locale === "en" ? fact.factTextEn : fact.factTextRu;
+}
+
+function localizedMeaningText(
+  fact: NarrativeFact,
+  locale: WalletNarrativeLocale
+): string | null {
+  return (locale === "en" ? fact.meaningTextEn : fact.meaningTextRu)?.trim() || null;
+}
+
+function localizedFactText(fact: NarrativeFact, locale: WalletNarrativeLocale): string {
+  return [localizedFindingText(fact, locale), localizedMeaningText(fact, locale)]
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
 }
 
 function localizedCoverageText(
@@ -1358,6 +1395,12 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
     if (typeof fact.factTextRu !== "string" || typeof fact.factTextEn !== "string") {
       throw new Error("Wallet narrative fact texts must be strings.");
     }
+    if (fact.meaningTextRu !== undefined && typeof fact.meaningTextRu !== "string") {
+      throw new Error("Wallet narrative fact meaning text must be a string.");
+    }
+    if (fact.meaningTextEn !== undefined && typeof fact.meaningTextEn !== "string") {
+      throw new Error("Wallet narrative fact meaning text must be a string.");
+    }
     if (
       fact.role !== undefined &&
       fact.role !== null &&
@@ -1382,6 +1425,15 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
       fact.evidenceIds.some((id) => typeof id !== "string" || id.length === 0)
     ) {
       throw new Error("Wallet narrative fact evidence ids must contain non-empty strings.");
+    }
+    if (fact.scoreSignalKeys !== undefined && !Array.isArray(fact.scoreSignalKeys)) {
+      throw new Error("Wallet narrative fact score signal keys must be an array.");
+    }
+    if (
+      Array.isArray(fact.scoreSignalKeys) &&
+      fact.scoreSignalKeys.some((key) => typeof key !== "string" || key.trim().length === 0)
+    ) {
+      throw new Error("Wallet narrative fact score signal keys must contain non-empty strings.");
     }
   });
   if (input.coverageExplanation === null) return;
@@ -1409,11 +1461,22 @@ export function buildWalletNarrativeCase(input: WalletNarrativeCase): WalletNarr
   validateWalletNarrativeCase(input);
 
   const facts = input.facts.flatMap((fact) => {
+    const meaningTextRu = fact.meaningTextRu === undefined
+      ? null
+      : normalizeCopy(fact.meaningTextRu);
+    const meaningTextEn = fact.meaningTextEn === undefined
+      ? null
+      : normalizeCopy(fact.meaningTextEn);
     const normalized: NarrativeFact = {
       ...fact,
       id: fact.id.trim(),
+      scoreSignalKeys: fact.scoreSignalKeys
+        ? [...new Set(fact.scoreSignalKeys.map((key) => key.trim()))].sort(compareLexical)
+        : undefined,
       factTextRu: normalizeCopy(fact.factTextRu),
-      factTextEn: normalizeCopy(fact.factTextEn)
+      factTextEn: normalizeCopy(fact.factTextEn),
+      ...(meaningTextRu ? { meaningTextRu } : { meaningTextRu: undefined }),
+      ...(meaningTextEn ? { meaningTextEn } : { meaningTextEn: undefined })
     };
     return normalized.id && localizedFactText(normalized, input.locale) ? [normalized] : [];
   });
@@ -1450,7 +1513,13 @@ export function selectNarrativeFacts(caseData: WalletNarrativeCase): NarrativeFa
     compareText(left.id, right.id) ||
     compareText(left.kind, right.kind) ||
     compareText(left.factTextRu, right.factTextRu) ||
-    compareText(left.factTextEn, right.factTextEn);
+    compareText(left.factTextEn, right.factTextEn) ||
+    compareText(left.meaningTextRu ?? "", right.meaningTextRu ?? "") ||
+    compareText(left.meaningTextEn ?? "", right.meaningTextEn ?? "") ||
+    compareText(
+      (left.scoreSignalKeys ?? []).join("\u0000"),
+      (right.scoreSignalKeys ?? []).join("\u0000")
+    );
   const canonicalById = new Map<string, NarrativeFact>();
   for (const fact of [...caseData.facts].sort(compareFacts)) {
     if (!canonicalById.has(fact.id)) canonicalById.set(fact.id, fact);
@@ -1504,6 +1573,71 @@ function header(caseData: WalletNarrativeCase): string {
 
 function fitsBody(parts: string[]): boolean {
   return parts.length === 0 || `\n\n${parts.join("\n\n")}`.length <= MAX_BODY_LENGTH;
+}
+
+export type PreliminaryNarrativeSections = {
+  findings: string[];
+  conclusion: string | null;
+  coverage: string | null;
+};
+
+function preliminaryBodyParts(
+  sections: PreliminaryNarrativeSections,
+  locale: WalletNarrativeLocale
+): string[] {
+  return [
+    sections.findings.length > 0
+      ? [
+          locale === "en" ? "Finding" : "Что нашли",
+          sections.findings.map((finding) => `• ${finding}`).join("\n")
+        ].join("\n")
+      : null,
+    sections.conclusion
+      ? [locale === "en" ? "Conclusion" : "Вывод", sections.conclusion].join("\n")
+      : null,
+    sections.coverage
+      ? [locale === "en" ? "Coverage limits" : "Границы проверки", sections.coverage].join("\n")
+      : null
+  ].filter((part): part is string => part !== null);
+}
+
+export function buildPreliminaryNarrativeSections(input: Pick<
+  WalletNarrativeCase,
+  "locale" | "facts" | "preferredFactId" | "coverageExplanation"
+>): PreliminaryNarrativeSections {
+  const normalized = buildWalletNarrativeCase({
+    locale: input.locale,
+    decision: "NO_FINAL_DECISION",
+    score: null,
+    facts: input.facts,
+    preferredFactId: input.preferredFactId,
+    coverageExplanation: input.coverageExplanation
+  });
+  const selected = selectNarrativeFacts(normalized)
+    .filter((fact) => localizedFindingText(fact, normalized.locale).length > 0);
+  const primary = selected[0];
+  const sections: PreliminaryNarrativeSections = {
+    findings: primary ? [localizedFindingText(primary, normalized.locale)] : [],
+    conclusion: null,
+    coverage: null
+  };
+  const fits = (candidate: PreliminaryNarrativeSections) =>
+    fitsBody(preliminaryBodyParts(candidate, normalized.locale));
+  const coverage = normalized.coverageExplanation
+    ? localizedCoverageText(normalized.coverageExplanation, normalized.locale)
+    : null;
+  if (coverage && fits({ ...sections, coverage })) sections.coverage = coverage;
+
+  const meaning = primary ? localizedMeaningText(primary, normalized.locale) : null;
+  if (meaning && fits({ ...sections, conclusion: meaning })) sections.conclusion = meaning;
+
+  const secondary = selected[1]
+    ? localizedFindingText(selected[1], normalized.locale)
+    : null;
+  if (secondary && fits({ ...sections, findings: [...sections.findings, secondary] })) {
+    sections.findings.push(secondary);
+  }
+  return sections;
 }
 
 export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string {

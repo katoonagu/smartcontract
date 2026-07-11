@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as walletNarrativeSummary from "../../src/bot/walletNarrativeSummary";
 import {
+  buildPreliminaryNarrativeSections,
   buildWalletNarrativeCase,
   formatWalletNarrativeSummary,
   selectNarrativeFacts,
@@ -53,6 +54,136 @@ function narrativeCase(
 }
 
 describe("formatWalletNarrativeSummary", () => {
+  it("uses the preferred primary finding and its meaning in preliminary sections", () => {
+    const sections = buildPreliminaryNarrativeSections({
+      locale: "ru",
+      facts: [
+        {
+          id: "cex",
+          kind: "cex_source",
+          factTextRu: "17% суммы пришло с Binance.",
+          factTextEn: "17% of the amount came from Binance.",
+          meaningTextRu: "Второй факт не должен определять вывод.",
+          meaningTextEn: "The second fact must not define the conclusion."
+        },
+        {
+          id: "bridge",
+          kind: "bridge_route",
+          factTextRu: "83% проверяемой суммы пришло через мост UsdtOFT.",
+          factTextEn: "83% of the checked amount came through the UsdtOFT bridge.",
+          meaningTextRu: "Мост мог использоваться для обмена между сетями или чтобы затруднить проверку происхождения денег.",
+          meaningTextEn: "The bridge may have been used for a cross-chain swap or to make origin checks harder."
+        },
+        {
+          id: "collector",
+          kind: "collector",
+          factTextRu: "Третий факт не должен попасть в краткий отчёт.",
+          factTextEn: "The third fact must not appear in the compact report."
+        }
+      ],
+      preferredFactId: "bridge",
+      coverageExplanation: {
+        textRu: "Оставшиеся 17% суммы не удалось проследить.",
+        textEn: "The remaining 17% of the amount could not be traced.",
+        isRiskEvidence: false
+      }
+    });
+
+    expect(sections).toEqual({
+      findings: [
+        "83% проверяемой суммы пришло через мост UsdtOFT.",
+        "17% суммы пришло с Binance."
+      ],
+      conclusion: "Мост мог использоваться для обмена между сетями или чтобы затруднить проверку происхождения денег.",
+      coverage: "Оставшиеся 17% суммы не удалось проследить."
+    });
+  });
+
+  it("keeps preliminary coverage and complete sentences ahead of an optional second finding", () => {
+    const primary = `Главный факт. ${"а".repeat(145)}`;
+    const meaning = `Смысл главного факта. ${"б".repeat(85)}`;
+    const coverage = `Граница покрытия. ${"в".repeat(115)}`;
+    const secondary = `Дополнительный факт. ${"г".repeat(65)}`;
+    const sections = buildPreliminaryNarrativeSections({
+      locale: "ru",
+      facts: [
+        {
+          id: "primary",
+          kind: "usdt_blacklist",
+          factTextRu: primary,
+          factTextEn: primary,
+          meaningTextRu: meaning,
+          meaningTextEn: meaning
+        },
+        {
+          id: "secondary",
+          kind: "bridge_route",
+          factTextRu: secondary,
+          factTextEn: secondary
+        }
+      ],
+      preferredFactId: "primary",
+      coverageExplanation: {
+        textRu: coverage,
+        textEn: coverage,
+        isRiskEvidence: false
+      }
+    });
+    const body = [
+      sections.findings.length > 0
+        ? `Что нашли\n${sections.findings.map((finding) => `• ${finding}`).join("\n")}`
+        : null,
+      sections.conclusion ? `Вывод\n${sections.conclusion}` : null,
+      sections.coverage ? `Границы проверки\n${sections.coverage}` : null
+    ].filter((part): part is string => part !== null).join("\n\n");
+
+    expect(sections).toEqual({ findings: [primary], conclusion: meaning, coverage });
+    expect(`\n\n${body}`.length).toBeLessThanOrEqual(500);
+    expect(sections.findings.every((finding) => finding.length > 0)).toBe(true);
+    expect(sections.conclusion).not.toBe("");
+    expect(sections.coverage).not.toBe("");
+  });
+
+  it("keeps finding and meaning in the final formatter without duplicating either sentence", () => {
+    const finding = "83% проверяемой суммы пришло через мост UsdtOFT.";
+    const meaning = "Мост мог использоваться для обмена между сетями или чтобы затруднить проверку происхождения денег.";
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [
+        {
+          id: "bridge",
+          kind: "bridge_route",
+          factTextRu: finding,
+          factTextEn: finding,
+          meaningTextRu: meaning,
+          meaningTextEn: meaning
+        },
+        {
+          id: "duplicate-finding",
+          kind: "collector",
+          factTextRu: finding,
+          factTextEn: finding
+        }
+      ]
+    }));
+    const body = output.split("\n\n").slice(1).join("\n\n");
+
+    expect(output.match(/83% проверяемой суммы/gu)).toHaveLength(1);
+    expect(output.match(/Мост мог использоваться/gu)).toHaveLength(1);
+    expect(body.length).toBeLessThanOrEqual(500);
+  });
+
+  it("keeps action in the final header and out of a sanctioned shared fact", () => {
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [postDesignationHtxPath()],
+      sourcePolicyEvidence: [postDesignationHtxPolicy()]
+    });
+
+    expect(fact?.factTextRu).not.toMatch(/операцию не проводить/i);
+    expect(fact?.factTextEn).not.toMatch(/do not proceed/i);
+    expect(formatWalletNarrativeSummary(narrativeCase({ facts: [fact!] })))
+      .toMatch(/^🔴 95\/100.*Операцию не проводить\./u);
+  });
+
   it.each([
     {
       locale: "ru" as const,
@@ -912,6 +1043,38 @@ function policyEvidence(overrides: Partial<SourcePolicyEvidence> = {}): SourcePo
   };
 }
 
+function postDesignationHtxPath(): MoneyOriginPath {
+  const txHash = "8".repeat(64);
+  return originPath({
+    balanceTransferTxHash: txHash,
+    exposureSourceLabel: "HTX/Huobi",
+    sourceExposureKind: "sanctioned_service",
+    balanceShare: 1,
+    txHashes: [txHash],
+    amountUsage: {
+      anchorAmountRaw: "100000000000",
+      originalAmountRaw: "100000000000",
+      usedAmountRaw: "100000000000",
+      coverageShare: 1,
+      role: "anchor"
+    },
+    steps: [{
+      txHash,
+      fromAddress: counterparty,
+      toAddress: subject,
+      amountRaw: "100000000000",
+      timestamp: "2026-05-27T00:00:00.000Z"
+    }]
+  });
+}
+
+function postDesignationHtxPolicy(): SourcePolicyEvidence {
+  return policyEvidence({
+    kind: "sanctioned_service",
+    evidenceIds: ["8".repeat(64)]
+  });
+}
+
 function aggregateRouteFact(
   kind: "cross_chain_boundary" | "bridge_router_dex",
   paths: MoneyOriginPath[]
@@ -1391,39 +1554,17 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it("renders post-designation HTX sanctions only from matching sanctioned-service policy evidence", () => {
-    const txHash = "8".repeat(64);
-    const path = originPath({
-      balanceTransferTxHash: txHash,
-      exposureSourceLabel: "HTX/Huobi",
-      sourceExposureKind: "sanctioned_service",
-      balanceShare: 1,
-      txHashes: [txHash],
-      amountUsage: {
-        anchorAmountRaw: "100000000000",
-        originalAmountRaw: "100000000000",
-        usedAmountRaw: "100000000000",
-        coverageShare: 1,
-        role: "anchor"
-      },
-      steps: [{
-        txHash,
-        fromAddress: counterparty,
-        toAddress: subject,
-        amountRaw: "100000000000",
-        timestamp: "2026-05-27T00:00:00.000Z"
-      }]
-    });
     const [fact] = catalogueApi.sourceAndRouteFacts({
-      paths: [path],
-      sourcePolicyEvidence: [policyEvidence({
-        kind: "sanctioned_service",
-        evidenceIds: [txHash]
-      })]
+      paths: [postDesignationHtxPath()],
+      sourcePolicyEvidence: [postDesignationHtxPolicy()]
     });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
-    expect(fact?.factTextRu).toMatch(/40 000 USDT.*40%.*HTX\/Huobi.*санкц.*Великобритани.*26 мая 2026.*операцию не проводить/i);
-    expect(fact?.factTextEn).toMatch(/40,000 USDT.*40%.*HTX\/Huobi.*UK sanctions.*26 May 2026.*do not proceed/i);
+    expect(fact?.factTextRu).toMatch(/40 000 USDT.*40%.*HTX\/Huobi.*санкц.*Великобритани.*26 мая 2026/i);
+    expect(fact?.factTextEn).toMatch(/40,000 USDT.*40%.*HTX\/Huobi.*UK sanctions.*26 May 2026/i);
+    expect(fact?.meaningTextRu).toMatch(/прямой санкционный источник выбранной части суммы/i);
+    expect(fact?.meaningTextEn).toMatch(/direct sanctioned source for the selected share/i);
+    expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/краж|theft/i);
   });
 
@@ -1446,10 +1587,11 @@ describe("wallet narrative signal catalogue", () => {
         }
       })]
     });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
     expect(copy).toMatch(/25 000 USDT.*25%.*Example Sanctioned Service.*санкцион|25,000 USDT.*25%.*Example Sanctioned Service.*sanctioned/is);
-    expect(copy).toMatch(/операцию не проводить|do not proceed/i);
+    expect(copy).toMatch(/прямой санкционный источник|direct sanctioned source/i);
+    expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/Великобритани|\bUK\b|26 мая|26 May/i);
   });
 
@@ -1501,10 +1643,12 @@ describe("wallet narrative signal catalogue", () => {
     }).find((fact) => fact.kind === "sanctioned_source");
     const forward = build(paths);
     const reversed = build([...paths].reverse());
-    const copy = `${forward?.factTextRu}\n${forward?.factTextEn}`;
+    const copy = `${forward?.factTextRu}\n${forward?.meaningTextRu}\n${forward?.factTextEn}\n${forward?.meaningTextEn}`;
 
-    expect(forward?.factTextRu).toMatch(/50 000 USDT.*50%.*нескольких санкционных сервисов.*операцию не проводить/i);
-    expect(forward?.factTextEn).toMatch(/50,000 USDT.*50%.*multiple sanctioned services.*do not proceed/i);
+    expect(forward?.factTextRu).toMatch(/50 000 USDT.*50%.*нескольких санкционных сервисов.*санкцион/i);
+    expect(forward?.factTextEn).toMatch(/50,000 USDT.*50%.*multiple sanctioned services.*sanctioned/i);
+    expect(copy).toMatch(/прямой санкционный источник|direct sanctioned source/i);
+    expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/50[ ,]000 USDT.*(?:пришло с|came from) (?:Alpha|Zulu)/i);
     expect(reversed).toEqual(forward);
   });
