@@ -20,12 +20,17 @@
 - `58abd209` — обязательное совпадение Fast critical evidence;
 - `3934fec2` — Telegram-формат и runtime diagnostic;
 - `0a2f69b8` — отдельный заголовок границ проверки;
-- `ef04c34c` — изоляция best-effort diagnostic от доставки.
+- `ef04c34c` — изоляция best-effort diagnostic от доставки;
+- `ef522382` — fail-closed привязка score к evidence, material-only coverage и
+  безопасные внешние display labels.
 
 Свежая проверка после реализации:
 
-- affected gate: 8 test files, 682 tests passed;
-- full gate: 152 test files, 3018 tests passed;
+- RED hardening gate: 10 ожидаемых падений при 489 пройденных тестах; отдельный
+  self-review RED: 3 ожидаемых падения при 301 пройденном тесте;
+- focused hardening gate: 3 test files, 502 tests passed;
+- affected gate: 8 test files, 698 tests passed;
+- full gate: 152 test files, 3034 tests passed;
 - TypeScript: `tsc --noEmit` passed;
 - `git diff --check`: whitespace errors отсутствуют;
 - copy-safety: в production preliminary нет старого fallback, `Что дальше`,
