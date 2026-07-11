@@ -297,6 +297,12 @@ supersedes:
 
 ## UX
 
+- Preliminary `Where is money` Telegram delivery can still publish a numeric
+  score with the generic sentence that the provenance check completed. It does
+  not yet select the structured fact that explains the score, does not yet
+  render the fact/meaning/coverage architecture, and still mentions the later
+  DeepCheck phase. The approved design is in
+  `docs/superpowers/specs/2026-07-11-where-preliminary-narrative-design.md`.
 - Canonical Wallet/Incoming technical stops now have plain no-final copy, but
   Telegram still needs plain language for technical coverage blocks in some
   other and legacy paths.

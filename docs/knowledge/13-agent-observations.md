@@ -112,3 +112,20 @@ Correct rules:
 - `isContract` and GasFree-account status are address facts, not scoring
   exemptions. Exclude only an exact GasFree `service_fee` edge. Principal
   transfers remain eligible at every hop.
+
+## 2026-07-11: Historical HTX Exposure Is Not Neutral
+
+Agent mistake:
+
+The agent proposed hiding pre-designation HTX/Huobi transfers behind the
+neutral phrase `historical exchange source`, as if only transfers after the
+sanctions date mattered to the user.
+
+Correct rule:
+
+The official designation date still controls whether a transfer is called a
+direct sanctioned source. Earlier HTX/Huobi exposure nevertheless remains
+material `REVIEW` compliance context and must be named plainly, because a
+receiving service may delay the funds and request additional source-of-funds
+checks. Do not call a pre-designation transfer sanctioned at that timestamp,
+and do not flatten it into an ordinary clean CEX source.

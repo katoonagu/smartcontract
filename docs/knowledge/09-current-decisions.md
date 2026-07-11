@@ -209,7 +209,10 @@ of these decisions, update this file in the same work.
   through a local registry with aliases, authority, and official designation
   date. A traced event is treated as `sanctioned_service` only on or after that
   service's designation date; before that date, HTX/Huobi remains ordinary
-  `htx_huobi` source-policy context.
+  `htx_huobi` source-policy context. `Ordinary` here means non-sanctioned at the
+  transfer timestamp, not neutral or unimportant: historical HTX/Huobi
+  exposure remains visible `REVIEW` compliance context because a receiving
+  service may delay the funds and request additional source-of-funds checks.
 - Medium source-policy context must not be flattened to `ACCEPTABLE`.
   Low-score HTX/Huobi policy exposure remains user-facing `REVIEW`, and simple
   alert score display maps 45-59 to `REVIEW` instead of `ACCEPTABLE`.
@@ -220,6 +223,11 @@ of these decisions, update this file in the same work.
   scoring dumps. Matrix `REVIEW` displays as `REVIEW`, exact hard evidence is
   deduplicated into one clear reason, and raw scoring diagnostics stay in
   support/admin/debug surfaces.
+- A scored preliminary `Where is money` Telegram result must name the
+  structured source, route, or hard-evidence fact that explains the score. It
+  shows no canonical decision or action and does not discuss DeepCheck. If no
+  structured fact explains the score, the formatter must not publish a generic
+  completion sentence or an unexplained `/100` value.
 - Human risk explanations do not change scoring math. Normal Telegram output
   stays short and user-facing; `/check_status detailed` and Admin graph right
   rail show the detailed multi-mode explanation from saved FastCheck, Where Is
