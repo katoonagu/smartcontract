@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as walletNarrativeSummary from "../../src/bot/walletNarrativeSummary";
 import {
+  buildPreliminaryNarrativeSections,
   buildWalletNarrativeCase,
   formatWalletNarrativeSummary,
   selectNarrativeFacts,
@@ -10,6 +11,7 @@ import {
 import type {
   AddressBehaviorProfile,
   ApprovalDrainProvenanceProfile,
+  BalanceFormingTransfer,
   BoundaryExposureProfile,
   DirectCounterpartyInteractionProfile,
   FirstHopBlacklistCoverage,
@@ -31,6 +33,7 @@ import {
   tgytFirstHopCoverage,
   tgytSubjectRestriction
 } from "../fixtures/forensics/directBlacklistCases";
+import { SANCTIONED_CRYPTO_SERVICES } from "../../src/forensics/sanctionedServiceRegistry";
 
 const primaryFact: NarrativeFact = {
   id: "primary",
@@ -53,6 +56,271 @@ function narrativeCase(
 }
 
 describe("formatWalletNarrativeSummary", () => {
+  it("uses the preferred primary finding and its meaning in preliminary sections", () => {
+    const sections = buildPreliminaryNarrativeSections({
+      locale: "ru",
+      facts: [
+        {
+          id: "cex",
+          kind: "cex_source",
+          factTextRu: "17% суммы пришло с Binance.",
+          factTextEn: "17% of the amount came from Binance.",
+          meaningTextRu: "Второй факт не должен определять вывод.",
+          meaningTextEn: "The second fact must not define the conclusion."
+        },
+        {
+          id: "bridge",
+          kind: "bridge_route",
+          factTextRu: "83% проверяемой суммы пришло через мост UsdtOFT.",
+          factTextEn: "83% of the checked amount came through the UsdtOFT bridge.",
+          meaningTextRu: "Мост мог использоваться для обмена между сетями или чтобы затруднить проверку происхождения денег.",
+          meaningTextEn: "The bridge may have been used for a cross-chain swap or to make origin checks harder."
+        },
+        {
+          id: "collector",
+          kind: "collector",
+          factTextRu: "Третий факт не должен попасть в краткий отчёт.",
+          factTextEn: "The third fact must not appear in the compact report."
+        }
+      ],
+      preferredFactId: "bridge",
+      coverageExplanation: {
+        textRu: "Оставшиеся 17% суммы не удалось проследить.",
+        textEn: "The remaining 17% of the amount could not be traced.",
+        isRiskEvidence: false
+      }
+    });
+
+    expect(sections).toEqual({
+      findings: [
+        "83% проверяемой суммы пришло через мост UsdtOFT.",
+        "17% суммы пришло с Binance."
+      ],
+      conclusion: "Мост мог использоваться для обмена между сетями или чтобы затруднить проверку происхождения денег.",
+      coverage: "Оставшиеся 17% суммы не удалось проследить."
+    });
+  });
+
+  it("normalizes meaning and score keys and resolves duplicate ties deterministically", () => {
+    const tieA: NarrativeFact = {
+      id: "tie",
+      kind: "bridge_route",
+      factTextRu: "  Одинаковый   факт. ",
+      factTextEn: "  Same   finding. ",
+      meaningTextRu: "  Alpha   meaning. ",
+      meaningTextEn: "  Primary   meaning. ",
+      scoreSignalKeys: [" zeta ", "", "alpha", "zeta", "   "]
+    };
+    const tieB: NarrativeFact = {
+      ...tieA,
+      meaningTextRu: "Beta meaning.",
+      meaningTextEn: "Secondary meaning.",
+      scoreSignalKeys: ["beta"]
+    };
+    const buildAndSelect = (facts: NarrativeFact[]) => selectNarrativeFacts(buildWalletNarrativeCase({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 95,
+      facts,
+      coverageExplanation: null
+    }));
+
+    const forward = buildAndSelect([tieA, tieB]);
+    const reversed = buildAndSelect([tieB, tieA]);
+
+    expect(forward).toEqual(reversed);
+    expect(forward).toEqual([expect.objectContaining({
+      factTextRu: "Одинаковый факт.",
+      factTextEn: "Same finding.",
+      meaningTextRu: "Alpha meaning.",
+      meaningTextEn: "Primary meaning.",
+      scoreSignalKeys: ["alpha", "zeta"]
+    })]);
+  });
+
+  it.each([
+    {
+      locale: "ru" as const,
+      primary: `Главный факт: 123 456,78 USDT пришли на T${"A".repeat(33)}. ${"а".repeat(90)}.`,
+      meaning: `Смысл главного факта сохранён полностью. ${"б".repeat(70)}.`,
+      coverage: `Оставшиеся 17% суммы не удалось проследить. ${"в".repeat(80)}.`,
+      secondary: `Дополнительный факт: 9 999 USDT. ${"г".repeat(55)}.`,
+      headings: { finding: "Что нашли", conclusion: "Вывод", coverage: "Границы проверки" }
+    },
+    {
+      locale: "en" as const,
+      primary: `Primary finding: 123,456.78 USDT arrived at T${"A".repeat(33)}. ${"a".repeat(90)}.`,
+      meaning: `The primary meaning is preserved in full. ${"b".repeat(70)}.`,
+      coverage: `The remaining 17% of the amount could not be traced. ${"c".repeat(80)}.`,
+      secondary: `Additional finding: 9,999 USDT. ${"d".repeat(55)}.`,
+      headings: { finding: "Finding", conclusion: "Conclusion", coverage: "Coverage limits" }
+    }
+  ])("keeps the worst-case $locale preliminary body whole and within budget", ({
+    locale,
+    primary,
+    meaning,
+    coverage,
+    secondary,
+    headings
+  }) => {
+    const sections = buildPreliminaryNarrativeSections({
+      locale,
+      facts: [
+        {
+          id: "primary",
+          kind: "usdt_blacklist",
+          factTextRu: primary,
+          factTextEn: primary,
+          meaningTextRu: meaning,
+          meaningTextEn: meaning
+        },
+        {
+          id: "secondary",
+          kind: "bridge_route",
+          factTextRu: secondary,
+          factTextEn: secondary
+        }
+      ],
+      preferredFactId: "primary",
+      coverageExplanation: {
+        textRu: coverage,
+        textEn: coverage,
+        isRiskEvidence: false
+      }
+    });
+    const body = [
+      sections.findings.length > 0
+        ? `${headings.finding}\n${sections.findings.map((finding) => `• ${finding}`).join("\n")}`
+        : null,
+      sections.conclusion ? `${headings.conclusion}\n${sections.conclusion}` : null,
+      sections.coverage ? `${headings.coverage}\n${sections.coverage}` : null
+    ].filter((part): part is string => part !== null).join("\n\n");
+
+    expect(sections).toEqual({ findings: [primary], conclusion: meaning, coverage });
+    expect(`\n\n${body}`.length).toBeLessThanOrEqual(500);
+    expect(sections.findings.every((finding) => finding.length > 0)).toBe(true);
+    expect(sections.conclusion).toBeTruthy();
+    expect(sections.coverage).toBeTruthy();
+    expect(body).toContain(locale === "en" ? "123,456.78 USDT" : "123 456,78 USDT");
+    expect(body).toContain(`T${"A".repeat(33)}`);
+    expect(body).not.toContain(secondary);
+  });
+
+  it("keeps finding and meaning in the final formatter without duplicating either sentence", () => {
+    const finding = "83% проверяемой суммы пришло через мост UsdtOFT.";
+    const meaning = "Мост мог использоваться для обмена между сетями или чтобы затруднить проверку происхождения денег.";
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [
+        {
+          id: "bridge",
+          kind: "bridge_route",
+          factTextRu: finding,
+          factTextEn: finding,
+          meaningTextRu: meaning,
+          meaningTextEn: meaning
+        },
+        {
+          id: "duplicate-finding",
+          kind: "collector",
+          factTextRu: finding,
+          factTextEn: finding
+        }
+      ]
+    }));
+    const body = output.split("\n\n").slice(1).join("\n\n");
+
+    expect(output.match(/83% проверяемой суммы/gu)).toHaveLength(1);
+    expect(output.match(/Мост мог использоваться/gu)).toHaveLength(1);
+    expect(body.length).toBeLessThanOrEqual(500);
+  });
+
+  it("keeps a complete 280-character finding and drops an oversized final meaning", () => {
+    const finding = `Finding: ${"f".repeat(271)}`;
+    const meaning = `Meaning: ${"m".repeat(271)}`;
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      locale: "en",
+      facts: [{
+        id: "max-copy",
+        kind: "usdt_blacklist",
+        factTextRu: finding,
+        factTextEn: finding,
+        meaningTextRu: meaning,
+        meaningTextEn: meaning
+      }]
+    }));
+    const completeBody = output.slice(output.indexOf("\n\n"));
+    const findingCopy = output.split("Finding\n")[1];
+
+    expect(finding).toHaveLength(280);
+    expect(meaning).toHaveLength(280);
+    expect(completeBody.length).toBeLessThanOrEqual(500);
+    expect(findingCopy).toBe(finding);
+    expect(findingCopy?.length).toBeLessThanOrEqual(280);
+    expect(output).not.toContain(meaning);
+  });
+
+  it.each([
+    {
+      locale: "ru" as const,
+      emptyFact: { factTextRu: "   ", factTextEn: "English finding." },
+      meaning: { meaningTextRu: "Только интерпретация.", meaningTextEn: "Interpretation only." },
+      validFinding: "Подтверждённый факт."
+    },
+    {
+      locale: "en" as const,
+      emptyFact: { factTextRu: "Русский факт.", factTextEn: "   " },
+      meaning: { meaningTextRu: "Только интерпретация.", meaningTextEn: "Interpretation only." },
+      validFinding: "Confirmed finding."
+    }
+  ])("drops an interpretation-only $locale fact before selection", ({
+    locale,
+    emptyFact,
+    meaning,
+    validFinding
+  }) => {
+    const caseData = buildWalletNarrativeCase({
+      locale,
+      decision: "DECLINE",
+      score: 95,
+      facts: [
+        {
+          id: "interpretation-only",
+          kind: "usdt_blacklist",
+          ...emptyFact,
+          ...meaning
+        },
+        {
+          id: "valid",
+          kind: "bridge_route",
+          factTextRu: "Подтверждённый факт.",
+          factTextEn: "Confirmed finding."
+        }
+      ],
+      preferredFactId: "interpretation-only",
+      coverageExplanation: null
+    });
+    const selected = selectNarrativeFacts(caseData);
+    const output = formatWalletNarrativeSummary(caseData);
+
+    expect(caseData.facts.map((fact) => fact.id)).toEqual(["valid"]);
+    expect(caseData.preferredFactId).toBeNull();
+    expect(selected.map((fact) => fact.id)).toEqual(["valid"]);
+    expect(output).toContain(validFinding);
+    expect(output).not.toContain(locale === "en" ? meaning.meaningTextEn : meaning.meaningTextRu);
+  });
+
+  it("keeps action in the final header and out of a sanctioned shared fact", () => {
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [postDesignationHtxPath()],
+      sourcePolicyEvidence: [postDesignationHtxPolicy()]
+    });
+
+    expect(fact?.factTextRu).not.toMatch(/операцию не проводить/i);
+    expect(fact?.factTextEn).not.toMatch(/do not proceed/i);
+    expect(formatWalletNarrativeSummary(narrativeCase({ facts: [fact!] })))
+      .toMatch(/^🔴 95\/100.*Операцию не проводить\./u);
+  });
+
   it.each([
     {
       locale: "ru" as const,
@@ -690,6 +958,7 @@ const catalogueApi = walletNarrativeSummary as unknown as {
   ) => NarrativeFact[];
   sourceAndRouteFacts: (input: Record<string, unknown>) => NarrativeFact[];
   gasFreeFeeFact: (profiles: DirectCounterpartyInteractionProfile[]) => NarrativeFact | null;
+  gasFreeFeeFactFromBalanceTransfers: (transfers: BalanceFormingTransfer[]) => NarrativeFact | null;
   coverageExplanationFor: (input: Record<string, unknown>) => WalletNarrativeCase["coverageExplanation"];
   buildWalletNarrativeEvidence: (input: Record<string, unknown>) => {
     facts: NarrativeFact[];
@@ -910,6 +1179,39 @@ function policyEvidence(overrides: Partial<SourcePolicyEvidence> = {}): SourcePo
     },
     ...overrides
   };
+}
+
+function postDesignationHtxPath(): MoneyOriginPath {
+  const txHash = "8".repeat(64);
+  return originPath({
+    balanceTransferTxHash: txHash,
+    exposureSourceKey: "htx_huobi",
+    exposureSourceLabel: "HTX/Huobi",
+    sourceExposureKind: "sanctioned_service",
+    balanceShare: 1,
+    txHashes: [txHash],
+    amountUsage: {
+      anchorAmountRaw: "100000000000",
+      originalAmountRaw: "100000000000",
+      usedAmountRaw: "100000000000",
+      coverageShare: 1,
+      role: "anchor"
+    },
+    steps: [{
+      txHash,
+      fromAddress: counterparty,
+      toAddress: subject,
+      amountRaw: "100000000000",
+      timestamp: "2026-05-27T00:00:00.000Z"
+    }]
+  });
+}
+
+function postDesignationHtxPolicy(): SourcePolicyEvidence {
+  return policyEvidence({
+    kind: "sanctioned_service",
+    evidenceIds: ["8".repeat(64)]
+  });
 }
 
 function aggregateRouteFact(
@@ -1391,30 +1693,150 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it("renders post-designation HTX sanctions only from matching sanctioned-service policy evidence", () => {
-    const txHash = "8".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [postDesignationHtxPath()],
+      sourcePolicyEvidence: [postDesignationHtxPolicy()]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(/40 000 USDT.*40%.*HTX\/Huobi.*санкц.*Великобритани.*26 мая 2026/i);
+    expect(fact?.factTextEn).toMatch(/40,000 USDT.*40%.*HTX\/Huobi.*UK sanctions.*26 May 2026/i);
+    expect(fact?.meaningTextRu).toMatch(/прямой санкционный источник выбранной части суммы/i);
+    expect(fact?.meaningTextEn).toMatch(/direct sanctioned source for the selected share/i);
+    expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
+    expect(copy).not.toMatch(/краж|theft/i);
+  });
+
+  it("keeps pre-designation HTX as material historical compliance risk from matched typed evidence", () => {
+    const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
+    const txHash = "7".repeat(64);
     const path = originPath({
       balanceTransferTxHash: txHash,
-      exposureSourceLabel: "HTX/Huobi",
-      sourceExposureKind: "sanctioned_service",
-      balanceShare: 1,
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX",
+      sourceExposureKind: "htx_huobi",
+      balanceShare: 0.4,
       txHashes: [txHash],
-      amountUsage: {
-        anchorAmountRaw: "100000000000",
-        originalAmountRaw: "100000000000",
-        usedAmountRaw: "100000000000",
-        coverageShare: 1,
-        role: "anchor"
-      },
       steps: [{
         txHash,
         fromAddress: counterparty,
         toAddress: subject,
-        amountRaw: "100000000000",
-        timestamp: "2026-05-27T00:00:00.000Z"
+        amountRaw: "40000000000",
+        timestamp: new Date(Date.parse(htx.designatedAt) - 1).toISOString()
       }]
     });
     const [fact] = catalogueApi.sourceAndRouteFacts({
       paths: [path],
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_context",
+        evidenceIds: [txHash]
+      })]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(/40 000 USDT.*40%.*HTX.*до.*санкцион/i);
+    expect(fact?.factTextEn).toMatch(/40,000 USDT.*40%.*HTX.*before.*sanction/i);
+    expect(fact?.meaningTextRu).toBe("Это историческая связь с HTX. Она остаётся существенным compliance-риском: принимающая биржа может задержать средства и запросить дополнительную проверку их происхождения.");
+    expect(fact?.meaningTextEn).toBe("This is a historical HTX link and remains material compliance context: a receiving exchange may delay the funds and request additional source-of-funds checks.");
+    expect(fact?.scoreSignalKeys).toEqual(["htx_huobi", "source_policy:htx_huobi"]);
+    expect(copy).not.toMatch(/на дату перевода.*санкц|sanctioned at transfer|обычн.*бирж|clean CEX|операци.*не провод|do not proceed/i);
+  });
+
+  it("uses the exact HTX boundary and never promotes the name alone", () => {
+    const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
+    const txHash = "8".repeat(64);
+    const boundaryPath = postDesignationHtxPath();
+    boundaryPath.steps[0]!.timestamp = htx.designatedAt;
+    const [atBoundary] = catalogueApi.sourceAndRouteFacts({
+      paths: [boundaryPath],
+      sourcePolicyEvidence: [postDesignationHtxPolicy()]
+    });
+    const namedOnlyPath = originPath({
+      balanceTransferTxHash: txHash,
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX",
+      sourceExposureKind: "htx_huobi",
+      txHashes: [txHash],
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw: "40000000000",
+        timestamp: htx.designatedAt
+      }]
+    });
+    const [namedOnly] = catalogueApi.sourceAndRouteFacts({ paths: [namedOnlyPath] });
+    const [unmatched] = catalogueApi.sourceAndRouteFacts({
+      paths: [boundaryPath],
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "sanctioned_service",
+        evidenceIds: ["6".repeat(64)]
+      })]
+    });
+
+    expect(atBoundary?.kind).toBe("sanctioned_source");
+    expect(atBoundary?.meaningTextRu).toMatch(/прямой санкционный источник/i);
+    expect(namedOnly?.kind).not.toBe("sanctioned_source");
+    expect(`${namedOnly?.factTextRu}\n${namedOnly?.meaningTextRu}`).not.toMatch(/прямой санкционный|на дату перевода.*санкц/i);
+    expect(unmatched?.proofStrength).toBe("context");
+    expect(`${unmatched?.factTextRu}\n${unmatched?.meaningTextRu}`).not.toMatch(/прямой санкционный источник/i);
+  });
+
+  it.each([null, "Renamed exchange cluster"])(
+    "uses typed HTX identity and the registry boundary when the label is %s",
+    (label) => {
+      const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
+      const txHash = `${label === null ? "4" : "5"}`.repeat(64);
+      const path = originPath({
+        balanceTransferTxHash: txHash,
+        exposureSourceKey: "htx_huobi",
+        exposureSourceLabel: label,
+        sourceExposureKind: "sanctioned_service",
+        txHashes: [txHash],
+        steps: [{
+          txHash,
+          fromAddress: counterparty,
+          toAddress: subject,
+          amountRaw: "40000000000",
+          timestamp: htx.designatedAt
+        }]
+      });
+      const [fact] = catalogueApi.sourceAndRouteFacts({
+        paths: [path],
+        sourcePolicyEvidence: [policyEvidence({
+          kind: "sanctioned_service",
+          evidenceIds: [txHash]
+        })]
+      });
+      const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+      expect(fact?.kind).toBe("sanctioned_source");
+      expect(copy).toMatch(/HTX|Huobi/i);
+      expect(copy).toMatch(/Великобритани|UK sanctions/i);
+      expect(copy).not.toContain("Renamed exchange cluster");
+      expect(copy).not.toContain("..");
+    }
+  );
+
+  it("does not infer HTX sanctions identity or UK date from a label without the typed key", () => {
+    const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
+    const txHash = "6".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        balanceTransferTxHash: txHash,
+        exposureSourceKey: "other_sanctioned_service",
+        exposureSourceLabel: "HTX lookalike desk",
+        sourceExposureKind: "sanctioned_service",
+        txHashes: [txHash],
+        steps: [{
+          txHash,
+          fromAddress: counterparty,
+          toAddress: subject,
+          amountRaw: "40000000000",
+          timestamp: htx.designatedAt
+        }]
+      })],
       sourcePolicyEvidence: [policyEvidence({
         kind: "sanctioned_service",
         evidenceIds: [txHash]
@@ -1422,9 +1844,62 @@ describe("wallet narrative signal catalogue", () => {
     });
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
 
-    expect(fact?.factTextRu).toMatch(/40 000 USDT.*40%.*HTX\/Huobi.*санкц.*Великобритани.*26 мая 2026.*операцию не проводить/i);
-    expect(fact?.factTextEn).toMatch(/40,000 USDT.*40%.*HTX\/Huobi.*UK sanctions.*26 May 2026.*do not proceed/i);
-    expect(copy).not.toMatch(/краж|theft/i);
+    expect(fact?.kind).toBe("sanctioned_source");
+    expect(copy).not.toMatch(/Великобритани|UK sanctions|26 мая|26 May/i);
+    expect(copy).not.toContain("HTX/Huobi Global");
+  });
+
+  it.each([
+    ["mixer", "Known mixer", /35 000 USDT.*35%.*Known mixer/i, /миксер без установленного названия/i, /первоначальный источник.*нельзя.*проследить/i, "mixer_source"],
+    ["no_name_token_liquidity", "Known pool", /35 000 USDT.*35%.*Known pool/i, /пул ликвидности без установленного названия/i, /источник.*не установлен/i, "unknown_source"],
+    ["unknown_cex", "Known exchange service", /35 000 USDT.*35%.*Known exchange service/i, /биржевой сервис, название которого не удалось подтвердить/i, /общей ликвидност/i, "cex_source"],
+    ["risky_label", "phishing", /35 000 USDT.*35%.*phishing/i, /источник с подтверждённой риск-меткой/i, /риск.*этой части суммы/i, "direct_counterparty_exact_label"],
+    ["whitebit", "WhiteBIT", /35 000 USDT.*35%.*WhiteBIT/i, /WhiteBIT/i, /дополнительн.*проверк.*происхожд/i, "direct_counterparty_sanction"]
+  ] as const)("renders matched typed %s exposure with named and unnamed identity", (kind, label, namedCopy, unnamedCopy, meaning, factKind) => {
+    const txHash = kind.padEnd(64, "1").slice(0, 64);
+    const build = (sourceLabel: string | null, evidenceIds = [txHash]) => catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        balanceTransferTxHash: txHash,
+        rootSourceType: kind === "risky_label" ? "risky_label" : kind === "unknown_cex" ? "unknown" : "decline_boundary",
+        exposureSourceLabel: sourceLabel,
+        sourceExposureKind: kind,
+        balanceShare: 0.35,
+        txHashes: [txHash],
+        steps: [{
+          txHash,
+          fromAddress: counterparty,
+          toAddress: subject,
+          amountRaw: "35000000000",
+          timestamp: "2026-05-25T00:00:00.000Z"
+        }]
+      })],
+      sourcePolicyEvidence: [policyEvidence({
+        kind,
+        aggregateShare: 0.35,
+        effectiveShare: 0.35,
+        evidenceIds,
+        reasons: ["POISON_RAW_REASON"],
+        warnings: ["POISON_RAW_WARNING"],
+        shareDetail: {
+          ...policyEvidence().shareDetail!,
+          affectedAmountRaw: "35000000000",
+          rawShare: 0.35,
+          effectiveShare: 0.35
+        }
+      })]
+    });
+    const [named] = build(label);
+    const [unnamed] = build(null);
+
+    expect(named?.kind).toBe(factKind);
+    expect(named?.factTextRu).toMatch(namedCopy);
+    expect(unnamed?.factTextRu).toMatch(/35 000 USDT.*35%/i);
+    expect(unnamed?.factTextRu).toMatch(unnamedCopy);
+    expect(named?.meaningTextRu).toMatch(meaning);
+    expect(unnamed?.meaningTextRu).toMatch(meaning);
+    expect(named?.scoreSignalKeys).toEqual([kind, `source_policy:${kind}`].sort());
+    expect(JSON.stringify([named, unnamed])).not.toMatch(/POISON_RAW_(?:REASON|WARNING)/);
+    expect(build(label, ["0".repeat(64)])).toEqual([]);
   });
 
   it("renders another canonical sanctioned service without inventing authority or date", () => {
@@ -1446,10 +1921,11 @@ describe("wallet narrative signal catalogue", () => {
         }
       })]
     });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
     expect(copy).toMatch(/25 000 USDT.*25%.*Example Sanctioned Service.*санкцион|25,000 USDT.*25%.*Example Sanctioned Service.*sanctioned/is);
-    expect(copy).toMatch(/операцию не проводить|do not proceed/i);
+    expect(copy).toMatch(/прямой санкционный источник|direct sanctioned source/i);
+    expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/Великобритани|\bUK\b|26 мая|26 May/i);
   });
 
@@ -1501,16 +1977,19 @@ describe("wallet narrative signal catalogue", () => {
     }).find((fact) => fact.kind === "sanctioned_source");
     const forward = build(paths);
     const reversed = build([...paths].reverse());
-    const copy = `${forward?.factTextRu}\n${forward?.factTextEn}`;
+    const copy = `${forward?.factTextRu}\n${forward?.meaningTextRu}\n${forward?.factTextEn}\n${forward?.meaningTextEn}`;
 
-    expect(forward?.factTextRu).toMatch(/50 000 USDT.*50%.*нескольких санкционных сервисов.*операцию не проводить/i);
-    expect(forward?.factTextEn).toMatch(/50,000 USDT.*50%.*multiple sanctioned services.*do not proceed/i);
+    expect(forward?.factTextRu).toMatch(/50 000 USDT.*50%.*нескольких санкционных сервисов.*санкцион/i);
+    expect(forward?.factTextEn).toMatch(/50,000 USDT.*50%.*multiple sanctioned services.*sanctioned/i);
+    expect(copy).toMatch(/прямой санкционный источник|direct sanctioned source/i);
+    expect(copy).not.toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/50[ ,]000 USDT.*(?:пришло с|came from) (?:Alpha|Zulu)/i);
     expect(reversed).toEqual(forward);
   });
 
   it("keeps ordinary HTX and unmatched evidence as plain inbound context", () => {
     const path = originPath({
+      exposureSourceKey: "htx_huobi",
       exposureSourceLabel: "HTX/Huobi",
       sourceExposureKind: "htx_huobi",
       txHashes: ["7".repeat(64)]
@@ -1564,7 +2043,7 @@ describe("wallet narrative signal catalogue", () => {
       htxHuobiOutgoingRatio: 0.25
     });
     const [fact] = catalogueApi.sourceAndRouteFacts({ operationalFlowProfiles: [profile] });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
     expect(fact?.factTextRu).toMatch(/Исходящий:.*отправил 25 000 USDT.*на HTX\/Huobi.*2 перевод/i);
     expect(fact?.factTextEn).toMatch(/Outbound:.*sent 25,000 USDT.*to HTX\/Huobi.*2 transfers/i);
@@ -1601,12 +2080,14 @@ describe("wallet narrative signal catalogue", () => {
         }
       })]
     });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
     expect(copy).toMatch(/83%.*UsdtOFT/i);
-    expect(copy).toMatch(/история.*вне TRON|earlier history.*outside TRON/is);
-    expect(copy).toMatch(/обменивает.*усложняет.*происхожд|swap.*hinder.*origin/is);
-    if (repeated) expect(copy).toMatch(/10 перевод.*нетипич|10 transfers.*unusual/is);
+    if (repeated) {
+      expect(copy).toMatch(/10 перевод.*сильнее скрывает.*AML-риск|10 transfers.*obscures.*AML risk/is);
+    } else {
+      expect(copy).toMatch(/обычн.*перевод.*сет.*затруднить.*происхожд|ordinary cross-chain transfer.*checks harder/is);
+    }
   });
 
   it.each([
@@ -1627,12 +2108,12 @@ describe("wallet narrative signal catalogue", () => {
     ];
     const forward = aggregateRouteFact(kind, paths);
     const reversed = aggregateRouteFact(kind, [...paths].reverse());
-    const copy = `${forward?.factTextRu}\n${forward?.factTextEn}`;
+    const copy = `${forward?.factTextRu}\n${forward?.meaningTextRu}\n${forward?.factTextEn}\n${forward?.meaningTextEn}`;
 
     expect(forward?.factTextRu).toMatch(ru);
     expect(forward?.factTextEn).toMatch(en);
     expect(copy).not.toMatch(/50%.*(?:пришло|прошло|came|passed).*Alpha Route/i);
-    if (kind === "cross_chain_boundary") expect(copy).toMatch(/история до него.*earlier history/is);
+    if (kind === "cross_chain_boundary") expect(copy).toMatch(/сильнее скрывает.*AML-риск|obscures.*AML risk/is);
     expect(reversed).toEqual(forward);
   });
 
@@ -1658,7 +2139,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(forward?.factTextRu).toMatch(ru);
     expect(forward?.factTextEn).toMatch(en);
     if (kind === "cross_chain_boundary") {
-      expect(`${forward?.factTextRu}\n${forward?.factTextEn}`).toMatch(/история до него.*earlier history/is);
+      expect(`${forward?.meaningTextRu}\n${forward?.meaningTextEn}`).toMatch(/сильнее скрывает.*AML-риск|obscures.*AML risk/is);
     }
     expect(reversed).toEqual(forward);
   });
@@ -1695,7 +2176,7 @@ describe("wallet narrative signal catalogue", () => {
         evidenceIds: [txHash]
       })]
     });
-    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+    const copy = `${fact?.factTextRu}\n${fact?.meaningTextRu}\n${fact?.factTextEn}\n${fact?.meaningTextEn}`;
 
     expect(copy).toMatch(/SUN\.io.*DEX|SUN\.io.*router|SUN\.io.*обменн.*сервис/is);
     expect(copy).toMatch(/обычн.*обмен.*скры.*происхожд.*AML-риск|ordinary swaps.*hide.*origin.*AML risk/is);
@@ -1738,29 +2219,171 @@ describe("wallet narrative signal catalogue", () => {
     expect(english[2]).toMatch(/unnamed DEX\/router service/i);
     expect(english[3]).toMatch(/unnamed exchange service/i);
     expect(english.join("\n")).not.toMatch(/[А-Яа-яЁё]/);
-    expect(crossChain?.factTextRu).toMatch(/история до него/i);
-    expect(crossChain?.factTextRu).not.toMatch(/история до границы/i);
+    expect(crossChain?.meaningTextRu).toMatch(/перевод между сетями.*затруднить/i);
   });
 
   it("derives CEX and a proven unknown-contract stop from canonical paths", () => {
-    const cex = originPath();
+    const cex = originPath({ balanceShare: 1 });
     const unknown = originPath({
       balanceTransferTxHash: "6".repeat(64),
       rootSourceAddress: `T${"6".repeat(33)}`,
       rootSourceType: "incomplete",
       exposureSourceLabel: null,
       sourceExposureKind: "unknown_contract",
-      balanceShare: 0.1,
+      balanceShare: 1,
       txHashes: ["6".repeat(64)],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "10000000000",
+        usedAmountRaw: "10000000000",
+        coverageShare: 0.1,
+        role: "anchor"
+      },
       stoppedReason: "incoming_history_not_fetched",
       historyCoverage: [traceHistory({ statusReason: "partial_provider_cap" })]
     });
     const facts = catalogueApi.sourceAndRouteFacts({ paths: [cex, unknown] });
-    const copy = facts.map((fact) => `${fact.factTextRu}\n${fact.factTextEn}`).join("\n");
+    const copy = facts.map((fact) => `${fact.factTextRu}\n${fact.meaningTextRu}\n${fact.factTextEn}\n${fact.meaningTextEn}`).join("\n");
 
     expect(copy).toMatch(/72%.*пришло с Binance|72%.*came from Binance/i);
     expect(copy).toMatch(/контракт без названия.*старые переводы.*источник[а]? данных|unnamed contract.*older transfers.*provider/is);
     expect(copy).not.toMatch(/контракт.*непрослеживаем|contract.*untraceable/i);
+  });
+
+  it.each([
+    ["cex", "allowlisted_cex", "allowlist_cex", "Binance"],
+    ["unknown contract", "unknown_contract", "unknown", "Unknown contract"]
+  ] as const)("uses selected amount usage instead of raw balance share for %s narrative", (_name, sourceExposureKind, rootSourceType, label) => {
+    const txHash = "a".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({ paths: [originPath({
+      balanceTransferTxHash: txHash,
+      rootSourceType,
+      exposureSourceKey: sourceExposureKind,
+      exposureSourceLabel: label,
+      sourceExposureKind,
+      balanceShare: 1,
+      txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "100000000000",
+        usedAmountRaw: "40000000000",
+        coverageShare: 0.4,
+        role: "anchor"
+      },
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-27T00:00:00.000Z"
+      }]
+    })] });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(copy).toMatch(/40 000 USDT.*40%|40,000 USDT.*40%/i);
+    expect(copy).not.toMatch(/100 000 USDT|100,000 USDT|100%/i);
+  });
+
+  it.each([
+    ["cex", "allowlisted_cex", "allowlist_cex", "Binance"],
+    ["unknown contract", "unknown_contract", "unknown", "Unknown contract"]
+  ] as const)("scales a %s branch amount and counts a duplicated physical transfer once", (_name, sourceExposureKind, rootSourceType, label) => {
+    const txHash = "b".repeat(64);
+    const path = originPath({
+      balanceTransferTxHash: txHash,
+      rootSourceType,
+      exposureSourceKey: sourceExposureKind,
+      exposureSourceLabel: label,
+      sourceExposureKind,
+      balanceShare: 0.5,
+      txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "100000000000",
+        usedAmountRaw: "100000000000",
+        coverageShare: 1,
+        role: "anchor"
+      },
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-27T00:00:00.000Z"
+      }]
+    });
+    const facts = catalogueApi.sourceAndRouteFacts({ paths: [path, { ...path }] });
+    const copy = facts.map((fact) => `${fact.factTextRu}\n${fact.factTextEn}`).join("\n");
+
+    expect(facts).toHaveLength(1);
+    expect(copy).toMatch(/50 000 USDT.*50%|50,000 USDT.*50%/i);
+    expect(copy).not.toMatch(/100 000 USDT|100,000 USDT|100%|200 000 USDT|200,000 USDT/i);
+    if (sourceExposureKind === "allowlisted_cex") {
+      expect(copy).toMatch(/1 перевод|1 transfer/i);
+    }
+  });
+
+  it.each([
+    ["sanctioned", /40 000 USDT.*40%.*HTX/i, /прямой санкционный источник/i],
+    ["htx", /40 000 USDT.*40%.*HTX.*до.*санкцион/i, /существенным compliance-риском/i],
+    ["cross_chain", /40 000 USDT.*40%.*UsdtOFT/i, /обычн.*перевод.*сет|затруднить.*происхожд/i],
+    ["bridge_router_dex", /40 000 USDT.*40%.*SUN\.io/i, /более ранний источник.*сложнее/i],
+    ["cex", /40 000 USDT.*40%.*Binance/i, /более ранний источник.*общей ликвидност/i],
+    ["unknown_contract", /40 000 USDT.*40%.*Unknown contract/i, /назначение.*не удалось определить/i]
+  ] as const)("splits %s source finding from its plain meaning", (scenario, finding, meaning) => {
+    const txHash = scenario.padEnd(64, "2").slice(0, 64);
+    const pathOverrides: Partial<MoneyOriginPath> = {
+      balanceTransferTxHash: txHash,
+      balanceShare: 1,
+      txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "40000000000",
+        usedAmountRaw: "40000000000",
+        coverageShare: 0.4,
+        role: "anchor"
+      },
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw: "40000000000",
+        timestamp: scenario === "htx" ? "2026-05-25T00:00:00.000Z" : "2026-05-27T00:00:00.000Z"
+      }]
+    };
+    const sourcePolicyEvidence: SourcePolicyEvidence[] = [];
+    if (scenario === "sanctioned") {
+      Object.assign(pathOverrides, { exposureSourceKey: "htx_huobi", exposureSourceLabel: "HTX", sourceExposureKind: "sanctioned_service" });
+      sourcePolicyEvidence.push(postDesignationHtxPolicy());
+      sourcePolicyEvidence[0]!.evidenceIds = [txHash];
+    } else if (scenario === "htx") {
+      Object.assign(pathOverrides, { exposureSourceKey: "htx_huobi", exposureSourceLabel: "HTX", sourceExposureKind: "htx_huobi" });
+      sourcePolicyEvidence.push(policyEvidence({ kind: "htx_huobi", proofLevel: "exchange_policy_context", evidenceIds: [txHash] }));
+    } else if (scenario === "cross_chain") {
+      Object.assign(pathOverrides, { rootSourceType: "decline_boundary", exposureSourceLabel: "UsdtOFT", sourceExposureKind: "cross_chain_boundary" });
+      sourcePolicyEvidence.push(policyEvidence({ kind: "cross_chain_boundary", proofLevel: "exchange_policy_context", evidenceIds: [txHash] }));
+    } else if (scenario === "bridge_router_dex") {
+      Object.assign(pathOverrides, { rootSourceType: "decline_boundary", exposureSourceLabel: "SUN.io", sourceExposureKind: "bridge_router_dex" });
+      sourcePolicyEvidence.push(policyEvidence({ kind: "bridge_router_dex", proofLevel: "exchange_policy_context", evidenceIds: [txHash] }));
+    } else if (scenario === "cex") {
+      Object.assign(pathOverrides, { rootSourceType: "allowlist_cex", exposureSourceLabel: "Binance", sourceExposureKind: "allowlisted_cex" });
+    } else {
+      Object.assign(pathOverrides, { rootSourceType: "unknown", exposureSourceLabel: "Unknown contract", sourceExposureKind: "unknown_contract" });
+    }
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath(pathOverrides)],
+      sourcePolicyEvidence
+    });
+
+    expect(fact?.factTextRu).toMatch(finding);
+    expect(fact?.meaningTextRu).toMatch(meaning);
+    expect(fact?.factTextRu).not.toMatch(meaning);
+    expect(fact?.meaningTextRu).not.toMatch(finding);
+    expect(fact?.scoreSignalKeys?.length).toBeGreaterThan(0);
+
+    const rendered = formatWalletNarrativeSummary(narrativeCase({ facts: [fact!] }));
+    expect(rendered).toContain(fact!.factTextRu);
+    expect(rendered).toContain(fact!.meaningTextRu!);
   });
 
   it.each([
@@ -2092,7 +2715,7 @@ describe("wallet narrative signal catalogue", () => {
 
     expect(bridgeFacts).toHaveLength(1);
     expect(bridgeFacts[0]?.evidenceIds).toEqual([firstHash, secondHash, "9".repeat(64)]);
-    expect(bridgeFacts[0]?.factTextEn).toMatch(/earlier history.*outside TRON/i);
+    expect(bridgeFacts[0]?.meaningTextEn).toMatch(/repeated bridge route.*AML risk/i);
     expect(reversed).toEqual(forward);
   });
 
@@ -2247,6 +2870,49 @@ describe("wallet narrative signal catalogue", () => {
     expect(principal?.factTextRu).not.toContain("1 176 320");
     expect(`${fee?.factTextRu}\n${fee?.factTextEn}`).not.toMatch(/риск|risk|санкц|blacklist/i);
     expect(`${fee?.factTextRu}\n${fee?.factTextEn}`).not.toMatch(/связан|linked|settlement|перед|before/i);
+  });
+
+  it("builds the same exact GasFree fee fact from Where balance-forming transfers", () => {
+    const hugeRaw = "900719925474099312345678";
+    const fee: BalanceFormingTransfer = {
+      txHash: "e".repeat(64),
+      fromAddress: subject,
+      toAddress: `T${"7".repeat(33)}`,
+      amountRaw: hugeRaw,
+      timestamp: "2026-05-26T09:56:19.000Z",
+      method: "transfer",
+      edgeType: "normal_transfer",
+      economicRole: "service_fee",
+      economicProtocol: "tron_gasfree",
+      coverageShare: 0,
+      selectedReason: "covers_current_balance"
+    };
+    const duplicate = { ...fee };
+    const second = { ...fee, txHash: "c".repeat(64), amountRaw: "3000000" };
+    const fact = catalogueApi.gasFreeFeeFactFromBalanceTransfers([fee, duplicate, second]);
+
+    expect(fact?.factTextRu).toContain("900 719 925 474 099 315,345678 USDT");
+    expect(fact?.factTextEn).toContain("900,719,925,474,099,315.345678 USDT");
+    expect(fact?.evidenceIds).toEqual(["c".repeat(64), "e".repeat(64)]);
+  });
+
+  it("does not infer a GasFree fee from destination, familiar amount, or close timing", () => {
+    const heuristicOnly: BalanceFormingTransfer = {
+      txHash: "f".repeat(64),
+      fromAddress: subject,
+      toAddress: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
+      amountRaw: "3000000",
+      timestamp: "2026-05-26T09:56:19.000Z",
+      method: "transfer",
+      edgeType: "normal_transfer",
+      economicRole: "principal",
+      economicProtocol: "tron_gasfree",
+      coverageShare: 1,
+      selectedReason: "covers_current_balance"
+    };
+
+    expect(catalogueApi.gasFreeFeeFactFromBalanceTransfers([heuristicOnly])).toBeNull();
+    expect(heuristicOnly.economicRole).toBe("principal");
   });
 
   it("does not turn a fee-only GasFree provider into direct adverse evidence", () => {
@@ -2410,6 +3076,72 @@ describe("wallet narrative signal catalogue", () => {
 
     expect(coverage?.textRu).toMatch(/остальные 17%.*не прослежены.*источник данных.*старые переводы/i);
     expect(coverage?.textEn).toMatch(/remaining 17%.*untraced.*provider.*older transfers/i);
+  });
+
+  it("omits Where coverage when the selected amount is completely traced", () => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      whereCoverage: whereCoverage({
+        coverageRatio: 1,
+        currentBalanceCoverageRatio: 1,
+        selectedAmountRaw: "100000000000",
+        partial: false
+      })
+    });
+
+    expect(coverage).toBeNull();
+  });
+
+  it("states the untraced remainder without inventing a provider reason", () => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      whereCoverage: whereCoverage(),
+      traceHistoryCoverage: []
+    });
+
+    expect(coverage?.textRu).toContain("Оставшиеся 17% не удалось отнести к подтверждённому источнику.");
+    expect(coverage?.textEn).toContain("The remaining 17% could not be attributed to a confirmed source.");
+    expect(`${coverage?.textRu}\n${coverage?.textEn}`).not.toMatch(/provider|провайдер|источник данных|сервис/i);
+  });
+
+  it.each([
+    ["provider cap", { providerCapHit: true, statusReason: "partial_provider_cap" as const }, /источник данных.*старые переводы|provider.*older transfers/i],
+    ["budget", { budgetExhausted: true, statusReason: "partial_budget_exhausted" as const }, /техническ.*лимит|technical limit/i],
+    ["inconsistent", { providerInconsistent: true, statusReason: "partial_provider_inconsistent" as const }, /противоречив.*истори|inconsistent history/i],
+    ["provider failure", { statusReason: "failed_retryable" as const }, /запрос истории.*ошибк|history request failed/i]
+  ])("explains Where-only $name coverage from structured history", (_name, history, reason) => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      whereCoverage: whereCoverage({ notes: ["POISON notes provider_cap_unresolved"] }),
+      traceHistoryCoverage: [traceHistory(history)]
+    });
+    const copy = `${coverage?.textRu}\n${coverage?.textEn}`;
+
+    expect(coverage?.reasonKind).toBe("where_money_coverage");
+    expect(copy).toMatch(/83%/);
+    expect(copy).toMatch(reason);
+    expect(copy).not.toContain("POISON");
+    expect(coverage?.isRiskEvidence).toBe(false);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01])(
+    "rejects invalid Where coverage ratio %s instead of inventing a percentage",
+    (coverageRatio) => {
+      const coverage = catalogueApi.coverageExplanationFor({
+        whereCoverage: whereCoverage({ coverageRatio, currentBalanceCoverageRatio: coverageRatio }),
+        traceHistoryCoverage: [traceHistory({ statusReason: "partial_provider_cap" })]
+      });
+
+      expect(coverage).toBeNull();
+    }
+  );
+
+  it("builds Where coverage in the evidence catalogue without Deep first-hop coverage", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: subject,
+      whereCoverage: whereCoverage(),
+      traceHistoryCoverage: [traceHistory({ statusReason: "partial_provider_cap" })]
+    });
+
+    expect(evidence.coverageExplanation?.textRu).toMatch(/83%.*17%/i);
+    expect(evidence.coverageExplanation?.reasonKind).toBe("where_money_coverage");
   });
 
   it("requires checkedAddress at the evidence build boundary", () => {

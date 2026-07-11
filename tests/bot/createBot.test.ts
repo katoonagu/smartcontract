@@ -24,6 +24,14 @@ import {
   tgytFirstHopCoverage,
   tgytSubjectRestriction
 } from "../fixtures/forensics/directBlacklistCases";
+import {
+  POISON_RAW_REASON,
+  bridgeWhereReportFixture,
+  sourceWhereReportFixture,
+  whereAssessmentFixture,
+  whereReportFixture,
+  whereRiskLayerFixture
+} from "../fixtures/forensics/wherePreliminaryNarrativeCases";
 
 const walletAddress = `T${"1".repeat(33)}`;
 const secondWalletAddress = `T${"2".repeat(33)}`;
@@ -6300,109 +6308,311 @@ describe("bot command and inline UX smoke coverage", () => {
     expectCompactNoFinalNarrative(text);
   });
 
-  it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
-    const whereReport = whereIsMoneyReportForTest({
-      decision: "DECLINE",
-      userDecision: "DECLINE",
-      internalDecision: "DECLINE",
-      riskScore: 95,
-      assessment: {
-        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
-        hardBadEvidence: [
-          {
-            kind: "approval_drain",
-            score: 95,
-            evidenceIds: ["tx-preliminary-approval-drain"],
-            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
-          }
-        ]
-      },
-      approvalDrainProvenanceProfiles: [
-        {
-          victimAddress: "TVictim111111111111111111111111111111",
-          approvalTxHash: "tx-approval-root-cause",
-          drainTxHash: "tx-transferfrom-drain",
-          spenderAddress: "TSpender11111111111111111111111111111",
-          firstReceiverAddress: walletAddress,
-          subjectAddress: walletAddress,
-          hopDepth: 0,
-          amountRaw: "309000000000",
-          amountPreservationRatio: 0.991,
-          approvalAt: "2026-05-20T09:50:00.000Z",
-          drainAt: "2026-05-20T10:00:00.000Z",
-          pathTxHashes: ["tx-transferfrom-drain"],
-          pathAddresses: ["TVictim111111111111111111111111111111", walletAddress],
-          score: 95,
-          evidenceStrength: "exact_approval_and_transfer_from",
-          subjectTokenState: null,
-          victimTokenState: null,
-          features: []
-        }
-      ]
-    });
-    const runningDeepJob = whereIsMoneyJobForTest({
-      id: "deep-job-running",
+  function preliminaryDelivery(
+    report: WhereIsMoneyReport,
+    options: Parameters<typeof formatWhereIsMoneyUserDeliveryReport>[4] = { locale: "ru" },
+    overrides: { deepStatus?: ForensicCheckJob["status"]; whereStatus?: "completed" | "partial"; job?: ForensicCheckJob } = {}
+  ) {
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-preliminary-pending",
       kind: "address_deep_check",
-      status: "running",
-      subjectAddress: whereReport.subjectAddress,
+      status: overrides.deepStatus ?? "running",
+      subjectAddress: report.subjectAddress,
       resultJson: {}
     });
-
-    const message = formatWhereIsMoneyUserDeliveryReport(
-      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
-      whereReport,
-      "completed",
-      runningDeepJob,
-      { locale: "ru", runtimeLabel: "worker-test" }
+    return formatWhereIsMoneyUserDeliveryReport(
+      overrides.job ?? whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      report,
+      overrides.whereStatus ?? "completed",
+      deepJob,
+      options
     );
-    const text = plainTelegramText(message.text);
+  }
+
+  function preliminaryDeliveryText(
+    report: WhereIsMoneyReport,
+    options: Parameters<typeof formatWhereIsMoneyUserDeliveryReport>[4] = { locale: "ru" },
+    overrides: Parameters<typeof preliminaryDelivery>[2] = {}
+  ): string {
+    return plainTelegramText(preliminaryDelivery(report, options, overrides).text);
+  }
+
+  it.each(["queued", "running"] as const)(
+    "renders the approved preliminary narrative for matching %s DeepCheck",
+    (deepStatus) => {
+      const report = bridgeWhereReportFixture({ score: 78, share: 0.83, transferCount: 10 });
+      const text = preliminaryDeliveryText(report, { locale: "ru", runtimeLabel: "worker-test" }, { deepStatus });
+      const ordered = [
+        "Откуда деньги — предварительный результат",
+        "Адрес",
+        "Предварительный риск: 🟠 78/100",
+        "Что нашли",
+        "Вывод"
+      ];
+
+      ordered.reduce((previous, heading) => {
+        const position = text.indexOf(heading);
+        expect(position).toBeGreaterThan(previous);
+        return position;
+      }, -1);
+      expect(text).toContain(report.subjectAddress);
+      expect(text).toMatch(/83%.*UsdtOFT.*10 перевод/i);
+      expect((plainSectionText(text, "Что нашли").match(/•/g) ?? [])).toHaveLength(1);
+      expect(text).toContain("Runtime: worker-test");
+      expect(text).not.toMatch(/Почему|Что дальше|DeepCheck|Финальный итог|предварительную проверку происхождения/i);
+      expect(text).not.toMatch(/Операцию не проводить|Можно принять|hard-proof|transferFrom|ПОИСК|POISON|cross_chain_boundary/i);
+      expect(text).not.toContain(POISON_RAW_REASON);
+    }
+  );
+
+  it("uses the same preliminary contract for a partial Where result with pending DeepCheck", () => {
+    const report = bridgeWhereReportFixture();
+    report.coverage = {
+      ...report.coverage,
+      partial: true,
+      coverageRatio: 0.83,
+      currentBalanceCoverageRatio: 0.83
+    };
+    const text = preliminaryDeliveryText(
+      report,
+      { locale: "ru", runtimeLabel: "worker-partial" },
+      { whereStatus: "partial" }
+    );
 
     expect(text).toContain("Откуда деньги — предварительный результат");
-    expect(text).toContain("Предварительный риск");
-    expect(text).toContain("95/100");
-    expect(text).toContain("Найдена точная approval-drain цепочка");
-    expect(text).toContain("Проверка “Откуда деньги” нашла 1 hard-proof approval-drain цепочек.");
-    expect(text).toContain("Проверяемый адрес — первый получатель после transferFrom drain.");
-    expect(text).toContain("“Откуда деньги” завершено первым");
-    expect(text).toContain("Финальный итог придёт");
-    expect(text).not.toContain("Проверка адреса — итог");
-    expect(text).not.toContain("Exact approval-drain provenance reaches checked wallet via 0 hop(s).");
-    expect(text).not.toContain("Разбор оценки");
+    expect(text).toContain("Предварительный риск: 🟠 78/100");
+    expect(text).toContain("Что нашли");
+    expect(text).toContain("Вывод");
+    expect(plainSectionText(text, "Границы проверки")).toMatch(/прослежено 83% суммы/i);
+    expect(text.indexOf("Границы проверки")).toBeGreaterThan(text.indexOf("Вывод"));
+    expect(text.indexOf("Runtime: worker-partial")).toBeGreaterThan(text.indexOf("Границы проверки"));
+    expect(text).not.toMatch(/DeepCheck|Что дальше|Финальный итог/i);
   });
 
-  it("formats low where-is-money preliminary delivery without overstating evidence", () => {
-    const whereReport = whereIsMoneyReportForTest({
-      decision: "ACCEPTABLE",
-      userDecision: "ACCEPTABLE",
-      internalDecision: "ACCEPTABLE",
-      riskScore: 10,
-      assessment: {
-        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
-        hardBadEvidence: []
+  it.each([
+    [29, "🟢"],
+    [30, "🟡"],
+    [60, "🟠"],
+    [85, "🔴"]
+  ] as const)("keeps the preliminary emoji at %s", (score, icon) => {
+    expect(preliminaryDeliveryText(bridgeWhereReportFixture({ score })))
+      .toContain(`${icon} ${score}/100`);
+  });
+
+  it.each([false, undefined])("hides preliminary score when scoreValid=%s", (validity) => {
+    const report = bridgeWhereReportFixture({ score: 78, scoreValid: false });
+    if (validity === undefined) {
+      delete report.scoreValid;
+      delete report.assessment.scoreValid;
+      delete report.scoringPolicyVersion;
+      delete report.assessment.scoringPolicyVersion;
+    }
+    const diagnostics: unknown[] = [];
+    const text = preliminaryDeliveryText(report, {
+      locale: "ru",
+      onPreliminaryDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+    });
+
+    expect(text).toContain("Предварительный риск не рассчитан");
+    expect(text).not.toMatch(/[🟢🟡🟠🔴]|\/100|78/);
+    expect(text).not.toContain("Что нашли");
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("reports one typed diagnostic and hides a valid unexplained score", () => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.originPaths = [];
+    report.assessment.sourcePolicyEvidence = [];
+    const diagnostics: unknown[] = [];
+    const text = preliminaryDeliveryText(report, {
+      locale: "ru",
+      onPreliminaryDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+    }, { job: whereIsMoneyJobForTest({ id: "where-unexplained" }) });
+
+    expect(text).toContain("Предварительный риск не рассчитан");
+    expect(text).not.toMatch(/[🟢🟡🟠🔴]|\/100|78/);
+    expect(diagnostics).toEqual([{
+      code: "where_preliminary_score_without_structured_fact",
+      jobId: "where-unexplained",
+      subjectAddress: report.subjectAddress,
+      riskScore: 78
+    }]);
+  });
+
+  it("keeps preliminary delivery unchanged when the optional diagnostic callback throws", () => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.originPaths = [];
+    report.assessment.sourcePolicyEvidence = [];
+    const baseline = preliminaryDelivery(report, { locale: "ru" });
+    let callbackCalls = 0;
+    let actual: ReturnType<typeof preliminaryDelivery> | undefined;
+
+    expect(() => {
+      actual = preliminaryDelivery(report, {
+        locale: "ru",
+        onPreliminaryDiagnostic: () => {
+          callbackCalls += 1;
+          throw new Error("raw diagnostic callback failure");
+        }
+      });
+    }).not.toThrow();
+
+    expect(callbackCalls).toBe(1);
+    expect(actual).toEqual(baseline);
+    expect(actual?.text).toContain("Предварительный риск не рассчитан");
+    expect(actual?.text).not.toContain("raw diagnostic callback failure");
+  });
+
+  it("prefers the explicit English locale and does not leak Russian headings", () => {
+    const text = preliminaryDeliveryText(bridgeWhereReportFixture(), { locale: "en" });
+
+    expect(text).toContain("Where Is Money — preliminary result");
+    expect(text).toContain("Preliminary risk: 🟠 78/100");
+    expect(text).toContain("Finding");
+    expect(text).toContain("Conclusion");
+    expect(text).not.toMatch(/Откуда деньги|Адрес|Предварительный|Что нашли|Вывод|Границы/);
+  });
+
+  it("escapes a service label once in Telegram HTML", () => {
+    const report = sourceWhereReportFixture({
+      kind: "cross_chain_boundary",
+      score: 78,
+      share: 0.83,
+      label: "<Bridge & Co>"
+    });
+    const message = preliminaryDelivery(report);
+    const plain = plainTelegramText(message.text);
+
+    expect(plain.match(/<Bridge & Co>/g)).toHaveLength(1);
+    expect(message.text.match(/&lt;Bridge &amp; Co&gt;/g)).toHaveLength(1);
+    expect(message.text).not.toContain("&amp;lt;");
+  });
+
+  it.each([
+    ["overlong", "X".repeat(260)],
+    ["internal code", "provider_cap_unresolved"],
+    ["forbidden heading", "Coverage limits"]
+  ])("delivers the bridge score when an unrelated CEX has an unsafe %s label", (_name, label) => {
+    const report = bridgeWhereReportFixture({ score: 78, share: 0.83, transferCount: 2 });
+    const unrelated = sourceWhereReportFixture({
+      kind: "allowlisted_cex", score: 18, share: 0.17, label
+    });
+    report.originPaths.push(...unrelated.originPaths);
+
+    let message: ReturnType<typeof preliminaryDelivery> | undefined;
+    expect(() => {
+      message = preliminaryDelivery(report);
+    }).not.toThrow();
+    const plain = plainTelegramText(message!.text);
+    expect(plain).toContain("🟠 78/100");
+    expect(plain).toContain("UsdtOFT");
+    expect(plain).not.toContain(label);
+  });
+
+  it("does not show a coverage-limits section for complete 100% coverage", () => {
+    const text = preliminaryDeliveryText(bridgeWhereReportFixture());
+
+    expect(text).not.toContain("Границы проверки");
+  });
+
+  it("uses exact Verify20 only from the validated subject-bound Where job", () => {
+    const driver = whereRiskLayerFixture("verify20_template", 85, "contract_suspicion", ["verify20:5082dd12"]);
+    const report = whereReportFixture({
+      riskScore: 85,
+      assessment: whereAssessmentFixture({
+        riskScore: 85,
+        contractSuspicionEvidence: [driver],
+        dominantRiskLayer: driver
+      })
+    });
+    const exactJob = whereIsMoneyJobForTest({
+      progressJson: {
+        locale: "ru",
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()))
+        }
       }
     });
-    const runningDeepJob = whereIsMoneyJobForTest({
-      id: "deep-job-running-low-risk",
-      kind: "address_deep_check",
-      status: "running",
-      subjectAddress: whereReport.subjectAddress,
-      resultJson: {}
+    const exact = preliminaryDeliveryText(report, { locale: "ru" }, { job: exactJob });
+
+    expect(exact).toContain("🔴 85/100");
+    expect(exact).toMatch(/полный шаблон Verify20/i);
+
+    const malformed = JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()));
+    malformed.contractProfile.methodMap = {};
+    const malformedText = preliminaryDeliveryText(report, { locale: "ru" }, {
+      job: whereIsMoneyJobForTest({
+        progressJson: { contractSafetyAnalysis: { status: "completed", report: malformed } }
+      })
+    });
+    const mismatched = JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()));
+    mismatched.subjectAddress = secondWalletAddress;
+    const mismatchedText = preliminaryDeliveryText(report, { locale: "ru" }, {
+      job: whereIsMoneyJobForTest({
+        progressJson: { contractSafetyAnalysis: { status: "completed", report: mismatched } }
+      })
     });
 
+    for (const text of [malformedText, mismatchedText]) {
+      expect(text).toContain("Предварительный риск не рассчитан");
+      expect(text).not.toMatch(/Verify20|\/100/);
+    }
+  });
+
+  it("does not reuse Deep-only Verify20 evidence for preliminary Where", () => {
+    const driver = whereRiskLayerFixture("verify20_template", 85, "contract_suspicion", ["verify20:5082dd12"]);
+    const report = whereReportFixture({
+      riskScore: 85,
+      assessment: whereAssessmentFixture({
+        riskScore: 85,
+        contractSuspicionEvidence: [driver],
+        dominantRiskLayer: driver
+      })
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-only-verify20",
+      kind: "address_deep_check",
+      status: "running",
+      subjectAddress: report.subjectAddress,
+      progressJson: {
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()))
+        }
+      }
+    });
     const message = formatWhereIsMoneyUserDeliveryReport(
-      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
-      whereReport,
-      "completed",
-      runningDeepJob,
-      { locale: "ru" }
+      whereIsMoneyJobForTest(), report, "completed", deepJob, { locale: "ru" }
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Откуда деньги — предварительный результат");
-    expect(text).toContain("предварительную проверку происхождения");
-    expect(text).not.toContain("важный сигнал");
-    expect(text).not.toContain("Проверка адреса — итог");
+    expect(text).toContain("Предварительный риск не рассчитан");
+    expect(text).not.toMatch(/Verify20|\/100/);
   });
+
+  it.each([
+    { name: "failed", status: "failed", subjectAddress: walletAddress },
+    { name: "running subject-mismatched", status: "running", subjectAddress: secondWalletAddress },
+    { name: "completed subject-mismatched", status: "completed", subjectAddress: secondWalletAddress }
+  ] as const)(
+    "keeps the standalone Where route for $name DeepCheck",
+    ({ status, subjectAddress }) => {
+      const report = bridgeWhereReportFixture();
+      const deepJob = whereIsMoneyJobForTest({
+        kind: "address_deep_check",
+        status,
+        subjectAddress
+      });
+      const text = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
+        whereIsMoneyJobForTest(), report, "completed", deepJob, { locale: "ru" }
+      ).text);
+
+      expect(text).not.toContain("предварительный результат");
+      expectCompactNoFinalNarrative(text);
+      expect(text).toMatch(/^⚪ Итог не рассчитан/u);
+    }
+  );
 
   it("keeps normal where delivery compact without support-only details", () => {
     const whereReport = whereIsMoneyReportForTest({
@@ -9511,8 +9721,9 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(fresh).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
       expect(fresh).toContain("Сам адрес не в списке");
       expect(fresh).toContain("UsdtOFT");
-      expect(fresh).toContain("Границы проверки");
-      expect(fresh).not.toMatch(/GasFree|Техническая деталь|45 с|1 176 320|risky_counterparty|cross_chain_boundary/u);
+      expect(fresh).not.toContain("Границы проверки");
+      expect(fresh).toMatch(/GasFree|Техническая деталь/u);
+      expect(fresh).not.toMatch(/45 с|1 176 320|risky_counterparty|cross_chain_boundary/u);
 
       expect(legacy).toContain("78/100");
       expect(legacy).toMatch(/устаревш|свеж/u);
@@ -9652,8 +9863,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
       expect(approvalText).toContain("первым получил 309 000 USDT");
       expect(approvalText).toContain("подтверждённой дрейнер-цепочке");
-      expect(bridgeText).toContain("83% проверенной суммы — через мост UsdtOFT");
-      expect(bridgeText).toContain("вне TRON");
+      expect(bridgeText).toContain("83 000 USDT (83%) пришло через мост UsdtOFT");
+      expect(bridgeText).toContain("затруднить проверку происхождения");
       expect(bridgeText).not.toContain("raw_bridge_reason_must_not_leak");
     });
 

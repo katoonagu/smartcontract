@@ -10,9 +10,7 @@ import {
   type DeepAddressForensicReport
 } from "../check/deepForensicCheck";
 import {
-  addressBehaviorEffectiveScore,
-  isAddressBehaviorReasonCode,
-  type AddressBehaviorReasonCode
+  addressBehaviorEffectiveScore
 } from "../forensics/addressBehavior";
 import {
   extractUsdtTransferDisplayContext,
@@ -23,11 +21,6 @@ import {
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskClarity";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
-import {
-  exactFastHardEvidence,
-  isExactFastHardEvidenceCode,
-  type ExactFastHardEvidenceCode
-} from "../risk/fastEvidence";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import {
@@ -41,12 +34,18 @@ import {
 } from "./riskExplanationSummary";
 import {
   buildWalletNarrativeEvidence,
+  fastNarrativeCopy,
+  fastNarrativeReasonScore,
   formatWalletNarrativeSummary,
   type ApprovalDrainNarrativeEvidence,
   type CoverageExplanation,
   type NarrativeFact,
   type WalletNarrativeEvidenceInput
 } from "./walletNarrativeSummary";
+import {
+  buildWherePreliminaryNarrative,
+  type WherePreliminaryDiagnosticCode
+} from "./wherePreliminaryNarrative";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
 import {
@@ -2170,64 +2169,66 @@ function isPendingDeepForensicJob(job: ForensicCheckJob | null | undefined, subj
   );
 }
 
-function wherePreliminaryHardEvidenceLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
-  const hardEvidence = report.assessment.hardBadEvidence.filter(isDeterministicWhereHardEvidence);
-  const approvalDrainCount = hardEvidence.filter((evidence) => evidence.kind === "approval_drain").length;
-  const lines: string[] = [];
-  if (approvalDrainCount > 0) {
-    lines.push(locale === "en"
-      ? `Where Is Money found ${approvalDrainCount} hard-proof approval-drain path(s).`
-      : `Проверка “Откуда деньги” нашла ${approvalDrainCount} hard-proof approval-drain цепочек.`);
-  }
+export type WherePreliminaryDiagnostic = {
+  code: WherePreliminaryDiagnosticCode;
+  jobId: string;
+  subjectAddress: string;
+  riskScore: number;
+};
 
-  const topProfile = report.approvalDrainProvenanceProfiles
-    .find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from" || profile.score >= 85) ?? null;
-  if (topProfile) {
-    lines.push(locale === "en"
-      ? topProfile.hopDepth === 0
-        ? "The checked address is the first receiver after the transferFrom drain."
-        : `The checked address is linked to the transferFrom drain receiver within ${topProfile.hopDepth} hop(s).`
-      : topProfile.hopDepth === 0
-        ? "Проверяемый адрес — первый получатель после transferFrom drain."
-        : `Проверяемый адрес связан с получателем после transferFrom drain через ${topProfile.hopDepth} hop.`);
-  }
-
-  return lines.slice(0, 2);
-}
+type WhereIsMoneyUserDeliveryOptions = {
+  runtimeLabel?: string;
+  locale?: BotLocale;
+  showBetaDiagnostics?: boolean;
+  onPreliminaryDiagnostic?: (diagnostic: WherePreliminaryDiagnostic) => void;
+};
 
 function formatWhereIsMoneyPreliminaryReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
-  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+  options: WhereIsMoneyUserDeliveryOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
-  const level = levelFromScore(report.riskScore);
-  const hardEvidence = whereHardEvidenceReasonLines(report, locale)[0] ?? null;
-  const reason = hardEvidence
-    ? hardEvidence.replace(/^Жёсткое доказательство:\s*/u, "").replace(/^Hard evidence:\s*/u, "")
-    : locale === "en"
-      ? "Where Is Money completed a preliminary provenance pass."
-      : "Where Is Money завершил предварительную проверку происхождения средств.";
-  const reasonLines = [
-    normalizeNotificationReason(reason, locale),
-    ...wherePreliminaryHardEvidenceLines(report, locale)
-  ];
+  const contractReport = extractSmartContractCheckReportFromJob(job, report.subjectAddress);
+  const narrative = buildWherePreliminaryNarrative(report, {
+    locale,
+    verify20: contractReport?.verify20Fingerprint.matched
+      ? {
+          subjectAddress: contractReport.subjectAddress,
+          role: "verify20_contract",
+          fingerprint: contractReport.verify20Fingerprint,
+          debitObserved: contractReport.exactDrainProven
+        }
+      : null
+  });
+  if (narrative.diagnosticCode) {
+    try {
+      options.onPreliminaryDiagnostic?.({
+        code: narrative.diagnosticCode,
+        jobId: job.id,
+        subjectAddress: report.subjectAddress,
+        riskScore: report.riskScore
+      });
+    } catch {
+      // Delivery diagnostics are best-effort and must not block the user message.
+    }
+  }
 
   return telegramHtmlMessage([
     bold(locale === "en" ? "Where Is Money — preliminary result" : "Откуда деньги — предварительный результат"),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
-    `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(level)} ${code(`${report.riskScore}/100`)}`,
-    section(locale === "en" ? "Why" : "Почему", [
-      bulletList([...new Set(reasonLines)])
-    ]),
-    section(locale === "en" ? "What happens next" : "Что дальше", [
-      locale === "en"
-        ? "Where Is Money finished first; DeepCheck is still checking address links and behavior."
-        : "“Откуда деньги” завершено первым; DeepCheck ещё продолжает проверку связей и поведения адреса.",
-      locale === "en"
-        ? "Final result will arrive after the remaining analysis completes."
-        : "Финальный итог придёт после завершения анализа."
-    ]),
+    narrative.score === null
+      ? bold(locale === "en" ? "Preliminary risk was not calculated" : "Предварительный риск не рассчитан")
+      : `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(levelFromScore(narrative.score))} ${code(`${narrative.score}/100`)}`,
+    narrative.sections.findings.length > 0
+      ? section(locale === "en" ? "Finding" : "Что нашли", [bulletList(narrative.sections.findings.slice(0, 2))])
+      : null,
+    narrative.sections.conclusion
+      ? section(locale === "en" ? "Conclusion" : "Вывод", [escapeHtml(narrative.sections.conclusion)])
+      : null,
+    narrative.sections.coverage
+      ? section(locale === "en" ? "Coverage limits" : "Границы проверки", [escapeHtml(narrative.sections.coverage)])
+      : null,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -2237,7 +2238,7 @@ export function formatWhereIsMoneyUserDeliveryReport(
   report: WhereIsMoneyReport,
   status: "completed" | "partial",
   deepJob: ForensicCheckJob | null | undefined,
-  options: { runtimeLabel?: string; locale?: BotLocale; showBetaDiagnostics?: boolean } = {}
+  options: WhereIsMoneyUserDeliveryOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, report.subjectAddress));
@@ -2256,7 +2257,8 @@ export function formatWhereIsMoneyUserDeliveryReport(
   if (isPendingDeepForensicJob(deepJob, report.subjectAddress)) {
     return formatWhereIsMoneyPreliminaryReport(job, report, {
       runtimeLabel: options.runtimeLabel,
-      locale
+      locale,
+      onPreliminaryDiagnostic: options.onPreliminaryDiagnostic
     });
   }
   return formatWhereIsMoneyReport(job, report, status, {
@@ -3507,128 +3509,6 @@ function buildUnifiedWalletNarrativeEvidence(
   };
 }
 
-type FastNarrativeCopy = Pick<NarrativeFact, "kind" | "proofStrength"> & { ru: string; en: string };
-
-const exactFastNarrativeCopies: Record<ExactFastHardEvidenceCode, FastNarrativeCopy> = {
-  stablecoin_usdt_blacklisted: {
-    kind: "usdt_blacklist",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес находится в чёрном списке USDT: переводы токена заблокированы, а USDT на адресе заморожен.",
-    en: "The checked address is on the USDT blacklist: token transfers are blocked and USDT at the address is frozen."
-  },
-  forensic_approval_drain_provenance: {
-    kind: "approval_drain",
-    proofStrength: "exact",
-    ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
-    en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
-  },
-  internal_label_approval_drain_proximity: {
-    kind: "approval_drain",
-    proofStrength: "exact",
-    ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
-    en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
-  },
-  internal_label_scam: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе как мошеннический.",
-    en: "The checked address is labeled as a scam address in the internal database."
-  },
-  internal_label_reported_scam: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе по подтверждённой жалобе на мошенничество.",
-    en: "The checked address has a confirmed scam report in the internal database."
-  },
-  internal_label_stolen_funds: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе как связанный с украденными средствами.",
-    en: "The checked address is labeled as linked to stolen funds in the internal database."
-  },
-  internal_label_phishing: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе как фишинговый.",
-    en: "The checked address is labeled as a phishing address in the internal database."
-  },
-  internal_label_risky_contract: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе как рискованный контракт.",
-    en: "The checked address is labeled as a risky contract in the internal database."
-  },
-  internal_label_whitebit: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе как связанный с WhiteBIT.",
-    en: "The checked address is labeled as linked to WhiteBIT in the internal database."
-  },
-  internal_label_darknet_exchange: {
-    kind: "direct_counterparty_exact_label",
-    proofStrength: "exact",
-    ru: "Проверяемый адрес отмечен во внутренней базе как связанный с даркнет-обменником.",
-    en: "The checked address is labeled as linked to a darknet exchange in the internal database."
-  }
-};
-
-const behaviorFastNarrativeCopies: Record<AddressBehaviorReasonCode, FastNarrativeCopy> = {
-  address_behavior_deposit_then_drain: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
-    en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
-  },
-  address_behavior_fast_post_deposit_exit: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
-    en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
-  },
-  address_behavior_large_inflow_preserved_outflow: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Кошелёк получил значительное поступление и перевёл дальше большую часть суммы. Так может работать транзитный или операционный кошелёк.",
-    en: "The wallet received a material inflow and sent most of it onward. This can match a transit or operational wallet."
-  },
-  address_behavior_drain_to_service_infrastructure: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Кошелёк направил значительную часть поступивших средств в сервисную инфраструктуру. Нужна ручная проверка назначения перевода.",
-    en: "The wallet sent a material share of received funds into service infrastructure. Review the transfer purpose manually."
-  },
-  address_behavior_high_volume_transit: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
-    en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
-  },
-  address_behavior_fan_in_fan_out: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
-    en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
-  },
-  address_behavior_collector_like_wallet: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Кошелёк собирает поступления и переводит средства дальше. Это похоже на кошелёк-сборщик или операционный кошелёк.",
-    en: "The wallet collects incoming funds and sends them onward. It looks like a collector or operational wallet."
-  },
-  address_behavior_large_outgoing_concentration: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Большая часть исходящих средств направляется основным получателям. Это концентрация потока, которую нужно проверить вручную.",
-    en: "A large share of outgoing funds goes to the main recipients. This flow concentration requires manual review."
-  },
-  address_behavior_top_counterparty_concentration: {
-    kind: "risky_counterparty",
-    proofStrength: "context",
-    ru: "Большая часть исходящих средств направляется основным получателям. Это концентрация потока, которую нужно проверить вручную.",
-    en: "A large share of outgoing funds goes to the main recipients. This flow concentration requires manual review."
-  }
-};
-
 function dominantFastNarrativeFact(
   input: UnifiedAddressFinalReportInput & { unifiedRisk: UnifiedWalletRiskResult },
   existingFacts: NarrativeFact[]
@@ -3672,39 +3552,6 @@ function dominantFastNarrativeFact(
     factTextRu: copy.ru,
     factTextEn: copy.en
   };
-}
-
-function fastNarrativeReasonScore(
-  fast: RiskReport,
-  reason: RiskReport["reasons"][number]
-): number {
-  if (isExactFastHardEvidenceCode(reason.code)) {
-    return exactFastHardEvidence({ ...fast, reasons: [reason] })[0]?.score ?? 0;
-  }
-  return Number.isFinite(reason.scoreImpact) ? Math.max(0, reason.scoreImpact) : 0;
-}
-
-function fastNarrativeCopy(
-  code: string,
-  fast: RiskReport
-): FastNarrativeCopy | null {
-  if (isExactFastHardEvidenceCode(code)) return exactFastNarrativeCopies[code];
-  if (isAddressBehaviorReasonCode(code)) return behaviorFastNarrativeCopies[code];
-  if (code === "forensic_address_behavior") {
-    const transit = fast.dominantRiskType === "laundering_pattern" ||
-      (fast.launderingPatternScore ?? 0) > (fast.taintScore ?? 0);
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: transit
-        ? "Быстрая проверка выявила транзитное движение средств через кошелёк. Операцию нужно проверить вручную."
-        : "Быстрая проверка выявила необычное движение средств через кошелёк. Операцию нужно проверить вручную.",
-      en: transit
-        ? "FastCheck found transit movement through the wallet. Review the operation manually."
-        : "FastCheck found unusual movement through the wallet. Review the operation manually."
-    };
-  }
-  return null;
 }
 
 function freshDeepPrerequisiteFailure(

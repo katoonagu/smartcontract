@@ -2,11 +2,45 @@
 
 Дата: 2026-07-11
 
-Статус: согласованный дизайн, перед implementation plan
+Статус: реализовано и проверено
+
+## Реализация
+
+Дизайн реализован в коммитах:
+
+- `afbd6d96` — разделение факта и его смысла;
+- `d46599d2` — детерминированность preliminary narrative;
+- `72a4ed17` — лимит длины wallet narrative;
+- `9fa51104` — каталог typed-сигналов Where;
+- `c9a9b37e` — привязка сумм к сохранённым фактам;
+- `d5316aae` — typed-адаптер предварительного Where;
+- `89b08aae` — привязка score к совпадающему evidence;
+- `f3629d5b` — fail-closed для неоднозначного evidence;
+- `cbfd8702` — production Fast critical narrative;
+- `58abd209` — обязательное совпадение Fast critical evidence;
+- `3934fec2` — Telegram-формат и runtime diagnostic;
+- `0a2f69b8` — отдельный заголовок границ проверки;
+- `ef04c34c` — изоляция best-effort diagnostic от доставки;
+- `ef522382` — fail-closed привязка score к evidence, material-only coverage и
+  безопасные внешние display labels.
+
+Свежая проверка после реализации:
+
+- RED hardening gate: 10 ожидаемых падений при 489 пройденных тестах; отдельный
+  self-review RED: 3 ожидаемых падения при 301 пройденном тесте;
+- focused hardening gate: 3 test files, 502 tests passed;
+- affected gate: 8 test files, 698 tests passed;
+- full gate: 152 test files, 3034 tests passed;
+- TypeScript: `tsc --noEmit` passed;
+- `git diff --check`: whitespace errors отсутствуют;
+- copy-safety: в production preliminary нет старого fallback, `Что дальше`,
+  DeepCheck-state, action, `hard-proof` или `transferFrom drain`; raw-коды в
+  пользовательский текст не попадают;
+- инфостиль: категория `брехня` — 0.
 
 ## Задача
 
-Сейчас предварительное сообщение `Where is money` может показать высокий балл,
+До этой реализации предварительное сообщение `Where is money` могло показать высокий балл,
 но не объяснить, какой источник или маршрут его создал. Общая фраза
 `Where Is Money завершил предварительную проверку происхождения средств` не
 является результатом проверки.

@@ -14,6 +14,8 @@ code_refs:
   - src/risk/scoringSignalMatrix.ts
   - src/tron/usdtBlacklistTimeline.ts
   - src/check/deepForensicCheck.ts
+  - src/bot/createBot.ts
+  - src/bot/wherePreliminaryNarrative.ts
   - src/bot/walletNarrativeSummary.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/incomingDepositJob.ts
@@ -25,6 +27,8 @@ code_refs:
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
+  - tests/bot/wherePreliminaryNarrative.test.ts
+  - tests/bot/createBot.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
@@ -223,11 +227,27 @@ of these decisions, update this file in the same work.
   scoring dumps. Matrix `REVIEW` displays as `REVIEW`, exact hard evidence is
   deduplicated into one clear reason, and raw scoring diagnostics stay in
   support/admin/debug surfaces.
-- A scored preliminary `Where is money` Telegram result must name the
-  structured source, route, or hard-evidence fact that explains the score. It
-  shows no canonical decision or action and does not discuss DeepCheck. If no
-  structured fact explains the score, the formatter must not publish a generic
-  completion sentence or an unexplained `/100` value.
+- The preliminary `Where is money` Telegram narrative is verified current
+  behavior for a matching queued/running DeepCheck. It publishes `/100` only
+  when at least one top-level or assessment validity mirror is explicitly
+  `true`, neither mirror is `false`, and a subject-bound typed fact matches the
+  dominant saved driver. An explicit `false` wins over `true`; false,
+  undefined-only, and valid but unexplained results fail closed without score
+  or emoji.
+- Driver binding uses typed kind, evidence class, source-exposure kind, and
+  evidence IDs. Raw reasons, messages, path warnings, method names, LLM text,
+  and Deep-only evidence have no authority to explain the preliminary score.
+  The primary fact owns the conclusion; coverage remains a separate
+  non-risk section.
+- A valid score without a matching typed fact emits
+  `where_preliminary_score_without_structured_fact` as a best-effort runtime
+  diagnostic. Diagnostic failure cannot block delivery and does not mutate the
+  job, database, score, or stored report. The user sees a no-score coverage
+  explanation, not the raw diagnostic code.
+- The preliminary message has no canonical decision, action, recommendation,
+  or DeepCheck state. It no longer has a generic completion fallback. Final
+  narrative still owns canonical action; detailed, support, and Admin behavior
+  is unchanged.
 - Human risk explanations do not change scoring math. Normal Telegram output
   stays short and user-facing; `/check_status detailed` and Admin graph right
   rail show the detailed multi-mode explanation from saved FastCheck, Where Is
