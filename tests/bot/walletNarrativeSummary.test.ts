@@ -130,7 +130,7 @@ describe("formatWalletNarrativeSummary", () => {
     expect(formatWalletNarrativeSummary(narrativeCase({ score, decision })).split("\n")[0]).toBe(header);
   });
 
-  it("shows one primary fact, one nonduplicate context fact, and one coverage limitation", () => {
+  it("shows one primary fact, one nonduplicate conclusion, and one coverage limitation", () => {
     const output = formatWalletNarrativeSummary(narrativeCase({
       facts: [
         {
@@ -165,7 +165,7 @@ describe("formatWalletNarrativeSummary", () => {
       "Что нашли",
       "Адрес находится в чёрном списке USDT: переводы токена заблокированы.",
       "",
-      "Контекст",
+      "Вывод",
       "83% проверенной суммы пришло через мост UsdtOFT.",
       "",
       "Границы проверки",
@@ -175,6 +175,51 @@ describe("formatWalletNarrativeSummary", () => {
     const parts = output.split("\n\n").slice(1);
     expect(parts).toHaveLength(3);
     expect(parts.every((part) => part.split("\n").every((line) => line.trim().length > 0))).toBe(true);
+  });
+
+  it.each([
+    {
+      locale: "ru" as const,
+      expected: [
+        "🔴 95/100 — критический риск. Операцию не проводить.",
+        "",
+        "Что нашли",
+        "Адрес находится в чёрном списке USDT: переводы токена заблокированы.",
+        "",
+        "Вывод",
+        "83% проверенной суммы пришло через мост UsdtOFT."
+      ].join("\n")
+    },
+    {
+      locale: "en" as const,
+      expected: [
+        "🔴 95/100 — critical risk. Do not proceed.",
+        "",
+        "Finding",
+        "The address is on the USDT blacklist, so token transfers are blocked.",
+        "",
+        "Conclusion",
+        "83% of the checked amount arrived through the UsdtOFT bridge."
+      ].join("\n")
+    }
+  ])("uses the canonical conclusion heading in $locale", ({ locale, expected }) => {
+    expect(formatWalletNarrativeSummary(narrativeCase({
+      locale,
+      facts: [
+        {
+          id: "bridge",
+          kind: "bridge_route",
+          factTextRu: "83% проверенной суммы пришло через мост UsdtOFT.",
+          factTextEn: "83% of the checked amount arrived through the UsdtOFT bridge."
+        },
+        {
+          id: "blacklist",
+          kind: "usdt_blacklist",
+          factTextRu: "Адрес находится в чёрном списке USDT: переводы токена заблокированы.",
+          factTextEn: "The address is on the USDT blacklist, so token transfers are blocked."
+        }
+      ]
+    }))).toBe(expected);
   });
 
   it("selects facts deterministically and drops repeated sentences", () => {
@@ -210,6 +255,138 @@ describe("formatWalletNarrativeSummary", () => {
 
     const output = formatWalletNarrativeSummary(narrativeCase({ facts }));
     expect(output.match(/Адрес находится в чёрном списке USDT/g)).toHaveLength(1);
+  });
+
+  it("canonicalizes duplicate episode ids independently of input order", () => {
+    const first: NarrativeFact = {
+      id: "episode-1",
+      kind: "bridge_route",
+      factTextRu: "Сумма прошла через мост Alpha.",
+      factTextEn: "The amount passed through the Alpha bridge."
+    };
+    const second: NarrativeFact = {
+      id: "episode-1",
+      kind: "bridge_route",
+      factTextRu: "Сумма прошла через мост Beta.",
+      factTextEn: "The amount passed through the Beta bridge."
+    };
+
+    const forward = narrativeCase({ facts: [first, second] });
+    const reversed = narrativeCase({ facts: [second, first] });
+    expect(selectNarrativeFacts(forward).map((fact) => fact.id)).toEqual(["episode-1"]);
+    expect(selectNarrativeFacts(reversed).map((fact) => fact.id)).toEqual(["episode-1"]);
+    expect(formatWalletNarrativeSummary(forward)).toBe(formatWalletNarrativeSummary(reversed));
+  });
+
+  it("reserves the 500-character body budget for coverage before the optional conclusion", () => {
+    const primary = `Главный факт ${"а".repeat(225)}`;
+    const secondary = `Дополнительный вывод ${"б".repeat(215)}`;
+    const limitation = `Не проверена старая история ${"в".repeat(170)}`;
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [
+        { id: "primary", kind: "usdt_blacklist", factTextRu: primary, factTextEn: primary },
+        { id: "secondary", kind: "bridge_route", factTextRu: secondary, factTextEn: secondary }
+      ],
+      coverageExplanation: {
+        textRu: limitation,
+        textEn: limitation,
+        isRiskEvidence: false
+      }
+    }));
+    const body = output.split("\n\n").slice(1).join("\n\n");
+
+    expect(body.length).toBeLessThanOrEqual(500);
+    expect(output).toContain(primary);
+    expect(output).toContain(limitation);
+    expect(output).not.toContain(secondary);
+    expect(output).not.toContain("Вывод\n");
+  });
+
+  it("keeps a coverage limitation instead of a conclusion with the same sentence", () => {
+    const repeated = "Более старые переводы источник данных не отдал.";
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [
+        { ...primaryFact, id: "primary" },
+        { id: "secondary", kind: "bridge_route", factTextRu: repeated, factTextEn: repeated }
+      ],
+      coverageExplanation: {
+        textRu: repeated,
+        textEn: repeated,
+        isRiskEvidence: false
+      }
+    }));
+
+    expect(output).toContain(`Границы проверки\n${repeated}`);
+    expect(output).not.toContain("Вывод\n");
+  });
+
+  it("keeps the worst accepted input body within 500 characters without empty headings", () => {
+    const maxPart = (prefix: string, fill: string) => `${prefix}${fill.repeat(280 - prefix.length)}`;
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [
+        {
+          id: "primary",
+          kind: "usdt_blacklist",
+          factTextRu: maxPart("Главный факт: ", "а"),
+          factTextEn: maxPart("Primary fact: ", "a")
+        },
+        {
+          id: "secondary",
+          kind: "bridge_route",
+          factTextRu: maxPart("Дополнительный вывод: ", "б"),
+          factTextEn: maxPart("Additional conclusion: ", "b")
+        }
+      ],
+      coverageExplanation: {
+        textRu: maxPart("Ограничение данных: ", "в"),
+        textEn: maxPart("Coverage limitation: ", "c"),
+        isRiskEvidence: false
+      }
+    }));
+    const body = output.split("\n\n").slice(1).join("\n\n");
+
+    expect(body.length).toBeLessThanOrEqual(500);
+    expect(body).toContain("Главный факт:");
+    expect(body.split("\n").every((line) => line.trim().length > 0)).toBe(true);
+  });
+
+  it("counts the separator after the header in the 500-character body budget", () => {
+    const primary = `Факт ${"а".repeat(230)}`;
+    const limitation = `Предел ${"б".repeat(229)}`;
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [{ id: "primary", kind: "usdt_blacklist", factTextRu: primary, factTextEn: primary }],
+      coverageExplanation: {
+        textRu: limitation,
+        textEn: limitation,
+        isRiskEvidence: false
+      }
+    }));
+    const headerEnd = output.indexOf("\n\n");
+    const completeBody = headerEnd < 0 ? "" : output.slice(headerEnd);
+
+    expect(completeBody.length).toBeLessThanOrEqual(500);
+    expect(output).toContain(primary);
+    expect(output).not.toContain(limitation);
+  });
+
+  it("uses a fitting conclusion when the preferred coverage limitation cannot fit", () => {
+    const primary = `Главный факт ${"а".repeat(225)}`;
+    const secondary = "Источник данных не отдал старые переводы.";
+    const limitation = `${secondary} ${"б".repeat(230)}`;
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [
+        { id: "primary", kind: "usdt_blacklist", factTextRu: primary, factTextEn: primary },
+        { id: "secondary", kind: "bridge_route", factTextRu: secondary, factTextEn: secondary }
+      ],
+      coverageExplanation: {
+        textRu: limitation,
+        textEn: limitation,
+        isRiskEvidence: false
+      }
+    }));
+
+    expect(output).toContain(`Вывод\n${secondary}`);
+    expect(output).not.toContain("Границы проверки\n");
   });
 
   it("keeps a representative body within the 200–500 character target without boilerplate", () => {
@@ -258,7 +435,9 @@ describe("formatWalletNarrativeSummary", () => {
     "Что важно учесть перед операцией.",
     "Found a drain episode.",
     "Incomplete anchor coverage.",
-    "provider_cap_unresolved"
+    "provider_cap_unresolved",
+    "PROVIDER_CAP_UNRESOLVED",
+    "Provider_Cap_Unresolved"
   ])("rejects forbidden normal copy: %s", (factTextRu) => {
     expect(() => narrativeCase({
       facts: [{

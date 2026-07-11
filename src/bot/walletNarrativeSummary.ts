@@ -43,7 +43,8 @@ export type WalletNarrativeCase = {
 };
 
 const MAX_PART_LENGTH = 280;
-const RAW_REASON_CODE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/;
+const MAX_BODY_LENGTH = 500;
+const RAW_REASON_CODE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i;
 const FORBIDDEN_COPY = /Почему|Что это может значить|Что важно учесть|drain episode|anchor coverage/i;
 
 const factRank: Record<NarrativeFactKind, number> = {
@@ -138,9 +139,18 @@ export function buildWalletNarrativeCase(input: WalletNarrativeCase): WalletNarr
 export function selectNarrativeFacts(caseData: WalletNarrativeCase): NarrativeFact[] {
   const selected: NarrativeFact[] = [];
   const usedSentences = new Set<string>();
-  const facts = [...caseData.facts].sort((left, right) =>
-    factRank[left.kind] - factRank[right.kind] || left.id.localeCompare(right.id)
-  );
+  const compareText = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+  const compareFacts = (left: NarrativeFact, right: NarrativeFact) =>
+    factRank[left.kind] - factRank[right.kind] ||
+    compareText(left.id, right.id) ||
+    compareText(left.kind, right.kind) ||
+    compareText(left.factTextRu, right.factTextRu) ||
+    compareText(left.factTextEn, right.factTextEn);
+  const canonicalById = new Map<string, NarrativeFact>();
+  for (const fact of [...caseData.facts].sort(compareFacts)) {
+    if (!canonicalById.has(fact.id)) canonicalById.set(fact.id, fact);
+  }
+  const facts = [...canonicalById.values()].sort(compareFacts);
 
   for (const fact of facts) {
     const sentences = sentenceKeys(localizedFactText(fact, caseData.locale));
@@ -183,28 +193,51 @@ function header(caseData: WalletNarrativeCase): string {
     : "⚪ Итог не рассчитан. Поставьте операцию на паузу до повторной проверки.";
 }
 
+function fitsBody(parts: string[]): boolean {
+  return parts.length === 0 || `\n\n${parts.join("\n\n")}`.length <= MAX_BODY_LENGTH;
+}
+
 export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string {
   const caseData = buildWalletNarrativeCase(input);
   const selected = selectNarrativeFacts(caseData);
-  const parts = selected.map((fact, index) => [
+  const factParts = selected.map((fact, index) => [
     caseData.locale === "en"
-      ? index === 0 ? "Finding" : "Context"
-      : index === 0 ? "Что нашли" : "Контекст",
+      ? index === 0 ? "Finding" : "Conclusion"
+      : index === 0 ? "Что нашли" : "Вывод",
     localizedFactText(fact, caseData.locale)
   ].join("\n"));
 
+  let coveragePart: string | null = null;
+  const coverageSentences = new Set<string>();
   const coverage = caseData.coverageExplanation;
   if (coverage) {
     const coverageText = localizedCoverageText(coverage, caseData.locale);
-    const usedSentences = new Set(selected.flatMap((fact) =>
+    const usedSentences = new Set(selected.slice(0, 1).flatMap((fact) =>
       sentenceKeys(localizedFactText(fact, caseData.locale))
     ));
     if (!sentenceKeys(coverageText).some((sentence) => usedSentences.has(sentence))) {
-      parts.push([
+      sentenceKeys(coverageText).forEach((sentence) => coverageSentences.add(sentence));
+      coveragePart = [
         caseData.locale === "en" ? "Coverage limits" : "Границы проверки",
         coverageText
-      ].join("\n"));
+      ].join("\n");
     }
+  }
+
+  const parts = factParts.slice(0, 1);
+  if (coveragePart && fitsBody([...parts, coveragePart])) {
+    parts.push(coveragePart);
+  } else {
+    coveragePart = null;
+    coverageSentences.clear();
+  }
+  const conclusionPart = factParts[1];
+  const conclusionIndex = parts.length > 0 ? 1 : 0;
+  const conclusionDuplicatesCoverage = selected[1] && sentenceKeys(localizedFactText(selected[1], caseData.locale))
+    .some((sentence) => coverageSentences.has(sentence));
+  const withConclusion = [...parts.slice(0, conclusionIndex), conclusionPart, ...parts.slice(conclusionIndex)];
+  if (conclusionPart && !conclusionDuplicatesCoverage && fitsBody(withConclusion)) {
+    parts.splice(conclusionIndex, 0, conclusionPart);
   }
 
   return [header(caseData), ...parts].join("\n\n");
