@@ -120,6 +120,11 @@ describe("resolveFinalDisposition", () => {
       coverage: { overall: "partial", invalidModes: ["where_is_money"] },
       hardProofEvidenceIds: ["evidence:1"]
     });
+    expect(result.decisiveCandidate).toMatchObject({
+      row: "hard_proof",
+      score: 95,
+      evidenceIds: ["evidence:1"]
+    });
   });
 
   it("returns no final score for invalid required coverage without hard proof", () => {
@@ -134,7 +139,8 @@ describe("resolveFinalDisposition", () => {
       observedContextScore: 90,
       scoreValid: false,
       decisionBasis: "technical_stop",
-      hardProofEvidenceIds: []
+      hardProofEvidenceIds: [],
+      decisiveCandidate: null
     });
   });
 
@@ -152,6 +158,16 @@ describe("resolveFinalDisposition", () => {
       decisionBasis: "independent_policy",
       coverage: { required: "invalid", overall: "partial" },
       hardProofEvidenceIds: []
+    });
+    expect(resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore: directPolicyMatrix(address, 73),
+      coverage: coverage("invalid", "partial"),
+      observedContextScore: 88
+    }).decisiveCandidate).toMatchObject({
+      row: "direct_counterparty_policy",
+      score: 73,
+      evidenceIds: ["evidence:1"]
     });
   });
 
@@ -213,15 +229,19 @@ describe("resolveFinalDisposition", () => {
     ["ACCEPTABLE", "ACCEPTABLE", 10],
     ["INSUFFICIENT_EVIDENCE", "NO_FINAL_DECISION", null]
   ] as const)("maps matrix %s losslessly to %s", (matrixDecision, decision, finalScore) => {
+    const matrixScore = matrixResult(address, matrixDecision, finalScore);
     const result = resolveFinalDisposition({
       subject: { decisionScope: "wallet_unified", address, txHash: null },
-      matrixScore: matrixResult(address, matrixDecision, finalScore),
+      matrixScore,
       coverage: coverage("valid"),
       observedContextScore: 55
     });
 
     expect(result.decision).toBe(decision);
     expect(result.finalScore).toBe(finalScore);
+    expect(result.decisiveCandidate).toBe(matrixDecision === "INSUFFICIENT_EVIDENCE"
+      ? null
+      : matrixScore.winningCandidate);
   });
 
   it("ignores hard evidence linked to another subject", () => {

@@ -19,6 +19,7 @@ export type FinalDisposition = {
   decisionBasis: FinalDecisionBasis;
   coverage: DecisionCoverage;
   hardProofEvidenceIds: string[];
+  decisiveCandidate: ClassifiedMatrixCandidate | null;
 };
 
 function sameSubject(candidate: ClassifiedMatrixCandidate, subject: DecisionSubject): boolean {
@@ -83,7 +84,8 @@ export function resolveFinalDisposition(input: {
       scoreValid: true,
       decisionBasis: "exact_hard_proof",
       coverage: input.coverage,
-      hardProofEvidenceIds: hard.evidenceIds
+      hardProofEvidenceIds: hard.evidenceIds,
+      decisiveCandidate: hard
     };
   }
 
@@ -96,7 +98,8 @@ export function resolveFinalDisposition(input: {
       scoreValid: true,
       decisionBasis: "independent_policy",
       coverage: input.coverage,
-      hardProofEvidenceIds: []
+      hardProofEvidenceIds: [],
+      decisiveCandidate: independentPolicy
     };
   }
 
@@ -114,7 +117,8 @@ export function resolveFinalDisposition(input: {
       scoreValid: false,
       decisionBasis: "technical_stop",
       coverage: input.coverage,
-      hardProofEvidenceIds: []
+      hardProofEvidenceIds: [],
+      decisiveCandidate: null
     };
   }
 
@@ -125,6 +129,7 @@ export function resolveFinalDisposition(input: {
     scoreValid: true,
     decisionBasis: "matrix",
     coverage: input.coverage,
-    hardProofEvidenceIds: []
+    hardProofEvidenceIds: [],
+    decisiveCandidate: input.matrixScore.winningCandidate
   };
 }

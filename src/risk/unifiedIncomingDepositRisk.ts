@@ -92,26 +92,18 @@ function levelFromScore(score: number): RiskLevel {
   return "LOW";
 }
 
-function incomingMatrixAnchorReason(matrixScore: MatrixScoringResult): UnifiedWalletRiskReason | null {
-  if (matrixScore.policyScore === null) return null;
-  const winner = matrixScore.winningCandidate;
-  const source: UnifiedWalletRiskReason["source"] = winner.evidenceClass === "exact_hard"
+function incomingDecisiveSource(candidate: ClassifiedMatrixCandidate): UnifiedWalletRiskReason["source"] {
+  return candidate.evidenceClass === "exact_hard"
     ? "hard_evidence"
-    : winner.evidenceClass === "policy"
+    : candidate.row === "asset_continuation"
+      ? "asset_continuation"
+      : candidate.evidenceClass === "policy"
       ? "policy_floor"
-      : winner.row === "asset_continuation"
-        ? "asset_continuation"
-        : winner.evidenceClass === "pattern"
+        : candidate.evidenceClass === "pattern"
           ? "pattern_floor"
-          : winner.evidenceClass === "coverage"
+          : candidate.evidenceClass === "coverage"
             ? "coverage"
             : "deep_research";
-  return {
-    code: `matrix:${winner.row}`,
-    message: `Scoring Signal Matrix winning row is ${winner.row}.`,
-    score: matrixScore.policyScore,
-    source
-  };
 }
 
 function classifiedIncomingCandidates(matrix: MatrixScoringResult): ClassifiedMatrixCandidate[] {
@@ -128,35 +120,41 @@ function incomingCoverageFromWhere(report: WhereIsMoneyReport): DecisionCoverage
   };
 }
 
-function incomingCandidateReason(candidate: ClassifiedMatrixCandidate): UnifiedWalletRiskReason {
+function incomingCandidateReason(
+  candidate: ClassifiedMatrixCandidate,
+  decisive: boolean
+): UnifiedWalletRiskReason {
   const code = candidate.atomicSignals[0] ?? `${candidate.row}:${candidate.evidenceIds[0] ?? "unknown"}`;
-  const source: UnifiedWalletRiskReason["source"] = candidate.evidenceClass === "exact_hard"
-    ? "hard_evidence"
+  const source: UnifiedWalletRiskReason["source"] = decisive
+    ? incomingDecisiveSource(candidate)
     : code.startsWith("incoming_")
       ? "incoming_exposure"
-      : candidate.evidenceClass === "policy"
-        ? "policy_floor"
-        : candidate.row === "asset_continuation"
-          ? "asset_continuation"
-          : candidate.evidenceClass === "pattern"
-            ? "pattern_floor"
-            : candidate.evidenceClass === "coverage"
-              ? "coverage"
-              : "deep_research";
+      : "deep_research";
   return {
     code,
-    message: candidate.evidenceClass === "exact_hard"
-      ? "Applicable exact hard evidence from the canonical scoring matrix."
-      : `Applicable ${candidate.row} evidence from the canonical scoring matrix.`,
+    message: decisive
+      ? candidate.evidenceClass === "exact_hard"
+        ? "Applicable exact hard evidence selected by the canonical final disposition."
+        : `Applicable ${candidate.row} evidence selected by the canonical final disposition.`
+      : `Observed non-decisive ${candidate.row} context from the canonical scoring matrix.`,
     score: candidate.score,
     source
   };
 }
 
-function activeIncomingAnchor(reasons: UnifiedWalletRiskReason[]): UnifiedWalletRiskReason | null {
-  return [...reasons]
-    .filter((reason) => reason.score > 0)
-    .sort((left, right) => right.score - left.score || left.code.localeCompare(right.code))[0] ?? null;
+function incomingResolvedFloors(candidate: ClassifiedMatrixCandidate | null): {
+  hardEvidence: number;
+  policy: number;
+  assetContinuation: number;
+  pattern: number;
+} {
+  if (!candidate) return { hardEvidence: 0, policy: 0, assetContinuation: 0, pattern: 0 };
+  return {
+    hardEvidence: candidate.evidenceClass === "exact_hard" ? candidate.score : 0,
+    policy: candidate.evidenceClass === "policy" ? candidate.score : 0,
+    assetContinuation: candidate.row === "asset_continuation" ? candidate.score : 0,
+    pattern: candidate.evidenceClass === "pattern" && candidate.row !== "asset_continuation" ? candidate.score : 0
+  };
 }
 
 export function calculateUnifiedIncomingDepositRisk(
@@ -209,11 +207,7 @@ export function calculateUnifiedIncomingDepositRisk(
   const diagnosticCandidates = classifiedCandidates.filter((candidate) =>
     candidate.evidenceClass !== "coverage" && candidate.evidenceClass !== "clean"
   );
-  const incomingReasons = diagnosticCandidates.map(incomingCandidateReason);
-  const hardEvidenceFloor = Math.max(0, ...exactHardCandidates.map((candidate) => candidate.score));
-  const policyFloor = Math.max(0, ...policyCandidates.map((candidate) => candidate.score));
-  const assetContinuationFloor = Math.max(0, ...assetCandidates.map((candidate) => candidate.score));
-  const patternFloor = Math.max(0, ...patternCandidates.map((candidate) => candidate.score));
+  const rawHardEvidenceFloor = Math.max(0, ...exactHardCandidates.map((candidate) => candidate.score));
   const coverageFloor = Math.max(0, ...coverageCandidates.map((candidate) => candidate.score));
   const backgroundScore = Math.max(0, ...classifiedCandidates
     .filter((candidate) => candidate.atomicSignals.includes("incoming_wallet_exposure_profile"))
@@ -229,7 +223,7 @@ export function calculateUnifiedIncomingDepositRisk(
     candidate.atomicSignals.includes("incoming_fresh_risky_label_source") ||
     (candidate.atomicSignals.includes("incoming_fresh_htx_huobi_source") && candidate.score >= 70)
   );
-  const noHardEvidenceCriticalCapApplies = hardEvidenceFloor === 0 && !bypassNoHardEvidenceCriticalCap;
+  const noHardEvidenceCriticalCapApplies = rawHardEvidenceFloor === 0 && !bypassNoHardEvidenceCriticalCap;
   const cappedDiagnosticScore = noHardEvidenceCriticalCapApplies
     ? Math.min(uncappedDiagnosticScore, 84)
     : uncappedDiagnosticScore;
@@ -244,7 +238,16 @@ export function calculateUnifiedIncomingDepositRisk(
     coverage: input.decisionCoverage ?? incomingCoverageFromWhere(input.whereReport),
     observedContextScore
   });
-  const matrixAnchor = incomingMatrixAnchorReason(matrixScore);
+  const decisiveCandidate = disposition.decisiveCandidate;
+  const resolvedFloors = incomingResolvedFloors(decisiveCandidate);
+  const hardEvidenceFloor = resolvedFloors.hardEvidence;
+  const policyFloor = resolvedFloors.policy;
+  const assetContinuationFloor = resolvedFloors.assetContinuation;
+  const patternFloor = resolvedFloors.pattern;
+  const decisiveReason = decisiveCandidate ? incomingCandidateReason(decisiveCandidate, true) : null;
+  const incomingReasons = diagnosticCandidates
+    .filter((candidate) => candidate !== decisiveCandidate)
+    .map((candidate) => incomingCandidateReason(candidate, false));
   const dampenerReason: UnifiedWalletRiskReason | null = base.dampener > 0
     ? {
         code: "unified_dampener",
@@ -254,14 +257,18 @@ export function calculateUnifiedIncomingDepositRisk(
       }
     : null;
   const reasons = [
-    ...incomingReasons,
-    ...(matrixAnchor ? [matrixAnchor] : []),
+    ...(decisiveReason ? [decisiveReason] : []),
+    ...incomingReasons.sort((left, right) => right.score - left.score || left.code.localeCompare(right.code)),
     ...(dampenerReason ? [dampenerReason] : [])
-  ].sort((left, right) => right.score - left.score || left.code.localeCompare(right.code));
-  const activeAnchor = activeIncomingAnchor([
-    ...incomingReasons,
-    ...(matrixAnchor ? [matrixAnchor] : [])
-  ]);
+  ];
+  const activeAnchor = decisiveReason && decisiveCandidate ? {
+    code: decisiveReason.code,
+    message: decisiveReason.message,
+    score: decisiveReason.score,
+    source: decisiveReason.source,
+    row: decisiveCandidate.row,
+    evidenceIds: decisiveCandidate.evidenceIds
+  } : null;
 
   return {
     finalScore: disposition.finalScore,

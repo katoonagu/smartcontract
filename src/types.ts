@@ -907,6 +907,8 @@ export type IncomingDepositUnifiedRiskSummary = {
     message: string;
     score: number;
     source: string;
+    row: string;
+    evidenceIds: string[];
   } | null;
 };
 

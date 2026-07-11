@@ -3566,7 +3566,10 @@ describe("buildIncomingDepositReport", () => {
     expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
     expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
     expect(result.unifiedRiskSummary?.activeAnchor?.source).toBe("policy_floor");
-    expect(result.unifiedRiskSummary?.activeAnchor?.code).toContain("matrix:");
+    expect(result.unifiedRiskSummary?.activeAnchor).toMatchObject({
+      code: "source_policy_no_name_token_liquidity",
+      row: "source_policy"
+    });
     expect(result.unifiedRiskSummary?.matrixDecision).toBe("DECLINE");
     expect(result.unifiedRiskSummary?.winningRow).toBe("source_policy");
     expect(result.unifiedRiskSummary?.policyScore).toBe(result.depositRiskScore);

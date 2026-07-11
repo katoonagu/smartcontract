@@ -4954,7 +4954,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Decision: DECLINE");
   });
 
-  it("shows policy and asset continuation floors in the unified final report", () => {
+  it("shows only the resolved asset-continuation floor in the unified final report", () => {
     const whereReport = stage2WhereReportForTest("no_name_token_liquidity");
     const deepReport = deepReportForTest({
       assetContinuationProfiles: [
@@ -4970,7 +4970,7 @@ describe("bot command and inline UX smoke coverage", () => {
       showBetaDiagnostics: true
     });
 
-    expect(text).toContain("Policy floor: 70");
+    expect(text).not.toContain("Policy floor: 70");
     expect(text).toContain("Asset continuation floor: 82");
     expect(text).toContain("Context score: 78.");
     expect(text).toContain("Risk:");
