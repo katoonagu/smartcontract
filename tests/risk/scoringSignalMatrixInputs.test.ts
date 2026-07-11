@@ -552,6 +552,33 @@ describe("scoring signal matrix input mappers", () => {
     }
   });
 
+  it("aggregates distinct positive principal movements by transaction and rejects identical duplicates", () => {
+    const transfer = directCounterpartyProfile().transfers![0];
+    const validMovements = [
+      { ...transfer, amountRaw: "6000000000" },
+      { ...transfer, amountRaw: "4000000000" },
+      { ...transfer, amountRaw: "0" }
+    ];
+    expect(directPolicyCandidates(firstHopBlacklistFact(), [
+      directCounterpartyProfile({ transfers: validMovements })
+    ])).toEqual([expect.objectContaining({
+      row: "direct_counterparty_policy",
+      score: 60,
+      evidenceIds: expect.arrayContaining([directTxHash])
+    })]);
+
+    const duplicatedMovement = { ...transfer, amountRaw: "2500000000" };
+    expect(directPolicyCandidates(firstHopBlacklistFact(), [
+      directCounterpartyProfile({
+        transfers: [
+          duplicatedMovement,
+          { ...duplicatedMovement },
+          { ...transfer, amountRaw: "5000000000" }
+        ]
+      })
+    ])).toEqual([]);
+  });
+
   it("rejects fee-only, malformed, and endpoint-inconsistent transfer profiles", () => {
     const transfer = directCounterpartyProfile().transfers![0];
     const invalidTransfers: DirectCounterpartyInteractionProfile["transfers"][] = [

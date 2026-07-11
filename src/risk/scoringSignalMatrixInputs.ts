@@ -125,7 +125,8 @@ function indexedDirectPolicyProfile(
     profile.transfers.length === 0
   ) return null;
 
-  const principalTransfers: NonNullable<DirectCounterpartyInteractionProfile["transfers"]> = [];
+  const principalAmountByTxHash = new Map<string, bigint>();
+  const seenPrincipalMovements = new Set<string>();
   for (const transfer of profile.transfers) {
     if (
       !transfer ||
@@ -143,11 +144,30 @@ function indexedDirectPolicyProfile(
       : sameAddress(transfer.fromAddress, profile.subjectAddress) &&
         sameAddress(transfer.toAddress, profile.counterpartyAddress);
     if (!endpointsMatch) return null;
-    if (transfer.economicRole !== "service_fee") principalTransfers.push(transfer);
+    if (transfer.economicRole === "service_fee") continue;
+    const amountRaw = BigInt(transfer.amountRaw);
+    if (amountRaw === 0n) continue;
+    const movementSignature = JSON.stringify({
+      txHash: transfer.txHash,
+      fromAddress: transfer.fromAddress,
+      toAddress: transfer.toAddress,
+      amountRaw: transfer.amountRaw,
+      timestamp: transfer.timestamp,
+      method: transfer.method,
+      edgeType: transfer.edgeType,
+      economicRole: transfer.economicRole ?? null,
+      economicProtocol: transfer.economicProtocol ?? null
+    });
+    if (seenPrincipalMovements.has(movementSignature)) return null;
+    seenPrincipalMovements.add(movementSignature);
+    principalAmountByTxHash.set(
+      transfer.txHash,
+      (principalAmountByTxHash.get(transfer.txHash) ?? 0n) + amountRaw
+    );
   }
-  if (principalTransfers.length === 0) return null;
+  if (principalAmountByTxHash.size === 0) return null;
 
-  const principalTxHashes = principalTransfers.map((transfer) => transfer.txHash);
+  const principalTxHashes = [...principalAmountByTxHash.keys()];
   const key = directPolicyProfileKey({
     subjectAddress: profile.subjectAddress,
     counterpartyAddress: profile.counterpartyAddress,
@@ -158,8 +178,8 @@ function indexedDirectPolicyProfile(
   return {
     key,
     binding: {
-      principalAmountRaw: principalTransfers.reduce((sum, transfer) => sum + BigInt(transfer.amountRaw), 0n),
-      principalTxCount: principalTxHashes.length,
+      principalAmountRaw: [...principalAmountByTxHash.values()].reduce((sum, amountRaw) => sum + amountRaw, 0n),
+      principalTxCount: principalAmountByTxHash.size,
       scoreContribution: profile.scoreContribution
     }
   };
