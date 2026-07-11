@@ -11,6 +11,7 @@ import type {
   UsdtBlacklistTimeline,
   UsdtBlacklistTimelineEvent
 } from "../types";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 import {
   matchSanctionedCryptoService,
@@ -243,13 +244,42 @@ type TransferTiming = "before" | "active" | "unknown";
 
 function sortedVerifiedTimeline(events: UsdtBlacklistTimelineEvent[]): UsdtBlacklistTimelineEvent[] {
   return [...events]
-    .filter((event) => event.verification === "verified_contract_log")
+    .filter((event) => event.verification === "verified_contract_log" &&
+      event.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
+      Number.isFinite(Date.parse(event.occurredAt)))
     .sort((left, right) =>
       Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
       (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
       (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
       compareText(left.txHash, right.txHash)
     );
+}
+
+function sanitizedRestrictionTimeline(
+  restriction: TimelineBearingStablecoinRestrictionProfile
+): TimelineBearingStablecoinRestrictionProfile {
+  const timeline = restriction.blacklistTimeline;
+  if (!timeline) return restriction;
+  const events = sortedVerifiedTimeline(timeline.events);
+  const invalidTimeline = events.length !== timeline.events.length ||
+    timeline.pagination === "complete" && timeline.failureReason !== null ||
+    timeline.pagination === "partial" && timeline.failureReason === null;
+  const blacklistTimeline: UsdtBlacklistTimeline = invalidTimeline
+    ? {
+        ...timeline,
+        events,
+        pagination: "partial",
+        failureReason: timeline.failureReason ?? "event_log_unverified"
+      }
+    : { ...timeline, events };
+  const effectiveEvent = [...events].reverse().find((event) => event.eventKind === "added") ?? null;
+  return {
+    ...restriction,
+    blacklistEventTxHash: effectiveEvent?.txHash ?? null,
+    blacklistEventTimestamp: effectiveEvent?.occurredAt ?? null,
+    blacklistEventBlock: effectiveEvent?.blockNumber ?? null,
+    blacklistTimeline
+  };
 }
 
 function completeActiveTimeline(timeline: UsdtBlacklistTimeline | null | undefined): boolean {
@@ -489,14 +519,21 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   }
 
   const snapshots = await mapWithConcurrency(addresses, input.concurrency ?? 8, async (address) => {
-    const [labels, classification] = await Promise.all([
+    const [rawLabels, classification] = await Promise.all([
       input.getLabelsForAddress(address),
       input.getClassificationForAddress(address)
     ]);
+    const labels = [...rawLabels].sort((left, right) =>
+      compareText(left.label, right.label) ||
+      compareText(left.source, right.source) ||
+      left.createdAt.getTime() - right.createdAt.getTime()
+    );
     let usdtRestriction: TimelineBearingStablecoinRestrictionProfile | null = null;
     if (liveAddresses.has(address) && input.getUsdtRestrictionStatus) {
       try {
-        usdtRestriction = await input.getUsdtRestrictionStatus(address, { includeEventTimeline: true });
+        usdtRestriction = sanitizedRestrictionTimeline(
+          await input.getUsdtRestrictionStatus(address, { includeEventTimeline: true })
+        );
         checkedAddresses.add(address);
       } catch (error) {
         failedAddresses.add(address);
@@ -510,7 +547,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       ...(classification?.isBoundary ? [`service:${classification.identity ?? classification.category}`] : []),
       ...(sanctioned ? [sanctioned] : []),
       ...(usdtRestriction?.isBlacklisted ? ["usdt_blacklist"] : [])
-    ];
+    ].sort(compareText);
 
     return {
       address,
@@ -577,7 +614,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   const blacklistCheckCoverage = !hasDirectedPrincipalGroups
     ? "history_partial" as const
     : !input.getUsdtRestrictionStatus
-      ? "running" as const
+      ? "provider_failed" as const
       : failedMaterialCounterpartyCount > 0
         ? "provider_failed" as const
         : uncheckedMaterialCounterpartyCount > 0
@@ -589,7 +626,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     ? "Legacy integration is pending directed principal groups; snapshots are excluded from first-hop decision coverage."
     : blacklistCheckCoverage === "complete"
       ? null
-      : blacklistCheckCoverage === "running"
+      : blacklistCheckCoverage === "provider_failed" && !input.getUsdtRestrictionStatus
         ? "USDT blacklist provider is not available for this run."
         : blacklistCheckCoverage === "provider_failed"
           ? `${failedMaterialCounterpartyCount} material counterparty blacklist lookup(s) failed.`

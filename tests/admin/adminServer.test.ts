@@ -65,7 +65,7 @@ function adminFirstHopEvidenceForTest() {
   const timelineEvent = {
     eventKind: "added",
     occurredAt: "2026-05-10T00:00:00.000Z",
-    txHash: "tx-admin-added",
+    txHash: "b".repeat(64),
     tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
     blockNumber: 100,
     logIndex: 2,
@@ -86,7 +86,7 @@ function adminFirstHopEvidenceForTest() {
       principalTxCount: 1,
       directionalPrincipalShare: null,
       shareSemantics: "unavailable",
-      transferTxHashes: ["tx-admin-direct"],
+      transferTxHashes: ["a".repeat(64)],
       beforeEffectiveAmountRaw: "12000000000",
       beforeEffectiveTxCount: 1,
       activeAmountRaw: "0",
@@ -108,7 +108,7 @@ function adminFirstHopEvidenceForTest() {
       principalTxCount: 1,
       directionalPrincipalShare: null,
       shareSemantics: "unavailable",
-      transferTxHashes: ["tx-admin-direct"],
+      transferTxHashes: ["a".repeat(64)],
       linkedToSelectedProvenance: false
     }],
     firstHopBlacklistCoverage: {
@@ -339,19 +339,7 @@ describe("startAdminServer", () => {
       kind: "address_deep_check",
       resultJson: {
         subjectAddress: "TSubject111111111111111111111111111111",
-        ...evidence,
-        firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }],
-        firstHopLabelFacts: [
-          ...evidence.firstHopLabelFacts,
-          { ...evidence.firstHopLabelFacts[0], labelCode: "arbitrary_label" },
-          { principalAmountRaw: 12_000_000_000 }
-        ],
-        directHardEvidenceSnapshots: [
-          ...evidence.directHardEvidenceSnapshots,
-          { ...evidence.directHardEvidenceSnapshots[0], labels: [{}] },
-          { ...evidence.directHardEvidenceSnapshots[0], classification: {} },
-          { address: false }
-        ]
+        ...evidence
       }
     }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
 
@@ -359,6 +347,36 @@ describe("startAdminServer", () => {
     expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
     expect(report?.firstHopBlacklistCoverage).toEqual(evidence.firstHopBlacklistCoverage);
     expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots);
+  });
+
+  it("fails closed atomically when persisted first-hop counters contradict the envelope", () => {
+    const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
+    expect(extractor).toBeTypeOf("function");
+    if (typeof extractor !== "function") return;
+    const evidence = adminFirstHopEvidenceForTest();
+    const report = extractor(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        ...evidence,
+        firstHopBlacklistCoverage: {
+          ...evidence.firstHopBlacklistCoverage,
+          confirmedAdverseFactCount: 0
+        }
+      }
+    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+
+    expect(report).toMatchObject({
+      firstHopBlacklistFacts: [],
+      firstHopLabelFacts: [],
+      directHardEvidenceSnapshots: [],
+      firstHopBlacklistCoverage: {
+        requiredForDecision: true,
+        directPrincipalTransferCoverage: "partial",
+        blacklistCheckCoverage: "provider_failed",
+        incompleteReason: "persisted_first_hop_evidence_invalid"
+      }
+    });
   });
 
   it("keeps first-hop evidence absent when Admin extracts a legacy Deep payload", () => {

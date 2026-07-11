@@ -747,6 +747,37 @@ describe("deep forensic address check", () => {
     });
   });
 
+  it("reports provider_failed first-hop coverage when a fresh final Deep run has no restriction provider", async () => {
+    const sourceAddress = "TSubjectNoRestrictionProvider111111111";
+    const counterparty = "TNoRestrictionProviderCounterparty11111";
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === sourceAddress ? [transfer({
+          id: "tx-no-restriction-provider",
+          from: counterparty,
+          to: sourceAddress,
+          amountRaw: "10000000000",
+          at: "2026-05-20T00:00:00.000Z"
+        })] : []
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxPagesPerAddress: 1,
+      pageLimit: 10,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled"
+    });
+
+    expect(report.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      blacklistCheckCoverage: "provider_failed",
+      incompleteReason: expect.stringMatching(/provider.*not available/i)
+    });
+  });
+
   it("fails closed when an indexed direct principal row is invalid", async () => {
     const sourceAddress = "TSubjectInvalidFirstHop1111111111111";
     const counterparty = "TInvalidFirstHopCounterparty111111111";
@@ -3162,6 +3193,8 @@ describe("deep forensic address check", () => {
 
   it("rejects unsound persisted first-hop nested DTOs and normalizes valid JSON label dates", () => {
     const address = "TPersistedFirstHop111111111111111111";
+    const directTxHash = "a".repeat(64);
+    const eventTxHash = "b".repeat(64);
     const validLabel = {
       address,
       label: "phishing",
@@ -3186,14 +3219,14 @@ describe("deep forensic address check", () => {
       balanceRaw: "0",
       checkedAt: "2026-05-24T00:00:00.000Z",
       evidenceStrength: "exact_contract_state",
-      blacklistEventTxHash: "tx-blacklist-added",
+      blacklistEventTxHash: eventTxHash,
       blacklistEventTimestamp: "2026-05-10T00:00:00.000Z",
       blacklistEventBlock: 100,
       blacklistTimeline: {
         events: [{
           eventKind: "added",
           occurredAt: "2026-05-10T00:00:00.000Z",
-          txHash: "tx-blacklist-added",
+          txHash: eventTxHash,
           tokenContract: TRON_USDT_CONTRACT_ADDRESS,
           blockNumber: 100,
           logIndex: 2,
@@ -3221,13 +3254,13 @@ describe("deep forensic address check", () => {
       statusAtCheck: "active",
       temporalRelation: "active_at_transfer",
       effectiveAt: "2026-05-10T00:00:00.000Z",
-      effectiveTxHash: "tx-blacklist-added",
+      effectiveTxHash: eventTxHash,
       checkedAt: "2026-05-24T00:00:00.000Z",
       principalAmountRaw: "10000000000",
       principalTxCount: 1,
       directionalPrincipalShare: 1,
       shareSemantics: "exact",
-      transferTxHashes: ["tx-direct"],
+      transferTxHashes: [directTxHash],
       beforeEffectiveAmountRaw: "0",
       beforeEffectiveTxCount: 0,
       activeAmountRaw: "10000000000",
@@ -3249,49 +3282,119 @@ describe("deep forensic address check", () => {
       principalTxCount: 1,
       directionalPrincipalShare: 1,
       shareSemantics: "exact",
-      transferTxHashes: ["tx-direct"],
+      transferTxHashes: [directTxHash],
       linkedToSelectedProvenance: false
     };
-    const normalized = normalizePersistedDeepFirstHopEvidence({
-      firstHopBlacklistFacts: [
-        validFact,
-        { ...validFact, statusAtCheck: "pending" },
-        { ...validFact, principalAmountRaw: "not-an-amount" },
-        { ...validFact, checkedAt: "not-a-date" },
-        { ...validFact, effectiveAt: "not-a-date" },
-        { ...validFact, effectiveTxHash: "" },
-        { ...validFact, transferTxHashes: [""] }
-      ],
-      firstHopLabelFacts: [
-        validLabelFact,
-        { ...validLabelFact, labelCode: "arbitrary_future_string" },
-        { ...validLabelFact, recordedAt: "not-a-date" },
-        { ...validLabelFact, transferTxHashes: [""] }
-      ],
-      directHardEvidenceSnapshots: [
-        validSnapshot,
-        { ...validSnapshot, labels: [{}] },
-        { ...validSnapshot, labels: [{ ...validLabel, createdAt: "not-a-date" }] },
-        { ...validSnapshot, classification: {} },
-        { ...validSnapshot, classification: { category: "cex" } },
-        { ...validSnapshot, usdtRestriction: { ...validRestriction, checkedAt: "not-a-date" } },
-        { ...validSnapshot, usdtRestriction: { ...validRestriction, balanceRaw: 0 } },
-        { ...validSnapshot, usdtRestriction: { ...validRestriction, blacklistEventTxHash: "" } },
-        { ...validSnapshot, usdtRestriction: {
-          ...validRestriction,
-          blacklistTimeline: {
-            ...validRestriction.blacklistTimeline,
-            events: [{ ...validRestriction.blacklistTimeline.events[0], occurredAt: "not-a-date", txHash: "" }]
-          }
-        } }
-      ]
+    const validCoverage = {
+      requiredForDecision: true,
+      scope: "all_time",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "complete",
+      materialCounterpartyCount: 1,
+      checkedMaterialCounterpartyCount: 1,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "complete",
+      incompleteReason: null,
+      confirmedAdverseFactCount: 1,
+      completeTimelineFactCount: 1,
+      partialTimelineFactCount: 0
+    };
+    const validEnvelope = {
+      firstHopBlacklistFacts: [validFact],
+      firstHopLabelFacts: [validLabelFact],
+      firstHopBlacklistCoverage: validCoverage,
+      directHardEvidenceSnapshots: [validSnapshot]
+    };
+    const validNormalized = normalizePersistedDeepFirstHopEvidence(validEnvelope);
+    expect(validNormalized).toEqual({
+      ...validEnvelope,
+      directHardEvidenceSnapshots: [{
+        ...validSnapshot,
+        labels: [{ ...validLabel, createdAt: new Date(validLabel.createdAt) }]
+      }]
     });
+    expect(normalizePersistedDeepFirstHopEvidence({})).toEqual({});
 
-    expect(normalized.firstHopBlacklistFacts).toEqual([validFact]);
-    expect(normalized.firstHopLabelFacts).toEqual([validLabelFact]);
-    expect(normalized.directHardEvidenceSnapshots).toEqual([{
-      ...validSnapshot,
-      labels: [{ ...validLabel, createdAt: new Date(validLabel.createdAt) }]
-    }]);
+    const uint256Overflow = (1n << 256n).toString();
+    const laterEvent = {
+      ...validRestriction.blacklistTimeline.events[0],
+      occurredAt: "2026-05-11T00:00:00.000Z",
+      txHash: "c".repeat(64),
+      blockNumber: 101
+    };
+    const maliciousEnvelopes = [
+      { ...validEnvelope, firstHopBlacklistFacts: [validFact, { ...validFact, statusAtCheck: "pending" }] },
+      { ...validEnvelope, firstHopLabelFacts: [validLabelFact, { ...validLabelFact, labelCode: "arbitrary_future_string" }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, checkedAt: "2026-05-24T00:00:00Z" }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{
+        ...validFact,
+        principalAmountRaw: uint256Overflow,
+        activeAmountRaw: uint256Overflow
+      }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, transferTxHashes: ["tx-direct"] }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{
+        ...validFact,
+        temporalRelation: "active_at_transfer",
+        beforeEffectiveAmountRaw: "10000000000",
+        beforeEffectiveTxCount: 1,
+        activeAmountRaw: "0",
+        activeTxCount: 0
+      }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{
+        ...validFact,
+        timelineEvents: [{ ...validFact.timelineEvents[0], tokenContract: "TWrongContract" }]
+      }] },
+      { ...validEnvelope, directHardEvidenceSnapshots: [{ ...validSnapshot, labels: [{}] }] },
+      { ...validEnvelope, directHardEvidenceSnapshots: [{ ...validSnapshot, classification: {} }] },
+      { ...validEnvelope, directHardEvidenceSnapshots: [{ ...validSnapshot, usdtRestriction: {
+        ...validRestriction,
+        blacklistTimeline: {
+          ...validRestriction.blacklistTimeline,
+          events: [{ ...validRestriction.blacklistTimeline.events[0], verification: "unverified" }]
+        }
+      } }] },
+      { ...validEnvelope, firstHopBlacklistFacts: [{
+        ...validFact,
+        effectiveAt: laterEvent.occurredAt,
+        effectiveTxHash: laterEvent.txHash,
+        timelineEvents: [laterEvent, validFact.timelineEvents[0]]
+      }], directHardEvidenceSnapshots: [{ ...validSnapshot, usdtRestriction: {
+        ...validRestriction,
+        blacklistEventTimestamp: laterEvent.occurredAt,
+        blacklistEventTxHash: laterEvent.txHash,
+        blacklistTimeline: {
+          ...validRestriction.blacklistTimeline,
+          events: [laterEvent, validRestriction.blacklistTimeline.events[0]]
+        }
+      } }] },
+      { ...validEnvelope, firstHopBlacklistCoverage: { ...validCoverage, confirmedAdverseFactCount: 0 } },
+      { ...validEnvelope, firstHopBlacklistCoverage: { ...validCoverage, failedMaterialCounterpartyCount: 1 } },
+      { firstHopBlacklistFacts: [validFact] }
+    ];
+    for (const malicious of maliciousEnvelopes) {
+      expect(normalizePersistedDeepFirstHopEvidence(malicious)).toEqual({
+        firstHopBlacklistFacts: [],
+        firstHopLabelFacts: [],
+        firstHopBlacklistCoverage: {
+          requiredForDecision: true,
+          scope: "checked_window",
+          windowStart: null,
+          windowEnd: null,
+          directPrincipalTransferCoverage: "partial",
+          materialCounterpartyCount: 0,
+          checkedMaterialCounterpartyCount: 0,
+          failedMaterialCounterpartyCount: 0,
+          uncheckedMaterialCounterpartyCount: 0,
+          blacklistCheckCoverage: "provider_failed",
+          incompleteReason: "persisted_first_hop_evidence_invalid",
+          confirmedAdverseFactCount: 0,
+          completeTimelineFactCount: 0,
+          partialTimelineFactCount: 0
+        },
+        directHardEvidenceSnapshots: []
+      });
+    }
   });
 });

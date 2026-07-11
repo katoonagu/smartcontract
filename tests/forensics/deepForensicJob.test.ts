@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  type DeepAddressForensicReport
+} from "../../src/check/deepForensicCheck";
 import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
 import { runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
@@ -5796,6 +5799,8 @@ describe("deep forensic job runner", () => {
 
   it("persists JSON-safe first-hop timeline facts and coverage in deep result and progress", async () => {
     const counterparty = "TJobFirstHopBlacklisted1111111111111";
+    const directTxHash = "a".repeat(64);
+    const eventTxHash = "b".repeat(64);
     const sourceJob = job();
     const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
 
@@ -5806,7 +5811,7 @@ describe("deep forensic job runner", () => {
       upsertAddressLabelAssertion: vi.fn(async () => undefined),
       tronClient: {
         listRelatedTrc20Transfers: async (address) => address === subject ? [transfer({
-          id: "tx-job-first-hop",
+          id: directTxHash,
           from: counterparty,
           to: subject,
           amountRaw: "10000000000",
@@ -5824,7 +5829,7 @@ describe("deep forensic job runner", () => {
         ...usdtRestrictionProfile({
           subjectAddress: address,
           isBlacklisted: address === counterparty,
-          blacklistEventTxHash: address === counterparty ? "tx-job-added" : null,
+          blacklistEventTxHash: address === counterparty ? eventTxHash : null,
           blacklistEventTimestamp: address === counterparty ? "2026-05-10T00:00:00.000Z" : null,
           blacklistEventBlock: address === counterparty ? 10 : null
         }),
@@ -5835,7 +5840,7 @@ describe("deep forensic job runner", () => {
             address,
             tokenContract: TRON_USDT_CONTRACT_ADDRESS,
             occurredAt: "2026-05-10T00:00:00.000Z",
-            txHash: "tx-job-added",
+            txHash: eventTxHash,
             blockNumber: 10,
             logIndex: 2,
             verification: "verified_contract_log" as const
@@ -5865,15 +5870,15 @@ describe("deep forensic job runner", () => {
         counterpartyAddress: counterparty,
         direction: "inbound",
         principalAmountRaw: "10000000000",
-        transferTxHashes: ["tx-job-first-hop"],
+        transferTxHashes: [directTxHash],
         activeAmountRaw: "10000000000",
-        timelineEvents: [expect.objectContaining({ txHash: "tx-job-added", logIndex: 2 })]
+        timelineEvents: [expect.objectContaining({ txHash: eventTxHash, logIndex: 2 })]
       })],
       firstHopLabelFacts: [expect.objectContaining({
         counterpartyAddress: counterparty,
         direction: "inbound",
         principalAmountRaw: "10000000000",
-        transferTxHashes: ["tx-job-first-hop"],
+        transferTxHashes: [directTxHash],
         linkedToSelectedProvenance: false
       })],
       firstHopBlacklistCoverage: expect.objectContaining({
@@ -5888,6 +5893,12 @@ describe("deep forensic job runner", () => {
       firstHopLabelFacts: serialized.resultJson.firstHopLabelFacts,
       firstHopBlacklistCoverage: serialized.resultJson.firstHopBlacklistCoverage
     });
+    const restored = normalizePersistedDeepFirstHopEvidence(serialized.resultJson);
+    expect(restored.firstHopBlacklistFacts).toEqual(serialized.resultJson.firstHopBlacklistFacts);
+    expect(restored.firstHopLabelFacts).toEqual(serialized.resultJson.firstHopLabelFacts);
+    expect(restored.firstHopBlacklistCoverage).toEqual(serialized.resultJson.firstHopBlacklistCoverage);
+    expect(restored.directHardEvidenceSnapshots).toHaveLength(1);
+    expect(restored.firstHopBlacklistCoverage?.incompleteReason).not.toBe("persisted_first_hop_evidence_invalid");
   });
 
   it("keeps a completed deep job completed when Telegram result delivery fails", async () => {

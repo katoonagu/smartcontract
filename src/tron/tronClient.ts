@@ -10,7 +10,7 @@ import {
   type ContractIntelligenceProfile
 } from "../approvals/contractIntelligence";
 import type {
-  StablecoinRestrictionProfile,
+  TimelineBearingStablecoinRestrictionProfile,
   UsdtBlacklistTimeline,
   UsdtBlacklistTimelineEvent
 } from "../types";
@@ -44,7 +44,7 @@ export type TronDashboardClient = TronClient & {
   getUsdtRestrictionStatus?(
     address: string,
     options?: GetUsdtRestrictionStatusOptions
-  ): Promise<StablecoinRestrictionProfile & { blacklistTimeline: UsdtBlacklistTimeline | null }>;
+  ): Promise<TimelineBearingStablecoinRestrictionProfile>;
   listRelatedTrc20Transfers(
     address: string,
     options?: ListRelatedTrc20TransfersOptions
@@ -420,7 +420,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   async getUsdtRestrictionStatus(
     address: string,
     options: GetUsdtRestrictionStatusOptions = {}
-  ): Promise<StablecoinRestrictionProfile & { blacklistTimeline: UsdtBlacklistTimeline | null }> {
+  ): Promise<TimelineBearingStablecoinRestrictionProfile> {
     const checkedAt = new Date().toISOString();
     const blacklist = await this.callUsdtBoolean("isBlackListed(address)", address)
       .then((isBlacklisted) => ({ isBlacklisted, method: "isBlackListed(address)" as const }))

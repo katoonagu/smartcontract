@@ -50,7 +50,7 @@ import { indexedTransferToRouteEdge } from "../forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
 import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
-import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type { AddressMetadata } from "../storage/repositories";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
@@ -81,6 +81,7 @@ import type {
   ServiceClassification,
   StablecoinRestrictionProfile,
   TimelineBearingStablecoinRestrictionProfile,
+  UsdtBlacklistTimelineEvent,
   DeepCheckAllTimeCoverage,
   DeepCheckAllTimeMode,
   TronAddressUsdtIndexState,
@@ -136,10 +137,10 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   coverageDebug: CoverageDebugReport;
 };
 
-type PersistedDeepFirstHopEvidence = Pick<
+type PersistedDeepFirstHopEvidence = Required<Pick<
   DeepAddressForensicReport,
   "firstHopBlacklistFacts" | "firstHopLabelFacts" | "firstHopBlacklistCoverage" | "directHardEvidenceSnapshots"
->;
+>>;
 
 function persistedRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -154,11 +155,13 @@ function persistedNonEmptyString(value: unknown): value is string {
 }
 
 function persistedHashArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(persistedNonEmptyString);
+  return Array.isArray(value) && value.every(persistedTxHash);
 }
 
 function persistedIsoDate(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && Number.isFinite(Date.parse(value));
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
 function persistedCount(value: unknown): value is number {
@@ -166,7 +169,11 @@ function persistedCount(value: unknown): value is number {
 }
 
 function persistedRawAmount(value: unknown): value is string {
-  return typeof value === "string" && /^\d+$/.test(value);
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) && BigInt(value) <= (1n << 256n) - 1n;
+}
+
+function persistedTxHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function persistedNullableString(value: unknown): value is string | null {
@@ -178,7 +185,7 @@ function persistedNullableIsoDate(value: unknown): value is string | null {
 }
 
 function persistedNullableHash(value: unknown): value is string | null {
-  return value === null || persistedNonEmptyString(value);
+  return value === null || persistedTxHash(value);
 }
 
 function persistedShare(value: unknown, semantics: unknown): boolean {
@@ -187,15 +194,22 @@ function persistedShare(value: unknown, semantics: unknown): boolean {
     typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-function persistedTimelineEvent(value: unknown): boolean {
+function persistedTimelineEvent(value: unknown): value is UsdtBlacklistTimelineEvent {
   if (!persistedRecord(value)) return false;
   return (value.eventKind === "added" || value.eventKind === "removed") &&
     persistedIsoDate(value.occurredAt) &&
-    persistedNonEmptyString(value.txHash) &&
-    persistedNonEmptyString(value.tokenContract) &&
+    persistedTxHash(value.txHash) &&
+    value.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
     (value.blockNumber === null || persistedCount(value.blockNumber)) &&
     (value.logIndex === null || persistedCount(value.logIndex)) &&
-    (value.verification === "verified_contract_log" || value.verification === "unverified");
+    value.verification === "verified_contract_log";
+}
+
+function comparePersistedTimelineEvents(left: UsdtBlacklistTimelineEvent, right: UsdtBlacklistTimelineEvent): number {
+  return Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+    (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
+    (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
+    left.txHash.localeCompare(right.txHash);
 }
 
 function persistedTimeline(value: unknown): boolean {
@@ -208,8 +222,31 @@ function persistedTimeline(value: unknown): boolean {
     "event_log_unverified",
     "state_timeline_inconsistent"
   ]);
-  return (value.pagination === "complete" || value.pagination === "partial") &&
-    (value.failureReason === null || typeof value.failureReason === "string" && failures.has(value.failureReason));
+  const sorted = value.events.every((event, index, events) => index === 0 || comparePersistedTimelineEvents(events[index - 1], event) <= 0);
+  return sorted && (
+    value.pagination === "complete" && value.failureReason === null ||
+    value.pagination === "partial" && typeof value.failureReason === "string" && failures.has(value.failureReason)
+  );
+}
+
+function chronologyRelationValid(value: Record<string, unknown>): boolean {
+  const beforeAmount = BigInt(String(value.beforeEffectiveAmountRaw));
+  const activeAmount = BigInt(String(value.activeAmountRaw));
+  const unknownAmount = BigInt(String(value.unknownTimingAmountRaw));
+  const beforeCount = Number(value.beforeEffectiveTxCount);
+  const activeCount = Number(value.activeTxCount);
+  const unknownCount = Number(value.unknownTimingTxCount);
+  const before = beforeAmount > 0n && beforeCount > 0;
+  const active = activeAmount > 0n && activeCount > 0;
+  const unknown = unknownAmount > 0n && unknownCount > 0;
+  const zeroPairsValid = (beforeAmount === 0n) === (beforeCount === 0) &&
+    (activeAmount === 0n) === (activeCount === 0) &&
+    (unknownAmount === 0n) === (unknownCount === 0);
+  if (!zeroPairsValid) return false;
+  if (value.temporalRelation === "active_at_transfer") return active && !before && !unknown;
+  if (value.temporalRelation === "became_active_after") return before && !active && !unknown;
+  if (value.temporalRelation === "mixed") return before && active && !unknown;
+  return value.temporalRelation === "unknown" && unknown;
 }
 
 function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact {
@@ -219,7 +256,7 @@ function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact 
     (value.direction !== "inbound" && value.direction !== "outbound") ||
     value.evidenceKind !== "usdt_blacklist" ||
     value.evidenceAuthority !== "official_contract" ||
-    !["active", "inactive", "unknown"].includes(String(value.statusAtCheck)) ||
+    value.statusAtCheck !== "active" ||
     !["active_at_transfer", "became_active_after", "mixed", "unknown"].includes(String(value.temporalRelation)) ||
     !persistedNullableIsoDate(value.effectiveAt) ||
     !persistedNullableHash(value.effectiveTxHash) ||
@@ -241,7 +278,8 @@ function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact 
     !value.timelineEvents.every(persistedTimelineEvent)
   ) return false;
   return BigInt(value.beforeEffectiveAmountRaw) + BigInt(value.activeAmountRaw) + BigInt(value.unknownTimingAmountRaw) === BigInt(value.principalAmountRaw) &&
-    value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount;
+    value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount &&
+    chronologyRelationValid(value);
 }
 
 const PERSISTED_RISK_LABELS: ReadonlySet<string> = new Set([
@@ -299,13 +337,13 @@ function persistedFirstHopCoverage(value: unknown): value is FirstHopBlacklistCo
   const scopeValid = value.scope === "all_time"
     ? value.windowStart === null && value.windowEnd === null && value.directPrincipalTransferCoverage === "complete"
     : value.scope === "checked_window" &&
-      typeof value.windowStart === "string" && Number.isFinite(Date.parse(value.windowStart)) &&
-      typeof value.windowEnd === "string" && Number.isFinite(Date.parse(value.windowEnd)) &&
+      persistedIsoDate(value.windowStart) &&
+      persistedIsoDate(value.windowEnd) &&
       Date.parse(value.windowStart) <= Date.parse(value.windowEnd) &&
       value.directPrincipalTransferCoverage === "partial";
   return typeof value.requiredForDecision === "boolean" &&
     scopeValid &&
-    ["complete", "running", "provider_failed", "budget_exhausted", "history_partial"].includes(String(value.blacklistCheckCoverage)) &&
+    ["complete", "provider_failed", "budget_exhausted", "history_partial"].includes(String(value.blacklistCheckCoverage)) &&
     persistedNullableString(value.incompleteReason) &&
     Number(value.checkedMaterialCounterpartyCount) + Number(value.failedMaterialCounterpartyCount) + Number(value.uncheckedMaterialCounterpartyCount) === Number(value.materialCounterpartyCount);
 }
@@ -362,7 +400,7 @@ function persistedRestriction(
   if (!persistedRecord(value)) return false;
   const methods = persistedRecord(value.methods) ? value.methods : null;
   return value.subjectAddress === address &&
-    persistedNonEmptyString(value.tokenContract) &&
+    value.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
     value.tokenSymbol === "USDT" &&
     value.tokenStandard === "TRC20" &&
     value.decimals === 6 &&
@@ -402,28 +440,113 @@ function normalizePersistedDirectSnapshot(value: unknown): DirectHardEvidenceSna
   };
 }
 
+function invalidPersistedFirstHopEvidence(): PersistedDeepFirstHopEvidence {
+  return {
+    firstHopBlacklistFacts: [],
+    firstHopLabelFacts: [],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 0,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "provider_failed",
+      incompleteReason: "persisted_first_hop_evidence_invalid",
+      confirmedAdverseFactCount: 0,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 0
+    },
+    directHardEvidenceSnapshots: []
+  };
+}
+
+function persistedShareMatchesCoverage(
+  item: FirstHopBlacklistFact | FirstHopLabelFact,
+  coverage: FirstHopBlacklistCoverage
+): boolean {
+  return coverage.directPrincipalTransferCoverage === "complete"
+    ? item.shareSemantics === "exact" && item.directionalPrincipalShare !== null
+    : item.shareSemantics === "unavailable" && item.directionalPrincipalShare === null;
+}
+
+function persistedEnvelopeConsistent(input: PersistedDeepFirstHopEvidence): boolean {
+  const { firstHopBlacklistFacts: facts, firstHopLabelFacts: labelFacts, firstHopBlacklistCoverage: coverage, directHardEvidenceSnapshots: snapshots } = input;
+  const snapshotsByAddress = new Map(snapshots.map((snapshot) => [snapshot.address, snapshot]));
+  if (snapshotsByAddress.size !== snapshots.length || coverage.requiredForDecision !== true) return false;
+  const checkedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction !== null).length;
+  const failedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction === null).length;
+  const uncheckedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "local_only").length;
+  if (
+    coverage.materialCounterpartyCount !== snapshots.length ||
+    coverage.checkedMaterialCounterpartyCount !== checkedCount ||
+    coverage.failedMaterialCounterpartyCount !== failedCount ||
+    coverage.uncheckedMaterialCounterpartyCount !== uncheckedCount ||
+    coverage.confirmedAdverseFactCount !== facts.length ||
+    coverage.completeTimelineFactCount !== facts.filter((fact) => fact.timelineCoverage === "complete").length ||
+    coverage.partialTimelineFactCount !== facts.filter((fact) => fact.timelineCoverage === "partial").length
+  ) return false;
+  if (coverage.blacklistCheckCoverage === "complete") {
+    if (
+      coverage.directPrincipalTransferCoverage !== "complete" ||
+      coverage.failedMaterialCounterpartyCount !== 0 ||
+      coverage.uncheckedMaterialCounterpartyCount !== 0 ||
+      coverage.incompleteReason !== null ||
+      coverage.partialTimelineFactCount !== 0
+    ) return false;
+  } else if (!persistedNonEmptyString(coverage.incompleteReason)) {
+    return false;
+  }
+  for (const fact of facts) {
+    if (fact.directTransferCoverage !== coverage.directPrincipalTransferCoverage || !persistedShareMatchesCoverage(fact, coverage)) return false;
+    const snapshot = snapshotsByAddress.get(fact.counterpartyAddress);
+    const restriction = snapshot?.evidenceStatus === "live_checked" ? snapshot.usdtRestriction : null;
+    if (!restriction?.isBlacklisted || restriction.checkedAt !== fact.checkedAt) return false;
+    const timelineEvents = restriction.blacklistTimeline?.events ?? [];
+    if (JSON.stringify(timelineEvents) !== JSON.stringify(fact.timelineEvents)) return false;
+    const expectedTimelineCoverage = restriction.blacklistTimeline?.pagination === "complete" ? "complete" : "partial";
+    if (fact.timelineCoverage !== expectedTimelineCoverage) return false;
+    const effectiveEvent = [...fact.timelineEvents].reverse().find((event) => event.eventKind === "added") ?? null;
+    const effectiveAt = effectiveEvent?.occurredAt ?? restriction.blacklistEventTimestamp ?? null;
+    const effectiveTxHash = effectiveEvent?.txHash ?? restriction.blacklistEventTxHash ?? null;
+    if (fact.effectiveAt !== effectiveAt || fact.effectiveTxHash !== effectiveTxHash) return false;
+  }
+  for (const fact of labelFacts) {
+    if (!snapshotsByAddress.has(fact.counterpartyAddress) || !persistedShareMatchesCoverage(fact, coverage)) return false;
+  }
+  return true;
+}
+
 export function normalizePersistedDeepFirstHopEvidence(
   record: Record<string, unknown>
 ): Partial<PersistedDeepFirstHopEvidence> {
-  return {
-    ...(Array.isArray(record.firstHopBlacklistFacts)
-      ? { firstHopBlacklistFacts: record.firstHopBlacklistFacts.filter(persistedBlacklistFact) }
-      : {}),
-    ...(Array.isArray(record.firstHopLabelFacts)
-      ? { firstHopLabelFacts: record.firstHopLabelFacts.filter(persistedLabelFact) }
-      : {}),
-    ...(persistedFirstHopCoverage(record.firstHopBlacklistCoverage)
-      ? { firstHopBlacklistCoverage: record.firstHopBlacklistCoverage }
-      : {}),
-    ...(Array.isArray(record.directHardEvidenceSnapshots)
-      ? {
-          directHardEvidenceSnapshots: record.directHardEvidenceSnapshots.flatMap((snapshot) => {
-            const normalized = normalizePersistedDirectSnapshot(snapshot);
-            return normalized ? [normalized] : [];
-          })
-        }
-      : {})
+  const fields = [
+    "firstHopBlacklistFacts",
+    "firstHopLabelFacts",
+    "firstHopBlacklistCoverage",
+    "directHardEvidenceSnapshots"
+  ] as const;
+  if (fields.every((field) => !Object.prototype.hasOwnProperty.call(record, field))) return {};
+  if (
+    !Array.isArray(record.firstHopBlacklistFacts) ||
+    !record.firstHopBlacklistFacts.every(persistedBlacklistFact) ||
+    !Array.isArray(record.firstHopLabelFacts) ||
+    !record.firstHopLabelFacts.every(persistedLabelFact) ||
+    !persistedFirstHopCoverage(record.firstHopBlacklistCoverage) ||
+    !Array.isArray(record.directHardEvidenceSnapshots)
+  ) return invalidPersistedFirstHopEvidence();
+  const snapshots = record.directHardEvidenceSnapshots.map(normalizePersistedDirectSnapshot);
+  if (snapshots.some((snapshot) => snapshot === null)) return invalidPersistedFirstHopEvidence();
+  const envelope: PersistedDeepFirstHopEvidence = {
+    firstHopBlacklistFacts: record.firstHopBlacklistFacts,
+    firstHopLabelFacts: record.firstHopLabelFacts,
+    firstHopBlacklistCoverage: record.firstHopBlacklistCoverage,
+    directHardEvidenceSnapshots: snapshots.filter((snapshot): snapshot is DirectHardEvidenceSnapshot => snapshot !== null)
   };
+  return persistedEnvelopeConsistent(envelope) ? envelope : invalidPersistedFirstHopEvidence();
 }
 
 export type DeepAddressForensicDeps = {

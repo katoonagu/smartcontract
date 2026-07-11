@@ -1285,7 +1285,7 @@ function persistedFirstHopEvidenceForTest() {
   const timelineEvent = {
     eventKind: "added" as const,
     occurredAt: "2026-05-10T00:00:00.000Z",
-    txHash: "tx-blacklist-added",
+    txHash: "b".repeat(64),
     tokenContract: TRON_USDT_CONTRACT_ADDRESS,
     blockNumber: 100,
     logIndex: 2,
@@ -1305,7 +1305,7 @@ function persistedFirstHopEvidenceForTest() {
     principalTxCount: 1,
     directionalPrincipalShare: 0.75,
     shareSemantics: "exact" as const,
-    transferTxHashes: ["tx-direct-in"],
+    transferTxHashes: ["a".repeat(64)],
     beforeEffectiveAmountRaw: "0",
     beforeEffectiveTxCount: 0,
     activeAmountRaw: "10000000000",
@@ -1327,7 +1327,7 @@ function persistedFirstHopEvidenceForTest() {
     principalTxCount: 1,
     directionalPrincipalShare: 0.75,
     shareSemantics: "exact" as const,
-    transferTxHashes: ["tx-direct-in"],
+    transferTxHashes: ["a".repeat(64)],
     linkedToSelectedProvenance: false
   }];
   const firstHopBlacklistCoverage = {
@@ -5335,19 +5335,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const evidence = persistedFirstHopEvidenceForTest();
     const resultJson = {
       ...persistedDeepResultJsonForTest(deepReportForTest()),
-      ...evidence,
-      firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }],
-      firstHopLabelFacts: [
-        ...evidence.firstHopLabelFacts,
-        { ...evidence.firstHopLabelFacts[0], labelCode: "arbitrary_label" },
-        { principalAmountRaw: 100 }
-      ],
-      directHardEvidenceSnapshots: [
-        ...evidence.directHardEvidenceSnapshots,
-        { ...evidence.directHardEvidenceSnapshots[0], labels: [{}] },
-        { ...evidence.directHardEvidenceSnapshots[0], classification: {} },
-        { address: 123 }
-      ]
+      ...evidence
     };
     const report = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
       kind: "address_deep_check",
@@ -5361,6 +5349,30 @@ describe("bot command and inline UX smoke coverage", () => {
       ...snapshot,
       labels: snapshot.labels.map((label) => ({ ...label, createdAt: new Date(label.createdAt) }))
     })));
+  });
+
+  it("fails closed atomically when one persisted first-hop fact is malformed", () => {
+    const evidence = persistedFirstHopEvidenceForTest();
+    const report = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: {
+        ...persistedDeepResultJsonForTest(deepReportForTest()),
+        ...evidence,
+        firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }]
+      }
+    }), walletAddress);
+
+    expect(report).toMatchObject({
+      firstHopBlacklistFacts: [],
+      firstHopLabelFacts: [],
+      directHardEvidenceSnapshots: [],
+      firstHopBlacklistCoverage: {
+        requiredForDecision: true,
+        directPrincipalTransferCoverage: "partial",
+        blacklistCheckCoverage: "provider_failed",
+        incompleteReason: "persisted_first_hop_evidence_invalid"
+      }
+    });
   });
 
   it("keeps first-hop evidence absent for legacy persisted Deep reports", () => {

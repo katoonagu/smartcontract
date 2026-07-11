@@ -382,6 +382,105 @@ describe("direct hard evidence helper", () => {
     expect(result.missingChecks[0]).toContain("TDirect1");
   });
 
+  it("marks a required final first-hop check provider_failed when no restriction provider exists", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [edge({ id: "1", fromAddress: "TNoProvider", toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "partial",
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+      requiredForDecision: true,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null
+    });
+
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      blacklistCheckCoverage: "provider_failed",
+      incompleteReason: expect.stringMatching(/provider.*not available/i)
+    });
+  });
+
+  it("filters invalid timeline events and canonically sorts snapshot labels and reasons", async () => {
+    const address = "TCanonicalSnapshot";
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({
+        id: "1",
+        fromAddress: address,
+        toAddress: SUBJECT,
+        amountRaw: 10_000_000000n,
+        timestamp: new Date("2026-07-03T00:00:00.000Z")
+      })]
+    });
+    const validEvent = {
+      eventKind: "added" as const,
+      occurredAt: "2026-07-02T00:00:00.000Z",
+      txHash: "valid-event",
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 100,
+      logIndex: 1,
+      verification: "verified_contract_log" as const
+    };
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [{
+        address,
+        label: "victim",
+        source: "system",
+        createdByTelegramId: null,
+        createdAt: new Date("2026-07-02T00:00:00.000Z")
+      }, {
+        address,
+        label: "phishing",
+        source: "service_admin",
+        createdByTelegramId: "1",
+        createdAt: new Date("2026-07-01T00:00:00.000Z")
+      }],
+      getClassificationForAddress: async () => ({
+        category: "cex",
+        identity: null,
+        confidence: "high",
+        evidence: ["fixture"],
+        isBoundary: true
+      }),
+      getUsdtRestrictionStatus: async () => restriction(address, {
+        isBlacklisted: true,
+        blacklistTimeline: {
+          events: [
+            { ...validEvent, occurredAt: "not-a-date", txHash: "invalid-date" },
+            { ...validEvent, tokenContract: "TWrongContract", txHash: "wrong-contract" },
+            validEvent
+          ],
+          pagination: "complete",
+          failureReason: null
+        }
+      })
+    });
+
+    expect(result.blacklistFacts[0]).toMatchObject({
+      effectiveAt: validEvent.occurredAt,
+      effectiveTxHash: validEvent.txHash,
+      timelineCoverage: "partial",
+      timelineEvents: [validEvent]
+    });
+    expect(result.snapshots[0].labels.map((item) => item.label)).toEqual(["phishing", "victim"]);
+    expect(result.snapshots[0].reasons).toEqual([
+      "label:phishing",
+      "label:victim",
+      "service:cex",
+      "usdt_blacklist"
+    ]);
+  });
+
   it("applies liveLimit after combining material and non-material directions for each address", async () => {
     const groups = groupDirectPrincipalCounterparties({
       subjectAddress: SUBJECT,
