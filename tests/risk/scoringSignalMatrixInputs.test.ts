@@ -564,6 +564,23 @@ describe("scoring signal matrix input mappers", () => {
     ]);
   });
 
+  it("joins direct policy profiles only to the exact case-sensitive TRON counterparty", () => {
+    const factCounterparty = "TAaBbCcDdEeFfGgHhJjKkMmNnPpQqRrSs";
+    const differentCounterparty = "TAabbCcDdEeFfGgHhJjKkMmNnPpQqRrSs";
+    const fact = firstHopBlacklistFact({ counterpartyAddress: factCounterparty });
+
+    expect(directPolicyCandidates(fact, [
+      directCounterpartyProfile({ counterpartyAddress: factCounterparty })
+    ])).toEqual([expect.objectContaining({
+      row: "direct_counterparty_policy",
+      score: 60
+    })]);
+
+    expect(directPolicyCandidates(fact, [
+      directCounterpartyProfile({ counterpartyAddress: differentCounterparty })
+    ])).toEqual([]);
+  });
+
   it("rejects inactive, non-official, non-USDT, and fee-only/no-principal inputs", () => {
     const invalidFacts = [
       firstHopBlacklistFact({ statusAtCheck: "inactive" }),

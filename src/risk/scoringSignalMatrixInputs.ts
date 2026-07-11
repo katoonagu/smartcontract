@@ -93,10 +93,6 @@ type DirectPolicyProfileBinding = {
 
 type DirectPolicyProfileIndex = Map<string, DirectPolicyProfileBinding[]>;
 
-function normalizedAddress(address: string): string {
-  return address.toLowerCase();
-}
-
 function directPolicyProfileKey(input: {
   subjectAddress: string;
   counterpartyAddress: string;
@@ -107,8 +103,8 @@ function directPolicyProfileKey(input: {
   const uniqueHashes = [...new Set(input.txHashes)];
   if (uniqueHashes.length !== input.txHashes.length) return null;
   return [
-    normalizedAddress(input.subjectAddress),
-    normalizedAddress(input.counterpartyAddress),
+    input.subjectAddress.trim(),
+    input.counterpartyAddress.trim(),
     input.direction,
     ...uniqueHashes.sort((left, right) => left.localeCompare(right))
   ].join(":");
