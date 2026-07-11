@@ -42,6 +42,10 @@ import {
   type NarrativeFact,
   type WalletNarrativeEvidenceInput
 } from "./walletNarrativeSummary";
+import {
+  buildWherePreliminaryNarrative,
+  type WherePreliminaryDiagnosticCode
+} from "./wherePreliminaryNarrative";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
 import {
@@ -2165,64 +2169,62 @@ function isPendingDeepForensicJob(job: ForensicCheckJob | null | undefined, subj
   );
 }
 
-function wherePreliminaryHardEvidenceLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
-  const hardEvidence = report.assessment.hardBadEvidence.filter(isDeterministicWhereHardEvidence);
-  const approvalDrainCount = hardEvidence.filter((evidence) => evidence.kind === "approval_drain").length;
-  const lines: string[] = [];
-  if (approvalDrainCount > 0) {
-    lines.push(locale === "en"
-      ? `Where Is Money found ${approvalDrainCount} hard-proof approval-drain path(s).`
-      : `Проверка “Откуда деньги” нашла ${approvalDrainCount} hard-proof approval-drain цепочек.`);
-  }
+export type WherePreliminaryDiagnostic = {
+  code: WherePreliminaryDiagnosticCode;
+  jobId: string;
+  subjectAddress: string;
+  riskScore: number;
+};
 
-  const topProfile = report.approvalDrainProvenanceProfiles
-    .find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from" || profile.score >= 85) ?? null;
-  if (topProfile) {
-    lines.push(locale === "en"
-      ? topProfile.hopDepth === 0
-        ? "The checked address is the first receiver after the transferFrom drain."
-        : `The checked address is linked to the transferFrom drain receiver within ${topProfile.hopDepth} hop(s).`
-      : topProfile.hopDepth === 0
-        ? "Проверяемый адрес — первый получатель после transferFrom drain."
-        : `Проверяемый адрес связан с получателем после transferFrom drain через ${topProfile.hopDepth} hop.`);
-  }
-
-  return lines.slice(0, 2);
-}
+type WhereIsMoneyUserDeliveryOptions = {
+  runtimeLabel?: string;
+  locale?: BotLocale;
+  showBetaDiagnostics?: boolean;
+  onPreliminaryDiagnostic?: (diagnostic: WherePreliminaryDiagnostic) => void;
+};
 
 function formatWhereIsMoneyPreliminaryReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
-  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+  options: WhereIsMoneyUserDeliveryOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
-  const level = levelFromScore(report.riskScore);
-  const hardEvidence = whereHardEvidenceReasonLines(report, locale)[0] ?? null;
-  const reason = hardEvidence
-    ? hardEvidence.replace(/^Жёсткое доказательство:\s*/u, "").replace(/^Hard evidence:\s*/u, "")
-    : locale === "en"
-      ? "Where Is Money completed a preliminary provenance pass."
-      : "Where Is Money завершил предварительную проверку происхождения средств.";
-  const reasonLines = [
-    normalizeNotificationReason(reason, locale),
-    ...wherePreliminaryHardEvidenceLines(report, locale)
-  ];
+  const contractReport = extractSmartContractCheckReportFromJob(job, report.subjectAddress);
+  const narrative = buildWherePreliminaryNarrative(report, {
+    locale,
+    verify20: contractReport?.verify20Fingerprint.matched
+      ? {
+          subjectAddress: contractReport.subjectAddress,
+          role: "verify20_contract",
+          fingerprint: contractReport.verify20Fingerprint,
+          debitObserved: contractReport.exactDrainProven
+        }
+      : null
+  });
+  if (narrative.diagnosticCode) {
+    options.onPreliminaryDiagnostic?.({
+      code: narrative.diagnosticCode,
+      jobId: job.id,
+      subjectAddress: report.subjectAddress,
+      riskScore: report.riskScore
+    });
+  }
 
   return telegramHtmlMessage([
     bold(locale === "en" ? "Where Is Money — preliminary result" : "Откуда деньги — предварительный результат"),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
-    `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(level)} ${code(`${report.riskScore}/100`)}`,
-    section(locale === "en" ? "Why" : "Почему", [
-      bulletList([...new Set(reasonLines)])
-    ]),
-    section(locale === "en" ? "What happens next" : "Что дальше", [
-      locale === "en"
-        ? "Where Is Money finished first; DeepCheck is still checking address links and behavior."
-        : "“Откуда деньги” завершено первым; DeepCheck ещё продолжает проверку связей и поведения адреса.",
-      locale === "en"
-        ? "Final result will arrive after the remaining analysis completes."
-        : "Финальный итог придёт после завершения анализа."
-    ]),
+    narrative.score === null
+      ? bold(locale === "en" ? "Preliminary risk was not calculated" : "Предварительный риск не рассчитан")
+      : `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(levelFromScore(narrative.score))} ${code(`${narrative.score}/100`)}`,
+    narrative.sections.findings.length > 0
+      ? section(locale === "en" ? "Finding" : "Что нашли", [bulletList(narrative.sections.findings.slice(0, 2))])
+      : null,
+    narrative.sections.conclusion
+      ? section(locale === "en" ? "Conclusion" : "Вывод", [escapeHtml(narrative.sections.conclusion)])
+      : null,
+    narrative.sections.coverage
+      ? section(locale === "en" ? "Coverage limits" : "Границы", [escapeHtml(narrative.sections.coverage)])
+      : null,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -2232,7 +2234,7 @@ export function formatWhereIsMoneyUserDeliveryReport(
   report: WhereIsMoneyReport,
   status: "completed" | "partial",
   deepJob: ForensicCheckJob | null | undefined,
-  options: { runtimeLabel?: string; locale?: BotLocale; showBetaDiagnostics?: boolean } = {}
+  options: WhereIsMoneyUserDeliveryOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, report.subjectAddress));
@@ -2251,7 +2253,8 @@ export function formatWhereIsMoneyUserDeliveryReport(
   if (isPendingDeepForensicJob(deepJob, report.subjectAddress)) {
     return formatWhereIsMoneyPreliminaryReport(job, report, {
       runtimeLabel: options.runtimeLabel,
-      locale
+      locale,
+      onPreliminaryDiagnostic: options.onPreliminaryDiagnostic
     });
   }
   return formatWhereIsMoneyReport(job, report, status, {

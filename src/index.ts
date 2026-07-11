@@ -994,7 +994,10 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         const message = formatWhereIsMoneyUserDeliveryReport(job, report, status, deepJob, {
           runtimeLabel: config.runtimeInstanceLabel,
           locale: normalizeBotLocale(job.progressJson.locale),
-          showBetaDiagnostics: config.botBetaRiskDiagnosticsEnabled
+          showBetaDiagnostics: config.botBetaRiskDiagnosticsEnabled,
+          onPreliminaryDiagnostic: (diagnostic) => {
+            logger.warn("where_preliminary_score_without_structured_fact", diagnostic);
+          }
         });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
