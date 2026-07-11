@@ -136,6 +136,179 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   coverageDebug: CoverageDebugReport;
 };
 
+type PersistedDeepFirstHopEvidence = Pick<
+  DeepAddressForensicReport,
+  "firstHopBlacklistFacts" | "firstHopLabelFacts" | "firstHopBlacklistCoverage" | "directHardEvidenceSnapshots"
+>;
+
+function persistedRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function persistedStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function persistedCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function persistedRawAmount(value: unknown): value is string {
+  return typeof value === "string" && /^\d+$/.test(value);
+}
+
+function persistedNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function persistedShare(value: unknown, semantics: unknown): boolean {
+  if (semantics === "unavailable") return value === null;
+  return (semantics === "exact" || semantics === "lower_bound") &&
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function persistedTimelineEvent(value: unknown): boolean {
+  if (!persistedRecord(value)) return false;
+  return (value.eventKind === "added" || value.eventKind === "removed") &&
+    typeof value.occurredAt === "string" && Number.isFinite(Date.parse(value.occurredAt)) &&
+    typeof value.txHash === "string" &&
+    typeof value.tokenContract === "string" &&
+    (value.blockNumber === null || persistedCount(value.blockNumber)) &&
+    (value.logIndex === null || persistedCount(value.logIndex)) &&
+    (value.verification === "verified_contract_log" || value.verification === "unverified");
+}
+
+function persistedTimeline(value: unknown): boolean {
+  if (!persistedRecord(value) || !Array.isArray(value.events) || !value.events.every(persistedTimelineEvent)) return false;
+  const failures = new Set([
+    "provider_failed",
+    "address_mismatch",
+    "wrong_contract",
+    "transaction_unconfirmed",
+    "event_log_unverified",
+    "state_timeline_inconsistent"
+  ]);
+  return (value.pagination === "complete" || value.pagination === "partial") &&
+    (value.failureReason === null || failures.has(value.failureReason as string));
+}
+
+function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact {
+  if (!persistedRecord(value)) return false;
+  if (
+    typeof value.counterpartyAddress !== "string" ||
+    (value.direction !== "inbound" && value.direction !== "outbound") ||
+    value.evidenceKind !== "usdt_blacklist" ||
+    value.evidenceAuthority !== "official_contract" ||
+    !["active", "inactive", "unknown"].includes(String(value.statusAtCheck)) ||
+    !["active_at_transfer", "became_active_after", "mixed", "unknown"].includes(String(value.temporalRelation)) ||
+    !persistedNullableString(value.effectiveAt) ||
+    !persistedNullableString(value.effectiveTxHash) ||
+    typeof value.checkedAt !== "string" ||
+    !persistedRawAmount(value.principalAmountRaw) ||
+    !persistedCount(value.principalTxCount) ||
+    !persistedShare(value.directionalPrincipalShare, value.shareSemantics) ||
+    !persistedStringArray(value.transferTxHashes) ||
+    !persistedRawAmount(value.beforeEffectiveAmountRaw) ||
+    !persistedCount(value.beforeEffectiveTxCount) ||
+    !persistedRawAmount(value.activeAmountRaw) ||
+    !persistedCount(value.activeTxCount) ||
+    !persistedRawAmount(value.unknownTimingAmountRaw) ||
+    !persistedCount(value.unknownTimingTxCount) ||
+    (value.directTransferCoverage !== "complete" && value.directTransferCoverage !== "partial") ||
+    (value.timelineCoverage !== "complete" && value.timelineCoverage !== "partial") ||
+    !Array.isArray(value.timelineEvents) ||
+    !value.timelineEvents.every(persistedTimelineEvent)
+  ) return false;
+  return BigInt(value.beforeEffectiveAmountRaw) + BigInt(value.activeAmountRaw) + BigInt(value.unknownTimingAmountRaw) === BigInt(value.principalAmountRaw) &&
+    value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount;
+}
+
+function persistedLabelFact(value: unknown): value is FirstHopLabelFact {
+  if (!persistedRecord(value)) return false;
+  return typeof value.counterpartyAddress === "string" &&
+    (value.direction === "inbound" || value.direction === "outbound") &&
+    typeof value.labelCode === "string" &&
+    (value.evidenceAuthority === "exact_internal" || value.evidenceAuthority === "derived") &&
+    typeof value.recordedAt === "string" &&
+    value.effectiveAt === null &&
+    persistedRawAmount(value.principalAmountRaw) &&
+    persistedCount(value.principalTxCount) &&
+    persistedShare(value.directionalPrincipalShare, value.shareSemantics) &&
+    persistedStringArray(value.transferTxHashes) &&
+    typeof value.linkedToSelectedProvenance === "boolean";
+}
+
+function persistedFirstHopCoverage(value: unknown): value is FirstHopBlacklistCoverage {
+  if (!persistedRecord(value)) return false;
+  const counts = [
+    value.materialCounterpartyCount,
+    value.checkedMaterialCounterpartyCount,
+    value.failedMaterialCounterpartyCount,
+    value.uncheckedMaterialCounterpartyCount,
+    value.confirmedAdverseFactCount,
+    value.completeTimelineFactCount,
+    value.partialTimelineFactCount
+  ];
+  if (!counts.every(persistedCount)) return false;
+  const scopeValid = value.scope === "all_time"
+    ? value.windowStart === null && value.windowEnd === null && value.directPrincipalTransferCoverage === "complete"
+    : value.scope === "checked_window" &&
+      typeof value.windowStart === "string" && Number.isFinite(Date.parse(value.windowStart)) &&
+      typeof value.windowEnd === "string" && Number.isFinite(Date.parse(value.windowEnd)) &&
+      Date.parse(value.windowStart) <= Date.parse(value.windowEnd) &&
+      value.directPrincipalTransferCoverage === "partial";
+  return typeof value.requiredForDecision === "boolean" &&
+    scopeValid &&
+    ["complete", "running", "provider_failed", "budget_exhausted", "history_partial"].includes(String(value.blacklistCheckCoverage)) &&
+    persistedNullableString(value.incompleteReason) &&
+    Number(value.checkedMaterialCounterpartyCount) + Number(value.failedMaterialCounterpartyCount) + Number(value.uncheckedMaterialCounterpartyCount) === Number(value.materialCounterpartyCount);
+}
+
+function persistedRestriction(value: unknown, address: string): boolean {
+  if (!persistedRecord(value)) return false;
+  const methods = persistedRecord(value.methods) ? value.methods : null;
+  return value.subjectAddress === address &&
+    typeof value.tokenContract === "string" &&
+    value.tokenSymbol === "USDT" &&
+    value.tokenStandard === "TRC20" &&
+    typeof value.decimals === "number" && Number.isFinite(value.decimals) &&
+    typeof value.isBlacklisted === "boolean" &&
+    typeof value.checkedAt === "string" &&
+    value.evidenceStrength === "exact_contract_state" &&
+    methods !== null &&
+    (methods.blacklist === "isBlackListed(address)" || methods.blacklist === "getBlackListStatus(address)") &&
+    (value.blacklistTimeline === undefined || value.blacklistTimeline === null || persistedTimeline(value.blacklistTimeline));
+}
+
+function persistedDirectSnapshot(value: unknown): value is DirectHardEvidenceSnapshot {
+  if (!persistedRecord(value) || typeof value.address !== "string") return false;
+  return Array.isArray(value.labels) && value.labels.every(persistedRecord) &&
+    (value.classification === null || persistedRecord(value.classification)) &&
+    (value.usdtRestriction === null || persistedRestriction(value.usdtRestriction, value.address)) &&
+    (value.evidenceStatus === "live_checked" || value.evidenceStatus === "local_only") &&
+    typeof value.hasHardEvidence === "boolean" &&
+    persistedStringArray(value.reasons);
+}
+
+export function normalizePersistedDeepFirstHopEvidence(
+  record: Record<string, unknown>
+): Partial<PersistedDeepFirstHopEvidence> {
+  return {
+    ...(Array.isArray(record.firstHopBlacklistFacts)
+      ? { firstHopBlacklistFacts: record.firstHopBlacklistFacts.filter(persistedBlacklistFact) }
+      : {}),
+    ...(Array.isArray(record.firstHopLabelFacts)
+      ? { firstHopLabelFacts: record.firstHopLabelFacts.filter(persistedLabelFact) }
+      : {}),
+    ...(persistedFirstHopCoverage(record.firstHopBlacklistCoverage)
+      ? { firstHopBlacklistCoverage: record.firstHopBlacklistCoverage }
+      : {}),
+    ...(Array.isArray(record.directHardEvidenceSnapshots)
+      ? { directHardEvidenceSnapshots: record.directHardEvidenceSnapshots.filter(persistedDirectSnapshot) }
+      : {})
+  };
+}
+
 export type DeepAddressForensicDeps = {
   tronClient: RouteSearchTronClient;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;

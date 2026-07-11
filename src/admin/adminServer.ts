@@ -5,7 +5,10 @@ import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
 import { adminConsoleHtml } from "./adminConsole";
 import { projectForensicJobGraph, type AdminForensicsGraph, type AdminForensicsHumanSummary, type AdminForensicsNode } from "./forensicsGraph";
-import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  type DeepAddressForensicReport
+} from "../check/deepForensicCheck";
 import {
   buildRiskExplanationSummary,
   factAction,
@@ -961,7 +964,7 @@ function normalizeDeepDirectCounterpartyProfiles(value: unknown): Record<string,
   }));
 }
 
-function extractDeepForensicReportFromAdminJob(
+export function extractDeepForensicReportFromAdminJob(
   job: ForensicCheckJob | null | undefined,
   subjectAddress: string
 ): DeepAddressForensicReport | null {
@@ -992,6 +995,7 @@ function extractDeepForensicReportFromAdminJob(
     operationalFlowProfiles: normalizeDeepProfilesWithFeatures(result.operationalFlowProfiles) as DeepAddressForensicReport["operationalFlowProfiles"],
     walletRoleProfiles: normalizeDeepWalletRoleProfiles(result.walletRoleProfiles) as DeepAddressForensicReport["walletRoleProfiles"],
     extendedProvenanceProfiles: normalizeDeepExtendedProvenanceProfiles(result.extendedProvenanceProfiles, subjectAddress) as DeepAddressForensicReport["extendedProvenanceProfiles"],
+    ...normalizePersistedDeepFirstHopEvidence(result),
     coverage: (isRecord(result.coverage) ? result.coverage : {}) as DeepAddressForensicReport["coverage"],
     coverageDebug: (isRecord(result.coverageDebug) ? result.coverageDebug : {}) as DeepAddressForensicReport["coverageDebug"]
   };

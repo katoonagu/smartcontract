@@ -5,7 +5,10 @@ import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck"
 import { mergeContractSafetyContext, type SmartContractCheckReport } from "../check/smartContractCheck";
 import { loadTheftReportTransfer } from "../check/theftReportTransaction";
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
-import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  type DeepAddressForensicReport
+} from "../check/deepForensicCheck";
 import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
 import {
   extractUsdtTransferDisplayContext,
@@ -2106,6 +2109,7 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     operationalFlowProfiles: optionalArrayField(job.resultJson, "operationalFlowProfiles") as DeepAddressForensicReport["operationalFlowProfiles"],
     walletRoleProfiles: optionalArrayField(job.resultJson, "walletRoleProfiles") as DeepAddressForensicReport["walletRoleProfiles"],
     extendedProvenanceProfiles: optionalArrayField(job.resultJson, "extendedProvenanceProfiles") as DeepAddressForensicReport["extendedProvenanceProfiles"],
+    ...normalizePersistedDeepFirstHopEvidence(job.resultJson),
     coverage: job.resultJson.coverage as DeepAddressForensicReport["coverage"],
     coverageDebug: job.resultJson.coverageDebug as DeepAddressForensicReport["coverageDebug"]
   };

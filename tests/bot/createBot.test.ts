@@ -1280,6 +1280,110 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
   };
 }
 
+function persistedFirstHopEvidenceForTest() {
+  const counterpartyAddress = `T${"9".repeat(33)}`;
+  const timelineEvent = {
+    eventKind: "added" as const,
+    occurredAt: "2026-05-10T00:00:00.000Z",
+    txHash: "tx-blacklist-added",
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    blockNumber: 100,
+    logIndex: 2,
+    verification: "verified_contract_log" as const
+  };
+  const firstHopBlacklistFacts = [{
+    counterpartyAddress,
+    direction: "inbound" as const,
+    evidenceKind: "usdt_blacklist" as const,
+    evidenceAuthority: "official_contract" as const,
+    statusAtCheck: "active" as const,
+    temporalRelation: "active_at_transfer" as const,
+    effectiveAt: timelineEvent.occurredAt,
+    effectiveTxHash: timelineEvent.txHash,
+    checkedAt: "2026-05-24T00:00:00.000Z",
+    principalAmountRaw: "10000000000",
+    principalTxCount: 1,
+    directionalPrincipalShare: 0.75,
+    shareSemantics: "exact" as const,
+    transferTxHashes: ["tx-direct-in"],
+    beforeEffectiveAmountRaw: "0",
+    beforeEffectiveTxCount: 0,
+    activeAmountRaw: "10000000000",
+    activeTxCount: 1,
+    unknownTimingAmountRaw: "0",
+    unknownTimingTxCount: 0,
+    directTransferCoverage: "complete" as const,
+    timelineCoverage: "complete" as const,
+    timelineEvents: [timelineEvent]
+  }];
+  const firstHopLabelFacts = [{
+    counterpartyAddress,
+    direction: "inbound" as const,
+    labelCode: "phishing" as const,
+    evidenceAuthority: "exact_internal" as const,
+    recordedAt: "2026-05-01T00:00:00.000Z",
+    effectiveAt: null,
+    principalAmountRaw: "10000000000",
+    principalTxCount: 1,
+    directionalPrincipalShare: 0.75,
+    shareSemantics: "exact" as const,
+    transferTxHashes: ["tx-direct-in"],
+    linkedToSelectedProvenance: false
+  }];
+  const firstHopBlacklistCoverage = {
+    requiredForDecision: true,
+    scope: "all_time" as const,
+    windowStart: null,
+    windowEnd: null,
+    directPrincipalTransferCoverage: "complete" as const,
+    materialCounterpartyCount: 1,
+    checkedMaterialCounterpartyCount: 1,
+    failedMaterialCounterpartyCount: 0,
+    uncheckedMaterialCounterpartyCount: 0,
+    blacklistCheckCoverage: "complete" as const,
+    incompleteReason: null,
+    confirmedAdverseFactCount: 1,
+    completeTimelineFactCount: 1,
+    partialTimelineFactCount: 0
+  };
+  const directHardEvidenceSnapshots = [{
+    address: counterpartyAddress,
+    labels: [{
+      address: counterpartyAddress,
+      label: "phishing",
+      source: "service_admin",
+      createdByTelegramId: "1",
+      createdAt: "2026-05-01T00:00:00.000Z"
+    }],
+    classification: null,
+    usdtRestriction: {
+      subjectAddress: counterpartyAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: true,
+      balanceRaw: "0",
+      checkedAt: "2026-05-24T00:00:00.000Z",
+      evidenceStrength: "exact_contract_state",
+      blacklistEventTxHash: timelineEvent.txHash,
+      blacklistEventTimestamp: timelineEvent.occurredAt,
+      blacklistEventBlock: 100,
+      blacklistTimeline: { events: [timelineEvent], pagination: "complete", failureReason: null },
+      methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+    },
+    evidenceStatus: "live_checked",
+    hasHardEvidence: true,
+    reasons: ["label:phishing", "usdt_blacklist"]
+  }];
+  return {
+    firstHopBlacklistFacts,
+    firstHopLabelFacts,
+    firstHopBlacklistCoverage,
+    directHardEvidenceSnapshots
+  };
+}
+
 function formatUnifiedAddressFinalReportForTest(input: {
   address: string;
   whereReport: WhereIsMoneyReport;
@@ -5225,6 +5329,39 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(malformedHardEvidenceReport?.assetContinuationProfiles).toEqual([]);
     expect(extractDeepForensicReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
+  });
+
+  it("extracts validated persisted first-hop evidence without dropping timeline fields", () => {
+    const evidence = persistedFirstHopEvidenceForTest();
+    const resultJson = {
+      ...persistedDeepResultJsonForTest(deepReportForTest()),
+      ...evidence,
+      firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }],
+      firstHopLabelFacts: [...evidence.firstHopLabelFacts, { principalAmountRaw: 100 }],
+      directHardEvidenceSnapshots: [...evidence.directHardEvidenceSnapshots, { address: 123 }]
+    };
+    const report = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson
+    }), walletAddress);
+
+    expect(report?.firstHopBlacklistFacts).toEqual(evidence.firstHopBlacklistFacts);
+    expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
+    expect(report?.firstHopBlacklistCoverage).toEqual(evidence.firstHopBlacklistCoverage);
+    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots);
+  });
+
+  it("keeps first-hop evidence absent for legacy persisted Deep reports", () => {
+    const report = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReportForTest())
+    }), walletAddress);
+
+    expect(report).not.toBeNull();
+    expect(report?.firstHopBlacklistFacts).toBeUndefined();
+    expect(report?.firstHopLabelFacts).toBeUndefined();
+    expect(report?.firstHopBlacklistCoverage).toBeUndefined();
+    expect(report?.directHardEvidenceSnapshots).toBeUndefined();
   });
 
   it("formats where delivery with matching persisted deep context without competing behavior score", () => {

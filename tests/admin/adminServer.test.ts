@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { adminConsoleHtml } from "../../src/admin/adminConsole";
+import * as adminServerModule from "../../src/admin/adminServer";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
 import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositories";
 
@@ -56,6 +57,97 @@ function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
     createdAt: new Date("2026-07-08T09:00:00.000Z"),
     updatedAt: new Date("2026-07-08T10:00:00.000Z"),
     ...overrides
+  };
+}
+
+function adminFirstHopEvidenceForTest() {
+  const address = "TAdminFirstHop1111111111111111111111";
+  const timelineEvent = {
+    eventKind: "added",
+    occurredAt: "2026-05-10T00:00:00.000Z",
+    txHash: "tx-admin-added",
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    blockNumber: 100,
+    logIndex: 2,
+    verification: "verified_contract_log"
+  };
+  return {
+    firstHopBlacklistFacts: [{
+      counterpartyAddress: address,
+      direction: "outbound",
+      evidenceKind: "usdt_blacklist",
+      evidenceAuthority: "official_contract",
+      statusAtCheck: "active",
+      temporalRelation: "became_active_after",
+      effectiveAt: timelineEvent.occurredAt,
+      effectiveTxHash: timelineEvent.txHash,
+      checkedAt: "2026-06-01T01:00:00.000Z",
+      principalAmountRaw: "12000000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable",
+      transferTxHashes: ["tx-admin-direct"],
+      beforeEffectiveAmountRaw: "12000000000",
+      beforeEffectiveTxCount: 1,
+      activeAmountRaw: "0",
+      activeTxCount: 0,
+      unknownTimingAmountRaw: "0",
+      unknownTimingTxCount: 0,
+      directTransferCoverage: "partial",
+      timelineCoverage: "complete",
+      timelineEvents: [timelineEvent]
+    }],
+    firstHopLabelFacts: [{
+      counterpartyAddress: address,
+      direction: "outbound",
+      labelCode: "phishing",
+      evidenceAuthority: "exact_internal",
+      recordedAt: "2026-05-01T00:00:00.000Z",
+      effectiveAt: null,
+      principalAmountRaw: "12000000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable",
+      transferTxHashes: ["tx-admin-direct"],
+      linkedToSelectedProvenance: false
+    }],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: "2026-06-01T00:00:00.000Z",
+      windowEnd: "2026-06-01T01:00:00.000Z",
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 1,
+      checkedMaterialCounterpartyCount: 1,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: "Direct principal transfer history is partial.",
+      confirmedAdverseFactCount: 1,
+      completeTimelineFactCount: 1,
+      partialTimelineFactCount: 0
+    },
+    directHardEvidenceSnapshots: [{
+      address,
+      labels: [],
+      classification: null,
+      usdtRestriction: {
+        subjectAddress: address,
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        tokenSymbol: "USDT",
+        tokenStandard: "TRC20",
+        decimals: 6,
+        isBlacklisted: true,
+        balanceRaw: "0",
+        checkedAt: "2026-06-01T01:00:00.000Z",
+        evidenceStrength: "exact_contract_state",
+        blacklistTimeline: { events: [timelineEvent], pagination: "complete", failureReason: null },
+        methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+      },
+      evidenceStatus: "live_checked",
+      hasHardEvidence: true,
+      reasons: ["usdt_blacklist"]
+    }]
   };
 }
 
@@ -238,6 +330,44 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
+  it("extracts validated persisted first-hop evidence for Admin without dropping timeline fields", () => {
+    const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
+    expect(extractor).toBeTypeOf("function");
+    if (typeof extractor !== "function") return;
+    const evidence = adminFirstHopEvidenceForTest();
+    const report = extractor(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        ...evidence,
+        firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }],
+        firstHopLabelFacts: [...evidence.firstHopLabelFacts, { principalAmountRaw: 12_000_000_000 }],
+        directHardEvidenceSnapshots: [...evidence.directHardEvidenceSnapshots, { address: false }]
+      }
+    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+
+    expect(report?.firstHopBlacklistFacts).toEqual(evidence.firstHopBlacklistFacts);
+    expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
+    expect(report?.firstHopBlacklistCoverage).toEqual(evidence.firstHopBlacklistCoverage);
+    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots);
+  });
+
+  it("keeps first-hop evidence absent when Admin extracts a legacy Deep payload", () => {
+    const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
+    expect(extractor).toBeTypeOf("function");
+    if (typeof extractor !== "function") return;
+    const report = extractor(job({
+      kind: "address_deep_check",
+      resultJson: { subjectAddress: "TSubject111111111111111111111111111111" }
+    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+
+    expect(report).not.toBeNull();
+    expect(report).not.toHaveProperty("firstHopBlacklistFacts");
+    expect(report).not.toHaveProperty("firstHopLabelFacts");
+    expect(report).not.toHaveProperty("firstHopBlacklistCoverage");
+    expect(report).not.toHaveProperty("directHardEvidenceSnapshots");
+  });
+
   it("redirects root to the forensics console", async () => {
     const server = await start();
 
