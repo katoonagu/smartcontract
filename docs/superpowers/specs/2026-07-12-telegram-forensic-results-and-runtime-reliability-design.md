@@ -2,12 +2,14 @@
 
 ## Status
 
-Approved in conversation on 2026-07-12. This document specifies the product
-behavior to implement. It does not describe behavior that is already deployed.
+The base design was approved in conversation on 2026-07-12. The active-USDT-
+approval amendment below is awaiting final review. This document specifies the
+product behavior to implement. It does not describe behavior that is already
+deployed.
 
 ## Problem
 
-Fresh Telegram checks exposed six related defects:
+Fresh Telegram checks exposed nine related defects:
 
 1. Final messages do not consistently name the checked wallet, so adjacent
    results are easy to mix up.
@@ -24,6 +26,16 @@ Fresh Telegram checks exposed six related defects:
    context message and no final result.
 6. Telegram updates are handled sequentially while some handlers wait for
    TronScan or dashboard refreshes. This makes buttons and sections feel slow.
+7. Approval Guard treats a provider name such as `VerifyAccount` as benign
+   metadata before it evaluates the exact Verify20 fingerprint and active
+   allowance. This produced `35/100 ACCEPTABLE` for a live unlimited approval
+   to a mass-debit contract.
+8. `wallet_approvals.current_allowance_raw` currently mirrors the last observed
+   Approval event. It is not refreshed from `allowance(owner, spender)` and can
+   therefore present an old permission as current.
+9. Telegram displays TRON transaction-envelope `raw_data.expiration` as if the
+   USDT approval itself expired. That timestamp only limits when the signed
+   transaction may be packed; it does not revoke a confirmed allowance.
 
 The copy also needs restrained visual structure, plain Russian explanations,
 and clickable TronScan addresses.
@@ -49,6 +61,28 @@ The design is grounded in saved jobs from 2026-07-11:
   `e996732b-5ac9-4d16-b5ae-24da4d0fa192` remained queued in
   `waiting_for_targeted_index` after all 13 candidate-window waits became
   `ready` and their matching index states became `complete`.
+- `TNAraW3cWKETcRz9p6obg7SzeiMzH2Z9i1`: direct calls to the official USDT
+  contract on 2026-07-12 returned the maximum `uint256` allowance for both
+  `TFagrFLKwcuRvXobE9TmQxdAM7BEjvnXzK` and
+  `TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s`. The wallet balance was
+  `4,084.665 USDT`.
+  - [`TFagr…nXzK`](https://tronscan.org/#/address/TFagrFLKwcuRvXobE9TmQxdAM7BEjvnXzK)
+    is the verified `VerifyAccount` contract with the exact four selectors
+    required by the existing Verify20 fingerprint. Its history contains 309
+    `Verify20` calls, 241 source wallets, and 16 receivers. The checked wallet
+    was never a `Verify20` source, so no debit from it was found. The approval
+    transaction is
+    [`fde8…3d1`](https://tronscan.org/#/transaction/fde8e8925a5b0d65050bbfe102c21c79b508087113f955dd51f25514c2f823d1).
+  - The contract creator is `TSq1…pQkC`, which also calls `Verify20`. It sent
+    one BTTOLD to the checked wallet 12 seconds before the unlimited approval.
+    This is a prepared sequence, but it does not prove common ownership.
+  - [`TPwez…Et5s`](https://tronscan.org/#/address/TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s)
+    is Bridgers. The wallet
+    [approved it](https://tronscan.org/#/transaction/76e847b4c3a1dffdd3c9b26ef70d9265e31bdba546f9a31a60b2a1f59dc4a580)
+    and, 66 seconds later,
+    [called `swap`](https://tronscan.org/#/transaction/c16e27c144732bee70de72c88f5e3e501ac2bd5bbcdad66f6edac5b66cd31743)
+    itself for `91.103009 USDT`. This is exact service-session context rather
+    than a Verify20/drainer pattern.
 
 ## Goals
 
@@ -62,6 +96,10 @@ The design is grounded in saved jobs from 2026-07-11:
 6. Keep normal button navigation responsive without adding a concurrency
    dependency.
 7. Add a calibrated USDD PSM AML signal based on share, direction, and mode.
+8. Distinguish active wallet-safety exposure from dirty-funds provenance.
+9. Verify current USDT allowance on-chain and explain dangerous and ordinary
+   service approvals differently.
+10. Stop presenting transaction-envelope expiration as approval expiration.
 
 ## Non-Goals
 
@@ -71,6 +109,9 @@ The design is grounded in saved jobs from 2026-07-11:
 - Do not redesign the Admin console in this change.
 - Do not claim that USDD PSM proves laundering.
 - Do not treat coverage limitations as risk evidence.
+- Do not call an active dangerous approval proof of stolen or dirty funds.
+- Do not treat a provider name, one method name, or one selector as an exact
+  Verify20 fingerprint.
 
 ## Evidence And Scoring Contract
 
@@ -127,6 +168,170 @@ Example:
 - Partial unrelated coverage does not materially reduce a score already
   anchored by exact hard or applicable policy evidence. The limitation remains
   visible separately.
+
+## Active USDT Approval Safety
+
+### Separate Safety From Provenance
+
+An approval answers whether a contract can spend the wallet's USDT. It does not
+by itself answer where the wallet's money came from. The product therefore
+keeps two conclusions separate:
+
+- `Безопасность кошелька`: can the active approval put present or future USDT
+  at risk?
+- final AML/deposit decision: is there adverse provenance, sanctions evidence,
+  an exact debit chain, or another eligible score driver?
+
+Approval Guard must not show the exchange labels `ACCEPTABLE`, `REVIEW`, or
+`DECLINE` as its primary action. It shows a wallet-safety level and a concrete
+action. A critical active approval can pause work with the wallet without
+claiming that its funds are stolen.
+
+### Current-Allowance Truth
+
+The latest Approval event is historical evidence, not proof that the allowance
+is still active. The authoritative current value is the result of
+`allowance(owner, spender)` called directly on the official TRON USDT contract.
+
+Reuse `wallet_approvals.current_allowance_raw`, but populate it from that
+constant call. Persist the minimum freshness metadata:
+
+- `allowance_checked_at`;
+- `allowance_check_status = confirmed | failed | stale`.
+
+Refresh current allowance:
+
+- after a confirmed approval or revocation event;
+- before a new Approval Guard result is finalized;
+- in the background when Safety is opened with stale data;
+- periodically for stored active allowances so a later revocation is detected.
+
+Normal tab navigation remains cache-first. A provider or full-node failure must
+not block the Telegram menu. If the direct call fails, say that the last
+unlimited approval was observed but its current state could not be confirmed.
+Do not call it active until a successful constant call does so.
+
+### Verify20 Safety Policy
+
+For the spender itself, the exact Verify20 fingerprint retains the existing
+four-selector requirement and trusted-service guard:
+
+- `Verify20(address,address,address,uint256)`;
+- `Verify10(address,uint256)`;
+- `withdrawAllTrxTo(address)`;
+- `transferOwnership(address)`.
+
+For the wallet that granted permission, use these safety outcomes:
+
+| Evidence | Wallet-safety result |
+| --- | --- |
+| exact Verify20 fingerprint + currently active unlimited USDT allowance | `CRITICAL 90/100` |
+| exact Verify20 fingerprint + active finite allowance of at least 100 USDT | `HIGH 75/100` |
+| exact Verify20 fingerprint + active finite allowance below 100 USDT | `MEDIUM 45/100` |
+| exact Verify20 fingerprint + confirmed zero allowance | historical context only, no active-threat score |
+| one selector, a method name, or a free-text/provider label only | review context, capped at `35/100` |
+| exact approve → `transferFrom` → receiver debit from this wallet | exact drain evidence, `CRITICAL 95/100` |
+
+The wallet's current USDT balance changes the urgency and displayed amount at
+risk, not the evidence class. An unlimited active approval remains dangerous
+with a zero balance because future deposits may also be spent.
+
+Campaign statistics strengthen the explanation but do not replace the exact
+fingerprint. Pre-approval funding, token dust, resource delegation, and common
+caller relationships are orchestration context. They may support two
+plausible readings — a controlled/test wallet or a prepared phishing sequence —
+but cannot prove a shared private key or common ownership.
+
+No observed debit must be stated plainly. It prevents the result from claiming
+theft or applying the exact-drain `95/100` floor; it does not make an active
+unlimited permission safe.
+
+Canonical TNAra-shaped copy:
+
+```text
+🔴 Критическая угроза кошельку — 90/100
+Кошелёк: TNAra…Z9i1
+
+Что нашли
+Кошелёк дал VerifyAccount безлимитный доступ к USDT. У контракта подтверждён
+Verify20-шаблон массовых списаний: 309 вызовов, 241 кошелёк-источник и
+16 получателей.
+
+Что это значит
+Разрешение всё ещё активно. Контракт может списать весь баланс — сейчас
+4 084,665 USDT. Списаний с этого кошелька не найдено.
+
+Что делать
+Срочно отозвать разрешение. До повторной проверки с allowance = 0 не пополнять
+кошелёк и не проводить операцию.
+
+Дополнительно
+За 12 секунд до разрешения создатель контракта отправил кошельку 1 BTTOLD.
+Последовательность выглядит подготовленной: это может быть тестовый кошелёк
+оператора или фишинговый сценарий. Общий владелец не доказан.
+```
+
+In rendered Telegram, the wallet, spender, and approval transaction are
+shortened clickable TronScan links. The copy says `Verify20-шаблон` because the
+fingerprint is exact; it does not expose selector signatures to the user.
+
+### Known-Service Session Policy
+
+A known service tag alone is insufficient. Lower drainer risk only when the
+same wallet performed a successful nearby service action and the amount and
+route match.
+
+The TNAra-shaped Bridgers fixture is the canonical positive case:
+
+- the wallet granted Bridgers access to USDT;
+- 66 seconds later the wallet itself called `swap`;
+- the call moved exactly `91.103009 USDT` through Bridgers;
+- no Verify20 fingerprint or debit to an unrelated collector was found.
+
+This remains `LOW 10/100` wallet-safety risk and does not increase the AML
+score. Because the allowance is still unlimited, Safety still gives a short
+hygiene action: revoke the permission if the bridge is no longer needed. A
+confirmed zero allowance reduces this safety result to `0/100`.
+
+Canonical copy:
+
+```text
+🟢 Низкий риск
+Кошелёк: TNAra…Z9i1
+
+Что нашли
+Кошелёк дал Bridgers доступ к USDT и через 66 секунд сам обменял
+91,103009 USDT через мост.
+
+Вывод
+Разрешение использовали для конкретного обмена. Признаков Verify20 или
+дрейнера нет. Доступ остаётся безлимитным — отзовите его, если мост больше
+не нужен.
+```
+
+### Approval Expiration Semantics
+
+Official TRON documentation defines `raw_data.expiration` as the deadline after
+which a transaction can no longer be packed. Once a USDT `approve` or
+`increaseApproval` transaction is confirmed, this timestamp does not expire
+the resulting allowance.
+
+Primary reference:
+
+- <https://developers.tron.network/docs/tron-protocol-transaction>
+
+Required changes:
+
+- rename internal `expirationAt` to `transactionExpirationAt` where feasible;
+- keep it only as signing/transaction diagnostic metadata;
+- remove user-facing `Истекает` and `Expires` lines from approval messages;
+- remove `approval_extended_expiration` as an approval-risk reason;
+- show `Активно на <allowance_checked_at>` only after a successful direct
+  allowance call;
+- show `Отозвано` only when the current allowance is confirmed as zero.
+
+The two historical dates shown for the TNAra approvals were transaction
+deadlines and must never again be presented as approval expiry dates.
 
 ## USDD PSM Policy
 
@@ -431,7 +636,29 @@ Implementation follows test-first development. Required failing tests include:
 16. Delivery retry records attempts and does not duplicate a sent fingerprint.
 17. Normal navigation does not call TronScan; explicit refresh does.
 18. Check callbacks return before the slow check promise completes.
-19. Existing Fast, Deep, Where, Incoming, GasFree, blacklist, and Telegram
+19. A TNAra-shaped exact Verify20 fixture with a confirmed live unlimited
+    allowance produces `CRITICAL 90/100` wallet-safety risk without claiming a
+    debit or theft.
+20. The same fixture includes the confirmed current USDT balance as the amount
+    at risk and says that no debit from the wallet was found.
+21. Campaign counts and the 12-second BTTOLD sequence appear as supporting
+    context, never as proof of common ownership.
+22. A single Verify20 selector or provider name remains capped at review.
+23. A confirmed zero allowance removes the active-threat score while retaining
+    historical context.
+24. A direct allowance failure produces `current state not confirmed`, not an
+    active or revoked claim.
+25. A Bridgers fixture with approval, same-wallet swap after 66 seconds, and an
+    exact `91.103009 USDT` route produces `LOW 10/100` wallet-safety risk and
+    adds no AML score.
+26. A service tag without same-wallet route and amount continuity does not
+    receive the service-session dampener.
+27. Approval Telegram messages never render transaction-envelope expiration as
+    `Истекает` or `Expires`.
+28. Transaction-envelope expiration no longer contributes
+    `approval_extended_expiration` risk.
+29. Existing Fast, Deep, Where, Incoming, Approval Guard, GasFree, blacklist,
+    and Telegram
     regression suites remain green.
 
 ## Documentation Updates During Implementation
@@ -440,6 +667,7 @@ Update these current knowledge pages in the implementation commit:
 
 - `docs/knowledge/03-job-lifecycle.md`
 - `docs/knowledge/05-where-is-money-and-incoming.md`
+- `docs/knowledge/06-deepcheck.md`
 - `docs/knowledge/07-risk-scoring-matrix.md`
 - `docs/knowledge/08-admin-and-bot-ux.md`
 - `docs/knowledge/09-current-decisions.md`
