@@ -43,7 +43,7 @@ type MutableDirectPrincipalCounterpartyGroup = {
 };
 
 function normalizedAddress(address: string): string {
-  return address.trim().toLowerCase();
+  return address.trim();
 }
 
 function principalAmountRaw(amountRaw: string): bigint {
@@ -129,15 +129,24 @@ export function selectDirectPrincipalLookupAddresses(
   groups: DirectPrincipalCounterpartyGroup[],
   liveLimit: number
 ): string[] {
-  const combinedByAddress = new Map<string, { address: string; principalAmountRaw: bigint }>();
+  const combinedByAddress = new Map<string, {
+    address: string;
+    principalAmountRaw: bigint;
+    hasMaterial: boolean;
+  }>();
   for (const group of groups) {
-    if (!group.material) continue;
     const key = normalizedAddress(group.address);
-    const combined = combinedByAddress.get(key) ?? { address: group.address.trim(), principalAmountRaw: 0n };
+    const combined = combinedByAddress.get(key) ?? {
+      address: key,
+      principalAmountRaw: 0n,
+      hasMaterial: false
+    };
     combined.principalAmountRaw += group.principalAmountRaw;
+    combined.hasMaterial ||= group.material;
     combinedByAddress.set(key, combined);
   }
   return [...combinedByAddress.values()]
+    .filter((item) => item.hasMaterial)
     .sort((left, right) => compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw))
     .slice(0, Math.max(0, Math.trunc(liveLimit)))
     .map((item) => item.address);

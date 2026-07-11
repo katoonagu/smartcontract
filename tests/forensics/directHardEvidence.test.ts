@@ -192,6 +192,36 @@ describe("direct hard evidence helper", () => {
     ]);
   });
 
+  it("sorts material lookup addresses by principal combined across material and non-material directions", () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [
+        edge({ id: "1", fromAddress: "TBoth", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+        edge({ id: "2", fromAddress: SUBJECT, toAddress: "TBoth", amountRaw: 9_000_000000n }),
+        edge({ id: "3", fromAddress: "TMaterialOnly", toAddress: SUBJECT, amountRaw: 15_000_000000n })
+      ]
+    });
+
+    expect(groups.find((group) => group.direction === "outbound")?.material).toBe(false);
+    expect(selectDirectPrincipalLookupAddresses(groups, 2)).toEqual(["TBoth", "TMaterialOnly"]);
+  });
+
+  it("preserves case-significant TRON addresses when grouping, matching the subject, and selecting lookups", () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [
+        edge({ id: "1", fromAddress: "TCase", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+        edge({ id: "2", fromAddress: "Tcase", toAddress: SUBJECT, amountRaw: 11_000_000000n }),
+        edge({ id: "3", fromAddress: "Tsubject", toAddress: "TUnrelated", amountRaw: 20_000_000000n })
+      ]
+    });
+
+    expect(groups.map((group) => group.address)).toEqual(["Tcase", "TCase"]);
+    expect(selectDirectPrincipalLookupAddresses(groups, 2)).toEqual(["Tcase", "TCase"]);
+  });
+
   it("runs live checks with bounded concurrency and liveLimit", async () => {
     let active = 0;
     let maxActive = 0;
