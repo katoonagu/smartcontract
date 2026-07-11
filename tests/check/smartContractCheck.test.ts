@@ -318,6 +318,98 @@ describe("smart contract check", () => {
     expect(partial.riskScore).toBe(35);
   });
 
+  it("never exempts exact Verify20 from a verified display name without an authoritative tag", () => {
+    const profile = exactVerify20Profile({
+      isVerified: true,
+      verified: true,
+      sourceStatus: "available",
+      lowMetadata: false,
+      activityLevel: "high",
+      serviceTag: null,
+      publicTag: null,
+      publicTagDesc: null,
+      providerTags: [],
+      publicTags: []
+    });
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Router", tag: null, verified: true }),
+      contractProfile: profile,
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      serviceLabel: null,
+      decision: "DECLINE",
+      riskScore: 85,
+      verify20Fingerprint: { matched: true, blockedByTrustedService: false }
+    });
+
+    const persistedExemption = JSON.parse(JSON.stringify(report));
+    persistedExemption.serviceLabel = "Router";
+    persistedExemption.decision = "ACCEPTABLE";
+    persistedExemption.riskScore = 10;
+    persistedExemption.riskLevel = "LOW";
+    persistedExemption.verify20Fingerprint = {
+      matched: false,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: true,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    };
+    expect(normalizeSmartContractCheckReport(persistedExemption, subjectAddress)).toBeNull();
+  });
+
+  it("preserves the Verify20 exemption for an authoritative verified metadata tag", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Display Name", tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: null,
+        publicTag: null,
+        publicTagDesc: null,
+        providerTags: [],
+        publicTags: []
+      }),
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      serviceLabel: "Router",
+      decision: "ACCEPTABLE",
+      riskScore: 10,
+      verify20Fingerprint: { matched: false, blockedByTrustedService: true }
+    });
+    expect(normalizeSmartContractCheckReport(JSON.parse(JSON.stringify(report)), subjectAddress)).not.toBeNull();
+  });
+
+  it("does not treat a verified display name as a generic standalone service identity", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Router", tag: null, verified: true }),
+      contractProfile: contractProfile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: null,
+        providerTags: [],
+        publicTags: []
+      }),
+      relatedApprovals: []
+    });
+
+    expect(report.serviceLabel).toBeNull();
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBe(35);
+  });
+
   it("rejects persisted reports whose matched fingerprint contradicts their profile", () => {
     const report = evaluateSmartContractAddress({
       subjectAddress,

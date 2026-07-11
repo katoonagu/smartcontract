@@ -106,10 +106,10 @@ function addReason(reasons: string[], code: string): void {
 }
 
 function serviceLabelFromMetadata(metadata: AddressMetadata): string | null {
-  const text = [metadata.tag, metadata.name].filter(Boolean).join(" ").toLowerCase();
+  const text = metadata.tag?.toLowerCase() ?? "";
   if (!text) return null;
   if (SERVICE_KEYWORDS.test(text)) {
-    return metadata.tag ?? metadata.name;
+    return metadata.tag;
   }
   return null;
 }
