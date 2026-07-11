@@ -3155,6 +3155,51 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Detailed address report");
   });
 
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+    "preserves a %s policy stored Where outcome in normal check_status",
+    async (scoringPolicyVersion) => {
+      const legacyReport = whereIsMoneyReportForTest({
+        scoringPolicyVersion,
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved",
+        decision: "REVIEW",
+        userDecision: "REVIEW",
+        internalDecision: "REVIEW",
+        riskScore: 45,
+        assessment: {
+          ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45 }),
+          scoreValid: false,
+          scoreBlockedReason: "insufficient_coverage",
+          technicalStatus: "provider_cap_unresolved",
+          decision: "REVIEW",
+          riskScore: 45
+        }
+      });
+      if (scoringPolicyVersion === undefined) delete legacyReport.scoringPolicyVersion;
+      const { bot, calls } = await createSmokeBot({
+        getForensicCheckJob: async (id) => whereIsMoneyJobForTest({
+          id,
+          resultJson: {
+            ...(scoringPolicyVersion === undefined ? {} : { scoringPolicyVersion }),
+            subjectAddress: legacyReport.subjectAddress,
+            whereIsMoneyReport: legacyReport
+          }
+        })
+      });
+
+      await bot.handleUpdate(messageUpdate("/check_status where-job-legacy", userId));
+
+      const text = lastPlainText(calls);
+      expect(text).toContain("Legacy result");
+      expect(text).toContain("REVIEW");
+      expect(text).toContain("45/100");
+      expect(text).toContain("run a fresh check");
+      expect(text).not.toContain("NO_FINAL_DECISION");
+      expect(text).not.toContain("Where-is-money — support/debug");
+    }
+  );
+
   it("returns a detailed address report for a where-is-money job when requested by a Russian user", async () => {
     const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
     const deepReport = deepReportForTest();
@@ -4127,6 +4172,36 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).not.toContain("95/100");
+  });
+
+  it("keeps a legacy Where outcome when paired with a current Deep report", () => {
+    const legacyWhere = whereIsMoneyReportForTest({
+      scoringPolicyVersion: "scoring-signal-matrix-v1",
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45
+    });
+    const currentDeep = deepReportForTest({
+      stablecoinRestrictionProfiles: [stablecoinRestrictionProfile({ subjectAddress: walletAddress })]
+    });
+    const currentDeepJob = whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(currentDeep)
+    });
+
+    const text = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest(),
+      legacyWhere,
+      "completed",
+      currentDeepJob,
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Legacy result");
+    expect(text).toContain("REVIEW");
+    expect(text).toContain("45/100");
+    expect(text).not.toContain("90/100");
   });
 
   it("formats Russian selected-anchor coverage without English copy", () => {

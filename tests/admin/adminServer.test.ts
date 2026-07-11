@@ -1803,6 +1803,43 @@ describe("startAdminServer", () => {
     }
   );
 
+  it("keeps a legacy Where outcome when a current Deep job is related", async () => {
+    const legacyReport = whereReportForAdminTest({
+      scoringPolicyVersion: "scoring-signal-matrix-v1",
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45,
+      assessment: { decision: "REVIEW", riskScore: 45, riskBand: "MEDIUM" }
+    });
+    const legacyWhereJob = job({
+      id: "job-legacy-where-current-deep",
+      resultJson: {
+        scoringPolicyVersion: "scoring-signal-matrix-v1",
+        subjectAddress,
+        whereIsMoneyReport: legacyReport
+      }
+    });
+    const currentDeepJob = deepJobForAdminSummaryTest({
+      windowStart: legacyWhereJob.windowStart,
+      windowEnd: legacyWhereJob.windowEnd
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [currentDeepJob],
+      getJob: async (id) => id === legacyWhereJob.id ? legacyWhereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${legacyWhereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+
+    expect(graph.summary).toMatchObject({ decision: "REVIEW", riskScore: 45 });
+    expect(graph.summary.humanSummary.limitations.join(" ")).toMatch(/legacy|fresh check/i);
+    expect(JSON.stringify(graph.summary.humanSummary)).not.toContain("whitebit");
+  });
+
   it("does not overlay a related legacy Where conclusion on a Fast graph", async () => {
     const fastJob = job({
       id: "job-fast-with-legacy-related",
@@ -1997,6 +2034,43 @@ describe("startAdminServer", () => {
 
     expect(humanSummary).not.toContain("Verify20");
     expect(graph.summary.riskScore).not.toBe(85);
+  });
+
+  it("does not reuse persisted direct hard evidence from an unmarked related Deep job", async () => {
+    const whereJob = job({
+      id: "job-current-where-legacy-deep-hard",
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const legacyDeepJob = deepJobForAdminSummaryTest({
+      id: "job-legacy-deep-hard",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd
+    });
+    const persistedHardEvidence = adminFirstHopEvidenceForTest();
+    legacyDeepJob.resultJson = {
+      ...legacyDeepJob.resultJson,
+      ...persistedHardEvidence
+    };
+    delete legacyDeepJob.resultJson.scoringPolicyVersion;
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [legacyDeepJob],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+
+    expect(humanSummary).not.toContain(persistedHardEvidence.firstHopBlacklistFacts[0].counterpartyAddress);
+    expect(humanSummary).not.toMatch(/USDT blacklist|TRC20 USDT blacklist/i);
+    expect(graph.summary.riskScore).not.toBe(90);
   });
 
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {

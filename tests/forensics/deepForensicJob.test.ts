@@ -3835,6 +3835,7 @@ describe("deep forensic job runner", () => {
         observationIds: [],
         lastError: "rate_limited_after_retries",
         resultJson: expect.objectContaining({
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: subject,
           score_valid: false,
           score_blocked_reason: "rate_limited_after_retries",
@@ -4722,11 +4723,13 @@ describe("deep forensic job runner", () => {
           riskScore: 45
         }),
         resultJson: expect.objectContaining({
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: thjSubject,
           score_valid: true,
           score_blocked_reason: null,
           technical_status: "completed",
           whereIsMoneyReport: expect.objectContaining({
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             decision: "REVIEW",
             userDecision: "REVIEW",
             riskScore: 45,
@@ -5802,6 +5805,40 @@ describe("deep forensic job runner", () => {
       })
     ]);
     expect(sentReports[0]?.scoringPolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+  });
+
+  it("marks a resumed ordinary Where terminal provider result with matrix v2", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: {
+          statusReason: "failed_terminal",
+          lastError: "provider unavailable"
+        }
+      }
+    };
+    const completeForensicCheckJob = vi.fn(async () => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    });
+
+    expect(handled).toBe(true);
+    expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      resultJson: expect.objectContaining({
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress: subject,
+        score_valid: false
+      })
+    }));
   });
 
   it("persists JSON-safe first-hop timeline facts and coverage in deep result and progress", async () => {

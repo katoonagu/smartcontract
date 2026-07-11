@@ -4712,6 +4712,15 @@ export function createBot(
       return;
     }
     if (job?.kind === "where_is_money_check" && whereReport) {
+      if (!hasCurrentScoringPolicy(whereReport)) {
+        await sendMessage(ctx, formatLegacyUnifiedAddressFinalReport({
+          address: job.subjectAddress,
+          whereReport,
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale
+        }));
+        return;
+      }
       await sendMessage(ctx, formatWhereIsMoneySupportReport(job, whereReport, job.status === "partial" ? "partial" : "completed", {
         runtimeLabel: config.runtimeInstanceLabel,
         locale

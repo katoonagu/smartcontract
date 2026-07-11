@@ -1708,6 +1708,7 @@ export async function runSingleDeepForensicJobCycle(
           status: "failed",
           progressJson: job.progressJson,
           resultJson: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             subjectAddress: job.subjectAddress,
             ...strictBlockedResultJson(reason)
           },
@@ -1734,6 +1735,7 @@ export async function runSingleDeepForensicJobCycle(
           status: "failed",
           progressJson: job.progressJson,
           resultJson: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             subjectAddress: job.subjectAddress,
             score_valid: false,
             score_blocked_reason: mapped.scoreBlockedReason,
@@ -1935,6 +1937,7 @@ export async function runSingleDeepForensicJobCycle(
         status: "failed",
         progressJson: strictProviderLimitedProgressJson(job.progressJson, reason),
         resultJson: {
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: job.subjectAddress,
           ...strictBlockedResultJson(reason)
         },
@@ -1958,6 +1961,7 @@ export async function runSingleDeepForensicJobCycle(
         status: "failed",
         progressJson,
         resultJson: {
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: job.subjectAddress,
           score_valid: false,
           score_blocked_reason: error.scoreBlockedReason,
@@ -1974,7 +1978,9 @@ export async function runSingleDeepForensicJobCycle(
       id: job.id,
       status: "failed",
       progressJson: job.progressJson,
-      resultJson: {},
+      resultJson: job.kind === "where_is_money_check"
+        ? { scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION }
+        : {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: message
