@@ -56,6 +56,7 @@ export type NarrativeFact = {
   id: string;
   kind: NarrativeFactKind;
   evidenceIds?: string[];
+  relatedFactIds?: string[];
   role?: NarrativeAddressRole | null;
   proofStrength?: "exact" | "strong" | "context" | "limitation";
   priority?: number;
@@ -512,15 +513,15 @@ export function firstHopBlacklistFacts(
       const direction = fact.direction === "inbound"
         ? {
             ru: `Входящий: адрес получил ${amountRu} USDT от контрагента ${address}`,
-            en: `Inbound: the address received ${amountEn} USDT from blacklisted counterparty ${address}`,
+            en: `Inbound: address received ${amountEn} USDT from counterparty ${address}`,
             shareRu: "входящей суммы",
-            shareEn: "of the incoming amount"
+            shareEn: "incoming amount"
           }
         : {
             ru: `Исходящий: адрес отправил ${amountRu} USDT контрагенту ${address}`,
-            en: `Outbound: the address sent ${amountEn} USDT to blacklisted counterparty ${address}`,
+            en: `Outbound: address sent ${amountEn} USDT to counterparty ${address}`,
             shareRu: "исходящей суммы",
-            shareEn: "of the outgoing amount"
+            shareEn: "outgoing amount"
           };
       const share = fact.shareSemantics === "exact" && fact.directionalPrincipalShare !== null
         ? {
@@ -532,14 +533,14 @@ export function firstHopBlacklistFacts(
       const subjectClear = subjectKnownClear
         ? {
             ru: " Сам проверяемый адрес не в чёрном списке.",
-            en: " The checked address itself is not on the blacklist."
+            en: " The checked address itself is not blacklisted."
           }
         : { ru: "", en: "" };
       return narrativeFact(
         `first-hop-blacklist:${fact.direction}:${fact.counterpartyAddress}:${fact.transferTxHashes.slice().sort().join(",")}`,
         "direct_counterparty_blacklist",
         `${direction.ru}${share.ru} (${russianDirectTransferCount(fact.principalTxCount)}). Контрагент сейчас в чёрном списке USDT. ${chronology.ru}${subjectClear.ru}`,
-        `${direction.en}${share.en} (${englishDirectTransferCount(fact.principalTxCount)}). ${chronology.en}${subjectClear.en}`,
+        `${direction.en}${share.en} (${englishDirectTransferCount(fact.principalTxCount)}). The counterparty is currently on the USDT blacklist. ${chronology.en}${subjectClear.en}`,
         null,
         "exact",
         fact.transferTxHashes
@@ -1071,12 +1072,37 @@ export function gasFreeFeeFact(
   return narrativeFact(
     `gasfree-fee:${[...fees.keys()].sort().join(",")}`,
     "gasfree_fee",
-    `GasFree удержал ${formatUsdtRaw(total.toString(), "ru")} USDT перед переводом. Это комиссия сервиса, а не основная сумма перевода.`,
-    `GasFree retained ${formatUsdtRaw(total.toString(), "en")} USDT before the transfer. This is a service fee, not transfer principal.`,
+    `Отдельно GasFree удержал ${formatUsdtRaw(total.toString(), "ru")} USDT комиссии. Она не входит в основную сумму.`,
+    `Separately, GasFree retained a ${formatUsdtRaw(total.toString(), "en")} USDT fee. It is excluded from the principal amount.`,
     null,
     "exact",
     txHashes
   );
+}
+
+function linkGasFreeFeeToDirectFacts(
+  fee: NarrativeFact,
+  facts: NarrativeFact[],
+  profiles: DirectCounterpartyInteractionProfile[]
+): NarrativeFact {
+  const principalSettlementTxHashes = new Set(profiles.flatMap((profile) =>
+    (profile.transfers ?? [])
+      .filter((transfer) =>
+        transfer.economicRole === "principal" && transfer.economicProtocol === "tron_gasfree"
+      )
+      .map((transfer) => transfer.txHash)
+  ));
+  const feeSettlementTxHashes = new Set((fee.evidenceIds ?? [])
+    .filter((txHash) => principalSettlementTxHashes.has(txHash)));
+  if (feeSettlementTxHashes.size === 0) return fee;
+  const relatedFactIds = facts
+    .filter((fact) =>
+      fact.kind === "direct_counterparty_blacklist" &&
+      fact.evidenceIds?.some((txHash) => feeSettlementTxHashes.has(txHash))
+    )
+    .map((fact) => fact.id)
+    .sort(compareLexical);
+  return relatedFactIds.length > 0 ? { ...fee, relatedFactIds } : fee;
 }
 
 function traceHistoryReason(
@@ -1291,7 +1317,7 @@ export function buildWalletNarrativeEvidence(
     boundaryExposureProfiles: input.boundaryExposureProfiles
   }));
   const fee = gasFreeFeeFact(profiles);
-  if (fee) facts.push(fee);
+  if (fee) facts.push(linkGasFreeFeeToDirectFacts(fee, facts, profiles));
 
   const coverageExplanation = input.firstHopBlacklistCoverage
       ? coverageExplanationFor({
@@ -1383,6 +1409,13 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
     ) {
       throw new Error("Wallet narrative fact evidence ids must contain non-empty strings.");
     }
+    if (
+      fact.relatedFactIds !== undefined &&
+      (!Array.isArray(fact.relatedFactIds) ||
+        fact.relatedFactIds.some((id) => typeof id !== "string" || id.length === 0))
+    ) {
+      throw new Error("Wallet narrative related fact ids must contain non-empty strings.");
+    }
   });
   if (input.coverageExplanation === null) return;
   if (!isRecord(input.coverageExplanation)) {
@@ -1463,12 +1496,15 @@ export function selectNarrativeFacts(caseData: WalletNarrativeCase): NarrativeFa
   if (orderedFacts[0]?.kind === "direct_counterparty_blacklist") {
     const primary = orderedFacts[0];
     const rest = orderedFacts.slice(1);
+    const linkedFees = rest.filter((fact) =>
+      fact.kind === "gasfree_fee" && fact.relatedFactIds?.includes(primary.id)
+    );
     orderedFacts = [
       primary,
       ...rest.filter((fact) => factRank[fact.kind] <= factRank.verify20_template),
-      ...rest.filter((fact) => fact.kind === "gasfree_fee"),
+      ...linkedFees,
       ...rest.filter((fact) =>
-        factRank[fact.kind] > factRank.verify20_template && fact.kind !== "gasfree_fee"
+        factRank[fact.kind] > factRank.verify20_template && !linkedFees.includes(fact)
       )
     ];
   }

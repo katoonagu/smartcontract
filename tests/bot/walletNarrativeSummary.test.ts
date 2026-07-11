@@ -615,6 +615,11 @@ describe("formatWalletNarrativeSummary", () => {
       error: /fact evidence ids must contain non-empty strings/
     },
     {
+      name: "empty related fact id",
+      value: { facts: [{ ...primaryFact, relatedFactIds: [""] }] },
+      error: /related fact ids must contain non-empty strings/
+    },
+    {
       name: "coverage object",
       value: { coverageExplanation: [] },
       error: /coverage must be an object or null/
@@ -2234,8 +2239,8 @@ describe("wallet narrative signal catalogue", () => {
       })
     ], [profile]);
 
-    expect(fee?.factTextRu).toMatch(/3 USDT.*комисси.*сервис/i);
-    expect(fee?.factTextEn).toMatch(/3 USDT.*service fee/i);
+    expect(fee?.factTextRu).toBe("Отдельно GasFree удержал 3 USDT комиссии. Она не входит в основную сумму.");
+    expect(fee?.factTextEn).toBe("Separately, GasFree retained a 3 USDT fee. It is excluded from the principal amount.");
     expect(principal?.factTextRu).toContain("1 176 317 USDT");
     expect(principal?.factTextRu).not.toContain("1 176 320");
     expect(`${fee?.factTextRu}\n${fee?.factTextEn}`).not.toMatch(/риск|risk|санкц|blacklist/i);
@@ -2576,6 +2581,13 @@ describe("wallet narrative signal catalogue", () => {
       facts: evidence.facts,
       coverageExplanation: evidence.coverageExplanation
     });
+    const english = formatWalletNarrativeSummary({
+      locale: "en",
+      decision: "DECLINE",
+      score: 90,
+      facts: evidence.facts,
+      coverageExplanation: evidence.coverageExplanation
+    });
 
     expect(evidence.facts.map((fact) => fact.kind)).toEqual([
       "direct_counterparty_blacklist",
@@ -2587,6 +2599,7 @@ describe("wallet narrative signal catalogue", () => {
       TGYT_DIRECT_BLACKLIST_CASE.largePrincipalTxHash
     ]);
     expect(evidence.facts[2]?.evidenceIds).toEqual([TGYT_DIRECT_BLACKLIST_CASE.gasFreeFeeTxHash]);
+    expect(evidence.facts[2]?.relatedFactIds).toEqual([evidence.facts[0]?.id]);
     expect(text).toMatch(/^🔴 90\/100 — критический риск\. Операцию не проводить\./u);
     expect(text).toContain("TWGC…TdTm");
     expect(text).toContain("1 176 317 USDT");
@@ -2594,9 +2607,75 @@ describe("wallet narrative signal catalogue", () => {
     expect(text).toContain("сейчас в чёрном списке USDT");
     expect(text).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
     expect(text).toContain("Сам проверяемый адрес не в чёрном списке");
-    expect(text).toMatch(/GasFree удержал 3 USDT.*комиссия сервиса.*не основная сумма/u);
+    expect(text).toMatch(/Отдельно GasFree удержал 3 USDT комиссии.*не входит в основную сумму/u);
     expect(text.match(/GasFree/gu)).toHaveLength(1);
+    expect(text).not.toMatch(/перед переводом/u);
     expect(text).not.toContain("UsdtOFT");
     expect(text).not.toMatch(/45 с|1 176 320|TGyt.*ч[её]рном списке|risky_counterparty|cross_chain_boundary/iu);
+    expect(english).toMatch(/to counterparty TWGC…TdTm.*The counterparty is currently on the USDT blacklist.*It was listed 2 h 52 m after the 1,176,302 USDT transfer/u);
+    expect(english).not.toMatch(/blacklisted counterparty|before the transfer/u);
+  });
+
+  it("does not promote an unrelated GasFree fee above material bridge context", () => {
+    const profiles = tgytDirectInteractionProfiles();
+    const unrelatedFeeHash = "8".repeat(64);
+    const feeProfile = profiles[1]!;
+    profiles[1] = {
+      ...feeProfile,
+      txHashes: [unrelatedFeeHash],
+      transfers: feeProfile.transfers?.map((transfer) => ({ ...transfer, txHash: unrelatedFeeHash }))
+    };
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: TGYT_DIRECT_BLACKLIST_CASE.subjectAddress,
+      subjectRestriction: tgytSubjectRestriction(),
+      firstHopBlacklistFacts: [tgytFirstHopBlacklistFact()],
+      firstHopBlacklistCoverage: tgytFirstHopCoverage(),
+      directCounterpartyInteractionProfiles: profiles,
+      paths: [tgytBridgePath()],
+      sourcePolicyEvidence: [tgytBridgePolicyEvidence()]
+    });
+    const text = formatWalletNarrativeSummary({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 90,
+      facts: evidence.facts,
+      coverageExplanation: null
+    });
+
+    expect(evidence.facts.map((fact) => fact.kind)).toEqual([
+      "direct_counterparty_blacklist",
+      "bridge_route",
+      "gasfree_fee"
+    ]);
+    expect(evidence.facts[2]?.relatedFactIds).toBeUndefined();
+    expect(text).toContain("UsdtOFT");
+    expect(text).not.toContain("GasFree");
+  });
+
+  it("keeps stronger exact evidence above a linked GasFree fee", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: TGYT_DIRECT_BLACKLIST_CASE.subjectAddress,
+      subjectRestriction: tgytSubjectRestriction(),
+      firstHopBlacklistFacts: [tgytFirstHopBlacklistFact()],
+      firstHopBlacklistCoverage: tgytFirstHopCoverage(),
+      directCounterpartyInteractionProfiles: tgytDirectInteractionProfiles()
+    });
+    const approval: NarrativeFact = {
+      id: "approval-second",
+      kind: "approval_drain",
+      proofStrength: "exact",
+      factTextRu: "Найдена подтверждённая дрейнер-цепочка.",
+      factTextEn: "A confirmed drainer route was found."
+    };
+    const text = formatWalletNarrativeSummary({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 95,
+      facts: [...evidence.facts, approval],
+      coverageExplanation: null
+    });
+
+    expect(text).toContain("подтверждённая дрейнер-цепочка");
+    expect(text).not.toContain("GasFree удержал");
   });
 });

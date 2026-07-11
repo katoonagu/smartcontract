@@ -9510,7 +9510,7 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(fresh).toContain("Контрагент сейчас в чёрном списке USDT");
       expect(fresh).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
       expect(fresh).toContain("Сам проверяемый адрес не в чёрном списке");
-      expect(fresh).toMatch(/GasFree удержал 3 USDT.*комиссия сервиса/u);
+      expect(fresh).toMatch(/Отдельно GasFree удержал 3 USDT комиссии.*не входит в основную сумму/u);
       expect(fresh).not.toMatch(/45 с|1 176 320|UsdtOFT|risky_counterparty|cross_chain_boundary/u);
 
       expect(legacy).toContain("78/100");
@@ -9791,7 +9791,7 @@ describe("bot command and inline UX smoke coverage", () => {
       const detailed = lastPlainText(calls);
 
       expect(normal).toMatch(/^[🟢🟡🟠🔴] \d+\/100 —/u);
-      expect(normal).toContain("blacklisted counterparty");
+      expect(normal).toMatch(/counterparty.*currently on the USDT blacklist/i);
       expect(normal).not.toContain("support/debug");
       expect(detailed).toContain("Detailed address report");
       expect(detailed).toContain("Where Is Money");
