@@ -10,6 +10,7 @@ import type { ManualCheckResult } from "../../src/check/manualCheck";
 import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { Db } from "../../src/storage/db";
 import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
@@ -935,7 +936,7 @@ function lastPlainText(calls: ReplyCall[]): string {
 }
 
 function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
-  return {
+  const value: ForensicCheckJob = {
     id: "where-job-test",
     kind: "where_is_money_check",
     subjectAddress: walletAddress,
@@ -957,6 +958,17 @@ function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): Fore
     completedAt: new Date("2026-05-24T00:01:00.000Z"),
     ...overrides
   };
+  const whereReport = value.resultJson.whereIsMoneyReport;
+  if (
+    typeof whereReport === "object" &&
+    whereReport !== null &&
+    !Array.isArray(whereReport) &&
+    (whereReport as Record<string, unknown>).scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION &&
+    value.resultJson.scoringPolicyVersion === undefined
+  ) {
+    value.resultJson = { ...value.resultJson, scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION };
+  }
+  return value;
 }
 
 function whereRiskBandForTest(score: number): WhereIsMoneyAssessment["riskBand"] {
@@ -1005,6 +1017,7 @@ function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIs
 function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyReport {
   const assessment = overrides.assessment ?? whereAssessmentForTest(overrides);
   return {
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     scoreValid: true,
     scoreBlockedReason: null,
     technicalStatus: "completed",
@@ -1208,6 +1221,7 @@ function stage2WhereReportForTest(terminalBoundary: CrossChainTerminalBoundary, 
 
 function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): DeepAddressForensicReport {
   return {
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     subjectAddress: walletAddress,
     windowStart: new Date("2026-04-24T00:00:00.000Z"),
     windowEnd: new Date("2026-05-24T00:00:00.000Z"),
@@ -1256,6 +1270,7 @@ function assetContinuationProfileForTest(overrides: Partial<AssetContinuationPro
 
 function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Record<string, unknown> {
   return {
+    scoringPolicyVersion: report.scoringPolicyVersion,
     subjectAddress: report.subjectAddress,
     windowStart: report.windowStart.toISOString(),
     windowEnd: report.windowEnd.toISOString(),
@@ -4045,7 +4060,9 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("where_is_money");
   });
 
-  it("renders an unversioned legacy Where result without rescoring it", () => {
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+    "renders a %s policy Where result without rescoring it even when score validity is explicit",
+    (scoringPolicyVersion) => {
     const legacy = whereIsMoneyReportForTest({
       decision: "REVIEW",
       userDecision: "REVIEW",
@@ -4058,8 +4075,11 @@ describe("bot command and inline UX smoke coverage", () => {
         riskBand: "MEDIUM"
       }
     });
-    delete legacy.scoreValid;
-    delete legacy.assessment.scoreValid;
+    if (scoringPolicyVersion === undefined) {
+      delete legacy.scoringPolicyVersion;
+    } else {
+      legacy.scoringPolicyVersion = scoringPolicyVersion;
+    }
 
     const text = formatUnifiedAddressFinalReportForTest({
       address: legacy.subjectAddress,
@@ -4071,6 +4091,42 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("REVIEW");
     expect(text).toContain("45/100");
     expect(text).toContain("run a fresh check");
+    }
+  );
+
+  it("does not reuse an unmarked related Deep hard-evidence report in current scoring", () => {
+    const legacyDeep = deepReportForTest({
+      approvalDrainProvenanceProfiles: [{
+        victimAddress: "TVictim111111111111111111111111111111",
+        approvalTxHash: "tx-approval",
+        drainTxHash: "tx-drain",
+        spenderAddress: "TSpender11111111111111111111111111111",
+        firstReceiverAddress: walletAddress,
+        subjectAddress: walletAddress,
+        hopDepth: 0,
+        amountRaw: "1000000000",
+        amountPreservationRatio: 1,
+        approvalAt: "2026-05-20T09:50:00.000Z",
+        drainAt: "2026-05-20T10:00:00.000Z",
+        pathTxHashes: ["tx-drain"],
+        pathAddresses: [walletAddress],
+        score: 95,
+        evidenceStrength: "exact_approval_and_transfer_from",
+        subjectTokenState: null,
+        victimTokenState: null,
+        features: []
+      }]
+    });
+    delete legacyDeep.scoringPolicyVersion;
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest({ riskScore: 20 }),
+      deepReport: legacyDeep,
+      locale: "en"
+    });
+
+    expect(text).not.toContain("95/100");
   });
 
   it("formats Russian selected-anchor coverage without English copy", () => {
@@ -5457,6 +5513,37 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(whereFirstRu).not.toContain("Жёстких плохих доказательств");
   });
 
+  it("does not reuse Verify20 evidence from an unmarked related Deep job", () => {
+    const legacyDeepResult = persistedDeepResultJsonForTest(deepReportForTest());
+    delete legacyDeepResult.scoringPolicyVersion;
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const whereJob = whereIsMoneyJobForTest({
+      progressJson: {},
+      resultJson: { subjectAddress: walletAddress, whereIsMoneyReport: whereReport }
+    });
+    const legacyDeepJob = whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      progressJson: {
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()))
+        }
+      },
+      resultJson: legacyDeepResult
+    });
+
+    const text = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
+      whereJob,
+      whereReport,
+      "completed",
+      legacyDeepJob,
+      { locale: "en" }
+    ).text);
+
+    expect(text).not.toContain("85/100");
+    expect(text).not.toContain("full Verify20 contract pattern");
+  });
+
   it("does not forge a Verify20 floor from malformed or legacy progress", () => {
     const malformed = JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()));
     malformed.contractProfile.methodMap = {};
@@ -6349,6 +6436,7 @@ describe("bot command and inline UX smoke coverage", () => {
         completedAt: new Date("2026-05-24T00:01:00.000Z")
       },
       {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         scoreValid: true,
         scoreBlockedReason: null,
         technicalStatus: "completed",
@@ -6481,6 +6569,7 @@ describe("bot command and inline UX smoke coverage", () => {
         completedAt: new Date("2026-05-24T00:01:00.000Z")
       },
       {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         scoreValid: true,
         scoreBlockedReason: null,
         technicalStatus: "completed",
@@ -7167,6 +7256,7 @@ describe("bot command and inline UX smoke coverage", () => {
         completedAt: new Date("2026-05-24T00:01:00.000Z")
       },
       {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         scoreValid: true,
         scoreBlockedReason: null,
         technicalStatus: "completed",

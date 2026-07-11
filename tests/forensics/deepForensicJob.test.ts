@@ -7,6 +7,7 @@ import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders
 import { runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
 import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, ForensicRouteEdge, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
@@ -1576,8 +1577,12 @@ describe("deep forensic job runner", () => {
           whereIsMoneyCoverage: whereReport.coverage
         }),
         resultJson: expect.objectContaining({
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport,
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          }),
           contractDrivenReceiverProfile: null,
           contractDrivenTransferProfiles: []
         })
@@ -5781,6 +5786,7 @@ describe("deep forensic job runner", () => {
       })
     ]));
     expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       stablecoinRestrictionProfiles: [
         expect.objectContaining({
           subjectAddress: subject,
@@ -5795,6 +5801,7 @@ describe("deep forensic job runner", () => {
         isBlacklisted: true
       })
     ]);
+    expect(sentReports[0]?.scoringPolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
   it("persists JSON-safe first-hop timeline facts and coverage in deep result and progress", async () => {
@@ -5866,6 +5873,7 @@ describe("deep forensic job runner", () => {
     const completion = completeForensicCheckJob.mock.calls[0]?.[0];
     const serialized = JSON.parse(JSON.stringify(completion));
     expect(serialized.resultJson).toMatchObject({
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       firstHopBlacklistFacts: [expect.objectContaining({
         counterpartyAddress: counterparty,
         direction: "inbound",

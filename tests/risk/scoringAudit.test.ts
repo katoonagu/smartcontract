@@ -125,6 +125,38 @@ describe("scoring audit rows", () => {
     expect(row.policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+    "preserves the stored outcome for a %s top-level marker despite nested matrix v2 fields",
+    (scoringPolicyVersion) => {
+      const row = buildScoringAuditRow(job({
+        kind: "where_is_money_check",
+        resultJson: {
+          ...(scoringPolicyVersion === undefined ? {} : { scoringPolicyVersion }),
+          whereIsMoneyReport: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+            riskScore: 45,
+            userDecision: "REVIEW",
+            matrixScore: {
+              policyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+              matrixDecision: "DECLINE"
+            }
+          },
+          unifiedRiskSummary: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+            finalScore: 90,
+            finalDecision: "DECLINE",
+            matrixDecision: "DECLINE"
+          }
+        }
+      }));
+
+      expect(row.finalScore).toBe(45);
+      expect(row.productionDecision).toBe("REVIEW");
+      expect(row.auditDecision).toBe("REVIEW");
+      expect(row.policyVersion).not.toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+    }
+  );
+
   it("flags hard evidence cases", () => {
     const row = buildScoringAuditRow(job({
       resultJson: {
@@ -273,6 +305,7 @@ describe("scoring audit rows", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         decision: "ACCEPTABLE",
         depositRiskScore: 20,
         unifiedRiskSummary: {

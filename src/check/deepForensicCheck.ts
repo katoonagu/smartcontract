@@ -52,6 +52,7 @@ import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
 import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import type { AddressMetadata } from "../storage/repositories";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
@@ -101,6 +102,7 @@ export type DeepForensicProviderBudgetReport = {
 };
 
 export type DeepAddressForensicReport = AddressExposureReport & {
+  scoringPolicyVersion?: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   runProfile: DeepForensicRunProfile;
   providerBudget: DeepForensicProviderBudgetReport;
   inboundProvenanceProfiles: InboundProvenanceProfile[];
@@ -2523,6 +2525,7 @@ export async function runDeepAddressForensicCheck(
 
   return {
     ...exposureReport,
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     runProfile: input.runProfile ?? "production_full",
     providerBudget: {
       providerCallBudget: input.providerCallBudget ?? null,

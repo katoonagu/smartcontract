@@ -19,6 +19,7 @@ import {
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskClarity";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import {
   buildRiskExplanationSummary,
@@ -1777,6 +1778,13 @@ export function extractWhereIsMoneyReportFromJob(job: ForensicCheckJob | null | 
   const wrappedReport = job.resultJson.whereIsMoneyReport;
   if (!isWhereIsMoneyReport(wrappedReport)) return null;
   if (job.resultJson.subjectAddress !== subjectAddress || wrappedReport.subjectAddress !== subjectAddress) return null;
+  if (
+    wrappedReport.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION &&
+    job.resultJson.scoringPolicyVersion !== SCORING_SIGNAL_MATRIX_POLICY_VERSION
+  ) {
+    const { scoringPolicyVersion: _ignored, ...legacyReport } = wrappedReport;
+    return legacyReport;
+  }
   return wrappedReport;
 }
 
@@ -1886,12 +1894,13 @@ export function formatDeepForensicUserDeliveryReport(
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
+  const currentDeepReport = currentScoringPolicyDeepReport(report);
   return whereReport
     ? formatUnifiedAddressFinalReport({
         address: report.subjectAddress,
         whereReport,
-        deepReport: report,
-        smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress) ??
+        deepReport: currentDeepReport,
+        smartContractReport: (currentDeepReport ? extractSmartContractCheckReportFromJob(job, report.subjectAddress) : null) ??
           extractSmartContractCheckReportFromJob(whereJob, report.subjectAddress),
         runtimeLabel: options.runtimeLabel,
         locale,
@@ -2105,6 +2114,9 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
   }
 
   return {
+    ...(job.resultJson.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION
+      ? { scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION }
+      : {}),
     subjectAddress,
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
@@ -2211,14 +2223,14 @@ export function formatWhereIsMoneyUserDeliveryReport(
   options: { runtimeLabel?: string; locale?: BotLocale; showBetaDiagnostics?: boolean } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
-  const deepReport = extractDeepForensicReportFromJob(deepJob, report.subjectAddress);
+  const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, report.subjectAddress));
   if (deepReport) {
     return formatUnifiedAddressFinalReport({
       address: report.subjectAddress,
       whereReport: report,
       deepReport,
       smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress) ??
-        extractSmartContractCheckReportFromJob(deepJob, report.subjectAddress),
+        (deepReport ? extractSmartContractCheckReportFromJob(deepJob, report.subjectAddress) : null),
       runtimeLabel: options.runtimeLabel,
       locale,
       showBetaDiagnostics: options.showBetaDiagnostics
@@ -3330,8 +3342,12 @@ function summaryRiskLine(summary: RiskExplanationSummary, locale: BotLocale): st
     : `Риск: ${summary.score}/100 — ${level} (Итоговый риск)`;
 }
 
-function hasExplicitWhereScoreValidity(report: WhereIsMoneyReport): boolean {
-  return typeof report.scoreValid === "boolean" || typeof report.assessment.scoreValid === "boolean";
+function hasCurrentScoringPolicy(report: WhereIsMoneyReport): boolean {
+  return report.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION;
+}
+
+function currentScoringPolicyDeepReport(report: DeepAddressForensicReport | null | undefined): DeepAddressForensicReport | null {
+  return report?.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION ? report : null;
 }
 
 function formatLegacyUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
@@ -3425,9 +3441,10 @@ function formatInvalidWhereScoreFinalReport(
 
 export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  if (!hasExplicitWhereScoreValidity(input.whereReport)) {
+  if (!hasCurrentScoringPolicy(input.whereReport)) {
     return formatLegacyUnifiedAddressFinalReport(input);
   }
+  input = { ...input, deepReport: currentScoringPolicyDeepReport(input.deepReport) };
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,
@@ -3497,9 +3514,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
 
 export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  if (!hasExplicitWhereScoreValidity(input.whereReport)) {
+  if (!hasCurrentScoringPolicy(input.whereReport)) {
     return formatLegacyUnifiedAddressFinalReport(input);
   }
+  input = { ...input, deepReport: currentScoringPolicyDeepReport(input.deepReport) };
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,
@@ -4661,19 +4679,20 @@ export function createBot(
         : "Подробный итоговый отчёт доступен после завершённой проверки “Откуда деньги”.";
       if (job?.kind === "where_is_money_check" && whereReport) {
         const deepJob = await resolveLatestDeepForensicCheckJobForAddressAnyStatus(relatedJobLookupInput(job));
+        const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, job.subjectAddress));
         await sendMessage(ctx, formatUnifiedAddressDetailedReport({
           address: job.subjectAddress,
           whereReport,
-          deepReport: extractDeepForensicReportFromJob(deepJob, job.subjectAddress),
+          deepReport,
           smartContractReport: extractSmartContractCheckReportFromJob(job, job.subjectAddress) ??
-            extractSmartContractCheckReportFromJob(deepJob, job.subjectAddress),
+            (deepReport ? extractSmartContractCheckReportFromJob(deepJob, job.subjectAddress) : null),
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         }));
         return;
       }
       if (job?.kind === "address_deep_check") {
-        const deepReport = extractDeepForensicReportFromJob(job, job.subjectAddress);
+        const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(job, job.subjectAddress));
         const matchingWhereJob = await resolveLatestWhereIsMoneyCheckJobForAddress(relatedJobLookupInput(job));
         const matchingWhereReport = extractWhereIsMoneyReportFromJob(matchingWhereJob, job.subjectAddress);
         if (matchingWhereReport) {
@@ -4681,7 +4700,7 @@ export function createBot(
             address: job.subjectAddress,
             whereReport: matchingWhereReport,
             deepReport,
-            smartContractReport: extractSmartContractCheckReportFromJob(job, job.subjectAddress) ??
+            smartContractReport: (deepReport ? extractSmartContractCheckReportFromJob(job, job.subjectAddress) : null) ??
               extractSmartContractCheckReportFromJob(matchingWhereJob, job.subjectAddress),
             runtimeLabel: config.runtimeInstanceLabel,
             locale

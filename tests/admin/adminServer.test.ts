@@ -4,6 +4,7 @@ import * as adminServerModule from "../../src/admin/adminServer";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
 import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositories";
 import { SHADOW_SCORING_POLICY_VERSION } from "../../src/risk/shadowScoring";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
 
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -57,7 +58,7 @@ function exactVerify20Report() {
 }
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
-  return {
+  const value: ForensicCheckJob = {
     id: "job-1",
     kind: "where_is_money_check",
     subjectAddress: "TSubject111111111111111111111111111111",
@@ -86,6 +87,17 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
     completedAt: new Date("2026-06-01T01:00:00.000Z"),
     ...overrides
   };
+  const whereReport = value.resultJson.whereIsMoneyReport;
+  if (
+    typeof whereReport === "object" &&
+    whereReport !== null &&
+    !Array.isArray(whereReport) &&
+    (whereReport as Record<string, unknown>).scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION &&
+    value.resultJson.scoringPolicyVersion === undefined
+  ) {
+    value.resultJson = { ...value.resultJson, scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION };
+  }
+  return value;
 }
 
 function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
@@ -278,6 +290,7 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
     ...(typeof overrides.assessment === "object" && overrides.assessment !== null ? overrides.assessment as Record<string, unknown> : {})
   };
   return {
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     scoreValid: true,
     scoreBlockedReason: null,
     technicalStatus: "completed",
@@ -333,6 +346,7 @@ function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): 
     id: "job-deep-related",
     kind: "address_deep_check",
     resultJson: {
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       subjectAddress: "TSubject111111111111111111111111111111",
       serviceExposureProfiles: [],
       addressBehaviorProfiles: [],
@@ -1755,10 +1769,15 @@ describe("startAdminServer", () => {
     });
   });
 
-  it("keeps a legacy Admin result byte-for-byte unchanged while reading its stored semantics", async () => {
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+    "keeps a %s policy Admin result byte-for-byte unchanged while reading its stored semantics",
+    async (scoringPolicyVersion) => {
     const whereReport = whereReportForAdminTest();
-    delete whereReport.scoreValid;
-    delete (whereReport.assessment as Record<string, unknown>).scoreValid;
+    if (scoringPolicyVersion === undefined) {
+      delete whereReport.scoringPolicyVersion;
+    } else {
+      whereReport.scoringPolicyVersion = scoringPolicyVersion;
+    }
     const fixture = job({
       id: "job-legacy-read",
       resultJson: {
@@ -1781,7 +1800,8 @@ describe("startAdminServer", () => {
     expect(graph.summary).toMatchObject({ decision: "REVIEW", riskScore: 78 });
     expect(graph.summary.humanSummary.limitations.join(" ")).toMatch(/legacy|fresh check/i);
     expect(JSON.stringify(fixture.resultJson)).toBe(before);
-  });
+    }
+  );
 
   it("does not overlay a related legacy Where conclusion on a Fast graph", async () => {
     const fastJob = job({
@@ -1811,8 +1831,7 @@ describe("startAdminServer", () => {
       riskScore: 45,
       assessment: { decision: "REVIEW", riskScore: 45, riskBand: "MEDIUM" }
     });
-    delete legacyReport.scoreValid;
-    delete (legacyReport.assessment as Record<string, unknown>).scoreValid;
+    delete legacyReport.scoringPolicyVersion;
     const legacyWhereJob = job({
       id: "job-related-legacy-where",
       resultJson: {
@@ -1857,8 +1876,7 @@ describe("startAdminServer", () => {
       }
     });
     const legacyReport = whereReportForAdminTest();
-    delete legacyReport.scoreValid;
-    delete (legacyReport.assessment as Record<string, unknown>).scoreValid;
+    delete legacyReport.scoringPolicyVersion;
     const legacyWhereJob = job({
       id: "job-related-legacy-first",
       updatedAt: new Date("2026-06-01T00:30:00.000Z"),
@@ -1943,6 +1961,42 @@ describe("startAdminServer", () => {
     expect(humanSummary).toContain("не доказывает конкретную кражу");
     expect(humanSummary).not.toContain("Точных признаков кражи");
     expect(humanSummary).not.toContain("Жёстких плохих доказательств");
+  });
+
+  it("does not reuse Verify20 evidence from an unmarked related Deep job in Admin", async () => {
+    const whereJob = job({
+      id: "job-verify20-current-where",
+      progressJson: {},
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest({ riskScore: 20 })
+      }
+    });
+    const legacyDeepJob = deepJobForAdminSummaryTest({
+      id: "job-verify20-legacy-deep",
+      progressJson: {
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20Report()))
+        }
+      }
+    });
+    delete legacyDeepJob.resultJson.scoringPolicyVersion;
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [legacyDeepJob],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+
+    expect(humanSummary).not.toContain("Verify20");
+    expect(graph.summary.riskScore).not.toBe(85);
   });
 
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {

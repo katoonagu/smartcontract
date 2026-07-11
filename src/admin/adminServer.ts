@@ -24,6 +24,7 @@ import {
 } from "../bot/riskExplanationSummary";
 import { buildScoringAuditReport } from "../forensics/scoringAuditReport";
 import { buildScoringAuditRow } from "../risk/scoringAudit";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { calculateUnifiedWalletRisk, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import type {
   ForensicCheckJob,
@@ -675,8 +676,13 @@ function riskLevel(value: unknown): RiskLevel | null {
   return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL" ? value : null;
 }
 
-function hasExplicitWhereScoreValidity(report: WhereIsMoneyReport): boolean {
-  return typeof report.scoreValid === "boolean" || typeof report.assessment.scoreValid === "boolean";
+function hasCurrentScoringPolicy(report: WhereIsMoneyReport): boolean {
+  return report.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION;
+}
+
+function jobHasCurrentScoringPolicyReport(job: ForensicCheckJob): boolean {
+  const result = jobResultRecord(job);
+  return result.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION;
 }
 
 function normalizeWhereIsMoneyReport(value: unknown, subjectAddress: string): WhereIsMoneyReport | null {
@@ -739,7 +745,15 @@ function extractWhereIsMoneyReportFromAdminJob(
   const result = jobResultRecord(job);
   const candidate = isRecord(result.whereIsMoneyReport) ? result.whereIsMoneyReport : result;
   if ((stringField(result.subjectAddress) ?? stringField(candidate.subjectAddress)) !== subjectAddress) return null;
-  return normalizeWhereIsMoneyReport(candidate, subjectAddress);
+  const report = normalizeWhereIsMoneyReport(candidate, subjectAddress);
+  if (
+    report?.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION &&
+    result.scoringPolicyVersion !== SCORING_SIGNAL_MATRIX_POLICY_VERSION
+  ) {
+    const { scoringPolicyVersion: _ignored, ...legacyReport } = report;
+    return legacyReport as WhereIsMoneyReport;
+  }
+  return report;
 }
 
 function defaultDeepProviderBudget(): DeepAddressForensicReport["providerBudget"] {
@@ -985,6 +999,9 @@ export function extractDeepForensicReportFromAdminJob(
   const result = jobResultRecord(job);
   if (result.subjectAddress !== subjectAddress) return null;
   return {
+    ...(result.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION
+      ? { scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION }
+      : {}),
     subjectAddress,
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
@@ -1164,7 +1181,7 @@ async function enrichHumanRiskSummary(
   if (job.kind === "where_is_money_check" && !primaryWhereReport) {
     return { ...graph, summary: { ...graph.summary, humanSummary: null } };
   }
-  if (primaryWhereReport && !hasExplicitWhereScoreValidity(primaryWhereReport)) {
+  if (primaryWhereReport && !hasCurrentScoringPolicy(primaryWhereReport)) {
     return graphWithLegacyHumanSummary(graph, primaryWhereReport);
   }
 
@@ -1173,16 +1190,20 @@ async function enrichHumanRiskSummary(
   const whereReport = primaryWhereReport ??
     jobs
       .map((candidate) => extractWhereIsMoneyReportFromAdminJob(candidate, job.subjectAddress))
-      .find((report) => report !== null && hasExplicitWhereScoreValidity(report)) ??
+      .find((report) => report !== null && hasCurrentScoringPolicy(report)) ??
     null;
   if (!whereReport) return { ...graph, summary: { ...graph.summary, humanSummary: null } };
-  if (!hasExplicitWhereScoreValidity(whereReport)) {
+  if (!hasCurrentScoringPolicy(whereReport)) {
     return graphWithLegacyHumanSummary(graph, whereReport);
   }
 
-  const deepReport = jobs.map((candidate) => extractDeepForensicReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
+  const deepReport = jobs
+    .map((candidate) => extractDeepForensicReportFromAdminJob(candidate, job.subjectAddress))
+    .find((report) => report?.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION) ??
+    null;
   const fastReport = jobs.map((candidate) => extractFastRiskReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
   const smartContractReport = jobs
+    .filter(jobHasCurrentScoringPolicyReport)
     .map((candidate) => extractSmartContractCheckReportFromAdminJob(candidate, job.subjectAddress))
     .find((report) => report !== null) ?? null;
   let presentation: ReturnType<typeof buildAdminRiskPresentation> | null = null;

@@ -565,6 +565,7 @@ export type ForensicTechnicalStatus =
   | "hard_safety_limit_exceeded";
 
 export type ForensicScoreValidity = {
+  scoringPolicyVersion?: string;
   scoreValid?: boolean;
   scoreBlockedReason?: ForensicScoreBlockedReason | null;
   technicalStatus?: ForensicTechnicalStatus | null;

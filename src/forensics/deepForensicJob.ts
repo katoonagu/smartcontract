@@ -43,6 +43,7 @@ import {
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
@@ -1559,7 +1560,7 @@ async function runWhereIsMoneyJob(
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
   let report: WhereIsMoneyReport;
   try {
-    report = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
+    const currentReport = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
       getTrc20Balance: async (address, tokenContractAddress) => {
         if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
         const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
@@ -1604,6 +1605,8 @@ async function runWhereIsMoneyJob(
         await persistProgress(patch);
       }
     }));
+    report = currentReport;
+    report.scoringPolicyVersion = SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   } catch (error) {
     if (error instanceof StrictProvenanceWaitingForIndex || error instanceof TargetedHistoryWaitingForIndex) return true;
     throw error;
@@ -1627,6 +1630,7 @@ async function runWhereIsMoneyJob(
         riskScore: report.riskScore
       },
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: report.subjectAddress,
         whereIsMoneyReport: report,
         contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
@@ -1662,6 +1666,7 @@ async function runWhereIsMoneyJob(
       riskScore: report.riskScore
     },
     resultJson: {
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       subjectAddress: report.subjectAddress,
       ...(strictBenchmark ? strictCompletedResultJson() : whereReportScoreValidityResultJson(report)),
       whereIsMoneyReport: report,
@@ -1874,6 +1879,7 @@ export async function runSingleDeepForensicJobCycle(
         derivedLabel
       },
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: report.subjectAddress,
         windowStart: report.windowStart.toISOString(),
         windowEnd: report.windowEnd.toISOString(),
