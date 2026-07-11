@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -8,6 +8,7 @@ code_refs:
   - src/admin/adminServer.ts
   - src/storage/repositories.ts
   - src/bot/createBot.ts
+  - src/bot/walletNarrativeSummary.ts
   - src/bot/riskExplanationSummary.ts
   - src/alerts/formatters.ts
   - tests/admin/forensicsGraph.test.ts
@@ -15,6 +16,7 @@ code_refs:
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminServer.test.ts
   - tests/bot/createBot.test.ts
+  - tests/bot/walletNarrativeSummary.test.ts
   - tests/alerts/formatters.test.ts
 supersedes:
   - docs/project-walkthrough/08-admin-forensics-console-plain-language.md
@@ -306,21 +308,34 @@ shown only in `Дополнительный контекст`. Where preliminary
 as `Откуда деньги — предварительный результат` so users can distinguish it from
 the initial FastCheck preliminary message.
 
-Final Telegram address reports use reason cards. Normal user delivery shows
-`Решение`, `Итоговый риск`, `Что делать`, `Почему`, and `Что важно учесть`.
-It must not show scoring internals such as matrix rows, weighted layer scores,
-dampeners, run profiles, or raw layer weights. Those diagnostics remain
-available in support/admin output or when beta diagnostics are explicitly
-enabled.
+Normal final Telegram address reports now use one compact deterministic
+narrative in plain Russian or English. A scored header always keeps the risk
+emoji, score band, and canonical action; `NO_FINAL_DECISION` has a neutral
+header and no score. The body selects the strongest winning evidence first,
+then at most one additional risk or context fact. A coverage limitation has
+higher display priority than optional technical detail. One exact GasFree fee
+may appear as a third technical part only when no coverage part is present and
+the 500-character body budget still fits.
 
-Final Telegram address reports are the short user-facing version. They show the
-decision, risk, recommended action, main reasons, and important limitations in
-Russian-first copy. Detailed explanations live in `/check_status <job-id>
-detailed` / `/check_status <job-id> подробно` and in the Admin graph right rail.
-Those detailed views can show FastCheck, Where Is Money, and DeepCheck sections,
-humanized evidence, limitations, possible benign interpretations, and
-recommendations. Raw codes may remain in Admin/debug areas, but the first screen
-should explain the analyst meaning before diagnostics.
+The compact formatter reads typed, subject-bound Fast, Where, Deep, contract,
+first-hop, role, and coverage fields. It never lets an LLM or raw free-text
+reason write the final message. The effective Fast fallback is accepted only
+for the checked address and only through an allowlisted structured reason. A
+counterparty blacklist is not described as the subject's blacklist; Verify20
+interaction alone does not assign a drainer role; exact approval-drain victim,
+spender, receiver, and route roles keep their distinct meanings.
+
+The normal body has at most three parts, each at most 280 characters, and a
+target body length of at most 500 characters. It does not restore the old
+`Почему` / `Что это может значить` / `Что важно учесть` dump, scoring internals,
+or raw codes. Detailed `/check_status <job-id> detailed` / `подробно`, support,
+and Admin diagnostics retain their full evidence sections.
+
+Normal and detailed current-policy `/check_status` use the same fresh DeepCheck
+prerequisite: the Deep report must match the checked subject and contain saved
+required first-hop coverage. If it is absent or mismatched, both surfaces show
+`NO_FINAL_DECISION` and no final score. The detailed surface still keeps its
+diagnostic mode sections and adds the prerequisite failure to its limitations.
 
 Admin graph summaries expose a human-readable `humanSummary` for the right rail
 so analysts do not need to read raw graph JSON first. This is a presentation

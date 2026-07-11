@@ -1,12 +1,64 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { adminConsoleHtml } from "../../src/admin/adminConsole";
+import * as adminServerModule from "../../src/admin/adminServer";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
 import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositories";
+import { SHADOW_SCORING_POLICY_VERSION } from "../../src/risk/shadowScoring";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
+import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
 
 const servers: Array<{ close(): Promise<void> }> = [];
+const subjectAddress = "TSubject111111111111111111111111111111";
+
+function exactVerify20Report() {
+  const now = new Date("2026-07-11T00:00:00.000Z");
+  return evaluateSmartContractAddress({
+    subjectAddress,
+    metadata: {
+      address: subjectAddress,
+      source: "tronscan",
+      name: null,
+      tag: null,
+      isContract: true,
+      verified: false,
+      accountType: null,
+      rawJson: {},
+      fetchedAt: now,
+      expiresAt: now
+    },
+    contractProfile: {
+      contractAddress: subjectAddress,
+      providerTags: [],
+      publicTags: [],
+      isVerified: false,
+      verifyStatus: null,
+      sourceStatus: "missing",
+      contractCreatedAt: null,
+      contractAgeDays: null,
+      txCount: "1",
+      recentCallCount: null,
+      totalCallCount: "1",
+      totalCallerCount: "1",
+      topMethods: [],
+      topCallers: [],
+      methodMap: {
+        "5082dd12": "Verify20(address,address,address,uint256)",
+        "fc61dd23": "Verify10(address,uint256)",
+        "ea4418d9": "withdrawAllTrxTo(address)",
+        "f2fde38b": "transferOwnership(address)"
+      },
+      activityLevel: "low",
+      providerRisk: false,
+      rawPayload: {},
+      fetchedAt: now,
+      expiresAt: now
+    },
+    relatedApprovals: []
+  });
+}
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
-  return {
+  const value: ForensicCheckJob = {
     id: "job-1",
     kind: "where_is_money_check",
     subjectAddress: "TSubject111111111111111111111111111111",
@@ -35,6 +87,17 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
     completedAt: new Date("2026-06-01T01:00:00.000Z"),
     ...overrides
   };
+  const whereReport = value.resultJson.whereIsMoneyReport;
+  if (
+    typeof whereReport === "object" &&
+    whereReport !== null &&
+    !Array.isArray(whereReport) &&
+    (whereReport as Record<string, unknown>).scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION &&
+    value.resultJson.scoringPolicyVersion === undefined
+  ) {
+    value.resultJson = { ...value.resultJson, scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION };
+  }
+  return value;
 }
 
 function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
@@ -56,6 +119,126 @@ function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
     createdAt: new Date("2026-07-08T09:00:00.000Z"),
     updatedAt: new Date("2026-07-08T10:00:00.000Z"),
     ...overrides
+  };
+}
+
+it("strictly extracts persisted Verify20 contract reports for Admin reconstruction", () => {
+  const extractor = (adminServerModule as unknown as Record<string, unknown>).extractSmartContractCheckReportFromAdminJob as
+    ((job: ForensicCheckJob, subjectAddress: string) => unknown) | undefined;
+  expect(extractor).toBeTypeOf("function");
+  const persisted = JSON.parse(JSON.stringify(exactVerify20Report()));
+  expect(extractor!(job({
+    progressJson: { contractSafetyAnalysis: { status: "completed", report: persisted } }
+  }), subjectAddress)).toMatchObject({ verify20Fingerprint: { matched: true }, riskScore: 85 });
+
+  persisted.contractProfile.methodMap = {};
+  expect(extractor!(job({
+    progressJson: { contractSafetyAnalysis: { status: "completed", report: persisted } }
+  }), subjectAddress)).toBeNull();
+  expect(extractor!(job({ progressJson: {} }), subjectAddress)).toBeNull();
+
+  const forgedExactDrain = JSON.parse(JSON.stringify(exactVerify20Report()));
+  forgedExactDrain.exactDrainProven = true;
+  forgedExactDrain.riskScore = 95;
+  expect(extractor!(job({
+    progressJson: { contractSafetyAnalysis: { status: "completed", report: forgedExactDrain } }
+  }), subjectAddress)).toBeNull();
+});
+
+function adminFirstHopEvidenceForTest() {
+  const address = "TAdminFirstHop1111111111111111111111";
+  const timelineEvent = {
+    eventKind: "added",
+    occurredAt: "2026-05-10T00:00:00.000Z",
+    txHash: "b".repeat(64),
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    blockNumber: 100,
+    logIndex: 2,
+    verification: "verified_contract_log"
+  };
+  return {
+    firstHopBlacklistFacts: [{
+      counterpartyAddress: address,
+      direction: "outbound",
+      evidenceKind: "usdt_blacklist",
+      evidenceAuthority: "official_contract",
+      statusAtCheck: "active",
+      temporalRelation: "became_active_after",
+      effectiveAt: timelineEvent.occurredAt,
+      effectiveTxHash: timelineEvent.txHash,
+      checkedAt: "2026-06-01T01:00:00.000Z",
+      principalAmountRaw: "12000000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable",
+      transferTxHashes: ["a".repeat(64)],
+      beforeEffectiveAmountRaw: "12000000000",
+      beforeEffectiveTxCount: 1,
+      activeAmountRaw: "0",
+      activeTxCount: 0,
+      unknownTimingAmountRaw: "0",
+      unknownTimingTxCount: 0,
+      directTransferCoverage: "partial",
+      timelineCoverage: "complete",
+      timelineEvents: [timelineEvent]
+    }],
+    firstHopLabelFacts: [{
+      counterpartyAddress: address,
+      direction: "outbound",
+      labelCode: "phishing",
+      evidenceAuthority: "exact_internal",
+      recordedAt: "2026-05-01T00:00:00.000Z",
+      effectiveAt: null,
+      principalAmountRaw: "12000000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable",
+      transferTxHashes: ["a".repeat(64)],
+      linkedToSelectedProvenance: false
+    }],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: "2026-06-01T00:00:00.000Z",
+      windowEnd: "2026-06-01T01:00:00.000Z",
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 1,
+      checkedMaterialCounterpartyCount: 1,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: "Direct principal transfer history is partial.",
+      confirmedAdverseFactCount: 1,
+      completeTimelineFactCount: 1,
+      partialTimelineFactCount: 0
+    },
+    directHardEvidenceSnapshots: [{
+      address,
+      labels: [{
+        address,
+        label: "phishing",
+        source: "service_admin",
+        createdByTelegramId: "1",
+        createdAt: "2026-05-01T00:00:00.000Z"
+      }],
+      classification: null,
+      usdtRestriction: {
+        subjectAddress: address,
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        tokenSymbol: "USDT",
+        tokenStandard: "TRC20",
+        decimals: 6,
+        isBlacklisted: true,
+        balanceRaw: "0",
+        checkedAt: "2026-06-01T01:00:00.000Z",
+        evidenceStrength: "exact_contract_state",
+        blacklistTimeline: { events: [timelineEvent], pagination: "complete", failureReason: null },
+        methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+      },
+      evidenceStatus: "live_checked",
+      hasHardEvidence: true,
+      reasons: ["label:phishing", "usdt_blacklist"]
+    }]
   };
 }
 
@@ -107,6 +290,7 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
     ...(typeof overrides.assessment === "object" && overrides.assessment !== null ? overrides.assessment as Record<string, unknown> : {})
   };
   return {
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     scoreValid: true,
     scoreBlockedReason: null,
     technicalStatus: "completed",
@@ -162,6 +346,7 @@ function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): 
     id: "job-deep-related",
     kind: "address_deep_check",
     resultJson: {
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       subjectAddress: "TSubject111111111111111111111111111111",
       serviceExposureProfiles: [],
       addressBehaviorProfiles: [],
@@ -238,6 +423,74 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
+  it("extracts validated persisted first-hop evidence for Admin without dropping timeline fields", () => {
+    const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
+    expect(extractor).toBeTypeOf("function");
+    if (typeof extractor !== "function") return;
+    const evidence = adminFirstHopEvidenceForTest();
+    const report = extractor(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        ...evidence
+      }
+    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+
+    expect(report?.firstHopBlacklistFacts).toEqual(evidence.firstHopBlacklistFacts);
+    expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
+    expect(report?.firstHopBlacklistCoverage).toEqual(evidence.firstHopBlacklistCoverage);
+    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots.map((snapshot) => ({
+      ...snapshot,
+      labels: snapshot.labels.map((label) => ({ ...label, createdAt: new Date(label.createdAt) }))
+    })));
+  });
+
+  it("fails closed atomically when persisted first-hop counters contradict the envelope", () => {
+    const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
+    expect(extractor).toBeTypeOf("function");
+    if (typeof extractor !== "function") return;
+    const evidence = adminFirstHopEvidenceForTest();
+    const report = extractor(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        ...evidence,
+        firstHopBlacklistCoverage: {
+          ...evidence.firstHopBlacklistCoverage,
+          confirmedAdverseFactCount: 0
+        }
+      }
+    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+
+    expect(report).toMatchObject({
+      firstHopBlacklistFacts: [],
+      firstHopLabelFacts: [],
+      directHardEvidenceSnapshots: [],
+      firstHopBlacklistCoverage: {
+        requiredForDecision: true,
+        directPrincipalTransferCoverage: "partial",
+        blacklistCheckCoverage: "provider_failed",
+        incompleteReason: "persisted_first_hop_evidence_invalid"
+      }
+    });
+  });
+
+  it("keeps first-hop evidence absent when Admin extracts a legacy Deep payload", () => {
+    const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
+    expect(extractor).toBeTypeOf("function");
+    if (typeof extractor !== "function") return;
+    const report = extractor(job({
+      kind: "address_deep_check",
+      resultJson: { subjectAddress: "TSubject111111111111111111111111111111" }
+    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+
+    expect(report).not.toBeNull();
+    expect(report).not.toHaveProperty("firstHopBlacklistFacts");
+    expect(report).not.toHaveProperty("firstHopLabelFacts");
+    expect(report).not.toHaveProperty("firstHopBlacklistCoverage");
+    expect(report).not.toHaveProperty("directHardEvidenceSnapshots");
+  });
+
   it("redirects root to the forensics console", async () => {
     const server = await start();
 
@@ -1230,7 +1483,7 @@ describe("startAdminServer", () => {
           kind: "where_is_money_check"
         }],
         shadowComparisons: [{
-          candidatePolicyVersion: "scoring-signal-matrix-v1"
+          candidatePolicyVersion: SHADOW_SCORING_POLICY_VERSION
         }]
       }
     });
@@ -1516,10 +1769,15 @@ describe("startAdminServer", () => {
     });
   });
 
-  it("keeps a legacy Admin result byte-for-byte unchanged while reading its stored semantics", async () => {
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+    "keeps a %s policy Admin result byte-for-byte unchanged while reading its stored semantics",
+    async (scoringPolicyVersion) => {
     const whereReport = whereReportForAdminTest();
-    delete whereReport.scoreValid;
-    delete (whereReport.assessment as Record<string, unknown>).scoreValid;
+    if (scoringPolicyVersion === undefined) {
+      delete whereReport.scoringPolicyVersion;
+    } else {
+      whereReport.scoringPolicyVersion = scoringPolicyVersion;
+    }
     const fixture = job({
       id: "job-legacy-read",
       resultJson: {
@@ -1542,6 +1800,44 @@ describe("startAdminServer", () => {
     expect(graph.summary).toMatchObject({ decision: "REVIEW", riskScore: 78 });
     expect(graph.summary.humanSummary.limitations.join(" ")).toMatch(/legacy|fresh check/i);
     expect(JSON.stringify(fixture.resultJson)).toBe(before);
+    }
+  );
+
+  it("keeps a legacy Where outcome when a current Deep job is related", async () => {
+    const legacyReport = whereReportForAdminTest({
+      scoringPolicyVersion: "scoring-signal-matrix-v1",
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45,
+      assessment: { decision: "REVIEW", riskScore: 45, riskBand: "MEDIUM" }
+    });
+    const legacyWhereJob = job({
+      id: "job-legacy-where-current-deep",
+      resultJson: {
+        scoringPolicyVersion: "scoring-signal-matrix-v1",
+        subjectAddress,
+        whereIsMoneyReport: legacyReport
+      }
+    });
+    const currentDeepJob = deepJobForAdminSummaryTest({
+      windowStart: legacyWhereJob.windowStart,
+      windowEnd: legacyWhereJob.windowEnd
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [currentDeepJob],
+      getJob: async (id) => id === legacyWhereJob.id ? legacyWhereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${legacyWhereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+
+    expect(graph.summary).toMatchObject({ decision: "REVIEW", riskScore: 45 });
+    expect(graph.summary.humanSummary.limitations.join(" ")).toMatch(/legacy|fresh check/i);
+    expect(JSON.stringify(graph.summary.humanSummary)).not.toContain("whitebit");
   });
 
   it("does not overlay a related legacy Where conclusion on a Fast graph", async () => {
@@ -1572,8 +1868,7 @@ describe("startAdminServer", () => {
       riskScore: 45,
       assessment: { decision: "REVIEW", riskScore: 45, riskBand: "MEDIUM" }
     });
-    delete legacyReport.scoreValid;
-    delete (legacyReport.assessment as Record<string, unknown>).scoreValid;
+    delete legacyReport.scoringPolicyVersion;
     const legacyWhereJob = job({
       id: "job-related-legacy-where",
       resultJson: {
@@ -1618,8 +1913,7 @@ describe("startAdminServer", () => {
       }
     });
     const legacyReport = whereReportForAdminTest();
-    delete legacyReport.scoreValid;
-    delete (legacyReport.assessment as Record<string, unknown>).scoreValid;
+    delete legacyReport.scoringPolicyVersion;
     const legacyWhereJob = job({
       id: "job-related-legacy-first",
       updatedAt: new Date("2026-06-01T00:30:00.000Z"),
@@ -1668,6 +1962,169 @@ describe("startAdminServer", () => {
     expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 95 });
     expect(graph.summary.humanSummary.conclusion).toMatch(/сильный риск/i);
     expect(JSON.stringify(graph.summary.humanSummary)).not.toContain("Legacy result");
+  });
+
+  it("uses a validated persisted Verify20 report in Admin unified-risk reconstruction", async () => {
+    const whereJob = job({
+      id: "job-verify20-admin",
+      progressJson: {
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20Report()))
+        }
+      },
+      resultJson: {
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest({ riskScore: 20 })
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 85, riskLevel: "CRITICAL" });
+    expect(graph.nodes.find((node: { kind: string }) => node.kind === "subject")?.metadata).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85
+    });
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+    expect(humanSummary).toContain("полный шаблон Verify20, который часто используют дрейнеры");
+    expect(humanSummary).toContain("не доказывает конкретную кражу");
+    expect(humanSummary).not.toContain("Точных признаков кражи");
+    expect(humanSummary).not.toContain("Жёстких плохих доказательств");
+  });
+
+  it("does not reuse Verify20 evidence from an unmarked related Deep job in Admin", async () => {
+    const whereJob = job({
+      id: "job-verify20-current-where",
+      progressJson: {},
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest({ riskScore: 20 })
+      }
+    });
+    const legacyDeepJob = deepJobForAdminSummaryTest({
+      id: "job-verify20-legacy-deep",
+      progressJson: {
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20Report()))
+        }
+      }
+    });
+    delete legacyDeepJob.resultJson.scoringPolicyVersion;
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [legacyDeepJob],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+
+    expect(humanSummary).not.toContain("Verify20");
+    expect(graph.summary.riskScore).not.toBe(85);
+  });
+
+  it("does not reuse persisted direct hard evidence from an unmarked related Deep job", async () => {
+    const whereJob = job({
+      id: "job-current-where-legacy-deep-hard",
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const legacyDeepJob = deepJobForAdminSummaryTest({
+      id: "job-legacy-deep-hard",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd
+    });
+    const persistedHardEvidence = adminFirstHopEvidenceForTest();
+    legacyDeepJob.resultJson = {
+      ...legacyDeepJob.resultJson,
+      ...persistedHardEvidence
+    };
+    delete legacyDeepJob.resultJson.scoringPolicyVersion;
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [legacyDeepJob],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+
+    expect(humanSummary).not.toContain(persistedHardEvidence.firstHopBlacklistFacts[0].counterpartyAddress);
+    expect(humanSummary).not.toMatch(/USDT blacklist|TRC20 USDT blacklist/i);
+    expect(graph.summary.riskScore).not.toBe(90);
+  });
+
+  it.each([
+    { name: "mismatched embedded subject", marker: SCORING_SIGNAL_MATRIX_POLICY_VERSION, embeddedSubject: "TOther1111111111111111111111111111111", expectedCurrent: false },
+    { name: "unmarked legacy report", marker: undefined, embeddedSubject: subjectAddress, expectedCurrent: false },
+    { name: "marked exact subject", marker: SCORING_SIGNAL_MATRIX_POLICY_VERSION, embeddedSubject: subjectAddress, expectedCurrent: true }
+  ])("uses related Fast evidence only for a $name", async ({ marker, embeddedSubject, expectedCurrent }) => {
+    const whereJob = job({
+      id: "job-current-where-fast-guard",
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const fastJob = job({
+      id: `job-fast-${expectedCurrent ? "current" : "rejected"}`,
+      kind: "address_fast_check",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd,
+      resultJson: {
+        ...(marker === undefined ? {} : { scoringPolicyVersion: marker }),
+        subjectAddress,
+        fastRiskReport: {
+          subjectAddress: embeddedSubject,
+          score: 90,
+          level: "CRITICAL",
+          reasons: [{
+            code: "stablecoin_usdt_blacklisted",
+            message: "Exact Fast blacklist signal.",
+            scoreImpact: 90
+          }]
+        }
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fastJob],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+
+    if (expectedCurrent) {
+      expect(graph.summary.riskScore).toBe(95);
+      expect(humanSummary).toMatch(/blacklist/i);
+    } else {
+      expect(graph.summary.riskScore).not.toBe(90);
+      expect(humanSummary).not.toContain("Exact Fast blacklist signal");
+    }
   });
 
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {

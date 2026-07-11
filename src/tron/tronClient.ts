@@ -9,7 +9,11 @@ import {
   inspectRawContractJson,
   type ContractIntelligenceProfile
 } from "../approvals/contractIntelligence";
-import type { StablecoinRestrictionProfile } from "../types";
+import type {
+  TimelineBearingStablecoinRestrictionProfile,
+  UsdtBlacklistTimeline,
+  UsdtBlacklistTimelineEvent
+} from "../types";
 import type { TronContractEvent, TronContractEventPage } from "../forensics/tronUsdtEventIndexer";
 import {
   createTronscanScheduler,
@@ -18,6 +22,14 @@ import {
   type TronscanRequestPriority,
   type TronscanScheduler
 } from "./tronscanScheduler";
+import {
+  BlacklistTimelineValidationError,
+  parseBlacklistRows,
+  reconstructedBlacklistState,
+  sortBlacklistTimelineEvents,
+  verifyBlacklistEventForRow,
+  verifyBlacklistTransaction
+} from "./usdtBlacklistTimeline";
 
 export type TronClient = {
   listIncomingTrc20Transfers(
@@ -29,7 +41,10 @@ export type TronClient = {
 
 export type TronDashboardClient = TronClient & {
   getAccount(address: string): Promise<TronscanAccount>;
-  getUsdtRestrictionStatus?(address: string, options?: GetUsdtRestrictionStatusOptions): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus?(
+    address: string,
+    options?: GetUsdtRestrictionStatusOptions
+  ): Promise<TimelineBearingStablecoinRestrictionProfile>;
   listRelatedTrc20Transfers(
     address: string,
     options?: ListRelatedTrc20TransfersOptions
@@ -43,6 +58,11 @@ export type TronDashboardClient = TronClient & {
 
 export type GetUsdtRestrictionStatusOptions = {
   includeEventTimeline?: boolean;
+};
+
+export type GetUsdtBlacklistTimelineOptions = {
+  limit?: number;
+  currentState?: boolean;
 };
 
 export type TronApprovalClient = {
@@ -82,6 +102,8 @@ type FetchJsonOptions = {
 const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
 const TRONGRID_TRANSFER_FALLBACK_MAX_PAGES = 10;
 const TRONSCAN_TRANSFER_PAGE_LIMIT = 50;
+const TRONSCAN_BLACKLIST_MIN_PAGE_LIMIT = 20;
+const TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT = 100;
 
 function sha256Json(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
@@ -398,7 +420,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   async getUsdtRestrictionStatus(
     address: string,
     options: GetUsdtRestrictionStatusOptions = {}
-  ): Promise<StablecoinRestrictionProfile> {
+  ): Promise<TimelineBearingStablecoinRestrictionProfile> {
     const checkedAt = new Date().toISOString();
     const blacklist = await this.callUsdtBoolean("isBlackListed(address)", address)
       .then((isBlacklisted) => ({ isBlacklisted, method: "isBlackListed(address)" as const }))
@@ -413,15 +435,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       });
       return null;
     });
-    const event = blacklist.isBlacklisted && options.includeEventTimeline === true
-      ? await this.findUsdtBlacklistEvent(address).catch((error) => {
-        this.logger.warn("stablecoin_blacklist_event_lookup_failed", {
-          address,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        return null;
-      })
+    const blacklistTimeline = blacklist.isBlacklisted && options.includeEventTimeline === true
+      ? await this.getUsdtBlacklistTimeline(address, { currentState: blacklist.isBlacklisted })
       : null;
+    const event = [...(blacklistTimeline?.events ?? [])].reverse().find((item) => item.eventKind === "added") ?? null;
 
     return {
       subjectAddress: address,
@@ -434,13 +451,123 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       checkedAt,
       evidenceStrength: "exact_contract_state",
       blacklistEventTxHash: event?.txHash ?? null,
-      blacklistEventTimestamp: event?.timestamp ?? null,
-      blacklistEventBlock: event?.block ?? null,
+      blacklistEventTimestamp: event?.occurredAt ?? null,
+      blacklistEventBlock: event?.blockNumber ?? null,
+      blacklistTimeline,
       methods: {
         blacklist: blacklist.method,
         balance: balanceRaw === null ? null : "balanceOf(address)"
       }
     };
+  }
+
+  async getUsdtBlacklistTimeline(
+    address: string,
+    options: GetUsdtBlacklistTimelineOptions = {}
+  ): Promise<UsdtBlacklistTimeline> {
+    const requestedLimit = Number.isSafeInteger(options.limit) ? options.limit! : TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT;
+    const pageLimit = Math.min(
+      TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT,
+      Math.max(TRONSCAN_BLACKLIST_MIN_PAGE_LIMIT, requestedLimit)
+    );
+    const events: UsdtBlacklistTimelineEvent[] = [];
+    const seenRows = new Map<string, string>();
+    let start = 0;
+    let declaredTotal: number | null = null;
+
+    const partial = (
+      failureReason: Exclude<UsdtBlacklistTimeline["failureReason"], null>
+    ): UsdtBlacklistTimeline => ({
+      events: sortBlacklistTimelineEvents(events) ?? [...events],
+      pagination: "partial",
+      failureReason
+    });
+
+    try {
+      while (declaredTotal === null || start < declaredTotal) {
+        const url = new URL("/api/stableCoin/blackList", this.baseUrl);
+        url.searchParams.set("blackAddress", address);
+        url.searchParams.set("tokenAddress", TRON_USDT_CONTRACT_ADDRESS);
+        url.searchParams.set("sort", "2");
+        url.searchParams.set("direction", "2");
+        url.searchParams.set("start", String(start));
+        url.searchParams.set("limit", String(pageLimit));
+
+        const json = await this.fetchJson(url, "stablecoin_blacklist_timeline");
+        if (!this.isObjectRecord(json) || !Array.isArray(json.data)) return partial("provider_failed");
+        const total = this.safeIntegerField(json.total);
+        if (
+          total === null ||
+          total < 0 ||
+          (declaredTotal !== null && total !== declaredTotal) ||
+          json.data.length > pageLimit ||
+          start + json.data.length > total
+        ) {
+          return partial("provider_failed");
+        }
+        declaredTotal ??= total;
+        if (json.data.length === 0) {
+          if (start < total) return partial("provider_failed");
+          break;
+        }
+
+        let rows;
+        try {
+          rows = parseBlacklistRows(json.data, address);
+        } catch (error) {
+          return partial(error instanceof BlacklistTimelineValidationError ? error.failureReason : "provider_failed");
+        }
+
+        const uniqueRowsBeforePage = seenRows.size;
+        for (const row of rows) {
+          const serialized = JSON.stringify(row);
+          const previous = seenRows.get(row.transHash);
+          if (previous !== undefined) {
+            if (previous !== serialized) return partial("provider_failed");
+            continue;
+          }
+          seenRows.set(row.transHash, serialized);
+
+          const transaction = verifyBlacklistTransaction(await this.getTransaction(row.transHash), row);
+          if (!transaction) return partial("transaction_unconfirmed");
+          if (!this.fullNodeBaseUrl) return partial("provider_failed");
+          const eventUrl = new URL(`/v1/transactions/${row.transHash}/events`, this.fullNodeBaseUrl);
+          const eventJson = await this.fetchJson(
+            eventUrl,
+            "stablecoin_blacklist_event",
+            {},
+            this.fullNodeApiKey ?? null
+          );
+          if (!this.isObjectRecord(eventJson) || !Array.isArray(eventJson.data)) {
+            return partial("provider_failed");
+          }
+          const event = verifyBlacklistEventForRow(eventJson.data, address, row, transaction);
+          if (!event) return partial("event_log_unverified");
+          events.push(event);
+        }
+        if (seenRows.size === uniqueRowsBeforePage) return partial("provider_failed");
+
+        start += json.data.length;
+        if (start < total && json.data.length < pageLimit) return partial("provider_failed");
+      }
+    } catch {
+      return partial("provider_failed");
+    }
+
+    if (declaredTotal === null || seenRows.size !== declaredTotal) return partial("provider_failed");
+    const sortedEvents = sortBlacklistTimelineEvents(events);
+    if (!sortedEvents) return partial("event_log_unverified");
+    if (
+      options.currentState !== undefined &&
+      reconstructedBlacklistState(sortedEvents) !== options.currentState
+    ) {
+      return {
+        events: sortedEvents,
+        pagination: "partial",
+        failureReason: "state_timeline_inconsistent"
+      };
+    }
+    return { events: sortedEvents, pagination: "complete", failureReason: null };
   }
 
   async getAddressMetadata(address: string, options: GetAddressMetadataOptions = {}): Promise<TronscanAddressMetadata> {
@@ -834,7 +961,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const url = new URL("/api/transaction-info", this.baseUrl);
     url.searchParams.set("hash", txHash);
 
-    return this.fetchJson(url, "transaction");
+    return this.fetchJson(url, "tronscan_transaction_info");
   }
 
   private encodeAddressParameter(address: string): string {
@@ -884,36 +1011,6 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   private async callUsdtUint(functionSelector: "balanceOf(address)", address: string): Promise<string> {
     const raw = await this.triggerUsdtConstant(functionSelector, address);
     return BigInt(`0x${raw}`).toString();
-  }
-
-  private async findUsdtBlacklistEvent(address: string): Promise<{ txHash: string; timestamp: string; block: number } | null> {
-    if (!this.fullNodeBaseUrl) return null;
-    const target = `0x${TronWeb.address.toHex(address).replace(/^41/i, "").toLowerCase()}`;
-    const url = new URL(`/v1/contracts/${TRON_USDT_CONTRACT_ADDRESS}/events`, this.fullNodeBaseUrl);
-    url.searchParams.set("event_name", "AddedBlackList");
-    url.searchParams.set("only_confirmed", "true");
-    url.searchParams.set("limit", "50");
-    url.searchParams.set("order_by", "block_timestamp,desc");
-
-    const json = await this.fetchJson(url, "stablecoin_blacklist_event", {}, this.fullNodeApiKey ?? null);
-    if (!this.isObjectRecord(json)) return null;
-    const rows = Array.isArray(json.data) ? json.data : [];
-    for (const row of rows) {
-      if (!this.isObjectRecord(row)) continue;
-      const result = this.objectField(row.result);
-      const user = this.stringField(result?._user ?? result?.["0"]);
-      if (user?.toLowerCase() !== target) continue;
-      const txHash = this.stringField(row.transaction_id);
-      const timestampMs = this.safeIntegerField(row.block_timestamp);
-      const block = this.safeIntegerField(row.block_number);
-      if (!txHash || timestampMs === null || block === null) return null;
-      return {
-        txHash,
-        timestamp: new Date(timestampMs).toISOString(),
-        block
-      };
-    }
-    return null;
   }
 
   private parseContractEventRow(row: unknown, contractAddress: string, eventName: string): TronContractEvent | null {
@@ -1482,6 +1579,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (requestName === "account") return "metadata";
     if (
       requestName === "transaction" ||
+      requestName === "tronscan_transaction_info" ||
       requestName === "approval_list" ||
       requestName === "approval_change" ||
       requestName === "stablecoin_contract_state" ||

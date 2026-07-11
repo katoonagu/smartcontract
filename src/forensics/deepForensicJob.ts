@@ -43,7 +43,8 @@ import {
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -64,7 +65,7 @@ export type DeepForensicJobRunnerDeps = Omit<
     orderBy?: "newest" | "amount_desc";
     direction?: "both";
   }): Promise<IndexedTronUsdtTransfer[]>;
-  getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<TimelineBearingStablecoinRestrictionProfile>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
     id: string;
@@ -1559,7 +1560,7 @@ async function runWhereIsMoneyJob(
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
   let report: WhereIsMoneyReport;
   try {
-    report = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
+    const currentReport = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
       getTrc20Balance: async (address, tokenContractAddress) => {
         if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
         const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
@@ -1604,6 +1605,10 @@ async function runWhereIsMoneyJob(
         await persistProgress(patch);
       }
     }));
+    report = {
+      ...currentReport,
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+    };
   } catch (error) {
     if (error instanceof StrictProvenanceWaitingForIndex || error instanceof TargetedHistoryWaitingForIndex) return true;
     throw error;
@@ -1627,6 +1632,7 @@ async function runWhereIsMoneyJob(
         riskScore: report.riskScore
       },
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: report.subjectAddress,
         whereIsMoneyReport: report,
         contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
@@ -1662,6 +1668,7 @@ async function runWhereIsMoneyJob(
       riskScore: report.riskScore
     },
     resultJson: {
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       subjectAddress: report.subjectAddress,
       ...(strictBenchmark ? strictCompletedResultJson() : whereReportScoreValidityResultJson(report)),
       whereIsMoneyReport: report,
@@ -1703,6 +1710,7 @@ export async function runSingleDeepForensicJobCycle(
           status: "failed",
           progressJson: job.progressJson,
           resultJson: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             subjectAddress: job.subjectAddress,
             ...strictBlockedResultJson(reason)
           },
@@ -1729,6 +1737,7 @@ export async function runSingleDeepForensicJobCycle(
           status: "failed",
           progressJson: job.progressJson,
           resultJson: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             subjectAddress: job.subjectAddress,
             score_valid: false,
             score_blocked_reason: mapped.scoreBlockedReason,
@@ -1867,9 +1876,14 @@ export async function runSingleDeepForensicJobCycle(
         ...job.progressJson,
         ...progressCoverage,
         ...(allTimeCoverage === undefined ? {} : { allTimeCoverage }),
+        firstHopBlacklistFacts: report.firstHopBlacklistFacts ?? [],
+        firstHopLabelFacts: report.firstHopLabelFacts ?? [],
+        firstHopBlacklistCoverage: report.firstHopBlacklistCoverage ?? null,
+        directHardEvidenceSnapshots: report.directHardEvidenceSnapshots ?? [],
         derivedLabel
       },
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: report.subjectAddress,
         windowStart: report.windowStart.toISOString(),
         windowEnd: report.windowEnd.toISOString(),
@@ -1890,6 +1904,10 @@ export async function runSingleDeepForensicJobCycle(
         operationalFlowProfiles: report.operationalFlowProfiles ?? [],
         walletRoleProfiles: report.walletRoleProfiles,
         stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
+        firstHopBlacklistFacts: report.firstHopBlacklistFacts ?? [],
+        firstHopLabelFacts: report.firstHopLabelFacts ?? [],
+        firstHopBlacklistCoverage: report.firstHopBlacklistCoverage ?? null,
+        directHardEvidenceSnapshots: report.directHardEvidenceSnapshots ?? [],
         extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],
         derivedLabel,
         derivedLabels,
@@ -1921,6 +1939,7 @@ export async function runSingleDeepForensicJobCycle(
         status: "failed",
         progressJson: strictProviderLimitedProgressJson(job.progressJson, reason),
         resultJson: {
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: job.subjectAddress,
           ...strictBlockedResultJson(reason)
         },
@@ -1944,6 +1963,7 @@ export async function runSingleDeepForensicJobCycle(
         status: "failed",
         progressJson,
         resultJson: {
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: job.subjectAddress,
           score_valid: false,
           score_blocked_reason: error.scoreBlockedReason,

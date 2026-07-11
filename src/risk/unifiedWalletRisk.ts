@@ -1,4 +1,5 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import type { SmartContractCheckReport } from "../check/smartContractCheck";
 import { resolveFinalDisposition } from "./finalDisposition";
 import {
   scoreMatrixCandidates,
@@ -50,6 +51,8 @@ export type UnifiedWalletRiskActiveAnchor = {
   message: string;
   score: number;
   source: UnifiedWalletRiskReason["source"];
+  row: ClassifiedMatrixCandidate["row"];
+  evidenceIds: string[];
 };
 
 export type UnifiedWalletRiskFloorBreakdown = {
@@ -77,6 +80,7 @@ export type UnifiedWalletRiskInput = {
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
+  smartContractReport?: SmartContractCheckReport | null;
 };
 
 export type UnifiedForensicRiskSubject =
@@ -148,24 +152,6 @@ function maxScore(values: Array<number | null | undefined>): number {
   return clampScore(
     Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)))
   );
-}
-
-function activeAnchorFromReasons(reasons: UnifiedWalletRiskReason[]): UnifiedWalletRiskActiveAnchor | null {
-  const sorted = [...reasons]
-    .filter((reason) => reason.score > 0)
-    .sort((left, right) =>
-      right.score - left.score ||
-      left.code.localeCompare(right.code)
-    );
-  const top = sorted[0];
-  return top
-    ? {
-        code: top.code,
-        message: top.message,
-        score: top.score,
-        source: top.source
-      }
-    : null;
 }
 
 function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
@@ -371,7 +357,7 @@ function coverageLevel(input: UnifiedWalletRiskInput): UnifiedWalletCoverageLeve
   if (wherePartial && deepSparse) return "limited";
   if (!deep || !selectedFastReport(input)) return "partial";
   const deepMissingCount = arrayOrEmpty(deep.missingChecks).length + arrayOrEmpty(deep.coverageDebug?.missingChecks).length;
-  if (wherePartial || deepMissingCount > 0) return "partial";
+  if (wherePartial || deepMissingCount > 0 || requiredFirstHopCoverageLimitations(deep).length > 0) return "partial";
   return "complete";
 }
 
@@ -444,46 +430,103 @@ function matrixAnchorSource(
   return "deep_research";
 }
 
-function matrixAnchorReason(matrixScore: MatrixScoringResult): UnifiedWalletRiskReason | null {
-  if (matrixScore.policyScore === null) return null;
-  return {
-    code: `matrix:${matrixScore.winningRow}`,
-    message: `Scoring Signal Matrix winning row is ${matrixScore.winningRow}.`,
-    score: matrixScore.policyScore,
-    source: matrixAnchorSource(matrixScore.winningCandidate)
-  };
-}
-
 function matrixCandidates(matrix: MatrixScoringResult): ClassifiedMatrixCandidate[] {
   return Object.values(matrix.riskVector).flatMap((candidates) => candidates ?? []);
 }
 
 function matrixCandidateReason(
   candidate: ClassifiedMatrixCandidate,
-  source: UnifiedWalletRiskReason["source"]
+  source: UnifiedWalletRiskReason["source"],
+  decisive: boolean
 ): UnifiedWalletRiskReason {
   return {
     code: candidate.atomicSignals[0] ?? `${candidate.row}:${candidate.evidenceIds[0] ?? "unknown"}`,
-    message: source === "hard_evidence"
-      ? "Applicable exact hard evidence from the canonical scoring matrix."
-      : `Applicable ${candidate.row} evidence from the canonical scoring matrix.`,
+    message: decisive
+      ? source === "hard_evidence"
+        ? "Applicable exact hard evidence selected by the canonical final disposition."
+        : `Applicable ${candidate.row} evidence selected by the canonical final disposition.`
+      : `Observed non-decisive ${candidate.row} context from the canonical scoring matrix.`,
     score: candidate.score,
     source
   };
 }
 
+function resolvedCandidateFloors(candidate: ClassifiedMatrixCandidate | null): {
+  hardEvidence: number;
+  policy: number;
+  assetContinuation: number;
+  pattern: number;
+} {
+  if (!candidate) return { hardEvidence: 0, policy: 0, assetContinuation: 0, pattern: 0 };
+  return {
+    hardEvidence: candidate.evidenceClass === "exact_hard" ? candidate.score : 0,
+    policy: candidate.evidenceClass === "policy" ? candidate.score : 0,
+    assetContinuation: candidate.row === "asset_continuation" ? candidate.score : 0,
+    pattern: candidate.evidenceClass === "pattern" && candidate.row !== "asset_continuation" ? candidate.score : 0
+  };
+}
+
 function walletDecisionCoverage(
   report: WhereIsMoneyReport,
+  deepReport: DeepAddressForensicReport | null | undefined,
   coverageLevel: UnifiedWalletCoverageLevel
 ): DecisionCoverage {
   const notApplicable = report.coverage.questionStatus === "not_applicable";
-  const invalid = !notApplicable && report.scoreValid !== true;
+  const whereInvalid = !notApplicable && report.scoreValid !== true;
+  const firstHopLimitations = requiredFirstHopCoverageLimitations(deepReport);
+  const firstHopInvalid = firstHopLimitations.length > 0;
+  const invalid = whereInvalid || firstHopInvalid;
+  const firstHopIncompleteReason = firstHopInvalid
+    ? deepReport?.firstHopBlacklistCoverage?.incompleteReason
+    : null;
   return {
-    required: notApplicable ? "not_applicable" : invalid ? "invalid" : "valid",
+    required: invalid ? "invalid" : notApplicable ? "not_applicable" : "valid",
     overall: invalid || report.coverage.partial || coverageLevel !== "complete" ? "partial" : "complete",
-    invalidModes: invalid ? ["where_is_money"] : [],
-    caveats: [...report.coverage.notes, ...(report.assessment.warnings ?? [])]
+    invalidModes: [
+      ...(whereInvalid ? ["where_is_money"] : []),
+      ...(firstHopInvalid ? ["deep_first_hop_blacklist"] : [])
+    ],
+    caveats: [
+      ...report.coverage.notes,
+      ...(report.assessment.warnings ?? []),
+      ...(firstHopIncompleteReason ? [firstHopIncompleteReason] : []),
+      ...firstHopLimitations
+    ]
   };
+}
+
+function requiredFirstHopCoverageLimitations(
+  report: DeepAddressForensicReport | null | undefined
+): string[] {
+  const coverage = report?.firstHopBlacklistCoverage;
+  if (!coverage || coverage.requiredForDecision !== true) return [];
+
+  const limitations: string[] = [];
+  if (coverage.blacklistCheckCoverage !== "complete") {
+    limitations.push(`First-hop blacklist checks are ${coverage.blacklistCheckCoverage}.`);
+  }
+  if (coverage.directPrincipalTransferCoverage !== "complete") {
+    limitations.push("First-hop blacklist direct principal transfer coverage is partial.");
+  }
+  if (coverage.failedMaterialCounterpartyCount > 0) {
+    limitations.push(`First-hop blacklist checks failed for ${coverage.failedMaterialCounterpartyCount} material counterparties.`);
+  }
+  if (coverage.uncheckedMaterialCounterpartyCount > 0) {
+    limitations.push(`First-hop blacklist checks did not run for ${coverage.uncheckedMaterialCounterpartyCount} material counterparties.`);
+  }
+  const accountedCount = coverage.checkedMaterialCounterpartyCount +
+    coverage.failedMaterialCounterpartyCount +
+    coverage.uncheckedMaterialCounterpartyCount;
+  if (accountedCount !== coverage.materialCounterpartyCount) {
+    limitations.push("First-hop blacklist material counterparty coverage counts do not match.");
+  }
+  if (coverage.partialTimelineFactCount > 0) {
+    limitations.push("First-hop blacklist fact timeline coverage is partial.");
+  }
+  if (limitations.length === 0 && coverage.incompleteReason) {
+    limitations.push("First-hop blacklist coverage is marked incomplete.");
+  }
+  return limitations;
 }
 
 export function observedContextFromMatrix(matrix: MatrixScoringResult, weightedContextScore: number): number {
@@ -518,28 +561,30 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     candidate.evidenceClass === "pattern" && candidate.row !== "asset_continuation"
   );
   const coverageCandidates = classifiedCandidates.filter((candidate) => candidate.evidenceClass === "coverage");
-  const hardReasons = exactHardCandidates.map((candidate) => matrixCandidateReason(candidate, "hard_evidence"));
-  const policyReasons = policyCandidates.map((candidate) => matrixCandidateReason(candidate, "policy_floor"));
-  const assetContinuationReasons = assetContinuationCandidates
-    .map((candidate) => matrixCandidateReason(candidate, "asset_continuation"));
-  const patternReasons = patternCandidates.map((candidate) => matrixCandidateReason(candidate, "pattern_floor"));
-  const hardEvidenceFloor = maxScore(exactHardCandidates.map((candidate) => candidate.score));
-  const policyFloor = maxScore(policyCandidates.map((candidate) => candidate.score));
-  const assetContinuationFloorScore = maxScore(assetContinuationCandidates.map((candidate) => candidate.score));
-  const patternFloor = maxScore(patternCandidates.map((candidate) => candidate.score));
+  const rawHardEvidenceFloor = maxScore(exactHardCandidates.map((candidate) => candidate.score));
+  const rawPolicyFloor = maxScore(policyCandidates.map((candidate) => candidate.score));
+  const rawAssetContinuationFloor = maxScore(assetContinuationCandidates.map((candidate) => candidate.score));
+  const rawPatternFloor = maxScore(patternCandidates.map((candidate) => candidate.score));
+  const exactVerify20PatternFloor = patternCandidates.some((candidate) =>
+    candidate.row === "contract_suspicion" &&
+    candidate.score >= 85 &&
+    candidate.atomicSignals.length === 1 &&
+    candidate.atomicSignals[0] === "exact_verify20_contract_pattern" &&
+    candidate.modifiers.includes("direct_contract_subject_anchor")
+  );
   const coverageFloorScore = maxScore(coverageCandidates.map((candidate) => candidate.score));
   const coverageLevelValue = coverageLevel(input);
 
   const floorScore = maxScore([
-    hardEvidenceFloor,
-    policyFloor,
-    assetContinuationFloorScore,
-    patternFloor
+    rawHardEvidenceFloor,
+    rawPolicyFloor,
+    rawAssetContinuationFloor,
+    rawPatternFloor
   ]);
   const dampenerReason = rawDampener(input, {
-    strongTransitAnchor: assetContinuationFloorScore > 0 ||
-      patternFloor > 0 ||
-      (policyFloor > 0 && hasStrongTransitSourcePolicyAnchor(input.whereReport))
+    strongTransitAnchor: rawAssetContinuationFloor > 0 ||
+      rawPatternFloor > 0 ||
+      (rawPolicyFloor > 0 && hasStrongTransitSourcePolicyAnchor(input.whereReport))
   });
   const dampener = allowedDampener({
     raw: dampenerReason.score,
@@ -549,33 +594,50 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const contextScore = clampScore(weightedLayerScore - dampener);
   const coverageAdjustedContextScore = coverageLevelValue === "limited" ? Math.max(contextScore, 30) : contextScore;
   const legacyFinalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
-  const legacyFinalScore = hardEvidenceFloor === 0 ? Math.min(legacyFinalBeforeHardCap, 84) : legacyFinalBeforeHardCap;
-  const decisionCoverage = walletDecisionCoverage(input.whereReport, coverageLevelValue);
+  const legacyFinalScore = rawHardEvidenceFloor === 0 && !exactVerify20PatternFloor
+    ? Math.min(legacyFinalBeforeHardCap, 84)
+    : legacyFinalBeforeHardCap;
+  const decisionCoverage = walletDecisionCoverage(input.whereReport, input.deepReport, coverageLevelValue);
   const disposition = resolveFinalDisposition({
     subject: { decisionScope: "wallet_unified", address: input.address, txHash: null },
     matrixScore,
     coverage: decisionCoverage,
     observedContextScore: observedContextFromMatrix(matrixScore, coverageAdjustedContextScore)
   });
-  const matrixAnchor = matrixAnchorReason(matrixScore);
-
-  const floorReasons = [
-    ...hardReasons,
-    ...policyReasons,
-    ...assetContinuationReasons,
-    ...patternReasons,
-    ...(matrixAnchor ? [matrixAnchor] : [])
-  ];
-  const noHardEvidenceCriticalCapApplied = hardEvidenceFloor === 0 && legacyFinalBeforeHardCap > legacyFinalScore;
+  const decisiveCandidate = disposition.decisiveCandidate;
+  const resolvedFloors = resolvedCandidateFloors(decisiveCandidate);
+  const hardEvidenceFloor = resolvedFloors.hardEvidence;
+  const policyFloor = resolvedFloors.policy;
+  const assetContinuationFloorScore = resolvedFloors.assetContinuation;
+  const patternFloor = resolvedFloors.pattern;
+  const decisiveReason = decisiveCandidate
+    ? matrixCandidateReason(decisiveCandidate, matrixAnchorSource(decisiveCandidate), true)
+    : null;
+  const observedReasons = [
+    ...exactHardCandidates,
+    ...policyCandidates,
+    ...assetContinuationCandidates,
+    ...patternCandidates
+  ]
+    .filter((candidate) => candidate !== decisiveCandidate)
+    .map((candidate) => matrixCandidateReason(candidate, "deep_research", false));
+  const noHardEvidenceCriticalCapApplied = rawHardEvidenceFloor === 0 &&
+    !exactVerify20PatternFloor &&
+    legacyFinalBeforeHardCap > legacyFinalScore;
 
   const reasons = [
-    ...hardReasons,
-    ...policyReasons,
-    ...assetContinuationReasons,
-    ...patternReasons,
-    ...(matrixAnchor ? [matrixAnchor] : []),
+    ...(decisiveReason ? [decisiveReason] : []),
+    ...observedReasons.sort((a, b) => b.score - a.score || a.code.localeCompare(b.code)),
     ...(dampener > 0 ? [{ ...dampenerReason, score: dampener }] : [])
-  ].sort((a, b) => b.score - a.score);
+  ];
+  const activeAnchor: UnifiedWalletRiskActiveAnchor | null = decisiveReason && decisiveCandidate ? {
+    code: decisiveReason.code,
+    message: decisiveReason.message,
+    score: decisiveReason.score,
+    source: decisiveReason.source,
+    row: decisiveCandidate.row,
+    evidenceIds: decisiveCandidate.evidenceIds
+  } : null;
 
   return {
     finalScore: disposition.finalScore,
@@ -607,7 +669,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
         pattern: patternFloor,
         coverage: coverageFloorScore
       },
-      activeAnchor: activeAnchorFromReasons(floorReasons),
+      activeAnchor,
       noHardEvidenceCriticalCap: {
         applied: noHardEvidenceCriticalCapApplied,
         maxScore: 84

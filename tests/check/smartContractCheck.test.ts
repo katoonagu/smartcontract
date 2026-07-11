@@ -3,7 +3,8 @@ import {
   buildStandaloneContractAnalysisCaseFile,
   checkSmartContractAddress,
   evaluateSmartContractAddress,
-  mergeContractSafetyContext
+  mergeContractSafetyContext,
+  normalizeSmartContractCheckReport
 } from "../../src/check/smartContractCheck";
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
@@ -65,6 +66,16 @@ function contractProfile(overrides: Partial<ContractIntelligenceProfile> = {}): 
     rawJson: {},
     ...overrides
   };
+}
+
+function exactVerify20Profile(overrides: Partial<ContractIntelligenceProfile> = {}): ContractIntelligenceProfile {
+  const methodMap = {
+    "5082dd12": "Verify20(address,address,address,uint256)",
+    "fc61dd23": "Verify10(address,uint256)",
+    "ea4418d9": "withdrawAllTrxTo(address)",
+    "f2fde38b": "transferOwnership(address)"
+  };
+  return contractProfile({ methodMap, ...overrides });
 }
 
 function activeUnlimitedApproval(overrides: Partial<WalletApprovalSpenderRelation> = {}): WalletApprovalSpenderRelation {
@@ -247,6 +258,330 @@ describe("merge contract safety context", () => {
 });
 
 describe("smart contract check", () => {
+  it("declines an exact Verify20 fingerprint without claiming a specific theft", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      decision: "DECLINE",
+      riskScore: 85,
+      riskLevel: "CRITICAL",
+      verify20Fingerprint: {
+        matched: true,
+        blockedByTrustedService: false,
+        missingSelectors: [],
+        mismatchedSelectors: []
+      }
+    });
+    expect(report.reasons).toContain("exact_verify20_contract_pattern");
+    expect(report.reasons.join(" ")).not.toMatch(/victim|amount|stolen transfer/i);
+  });
+
+  it("does not apply the Verify20 floor to trusted services or incomplete fingerprints", () => {
+    const trusted = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Verified Router", tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "low",
+        serviceTag: "Router",
+        providerTags: [{ kind: "blueTag", label: "Router", url: null }],
+        txCount: "1000",
+        totalCallCount: "1000",
+        totalCallerCount: "100"
+      }),
+      relatedApprovals: []
+    });
+    const partial = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile({
+        methodMap: {
+          "5082dd12": "Verify20(address,address,address,uint256)",
+          "fc61dd23": "Verify10(address,uint256)",
+          "ea4418d9": "withdrawAllTrxTo(address)"
+        }
+      }),
+      relatedApprovals: []
+    });
+
+    expect(trusted.verify20Fingerprint).toMatchObject({ matched: false, blockedByTrustedService: true });
+    expect(trusted.riskScore).toBe(10);
+    expect(partial.verify20Fingerprint).toMatchObject({ matched: false, missingSelectors: ["f2fde38b"] });
+    expect(partial.riskScore).toBe(35);
+  });
+
+  it("never exempts exact Verify20 from a verified display name without an authoritative tag", () => {
+    const profile = exactVerify20Profile({
+      isVerified: true,
+      verified: true,
+      sourceStatus: "available",
+      lowMetadata: false,
+      activityLevel: "high",
+      serviceTag: null,
+      publicTag: null,
+      publicTagDesc: null,
+      providerTags: [],
+      publicTags: []
+    });
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Router", tag: null, verified: true }),
+      contractProfile: profile,
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      serviceLabel: null,
+      decision: "DECLINE",
+      riskScore: 85,
+      verify20Fingerprint: { matched: true, blockedByTrustedService: false }
+    });
+
+    const persistedExemption = JSON.parse(JSON.stringify(report));
+    persistedExemption.serviceLabel = "Router";
+    persistedExemption.decision = "ACCEPTABLE";
+    persistedExemption.riskScore = 10;
+    persistedExemption.riskLevel = "LOW";
+    persistedExemption.verify20Fingerprint = {
+      matched: false,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: true,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    };
+    expect(normalizeSmartContractCheckReport(persistedExemption, subjectAddress)).toBeNull();
+  });
+
+  it("preserves the Verify20 exemption for an authoritative verified metadata tag", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Display Name", tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "low",
+        serviceTag: null,
+        publicTag: null,
+        publicTagDesc: null,
+        providerTags: [],
+        publicTags: []
+      }),
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      serviceLabel: "Router",
+      decision: "ACCEPTABLE",
+      riskScore: 10,
+      verify20Fingerprint: { matched: false, blockedByTrustedService: true }
+    });
+    expect(normalizeSmartContractCheckReport(JSON.parse(JSON.stringify(report)), subjectAddress)).not.toBeNull();
+  });
+
+  it("finds a later authoritative service-like provider tag without requiring activity", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "low",
+        serviceTag: null,
+        providerTags: [
+          { kind: "blueTag", label: "Foundation", url: null },
+          { kind: "blueTag", label: "Router", url: null }
+        ],
+        publicTags: []
+      }),
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      serviceLabel: "Router",
+      decision: "ACCEPTABLE",
+      riskScore: 10,
+      verify20Fingerprint: { matched: false, blockedByTrustedService: true }
+    });
+  });
+
+  it("does not exempt unverified authoritative-looking tags or provider-risk contracts", () => {
+    const unverified = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ tag: "Router", verified: false }),
+      contractProfile: exactVerify20Profile({ activityLevel: "low", serviceTag: "Router" }),
+      relatedApprovals: []
+    });
+    const providerRisk = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        activityLevel: "high",
+        serviceTag: "Router",
+        providerRisk: true
+      }),
+      relatedApprovals: []
+    });
+
+    expect(unverified).toMatchObject({
+      serviceLabel: null,
+      decision: "DECLINE",
+      riskScore: 85,
+      verify20Fingerprint: { matched: true }
+    });
+    expect(providerRisk.serviceLabel).toBeNull();
+    expect(providerRisk.verify20Fingerprint.matched).toBe(true);
+    expect(providerRisk.riskScore).toBe(90);
+  });
+
+  it("does not treat a verified display name as a generic standalone service identity", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Router", tag: null, verified: true }),
+      contractProfile: contractProfile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: null,
+        providerTags: [],
+        publicTags: []
+      }),
+      relatedApprovals: []
+    });
+
+    expect(report.serviceLabel).toBeNull();
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBe(35);
+  });
+
+  it("rejects persisted reports whose matched fingerprint contradicts their profile", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    });
+    const persisted = JSON.parse(JSON.stringify(report));
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toMatchObject({
+      subjectAddress,
+      verify20Fingerprint: { matched: true }
+    });
+    persisted.contractProfile.methodMap = {};
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({ ...persisted, verify20Fingerprint: undefined }, subjectAddress)).toBeNull();
+  });
+
+  it("rejects a forged persisted service label but preserves a verified activity-backed service guard", () => {
+    const exact = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    });
+    const forged = JSON.parse(JSON.stringify(exact));
+    forged.serviceLabel = "Trusted Router";
+    forged.verify20Fingerprint = {
+      matched: false,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: true,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    };
+    forged.decision = "ACCEPTABLE";
+    forged.riskScore = 10;
+    forged.riskLevel = "LOW";
+    expect(normalizeSmartContractCheckReport(forged, subjectAddress)).toBeNull();
+
+    const missingTrustField = JSON.parse(JSON.stringify(exact));
+    delete missingTrustField.contractProfile.activityLevel;
+    expect(normalizeSmartContractCheckReport(missingTrustField, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({ ...exact, activityLabel: "high" }, subjectAddress)).toBeNull();
+
+    const aiOnly = JSON.parse(JSON.stringify(exact));
+    aiOnly.llmVerdict = { verdict: "legitimate_service", reasons: ["Trusted Router"] };
+    expect(normalizeSmartContractCheckReport(aiOnly, subjectAddress)).toMatchObject({
+      serviceLabel: null,
+      verify20Fingerprint: { matched: true }
+    });
+    const nameOnly = JSON.parse(JSON.stringify(exact));
+    nameOnly.metadata.name = "Trusted Router";
+    nameOnly.metadata.tag = "Router";
+    expect(normalizeSmartContractCheckReport(nameOnly, subjectAddress)).toMatchObject({
+      serviceLabel: null,
+      verify20Fingerprint: { matched: true }
+    });
+
+    const legitimate = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Verified Router", tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: "Router",
+        providerTags: [{ kind: "blueTag", label: "Router", url: null }]
+      }),
+      relatedApprovals: []
+    });
+    expect(normalizeSmartContractCheckReport(JSON.parse(JSON.stringify(legitimate)), subjectAddress)).toMatchObject({
+      serviceLabel: "Router",
+      verify20Fingerprint: { matched: false, blockedByTrustedService: true }
+    });
+  });
+
+  it("rejects persisted exactDrainProven without typed approve-transferFrom proof", () => {
+    const persisted = JSON.parse(JSON.stringify(evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    })));
+    persisted.exactDrainProven = true;
+    persisted.riskScore = 95;
+    persisted.riskLevel = "CRITICAL";
+    persisted.decision = "DECLINE";
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
+  });
+
+  it("rejects case-mutated persisted TRON subjects and nested addresses", () => {
+    const persisted = JSON.parse(JSON.stringify(evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    })));
+    const caseMutated = subjectAddress.replace("C", "c");
+
+    expect(normalizeSmartContractCheckReport({ ...persisted, subjectAddress: caseMutated }, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({
+      ...persisted,
+      metadata: { ...persisted.metadata, address: caseMutated }
+    }, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({
+      ...persisted,
+      contractProfile: { ...persisted.contractProfile, contractAddress: caseMutated }
+    }, subjectAddress)).toBeNull();
+  });
+
   it("declines a TNKG-style unverified active unlimited approval spender without exact drain proof", () => {
     const report = evaluateSmartContractAddress({
       subjectAddress,
@@ -526,7 +861,7 @@ describe("smart contract check", () => {
     expect(report.reasons).toContain("active_unlimited_usdt_approval_spender");
   });
 
-  it("skips LLM analysis for a known verified service without approval risk", async () => {
+  it("skips LLM analysis for an authoritative verified service tag even with low activity", async () => {
     let analyzerCalls = 0;
     const report = await checkSmartContractAddress({
       address: subjectAddress,
@@ -536,7 +871,7 @@ describe("smart contract check", () => {
         verified: true,
         sourceStatus: "available",
         lowMetadata: false,
-        activityLevel: "high",
+        activityLevel: "low",
         serviceTag: "Bridgers:Cross-chain Bridge",
         providerTags: [{ kind: "blueTag", label: "Bridgers:Cross-chain Bridge", url: null }],
         txCount: "4380107",

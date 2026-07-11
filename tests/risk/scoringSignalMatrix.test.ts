@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SCORING_SIGNAL_MATRIX_POLICY_VERSION,
   scoreMatrixCandidates,
   type MatrixCandidate,
   type MatrixCandidateContext,
@@ -90,7 +91,7 @@ describe("scoreMatrixCandidates", () => {
     ], matrixContext);
 
     expect(result).toMatchObject({
-      policyVersion: "scoring-signal-matrix-v1",
+      policyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       policyScore: 95,
       matrixDecision: "DECLINE",
       winningRow: "hard_proof",
@@ -109,6 +110,31 @@ describe("scoreMatrixCandidates", () => {
         txHash: null
       }
     });
+  });
+
+  it("uses matrix v2 and breaks equal-score ties by restriction then direct policy then hard proof", () => {
+    const result = scoreMatrixCandidates([
+      matrixDraft({ kind: "exact_hard", proofSource: "approval_drain_exact" }, {
+        row: "hard_proof",
+        score: 90,
+        evidenceEpisodeIds: ["episode:hard"]
+      }),
+      matrixDraft({ kind: "policy", decisionEligibility: "can_decline", coverageDependency: "none" }, {
+        row: "direct_counterparty_policy",
+        score: 90,
+        evidenceEpisodeIds: ["episode:direct"]
+      }),
+      matrixDraft({ kind: "exact_hard", proofSource: "stablecoin_restriction" }, {
+        row: "subject_restriction",
+        score: 90,
+        evidenceEpisodeIds: ["episode:subject"]
+      })
+    ], matrixContext);
+
+    expect(result.policyVersion).toBe("scoring-signal-matrix-v2");
+    expect(result.winningRow).toBe("subject_restriction");
+    expect(result.riskVector.direct_counterparty_policy).toHaveLength(1);
+    expect(result.riskVector.hard_proof).toHaveLength(1);
   });
 
   it("does not let coverage evidence create badness", () => {

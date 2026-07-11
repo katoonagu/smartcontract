@@ -1,6 +1,10 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import type { SmartContractCheckReport } from "../check/smartContractCheck";
 import { calculateHistoricalTransitBreakdown } from "../forensics/historicalTransitScore";
 import type {
+  CounterpartyRiskDirection,
+  DirectCounterpartyInteractionProfile,
+  FirstHopBlacklistFact,
   IncomingFreshBundleExposure,
   IncomingWalletExposureProfile,
   RiskLabel,
@@ -20,6 +24,7 @@ export type WalletMatrixCandidateInput = {
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
+  smartContractReport?: SmartContractCheckReport | null;
 };
 
 export type IncomingDepositMatrixCandidateInput = {
@@ -28,6 +33,7 @@ export type IncomingDepositMatrixCandidateInput = {
   txHash: string;
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
+  receiverDeepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
   freshBundleExposure?: IncomingFreshBundleExposure | null;
   walletExposureProfile?: IncomingWalletExposureProfile | null;
@@ -75,6 +81,234 @@ function contextScore(value: number, max = 59): number {
   return Math.max(0, Math.min(max, Math.round(value)));
 }
 
+const DIRECT_POLICY_ABSOLUTE_RAW = 10_000n * 1_000_000n;
+const DIRECT_POLICY_RELATIVE_MIN_RAW = 100n * 1_000_000n;
+const DIRECT_POLICY_RELATIVE_MIN_SHARE = 0.01;
+
+type DirectPolicyProfileBinding = {
+  principalAmountRaw: bigint;
+  principalTxCount: number;
+  scoreContribution: number;
+};
+
+type DirectPolicyProfileIndex = Map<string, DirectPolicyProfileBinding[]>;
+
+function directPolicyProfileKey(input: {
+  subjectAddress: string;
+  counterpartyAddress: string;
+  direction: CounterpartyRiskDirection;
+  txHashes: string[];
+}): string | null {
+  if (input.txHashes.some((txHash) => typeof txHash !== "string" || txHash.trim().length === 0)) return null;
+  const uniqueHashes = [...new Set(input.txHashes)];
+  if (uniqueHashes.length !== input.txHashes.length) return null;
+  return [
+    input.subjectAddress.trim(),
+    input.counterpartyAddress.trim(),
+    input.direction,
+    ...uniqueHashes.sort((left, right) => left.localeCompare(right))
+  ].join(":");
+}
+
+function indexedDirectPolicyProfile(
+  reportSubjectAddress: string,
+  profile: DirectCounterpartyInteractionProfile
+): { key: string; binding: DirectPolicyProfileBinding } | null {
+  if (
+    !sameAddress(profile.subjectAddress, reportSubjectAddress) ||
+    !Number.isFinite(profile.scoreContribution) ||
+    profile.scoreContribution < 0 ||
+    profile.scoreContribution > 100 ||
+    !Array.isArray(profile.transfers) ||
+    profile.transfers.length === 0
+  ) return null;
+
+  const principalAmountByTxHash = new Map<string, bigint>();
+  const seenPrincipalMovements = new Set<string>();
+  for (const transfer of profile.transfers) {
+    if (
+      !transfer ||
+      typeof transfer.txHash !== "string" ||
+      transfer.txHash.trim().length === 0 ||
+      typeof transfer.amountRaw !== "string" ||
+      !/^(0|[1-9]\d*)$/.test(transfer.amountRaw) ||
+      (transfer.economicRole !== undefined &&
+        transfer.economicRole !== "principal" &&
+        transfer.economicRole !== "service_fee")
+    ) return null;
+    const endpointsMatch = profile.direction === "inbound"
+      ? sameAddress(transfer.fromAddress, profile.counterpartyAddress) &&
+        sameAddress(transfer.toAddress, profile.subjectAddress)
+      : sameAddress(transfer.fromAddress, profile.subjectAddress) &&
+        sameAddress(transfer.toAddress, profile.counterpartyAddress);
+    if (!endpointsMatch) return null;
+    if (transfer.economicRole === "service_fee") continue;
+    const amountRaw = BigInt(transfer.amountRaw);
+    if (amountRaw === 0n) continue;
+    const movementSignature = JSON.stringify({
+      txHash: transfer.txHash,
+      fromAddress: transfer.fromAddress,
+      toAddress: transfer.toAddress,
+      amountRaw: transfer.amountRaw,
+      timestamp: transfer.timestamp,
+      method: transfer.method,
+      edgeType: transfer.edgeType,
+      economicRole: transfer.economicRole ?? null,
+      economicProtocol: transfer.economicProtocol ?? null
+    });
+    if (seenPrincipalMovements.has(movementSignature)) return null;
+    seenPrincipalMovements.add(movementSignature);
+    principalAmountByTxHash.set(
+      transfer.txHash,
+      (principalAmountByTxHash.get(transfer.txHash) ?? 0n) + amountRaw
+    );
+  }
+  if (principalAmountByTxHash.size === 0) return null;
+
+  const principalTxHashes = [...principalAmountByTxHash.keys()];
+  const key = directPolicyProfileKey({
+    subjectAddress: profile.subjectAddress,
+    counterpartyAddress: profile.counterpartyAddress,
+    direction: profile.direction,
+    txHashes: principalTxHashes
+  });
+  if (key === null) return null;
+  return {
+    key,
+    binding: {
+      principalAmountRaw: [...principalAmountByTxHash.values()].reduce((sum, amountRaw) => sum + amountRaw, 0n),
+      principalTxCount: principalAmountByTxHash.size,
+      scoreContribution: profile.scoreContribution
+    }
+  };
+}
+
+function buildDirectPolicyProfileIndex(report: DeepAddressForensicReport): DirectPolicyProfileIndex {
+  const index: DirectPolicyProfileIndex = new Map();
+  for (const profile of arrayOrEmpty(report.directCounterpartyInteractionProfiles)) {
+    const indexed = indexedDirectPolicyProfile(report.subjectAddress, profile);
+    if (!indexed) continue;
+    index.set(indexed.key, [...(index.get(indexed.key) ?? []), indexed.binding]);
+  }
+  return index;
+}
+
+function boundDirectPolicyProfileScore(
+  report: DeepAddressForensicReport,
+  fact: FirstHopBlacklistFact,
+  profileIndex: DirectPolicyProfileIndex
+): number | null {
+  const key = directPolicyProfileKey({
+    subjectAddress: report.subjectAddress,
+    counterpartyAddress: fact.counterpartyAddress,
+    direction: fact.direction,
+    txHashes: fact.transferTxHashes
+  });
+  if (key === null || fact.principalTxCount !== fact.transferTxHashes.length) return null;
+  const principalAmountRaw = BigInt(fact.principalAmountRaw);
+  const bindings = (profileIndex.get(key) ?? []).filter((binding) =>
+    binding.principalAmountRaw === principalAmountRaw &&
+    binding.principalTxCount === fact.principalTxCount
+  );
+  return bindings.length > 0
+    ? Math.max(...bindings.map((binding) => binding.scoreContribution))
+    : null;
+}
+
+function verifiedBlacklistEventTxHash(fact: FirstHopBlacklistFact): string | null {
+  if (!fact.effectiveTxHash) return null;
+  return fact.timelineEvents.some((event) =>
+    event.txHash === fact.effectiveTxHash && event.verification === "verified_contract_log"
+  ) ? fact.effectiveTxHash : null;
+}
+
+function directCounterpartyPolicyCandidate(
+  context: MatrixCandidateContext,
+  report: DeepAddressForensicReport,
+  profileIndex: DirectPolicyProfileIndex,
+  fact: FirstHopBlacklistFact,
+  actionUnit: "wallet" | "incoming_deposit"
+): MatrixCandidate | null {
+  if (
+    fact.evidenceKind !== "usdt_blacklist" ||
+    fact.evidenceAuthority !== "official_contract" ||
+    fact.statusAtCheck !== "active" ||
+    !/^(0|[1-9]\d*)$/.test(fact.principalAmountRaw) ||
+    BigInt(fact.principalAmountRaw) <= 0n ||
+    fact.principalTxCount <= 0 ||
+    fact.transferTxHashes.length === 0
+  ) return null;
+
+  const boundProfileScore = boundDirectPolicyProfileScore(report, fact, profileIndex);
+  if (boundProfileScore === null) return null;
+
+  const principalAmountRaw = BigInt(fact.principalAmountRaw);
+  const absoluteMaterial = principalAmountRaw >= DIRECT_POLICY_ABSOLUTE_RAW;
+  const exactShare = fact.directTransferCoverage === "complete" && fact.shareSemantics === "exact";
+  const relativeMaterial = exactShare &&
+    fact.directionalPrincipalShare !== null &&
+    principalAmountRaw >= DIRECT_POLICY_RELATIVE_MIN_RAW &&
+    fact.directionalPrincipalShare >= DIRECT_POLICY_RELATIVE_MIN_SHARE;
+  if (!absoluteMaterial && !relativeMaterial) return null;
+
+  const currentStateId = `usdt_blacklist_state:${fact.counterpartyAddress}:${fact.checkedAt}`;
+  const eventTxHash = verifiedBlacklistEventTxHash(fact);
+  const ids = [...new Set([
+    ...fact.transferTxHashes,
+    ...(eventTxHash ? [eventTxHash] : []),
+    currentStateId
+  ])].sort((left, right) => left.localeCompare(right));
+  const profileScore = exactShare ? boundProfileScore : 0;
+  return candidate(context, {
+    kind: "policy",
+    decisionEligibility: "can_decline",
+    coverageDependency: "none"
+  }, {
+    row: "direct_counterparty_policy",
+    actionUnit,
+    score: exactShare ? Math.max(60, Math.min(90, Math.round(profileScore))) : 60,
+    evidenceIds: ids,
+    evidenceEpisodeIds: [`direct_counterparty_policy:${fact.direction}:${fact.counterpartyAddress}`],
+    atomicSignals: ["direct_counterparty_current_usdt_blacklist"],
+    modifiers: [`direction_${fact.direction}`, `blacklist_timing_${fact.temporalRelation}`],
+    caps: profileScore > 90 ? ["direct_counterparty_policy_cap_90"] : [],
+    dampeners: [],
+    caveats: []
+  });
+}
+
+function walletDirectCounterpartyPolicyCandidates(
+  context: MatrixCandidateContext,
+  report: DeepAddressForensicReport | null | undefined
+): MatrixCandidate[] {
+  if (!report || !sameAddress(report.subjectAddress, context.subjectAddress)) return [];
+  const profileIndex = buildDirectPolicyProfileIndex(report);
+  return arrayOrEmpty(report.firstHopBlacklistFacts)
+    .map((fact) => directCounterpartyPolicyCandidate(context, report, profileIndex, fact, "wallet"))
+    .filter((item): item is MatrixCandidate => item !== null);
+}
+
+function incomingDirectCounterpartyPolicyCandidates(
+  context: MatrixCandidateContext,
+  input: Pick<IncomingDepositMatrixCandidateInput, "senderAddress" | "receiverAddress" | "txHash" | "receiverDeepReport">
+): MatrixCandidate[] {
+  const report = input.receiverDeepReport;
+  if (!report || !sameAddress(report.subjectAddress, input.receiverAddress)) return [];
+  const profileIndex = buildDirectPolicyProfileIndex(report);
+  return arrayOrEmpty(report.firstHopBlacklistFacts)
+    .filter((fact) =>
+      fact.direction === "inbound" &&
+      sameAddress(fact.counterpartyAddress, input.senderAddress) &&
+      fact.transferTxHashes.includes(input.txHash)
+    )
+    .map((fact) => directCounterpartyPolicyCandidate(context, report, profileIndex, fact, "incoming_deposit"))
+    .filter((item): item is MatrixCandidate => item !== null)
+    .map((item) => ({
+      ...item,
+      modifiers: [...item.modifiers, `deposit_receiver_${input.receiverAddress}`]
+    }));
+}
+
 function coverageCandidate(context: MatrixCandidateContext, reason: string): MatrixCandidate {
   return candidate(context, { kind: "coverage", coverageDependency: context.requiredCoverage }, {
     row: "coverage_uncertainty",
@@ -117,7 +351,7 @@ function fastHardProofCandidates(
     context,
     { kind: "exact_hard", proofSource: "fast_exact_code" },
     {
-      row: "hard_proof",
+      row: item.code === "stablecoin_usdt_blacklisted" ? "subject_restriction" : "hard_proof",
       actionUnit: "wallet",
       score: item.score,
       evidenceIds: [item.evidenceId],
@@ -132,7 +366,7 @@ function fastHardProofCandidates(
 }
 
 function sameAddress(left: string | null | undefined, right: string): boolean {
-  return (left ?? "").toLowerCase() === right.toLowerCase();
+  return (left ?? "") === right;
 }
 
 function fastContextCandidates(
@@ -170,7 +404,7 @@ function deepCandidates(
   for (const profile of arrayOrEmpty(report.stablecoinRestrictionProfiles)) {
     if (!profile.isBlacklisted || !sameAddress(profile.subjectAddress, context.subjectAddress)) continue;
     candidates.push(candidate(context, { kind: "exact_hard", proofSource: "stablecoin_restriction" }, {
-      row: "hard_proof",
+      row: "subject_restriction",
       actionUnit: "wallet",
       score: 95,
       evidenceIds: [`stablecoin:${profile.subjectAddress}:${profile.tokenSymbol}`],
@@ -181,6 +415,10 @@ function deepCandidates(
       dampeners: [],
       caveats: []
     }));
+  }
+
+  if (context.decisionScope !== "incoming_unified") {
+    candidates.push(...walletDirectCounterpartyPolicyCandidates(context, report));
   }
 
   for (const profile of arrayOrEmpty(report.approvalDrainProvenanceProfiles)) {
@@ -768,6 +1006,33 @@ function buildAddressEvidenceCandidates(
   return candidates;
 }
 
+function directContractCandidates(
+  context: MatrixCandidateContext,
+  report: SmartContractCheckReport | null | undefined
+): MatrixCandidate[] {
+  if (!report || !sameAddress(report.subjectAddress, context.subjectAddress)) return [];
+  const fingerprint = report.verify20Fingerprint;
+  if (!fingerprint?.matched || fingerprint.blockedByTrustedService || report.serviceLabel !== null ||
+    fingerprint.missingSelectors.length > 0 || fingerprint.mismatchedSelectors.length > 0) return [];
+  const evidenceId = `contract:${context.subjectAddress}:verify20`;
+  return [candidate(context, {
+    kind: "pattern",
+    decisionEligibility: "can_decline",
+    coverageDependency: "none"
+  }, {
+    row: "contract_suspicion",
+    actionUnit: "wallet",
+    score: 85,
+    evidenceIds: [evidenceId],
+    evidenceEpisodeIds: [evidenceId],
+    atomicSignals: ["exact_verify20_contract_pattern"],
+    modifiers: ["direct_contract_subject_anchor"],
+    caps: [],
+    dampeners: [],
+    caveats: report.limitations
+  })];
+}
+
 export function buildWalletMatrixCandidates(input: WalletMatrixCandidateInput): MatrixCandidate[] {
   const context: MatrixCandidateContext = {
     decisionScope: "wallet_unified",
@@ -776,9 +1041,13 @@ export function buildWalletMatrixCandidates(input: WalletMatrixCandidateInput): 
     requiredCoverage: "wallet_provenance"
   };
   if (!sameAddress(input.whereReport.subjectAddress, input.address)) {
-    return [coverageCandidate(context, "coverage:where_subject_mismatch")];
+    return [
+      ...directContractCandidates(context, input.smartContractReport),
+      coverageCandidate(context, "coverage:where_subject_mismatch")
+    ];
   }
   const candidates = buildAddressEvidenceCandidates(context, input);
+  candidates.push(...directContractCandidates(context, input.smartContractReport));
 
   const deepReport = sameAddress(input.deepReport?.subjectAddress, input.address) ? input.deepReport : null;
   const deepSparse = deepReport ? (deepReport.coverage?.transferEdges ?? 0) < 10 : true;
@@ -797,6 +1066,7 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
     requiredCoverage: "deposit_provenance"
   };
   const candidates = buildAddressEvidenceCandidates(context, input, input.txHash);
+  candidates.push(...incomingDirectCounterpartyPolicyCandidates(context, input));
   const exposure = input.freshBundleExposure;
   const backgroundScore = Math.max(0, Math.min(20, Math.round(input.walletExposureProfile?.scoreContribution ?? 0)));
   if (backgroundScore > 0) {

@@ -9,13 +9,20 @@ import {
   incomingRiskBandFromUnifiedScore,
   incomingUnifiedRiskSummary
 } from "../../src/risk/unifiedIncomingDepositRisk";
-import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  type DeepAddressForensicReport
+} from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
+import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type {
   ApprovalDrainProvenanceProfile,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
+  FirstHopBlacklistCoverage,
+  FirstHopBlacklistFact,
   InboundProvenanceProfile,
   MoneyOriginSourceProvenanceMaterialitySummary,
   OperationalFlowProfile,
@@ -30,6 +37,36 @@ import type {
 } from "../../src/types";
 
 const address = `T${"1".repeat(33)}`;
+const directPolicyCounterparty = `T${"2".repeat(33)}`;
+const directPolicyTxHash = "a".repeat(64);
+const directPolicyEventTxHash = "b".repeat(64);
+
+function exactVerify20Report(overrides: Partial<SmartContractCheckReport> = {}): SmartContractCheckReport {
+  return {
+    subjectAddress: address,
+    decision: "DECLINE",
+    decisionScope: "contract_safety",
+    riskScore: 85,
+    riskLevel: "CRITICAL",
+    verify20Fingerprint: {
+      matched: true,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: false,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    },
+    exactDrainProven: false,
+    serviceLabel: null,
+    activityLabel: "low",
+    reasons: ["exact_verify20_contract_pattern"],
+    limitations: ["exact_drain_not_proven_in_standalone_check"],
+    metadata: {} as SmartContractCheckReport["metadata"],
+    contractProfile: null,
+    relatedApprovals: [],
+    llmVerdict: null,
+    ...overrides
+  };
+}
 
 function coverageDebug(summaryOverrides: Partial<CoverageDebugReport["summary"]> = {}): CoverageDebugReport {
   return {
@@ -256,6 +293,125 @@ function deepReport(overrides: Partial<DeepAddressForensicReport> = {}): DeepAdd
       apiKeyConfigured: true
     },
     coverageDebug: coverageDebug(),
+    ...overrides
+  };
+}
+
+function firstHopCoverage(overrides: Partial<FirstHopBlacklistCoverage> = {}): FirstHopBlacklistCoverage {
+  return {
+    requiredForDecision: true,
+    scope: "all_time",
+    windowStart: null,
+    windowEnd: null,
+    directPrincipalTransferCoverage: "complete",
+    materialCounterpartyCount: 1,
+    checkedMaterialCounterpartyCount: 1,
+    failedMaterialCounterpartyCount: 0,
+    uncheckedMaterialCounterpartyCount: 0,
+    blacklistCheckCoverage: "complete",
+    incompleteReason: null,
+    confirmedAdverseFactCount: 0,
+    completeTimelineFactCount: 0,
+    partialTimelineFactCount: 0,
+    ...overrides
+  };
+}
+
+function persistedEmptyFirstHopEnvelope(
+  requiredForDecision: boolean | undefined,
+  overrides: Partial<FirstHopBlacklistCoverage> = {}
+): Record<string, unknown> {
+  const coverage: Partial<FirstHopBlacklistCoverage> = firstHopCoverage({
+    requiredForDecision: requiredForDecision ?? false,
+    materialCounterpartyCount: 0,
+    checkedMaterialCounterpartyCount: 0,
+    ...overrides
+  });
+  if (requiredForDecision === undefined) delete coverage.requiredForDecision;
+  return JSON.parse(JSON.stringify({
+    firstHopBlacklistFacts: [],
+    firstHopLabelFacts: [],
+    firstHopBlacklistCoverage: coverage,
+    directHardEvidenceSnapshots: []
+  })) as Record<string, unknown>;
+}
+
+function directPolicyFact(overrides: Partial<FirstHopBlacklistFact> = {}): FirstHopBlacklistFact {
+  return {
+    counterpartyAddress: directPolicyCounterparty,
+    direction: "outbound",
+    evidenceKind: "usdt_blacklist",
+    evidenceAuthority: "official_contract",
+    statusAtCheck: "active",
+    temporalRelation: "became_active_after",
+    effectiveAt: "2026-05-24T01:00:00.000Z",
+    effectiveTxHash: directPolicyEventTxHash,
+    checkedAt: "2026-05-24T02:00:00.000Z",
+    principalAmountRaw: "10000000000",
+    principalTxCount: 1,
+    directionalPrincipalShare: null,
+    shareSemantics: "unavailable",
+    transferTxHashes: [directPolicyTxHash],
+    beforeEffectiveAmountRaw: "10000000000",
+    beforeEffectiveTxCount: 1,
+    activeAmountRaw: "0",
+    activeTxCount: 0,
+    unknownTimingAmountRaw: "0",
+    unknownTimingTxCount: 0,
+    directTransferCoverage: "partial",
+    timelineCoverage: "complete",
+    timelineEvents: [{
+      eventKind: "added",
+      occurredAt: "2026-05-24T01:00:00.000Z",
+      txHash: directPolicyEventTxHash,
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 81234567,
+      logIndex: 0,
+      verification: "verified_contract_log"
+    }],
+    ...overrides
+  };
+}
+
+function directPolicyProfile(overrides: Partial<DirectCounterpartyInteractionProfile> = {}): DirectCounterpartyInteractionProfile {
+  const subjectAddress = overrides.subjectAddress ?? address;
+  const counterpartyAddress = overrides.counterpartyAddress ?? directPolicyCounterparty;
+  const direction = overrides.direction ?? "outbound";
+  const txHashes = overrides.txHashes ?? [directPolicyTxHash];
+  return {
+    subjectAddress,
+    direction,
+    counterpartyAddress,
+    volumeRaw: "10000000000",
+    volumeRatio: 1,
+    txCount: 1,
+    firstSeen: "2026-05-24T00:00:00.000Z",
+    lastSeen: "2026-05-24T00:00:00.000Z",
+    txHashes,
+    transfers: txHashes.map((txHash) => ({
+      txHash,
+      fromAddress: direction === "inbound" ? counterpartyAddress : subjectAddress,
+      toAddress: direction === "inbound" ? subjectAddress : counterpartyAddress,
+      amountRaw: "10000000000",
+      timestamp: "2026-05-24T00:00:00.000Z",
+      method: "transfer",
+      edgeType: "normal_transfer"
+    })),
+    serviceCategory: null,
+    identity: null,
+    snapshot: {
+      address: counterpartyAddress,
+      riskScore: 95,
+      riskLevel: "CRITICAL",
+      source: "stablecoin_blacklist",
+      evidenceClass: "exact_labeled_counterparty",
+      reasons: [],
+      partialNotes: []
+    },
+    interactionWeight: 0.95,
+    scoreContribution: 88,
+    evidenceClass: "exact_labeled_counterparty",
+    skippedReason: null,
     ...overrides
   };
 }
@@ -560,7 +716,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       finalDecision: "DECLINE",
       hardEvidenceFloor: 95,
       activeAnchor: {
-        code: "matrix:hard_proof",
+        code: "stablecoin_usdt_blacklisted",
         score: 95,
         source: "hard_evidence"
       }
@@ -606,6 +762,234 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
   });
 
+  it("keeps receiver-bound direct counterparty policy decisive through invalid deposit provenance", () => {
+    const senderAddress = address;
+    const receiverAddress = `T${"7".repeat(33)}`;
+    const txHash = directPolicyTxHash;
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress,
+      receiverAddress,
+      txHash,
+      amountRaw: "10000000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(45, {
+        subjectAddress: senderAddress,
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved"
+      }),
+      receiverDeepReport: deepReport({
+        subjectAddress: receiverAddress,
+        firstHopBlacklistFacts: [directPolicyFact({
+          counterpartyAddress: senderAddress,
+          direction: "inbound",
+          transferTxHashes: [txHash]
+        })],
+        directCounterpartyInteractionProfiles: [directPolicyProfile({
+          subjectAddress: receiverAddress,
+          counterpartyAddress: senderAddress,
+          direction: "inbound",
+          txHashes: [txHash]
+        })]
+      }),
+      decisionCoverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: ["incoming_deposit_provenance"],
+        caveats: ["provider_cap_unresolved"]
+      }
+    });
+
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 60,
+      scoreValid: true,
+      decisionBasis: "independent_policy",
+      coverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: ["incoming_deposit_provenance"]
+      }
+    });
+  });
+
+  it("resolves incoming diagnostics to independent direct policy below an ineligible source-policy winner", () => {
+    const senderAddress = address;
+    const receiverAddress = `T${"7".repeat(33)}`;
+    const txHash = directPolicyTxHash;
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress,
+      receiverAddress,
+      txHash,
+      amountRaw: "10000000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(90, {
+        subjectAddress: senderAddress,
+        scoreValid: false,
+        assessment: whereAssessment(90, {
+          sourcePolicyEvidence: [{ ...sourcePolicyEvidence(90), evidenceIds: [txHash] }]
+        })
+      }),
+      receiverDeepReport: deepReport({
+        subjectAddress: receiverAddress,
+        firstHopBlacklistFacts: [directPolicyFact({
+          counterpartyAddress: senderAddress,
+          direction: "inbound",
+          transferTxHashes: [txHash]
+        })],
+        directCounterpartyInteractionProfiles: [directPolicyProfile({
+          subjectAddress: receiverAddress,
+          counterpartyAddress: senderAddress,
+          direction: "inbound",
+          txHashes: [txHash]
+        })]
+      }),
+      decisionCoverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: ["incoming_deposit_provenance"],
+        caveats: ["provider_cap_unresolved"]
+      }
+    });
+
+    expect(result.matrixScore).toMatchObject({ winningRow: "source_policy", policyScore: 90 });
+    expect(result.matrixScore.riskVector.direct_counterparty_policy?.[0].score).toBe(60);
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 60,
+      observedContextScore: 90,
+      decisionBasis: "independent_policy",
+      hardEvidenceFloor: 0,
+      policyFloor: 60,
+      assetContinuationFloor: 0,
+      patternFloor: 0,
+      scoreBreakdown: {
+        floors: { hardEvidence: 0, policy: 60, assetContinuation: 0, pattern: 0 },
+        activeAnchor: {
+          code: "direct_counterparty_current_usdt_blacklist",
+          score: 60,
+          source: "policy_floor",
+          row: "direct_counterparty_policy",
+          evidenceIds: expect.arrayContaining([txHash])
+        }
+      }
+    });
+    expect(result.reasons.find((reason) => reason.code === "source_policy_bridge_router_dex")?.source)
+      .toBe("deep_research");
+    expect(result.reasons[0]).toMatchObject({
+      code: "direct_counterparty_current_usdt_blacklist",
+      score: 60,
+      source: "policy_floor"
+    });
+  });
+
+  it("resolves incoming diagnostics to exact hard evidence below a direct policy matrix winner", () => {
+    const receiverAddress = `T${"7".repeat(33)}`;
+    const txHash = "tx-extended-provenance";
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: address,
+      receiverAddress,
+      txHash,
+      amountRaw: "10000000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport({ extendedProvenanceProfiles: [extendedProvenanceProfile("risky_contract", 85)] }),
+      receiverDeepReport: deepReport({
+        subjectAddress: receiverAddress,
+        firstHopBlacklistFacts: [directPolicyFact({
+          counterpartyAddress: address,
+          direction: "inbound",
+          transferTxHashes: [txHash],
+          directTransferCoverage: "complete",
+          shareSemantics: "exact",
+          directionalPrincipalShare: 1
+        })],
+        directCounterpartyInteractionProfiles: [directPolicyProfile({
+          subjectAddress: receiverAddress,
+          counterpartyAddress: address,
+          direction: "inbound",
+          txHashes: [txHash],
+          scoreContribution: 90
+        })]
+      })
+    });
+
+    expect(result.matrixScore).toMatchObject({ winningRow: "direct_counterparty_policy", policyScore: 90 });
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85,
+      observedContextScore: 90,
+      decisionBasis: "exact_hard_proof",
+      hardEvidenceFloor: 85,
+      policyFloor: 0,
+      assetContinuationFloor: 0,
+      patternFloor: 0,
+      scoreBreakdown: {
+        floors: { hardEvidence: 85, policy: 0, assetContinuation: 0, pattern: 0 },
+        activeAnchor: {
+          code: "deep_high_risk_extended_provenance",
+          score: 85,
+          source: "hard_evidence",
+          row: "hard_proof",
+          evidenceIds: [txHash]
+        }
+      }
+    });
+    expect(result.reasons.find((reason) => reason.code === "direct_counterparty_current_usdt_blacklist")?.source)
+      .toBe("deep_research");
+    expect(result.reasons[0]).toMatchObject({
+      code: "deep_high_risk_extended_provenance",
+      score: 85,
+      source: "hard_evidence"
+    });
+  });
+
+  it("anchors a normal valid incoming matrix result to its winner", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: address,
+      receiverAddress: `T${"2".repeat(33)}`,
+      txHash: "tx-normal-valid-incoming",
+      amountRaw: "1000000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(0),
+      freshBundleExposure: {
+        targetAmountRaw: "1000000000",
+        htxHuobiShare: 0.8,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.2,
+        dominantFreshSource: "htx_huobi",
+        reasons: ["HTX/Huobi source is dominant."]
+      }
+    });
+
+    expect(result).toMatchObject({
+      finalScore: 85,
+      decisionBasis: "matrix",
+      policyFloor: 85,
+      scoreBreakdown: {
+        activeAnchor: {
+          code: "incoming_fresh_htx_huobi_source",
+          score: 85,
+          source: "policy_floor",
+          row: "incoming_deposit_source_policy",
+          evidenceIds: ["incoming:tx-normal-valid-incoming:htx_huobi"]
+        }
+      }
+    });
+    expect(result.scoreBreakdown.activeAnchor?.score).toBe(result.finalScore);
+  });
+
   it("preserves no-final-decision when where scoring is technically invalid", () => {
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress: address,
@@ -639,6 +1023,13 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       scoreValid: false,
       observedContextScore: expect.any(Number),
       decisionBasis: "technical_stop"
+    });
+    expect(result.scoreBreakdown.activeAnchor).toBeNull();
+    expect(result.scoreBreakdown.floors).toMatchObject({
+      hardEvidence: 0,
+      policy: 0,
+      assetContinuation: 0,
+      pattern: 0
     });
   });
 
@@ -761,7 +1152,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     expect(result.scoreBreakdown.noHardEvidenceCriticalCap.applied).toBe(false);
     expect(result.scoreBreakdown.activeAnchor).toMatchObject({
       code: "incoming_fresh_htx_huobi_source",
-      source: "incoming_exposure"
+      source: "policy_floor"
     });
     expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_htx_huobi_corridor_context");
     expect(incomingUnifiedRiskSummary(result)).toMatchObject({
@@ -909,7 +1300,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.scoreBreakdown.activeAnchor).toMatchObject({
       code: "incoming_fresh_risky_label_source",
-      source: "incoming_exposure"
+      source: "policy_floor"
     });
     expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_fresh_htx_huobi_context");
   });
@@ -1043,6 +1434,61 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 });
 
 describe("calculateUnifiedWalletRisk", () => {
+  it("keeps Verify20 at 85 for a forged contract exact-drain flag and canonical Deep proof at 95", () => {
+    const invalidWhere = whereReport(20, {
+      scoreValid: false,
+      scoreBlockedReason: "insufficient_coverage",
+      technicalStatus: "provider_cap_unresolved",
+      coverage: { ...whereReport(20).coverage, partial: true }
+    });
+    const verify20 = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: null,
+      whereReport: invalidWhere,
+      smartContractReport: exactVerify20Report()
+    });
+    const forgedContractExactDrain = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: null,
+      whereReport: invalidWhere,
+      smartContractReport: exactVerify20Report({ exactDrainProven: true, riskScore: 95 })
+    });
+    const exactDrain = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] }),
+      whereReport: invalidWhere,
+      smartContractReport: exactVerify20Report()
+    });
+
+    expect(verify20).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85,
+      finalLevel: "CRITICAL",
+      decisionBasis: "independent_policy",
+      patternFloor: 85,
+      scoreValid: true,
+      scoreBreakdown: {
+        activeAnchor: { row: "contract_suspicion", score: 85 },
+        noHardEvidenceCriticalCap: { applied: false, maxScore: 84 }
+      }
+    });
+    expect(forgedContractExactDrain).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85,
+      hardEvidenceFloor: 0,
+      patternFloor: 85
+    });
+    expect(exactDrain).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 95,
+      hardEvidenceFloor: 95,
+      decisionBasis: "exact_hard_proof"
+    });
+  });
+
   it("scores incoming deposits through the shared scorer without auto-declining insufficient coverage", () => {
     const result = calculateUnifiedForensicRisk({
       subject: {
@@ -1115,7 +1561,7 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.matrixScore).toMatchObject({
-      policyVersion: "scoring-signal-matrix-v1",
+      policyVersion: "scoring-signal-matrix-v2",
       policyScore: 70,
       matrixDecision: "DECLINE",
       winningRow: "source_policy",
@@ -1235,7 +1681,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBe(70);
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.scoreBreakdown.activeAnchor).toMatchObject({
-      code: "matrix:source_policy",
+      code: "source_policy_bridge_router_dex",
       score: 70,
       source: "policy_floor"
     });
@@ -1316,7 +1762,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalLevel).toBe("HIGH");
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.scoreBreakdown.activeAnchor).toEqual(expect.objectContaining({
-      code: "matrix:service_linked_pattern",
+      code: "where_drain_episode_transit_pattern",
       source: "pattern_floor"
     }));
     expect(result.reasons.map((reason) => reason.code)).toContain("where_drain_episode_transit_pattern");
@@ -1666,7 +2112,7 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.weightedLayerScore).toBe(70);
-    expect(result.policyFloor).toBe(70);
+    expect(result.policyFloor).toBe(0);
     expect(result.assetContinuationFloor).toBe(82);
     expect(result.finalScore).toBe(82);
     expect(result.finalLevel).toBe("HIGH");
@@ -1704,7 +2150,7 @@ describe("calculateUnifiedWalletRisk", () => {
       })
     });
 
-    expect(result.policyFloor).toBe(70);
+    expect(result.policyFloor).toBe(0);
     expect(result.assetContinuationFloor).toBe(82);
     expect(result.dampener).toBe(0);
     expect(result.finalScore).toBe(82);
@@ -2396,7 +2842,7 @@ describe("calculateUnifiedWalletRisk", () => {
       });
 
       expect(result.weightedLayerScore).toBe(74);
-      expect(result.policyFloor).toBe(78);
+      expect(result.policyFloor).toBe(0);
       expect(result.assetContinuationFloor).toBe(84);
       expect(result.finalScore).toBe(84);
       expect(result.finalLevel).toBe("HIGH");
@@ -2690,6 +3136,381 @@ describe("calculateUnifiedWalletRisk", () => {
       coverage: {
         overall: "partial",
         invalidModes: ["where_is_money"]
+      }
+    });
+  });
+
+  it("keeps independent direct counterparty policy decisive while all unrelated limitations remain visible", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(45, {
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved",
+        coverage: {
+          ...whereReport(45).coverage,
+          partial: true,
+          notes: ["where_provider_cap_unresolved"]
+        }
+      }),
+      deepReport: deepReport({
+        firstHopBlacklistFacts: [directPolicyFact()],
+        directCounterpartyInteractionProfiles: [directPolicyProfile()],
+        firstHopBlacklistCoverage: firstHopCoverage({
+          scope: "checked_window",
+          windowStart: "2026-04-24T00:00:00.000Z",
+          windowEnd: "2026-05-24T00:00:00.000Z",
+          directPrincipalTransferCoverage: "partial",
+          blacklistCheckCoverage: "provider_failed",
+          incompleteReason: "one material counterparty provider call failed"
+        })
+      })
+    });
+
+    expect(result.matrixScore.riskVector.direct_counterparty_policy).toHaveLength(1);
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 60,
+      scoreValid: true,
+      decisionBasis: "independent_policy",
+      coverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: expect.arrayContaining(["where_is_money", "deep_first_hop_blacklist"]),
+        caveats: expect.arrayContaining([
+          "where_provider_cap_unresolved",
+          "one material counterparty provider call failed"
+        ])
+      }
+    });
+  });
+
+  it("resolves wallet diagnostics to independent direct policy below an ineligible source-policy winner", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(90, {
+        scoreValid: false,
+        assessment: whereAssessment(90, { sourcePolicyEvidence: [sourcePolicyEvidence(90)] }),
+        coverage: {
+          ...whereReport(90).coverage,
+          partial: true,
+          notes: ["provider_cap_unresolved"]
+        }
+      }),
+      deepReport: deepReport({
+        firstHopBlacklistFacts: [directPolicyFact()],
+        directCounterpartyInteractionProfiles: [directPolicyProfile()]
+      })
+    });
+
+    expect(result.matrixScore).toMatchObject({ winningRow: "source_policy", policyScore: 90 });
+    expect(result.matrixScore.riskVector.direct_counterparty_policy?.[0].score).toBe(60);
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 60,
+      observedContextScore: 90,
+      decisionBasis: "independent_policy",
+      hardEvidenceFloor: 0,
+      policyFloor: 60,
+      assetContinuationFloor: 0,
+      patternFloor: 0,
+      scoreBreakdown: {
+        floors: { hardEvidence: 0, policy: 60, assetContinuation: 0, pattern: 0 },
+        activeAnchor: {
+          code: "direct_counterparty_current_usdt_blacklist",
+          score: 60,
+          source: "policy_floor",
+          row: "direct_counterparty_policy",
+          evidenceIds: expect.arrayContaining([directPolicyTxHash])
+        }
+      }
+    });
+    expect(result.reasons.find((reason) => reason.code === "source_policy_bridge_router_dex")?.source)
+      .toBe("deep_research");
+    expect(result.reasons[0]).toMatchObject({
+      code: "direct_counterparty_current_usdt_blacklist",
+      score: 60,
+      source: "policy_floor"
+    });
+  });
+
+  it("resolves wallet diagnostics to exact hard evidence below a direct policy matrix winner", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        extendedProvenanceProfiles: [extendedProvenanceProfile("risky_contract", 85)],
+        firstHopBlacklistFacts: [directPolicyFact({
+          directTransferCoverage: "complete",
+          shareSemantics: "exact",
+          directionalPrincipalShare: 1
+        })],
+        directCounterpartyInteractionProfiles: [directPolicyProfile({ scoreContribution: 90 })]
+      })
+    });
+
+    expect(result.matrixScore).toMatchObject({ winningRow: "direct_counterparty_policy", policyScore: 90 });
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85,
+      observedContextScore: 90,
+      decisionBasis: "exact_hard_proof",
+      hardEvidenceFloor: 85,
+      policyFloor: 0,
+      assetContinuationFloor: 0,
+      patternFloor: 0,
+      scoreBreakdown: {
+        floors: { hardEvidence: 85, policy: 0, assetContinuation: 0, pattern: 0 },
+        activeAnchor: {
+          code: "deep_high_risk_extended_provenance",
+          score: 85,
+          source: "hard_evidence",
+          row: "hard_proof",
+          evidenceIds: ["tx-extended-provenance"]
+        }
+      }
+    });
+    expect(result.reasons.find((reason) => reason.code === "direct_counterparty_current_usdt_blacklist")?.source)
+      .toBe("deep_research");
+    expect(result.reasons[0]).toMatchObject({
+      code: "deep_high_risk_extended_provenance",
+      score: 85,
+      source: "hard_evidence"
+    });
+  });
+
+  it("anchors a normal valid wallet matrix result to its winner", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(70, {
+        assessment: whereAssessment(70, { sourcePolicyEvidence: [sourcePolicyEvidence(70)] })
+      }),
+      deepReport: deepReport()
+    });
+
+    expect(result).toMatchObject({
+      finalScore: 70,
+      decisionBasis: "matrix",
+      policyFloor: 70,
+      scoreBreakdown: {
+        activeAnchor: {
+          code: "source_policy_bridge_router_dex",
+          score: 70,
+          source: "policy_floor",
+          row: "source_policy",
+          evidenceIds: ["source-policy-bridge-router-dex"]
+        }
+      }
+    });
+    expect(result.scoreBreakdown.activeAnchor?.score).toBe(result.finalScore);
+  });
+
+  it.each([
+    ["running status", { blacklistCheckCoverage: "running", incompleteReason: "blacklist checks still running" }],
+    ["provider failure", { blacklistCheckCoverage: "provider_failed", incompleteReason: "provider failed" }],
+    ["budget exhaustion", { blacklistCheckCoverage: "budget_exhausted", incompleteReason: "budget exhausted" }],
+    ["partial history", { blacklistCheckCoverage: "history_partial", incompleteReason: "history partial" }],
+    ["failed material counterparty", { checkedMaterialCounterpartyCount: 0, failedMaterialCounterpartyCount: 1 }],
+    ["unchecked material counterparty", { checkedMaterialCounterpartyCount: 0, uncheckedMaterialCounterpartyCount: 1 }],
+    ["material count mismatch", { materialCounterpartyCount: 2 }],
+    ["partial direct transfer boundary", {
+      scope: "checked_window",
+      windowStart: "2026-04-24T00:00:00.000Z",
+      windowEnd: "2026-05-24T00:00:00.000Z",
+      directPrincipalTransferCoverage: "partial"
+    }]
+  ] as const)("blocks a clean final wallet result for incomplete required first-hop negative coverage: %s", (_label, overrides) => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport({ firstHopBlacklistCoverage: firstHopCoverage(overrides) })
+    });
+
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      finalLevel: null,
+      scoreValid: false,
+      decisionBasis: "technical_stop",
+      coverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: expect.arrayContaining(["deep_first_hop_blacklist"])
+      }
+    });
+    expect(result.coverage.caveats.some((caveat) => caveat.toLowerCase().includes("first-hop blacklist"))).toBe(true);
+    expect(result.scoreBreakdown.activeAnchor).toBeNull();
+  });
+
+  it("does not let an unbound confirmed direct fact bypass incomplete required first-hop coverage", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        firstHopBlacklistFacts: [directPolicyFact()],
+        directCounterpartyInteractionProfiles: [],
+        firstHopBlacklistCoverage: firstHopCoverage({
+          blacklistCheckCoverage: "provider_failed",
+          incompleteReason: "remaining material counterparty failed"
+        })
+      })
+    });
+
+    expect(result.matrixScore.riskVector.direct_counterparty_policy).toBeUndefined();
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      scoreValid: false,
+      decisionBasis: "technical_stop"
+    });
+  });
+
+  it("keeps required incomplete first-hop coverage blocking when Where is not applicable", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0, {
+        coverage: {
+          ...whereReport(0).coverage,
+          questionStatus: "not_applicable"
+        }
+      }),
+      deepReport: deepReport({
+        firstHopBlacklistCoverage: firstHopCoverage({
+          blacklistCheckCoverage: "running",
+          incompleteReason: "first-hop checks are still running"
+        })
+      })
+    });
+
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      scoreValid: false,
+      coverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: ["deep_first_hop_blacklist"]
+      }
+    });
+  });
+
+  it("preserves legacy behavior when first-hop coverage is absent or explicitly not required", () => {
+    const legacy = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport()
+    });
+    const notRequired = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        firstHopBlacklistCoverage: firstHopCoverage({
+          requiredForDecision: false,
+          blacklistCheckCoverage: "provider_failed",
+          incompleteReason: "legacy optional check"
+        })
+      })
+    });
+
+    expect(legacy.finalDecision).not.toBe("NO_FINAL_DECISION");
+    expect(notRequired.finalDecision).toBe(legacy.finalDecision);
+    expect(notRequired.coverage).toEqual(legacy.coverage);
+  });
+
+  it.each([
+    ["explicit non-required flag", false],
+    ["legacy missing required flag", undefined]
+  ] as const)("round-trips persisted %s without creating a unified coverage blocker", (_label, requiredForDecision) => {
+    const normalized = normalizePersistedDeepFirstHopEvidence(
+      persistedEmptyFirstHopEnvelope(requiredForDecision)
+    );
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport(normalized)
+    });
+
+    expect(normalized.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: false,
+      blacklistCheckCoverage: "complete",
+      materialCounterpartyCount: 0
+    });
+    expect(result).toMatchObject({
+      finalDecision: "ACCEPTABLE",
+      finalScore: 0,
+      scoreValid: true,
+      coverage: {
+        required: "valid",
+        invalidModes: []
+      }
+    });
+  });
+
+  it("round-trips a malformed new persisted envelope to the fail-closed blocker", () => {
+    const normalized = normalizePersistedDeepFirstHopEvidence(
+      persistedEmptyFirstHopEnvelope(true, { materialCounterpartyCount: 1 })
+    );
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport(normalized)
+    });
+
+    expect(normalized).toMatchObject({
+      firstHopBlacklistFacts: [],
+      firstHopLabelFacts: [],
+      directHardEvidenceSnapshots: [],
+      firstHopBlacklistCoverage: {
+        requiredForDecision: true,
+        blacklistCheckCoverage: "provider_failed",
+        incompleteReason: "persisted_first_hop_evidence_invalid"
+      }
+    });
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      scoreValid: false,
+      coverage: {
+        required: "invalid",
+        invalidModes: ["deep_first_hop_blacklist"]
+      }
+    });
+  });
+
+  it("keeps exact subject restriction on the hard-evidence basis through incomplete first-hop coverage", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        stablecoinRestrictionProfiles: [blacklistProfile()],
+        firstHopBlacklistCoverage: firstHopCoverage({
+          blacklistCheckCoverage: "history_partial",
+          incompleteReason: "first-hop history is partial"
+        })
+      })
+    });
+
+    expect(result).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 95,
+      scoreValid: true,
+      decisionBasis: "exact_hard_proof",
+      coverage: {
+        required: "invalid",
+        overall: "partial",
+        invalidModes: expect.arrayContaining(["deep_first_hop_blacklist"])
       }
     });
   });

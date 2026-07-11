@@ -5,6 +5,10 @@ import {
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractIntelligenceProfile } from "../approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../storage/repositories";
+import {
+  detectVerify20Fingerprint,
+  type Verify20FingerprintResult
+} from "../forensics/verify20Fingerprint";
 import type {
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
@@ -25,6 +29,7 @@ export type SmartContractCheckReport = {
   relatedApprovals: WalletApprovalSpenderRelation[];
   llmVerdict: ContractLlmVerdictSummary | null;
   exactDrainProven: boolean;
+  verify20Fingerprint: Verify20FingerprintResult;
   serviceLabel: string | null;
   activityLabel: "none" | "low" | "normal" | "high" | "unknown";
   reasons: string[];
@@ -101,10 +106,10 @@ function addReason(reasons: string[], code: string): void {
 }
 
 function serviceLabelFromMetadata(metadata: AddressMetadata): string | null {
-  const text = [metadata.tag, metadata.name].filter(Boolean).join(" ").toLowerCase();
+  const text = metadata.tag?.toLowerCase() ?? "";
   if (!text) return null;
   if (SERVICE_KEYWORDS.test(text)) {
-    return metadata.tag ?? metadata.name;
+    return metadata.tag;
   }
   return null;
 }
@@ -130,6 +135,25 @@ function verifiedServiceLabel(
       )
     : metadata.verified === true && Boolean(metadata.tag);
   return verified && serviceEvidence ? label : null;
+}
+
+function authoritativeVerify20ServiceLabel(
+  metadata: AddressMetadata,
+  contractProfile: ContractIntelligenceProfile | null
+): string | null {
+  if (contractProfile?.providerRisk === true) return null;
+  const verified = metadata.verified === true ||
+    contractProfile?.isVerified === true ||
+    contractProfile?.verified === true;
+  if (!verified) return null;
+  const labels = [
+    metadata.tag,
+    contractProfile?.serviceTag,
+    ...(contractProfile?.providerTags ?? []).map((tag) => tag.label),
+    contractProfile?.publicTag,
+    ...(contractProfile?.publicTags ?? []).map((tag) => tag.label)
+  ];
+  return labels.find((label): label is string => typeof label === "string" && isServiceLikeLabel(label)) ?? null;
 }
 
 function activityLabel(contractProfile: ContractIntelligenceProfile | null): SmartContractCheckReport["activityLabel"] {
@@ -358,8 +382,9 @@ function decisionForScore(input: {
   knownVerifiedService: boolean;
   hasApprovalSafetyRisk: boolean;
   hasProviderRisk: boolean;
+  exactVerify20Pattern: boolean;
 }): ExchangeDecision {
-  if (input.hasProviderRisk || input.hasApprovalSafetyRisk) return "DECLINE";
+  if (input.hasProviderRisk || input.hasApprovalSafetyRisk || input.exactVerify20Pattern) return "DECLINE";
   if (input.knownVerifiedService && input.score <= 20) return "ACCEPTABLE";
   if (input.score >= 35) return "REVIEW";
   return "ACCEPTABLE";
@@ -371,7 +396,13 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
   const llmVerdict = input.llmVerdict ?? null;
   const reasons: string[] = [];
   const limitations = [EXACT_DRAIN_NOT_PROVEN];
-  const serviceLabel = verifiedServiceLabel(input.metadata, contractProfile);
+  const verify20ServiceLabel = authoritativeVerify20ServiceLabel(input.metadata, contractProfile);
+  const serviceLabel = verify20ServiceLabel ?? verifiedServiceLabel(input.metadata, contractProfile);
+  const verify20Fingerprint = detectVerify20Fingerprint({
+    methodMap: contractProfile?.methodMap,
+    topMethods: contractProfile?.topMethods,
+    serviceLabel: verify20ServiceLabel
+  });
   const activeUnlimited = activeUnlimitedApprovals(input.subjectAddress, relatedApprovals);
   const activeRiskyRelated = activeRiskyRelatedApprovals(input.subjectAddress, relatedApprovals);
   const knownVerifiedService = serviceLabel !== null;
@@ -397,6 +428,11 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
   } else if (verifiedWithoutServiceEvidence) {
     addReason(reasons, "verified_contract_without_service_evidence");
     riskScore = Math.max(riskScore, 35);
+  }
+
+  if (verify20Fingerprint.matched) {
+    addReason(reasons, "exact_verify20_contract_pattern");
+    riskScore = Math.max(riskScore, 85);
   }
 
   if (hasWeakUnknownMetadata(input.metadata, contractProfile, serviceLabel)) {
@@ -435,7 +471,8 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
       score: finalScore,
       knownVerifiedService,
       hasApprovalSafetyRisk,
-      hasProviderRisk: providerRisk
+      hasProviderRisk: providerRisk,
+      exactVerify20Pattern: verify20Fingerprint.matched
     }),
     decisionScope: hasApprovalSafetyRisk ? "approval_safety" : "contract_safety",
     riskScore: finalScore,
@@ -445,11 +482,135 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
     relatedApprovals,
     llmVerdict,
     exactDrainProven: false,
+    verify20Fingerprint,
     serviceLabel,
     activityLabel: activityLabel(contractProfile),
     reasons,
     limitations
   };
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function sameAddress(left: string, right: string): boolean {
+  return left === right;
+}
+
+function nullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function optionalNullableString(value: unknown): boolean {
+  return value === undefined || nullableString(value);
+}
+
+function optionalNullableBoolean(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "boolean";
+}
+
+function validPersistedMetadata(value: Record<string, unknown>, subjectAddress: string): value is AddressMetadata & Record<string, unknown> {
+  return value.address === subjectAddress &&
+    value.source === "tronscan" &&
+    nullableString(value.name) &&
+    nullableString(value.tag) &&
+    (value.isContract === null || typeof value.isContract === "boolean") &&
+    (value.verified === null || typeof value.verified === "boolean") &&
+    (value.accountType === null || typeof value.accountType === "number" && Number.isFinite(value.accountType)) &&
+    record(value.rawJson) !== null;
+}
+
+function validPersistedContractProfile(
+  value: Record<string, unknown>,
+  subjectAddress: string
+): value is ContractIntelligenceProfile & Record<string, unknown> {
+  if (value.contractAddress !== subjectAddress ||
+    !Array.isArray(value.providerTags) ||
+    !Array.isArray(value.publicTags) ||
+    (value.isVerified !== null && typeof value.isVerified !== "boolean") ||
+    !optionalNullableBoolean(value.verified) ||
+    (value.providerRisk !== null && typeof value.providerRisk !== "boolean") ||
+    !optionalNullableString(value.serviceTag) ||
+    !optionalNullableString(value.publicTag) ||
+    !optionalNullableString(value.publicTagDesc) ||
+    (value.activityLevel !== "none" && value.activityLevel !== "low" && value.activityLevel !== "normal" && value.activityLevel !== "high" && value.activityLevel !== "unknown") ||
+    !record(value.methodMap) ||
+    !Array.isArray(value.topMethods)) return false;
+  if (!value.providerTags.every((item) => {
+    const tag = record(item);
+    return tag !== null && typeof tag.label === "string";
+  })) return false;
+  if (!value.publicTags.every((item) => {
+    const tag = record(item);
+    return tag !== null && typeof tag.label === "string" && optionalNullableString(tag.description);
+  })) return false;
+  if (!Object.values(value.methodMap as Record<string, unknown>).every((item) => typeof item === "string")) return false;
+  return value.topMethods.every((item) => {
+    const method = record(item);
+    return method !== null && typeof method.methodId === "string" &&
+      nullableString(method.signature) &&
+      (method.method === undefined || typeof method.method === "string");
+  });
+}
+
+function sameFingerprint(left: Verify20FingerprintResult, right: Verify20FingerprintResult): boolean {
+  return left.matched === right.matched &&
+    left.blockedByTrustedService === right.blockedByTrustedService &&
+    left.selectors.join(":") === right.selectors.join(":") &&
+    left.missingSelectors.join(":") === right.missingSelectors.join(":") &&
+    left.mismatchedSelectors.join(":") === right.mismatchedSelectors.join(":");
+}
+
+/** Treat persisted contract analysis as untrusted; exact fingerprints are re-derived from the saved profile. */
+export function normalizeSmartContractCheckReport(
+  value: unknown,
+  expectedSubjectAddress?: string
+): SmartContractCheckReport | null {
+  const report = record(value);
+  if (!report || typeof report.subjectAddress !== "string" || report.subjectAddress.length === 0) return null;
+  if (expectedSubjectAddress && !sameAddress(report.subjectAddress, expectedSubjectAddress)) return null;
+  if (report.decision !== "ACCEPTABLE" && report.decision !== "REVIEW" && report.decision !== "DECLINE") return null;
+  if (report.decisionScope !== "contract_safety" && report.decisionScope !== "approval_safety") return null;
+  if (typeof report.riskScore !== "number" || !Number.isInteger(report.riskScore) || report.riskScore < 0 || report.riskScore > 100) return null;
+  if (report.riskLevel !== riskLevelFromScore(report.riskScore)) return null;
+  if (typeof report.exactDrainProven !== "boolean") return null;
+  if (report.exactDrainProven) return null;
+  if (report.serviceLabel !== null && typeof report.serviceLabel !== "string") return null;
+  if (report.activityLabel !== "none" && report.activityLabel !== "low" && report.activityLabel !== "normal" && report.activityLabel !== "high" && report.activityLabel !== "unknown") return null;
+  if (!stringArray(report.reasons) || !stringArray(report.limitations) || !Array.isArray(report.relatedApprovals)) return null;
+  if (report.llmVerdict !== null && !record(report.llmVerdict)) return null;
+
+  const metadata = record(report.metadata);
+  if (!metadata || !validPersistedMetadata(metadata, report.subjectAddress)) return null;
+  const profile = report.contractProfile === null ? null : record(report.contractProfile);
+  if (report.contractProfile !== null && !profile) return null;
+  if (profile && !validPersistedContractProfile(profile, report.subjectAddress)) return null;
+  if (report.activityLabel !== activityLabel(profile)) return null;
+
+  const verify20ServiceLabel = authoritativeVerify20ServiceLabel(metadata, profile);
+  const trustedServiceLabel = verify20ServiceLabel ?? verifiedServiceLabel(metadata, profile);
+  if (report.serviceLabel !== trustedServiceLabel) return null;
+
+  const fingerprint = record(report.verify20Fingerprint);
+  if (!fingerprint || typeof fingerprint.matched !== "boolean" ||
+    typeof fingerprint.blockedByTrustedService !== "boolean" ||
+    !stringArray(fingerprint.selectors) || !stringArray(fingerprint.missingSelectors) || !stringArray(fingerprint.mismatchedSelectors)) return null;
+  const derived = detectVerify20Fingerprint({
+    methodMap: profile?.methodMap as Record<string, string> | undefined,
+    topMethods: profile?.topMethods as ContractIntelligenceProfile["topMethods"] | undefined,
+    serviceLabel: verify20ServiceLabel
+  });
+  if (!sameFingerprint(fingerprint as Verify20FingerprintResult, derived)) return null;
+  if (derived.matched && (report.decision !== "DECLINE" || report.riskScore < 85 || report.serviceLabel !== null)) return null;
+
+  return report as unknown as SmartContractCheckReport;
 }
 
 function shouldAnalyzeStandaloneContract(input: {
@@ -464,7 +625,8 @@ function shouldAnalyzeStandaloneContract(input: {
 }
 
 export async function checkSmartContractAddress(input: CheckSmartContractAddressInput): Promise<SmartContractCheckReport> {
-  const serviceLabel = verifiedServiceLabel(input.metadata, input.contractProfile);
+  const serviceLabel = authoritativeVerify20ServiceLabel(input.metadata, input.contractProfile) ??
+    verifiedServiceLabel(input.metadata, input.contractProfile);
   const activeUnlimited = activeUnlimitedApprovals(input.address, input.relatedApprovals);
   let llmVerdict: ContractLlmVerdictSummary | null = null;
 

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildIncomingDepositMatrixCandidates, buildWalletMatrixCandidates } from "../../src/risk/scoringSignalMatrixInputs";
+import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
 import { scoreMatrixCandidates, type MatrixCandidateContext } from "../../src/risk/scoringSignalMatrix";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type {
   AssetContinuationProfile,
+  DirectCounterpartyInteractionProfile,
+  FirstHopBlacklistFact,
   InboundProvenanceProfile,
   IncomingFreshBundleExposure,
   OperationalFlowProfile,
@@ -12,6 +15,93 @@ import type {
 } from "../../src/types";
 
 const address = `T${"1".repeat(33)}`;
+const blacklistedCounterparty = `T${"2".repeat(33)}`;
+const directTxHash = "a".repeat(64);
+const blacklistEventTxHash = "b".repeat(64);
+
+function firstHopBlacklistFact(overrides: Partial<FirstHopBlacklistFact> = {}): FirstHopBlacklistFact {
+  return {
+    counterpartyAddress: blacklistedCounterparty,
+    direction: "outbound",
+    evidenceKind: "usdt_blacklist",
+    evidenceAuthority: "official_contract",
+    statusAtCheck: "active",
+    temporalRelation: "became_active_after",
+    effectiveAt: "2026-05-24T01:00:00.000Z",
+    effectiveTxHash: blacklistEventTxHash,
+    checkedAt: "2026-05-24T02:00:00.000Z",
+    principalAmountRaw: "10000000000",
+    principalTxCount: 1,
+    directionalPrincipalShare: null,
+    shareSemantics: "unavailable",
+    transferTxHashes: [directTxHash],
+    beforeEffectiveAmountRaw: "10000000000",
+    beforeEffectiveTxCount: 1,
+    activeAmountRaw: "0",
+    activeTxCount: 0,
+    unknownTimingAmountRaw: "0",
+    unknownTimingTxCount: 0,
+    directTransferCoverage: "partial",
+    timelineCoverage: "complete",
+    timelineEvents: [{
+      eventKind: "added",
+      occurredAt: "2026-05-24T01:00:00.000Z",
+      txHash: blacklistEventTxHash,
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 81234567,
+      logIndex: 0,
+      verification: "verified_contract_log"
+    }],
+    ...overrides
+  };
+}
+
+function directCounterpartyProfile(
+  overrides: Partial<DirectCounterpartyInteractionProfile> = {}
+): DirectCounterpartyInteractionProfile {
+  const subjectAddress = overrides.subjectAddress ?? address;
+  const direction = overrides.direction ?? "outbound";
+  const counterpartyAddress = overrides.counterpartyAddress ?? blacklistedCounterparty;
+  const volumeRaw = overrides.volumeRaw ?? "10000000000";
+  const txHashes = overrides.txHashes ?? [directTxHash];
+  const transfers = overrides.transfers ?? txHashes.map((txHash, index) => ({
+    txHash,
+    fromAddress: direction === "inbound" ? counterpartyAddress : subjectAddress,
+    toAddress: direction === "inbound" ? subjectAddress : counterpartyAddress,
+    amountRaw: index === 0 ? volumeRaw : "0",
+    timestamp: "2026-05-24T00:00:00.000Z",
+    method: "transfer",
+    edgeType: "normal_transfer" as const
+  }));
+  return {
+    subjectAddress,
+    direction,
+    counterpartyAddress,
+    volumeRaw,
+    volumeRatio: 1,
+    txCount: 1,
+    firstSeen: "2026-05-24T00:00:00.000Z",
+    lastSeen: "2026-05-24T00:00:00.000Z",
+    txHashes,
+    transfers,
+    serviceCategory: null,
+    identity: null,
+    snapshot: {
+      address: blacklistedCounterparty,
+      riskScore: 95,
+      riskLevel: "CRITICAL",
+      source: "stablecoin_blacklist",
+      evidenceClass: "exact_labeled_counterparty",
+      reasons: [],
+      partialNotes: []
+    },
+    interactionWeight: 0.95,
+    scoreContribution: 88,
+    evidenceClass: "exact_labeled_counterparty",
+    skippedReason: null,
+    ...overrides
+  };
+}
 
 function fastReport(score: number, code = "address_behavior_fast_post_deposit_exit"): RiskReport {
   return {
@@ -298,7 +388,511 @@ const freshHtxExposure = (): IncomingFreshBundleExposure => ({
   reasons: ["HTX/Huobi fresh bundle exposure"]
 });
 
+function directPolicyCandidates(
+  fact: FirstHopBlacklistFact,
+  profiles: DirectCounterpartyInteractionProfile[] = [directCounterpartyProfile({
+    volumeRaw: fact.principalAmountRaw
+  })]
+) {
+  return buildWalletMatrixCandidates({
+    address,
+    fastReport: null,
+    deepReport: deepReport({
+      firstHopBlacklistFacts: [fact],
+      directCounterpartyInteractionProfiles: profiles
+    }),
+    whereReport: whereReport()
+  }).filter((candidate) => candidate.row === "direct_counterparty_policy");
+}
+
 describe("scoring signal matrix input mappers", () => {
+  it("maps an exact Verify20 report only for the checked contract subject", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress: address,
+      metadata: {
+        address,
+        source: "tronscan",
+        name: null,
+        tag: null,
+        isContract: true,
+        verified: false,
+        accountType: null,
+        rawJson: {},
+        fetchedAt: new Date("2026-07-11T00:00:00.000Z"),
+        expiresAt: new Date("2026-07-12T00:00:00.000Z")
+      },
+      contractProfile: {
+        contractAddress: address,
+        providerTags: [],
+        publicTags: [],
+        isVerified: false,
+        verifyStatus: null,
+        sourceStatus: "missing",
+        contractCreatedAt: null,
+        contractAgeDays: null,
+        txCount: "1",
+        recentCallCount: null,
+        totalCallCount: "1",
+        totalCallerCount: "1",
+        topMethods: [],
+        topCallers: [],
+        methodMap: {
+          "5082dd12": "Verify20(address,address,address,uint256)",
+          "fc61dd23": "Verify10(address,uint256)",
+          "ea4418d9": "withdrawAllTrxTo(address)",
+          "f2fde38b": "transferOwnership(address)"
+        },
+        providerRisk: false,
+        rawPayload: {},
+        fetchedAt: new Date("2026-07-11T00:00:00.000Z"),
+        expiresAt: new Date("2026-07-12T00:00:00.000Z")
+      },
+      relatedApprovals: []
+    });
+
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport(),
+      smartContractReport: report
+    });
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "contract_suspicion",
+      actionUnit: "wallet",
+      score: 85,
+      authority: { kind: "pattern", decisionEligibility: "can_decline", coverageDependency: "none" },
+      atomicSignals: ["exact_verify20_contract_pattern"],
+      subject: { decisionScope: "wallet_unified", address, txHash: null }
+    }));
+
+    expect(buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport(),
+      smartContractReport: { ...report, subjectAddress: "TOtherContract11111111111111111111111" }
+    }).some((candidate) => candidate.atomicSignals.includes("exact_verify20_contract_pattern"))).toBe(false);
+    expect(buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport(),
+      smartContractReport: { ...report, subjectAddress: `t${report.subjectAddress.slice(1)}` }
+    }).some((candidate) => candidate.atomicSignals.includes("exact_verify20_contract_pattern"))).toBe(false);
+  });
+
+  it("maps a material active official first-hop blacklist fact to independent wallet policy", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: deepReport({
+        firstHopBlacklistFacts: [firstHopBlacklistFact()],
+        directCounterpartyInteractionProfiles: [directCounterpartyProfile()]
+      }),
+      whereReport: whereReport()
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "direct_counterparty_policy",
+      actionUnit: "wallet",
+      score: 60,
+      authority: {
+        kind: "policy",
+        decisionEligibility: "can_decline",
+        coverageDependency: "none"
+      },
+      evidenceIds: [
+        directTxHash,
+        blacklistEventTxHash,
+        `usdt_blacklist_state:${blacklistedCounterparty}:2026-05-24T02:00:00.000Z`
+      ].sort(),
+      modifiers: ["direction_outbound", "blacklist_timing_became_active_after"],
+      subject: { decisionScope: "wallet_unified", address, txHash: null }
+    }));
+  });
+
+  it("uses exact direct-policy materiality boundaries for partial and complete denominators", () => {
+    expect(directPolicyCandidates(firstHopBlacklistFact({
+      principalAmountRaw: "9999999000",
+      beforeEffectiveAmountRaw: "9999999000"
+    }))).toEqual([]);
+    expect(directPolicyCandidates(firstHopBlacklistFact({
+      principalAmountRaw: "10000000000",
+      beforeEffectiveAmountRaw: "10000000000"
+    }))).toEqual([expect.objectContaining({ score: 60 })]);
+
+    const completeFact = {
+      directTransferCoverage: "complete" as const,
+      shareSemantics: "exact" as const
+    };
+    expect(directPolicyCandidates(firstHopBlacklistFact({
+      ...completeFact,
+      principalAmountRaw: "99999000",
+      beforeEffectiveAmountRaw: "99999000",
+      directionalPrincipalShare: 0.5
+    }))).toEqual([]);
+    expect(directPolicyCandidates(firstHopBlacklistFact({
+      ...completeFact,
+      principalAmountRaw: "100000000",
+      beforeEffectiveAmountRaw: "100000000",
+      directionalPrincipalShare: 0.00999
+    }))).toEqual([]);
+    expect(directPolicyCandidates(firstHopBlacklistFact({
+      ...completeFact,
+      principalAmountRaw: "100000000",
+      beforeEffectiveAmountRaw: "100000000",
+      directionalPrincipalShare: 0.01
+    }))).toEqual([expect.objectContaining({ score: 88 })]);
+  });
+
+  it("joins exact-share score only by counterparty, direction, and evidence transaction, capped at 90", () => {
+    const exactFact = firstHopBlacklistFact({
+      directTransferCoverage: "complete",
+      shareSemantics: "exact",
+      directionalPrincipalShare: 1
+    });
+    const unrelated = [
+      directCounterpartyProfile({ counterpartyAddress: `T${"3".repeat(33)}`, scoreContribution: 99 }),
+      directCounterpartyProfile({ direction: "inbound", scoreContribution: 98 }),
+      directCounterpartyProfile({ txHashes: ["c".repeat(64)], scoreContribution: 97 })
+    ];
+
+    expect(directPolicyCandidates(exactFact, unrelated)).toEqual([]);
+    expect(directPolicyCandidates(exactFact, [directCounterpartyProfile({ scoreContribution: 95 })])).toEqual([
+      expect.objectContaining({ score: 90, caps: ["direct_counterparty_policy_cap_90"] })
+    ]);
+  });
+
+  it("joins direct policy profiles only to the exact case-sensitive TRON counterparty", () => {
+    const factCounterparty = "TAaBbCcDdEeFfGgHhJjKkMmNnPpQqRrSs";
+    const differentCounterparty = "TAabbCcDdEeFfGgHhJjKkMmNnPpQqRrSs";
+    const fact = firstHopBlacklistFact({ counterpartyAddress: factCounterparty });
+
+    expect(directPolicyCandidates(fact, [
+      directCounterpartyProfile({ counterpartyAddress: factCounterparty })
+    ])).toEqual([expect.objectContaining({
+      row: "direct_counterparty_policy",
+      score: 60
+    })]);
+
+    expect(directPolicyCandidates(fact, [
+      directCounterpartyProfile({ counterpartyAddress: differentCounterparty })
+    ])).toEqual([]);
+  });
+
+  it("rejects inactive, non-official, non-USDT, and fee-only/no-principal inputs", () => {
+    const invalidFacts = [
+      firstHopBlacklistFact({ statusAtCheck: "inactive" }),
+      firstHopBlacklistFact({ evidenceAuthority: "derived" } as unknown as Partial<FirstHopBlacklistFact>),
+      firstHopBlacklistFact({ evidenceKind: "sanctions" } as unknown as Partial<FirstHopBlacklistFact>),
+      firstHopBlacklistFact({
+        principalAmountRaw: "0",
+        principalTxCount: 0,
+        transferTxHashes: [],
+        beforeEffectiveAmountRaw: "0",
+        beforeEffectiveTxCount: 0
+      })
+    ];
+
+    for (const fact of invalidFacts) expect(directPolicyCandidates(fact)).toEqual([]);
+    expect(buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: deepReport({
+        firstHopBlacklistFacts: [],
+        directCounterpartyInteractionProfiles: [directCounterpartyProfile({
+          transfers: [{
+            txHash: directTxHash,
+            fromAddress: address,
+            toAddress: blacklistedCounterparty,
+            amountRaw: "3000000",
+            timestamp: "2026-05-24T00:00:00.000Z",
+            method: "transfer",
+            edgeType: "normal_transfer",
+            economicRole: "service_fee",
+            economicProtocol: "tron_gasfree"
+          }]
+        })]
+      }),
+      whereReport: whereReport()
+    }).some((candidate) => candidate.row === "direct_counterparty_policy")).toBe(false);
+  });
+
+  it("requires an exact transfer-hash, amount, and count binding before absolute policy", () => {
+    const secondTxHash = "c".repeat(64);
+    const exactFact = firstHopBlacklistFact({
+      transferTxHashes: [directTxHash, secondTxHash],
+      principalTxCount: 2
+    });
+    const validTransfers = [
+      directCounterpartyProfile().transfers![0],
+      { ...directCounterpartyProfile().transfers![0], txHash: secondTxHash, amountRaw: "0" }
+    ];
+    const invalidProfiles = [
+      directCounterpartyProfile({ txHashes: [directTxHash], transfers: [validTransfers[0]] }),
+      directCounterpartyProfile({
+        txHashes: [directTxHash, secondTxHash],
+        transfers: [{ ...validTransfers[0], amountRaw: "9999999999" }, validTransfers[1]]
+      }),
+      directCounterpartyProfile({
+        txHashes: [directTxHash, secondTxHash],
+        transfers: validTransfers.slice(0, 1)
+      })
+    ];
+
+    for (const profile of invalidProfiles) {
+      expect(directPolicyCandidates(exactFact, [profile])).toEqual([]);
+    }
+  });
+
+  it("aggregates distinct positive principal movements by transaction and rejects identical duplicates", () => {
+    const transfer = directCounterpartyProfile().transfers![0];
+    const validMovements = [
+      { ...transfer, amountRaw: "6000000000" },
+      { ...transfer, amountRaw: "4000000000" },
+      { ...transfer, amountRaw: "0" }
+    ];
+    expect(directPolicyCandidates(firstHopBlacklistFact(), [
+      directCounterpartyProfile({ transfers: validMovements })
+    ])).toEqual([expect.objectContaining({
+      row: "direct_counterparty_policy",
+      score: 60,
+      evidenceIds: expect.arrayContaining([directTxHash])
+    })]);
+
+    const duplicatedMovement = { ...transfer, amountRaw: "2500000000" };
+    expect(directPolicyCandidates(firstHopBlacklistFact(), [
+      directCounterpartyProfile({
+        transfers: [
+          duplicatedMovement,
+          { ...duplicatedMovement },
+          { ...transfer, amountRaw: "5000000000" }
+        ]
+      })
+    ])).toEqual([]);
+  });
+
+  it("rejects fee-only, malformed, and endpoint-inconsistent transfer profiles", () => {
+    const transfer = directCounterpartyProfile().transfers![0];
+    const invalidTransfers: DirectCounterpartyInteractionProfile["transfers"][] = [
+      [{ ...transfer, economicRole: "service_fee", economicProtocol: "tron_gasfree" }],
+      [{ ...transfer, amountRaw: "01" }],
+      [{ ...transfer, amountRaw: "-1" }],
+      [{ ...transfer, fromAddress: blacklistedCounterparty, toAddress: address }],
+      []
+    ];
+
+    for (const transfers of invalidTransfers) {
+      expect(directPolicyCandidates(firstHopBlacklistFact(), [
+        directCounterpartyProfile({ transfers })
+      ])).toEqual([]);
+    }
+  });
+
+  it("rejects a noncanonical fact amount even when its numeric value matches principal transfers", () => {
+    const fact = firstHopBlacklistFact({
+      principalAmountRaw: "010000000000",
+      beforeEffectiveAmountRaw: "010000000000"
+    });
+
+    expect(directPolicyCandidates(fact, [directCounterpartyProfile()])).toEqual([]);
+  });
+
+  it("rejects nonfinite and out-of-range joined profile contributions", () => {
+    const exactFact = firstHopBlacklistFact({
+      directTransferCoverage: "complete",
+      shareSemantics: "exact",
+      directionalPrincipalShare: 1
+    });
+
+    for (const scoreContribution of [Number.NaN, Number.POSITIVE_INFINITY, -1, 101]) {
+      expect(directPolicyCandidates(exactFact, [
+        directCounterpartyProfile({ scoreContribution })
+      ])).toEqual([]);
+    }
+  });
+
+  it("maps the checked subject blacklist to the highest-priority restriction row", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: deepReport({
+        stablecoinRestrictionProfiles: [{
+          subjectAddress: address,
+          tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          tokenSymbol: "USDT",
+          tokenStandard: "TRC20",
+          decimals: 6,
+          isBlacklisted: true,
+          balanceRaw: null,
+          checkedAt: "2026-05-24T02:00:00.000Z",
+          evidenceStrength: "exact_contract_state",
+          methods: { blacklist: "isBlackListed(address)", balance: null }
+        }],
+        firstHopBlacklistFacts: [firstHopBlacklistFact({
+          directTransferCoverage: "complete",
+          shareSemantics: "exact",
+          directionalPrincipalShare: 1
+        })],
+        directCounterpartyInteractionProfiles: [directCounterpartyProfile({ scoreContribution: 90 })]
+      }),
+      whereReport: whereReport()
+    });
+    const scored = scoreMatrixCandidates(candidates, walletContext());
+
+    expect(scored.winningRow).toBe("subject_restriction");
+    expect(scored.riskVector.subject_restriction).toHaveLength(1);
+    expect(scored.riskVector.direct_counterparty_policy).toHaveLength(1);
+  });
+
+  it("maps exact Fast subject blacklist evidence to the subject restriction row", () => {
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: fastReport(95, "stablecoin_usdt_blacklisted"),
+      deepReport: null,
+      whereReport: whereReport()
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "subject_restriction",
+      atomicSignals: ["stablecoin_usdt_blacklisted"]
+    }));
+    expect(candidates.some((candidate) =>
+      candidate.row === "hard_proof" && candidate.atomicSignals.includes("stablecoin_usdt_blacklisted")
+    )).toBe(false);
+  });
+
+  it("keeps a 95-point exact approval drain above a 90-point direct policy candidate", () => {
+    const approvalTxHash = "c".repeat(64);
+    const drainTxHash = "d".repeat(64);
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: deepReport({
+        firstHopBlacklistFacts: [firstHopBlacklistFact({
+          directTransferCoverage: "complete",
+          shareSemantics: "exact",
+          directionalPrincipalShare: 1
+        })],
+        directCounterpartyInteractionProfiles: [directCounterpartyProfile({ scoreContribution: 90 })],
+        approvalDrainProvenanceProfiles: [{
+          subjectAddress: address,
+          victimAddress: address,
+          spenderAddress: `T${"4".repeat(33)}`,
+          operatorAddress: `T${"5".repeat(33)}`,
+          firstReceiverAddress: `T${"6".repeat(33)}`,
+          approvalTxHash,
+          drainTxHash,
+          amountRaw: "100000000",
+          amountPreservationRatio: 1,
+          approvalAt: "2026-05-24T00:00:00.000Z",
+          drainAt: "2026-05-24T00:01:00.000Z",
+          pathTxHashes: [drainTxHash],
+          pathAddresses: [address, `T${"6".repeat(33)}`],
+          hopDepth: 1,
+          score: 95,
+          evidenceStrength: "exact_approval_and_transfer_from",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }]
+      }),
+      whereReport: whereReport()
+    });
+    const scored = scoreMatrixCandidates(candidates, walletContext());
+
+    expect(scored.winningRow).toBe("hard_proof");
+    expect(scored.policyScore).toBe(95);
+    expect(scored.riskVector.direct_counterparty_policy?.[0].score).toBe(90);
+  });
+
+  it("promotes only the exact receiver-relative inbound deposit fact to incoming direct policy", () => {
+    const senderAddress = address;
+    const receiverAddress = `T${"7".repeat(33)}`;
+    const txHash = "e".repeat(64);
+    const receiverFact = firstHopBlacklistFact({
+      counterpartyAddress: senderAddress,
+      direction: "inbound",
+      transferTxHashes: [txHash],
+      directTransferCoverage: "complete",
+      shareSemantics: "exact",
+      directionalPrincipalShare: 1
+    });
+    const receiverProfile = directCounterpartyProfile({
+      subjectAddress: receiverAddress,
+      counterpartyAddress: senderAddress,
+      direction: "inbound",
+      txHashes: [txHash],
+      scoreContribution: 87
+    });
+    const candidates = buildIncomingDepositMatrixCandidates({
+      senderAddress,
+      receiverAddress,
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      receiverDeepReport: deepReport({
+        subjectAddress: receiverAddress,
+        firstHopBlacklistFacts: [receiverFact],
+        directCounterpartyInteractionProfiles: [receiverProfile]
+      }),
+      whereReport: whereReport({ subjectAddress: senderAddress })
+    });
+
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "direct_counterparty_policy",
+      actionUnit: "incoming_deposit",
+      score: 87,
+      authority: { kind: "policy", decisionEligibility: "can_decline", coverageDependency: "none" },
+      modifiers: expect.arrayContaining(["direction_inbound", `deposit_receiver_${receiverAddress}`]),
+      subject: { decisionScope: "incoming_unified", address: senderAddress, txHash }
+    }));
+  });
+
+  it("does not promote absent or mismatched receiver facts, nor sender-deep outbound history", () => {
+    const senderAddress = address;
+    const receiverAddress = `T${"7".repeat(33)}`;
+    const txHash = "e".repeat(64);
+    const receiverFact = firstHopBlacklistFact({
+      counterpartyAddress: senderAddress,
+      direction: "inbound",
+      transferTxHashes: [txHash]
+    });
+    const base = {
+      senderAddress,
+      receiverAddress,
+      txHash,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport({ subjectAddress: senderAddress })
+    };
+    const receiverReport = (fact: FirstHopBlacklistFact, subjectAddress = receiverAddress) => deepReport({
+      subjectAddress,
+      firstHopBlacklistFacts: [fact],
+      directCounterpartyInteractionProfiles: []
+    });
+    const inputs = [
+      base,
+      { ...base, receiverDeepReport: receiverReport(receiverFact, `T${"8".repeat(33)}`) },
+      { ...base, receiverDeepReport: receiverReport(firstHopBlacklistFact({ ...receiverFact, counterpartyAddress: `T${"9".repeat(33)}` })) },
+      { ...base, receiverDeepReport: receiverReport(firstHopBlacklistFact({ ...receiverFact, direction: "outbound" })) },
+      { ...base, receiverDeepReport: receiverReport(firstHopBlacklistFact({ ...receiverFact, transferTxHashes: ["f".repeat(64)] })) },
+      {
+        ...base,
+        deepReport: deepReport({
+          firstHopBlacklistFacts: [firstHopBlacklistFact({ transferTxHashes: [txHash] })],
+          directCounterpartyInteractionProfiles: [directCounterpartyProfile({ txHashes: [txHash] })]
+        })
+      }
+    ];
+
+    for (const input of inputs) {
+      expect(buildIncomingDepositMatrixCandidates(input)
+        .some((candidate) => candidate.row === "direct_counterparty_policy")).toBe(false);
+    }
+  });
+
   it("maps Where source-policy evidence with explicit policy authority", () => {
     const candidates = buildWalletMatrixCandidates({
       address,

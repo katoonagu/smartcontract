@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
+import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import {
   buildIncomingDepositReport,
   runSingleIncomingDepositJobCycle,
   type BuildIncomingDepositReportInput,
-  type IncomingDepositRuntimeDeps
+  type IncomingDepositRuntimeDeps,
+  type RunSingleIncomingDepositJobCycleDeps
 } from "../../src/forensics/incomingDepositJob";
 import { TargetedHistoryWaitingForIndex } from "../../src/forensics/targetedHistoryCoordinator";
+import { buildScoringAuditRow } from "../../src/risk/scoringAudit";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import {
   createFixtureCrossChainDiscoveryProvider,
   type CrossChainDiscoveryProvider,
@@ -204,6 +208,7 @@ async function runCompleteIncomingTargetedMaterializationScenario(input: {
   amountRaw?: string;
   coveringStateOnly?: boolean;
   senderBlacklisted?: boolean;
+  receiverDeepReport?: DeepAddressForensicReport | null;
 }) {
   const hub = "TIncomingMaterializedHub111111111111111";
   const upstreamSource = "TIncomingMaterializedCex111111111111111";
@@ -314,6 +319,7 @@ async function runCompleteIncomingTargetedMaterializationScenario(input: {
     sender: validProgressJson.sender,
     amountRaw,
     timestamp: new Date(validProgressJson.timestamp),
+    receiverDeepReport: input.receiverDeepReport,
     localIndexMaterializationMaxRows: input.localIndexMaterializationMaxRows,
     persistProgress: async (patch) => patch
   });
@@ -363,7 +369,7 @@ function incomingMaterializationRows(input: {
 describe("runSingleIncomingDepositJobCycle", () => {
   it("completes an incoming deposit job and sends one final alert", async () => {
     const events: string[] = [];
-    const complete = vi.fn(async (input: { status: string }) => {
+    const complete = vi.fn(async (input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]) => {
       events.push(`complete:${input.status}`);
       return true;
     });
@@ -393,6 +399,15 @@ describe("runSingleIncomingDepositJobCycle", () => {
 
     expect(handled).toBe(true);
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    const completion = complete.mock.calls[0]?.[0];
+    if (!completion) throw new Error("expected incoming completion");
+    expect(completion.resultJson.scoringPolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+    expect(buildScoringAuditRow({
+      ...job(validProgressJson),
+      status: "completed",
+      resultJson: completion.resultJson,
+      completedAt: new Date("2026-05-29T14:03:00.000Z")
+    }).policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
     expect(send).toHaveBeenCalledTimes(1);
     expect(markSent).toHaveBeenCalledWith({
       txHash: depositTxHash,
@@ -406,7 +421,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
   });
 
   it("does not persist a generic observed risk for a completed no-final incoming result", async () => {
-    const complete = vi.fn(async () => true);
+    const complete = vi.fn(async (_input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]) => true);
     const send = vi.fn(async () => undefined);
     const recordObservedTransactionRisk = vi.fn(async () => true);
 
@@ -438,10 +453,19 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       status: "completed",
       resultJson: expect.objectContaining({
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         decision: "NO_FINAL_DECISION",
         depositRiskScore: null
       })
     }));
+    const completion = complete.mock.calls[0]?.[0];
+    if (!completion) throw new Error("expected incoming no-final completion");
+    expect(buildScoringAuditRow({
+      ...job(validProgressJson),
+      status: "completed",
+      resultJson: completion.resultJson,
+      completedAt: new Date("2026-05-29T14:03:00.000Z")
+    }).policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
   it("does not fail an incoming job when wallet intelligence indexing fails", async () => {
@@ -1244,6 +1268,83 @@ describe("runSingleIncomingDepositJobCycle", () => {
 });
 
 describe("buildIncomingDepositReport", () => {
+  it("passes an optional receiver Deep report with the exact checked deposit context", async () => {
+    const receiverDeepReport = {
+      subjectAddress: validProgressJson.watchedWallet,
+      firstHopBlacklistFacts: [{
+        counterpartyAddress: validProgressJson.sender,
+        direction: "inbound",
+        evidenceKind: "usdt_blacklist",
+        evidenceAuthority: "official_contract",
+        statusAtCheck: "active",
+        temporalRelation: "unknown",
+        effectiveAt: null,
+        effectiveTxHash: null,
+        checkedAt: "2026-05-29T14:02:00.000Z",
+        principalAmountRaw: validProgressJson.amountRaw,
+        principalTxCount: 1,
+        directionalPrincipalShare: 1,
+        shareSemantics: "exact",
+        transferTxHashes: [depositTxHash],
+        beforeEffectiveAmountRaw: "0",
+        beforeEffectiveTxCount: 0,
+        activeAmountRaw: "0",
+        activeTxCount: 0,
+        unknownTimingAmountRaw: validProgressJson.amountRaw,
+        unknownTimingTxCount: 1,
+        directTransferCoverage: "complete",
+        timelineCoverage: "partial",
+        timelineEvents: []
+      }],
+      directCounterpartyInteractionProfiles: [{
+        subjectAddress: validProgressJson.watchedWallet,
+        direction: "inbound",
+        counterpartyAddress: validProgressJson.sender,
+        volumeRaw: validProgressJson.amountRaw,
+        volumeRatio: 1,
+        txCount: 1,
+        firstSeen: validProgressJson.timestamp,
+        lastSeen: validProgressJson.timestamp,
+        txHashes: [depositTxHash],
+        transfers: [{
+          txHash: depositTxHash,
+          fromAddress: validProgressJson.sender,
+          toAddress: validProgressJson.watchedWallet,
+          amountRaw: validProgressJson.amountRaw,
+          timestamp: validProgressJson.timestamp,
+          method: "transfer",
+          edgeType: "normal_transfer"
+        }],
+        serviceCategory: null,
+        identity: null,
+        snapshot: {
+          address: validProgressJson.sender,
+          riskScore: 95,
+          riskLevel: "CRITICAL",
+          source: "stablecoin_blacklist",
+          evidenceClass: "exact_labeled_counterparty",
+          reasons: [],
+          partialNotes: []
+        },
+        interactionWeight: 1,
+        scoreContribution: 90,
+        evidenceClass: "exact_labeled_counterparty",
+        skippedReason: null
+      }]
+    } as unknown as DeepAddressForensicReport;
+
+    const { result } = await runCompleteIncomingTargetedMaterializationScenario({
+      hopRows: incomingMaterializationRows,
+      receiverDeepReport
+    });
+
+    expect(result).toMatchObject({
+      decision: "DECLINE",
+      scoreValid: true,
+      depositRiskScore: 90
+    });
+  });
+
   it("records report-level performance stages without changing the report", async () => {
     const timingStages: string[] = [];
     const timing = {
@@ -3486,7 +3587,10 @@ describe("buildIncomingDepositReport", () => {
     expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
     expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
     expect(result.unifiedRiskSummary?.activeAnchor?.source).toBe("policy_floor");
-    expect(result.unifiedRiskSummary?.activeAnchor?.code).toContain("matrix:");
+    expect(result.unifiedRiskSummary?.activeAnchor).toMatchObject({
+      code: "source_policy_no_name_token_liquidity",
+      row: "source_policy"
+    });
     expect(result.unifiedRiskSummary?.matrixDecision).toBe("DECLINE");
     expect(result.unifiedRiskSummary?.winningRow).toBe("source_policy");
     expect(result.unifiedRiskSummary?.policyScore).toBe(result.depositRiskScore);

@@ -1,8 +1,10 @@
 import type { ForensicCheckJob, ForensicCheckJobKind } from "../storage/repositories";
+import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import {
   calculateUnifiedIncomingDepositRisk,
   incomingRiskBandFromUnifiedScore,
@@ -168,6 +170,7 @@ export type BuildIncomingDepositReportInput = {
   sender: string;
   amountRaw: string;
   timestamp: Date;
+  receiverDeepReport?: DeepAddressForensicReport | null;
   localIndexMaterializationMaxRows?: number;
   timing?: IncomingDepositTimingRecorder;
   persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
@@ -1251,6 +1254,7 @@ function incomingReportFromWhere(input: {
   walletExposureProfile?: IncomingWalletExposureProfile;
   targetedHistoryCoverage?: IncomingDepositTargetedCoverageSummary | null;
   targetedCoverageBlock?: IncomingTargetedCoverageBlock | null;
+  receiverDeepReport?: DeepAddressForensicReport | null;
 }): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
@@ -1319,6 +1323,7 @@ function incomingReportFromWhere(input: {
     fastSenderRisk: input.fastSenderRisk,
     senderStablecoinState: input.senderStablecoinState,
     whereReport: input.whereReport,
+    receiverDeepReport: input.receiverDeepReport,
     freshBundleExposure,
     walletExposureProfile: walletExposureProfile ?? null,
     decisionCoverage
@@ -2058,7 +2063,8 @@ export async function buildIncomingDepositReport(
     fundingBundlesByTxHash,
     walletExposureProfile,
     targetedHistoryCoverage: targetedCoverage.summary,
-    targetedCoverageBlock: targetedCoverage.block
+    targetedCoverageBlock: targetedCoverage.block,
+    receiverDeepReport: input.receiverDeepReport
   });
   const fundingCoverage = {
     depositFundingCoverageRatio: fundingSelection.coverageRatio,
@@ -2341,7 +2347,10 @@ export async function runSingleIncomingDepositJobCycle(
       id: job.id,
       status: "completed",
       progressJson: currentProgress,
-      resultJson: report as unknown as Record<string, unknown>,
+      resultJson: {
+        ...(report as unknown as Record<string, unknown>),
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+      },
       rawEvidenceIds: [],
       observationIds: [],
       lastError: null

@@ -89,3 +89,26 @@ boundary of knowledge only when it prevents a concrete overclaim. A victim is
 simply called a victim. Collector behavior is described as a wallet role.
 Bridge exposure is described as cross-chain AML risk without claiming that
 every bridge transfer, or every laundering scheme, has the same meaning.
+
+## 2026-07-11: Keep Address Fixtures And Economic Claims Grounded
+
+Agent mistakes:
+
+- A mixed-case TGyt placeholder was treated as a valid TRON address even though
+  Base58 addresses are case-sensitive.
+- A nearby 3 USDT GasFree fee was described as a settlement tied to a principal
+  transfer without saved structural evidence for that relation.
+- Contract and GasFree account types were used as reasons to skip ordinary
+  principal scoring.
+
+Correct rules:
+
+- Use the canonical valid fixture
+  `TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD`; validate copied addresses before
+  building a regression around them.
+- State only the saved economic fact. An exact service-fee edge is separate
+  technical context and is excluded from principal, but timing or destination
+  alone does not prove how that fee settled another transfer.
+- `isContract` and GasFree-account status are address facts, not scoring
+  exemptions. Exclude only an exact GasFree `service_fee` edge. Principal
+  transfers remain eligible at every hop.

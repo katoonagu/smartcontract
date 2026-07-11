@@ -1,10 +1,11 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
   - src/tron/tronscanScheduler.ts
+  - src/tron/usdtBlacklistTimeline.ts
   - src/check/theftReportTransaction.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -20,6 +21,8 @@ code_refs:
   - scripts/repairTargetedIndexCoverage.ts
   - tests/config/config.test.ts
   - tests/tron/tronscanScheduler.test.ts
+  - tests/tron/tronClient.test.ts
+  - tests/tron/usdtBlacklistTimeline.test.ts
   - tests/check/theftReportTransaction.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/fundingFirstSourceProvenance.test.ts
@@ -62,6 +65,31 @@ The system supports a TronScan API key pool:
 
 More keys increase throughput. They do not fix local page budgets or partial
 targeted-index states by themselves.
+
+### Address-Scoped USDT Blacklist Timeline
+
+Current USDT blacklist state comes from the official USDT contract. When that
+state is active and event history is requested, the Tron client also reads the
+address-scoped TronScan `/api/stableCoin/blackList` timeline. The provider rows
+are only an index of candidate transactions: each candidate must be a
+successful transaction and must decode to an `AddedBlackList` or
+`RemovedBlackList` log from the official USDT contract for the exact address.
+
+The saved timeline separates current state from chronology. Current active
+state remains exact contract evidence even if event history is incomplete;
+dates, event kind, block order, and transaction id are used only when the
+corresponding contract log is verified. Pagination, duplicate rows,
+address/contract mismatch, unconfirmed transactions, undecodable logs, and a
+timeline that disagrees with current state cannot become a false complete
+history.
+
+A verified result stores `pagination=complete` and the ordered events. A
+provider or validation failure stores `pagination=partial` with a typed reason:
+`provider_failed`, `address_mismatch`, `wrong_contract`,
+`transaction_unconfirmed`, `event_log_unverified`, or
+`state_timeline_inconsistent`. A partial timeline makes blacklist chronology
+unknown; it does not turn an active current restriction into an inactive one.
+Inactive counterparties do not trigger the extra historical scan.
 
 ### Complete Index Versus Local Materialization
 

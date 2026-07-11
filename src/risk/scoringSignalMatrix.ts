@@ -5,6 +5,8 @@ export type MatrixDecision =
   | "INSUFFICIENT_EVIDENCE";
 
 export type MatrixEvidenceRow =
+  | "subject_restriction"
+  | "direct_counterparty_policy"
   | "hard_proof"
   | "source_policy"
   | "incoming_deposit_source_policy"
@@ -98,8 +100,10 @@ export type MatrixUncertaintyState = {
 
 export type MatrixRiskVector = Partial<Record<MatrixEvidenceRow, ClassifiedMatrixCandidate[]>>;
 
+export const SCORING_SIGNAL_MATRIX_POLICY_VERSION = "scoring-signal-matrix-v2" as const;
+
 export type MatrixScoringResult = {
-  policyVersion: "scoring-signal-matrix-v1";
+  policyVersion: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   policyScore: number | null;
   matrixDecision: MatrixDecision;
   winningRow: MatrixEvidenceRow;
@@ -112,6 +116,8 @@ export type MatrixScoringResult = {
 };
 
 const rowPriority: MatrixEvidenceRow[] = [
+  "subject_restriction",
+  "direct_counterparty_policy",
   "hard_proof",
   "source_policy",
   "incoming_deposit_source_policy",
@@ -173,7 +179,11 @@ function classifyCandidate(candidate: MatrixCandidate): ClassifiedMatrixCandidat
                 decisionEligibility: "review_only" as const,
                 coverageDependency: "none" as const
               };
-  if (candidate.authority.kind === "exact_hard" && candidate.row !== "hard_proof") {
+  if (
+    candidate.authority.kind === "exact_hard" &&
+    candidate.row !== "subject_restriction" &&
+    candidate.row !== "hard_proof"
+  ) {
     throw new Error("exact hard authority requires the hard_proof matrix row");
   }
   return { ...candidate, ...metadata };
@@ -181,7 +191,7 @@ function classifyCandidate(candidate: MatrixCandidate): ClassifiedMatrixCandidat
 
 function sameMatrixSubject(candidate: ClassifiedMatrixCandidate, context: MatrixCandidateContext): boolean {
   return candidate.subject.decisionScope === context.decisionScope &&
-    candidate.subject.address.toLowerCase() === context.subjectAddress.toLowerCase() &&
+    candidate.subject.address === context.subjectAddress &&
     candidate.subject.txHash === context.subjectTxHash;
 }
 
@@ -205,6 +215,14 @@ function withCap(
 
 function applyRowCaps(candidate: ClassifiedMatrixCandidate): ClassifiedMatrixCandidate {
   const score = clampScore(candidate.score);
+  const exactDirectVerify20Pattern = candidate.row === "contract_suspicion" &&
+    candidate.actionUnit === "wallet" &&
+    candidate.authority.kind === "pattern" &&
+    candidate.authority.decisionEligibility === "can_decline" &&
+    candidate.authority.coverageDependency === "none" &&
+    candidate.atomicSignals.length === 1 &&
+    candidate.atomicSignals[0] === "exact_verify20_contract_pattern" &&
+    candidate.modifiers.includes("direct_contract_subject_anchor");
   if (candidate.evidenceClass === "coverage") {
     return withCap(candidate, 0, "coverage_uncertainty_no_badness");
   }
@@ -217,7 +235,7 @@ function applyRowCaps(candidate: ClassifiedMatrixCandidate): ClassifiedMatrixCan
   if (candidate.row === "behavior_only_prior" && score >= 60) {
     return withCap(candidate, 59, "behavior_only_cap_59");
   }
-  if (candidate.row === "contract_suspicion" && score >= 60) {
+  if (candidate.row === "contract_suspicion" && score >= 60 && !exactDirectVerify20Pattern) {
     return withCap(candidate, 59, "contract_suspicion_cap_59");
   }
   if (candidate.row === "typology_subgraph_pattern" && !hasAnchor(candidate) && score >= 60) {
@@ -326,7 +344,7 @@ export function scoreMatrixCandidates(
   const policyScore = winner.evidenceClass === "coverage" ? null : winner.score;
 
   return {
-    policyVersion: "scoring-signal-matrix-v1",
+    policyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     policyScore,
     matrixDecision,
     winningRow: winner.row,

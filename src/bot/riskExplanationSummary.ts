@@ -19,6 +19,7 @@ export type RiskExplanationMode = "fast" | "where" | "deep";
 
 export type RiskExplanationFactKind =
   | "hard_evidence"
+  | "contract_pattern"
   | "source_policy"
   | "behavior_context"
   | "service_boundary"
@@ -659,7 +660,31 @@ function addUnifiedFacts(input: RiskExplanationInput, allFacts: RiskExplanationF
     addFact(allFacts, fact);
     addFact(sections.deep, fact);
   }
-  if (result.hardEvidenceFloor === 0) {
+  const activeAnchor = result.scoreBreakdown.activeAnchor;
+  const decisiveVerify20 = activeAnchor?.row === "contract_suspicion" &&
+    activeAnchor.code === "exact_verify20_contract_pattern" &&
+    result.patternFloor >= 85 &&
+    (result.matrixScore.riskVector.contract_suspicion ?? []).some((candidate) =>
+      candidate.authority.kind === "pattern" &&
+      candidate.authority.decisionEligibility === "can_decline" &&
+      candidate.authority.coverageDependency === "none" &&
+      candidate.atomicSignals.includes("exact_verify20_contract_pattern") &&
+      candidate.score === activeAnchor.score &&
+      candidate.evidenceIds.some((evidenceId) => activeAnchor.evidenceIds.includes(evidenceId))
+    );
+  if (decisiveVerify20) {
+    const fact: RiskExplanationFact = {
+      kind: "contract_pattern",
+      source: "unified",
+      priority: 25,
+      dedupeKey: "exact_verify20_contract_pattern",
+      textRu: "В проверяемом контракте найден полный шаблон Verify20, который часто используют дрейнеры. Это не доказывает конкретную кражу, сумму или жертву.",
+      textEn: "The checked contract contains the full Verify20 contract pattern often used by drainers. This does not prove a specific theft, amount, or victim."
+    };
+    addFact(allFacts, fact);
+    addFact(sections.fast, fact);
+  }
+  if (result.hardEvidenceFloor === 0 && result.policyFloor === 0 && result.patternFloor === 0) {
     const fact: RiskExplanationFact = {
       kind: "absent_evidence",
       source: "unified",
@@ -749,6 +774,10 @@ function possibleMeanings(decision: RiskExplanationDecision, facts: RiskExplanat
   if (facts.some((fact) => fact.kind === "source_policy")) {
     ru.push("Источник может быть policy-рискованным даже без доказательства кражи.");
     en.push("The source may be policy-risky even without proof of theft.");
+  }
+  if (facts.some((fact) => fact.kind === "contract_pattern")) {
+    ru.push("Совпадение относится к сильному шаблону контракта, но само по себе не доказывает конкретную кражу.");
+    en.push("The match is a strong contract-pattern signal, but it does not by itself prove a specific theft.");
   }
   if (facts.some((fact) => fact.kind === "service_boundary")) {
     ru.push("Публичная трассировка могла остановиться на сервисной границе.");

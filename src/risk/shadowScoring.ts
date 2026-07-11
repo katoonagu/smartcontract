@@ -1,5 +1,7 @@
 import type { ScoringAuditDecision, ScoringAuditRow } from "./scoringAudit";
 
+export const SHADOW_SCORING_POLICY_VERSION = "shadow-scoring-v1" as const;
+
 export type ShadowScoringComparison = {
   currentScore: number | null;
   currentDecision: ScoringAuditDecision;
@@ -7,10 +9,9 @@ export type ShadowScoringComparison = {
   candidateDecision: ScoringAuditDecision;
   delta: number | null;
   deltaReasons: string[];
-  candidatePolicyVersion: "scoring-signal-matrix-v1";
+  candidatePolicyVersion: typeof SHADOW_SCORING_POLICY_VERSION;
 };
 
-const candidatePolicyVersion = "scoring-signal-matrix-v1" as const;
 const incompleteCoverage = new Set<ScoringAuditRow["coverageStatus"]>(["limited", "insufficient", "partial"]);
 
 export function compareShadowScoring(row: ScoringAuditRow): ShadowScoringComparison {
@@ -44,6 +45,6 @@ export function compareShadowScoring(row: ScoringAuditRow): ShadowScoringCompari
     candidateDecision,
     delta: currentScore === null || candidateScore === null ? null : candidateScore - currentScore,
     deltaReasons,
-    candidatePolicyVersion
+    candidatePolicyVersion: SHADOW_SCORING_POLICY_VERSION
   };
 }

@@ -17,7 +17,11 @@ import { buildAssetContinuationProfiles } from "../forensics/assetContinuation";
 import {
   DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE,
   DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
-  buildDirectHardEvidenceSnapshots
+  buildDirectHardEvidenceSnapshots,
+  groupDirectPrincipalCounterparties,
+  isPersistableUsdtBlacklistTimelineEvent,
+  type DirectHardEvidenceResult,
+  type DirectHardEvidenceSnapshot
 } from "../forensics/directHardEvidence";
 import { buildSecondLayerRelationshipProfiles } from "../forensics/deepSecondLayerRelationship";
 import {
@@ -47,7 +51,8 @@ import { indexedTransferToRouteEdge } from "../forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
 import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
-import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import type { AddressMetadata } from "../storage/repositories";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
@@ -66,6 +71,9 @@ import type {
   DeepSecondLayerRelationshipProfile,
   ExtendedProvenanceProfile,
   FastCheckHintAddress,
+  FirstHopBlacklistCoverage,
+  FirstHopBlacklistFact,
+  FirstHopLabelFact,
   ForensicRouteEdge,
   IndexedTronUsdtTransfer,
   InboundProvenanceProfile,
@@ -74,6 +82,8 @@ import type {
   RiskSignalObservationInput,
   ServiceClassification,
   StablecoinRestrictionProfile,
+  TimelineBearingStablecoinRestrictionProfile,
+  UsdtBlacklistTimelineEvent,
   DeepCheckAllTimeCoverage,
   DeepCheckAllTimeMode,
   TronAddressUsdtIndexState,
@@ -92,6 +102,7 @@ export type DeepForensicProviderBudgetReport = {
 };
 
 export type DeepAddressForensicReport = AddressExposureReport & {
+  scoringPolicyVersion?: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   runProfile: DeepForensicRunProfile;
   providerBudget: DeepForensicProviderBudgetReport;
   inboundProvenanceProfiles: InboundProvenanceProfile[];
@@ -107,6 +118,14 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   secondLayerRelationshipProfiles?: DeepSecondLayerRelationshipProfile | null;
+  /** Absent on legacy stored reports created before first-hop evidence persistence. */
+  firstHopBlacklistFacts?: FirstHopBlacklistFact[];
+  /** Absent on legacy stored reports created before first-hop evidence persistence. */
+  firstHopLabelFacts?: FirstHopLabelFact[];
+  /** Absent on legacy stored reports created before first-hop evidence persistence. */
+  firstHopBlacklistCoverage?: FirstHopBlacklistCoverage;
+  /** Timeline-bearing direct restriction snapshots; absent on legacy stored reports. */
+  directHardEvidenceSnapshots?: DirectHardEvidenceSnapshot[];
   coverage: {
     sourceTransferPages: number;
     inboundSendersExpanded: number;
@@ -121,12 +140,428 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   coverageDebug: CoverageDebugReport;
 };
 
+type PersistedDeepFirstHopEvidence = Required<Pick<
+  DeepAddressForensicReport,
+  "firstHopBlacklistFacts" | "firstHopLabelFacts" | "firstHopBlacklistCoverage" | "directHardEvidenceSnapshots"
+>>;
+
+function persistedRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function persistedStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function persistedNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function persistedHashArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(persistedTxHash);
+}
+
+function persistedIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function persistedCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function persistedRawAmount(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) && BigInt(value) <= (1n << 256n) - 1n;
+}
+
+function persistedTxHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function persistedNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function persistedNullableIsoDate(value: unknown): value is string | null {
+  return value === null || persistedIsoDate(value);
+}
+
+function persistedNullableHash(value: unknown): value is string | null {
+  return value === null || persistedTxHash(value);
+}
+
+function persistedShare(value: unknown, semantics: unknown): boolean {
+  if (semantics === "unavailable") return value === null;
+  return (semantics === "exact" || semantics === "lower_bound") &&
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function comparePersistedTimelineEvents(left: UsdtBlacklistTimelineEvent, right: UsdtBlacklistTimelineEvent): number {
+  return Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+    (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
+    (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
+    left.txHash.localeCompare(right.txHash);
+}
+
+function persistedTimeline(value: unknown): boolean {
+  if (!persistedRecord(value) || !Array.isArray(value.events) || !value.events.every(isPersistableUsdtBlacklistTimelineEvent)) return false;
+  const failures = new Set([
+    "provider_failed",
+    "address_mismatch",
+    "wrong_contract",
+    "transaction_unconfirmed",
+    "event_log_unverified",
+    "state_timeline_inconsistent"
+  ]);
+  const sorted = value.events.every((event, index, events) => index === 0 || comparePersistedTimelineEvents(events[index - 1], event) <= 0);
+  return sorted && (
+    value.pagination === "complete" && value.failureReason === null ||
+    value.pagination === "partial" && typeof value.failureReason === "string" && failures.has(value.failureReason)
+  );
+}
+
+function chronologyRelationValid(value: Record<string, unknown>): boolean {
+  const beforeAmount = BigInt(String(value.beforeEffectiveAmountRaw));
+  const activeAmount = BigInt(String(value.activeAmountRaw));
+  const unknownAmount = BigInt(String(value.unknownTimingAmountRaw));
+  const beforeCount = Number(value.beforeEffectiveTxCount);
+  const activeCount = Number(value.activeTxCount);
+  const unknownCount = Number(value.unknownTimingTxCount);
+  const before = beforeAmount > 0n && beforeCount > 0;
+  const active = activeAmount > 0n && activeCount > 0;
+  const unknown = unknownAmount > 0n && unknownCount > 0;
+  const zeroPairsValid = (beforeAmount === 0n) === (beforeCount === 0) &&
+    (activeAmount === 0n) === (activeCount === 0) &&
+    (unknownAmount === 0n) === (unknownCount === 0);
+  if (!zeroPairsValid) return false;
+  if (value.temporalRelation === "active_at_transfer") return active && !before && !unknown;
+  if (value.temporalRelation === "became_active_after") return before && !active && !unknown;
+  if (value.temporalRelation === "mixed") return before && active && !unknown;
+  return value.temporalRelation === "unknown" && unknown;
+}
+
+function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact {
+  if (!persistedRecord(value)) return false;
+  if (
+    !persistedNonEmptyString(value.counterpartyAddress) ||
+    (value.direction !== "inbound" && value.direction !== "outbound") ||
+    value.evidenceKind !== "usdt_blacklist" ||
+    value.evidenceAuthority !== "official_contract" ||
+    value.statusAtCheck !== "active" ||
+    !["active_at_transfer", "became_active_after", "mixed", "unknown"].includes(String(value.temporalRelation)) ||
+    !persistedNullableIsoDate(value.effectiveAt) ||
+    !persistedNullableHash(value.effectiveTxHash) ||
+    ((value.effectiveAt === null) !== (value.effectiveTxHash === null)) ||
+    !persistedIsoDate(value.checkedAt) ||
+    !persistedRawAmount(value.principalAmountRaw) ||
+    !persistedCount(value.principalTxCount) ||
+    !persistedShare(value.directionalPrincipalShare, value.shareSemantics) ||
+    !persistedHashArray(value.transferTxHashes) ||
+    !persistedRawAmount(value.beforeEffectiveAmountRaw) ||
+    !persistedCount(value.beforeEffectiveTxCount) ||
+    !persistedRawAmount(value.activeAmountRaw) ||
+    !persistedCount(value.activeTxCount) ||
+    !persistedRawAmount(value.unknownTimingAmountRaw) ||
+    !persistedCount(value.unknownTimingTxCount) ||
+    (value.directTransferCoverage !== "complete" && value.directTransferCoverage !== "partial") ||
+    (value.timelineCoverage !== "complete" && value.timelineCoverage !== "partial") ||
+    !Array.isArray(value.timelineEvents) ||
+    !value.timelineEvents.every(isPersistableUsdtBlacklistTimelineEvent)
+  ) return false;
+  return BigInt(value.beforeEffectiveAmountRaw) + BigInt(value.activeAmountRaw) + BigInt(value.unknownTimingAmountRaw) === BigInt(value.principalAmountRaw) &&
+    value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount &&
+    chronologyRelationValid(value);
+}
+
+const PERSISTED_RISK_LABELS: ReadonlySet<string> = new Set([
+  "scam",
+  "reported_scam",
+  "stolen_funds",
+  "phishing",
+  "victim",
+  "mule",
+  "collector",
+  "bridge",
+  "exchange",
+  "trusted",
+  "false_positive",
+  "needs_review",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange",
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function persistedRiskLabel(value: unknown): value is AddressLabel["label"] {
+  return typeof value === "string" && PERSISTED_RISK_LABELS.has(value);
+}
+
+function persistedLabelFact(value: unknown): value is FirstHopLabelFact {
+  if (!persistedRecord(value)) return false;
+  return persistedNonEmptyString(value.counterpartyAddress) &&
+    (value.direction === "inbound" || value.direction === "outbound") &&
+    persistedRiskLabel(value.labelCode) &&
+    (value.evidenceAuthority === "exact_internal" || value.evidenceAuthority === "derived") &&
+    persistedIsoDate(value.recordedAt) &&
+    value.effectiveAt === null &&
+    persistedRawAmount(value.principalAmountRaw) &&
+    persistedCount(value.principalTxCount) &&
+    persistedShare(value.directionalPrincipalShare, value.shareSemantics) &&
+    persistedHashArray(value.transferTxHashes) &&
+    typeof value.linkedToSelectedProvenance === "boolean";
+}
+
+function normalizePersistedFirstHopCoverage(value: unknown): FirstHopBlacklistCoverage | null {
+  if (!persistedRecord(value)) return null;
+  const requiredForDecision = !Object.prototype.hasOwnProperty.call(value, "requiredForDecision")
+    ? false
+    : typeof value.requiredForDecision === "boolean"
+      ? value.requiredForDecision
+      : null;
+  if (requiredForDecision === null) return null;
+  const counts = [
+    value.materialCounterpartyCount,
+    value.checkedMaterialCounterpartyCount,
+    value.failedMaterialCounterpartyCount,
+    value.uncheckedMaterialCounterpartyCount,
+    value.confirmedAdverseFactCount,
+    value.completeTimelineFactCount,
+    value.partialTimelineFactCount
+  ];
+  if (!counts.every(persistedCount)) return null;
+  const scopeValid = value.scope === "all_time"
+    ? value.windowStart === null && value.windowEnd === null && value.directPrincipalTransferCoverage === "complete"
+    : value.scope === "checked_window" &&
+      persistedIsoDate(value.windowStart) &&
+      persistedIsoDate(value.windowEnd) &&
+      Date.parse(value.windowStart) <= Date.parse(value.windowEnd) &&
+      value.directPrincipalTransferCoverage === "partial";
+  const structurallyValid = scopeValid &&
+    ["complete", "provider_failed", "budget_exhausted", "history_partial"].includes(String(value.blacklistCheckCoverage)) &&
+    persistedNullableString(value.incompleteReason) &&
+    Number(value.checkedMaterialCounterpartyCount) + Number(value.failedMaterialCounterpartyCount) + Number(value.uncheckedMaterialCounterpartyCount) === Number(value.materialCounterpartyCount);
+  if (!structurallyValid) return null;
+  return { ...(value as unknown as FirstHopBlacklistCoverage), requiredForDecision };
+}
+
+const PERSISTED_SERVICE_CATEGORIES: ReadonlySet<string> = new Set([
+  "bridge",
+  "bridge_pool",
+  "dex",
+  "router",
+  "cex",
+  "hot_wallet",
+  "swap_adapter",
+  "service",
+  "protocol",
+  "unknown_contract",
+  "none"
+]);
+
+function persistedServiceCategory(value: unknown): value is ServiceClassification["category"] {
+  return typeof value === "string" && PERSISTED_SERVICE_CATEGORIES.has(value);
+}
+
+function persistedClassification(value: unknown): value is ServiceClassification {
+  if (!persistedRecord(value)) return false;
+  return persistedServiceCategory(value.category) &&
+    persistedNullableString(value.identity) &&
+    (value.confidence === "low" || value.confidence === "medium" || value.confidence === "high") &&
+    persistedStringArray(value.evidence) &&
+    typeof value.isBoundary === "boolean";
+}
+
+function normalizePersistedAddressLabel(value: unknown, address: string): AddressLabel | null {
+  if (!persistedRecord(value)) return null;
+  if (
+    value.address !== address ||
+    !persistedRiskLabel(value.label) ||
+    (value.source !== "service_admin" && value.source !== "system") ||
+    !(value.createdByTelegramId === null || persistedNonEmptyString(value.createdByTelegramId)) ||
+    !persistedIsoDate(value.createdAt)
+  ) return null;
+  return {
+    address,
+    label: value.label,
+    source: value.source,
+    createdByTelegramId: value.createdByTelegramId,
+    createdAt: new Date(value.createdAt)
+  };
+}
+
+function persistedRestriction(
+  value: unknown,
+  address: string
+): value is TimelineBearingStablecoinRestrictionProfile {
+  if (!persistedRecord(value)) return false;
+  const methods = persistedRecord(value.methods) ? value.methods : null;
+  return value.subjectAddress === address &&
+    value.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
+    value.tokenSymbol === "USDT" &&
+    value.tokenStandard === "TRC20" &&
+    value.decimals === 6 &&
+    typeof value.isBlacklisted === "boolean" &&
+    (value.balanceRaw === null || persistedRawAmount(value.balanceRaw)) &&
+    persistedIsoDate(value.checkedAt) &&
+    value.evidenceStrength === "exact_contract_state" &&
+    (value.blacklistEventTxHash === undefined || persistedNullableHash(value.blacklistEventTxHash)) &&
+    (value.blacklistEventTimestamp === undefined || persistedNullableIsoDate(value.blacklistEventTimestamp)) &&
+    (value.blacklistEventBlock === undefined || value.blacklistEventBlock === null || persistedCount(value.blacklistEventBlock)) &&
+    methods !== null &&
+    (methods.blacklist === "isBlackListed(address)" || methods.blacklist === "getBlackListStatus(address)") &&
+    (methods.balance === null || methods.balance === "balanceOf(address)") &&
+    (value.blacklistTimeline === undefined || value.blacklistTimeline === null || persistedTimeline(value.blacklistTimeline));
+}
+
+function normalizePersistedDirectSnapshot(value: unknown): DirectHardEvidenceSnapshot | null {
+  if (!persistedRecord(value) || !persistedNonEmptyString(value.address) || !Array.isArray(value.labels)) return null;
+  const address = value.address;
+  const labels = value.labels.map((label) => normalizePersistedAddressLabel(label, address));
+  if (labels.some((label) => label === null)) return null;
+  if (value.classification !== null && !persistedClassification(value.classification)) return null;
+  if (value.usdtRestriction !== null && !persistedRestriction(value.usdtRestriction, address)) return null;
+  if (
+    value.evidenceStatus !== "live_checked" && value.evidenceStatus !== "local_only" ||
+    typeof value.hasHardEvidence !== "boolean" ||
+    !persistedStringArray(value.reasons)
+  ) return null;
+  return {
+    address,
+    labels: labels.filter((label): label is AddressLabel => label !== null),
+    classification: value.classification,
+    usdtRestriction: value.usdtRestriction,
+    evidenceStatus: value.evidenceStatus,
+    hasHardEvidence: value.hasHardEvidence,
+    reasons: value.reasons
+  };
+}
+
+function invalidPersistedFirstHopEvidence(): PersistedDeepFirstHopEvidence {
+  return {
+    firstHopBlacklistFacts: [],
+    firstHopLabelFacts: [],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 0,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "provider_failed",
+      incompleteReason: "persisted_first_hop_evidence_invalid",
+      confirmedAdverseFactCount: 0,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 0
+    },
+    directHardEvidenceSnapshots: []
+  };
+}
+
+function persistedShareMatchesCoverage(
+  item: FirstHopBlacklistFact | FirstHopLabelFact,
+  coverage: FirstHopBlacklistCoverage
+): boolean {
+  return coverage.directPrincipalTransferCoverage === "complete"
+    ? item.shareSemantics === "exact" && item.directionalPrincipalShare !== null
+    : item.shareSemantics === "unavailable" && item.directionalPrincipalShare === null;
+}
+
+function persistedEnvelopeConsistent(input: PersistedDeepFirstHopEvidence): boolean {
+  const { firstHopBlacklistFacts: facts, firstHopLabelFacts: labelFacts, firstHopBlacklistCoverage: coverage, directHardEvidenceSnapshots: snapshots } = input;
+  const snapshotsByAddress = new Map(snapshots.map((snapshot) => [snapshot.address, snapshot]));
+  if (snapshotsByAddress.size !== snapshots.length) return false;
+  const checkedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction !== null).length;
+  const failedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction === null).length;
+  const uncheckedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "local_only").length;
+  if (
+    coverage.materialCounterpartyCount !== snapshots.length ||
+    coverage.checkedMaterialCounterpartyCount !== checkedCount ||
+    coverage.failedMaterialCounterpartyCount !== failedCount ||
+    coverage.uncheckedMaterialCounterpartyCount !== uncheckedCount ||
+    coverage.confirmedAdverseFactCount !== facts.length ||
+    coverage.completeTimelineFactCount !== facts.filter((fact) => fact.timelineCoverage === "complete").length ||
+    coverage.partialTimelineFactCount !== facts.filter((fact) => fact.timelineCoverage === "partial").length
+  ) return false;
+  if (coverage.blacklistCheckCoverage === "complete") {
+    if (
+      coverage.directPrincipalTransferCoverage !== "complete" ||
+      coverage.failedMaterialCounterpartyCount !== 0 ||
+      coverage.uncheckedMaterialCounterpartyCount !== 0 ||
+      coverage.incompleteReason !== null ||
+      coverage.partialTimelineFactCount !== 0
+    ) return false;
+  } else if (!persistedNonEmptyString(coverage.incompleteReason)) {
+    return false;
+  }
+  for (const fact of facts) {
+    if (fact.directTransferCoverage !== coverage.directPrincipalTransferCoverage || !persistedShareMatchesCoverage(fact, coverage)) return false;
+    const snapshot = snapshotsByAddress.get(fact.counterpartyAddress);
+    const restriction = snapshot?.evidenceStatus === "live_checked" ? snapshot.usdtRestriction : null;
+    if (!restriction?.isBlacklisted || restriction.checkedAt !== fact.checkedAt) return false;
+    const timelineEvents = restriction.blacklistTimeline?.events ?? [];
+    if (JSON.stringify(timelineEvents) !== JSON.stringify(fact.timelineEvents)) return false;
+    const expectedTimelineCoverage = restriction.blacklistTimeline?.pagination === "complete" ? "complete" : "partial";
+    if (fact.timelineCoverage !== expectedTimelineCoverage) return false;
+    const effectiveEvent = [...fact.timelineEvents].reverse().find((event) => event.eventKind === "added") ?? null;
+    const effectiveAt = effectiveEvent?.occurredAt ?? restriction.blacklistEventTimestamp ?? null;
+    const effectiveTxHash = effectiveEvent?.txHash ?? restriction.blacklistEventTxHash ?? null;
+    if (fact.effectiveAt !== effectiveAt || fact.effectiveTxHash !== effectiveTxHash) return false;
+  }
+  for (const fact of labelFacts) {
+    const snapshot = snapshotsByAddress.get(fact.counterpartyAddress);
+    const matchingLabel = snapshot?.labels.some((label) =>
+      label.address === fact.counterpartyAddress &&
+      label.label === fact.labelCode &&
+      (label.source === "service_admin" ? "exact_internal" : "derived") === fact.evidenceAuthority &&
+      label.createdAt.toISOString() === fact.recordedAt
+    );
+    if (!matchingLabel || !persistedShareMatchesCoverage(fact, coverage)) return false;
+  }
+  return true;
+}
+
+export function normalizePersistedDeepFirstHopEvidence(
+  record: Record<string, unknown>
+): Partial<PersistedDeepFirstHopEvidence> {
+  const fields = [
+    "firstHopBlacklistFacts",
+    "firstHopLabelFacts",
+    "firstHopBlacklistCoverage",
+    "directHardEvidenceSnapshots"
+  ] as const;
+  if (fields.every((field) => !Object.prototype.hasOwnProperty.call(record, field))) return {};
+  const coverage = normalizePersistedFirstHopCoverage(record.firstHopBlacklistCoverage);
+  if (
+    !Array.isArray(record.firstHopBlacklistFacts) ||
+    !record.firstHopBlacklistFacts.every(persistedBlacklistFact) ||
+    !Array.isArray(record.firstHopLabelFacts) ||
+    !record.firstHopLabelFacts.every(persistedLabelFact) ||
+    coverage === null ||
+    !Array.isArray(record.directHardEvidenceSnapshots)
+  ) return invalidPersistedFirstHopEvidence();
+  const snapshots = record.directHardEvidenceSnapshots.map(normalizePersistedDirectSnapshot);
+  if (snapshots.some((snapshot) => snapshot === null)) return invalidPersistedFirstHopEvidence();
+  const envelope: PersistedDeepFirstHopEvidence = {
+    firstHopBlacklistFacts: record.firstHopBlacklistFacts,
+    firstHopLabelFacts: record.firstHopLabelFacts,
+    firstHopBlacklistCoverage: coverage,
+    directHardEvidenceSnapshots: snapshots.filter((snapshot): snapshot is DirectHardEvidenceSnapshot => snapshot !== null)
+  };
+  return persistedEnvelopeConsistent(envelope) ? envelope : invalidPersistedFirstHopEvidence();
+}
+
 export type DeepAddressForensicDeps = {
   tronClient: RouteSearchTronClient;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getAddressMetadata?(address: string): Promise<AddressMetadata | null>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
-  getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<TimelineBearingStablecoinRestrictionProfile>;
   getTransaction?(txHash: string): Promise<unknown>;
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   listIndexedUsdtTransfersForAddress?(address: string, options: {
@@ -623,6 +1058,54 @@ async function fetchAllIndexedEdgesForAddress(
     if (rows.length < limit) break;
   }
   return dedupeEdges(edges);
+}
+
+function edgeWithinDeclaredWindow(
+  edge: ForensicRouteEdge,
+  windowStart: Date,
+  windowEnd: Date
+): boolean {
+  const timestamp = edge.timestamp.getTime();
+  return Number.isFinite(timestamp) &&
+    timestamp >= windowStart.getTime() &&
+    timestamp <= windowEnd.getTime();
+}
+
+function failedClosedDirectHardEvidence(input: {
+  addresses: string[];
+  windowStart: Date;
+  windowEnd: Date;
+  error: unknown;
+}): DirectHardEvidenceResult {
+  const reason = `Direct principal evidence is invalid and cannot support a clean first-hop conclusion: ${providerErrorMessage(input.error)}`;
+  return {
+    status: "local_only_partial",
+    checkedCount: 0,
+    liveCheckedCount: 0,
+    liveFailedCount: 0,
+    serviceCount: 0,
+    blacklistedCount: 0,
+    blacklistFacts: [],
+    labelFacts: [],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString(),
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: input.addresses.length,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: input.addresses.length,
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: reason,
+      confirmedAdverseFactCount: 0,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 0
+    },
+    snapshots: [],
+    missingChecks: [reason]
+  };
 }
 
 function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string> {
@@ -1617,29 +2100,56 @@ export async function runDeepAddressForensicCheck(
     if (labelSnapshot) baselineDirectSnapshots.set(address, labelSnapshot);
     else if (serviceSnapshot) baselineDirectSnapshots.set(address, serviceSnapshot);
   }
-  const directHardEvidence = allTimeDirectBoundaryActive
-    ? await buildDirectHardEvidenceSnapshots({
+  const directTransferCoverage = allTimeDirectBoundaryActive ? "complete" as const : "partial" as const;
+  // Sparse fallback rows remain useful Deep context, but first-hop decision evidence is scoped
+  // strictly to the declared checked window unless the exact all-time subject index is active.
+  const firstHopDirectEdges = allTimeDirectBoundaryActive
+    ? riskEligibleDirectEdges
+    : riskEligibleDirectEdges.filter((edge) => edgeWithinDeclaredWindow(edge, input.windowStart, input.windowEnd));
+  let directHardEvidence: DirectHardEvidenceResult;
+  try {
+    const principalGroups = groupDirectPrincipalCounterparties({
+      subjectAddress: input.sourceAddress,
+      edges: firstHopDirectEdges,
+      directTransferCoverage
+    });
+    directHardEvidence = await buildDirectHardEvidenceSnapshots({
       addresses: directBoundaryAddresses,
+      principalGroups,
+      directTransferCoverage,
+      // Bounds are ignored for genuinely complete evidence and become the fail-closed
+      // checked window if conflicting transaction chronology downgrades that envelope.
+      windowStart: allTimeDirectBoundaryActive ? new Date(0) : input.windowStart,
+      windowEnd: input.windowEnd,
+      requiredForDecision: true,
+      // Deep has no typed selected Where/Incoming identity. A later caller join may populate it;
+      // historical direct transfers and human reason text are deliberately not substitutes.
+      selectedProvenanceTxHashes: [],
       concurrency: input.directHardEvidenceConcurrency ?? 8,
       liveLimit: input.directHardEvidenceLiveLimit ?? 250,
       getLabelsForAddress: async (address) => labelsByAddress.get(address) ?? deps.getLabelsForAddress(address),
       getClassificationForAddress: async (address) => classifications.get(address) ?? null,
       getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
-    })
-    : null;
-  const allTimeCounterpartySnapshots = new Map(baselineDirectSnapshots);
-  if (directHardEvidence) {
-    for (const snapshot of directHardEvidence.snapshots) {
-      const stablecoinSnapshot = snapshotForStablecoinRestriction(snapshot.address, snapshot.usdtRestriction);
-      const labelSnapshot = snapshotForLabels(snapshot.address, snapshot.labels);
-      const serviceSnapshot = snapshotForService(snapshot.address, snapshot.classification);
-      if (stablecoinSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, stablecoinSnapshot);
-      else if (labelSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, labelSnapshot);
-      else if (serviceSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, serviceSnapshot);
-    }
+    });
+  } catch (error) {
+    directHardEvidence = failedClosedDirectHardEvidence({
+      addresses: directCounterpartyAddresses(input.sourceAddress, firstHopDirectEdges),
+      windowStart: allTimeDirectBoundaryActive ? new Date(0) : input.windowStart,
+      windowEnd: input.windowEnd,
+      error
+    });
   }
-  const counterpartySnapshots = allTimeDirectBoundaryActive
-    ? allTimeCounterpartySnapshots
+  const allTimeCounterpartySnapshots = new Map(baselineDirectSnapshots);
+  for (const snapshot of directHardEvidence.snapshots) {
+    const stablecoinSnapshot = snapshotForStablecoinRestriction(snapshot.address, snapshot.usdtRestriction);
+    const labelSnapshot = snapshotForLabels(snapshot.address, snapshot.labels);
+    const serviceSnapshot = snapshotForService(snapshot.address, snapshot.classification);
+    if (stablecoinSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, stablecoinSnapshot);
+    else if (labelSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, labelSnapshot);
+    else if (serviceSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, serviceSnapshot);
+  }
+  const boundedCounterpartySnapshots = allTimeDirectBoundaryActive
+    ? null
     : await buildCounterpartyFastSnapshots({
       deps,
       runInput: input,
@@ -1648,6 +2158,14 @@ export async function runDeepAddressForensicCheck(
       classifications,
       resolveEconomicEdges
     });
+  for (const snapshot of directHardEvidence.snapshots) {
+    if (!boundedCounterpartySnapshots) break;
+    const stablecoinSnapshot = snapshotForStablecoinRestriction(snapshot.address, snapshot.usdtRestriction);
+    if (stablecoinSnapshot) boundedCounterpartySnapshots.set(snapshot.address, stablecoinSnapshot);
+  }
+  const counterpartySnapshots = allTimeDirectBoundaryActive
+    ? allTimeCounterpartySnapshots
+    : boundedCounterpartySnapshots ?? new Map<string, CounterpartyRiskSnapshot>();
   const directCounterpartyInteractionProfiles = buildDirectCounterpartyInteractionProfiles({
     subjectAddress: input.sourceAddress,
     edges: directBoundaryEdges,
@@ -2007,6 +2525,7 @@ export async function runDeepAddressForensicCheck(
 
   return {
     ...exposureReport,
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     runProfile: input.runProfile ?? "production_full",
     providerBudget: {
       providerCallBudget: input.providerCallBudget ?? null,
@@ -2057,6 +2576,10 @@ export async function runDeepAddressForensicCheck(
     walletRoleProfiles,
     extendedProvenanceProfiles,
     secondLayerRelationshipProfiles,
+    firstHopBlacklistFacts: directHardEvidence.blacklistFacts,
+    firstHopLabelFacts: directHardEvidence.labelFacts,
+    firstHopBlacklistCoverage: directHardEvidence.firstHopBlacklistCoverage,
+    directHardEvidenceSnapshots: directHardEvidence.snapshots,
     coverage,
     coverageDebug
   };

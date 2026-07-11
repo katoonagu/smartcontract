@@ -44,6 +44,38 @@ export type TronTransferEvent = {
   timestamp: Date;
 };
 
+export type TronScanBlacklistRow = {
+  blackAddress: string;
+  tokenName: string;
+  num: string;
+  time: number;
+  transHash: string;
+  contractAddress: string;
+};
+
+export type UsdtBlacklistTimelineEvent = {
+  eventKind: "added" | "removed";
+  occurredAt: string;
+  txHash: string;
+  tokenContract: string;
+  blockNumber: number | null;
+  logIndex: number | null;
+  verification: "verified_contract_log" | "unverified";
+};
+
+export type UsdtBlacklistTimeline = {
+  events: UsdtBlacklistTimelineEvent[];
+  pagination: "complete" | "partial";
+  failureReason:
+    | "provider_failed"
+    | "address_mismatch"
+    | "wrong_contract"
+    | "transaction_unconfirmed"
+    | "event_log_unverified"
+    | "state_timeline_inconsistent"
+    | null;
+};
+
 export type AddressLabel = {
   address: string;
   label: RiskLabel;
@@ -507,7 +539,7 @@ export type DecisionCoverage = {
   caveats: string[];
 };
 
-export type FinalDecisionBasis = "exact_hard_proof" | "matrix" | "technical_stop";
+export type FinalDecisionBasis = "exact_hard_proof" | "independent_policy" | "matrix" | "technical_stop";
 
 export type LocalIndexMaterializationStatus = "complete" | "local_limit" | "read_failed";
 
@@ -533,6 +565,7 @@ export type ForensicTechnicalStatus =
   | "hard_safety_limit_exceeded";
 
 export type ForensicScoreValidity = {
+  scoringPolicyVersion?: string;
   scoreValid?: boolean;
   scoreBlockedReason?: ForensicScoreBlockedReason | null;
   technicalStatus?: ForensicTechnicalStatus | null;
@@ -875,6 +908,8 @@ export type IncomingDepositUnifiedRiskSummary = {
     message: string;
     score: number;
     source: string;
+    row: string;
+    evidenceIds: string[];
   } | null;
 };
 
@@ -2207,6 +2242,91 @@ export type ExtendedProvenanceProfile = {
 
 export type CounterpartyRiskDirection = "inbound" | "outbound";
 
+export type DirectPrincipalCounterpartyGroup = {
+  address: string;
+  direction: CounterpartyRiskDirection;
+  principalAmountRaw: bigint;
+  principalTxCount: number;
+  directionalPrincipalShare: number | null;
+  shareSemantics: "exact" | "unavailable";
+  transferTxHashes: string[];
+  principalTransfers: Array<{
+    txHash: string;
+    amountRaw: bigint;
+    occurredAt: string;
+  }>;
+  material: boolean;
+};
+
+export type FirstHopTemporalRelation =
+  | "active_at_transfer"
+  | "became_active_after"
+  | "mixed"
+  | "unknown";
+
+export type FirstHopBlacklistFact = {
+  counterpartyAddress: string;
+  direction: CounterpartyRiskDirection;
+  evidenceKind: "usdt_blacklist";
+  evidenceAuthority: "official_contract";
+  statusAtCheck: "active" | "inactive" | "unknown";
+  temporalRelation: FirstHopTemporalRelation;
+  effectiveAt: string | null;
+  effectiveTxHash: string | null;
+  checkedAt: string;
+  principalAmountRaw: string;
+  principalTxCount: number;
+  directionalPrincipalShare: number | null;
+  shareSemantics: "exact" | "lower_bound" | "unavailable";
+  transferTxHashes: string[];
+  beforeEffectiveAmountRaw: string;
+  beforeEffectiveTxCount: number;
+  activeAmountRaw: string;
+  activeTxCount: number;
+  unknownTimingAmountRaw: string;
+  unknownTimingTxCount: number;
+  directTransferCoverage: "complete" | "partial";
+  timelineCoverage: "complete" | "partial";
+  timelineEvents: UsdtBlacklistTimelineEvent[];
+};
+
+export type FirstHopLabelFact = {
+  counterpartyAddress: string;
+  direction: CounterpartyRiskDirection;
+  labelCode: RiskLabel;
+  evidenceAuthority: "exact_internal" | "derived";
+  recordedAt: string;
+  effectiveAt: null;
+  principalAmountRaw: string;
+  principalTxCount: number;
+  directionalPrincipalShare: number | null;
+  shareSemantics: "exact" | "lower_bound" | "unavailable";
+  transferTxHashes: string[];
+  linkedToSelectedProvenance: boolean;
+};
+
+export type FirstHopBlacklistCoverage = {
+  requiredForDecision: boolean;
+  scope: "all_time" | "checked_window";
+  windowStart: string | null;
+  windowEnd: string | null;
+  directPrincipalTransferCoverage: "complete" | "partial";
+  materialCounterpartyCount: number;
+  checkedMaterialCounterpartyCount: number;
+  failedMaterialCounterpartyCount: number;
+  uncheckedMaterialCounterpartyCount: number;
+  blacklistCheckCoverage:
+    | "complete"
+    | "running"
+    | "provider_failed"
+    | "budget_exhausted"
+    | "history_partial";
+  incompleteReason: string | null;
+  confirmedAdverseFactCount: number;
+  completeTimelineFactCount: number;
+  partialTimelineFactCount: number;
+};
+
 export type CounterpartyRiskProfile = {
   subjectAddress: string;
   direction: CounterpartyRiskDirection;
@@ -2409,6 +2529,10 @@ export type StablecoinRestrictionProfile = {
     blacklist: "isBlackListed(address)" | "getBlackListStatus(address)";
     balance: "balanceOf(address)" | null;
   };
+};
+
+export type TimelineBearingStablecoinRestrictionProfile = StablecoinRestrictionProfile & {
+  blacklistTimeline?: UsdtBlacklistTimeline | null;
 };
 
 export type RouteSearchOptions = {

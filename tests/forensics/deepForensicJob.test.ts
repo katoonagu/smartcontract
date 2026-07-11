@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  type DeepAddressForensicReport
+} from "../../src/check/deepForensicCheck";
 import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
 import { runSingleDeepForensicJobCycle, type DeepForensicJobRunnerDeps } from "../../src/forensics/deepForensicJob";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
 import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, ForensicRouteEdge, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
@@ -1573,13 +1577,20 @@ describe("deep forensic job runner", () => {
           whereIsMoneyCoverage: whereReport.coverage
         }),
         resultJson: expect.objectContaining({
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport,
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          }),
           contractDrivenReceiverProfile: null,
           contractDrivenTransferProfiles: []
         })
       }));
-      expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, whereReport, "completed");
+      expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, expect.objectContaining({
+        ...whereReport,
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+      }), "completed");
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
@@ -3302,7 +3313,10 @@ describe("deep forensic job runner", () => {
         status: "completed",
         lastError: null,
         resultJson: expect.objectContaining({
-          whereIsMoneyReport: whereReport
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          })
         })
       }));
       expect(coverageSnapshots[0]).toMatchObject({
@@ -3698,7 +3712,10 @@ describe("deep forensic job runner", () => {
         }),
         resultJson: expect.objectContaining({
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport,
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          }),
           score_valid: false,
           score_blocked_reason: "provider_error",
           technical_status: "provider_error"
@@ -3768,7 +3785,10 @@ describe("deep forensic job runner", () => {
         }),
         resultJson: expect.objectContaining({
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport,
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          }),
           score_valid: false,
           score_blocked_reason: "provider_error",
           technical_status: "provider_error"
@@ -3827,6 +3847,7 @@ describe("deep forensic job runner", () => {
         observationIds: [],
         lastError: "rate_limited_after_retries",
         resultJson: expect.objectContaining({
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: subject,
           score_valid: false,
           score_blocked_reason: "rate_limited_after_retries",
@@ -4714,11 +4735,13 @@ describe("deep forensic job runner", () => {
           riskScore: 45
         }),
         resultJson: expect.objectContaining({
+          scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: thjSubject,
           score_valid: true,
           score_blocked_reason: null,
           technical_status: "completed",
           whereIsMoneyReport: expect.objectContaining({
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             decision: "REVIEW",
             userDecision: "REVIEW",
             riskScore: 45,
@@ -5778,6 +5801,7 @@ describe("deep forensic job runner", () => {
       })
     ]));
     expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       stablecoinRestrictionProfiles: [
         expect.objectContaining({
           subjectAddress: subject,
@@ -5792,6 +5816,146 @@ describe("deep forensic job runner", () => {
         isBlacklisted: true
       })
     ]);
+    expect(sentReports[0]?.scoringPolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+  });
+
+  it("marks a resumed ordinary Where terminal provider result with matrix v2", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: {
+          statusReason: "failed_terminal",
+          lastError: "provider unavailable"
+        }
+      }
+    };
+    const completeForensicCheckJob = vi.fn(async () => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    });
+
+    expect(handled).toBe(true);
+    expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      resultJson: expect.objectContaining({
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress: subject,
+        score_valid: false
+      })
+    }));
+  });
+
+  it("persists JSON-safe first-hop timeline facts and coverage in deep result and progress", async () => {
+    const counterparty = "TJobFirstHopBlacklisted1111111111111";
+    const directTxHash = "a".repeat(64);
+    const eventTxHash = "b".repeat(64);
+    const sourceJob = job();
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      upsertAddressLabelAssertion: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === subject ? [transfer({
+          id: directTxHash,
+          from: counterparty,
+          to: subject,
+          amountRaw: "10000000000",
+          at: "2026-05-20T10:00:00.000Z"
+        })] : []
+      },
+      getLabelsForAddress: async (address) => address === counterparty ? [{
+        address,
+        label: "phishing",
+        source: "service_admin",
+        createdByTelegramId: "1",
+        createdAt: new Date("2026-05-01T00:00:00.000Z")
+      }] : [],
+      getUsdtRestrictionStatus: async (address, options) => ({
+        ...usdtRestrictionProfile({
+          subjectAddress: address,
+          isBlacklisted: address === counterparty,
+          blacklistEventTxHash: address === counterparty ? eventTxHash : null,
+          blacklistEventTimestamp: address === counterparty ? "2026-05-10T00:00:00.000Z" : null,
+          blacklistEventBlock: address === counterparty ? 10 : null
+        }),
+        blacklistTimeline: address === counterparty && options?.includeEventTimeline === true ? {
+          address,
+          events: [{
+            eventKind: "added" as const,
+            address,
+            tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+            occurredAt: "2026-05-10T00:00:00.000Z",
+            txHash: eventTxHash,
+            blockNumber: 10,
+            logIndex: 2,
+            verification: "verified_contract_log" as const
+          }],
+          pagination: "complete" as const,
+          failureReason: null,
+          checkedAt: "2026-05-24T00:00:00.000Z"
+        } : null
+      })
+    }, {
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      recentFallbackMinTransferCount: 0,
+      recentFallbackTransferLimit: 0
+    });
+
+    expect(handled).toBe(true);
+    const completion = completeForensicCheckJob.mock.calls[0]?.[0];
+    const serialized = JSON.parse(JSON.stringify(completion));
+    expect(serialized.resultJson).toMatchObject({
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+      firstHopBlacklistFacts: [expect.objectContaining({
+        counterpartyAddress: counterparty,
+        direction: "inbound",
+        principalAmountRaw: "10000000000",
+        transferTxHashes: [directTxHash],
+        activeAmountRaw: "10000000000",
+        timelineEvents: [expect.objectContaining({ txHash: eventTxHash, logIndex: 2 })]
+      })],
+      firstHopLabelFacts: [expect.objectContaining({
+        counterpartyAddress: counterparty,
+        direction: "inbound",
+        principalAmountRaw: "10000000000",
+        transferTxHashes: [directTxHash],
+        linkedToSelectedProvenance: false
+      })],
+      firstHopBlacklistCoverage: expect.objectContaining({
+        requiredForDecision: true,
+        scope: "checked_window",
+        directPrincipalTransferCoverage: "partial",
+        blacklistCheckCoverage: "history_partial"
+      })
+    });
+    expect(serialized.progressJson).toMatchObject({
+      firstHopBlacklistFacts: serialized.resultJson.firstHopBlacklistFacts,
+      firstHopLabelFacts: serialized.resultJson.firstHopLabelFacts,
+      firstHopBlacklistCoverage: serialized.resultJson.firstHopBlacklistCoverage
+    });
+    const restored = normalizePersistedDeepFirstHopEvidence(serialized.resultJson);
+    expect(restored.firstHopBlacklistFacts).toEqual(serialized.resultJson.firstHopBlacklistFacts);
+    expect(restored.firstHopLabelFacts).toEqual(serialized.resultJson.firstHopLabelFacts);
+    expect(restored.firstHopBlacklistCoverage).toEqual(serialized.resultJson.firstHopBlacklistCoverage);
+    expect(restored.directHardEvidenceSnapshots).toHaveLength(1);
+    expect(restored.firstHopBlacklistCoverage?.incompleteReason).not.toBe("persisted_first_hop_evidence_invalid");
   });
 
   it("keeps a completed deep job completed when Telegram result delivery fails", async () => {

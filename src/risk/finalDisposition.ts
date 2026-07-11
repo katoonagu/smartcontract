@@ -19,11 +19,12 @@ export type FinalDisposition = {
   decisionBasis: FinalDecisionBasis;
   coverage: DecisionCoverage;
   hardProofEvidenceIds: string[];
+  decisiveCandidate: ClassifiedMatrixCandidate | null;
 };
 
 function sameSubject(candidate: ClassifiedMatrixCandidate, subject: DecisionSubject): boolean {
   return candidate.subject.decisionScope === subject.decisionScope &&
-    candidate.subject.address.toLowerCase() === subject.address.toLowerCase() &&
+    candidate.subject.address === subject.address &&
     candidate.subject.txHash === subject.txHash;
 }
 
@@ -31,12 +32,59 @@ function exactHardCandidate(
   matrix: MatrixScoringResult,
   subject: DecisionSubject
 ): ClassifiedMatrixCandidate | null {
-  return [...(matrix.riskVector.hard_proof ?? [])]
+  return [
+    ...(matrix.riskVector.subject_restriction ?? []),
+    ...(matrix.riskVector.hard_proof ?? [])
+  ]
     .filter((candidate) =>
       candidate.evidenceClass === "exact_hard" &&
       candidate.proofLevel === "exact" &&
       candidate.decisionEligibility === "can_decline" &&
       candidate.coverageDependency === "none" &&
+      sameSubject(candidate, subject)
+    )
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+}
+
+function independentDirectPolicyCandidate(
+  matrix: MatrixScoringResult,
+  subject: DecisionSubject
+): ClassifiedMatrixCandidate | null {
+  return (matrix.riskVector.direct_counterparty_policy ?? [])
+    .filter((candidate) =>
+      candidate.row === "direct_counterparty_policy" &&
+      candidate.authority.kind === "policy" &&
+      candidate.authority.decisionEligibility === "can_decline" &&
+      candidate.authority.coverageDependency === "none" &&
+      candidate.evidenceClass === "policy" &&
+      candidate.proofLevel === "policy" &&
+      candidate.decisionEligibility === "can_decline" &&
+      candidate.coverageDependency === "none" &&
+      candidate.score >= 60 &&
+      sameSubject(candidate, subject)
+    )
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+}
+
+function independentDirectVerify20Candidate(
+  matrix: MatrixScoringResult,
+  subject: DecisionSubject
+): ClassifiedMatrixCandidate | null {
+  return (matrix.riskVector.contract_suspicion ?? [])
+    .filter((candidate) =>
+      candidate.row === "contract_suspicion" &&
+      candidate.actionUnit === "wallet" &&
+      candidate.authority.kind === "pattern" &&
+      candidate.authority.decisionEligibility === "can_decline" &&
+      candidate.authority.coverageDependency === "none" &&
+      candidate.evidenceClass === "pattern" &&
+      candidate.proofLevel === "corroborated_pattern" &&
+      candidate.decisionEligibility === "can_decline" &&
+      candidate.coverageDependency === "none" &&
+      candidate.score >= 85 &&
+      candidate.atomicSignals.length === 1 &&
+      candidate.atomicSignals[0] === "exact_verify20_contract_pattern" &&
+      candidate.modifiers.includes("direct_contract_subject_anchor") &&
       sameSubject(candidate, subject)
     )
     .sort((left, right) => right.score - left.score)[0] ?? null;
@@ -60,7 +108,23 @@ export function resolveFinalDisposition(input: {
       scoreValid: true,
       decisionBasis: "exact_hard_proof",
       coverage: input.coverage,
-      hardProofEvidenceIds: hard.evidenceIds
+      hardProofEvidenceIds: hard.evidenceIds,
+      decisiveCandidate: hard
+    };
+  }
+
+  const independentPolicy = independentDirectPolicyCandidate(input.matrixScore, input.subject) ??
+    independentDirectVerify20Candidate(input.matrixScore, input.subject);
+  if (independentPolicy) {
+    return {
+      decision: "DECLINE",
+      finalScore: independentPolicy.score,
+      observedContextScore,
+      scoreValid: true,
+      decisionBasis: "independent_policy",
+      coverage: input.coverage,
+      hardProofEvidenceIds: [],
+      decisiveCandidate: independentPolicy
     };
   }
 
@@ -78,7 +142,8 @@ export function resolveFinalDisposition(input: {
       scoreValid: false,
       decisionBasis: "technical_stop",
       coverage: input.coverage,
-      hardProofEvidenceIds: []
+      hardProofEvidenceIds: [],
+      decisiveCandidate: null
     };
   }
 
@@ -89,6 +154,7 @@ export function resolveFinalDisposition(input: {
     scoreValid: true,
     decisionBasis: "matrix",
     coverage: input.coverage,
-    hardProofEvidenceIds: []
+    hardProofEvidenceIds: [],
+    decisiveCandidate: input.matrixScore.winningCandidate
   };
 }

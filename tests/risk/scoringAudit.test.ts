@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildScoringAuditRow, cohortCounts } from "../../src/risk/scoringAudit";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
@@ -76,7 +77,7 @@ describe("scoring audit rows", () => {
     ]));
   });
 
-  it("uses matrix insufficient evidence as the audit decision and policy version", () => {
+  it("does not infer matrix v2 from a legacy winning row without a persisted marker", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",
       resultJson: {
@@ -102,8 +103,59 @@ describe("scoring audit rows", () => {
 
     expect(row.auditDecision).toBe("INSUFFICIENT_COVERAGE");
     expect(row.cohorts).toContain("low_score_incomplete_coverage");
-    expect(row.policyVersion).toBe("scoring-signal-matrix-v1");
+    expect(row.policyVersion).toBe("incoming-deposit-risk-v1");
   });
+
+  it("attributes matrix v2 only from an exact persisted scoring marker", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "incoming_deposit_check",
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        decision: "DECLINE",
+        depositRiskScore: 90,
+        unifiedRiskSummary: {
+          finalScore: 90,
+          finalDecision: "DECLINE",
+          matrixDecision: "DECLINE",
+          winningRow: "direct_counterparty_policy"
+        }
+      }
+    }));
+
+    expect(row.policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+  });
+
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+    "preserves the stored outcome for a %s top-level marker despite nested matrix v2 fields",
+    (scoringPolicyVersion) => {
+      const row = buildScoringAuditRow(job({
+        kind: "where_is_money_check",
+        resultJson: {
+          ...(scoringPolicyVersion === undefined ? {} : { scoringPolicyVersion }),
+          whereIsMoneyReport: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+            riskScore: 45,
+            userDecision: "REVIEW",
+            matrixScore: {
+              policyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+              matrixDecision: "DECLINE"
+            }
+          },
+          unifiedRiskSummary: {
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+            finalScore: 90,
+            finalDecision: "DECLINE",
+            matrixDecision: "DECLINE"
+          }
+        }
+      }));
+
+      expect(row.finalScore).toBe(45);
+      expect(row.productionDecision).toBe("REVIEW");
+      expect(row.auditDecision).toBe("REVIEW");
+      expect(row.policyVersion).not.toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+    }
+  );
 
   it("flags hard evidence cases", () => {
     const row = buildScoringAuditRow(job({
@@ -253,6 +305,7 @@ describe("scoring audit rows", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         decision: "ACCEPTABLE",
         depositRiskScore: 20,
         unifiedRiskSummary: {

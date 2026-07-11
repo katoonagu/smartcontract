@@ -10,6 +10,26 @@ import { isServiceBoundary } from "./serviceClassifier";
 
 export const ADDRESS_BEHAVIOR_DEFAULT_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
 
+export const ADDRESS_BEHAVIOR_REASON_CODES = [
+  "address_behavior_deposit_then_drain",
+  "address_behavior_large_inflow_preserved_outflow",
+  "address_behavior_fast_post_deposit_exit",
+  "address_behavior_drain_to_service_infrastructure",
+  "address_behavior_high_volume_transit",
+  "address_behavior_fan_in_fan_out",
+  "address_behavior_large_outgoing_concentration",
+  "address_behavior_top_counterparty_concentration",
+  "address_behavior_collector_like_wallet"
+] as const;
+
+export type AddressBehaviorReasonCode = typeof ADDRESS_BEHAVIOR_REASON_CODES[number];
+
+const addressBehaviorReasonCodes = new Set<string>(ADDRESS_BEHAVIOR_REASON_CODES);
+
+export function isAddressBehaviorReasonCode(code: string): code is AddressBehaviorReasonCode {
+  return addressBehaviorReasonCodes.has(code);
+}
+
 export type AddressBehaviorMetadata = {
   name?: string | null;
   tag?: string | null;
@@ -51,7 +71,11 @@ function scaledAmount(amount: bigint, ratio: number): bigint {
   return amount * BigInt(Math.round(ratio * 10_000)) / 10_000n;
 }
 
-function feature(code: string, label: string, scoreImpact: number, value?: RouteScoreFeature["value"]): RouteScoreFeature {
+function feature(code: AddressBehaviorReasonCode, label: string, scoreImpact: number, value?: RouteScoreFeature["value"]): RouteScoreFeature {
+  return { code, label, scoreImpact, value };
+}
+
+function dampenerFeature(code: string, label: string, scoreImpact: number, value?: RouteScoreFeature["value"]): RouteScoreFeature {
   return { code, label, scoreImpact, value };
 }
 
@@ -243,7 +267,7 @@ function scoreDampeners(input: {
     (classification && isServiceBoundary(classification) && classification.category !== "unknown_contract") ||
     /treasury|merchant|payment|payroll|operation|operational/.test(text)
   ) {
-    features.push(feature("known_service_or_treasury_dampener", "Known service or treasury-like subject can legitimately show transit behavior", -25, classification?.category ?? text));
+    features.push(dampenerFeature("known_service_or_treasury_dampener", "Known service or treasury-like subject can legitimately show transit behavior", -25, classification?.category ?? text));
   }
 
   const createdAt = walletCreatedAt(input.metadata);
@@ -251,7 +275,7 @@ function scoreDampeners(input: {
   if (createdAt && txCount !== null) {
     const ageDays = Math.floor((Date.now() - createdAt.getTime()) / 86_400_000);
     if (ageDays >= 180 && txCount >= 1_000) {
-      features.push(feature("long_lived_high_activity_wallet_dampener", "Long-lived high-activity wallet can match legitimate operational behavior", -20, txCount));
+      features.push(dampenerFeature("long_lived_high_activity_wallet_dampener", "Long-lived high-activity wallet can match legitimate operational behavior", -20, txCount));
     }
   }
 
@@ -263,7 +287,7 @@ function scoreDampeners(input: {
     input.uniqueOutgoingCounterparties >= 5 &&
     largestIncomingRatio < 0.4
   ) {
-    features.push(feature("regular_activity_dampener", "Distributed regular activity reduces single-incident interpretation", -15, largestIncomingRatio));
+    features.push(dampenerFeature("regular_activity_dampener", "Distributed regular activity reduces single-incident interpretation", -15, largestIncomingRatio));
   }
 
   const providerFailures = input.missingChecks.filter((item) =>
@@ -271,7 +295,7 @@ function scoreDampeners(input: {
     !item.toLowerCase().includes("sparse-wallet context")
   );
   if (providerFailures.length > 0) {
-    features.push(feature("low_context_dampener", "Partial provider context reduces behavior confidence", -15, providerFailures.length));
+    features.push(dampenerFeature("low_context_dampener", "Partial provider context reduces behavior confidence", -15, providerFailures.length));
   }
 
   return features;
