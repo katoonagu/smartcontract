@@ -8,6 +8,7 @@ code_refs:
   - src/admin/adminServer.ts
   - src/storage/repositories.ts
   - src/bot/createBot.ts
+  - src/bot/wherePreliminaryNarrative.ts
   - src/bot/walletNarrativeSummary.ts
   - src/bot/riskExplanationSummary.ts
   - src/alerts/formatters.ts
@@ -16,6 +17,7 @@ code_refs:
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminServer.test.ts
   - tests/bot/createBot.test.ts
+  - tests/bot/wherePreliminaryNarrative.test.ts
   - tests/bot/walletNarrativeSummary.test.ts
   - tests/alerts/formatters.test.ts
 supersedes:
@@ -307,6 +309,25 @@ approve -> transferFrom -> receiver evidence, while rapid transit behavior is
 shown only in `Дополнительный контекст`. Where preliminary delivery is labeled
 as `Откуда деньги — предварительный результат` so users can distinguish it from
 the initial FastCheck preliminary message.
+
+When a matching DeepCheck job is queued or running, the preliminary Where
+message has this fixed order: title, address, preliminary-risk line, optional
+`Что нашли` / `Finding`, optional `Вывод` / `Conclusion`, optional
+`Границы проверки` / `Coverage limits`, and the existing runtime marker. The
+title is exactly `Откуда деньги — предварительный результат` in Russian and
+`Where Is Money — preliminary result` in English. A scored line keeps the
+existing band emoji and `/100`. A no-score line is exactly `Предварительный
+риск не рассчитан` / `Preliminary risk was not calculated` and has no emoji or
+`/100`.
+
+This preliminary surface shows at most two typed findings, one primary meaning,
+and a separate coverage limit. It has no `Почему`, `Что дальше`, decision,
+canonical action, recommendation, DeepCheck state or name, raw code, raw
+reason, LLM copy, or contract method name. A diagnostic for an explicitly valid
+but unexplained score is logged best-effort; callback failure is swallowed and
+cannot change or block Telegram delivery. Completed current Deep routing and
+the absent/failed Deep detailed behavior are unchanged. Admin, support, and
+`/check_status ... detailed` keep their existing diagnostic surfaces.
 
 Normal final Telegram address reports now use one compact deterministic
 narrative in plain Russian or English. A scored header always keeps the risk

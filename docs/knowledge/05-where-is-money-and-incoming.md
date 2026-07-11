@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -12,6 +12,9 @@ code_refs:
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
+  - src/bot/wherePreliminaryNarrative.ts
+  - src/bot/walletNarrativeSummary.ts
+  - src/bot/createBot.ts
   - src/index.ts
   - tests/forensics/fundingFirstSourceProvenance.test.ts
   - tests/forensics/gasFreeSettlement.test.ts
@@ -22,6 +25,9 @@ code_refs:
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
+  - tests/bot/wherePreliminaryNarrative.test.ts
+  - tests/bot/walletNarrativeSummary.test.ts
+  - tests/bot/createBot.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -42,6 +48,31 @@ Do not merge these modes. They use similar provenance logic but answer
 different user questions.
 
 ## Current Behavior
+
+When a matching DeepCheck job is queued or running, Telegram renders ordinary
+Where as `Откуда деньги — предварительный результат` / `Where Is Money —
+preliminary result`. A numeric preliminary risk is published only when at
+least one validity mirror is explicitly `true`, neither mirror is `false`, and
+a subject-bound typed fact explains the dominant saved score driver. Explicit
+`false` wins over a conflicting `true`; false, undefined-only, and valid but
+unexplained results show no emoji or `/100` value.
+
+The preliminary narrative has at most two findings. The first is the primary
+fact, its short meaning is a separate conclusion, and material coverage limits
+are a separate section rather than risk evidence. It reads saved typed Where
+facts and subject-bound Fast or Verify20 facts only. It does not read raw
+reasons or LLM text, does not use Deep-only counterparty, relationship,
+collector, or first-hop evidence, and does not show a decision, action,
+DeepCheck state, or method name.
+
+Historical HTX remains visible `REVIEW` compliance context before the official
+designation date and must not be called sanctioned at the transfer timestamp.
+At or after the designation boundary, sanctioned wording requires matching
+typed `sanctioned_service` evidence for the selected Where path. GasFree
+principal remains traceable and scoreable. A GasFree fee is optional technical
+detail only when the saved balance-forming transfer has exact `service_fee`
+plus `tron_gasfree` roles; destination, familiar amount, or timing alone does
+not create that fact or explain the score.
 
 GasFree Accounts and unknown or unlabeled contracts are traceable addresses at
 the first, second, third, and later hops. Their contract fact does not create a

@@ -2,7 +2,36 @@
 
 Дата: 2026-07-11
 
-Статус: согласованный дизайн, перед implementation plan
+Статус: реализовано и проверено
+
+## Реализация
+
+Дизайн реализован в коммитах:
+
+- `afbd6d96` — разделение факта и его смысла;
+- `d46599d2` — детерминированность preliminary narrative;
+- `72a4ed17` — лимит длины wallet narrative;
+- `9fa51104` — каталог typed-сигналов Where;
+- `c9a9b37e` — привязка сумм к сохранённым фактам;
+- `d5316aae` — typed-адаптер предварительного Where;
+- `89b08aae` — привязка score к совпадающему evidence;
+- `f3629d5b` — fail-closed для неоднозначного evidence;
+- `cbfd8702` — production Fast critical narrative;
+- `58abd209` — обязательное совпадение Fast critical evidence;
+- `3934fec2` — Telegram-формат и runtime diagnostic;
+- `0a2f69b8` — отдельный заголовок границ проверки;
+- `ef04c34c` — изоляция best-effort diagnostic от доставки.
+
+Свежая проверка после реализации:
+
+- affected gate: 8 test files, 682 tests passed;
+- full gate: 152 test files, 3018 tests passed;
+- TypeScript: `tsc --noEmit` passed;
+- `git diff --check`: whitespace errors отсутствуют;
+- copy-safety: в production preliminary нет старого fallback, `Что дальше`,
+  DeepCheck-state, action, `hard-proof` или `transferFrom drain`; raw-коды в
+  пользовательский текст не попадают;
+- инфостиль: категория `брехня` — 0.
 
 ## Задача
 
