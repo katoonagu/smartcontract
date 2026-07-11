@@ -99,13 +99,70 @@ describe("formatWalletNarrativeSummary", () => {
     });
   });
 
-  it("keeps preliminary coverage and complete sentences ahead of an optional second finding", () => {
-    const primary = `Главный факт. ${"а".repeat(145)}`;
-    const meaning = `Смысл главного факта. ${"б".repeat(85)}`;
-    const coverage = `Граница покрытия. ${"в".repeat(115)}`;
-    const secondary = `Дополнительный факт. ${"г".repeat(65)}`;
-    const sections = buildPreliminaryNarrativeSections({
+  it("normalizes meaning and score keys and resolves duplicate ties deterministically", () => {
+    const tieA: NarrativeFact = {
+      id: "tie",
+      kind: "bridge_route",
+      factTextRu: "  Одинаковый   факт. ",
+      factTextEn: "  Same   finding. ",
+      meaningTextRu: "  Alpha   meaning. ",
+      meaningTextEn: "  Primary   meaning. ",
+      scoreSignalKeys: [" zeta ", "", "alpha", "zeta", "   "]
+    };
+    const tieB: NarrativeFact = {
+      ...tieA,
+      meaningTextRu: "Beta meaning.",
+      meaningTextEn: "Secondary meaning.",
+      scoreSignalKeys: ["beta"]
+    };
+    const buildAndSelect = (facts: NarrativeFact[]) => selectNarrativeFacts(buildWalletNarrativeCase({
       locale: "ru",
+      decision: "DECLINE",
+      score: 95,
+      facts,
+      coverageExplanation: null
+    }));
+
+    const forward = buildAndSelect([tieA, tieB]);
+    const reversed = buildAndSelect([tieB, tieA]);
+
+    expect(forward).toEqual(reversed);
+    expect(forward).toEqual([expect.objectContaining({
+      factTextRu: "Одинаковый факт.",
+      factTextEn: "Same finding.",
+      meaningTextRu: "Alpha meaning.",
+      meaningTextEn: "Primary meaning.",
+      scoreSignalKeys: ["alpha", "zeta"]
+    })]);
+  });
+
+  it.each([
+    {
+      locale: "ru" as const,
+      primary: `Главный факт: 123 456,78 USDT пришли на T${"A".repeat(33)}. ${"а".repeat(90)}.`,
+      meaning: `Смысл главного факта сохранён полностью. ${"б".repeat(70)}.`,
+      coverage: `Оставшиеся 17% суммы не удалось проследить. ${"в".repeat(80)}.`,
+      secondary: `Дополнительный факт: 9 999 USDT. ${"г".repeat(55)}.`,
+      headings: { finding: "Что нашли", conclusion: "Вывод", coverage: "Границы проверки" }
+    },
+    {
+      locale: "en" as const,
+      primary: `Primary finding: 123,456.78 USDT arrived at T${"A".repeat(33)}. ${"a".repeat(90)}.`,
+      meaning: `The primary meaning is preserved in full. ${"b".repeat(70)}.`,
+      coverage: `The remaining 17% of the amount could not be traced. ${"c".repeat(80)}.`,
+      secondary: `Additional finding: 9,999 USDT. ${"d".repeat(55)}.`,
+      headings: { finding: "Finding", conclusion: "Conclusion", coverage: "Coverage limits" }
+    }
+  ])("keeps the worst-case $locale preliminary body whole and within budget", ({
+    locale,
+    primary,
+    meaning,
+    coverage,
+    secondary,
+    headings
+  }) => {
+    const sections = buildPreliminaryNarrativeSections({
+      locale,
       facts: [
         {
           id: "primary",
@@ -131,17 +188,20 @@ describe("formatWalletNarrativeSummary", () => {
     });
     const body = [
       sections.findings.length > 0
-        ? `Что нашли\n${sections.findings.map((finding) => `• ${finding}`).join("\n")}`
+        ? `${headings.finding}\n${sections.findings.map((finding) => `• ${finding}`).join("\n")}`
         : null,
-      sections.conclusion ? `Вывод\n${sections.conclusion}` : null,
-      sections.coverage ? `Границы проверки\n${sections.coverage}` : null
+      sections.conclusion ? `${headings.conclusion}\n${sections.conclusion}` : null,
+      sections.coverage ? `${headings.coverage}\n${sections.coverage}` : null
     ].filter((part): part is string => part !== null).join("\n\n");
 
     expect(sections).toEqual({ findings: [primary], conclusion: meaning, coverage });
     expect(`\n\n${body}`.length).toBeLessThanOrEqual(500);
     expect(sections.findings.every((finding) => finding.length > 0)).toBe(true);
-    expect(sections.conclusion).not.toBe("");
-    expect(sections.coverage).not.toBe("");
+    expect(sections.conclusion).toBeTruthy();
+    expect(sections.coverage).toBeTruthy();
+    expect(body).toContain(locale === "en" ? "123,456.78 USDT" : "123 456,78 USDT");
+    expect(body).toContain(`T${"A".repeat(33)}`);
+    expect(body).not.toContain(secondary);
   });
 
   it("keeps finding and meaning in the final formatter without duplicating either sentence", () => {

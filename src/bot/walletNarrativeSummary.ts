@@ -226,7 +226,9 @@ function narrativeFact(
     id,
     kind,
     evidenceIds: [...new Set(evidenceIds.filter((id) => id.length > 0))].sort(compareLexical),
-    scoreSignalKeys: [...new Set(options.scoreSignalKeys ?? [])].sort(compareLexical),
+    scoreSignalKeys: [...new Set(
+      (options.scoreSignalKeys ?? []).map((key) => key.trim()).filter((key) => key.length > 0)
+    )].sort(compareLexical),
     role,
     proofStrength,
     priority: factRank[kind],
@@ -1431,9 +1433,9 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
     }
     if (
       Array.isArray(fact.scoreSignalKeys) &&
-      fact.scoreSignalKeys.some((key) => typeof key !== "string" || key.trim().length === 0)
+      fact.scoreSignalKeys.some((key) => typeof key !== "string")
     ) {
-      throw new Error("Wallet narrative fact score signal keys must contain non-empty strings.");
+      throw new Error("Wallet narrative fact score signal keys must contain strings.");
     }
   });
   if (input.coverageExplanation === null) return;
@@ -1471,7 +1473,9 @@ export function buildWalletNarrativeCase(input: WalletNarrativeCase): WalletNarr
       ...fact,
       id: fact.id.trim(),
       scoreSignalKeys: fact.scoreSignalKeys
-        ? [...new Set(fact.scoreSignalKeys.map((key) => key.trim()))].sort(compareLexical)
+        ? [...new Set(
+            fact.scoreSignalKeys.map((key) => key.trim()).filter((key) => key.length > 0)
+          )].sort(compareLexical)
         : undefined,
       factTextRu: normalizeCopy(fact.factTextRu),
       factTextEn: normalizeCopy(fact.factTextEn),
