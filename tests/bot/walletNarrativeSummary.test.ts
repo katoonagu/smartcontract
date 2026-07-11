@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as walletNarrativeSummary from "../../src/bot/walletNarrativeSummary";
 import {
   buildWalletNarrativeCase,
   formatWalletNarrativeSummary,
@@ -6,6 +7,14 @@ import {
   type NarrativeFact,
   type WalletNarrativeCase
 } from "../../src/bot/walletNarrativeSummary";
+import type {
+  ApprovalDrainProvenanceProfile,
+  DirectCounterpartyInteractionProfile,
+  FirstHopBlacklistCoverage,
+  FirstHopBlacklistFact,
+  FirstHopLabelFact,
+  StablecoinRestrictionProfile
+} from "../../src/types";
 
 const primaryFact: NarrativeFact = {
   id: "primary",
@@ -526,6 +535,21 @@ describe("formatWalletNarrativeSummary", () => {
       error: /fact texts must be strings/
     },
     {
+      name: "fact role",
+      value: { facts: [{ ...primaryFact, role: "sender" }] },
+      error: /fact role is invalid/
+    },
+    {
+      name: "fact proof strength",
+      value: { facts: [{ ...primaryFact, proofStrength: "guessed" }] },
+      error: /proof strength is invalid/
+    },
+    {
+      name: "fact priority",
+      value: { facts: [{ ...primaryFact, priority: 1.5 }] },
+      error: /fact priority must be an integer/
+    },
+    {
       name: "coverage object",
       value: { coverageExplanation: [] },
       error: /coverage must be an object or null/
@@ -543,6 +567,18 @@ describe("formatWalletNarrativeSummary", () => {
         coverageExplanation: { textRu: "Ограничение.", textEn: "Coverage.", isRiskEvidence: true }
       },
       error: /coverage must be a limitation/
+    },
+    {
+      name: "coverage reason kind",
+      value: {
+        coverageExplanation: {
+          reasonKind: 42,
+          textRu: "Ограничение.",
+          textEn: "Coverage.",
+          isRiskEvidence: false
+        }
+      },
+      error: /coverage reason kind must be a string/
     },
     {
       name: "score type",
@@ -574,5 +610,918 @@ describe("formatWalletNarrativeSummary", () => {
     expect(() => narrativeCase({ decision: "NO_FINAL_DECISION", score: 45 })).toThrow(/must not have a score/);
     expect(() => narrativeCase({ decision: "REVIEW", score: null })).toThrow(/requires a score/);
     expect(() => narrativeCase({ score: 101 })).toThrow(/between 0 and 100/);
+  });
+});
+
+const catalogueApi = walletNarrativeSummary as unknown as {
+  subjectBlacklistFact: (profile: StablecoinRestrictionProfile) => NarrativeFact | null;
+  approvalDrainRoleFact: (input: Record<string, unknown>) => NarrativeFact | null;
+  verify20RoleFact: (input: Record<string, unknown>) => NarrativeFact | null;
+  firstHopBlacklistFacts: (
+    facts: FirstHopBlacklistFact[],
+    profiles?: DirectCounterpartyInteractionProfile[],
+    subjectRestriction?: StablecoinRestrictionProfile | null
+  ) => NarrativeFact[];
+  sourceAndRouteFacts: (input: Record<string, unknown>) => NarrativeFact[];
+  gasFreeFeeFact: (profiles: DirectCounterpartyInteractionProfile[]) => NarrativeFact | null;
+  coverageExplanationFor: (input: Record<string, unknown>) => WalletNarrativeCase["coverageExplanation"];
+  buildWalletNarrativeEvidence: (input: Record<string, unknown>) => {
+    facts: NarrativeFact[];
+    coverageExplanation: WalletNarrativeCase["coverageExplanation"];
+  };
+};
+
+const subject = `T${"1".repeat(33)}`;
+const counterparty = `T${"2".repeat(33)}`;
+
+function blacklistFact(overrides: Partial<FirstHopBlacklistFact> = {}): FirstHopBlacklistFact {
+  return {
+    counterpartyAddress: counterparty,
+    direction: "inbound",
+    evidenceKind: "usdt_blacklist",
+    evidenceAuthority: "official_contract",
+    statusAtCheck: "active",
+    temporalRelation: "active_at_transfer",
+    effectiveAt: "2026-05-26T12:49:03.000Z",
+    effectiveTxHash: "b".repeat(64),
+    checkedAt: "2026-07-11T00:00:00.000Z",
+    principalAmountRaw: "25000000000",
+    principalTxCount: 2,
+    directionalPrincipalShare: 0.25,
+    shareSemantics: "exact",
+    transferTxHashes: ["a".repeat(64)],
+    beforeEffectiveAmountRaw: "0",
+    beforeEffectiveTxCount: 0,
+    activeAmountRaw: "25000000000",
+    activeTxCount: 2,
+    unknownTimingAmountRaw: "0",
+    unknownTimingTxCount: 0,
+    directTransferCoverage: "complete",
+    timelineCoverage: "complete",
+    timelineEvents: [],
+    ...overrides
+  };
+}
+
+function firstHopCoverage(
+  overrides: Partial<FirstHopBlacklistCoverage> = {}
+): FirstHopBlacklistCoverage {
+  return {
+    requiredForDecision: true,
+    scope: "checked_window",
+    windowStart: "2026-05-01T00:00:00.000Z",
+    windowEnd: "2026-07-11T00:00:00.000Z",
+    directPrincipalTransferCoverage: "complete",
+    materialCounterpartyCount: 4,
+    checkedMaterialCounterpartyCount: 4,
+    failedMaterialCounterpartyCount: 0,
+    uncheckedMaterialCounterpartyCount: 0,
+    blacklistCheckCoverage: "complete",
+    incompleteReason: null,
+    confirmedAdverseFactCount: 0,
+    completeTimelineFactCount: 0,
+    partialTimelineFactCount: 0,
+    ...overrides
+  };
+}
+
+function approvalProfile(
+  overrides: Partial<ApprovalDrainProvenanceProfile> = {}
+): ApprovalDrainProvenanceProfile {
+  return {
+    victimAddress: subject,
+    approvalTxHash: "1".repeat(64),
+    drainTxHash: "2".repeat(64),
+    spenderAddress: `T${"3".repeat(33)}`,
+    firstReceiverAddress: `T${"4".repeat(33)}`,
+    subjectAddress: subject,
+    hopDepth: 0,
+    amountRaw: "850000000",
+    amountPreservationRatio: 1,
+    approvalAt: "2026-07-10T00:00:00.000Z",
+    drainAt: "2026-07-10T00:01:00.000Z",
+    pathTxHashes: ["2".repeat(64)],
+    pathAddresses: [subject, `T${"3".repeat(33)}`, `T${"4".repeat(33)}`],
+    score: 95,
+    evidenceStrength: "exact_approval_and_transfer_from",
+    subjectTokenState: null,
+    victimTokenState: null,
+    features: [],
+    ...overrides
+  };
+}
+
+function interactionProfile(
+  transfers: NonNullable<DirectCounterpartyInteractionProfile["transfers"]>,
+  overrides: Partial<DirectCounterpartyInteractionProfile> = {}
+): DirectCounterpartyInteractionProfile {
+  return {
+    subjectAddress: subject,
+    direction: "outbound",
+    counterpartyAddress: counterparty,
+    volumeRaw: "1176320000000",
+    volumeRatio: 1,
+    txCount: transfers.length,
+    firstSeen: transfers[0]?.timestamp ?? "2026-07-11T00:00:00.000Z",
+    lastSeen: transfers.at(-1)?.timestamp ?? "2026-07-11T00:00:00.000Z",
+    txHashes: transfers.map((transfer) => transfer.txHash),
+    transfers,
+    serviceCategory: null,
+    identity: null,
+    snapshot: {
+      address: counterparty,
+      riskScore: 0,
+      riskLevel: "LOW",
+      source: "none",
+      evidenceClass: "no_exact_label_or_cached_taint",
+      reasons: ["POISON snapshot.reasons"],
+      partialNotes: ["POISON snapshot.partialNotes"]
+    },
+    interactionWeight: 1,
+    scoreContribution: 0,
+    evidenceClass: "no_exact_label_or_cached_taint",
+    skippedReason: null,
+    ...overrides
+  };
+}
+
+describe("wallet narrative signal catalogue", () => {
+  it("states the checked subject's active USDT restriction in plain RU and EN", () => {
+    const fact = catalogueApi.subjectBlacklistFact({
+      subjectAddress: subject,
+      tokenContract: `T${"9".repeat(33)}`,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: true,
+      balanceRaw: "1000000",
+      checkedAt: "2026-07-11T00:00:00.000Z",
+      evidenceStrength: "exact_contract_state",
+      methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+    });
+
+    expect(fact?.factTextRu).toMatch(/адрес находится в ч[её]рном списке USDT/i);
+    expect(fact?.factTextRu).toMatch(/переводы .*заблокированы|USDT .*заморожен/i);
+    expect(fact?.factTextEn).toMatch(/address is on the USDT blacklist/i);
+    expect(fact?.factTextEn).toMatch(/transfers are blocked|USDT .*frozen/i);
+  });
+
+  it.each([
+    {
+      role: "victim",
+      checkedAddress: subject,
+      walletRole: "victim",
+      expectedRu: /жертва.*списан|списали.*жертва/i,
+      expectedEn: /victim.*debit|debited.*victim/i,
+      forbidden: /контракт-дрейнер|drainer contract/i
+    },
+    {
+      role: "drainer_spender",
+      checkedAddress: `T${"3".repeat(33)}`,
+      walletRole: "drainer_spender",
+      expectedRu: /получил доступ.*списал|контракт-дрейнер/i,
+      expectedEn: /obtained access.*debited|drainer contract/i
+    },
+    {
+      role: "first_receiver",
+      checkedAddress: `T${"4".repeat(33)}`,
+      walletRole: "first_receiver",
+      expectedRu: /первым получил.*850 USDT/i,
+      expectedEn: /first.*receive.*850 USDT/i
+    },
+    {
+      role: "route_linked",
+      checkedAddress: `T${"5".repeat(33)}`,
+      walletRole: "unknown",
+      profile: {
+        subjectAddress: `T${"5".repeat(33)}`,
+        hopDepth: 2 as const,
+        amountPreservationRatio: 0.96,
+        pathAddresses: [subject, `T${"3".repeat(33)}`, `T${"4".repeat(33)}`, `T${"5".repeat(33)}`]
+      },
+      expectedRu: /следующее звено|дальше по цепочке/i,
+      expectedEn: /later link|farther along/i
+    }
+  ])("renders exact approval-drain role $role without role confusion", (row) => {
+    const fact = catalogueApi.approvalDrainRoleFact({
+      checkedAddress: row.checkedAddress,
+      walletRole: row.walletRole,
+      profile: approvalProfile(row.profile)
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(row.expectedRu);
+    expect(fact?.factTextEn).toMatch(row.expectedEn);
+    if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
+  });
+
+  it("does not create approval-drain evidence from a method name alone", () => {
+    expect(catalogueApi.approvalDrainRoleFact({
+      checkedAddress: subject,
+      walletRole: "unknown",
+      method: "transferFrom"
+    })).toBeNull();
+  });
+
+  it("renders the canonical route_linked approval profile as context", () => {
+    const fact = catalogueApi.approvalDrainRoleFact({
+      checkedAddress: `T${"5".repeat(33)}`,
+      walletRole: "unknown",
+      profile: approvalProfile({
+        subjectAddress: `T${"5".repeat(33)}`,
+        hopDepth: 2,
+        amountPreservationRatio: 0.96,
+        evidenceStrength: "route_linked",
+        pathAddresses: [subject, `T${"4".repeat(33)}`, `T${"5".repeat(33)}`]
+      })
+    });
+
+    expect(fact?.role).toBe("route_linked");
+    expect(fact?.proofStrength).toBe("context");
+    expect(`${fact?.factTextRu}\n${fact?.factTextEn}`).not.toMatch(/контракт-дрейнер|drainer contract/i);
+  });
+
+  it.each([
+    {
+      role: "verify20_contract",
+      fingerprintMatched: true,
+      expectedRu: /полный.*Verify20.*часто используют дрейнеры/i,
+      expectedEn: /full.*Verify20.*often used by drainers/i,
+      forbidden: /конкретн.*краж|specific theft.*proven/i
+    },
+    {
+      role: "approval_only",
+      fingerprintMatched: true,
+      expectedRu: /открыл.*Verify20 доступ.*Списания.*не было.*Отзовите/i,
+      expectedEn: /granted Verify20 access.*no debit.*Revoke/i
+    },
+    {
+      role: "interaction_only",
+      fingerprintMatched: true,
+      expectedRu: /роль не установлена.*ручн/i,
+      expectedEn: /role is unknown.*manual review/i,
+      forbidden: /кошел[её]к — дрейнер|the wallet is a drainer/i
+    }
+  ])("renders Verify20 role $role without promoting interaction", (row) => {
+    const fact = catalogueApi.verify20RoleFact({
+      role: row.role,
+      fingerprint: {
+        matched: row.fingerprintMatched,
+        selectors: [],
+        blockedByTrustedService: false,
+        missingSelectors: [],
+        mismatchedSelectors: []
+      },
+      debitObserved: false
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(row.expectedRu);
+    expect(fact?.factTextEn).toMatch(row.expectedEn);
+    if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
+  });
+
+  it("requires the exact Verify20 fingerprint for a subject template fact", () => {
+    expect(catalogueApi.verify20RoleFact({
+      role: "verify20_contract",
+      fingerprint: {
+        matched: false,
+        selectors: [],
+        blockedByTrustedService: false,
+        missingSelectors: [],
+        mismatchedSelectors: []
+      },
+      method: "Verify20(address,address,address,uint256)"
+    })).toBeNull();
+  });
+
+  it.each([
+    {
+      relation: "active_at_transfer" as const,
+      direction: "inbound" as const,
+      expectedRu: /Входящий:.*получил 25 000 USDT.*контрагент/i,
+      chronologyRu: /уже находился в ч[её]рном списке/i,
+      expectedEn: /Inbound:.*received 25,000 USDT/i
+    },
+    {
+      relation: "active_at_transfer" as const,
+      direction: "outbound" as const,
+      expectedRu: /Исходящий:.*отправил 25 000 USDT.*контрагент/i,
+      chronologyRu: /уже находился в ч[её]рном списке/i,
+      expectedEn: /Outbound:.*sent 25,000 USDT/i
+    },
+    {
+      relation: "mixed" as const,
+      direction: "outbound" as const,
+      fact: {
+        beforeEffectiveAmountRaw: "20000000000",
+        beforeEffectiveTxCount: 1,
+        activeAmountRaw: "5000000000",
+        activeTxCount: 1
+      },
+      expectedRu: /Исходящий:/i,
+      chronologyRu: /до блокировки.*20 000 USDT.*после.*5 000 USDT/i,
+      expectedEn: /Outbound:/i
+    },
+    {
+      relation: "unknown" as const,
+      direction: "inbound" as const,
+      expectedRu: /Входящий:/i,
+      chronologyRu: /дату блокировки установить не удалось/i,
+      expectedEn: /Inbound:/i,
+      forbidden: /уже находился|после перевода|before the transfer|after the transfer/i
+    }
+  ])("renders direct blacklist $direction/$relation from typed facts", (row) => {
+    const [fact] = catalogueApi.firstHopBlacklistFacts([
+      blacklistFact({
+        direction: row.direction,
+        temporalRelation: row.relation,
+        ...(row.fact ?? {})
+      })
+    ]);
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(row.expectedRu);
+    expect(fact?.factTextRu).toMatch(row.chronologyRu);
+    expect(fact?.factTextEn).toMatch(row.expectedEn);
+    if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
+    if (row.direction === "outbound") {
+      expect(copy).not.toMatch(/источник (?:текущего )?баланса|source of (?:the )?(?:current )?balance/i);
+    }
+    expect(copy).not.toMatch(/проверяемый адрес находится в ч[её]рном списке|checked address is on the blacklist/i);
+  });
+
+  it("ties became-active-after chronology to the deterministic largest matched transfer", () => {
+    const smallHash = "a".repeat(64);
+    const largeHash = "c".repeat(64);
+    const profiles = [interactionProfile([
+      {
+        txHash: smallHash,
+        fromAddress: subject,
+        toAddress: counterparty,
+        amountRaw: "15000000",
+        timestamp: "2026-05-26T09:44:33.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer"
+      },
+      {
+        txHash: largeHash,
+        fromAddress: subject,
+        toAddress: counterparty,
+        amountRaw: "1176302000000",
+        timestamp: "2026-05-26T09:56:18.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer"
+      }
+    ])];
+    const [fact] = catalogueApi.firstHopBlacklistFacts([
+      blacklistFact({
+        direction: "outbound",
+        temporalRelation: "became_active_after",
+        effectiveAt: "2026-05-26T12:49:03.000Z",
+        principalAmountRaw: "1176317000000",
+        principalTxCount: 2,
+        directionalPrincipalShare: 1,
+        transferTxHashes: [smallHash, largeHash],
+        beforeEffectiveAmountRaw: "1176317000000",
+        beforeEffectiveTxCount: 2,
+        activeAmountRaw: "0",
+        activeTxCount: 0
+      })
+    ], profiles);
+
+    expect(fact?.factTextRu).toContain("1 176 317 USDT");
+    expect(fact?.factTextRu).toMatch(/2 ч(?:аса)? 52 мин(?:уты)? 45 с(?:екунд)? .*1 176 302 USDT/i);
+    expect(fact?.factTextEn).toMatch(/2 h 52 m 45 s .*1,176,302 USDT/i);
+    expect(`${fact?.factTextRu}\n${fact?.factTextEn}`).not.toContain("POISON");
+  });
+
+  it("states that the subject is not blacklisted only from an exact negative subject check", () => {
+    const exactNegative: StablecoinRestrictionProfile = {
+      subjectAddress: subject,
+      tokenContract: `T${"9".repeat(33)}`,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: false,
+      balanceRaw: "1000000",
+      checkedAt: "2026-07-11T00:00:00.000Z",
+      evidenceStrength: "exact_contract_state",
+      methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+    };
+    const [proved] = catalogueApi.firstHopBlacklistFacts([blacklistFact()], [], exactNegative);
+    const [unknown] = catalogueApi.firstHopBlacklistFacts([blacklistFact()]);
+
+    expect(proved?.factTextRu).toMatch(/сам проверяемый адрес.*ч[её]рн.*спис.*не|сам проверяемый адрес.*не.*ч[её]рн.*спис/i);
+    expect(proved?.factTextEn).toMatch(/checked address itself is not.*blacklist/i);
+    expect(`${unknown?.factTextRu}\n${unknown?.factTextEn}`).not.toMatch(/сам проверяемый адрес.*не|checked address itself is not/i);
+  });
+
+  it.each([
+    {
+      name: "sanctioned HTX source",
+      route: {
+        kind: "sanctioned_service",
+        identity: "HTX/Huobi",
+        direction: "inbound",
+        linkedToSelectedProvenance: true,
+        occurredAt: "2026-05-26T12:00:00.000Z",
+        sanctionsAuthority: "UK",
+        designationDate: "2026-05-26",
+        amountRaw: "40000000000",
+        share: 0.4,
+        txCount: 1
+      },
+      expectedRu: /40%.*HTX\/Huobi.*Великобритани.*санкц.*операцию не проводить/i,
+      expectedEn: /40%.*HTX\/Huobi.*UK.*sanctioned.*do not proceed/i,
+      forbidden: /краж|theft/i
+    },
+    {
+      name: "one-off bridge",
+      route: {
+        kind: "bridge",
+        identity: "UsdtOFT",
+        direction: "inbound",
+        amountRaw: "83000000000",
+        share: 0.83,
+        txCount: 1,
+        repeated: false
+      },
+      expectedRu: /83%.*через мост UsdtOFT.*другой сети.*не видна в TRON.*обычн.*обмен.*скры.*происхожд.*AML-риск/is,
+      expectedEn: /83%.*UsdtOFT bridge.*another chain.*not visible on TRON.*ordinary swaps.*hide.*origin.*AML risk/is,
+      forbidden: /нейтрален|neutral|отмывание невозможно|laundering .*impossible|не доказано|unproven/i
+    },
+    {
+      name: "repeated bridge",
+      route: {
+        kind: "bridge",
+        identity: "UsdtOFT",
+        direction: "inbound",
+        amountRaw: "83000000000",
+        share: 0.83,
+        txCount: 10,
+        repeated: true
+      },
+      expectedRu: /83%.*десяти переводах|83%.*10 переводах.*усложняет.*нетипичен/is,
+      expectedEn: /83%.*10 transfers.*harder to trace.*unusual/is
+    },
+    {
+      name: "CEX source",
+      route: {
+        kind: "cex",
+        identity: "Binance",
+        direction: "inbound",
+        amountRaw: "72000000000",
+        share: 0.72,
+        txCount: 4
+      },
+      expectedRu: /72%.*пришло с Binance.*четыр/i,
+      expectedEn: /72%.*came from Binance.*four/i
+    },
+    {
+      name: "unknown contract boundary",
+      route: {
+        kind: "unknown_contract",
+        identity: null,
+        direction: "inbound",
+        amountRaw: "10000000000",
+        share: 0.1,
+        txCount: 1,
+        untracedReason: "history_before_contract_unavailable"
+      },
+      expectedRu: /контракт без названия.*источник до контракта не установлен/i,
+      expectedEn: /unnamed contract.*source before the contract could not be traced/i
+    },
+    {
+      name: "known service boundary",
+      route: {
+        kind: "service_boundary",
+        identity: "Example Router",
+        direction: "inbound",
+        amountRaw: "10000000000",
+        share: 0.1,
+        txCount: 1,
+        untracedReason: "pooled_service_history"
+      },
+      expectedRu: /Example Router.*сервис.*источник до сервиса.*не удалось проследить/i,
+      expectedEn: /Example Router.*service.*source before the service.*could not be traced/i
+    },
+    {
+      name: "collector",
+      route: {
+        kind: "collector",
+        identity: "Bybit",
+        direction: "outbound",
+        amountRaw: "98000000000",
+        share: 0.98,
+        txCount: 18,
+        uniqueCounterpartyCount: 18
+      },
+      expectedRu: /собирает переводы.*18 адресов.*98%.*Bybit.*ликвидн|кошел[её]к-сборщик/is,
+      expectedEn: /collects transfers.*18 addresses.*98%.*Bybit.*liquidity|collector wallet/is,
+      forbidden: /грязн|винов|dirty|guilt/i
+    },
+    {
+      name: "risky counterparty",
+      route: {
+        kind: "risky_counterparty",
+        identity: null,
+        direction: "inbound",
+        amountRaw: "35000000000",
+        share: 0.35,
+        txCount: 2
+      },
+      expectedRu: /35%.*высоким риском.*этой части суммы/i,
+      expectedEn: /35%.*high-risk address.*that share/i,
+      forbidden: /кража не доказана|theft is not proven/i
+    }
+  ])("renders $name from typed route evidence", (row) => {
+    const [fact] = catalogueApi.sourceAndRouteFacts({ routes: [row.route] });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(row.expectedRu);
+    expect(fact?.factTextEn).toMatch(row.expectedEn);
+    if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
+  });
+
+  it("keeps pre-designation, outbound, and unselected HTX links as context", () => {
+    const routes = [
+      { direction: "inbound", linkedToSelectedProvenance: true, occurredAt: "2026-05-25T23:59:59.000Z" },
+      { direction: "outbound", linkedToSelectedProvenance: true, occurredAt: "2026-05-27T00:00:00.000Z" },
+      { direction: "inbound", linkedToSelectedProvenance: false, occurredAt: "2026-05-27T00:00:00.000Z" }
+    ].map((fields) => ({
+      kind: "sanctioned_service",
+      identity: "HTX/Huobi",
+      amountRaw: "1000000000",
+      share: 0.1,
+      txCount: 1,
+      sanctionsAuthority: "UK",
+      designationDate: "2026-05-26",
+      ...fields
+    }));
+
+    for (const route of routes) {
+      const [fact] = catalogueApi.sourceAndRouteFacts({ routes: [route] });
+      expect(`${fact?.factTextRu}\n${fact?.factTextEn}`).not.toMatch(/операцию не проводить|do not proceed/i);
+    }
+  });
+
+  it("does not apply the HTX designation date to another service or an unverified authority", () => {
+    const routes = [
+      { identity: "Another Exchange", sanctionsAuthority: "UK", designationDate: "2026-05-26" },
+      { identity: "HTX/Huobi", sanctionsAuthority: "unknown", designationDate: "2026-05-26" }
+    ].map((fields) => ({
+      kind: "sanctioned_service",
+      direction: "inbound",
+      linkedToSelectedProvenance: true,
+      occurredAt: "2026-05-27T00:00:00.000Z",
+      amountRaw: "1000000000",
+      share: 0.1,
+      txCount: 1,
+      ...fields
+    }));
+
+    for (const route of routes) {
+      const [fact] = catalogueApi.sourceAndRouteFacts({ routes: [route] });
+      expect(`${fact?.factTextRu}\n${fact?.factTextEn}`).not.toMatch(/операцию не проводить|do not proceed/i);
+    }
+  });
+
+  it("does not invent a CEX or service identity when none was resolved", () => {
+    const facts = catalogueApi.sourceAndRouteFacts({
+      routes: [
+        {
+          kind: "cex",
+          identity: null,
+          direction: "inbound",
+          amountRaw: "1000000000",
+          share: 0.1,
+          txCount: 1
+        },
+        {
+          kind: "service_boundary",
+          identity: null,
+          direction: "inbound",
+          amountRaw: "2000000000",
+          share: 0.2,
+          txCount: 1,
+          untracedReason: "pooled_service_history"
+        }
+      ]
+    });
+    const copy = facts.map((fact) => `${fact.factTextRu}\n${fact.factTextEn}`).join("\n");
+
+    expect(copy).toMatch(/биржев.*сервис|exchange service/i);
+    expect(copy).toMatch(/сервис с общей ликвидностью|pooled-liquidity service/i);
+    expect(copy).not.toMatch(/unknown exchange|1000000000|2000000000/);
+  });
+
+  it("canonicalizes route facts independently of route insertion order", () => {
+    const bridge = {
+      kind: "bridge",
+      identity: "UsdtOFT",
+      direction: "inbound",
+      amountRaw: "83000000000",
+      share: 0.83,
+      txCount: 1,
+      repeated: false
+    };
+    const cex = {
+      kind: "cex",
+      identity: "Binance",
+      direction: "inbound",
+      amountRaw: "72000000000",
+      share: 0.72,
+      txCount: 4
+    };
+    const ids = (routes: Record<string, unknown>[]) => catalogueApi.buildWalletNarrativeEvidence({
+      routes,
+      firstHopBlacklistCoverage: firstHopCoverage()
+    }).facts.map((fact) => fact.id);
+
+    expect(ids([bridge, cex, bridge])).toEqual(ids([cex, bridge]));
+  });
+
+  it("renders exact label codes and never treats recordedAt as an effective criminal date", () => {
+    const labels: FirstHopLabelFact[] = [
+      {
+        counterpartyAddress: counterparty,
+        direction: "inbound",
+        labelCode: "stolen_funds",
+        evidenceAuthority: "exact_internal",
+        recordedAt: "2099-12-31T23:59:59.000Z",
+        effectiveAt: null,
+        principalAmountRaw: "1000000000",
+        principalTxCount: 1,
+        directionalPrincipalShare: 0.1,
+        shareSemantics: "exact",
+        transferTxHashes: ["a".repeat(64)],
+        linkedToSelectedProvenance: true
+      },
+      {
+        counterpartyAddress: `T${"6".repeat(33)}`,
+        direction: "outbound",
+        labelCode: "approval_drain_proximity",
+        evidenceAuthority: "derived",
+        recordedAt: "2099-12-31T23:59:59.000Z",
+        effectiveAt: null,
+        principalAmountRaw: "500000000",
+        principalTxCount: 1,
+        directionalPrincipalShare: 0.05,
+        shareSemantics: "exact",
+        transferTxHashes: ["b".repeat(64)],
+        linkedToSelectedProvenance: false
+      }
+    ];
+    const facts = catalogueApi.sourceAndRouteFacts({ routes: [], firstHopLabelFacts: labels });
+    const copy = facts.map((fact) => `${fact.factTextRu}\n${fact.factTextEn}`).join("\n");
+
+    expect(copy).toMatch(/украденн|stolen funds/i);
+    expect(copy).toMatch(/контекст|context/i);
+    expect(copy).not.toContain("2099");
+  });
+
+  it("sums only exact GasFree service fees and leaves principal in ordinary first-hop facts", () => {
+    const principalHash = "d".repeat(64);
+    const feeHash = "e".repeat(64);
+    const profile = interactionProfile([
+      {
+        txHash: principalHash,
+        fromAddress: subject,
+        toAddress: counterparty,
+        amountRaw: "1176317000000",
+        timestamp: "2026-05-26T09:56:18.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer",
+        economicRole: "principal",
+        economicProtocol: "tron_gasfree"
+      },
+      {
+        txHash: feeHash,
+        fromAddress: subject,
+        toAddress: `T${"7".repeat(33)}`,
+        amountRaw: "3000000",
+        timestamp: "2026-05-26T09:56:19.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer",
+        economicRole: "service_fee",
+        economicProtocol: "tron_gasfree"
+      },
+      {
+        txHash: "f".repeat(64),
+        fromAddress: subject,
+        toAddress: `T${"8".repeat(33)}`,
+        amountRaw: "9000000",
+        timestamp: "2026-05-26T09:56:20.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer",
+        economicRole: "service_fee"
+      }
+    ]);
+    const fee = catalogueApi.gasFreeFeeFact([profile]);
+    const [principal] = catalogueApi.firstHopBlacklistFacts([
+      blacklistFact({
+        direction: "outbound",
+        principalAmountRaw: "1176317000000",
+        principalTxCount: 1,
+        transferTxHashes: [principalHash]
+      })
+    ], [profile]);
+
+    expect(fee?.factTextRu).toMatch(/3 USDT.*комисси.*сервис/i);
+    expect(fee?.factTextEn).toMatch(/3 USDT.*service fee/i);
+    expect(principal?.factTextRu).toContain("1 176 317 USDT");
+    expect(principal?.factTextRu).not.toContain("1 176 320");
+    expect(`${fee?.factTextRu}\n${fee?.factTextEn}`).not.toMatch(/риск|risk|санкц|blacklist/i);
+  });
+
+  it("does not turn a fee-only GasFree provider into direct adverse evidence", () => {
+    const feeOnly = interactionProfile([{
+      txHash: "e".repeat(64),
+      fromAddress: subject,
+      toAddress: counterparty,
+      amountRaw: "3000000",
+      timestamp: "2026-05-26T09:56:19.000Z",
+      method: "transfer",
+      edgeType: "normal_transfer",
+      economicRole: "service_fee",
+      economicProtocol: "tron_gasfree"
+    }]);
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      firstHopBlacklistFacts: [],
+      firstHopBlacklistCoverage: firstHopCoverage(),
+      directCounterpartyInteractionProfiles: [feeOnly]
+    });
+
+    expect(evidence.facts.map((fact) => fact.kind)).toEqual(["gasfree_fee"]);
+  });
+
+  it("formats raw USDT with BigInt precision beyond Number.MAX_SAFE_INTEGER", () => {
+    const [fact] = catalogueApi.firstHopBlacklistFacts([blacklistFact({
+      principalAmountRaw: "900719925474099312345678",
+      principalTxCount: 1,
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable"
+    })]);
+
+    expect(fact?.factTextRu).toContain("900 719 925 474 099 312,345678 USDT");
+    expect(fact?.factTextEn).toContain("900,719,925,474,099,312.345678 USDT");
+  });
+
+  it.each([
+    {
+      status: "complete" as const,
+      expectedRu: /проверили 10 входящих переводов.*проследили 83% суммы/i,
+      expectedEn: /checked 10 inbound transfers.*traced 83% of the amount/i
+    },
+    {
+      status: "running" as const,
+      expectedRu: /проверка остальных прямых контрагентов.*продолжается/i,
+      expectedEn: /remaining direct counterparties.*still being checked/i
+    },
+    {
+      status: "provider_failed" as const,
+      expectedRu: /не удалось проверить часть прямых контрагентов.*повторн/i,
+      expectedEn: /could not check some direct counterparties.*run.*again/i
+    },
+    {
+      status: "budget_exhausted" as const,
+      expectedRu: /техническом лимите.*часть контрагентов не проверена/i,
+      expectedEn: /technical limit.*some counterparties were not checked/i
+    },
+    {
+      status: "history_partial" as const,
+      expectedRu: /только часть истории прямых переводов/i,
+      expectedEn: /only part of the direct transfer history/i
+    }
+  ])("explains first-hop $status coverage independently from money coverage", (row) => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      firstHopCoverage: firstHopCoverage({
+        blacklistCheckCoverage: row.status,
+        checkedMaterialCounterpartyCount: row.status === "complete" ? 4 : 2,
+        uncheckedMaterialCounterpartyCount: row.status === "complete" ? 0 : 2,
+        confirmedAdverseFactCount: row.status === "complete" ? 0 : 1,
+        incompleteReason: row.status === "complete" ? null : `POISON ${row.status}`
+      }),
+      traceCoverage: {
+        status: row.status === "complete" ? "exact" : "partial",
+        direction: "inbound",
+        checkedTransferCount: 10,
+        tracedAmountPercent: 83,
+        untracedReason: "older_history_unavailable"
+      }
+    });
+
+    expect(coverage?.textRu).toMatch(row.expectedRu);
+    expect(coverage?.textEn).toMatch(row.expectedEn);
+    expect(coverage?.isRiskEvidence).toBe(false);
+    expect(`${coverage?.textRu}\n${coverage?.textEn}`).not.toContain("POISON");
+  });
+
+  it("explains unavailable money coverage without a clean or chronology claim", () => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      firstHopCoverage: firstHopCoverage({
+        directPrincipalTransferCoverage: "partial",
+        blacklistCheckCoverage: "history_partial",
+        materialCounterpartyCount: 0,
+        checkedMaterialCounterpartyCount: 0
+      }),
+      traceCoverage: {
+        status: "unavailable",
+        direction: "inbound",
+        checkedTransferCount: null,
+        tracedAmountPercent: null,
+        untracedReason: "provider_failed"
+      }
+    });
+    const copy = `${coverage?.textRu}\n${coverage?.textEn}`;
+
+    expect(coverage?.textRu).toMatch(/происхождение суммы не удалось проследить.*источник данных/i);
+    expect(coverage?.textEn).toMatch(/could not trace the source of the amount.*data provider/i);
+    expect(copy).not.toMatch(/риск не найден|no risk found|до блокировки|after blacklist/i);
+  });
+
+  it("states the untraced remainder and its structured reason for partial money coverage", () => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      firstHopCoverage: firstHopCoverage(),
+      traceCoverage: {
+        status: "partial",
+        direction: "inbound",
+        checkedTransferCount: 10,
+        tracedAmountPercent: 83,
+        untracedReason: "older_history_unavailable"
+      }
+    });
+
+    expect(coverage?.textRu).toMatch(/оставшиеся 17%.*не удалось.*источник данных.*старые переводы/i);
+    expect(coverage?.textEn).toMatch(/remaining 17%.*could not.*data provider.*older transfers/i);
+  });
+
+  it("keeps a confirmed adverse fact primary and its limitation separate", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      firstHopBlacklistFacts: [blacklistFact()],
+      firstHopBlacklistCoverage: firstHopCoverage({
+        blacklistCheckCoverage: "provider_failed",
+        checkedMaterialCounterpartyCount: 1,
+        failedMaterialCounterpartyCount: 3,
+        confirmedAdverseFactCount: 1,
+        incompleteReason: "POISON provider detail"
+      }),
+      traceCoverage: {
+        status: "partial",
+        direction: "inbound",
+        checkedTransferCount: 10,
+        tracedAmountPercent: 83,
+        untracedReason: "provider_failed"
+      },
+      snapshot: { reasons: ["POISON snapshot.reasons"] },
+      decisionReasons: ["POISON decisionReasons"],
+      assessment: { reasons: ["POISON assessment.reasons"], notes: ["POISON notes"] }
+    });
+    const serialized = JSON.stringify(evidence);
+
+    expect(evidence.facts[0]?.kind).toBe("direct_counterparty_blacklist");
+    expect(evidence.coverageExplanation).not.toBeNull();
+    expect(serialized).not.toContain("POISON");
+    expect(serialized).not.toMatch(/transferFrom|boundary|drain episode|anchor coverage/i);
+  });
+
+  it("returns a scoped neutral fact only for complete coverage with no material finding", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      firstHopBlacklistFacts: [],
+      firstHopBlacklistCoverage: firstHopCoverage({ scope: "checked_window" }),
+      traceCoverage: {
+        status: "exact",
+        direction: "inbound",
+        checkedTransferCount: 10,
+        tracedAmountPercent: 100,
+        untracedReason: null
+      },
+      snapshot: { reasons: ["USDT blacklist не найден; POISON"] }
+    });
+    const copy = evidence.facts.map((fact) => `${fact.factTextRu}\n${fact.factTextEn}`).join("\n");
+
+    expect(copy).toMatch(/проверенн.*окн|checked window/i);
+    expect(copy).toMatch(/материальн.*неблагоприятн.*не найден|no material adverse facts/i);
+    expect(copy).not.toMatch(/полная история|full history|USDT blacklist не найден|POISON/i);
+  });
+
+  it("sorts and deduplicates normalized evidence independently of producer order", () => {
+    const left = blacklistFact({
+      counterpartyAddress: `T${"3".repeat(33)}`,
+      direction: "outbound",
+      transferTxHashes: ["c".repeat(64)]
+    });
+    const right = blacklistFact({
+      counterpartyAddress: `T${"4".repeat(33)}`,
+      direction: "inbound",
+      transferTxHashes: ["d".repeat(64)]
+    });
+    const build = (facts: FirstHopBlacklistFact[]) => catalogueApi.buildWalletNarrativeEvidence({
+      firstHopBlacklistFacts: facts,
+      firstHopBlacklistCoverage: firstHopCoverage({ confirmedAdverseFactCount: 2 })
+    }).facts.map((fact) => fact.id);
+
+    expect(build([left, right, left])).toEqual(build([right, left]));
   });
 });
