@@ -44,6 +44,38 @@ export type TronTransferEvent = {
   timestamp: Date;
 };
 
+export type TronScanBlacklistRow = {
+  blackAddress: string;
+  tokenName: string;
+  num: string;
+  time: number;
+  transHash: string;
+  contractAddress: string;
+};
+
+export type UsdtBlacklistTimelineEvent = {
+  eventKind: "added" | "removed";
+  occurredAt: string;
+  txHash: string;
+  tokenContract: string;
+  blockNumber: number | null;
+  logIndex: number | null;
+  verification: "verified_contract_log" | "unverified";
+};
+
+export type UsdtBlacklistTimeline = {
+  events: UsdtBlacklistTimelineEvent[];
+  pagination: "complete" | "partial";
+  failureReason:
+    | "provider_failed"
+    | "address_mismatch"
+    | "wrong_contract"
+    | "transaction_unconfirmed"
+    | "event_log_unverified"
+    | "state_timeline_inconsistent"
+    | null;
+};
+
 export type AddressLabel = {
   address: string;
   label: RiskLabel;
