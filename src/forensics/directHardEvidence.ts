@@ -1,11 +1,17 @@
 import type {
   AddressLabel,
+  CounterpartyRiskDirection,
+  DirectPrincipalCounterpartyGroup,
+  ForensicRouteEdge,
   ServiceClassification,
   StablecoinRestrictionProfile
 } from "../types";
+import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
 
 export const DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS = 50_000;
 export const DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE = 1_000;
+const DIRECT_PRINCIPAL_ABSOLUTE_MATERIAL_RAW = 10_000_000000n;
+const DIRECT_PRINCIPAL_RELATIVE_MINIMUM_RAW = 100_000000n;
 
 export type DirectHardEvidenceSnapshot = {
   address: string;
@@ -27,6 +33,115 @@ export type DirectHardEvidenceResult = {
   snapshots: DirectHardEvidenceSnapshot[];
   missingChecks: string[];
 };
+
+type MutableDirectPrincipalCounterpartyGroup = {
+  address: string;
+  direction: CounterpartyRiskDirection;
+  principalAmountRaw: bigint;
+  transferTxHashes: string[];
+  seenTxHashes: Set<string>;
+};
+
+function normalizedAddress(address: string): string {
+  return address.trim().toLowerCase();
+}
+
+function principalAmountRaw(amountRaw: string): bigint {
+  return /^\d+$/.test(amountRaw) ? BigInt(amountRaw) : 0n;
+}
+
+function exactShare(numerator: bigint, denominator: bigint): number {
+  return denominator > 0n
+    ? Number(numerator * 100_000_000n / denominator) / 100_000_000
+    : 0;
+}
+
+function compareBigintDesc(left: bigint, right: bigint): number {
+  if (left === right) return 0;
+  return left > right ? -1 : 1;
+}
+
+export function groupDirectPrincipalCounterparties(input: {
+  subjectAddress: string;
+  edges: ForensicRouteEdge[];
+  directTransferCoverage: "complete" | "partial";
+}): DirectPrincipalCounterpartyGroup[] {
+  const subject = normalizedAddress(input.subjectAddress);
+  const groups = new Map<string, MutableDirectPrincipalCounterpartyGroup>();
+  const directionalTotals: Record<CounterpartyRiskDirection, bigint> = {
+    inbound: 0n,
+    outbound: 0n
+  };
+
+  for (const edge of input.edges) {
+    if (isGasFreeServiceFeeEdge(edge)) continue;
+    const from = normalizedAddress(edge.fromAddress);
+    const to = normalizedAddress(edge.toAddress);
+    const direction = to === subject
+      ? "inbound" as const
+      : from === subject
+        ? "outbound" as const
+        : null;
+    if (!direction) continue;
+    const amountRaw = principalAmountRaw(edge.amountRaw);
+    if (amountRaw <= 0n) continue;
+    const address = (direction === "inbound" ? edge.fromAddress : edge.toAddress).trim();
+    const key = `${direction}:${normalizedAddress(address)}`;
+    const group = groups.get(key) ?? {
+      address,
+      direction,
+      principalAmountRaw: 0n,
+      transferTxHashes: [],
+      seenTxHashes: new Set<string>()
+    };
+    group.principalAmountRaw += amountRaw;
+    if (!group.seenTxHashes.has(edge.txHash)) {
+      group.seenTxHashes.add(edge.txHash);
+      group.transferTxHashes.push(edge.txHash);
+    }
+    groups.set(key, group);
+    directionalTotals[direction] += amountRaw;
+  }
+
+  return [...groups.values()]
+    .map((group): DirectPrincipalCounterpartyGroup => {
+      const denominator = directionalTotals[group.direction];
+      const shareExact = input.directTransferCoverage === "complete";
+      return {
+        address: group.address,
+        direction: group.direction,
+        principalAmountRaw: group.principalAmountRaw,
+        principalTxCount: group.transferTxHashes.length,
+        directionalPrincipalShare: shareExact ? exactShare(group.principalAmountRaw, denominator) : null,
+        shareSemantics: shareExact ? "exact" : "unavailable",
+        transferTxHashes: group.transferTxHashes,
+        material: group.principalAmountRaw >= DIRECT_PRINCIPAL_ABSOLUTE_MATERIAL_RAW || (
+          shareExact &&
+          group.principalAmountRaw >= DIRECT_PRINCIPAL_RELATIVE_MINIMUM_RAW &&
+          group.principalAmountRaw * 100n >= denominator
+        )
+      };
+    })
+    .sort((left, right) => compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw));
+}
+
+export function selectDirectPrincipalLookupAddresses(
+  groups: DirectPrincipalCounterpartyGroup[],
+  liveLimit: number
+): string[] {
+  const combinedByAddress = new Map<string, { address: string; principalAmountRaw: bigint }>();
+  for (const group of groups) {
+    if (!group.material) continue;
+    const key = normalizedAddress(group.address);
+    const combined = combinedByAddress.get(key) ?? { address: group.address.trim(), principalAmountRaw: 0n };
+    combined.principalAmountRaw += group.principalAmountRaw;
+    combinedByAddress.set(key, combined);
+  }
+  return [...combinedByAddress.values()]
+    .sort((left, right) => compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw))
+    .slice(0, Math.max(0, Math.trunc(liveLimit)))
+    .map((item) => item.address);
+}
 
 async function mapWithConcurrency<T, R>(
   items: T[],

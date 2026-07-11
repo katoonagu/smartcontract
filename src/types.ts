@@ -2239,6 +2239,17 @@ export type ExtendedProvenanceProfile = {
 
 export type CounterpartyRiskDirection = "inbound" | "outbound";
 
+export type DirectPrincipalCounterpartyGroup = {
+  address: string;
+  direction: CounterpartyRiskDirection;
+  principalAmountRaw: bigint;
+  principalTxCount: number;
+  directionalPrincipalShare: number | null;
+  shareSemantics: "exact" | "unavailable";
+  transferTxHashes: string[];
+  material: boolean;
+};
+
 export type CounterpartyRiskProfile = {
   subjectAddress: string;
   direction: CounterpartyRiskDirection;
