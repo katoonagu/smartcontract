@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { TronWeb } from "tronweb";
-import { runDeepAddressForensicCheck } from "../../src/check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  runDeepAddressForensicCheck
+} from "../../src/check/deepForensicCheck";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type {
   AddressLabel,
@@ -3155,5 +3158,140 @@ describe("deep forensic address check", () => {
     expect(report.coverageDebug.missingChecks).toEqual(expect.arrayContaining([
       expect.stringContaining("30d window had 2 USDT transfers")
     ]));
+  });
+
+  it("rejects unsound persisted first-hop nested DTOs and normalizes valid JSON label dates", () => {
+    const address = "TPersistedFirstHop111111111111111111";
+    const validLabel = {
+      address,
+      label: "phishing",
+      source: "service_admin",
+      createdByTelegramId: "1",
+      createdAt: "2026-05-01T00:00:00.000Z"
+    };
+    const validClassification = {
+      category: "cex",
+      identity: "Known Exchange",
+      confidence: "high",
+      evidence: ["verified provider metadata"],
+      isBoundary: true
+    };
+    const validRestriction = {
+      subjectAddress: address,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: true,
+      balanceRaw: "0",
+      checkedAt: "2026-05-24T00:00:00.000Z",
+      evidenceStrength: "exact_contract_state",
+      blacklistEventTxHash: "tx-blacklist-added",
+      blacklistEventTimestamp: "2026-05-10T00:00:00.000Z",
+      blacklistEventBlock: 100,
+      blacklistTimeline: {
+        events: [{
+          eventKind: "added",
+          occurredAt: "2026-05-10T00:00:00.000Z",
+          txHash: "tx-blacklist-added",
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          blockNumber: 100,
+          logIndex: 2,
+          verification: "verified_contract_log"
+        }],
+        pagination: "complete",
+        failureReason: null
+      },
+      methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+    };
+    const validSnapshot = {
+      address,
+      labels: [validLabel],
+      classification: validClassification,
+      usdtRestriction: validRestriction,
+      evidenceStatus: "live_checked",
+      hasHardEvidence: true,
+      reasons: ["label:phishing", "usdt_blacklist"]
+    };
+    const validFact = {
+      counterpartyAddress: address,
+      direction: "inbound",
+      evidenceKind: "usdt_blacklist",
+      evidenceAuthority: "official_contract",
+      statusAtCheck: "active",
+      temporalRelation: "active_at_transfer",
+      effectiveAt: "2026-05-10T00:00:00.000Z",
+      effectiveTxHash: "tx-blacklist-added",
+      checkedAt: "2026-05-24T00:00:00.000Z",
+      principalAmountRaw: "10000000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: 1,
+      shareSemantics: "exact",
+      transferTxHashes: ["tx-direct"],
+      beforeEffectiveAmountRaw: "0",
+      beforeEffectiveTxCount: 0,
+      activeAmountRaw: "10000000000",
+      activeTxCount: 1,
+      unknownTimingAmountRaw: "0",
+      unknownTimingTxCount: 0,
+      directTransferCoverage: "complete",
+      timelineCoverage: "complete",
+      timelineEvents: validRestriction.blacklistTimeline.events
+    };
+    const validLabelFact = {
+      counterpartyAddress: address,
+      direction: "inbound",
+      labelCode: "phishing",
+      evidenceAuthority: "exact_internal",
+      recordedAt: "2026-05-01T00:00:00.000Z",
+      effectiveAt: null,
+      principalAmountRaw: "10000000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: 1,
+      shareSemantics: "exact",
+      transferTxHashes: ["tx-direct"],
+      linkedToSelectedProvenance: false
+    };
+    const normalized = normalizePersistedDeepFirstHopEvidence({
+      firstHopBlacklistFacts: [
+        validFact,
+        { ...validFact, statusAtCheck: "pending" },
+        { ...validFact, principalAmountRaw: "not-an-amount" },
+        { ...validFact, checkedAt: "not-a-date" },
+        { ...validFact, effectiveAt: "not-a-date" },
+        { ...validFact, effectiveTxHash: "" },
+        { ...validFact, transferTxHashes: [""] }
+      ],
+      firstHopLabelFacts: [
+        validLabelFact,
+        { ...validLabelFact, labelCode: "arbitrary_future_string" },
+        { ...validLabelFact, recordedAt: "not-a-date" },
+        { ...validLabelFact, transferTxHashes: [""] }
+      ],
+      directHardEvidenceSnapshots: [
+        validSnapshot,
+        { ...validSnapshot, labels: [{}] },
+        { ...validSnapshot, labels: [{ ...validLabel, createdAt: "not-a-date" }] },
+        { ...validSnapshot, classification: {} },
+        { ...validSnapshot, classification: { category: "cex" } },
+        { ...validSnapshot, usdtRestriction: { ...validRestriction, checkedAt: "not-a-date" } },
+        { ...validSnapshot, usdtRestriction: { ...validRestriction, balanceRaw: 0 } },
+        { ...validSnapshot, usdtRestriction: { ...validRestriction, blacklistEventTxHash: "" } },
+        { ...validSnapshot, usdtRestriction: {
+          ...validRestriction,
+          blacklistTimeline: {
+            ...validRestriction.blacklistTimeline,
+            events: [{ ...validRestriction.blacklistTimeline.events[0], occurredAt: "not-a-date", txHash: "" }]
+          }
+        } }
+      ]
+    });
+
+    expect(normalized.firstHopBlacklistFacts).toEqual([validFact]);
+    expect(normalized.firstHopLabelFacts).toEqual([validLabelFact]);
+    expect(normalized.directHardEvidenceSnapshots).toEqual([{
+      ...validSnapshot,
+      labels: [{ ...validLabel, createdAt: new Date(validLabel.createdAt) }]
+    }]);
   });
 });

@@ -5337,8 +5337,17 @@ describe("bot command and inline UX smoke coverage", () => {
       ...persistedDeepResultJsonForTest(deepReportForTest()),
       ...evidence,
       firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }],
-      firstHopLabelFacts: [...evidence.firstHopLabelFacts, { principalAmountRaw: 100 }],
-      directHardEvidenceSnapshots: [...evidence.directHardEvidenceSnapshots, { address: 123 }]
+      firstHopLabelFacts: [
+        ...evidence.firstHopLabelFacts,
+        { ...evidence.firstHopLabelFacts[0], labelCode: "arbitrary_label" },
+        { principalAmountRaw: 100 }
+      ],
+      directHardEvidenceSnapshots: [
+        ...evidence.directHardEvidenceSnapshots,
+        { ...evidence.directHardEvidenceSnapshots[0], labels: [{}] },
+        { ...evidence.directHardEvidenceSnapshots[0], classification: {} },
+        { address: 123 }
+      ]
     };
     const report = extractDeepForensicReportFromJob(whereIsMoneyJobForTest({
       kind: "address_deep_check",
@@ -5348,7 +5357,10 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(report?.firstHopBlacklistFacts).toEqual(evidence.firstHopBlacklistFacts);
     expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
     expect(report?.firstHopBlacklistCoverage).toEqual(evidence.firstHopBlacklistCoverage);
-    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots);
+    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots.map((snapshot) => ({
+      ...snapshot,
+      labels: snapshot.labels.map((label) => ({ ...label, createdAt: new Date(label.createdAt) }))
+    })));
   });
 
   it("keeps first-hop evidence absent for legacy persisted Deep reports", () => {

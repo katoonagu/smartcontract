@@ -341,8 +341,17 @@ describe("startAdminServer", () => {
         subjectAddress: "TSubject111111111111111111111111111111",
         ...evidence,
         firstHopBlacklistFacts: [...evidence.firstHopBlacklistFacts, { direction: "sideways" }],
-        firstHopLabelFacts: [...evidence.firstHopLabelFacts, { principalAmountRaw: 12_000_000_000 }],
-        directHardEvidenceSnapshots: [...evidence.directHardEvidenceSnapshots, { address: false }]
+        firstHopLabelFacts: [
+          ...evidence.firstHopLabelFacts,
+          { ...evidence.firstHopLabelFacts[0], labelCode: "arbitrary_label" },
+          { principalAmountRaw: 12_000_000_000 }
+        ],
+        directHardEvidenceSnapshots: [
+          ...evidence.directHardEvidenceSnapshots,
+          { ...evidence.directHardEvidenceSnapshots[0], labels: [{}] },
+          { ...evidence.directHardEvidenceSnapshots[0], classification: {} },
+          { address: false }
+        ]
       }
     }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
 

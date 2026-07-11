@@ -149,6 +149,18 @@ function persistedStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function persistedNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function persistedHashArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(persistedNonEmptyString);
+}
+
+function persistedIsoDate(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && Number.isFinite(Date.parse(value));
+}
+
 function persistedCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
@@ -161,6 +173,14 @@ function persistedNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
+function persistedNullableIsoDate(value: unknown): value is string | null {
+  return value === null || persistedIsoDate(value);
+}
+
+function persistedNullableHash(value: unknown): value is string | null {
+  return value === null || persistedNonEmptyString(value);
+}
+
 function persistedShare(value: unknown, semantics: unknown): boolean {
   if (semantics === "unavailable") return value === null;
   return (semantics === "exact" || semantics === "lower_bound") &&
@@ -170,9 +190,9 @@ function persistedShare(value: unknown, semantics: unknown): boolean {
 function persistedTimelineEvent(value: unknown): boolean {
   if (!persistedRecord(value)) return false;
   return (value.eventKind === "added" || value.eventKind === "removed") &&
-    typeof value.occurredAt === "string" && Number.isFinite(Date.parse(value.occurredAt)) &&
-    typeof value.txHash === "string" &&
-    typeof value.tokenContract === "string" &&
+    persistedIsoDate(value.occurredAt) &&
+    persistedNonEmptyString(value.txHash) &&
+    persistedNonEmptyString(value.tokenContract) &&
     (value.blockNumber === null || persistedCount(value.blockNumber)) &&
     (value.logIndex === null || persistedCount(value.logIndex)) &&
     (value.verification === "verified_contract_log" || value.verification === "unverified");
@@ -189,25 +209,26 @@ function persistedTimeline(value: unknown): boolean {
     "state_timeline_inconsistent"
   ]);
   return (value.pagination === "complete" || value.pagination === "partial") &&
-    (value.failureReason === null || failures.has(value.failureReason as string));
+    (value.failureReason === null || typeof value.failureReason === "string" && failures.has(value.failureReason));
 }
 
 function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact {
   if (!persistedRecord(value)) return false;
   if (
-    typeof value.counterpartyAddress !== "string" ||
+    !persistedNonEmptyString(value.counterpartyAddress) ||
     (value.direction !== "inbound" && value.direction !== "outbound") ||
     value.evidenceKind !== "usdt_blacklist" ||
     value.evidenceAuthority !== "official_contract" ||
     !["active", "inactive", "unknown"].includes(String(value.statusAtCheck)) ||
     !["active_at_transfer", "became_active_after", "mixed", "unknown"].includes(String(value.temporalRelation)) ||
-    !persistedNullableString(value.effectiveAt) ||
-    !persistedNullableString(value.effectiveTxHash) ||
-    typeof value.checkedAt !== "string" ||
+    !persistedNullableIsoDate(value.effectiveAt) ||
+    !persistedNullableHash(value.effectiveTxHash) ||
+    ((value.effectiveAt === null) !== (value.effectiveTxHash === null)) ||
+    !persistedIsoDate(value.checkedAt) ||
     !persistedRawAmount(value.principalAmountRaw) ||
     !persistedCount(value.principalTxCount) ||
     !persistedShare(value.directionalPrincipalShare, value.shareSemantics) ||
-    !persistedStringArray(value.transferTxHashes) ||
+    !persistedHashArray(value.transferTxHashes) ||
     !persistedRawAmount(value.beforeEffectiveAmountRaw) ||
     !persistedCount(value.beforeEffectiveTxCount) ||
     !persistedRawAmount(value.activeAmountRaw) ||
@@ -223,18 +244,43 @@ function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact 
     value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount;
 }
 
+const PERSISTED_RISK_LABELS: ReadonlySet<string> = new Set([
+  "scam",
+  "reported_scam",
+  "stolen_funds",
+  "phishing",
+  "victim",
+  "mule",
+  "collector",
+  "bridge",
+  "exchange",
+  "trusted",
+  "false_positive",
+  "needs_review",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange",
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function persistedRiskLabel(value: unknown): value is AddressLabel["label"] {
+  return typeof value === "string" && PERSISTED_RISK_LABELS.has(value);
+}
+
 function persistedLabelFact(value: unknown): value is FirstHopLabelFact {
   if (!persistedRecord(value)) return false;
-  return typeof value.counterpartyAddress === "string" &&
+  return persistedNonEmptyString(value.counterpartyAddress) &&
     (value.direction === "inbound" || value.direction === "outbound") &&
-    typeof value.labelCode === "string" &&
+    persistedRiskLabel(value.labelCode) &&
     (value.evidenceAuthority === "exact_internal" || value.evidenceAuthority === "derived") &&
-    typeof value.recordedAt === "string" &&
+    persistedIsoDate(value.recordedAt) &&
     value.effectiveAt === null &&
     persistedRawAmount(value.principalAmountRaw) &&
     persistedCount(value.principalTxCount) &&
     persistedShare(value.directionalPrincipalShare, value.shareSemantics) &&
-    persistedStringArray(value.transferTxHashes) &&
+    persistedHashArray(value.transferTxHashes) &&
     typeof value.linkedToSelectedProvenance === "boolean";
 }
 
@@ -264,30 +310,96 @@ function persistedFirstHopCoverage(value: unknown): value is FirstHopBlacklistCo
     Number(value.checkedMaterialCounterpartyCount) + Number(value.failedMaterialCounterpartyCount) + Number(value.uncheckedMaterialCounterpartyCount) === Number(value.materialCounterpartyCount);
 }
 
-function persistedRestriction(value: unknown, address: string): boolean {
+const PERSISTED_SERVICE_CATEGORIES: ReadonlySet<string> = new Set([
+  "bridge",
+  "bridge_pool",
+  "dex",
+  "router",
+  "cex",
+  "hot_wallet",
+  "swap_adapter",
+  "service",
+  "protocol",
+  "unknown_contract",
+  "none"
+]);
+
+function persistedServiceCategory(value: unknown): value is ServiceClassification["category"] {
+  return typeof value === "string" && PERSISTED_SERVICE_CATEGORIES.has(value);
+}
+
+function persistedClassification(value: unknown): value is ServiceClassification {
+  if (!persistedRecord(value)) return false;
+  return persistedServiceCategory(value.category) &&
+    persistedNullableString(value.identity) &&
+    (value.confidence === "low" || value.confidence === "medium" || value.confidence === "high") &&
+    persistedStringArray(value.evidence) &&
+    typeof value.isBoundary === "boolean";
+}
+
+function normalizePersistedAddressLabel(value: unknown, address: string): AddressLabel | null {
+  if (!persistedRecord(value)) return null;
+  if (
+    value.address !== address ||
+    !persistedRiskLabel(value.label) ||
+    (value.source !== "service_admin" && value.source !== "system") ||
+    !(value.createdByTelegramId === null || persistedNonEmptyString(value.createdByTelegramId)) ||
+    !persistedIsoDate(value.createdAt)
+  ) return null;
+  return {
+    address,
+    label: value.label,
+    source: value.source,
+    createdByTelegramId: value.createdByTelegramId,
+    createdAt: new Date(value.createdAt)
+  };
+}
+
+function persistedRestriction(
+  value: unknown,
+  address: string
+): value is TimelineBearingStablecoinRestrictionProfile {
   if (!persistedRecord(value)) return false;
   const methods = persistedRecord(value.methods) ? value.methods : null;
   return value.subjectAddress === address &&
-    typeof value.tokenContract === "string" &&
+    persistedNonEmptyString(value.tokenContract) &&
     value.tokenSymbol === "USDT" &&
     value.tokenStandard === "TRC20" &&
-    typeof value.decimals === "number" && Number.isFinite(value.decimals) &&
+    value.decimals === 6 &&
     typeof value.isBlacklisted === "boolean" &&
-    typeof value.checkedAt === "string" &&
+    (value.balanceRaw === null || persistedRawAmount(value.balanceRaw)) &&
+    persistedIsoDate(value.checkedAt) &&
     value.evidenceStrength === "exact_contract_state" &&
+    (value.blacklistEventTxHash === undefined || persistedNullableHash(value.blacklistEventTxHash)) &&
+    (value.blacklistEventTimestamp === undefined || persistedNullableIsoDate(value.blacklistEventTimestamp)) &&
+    (value.blacklistEventBlock === undefined || value.blacklistEventBlock === null || persistedCount(value.blacklistEventBlock)) &&
     methods !== null &&
     (methods.blacklist === "isBlackListed(address)" || methods.blacklist === "getBlackListStatus(address)") &&
+    (methods.balance === null || methods.balance === "balanceOf(address)") &&
     (value.blacklistTimeline === undefined || value.blacklistTimeline === null || persistedTimeline(value.blacklistTimeline));
 }
 
-function persistedDirectSnapshot(value: unknown): value is DirectHardEvidenceSnapshot {
-  if (!persistedRecord(value) || typeof value.address !== "string") return false;
-  return Array.isArray(value.labels) && value.labels.every(persistedRecord) &&
-    (value.classification === null || persistedRecord(value.classification)) &&
-    (value.usdtRestriction === null || persistedRestriction(value.usdtRestriction, value.address)) &&
-    (value.evidenceStatus === "live_checked" || value.evidenceStatus === "local_only") &&
-    typeof value.hasHardEvidence === "boolean" &&
-    persistedStringArray(value.reasons);
+function normalizePersistedDirectSnapshot(value: unknown): DirectHardEvidenceSnapshot | null {
+  if (!persistedRecord(value) || !persistedNonEmptyString(value.address) || !Array.isArray(value.labels)) return null;
+  const address = value.address;
+  const labels = value.labels.map((label) => normalizePersistedAddressLabel(label, address));
+  if (labels.some((label) => label === null)) return null;
+  if (value.classification !== null && !persistedClassification(value.classification)) return null;
+  if (value.usdtRestriction !== null && !persistedRestriction(value.usdtRestriction, address)) return null;
+  if (
+    value.evidenceStatus !== "live_checked" && value.evidenceStatus !== "local_only" ||
+    typeof value.hasHardEvidence !== "boolean" ||
+    !persistedStringArray(value.reasons)
+  ) return null;
+  return {
+    address,
+    labels: labels.filter((label): label is AddressLabel => label !== null),
+    classification: value.classification,
+    usdtRestriction: value.usdtRestriction,
+    evidenceStatus: value.evidenceStatus,
+    hasHardEvidence: value.hasHardEvidence,
+    reasons: value.reasons
+  };
 }
 
 export function normalizePersistedDeepFirstHopEvidence(
@@ -304,7 +416,12 @@ export function normalizePersistedDeepFirstHopEvidence(
       ? { firstHopBlacklistCoverage: record.firstHopBlacklistCoverage }
       : {}),
     ...(Array.isArray(record.directHardEvidenceSnapshots)
-      ? { directHardEvidenceSnapshots: record.directHardEvidenceSnapshots.filter(persistedDirectSnapshot) }
+      ? {
+          directHardEvidenceSnapshots: record.directHardEvidenceSnapshots.flatMap((snapshot) => {
+            const normalized = normalizePersistedDirectSnapshot(snapshot);
+            return normalized ? [normalized] : [];
+          })
+        }
       : {})
   };
 }
