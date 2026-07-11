@@ -9,7 +9,10 @@ import {
   incomingRiskBandFromUnifiedScore,
   incomingUnifiedRiskSummary
 } from "../../src/risk/unifiedIncomingDepositRisk";
-import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import {
+  normalizePersistedDeepFirstHopEvidence,
+  type DeepAddressForensicReport
+} from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import type {
   ApprovalDrainProvenanceProfile,
@@ -284,6 +287,25 @@ function firstHopCoverage(overrides: Partial<FirstHopBlacklistCoverage> = {}): F
     partialTimelineFactCount: 0,
     ...overrides
   };
+}
+
+function persistedEmptyFirstHopEnvelope(
+  requiredForDecision: boolean | undefined,
+  overrides: Partial<FirstHopBlacklistCoverage> = {}
+): Record<string, unknown> {
+  const coverage: Partial<FirstHopBlacklistCoverage> = firstHopCoverage({
+    requiredForDecision: requiredForDecision ?? false,
+    materialCounterpartyCount: 0,
+    checkedMaterialCounterpartyCount: 0,
+    ...overrides
+  });
+  if (requiredForDecision === undefined) delete coverage.requiredForDecision;
+  return JSON.parse(JSON.stringify({
+    firstHopBlacklistFacts: [],
+    firstHopLabelFacts: [],
+    firstHopBlacklistCoverage: coverage,
+    directHardEvidenceSnapshots: []
+  })) as Record<string, unknown>;
 }
 
 function directPolicyFact(overrides: Partial<FirstHopBlacklistFact> = {}): FirstHopBlacklistFact {
@@ -3013,6 +3035,68 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(legacy.finalDecision).not.toBe("NO_FINAL_DECISION");
     expect(notRequired.finalDecision).toBe(legacy.finalDecision);
     expect(notRequired.coverage).toEqual(legacy.coverage);
+  });
+
+  it.each([
+    ["explicit non-required flag", false],
+    ["legacy missing required flag", undefined]
+  ] as const)("round-trips persisted %s without creating a unified coverage blocker", (_label, requiredForDecision) => {
+    const normalized = normalizePersistedDeepFirstHopEvidence(
+      persistedEmptyFirstHopEnvelope(requiredForDecision)
+    );
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport(normalized)
+    });
+
+    expect(normalized.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: false,
+      blacklistCheckCoverage: "complete",
+      materialCounterpartyCount: 0
+    });
+    expect(result).toMatchObject({
+      finalDecision: "ACCEPTABLE",
+      finalScore: 0,
+      scoreValid: true,
+      coverage: {
+        required: "valid",
+        invalidModes: []
+      }
+    });
+  });
+
+  it("round-trips a malformed new persisted envelope to the fail-closed blocker", () => {
+    const normalized = normalizePersistedDeepFirstHopEvidence(
+      persistedEmptyFirstHopEnvelope(true, { materialCounterpartyCount: 1 })
+    );
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      whereReport: whereReport(0),
+      deepReport: deepReport(normalized)
+    });
+
+    expect(normalized).toMatchObject({
+      firstHopBlacklistFacts: [],
+      firstHopLabelFacts: [],
+      directHardEvidenceSnapshots: [],
+      firstHopBlacklistCoverage: {
+        requiredForDecision: true,
+        blacklistCheckCoverage: "provider_failed",
+        incompleteReason: "persisted_first_hop_evidence_invalid"
+      }
+    });
+    expect(result).toMatchObject({
+      finalDecision: "NO_FINAL_DECISION",
+      finalScore: null,
+      scoreValid: false,
+      coverage: {
+        required: "invalid",
+        invalidModes: ["deep_first_hop_blacklist"]
+      }
+    });
   });
 
   it("keeps exact subject restriction on the hard-evidence basis through incomplete first-hop coverage", () => {

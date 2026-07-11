@@ -312,8 +312,14 @@ function persistedLabelFact(value: unknown): value is FirstHopLabelFact {
     typeof value.linkedToSelectedProvenance === "boolean";
 }
 
-function persistedFirstHopCoverage(value: unknown): value is FirstHopBlacklistCoverage {
-  if (!persistedRecord(value)) return false;
+function normalizePersistedFirstHopCoverage(value: unknown): FirstHopBlacklistCoverage | null {
+  if (!persistedRecord(value)) return null;
+  const requiredForDecision = !Object.prototype.hasOwnProperty.call(value, "requiredForDecision")
+    ? false
+    : typeof value.requiredForDecision === "boolean"
+      ? value.requiredForDecision
+      : null;
+  if (requiredForDecision === null) return null;
   const counts = [
     value.materialCounterpartyCount,
     value.checkedMaterialCounterpartyCount,
@@ -323,7 +329,7 @@ function persistedFirstHopCoverage(value: unknown): value is FirstHopBlacklistCo
     value.completeTimelineFactCount,
     value.partialTimelineFactCount
   ];
-  if (!counts.every(persistedCount)) return false;
+  if (!counts.every(persistedCount)) return null;
   const scopeValid = value.scope === "all_time"
     ? value.windowStart === null && value.windowEnd === null && value.directPrincipalTransferCoverage === "complete"
     : value.scope === "checked_window" &&
@@ -331,11 +337,12 @@ function persistedFirstHopCoverage(value: unknown): value is FirstHopBlacklistCo
       persistedIsoDate(value.windowEnd) &&
       Date.parse(value.windowStart) <= Date.parse(value.windowEnd) &&
       value.directPrincipalTransferCoverage === "partial";
-  return typeof value.requiredForDecision === "boolean" &&
-    scopeValid &&
+  const structurallyValid = scopeValid &&
     ["complete", "provider_failed", "budget_exhausted", "history_partial"].includes(String(value.blacklistCheckCoverage)) &&
     persistedNullableString(value.incompleteReason) &&
     Number(value.checkedMaterialCounterpartyCount) + Number(value.failedMaterialCounterpartyCount) + Number(value.uncheckedMaterialCounterpartyCount) === Number(value.materialCounterpartyCount);
+  if (!structurallyValid) return null;
+  return { ...(value as unknown as FirstHopBlacklistCoverage), requiredForDecision };
 }
 
 const PERSISTED_SERVICE_CATEGORIES: ReadonlySet<string> = new Set([
@@ -466,7 +473,7 @@ function persistedShareMatchesCoverage(
 function persistedEnvelopeConsistent(input: PersistedDeepFirstHopEvidence): boolean {
   const { firstHopBlacklistFacts: facts, firstHopLabelFacts: labelFacts, firstHopBlacklistCoverage: coverage, directHardEvidenceSnapshots: snapshots } = input;
   const snapshotsByAddress = new Map(snapshots.map((snapshot) => [snapshot.address, snapshot]));
-  if (snapshotsByAddress.size !== snapshots.length || coverage.requiredForDecision !== true) return false;
+  if (snapshotsByAddress.size !== snapshots.length) return false;
   const checkedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction !== null).length;
   const failedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "live_checked" && snapshot.usdtRestriction === null).length;
   const uncheckedCount = snapshots.filter((snapshot) => snapshot.evidenceStatus === "local_only").length;
@@ -527,12 +534,13 @@ export function normalizePersistedDeepFirstHopEvidence(
     "directHardEvidenceSnapshots"
   ] as const;
   if (fields.every((field) => !Object.prototype.hasOwnProperty.call(record, field))) return {};
+  const coverage = normalizePersistedFirstHopCoverage(record.firstHopBlacklistCoverage);
   if (
     !Array.isArray(record.firstHopBlacklistFacts) ||
     !record.firstHopBlacklistFacts.every(persistedBlacklistFact) ||
     !Array.isArray(record.firstHopLabelFacts) ||
     !record.firstHopLabelFacts.every(persistedLabelFact) ||
-    !persistedFirstHopCoverage(record.firstHopBlacklistCoverage) ||
+    coverage === null ||
     !Array.isArray(record.directHardEvidenceSnapshots)
   ) return invalidPersistedFirstHopEvidence();
   const snapshots = record.directHardEvidenceSnapshots.map(normalizePersistedDirectSnapshot);
@@ -540,7 +548,7 @@ export function normalizePersistedDeepFirstHopEvidence(
   const envelope: PersistedDeepFirstHopEvidence = {
     firstHopBlacklistFacts: record.firstHopBlacklistFacts,
     firstHopLabelFacts: record.firstHopLabelFacts,
-    firstHopBlacklistCoverage: record.firstHopBlacklistCoverage,
+    firstHopBlacklistCoverage: coverage,
     directHardEvidenceSnapshots: snapshots.filter((snapshot): snapshot is DirectHardEvidenceSnapshot => snapshot !== null)
   };
   return persistedEnvelopeConsistent(envelope) ? envelope : invalidPersistedFirstHopEvidence();
