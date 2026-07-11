@@ -2223,7 +2223,7 @@ function formatWhereIsMoneyPreliminaryReport(
       ? section(locale === "en" ? "Conclusion" : "Вывод", [escapeHtml(narrative.sections.conclusion)])
       : null,
     narrative.sections.coverage
-      ? section(locale === "en" ? "Coverage limits" : "Границы", [escapeHtml(narrative.sections.coverage)])
+      ? section(locale === "en" ? "Coverage limits" : "Границы проверки", [escapeHtml(narrative.sections.coverage)])
       : null,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));

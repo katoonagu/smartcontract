@@ -6366,12 +6366,26 @@ describe("bot command and inline UX smoke coverage", () => {
   );
 
   it("uses the same preliminary contract for a partial Where result with pending DeepCheck", () => {
-    const text = preliminaryDeliveryText(bridgeWhereReportFixture(), { locale: "ru" }, { whereStatus: "partial" });
+    const report = bridgeWhereReportFixture();
+    report.coverage = {
+      ...report.coverage,
+      partial: true,
+      coverageRatio: 0.83,
+      currentBalanceCoverageRatio: 0.83
+    };
+    const text = preliminaryDeliveryText(
+      report,
+      { locale: "ru", runtimeLabel: "worker-partial" },
+      { whereStatus: "partial" }
+    );
 
     expect(text).toContain("Откуда деньги — предварительный результат");
     expect(text).toContain("Предварительный риск: 🟠 78/100");
     expect(text).toContain("Что нашли");
     expect(text).toContain("Вывод");
+    expect(plainSectionText(text, "Границы проверки")).toMatch(/прослежено 83% суммы/i);
+    expect(text.indexOf("Границы проверки")).toBeGreaterThan(text.indexOf("Вывод"));
+    expect(text.indexOf("Runtime: worker-partial")).toBeGreaterThan(text.indexOf("Границы проверки"));
     expect(text).not.toMatch(/DeepCheck|Что дальше|Финальный итог/i);
   });
 
