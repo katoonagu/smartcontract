@@ -518,6 +518,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           return partial(error instanceof BlacklistTimelineValidationError ? error.failureReason : "provider_failed");
         }
 
+        const uniqueRowsBeforePage = seenRows.size;
         for (const row of rows) {
           const serialized = JSON.stringify(row);
           const previous = seenRows.get(row.transHash);
@@ -544,6 +545,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           if (!event) return partial("event_log_unverified");
           events.push(event);
         }
+        if (seenRows.size === uniqueRowsBeforePage) return partial("provider_failed");
 
         start += json.data.length;
         if (start < total && json.data.length < pageLimit) return partial("provider_failed");
@@ -552,6 +554,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       return partial("provider_failed");
     }
 
+    if (declaredTotal === null || seenRows.size !== declaredTotal) return partial("provider_failed");
     const sortedEvents = sortBlacklistTimelineEvents(events);
     if (!sortedEvents) return partial("event_log_unverified");
     if (
@@ -958,7 +961,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const url = new URL("/api/transaction-info", this.baseUrl);
     url.searchParams.set("hash", txHash);
 
-    return this.fetchJson(url, "transaction");
+    return this.fetchJson(url, "tronscan_transaction_info");
   }
 
   private encodeAddressParameter(address: string): string {
@@ -1576,6 +1579,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (requestName === "account") return "metadata";
     if (
       requestName === "transaction" ||
+      requestName === "tronscan_transaction_info" ||
       requestName === "approval_list" ||
       requestName === "approval_change" ||
       requestName === "stablecoin_contract_state" ||

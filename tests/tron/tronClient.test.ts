@@ -1158,6 +1158,50 @@ describe("TronscanClient", () => {
     expect(eventCalls.every(([, init]) => headerValue(init.headers, "TRON-PRO-API-KEY") === "fullnode-secret")).toBe(true);
   });
 
+  it.each([
+    ["fully repeated", (rows: Array<{ txHash: string; time: number; block: number }>) => rows.slice(20, 40)],
+    ["partially overlapping", (rows: Array<{ txHash: string; time: number; block: number }>) => rows.slice(10, 30)]
+  ] as const)("returns partial provider failure when the second blacklist page is %s", async (_name, secondPage) => {
+    const rows = Array.from({ length: 40 }, (_, index) => ({
+      txHash: (index + 1).toString(16).padStart(64, "0"),
+      time: 1_700_100_000 + index,
+      block: 61_000_000 + index
+    }));
+    const byHash = new Map(rows.map((row) => [row.txHash, row]));
+    const pages = [rows.slice(20, 40), secondPage(rows)];
+    const fetchFn = vi.fn(async (input: URL | RequestInfo) => {
+      const url = input as URL;
+      if (url.pathname === "/api/stableCoin/blackList") {
+        const pageIndex = Number(url.searchParams.get("start")) === 0 ? 0 : 1;
+        return jsonResponse({
+          total: 40,
+          data: pages[pageIndex].map((row) => blacklistProviderRow(row.txHash, row.time))
+        });
+      }
+      if (url.pathname === "/api/transaction-info") {
+        const row = byHash.get(String(url.searchParams.get("hash")))!;
+        return jsonResponse(confirmedBlacklistTransaction(row.txHash, row.time, row.block));
+      }
+      const txHash = url.pathname.split("/")[3];
+      const row = byHash.get(txHash)!;
+      return jsonResponse({ data: [blacklistContractEvent(row.txHash, row.time, row.block, 0)] });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn
+    });
+
+    const result = await client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS, { limit: 20 });
+
+    expect(result).toMatchObject({ pagination: "partial", failureReason: "provider_failed" });
+    expect(new Set(result.events.map((event) => event.txHash)).size).toBe(result.events.length);
+    expect(result.events.length).toBeLessThan(40);
+    expect((fetchFn.mock.calls as unknown as Array<[URL, RequestInit]>).filter(
+      ([url]) => url.pathname === "/api/stableCoin/blackList"
+    )).toHaveLength(2);
+  });
+
   it("bounds the blacklist provider page size to its documented maximum", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ total: 0, data: [] }));
     const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
@@ -1675,6 +1719,88 @@ describe("TronscanClient", () => {
       await vi.advanceTimersByTimeAsync(1);
       await expect(result).resolves.toEqual({ hash: "tx1" });
       expect(fetchFn).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply a TronScan transaction-info cooldown to true fullnode transaction calls", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
+    try {
+      let transactionInfoAttempts = 0;
+      const calls: Array<{ path: string; apiKey: string | null }> = [];
+      const fetchFn = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = input as URL;
+        calls.push({ path: url.pathname, apiKey: headerValue(init?.headers, "TRON-PRO-API-KEY") });
+        if (url.pathname === "/api/transaction-info" && transactionInfoAttempts++ === 0) {
+          return jsonResponse({ error: "rate limited" }, { status: 429 });
+        }
+        return jsonResponse(url.pathname === "/api/transaction-info" ? { hash: "tx1" } : {});
+      });
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fullNodeBaseUrl: "https://api.trongrid.io",
+        apiKey: "tronscan-key",
+        fullNodeApiKey: "fullnode-key",
+        fetchFn,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        rateLimitCooldownMs: 100
+      });
+
+      const transactionInfo = client.getTransaction("tx1");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toEqual([{ path: "/api/transaction-info", apiKey: "tronscan-key" }]);
+
+      const fullnodeTransaction = client.getTransactionSigningMetadata("raw-tx");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls[1]).toEqual({ path: "/wallet/gettransactionbyid", apiKey: "fullnode-key" });
+      await expect(fullnodeTransaction).resolves.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(transactionInfo).resolves.toEqual({ hash: "tx1" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply a true fullnode transaction cooldown to TronScan transaction-info calls", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
+    try {
+      let fullnodeAttempts = 0;
+      const calls: Array<{ path: string; apiKey: string | null }> = [];
+      const fetchFn = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = input as URL;
+        calls.push({ path: url.pathname, apiKey: headerValue(init?.headers, "TRON-PRO-API-KEY") });
+        if (url.pathname === "/wallet/gettransactionbyid" && fullnodeAttempts++ === 0) {
+          return jsonResponse({ error: "rate limited" }, { status: 429 });
+        }
+        return jsonResponse(url.pathname === "/api/transaction-info" ? { hash: "tx1" } : {});
+      });
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fullNodeBaseUrl: "https://api.trongrid.io",
+        apiKey: "tronscan-key",
+        fullNodeApiKey: "fullnode-key",
+        fetchFn,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        rateLimitCooldownMs: 100
+      });
+
+      const fullnodeTransaction = client.getTransactionSigningMetadata("raw-tx");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toEqual([{ path: "/wallet/gettransactionbyid", apiKey: "fullnode-key" }]);
+
+      const transactionInfo = client.getTransaction("tx1");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls[1]).toEqual({ path: "/api/transaction-info", apiKey: "tronscan-key" });
+      await expect(transactionInfo).resolves.toEqual({ hash: "tx1" });
+
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(fullnodeTransaction).resolves.toBeNull();
     } finally {
       vi.useRealTimers();
     }
