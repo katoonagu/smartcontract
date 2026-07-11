@@ -635,6 +635,7 @@ const catalogueApi = walletNarrativeSummary as unknown as {
   approvalDrainRoleFact: (input: Record<string, unknown>) => NarrativeFact | null;
   verify20RoleFact: (input: Record<string, unknown>) => NarrativeFact | null;
   firstHopBlacklistFacts: (
+    checkedAddress: string,
     facts: FirstHopBlacklistFact[],
     profiles?: DirectCounterpartyInteractionProfile[],
     subjectRestriction?: StablecoinRestrictionProfile | null
@@ -967,7 +968,7 @@ describe("wallet narrative signal catalogue", () => {
     {
       role: "victim",
       checkedAddress: subject,
-      walletRole: "victim",
+      walletRole: "drainer_spender",
       expectedRu: /жертва.*списан|списали.*жертва/i,
       expectedEn: /victim.*debit|debited.*victim/i,
       forbidden: /контракт-дрейнер|drainer contract/i
@@ -975,21 +976,21 @@ describe("wallet narrative signal catalogue", () => {
     {
       role: "drainer_spender",
       checkedAddress: `T${"3".repeat(33)}`,
-      walletRole: "drainer_spender",
+      walletRole: "victim",
       expectedRu: /получил доступ.*списал|контракт-дрейнер/i,
       expectedEn: /obtained access.*debited|drainer contract/i
     },
     {
       role: "first_receiver",
       checkedAddress: `T${"4".repeat(33)}`,
-      walletRole: "first_receiver",
+      walletRole: "victim",
       expectedRu: /первым получил.*850 USDT/i,
       expectedEn: /first.*receive.*850 USDT/i
     },
     {
       role: "route_linked",
       checkedAddress: `T${"5".repeat(33)}`,
-      walletRole: "unknown",
+      walletRole: "victim",
       profile: {
         subjectAddress: `T${"5".repeat(33)}`,
         hopDepth: 2 as const,
@@ -1010,6 +1011,24 @@ describe("wallet narrative signal catalogue", () => {
     expect(fact?.factTextRu).toMatch(row.expectedRu);
     expect(fact?.factTextEn).toMatch(row.expectedEn);
     if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
+  });
+
+  it("does not let a stale walletRole assign an approval-drain role", () => {
+    expect(catalogueApi.approvalDrainRoleFact({
+      checkedAddress: `T${"8".repeat(33)}`,
+      walletRole: "victim",
+      profile: approvalProfile()
+    })).toBeNull();
+  });
+
+  it("uses victim precedence only when the checked address is the victim", () => {
+    const fact = catalogueApi.approvalDrainRoleFact({
+      checkedAddress: subject,
+      walletRole: "first_receiver",
+      profile: approvalProfile({ spenderAddress: subject, firstReceiverAddress: subject })
+    });
+
+    expect(fact?.role).toBe("victim");
   });
 
   it("does not create approval-drain evidence from a method name alone", () => {
@@ -1061,6 +1080,7 @@ describe("wallet narrative signal catalogue", () => {
     }
   ])("renders Verify20 role $role without promoting interaction", (row) => {
     const fact = catalogueApi.verify20RoleFact({
+      subjectAddress: subject,
       role: row.role,
       fingerprint: {
         matched: row.fingerprintMatched,
@@ -1080,6 +1100,7 @@ describe("wallet narrative signal catalogue", () => {
 
   it("requires the exact Verify20 fingerprint for a subject template fact", () => {
     expect(catalogueApi.verify20RoleFact({
+      subjectAddress: subject,
       role: "verify20_contract",
       fingerprint: {
         matched: false,
@@ -1129,7 +1150,7 @@ describe("wallet narrative signal catalogue", () => {
       forbidden: /уже находился|после перевода|before the transfer|after the transfer/i
     }
   ])("renders direct blacklist $direction/$relation from typed facts", (row) => {
-    const [fact] = catalogueApi.firstHopBlacklistFacts([
+    const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [
       blacklistFact({
         direction: row.direction,
         temporalRelation: row.relation,
@@ -1173,7 +1194,7 @@ describe("wallet narrative signal catalogue", () => {
         edgeType: "normal_transfer"
       }
     ])];
-    const [fact] = catalogueApi.firstHopBlacklistFacts([
+    const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [
       blacklistFact({
         direction: "outbound",
         temporalRelation: "became_active_after",
@@ -1201,7 +1222,7 @@ describe("wallet narrative signal catalogue", () => {
     ["2026-05-26T11:49:03.000Z", "2026-05-26T12:49:03.000Z", /1 ч 0 мин|1 h 0 m/]
   ])("formats blacklist elapsed time at useful minute precision", (timestamp, effectiveAt, expected) => {
     const txHash = "2".repeat(64);
-    const [fact] = catalogueApi.firstHopBlacklistFacts([blacklistFact({
+    const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact({
       temporalRelation: "became_active_after",
       effectiveAt,
       transferTxHashes: [txHash],
@@ -1224,7 +1245,7 @@ describe("wallet narrative signal catalogue", () => {
     [2, /2 перевода\)/, /2 transfers\)/],
     [5, /5 переводов\)/, /5 transfers\)/]
   ])("uses correct transfer-count grammar for %s direct blacklist transfers", (count, ru, en) => {
-    const [fact] = catalogueApi.firstHopBlacklistFacts([blacklistFact({ principalTxCount: count })]);
+    const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact({ principalTxCount: count })]);
 
     expect(fact?.factTextRu).toMatch(ru);
     expect(fact?.factTextEn).toMatch(en);
@@ -1243,12 +1264,30 @@ describe("wallet narrative signal catalogue", () => {
       evidenceStrength: "exact_contract_state",
       methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
     };
-    const [proved] = catalogueApi.firstHopBlacklistFacts([blacklistFact()], [], exactNegative);
-    const [unknown] = catalogueApi.firstHopBlacklistFacts([blacklistFact()]);
+    const [proved] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact()], [], exactNegative);
+    const [unknown] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact()]);
 
     expect(proved?.factTextRu).toMatch(/сам проверяемый адрес.*ч[её]рн.*спис.*не|сам проверяемый адрес.*не.*ч[её]рн.*спис/i);
     expect(proved?.factTextEn).toMatch(/checked address itself is not.*blacklist/i);
     expect(`${unknown?.factTextRu}\n${unknown?.factTextEn}`).not.toMatch(/сам проверяемый адрес.*не|checked address itself is not/i);
+  });
+
+  it("does not apply a subject-clear restriction from another wallet", () => {
+    const restriction: StablecoinRestrictionProfile = {
+      subjectAddress: `T${"8".repeat(33)}`,
+      tokenContract: `T${"9".repeat(33)}`,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: false,
+      balanceRaw: "1000000",
+      checkedAt: "2026-07-11T00:00:00.000Z",
+      evidenceStrength: "exact_contract_state",
+      methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+    };
+    const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact()], [], restriction);
+
+    expect(`${fact?.factTextRu}\n${fact?.factTextEn}`).not.toMatch(/сам проверяемый адрес.*не|checked address itself is not/i);
   });
 
   it("renders post-designation HTX sanctions only from matching sanctioned-service policy evidence", () => {
@@ -1312,6 +1351,62 @@ describe("wallet narrative signal catalogue", () => {
     expect(copy).toMatch(/25 000 USDT.*25%.*Example Sanctioned Service.*санкцион|25,000 USDT.*25%.*Example Sanctioned Service.*sanctioned/is);
     expect(copy).toMatch(/операцию не проводить|do not proceed/i);
     expect(copy).not.toMatch(/Великобритани|\bUK\b|26 мая|26 May/i);
+  });
+
+  it("describes aggregate exposure to multiple sanctioned services without assigning it to one", () => {
+    const alphaHash = "1".repeat(64);
+    const zuluHash = "2".repeat(64);
+    const makePath = (label: string, txHash: string, share: number, amountRaw: string) => originPath({
+      balanceTransferTxHash: txHash,
+      rootSourceType: "decline_boundary",
+      exposureSourceLabel: label,
+      sourceExposureKind: "sanctioned_service",
+      balanceShare: share,
+      txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: amountRaw,
+        usedAmountRaw: amountRaw,
+        coverageShare: share,
+        role: "anchor"
+      },
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw,
+        timestamp: "2026-05-27T00:00:00.000Z"
+      }]
+    });
+    const paths = [
+      makePath("Zulu Sanctioned", zuluHash, 0.2, "20000000000"),
+      makePath("Alpha Sanctioned", alphaHash, 0.3, "30000000000")
+    ];
+    const evidence = policyEvidence({
+      kind: "sanctioned_service",
+      aggregateShare: 0.5,
+      effectiveShare: 0.5,
+      pathCount: 2,
+      evidenceIds: [zuluHash, alphaHash],
+      shareDetail: {
+        ...policyEvidence().shareDetail!,
+        affectedAmountRaw: "50000000000",
+        rawShare: 0.5,
+        effectiveShare: 0.5
+      }
+    });
+    const build = (orderedPaths: MoneyOriginPath[]) => catalogueApi.sourceAndRouteFacts({
+      paths: orderedPaths,
+      sourcePolicyEvidence: [evidence]
+    }).find((fact) => fact.kind === "sanctioned_source");
+    const forward = build(paths);
+    const reversed = build([...paths].reverse());
+    const copy = `${forward?.factTextRu}\n${forward?.factTextEn}`;
+
+    expect(forward?.factTextRu).toMatch(/50 000 USDT.*50%.*нескольких санкционных сервисов.*операцию не проводить/i);
+    expect(forward?.factTextEn).toMatch(/50,000 USDT.*50%.*multiple sanctioned services.*do not proceed/i);
+    expect(copy).not.toMatch(/50[ ,]000 USDT.*(?:пришло с|came from) (?:Alpha|Zulu)/i);
+    expect(reversed).toEqual(forward);
   });
 
   it("keeps ordinary HTX and unmatched evidence as plain inbound context", () => {
@@ -1436,6 +1531,46 @@ describe("wallet narrative signal catalogue", () => {
     expect(copy).not.toMatch(/мост|bridge|друг.*сет|another chain|other chain/i);
   });
 
+  it("uses localized EN fallbacks for unnamed service identities", () => {
+    const sanctionedHash = "3".repeat(64);
+    const sanctioned = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        balanceTransferTxHash: sanctionedHash,
+        rootSourceType: "decline_boundary",
+        exposureSourceLabel: null,
+        sourceExposureKind: "sanctioned_service",
+        txHashes: [sanctionedHash]
+      })],
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "sanctioned_service",
+        evidenceIds: [sanctionedHash]
+      })]
+    }).find((fact) => fact.kind === "sanctioned_source");
+    const crossChain = catalogueApi.sourceAndRouteFacts({ paths: [originPath({
+      rootSourceType: "decline_boundary",
+      exposureSourceLabel: null,
+      sourceExposureKind: "cross_chain_boundary"
+    })] }).find((fact) => fact.kind === "bridge_route");
+    const dexRouter = catalogueApi.sourceAndRouteFacts({ paths: [originPath({
+      rootSourceType: "decline_boundary",
+      exposureSourceLabel: null,
+      sourceExposureKind: "bridge_router_dex"
+    })] }).find((fact) => fact.kind === "bridge_route");
+    const cex = catalogueApi.sourceAndRouteFacts({ paths: [originPath({
+      exposureSourceLabel: null,
+      sourceExposureKind: "allowlisted_cex"
+    })] }).find((fact) => fact.kind === "cex_source");
+    const english = [sanctioned, crossChain, dexRouter, cex].map((fact) => fact?.factTextEn ?? "");
+
+    expect(english[0]).toMatch(/unnamed sanctioned service/i);
+    expect(english[1]).toMatch(/unnamed cross-chain service/i);
+    expect(english[2]).toMatch(/unnamed DEX\/router service/i);
+    expect(english[3]).toMatch(/unnamed exchange service/i);
+    expect(english.join("\n")).not.toMatch(/[А-Яа-яЁё]/);
+    expect(crossChain?.factTextRu).toMatch(/история до этого сервиса/i);
+    expect(crossChain?.factTextRu).not.toMatch(/история до границы/i);
+  });
+
   it("derives CEX and a proven unknown-contract stop from canonical paths", () => {
     const cex = originPath();
     const unknown = originPath({
@@ -1530,7 +1665,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(fact?.factTextEn).toMatch(/Example Router.*pooled liquidity.*before the service.*cannot be traced/i);
   });
 
-  it("uses the selected terminal row's own ratio for collector behavior", () => {
+  it("derives collector share from the terminal amount and operational inflow", () => {
     const operational = operationalProfile({
       topOutgoingCounterparties: [
         {
@@ -1569,7 +1704,7 @@ describe("wallet narrative signal catalogue", () => {
       ]
     });
     const [fact] = catalogueApi.sourceAndRouteFacts({
-      addressBehaviorProfiles: [behaviorProfile()],
+      addressBehaviorProfiles: [behaviorProfile({ incomingVolumeRaw: "400000000000" })],
       operationalFlowProfiles: [operational]
     });
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
@@ -1602,13 +1737,14 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it.each([
-    { name: "zero inflow", incomingVolumeRaw: "0" },
-    { name: "invalid inflow", incomingVolumeRaw: "invalid" },
-    { name: "destination above inflow", incomingVolumeRaw: "10000000000" }
-  ])("uses amount-only collector copy for $name", ({ incomingVolumeRaw }) => {
+    { name: "zero inflow", operationalIncomingVolumeRaw: "0" },
+    { name: "invalid inflow", operationalIncomingVolumeRaw: "invalid" },
+    { name: "destination above inflow", operationalIncomingVolumeRaw: "10000000000" }
+  ])("uses amount-only collector copy for $name", ({ operationalIncomingVolumeRaw }) => {
     const [fact] = catalogueApi.sourceAndRouteFacts({
-      addressBehaviorProfiles: [behaviorProfile({ incomingVolumeRaw })],
+      addressBehaviorProfiles: [behaviorProfile({ incomingVolumeRaw: "777000000000" })],
       operationalFlowProfiles: [operationalProfile({
+        incomingVolumeRaw: operationalIncomingVolumeRaw,
         topOutgoingCounterparties: [{
           address: counterparty,
           direction: "outgoing",
@@ -1864,6 +2000,7 @@ describe("wallet narrative signal catalogue", () => {
     const [adverse] = catalogueApi.sourceAndRouteFacts({ firstHopLabelFacts: [makeLabel("scam")] });
     const [benign] = catalogueApi.sourceAndRouteFacts({ firstHopLabelFacts: [makeLabel("exchange")] });
     const verify = catalogueApi.verify20RoleFact({
+      subjectAddress: subject,
       role: "verify20_contract",
       fingerprint: { matched: true, selectors: [], blockedByTrustedService: false, missingSelectors: [], mismatchedSelectors: [] },
       debitObserved: false
@@ -1913,7 +2050,7 @@ describe("wallet narrative signal catalogue", () => {
       }
     ]);
     const fee = catalogueApi.gasFreeFeeFact([profile]);
-    const [principal] = catalogueApi.firstHopBlacklistFacts([
+    const [principal] = catalogueApi.firstHopBlacklistFacts(subject, [
       blacklistFact({
         direction: "outbound",
         principalAmountRaw: "1176317000000",
@@ -1942,6 +2079,7 @@ describe("wallet narrative signal catalogue", () => {
       economicProtocol: "tron_gasfree"
     }]);
     const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: subject,
       firstHopBlacklistFacts: [],
       firstHopBlacklistCoverage: firstHopCoverage(),
       directCounterpartyInteractionProfiles: [feeOnly]
@@ -1951,7 +2089,7 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it("formats raw USDT with BigInt precision beyond Number.MAX_SAFE_INTEGER", () => {
-    const [fact] = catalogueApi.firstHopBlacklistFacts([blacklistFact({
+    const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact({
       principalAmountRaw: "900719925474099312345678",
       principalTxCount: 1,
       directionalPrincipalShare: null,
@@ -2091,8 +2229,106 @@ describe("wallet narrative signal catalogue", () => {
     expect(coverage?.textEn).toMatch(/remaining 17%.*untraced.*provider.*older transfers/i);
   });
 
+  it("requires checkedAddress at the evidence build boundary", () => {
+    expect(() => catalogueApi.buildWalletNarrativeEvidence({})).toThrow(/checkedAddress.*required/i);
+  });
+
+  it.each([
+    {
+      name: "subject restriction",
+      input: {
+        subjectRestriction: {
+          subjectAddress: `T${"8".repeat(33)}`,
+          tokenContract: `T${"9".repeat(33)}`,
+          tokenSymbol: "USDT",
+          tokenStandard: "TRC20",
+          decimals: 6,
+          isBlacklisted: false,
+          balanceRaw: "0",
+          checkedAt: "2026-07-11T00:00:00.000Z",
+          evidenceStrength: "exact_contract_state",
+          methods: { blacklist: "isBlackListed(address)", balance: "balanceOf(address)" }
+        }
+      }
+    },
+    {
+      name: "direct interaction",
+      input: { directCounterpartyInteractionProfiles: [interactionProfile([], { subjectAddress: `T${"8".repeat(33)}` })] }
+    },
+    {
+      name: "address behavior",
+      input: { addressBehaviorProfiles: [behaviorProfile({ subjectAddress: `T${"8".repeat(33)}` })] }
+    },
+    {
+      name: "operational flow",
+      input: { operationalFlowProfiles: [operationalProfile({ subjectAddress: `T${"8".repeat(33)}` })] }
+    },
+    {
+      name: "boundary exposure",
+      input: {
+        boundaryExposureProfiles: [{
+          subjectAddress: `T${"8".repeat(33)}`,
+          incomingBoundaryVolumeRaw: "0",
+          outgoingBoundaryVolumeRaw: "0",
+          incomingBoundaryVolumeRatio: 0,
+          outgoingBoundaryVolumeRatio: 0,
+          directBoundaryTxCount: 0,
+          twoHopBoundaryTxCount: 0,
+          topBoundaryEntities: [],
+          categoryBreakdown: [],
+          flows: [],
+          contextScore: 0,
+          features: []
+        } satisfies BoundaryExposureProfile]
+      }
+    },
+    {
+      name: "approval checked address",
+      input: {
+        approvalDrain: {
+          checkedAddress: `T${"8".repeat(33)}`,
+          walletRole: "victim",
+          profile: approvalProfile()
+        }
+      }
+    },
+    {
+      name: "approval profile subject",
+      input: {
+        approvalDrain: {
+          checkedAddress: subject,
+          walletRole: "victim",
+          profile: approvalProfile({ subjectAddress: `T${"8".repeat(33)}` })
+        }
+      }
+    },
+    {
+      name: "Verify20 subject",
+      input: {
+        verify20: {
+          subjectAddress: `T${"8".repeat(33)}`,
+          role: "verify20_contract",
+          fingerprint: {
+            matched: true,
+            selectors: [],
+            blockedByTrustedService: false,
+            missingSelectors: [],
+            mismatchedSelectors: []
+          },
+          debitObserved: false
+        }
+      }
+    }
+  ])("fails closed for mixed-job $name input", ({ input }) => {
+    expect(() => catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: subject,
+      ...input
+    })).toThrow(/subject.*does not match checkedAddress/i);
+  });
+
   it("keeps a confirmed adverse fact primary and its limitation separate", () => {
     const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: subject,
       firstHopBlacklistFacts: [blacklistFact()],
       firstHopBlacklistCoverage: firstHopCoverage({
         blacklistCheckCoverage: "provider_failed",
@@ -2117,6 +2353,7 @@ describe("wallet narrative signal catalogue", () => {
 
   it("does not turn first-hop coverage into a broad clean claim", () => {
     const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: subject,
       firstHopBlacklistFacts: [],
       firstHopBlacklistCoverage: firstHopCoverage({ scope: "checked_window" }),
       snapshot: { reasons: ["USDT blacklist не найден; POISON"] }
@@ -2139,6 +2376,7 @@ describe("wallet narrative signal catalogue", () => {
       transferTxHashes: ["d".repeat(64)]
     });
     const build = (facts: FirstHopBlacklistFact[]) => catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: subject,
       firstHopBlacklistFacts: facts,
       firstHopBlacklistCoverage: firstHopCoverage({ confirmedAdverseFactCount: 2 })
     }).facts.map((fact) => fact.id);

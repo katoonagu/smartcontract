@@ -167,6 +167,7 @@ function normalizeCopy(value: string): string {
 }
 
 export type Verify20NarrativeEvidence = {
+  subjectAddress: string;
   role: "verify20_contract" | "approval_only" | "interaction_only";
   fingerprint: Verify20FingerprintResult;
   debitObserved: boolean;
@@ -179,6 +180,7 @@ export type ApprovalDrainNarrativeEvidence = {
 };
 
 export type WalletNarrativeEvidenceInput = {
+  checkedAddress: string;
   subjectRestriction?: StablecoinRestrictionProfile | null;
   firstHopBlacklistFacts?: FirstHopBlacklistFact[];
   firstHopBlacklistCoverage?: FirstHopBlacklistCoverage | null;
@@ -330,20 +332,16 @@ export function subjectBlacklistFact(
 function exactApprovalRole(
   input: ApprovalDrainNarrativeEvidence
 ): "victim" | "drainer_spender" | "first_receiver" | "route_linked" | null {
-  const { checkedAddress, profile, walletRole } = input;
+  const { checkedAddress, profile } = input;
   if (
     profile.evidenceStrength === "route_linked" &&
     checkedAddress === profile.subjectAddress &&
     profile.hopDepth > 0
   ) return "route_linked";
   if (profile.evidenceStrength !== "exact_approval_and_transfer_from") return null;
-  if (walletRole === "victim" || checkedAddress === profile.victimAddress) return "victim";
-  if (walletRole === "drainer_spender" || checkedAddress === profile.spenderAddress) {
-    return "drainer_spender";
-  }
-  if (walletRole === "first_receiver" || checkedAddress === profile.firstReceiverAddress) {
-    return "first_receiver";
-  }
+  if (checkedAddress === profile.victimAddress) return "victim";
+  if (checkedAddress === profile.spenderAddress) return "drainer_spender";
+  if (checkedAddress === profile.firstReceiverAddress) return "first_receiver";
   if (
     checkedAddress === profile.subjectAddress &&
     (profile.hopDepth > 0 || profile.pathAddresses.includes(checkedAddress))
@@ -492,11 +490,13 @@ function firstHopChronology(
 }
 
 export function firstHopBlacklistFacts(
+  checkedAddress: string,
   facts: FirstHopBlacklistFact[],
   profiles: DirectCounterpartyInteractionProfile[] = [],
   subjectRestriction: StablecoinRestrictionProfile | null = null
 ): NarrativeFact[] {
   const subjectKnownClear = subjectRestriction?.evidenceStrength === "exact_contract_state" &&
+    subjectRestriction.subjectAddress === checkedAddress &&
     subjectRestriction.isBlacklisted === false;
   return facts
     .filter((fact) =>
@@ -667,6 +667,34 @@ function isHtxName(value: string): boolean {
   return /(?:^|[^a-z])(?:htx|huobi)(?:[^a-z]|$)/i.test(value);
 }
 
+function sanctionedSourceIdentity(paths: MoneyOriginPath[]): {
+  ru: string;
+  en: string;
+  named: boolean;
+  htx: boolean;
+} {
+  const labels = paths.map((path) => path.exposureSourceLabel?.trim() || null);
+  const names = [...new Set(labels.filter((label): label is string => label !== null))]
+    .sort(compareLexical);
+  if (labels.every((label) => label !== null) && names.length === 1) {
+    return { ru: names[0]!, en: names[0]!, named: true, htx: isHtxName(names[0]!) };
+  }
+  if (paths.length > 1 || names.length > 1) {
+    return {
+      ru: "нескольких санкционных сервисов",
+      en: "multiple sanctioned services",
+      named: false,
+      htx: false
+    };
+  }
+  return {
+    ru: "санкционного сервиса без установленного названия",
+    en: "an unnamed sanctioned service",
+    named: false,
+    htx: false
+  };
+}
+
 function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
   const sanctionedPaths = paths.filter((path) => path.sourceExposureKind === "sanctioned_service");
   if (sanctionedPaths.length === 0) return [];
@@ -679,37 +707,36 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
     const matching = sanctionedPaths.filter((path) => policyMatchesPath(item, path));
     if (matching.length === 0) return [];
     matching.forEach((path) => matchedPaths.add(path));
-    const name = matching
-      .map((path) => path.exposureSourceLabel?.trim())
-      .filter((value): value is string => Boolean(value))
-      .sort(compareLexical)[0] ?? "санкционный сервис без установленного названия";
+    const identity = sanctionedSourceIdentity(matching);
     const share = item.shareDetail!.rawShare;
     const amountRaw = item.shareDetail!.affectedAmountRaw;
     const ids = [...new Set([...item.evidenceIds, ...matching.flatMap((path) => [...pathEvidenceIds(path)])])]
       .sort(compareLexical);
-    const htx = isHtxName(name);
+    const sourceRu = identity.named ? `с ${identity.ru}` : `от ${identity.ru}`;
+    const sourceEn = `from ${identity.en}`;
     return [narrativeFact(
       `sanctioned-source:${ids.join(",")}`,
       "sanctioned_source",
-      htx
-        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло с ${name}. HTX/Huobi под санкциями Великобритании с 26 мая 2026 года. Это санкционный источник. Операцию не проводить.`
-        : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло с ${name}. Это подтверждённый санкционный источник. Операцию не проводить.`,
-      htx
-        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came from ${name}. HTX/Huobi has been under UK sanctions since 26 May 2026. This is a sanctioned source. Do not proceed.`
-        : `${sourceAmountAndShareText(share, amountRaw, "en")} came from ${name}. This is a confirmed sanctioned source. Do not proceed.`,
+      identity.htx
+        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. HTX/Huobi под санкциями Великобритании с 26 мая 2026 года. Это санкционный источник. Операцию не проводить.`
+        : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. Это подтверждённый санкционный источник. Операцию не проводить.`,
+      identity.htx
+        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. HTX/Huobi has been under UK sanctions since 26 May 2026. This is a sanctioned source. Do not proceed.`
+        : `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. This is a confirmed sanctioned source. Do not proceed.`,
       null,
       "exact",
       ids
     )];
   });
   const unmatched = sanctionedPaths.filter((path) => !matchedPaths.has(path)).map((path) => {
-    const name = path.exposureSourceLabel?.trim() || "санкционный сервис без установленного названия";
+    const nameRu = path.exposureSourceLabel?.trim() || "санкционным сервисом без установленного названия";
+    const nameEn = path.exposureSourceLabel?.trim() || "an unnamed sanctioned service";
     const ids = [...pathEvidenceIds(path)].sort(compareLexical);
     return narrativeFact(
       `sanctioned-source-context:${ids.join(",")}`,
       "direct_counterparty_sanction",
-      `Входящая связь с ${name} есть в истории, но не подтверждена как источник выбранной суммы. Нужна ручная проверка.`,
-      `The inbound link to ${name} is present in history but is not confirmed as a source of the selected amount. Manual review is required.`,
+      `Входящая связь с ${nameRu} есть в истории, но не подтверждена как источник выбранной суммы. Нужна ручная проверка.`,
+      `The inbound link to ${nameEn} is present in history but is not confirmed as a source of the selected amount. Manual review is required.`,
       null,
       "context",
       ids
@@ -774,7 +801,9 @@ function crossChainFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   const name = routePaths
     .map((path) => path.exposureSourceLabel?.trim())
     .filter((value): value is string => Boolean(value))
-    .sort(compareLexical)[0] ?? "неустановленный cross-chain сервис";
+    .sort(compareLexical)[0];
+  const nameRu = name ?? "cross-chain сервис без установленного названия";
+  const nameEn = name ?? "an unnamed cross-chain service";
   const txHashes = [...new Set(routePaths.map((path) => path.balanceTransferTxHash))].sort(compareLexical);
   const count = txHashes.length;
   const repeatedRu = count > 1 ? ` в ${count} переводах` : "";
@@ -783,8 +812,8 @@ function crossChainFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   return [narrativeFact(
     `cross-chain:${ids.join(",")}`,
     "bridge_route",
-    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${name}${repeatedRu}. История до границы находится в другой сети и не видна в TRON. Такие маршруты подходят для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
-    `${sourceShareText(share, amountRaw, "en")} of the checked amount came through ${name}${repeatedEn}. History before the boundary is on another chain and not visible on TRON. Such routes support ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
+    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${nameRu}${repeatedRu}. История до этого сервиса находится в другой сети и не видна в TRON. Такие маршруты подходят для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
+    `${sourceShareText(share, amountRaw, "en")} of the checked amount came through ${nameEn}${repeatedEn}. History before this service is on another chain and not visible on TRON. Such routes support ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
     null,
     count > 1 ? "strong" : "context",
     ids
@@ -801,13 +830,15 @@ function bridgeRouterDexFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEv
   const name = routePaths
     .map((path) => path.exposureSourceLabel?.trim())
     .filter((value): value is string => Boolean(value))
-    .sort(compareLexical)[0] ?? "DEX/router сервис без установленного названия";
+    .sort(compareLexical)[0];
+  const nameRu = name ? `${name}, DEX/router-сервис` : "DEX/router-сервис без установленного названия";
+  const nameEn = name ? `${name}, a DEX/router service` : "an unnamed DEX/router service";
   const ids = routeEvidenceIds(routePaths, policy);
   return [narrativeFact(
     `dex-router:${ids.join(",")}`,
     "bridge_route",
-    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы прошло через DEX/router-сервис ${name}. Такие сервисы используют для обычных обменов и сокрытия происхождения; маршрут повышает AML-риск.`,
-    `${sourceShareText(share, amountRaw, "en")} of the checked amount passed through DEX/router service ${name}. These services support ordinary swaps and can hide origin; the route increases AML risk.`,
+    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы прошло через ${nameRu}. Такие сервисы используют для обычных обменов и сокрытия происхождения; маршрут повышает AML-риск.`,
+    `${sourceShareText(share, amountRaw, "en")} of the checked amount passed through ${nameEn}. These services support ordinary swaps and can hide origin; the route increases AML risk.`,
     null,
     "context",
     ids
@@ -818,17 +849,19 @@ function cexFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
   const groups = new Map<string, MoneyOriginPath[]>();
   for (const path of paths) {
     if (path.sourceExposureKind !== "allowlisted_cex" && path.rootSourceType !== "allowlist_cex") continue;
-    const name = path.exposureSourceLabel?.trim() || "биржевой сервис без установленного названия";
+    const name = path.exposureSourceLabel?.trim() || "";
     groups.set(name, [...(groups.get(name) ?? []), path]);
   }
   return [...groups.entries()].map(([name, group]) => {
+    const nameRu = name || "биржевого сервиса без установленного названия";
+    const nameEn = name || "an unnamed exchange service";
     const share = group.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
     const txHashes = [...new Set(group.map((path) => path.balanceTransferTxHash))].sort();
     return narrativeFact(
       `cex:${name}:${txHashes.join(",")}`,
       "cex_source",
-      `${formatPercent(share, "ru")}% проверяемой суммы пришло с ${name} (${russianDirectTransferCount(txHashes.length)}). Это похоже на вывод средств с биржи.`,
-      `${formatPercent(share, "en")}% of the checked amount came from ${name} (${englishDirectTransferCount(txHashes.length)}). This looks like an exchange withdrawal.`,
+      `${formatPercent(share, "ru")}% проверяемой суммы пришло с ${nameRu} (${russianDirectTransferCount(txHashes.length)}). Это похоже на вывод средств с биржи.`,
+      `${formatPercent(share, "en")}% of the checked amount came from ${nameEn} (${englishDirectTransferCount(txHashes.length)}). This looks like an exchange withdrawal.`,
       null,
       "context",
       txHashes
@@ -898,7 +931,8 @@ function collectorFacts(
   return behaviorProfiles.flatMap((behavior) => {
     if (behavior.transitScore <= 0 || behavior.uniqueIncomingCounterparties < 2) return [];
     const operational = operationalProfiles.find((profile) => profile.subjectAddress === behavior.subjectAddress);
-    const destination = operational?.topOutgoingCounterparties
+    if (!operational) return [];
+    const destination = operational.topOutgoingCounterparties
       .filter((row) => row.isTerminalLiquidity === true && tryRawAmount(row.volumeRaw) !== null)
       .sort((left, right) => {
         const leftVolume = rawAmount(left.volumeRaw);
@@ -906,8 +940,8 @@ function collectorFacts(
         return rightVolume > leftVolume ? 1 : rightVolume < leftVolume ? -1 : compareLexical(left.address, right.address);
       })[0];
     if (!destination) return [];
-    const shareRu = formatRawSharePercent(destination.volumeRaw, behavior.incomingVolumeRaw, "ru");
-    const shareEn = formatRawSharePercent(destination.volumeRaw, behavior.incomingVolumeRaw, "en");
+    const shareRu = formatRawSharePercent(destination.volumeRaw, operational.incomingVolumeRaw, "ru");
+    const shareEn = formatRawSharePercent(destination.volumeRaw, operational.incomingVolumeRaw, "en");
     const destinationName = destination.identity ?? shortAddress(destination.address);
     const flowRu = shareRu === null
       ? `отправляет ${formatUsdtRaw(destination.volumeRaw, "ru")} USDT на ${destinationName}`
@@ -1157,9 +1191,48 @@ function canonicalFacts(facts: NarrativeFact[]): NarrativeFact[] {
   return selected;
 }
 
+function assertSubjectBinding(
+  checkedAddress: string,
+  subjectAddress: string,
+  source: string
+): void {
+  if (subjectAddress !== checkedAddress) {
+    throw new Error(`${source} subject does not match checkedAddress.`);
+  }
+}
+
+function validateEvidenceSubjectBindings(input: WalletNarrativeEvidenceInput): void {
+  if (typeof input.checkedAddress !== "string" || input.checkedAddress.trim().length === 0) {
+    throw new Error("Wallet narrative checkedAddress is required.");
+  }
+  if (input.subjectRestriction) {
+    assertSubjectBinding(input.checkedAddress, input.subjectRestriction.subjectAddress, "subjectRestriction");
+  }
+  for (const profile of input.directCounterpartyInteractionProfiles ?? []) {
+    assertSubjectBinding(input.checkedAddress, profile.subjectAddress, "directCounterpartyInteractionProfile");
+  }
+  for (const profile of input.addressBehaviorProfiles ?? []) {
+    assertSubjectBinding(input.checkedAddress, profile.subjectAddress, "addressBehaviorProfile");
+  }
+  for (const profile of input.operationalFlowProfiles ?? []) {
+    assertSubjectBinding(input.checkedAddress, profile.subjectAddress, "operationalFlowProfile");
+  }
+  for (const profile of input.boundaryExposureProfiles ?? []) {
+    assertSubjectBinding(input.checkedAddress, profile.subjectAddress, "boundaryExposureProfile");
+  }
+  if (input.approvalDrain) {
+    assertSubjectBinding(input.checkedAddress, input.approvalDrain.checkedAddress, "approvalDrain");
+    assertSubjectBinding(input.checkedAddress, input.approvalDrain.profile.subjectAddress, "approvalDrainProfile");
+  }
+  if (input.verify20) {
+    assertSubjectBinding(input.checkedAddress, input.verify20.subjectAddress, "verify20");
+  }
+}
+
 export function buildWalletNarrativeEvidence(
   input: WalletNarrativeEvidenceInput
 ): WalletNarrativeEvidence {
+  validateEvidenceSubjectBindings(input);
   const profiles = input.directCounterpartyInteractionProfiles ?? [];
   const facts: NarrativeFact[] = [];
   if (input.subjectRestriction) {
@@ -1167,6 +1240,7 @@ export function buildWalletNarrativeEvidence(
     if (subject) facts.push(subject);
   }
   facts.push(...firstHopBlacklistFacts(
+    input.checkedAddress,
     input.firstHopBlacklistFacts ?? [],
     profiles,
     input.subjectRestriction
