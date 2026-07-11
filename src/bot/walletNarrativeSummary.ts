@@ -75,6 +75,7 @@ export type WalletNarrativeCase = {
   decision: WalletNarrativeDecision;
   score: number | null;
   facts: NarrativeFact[];
+  preferredFactId?: string | null;
   coverageExplanation: CoverageExplanation | null;
 };
 
@@ -1331,6 +1332,13 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
     throw new Error("Wallet narrative decision is invalid.");
   }
   validateScore(input.decision as WalletNarrativeDecision, input.score as number | null);
+  if (
+    input.preferredFactId !== undefined &&
+    input.preferredFactId !== null &&
+    typeof input.preferredFactId !== "string"
+  ) {
+    throw new Error("Wallet narrative preferred fact id must be a string or null.");
+  }
   if (!Array.isArray(input.facts)) throw new Error("Wallet narrative facts must be an array.");
   input.facts.forEach((fact, index) => {
     if (!isRecord(fact)) throw new Error(`Wallet narrative fact at index ${index} must be an object.`);
@@ -1415,6 +1423,9 @@ export function buildWalletNarrativeCase(input: WalletNarrativeCase): WalletNarr
     decision: input.decision,
     score: input.score,
     facts,
+    preferredFactId: facts.some((fact) => fact.id === input.preferredFactId)
+      ? input.preferredFactId
+      : null,
     coverageExplanation: coverageExplanation && localizedCoverageText(coverageExplanation, input.locale)
       ? coverageExplanation
       : null
@@ -1436,8 +1447,12 @@ export function selectNarrativeFacts(caseData: WalletNarrativeCase): NarrativeFa
     if (!canonicalById.has(fact.id)) canonicalById.set(fact.id, fact);
   }
   const facts = [...canonicalById.values()].sort(compareFacts);
+  const preferred = caseData.preferredFactId ? canonicalById.get(caseData.preferredFactId) : null;
+  const orderedFacts = preferred
+    ? [preferred, ...facts.filter((fact) => fact.id !== preferred.id)]
+    : facts;
 
-  for (const fact of facts) {
+  for (const fact of orderedFacts) {
     const sentences = sentenceKeys(localizedFactText(fact, caseData.locale));
     if (sentences.length === 0 || sentences.some((sentence) => usedSentences.has(sentence))) continue;
     selected.push(fact);

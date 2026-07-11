@@ -273,6 +273,40 @@ describe("formatWalletNarrativeSummary", () => {
     expect(output.match(/Адрес находится в чёрном списке USDT/g)).toHaveLength(1);
   });
 
+  it("keeps an explicitly preferred canonical winner visible beside higher-ranked secondary facts", () => {
+    const facts: NarrativeFact[] = [
+      {
+        id: "secondary-policy",
+        kind: "direct_counterparty_sanction",
+        factTextRu: "Есть вторичный исторический контекст сервиса.",
+        factTextEn: "There is secondary historical service context."
+      },
+      {
+        id: "secondary-bridge",
+        kind: "unknown_contract",
+        factTextRu: "Есть вторичная граница сервиса.",
+        factTextEn: "There is a secondary service boundary."
+      },
+      {
+        id: "fast-winner",
+        kind: "risky_counterparty",
+        factTextRu: "Через кошелёк проходит много входящих и исходящих переводов.",
+        factTextEn: "Many incoming and outgoing transfers pass through the wallet."
+      }
+    ];
+
+    const selected = selectNarrativeFacts(narrativeCase({
+      facts,
+      preferredFactId: "fast-winner"
+    }));
+
+    expect(selected.map((fact) => fact.id)).toEqual(["fast-winner", "secondary-policy"]);
+    expect(formatWalletNarrativeSummary(narrativeCase({
+      facts,
+      preferredFactId: "fast-winner"
+    }))).toContain("Через кошелёк проходит много входящих и исходящих переводов.");
+  });
+
   it("deduplicates Turkish I sentences without depending on the default locale", () => {
     const original = String.prototype.toLocaleLowerCase;
     const localeSpy = vi.spyOn(String.prototype, "toLocaleLowerCase")
@@ -525,6 +559,11 @@ describe("formatWalletNarrativeSummary", () => {
       name: "facts array",
       value: { facts: {} },
       error: /facts must be an array/
+    },
+    {
+      name: "preferred fact id",
+      value: { preferredFactId: 42 },
+      error: /preferred fact id must be a string or null/
     },
     {
       name: "fact kind",

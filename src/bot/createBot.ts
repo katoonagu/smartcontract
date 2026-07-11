@@ -9,7 +9,11 @@ import {
   normalizePersistedDeepFirstHopEvidence,
   type DeepAddressForensicReport
 } from "../check/deepForensicCheck";
-import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
+import {
+  addressBehaviorEffectiveScore,
+  isAddressBehaviorReasonCode,
+  type AddressBehaviorReasonCode
+} from "../forensics/addressBehavior";
 import {
   extractUsdtTransferDisplayContext,
   extractUsdtTransferSeedFromTransaction,
@@ -19,6 +23,11 @@ import {
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskClarity";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
+import {
+  exactFastHardEvidence,
+  isExactFastHardEvidenceCode,
+  type ExactFastHardEvidenceCode
+} from "../risk/fastEvidence";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import {
@@ -3358,6 +3367,13 @@ function currentScoringPolicyDeepReport(report: DeepAddressForensicReport | null
   return report?.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION ? report : null;
 }
 
+function effectiveFastReport(input: UnifiedAddressFinalReportInput): RiskReport | null {
+  if (input.fastReport?.subjectAddress === input.address) return input.fastReport;
+  return input.whereReport.fastWalletRisk?.subjectAddress === input.address
+    ? input.whereReport.fastWalletRisk
+    : null;
+}
+
 export function escapePlainTelegramText(value: string): string {
   return value
     .replace(/\r\n?/g, "\n")
@@ -3450,7 +3466,7 @@ function buildUnifiedWalletNarrativeEvidence(
     deepReport: DeepAddressForensicReport;
     unifiedRisk: UnifiedWalletRiskResult;
   }
-): ReturnType<typeof buildWalletNarrativeEvidence> {
+): ReturnType<typeof buildWalletNarrativeEvidence> & { preferredFactId?: string | null } {
   const restriction = [...(input.deepReport.stablecoinRestrictionProfiles ?? [])]
     .filter((profile) => profile.subjectAddress === input.address)
     .sort((left, right) => right.checkedAt.localeCompare(left.checkedAt) || left.tokenContract.localeCompare(right.tokenContract))[0] ?? null;
@@ -3484,23 +3500,134 @@ function buildUnifiedWalletNarrativeEvidence(
   const built = buildWalletNarrativeEvidence(evidence);
   const fastFact = dominantFastNarrativeFact(input, built.facts);
   if (!fastFact) return built;
-  if (input.unifiedRisk.matrixScore.winningRow !== "behavior_only_prior") {
-    return { ...built, facts: [...built.facts, fastFact] };
-  }
-  const hardFacts = built.facts.filter((fact) =>
-    fact.proofStrength === "exact" || fact.proofStrength === "strong"
-  );
-  const secondary = built.facts
-    .filter((fact) => fact.proofStrength !== "exact" && fact.proofStrength !== "strong")
-    .sort((left, right) =>
-      (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER) ||
-      left.id.localeCompare(right.id)
-    )[0];
   return {
     ...built,
-    facts: [...hardFacts, fastFact, ...(secondary ? [secondary] : [])]
+    facts: [...built.facts, fastFact],
+    preferredFactId: fastFact.id
   };
 }
+
+type FastNarrativeCopy = Pick<NarrativeFact, "kind" | "proofStrength"> & { ru: string; en: string };
+
+const exactFastNarrativeCopies: Record<ExactFastHardEvidenceCode, FastNarrativeCopy> = {
+  stablecoin_usdt_blacklisted: {
+    kind: "usdt_blacklist",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес находится в чёрном списке USDT: переводы токена заблокированы, а USDT на адресе заморожен.",
+    en: "The checked address is on the USDT blacklist: token transfers are blocked and USDT at the address is frozen."
+  },
+  forensic_approval_drain_provenance: {
+    kind: "approval_drain",
+    proofStrength: "exact",
+    ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
+    en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
+  },
+  internal_label_approval_drain_proximity: {
+    kind: "approval_drain",
+    proofStrength: "exact",
+    ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
+    en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
+  },
+  internal_label_scam: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе как мошеннический.",
+    en: "The checked address is labeled as a scam address in the internal database."
+  },
+  internal_label_reported_scam: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе по подтверждённой жалобе на мошенничество.",
+    en: "The checked address has a confirmed scam report in the internal database."
+  },
+  internal_label_stolen_funds: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе как связанный с украденными средствами.",
+    en: "The checked address is labeled as linked to stolen funds in the internal database."
+  },
+  internal_label_phishing: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе как фишинговый.",
+    en: "The checked address is labeled as a phishing address in the internal database."
+  },
+  internal_label_risky_contract: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе как рискованный контракт.",
+    en: "The checked address is labeled as a risky contract in the internal database."
+  },
+  internal_label_whitebit: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе как связанный с WhiteBIT.",
+    en: "The checked address is labeled as linked to WhiteBIT in the internal database."
+  },
+  internal_label_darknet_exchange: {
+    kind: "direct_counterparty_exact_label",
+    proofStrength: "exact",
+    ru: "Проверяемый адрес отмечен во внутренней базе как связанный с даркнет-обменником.",
+    en: "The checked address is labeled as linked to a darknet exchange in the internal database."
+  }
+};
+
+const behaviorFastNarrativeCopies: Record<AddressBehaviorReasonCode, FastNarrativeCopy> = {
+  address_behavior_deposit_then_drain: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
+    en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
+  },
+  address_behavior_fast_post_deposit_exit: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
+    en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
+  },
+  address_behavior_large_inflow_preserved_outflow: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Кошелёк получил значительное поступление и перевёл дальше большую часть суммы. Так может работать транзитный или операционный кошелёк.",
+    en: "The wallet received a material inflow and sent most of it onward. This can match a transit or operational wallet."
+  },
+  address_behavior_drain_to_service_infrastructure: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Кошелёк направил значительную часть поступивших средств в сервисную инфраструктуру. Нужна ручная проверка назначения перевода.",
+    en: "The wallet sent a material share of received funds into service infrastructure. Review the transfer purpose manually."
+  },
+  address_behavior_high_volume_transit: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
+    en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
+  },
+  address_behavior_fan_in_fan_out: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
+    en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
+  },
+  address_behavior_collector_like_wallet: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Кошелёк собирает поступления и переводит средства дальше. Это похоже на кошелёк-сборщик или операционный кошелёк.",
+    en: "The wallet collects incoming funds and sends them onward. It looks like a collector or operational wallet."
+  },
+  address_behavior_large_outgoing_concentration: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Большая часть исходящих средств направляется основным получателям. Это концентрация потока, которую нужно проверить вручную.",
+    en: "A large share of outgoing funds goes to the main recipients. This flow concentration requires manual review."
+  },
+  address_behavior_top_counterparty_concentration: {
+    kind: "risky_counterparty",
+    proofStrength: "context",
+    ru: "Большая часть исходящих средств направляется основным получателям. Это концентрация потока, которую нужно проверить вручную.",
+    en: "A large share of outgoing funds goes to the main recipients. This flow concentration requires manual review."
+  }
+};
 
 function dominantFastNarrativeFact(
   input: UnifiedAddressFinalReportInput & { unifiedRisk: UnifiedWalletRiskResult },
@@ -3515,12 +3642,19 @@ function dominantFastNarrativeFact(
     winner.subject.decisionScope !== "wallet_unified"
   ) return null;
 
-  const reasons = fast.reasons.filter((reason) => winner.atomicSignals.includes(reason.code));
-  if (reasons.length === 0) return null;
-  const reason = reasons.find((candidate) => fastNarrativeCopy(candidate.code, fast) !== null);
-  if (!reason) return null;
-  const copy = fastNarrativeCopy(reason.code, fast);
-  if (!copy) return null;
+  const selected = fast.reasons
+    .filter((reason) => winner.atomicSignals.includes(reason.code))
+    .flatMap((reason) => {
+      const copy = fastNarrativeCopy(reason.code, fast);
+      return copy ? [{ reason, copy }] : [];
+    })
+    .sort((left, right) =>
+      fastNarrativeReasonScore(fast, right.reason) - fastNarrativeReasonScore(fast, left.reason) ||
+      left.reason.code.localeCompare(right.reason.code) ||
+      (left.reason.evidenceRef ?? "").localeCompare(right.reason.evidenceRef ?? "")
+    )[0];
+  if (!selected) return null;
+  const { reason, copy } = selected;
   if (copy.proofStrength === "context" && winner.row !== "behavior_only_prior") return null;
   if (
     (reason.code === "forensic_approval_drain_provenance" || reason.code === "internal_label_approval_drain_proximity") &&
@@ -3540,112 +3674,22 @@ function dominantFastNarrativeFact(
   };
 }
 
+function fastNarrativeReasonScore(
+  fast: RiskReport,
+  reason: RiskReport["reasons"][number]
+): number {
+  if (isExactFastHardEvidenceCode(reason.code)) {
+    return exactFastHardEvidence({ ...fast, reasons: [reason] })[0]?.score ?? 0;
+  }
+  return Number.isFinite(reason.scoreImpact) ? Math.max(0, reason.scoreImpact) : 0;
+}
+
 function fastNarrativeCopy(
   code: string,
   fast: RiskReport
-): Pick<NarrativeFact, "kind" | "proofStrength"> & { ru: string; en: string } | null {
-  if (code === "stablecoin_usdt_blacklisted") {
-    return {
-      kind: "usdt_blacklist",
-      proofStrength: "exact",
-      ru: "Проверяемый адрес находится в чёрном списке USDT: переводы токена заблокированы, а USDT на адресе заморожен.",
-      en: "The checked address is on the USDT blacklist: token transfers are blocked and USDT at the address is frozen."
-    };
-  }
-  if (code === "forensic_approval_drain_provenance" || code === "internal_label_approval_drain_proximity") {
-    return {
-      kind: "approval_drain",
-      proofStrength: "exact",
-      ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
-      en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
-    };
-  }
-  const labels: Record<string, { ru: string; en: string }> = {
-    internal_label_scam: {
-      ru: "Проверяемый адрес отмечен во внутренней базе как мошеннический.",
-      en: "The checked address is labeled as a scam address in the internal database."
-    },
-    internal_label_reported_scam: {
-      ru: "Проверяемый адрес отмечен во внутренней базе по подтверждённой жалобе на мошенничество.",
-      en: "The checked address has a confirmed scam report in the internal database."
-    },
-    internal_label_stolen_funds: {
-      ru: "Проверяемый адрес отмечен во внутренней базе как связанный с украденными средствами.",
-      en: "The checked address is labeled as linked to stolen funds in the internal database."
-    },
-    internal_label_phishing: {
-      ru: "Проверяемый адрес отмечен во внутренней базе как фишинговый.",
-      en: "The checked address is labeled as a phishing address in the internal database."
-    },
-    internal_label_risky_contract: {
-      ru: "Проверяемый адрес отмечен во внутренней базе как рискованный контракт.",
-      en: "The checked address is labeled as a risky contract in the internal database."
-    },
-    internal_label_whitebit: {
-      ru: "Проверяемый адрес отмечен во внутренней базе как связанный с WhiteBIT.",
-      en: "The checked address is labeled as linked to WhiteBIT in the internal database."
-    },
-    internal_label_darknet_exchange: {
-      ru: "Проверяемый адрес отмечен во внутренней базе как связанный с даркнет-обменником.",
-      en: "The checked address is labeled as linked to a darknet exchange in the internal database."
-    }
-  };
-  const label = labels[code];
-  if (label) {
-    return {
-      kind: "direct_counterparty_exact_label",
-      proofStrength: "exact",
-      ...label
-    };
-  }
-  if (code === "address_behavior_deposit_then_drain" || code === "address_behavior_fast_post_deposit_exit") {
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
-      en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
-    };
-  }
-  if (code === "address_behavior_large_inflow_preserved_outflow") {
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: "Кошелёк получил значительное поступление и перевёл дальше большую часть суммы. Так может работать транзитный или операционный кошелёк.",
-      en: "The wallet received a material inflow and sent most of it onward. This can match a transit or operational wallet."
-    };
-  }
-  if (code === "address_behavior_drain_to_service_infrastructure") {
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: "Кошелёк направил значительную часть поступивших средств в сервисную инфраструктуру. Нужна ручная проверка назначения перевода.",
-      en: "The wallet sent a material share of received funds into service infrastructure. Review the transfer purpose manually."
-    };
-  }
-  if (code === "address_behavior_high_volume_transit" || code === "address_behavior_fan_in_fan_out") {
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
-      en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
-    };
-  }
-  if (code === "address_behavior_collector_like_wallet") {
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: "Кошелёк собирает поступления и переводит средства дальше. Это похоже на кошелёк-сборщик или операционный кошелёк.",
-      en: "The wallet collects incoming funds and sends them onward. It looks like a collector or operational wallet."
-    };
-  }
-  if (code === "address_behavior_large_outgoing_concentration" || code === "address_behavior_top_counterparty_concentration") {
-    return {
-      kind: "risky_counterparty",
-      proofStrength: "context",
-      ru: "Большая часть исходящих средств направляется основным получателям. Это концентрация потока, которую нужно проверить вручную.",
-      en: "A large share of outgoing funds goes to the main recipients. This flow concentration requires manual review."
-    };
-  }
+): FastNarrativeCopy | null {
+  if (isExactFastHardEvidenceCode(code)) return exactFastNarrativeCopies[code];
+  if (isAddressBehaviorReasonCode(code)) return behaviorFastNarrativeCopies[code];
   if (code === "forensic_address_behavior") {
     const transit = fast.dominantRiskType === "laundering_pattern" ||
       (fast.launderingPatternScore ?? 0) > (fast.taintScore ?? 0);
@@ -3803,19 +3847,20 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   }
   const deepReport = currentScoringPolicyDeepReport(input.deepReport);
   const currentInput = { ...input, deepReport };
+  const effectiveInput = { ...currentInput, fastReport: effectiveFastReport(currentInput) };
   const prerequisiteFailure = freshDeepPrerequisiteFailure(currentInput, deepReport);
-  if (prerequisiteFailure) return compactNoFinalWalletNarrative(currentInput, prerequisiteFailure);
+  if (prerequisiteFailure) return compactNoFinalWalletNarrative(effectiveInput, prerequisiteFailure);
 
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
-    fastReport: input.fastReport,
+    fastReport: effectiveInput.fastReport,
     deepReport,
     smartContractReport: input.smartContractReport,
     whereReport: input.whereReport
   });
   try {
     const evidence = buildUnifiedWalletNarrativeEvidence({
-      ...currentInput,
+      ...effectiveInput,
       deepReport: deepReport as DeepAddressForensicReport,
       unifiedRisk
     });
@@ -3828,7 +3873,7 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
         isRiskEvidence: false
       };
       return compactNoFinalWalletNarrative(
-        currentInput,
+        effectiveInput,
         evidence.coverageExplanation ?? fallbackCoverage,
         unifiedRisk
       );
@@ -3838,11 +3883,12 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
       decision: unifiedRisk.finalDecision,
       score: unifiedRisk.finalScore,
       facts: evidence.facts,
+      preferredFactId: evidence.preferredFactId,
       coverageExplanation: evidence.coverageExplanation
     });
-    return compactWalletNarrativeMessage(currentInput, narrative, unifiedRisk);
+    return compactWalletNarrativeMessage(effectiveInput, narrative, unifiedRisk);
   } catch {
-    return compactNoFinalWalletNarrative(currentInput, {
+    return compactNoFinalWalletNarrative(effectiveInput, {
       reasonKind: "evidence_control_failed",
       textRu: "Сохранённые данные не прошли проверку адреса. Запустите свежую проверку и дождитесь DeepCheck.",
       textEn: "The saved evidence failed address validation. Run a fresh check and wait for DeepCheck.",
@@ -3857,6 +3903,7 @@ export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalRep
     return formatLegacyUnifiedAddressFinalReport(input);
   }
   input = { ...input, deepReport: currentScoringPolicyDeepReport(input.deepReport) };
+  input = { ...input, fastReport: effectiveFastReport(input) };
   const prerequisiteFailure = freshDeepPrerequisiteFailure(input, input.deepReport ?? null);
   const calculatedRisk = calculateUnifiedWalletRisk({
     address: input.address,

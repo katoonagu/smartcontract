@@ -4049,6 +4049,39 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("RAW FAST MESSAGE MUST NOT LEAK");
   });
 
+  it("selects the strongest recognized Fast behavior reason instead of the first stored reason", () => {
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest(),
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        launderingPatternScore: 90,
+        dominantRiskType: "laundering_pattern",
+        reasons: [
+          {
+            code: "address_behavior_large_outgoing_concentration",
+            message: "RAW LOW IMPACT MUST NOT LEAK",
+            scoreImpact: 10,
+            evidenceRef: "fast-evidence:low"
+          },
+          {
+            code: "address_behavior_high_volume_transit",
+            message: "RAW HIGH IMPACT MUST NOT LEAK",
+            scoreImpact: 90,
+            evidenceRef: "fast-evidence:high"
+          }
+        ]
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Через кошелёк проходит много входящих и исходящих переводов");
+    expect(text).not.toContain("Большая часть исходящих средств направляется основным получателям");
+    expect(text).not.toContain("RAW LOW IMPACT MUST NOT LEAK");
+    expect(text).not.toContain("RAW HIGH IMPACT MUST NOT LEAK");
+  });
+
   it("keeps the winning Fast behavior reason beside secondary bridge, collector, and risky-counterparty facts", () => {
     const deepReport = freshNarrativeDeepReportForTest({
       boundaryExposureProfiles: [boundaryExposureProfile()],
@@ -5871,6 +5904,128 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(whereFirst).not.toContain("No deterministic bad evidence");
     expect(whereFirstRu).not.toContain("Точных признаков кражи");
     expect(whereFirstRu).not.toContain("Жёстких плохих доказательств");
+  });
+
+  it("uses the same saved Fast-only winner in Where-first, Deep-first, and check_status delivery", async () => {
+    const fastReport = riskReportForTest({
+      level: "CRITICAL",
+      score: 90,
+      launderingPatternScore: 90,
+      dominantRiskType: "laundering_pattern",
+      reasons: [{
+        code: "address_behavior_high_volume_transit",
+        message: "RAW SAVED FAST MESSAGE MUST NOT LEAK",
+        scoreImpact: 90,
+        evidenceRef: "fast-evidence:saved-high-volume"
+      }]
+    });
+    const whereReport = whereIsMoneyReportForTest({ fastWalletRisk: fastReport });
+    const deepReport = freshNarrativeDeepReportForTest();
+    const cleanFirstHop = persistedFirstHopEvidenceForTest();
+    cleanFirstHop.firstHopBlacklistFacts = [];
+    cleanFirstHop.firstHopLabelFacts = [];
+    cleanFirstHop.firstHopBlacklistCoverage.confirmedAdverseFactCount = 0;
+    cleanFirstHop.firstHopBlacklistCoverage.completeTimelineFactCount = 0;
+    const cleanSnapshots = cleanFirstHop.directHardEvidenceSnapshots.map((snapshot) => ({
+      ...snapshot,
+      labels: [],
+      usdtRestriction: {
+        ...snapshot.usdtRestriction,
+        isBlacklisted: false,
+        blacklistEventTxHash: null,
+        blacklistEventTimestamp: null,
+        blacklistEventBlock: null,
+        blacklistTimeline: { events: [], pagination: "complete" as const, failureReason: null }
+      },
+      hasHardEvidence: false,
+      reasons: []
+    }));
+    const persistedDeep = persistedDeepResultJsonForTest(deepReport);
+    persistedDeep.firstHopBlacklistFacts = cleanFirstHop.firstHopBlacklistFacts;
+    persistedDeep.firstHopLabelFacts = cleanFirstHop.firstHopLabelFacts;
+    persistedDeep.firstHopBlacklistCoverage = cleanFirstHop.firstHopBlacklistCoverage;
+    persistedDeep.directHardEvidenceSnapshots = cleanSnapshots;
+    const whereJob = whereIsMoneyJobForTest({
+      id: "saved-fast-where",
+      resultJson: { subjectAddress: walletAddress, whereIsMoneyReport: whereReport }
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      id: "saved-fast-deep",
+      kind: "address_deep_check",
+      resultJson: persistedDeep
+    });
+
+    const whereFirst = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
+      whereJob,
+      whereReport,
+      "completed",
+      deepJob,
+      { locale: "ru" }
+    ).text);
+    const deepFirst = plainTelegramText(formatDeepForensicUserDeliveryReport(
+      deepJob,
+      deepReport,
+      "completed",
+      whereJob,
+      { locale: "ru" }
+    ).text);
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      getForensicCheckJob: async () => whereJob,
+      getLatestDeepForensicCheckJobForAddressAnyStatus: async () => deepJob
+    });
+    await bot.handleUpdate(messageUpdate("/check_status saved-fast-where", userId));
+    const status = lastPlainText(calls);
+
+    for (const text of [whereFirst, deepFirst, status]) {
+      expect(text).toContain("Через кошелёк проходит много входящих и исходящих переводов");
+      expect(text).not.toContain("address_behavior_high_volume_transit");
+      expect(text).not.toContain("RAW SAVED FAST MESSAGE MUST NOT LEAK");
+    }
+  });
+
+  it("ignores a mismatched explicit Fast report and falls back only to a subject-bound saved report", () => {
+    const saved = riskReportForTest({
+      score: 90,
+      level: "CRITICAL",
+      launderingPatternScore: 90,
+      dominantRiskType: "laundering_pattern",
+      reasons: [{
+        code: "address_behavior_high_volume_transit",
+        message: "RAW SUBJECT-BOUND MESSAGE MUST NOT LEAK",
+        scoreImpact: 90
+      }]
+    });
+    const mismatched = riskReportForTest({
+      subjectAddress: secondWalletAddress,
+      score: 100,
+      level: "CRITICAL",
+      reasons: [{
+        code: "stablecoin_usdt_blacklisted",
+        message: "RAW MISMATCHED MESSAGE MUST NOT LEAK",
+        scoreImpact: 100
+      }]
+    });
+    const fallback = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest({ fastWalletRisk: saved }),
+      fastReport: mismatched,
+      locale: "ru"
+    });
+    const rejected = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest({
+        fastWalletRisk: { ...saved, subjectAddress: secondWalletAddress }
+      }),
+      fastReport: mismatched,
+      locale: "ru"
+    });
+
+    expect(fallback).toContain("Через кошелёк проходит много входящих и исходящих переводов");
+    expect(fallback).not.toContain("чёрном списке USDT");
+    expect(rejected).not.toContain("Через кошелёк проходит много входящих и исходящих переводов");
+    expect(rejected).not.toContain("чёрном списке USDT");
+    expect(`${fallback}\n${rejected}`).not.toContain("RAW MISMATCHED MESSAGE MUST NOT LEAK");
   });
 
   it("does not reuse Verify20 evidence from an unmarked related Deep job", () => {
