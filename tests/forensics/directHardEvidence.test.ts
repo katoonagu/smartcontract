@@ -84,6 +84,57 @@ describe("direct hard evidence helper", () => {
     });
   });
 
+  it("counts an exact repeated edge id once", () => {
+    const repeated = edge({
+      id: "10",
+      fromAddress: "TRepeated",
+      toAddress: SUBJECT,
+      amountRaw: 125_000000n,
+      txHash: "tx-repeated"
+    });
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [repeated, { ...repeated }]
+    });
+
+    expect(groups[0]).toMatchObject({
+      principalAmountRaw: 125_000000n,
+      principalTxCount: 1,
+      transferTxHashes: ["tx-repeated"]
+    });
+  });
+
+  it("counts distinct movements in one transaction by edge id while keeping one transaction count", () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({ id: "10", fromAddress: "TMulti", toAddress: SUBJECT, amountRaw: 125_000000n, txHash: "tx-multi" }),
+        edge({ id: "11", fromAddress: "TMulti", toAddress: SUBJECT, amountRaw: 75_000000n, txHash: "tx-multi" })
+      ]
+    });
+
+    expect(groups[0]).toMatchObject({
+      principalAmountRaw: 200_000000n,
+      principalTxCount: 1,
+      transferTxHashes: ["tx-multi"]
+    });
+  });
+
+  it("keeps distinct movements with empty edge ids instead of tuple-merging them", () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({ id: "", fromAddress: "TNoId", toAddress: SUBJECT, amountRaw: 125_000000n, txHash: "tx-no-id" }),
+        edge({ id: "", fromAddress: "TNoId", toAddress: SUBJECT, amountRaw: 75_000000n, txHash: "tx-no-id" })
+      ]
+    });
+
+    expect(groups[0]).toMatchObject({ principalAmountRaw: 200_000000n, principalTxCount: 1 });
+  });
+
   it("applies exact absolute and complete-directional-share materiality boundaries", () => {
     const partialBelow = groupDirectPrincipalCounterparties({
       subjectAddress: SUBJECT,
@@ -220,6 +271,55 @@ describe("direct hard evidence helper", () => {
 
     expect(groups.map((group) => group.address)).toEqual(["Tcase", "TCase"]);
     expect(selectDirectPrincipalLookupAddresses(groups, 2)).toEqual(["Tcase", "TCase"]);
+  });
+
+  it("excludes subject self-transfers from groups and lookup candidates", () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({ id: "1", fromAddress: SUBJECT, toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+
+    expect(groups).toEqual([]);
+    expect(selectDirectPrincipalLookupAddresses(groups, 1)).toEqual([]);
+  });
+
+  it("uses canonical address and direction tie breakers independent of edge input order", () => {
+    const edges = [
+      edge({ id: "1", fromAddress: "TBravo", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+      edge({ id: "2", fromAddress: SUBJECT, toAddress: "TSame", amountRaw: 10_000_000000n }),
+      edge({ id: "3", fromAddress: "TSame", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+      edge({ id: "4", fromAddress: "TAlpha", toAddress: SUBJECT, amountRaw: 10_000_000000n })
+    ];
+    const expected = [
+      ["TAlpha", "inbound"],
+      ["TBravo", "inbound"],
+      ["TSame", "inbound"],
+      ["TSame", "outbound"]
+    ];
+
+    for (const permutation of [edges, [...edges].reverse()]) {
+      const groups = groupDirectPrincipalCounterparties({
+        subjectAddress: SUBJECT,
+        directTransferCoverage: "complete",
+        edges: permutation
+      });
+      expect(groups.map((group) => [group.address, group.direction])).toEqual(expected);
+    }
+  });
+
+  it("uses an address tie breaker before liveLimit independent of group input order", () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [
+        edge({ id: "1", fromAddress: "TBravo", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+        edge({ id: "2", fromAddress: "TAlpha", toAddress: SUBJECT, amountRaw: 10_000_000000n })
+      ]
+    });
+
+    expect(selectDirectPrincipalLookupAddresses(groups, 1)).toEqual(["TAlpha"]);
+    expect(selectDirectPrincipalLookupAddresses([...groups].reverse(), 1)).toEqual(["TAlpha"]);
   });
 
   it("runs live checks with bounded concurrency and liveLimit", async () => {

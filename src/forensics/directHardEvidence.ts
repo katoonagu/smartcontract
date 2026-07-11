@@ -61,6 +61,11 @@ function compareBigintDesc(left: bigint, right: bigint): number {
   return left > right ? -1 : 1;
 }
 
+function compareText(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
 export function groupDirectPrincipalCounterparties(input: {
   subjectAddress: string;
   edges: ForensicRouteEdge[];
@@ -72,11 +77,13 @@ export function groupDirectPrincipalCounterparties(input: {
     inbound: 0n,
     outbound: 0n
   };
+  const seenEdgeIds = new Set<string>();
 
   for (const edge of input.edges) {
     if (isGasFreeServiceFeeEdge(edge)) continue;
     const from = normalizedAddress(edge.fromAddress);
     const to = normalizedAddress(edge.toAddress);
+    if (from === subject && to === subject) continue;
     const direction = to === subject
       ? "inbound" as const
       : from === subject
@@ -85,6 +92,11 @@ export function groupDirectPrincipalCounterparties(input: {
     if (!direction) continue;
     const amountRaw = principalAmountRaw(edge.amountRaw);
     if (amountRaw <= 0n) continue;
+    const edgeId = typeof edge.id === "string" && edge.id.trim().length > 0 ? edge.id : null;
+    if (edgeId !== null) {
+      if (seenEdgeIds.has(edgeId)) continue;
+      seenEdgeIds.add(edgeId);
+    }
     const address = (direction === "inbound" ? edge.fromAddress : edge.toAddress).trim();
     const key = `${direction}:${normalizedAddress(address)}`;
     const group = groups.get(key) ?? {
@@ -122,7 +134,11 @@ export function groupDirectPrincipalCounterparties(input: {
         )
       };
     })
-    .sort((left, right) => compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw));
+    .sort((left, right) =>
+      compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw) ||
+      compareText(left.address, right.address) ||
+      compareText(left.direction, right.direction)
+    );
 }
 
 export function selectDirectPrincipalLookupAddresses(
@@ -147,7 +163,10 @@ export function selectDirectPrincipalLookupAddresses(
   }
   return [...combinedByAddress.values()]
     .filter((item) => item.hasMaterial)
-    .sort((left, right) => compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw))
+    .sort((left, right) =>
+      compareBigintDesc(left.principalAmountRaw, right.principalAmountRaw) ||
+      compareText(left.address, right.address)
+    )
     .slice(0, Math.max(0, Math.trunc(liveLimit)))
     .map((item) => item.address);
 }
