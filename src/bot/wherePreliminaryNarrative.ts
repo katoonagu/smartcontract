@@ -32,6 +32,9 @@ export type WherePreliminaryNarrative = {
 };
 
 type WhereNarrativeDriver = {
+  kind: string;
+  evidenceClass: RiskLayerScore["evidenceClass"] | null;
+  sourceExposureKind: RiskLayerScore["sourceExposureKind"] | null;
   score: number;
   evidenceIds: string[];
   signalKeys: string[];
@@ -44,6 +47,9 @@ function stableKeys(...values: Array<string | undefined>): string[] {
 
 function layerDriver(layer: RiskLayerScore): WhereNarrativeDriver {
   return {
+    kind: layer.kind,
+    evidenceClass: layer.evidenceClass,
+    sourceExposureKind: layer.sourceExposureKind ?? null,
     score: layer.score,
     evidenceIds: [...layer.evidenceIds],
     signalKeys: stableKeys(
@@ -56,11 +62,21 @@ function layerDriver(layer: RiskLayerScore): WhereNarrativeDriver {
 }
 
 function hardDriver(item: WhereIsMoneyHardBadEvidence): WhereNarrativeDriver {
-  return { score: item.score, evidenceIds: [...item.evidenceIds], signalKeys: stableKeys(item.kind) };
+  return {
+    kind: item.kind,
+    evidenceClass: "hard_proof",
+    sourceExposureKind: null,
+    score: item.score,
+    evidenceIds: [...item.evidenceIds],
+    signalKeys: stableKeys(item.kind)
+  };
 }
 
 function sourceDriver(item: SourcePolicyEvidence): WhereNarrativeDriver {
   return {
+    kind: item.kind,
+    evidenceClass: "source_policy",
+    sourceExposureKind: item.kind,
     score: item.score,
     evidenceIds: [...item.evidenceIds],
     signalKeys: stableKeys(item.kind, "source_policy", `source_policy:${item.kind}`)
@@ -72,14 +88,17 @@ function driverKey(driver: WhereNarrativeDriver): string {
 }
 
 function driverFromReport(report: WhereIsMoneyReport): WhereNarrativeDriver | null {
-  if (report.assessment.dominantRiskLayer) return layerDriver(report.assessment.dominantRiskLayer);
+  if (!Number.isInteger(report.riskScore)) return null;
+  if (report.assessment.dominantRiskLayer?.score === report.riskScore) {
+    return layerDriver(report.assessment.dominantRiskLayer);
+  }
   const candidates = [
     ...report.assessment.hardBadEvidence.map(hardDriver),
     ...report.assessment.sourcePolicyEvidence.map(sourceDriver),
     ...report.assessment.contractSuspicionEvidence.map(layerDriver),
     ...report.assessment.unknownOriginEvidence.map(layerDriver)
   ];
-  return candidates.sort((left, right) =>
+  return candidates.filter((candidate) => candidate.score === report.riskScore).sort((left, right) =>
     right.score - left.score || driverKey(left).localeCompare(driverKey(right))
   )[0] ?? null;
 }
@@ -226,6 +245,7 @@ function whereFacts(report: WhereIsMoneyReport, verify20?: Verify20NarrativeEvid
     sourcePolicyEvidence: report.assessment.sourcePolicyEvidence
   });
   for (const profile of report.approvalDrainProvenanceProfiles) {
+    if (profile.subjectAddress !== report.subjectAddress) continue;
     const fact = approvalDrainRoleFact({ checkedAddress: report.subjectAddress, profile });
     if (fact) facts.push(fact);
   }
@@ -245,6 +265,33 @@ function overlaps(left: string[] | undefined, right: string[]): boolean {
   return left.some((value) => rightSet.has(value));
 }
 
+const compatibleHardFactKinds: Partial<Record<string, NarrativeFact["kind"][]>> = {
+  approval_drain: ["approval_drain"],
+  scam_or_blacklist: ["usdt_blacklist", "direct_counterparty_blacklist", "direct_counterparty_exact_label"],
+  sanctioned_service: ["sanctioned_source", "direct_counterparty_sanction"],
+  htx_huobi_source: ["direct_counterparty_sanction"],
+  bridge_router_dex_boundary: ["bridge_route"],
+  unknown_contract_boundary: ["unknown_contract"],
+  llm_contract_suspicion: ["contract_suspicion"]
+};
+
+function semanticallyCompatible(fact: NarrativeFact, driver: WhereNarrativeDriver): boolean {
+  if (overlaps(fact.scoreSignalKeys, driver.signalKeys)) return true;
+  if (driver.sourceExposureKind && (fact.scoreSignalKeys ?? []).some((key) =>
+    key === driver.sourceExposureKind || key === `source_policy:${driver.sourceExposureKind}`
+  )) return true;
+  if (fact.kind === driver.kind) return true;
+  if (driver.evidenceClass === "contract_suspicion" && fact.kind === "contract_suspicion") return true;
+  if (driver.evidenceClass === "unknown_origin" && fact.kind === "unknown_source") return true;
+  return compatibleHardFactKinds[driver.kind]?.includes(fact.kind) ?? false;
+}
+
+function matchesDriver(fact: NarrativeFact, driver: WhereNarrativeDriver): boolean {
+  if (!semanticallyCompatible(fact, driver)) return false;
+  const factIds = fact.evidenceIds ?? [];
+  return driver.evidenceIds.length === 0 || factIds.length === 0 || overlaps(factIds, driver.evidenceIds);
+}
+
 function preferredFactId(
   facts: NarrativeFact[],
   driver: WhereNarrativeDriver | null,
@@ -255,10 +302,8 @@ function preferredFactId(
     (fact.kind !== "cex_source" || fact.sourceIdentityKnown === true)
   );
   if (driver) {
-    const evidence = eligible.find((fact) => overlaps(fact.evidenceIds, driver.evidenceIds));
-    if (evidence) return evidence.id;
-    const signal = eligible.find((fact) => overlaps(fact.scoreSignalKeys, driver.signalKeys));
-    if (signal) return signal.id;
+    const matching = eligible.find((fact) => matchesDriver(fact, driver));
+    if (matching) return matching.id;
   }
   if (!driver && report.riskScore < 30) {
     const namedSource = eligible.find((fact) =>
@@ -326,7 +371,8 @@ export function buildWherePreliminaryNarrative(
   report: WhereIsMoneyReport,
   options: { locale: WalletNarrativeLocale; verify20?: Verify20NarrativeEvidence | null }
 ): WherePreliminaryNarrative {
-  const scoreValid = (report.scoreValid ?? report.assessment.scoreValid) === true;
+  const validity = [report.scoreValid, report.assessment.scoreValid];
+  const scoreValid = !validity.includes(false) && validity.includes(true);
   const facts = whereFacts(report, options.verify20);
   const driver = driverFromReport(report);
   const preferred = preferredFactId(facts, driver, report);

@@ -25,6 +25,51 @@ const forbiddenPreliminaryActions = {
   en: /\b(?:should|must|pause|revoke|proceed)\b|manual review|review\b[^.]{0,80}\bmanually/i
 } as const;
 
+function collidingFactReport(target: "approval" | "bridge" | "sanction" | "contract") {
+  const sharedEvidenceId = "drain-tx";
+  const approval = approvalWhereReportFixture("victim");
+  const bridge = sourceWhereReportFixture({
+    kind: "cross_chain_boundary", score: 78, share: 0.4, label: "UsdtOFT"
+  });
+  const sanction = sourceWhereReportFixture({
+    kind: "sanctioned_service", score: 90, share: 0.3, label: "Sanctioned X"
+  });
+  for (const source of [bridge, sanction]) {
+    const path = source.originPaths[0]!;
+    path.balanceTransferTxHash = sharedEvidenceId;
+    path.txHashes = [sharedEvidenceId];
+    path.steps = path.steps.map((step) => ({ ...step, txHash: sharedEvidenceId }));
+    source.assessment.sourcePolicyEvidence[0]!.evidenceIds = [sharedEvidenceId];
+  }
+  const drivers = {
+    approval: whereRiskLayerFixture("approval_drain", 95, "hard_proof", [sharedEvidenceId]),
+    bridge: whereRiskLayerFixture(
+      "cross_chain_boundary", 78, "source_policy", [sharedEvidenceId], "cross_chain_boundary"
+    ),
+    sanction: whereRiskLayerFixture(
+      "sanctioned_service", 90, "source_policy", [sharedEvidenceId], "sanctioned_service"
+    ),
+    contract: whereRiskLayerFixture("drainer_like", 72, "contract_suspicion", [sharedEvidenceId])
+  } as const;
+  const driver = drivers[target];
+  const contract = whereRiskLayerFixture("drainer_like", 72, "contract_suspicion", [sharedEvidenceId]);
+  return whereReportFixture({
+    riskScore: driver.score,
+    originPaths: [...bridge.originPaths, ...sanction.originPaths],
+    approvalDrainProvenanceProfiles: approval.approvalDrainProvenanceProfiles,
+    assessment: whereAssessmentFixture({
+      riskScore: driver.score,
+      sourcePolicyEvidence: [
+        ...bridge.assessment.sourcePolicyEvidence,
+        ...sanction.assessment.sourcePolicyEvidence
+      ],
+      contractSuspicionEvidence: [contract],
+      riskLayers: [driver],
+      dominantRiskLayer: driver
+    })
+  });
+}
+
 describe("buildWherePreliminaryNarrative", () => {
   it("binds 78 to the dominant 83% bridge fact", () => {
     const result = buildWherePreliminaryNarrative(
@@ -49,6 +94,25 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.sections.findings).toEqual([]);
     expect(result.sections.conclusion).toBeNull();
     expect(result.sections.coverage).toBeTruthy();
+  });
+
+  it.each(
+    ([true, false, undefined] as const).flatMap((top) =>
+      ([true, false, undefined] as const).map((assessment) => ({
+        top,
+        assessment,
+        expected: top !== false && assessment !== false && (top === true || assessment === true)
+      }))
+    )
+  )("applies strict validity mirrors top=$top assessment=$assessment", ({ top, assessment, expected }) => {
+    const report = bridgeWhereReportFixture();
+    if (top === undefined) delete report.scoreValid;
+    else report.scoreValid = top;
+    if (assessment === undefined) delete report.assessment.scoreValid;
+    else report.assessment.scoreValid = assessment;
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+    expect(result.score).toBe(expected ? 78 : null);
+    expect(result.diagnosticCode).toBeNull();
   });
 
   it("fails closed when no typed fact explains a valid score", () => {
@@ -223,6 +287,15 @@ describe("buildWherePreliminaryNarrative", () => {
     });
     expect(result.score).toBeNull();
     expect(text(result)).not.toMatch(forbiddenPreliminaryActions.ru);
+  });
+
+  it.each(["victim", "first_receiver"] as const)("ignores subject-mismatched approval profile for %s", (role) => {
+    const report = approvalWhereReportFixture(role);
+    report.approvalDrainProvenanceProfiles[0]!.subjectAddress = WHERE_SOURCE;
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+    expect(result.sections.findings).toEqual([]);
   });
 
   it.each([
@@ -400,6 +473,17 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.preferredFactId).toMatch(/cross-chain/);
   });
 
+  it.each([
+    ["approval", /^approval-drain:/],
+    ["bridge", /^cross-chain:/],
+    ["sanction", /^sanctioned-source:/],
+    ["contract", /^where-contract:/]
+  ] as const)("uses semantic compatibility for colliding %s evidence", (target, expectedId) => {
+    const result = buildWherePreliminaryNarrative(collidingFactReport(target), { locale: "en" });
+    expect(result.score).not.toBeNull();
+    expect(result.preferredFactId).toMatch(expectedId);
+  });
+
   it("fails closed instead of using an unrelated exact Fast fallback", () => {
     const report = bridgeWhereReportFixture({ score: 78 });
     report.originPaths = [];
@@ -438,15 +522,52 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.preferredFactId).toMatch(/^cex:/);
   });
 
-  it("selects the highest typed fallback driver stably when dominantRiskLayer is absent", () => {
+  it("uses a report-score-matched fallback instead of a higher mismatched candidate", () => {
     const bridge = sourceWhereReportFixture({ kind: "cross_chain_boundary", score: 68, label: "Bridge A" });
     const contract = whereRiskLayerFixture("unknown_suspicious", 72, "contract_suspicion", ["contract-high"]);
     bridge.assessment.dominantRiskLayer = null;
     bridge.assessment.contractSuspicionEvidence = [contract];
     const result = buildWherePreliminaryNarrative(bridge, { locale: "en" });
     expect(result.score).toBe(68);
-    expect(result.sections.findings[0]).toMatch(/suspicious contract/i);
-    expect(result.preferredFactId).toMatch(/where-contract/);
+    expect(result.sections.findings[0]).toMatch(/Bridge A/i);
+    expect(result.preferredFactId).toMatch(/cross-chain/);
+  });
+
+  it("fails closed when no typed driver matches the published score", () => {
+    const report = sourceWhereReportFixture({ kind: "cross_chain_boundary", score: 68, label: "Bridge A" });
+    const contract = whereRiskLayerFixture("unknown_suspicious", 72, "contract_suspicion", ["contract-high"]);
+    report.assessment.sourcePolicyEvidence = [];
+    report.assessment.dominantRiskLayer = contract;
+    report.assessment.contractSuspicionEvidence = [contract];
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+  });
+
+  it.each([
+    ["ru", 1, "Проверен 1 входящий перевод"],
+    ["ru", 2, "Проверены 2 входящих перевода"],
+    ["en", 1, "Checked 1 inbound transfer"],
+    ["en", 2, "Checked 2 inbound transfers"]
+  ] as const)("uses correct %s coverage grammar for %s", (locale, count, expected) => {
+    const report = sourceWhereReportFixture({ kind: "allowlisted_cex", score: 18, label: "Binance" });
+    report.coverage.selectedInboundTxCount = count;
+    const result = buildWherePreliminaryNarrative(report, { locale });
+    expect(result.sections.coverage).toContain(expected);
+    if (locale === "en" && count === 1) {
+      expect(result.sections.coverage).not.toContain("Checked 1 inbound transfers");
+    }
+  });
+
+  it("keeps repeated bridge fixture shares, amounts, and coverage aligned", () => {
+    const report = bridgeWhereReportFixture({ share: 0.83, transferCount: 3 });
+    expect(report.originPaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0)).toBeCloseTo(0.83);
+    expect(report.originPaths.reduce((sum, path) => sum + (path.effectiveExposureShare ?? 0), 0)).toBeCloseTo(0.83);
+    expect(report.originPaths.reduce(
+      (sum, path) => sum + BigInt(path.steps[0]!.amountRaw), 0n
+    )).toBe(83_000_000_000n);
+    expect(report.assessment.sourcePolicyEvidence[0]!.pathCount).toBe(3);
+    expect(report.coverage.selectedInboundTxCount).toBe(3);
   });
 
   it.each([

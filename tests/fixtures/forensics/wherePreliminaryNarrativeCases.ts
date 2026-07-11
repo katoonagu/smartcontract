@@ -164,17 +164,25 @@ export function sourceWhereReportFixture(input: {
   const score = input.score ?? 70;
   const share = input.share ?? 0.5;
   const transferCount = input.transferCount ?? 1;
+  if (!Number.isInteger(transferCount) || transferCount < 1) {
+    throw new RangeError("transferCount must be a positive integer");
+  }
   const evidenceIds = ["policy-evidence", ...Array.from({ length: transferCount }, (_, i) => `tx-${i + 1}`)];
   const policy = sourcePolicy(input.kind, score, share, evidenceIds);
+  policy.pathCount = transferCount;
+  const pathShare = share / transferCount;
+  const affectedAmountRaw = BigInt(Math.round(100_000_000_000 * share));
+  const amountPerPath = affectedAmountRaw / BigInt(transferCount);
+  const amountRemainder = Number(affectedAmountRaw % BigInt(transferCount));
   const paths: MoneyOriginPath[] = Array.from({ length: transferCount }, (_, i) => ({
     balanceTransferTxHash: `tx-${i + 1}`,
     rootSourceAddress: WHERE_SOURCE,
     rootSourceType: input.kind === "allowlisted_cex" ? "allowlist_cex" : "decline_boundary",
-    balanceShare: share / transferCount,
+    balanceShare: pathShare,
     exposureSourceKey: input.kind === "htx_huobi" ? "htx_huobi" : input.kind,
     exposureSourceLabel: input.label ?? null,
     sourceExposureKind: input.kind,
-    effectiveExposureShare: share,
+    effectiveExposureShare: pathShare,
     linkStrength: 1,
     pathAddresses: [WHERE_SOURCE, WHERE_SUBJECT],
     txHashes: [`tx-${i + 1}`],
@@ -182,7 +190,7 @@ export function sourceWhereReportFixture(input: {
       txHash: `tx-${i + 1}`,
       fromAddress: WHERE_SOURCE,
       toAddress: WHERE_SUBJECT,
-      amountRaw: String(Math.round(100_000_000_000 * share / transferCount)),
+      amountRaw: String(amountPerPath + (i < amountRemainder ? 1n : 0n)),
       timestamp: input.timestamp ?? "2026-06-01T00:00:00.000Z"
     }],
     amountPreservationRatio: 1,
@@ -199,7 +207,9 @@ export function sourceWhereReportFixture(input: {
     riskLayers: [dominant],
     dominantRiskLayer: dominant
   });
-  return whereReportFixture({ riskScore: score, originPaths: paths, assessment });
+  const report = whereReportFixture({ riskScore: score, originPaths: paths, assessment });
+  report.coverage.selectedInboundTxCount = transferCount;
+  return report;
 }
 
 export function bridgeWhereReportFixture(input: {

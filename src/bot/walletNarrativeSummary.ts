@@ -348,6 +348,20 @@ function englishDirectTransferCount(count: number): string {
   return `${count} ${count === 1 ? "transfer" : "transfers"}`;
 }
 
+function russianCheckedInboundTransferCount(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `Проверен ${count} входящий перевод`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `Проверены ${count} входящих перевода`;
+  }
+  return `Проверено ${count} входящих переводов`;
+}
+
+function englishCheckedInboundTransferCount(count: number): string {
+  return `Checked ${count} inbound ${count === 1 ? "transfer" : "transfers"}`;
+}
+
 function durationParts(milliseconds: number): { ru: string; en: string } | null {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
   const totalMinutes = Math.floor(milliseconds / 60_000);
@@ -1635,8 +1649,8 @@ function whereCoverageText(
   }
   const percent = checkedPercent(ratio * 100);
   const base = {
-    ru: `Проверено ${coverage.selectedInboundTxCount} входящих переводов; прослежено ${percent.replace(".", ",")}% суммы.`,
-    en: `Checked ${coverage.selectedInboundTxCount} inbound transfers; traced ${percent}% of the amount.`
+    ru: `${russianCheckedInboundTransferCount(coverage.selectedInboundTxCount)}; прослежено ${percent.replace(".", ",")}% суммы.`,
+    en: `${englishCheckedInboundTransferCount(coverage.selectedInboundTxCount)}; traced ${percent}% of the amount.`
   };
   if (!coverage.partial || ratio >= 1 || !reason) return base;
   const remaining = checkedPercent((1 - ratio) * 100);
