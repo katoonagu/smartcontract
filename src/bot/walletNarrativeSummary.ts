@@ -1,11 +1,18 @@
 import type {
+  AddressBehaviorProfile,
   ApprovalDrainProvenanceProfile,
+  BoundaryExposureProfile,
   DirectCounterpartyInteractionProfile,
   FirstHopBlacklistCoverage,
   FirstHopBlacklistFact,
   FirstHopLabelFact,
+  MoneyOriginPath,
+  MoneyOriginTraceHistoryCoverage,
+  OperationalFlowProfile,
   RiskLabel,
+  SourcePolicyEvidence,
   StablecoinRestrictionProfile,
+  WhereIsMoneyCoverage,
   WalletRole
 } from "../types";
 import type { Verify20FingerprintResult } from "../forensics/verify20Fingerprint";
@@ -164,48 +171,6 @@ export type Verify20NarrativeEvidence = {
   debitObserved: boolean;
 };
 
-export type NarrativeSourceRouteEvidence = {
-  kind:
-    | "sanctioned_service"
-    | "bridge"
-    | "cex"
-    | "service_boundary"
-    | "unknown_contract"
-    | "collector"
-    | "risky_counterparty";
-  identity: string | null;
-  direction: "inbound" | "outbound";
-  amountRaw: string;
-  share: number | null;
-  txCount: number;
-  repeated?: boolean;
-  uniqueCounterpartyCount?: number;
-  linkedToSelectedProvenance?: boolean;
-  occurredAt?: string | null;
-  sanctionsAuthority?: "UK" | "unknown";
-  designationDate?: "2026-05-26" | null;
-  untracedReason?:
-    | "history_before_contract_unavailable"
-    | "pooled_service_history"
-    | "provider_failed"
-    | "history_partial"
-    | null;
-};
-
-export type NarrativeTraceCoverage = {
-  status: "exact" | "partial" | "unavailable";
-  direction: "inbound" | "outbound";
-  checkedTransferCount: number | null;
-  tracedAmountPercent: number | null;
-  untracedReason:
-    | "older_history_unavailable"
-    | "provider_failed"
-    | "budget_exhausted"
-    | "history_partial"
-    | "running"
-    | null;
-};
-
 export type ApprovalDrainNarrativeEvidence = {
   checkedAddress: string;
   profile: ApprovalDrainProvenanceProfile;
@@ -220,8 +185,13 @@ export type WalletNarrativeEvidenceInput = {
   directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrain?: ApprovalDrainNarrativeEvidence | null;
   verify20?: Verify20NarrativeEvidence | null;
-  routes?: NarrativeSourceRouteEvidence[];
-  traceCoverage?: NarrativeTraceCoverage | null;
+  paths?: MoneyOriginPath[];
+  sourcePolicyEvidence?: SourcePolicyEvidence[];
+  whereCoverage?: WhereIsMoneyCoverage | null;
+  traceHistoryCoverage?: MoneyOriginTraceHistoryCoverage[];
+  addressBehaviorProfiles?: AddressBehaviorProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
 };
 
 export type WalletNarrativeEvidence = {
@@ -286,31 +256,30 @@ function shortAddress(address: string): string {
   return value.length > 12 ? `${value.slice(0, 4)}…${value.slice(-4)}` : value;
 }
 
-function russianTransferCount(count: number): string {
-  if (count === 1) return "одном переводе";
-  if (count === 2) return "двух переводах";
-  if (count === 4) return "четырёх переводах";
-  if (count === 10) return "10 переводах";
-  return `${count} переводах`;
+function russianDirectTransferCount(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun = mod10 === 1 && mod100 !== 11
+    ? "перевод"
+    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+      ? "перевода"
+      : "переводов";
+  return `${count} ${noun}`;
 }
 
-function englishTransferCount(count: number): string {
-  if (count === 1) return "one transfer";
-  if (count === 2) return "two transfers";
-  if (count === 4) return "four transfers";
-  return `${count} transfers`;
+function englishDirectTransferCount(count: number): string {
+  return `${count} ${count === 1 ? "transfer" : "transfers"}`;
 }
 
 function durationParts(milliseconds: number): { ru: string; en: string } | null {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
-  let seconds = Math.floor(milliseconds / 1000);
-  const hours = Math.floor(seconds / 3600);
-  seconds -= hours * 3600;
-  const minutes = Math.floor(seconds / 60);
-  seconds -= minutes * 60;
+  const totalMinutes = Math.floor(milliseconds / 60_000);
+  if (totalMinutes < 1) return { ru: "менее 1 мин", en: "less than 1 m" };
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
   return {
-    ru: `${hours} ч ${minutes} мин ${seconds} с`,
-    en: `${hours} h ${minutes} m ${seconds} s`
+    ru: hours > 0 ? `${hours} ч ${minutes} мин` : `${minutes} мин`,
+    en: hours > 0 ? `${hours} h ${minutes} m` : `${minutes} m`
   };
 }
 
@@ -509,12 +478,12 @@ export function firstHopBlacklistFacts(
       const address = shortAddress(fact.counterpartyAddress);
       const direction = fact.direction === "inbound"
         ? {
-            ru: `Входящий: адрес получил ${amountRu} USDT от контрагента ${address} в чёрном списке USDT.`,
-            en: `Inbound: the address received ${amountEn} USDT from blacklisted counterparty ${address}.`
+            ru: `Входящий: адрес получил ${amountRu} USDT от контрагента ${address} в чёрном списке USDT (${russianDirectTransferCount(fact.principalTxCount)}).`,
+            en: `Inbound: the address received ${amountEn} USDT from blacklisted counterparty ${address} (${englishDirectTransferCount(fact.principalTxCount)}).`
           }
         : {
-            ru: `Исходящий: адрес отправил ${amountRu} USDT контрагенту ${address} в чёрном списке USDT.`,
-            en: `Outbound: the address sent ${amountEn} USDT to blacklisted counterparty ${address}.`
+            ru: `Исходящий: адрес отправил ${amountRu} USDT контрагенту ${address} в чёрном списке USDT (${russianDirectTransferCount(fact.principalTxCount)}).`,
+            en: `Outbound: the address sent ${amountEn} USDT to blacklisted counterparty ${address} (${englishDirectTransferCount(fact.principalTxCount)}).`
           };
       const share = fact.shareSemantics === "exact" && fact.directionalPrincipalShare !== null
         ? {
@@ -561,180 +530,330 @@ const labelCopy: Record<RiskLabel, { ru: string; en: string }> = {
   approval_drain_proximity: { ru: "связь с дрейнер-цепочкой", en: "approval-drain route proximity" }
 };
 
-function firstHopLabelNarrative(fact: FirstHopLabelFact): NarrativeFact {
+function firstHopLabelNarrative(fact: FirstHopLabelFact): NarrativeFact | null {
+  if (fact.labelCode === "false_positive") return null;
   const amountRu = formatUsdtRaw(fact.principalAmountRaw, "ru");
   const amountEn = formatUsdtRaw(fact.principalAmountRaw, "en");
   const label = labelCopy[fact.labelCode];
   const directionRu = fact.direction === "inbound" ? "получил" : "отправил";
   const directionEn = fact.direction === "inbound" ? "received" : "sent";
-  const authorityRu = fact.evidenceAuthority === "exact_internal"
-    ? `Контрагент имеет точную внутреннюю метку «${label.ru}».`
-    : `У контрагента есть контекстная метка «${label.ru}»; она сама по себе не доказывает роль адреса.`;
-  const authorityEn = fact.evidenceAuthority === "exact_internal"
-    ? `The counterparty has the exact internal label “${label.en}”.`
-    : `The counterparty has the contextual label “${label.en}”; it does not prove the address role by itself.`;
+  const exactAdverse = new Set<RiskLabel>([
+    "scam",
+    "reported_scam",
+    "stolen_funds",
+    "phishing",
+    "mixer_like",
+    "risky_contract",
+    "darknet_exchange"
+  ]).has(fact.labelCode) && fact.evidenceAuthority === "exact_internal";
+  let kind: NarrativeFactKind = exactAdverse
+    ? "direct_counterparty_exact_label"
+    : "risky_counterparty";
+  let role: NarrativeAddressRole | null = null;
+  let meaningRu: string;
+  let meaningEn: string;
+
+  if (fact.labelCode === "bridge") {
+    kind = "bridge_route";
+    meaningRu = "Контрагент отмечен как мост; это контекст маршрута между сетями.";
+    meaningEn = "The counterparty is labeled as a bridge; this is cross-chain route context.";
+  } else if (["exchange", "whitebit", "trusted"].includes(fact.labelCode)) {
+    kind = "cex_source";
+    meaningRu = `Контрагент отмечен как «${label.ru}»; это сервисный контекст, а не плохая метка.`;
+    meaningEn = `The counterparty is labeled “${label.en}”; this is service context, not an adverse label.`;
+  } else if (fact.labelCode === "collector" || fact.labelCode === "mule") {
+    kind = "collector";
+    role = "collector";
+    meaningRu = `Контрагент отмечен как «${label.ru}»; это контекст транзитной роли.`;
+    meaningEn = `The counterparty is labeled “${label.en}”; this is transit-role context.`;
+  } else if (fact.labelCode === "victim") {
+    role = "victim";
+    meaningRu = "Контрагент отмечен как жертва; это контекст пострадавшей стороны.";
+    meaningEn = "The counterparty is labeled as a victim; this is affected-party context.";
+  } else if (fact.labelCode === "needs_review") {
+    meaningRu = "Контрагенту нужна ручная проверка; метка не подтверждает конкретное нарушение.";
+    meaningEn = "The counterparty needs manual review; the label does not confirm a specific violation.";
+  } else if (!exactAdverse) {
+    meaningRu = `У контрагента есть контекстная метка «${label.ru}»; она сама по себе не доказывает роль адреса.`;
+    meaningEn = `The counterparty has the contextual label “${label.en}”; it does not prove the address role by itself.`;
+  } else {
+    meaningRu = `Контрагент имеет точную неблагоприятную метку «${label.ru}».`;
+    meaningEn = `The counterparty has the exact adverse label “${label.en}”.`;
+  }
   return narrativeFact(
-    `first-hop-label:${fact.direction}:${fact.counterpartyAddress}:${fact.labelCode}`,
-    fact.evidenceAuthority === "exact_internal"
-      ? "direct_counterparty_exact_label"
-      : "risky_counterparty",
-    `Адрес ${directionRu} ${amountRu} USDT по прямой связи. ${authorityRu}`,
-    `The address ${directionEn} ${amountEn} USDT through a direct link. ${authorityEn}`,
-    null,
-    fact.evidenceAuthority === "exact_internal" ? "exact" : "context"
+    `first-hop-label:${fact.direction}:${fact.counterpartyAddress}:${fact.labelCode}:${fact.transferTxHashes.slice().sort().join(",")}`,
+    kind,
+    `Адрес ${directionRu} ${amountRu} USDT по прямой связи. ${meaningRu}`,
+    `The address ${directionEn} ${amountEn} USDT through a direct link. ${meaningEn}`,
+    role,
+    exactAdverse ? "exact" : "context"
   );
 }
 
-const HTX_DESIGNATION_START_MS = Date.parse("2026-05-26T00:00:00.000Z");
-
-function routeIdentity(route: NarrativeSourceRouteEvidence): string {
-  return route.identity?.trim() || "";
+function pathEvidenceIds(path: MoneyOriginPath): Set<string> {
+  return new Set([
+    path.balanceTransferTxHash,
+    ...path.txHashes,
+    ...path.steps.map((step) => step.txHash)
+  ]);
 }
 
-function routeFact(route: NarrativeSourceRouteEvidence): NarrativeFact {
-  const identity = routeIdentity(route);
-  const shareRu = route.share === null ? null : formatPercent(route.share, "ru");
-  const shareEn = route.share === null ? null : formatPercent(route.share, "en");
-  const amountRu = formatUsdtRaw(route.amountRaw, "ru");
-  const amountEn = formatUsdtRaw(route.amountRaw, "en");
-  const id = [
-    "source-route",
-    route.kind,
-    route.direction,
-    identity,
-    route.amountRaw,
-    route.share ?? "unavailable",
-    route.txCount,
-    route.occurredAt ?? "unknown"
-  ].join(":");
+function policyMatchesPath(evidence: SourcePolicyEvidence, path: MoneyOriginPath): boolean {
+  const ids = pathEvidenceIds(path);
+  return evidence.evidenceIds.some((id) => ids.has(id));
+}
 
-  if (route.kind === "sanctioned_service") {
-    const occurredMs = route.occurredAt ? Date.parse(route.occurredAt) : Number.NaN;
-    const normalizedIdentity = identity.toLowerCase().replace(/[^a-z]/g, "");
-    const isHtxHuobi = normalizedIdentity === "htx" ||
-      normalizedIdentity === "huobi" ||
-      normalizedIdentity === "htxhuobi";
-    const policyApplies = route.direction === "inbound" &&
-      route.linkedToSelectedProvenance === true &&
-      route.sanctionsAuthority === "UK" &&
-      route.designationDate === "2026-05-26" &&
-      isHtxHuobi &&
-      Number.isFinite(occurredMs) && occurredMs >= HTX_DESIGNATION_START_MS;
-    const name = identity || "сервис без установленного названия";
-    const amount = shareRu === null
-      ? { ru: `${amountRu} USDT`, en: `${amountEn} USDT` }
-      : { ru: `${shareRu}% проверяемой суммы`, en: `${shareEn}% of the checked amount` };
-    return narrativeFact(
-      id,
-      policyApplies ? "sanctioned_source" : "direct_counterparty_sanction",
-      policyApplies
-        ? `${amount.ru} пришло с ${name}. Великобритания ввела санкции 26 мая 2026 года: это санкционный источник. Операцию не проводить.`
-        : `${amount.ru} связано с ${name}. Эта историческая или исходящая связь требует ручной проверки, но не применяет политику санкционного входящего источника.`,
-      policyApplies
-        ? `${amount.en} came from ${name}. The UK designated it on 26 May 2026, so this is a sanctioned source. Do not proceed.`
-        : `${amount.en} is linked to ${name}. This historical or outbound link needs manual review but does not apply the sanctioned inbound-source policy.`,
+function pathAmountRaw(path: MoneyOriginPath): string {
+  return path.amountUsage?.usedAmountRaw ?? path.steps.at(-1)?.amountRaw ?? "0";
+}
+
+function sumRaw(values: string[]): string {
+  return values.reduce((sum, value) => sum + rawAmount(value), 0n).toString();
+}
+
+function sourceShareText(
+  share: number | null,
+  amountRaw: string,
+  locale: WalletNarrativeLocale
+): string {
+  return share === null
+    ? `${formatUsdtRaw(amountRaw, locale)} USDT`
+    : `${formatPercent(share, locale)}%`;
+}
+
+function htxFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
+  const htxPaths = paths.filter((path) => path.sourceExposureKind === "htx_huobi");
+  return evidence.filter((item) => item.kind === "htx_huobi").flatMap((item) => {
+    const matching = htxPaths.filter((path) => policyMatchesPath(item, path));
+    const linkedDecline = item.proofLevel === "exchange_policy_decline" &&
+      item.shareDetail !== undefined &&
+      matching.length > 0;
+    const path = matching[0] ?? htxPaths[0];
+    if (!path) return [];
+    const name = path.exposureSourceLabel?.trim() || "HTX/Huobi";
+    const share = item.shareDetail?.rawShare ?? item.aggregateShare;
+    const amountRaw = item.shareDetail?.affectedAmountRaw ?? sumRaw(matching.map(pathAmountRaw));
+    const ids = item.evidenceIds.slice().sort().join(",");
+    const amountRu = sourceShareText(share, amountRaw, "ru");
+    const amountEn = sourceShareText(share, amountRaw, "en");
+    return [narrativeFact(
+      `htx:${ids}`,
+      linkedDecline ? "sanctioned_source" : "direct_counterparty_sanction",
+      linkedDecline
+        ? `${amountRu} проверяемой суммы пришло с ${name}. Для выбранной суммы это санкционный источник. Операцию не проводить.`
+        : matching.length > 0
+          ? `Входящий: ${amountRu} проверяемой суммы пришло с ${name}. Это исторический контекст; запрет для выбранной суммы не подтверждён.`
+          : `Входящая связь с ${name} не входит в выбранный источник суммы. Нужна ручная проверка.`,
+      linkedDecline
+        ? `${amountEn} of the checked amount came from ${name}. This is a sanctioned source for the selected amount. Do not proceed.`
+        : matching.length > 0
+          ? `Inbound: ${amountEn} of the checked amount came from ${name}. This is historical context; a prohibition for the selected amount is not confirmed.`
+          : `The inbound link to ${name} is not part of the selected source amount. Manual review is required.`,
       null,
-      policyApplies ? "exact" : "context"
-    );
-  }
+      linkedDecline ? "exact" : "context"
+    )];
+  });
+}
 
-  if (route.kind === "bridge") {
-    const nameRu = identity ? ` ${identity}` : "";
-    const nameEn = identity ? ` ${identity}` : "";
-    const amount = shareRu === null
-      ? { ru: `${amountRu} USDT`, en: `${amountEn} USDT` }
-      : { ru: `${shareRu}% проверяемой суммы`, en: `${shareEn}% of the checked amount` };
-    if (route.repeated || route.txCount > 1) {
-      return narrativeFact(
-        id,
-        "bridge_route",
-        `${amount.ru} пришло через мост${nameRu} в ${russianTransferCount(route.txCount)}. Маршрут усложняет отслеживание и нетипичен для обычного депозита.`,
-        `${amount.en} arrived through the${nameEn} bridge in ${englishTransferCount(route.txCount)}. This route is harder to trace and unusual for an ordinary deposit.`,
-        null,
-        "strong"
-      );
-    }
-    return narrativeFact(
-      id,
-      "bridge_route",
-      `${amount.ru} пришло через мост${nameRu}. История до моста находится в другой сети и не видна в TRON. Мосты служат для обычного обмена, но также скрывают происхождение, поэтому повышают AML-риск.`,
-      `${amount.en} arrived through the${nameEn} bridge. History before it is on another chain and not visible on TRON. Bridges serve ordinary swaps and can hide origin, increasing AML risk.`,
+function outboundHtxFacts(profiles: OperationalFlowProfile[]): NarrativeFact[] {
+  return profiles.flatMap((profile) => profile.topOutgoingCounterparties
+    .filter((row) => row.isHtxHuobi)
+    .map((row) => narrativeFact(
+      `htx-outbound:${row.address}`,
+      "direct_counterparty_sanction",
+      `Исходящий: адрес отправил ${formatUsdtRaw(row.volumeRaw, "ru")} USDT на ${row.identity ?? shortAddress(row.address)} (${russianDirectTransferCount(row.txCount)}). Это прямая историческая связь.`,
+      `Outbound: the address sent ${formatUsdtRaw(row.volumeRaw, "en")} USDT to ${row.identity ?? shortAddress(row.address)} (${englishDirectTransferCount(row.txCount)}). This is a direct historical link.`,
       null,
-      "strong"
-    );
-  }
+      "context"
+    )));
+}
 
-  if (route.kind === "cex") {
-    const sourceRu = identity ? identity : "биржевого сервиса без установленного названия";
-    const sourceEn = identity ? identity : "an exchange service whose identity was not resolved";
+function bridgeFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
+  const bridgePaths = paths.filter((path) =>
+    path.sourceExposureKind === "bridge_router_dex" || path.sourceExposureKind === "cross_chain_boundary"
+  );
+  if (bridgePaths.length === 0) return [];
+  const policy = evidence.find((item) =>
+    (item.kind === "bridge_router_dex" || item.kind === "cross_chain_boundary") &&
+    bridgePaths.some((path) => policyMatchesPath(item, path))
+  );
+  const share = policy?.shareDetail?.rawShare ?? policy?.aggregateShare ??
+    bridgePaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
+  const amountRaw = policy?.shareDetail?.affectedAmountRaw ?? sumRaw(bridgePaths.map(pathAmountRaw));
+  const name = bridgePaths.find((path) => path.exposureSourceLabel?.trim())?.exposureSourceLabel ?? "неустановленный мост";
+  const txHashes = [...new Set(bridgePaths.map((path) => path.balanceTransferTxHash))].sort();
+  const count = txHashes.length;
+  const amountRu = sourceShareText(share, amountRaw, "ru");
+  const amountEn = sourceShareText(share, amountRaw, "en");
+  const repeatedRu = count > 1 ? ` в ${count} переводах` : "";
+  const repeatedEn = count > 1 ? ` in ${count} transfers` : "";
+  return [narrativeFact(
+    `bridge:${txHashes.join(",")}`,
+    "bridge_route",
+    `${amountRu} проверяемой суммы пришло через мост ${name}${repeatedRu}. История до моста находится в другой сети и не видна в TRON. Мосты используют для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
+    `${amountEn} of the checked amount came through the ${name} bridge${repeatedEn}. History before it is on another chain and not visible on TRON. Bridges serve ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
+    null,
+    count > 1 ? "strong" : "context"
+  )];
+}
+
+function cexFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
+  const groups = new Map<string, MoneyOriginPath[]>();
+  for (const path of paths) {
+    if (path.sourceExposureKind !== "allowlisted_cex" && path.rootSourceType !== "allowlist_cex") continue;
+    const name = path.exposureSourceLabel?.trim() || "биржевой сервис без установленного названия";
+    groups.set(name, [...(groups.get(name) ?? []), path]);
+  }
+  return [...groups.entries()].map(([name, group]) => {
+    const share = group.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
+    const txHashes = [...new Set(group.map((path) => path.balanceTransferTxHash))].sort();
     return narrativeFact(
-      id,
+      `cex:${name}:${txHashes.join(",")}`,
       "cex_source",
-      `${shareRu !== null ? shareRu + "%" : amountRu + " USDT"} проверяемой суммы пришло с ${sourceRu} в ${russianTransferCount(route.txCount)}. Это похоже на вывод средств с биржи.`,
-      `${shareEn !== null ? shareEn + "%" : amountEn + " USDT"} of the checked amount came from ${sourceEn} in ${englishTransferCount(route.txCount)}. This looks like an exchange withdrawal.`,
+      `${formatPercent(share, "ru")}% проверяемой суммы пришло с ${name}. Это похоже на вывод средств с биржи.`,
+      `${formatPercent(share, "en")}% of the checked amount came from ${name}. This looks like an exchange withdrawal.`,
       null,
       "context"
     );
-  }
+  });
+}
 
-  if (route.kind === "unknown_contract") {
+function traceStopText(path: MoneyOriginPath): { ru: string; en: string } | null {
+  const coverage = path.historyCoverage ?? [];
+  if (path.stoppedReason !== "incoming_history_not_fetched" && coverage.length === 0) return null;
+  if (coverage.some((item) => item.budgetExhausted || item.statusReason === "partial_budget_exhausted")) {
+    return { ru: "Дальше не проследили: проверка остановилась на техническом лимите.", en: "The trace stopped there because the check reached a technical limit." };
+  }
+  if (coverage.some((item) => item.providerInconsistent || item.statusReason === "partial_provider_inconsistent")) {
+    return { ru: "Дальше не проследили: источник данных вернул противоречивую историю.", en: "The trace stopped there because the provider returned inconsistent history." };
+  }
+  if (coverage.some((item) => item.providerCapHit || item.statusReason === "partial_provider_cap")) {
+    return { ru: "Дальше не проследили: более старые переводы не получены от источника данных.", en: "The trace stopped there because the provider did not return older transfers." };
+  }
+  if (coverage.some((item) => item.statusReason === "failed_retryable" || item.statusReason === "failed_terminal")) {
+    return { ru: "Дальше не проследили: запрос истории завершился ошибкой источника данных.", en: "The trace stopped there because the provider history request failed." };
+  }
+  return path.stoppedReason === "incoming_history_not_fetched"
+    ? { ru: "Дальше не проследили: более старая история переводов недоступна.", en: "The trace stopped there because older transfer history is unavailable." }
+    : null;
+}
+
+function unknownContractFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
+  return paths.filter((path) => path.sourceExposureKind === "unknown_contract").map((path) => {
+    const stop = traceStopText(path);
+    const nameRu = path.exposureSourceLabel?.trim() || "контракт без названия";
+    const nameEn = path.exposureSourceLabel?.trim() || "an unnamed contract";
     return narrativeFact(
-      id,
+      `unknown-contract:${path.txHashes.slice().sort().join(",")}`,
       "unknown_contract",
-      "Часть денег пришла через контракт без названия. Источник до контракта не установлен: доступная трассировка закончилась на этой границе.",
-      "Part of the funds came through an unnamed contract. The source before the contract could not be traced because the available trace ended there.",
+      `Часть суммы пришла через ${nameRu}.${stop ? ` ${stop.ru}` : ""}`,
+      `Part of the amount came through ${nameEn}.${stop ? ` ${stop.en}` : ""}`,
+      null,
+      stop ? "limitation" : "context"
+    );
+  });
+}
+
+function serviceBoundaryFacts(profiles: BoundaryExposureProfile[]): NarrativeFact[] {
+  return profiles.flatMap((profile) => profile.topBoundaryEntities.map((entity) => {
+    const txHashes = profile.flows
+      .filter((flow) => flow.boundaryAddress === entity.address)
+      .flatMap((flow) => [flow.subjectTxHash, flow.boundaryTxHash]);
+    const name = entity.identity ?? shortAddress(entity.address);
+    return narrativeFact(
+      `service:${entity.address}:${[...new Set(txHashes)].sort().join(",")}`,
+      entity.category === "cex" ? "cex_source" : "unknown_contract",
+      `${name} — сервис с общей ликвидностью. Источник до сервиса не прослеживается, потому что здесь объединяются переводы разных клиентов.`,
+      `${name} is a pooled liquidity service. The source before the service cannot be traced because transfers from different clients merge there.`,
       null,
       "limitation"
     );
-  }
+  }));
+}
 
-  if (route.kind === "service_boundary") {
-    const openingRu = identity
-      ? `${identity} — сервис с общей ликвидностью.`
-      : "Это сервис с общей ликвидностью.";
-    const openingEn = identity
-      ? `${identity} is a pooled-liquidity service.`
-      : "This is a pooled-liquidity service.";
-    return narrativeFact(
-      id,
-      "unknown_contract",
-      `${openingRu} Источник до сервиса не удалось проследить: здесь история объединяется с переводами других клиентов.`,
-      `${openingEn} The source before the service could not be traced because client transfers merge there.`,
-      null,
-      "limitation"
-    );
-  }
-
-  if (route.kind === "collector") {
-    const destinations = route.uniqueCounterpartyCount ?? route.txCount;
-    const name = identity || "ликвидный сервис";
-    return narrativeFact(
-      id,
+function collectorFacts(
+  behaviorProfiles: AddressBehaviorProfile[],
+  operationalProfiles: OperationalFlowProfile[]
+): NarrativeFact[] {
+  return behaviorProfiles.flatMap((behavior) => {
+    if (behavior.transitScore <= 0 || behavior.uniqueIncomingCounterparties < 2) return [];
+    const operational = operationalProfiles.find((profile) => profile.subjectAddress === behavior.subjectAddress);
+    const destination = operational?.topOutgoingCounterparties[0];
+    if (!destination) return [];
+    const share = behavior.drainToServiceRatio;
+    return [narrativeFact(
+      `collector:${behavior.subjectAddress}:${destination.address}`,
       "collector",
-      `Кошелёк собирает переводы от ${destinations} адресов и отправляет ${shareRu === null ? "часть" : shareRu + "%"} поступлений на ${name}. Это транзитный кошелёк-сборщик ликвидности.`,
-      `The wallet collects transfers from ${destinations} addresses and sends ${shareEn === null ? "part" : shareEn + "%"} of inflows to ${name}. It is a transit liquidity collector wallet.`,
+      `Кошелёк собирает переводы от ${behavior.uniqueIncomingCounterparties} адресов и отправляет ${formatPercent(share, "ru")}% поступлений на ${destination.identity ?? shortAddress(destination.address)}. Это транзитный кошелёк-сборщик ликвидности.`,
+      `The wallet collects transfers from ${behavior.uniqueIncomingCounterparties} addresses and sends ${formatPercent(share, "en")}% of inflows to ${destination.identity ?? shortAddress(destination.address)}. It is a transit liquidity collector wallet.`,
       "collector",
       "context"
-    );
-  }
+    )];
+  });
+}
 
-  return narrativeFact(
-    id,
-    "risky_counterparty",
-    `${shareRu !== null ? shareRu + "%" : amountRu + " USDT"} проверяемой суммы пришло от адреса с высоким риском. Повышенный риск относится только к этой части суммы.`,
-    `${shareEn !== null ? shareEn + "%" : amountEn + " USDT"} of the checked amount came from a high-risk address. The elevated risk applies only to that share.`,
-    null,
-    "context"
-  );
+function riskyCounterpartyFacts(profiles: DirectCounterpartyInteractionProfile[]): NarrativeFact[] {
+  return profiles.flatMap((profile) => {
+    if (profile.snapshot.riskLevel !== "HIGH" && profile.snapshot.riskLevel !== "CRITICAL") return [];
+    const transfers = (profile.transfers ?? []).filter((transfer) =>
+      !(transfer.economicRole === "service_fee" && transfer.economicProtocol === "tron_gasfree")
+    );
+    if (transfers.length === 0) return [];
+    const amountRaw = sumRaw(transfers.map((transfer) => transfer.amountRaw));
+    const address = shortAddress(profile.counterpartyAddress);
+    const exactShare = rawAmount(profile.volumeRaw) === rawAmount(amountRaw);
+    const consequence = exactShare
+      ? {
+          ru: `Это ${formatPercent(profile.volumeRatio, "ru")}% объёма направления; повышенный риск относится к этой части суммы.`,
+          en: `This is ${formatPercent(profile.volumeRatio, "en")}% of that direction's volume; the elevated risk applies to that share.`
+        }
+      : {
+          ru: "Повышенный риск относится к этой части суммы.",
+          en: "The elevated risk applies to that share."
+        };
+    const direction = profile.direction === "inbound"
+      ? {
+          ru: `Входящий: адрес получил ${formatUsdtRaw(amountRaw, "ru")} USDT от адреса ${address} с высоким риском (${russianDirectTransferCount(transfers.length)}). ${consequence.ru}`,
+          en: `Inbound: the address received ${formatUsdtRaw(amountRaw, "en")} USDT from high-risk address ${address} (${englishDirectTransferCount(transfers.length)}). ${consequence.en}`
+        }
+      : {
+          ru: `Исходящий: адрес отправил ${formatUsdtRaw(amountRaw, "ru")} USDT адресу ${address} с высоким риском (${russianDirectTransferCount(transfers.length)}). ${consequence.ru}`,
+          en: `Outbound: the address sent ${formatUsdtRaw(amountRaw, "en")} USDT to high-risk address ${address} (${englishDirectTransferCount(transfers.length)}). ${consequence.en}`
+        };
+    return [narrativeFact(
+      `risky-counterparty:${profile.direction}:${profile.counterpartyAddress}:${transfers.map((transfer) => transfer.txHash).sort().join(",")}`,
+      "risky_counterparty",
+      direction.ru,
+      direction.en,
+      null,
+      "context"
+    )];
+  });
 }
 
 export function sourceAndRouteFacts(input: {
-  routes?: NarrativeSourceRouteEvidence[];
+  paths?: MoneyOriginPath[];
+  sourcePolicyEvidence?: SourcePolicyEvidence[];
   firstHopLabelFacts?: FirstHopLabelFact[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
+  addressBehaviorProfiles?: AddressBehaviorProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
 }): NarrativeFact[] {
-  const routeFacts = (input.routes ?? []).map(routeFact);
-  const labelFacts = (input.firstHopLabelFacts ?? []).map(firstHopLabelNarrative);
-  return [...routeFacts, ...labelFacts];
+  const paths = input.paths ?? [];
+  const policy = input.sourcePolicyEvidence ?? [];
+  const facts = [
+    ...htxFacts(paths, policy),
+    ...outboundHtxFacts(input.operationalFlowProfiles ?? []),
+    ...bridgeFacts(paths, policy),
+    ...cexFacts(paths),
+    ...unknownContractFacts(paths),
+    ...serviceBoundaryFacts(input.boundaryExposureProfiles ?? []),
+    ...collectorFacts(input.addressBehaviorProfiles ?? [], input.operationalFlowProfiles ?? []),
+    ...riskyCounterpartyFacts(input.directCounterpartyInteractionProfiles ?? []),
+    ...(input.firstHopLabelFacts ?? []).flatMap((fact) => firstHopLabelNarrative(fact) ?? [])
+  ];
+  return canonicalFacts(facts);
 }
 
 export function gasFreeFeeFact(
@@ -763,141 +882,111 @@ export function gasFreeFeeFact(
   );
 }
 
-function traceCoverageText(trace: NarrativeTraceCoverage): { ru: string; en: string } {
-  if (trace.status === "unavailable") {
-    const reason = trace.untracedReason === "provider_failed"
-      ? {
-          ru: "источник данных не отдал нужную историю переводов",
-          en: "the data provider did not return the required transfer history"
-        }
-      : {
-          ru: "нужная история переводов недоступна",
-          en: "the required transfer history is unavailable"
-        };
+function traceHistoryReason(
+  coverage: MoneyOriginTraceHistoryCoverage[]
+): { ru: string; en: string } | null {
+  if (coverage.some((item) => item.budgetExhausted || item.statusReason === "partial_budget_exhausted")) {
+    return { ru: "проверка остановилась на техническом лимите", en: "the check stopped at a technical limit" };
+  }
+  if (coverage.some((item) => item.providerInconsistent || item.statusReason === "partial_provider_inconsistent")) {
+    return { ru: "источник данных вернул противоречивую историю", en: "the data provider returned inconsistent history" };
+  }
+  if (coverage.some((item) => item.providerCapHit || item.statusReason === "partial_provider_cap")) {
+    return { ru: "источник данных не отдал старые переводы", en: "the provider did not return older transfers" };
+  }
+  if (coverage.some((item) =>
+    item.statusReason === "failed_retryable" ||
+    item.statusReason === "failed_terminal" ||
+    item.statusReason === "partial_rate_limited"
+  )) {
+    return { ru: "источник данных завершил запрос истории с ошибкой", en: "the data provider history request failed" };
+  }
+  return null;
+}
+
+function whereCoverageText(
+  coverage: WhereIsMoneyCoverage | null | undefined,
+  history: MoneyOriginTraceHistoryCoverage[]
+): { ru: string; en: string } | null {
+  if (!coverage) return null;
+  const ratio = coverage.coverageRatio ?? coverage.currentBalanceCoverageRatio;
+  const reason = traceHistoryReason(history);
+  if (coverage.partial && coverage.selectedInboundTxCount === 0 && reason) {
     return {
       ru: `Происхождение суммы не удалось проследить: ${reason.ru}.`,
       en: `We could not trace the source of the amount because ${reason.en}.`
     };
   }
-
-  const parts = {
-    ru: [] as string[],
-    en: [] as string[]
-  };
-  if (trace.checkedTransferCount !== null) {
-    const directionRu = trace.direction === "inbound" ? "входящих" : "исходящих";
-    const directionEn = trace.direction === "inbound" ? "inbound" : "outbound";
-    parts.ru.push(`Мы проверили ${trace.checkedTransferCount} ${directionRu} переводов`);
-    parts.en.push(`We checked ${trace.checkedTransferCount} ${directionEn} transfers`);
-  }
-  if (trace.tracedAmountPercent !== null) {
-    const percent = checkedPercent(trace.tracedAmountPercent);
-    parts.ru.push(`проследили ${percent.replace(".", ",")}% суммы`);
-    parts.en.push(`traced ${percent}% of the amount`);
-  }
-  if (parts.ru.length === 0) {
-    return {
-      ru: "Данных о числе проверенных переводов и доле прослеженной суммы нет.",
-      en: "The checked transfer count and traced amount share are unavailable."
-    };
-  }
+  const percent = checkedPercent(Math.max(0, Math.min(1, ratio)) * 100);
   const base = {
-    ru: `${parts.ru.join(" и ")}.`,
-    en: `${parts.en.join(" and ")}.`
+    ru: `Проверено ${coverage.selectedInboundTxCount} входящих переводов; прослежено ${percent.replace(".", ",")}% суммы.`,
+    en: `Checked ${coverage.selectedInboundTxCount} inbound transfers; traced ${percent}% of the amount.`
   };
-  if (
-    trace.status !== "partial" ||
-    trace.tracedAmountPercent === null ||
-    trace.tracedAmountPercent >= 100 ||
-    trace.untracedReason === null
-  ) return base;
-  const remaining = checkedPercent(100 - trace.tracedAmountPercent);
-  const reason = {
-    older_history_unavailable: {
-      ru: "источник данных не отдал более старые переводы",
-      en: "the data provider did not return older transfers"
-    },
-    provider_failed: {
-      ru: "источник данных завершил запрос с ошибкой",
-      en: "the data provider request failed"
-    },
-    budget_exhausted: {
-      ru: "проверка остановилась на техническом лимите",
-      en: "the check stopped at a technical limit"
-    },
-    history_partial: {
-      ru: "доступна только часть истории переводов",
-      en: "only part of the transfer history is available"
-    },
-    running: {
-      ru: "система ещё загружает историю переводов",
-      en: "the system is still loading transfer history"
-    }
-  }[trace.untracedReason];
+  if (!coverage.partial || ratio >= 1 || !reason) return base;
+  const remaining = checkedPercent((1 - Math.max(0, ratio)) * 100);
   return {
-    ru: `${base.ru} Оставшиеся ${remaining.replace(".", ",")}% не удалось проследить: ${reason.ru}.`,
-    en: `${base.en} The remaining ${remaining}% could not be traced because ${reason.en}.`
+    ru: `${base.ru} Остальные ${remaining.replace(".", ",")}% не прослежены: ${reason.ru}.`,
+    en: `${base.en} The remaining ${remaining}% is untraced: ${reason.en}.`
   };
 }
 
-function firstHopCoverageText(
+function firstHopCoverageParts(
   coverage: FirstHopBlacklistCoverage
-): { ru: string; en: string } | null {
-  if (coverage.blacklistCheckCoverage === "complete") return null;
+): Array<{ ru: string; en: string }> {
+  const parts: Array<{ ru: string; en: string }> = [];
+  if (coverage.directPrincipalTransferCoverage === "partial") {
+    parts.push({
+      ru: "История прямых переводов неполна.",
+      en: "The direct transfer history is partial."
+    });
+  }
   if (coverage.blacklistCheckCoverage === "running") {
-    return {
-      ru: "Проверка остальных прямых контрагентов ещё продолжается.",
+    parts.push({
+      ru: "Проверка остальных прямых контрагентов продолжается.",
       en: "The remaining direct counterparties are still being checked."
-    };
+    });
+  } else if (coverage.blacklistCheckCoverage === "provider_failed") {
+    parts.push({
+      ru: "Часть прямых контрагентов не проверена: сбой источника.",
+      en: "Some direct counterparties were not checked: provider failure."
+    });
+  } else if (coverage.blacklistCheckCoverage === "budget_exhausted") {
+    parts.push({
+      ru: "Часть прямых контрагентов не проверена: технический лимит.",
+      en: "Some direct counterparties were not checked: technical limit."
+    });
+  } else if (coverage.blacklistCheckCoverage === "history_partial" && coverage.directPrincipalTransferCoverage !== "partial") {
+    parts.push({
+      ru: "История прямых переводов неполна.",
+      en: "The direct transfer history is partial."
+    });
   }
-  if (coverage.blacklistCheckCoverage === "provider_failed") {
-    return {
-      ru: "Не удалось проверить часть прямых контрагентов. Нужен повторный запуск.",
-      en: "We could not check some direct counterparties. Run the check again."
-    };
+  if (coverage.partialTimelineFactCount > 0) {
+    parts.push({
+      ru: `У ${coverage.partialTimelineFactCount} связей дата блокировки подтверждена не полностью.`,
+      en: `Blacklist timing is incomplete for ${coverage.partialTimelineFactCount} links.`
+    });
   }
-  if (coverage.blacklistCheckCoverage === "budget_exhausted") {
-    return {
-      ru: "Проверка остановилась на техническом лимите. Часть контрагентов не проверена.",
-      en: "The check stopped at a technical limit. Some counterparties were not checked."
-    };
-  }
-  return {
-    ru: "Доступна только часть истории прямых переводов.",
-    en: "Only part of the direct transfer history is available."
-  };
+  return parts;
 }
 
 export function coverageExplanationFor(input: {
   firstHopCoverage: FirstHopBlacklistCoverage;
-  traceCoverage?: NarrativeTraceCoverage | null;
+  whereCoverage?: WhereIsMoneyCoverage | null;
+  traceHistoryCoverage?: MoneyOriginTraceHistoryCoverage[];
 }): CoverageExplanation | null {
-  const trace = input.traceCoverage ? traceCoverageText(input.traceCoverage) : null;
-  const firstHop = firstHopCoverageText(input.firstHopCoverage);
-  if (!trace && !firstHop) return null;
-  const textRu = [trace?.ru, firstHop?.ru].filter(Boolean).join(" ");
-  const textEn = [trace?.en, firstHop?.en].filter(Boolean).join(" ");
+  const trace = whereCoverageText(input.whereCoverage, input.traceHistoryCoverage ?? []);
+  const parts = firstHopCoverageParts(input.firstHopCoverage);
+  if (trace) parts.unshift(trace);
+  if (parts.length === 0) return null;
+  const textRu = parts.map((part) => part.ru).join(" ");
+  const textEn = parts.map((part) => part.en).join(" ");
   return {
     reasonKind: input.firstHopCoverage.blacklistCheckCoverage,
     textRu: normalizeCopy(textRu),
     textEn: normalizeCopy(textEn),
     isRiskEvidence: false
   };
-}
-
-function neutralCoverageFact(scope: FirstHopBlacklistCoverage["scope"]): NarrativeFact {
-  return narrativeFact(
-    `coverage-neutral:${scope}`,
-    "coverage",
-    scope === "all_time"
-      ? "Во всей проверенной истории материальных неблагоприятных фактов не найдено."
-      : "В проверенном окне материальных неблагоприятных фактов не найдено.",
-    scope === "all_time"
-      ? "No material adverse facts were found in the complete checked history."
-      : "No material adverse facts were found in the checked window.",
-    null,
-    "context"
-  );
 }
 
 function canonicalFacts(facts: NarrativeFact[]): NarrativeFact[] {
@@ -937,24 +1026,24 @@ export function buildWalletNarrativeEvidence(
     if (verify20) facts.push(verify20);
   }
   facts.push(...sourceAndRouteFacts({
-    routes: input.routes,
-    firstHopLabelFacts: input.firstHopLabelFacts
+    paths: input.paths,
+    sourcePolicyEvidence: input.sourcePolicyEvidence,
+    firstHopLabelFacts: input.firstHopLabelFacts,
+    directCounterpartyInteractionProfiles: profiles,
+    addressBehaviorProfiles: input.addressBehaviorProfiles,
+    operationalFlowProfiles: input.operationalFlowProfiles,
+    boundaryExposureProfiles: input.boundaryExposureProfiles
   }));
   const fee = gasFreeFeeFact(profiles);
   if (fee) facts.push(fee);
 
   const coverageExplanation = input.firstHopBlacklistCoverage
-    ? coverageExplanationFor({
+      ? coverageExplanationFor({
         firstHopCoverage: input.firstHopBlacklistCoverage,
-        traceCoverage: input.traceCoverage
+        whereCoverage: input.whereCoverage,
+        traceHistoryCoverage: input.traceHistoryCoverage
       })
     : null;
-  const complete = input.firstHopBlacklistCoverage?.blacklistCheckCoverage === "complete" &&
-    input.firstHopBlacklistCoverage.directPrincipalTransferCoverage === "complete" &&
-    (!input.traceCoverage || input.traceCoverage.status === "exact");
-  if (facts.length === 0 && complete && input.firstHopBlacklistCoverage) {
-    facts.push(neutralCoverageFact(input.firstHopBlacklistCoverage.scope));
-  }
   return { facts: canonicalFacts(facts), coverageExplanation };
 }
 
