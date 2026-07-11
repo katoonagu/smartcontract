@@ -287,6 +287,7 @@ function buildBlacklistFact(input: {
   group: DirectPrincipalCounterpartyGroup;
   restriction: RestrictionWithTimeline;
   directTransferCoverage: "complete" | "partial";
+  conflictingTxHashes: Set<string>;
 }): FirstHopBlacklistFact {
   const timeline = input.restriction.blacklistTimeline ?? null;
   const events = sortedVerifiedTimeline(timeline?.events ?? []);
@@ -309,7 +310,10 @@ function buildBlacklistFact(input: {
     const transferTimings = new Set(transfers.map((transfer) =>
       transferTiming(transfer.occurredAt, events, timelineComplete)
     ));
-    const timing = repeatedAdditionLifecycle || occurredAtValues.size !== 1 || transferTimings.size !== 1
+    const timing = repeatedAdditionLifecycle ||
+      input.conflictingTxHashes.has(txHash) ||
+      occurredAtValues.size !== 1 ||
+      transferTimings.size !== 1
       ? "unknown"
       : [...transferTimings][0];
     amounts[timing] += transfers.reduce((sum, transfer) => sum + transfer.amountRaw, 0n);
@@ -373,6 +377,19 @@ function sanctionReason(
   )) ? `sanctioned_service:${service.key}` : null;
 }
 
+function conflictingPrincipalTxHashes(groups: DirectPrincipalCounterpartyGroup[]): Set<string> {
+  const timestampsByTxHash = new Map<string, string>();
+  const conflicting = new Set<string>();
+  for (const group of groups) {
+    for (const transfer of group.principalTransfers) {
+      const previous = timestampsByTxHash.get(transfer.txHash);
+      if (previous !== undefined && previous !== transfer.occurredAt) conflicting.add(transfer.txHash);
+      else timestampsByTxHash.set(transfer.txHash, transfer.occurredAt);
+    }
+  }
+  return conflicting;
+}
+
 export async function buildDirectHardEvidenceSnapshots(input: {
   addresses: string[];
   principalGroups?: DirectPrincipalCounterpartyGroup[];
@@ -390,17 +407,34 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   ): Promise<RestrictionWithTimeline>;
 }): Promise<DirectHardEvidenceResult> {
   const hasDirectedPrincipalGroups = input.principalGroups !== undefined;
-  const directTransferCoverage = hasDirectedPrincipalGroups
+  const principalGroups = input.principalGroups ?? [];
+  const materialGroups = principalGroups.filter((group) => group.material);
+  const materialAddresses = selectDirectPrincipalLookupAddresses(materialGroups, Number.MAX_SAFE_INTEGER);
+  const conflictingTxHashes = conflictingPrincipalTxHashes(materialGroups);
+  const requestedDirectTransferCoverage = hasDirectedPrincipalGroups
     ? input.directTransferCoverage ?? "partial"
     : "partial";
+  const directTransferCoverage = conflictingTxHashes.size > 0
+    ? "partial" as const
+    : requestedDirectTransferCoverage;
+  const hasWindowStart = input.windowStart !== null && input.windowStart !== undefined;
+  const hasWindowEnd = input.windowEnd !== null && input.windowEnd !== undefined;
   if (
+    hasDirectedPrincipalGroups &&
     directTransferCoverage !== "complete" &&
-    (input.windowStart === null || input.windowStart === undefined || input.windowEnd === null || input.windowEnd === undefined)
+    (!hasWindowStart || !hasWindowEnd)
   ) {
     throw new Error("Partial first-hop coverage requires explicit checked-window bounds.");
   }
-  const checkedWindowStart = directTransferCoverage === "complete" ? null : isoOrNull(input.windowStart);
-  const checkedWindowEnd = directTransferCoverage === "complete" ? null : isoOrNull(input.windowEnd);
+  if (!hasDirectedPrincipalGroups && hasWindowStart !== hasWindowEnd) {
+    throw new Error("Legacy first-hop checked-window bounds must be both present or both absent.");
+  }
+  const checkedWindowStart = directTransferCoverage === "complete" || !hasWindowStart
+    ? null
+    : isoOrNull(input.windowStart);
+  const checkedWindowEnd = directTransferCoverage === "complete" || !hasWindowEnd
+    ? null
+    : isoOrNull(input.windowEnd);
   if (
     checkedWindowStart !== null &&
     checkedWindowEnd !== null &&
@@ -408,9 +442,6 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   ) {
     throw new Error("First-hop checked-window start must not be after its end.");
   }
-  const principalGroups = input.principalGroups ?? [];
-  const materialGroups = principalGroups.filter((group) => group.material);
-  const materialAddresses = selectDirectPrincipalLookupAddresses(materialGroups, Number.MAX_SAFE_INTEGER);
   const addresses = input.principalGroups
     ? materialAddresses
     : uniqueAddresses(input.addresses);
@@ -475,7 +506,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   const blacklistFacts = materialGroups.flatMap((group) => {
     const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction as RestrictionWithTimeline | null | undefined;
     return restriction?.isBlacklisted
-      ? [buildBlacklistFact({ group, restriction, directTransferCoverage })]
+      ? [buildBlacklistFact({ group, restriction, directTransferCoverage, conflictingTxHashes })]
       : [];
   });
   const labelFacts = materialGroups.flatMap((group): FirstHopLabelFact[] => {
@@ -516,7 +547,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
             ? "history_partial" as const
             : "complete" as const;
   const incompleteReason = !hasDirectedPrincipalGroups
-    ? "Directed principal groups were not supplied; legacy snapshots are excluded from first-hop decision coverage."
+    ? "Legacy integration is pending directed principal groups; snapshots are excluded from first-hop decision coverage."
     : blacklistCheckCoverage === "complete"
       ? null
       : blacklistCheckCoverage === "running"
@@ -525,9 +556,11 @@ export async function buildDirectHardEvidenceSnapshots(input: {
           ? `${failedMaterialCounterpartyCount} material counterparty blacklist lookup(s) failed.`
           : blacklistCheckCoverage === "budget_exhausted"
             ? `${uncheckedMaterialCounterpartyCount} material counterparty blacklist lookup(s) were outside the live budget.`
-            : directTransferCoverage === "partial"
-              ? "Direct principal transfer history is partial."
-              : "A confirmed adverse blacklist fact has only partial timeline history.";
+            : conflictingTxHashes.size > 0
+              ? `${conflictingTxHashes.size} direct principal transaction(s) have conflicting timestamps.`
+              : directTransferCoverage === "partial"
+                ? "Direct principal transfer history is partial."
+                : "A confirmed adverse blacklist fact has only partial timeline history.";
   const firstHopBlacklistCoverage: FirstHopBlacklistCoverage = {
     requiredForDecision: hasDirectedPrincipalGroups && (input.requiredForDecision ?? materialCounterpartyCount > 0),
     scope: directTransferCoverage === "complete" ? "all_time" : "checked_window",

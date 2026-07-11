@@ -702,6 +702,8 @@ describe("direct hard evidence helper", () => {
       addresses: ["TConflictingTx"],
       principalGroups: groups,
       directTransferCoverage: "complete",
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
       getLabelsForAddress: async () => [],
       getClassificationForAddress: async () => null,
       getUsdtRestrictionStatus: async (address) => restriction(address, {
@@ -721,6 +723,62 @@ describe("direct hard evidence helper", () => {
       unknownTimingAmountRaw: "12000000000",
       unknownTimingTxCount: 1
     });
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      scope: "checked_window",
+      directPrincipalTransferCoverage: "partial",
+      blacklistCheckCoverage: "history_partial"
+    });
+  });
+
+  it("degrades inactive clean coverage when one transaction has conflicting timestamps", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({
+          id: "1",
+          fromAddress: "TInactiveConflict",
+          toAddress: SUBJECT,
+          amountRaw: 6_000_000000n,
+          txHash: "tx-inactive-conflict",
+          timestamp: new Date("2026-07-01T00:00:00.000Z")
+        }),
+        edge({
+          id: "2",
+          fromAddress: "TInactiveConflict",
+          toAddress: SUBJECT,
+          amountRaw: 6_000_000000n,
+          txHash: "tx-inactive-conflict",
+          timestamp: new Date("2026-07-03T00:00:00.000Z")
+        })
+      ]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TInactiveConflict"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address, { isBlacklisted: false })
+    });
+
+    expect(result.blacklistFacts).toEqual([]);
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: "2026-07-01T00:00:00.000Z",
+      windowEnd: "2026-07-03T00:00:00.000Z",
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 1,
+      checkedMaterialCounterpartyCount: 1,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "history_partial",
+      confirmedAdverseFactCount: 0
+    });
+    expect(result.firstHopBlacklistCoverage.incompleteReason).toMatch(/conflicting timestamps/i);
   });
 
   it("keeps complete removal and re-add lifecycles temporally unknown", async () => {
@@ -811,12 +869,25 @@ describe("direct hard evidence helper", () => {
     });
     expect(result.firstHopBlacklistCoverage.incompleteReason).toMatch(/directed principal groups/i);
 
-    await expect(buildDirectHardEvidenceSnapshots({
+    const compatibilityResult = await buildDirectHardEvidenceSnapshots({
       addresses: ["TLegacy0"],
       getLabelsForAddress: async () => [],
       getClassificationForAddress: async () => null,
       getUsdtRestrictionStatus: async (address) => restriction(address)
-    })).rejects.toThrow(/window/i);
+    });
+    expect(compatibilityResult.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: false,
+      scope: "checked_window",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 0,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "history_partial"
+    });
+    expect(compatibilityResult.firstHopBlacklistCoverage.incompleteReason).toMatch(/integration.pending|legacy/i);
 
     await expect(buildDirectHardEvidenceSnapshots({
       addresses: ["TLegacy0"],
