@@ -158,25 +158,59 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.sections.conclusion).toMatch(/compliance|провер.*происхожд/i);
   });
 
-  it("uses an exact subject-bound Fast blacklist reason", () => {
+  it.each([
+    ["stablecoin_usdt_blacklisted", 95, /чёрн.*списк.*USDT|USDT.*чёрн.*списк/i],
+    ["forensic_approval_drain_provenance", 95, /подтверждённ.*цепочк.*списан/i],
+    ["internal_label_scam", 90, /мошенническ/i]
+  ] as const)("maps production fast_critical to exact Fast reason %s", (code, score, expected) => {
+    const evidenceId = `fast:${code}`;
+    const report = whereReportFixture({
+      riskScore: score,
+      fastWalletRisk: {
+        subjectAddress: WHERE_SUBJECT,
+        level: "CRITICAL",
+        score,
+        reasons: [{ code, message: POISON_RAW_REASON, scoreImpact: score, evidenceRef: evidenceId }]
+      },
+      assessment: whereAssessmentFixture({
+        riskScore: score,
+        hardBadEvidence: [{ kind: "fast_critical", score, message: POISON_RAW_REASON, evidenceIds: [evidenceId] }],
+        dominantRiskLayer: whereRiskLayerFixture("fast_critical", score, "hard_proof", [evidenceId])
+      })
+    });
+    const result = buildWherePreliminaryNarrative(report, { locale: "ru" });
+    expect(result.score).toBe(score);
+    expect(result.sections.findings[0]).toMatch(expected);
+    expect(result.preferredFactId).toBe(`fast-subject:${code}`);
+  });
+
+  it("keeps evidence overlap mandatory for production fast_critical", () => {
+    const driverEvidenceId = "fast:driver";
     const report = whereReportFixture({
       riskScore: 95,
       fastWalletRisk: {
         subjectAddress: WHERE_SUBJECT,
         level: "CRITICAL",
         score: 95,
-        reasons: [{ code: "stablecoin_usdt_blacklisted", message: POISON_RAW_REASON, scoreImpact: 95, evidenceRef: "fast-blacklist" }]
+        reasons: [{
+          code: "stablecoin_usdt_blacklisted",
+          message: POISON_RAW_REASON,
+          scoreImpact: 95,
+          evidenceRef: "fast:unrelated"
+        }]
       },
       assessment: whereAssessmentFixture({
         riskScore: 95,
-        hardBadEvidence: [{ kind: "fast_critical", score: 95, message: POISON_RAW_REASON, evidenceIds: ["fast-blacklist"] }],
-        dominantRiskLayer: whereRiskLayerFixture("stablecoin_usdt_blacklisted", 95, "hard_proof", ["fast-blacklist"])
+        hardBadEvidence: [{
+          kind: "fast_critical", score: 95, message: POISON_RAW_REASON, evidenceIds: [driverEvidenceId]
+        }],
+        dominantRiskLayer: whereRiskLayerFixture("fast_critical", 95, "hard_proof", [driverEvidenceId])
       })
     });
     const result = buildWherePreliminaryNarrative(report, { locale: "ru" });
-    expect(result.score).toBe(95);
-    expect(result.sections.findings[0]).toMatch(/чёрн.*списк.*USDT|USDT.*чёрн.*списк/i);
-    expect(text(result)).toMatch(/заморож/i);
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+    expect(result.sections.findings).toEqual([]);
   });
 
   it.each(["ru", "en"] as const)("keeps preliminary Fast behavior copy action-free in %s", (locale) => {

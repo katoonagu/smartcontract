@@ -266,6 +266,7 @@ function overlaps(left: string[] | undefined, right: string[]): boolean {
 }
 
 const compatibleHardFactKinds: Partial<Record<string, NarrativeFact["kind"][]>> = {
+  fast_critical: ["usdt_blacklist", "approval_drain", "direct_counterparty_exact_label"],
   approval_drain: ["approval_drain"],
   scam_or_blacklist: ["usdt_blacklist", "direct_counterparty_blacklist", "direct_counterparty_exact_label"],
   sanctioned_service: ["sanctioned_source", "direct_counterparty_sanction"],
