@@ -1,10 +1,11 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
   - src/forensics/gasFreeSettlement.ts
+  - src/forensics/directHardEvidence.ts
   - src/forensics/counterpartyRisk.ts
   - src/forensics/counterpartyInteraction.ts
   - src/forensics/flowCounterpartyProfile.ts
@@ -19,6 +20,7 @@ code_refs:
   - tests/forensics/counterpartyInteraction.test.ts
   - tests/forensics/flowCounterpartyProfile.test.ts
   - tests/forensics/inboundProvenance.test.ts
+  - tests/forensics/directHardEvidence.test.ts
   - tests/forensics/deepForensicJob.test.ts
 supersedes:
   - docs/project-walkthrough/06-check-modes-fast-deep-where-is-money.md
@@ -54,6 +56,30 @@ unmatched movements remain ordinary risk-eligible edges. Only a structurally
 exact `tron_gasfree` `service_fee` edge is excluded from counterparty diversity,
 campaign counts, service exposure, and ordinary risk propagation. The fee still
 remains visible in gross transfer and debit facts.
+
+DeepCheck groups direct principal transfers by counterparty and direction
+before live screening. Exact GasFree service-fee edges are excluded from these
+groups, but a GasFree account or contract that sends or receives principal is
+checked like any other address. The material set is sorted by combined
+principal amount before the live lookup limit is applied, so insertion order
+does not decide which counterparties are checked.
+
+Fresh reports persist typed `firstHopBlacklistFacts`, `firstHopLabelFacts`, and
+`firstHopBlacklistCoverage`. A blacklist fact keeps the counterparty,
+direction, principal amount/count/share, direct transfer ids, current official
+USDT state, verified event chronology when available, and the split between
+transfers before, during, or at unknown blacklist timing. A complete subject
+index gives `all_time` coverage; a bounded path records the exact checked
+window and stays partial.
+
+First-hop coverage is saved even when no adverse fact is found. It distinguishes
+checked, failed, and unchecked material counterparties and separates direct
+transfer completeness from timeline completeness. Therefore an incomplete
+negative result is not a clean result: when this coverage is required and no
+independent positive policy fact exists, unified scoring returns
+`NO_FINAL_DECISION`. A confirmed active-blacklist relationship remains an
+independent positive fact even if unrelated coverage is partial; the
+limitation is preserved beside the decision.
 
 DeepCheck can use a complete all-time subject index. When that index is
 available and small enough to materialize, it considers the full direct

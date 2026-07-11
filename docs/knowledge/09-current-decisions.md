@@ -1,16 +1,20 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: docs
 code_refs:
   - src/index.ts
   - src/forensics/serviceClassifier.ts
   - src/forensics/gasFreeSettlement.ts
+  - src/forensics/directHardEvidence.ts
   - src/forensics/localTronUsdtIndex.ts
   - src/risk/finalDisposition.ts
   - src/risk/unifiedWalletRisk.ts
   - src/risk/unifiedIncomingDepositRisk.ts
+  - src/risk/scoringSignalMatrix.ts
+  - src/tron/usdtBlacklistTimeline.ts
   - src/check/deepForensicCheck.ts
+  - src/bot/walletNarrativeSummary.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
@@ -89,6 +93,63 @@ of these decisions, update this file in the same work.
   `NO_FINAL_DECISION`. Admin, Telegram, and alerts do not remap these outcomes.
 - Old unversioned jobs are not silently reinterpreted, mutated, or rescored. A
   fresh check is required to apply the new policy.
+
+## 2026-07-11 First-Hop Blacklist Scoring And Wallet Narrative
+
+### Direct Principal Policy
+
+- The official USDT contract is authoritative for current blacklist state.
+  TronScan's address-scoped blacklist endpoint supplies candidate history, but
+  chronology is accepted only after the transaction and official contract log
+  are verified. Provider or validation failures produce a typed partial
+  timeline, never a false empty or exact history.
+- DeepCheck persists directed first-hop blacklist facts, internal-label facts,
+  and report-level coverage even when no adverse fact is found. Required
+  incomplete negative coverage yields `NO_FINAL_DECISION`; an independently
+  confirmed positive remains decisive while unrelated coverage stays partial.
+- Material principal is at least 10,000 USDT, or at least 100 USDT and 1% of an
+  exact directional denominator. Partial history cannot use the percentage
+  branch. Its confirmed absolute branch contributes 60; exact share uses the
+  bound profile contribution clamped to 60..90.
+- Exact `tron_gasfree` service-fee edges are excluded from principal amounts and
+  policy materiality. Contract, GasFree-account, and ordinary-account types do
+  not exclude real principal transfers from first-, second-, or third-hop
+  tracing and scoring.
+- Fresh reports use `scoring-signal-matrix-v2`. The checked subject restriction
+  has first priority, then `direct_counterparty_policy`, then the remaining
+  rows. Stored reports without the exact current marker keep their historical
+  decision and require a fresh run.
+
+### Verify20 And Telegram
+
+- An exact four-selector Verify20 fingerprint for the checked contract, with no
+  trusted-service guard, is an independent `DECLINE` pattern with floor 85. It
+  does not prove a specific debit. Exact approval-drain provenance remains the
+  stronger 95 floor, and interaction with Verify20 does not itself make a
+  wallet a drainer.
+- Normal Telegram output is deterministic and does not use LLM/free text. It
+  keeps the risk emoji, canonical action, strongest winning fact, at most one
+  additional risk/context fact, and an important coverage limit. An exact
+  GasFree fee can appear as optional technical detail only when there is no
+  coverage part and the compact body still fits.
+- Normal and detailed current-policy status share the same fresh subject-bound
+  DeepCheck/first-hop prerequisite. Missing or mismatched evidence yields
+  `NO_FINAL_DECISION` with no score; detailed, support, and Admin diagnostics
+  remain available.
+
+### TGyt Regression
+
+- The valid fixture subject is `TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD`.
+  It sent 1,176,317 USDT of principal to
+  `TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm` in two transfers. That counterparty is
+  currently in the USDT blacklist and became active there 2 hours 52 minutes
+  after the larger 1,176,302 USDT transfer. The checked subject itself is not
+  blacklisted.
+- The 83% bridge route is secondary to the direct policy fact. A separate exact
+  3 USDT GasFree service-fee edge is excluded from principal. The fresh v2
+  result is `DECLINE 90`; the saved legacy result remains 78. The fixture does
+  not assert authoritative hashes for the two principal transfers or invent a
+  settlement relation for the fee.
 
 ## Provenance Completeness
 

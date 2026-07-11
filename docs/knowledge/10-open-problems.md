@@ -292,17 +292,6 @@ supersedes:
   severity tier beyond the current review-context behavior.
 - Second-layer metrics can show an empty queue even when a budget exists. Treat
   this as planned/partial until real queue work is implemented.
-- Direct counterparty hard-evidence checks should become wider and clearer.
-  DeepCheck can currently find an exact first-hop USDT-blacklisted
-  counterparty, direction, amount, and share, but the saved snapshot drops the
-  blacklist event timeline, unified scoring forces the profile into generic
-  `counterparty_context`, and Telegram hides the concrete relationship. The
-  direct lookup also does not request the timeline and the current lookup
-  scans only the latest 50 global `AddedBlackList` events instead of using the
-  official address-filtered TronScan blacklist endpoint. Planned behavior is
-  specified in
-  `docs/superpowers/specs/2026-07-11-telegram-wallet-narrative-design.md`;
-  it is not implemented yet.
 - Missing checks should be split into provider errors, local budget limits,
   service-boundary stops, and diagnostic notes.
 

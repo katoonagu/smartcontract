@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-11
 owner_area: scoring
 code_refs:
   - src/risk/fastEvidence.ts
@@ -59,6 +59,29 @@ Dense-hop provider-capped unresolved source can also keep `score_valid=true`
 only below its branch and aggregate thresholds and without hard evidence. This
 is a score-valid caveat, not a clean verdict; Admin and Telegram keep it
 visible, and scoring excludes it from decisive clean/bad evidence.
+
+### Matrix V2 Direct-Counterparty Policy
+
+Fresh reports use `scoring-signal-matrix-v2`. The highest-priority row is the
+checked subject's own restriction; the next row is
+`direct_counterparty_policy`. That direct row accepts only a typed material
+first-hop fact with `usdt_blacklist`, `official_contract`, and current
+`statusAtCheck=active`. Service identity, contract/account type, internal label,
+behavioral context, or an unverified event does not qualify.
+
+Material principal means either at least 10,000 USDT, or at least 100 USDT and
+1% of an exact complete directional denominator. With partial history the
+relative branch is unavailable; the absolute branch can still qualify and
+contributes exactly 60. With an exact share, the bound direct-profile
+contribution is clamped to 60..90. Exact GasFree service fees are excluded from
+principal, while principal transferred by a GasFree account or contract remains
+eligible.
+
+The row is independent policy with `can_decline` and no provenance coverage
+dependency. A confirmed positive therefore yields a valid `DECLINE` while
+unrelated coverage remains partial. If required first-hop checks are incomplete
+and there is no independently applicable positive fact, the final outcome is
+`NO_FINAL_DECISION`; missing checks cannot support a clean negative.
 
 ## Evidence Authority And Final Disposition
 
@@ -129,6 +152,13 @@ appear only as additional context beside the hard evidence.
 Route-linked approval-drain pattern without exact proof remains review/context
 evidence and must not inherit the 95/100 hard floor.
 
+An exact Verify20 contract fingerprint is a separate deterministic pattern for
+the checked contract subject. It requires the full approved four-selector set
+and no trusted-service guard, yields `DECLINE` with floor 85, and does not by
+itself prove a specific stolen transfer or make every interacting wallet a
+drainer. A single selector, method name, or free-text/AI label is insufficient.
+Exact approve -> transferFrom -> receiver provenance remains stronger at 95.
+
 ## Dampener
 
 Dampeners can reduce weak or contextual risk. They must not reduce hard
@@ -161,6 +191,10 @@ uncertainty. If `score_valid=true` and the Where result is
 Where score and `REVIEW` decision. Dense-hop materiality is not a clean verdict:
 the unresolved branch stays visible in Admin and Telegram and is excluded from
 decisive clean or bad evidence.
+
+Stored jobs without the exact v2 marker keep their saved score and decision.
+Bot and Admin do not silently recalculate them under current policy; a fresh
+run is required.
 
 ## Current Direction
 
