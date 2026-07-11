@@ -121,7 +121,9 @@ function normalizedTopic(value: unknown): string | null {
 
 function addressFromTopic(value: unknown): string | null {
   const topic = normalizedTopic(value);
-  return topic ? normalizeTronAddress(topic.slice(-40)) : null;
+  return topic && topic.slice(2, 26) === "0".repeat(24)
+    ? normalizeTronAddress(topic.slice(-40))
+    : null;
 }
 
 function eventKindFromName(value: unknown): UsdtBlacklistTimelineEvent["eventKind"] | null {
@@ -177,6 +179,7 @@ function verifyEvent(value: unknown, expectedAddress: string): UsdtBlacklistTime
   const topics = event.topics;
   const topicsPresent = hasOwn(event, "topics");
   if (topicsPresent && !Array.isArray(topics)) return null;
+  if (Array.isArray(topics) && topics.length !== 2) return null;
   const topicKind = topicsPresent && Array.isArray(topics) ? eventKindFromTopic(topics[0]) : null;
   const namedKind = resolveAliases(event, ["event_name", "eventName"], eventKindFromName);
   if (!namedKind) return null;

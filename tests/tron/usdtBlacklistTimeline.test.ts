@@ -209,4 +209,24 @@ describe("verifyBlacklistEvent", () => {
     expect(verifyBlacklistEvent([contractEvent({ event_name: "RemovedBlackList" })], ADDRESS)).toBeNull();
     expect(verifyBlacklistEvent([contractEvent({ event_name: "Transfer" })], ADDRESS)).toBeNull();
   });
+
+  it("rejects an indexed address topic with non-zero ABI padding", () => {
+    const nonCanonicalUserTopic = `0x${"1".repeat(24)}${TronWeb.address.toHex(ADDRESS).slice(2).toLowerCase()}`;
+
+    expect(verifyBlacklistEvent([contractEvent({
+      result: {},
+      topics: [ADDED_TOPIC, nonCanonicalUserTopic]
+    })], ADDRESS)).toBeNull();
+  });
+
+  it("requires exactly two topics for added and removed blacklist events", () => {
+    const extraTopic = `0x${"0".repeat(64)}`;
+    expect(verifyBlacklistEvent([contractEvent({
+      topics: [ADDED_TOPIC, addressTopic(ADDRESS), extraTopic]
+    })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({
+      event_name: "RemovedBlackList",
+      topics: [REMOVED_TOPIC, addressTopic(ADDRESS), extraTopic]
+    })], ADDRESS)).toBeNull();
+  });
 });
