@@ -55,6 +55,7 @@ export type NarrativeAddressRole =
 export type NarrativeFact = {
   id: string;
   kind: NarrativeFactKind;
+  evidenceIds?: string[];
   role?: NarrativeAddressRole | null;
   proofStrength?: "exact" | "strong" | "context" | "limitation";
   priority?: number;
@@ -205,17 +206,23 @@ function narrativeFact(
   factTextRu: string,
   factTextEn: string,
   role: NarrativeAddressRole | null,
-  proofStrength: NonNullable<NarrativeFact["proofStrength"]>
+  proofStrength: NonNullable<NarrativeFact["proofStrength"]>,
+  evidenceIds: string[] = []
 ): NarrativeFact {
   return {
     id,
     kind,
+    evidenceIds: [...new Set(evidenceIds.filter((id) => id.length > 0))].sort(compareLexical),
     role,
     proofStrength,
     priority: factRank[kind],
     factTextRu: normalizeCopy(factTextRu),
     factTextEn: normalizeCopy(factTextEn)
   };
+}
+
+function compareLexical(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function rawAmount(value: string): bigint {
@@ -293,7 +300,8 @@ export function subjectBlacklistFact(
     "Адрес находится в чёрном списке USDT: переводы токена заблокированы, а USDT на адресе заморожен.",
     "The address is on the USDT blacklist: token transfers are blocked and USDT at the address is frozen.",
     null,
-    "exact"
+    "exact",
+    profile.blacklistEventTxHash ? [profile.blacklistEventTxHash] : []
   );
 }
 
@@ -357,7 +365,8 @@ export function approvalDrainRoleFact(
     copy.ru,
     copy.en,
     role,
-    role === "route_linked" ? "context" : "exact"
+    role === "route_linked" ? "context" : "exact",
+    [input.profile.approvalTxHash, input.profile.drainTxHash, ...input.profile.pathTxHashes]
   );
 }
 
@@ -386,7 +395,8 @@ export function verify20RoleFact(input: Verify20NarrativeEvidence): NarrativeFac
     copy.ru,
     copy.en,
     input.role,
-    input.role === "verify20_contract" ? "strong" : "context"
+    input.role === "verify20_contract" ? "strong" : "context",
+    input.fingerprint.selectors.map((selector) => `verify20:${selector}`)
   );
 }
 
@@ -417,7 +427,7 @@ function selectedChronologyTransfer(
     const amountOrder = rawAmount(right.amountRaw) > rawAmount(left.amountRaw)
       ? 1
       : rawAmount(right.amountRaw) < rawAmount(left.amountRaw) ? -1 : 0;
-    return amountOrder || left.timestamp.localeCompare(right.timestamp) || left.txHash.localeCompare(right.txHash);
+    return amountOrder || compareLexical(left.timestamp, right.timestamp) || compareLexical(left.txHash, right.txHash);
   })[0] ?? null;
 }
 
@@ -504,7 +514,8 @@ export function firstHopBlacklistFacts(
         `${direction.ru}${share.ru} ${chronology.ru}${subjectClear.ru}`,
         `${direction.en}${share.en} ${chronology.en}${subjectClear.en}`,
         null,
-        "exact"
+        "exact",
+        fact.transferTxHashes
       );
     });
 }
@@ -586,7 +597,8 @@ function firstHopLabelNarrative(fact: FirstHopLabelFact): NarrativeFact | null {
     `Адрес ${directionRu} ${amountRu} USDT по прямой связи. ${meaningRu}`,
     `The address ${directionEn} ${amountEn} USDT through a direct link. ${meaningEn}`,
     role,
-    exactAdverse ? "exact" : "context"
+    exactAdverse ? "exact" : "context",
+    fact.transferTxHashes
   );
 }
 
@@ -621,37 +633,82 @@ function sourceShareText(
     : `${formatPercent(share, locale)}%`;
 }
 
-function htxFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
-  const htxPaths = paths.filter((path) => path.sourceExposureKind === "htx_huobi");
-  return evidence.filter((item) => item.kind === "htx_huobi").flatMap((item) => {
-    const matching = htxPaths.filter((path) => policyMatchesPath(item, path));
-    const linkedDecline = item.proofLevel === "exchange_policy_decline" &&
-      item.shareDetail !== undefined &&
-      matching.length > 0;
-    const path = matching[0] ?? htxPaths[0];
-    if (!path) return [];
-    const name = path.exposureSourceLabel?.trim() || "HTX/Huobi";
-    const share = item.shareDetail?.rawShare ?? item.aggregateShare;
-    const amountRaw = item.shareDetail?.affectedAmountRaw ?? sumRaw(matching.map(pathAmountRaw));
-    const ids = item.evidenceIds.slice().sort().join(",");
-    const amountRu = sourceShareText(share, amountRaw, "ru");
-    const amountEn = sourceShareText(share, amountRaw, "en");
+function sourceAmountAndShareText(
+  share: number,
+  amountRaw: string,
+  locale: WalletNarrativeLocale
+): string {
+  return `${formatUsdtRaw(amountRaw, locale)} USDT (${formatPercent(share, locale)}%)`;
+}
+
+function isHtxName(value: string): boolean {
+  return /(?:^|[^a-z])(?:htx|huobi)(?:[^a-z]|$)/i.test(value);
+}
+
+function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
+  const sanctionedPaths = paths.filter((path) => path.sourceExposureKind === "sanctioned_service");
+  if (sanctionedPaths.length === 0) return [];
+  const matchedPaths = new Set<MoneyOriginPath>();
+  const selected = evidence.filter((item) =>
+    item.kind === "sanctioned_service" &&
+    item.proofLevel === "exchange_policy_decline" &&
+    item.shareDetail !== undefined
+  ).flatMap((item) => {
+    const matching = sanctionedPaths.filter((path) => policyMatchesPath(item, path));
+    if (matching.length === 0) return [];
+    matching.forEach((path) => matchedPaths.add(path));
+    const name = matching
+      .map((path) => path.exposureSourceLabel?.trim())
+      .filter((value): value is string => Boolean(value))
+      .sort(compareLexical)[0] ?? "санкционный сервис без установленного названия";
+    const share = item.shareDetail!.rawShare;
+    const amountRaw = item.shareDetail!.affectedAmountRaw;
+    const ids = [...new Set([...item.evidenceIds, ...matching.flatMap((path) => [...pathEvidenceIds(path)])])]
+      .sort(compareLexical);
+    const htx = isHtxName(name);
     return [narrativeFact(
-      `htx:${ids}`,
-      linkedDecline ? "sanctioned_source" : "direct_counterparty_sanction",
-      linkedDecline
-        ? `${amountRu} проверяемой суммы пришло с ${name}. Для выбранной суммы это санкционный источник. Операцию не проводить.`
-        : matching.length > 0
-          ? `Входящий: ${amountRu} проверяемой суммы пришло с ${name}. Это исторический контекст; запрет для выбранной суммы не подтверждён.`
-          : `Входящая связь с ${name} не входит в выбранный источник суммы. Нужна ручная проверка.`,
-      linkedDecline
-        ? `${amountEn} of the checked amount came from ${name}. This is a sanctioned source for the selected amount. Do not proceed.`
-        : matching.length > 0
-          ? `Inbound: ${amountEn} of the checked amount came from ${name}. This is historical context; a prohibition for the selected amount is not confirmed.`
-          : `The inbound link to ${name} is not part of the selected source amount. Manual review is required.`,
+      `sanctioned-source:${ids.join(",")}`,
+      "sanctioned_source",
+      htx
+        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло с ${name}. HTX/Huobi под санкциями Великобритании с 26 мая 2026 года. Это санкционный источник. Операцию не проводить.`
+        : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло с ${name}. Это подтверждённый санкционный источник. Операцию не проводить.`,
+      htx
+        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came from ${name}. HTX/Huobi has been under UK sanctions since 26 May 2026. This is a sanctioned source. Do not proceed.`
+        : `${sourceAmountAndShareText(share, amountRaw, "en")} came from ${name}. This is a confirmed sanctioned source. Do not proceed.`,
       null,
-      linkedDecline ? "exact" : "context"
+      "exact",
+      ids
     )];
+  });
+  const unmatched = sanctionedPaths.filter((path) => !matchedPaths.has(path)).map((path) => {
+    const name = path.exposureSourceLabel?.trim() || "санкционный сервис без установленного названия";
+    const ids = [...pathEvidenceIds(path)].sort(compareLexical);
+    return narrativeFact(
+      `sanctioned-source-context:${ids.join(",")}`,
+      "direct_counterparty_sanction",
+      `Входящая связь с ${name} есть в истории, но не подтверждена как источник выбранной суммы. Нужна ручная проверка.`,
+      `The inbound link to ${name} is present in history but is not confirmed as a source of the selected amount. Manual review is required.`,
+      null,
+      "context",
+      ids
+    );
+  });
+  return [...selected, ...unmatched];
+}
+
+function htxContextFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
+  return paths.filter((path) => path.sourceExposureKind === "htx_huobi").map((path) => {
+    const name = path.exposureSourceLabel?.trim() || "HTX/Huobi";
+    const ids = [...pathEvidenceIds(path)].sort(compareLexical);
+    return narrativeFact(
+      `htx-context:${ids.join(",")}`,
+      "direct_counterparty_sanction",
+      `Входящий перевод с ${name} — исторический контекст, а не подтверждённый санкционный источник выбранной суммы.`,
+      `The inbound transfer from ${name} is historical context, not a confirmed sanctioned source of the selected amount.`,
+      null,
+      "context",
+      ids
+    );
   });
 }
 
@@ -668,32 +725,70 @@ function outboundHtxFacts(profiles: OperationalFlowProfile[]): NarrativeFact[] {
     )));
 }
 
-function bridgeFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
-  const bridgePaths = paths.filter((path) =>
-    path.sourceExposureKind === "bridge_router_dex" || path.sourceExposureKind === "cross_chain_boundary"
-  );
-  if (bridgePaths.length === 0) return [];
-  const policy = evidence.find((item) =>
-    (item.kind === "bridge_router_dex" || item.kind === "cross_chain_boundary") &&
-    bridgePaths.some((path) => policyMatchesPath(item, path))
-  );
+function routeEvidenceIds(paths: MoneyOriginPath[], policy?: SourcePolicyEvidence): string[] {
+  return [...new Set([
+    ...paths.flatMap((path) => [...pathEvidenceIds(path)]),
+    ...(policy?.evidenceIds ?? [])
+  ])].sort(compareLexical);
+}
+
+function policyForRoute(
+  kind: SourcePolicyEvidence["kind"],
+  paths: MoneyOriginPath[],
+  evidence: SourcePolicyEvidence[]
+): SourcePolicyEvidence | undefined {
+  return evidence
+    .filter((item) => item.kind === kind && paths.some((path) => policyMatchesPath(item, path)))
+    .sort((left, right) => compareLexical(left.evidenceIds.slice().sort(compareLexical).join(","), right.evidenceIds.slice().sort(compareLexical).join(",")))[0];
+}
+
+function crossChainFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
+  const routePaths = paths.filter((path) => path.sourceExposureKind === "cross_chain_boundary");
+  if (routePaths.length === 0) return [];
+  const policy = policyForRoute("cross_chain_boundary", routePaths, evidence);
   const share = policy?.shareDetail?.rawShare ?? policy?.aggregateShare ??
-    bridgePaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
-  const amountRaw = policy?.shareDetail?.affectedAmountRaw ?? sumRaw(bridgePaths.map(pathAmountRaw));
-  const name = bridgePaths.find((path) => path.exposureSourceLabel?.trim())?.exposureSourceLabel ?? "неустановленный мост";
-  const txHashes = [...new Set(bridgePaths.map((path) => path.balanceTransferTxHash))].sort();
+    routePaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
+  const amountRaw = policy?.shareDetail?.affectedAmountRaw ?? sumRaw(routePaths.map(pathAmountRaw));
+  const name = routePaths
+    .map((path) => path.exposureSourceLabel?.trim())
+    .filter((value): value is string => Boolean(value))
+    .sort(compareLexical)[0] ?? "неустановленный cross-chain сервис";
+  const txHashes = [...new Set(routePaths.map((path) => path.balanceTransferTxHash))].sort(compareLexical);
   const count = txHashes.length;
-  const amountRu = sourceShareText(share, amountRaw, "ru");
-  const amountEn = sourceShareText(share, amountRaw, "en");
   const repeatedRu = count > 1 ? ` в ${count} переводах` : "";
   const repeatedEn = count > 1 ? ` in ${count} transfers` : "";
+  const ids = routeEvidenceIds(routePaths, policy);
   return [narrativeFact(
-    `bridge:${txHashes.join(",")}`,
+    `cross-chain:${ids.join(",")}`,
     "bridge_route",
-    `${amountRu} проверяемой суммы пришло через мост ${name}${repeatedRu}. История до моста находится в другой сети и не видна в TRON. Мосты используют для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
-    `${amountEn} of the checked amount came through the ${name} bridge${repeatedEn}. History before it is on another chain and not visible on TRON. Bridges serve ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
+    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${name}${repeatedRu}. История до границы находится в другой сети и не видна в TRON. Такие маршруты подходят для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
+    `${sourceShareText(share, amountRaw, "en")} of the checked amount came through ${name}${repeatedEn}. History before the boundary is on another chain and not visible on TRON. Such routes support ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
     null,
-    count > 1 ? "strong" : "context"
+    count > 1 ? "strong" : "context",
+    ids
+  )];
+}
+
+function bridgeRouterDexFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidence[]): NarrativeFact[] {
+  const routePaths = paths.filter((path) => path.sourceExposureKind === "bridge_router_dex");
+  if (routePaths.length === 0) return [];
+  const policy = policyForRoute("bridge_router_dex", routePaths, evidence);
+  const share = policy?.shareDetail?.rawShare ?? policy?.aggregateShare ??
+    routePaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
+  const amountRaw = policy?.shareDetail?.affectedAmountRaw ?? sumRaw(routePaths.map(pathAmountRaw));
+  const name = routePaths
+    .map((path) => path.exposureSourceLabel?.trim())
+    .filter((value): value is string => Boolean(value))
+    .sort(compareLexical)[0] ?? "DEX/router сервис без установленного названия";
+  const ids = routeEvidenceIds(routePaths, policy);
+  return [narrativeFact(
+    `dex-router:${ids.join(",")}`,
+    "bridge_route",
+    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы прошло через DEX/router-сервис ${name}. Такие сервисы используют для обычных обменов и сокрытия происхождения; маршрут повышает AML-риск.`,
+    `${sourceShareText(share, amountRaw, "en")} of the checked amount passed through DEX/router service ${name}. These services support ordinary swaps and can hide origin; the route increases AML risk.`,
+    null,
+    "context",
+    ids
   )];
 }
 
@@ -710,10 +805,11 @@ function cexFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
     return narrativeFact(
       `cex:${name}:${txHashes.join(",")}`,
       "cex_source",
-      `${formatPercent(share, "ru")}% проверяемой суммы пришло с ${name}. Это похоже на вывод средств с биржи.`,
-      `${formatPercent(share, "en")}% of the checked amount came from ${name}. This looks like an exchange withdrawal.`,
+      `${formatPercent(share, "ru")}% проверяемой суммы пришло с ${name} (${russianDirectTransferCount(txHashes.length)}). Это похоже на вывод средств с биржи.`,
+      `${formatPercent(share, "en")}% of the checked amount came from ${name} (${englishDirectTransferCount(txHashes.length)}). This looks like an exchange withdrawal.`,
       null,
-      "context"
+      "context",
+      txHashes
     );
   });
 }
@@ -749,7 +845,8 @@ function unknownContractFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
       `Часть суммы пришла через ${nameRu}.${stop ? ` ${stop.ru}` : ""}`,
       `Part of the amount came through ${nameEn}.${stop ? ` ${stop.en}` : ""}`,
       null,
-      stop ? "limitation" : "context"
+      stop ? "limitation" : "context",
+      [...pathEvidenceIds(path)]
     );
   });
 }
@@ -766,7 +863,8 @@ function serviceBoundaryFacts(profiles: BoundaryExposureProfile[]): NarrativeFac
       `${name} — сервис с общей ликвидностью. Источник до сервиса не прослеживается, потому что здесь объединяются переводы разных клиентов.`,
       `${name} is a pooled liquidity service. The source before the service cannot be traced because transfers from different clients merge there.`,
       null,
-      "limitation"
+      "limitation",
+      txHashes
     );
   }));
 }
@@ -778,9 +876,11 @@ function collectorFacts(
   return behaviorProfiles.flatMap((behavior) => {
     if (behavior.transitScore <= 0 || behavior.uniqueIncomingCounterparties < 2) return [];
     const operational = operationalProfiles.find((profile) => profile.subjectAddress === behavior.subjectAddress);
-    const destination = operational?.topOutgoingCounterparties[0];
+    const destination = operational?.topOutgoingCounterparties
+      .filter((row) => row.isTerminalLiquidity || row.category !== null)
+      .sort((left, right) => right.volumeRatio - left.volumeRatio || compareLexical(left.address, right.address))[0];
     if (!destination) return [];
-    const share = behavior.drainToServiceRatio;
+    const share = destination.volumeRatio;
     return [narrativeFact(
       `collector:${behavior.subjectAddress}:${destination.address}`,
       "collector",
@@ -826,7 +926,8 @@ function riskyCounterpartyFacts(profiles: DirectCounterpartyInteractionProfile[]
       direction.ru,
       direction.en,
       null,
-      "context"
+      "context",
+      transfers.map((transfer) => transfer.txHash)
     )];
   });
 }
@@ -843,9 +944,11 @@ export function sourceAndRouteFacts(input: {
   const paths = input.paths ?? [];
   const policy = input.sourcePolicyEvidence ?? [];
   const facts = [
-    ...htxFacts(paths, policy),
+    ...sanctionedSourceFacts(paths, policy),
+    ...htxContextFacts(paths),
     ...outboundHtxFacts(input.operationalFlowProfiles ?? []),
-    ...bridgeFacts(paths, policy),
+    ...crossChainFacts(paths, policy),
+    ...bridgeRouterDexFacts(paths, policy),
     ...cexFacts(paths),
     ...unknownContractFacts(paths),
     ...serviceBoundaryFacts(input.boundaryExposureProfiles ?? []),
@@ -872,13 +975,16 @@ export function gasFreeFeeFact(
   }
   const total = [...fees.values()].reduce((sum, value) => sum + value, 0n);
   if (total === 0n) return null;
+  const txHashes = [...new Set([...fees.keys()].map((key) => key.slice(0, key.indexOf(":"))))]
+    .sort(compareLexical);
   return narrativeFact(
     `gasfree-fee:${[...fees.keys()].sort().join(",")}`,
     "gasfree_fee",
     `GasFree удержал ${formatUsdtRaw(total.toString(), "ru")} USDT перед переводом. Это комиссия сервиса, а не основная сумма перевода.`,
     `GasFree retained ${formatUsdtRaw(total.toString(), "en")} USDT before the transfer. This is a service fee, not transfer principal.`,
     null,
-    "exact"
+    "exact",
+    txHashes
   );
 }
 
@@ -990,17 +1096,31 @@ export function coverageExplanationFor(input: {
 }
 
 function canonicalFacts(facts: NarrativeFact[]): NarrativeFact[] {
+  const proofRank: Record<NonNullable<NarrativeFact["proofStrength"]>, number> = {
+    exact: 0,
+    strong: 1,
+    context: 2,
+    limitation: 3
+  };
   const ordered = [...facts].sort((left, right) =>
     factRank[left.kind] - factRank[right.kind] ||
-    left.id.localeCompare(right.id) ||
-    left.factTextRu.localeCompare(right.factTextRu) ||
-    left.factTextEn.localeCompare(right.factTextEn)
+    (right.evidenceIds?.length ?? 0) - (left.evidenceIds?.length ?? 0) ||
+    right.factTextRu.length - left.factTextRu.length ||
+    proofRank[left.proofStrength ?? "context"] - proofRank[right.proofStrength ?? "context"] ||
+    compareLexical(left.id, right.id) ||
+    compareLexical(left.factTextRu, right.factTextRu) ||
+    compareLexical(left.factTextEn, right.factTextEn)
   );
-  const byId = new Map<string, NarrativeFact>();
+  const selected: NarrativeFact[] = [];
   for (const fact of ordered) {
-    if (!byId.has(fact.id)) byId.set(fact.id, fact);
+    if (selected.some((existing) => existing.id === fact.id)) continue;
+    const ids = new Set(fact.evidenceIds ?? []);
+    const overlapsSameKind = ids.size > 0 && selected.some((existing) =>
+      existing.kind === fact.kind && existing.evidenceIds?.some((id) => ids.has(id))
+    );
+    if (!overlapsSameKind) selected.push(fact);
   }
-  return [...byId.values()];
+  return selected;
 }
 
 export function buildWalletNarrativeEvidence(
@@ -1110,6 +1230,15 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
     }
     if (fact.priority !== undefined && !Number.isInteger(fact.priority)) {
       throw new Error("Wallet narrative fact priority must be an integer.");
+    }
+    if (fact.evidenceIds !== undefined && !Array.isArray(fact.evidenceIds)) {
+      throw new Error("Wallet narrative fact evidence ids must be an array.");
+    }
+    if (
+      Array.isArray(fact.evidenceIds) &&
+      fact.evidenceIds.some((id) => typeof id !== "string" || id.length === 0)
+    ) {
+      throw new Error("Wallet narrative fact evidence ids must contain non-empty strings.");
     }
   });
   if (input.coverageExplanation === null) return;

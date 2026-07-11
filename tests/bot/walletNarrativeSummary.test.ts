@@ -557,6 +557,16 @@ describe("formatWalletNarrativeSummary", () => {
       error: /fact priority must be an integer/
     },
     {
+      name: "fact evidence ids type",
+      value: { facts: [{ ...primaryFact, evidenceIds: "abc" }] },
+      error: /fact evidence ids must be an array/
+    },
+    {
+      name: "empty fact evidence id",
+      value: { facts: [{ ...primaryFact, evidenceIds: [""] }] },
+      error: /fact evidence ids must contain non-empty strings/
+    },
+    {
       name: "coverage object",
       value: { coverageExplanation: [] },
       error: /coverage must be an object or null/
@@ -1241,34 +1251,70 @@ describe("wallet narrative signal catalogue", () => {
     expect(`${unknown?.factTextRu}\n${unknown?.factTextEn}`).not.toMatch(/сам проверяемый адрес.*не|checked address itself is not/i);
   });
 
-  it("renders HTX decline only from matching canonical selected-path policy evidence", () => {
+  it("renders post-designation HTX sanctions only from matching sanctioned-service policy evidence", () => {
     const txHash = "8".repeat(64);
     const path = originPath({
       balanceTransferTxHash: txHash,
       exposureSourceLabel: "HTX/Huobi",
-      sourceExposureKind: "htx_huobi",
-      balanceShare: 0.4,
+      sourceExposureKind: "sanctioned_service",
+      balanceShare: 1,
       txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "100000000000",
+        usedAmountRaw: "100000000000",
+        coverageShare: 1,
+        role: "anchor"
+      },
       steps: [{
         txHash,
         fromAddress: counterparty,
         toAddress: subject,
-        amountRaw: "40000000000",
+        amountRaw: "100000000000",
         timestamp: "2026-05-27T00:00:00.000Z"
       }]
     });
     const [fact] = catalogueApi.sourceAndRouteFacts({
       paths: [path],
-      sourcePolicyEvidence: [policyEvidence({ evidenceIds: [txHash] })]
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "sanctioned_service",
+        evidenceIds: [txHash]
+      })]
     });
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
 
-    expect(fact?.factTextRu).toMatch(/40%.*пришло с HTX\/Huobi.*санкцион.*операцию не проводить/i);
-    expect(fact?.factTextEn).toMatch(/40%.*came from HTX\/Huobi.*sanctioned.*do not proceed/i);
-    expect(copy).not.toMatch(/краж|theft|Великобритани|\bUK\b/i);
+    expect(fact?.factTextRu).toMatch(/40 000 USDT.*40%.*HTX\/Huobi.*санкц.*Великобритани.*26 мая 2026.*операцию не проводить/i);
+    expect(fact?.factTextEn).toMatch(/40,000 USDT.*40%.*HTX\/Huobi.*UK sanctions.*26 May 2026.*do not proceed/i);
+    expect(copy).not.toMatch(/краж|theft/i);
   });
 
-  it("keeps unmatched or context-proof HTX inbound evidence as plain context", () => {
+  it("renders another canonical sanctioned service without inventing authority or date", () => {
+    const txHash = "5".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        exposureSourceLabel: "Example Sanctioned Service",
+        sourceExposureKind: "sanctioned_service",
+        txHashes: [txHash]
+      })],
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "sanctioned_service",
+        evidenceIds: [txHash],
+        shareDetail: {
+          ...policyEvidence().shareDetail!,
+          affectedAmountRaw: "25000000000",
+          rawShare: 0.25,
+          effectiveShare: 0.25
+        }
+      })]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(copy).toMatch(/25 000 USDT.*25%.*Example Sanctioned Service.*санкцион|25,000 USDT.*25%.*Example Sanctioned Service.*sanctioned/is);
+    expect(copy).toMatch(/операцию не проводить|do not proceed/i);
+    expect(copy).not.toMatch(/Великобритани|\bUK\b|26 мая|26 May/i);
+  });
+
+  it("keeps ordinary HTX and unmatched evidence as plain inbound context", () => {
     const path = originPath({
       exposureSourceLabel: "HTX/Huobi",
       sourceExposureKind: "htx_huobi",
@@ -1276,6 +1322,8 @@ describe("wallet narrative signal catalogue", () => {
     });
     const cases = [
       policyEvidence({ proofLevel: "exchange_policy_context", evidenceIds: path.txHashes }),
+      policyEvidence({ proofLevel: "exchange_policy_decline", evidenceIds: path.txHashes }),
+      policyEvidence({ kind: "sanctioned_service", proofLevel: "exchange_policy_decline", evidenceIds: path.txHashes }),
       policyEvidence({ proofLevel: "exchange_policy_decline", evidenceIds: ["6".repeat(64)] })
     ];
 
@@ -1286,16 +1334,19 @@ describe("wallet narrative signal catalogue", () => {
     }
   });
 
-  it("does not aggregate a decline HTX share when canonical affected amount detail is absent", () => {
+  it("fails closed when sanctioned-service evidence does not match the selected path", () => {
     const txHash = "8".repeat(64);
     const path = originPath({
-      exposureSourceLabel: "HTX/Huobi",
-      sourceExposureKind: "htx_huobi",
+      exposureSourceLabel: "Example Sanctioned Service",
+      sourceExposureKind: "sanctioned_service",
       txHashes: [txHash]
     });
     const [fact] = catalogueApi.sourceAndRouteFacts({
       paths: [path],
-      sourcePolicyEvidence: [policyEvidence({ evidenceIds: [txHash], shareDetail: undefined })]
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "sanctioned_service",
+        evidenceIds: ["4".repeat(64)]
+      })]
     });
 
     expect(fact?.kind).toBe("direct_counterparty_sanction");
@@ -1363,6 +1414,28 @@ describe("wallet narrative signal catalogue", () => {
     if (repeated) expect(copy).toMatch(/10 перевод|10 transfers.*нетипич|unusual/is);
   });
 
+  it("describes a SUN.io bridge-router-DEX route without claiming a cross-chain boundary", () => {
+    const txHash = "2".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        balanceTransferTxHash: txHash,
+        exposureSourceLabel: "SUN.io",
+        sourceExposureKind: "bridge_router_dex",
+        txHashes: [txHash]
+      })],
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "bridge_router_dex",
+        proofLevel: "exchange_policy_context",
+        evidenceIds: [txHash]
+      })]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(copy).toMatch(/SUN\.io.*DEX|SUN\.io.*router|SUN\.io.*обменн.*сервис/is);
+    expect(copy).toMatch(/обычн.*обмен.*скры.*происхожд.*AML-риск|ordinary swaps.*hide.*origin.*AML risk/is);
+    expect(copy).not.toMatch(/мост|bridge|друг.*сет|another chain|other chain/i);
+  });
+
   it("derives CEX and a proven unknown-contract stop from canonical paths", () => {
     const cex = originPath();
     const unknown = originPath({
@@ -1382,6 +1455,22 @@ describe("wallet narrative signal catalogue", () => {
     expect(copy).toMatch(/72%.*пришло с Binance|72%.*came from Binance/i);
     expect(copy).toMatch(/контракт без названия.*старые переводы.*источник[а]? данных|unnamed contract.*older transfers.*provider/is);
     expect(copy).not.toMatch(/контракт.*непрослеживаем|contract.*untraceable/i);
+  });
+
+  it.each([
+    { count: 1, ru: /1 перевод\)/, en: /1 transfer\)/ },
+    { count: 4, ru: /4 перевода\)/, en: /4 transfers\)/ }
+  ])("counts $count unique CEX balance transfers", ({ count, ru, en }) => {
+    const paths = Array.from({ length: count }, (_, index) => originPath({
+      balanceTransferTxHash: String(index + 1).repeat(64).slice(0, 64),
+      balanceShare: 0.1,
+      txHashes: [String(index + 1).repeat(64).slice(0, 64)]
+    }));
+    paths.push({ ...paths[0]!, balanceShare: 0 });
+    const [fact] = catalogueApi.sourceAndRouteFacts({ paths });
+
+    expect(fact?.factTextRu).toMatch(ru);
+    expect(fact?.factTextEn).toMatch(en);
   });
 
   it("does not call an unknown contract a terminal stop without canonical stop evidence", () => {
@@ -1441,15 +1530,64 @@ describe("wallet narrative signal catalogue", () => {
     expect(fact?.factTextEn).toMatch(/Example Router.*pooled liquidity.*before the service.*cannot be traced/i);
   });
 
-  it("derives collector behavior from canonical behavior and operational profiles", () => {
+  it("uses the selected terminal row's own ratio for collector behavior", () => {
+    const operational = operationalProfile({
+      topOutgoingCounterparties: [
+        {
+          address: `T${"7".repeat(33)}`,
+          direction: "outgoing",
+          volumeRaw: "70000000000",
+          txCount: 4,
+          volumeRatio: 0.7,
+          category: null,
+          identity: "Ordinary peer",
+          isTerminalLiquidity: false,
+          isHtxHuobi: false
+        },
+        {
+          address: counterparty,
+          direction: "outgoing",
+          volumeRaw: "20000000000",
+          txCount: 2,
+          volumeRatio: 0.2,
+          category: "cex",
+          identity: "Bybit",
+          isTerminalLiquidity: true,
+          isHtxHuobi: false
+        }
+      ]
+    });
     const [fact] = catalogueApi.sourceAndRouteFacts({
       addressBehaviorProfiles: [behaviorProfile()],
-      operationalFlowProfiles: [operationalProfile()]
+      operationalFlowProfiles: [operational]
     });
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
 
-    expect(copy).toMatch(/18 адресов.*98%.*Bybit.*кошел[её]к-сборщик|18 addresses.*98%.*Bybit.*collector wallet/is);
+    expect(copy).toMatch(/18 адресов.*20%.*Bybit.*кошел[её]к-сборщик|18 addresses.*20%.*Bybit.*collector wallet/is);
+    expect(copy).not.toMatch(/Ordinary peer|70%|98%/i);
     expect(copy).not.toMatch(/грязн|винов|dirty|guilt/i);
+  });
+
+  it("does not invent a collector service destination when no outgoing row is terminal", () => {
+    const operational = operationalProfile({
+      topOutgoingCounterparties: [{
+        address: counterparty,
+        direction: "outgoing",
+        volumeRaw: "98000000000",
+        txCount: 8,
+        volumeRatio: 0.98,
+        category: null,
+        identity: "Ordinary peer",
+        isTerminalLiquidity: false,
+        isHtxHuobi: false
+      }]
+    });
+    const facts = catalogueApi.sourceAndRouteFacts({
+      addressBehaviorProfiles: [behaviorProfile()],
+      operationalFlowProfiles: [operational]
+    });
+
+    expect(facts.some((fact) => fact.kind === "collector")).toBe(false);
   });
 
   it.each([
@@ -1563,6 +1701,83 @@ describe("wallet narrative signal catalogue", () => {
     if (labelCode === "victim") {
       expect(`${fact?.factTextRu}\n${fact?.factTextEn}`).not.toMatch(/дрейнер|drainer/i);
     }
+  });
+
+  it("physically deduplicates overlapping route and label evidence regardless of input order", () => {
+    const firstHash = "1".repeat(64);
+    const secondHash = "2".repeat(64);
+    const paths = [
+      originPath({
+        balanceTransferTxHash: firstHash,
+        rootSourceType: "decline_boundary",
+        exposureSourceLabel: "UsdtOFT",
+        sourceExposureKind: "cross_chain_boundary",
+        txHashes: [firstHash]
+      }),
+      originPath({
+        balanceTransferTxHash: secondHash,
+        rootSourceType: "decline_boundary",
+        exposureSourceLabel: "LayerZero",
+        sourceExposureKind: "cross_chain_boundary",
+        txHashes: [secondHash]
+      })
+    ];
+    const labels: FirstHopLabelFact[] = [firstHash, secondHash].map((hash, index) => ({
+      counterpartyAddress: `T${String(index + 4).repeat(33)}`,
+      direction: "inbound",
+      labelCode: "bridge",
+      evidenceAuthority: "exact_internal",
+      recordedAt: "2026-07-11T00:00:00.000Z",
+      effectiveAt: null,
+      principalAmountRaw: "1000000",
+      principalTxCount: 1,
+      directionalPrincipalShare: 0.01,
+      shareSemantics: "exact",
+      transferTxHashes: [hash],
+      linkedToSelectedProvenance: true
+    }));
+
+    const forward = catalogueApi.sourceAndRouteFacts({ paths, firstHopLabelFacts: labels });
+    const reversed = catalogueApi.sourceAndRouteFacts({
+      paths: [...paths].reverse(),
+      firstHopLabelFacts: [...labels].reverse()
+    });
+    const bridgeFacts = forward.filter((fact) => fact.kind === "bridge_route");
+
+    expect(bridgeFacts).toHaveLength(1);
+    expect(bridgeFacts[0]?.evidenceIds).toEqual([firstHash, secondHash, "9".repeat(64)]);
+    expect(bridgeFacts[0]?.factTextEn).toMatch(/another chain.*not visible on TRON/i);
+    expect(reversed).toEqual(forward);
+  });
+
+  it("does not deduplicate different semantic kinds that share one transaction", () => {
+    const txHash = "3".repeat(64);
+    const facts = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        balanceTransferTxHash: txHash,
+        rootSourceType: "decline_boundary",
+        exposureSourceLabel: "UsdtOFT",
+        sourceExposureKind: "cross_chain_boundary",
+        txHashes: [txHash]
+      })],
+      firstHopLabelFacts: [{
+        counterpartyAddress: counterparty,
+        direction: "inbound",
+        labelCode: "scam",
+        evidenceAuthority: "exact_internal",
+        recordedAt: "2026-07-11T00:00:00.000Z",
+        effectiveAt: null,
+        principalAmountRaw: "1000000",
+        principalTxCount: 1,
+        directionalPrincipalShare: 0.01,
+        shareSemantics: "exact",
+        transferTxHashes: [txHash],
+        linkedToSelectedProvenance: true
+      }]
+    });
+
+    expect(facts.map((fact) => fact.kind)).toEqual(["direct_counterparty_exact_label", "bridge_route"]);
+    expect(facts.every((fact) => fact.evidenceIds?.includes(txHash))).toBe(true);
   });
 
   it("omits false-positive labels and keeps derived adverse labels contextual", () => {
