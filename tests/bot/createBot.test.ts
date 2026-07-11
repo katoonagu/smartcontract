@@ -2496,6 +2496,7 @@ describe("bot command and inline UX smoke coverage", () => {
       subjectAddress: walletAddress,
       score: expect.any(Number)
     });
+    expect(savedFastJob.resultJson.scoringPolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
     expect(savedFastJob.resultJson.fastCounterpartyTopsProfile).toEqual(fastCounterpartyTopsProfile);
     expect(savedFastJob.resultJson.missingChecks).toEqual(["service_exposure_timeout"]);
     expect(savedFastJob.resultJson.followUpJobs).toEqual({
@@ -3259,6 +3260,43 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain(walletAddress);
     expect(text).toContain("85/100");
     expect(text).not.toContain("Deep forensic status");
+  });
+
+  it("shows current Deep context instead of a legacy Where outcome in detailed Deep status", async () => {
+    const deepReport = deepReportForTest({
+      stablecoinRestrictionProfiles: [stablecoinRestrictionProfile({ subjectAddress: walletAddress })]
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job-current-with-legacy-where",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+    const legacyWhere = whereIsMoneyReportForTest({
+      scoringPolicyVersion: "scoring-signal-matrix-v1",
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45
+    });
+    const legacyWhereJob = whereIsMoneyJobForTest({
+      id: "where-job-legacy-for-current-deep",
+      resultJson: {
+        scoringPolicyVersion: "scoring-signal-matrix-v1",
+        subjectAddress: walletAddress,
+        whereIsMoneyReport: legacyWhere
+      }
+    });
+    const { bot, calls } = await createSmokeBot({
+      getForensicCheckJob: async () => deepJob,
+      getLatestWhereIsMoneyCheckJobForAddress: async () => legacyWhereJob
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status deep-job-current-with-legacy-where detailed", userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Address behavior — context ready");
+    expect(text).not.toContain("Legacy result");
+    expect(text).not.toContain("45/100");
   });
 
   it("does not show malformed persisted Deep hard evidence in detailed check_status", async () => {
@@ -4202,6 +4240,42 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("REVIEW");
     expect(text).toContain("45/100");
     expect(text).not.toContain("90/100");
+  });
+
+  it("keeps automatic current Deep delivery standalone when matching Where is legacy", () => {
+    const currentDeep = deepReportForTest({
+      stablecoinRestrictionProfiles: [stablecoinRestrictionProfile({ subjectAddress: walletAddress })]
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(currentDeep)
+    });
+    const legacyWhere = whereIsMoneyReportForTest({
+      scoringPolicyVersion: "scoring-signal-matrix-v1",
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45
+    });
+    const legacyWhereJob = whereIsMoneyJobForTest({
+      resultJson: {
+        scoringPolicyVersion: "scoring-signal-matrix-v1",
+        subjectAddress: walletAddress,
+        whereIsMoneyReport: legacyWhere
+      }
+    });
+
+    const text = plainTelegramText(formatDeepForensicUserDeliveryReport(
+      deepJob,
+      currentDeep,
+      "completed",
+      legacyWhereJob,
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Address behavior — context ready");
+    expect(text).not.toContain("Legacy result");
+    expect(text).not.toContain("45/100");
   });
 
   it("formats Russian selected-anchor coverage without English copy", () => {

@@ -1895,7 +1895,7 @@ export function formatDeepForensicUserDeliveryReport(
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
   const currentDeepReport = currentScoringPolicyDeepReport(report);
-  return whereReport
+  return whereReport && hasCurrentScoringPolicy(whereReport)
     ? formatUnifiedAddressFinalReport({
         address: report.subjectAddress,
         whereReport,
@@ -4026,6 +4026,7 @@ async function replyWithCheck(
         ...(parsedInput.requestedAmountRaw ? { requestedAmountRaw: parsedInput.requestedAmountRaw } : {})
       },
       resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: fastResult.subjectAddress,
         windowStart: resultWindowStart,
         windowEnd: resultWindowEnd,
@@ -4695,7 +4696,7 @@ export function createBot(
         const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(job, job.subjectAddress));
         const matchingWhereJob = await resolveLatestWhereIsMoneyCheckJobForAddress(relatedJobLookupInput(job));
         const matchingWhereReport = extractWhereIsMoneyReportFromJob(matchingWhereJob, job.subjectAddress);
-        if (matchingWhereReport) {
+        if (matchingWhereReport && hasCurrentScoringPolicy(matchingWhereReport)) {
           await sendMessage(ctx, formatUnifiedAddressDetailedReport({
             address: job.subjectAddress,
             whereReport: matchingWhereReport,
@@ -4705,6 +4706,15 @@ export function createBot(
             runtimeLabel: config.runtimeInstanceLabel,
             locale
           }));
+          return;
+        }
+        if (matchingWhereReport && deepReport) {
+          await sendMessage(ctx, formatDeepForensicContextReadyReport(
+            job,
+            deepReport,
+            job.status === "partial" ? "partial" : "completed",
+            { runtimeLabel: config.runtimeInstanceLabel, locale }
+          ));
           return;
         }
       }

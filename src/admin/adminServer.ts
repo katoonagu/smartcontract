@@ -1037,8 +1037,13 @@ function extractFastRiskReportFromAdminJob(
 ): RiskReport | null {
   if (!job || job.kind !== "address_fast_check" || (job.status !== "completed" && job.status !== "partial")) return null;
   const result = jobResultRecord(job);
-  if (result.subjectAddress !== subjectAddress && job.subjectAddress !== subjectAddress) return null;
+  if (
+    result.scoringPolicyVersion !== SCORING_SIGNAL_MATRIX_POLICY_VERSION ||
+    job.subjectAddress !== subjectAddress ||
+    result.subjectAddress !== subjectAddress
+  ) return null;
   const rawReport = isRecord(result.fastRiskReport) ? result.fastRiskReport : result;
+  if (rawReport.subjectAddress !== subjectAddress) return null;
   const level = riskLevel(rawReport.level);
   if (!isFiniteNumber(rawReport.score) || !level) return null;
   const score = rawReport.score;

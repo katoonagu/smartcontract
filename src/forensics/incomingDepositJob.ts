@@ -4,6 +4,7 @@ import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import {
   calculateUnifiedIncomingDepositRisk,
   incomingRiskBandFromUnifiedScore,
@@ -2346,7 +2347,10 @@ export async function runSingleIncomingDepositJobCycle(
       id: job.id,
       status: "completed",
       progressJson: currentProgress,
-      resultJson: report as unknown as Record<string, unknown>,
+      resultJson: {
+        ...(report as unknown as Record<string, unknown>),
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+      },
       rawEvidenceIds: [],
       observationIds: [],
       lastError: null

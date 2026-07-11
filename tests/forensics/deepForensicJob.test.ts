@@ -1587,7 +1587,10 @@ describe("deep forensic job runner", () => {
           contractDrivenTransferProfiles: []
         })
       }));
-      expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, whereReport, "completed");
+      expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, expect.objectContaining({
+        ...whereReport,
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+      }), "completed");
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
@@ -3310,7 +3313,10 @@ describe("deep forensic job runner", () => {
         status: "completed",
         lastError: null,
         resultJson: expect.objectContaining({
-          whereIsMoneyReport: whereReport
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          })
         })
       }));
       expect(coverageSnapshots[0]).toMatchObject({
@@ -3706,7 +3712,10 @@ describe("deep forensic job runner", () => {
         }),
         resultJson: expect.objectContaining({
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport,
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          }),
           score_valid: false,
           score_blocked_reason: "provider_error",
           technical_status: "provider_error"
@@ -3776,7 +3785,10 @@ describe("deep forensic job runner", () => {
         }),
         resultJson: expect.objectContaining({
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport,
+          whereIsMoneyReport: expect.objectContaining({
+            ...whereReport,
+            scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+          }),
           score_valid: false,
           score_blocked_reason: "provider_error",
           technical_status: "provider_error"

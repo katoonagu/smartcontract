@@ -1605,8 +1605,10 @@ async function runWhereIsMoneyJob(
         await persistProgress(patch);
       }
     }));
-    report = currentReport;
-    report.scoringPolicyVersion = SCORING_SIGNAL_MATRIX_POLICY_VERSION;
+    report = {
+      ...currentReport,
+      scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+    };
   } catch (error) {
     if (error instanceof StrictProvenanceWaitingForIndex || error instanceof TargetedHistoryWaitingForIndex) return true;
     throw error;
@@ -1978,9 +1980,7 @@ export async function runSingleDeepForensicJobCycle(
       id: job.id,
       status: "failed",
       progressJson: job.progressJson,
-      resultJson: job.kind === "where_is_money_check"
-        ? { scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION }
-        : {},
+      resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: message

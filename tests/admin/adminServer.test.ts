@@ -2073,6 +2073,60 @@ describe("startAdminServer", () => {
     expect(graph.summary.riskScore).not.toBe(90);
   });
 
+  it.each([
+    { name: "mismatched embedded subject", marker: SCORING_SIGNAL_MATRIX_POLICY_VERSION, embeddedSubject: "TOther1111111111111111111111111111111", expectedCurrent: false },
+    { name: "unmarked legacy report", marker: undefined, embeddedSubject: subjectAddress, expectedCurrent: false },
+    { name: "marked exact subject", marker: SCORING_SIGNAL_MATRIX_POLICY_VERSION, embeddedSubject: subjectAddress, expectedCurrent: true }
+  ])("uses related Fast evidence only for a $name", async ({ marker, embeddedSubject, expectedCurrent }) => {
+    const whereJob = job({
+      id: "job-current-where-fast-guard",
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest()
+      }
+    });
+    const fastJob = job({
+      id: `job-fast-${expectedCurrent ? "current" : "rejected"}`,
+      kind: "address_fast_check",
+      windowStart: whereJob.windowStart,
+      windowEnd: whereJob.windowEnd,
+      resultJson: {
+        ...(marker === undefined ? {} : { scoringPolicyVersion: marker }),
+        subjectAddress,
+        fastRiskReport: {
+          subjectAddress: embeddedSubject,
+          score: 90,
+          level: "CRITICAL",
+          reasons: [{
+            code: "stablecoin_usdt_blacklisted",
+            message: "Exact Fast blacklist signal.",
+            scoreImpact: 90
+          }]
+        }
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [fastJob],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+
+    if (expectedCurrent) {
+      expect(graph.summary.riskScore).toBe(95);
+      expect(humanSummary).toMatch(/blacklist/i);
+    } else {
+      expect(graph.summary.riskScore).not.toBe(90);
+      expect(humanSummary).not.toContain("Exact Fast blacklist signal");
+    }
+  });
+
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {
     const whereReport = whereReportForAdminTest();
     const whereJob = job({
