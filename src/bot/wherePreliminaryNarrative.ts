@@ -139,7 +139,7 @@ function fastFacts(report: WhereIsMoneyReport): NarrativeFact[] {
       kind: copy.kind,
       ru: copy.ru,
       en: copy.en,
-      evidenceIds: reason.evidenceRef ? [reason.evidenceRef] : [],
+      evidenceIds: [reason.evidenceRef ?? `fast:${reason.code}`],
       signalKeys: [reason.code],
       proofStrength: copy.proofStrength
     })];
@@ -290,6 +290,9 @@ function semanticallyCompatible(fact: NarrativeFact, driver: WhereNarrativeDrive
 function matchesDriver(fact: NarrativeFact, driver: WhereNarrativeDriver): boolean {
   if (!semanticallyCompatible(fact, driver)) return false;
   const factIds = fact.evidenceIds ?? [];
+  if (driver.kind === "fast_critical") {
+    return driver.evidenceIds.length > 0 && factIds.length > 0 && overlaps(factIds, driver.evidenceIds);
+  }
   return driver.evidenceIds.length === 0 || factIds.length === 0 || overlaps(factIds, driver.evidenceIds);
 }
 

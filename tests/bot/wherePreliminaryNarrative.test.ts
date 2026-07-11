@@ -184,6 +184,62 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.preferredFactId).toBe(`fast-subject:${code}`);
   });
 
+  it("binds production fast_critical through the fallback Fast evidence id", () => {
+    const code = "stablecoin_usdt_blacklisted";
+    const fallbackEvidenceId = `fast:${code}`;
+    const report = whereReportFixture({
+      riskScore: 95,
+      fastWalletRisk: {
+        subjectAddress: WHERE_SUBJECT,
+        level: "CRITICAL",
+        score: 95,
+        reasons: [{ code, message: POISON_RAW_REASON, scoreImpact: 95 }]
+      },
+      assessment: whereAssessmentFixture({
+        riskScore: 95,
+        hardBadEvidence: [{
+          kind: "fast_critical", score: 95, message: POISON_RAW_REASON, evidenceIds: [fallbackEvidenceId]
+        }],
+        dominantRiskLayer: whereRiskLayerFixture("fast_critical", 95, "hard_proof", [fallbackEvidenceId])
+      })
+    });
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+    expect(result.score).toBe(95);
+    expect(result.preferredFactId).toBe(`fast-subject:${code}`);
+  });
+
+  it("rejects a mismatched production Fast fallback evidence id", () => {
+    const report = whereReportFixture({
+      riskScore: 95,
+      fastWalletRisk: {
+        subjectAddress: WHERE_SUBJECT,
+        level: "CRITICAL",
+        score: 95,
+        reasons: [{
+          code: "stablecoin_usdt_blacklisted",
+          message: POISON_RAW_REASON,
+          scoreImpact: 95
+        }]
+      },
+      assessment: whereAssessmentFixture({
+        riskScore: 95,
+        hardBadEvidence: [{
+          kind: "fast_critical",
+          score: 95,
+          message: POISON_RAW_REASON,
+          evidenceIds: ["fast:internal_label_scam"]
+        }],
+        dominantRiskLayer: whereRiskLayerFixture(
+          "fast_critical", 95, "hard_proof", ["fast:internal_label_scam"]
+        )
+      })
+    });
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+    expect(result.sections.findings).toEqual([]);
+  });
+
   it("keeps evidence overlap mandatory for production fast_critical", () => {
     const driverEvidenceId = "fast:driver";
     const report = whereReportFixture({
