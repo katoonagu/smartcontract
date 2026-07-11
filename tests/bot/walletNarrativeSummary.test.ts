@@ -33,6 +33,7 @@ import {
   tgytFirstHopCoverage,
   tgytSubjectRestriction
 } from "../fixtures/forensics/directBlacklistCases";
+import { SANCTIONED_CRYPTO_SERVICES } from "../../src/forensics/sanctionedServiceRegistry";
 
 const primaryFact: NarrativeFact = {
   id: "primary",
@@ -1184,6 +1185,7 @@ function postDesignationHtxPath(): MoneyOriginPath {
   const txHash = "8".repeat(64);
   return originPath({
     balanceTransferTxHash: txHash,
+    exposureSourceKey: "htx_huobi",
     exposureSourceLabel: "HTX/Huobi",
     sourceExposureKind: "sanctioned_service",
     balanceShare: 1,
@@ -1706,9 +1708,11 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it("keeps pre-designation HTX as material historical compliance risk from matched typed evidence", () => {
+    const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
     const txHash = "7".repeat(64);
     const path = originPath({
       balanceTransferTxHash: txHash,
+      exposureSourceKey: "htx_huobi",
       exposureSourceLabel: "HTX",
       sourceExposureKind: "htx_huobi",
       balanceShare: 0.4,
@@ -1718,7 +1722,7 @@ describe("wallet narrative signal catalogue", () => {
         fromAddress: counterparty,
         toAddress: subject,
         amountRaw: "40000000000",
-        timestamp: "2026-05-25T23:59:59.999Z"
+        timestamp: new Date(Date.parse(htx.designatedAt) - 1).toISOString()
       }]
     });
     const [fact] = catalogueApi.sourceAndRouteFacts({
@@ -1740,15 +1744,17 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it("uses the exact HTX boundary and never promotes the name alone", () => {
+    const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
     const txHash = "8".repeat(64);
     const boundaryPath = postDesignationHtxPath();
-    boundaryPath.steps[0]!.timestamp = "2026-05-26T00:00:00.000Z";
+    boundaryPath.steps[0]!.timestamp = htx.designatedAt;
     const [atBoundary] = catalogueApi.sourceAndRouteFacts({
       paths: [boundaryPath],
       sourcePolicyEvidence: [postDesignationHtxPolicy()]
     });
     const namedOnlyPath = originPath({
       balanceTransferTxHash: txHash,
+      exposureSourceKey: "htx_huobi",
       exposureSourceLabel: "HTX",
       sourceExposureKind: "htx_huobi",
       txHashes: [txHash],
@@ -1757,7 +1763,7 @@ describe("wallet narrative signal catalogue", () => {
         fromAddress: counterparty,
         toAddress: subject,
         amountRaw: "40000000000",
-        timestamp: "2026-05-26T00:00:00.000Z"
+        timestamp: htx.designatedAt
       }]
     });
     const [namedOnly] = catalogueApi.sourceAndRouteFacts({ paths: [namedOnlyPath] });
@@ -1775,6 +1781,72 @@ describe("wallet narrative signal catalogue", () => {
     expect(`${namedOnly?.factTextRu}\n${namedOnly?.meaningTextRu}`).not.toMatch(/прямой санкционный|на дату перевода.*санкц/i);
     expect(unmatched?.proofStrength).toBe("context");
     expect(`${unmatched?.factTextRu}\n${unmatched?.meaningTextRu}`).not.toMatch(/прямой санкционный источник/i);
+  });
+
+  it.each([null, "Renamed exchange cluster"])(
+    "uses typed HTX identity and the registry boundary when the label is %s",
+    (label) => {
+      const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
+      const txHash = `${label === null ? "4" : "5"}`.repeat(64);
+      const path = originPath({
+        balanceTransferTxHash: txHash,
+        exposureSourceKey: "htx_huobi",
+        exposureSourceLabel: label,
+        sourceExposureKind: "sanctioned_service",
+        txHashes: [txHash],
+        steps: [{
+          txHash,
+          fromAddress: counterparty,
+          toAddress: subject,
+          amountRaw: "40000000000",
+          timestamp: htx.designatedAt
+        }]
+      });
+      const [fact] = catalogueApi.sourceAndRouteFacts({
+        paths: [path],
+        sourcePolicyEvidence: [policyEvidence({
+          kind: "sanctioned_service",
+          evidenceIds: [txHash]
+        })]
+      });
+      const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+      expect(fact?.kind).toBe("sanctioned_source");
+      expect(copy).toMatch(/HTX|Huobi/i);
+      expect(copy).toMatch(/Великобритани|UK sanctions/i);
+      expect(copy).not.toContain("Renamed exchange cluster");
+      expect(copy).not.toContain("..");
+    }
+  );
+
+  it("does not infer HTX sanctions identity or UK date from a label without the typed key", () => {
+    const htx = SANCTIONED_CRYPTO_SERVICES.find((service) => service.key === "htx_huobi")!;
+    const txHash = "6".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      paths: [originPath({
+        balanceTransferTxHash: txHash,
+        exposureSourceKey: "other_sanctioned_service",
+        exposureSourceLabel: "HTX lookalike desk",
+        sourceExposureKind: "sanctioned_service",
+        txHashes: [txHash],
+        steps: [{
+          txHash,
+          fromAddress: counterparty,
+          toAddress: subject,
+          amountRaw: "40000000000",
+          timestamp: htx.designatedAt
+        }]
+      })],
+      sourcePolicyEvidence: [policyEvidence({
+        kind: "sanctioned_service",
+        evidenceIds: [txHash]
+      })]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(fact?.kind).toBe("sanctioned_source");
+    expect(copy).not.toMatch(/Великобритани|UK sanctions|26 мая|26 May/i);
+    expect(copy).not.toContain("HTX/Huobi Global");
   });
 
   it.each([
@@ -1917,6 +1989,7 @@ describe("wallet narrative signal catalogue", () => {
 
   it("keeps ordinary HTX and unmatched evidence as plain inbound context", () => {
     const path = originPath({
+      exposureSourceKey: "htx_huobi",
       exposureSourceLabel: "HTX/Huobi",
       sourceExposureKind: "htx_huobi",
       txHashes: ["7".repeat(64)]
@@ -2150,15 +2223,22 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it("derives CEX and a proven unknown-contract stop from canonical paths", () => {
-    const cex = originPath();
+    const cex = originPath({ balanceShare: 1 });
     const unknown = originPath({
       balanceTransferTxHash: "6".repeat(64),
       rootSourceAddress: `T${"6".repeat(33)}`,
       rootSourceType: "incomplete",
       exposureSourceLabel: null,
       sourceExposureKind: "unknown_contract",
-      balanceShare: 0.1,
+      balanceShare: 1,
       txHashes: ["6".repeat(64)],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "10000000000",
+        usedAmountRaw: "10000000000",
+        coverageShare: 0.1,
+        role: "anchor"
+      },
       stoppedReason: "incoming_history_not_fetched",
       historyCoverage: [traceHistory({ statusReason: "partial_provider_cap" })]
     });
@@ -2168,6 +2248,79 @@ describe("wallet narrative signal catalogue", () => {
     expect(copy).toMatch(/72%.*пришло с Binance|72%.*came from Binance/i);
     expect(copy).toMatch(/контракт без названия.*старые переводы.*источник[а]? данных|unnamed contract.*older transfers.*provider/is);
     expect(copy).not.toMatch(/контракт.*непрослеживаем|contract.*untraceable/i);
+  });
+
+  it.each([
+    ["cex", "allowlisted_cex", "allowlist_cex", "Binance"],
+    ["unknown contract", "unknown_contract", "unknown", "Unknown contract"]
+  ] as const)("uses selected amount usage instead of raw balance share for %s narrative", (_name, sourceExposureKind, rootSourceType, label) => {
+    const txHash = "a".repeat(64);
+    const [fact] = catalogueApi.sourceAndRouteFacts({ paths: [originPath({
+      balanceTransferTxHash: txHash,
+      rootSourceType,
+      exposureSourceKey: sourceExposureKind,
+      exposureSourceLabel: label,
+      sourceExposureKind,
+      balanceShare: 1,
+      txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "100000000000",
+        usedAmountRaw: "40000000000",
+        coverageShare: 0.4,
+        role: "anchor"
+      },
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-27T00:00:00.000Z"
+      }]
+    })] });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(copy).toMatch(/40 000 USDT.*40%|40,000 USDT.*40%/i);
+    expect(copy).not.toMatch(/100 000 USDT|100,000 USDT|100%/i);
+  });
+
+  it.each([
+    ["cex", "allowlisted_cex", "allowlist_cex", "Binance"],
+    ["unknown contract", "unknown_contract", "unknown", "Unknown contract"]
+  ] as const)("scales a %s branch amount and counts a duplicated physical transfer once", (_name, sourceExposureKind, rootSourceType, label) => {
+    const txHash = "b".repeat(64);
+    const path = originPath({
+      balanceTransferTxHash: txHash,
+      rootSourceType,
+      exposureSourceKey: sourceExposureKind,
+      exposureSourceLabel: label,
+      sourceExposureKind,
+      balanceShare: 0.5,
+      txHashes: [txHash],
+      amountUsage: {
+        anchorAmountRaw: "100000000000",
+        originalAmountRaw: "100000000000",
+        usedAmountRaw: "100000000000",
+        coverageShare: 1,
+        role: "anchor"
+      },
+      steps: [{
+        txHash,
+        fromAddress: counterparty,
+        toAddress: subject,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-27T00:00:00.000Z"
+      }]
+    });
+    const facts = catalogueApi.sourceAndRouteFacts({ paths: [path, { ...path }] });
+    const copy = facts.map((fact) => `${fact.factTextRu}\n${fact.factTextEn}`).join("\n");
+
+    expect(facts).toHaveLength(1);
+    expect(copy).toMatch(/50 000 USDT.*50%|50,000 USDT.*50%/i);
+    expect(copy).not.toMatch(/100 000 USDT|100,000 USDT|100%|200 000 USDT|200,000 USDT/i);
+    if (sourceExposureKind === "allowlisted_cex") {
+      expect(copy).toMatch(/1 перевод|1 transfer/i);
+    }
   });
 
   it.each([
@@ -2181,7 +2334,7 @@ describe("wallet narrative signal catalogue", () => {
     const txHash = scenario.padEnd(64, "2").slice(0, 64);
     const pathOverrides: Partial<MoneyOriginPath> = {
       balanceTransferTxHash: txHash,
-      balanceShare: 0.4,
+      balanceShare: 1,
       txHashes: [txHash],
       amountUsage: {
         anchorAmountRaw: "100000000000",
@@ -2200,11 +2353,11 @@ describe("wallet narrative signal catalogue", () => {
     };
     const sourcePolicyEvidence: SourcePolicyEvidence[] = [];
     if (scenario === "sanctioned") {
-      Object.assign(pathOverrides, { exposureSourceLabel: "HTX", sourceExposureKind: "sanctioned_service" });
+      Object.assign(pathOverrides, { exposureSourceKey: "htx_huobi", exposureSourceLabel: "HTX", sourceExposureKind: "sanctioned_service" });
       sourcePolicyEvidence.push(postDesignationHtxPolicy());
       sourcePolicyEvidence[0]!.evidenceIds = [txHash];
     } else if (scenario === "htx") {
-      Object.assign(pathOverrides, { exposureSourceLabel: "HTX", sourceExposureKind: "htx_huobi" });
+      Object.assign(pathOverrides, { exposureSourceKey: "htx_huobi", exposureSourceLabel: "HTX", sourceExposureKind: "htx_huobi" });
       sourcePolicyEvidence.push(policyEvidence({ kind: "htx_huobi", proofLevel: "exchange_policy_context", evidenceIds: [txHash] }));
     } else if (scenario === "cross_chain") {
       Object.assign(pathOverrides, { rootSourceType: "decline_boundary", exposureSourceLabel: "UsdtOFT", sourceExposureKind: "cross_chain_boundary" });

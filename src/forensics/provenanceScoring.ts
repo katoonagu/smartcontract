@@ -514,7 +514,7 @@ function multiplyRawByShare(amountRaw: string, share: number): string | null {
   return ((amount * scaledShare + scale / 2n) / scale).toString();
 }
 
-function exactAffectedAmountRaw(paths: MoneyOriginPath[], targetAmountRaw: string | null | undefined): string | null {
+export function exactAffectedAmountRaw(paths: MoneyOriginPath[], targetAmountRaw: string | null | undefined): string | null {
   const target = targetAmountRaw ? parseAmountRaw(targetAmountRaw) : null;
   let sum = 0n;
   let sawExactUsage = false;

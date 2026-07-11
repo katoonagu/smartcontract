@@ -17,6 +17,14 @@ import type {
   WalletRole
 } from "../types";
 import type { Verify20FingerprintResult } from "../forensics/verify20Fingerprint";
+import { selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttribution";
+import { exactAffectedAmountRaw } from "../forensics/provenanceScoring";
+import {
+  SANCTIONED_CRYPTO_SERVICES,
+  sanctionedCryptoServiceActiveAt,
+  sanctionsDate,
+  type SanctionedCryptoService
+} from "../forensics/sanctionedServiceRegistry";
 
 export type WalletNarrativeLocale = "ru" | "en";
 
@@ -668,6 +676,38 @@ function pathAmountRaw(path: MoneyOriginPath): string {
   return path.amountUsage?.usedAmountRaw ?? path.steps.at(-1)?.amountRaw ?? "0";
 }
 
+function narrativePathAmountRaw(paths: MoneyOriginPath[]): string {
+  return exactAffectedAmountRaw(paths, undefined) ?? sumRaw(paths.map(pathAmountRaw));
+}
+
+function dedupeSelectedPaths(paths: MoneyOriginPath[]): MoneyOriginPath[] {
+  const selected = new Map<string, MoneyOriginPath>();
+  for (const path of paths) {
+    const existing = selected.get(path.balanceTransferTxHash);
+    if (!existing) {
+      selected.set(path.balanceTransferTxHash, path);
+      continue;
+    }
+    const pathShare = selectedMoneyOriginPathShare(path);
+    const existingShare = selectedMoneyOriginPathShare(existing);
+    if (pathShare > existingShare) {
+      selected.set(path.balanceTransferTxHash, path);
+      continue;
+    }
+    if (pathShare < existingShare) continue;
+    const pathAmount = tryRawAmount(narrativePathAmountRaw([path])) ?? 0n;
+    const existingAmount = tryRawAmount(narrativePathAmountRaw([existing])) ?? 0n;
+    if (pathAmount > existingAmount) selected.set(path.balanceTransferTxHash, path);
+  }
+  return [...selected.values()].sort((left, right) =>
+    compareLexical(left.balanceTransferTxHash, right.balanceTransferTxHash)
+  );
+}
+
+function selectedPathsShare(paths: MoneyOriginPath[]): number {
+  return Math.min(1, paths.reduce((sum, path) => sum + selectedMoneyOriginPathShare(path), 0));
+}
+
 function sumRaw(values: string[]): string {
   return values.reduce((sum, value) => sum + rawAmount(value), 0n).toString();
 }
@@ -680,17 +720,29 @@ function sourceAmountAndShareText(
   return `${formatUsdtRaw(amountRaw, locale)} USDT (${formatPercent(share, locale)}%)`;
 }
 
-function isHtxName(value: string): boolean {
-  return /(?:^|[^a-z])(?:htx|huobi)(?:[^a-z]|$)/i.test(value);
+const htxSanctionedService = SANCTIONED_CRYPTO_SERVICES.find((service) =>
+  service.key === "htx_huobi"
+);
+
+function htxServiceForPath(path: MoneyOriginPath): SanctionedCryptoService | null {
+  return path.exposureSourceKey === "htx_huobi" ? htxSanctionedService ?? null : null;
 }
 
-const HTX_DESIGNATION_AT_MS = Date.parse("2026-05-26T00:00:00.000Z");
+function sourceTimestamp(path: MoneyOriginPath): string | null {
+  return path.steps[0]?.timestamp ?? null;
+}
 
-function sourceTimestampMs(path: MoneyOriginPath): number | null {
-  const timestamp = path.steps[0]?.timestamp;
-  if (!timestamp) return null;
-  const parsed = Date.parse(timestamp);
-  return Number.isFinite(parsed) ? parsed : null;
+function localizedSanctionsDate(
+  service: SanctionedCryptoService,
+  locale: WalletNarrativeLocale
+): string {
+  const date = new Date(`${sanctionsDate(service)}T00:00:00.000Z`);
+  return new Intl.DateTimeFormat(locale === "ru" ? "ru-RU" : "en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(date).replace(/\.$/, "");
 }
 
 function sourceScoreSignalKeys(kind: SourcePolicyEvidence["kind"]): string[] {
@@ -741,10 +793,8 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
   const allSanctionedPaths = paths.filter((path) => path.sourceExposureKind === "sanctioned_service");
   if (allSanctionedPaths.length === 0) return [];
   const sanctionedPaths = allSanctionedPaths.filter((path) => {
-    const label = path.exposureSourceLabel?.trim();
-    if (!label || !isHtxName(label)) return true;
-    const timestamp = sourceTimestampMs(path);
-    return timestamp !== null && timestamp >= HTX_DESIGNATION_AT_MS;
+    const service = htxServiceForPath(path);
+    return !service || sanctionedCryptoServiceActiveAt(service, sourceTimestamp(path));
   });
   const matchedPaths = new Set<MoneyOriginPath>();
   const selected = evidence.filter((item) =>
@@ -755,27 +805,33 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
     const matching = sanctionedPaths.filter((path) => policyMatchesPath(item, path));
     if (matching.length === 0) return [];
     matching.forEach((path) => matchedPaths.add(path));
-    const identity = aggregateSourceIdentity(matching, {
-      multipleRu: "нескольких санкционных сервисов",
-      multipleEn: "multiple sanctioned services",
-      unnamedRu: "санкционного сервиса без установленного названия",
-      unnamedEn: "an unnamed sanctioned service"
-    });
+    const matchedHtx = matching.length > 0 && matching.every((path) => htxServiceForPath(path)?.key === "htx_huobi")
+      ? htxSanctionedService ?? null
+      : null;
+    const identity = matchedHtx
+      ? { ru: matchedHtx.displayName, en: matchedHtx.displayName, named: true, multiple: false }
+      : aggregateSourceIdentity(matching, {
+        multipleRu: "нескольких санкционных сервисов",
+        multipleEn: "multiple sanctioned services",
+        unnamedRu: "санкционного сервиса без установленного названия",
+        unnamedEn: "an unnamed sanctioned service"
+      });
     const share = item.shareDetail!.rawShare;
     const amountRaw = item.shareDetail!.affectedAmountRaw;
     const ids = [...new Set([...item.evidenceIds, ...matching.flatMap((path) => [...pathEvidenceIds(path)])])]
       .sort(compareLexical);
     const sourceRu = identity.named ? `с ${identity.ru}` : `от ${identity.ru}`;
     const sourceEn = `from ${identity.en}`;
-    const htx = identity.named && isHtxName(identity.ru);
+    const htxDateRu = matchedHtx ? localizedSanctionsDate(matchedHtx, "ru") : null;
+    const htxDateEn = matchedHtx ? localizedSanctionsDate(matchedHtx, "en") : null;
     return [narrativeFact(
       `sanctioned-source:${ids.join(",")}`,
       "sanctioned_source",
-      htx
-        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. На дату перевода HTX/Huobi находился под санкциями Великобритании с 26 мая 2026 года.`
+      matchedHtx
+        ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. На дату перевода ${matchedHtx.displayName} находился под санкциями Великобритании с ${htxDateRu}.`
         : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. Источник подтверждён как санкционный.`,
-      htx
-        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. At transfer time, HTX/Huobi was under UK sanctions effective 26 May 2026.`
+      matchedHtx
+        ? `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. At transfer time, ${matchedHtx.displayName} was under UK sanctions effective ${htxDateEn}.`
         : `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. The source is confirmed as sanctioned.`,
       null,
       "exact",
@@ -814,28 +870,24 @@ function htxContextFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   if (routePaths.length === 0) return [];
   const policy = policyForRoute("htx_huobi", routePaths, evidence);
   const matchedHistorical = policy
-    ? routePaths.filter((path) =>
-      policyMatchesPath(policy, path) &&
-      sourceTimestampMs(path) !== null &&
-      sourceTimestampMs(path)! < HTX_DESIGNATION_AT_MS
-    )
+    ? routePaths.filter((path) => {
+      const service = htxServiceForPath(path);
+      return policyMatchesPath(policy, path) &&
+        service !== null &&
+        !sanctionedCryptoServiceActiveAt(service, sourceTimestamp(path));
+    })
     : [];
   const facts: NarrativeFact[] = [];
   if (policy && matchedHistorical.length > 0) {
-    const identity = aggregateSourceIdentity(matchedHistorical, {
-      multipleRu: "HTX/Huobi",
-      multipleEn: "HTX/Huobi",
-      unnamedRu: "HTX/Huobi",
-      unnamedEn: "HTX/Huobi"
-    });
+    const identity = htxSanctionedService?.displayName ?? "HTX/Huobi";
     const share = policy.shareDetail?.rawShare ?? policy.aggregateShare;
     const amountRaw = policy.shareDetail?.affectedAmountRaw ?? sumRaw(matchedHistorical.map(pathAmountRaw));
     const ids = routeEvidenceIds(matchedHistorical, policy);
     facts.push(narrativeFact(
       `htx-historical:${ids.join(",")}`,
       "direct_counterparty_sanction",
-      `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло с ${identity.ru} до его включения в санкционный список.`,
-      `${sourceAmountAndShareText(share, amountRaw, "en")} came from ${identity.en} before its sanctions designation.`,
+      `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло с ${identity} до его включения в санкционный список.`,
+      `${sourceAmountAndShareText(share, amountRaw, "en")} came from ${identity} before its sanctions designation.`,
       null,
       "context",
       ids,
@@ -1088,11 +1140,12 @@ function cexFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
     groups.set(name, [...(groups.get(name) ?? []), path]);
   }
   return [...groups.entries()].map(([name, group]) => {
+    const selectedPaths = dedupeSelectedPaths(group);
     const nameRu = name || "биржевого сервиса без установленного названия";
     const nameEn = name || "an unnamed exchange service";
-    const share = group.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
-    const amountRaw = sumRaw(group.map(pathAmountRaw));
-    const txHashes = [...new Set(group.map((path) => path.balanceTransferTxHash))].sort();
+    const share = selectedPathsShare(selectedPaths);
+    const amountRaw = narrativePathAmountRaw(selectedPaths);
+    const txHashes = selectedPaths.map((path) => path.balanceTransferTxHash);
     return narrativeFact(
       `cex:${name}:${txHashes.join(",")}`,
       "cex_source",
@@ -1131,20 +1184,28 @@ function traceStopText(path: MoneyOriginPath): { ru: string; en: string } | null
 }
 
 function unknownContractFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
-  return paths.filter((path) => path.sourceExposureKind === "unknown_contract").map((path) => {
-    const stop = traceStopText(path);
-    const nameRu = path.exposureSourceLabel?.trim() || "контракт без названия";
-    const nameEn = path.exposureSourceLabel?.trim() || "an unnamed contract";
-    const share = path.balanceShare ?? 0;
-    const amountRaw = pathAmountRaw(path);
+  const groups = new Map<string, MoneyOriginPath[]>();
+  for (const path of paths) {
+    if (path.sourceExposureKind !== "unknown_contract") continue;
+    const name = path.exposureSourceLabel?.trim() || "";
+    groups.set(name, [...(groups.get(name) ?? []), path]);
+  }
+  return [...groups.entries()].map(([name, group]) => {
+    const selectedPaths = dedupeSelectedPaths(group);
+    const stop = selectedPaths.map(traceStopText).find((item) => item !== null) ?? null;
+    const nameRu = name || "контракт без названия";
+    const nameEn = name || "an unnamed contract";
+    const share = selectedPathsShare(selectedPaths);
+    const amountRaw = narrativePathAmountRaw(selectedPaths);
+    const ids = routeEvidenceIds(selectedPaths);
     return narrativeFact(
-      `unknown-contract:${path.txHashes.slice().sort().join(",")}`,
+      `unknown-contract:${ids.join(",")}`,
       "unknown_contract",
       `${sourceAmountAndShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${nameRu}.`,
       `${sourceAmountAndShareText(share, amountRaw, "en")} of the checked amount came through ${nameEn}.`,
       null,
       stop ? "limitation" : "context",
-      [...pathEvidenceIds(path)],
+      ids,
       {
         meaningRu: `Назначение контракта не удалось определить.${stop ? ` ${stop.ru}` : ""}`,
         meaningEn: `The contract's purpose could not be established.${stop ? ` ${stop.en}` : ""}`,
