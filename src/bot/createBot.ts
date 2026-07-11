@@ -30,6 +30,13 @@ import {
   type RiskExplanationFact,
   type RiskExplanationSummary
 } from "./riskExplanationSummary";
+import {
+  buildWalletNarrativeEvidence,
+  formatWalletNarrativeSummary,
+  type ApprovalDrainNarrativeEvidence,
+  type CoverageExplanation,
+  type WalletNarrativeEvidenceInput
+} from "./walletNarrativeSummary";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
 import {
@@ -3350,6 +3357,166 @@ function currentScoringPolicyDeepReport(report: DeepAddressForensicReport | null
   return report?.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION ? report : null;
 }
 
+function escapePlainTelegramText(value: string): string {
+  return value.split(/\r?\n/).map((line) => escapeHtml(line)).join("\n");
+}
+
+function compactWalletNarrativeMessage(
+  input: UnifiedAddressFinalReportInput,
+  narrative: string,
+  unifiedRisk?: UnifiedWalletRiskResult
+): TelegramHtmlMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const showDiagnostics = input.showBetaDiagnostics === true && unifiedRisk !== undefined;
+  const crossChainCorridorLines = showDiagnostics ? whereCrossChainCorridorLines(input.whereReport) : [];
+  return telegramHtmlMessage([
+    escapePlainTelegramText(narrative),
+    crossChainCorridorLines.length > 0 ? section("Cross-chain corridor", [
+      bulletList(crossChainCorridorLines)
+    ]) : null,
+    showDiagnostics ? section("Beta/internal", [
+      bulletList(compactUnifiedRiskBreakdownLines(unifiedRisk, locale, input.deepReport))
+    ]) : null,
+    runtimeMarkerLine(input.runtimeLabel)
+  ]);
+}
+
+function compactNoFinalWalletNarrative(
+  input: UnifiedAddressFinalReportInput,
+  coverageExplanation: CoverageExplanation,
+  unifiedRisk?: UnifiedWalletRiskResult
+): TelegramHtmlMessage {
+  return compactWalletNarrativeMessage(input, formatWalletNarrativeSummary({
+    locale: input.locale ?? DEFAULT_BOT_LOCALE,
+    decision: "NO_FINAL_DECISION",
+    score: null,
+    facts: [],
+    coverageExplanation
+  }), unifiedRisk);
+}
+
+function approvalProfileRoleRank(
+  address: string,
+  profile: ApprovalDrainProvenanceProfile
+): number {
+  if (profile.victimAddress === address) return 0;
+  if (profile.spenderAddress === address) return 1;
+  if (profile.firstReceiverAddress === address) return 2;
+  if (profile.pathAddresses.includes(address) || profile.hopDepth > 0) return 3;
+  return 4;
+}
+
+function selectApprovalDrainNarrativeEvidence(
+  address: string,
+  deepReport: DeepAddressForensicReport,
+  whereReport: WhereIsMoneyReport
+): ApprovalDrainNarrativeEvidence | null {
+  const walletRole = [...(deepReport.walletRoleProfiles ?? [])]
+    .filter((profile) => profile.subjectAddress === address)
+    .sort((left, right) =>
+      Number(right.primaryRole === "victim") - Number(left.primaryRole === "victim") ||
+      Number(right.evidenceStrength === "exact") - Number(left.evidenceStrength === "exact") ||
+      Math.max(0, ...right.roles.map((role) => role.score)) - Math.max(0, ...left.roles.map((role) => role.score)) ||
+      left.primaryRole.localeCompare(right.primaryRole)
+    )[0];
+  const deepProfiles = (deepReport.approvalDrainProvenanceProfiles ?? [])
+    .filter((profile) => profile.subjectAddress === address);
+  const candidates = deepProfiles.length > 0
+    ? deepProfiles
+    : whereReport.approvalDrainProvenanceProfiles.filter((profile) => profile.subjectAddress === address);
+  const victimProtected = walletRole?.primaryRole === "victim"
+    ? candidates.filter((profile) => profile.victimAddress === address)
+    : candidates;
+  const profile = [...victimProtected].sort((left, right) =>
+    approvalProfileRoleRank(address, left) - approvalProfileRoleRank(address, right) ||
+    Number(right.evidenceStrength === "exact_approval_and_transfer_from") - Number(left.evidenceStrength === "exact_approval_and_transfer_from") ||
+    right.score - left.score ||
+    left.drainTxHash.localeCompare(right.drainTxHash) ||
+    left.approvalTxHash.localeCompare(right.approvalTxHash)
+  )[0];
+  return profile ? { checkedAddress: address, profile, walletRole: walletRole?.primaryRole } : null;
+}
+
+function buildUnifiedWalletNarrativeEvidence(
+  input: UnifiedAddressFinalReportInput & { deepReport: DeepAddressForensicReport }
+): ReturnType<typeof buildWalletNarrativeEvidence> {
+  const restriction = [...(input.deepReport.stablecoinRestrictionProfiles ?? [])]
+    .filter((profile) => profile.subjectAddress === input.address)
+    .sort((left, right) => right.checkedAt.localeCompare(left.checkedAt) || left.tokenContract.localeCompare(right.tokenContract))[0] ?? null;
+  const contractReport = input.smartContractReport
+    ? normalizeSmartContractCheckReport(input.smartContractReport, input.address)
+    : null;
+  const evidence: WalletNarrativeEvidenceInput = {
+    checkedAddress: input.address,
+    subjectRestriction: restriction,
+    firstHopBlacklistFacts: input.deepReport.firstHopBlacklistFacts ?? [],
+    firstHopBlacklistCoverage: input.deepReport.firstHopBlacklistCoverage,
+    firstHopLabelFacts: input.deepReport.firstHopLabelFacts ?? [],
+    directCounterpartyInteractionProfiles: input.deepReport.directCounterpartyInteractionProfiles ?? [],
+    approvalDrain: selectApprovalDrainNarrativeEvidence(input.address, input.deepReport, input.whereReport),
+    verify20: contractReport?.verify20Fingerprint.matched
+      ? {
+          subjectAddress: contractReport.subjectAddress,
+          role: "verify20_contract",
+          fingerprint: contractReport.verify20Fingerprint,
+          debitObserved: contractReport.exactDrainProven
+        }
+      : null,
+    paths: input.whereReport.originPaths,
+    sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
+    whereCoverage: input.whereReport.coverage,
+    traceHistoryCoverage: input.whereReport.originPaths.flatMap((path) => path.historyCoverage ?? []),
+    addressBehaviorProfiles: input.deepReport.addressBehaviorProfiles,
+    operationalFlowProfiles: input.deepReport.operationalFlowProfiles ?? [],
+    boundaryExposureProfiles: input.deepReport.boundaryExposureProfiles ?? []
+  };
+  return buildWalletNarrativeEvidence(evidence);
+}
+
+function freshDeepPrerequisiteFailure(
+  input: UnifiedAddressFinalReportInput,
+  deepReport: DeepAddressForensicReport | null
+): CoverageExplanation | null {
+  const localeIndependent = (reasonKind: string, textRu: string, textEn: string): CoverageExplanation => ({
+    reasonKind,
+    textRu,
+    textEn,
+    isRiskEvidence: false
+  });
+  if (!deepReport) {
+    return localeIndependent(
+      "fresh_deep_required",
+      "Нет свежего DeepCheck с проверкой прямых контрагентов. Запустите проверку заново и дождитесь DeepCheck.",
+      "A fresh DeepCheck with direct-counterparty screening is missing. Rerun the check and wait for DeepCheck."
+    );
+  }
+  if (deepReport.subjectAddress !== input.address || input.whereReport.subjectAddress !== input.address) {
+    return localeIndependent(
+      "subject_mismatch",
+      "Данные проверки относятся к другому адресу. Запустите свежую проверку этого адреса.",
+      "The saved evidence belongs to a different address. Run a fresh check for this address."
+    );
+  }
+  if (
+    !deepReport.firstHopBlacklistCoverage ||
+    deepReport.firstHopBlacklistCoverage.requiredForDecision !== true
+  ) {
+    return localeIndependent(
+      "fresh_first_hop_required",
+      "В DeepCheck нет сохранённой проверки прямых контрагентов. Запустите проверку заново и дождитесь свежего DeepCheck.",
+      "DeepCheck has no persisted direct-counterparty screening. Rerun the check and wait for a fresh DeepCheck."
+    );
+  }
+  if (input.smartContractReport && input.smartContractReport.subjectAddress !== input.address) {
+    return localeIndependent(
+      "contract_subject_mismatch",
+      "Данные проверки контракта относятся к другому адресу. Запустите свежую проверку этого адреса.",
+      "The contract evidence belongs to a different address. Run a fresh check for this address."
+    );
+  }
+  return null;
+}
+
 function formatLegacyUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const decision = input.whereReport.userDecision;
@@ -3444,72 +3611,53 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   if (!hasCurrentScoringPolicy(input.whereReport)) {
     return formatLegacyUnifiedAddressFinalReport(input);
   }
-  input = { ...input, deepReport: currentScoringPolicyDeepReport(input.deepReport) };
+  const deepReport = currentScoringPolicyDeepReport(input.deepReport);
+  const currentInput = { ...input, deepReport };
+  const prerequisiteFailure = freshDeepPrerequisiteFailure(currentInput, deepReport);
+  if (prerequisiteFailure) return compactNoFinalWalletNarrative(currentInput, prerequisiteFailure);
+
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,
-    deepReport: input.deepReport,
+    deepReport,
     smartContractReport: input.smartContractReport,
     whereReport: input.whereReport
   });
-  if (unifiedRisk.finalDecision === "NO_FINAL_DECISION") {
-    return formatInvalidWhereScoreFinalReport({ ...input, unifiedRisk });
+  try {
+    const evidence = buildUnifiedWalletNarrativeEvidence({
+      ...currentInput,
+      deepReport: deepReport as DeepAddressForensicReport
+    });
+    if (unifiedRisk.finalDecision === "NO_FINAL_DECISION") {
+      const ratio = input.whereReport.coverage.coverageRatio ?? input.whereReport.coverage.currentBalanceCoverageRatio;
+      const fallbackCoverage: CoverageExplanation = {
+        reasonKind: "insufficient_current_coverage",
+        textRu: `Проверено входящих переводов: ${input.whereReport.coverage.selectedInboundTxCount}; прослежено ${Math.round(ratio * 100)}% суммы. Для итогового решения не хватает данных. Запустите свежую проверку.`,
+        textEn: `Checked inbound transfers: ${input.whereReport.coverage.selectedInboundTxCount}; traced ${Math.round(ratio * 100)}% of the amount. More data is required for a final decision. Run a fresh check.`,
+        isRiskEvidence: false
+      };
+      return compactNoFinalWalletNarrative(
+        currentInput,
+        evidence.coverageExplanation ?? fallbackCoverage,
+        unifiedRisk
+      );
+    }
+    const narrative = formatWalletNarrativeSummary({
+      locale,
+      decision: unifiedRisk.finalDecision,
+      score: unifiedRisk.finalScore,
+      facts: evidence.facts,
+      coverageExplanation: evidence.coverageExplanation
+    });
+    return compactWalletNarrativeMessage(currentInput, narrative, unifiedRisk);
+  } catch {
+    return compactNoFinalWalletNarrative(currentInput, {
+      reasonKind: "evidence_control_failed",
+      textRu: "Сохранённые данные не прошли проверку адреса. Запустите свежую проверку и дождитесь DeepCheck.",
+      textEn: "The saved evidence failed address validation. Run a fresh check and wait for DeepCheck.",
+      isRiskEvidence: false
+    });
   }
-  const finalDecision = unifiedRisk.finalDecision;
-  const summary = buildRiskExplanationSummary({
-    address: input.address,
-    whereReport: input.whereReport,
-    unifiedRisk,
-    finalDecision,
-    fastReport: input.fastReport,
-    deepReport: input.deepReport
-  });
-  const clarity = buildRiskClaritySummary({
-    kind: "address_deep_check",
-    executionStatus: input.whereReport.coverage.partial ? "partial" : "completed",
-    finalRiskScore: unifiedRisk.finalScore,
-    explicitDecision: finalDecision,
-    missingChecks: [
-      ...input.whereReport.coverage.notes,
-      ...(input.deepReport?.missingChecks ?? [])
-    ],
-    coveragePartial: input.whereReport.coverage.partial || unifiedRisk.coverageLevel !== "complete",
-    fetchedAddressCount: input.whereReport.coverage.fetchedAddressCount,
-    hardEvidenceObserved: finalReportHasHardEvidence(input, unifiedRisk),
-    evidenceHints: finalReportEvidenceHints(input, summaryFactLines(summary.primaryReasons, locale))
-  }, { betaDiagnosticsVisible: input.showBetaDiagnostics === true });
-  const betaInternalLines = compactUnifiedRiskBreakdownLines(unifiedRisk, locale, input.deepReport);
-  const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
-
-  return telegramHtmlMessage([
-    bold(locale === "en" ? "Address check — final" : "Проверка адреса — итог"),
-    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(summary.address)}`,
-    compactDecisionLine(summary.decision, locale),
-    summaryRiskLine(summary, locale),
-    section(locale === "en" ? "Why" : "Почему", [
-      bulletList(summaryFactLines(summary.primaryReasons, locale, 5), locale === "en" ? "No strong risk reason was found." : "Сильная причина риска не найдена.")
-    ]),
-    section(locale === "en" ? "What this may mean" : "Что это может значить", [
-      bulletList(summaryPossibleMeanings(summary, locale))
-    ]),
-    section(locale === "en" ? "What to do" : "Что делать", [
-      bulletList(summaryRecommendations(summary, locale))
-    ]),
-    section(locale === "en" ? "Important context" : "Что важно учесть", [
-      bulletList(uniqueFinalLines([...summaryOverflowFacts(summary, locale), ...summaryLimitations(summary, locale)]))
-    ]),
-    ...betaDiagnosticsLines(clarity),
-    input.showBetaDiagnostics === true ? section(locale === "en" ? "Limits" : "Ограничения", [
-      bulletList(summaryLimitations(summary, locale))
-    ]) : null,
-    crossChainCorridorLines.length > 0 ? section("Cross-chain corridor", [
-      bulletList(crossChainCorridorLines)
-    ]) : null,
-    input.showBetaDiagnostics === true ? section("Beta/internal", [
-      bulletList(betaInternalLines)
-    ]) : null,
-    runtimeMarkerLine(input.runtimeLabel)
-  ].filter((line): line is string => Boolean(line)));
 }
 
 export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
@@ -4731,7 +4879,14 @@ export function createBot(
         }));
         return;
       }
-      await sendMessage(ctx, formatWhereIsMoneySupportReport(job, whereReport, job.status === "partial" ? "partial" : "completed", {
+      const deepJob = await resolveLatestDeepForensicCheckJobForAddressAnyStatus(relatedJobLookupInput(job));
+      const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, job.subjectAddress));
+      await sendMessage(ctx, formatUnifiedAddressFinalReport({
+        address: job.subjectAddress,
+        whereReport,
+        deepReport,
+        smartContractReport: extractSmartContractCheckReportFromJob(job, job.subjectAddress) ??
+          (deepReport ? extractSmartContractCheckReportFromJob(deepJob, job.subjectAddress) : null),
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       }));
