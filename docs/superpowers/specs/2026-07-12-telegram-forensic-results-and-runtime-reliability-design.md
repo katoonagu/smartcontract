@@ -9,7 +9,7 @@ deployed.
 
 ## Problem
 
-Fresh Telegram checks exposed nine related defects:
+Fresh Telegram checks exposed related defects:
 
 1. Final messages do not consistently name the checked wallet, so adjacent
    results are easy to mix up.
@@ -36,6 +36,18 @@ Fresh Telegram checks exposed nine related defects:
 9. Telegram displays TRON transaction-envelope `raw_data.expiration` as if the
    USDT approval itself expired. That timestamp only limits when the signed
    transaction may be packed; it does not revoke a confirmed allowance.
+10. Standalone contract post-processing recognizes only a narrow
+    `serviceLabel`. It ignores authoritative service classification already
+    available for the official USDT contract and GasFree Accounts, so correct
+    LLM verdicts still end as `REVIEW 35`.
+11. Any active unlimited approval currently forces `DECLINE`, including a
+    Bridgers approval with an exact same-wallet swap route.
+12. Live LLM responses accept fractional risk scores, contradictory
+    verdict/recommendation pairs, and cited evidence ids absent from the case
+    file.
+13. DeepSeek output is not repeatable enough to own the decision. Identical
+    GasFree case files alternated between `legitimate_service` and
+    `unknown_insufficient_data` in both Flash and Pro.
 
 The copy also needs restrained visual structure, plain Russian explanations,
 and clickable TronScan addresses.
@@ -84,6 +96,25 @@ The design is grounded in saved jobs from 2026-07-11:
     itself for `91.103009 USDT`. This is exact service-session context rather
     than a Verify20/drainer pattern.
 
+A live no-cache contract-LLM audit on 2026-07-12 added five contract fixtures
+and two available DeepSeek models:
+
+- `VerifyAccount`: Flash returned `drainer_like` at 60% confidence; Pro
+  returned `unknown_suspicious` at 60%. The deterministic exact Verify20
+  fingerprint correctly retained `DECLINE 85` without relying on either model.
+- `Bridgers`: both models returned `legitimate_service` at 90%, but current
+  post-processing still produced `DECLINE 45` because an active unlimited
+  approval always forces decline.
+- `TGyt…BAZD` and `TRivm…MnxP`: GasFree service classification was present,
+  but current post-processing retained `REVIEW 35` because it did not accept
+  that classification as an authoritative standalone safety identity.
+- official TRON USDT `TR7N…j6t`: both models returned `legitimate_service` at
+  90%, but current post-processing retained `REVIEW 35`.
+- ten comparative calls and six identical-input repeat calls completed. Flash
+  averaged about 20 seconds and Pro about 30 seconds on the repeated GasFree
+  case. Each model returned `legitimate_service` twice and
+  `unknown_insufficient_data` once for the identical input.
+
 ## Goals
 
 1. Make every Telegram result self-identifying.
@@ -100,6 +131,10 @@ The design is grounded in saved jobs from 2026-07-11:
 9. Verify current USDT allowance on-chain and explain dangerous and ordinary
    service approvals differently.
 10. Stop presenting transaction-envelope expiration as approval expiration.
+11. Make deterministic service identity and exact transaction evidence own the
+    standalone contract decision; keep LLM output subordinate.
+12. Validate every LLM verdict before it can be stored, displayed, or used as
+    contract-suspicion context.
 
 ## Non-Goals
 
@@ -112,6 +147,11 @@ The design is grounded in saved jobs from 2026-07-11:
 - Do not call an active dangerous approval proof of stolen or dirty funds.
 - Do not treat a provider name, one method name, or one selector as an exact
   Verify20 fingerprint.
+- Do not switch the default model from Flash to Pro in this change. The manual
+  audit found higher latency without better repeatability.
+- Do not add a two-model voting system. Pro remains a possible future second
+  opinion for unresolved cases after the deterministic and validation defects
+  are fixed.
 
 ## Evidence And Scoring Contract
 
@@ -332,6 +372,114 @@ Required changes:
 
 The two historical dates shown for the TNAra approvals were transaction
 deadlines and must never again be presented as approval expiry dates.
+
+## Contract LLM Decision Policy
+
+### Authority Order
+
+The LLM does not own the score or final decision. Standalone contract safety
+uses this order:
+
+1. exact deterministic hard evidence, including the four-selector Verify20
+   fingerprint and exact approval-drain provenance;
+2. authoritative address and service registries;
+3. exact approval state and same-wallet transaction-session evidence;
+4. bounded LLM interpretation for facts that remain ambiguous;
+5. metadata weakness as review context, never as proof of malicious intent.
+
+A model verdict cannot weaken exact bad evidence, promote incomplete context to
+exact proof, or override an authoritative legitimate-service identity.
+
+### Deterministic Service Cases
+
+Handle these without an LLM call:
+
+- the official TRON USDT contract is `LOW 0/100` standalone contract risk;
+- a structurally classified `GasFree Account` is `LOW 10/100` standalone
+  contract risk and remains a normal traceable address in Fast, Deep, Where,
+  and Incoming;
+- a registered GasFree Endpoint/controller remains a pooled service boundary,
+  separate from a GasFree Account;
+- a verified bridge/router/DEX with no approval exposure uses its deterministic
+  service result.
+
+An active approval to a known service is evaluated separately:
+
+- exact same-wallet route and amount continuity, such as the TNAra Bridgers
+  approval followed 66 seconds later by the `91.103009 USDT` swap, yields
+  `LOW 10/100` wallet-safety risk and no AML increase;
+- a known-service unlimited approval without exact session evidence yields
+  `REVIEW 45/100`, not automatic `DECLINE`; the user is told to revoke it if it
+  is no longer needed;
+- provider risk, exact Verify20, or exact debit evidence always defeats the
+  service guard.
+
+The ordinary wallet-transfer modes still score the address's principal flows.
+Calling a GasFree Account or official token contract safe as a contract does
+not mark its transfers clean.
+
+### Ambiguous-Contract LLM Use
+
+Call the configured single model only when deterministic enrichment cannot
+resolve the contract. Keep `deepseek-v4-flash` as the default for now. Do not
+call Pro automatically and do not call either model for authoritative known
+services.
+
+Allowed LLM effects:
+
+- `legitimate_service` may support a deterministic service guard but cannot
+  create one from free text alone;
+- `unknown_suspicious` and `drainer_like` remain bounded contract-suspicion
+  context below the exact-evidence decline floor;
+- `unknown_insufficient_data`, timeout, invalid JSON, or invalid schema do not
+  change the deterministic decision or score;
+- raw model prose never becomes the primary Telegram reason.
+
+### Response Validation
+
+Accept a model response only when all structural rules pass:
+
+- `verdict` is one of the four allowed values;
+- `confidence` is finite and normalized to `0..1`;
+- `contractRiskScore` is a finite integer from `0` to `100`;
+- `decisionRecommendation` is exactly `ACCEPTABLE` or `DECLINE`;
+- `legitimate_service` cannot recommend `DECLINE`;
+- `drainer_like` or `unknown_suspicious` cannot recommend `ACCEPTABLE`;
+- `unknown_insufficient_data` recommendation is ignored;
+- every `citedEvidenceId` exists in the submitted case file;
+- risky verdicts without at least one valid cited evidence id are unavailable,
+  not scored suspicion.
+
+Filter unsupported citations from storage and display. If filtering leaves a
+risky verdict without evidence, reject the verdict. Reject fractional,
+non-finite, and out-of-range scores; do not round them or silently turn
+malformed values into a default decline.
+
+### User-Facing Contract Explanation
+
+Telegram shows the deterministic conclusion first. It may add one short AI
+interpretation only for an ambiguous contract, translated into the existing
+Russian reason vocabulary. Do not display raw English model reasons,
+confidence theater, internal selectors, or a separate recommendation that can
+contradict the canonical action.
+
+Examples of canonical outcomes:
+
+- `VerifyAccount`: exact Verify20 pattern; critical contract or approval safety;
+  no claim of a specific theft without exact debit proof.
+- `Bridgers`: permission belongs to the confirmed swap; low technical risk;
+  revoke the remaining unlimited permission if unused.
+- `GasFree Account`: ordinary traceable address; no smart-contract penalty;
+  transfer provenance is evaluated separately.
+- official USDT: official token contract; no standalone contract penalty.
+
+### Latency And Failure Handling
+
+Known services bypass the LLM, removing unnecessary 10-40 second waits. An
+ambiguous-contract call stays inside the existing background check path. LLM
+failure is a technical interpretation limitation and never a reason to decline.
+The existing model/prompt/policy cache remains valid only for the exact cache
+key; unavailable responses are not cached as successful verdicts.
 
 ## USDD PSM Policy
 
@@ -657,7 +805,30 @@ Implementation follows test-first development. Required failing tests include:
     `Истекает` or `Expires`.
 28. Transaction-envelope expiration no longer contributes
     `approval_extended_expiration` risk.
-29. Existing Fast, Deep, Where, Incoming, Approval Guard, GasFree, blacklist,
+29. The official TRON USDT contract produces `LOW 0/100` standalone contract
+    risk without an LLM call.
+30. A structurally classified GasFree Account produces `LOW 10/100` standalone
+    contract risk without an LLM call, while its transfers remain traceable and
+    scoreable in ordinary wallet modes.
+31. A Bridgers approval with exact same-wallet route and amount continuity
+    produces `LOW 10/100` wallet-safety risk instead of `DECLINE`.
+32. A known-service unlimited approval without exact session evidence remains
+    `REVIEW 45/100` and does not become an AML decline.
+33. Provider risk, exact Verify20, and exact debit evidence cannot be dampened
+    by service identity or an LLM verdict.
+34. Fractional, non-finite, out-of-range, or missing LLM risk scores fail schema
+    validation instead of receiving a default score.
+35. Contradictory verdict/recommendation pairs fail schema validation, while
+    the recommendation on `unknown_insufficient_data` is ignored.
+36. Live and cached LLM verdicts contain only cited evidence ids present in the
+    current case file.
+37. A risky LLM verdict without valid cited evidence is unavailable and cannot
+    change contract-suspicion context.
+38. LLM timeout, invalid JSON, and invalid schema preserve the deterministic
+    contract result and do not create a decline.
+39. Raw English model reasons never appear in normal Telegram contract output.
+40. Known deterministic services do not call Flash or Pro.
+41. Existing Fast, Deep, Where, Incoming, Approval Guard, GasFree, blacklist,
     and Telegram
     regression suites remain green.
 
