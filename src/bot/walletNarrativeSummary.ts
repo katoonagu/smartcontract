@@ -79,6 +79,7 @@ export type NarrativeFact = {
   kind: NarrativeFactKind;
   evidenceIds?: string[];
   scoreSignalKeys?: string[];
+  sourceIdentityKnown?: boolean;
   role?: NarrativeAddressRole | null;
   proofStrength?: "exact" | "strong" | "context" | "limitation";
   priority?: number;
@@ -235,6 +236,7 @@ type NarrativeFactOptions = {
   meaningRu?: string;
   meaningEn?: string;
   scoreSignalKeys?: string[];
+  sourceIdentityKnown?: boolean;
 };
 
 function narrativeFact(
@@ -254,6 +256,9 @@ function narrativeFact(
     scoreSignalKeys: [...new Set(
       (options.scoreSignalKeys ?? []).map((key) => key.trim()).filter((key) => key.length > 0)
     )].sort(compareLexical),
+    ...(options.sourceIdentityKnown !== undefined
+      ? { sourceIdentityKnown: options.sourceIdentityKnown }
+      : {}),
     role,
     proofStrength,
     priority: factRank[kind],
@@ -1167,7 +1172,8 @@ function cexFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
       {
         meaningRu: `Это похоже на вывод средств с биржи. Более ранний источник скрыт общей ликвидностью ${nameRu}.`,
         meaningEn: `This looks like an exchange withdrawal. The earlier source is hidden by ${nameEn}'s pooled liquidity.`,
-        scoreSignalKeys: sourceScoreSignalKeys("allowlisted_cex")
+        scoreSignalKeys: sourceScoreSignalKeys("allowlisted_cex"),
+        sourceIdentityKnown: name.length > 0
       }
     );
   });
@@ -1499,6 +1505,54 @@ const behaviorFastNarrativeCopies: Record<AddressBehaviorReasonCode, FastNarrati
   }
 };
 
+const preliminaryBehaviorFastNarrativeCopies: Record<AddressBehaviorReasonCode, FastNarrativeCopy> = {
+  address_behavior_deposit_then_drain: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
+    en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
+  },
+  address_behavior_fast_post_deposit_exit: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
+    en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
+  },
+  address_behavior_large_inflow_preserved_outflow: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Кошелёк получил значительное поступление и перевёл дальше большую часть суммы. Так может работать транзитный или операционный кошелёк.",
+    en: "The wallet received a material inflow and sent most of it onward. This can match a transit or operational wallet."
+  },
+  address_behavior_drain_to_service_infrastructure: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Кошелёк направил значительную часть поступивших средств в сервисную инфраструктуру.",
+    en: "The wallet sent a material share of received funds into service infrastructure."
+  },
+  address_behavior_high_volume_transit: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
+    en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
+  },
+  address_behavior_fan_in_fan_out: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
+    en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
+  },
+  address_behavior_collector_like_wallet: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Кошелёк собирает поступления и переводит средства дальше. Это похоже на кошелёк-сборщик или операционный кошелёк.",
+    en: "The wallet collects incoming funds and sends them onward. It looks like a collector or operational wallet."
+  },
+  address_behavior_large_outgoing_concentration: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Большая часть исходящих средств направляется основным получателям. Это заметная концентрация потока.",
+    en: "A large share of outgoing funds goes to the main recipients. This is a material flow concentration."
+  },
+  address_behavior_top_counterparty_concentration: {
+    kind: "risky_counterparty", proofStrength: "context",
+    ru: "Большая часть исходящих средств направляется основным получателям. Это заметная концентрация потока.",
+    en: "A large share of outgoing funds goes to the main recipients. This is a material flow concentration."
+  }
+};
+
 export function fastNarrativeReasonScore(
   fast: RiskReport,
   reason: RiskReport["reasons"][number]
@@ -1509,21 +1563,37 @@ export function fastNarrativeReasonScore(
   return Number.isFinite(reason.scoreImpact) ? Math.max(0, reason.scoreImpact) : 0;
 }
 
-export function fastNarrativeCopy(code: string, fast: RiskReport): FastNarrativeCopy | null {
+export function fastNarrativeCopy(
+  code: string,
+  fast: RiskReport,
+  options: { presentation?: "final" | "preliminary" } = {}
+): FastNarrativeCopy | null {
   if (isExactFastHardEvidenceCode(code)) return exactFastNarrativeCopies[code];
-  if (isAddressBehaviorReasonCode(code)) return behaviorFastNarrativeCopies[code];
+  if (isAddressBehaviorReasonCode(code)) {
+    return options.presentation === "preliminary"
+      ? preliminaryBehaviorFastNarrativeCopies[code]
+      : behaviorFastNarrativeCopies[code];
+  }
   if (code !== "forensic_address_behavior") return null;
   const transit = fast.dominantRiskType === "laundering_pattern" ||
     (fast.launderingPatternScore ?? 0) > (fast.taintScore ?? 0);
   return {
     kind: "risky_counterparty",
     proofStrength: "context",
-    ru: transit
-      ? "Быстрая проверка выявила транзитное движение средств через кошелёк. Операцию нужно проверить вручную."
-      : "Быстрая проверка выявила необычное движение средств через кошелёк. Операцию нужно проверить вручную.",
-    en: transit
-      ? "FastCheck found transit movement through the wallet. Review the operation manually."
-      : "FastCheck found unusual movement through the wallet. Review the operation manually."
+    ru: options.presentation === "preliminary"
+      ? transit
+        ? "Быстрая проверка выявила транзитное движение средств через кошелёк."
+        : "Быстрая проверка выявила необычное движение средств через кошелёк."
+      : transit
+        ? "Быстрая проверка выявила транзитное движение средств через кошелёк. Операцию нужно проверить вручную."
+        : "Быстрая проверка выявила необычное движение средств через кошелёк. Операцию нужно проверить вручную.",
+    en: options.presentation === "preliminary"
+      ? transit
+        ? "FastCheck found transit movement through the wallet."
+        : "FastCheck found unusual movement through the wallet."
+      : transit
+        ? "FastCheck found transit movement through the wallet. Review the operation manually."
+        : "FastCheck found unusual movement through the wallet. Review the operation manually."
   };
 }
 
@@ -1865,6 +1935,9 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
       fact.scoreSignalKeys.some((key) => typeof key !== "string")
     ) {
       throw new Error("Wallet narrative fact score signal keys must contain strings.");
+    }
+    if (fact.sourceIdentityKnown !== undefined && typeof fact.sourceIdentityKnown !== "boolean") {
+      throw new Error("Wallet narrative source identity flag must be boolean.");
     }
   });
   if (input.coverageExplanation === null) return;

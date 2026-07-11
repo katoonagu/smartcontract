@@ -20,6 +20,11 @@ function text(result: ReturnType<typeof buildWherePreliminaryNarrative>): string
     .filter(Boolean).join(" ");
 }
 
+const forbiddenPreliminaryActions = {
+  ru: /нужно|проверь|проверить|ручн|пауза|отозва|операци/i,
+  en: /\b(?:should|must|pause|revoke|proceed)\b|manual review|review\b[^.]{0,80}\bmanually/i
+} as const;
+
 describe("buildWherePreliminaryNarrative", () => {
   it("binds 78 to the dominant 83% bridge fact", () => {
     const result = buildWherePreliminaryNarrative(
@@ -110,6 +115,33 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(text(result)).toMatch(/заморож/i);
   });
 
+  it.each(["ru", "en"] as const)("keeps preliminary Fast behavior copy action-free in %s", (locale) => {
+    const driver = whereRiskLayerFixture(
+      "address_behavior_drain_to_service_infrastructure",
+      45,
+      "behavior_context",
+      ["fast-behavior"]
+    );
+    const report = whereReportFixture({
+      riskScore: 45,
+      fastWalletRisk: {
+        subjectAddress: WHERE_SUBJECT,
+        level: "MEDIUM",
+        score: 45,
+        reasons: [{
+          code: "address_behavior_drain_to_service_infrastructure",
+          message: POISON_RAW_REASON,
+          scoreImpact: 45,
+          evidenceRef: "fast-behavior"
+        }]
+      },
+      assessment: whereAssessmentFixture({ riskScore: 45, riskLayers: [driver], dominantRiskLayer: driver })
+    });
+    const result = buildWherePreliminaryNarrative(report, { locale });
+    expect(result.score).toBe(45);
+    expect(text(result)).not.toMatch(forbiddenPreliminaryActions[locale]);
+  });
+
   it("requires a full, trusted-service-free, subject-bound Verify20 fingerprint", () => {
     const fingerprint = detectVerify20Fingerprint({
       methodMap: {
@@ -168,6 +200,29 @@ describe("buildWherePreliminaryNarrative", () => {
     });
     expect(result.score).toBeNull();
     expect(text(result)).not.toMatch(/Verify20|specific debit/i);
+  });
+
+  it.each(["approval_only", "interaction_only"] as const)("does not publish action-bearing Verify20 role %s", (role) => {
+    const fingerprint = detectVerify20Fingerprint({
+      methodMap: {
+        "5082dd12": "Verify20(address,address,address,uint256)",
+        fc61dd23: "Verify10(address,uint256)",
+        ea4418d9: "withdrawAllTrxTo(address)",
+        f2fde38b: "transferOwnership(address)"
+      },
+      topMethods: []
+    });
+    const driver = whereRiskLayerFixture("verify20_template", 85, "contract_suspicion", ["verify20:5082dd12"]);
+    const report = whereReportFixture({
+      riskScore: 85,
+      assessment: whereAssessmentFixture({ riskScore: 85, contractSuspicionEvidence: [driver], dominantRiskLayer: driver })
+    });
+    const result = buildWherePreliminaryNarrative(report, {
+      locale: "ru",
+      verify20: { subjectAddress: WHERE_SUBJECT, role, fingerprint, debitObserved: false }
+    });
+    expect(result.score).toBeNull();
+    expect(text(result)).not.toMatch(forbiddenPreliminaryActions.ru);
   });
 
   it.each([
@@ -233,6 +288,34 @@ describe("buildWherePreliminaryNarrative", () => {
     const result = buildWherePreliminaryNarrative(report, { locale: "ru" });
     expect(result.score).toBe(35);
     expect(result.sections.findings[0]).toMatch(expected);
+  });
+
+  it.each(["ru", "en"] as const)("keeps preliminary age meaning action-free in %s", (locale) => {
+    const signal: WhereIsMoneyAgeSignal = {
+      code: "dormancy_gap",
+      scoreImpact: 12,
+      message: POISON_RAW_REASON,
+      value: 90,
+      evidenceIds: ["age:dormancy_gap"]
+    };
+    const driver = whereRiskLayerFixture("dormancy_gap", 35, "behavior_context", signal.evidenceIds);
+    const report = whereReportFixture({
+      riskScore: 35,
+      assessment: whereAssessmentFixture({
+        riskScore: 35,
+        ageSignals: {
+          subjectFirstSeenAt: null, subjectAgeDays: null, subjectActiveDays: 1,
+          directSenderMedianAgeDays: null, oldestDirectSenderAgeDays: null,
+          repeatedRelationshipCount: 0, longestRelationshipAgeDays: null, maxDormancyGapDays: 90,
+          signals: [signal]
+        },
+        riskLayers: [driver],
+        dominantRiskLayer: driver
+      })
+    });
+    const result = buildWherePreliminaryNarrative(report, { locale });
+    expect(result.score).toBe(35);
+    expect(text(result)).not.toMatch(forbiddenPreliminaryActions[locale]);
   });
 
   it("adds an exact GasFree fee only as non-driving technical detail", () => {
@@ -315,6 +398,44 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.score).toBe(78);
     expect(result.sections.findings[0]).toMatch(/UsdtOFT/);
     expect(result.preferredFactId).toMatch(/cross-chain/);
+  });
+
+  it("fails closed instead of using an unrelated exact Fast fallback", () => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.originPaths = [];
+    report.assessment.sourcePolicyEvidence = [];
+    report.fastWalletRisk = {
+      subjectAddress: WHERE_SUBJECT,
+      level: "CRITICAL",
+      score: 95,
+      reasons: [{
+        code: "stablecoin_usdt_blacklisted",
+        message: POISON_RAW_REASON,
+        scoreImpact: 95,
+        evidenceRef: "unrelated-fast-blacklist"
+      }]
+    };
+    const result = buildWherePreliminaryNarrative(report, { locale: "ru" });
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+    expect(result.sections.findings).toEqual([]);
+    expect(text(result)).not.toMatch(/чёрн.*списк|заморож/i);
+  });
+
+  it.each(["ru", "en"] as const)("fails closed for unnamed allowlisted CEX in %s", (locale) => {
+    const report = sourceWhereReportFixture({ kind: "allowlisted_cex", score: 18, share: 0.61 });
+    const result = buildWherePreliminaryNarrative(report, { locale });
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+    expect(result.sections.findings).toEqual([]);
+  });
+
+  it.each(["ru", "en"] as const)("publishes named allowlisted CEX from structured identity in %s", (locale) => {
+    const report = sourceWhereReportFixture({ kind: "allowlisted_cex", score: 18, share: 0.61, label: "Binance" });
+    const result = buildWherePreliminaryNarrative(report, { locale });
+    expect(result.score).toBe(18);
+    expect(result.sections.findings[0]).toContain("Binance");
+    expect(result.preferredFactId).toMatch(/^cex:/);
   });
 
   it("selects the highest typed fallback driver stably when dominantRiskLayer is absent", () => {

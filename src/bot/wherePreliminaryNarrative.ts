@@ -113,7 +113,7 @@ function fastFacts(report: WhereIsMoneyReport): NarrativeFact[] {
   const fast = report.fastWalletRisk;
   if (!fast || fast.subjectAddress !== report.subjectAddress) return [];
   return fast.reasons.flatMap((reason) => {
-    const copy = fastNarrativeCopy(reason.code, fast);
+    const copy = fastNarrativeCopy(reason.code, fast, { presentation: "preliminary" });
     if (!copy) return [];
     return [plainFact({
       id: `fast-subject:${reason.code}`,
@@ -192,8 +192,8 @@ const ageCopies: Partial<Record<WhereIsMoneyAgeSignal["code"], { ru: string; en:
   dormancy_gap: {
     ru: "Перед переводом был долгий период неактивности.",
     en: "There was a long inactive period before the transfer.",
-    meaningRu: "Неожиданное возобновление активности требует ручной проверки.",
-    meaningEn: "The unexpected return to activity requires manual review."
+    meaningRu: "Длительный разрыв активности повышает неопределённость временного контекста.",
+    meaningEn: "The long inactivity gap increases timing uncertainty."
   },
   relationship_repeated: {
     ru: "С отправителем есть устоявшаяся повторная история переводов.",
@@ -229,7 +229,7 @@ function whereFacts(report: WhereIsMoneyReport, verify20?: Verify20NarrativeEvid
     const fact = approvalDrainRoleFact({ checkedAddress: report.subjectAddress, profile });
     if (fact) facts.push(fact);
   }
-  if (verify20?.subjectAddress === report.subjectAddress) {
+  if (verify20?.subjectAddress === report.subjectAddress && verify20.role === "verify20_contract") {
     const fact = verify20RoleFact(verify20);
     if (fact) facts.push(fact);
   }
@@ -250,16 +250,20 @@ function preferredFactId(
   driver: WhereNarrativeDriver | null,
   report: WhereIsMoneyReport
 ): string | null {
+  const eligible = facts.filter((fact) =>
+    fact.kind !== "gasfree_fee" &&
+    (fact.kind !== "cex_source" || fact.sourceIdentityKnown === true)
+  );
   if (driver) {
-    const evidence = facts.find((fact) => fact.kind !== "gasfree_fee" && overlaps(fact.evidenceIds, driver.evidenceIds));
+    const evidence = eligible.find((fact) => overlaps(fact.evidenceIds, driver.evidenceIds));
     if (evidence) return evidence.id;
-    const signal = facts.find((fact) => fact.kind !== "gasfree_fee" && overlaps(fact.scoreSignalKeys, driver.signalKeys));
+    const signal = eligible.find((fact) => overlaps(fact.scoreSignalKeys, driver.signalKeys));
     if (signal) return signal.id;
   }
-  const exactFast = facts.find((fact) => fact.id.startsWith("fast-subject:") && fact.proofStrength === "exact");
-  if (exactFast) return exactFast.id;
   if (!driver && report.riskScore < 30) {
-    const namedSource = facts.find((fact) => fact.kind === "cex_source" && !/without|не установлен/i.test(fact.factTextEn));
+    const namedSource = eligible.find((fact) =>
+      fact.kind === "cex_source" && fact.sourceIdentityKnown === true
+    );
     if (namedSource) return namedSource.id;
   }
   return null;
