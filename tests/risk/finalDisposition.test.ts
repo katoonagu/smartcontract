@@ -92,6 +92,16 @@ const hardMatrix = (subjectAddress: string, score: number): MatrixScoringResult 
 const contextMatrix = (subjectAddress: string, score: number): MatrixScoringResult =>
   scoreMatrixCandidates([matrixCandidate(subjectAddress, { score })], matrixContext(subjectAddress));
 
+const directPolicyMatrix = (subjectAddress: string, score = 60): MatrixScoringResult =>
+  scoreMatrixCandidates([matrixCandidate(subjectAddress, {
+    row: "direct_counterparty_policy",
+    score
+  }, {
+    kind: "policy",
+    decisionEligibility: "can_decline",
+    coverageDependency: "none"
+  })], matrixContext(subjectAddress));
+
 describe("resolveFinalDisposition", () => {
   it("keeps exact hard DECLINE when unrelated coverage is partial", () => {
     const result = resolveFinalDisposition({
@@ -125,6 +135,75 @@ describe("resolveFinalDisposition", () => {
       scoreValid: false,
       decisionBasis: "technical_stop",
       hardProofEvidenceIds: []
+    });
+  });
+
+  it("keeps structurally validated direct counterparty policy decisive through unrelated partial coverage", () => {
+    expect(resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore: directPolicyMatrix(address, 73),
+      coverage: coverage("invalid", "partial"),
+      observedContextScore: 88
+    })).toMatchObject({
+      decision: "DECLINE",
+      finalScore: 73,
+      observedContextScore: 88,
+      scoreValid: true,
+      decisionBasis: "independent_policy",
+      coverage: { required: "invalid", overall: "partial" },
+      hardProofEvidenceIds: []
+    });
+  });
+
+  it("keeps exact hard proof ahead of a higher-scoring independent direct policy", () => {
+    const matrixScore = scoreMatrixCandidates([
+      matrixCandidate(address, {
+        row: "hard_proof",
+        score: 80,
+        evidenceIds: ["hard:1"],
+        evidenceEpisodeIds: ["hard-episode"]
+      }, { kind: "exact_hard", proofSource: "approval_drain_exact" }),
+      matrixCandidate(address, {
+        row: "direct_counterparty_policy",
+        score: 90,
+        evidenceIds: ["policy:1"],
+        evidenceEpisodeIds: ["policy-episode"]
+      }, { kind: "policy", decisionEligibility: "can_decline", coverageDependency: "none" })
+    ], matrixContext(address));
+
+    expect(resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore,
+      coverage: coverage("invalid", "partial"),
+      observedContextScore: 90
+    })).toMatchObject({
+      decision: "DECLINE",
+      finalScore: 80,
+      decisionBasis: "exact_hard_proof",
+      hardProofEvidenceIds: ["hard:1"]
+    });
+  });
+
+  it.each([
+    ["score below decline threshold", 59, { kind: "policy", decisionEligibility: "can_decline", coverageDependency: "none" }],
+    ["review-only authority", 80, { kind: "policy", decisionEligibility: "review_only", coverageDependency: "none" }],
+    ["coverage-dependent authority", 80, { kind: "policy", decisionEligibility: "can_decline", coverageDependency: "wallet_provenance" }]
+  ] as const)("does not bypass invalid coverage for direct policy with %s", (_label, score, authority) => {
+    const matrixScore = scoreMatrixCandidates([matrixCandidate(address, {
+      row: "direct_counterparty_policy",
+      score
+    }, authority)], matrixContext(address));
+
+    expect(resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore,
+      coverage: coverage("invalid", "partial"),
+      observedContextScore: score
+    })).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      finalScore: null,
+      scoreValid: false,
+      decisionBasis: "technical_stop"
     });
   });
 

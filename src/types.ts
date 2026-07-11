@@ -539,7 +539,7 @@ export type DecisionCoverage = {
   caveats: string[];
 };
 
-export type FinalDecisionBasis = "exact_hard_proof" | "matrix" | "technical_stop";
+export type FinalDecisionBasis = "exact_hard_proof" | "independent_policy" | "matrix" | "technical_stop";
 
 export type LocalIndexMaterializationStatus = "complete" | "local_limit" | "read_failed";
 

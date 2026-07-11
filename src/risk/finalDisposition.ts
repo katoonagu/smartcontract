@@ -45,6 +45,26 @@ function exactHardCandidate(
     .sort((left, right) => right.score - left.score)[0] ?? null;
 }
 
+function independentDirectPolicyCandidate(
+  matrix: MatrixScoringResult,
+  subject: DecisionSubject
+): ClassifiedMatrixCandidate | null {
+  return (matrix.riskVector.direct_counterparty_policy ?? [])
+    .filter((candidate) =>
+      candidate.row === "direct_counterparty_policy" &&
+      candidate.authority.kind === "policy" &&
+      candidate.authority.decisionEligibility === "can_decline" &&
+      candidate.authority.coverageDependency === "none" &&
+      candidate.evidenceClass === "policy" &&
+      candidate.proofLevel === "policy" &&
+      candidate.decisionEligibility === "can_decline" &&
+      candidate.coverageDependency === "none" &&
+      candidate.score >= 60 &&
+      sameSubject(candidate, subject)
+    )
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+}
+
 export function resolveFinalDisposition(input: {
   subject: DecisionSubject;
   matrixScore: MatrixScoringResult;
@@ -64,6 +84,19 @@ export function resolveFinalDisposition(input: {
       decisionBasis: "exact_hard_proof",
       coverage: input.coverage,
       hardProofEvidenceIds: hard.evidenceIds
+    };
+  }
+
+  const independentPolicy = independentDirectPolicyCandidate(input.matrixScore, input.subject);
+  if (independentPolicy) {
+    return {
+      decision: "DECLINE",
+      finalScore: independentPolicy.score,
+      observedContextScore,
+      scoreValid: true,
+      decisionBasis: "independent_policy",
+      coverage: input.coverage,
+      hardProofEvidenceIds: []
     };
   }
 

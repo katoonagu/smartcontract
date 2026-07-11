@@ -371,7 +371,7 @@ function coverageLevel(input: UnifiedWalletRiskInput): UnifiedWalletCoverageLeve
   if (wherePartial && deepSparse) return "limited";
   if (!deep || !selectedFastReport(input)) return "partial";
   const deepMissingCount = arrayOrEmpty(deep.missingChecks).length + arrayOrEmpty(deep.coverageDebug?.missingChecks).length;
-  if (wherePartial || deepMissingCount > 0) return "partial";
+  if (wherePartial || deepMissingCount > 0 || requiredFirstHopCoverageLimitations(deep).length > 0) return "partial";
   return "complete";
 }
 
@@ -474,16 +474,65 @@ function matrixCandidateReason(
 
 function walletDecisionCoverage(
   report: WhereIsMoneyReport,
+  deepReport: DeepAddressForensicReport | null | undefined,
   coverageLevel: UnifiedWalletCoverageLevel
 ): DecisionCoverage {
   const notApplicable = report.coverage.questionStatus === "not_applicable";
-  const invalid = !notApplicable && report.scoreValid !== true;
+  const whereInvalid = !notApplicable && report.scoreValid !== true;
+  const firstHopLimitations = requiredFirstHopCoverageLimitations(deepReport);
+  const firstHopInvalid = firstHopLimitations.length > 0;
+  const invalid = whereInvalid || firstHopInvalid;
+  const firstHopIncompleteReason = firstHopInvalid
+    ? deepReport?.firstHopBlacklistCoverage?.incompleteReason
+    : null;
   return {
-    required: notApplicable ? "not_applicable" : invalid ? "invalid" : "valid",
+    required: invalid ? "invalid" : notApplicable ? "not_applicable" : "valid",
     overall: invalid || report.coverage.partial || coverageLevel !== "complete" ? "partial" : "complete",
-    invalidModes: invalid ? ["where_is_money"] : [],
-    caveats: [...report.coverage.notes, ...(report.assessment.warnings ?? [])]
+    invalidModes: [
+      ...(whereInvalid ? ["where_is_money"] : []),
+      ...(firstHopInvalid ? ["deep_first_hop_blacklist"] : [])
+    ],
+    caveats: [
+      ...report.coverage.notes,
+      ...(report.assessment.warnings ?? []),
+      ...(firstHopIncompleteReason ? [firstHopIncompleteReason] : []),
+      ...firstHopLimitations
+    ]
   };
+}
+
+function requiredFirstHopCoverageLimitations(
+  report: DeepAddressForensicReport | null | undefined
+): string[] {
+  const coverage = report?.firstHopBlacklistCoverage;
+  if (!coverage || coverage.requiredForDecision !== true) return [];
+
+  const limitations: string[] = [];
+  if (coverage.blacklistCheckCoverage !== "complete") {
+    limitations.push(`First-hop blacklist checks are ${coverage.blacklistCheckCoverage}.`);
+  }
+  if (coverage.directPrincipalTransferCoverage !== "complete") {
+    limitations.push("First-hop blacklist direct principal transfer coverage is partial.");
+  }
+  if (coverage.failedMaterialCounterpartyCount > 0) {
+    limitations.push(`First-hop blacklist checks failed for ${coverage.failedMaterialCounterpartyCount} material counterparties.`);
+  }
+  if (coverage.uncheckedMaterialCounterpartyCount > 0) {
+    limitations.push(`First-hop blacklist checks did not run for ${coverage.uncheckedMaterialCounterpartyCount} material counterparties.`);
+  }
+  const accountedCount = coverage.checkedMaterialCounterpartyCount +
+    coverage.failedMaterialCounterpartyCount +
+    coverage.uncheckedMaterialCounterpartyCount;
+  if (accountedCount !== coverage.materialCounterpartyCount) {
+    limitations.push("First-hop blacklist material counterparty coverage counts do not match.");
+  }
+  if (coverage.partialTimelineFactCount > 0) {
+    limitations.push("First-hop blacklist fact timeline coverage is partial.");
+  }
+  if (limitations.length === 0 && coverage.incompleteReason) {
+    limitations.push("First-hop blacklist coverage is marked incomplete.");
+  }
+  return limitations;
 }
 
 export function observedContextFromMatrix(matrix: MatrixScoringResult, weightedContextScore: number): number {
@@ -550,7 +599,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const coverageAdjustedContextScore = coverageLevelValue === "limited" ? Math.max(contextScore, 30) : contextScore;
   const legacyFinalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
   const legacyFinalScore = hardEvidenceFloor === 0 ? Math.min(legacyFinalBeforeHardCap, 84) : legacyFinalBeforeHardCap;
-  const decisionCoverage = walletDecisionCoverage(input.whereReport, coverageLevelValue);
+  const decisionCoverage = walletDecisionCoverage(input.whereReport, input.deepReport, coverageLevelValue);
   const disposition = resolveFinalDisposition({
     subject: { decisionScope: "wallet_unified", address: input.address, txHash: null },
     matrixScore,
