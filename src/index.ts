@@ -552,7 +552,7 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     logger
   }),
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
-  getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
+  getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
   ensureAddressUsdtHistory,
   getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, {
@@ -903,7 +903,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getAddressMetadata: (address) => getCachedOrLiveAddressMetadata(address),
       getContractIntelligenceProfile: (address) => getCachedOrLiveContractIntelligenceProfile(address),
-      getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
+      getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
       analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,

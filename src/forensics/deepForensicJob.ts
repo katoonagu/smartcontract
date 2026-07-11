@@ -43,7 +43,7 @@ import {
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -64,7 +64,7 @@ export type DeepForensicJobRunnerDeps = Omit<
     orderBy?: "newest" | "amount_desc";
     direction?: "both";
   }): Promise<IndexedTronUsdtTransfer[]>;
-  getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<TimelineBearingStablecoinRestrictionProfile>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
     id: string;
@@ -1867,6 +1867,10 @@ export async function runSingleDeepForensicJobCycle(
         ...job.progressJson,
         ...progressCoverage,
         ...(allTimeCoverage === undefined ? {} : { allTimeCoverage }),
+        firstHopBlacklistFacts: report.firstHopBlacklistFacts ?? [],
+        firstHopLabelFacts: report.firstHopLabelFacts ?? [],
+        firstHopBlacklistCoverage: report.firstHopBlacklistCoverage ?? null,
+        directHardEvidenceSnapshots: report.directHardEvidenceSnapshots ?? [],
         derivedLabel
       },
       resultJson: {
@@ -1890,6 +1894,10 @@ export async function runSingleDeepForensicJobCycle(
         operationalFlowProfiles: report.operationalFlowProfiles ?? [],
         walletRoleProfiles: report.walletRoleProfiles,
         stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
+        firstHopBlacklistFacts: report.firstHopBlacklistFacts ?? [],
+        firstHopLabelFacts: report.firstHopLabelFacts ?? [],
+        firstHopBlacklistCoverage: report.firstHopBlacklistCoverage ?? null,
+        directHardEvidenceSnapshots: report.directHardEvidenceSnapshots ?? [],
         extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],
         derivedLabel,
         derivedLabels,

@@ -790,6 +790,48 @@ describe("direct hard evidence helper", () => {
     });
   });
 
+  it("does not treat a timeline with a non-finite event timestamp as complete", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({ id: "1", fromAddress: "TInvalidTimelineDate", toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address, {
+        isBlacklisted: true,
+        blacklistTimeline: {
+          events: [{
+            eventKind: "added",
+            occurredAt: "not-a-date",
+            txHash: "tx-invalid-date",
+            tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            blockNumber: 100,
+            logIndex: 1,
+            verification: "verified_contract_log"
+          }],
+          pagination: "complete",
+          failureReason: null
+        }
+      })
+    });
+
+    expect(result.blacklistFacts[0]).toMatchObject({
+      timelineCoverage: "partial",
+      temporalRelation: "unknown",
+      unknownTimingAmountRaw: "10000000000"
+    });
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      blacklistCheckCoverage: "history_partial",
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 1
+    });
+  });
+
   it("assigns every movement in one transaction to unknown when its timestamps imply conflicting relations", async () => {
     const groups = groupDirectPrincipalCounterparties({
       subjectAddress: SUBJECT,

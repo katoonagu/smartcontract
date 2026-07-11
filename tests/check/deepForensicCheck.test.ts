@@ -264,7 +264,7 @@ describe("deep forensic address check", () => {
         id: `tx-all-time-${index}`,
         from: `TSender${String(index).padStart(2, "0")}111111111111111111111`,
         to: sourceAddress,
-        amountRaw: String((index + 1) * 1_000_000),
+        amountRaw: "1000000000",
         at: `2026-06-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
         eventIndex: index
       })
@@ -552,6 +552,320 @@ describe("deep forensic address check", () => {
       })
     });
     expect(report.directCounterpartyInteractionProfiles?.[0]?.scoreContribution).toBeGreaterThan(0);
+  });
+
+  it("carries exact all-time first-hop facts with timeline chronology into the fresh report", async () => {
+    const sourceAddress = "TSubjectFirstHopAllTime111111111111";
+    const counterparty = "TFirstHopAllTimeBlacklisted111111111";
+    const transfers = [
+      indexed({
+        id: "tx-before-blacklist",
+        from: counterparty,
+        to: sourceAddress,
+        amountRaw: "6000000000",
+        at: "2026-05-01T00:00:00.000Z"
+      }),
+      indexed({
+        id: "tx-active-blacklist",
+        from: counterparty,
+        to: sourceAddress,
+        amountRaw: "6000000000",
+        at: "2026-06-15T00:00:00.000Z",
+        eventIndex: 1
+      })
+    ];
+    const restrictionCalls: Array<{ address: string; includeEventTimeline: boolean | undefined }> = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getLabelsForAddress: async (address) => address === counterparty ? [label(address)] : [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address, options) => {
+        restrictionCalls.push({ address, includeEventTimeline: options?.includeEventTimeline });
+        return {
+          ...usdtRestriction(address),
+          isBlacklisted: address === counterparty,
+          blacklistEventTxHash: address === counterparty ? "tx-added-blacklist" : null,
+          blacklistEventTimestamp: address === counterparty ? "2026-06-01T00:00:00.000Z" : null,
+          blacklistEventBlock: address === counterparty ? 200 : null,
+          blacklistTimeline: address === counterparty ? {
+            address,
+            events: [{
+              eventKind: "added" as const,
+              address,
+              tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+              occurredAt: "2026-06-01T00:00:00.000Z",
+              txHash: "tx-added-blacklist",
+              blockNumber: 200,
+              logIndex: 3,
+              verification: "verified_contract_log" as const
+            }],
+            pagination: "complete" as const,
+            failureReason: null,
+            checkedAt: "2026-07-02T00:00:00.000Z"
+          } : null
+        };
+      }
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-05-15T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 2, 1),
+      allTimeMode: "strict"
+    });
+
+    expect(restrictionCalls).toContainEqual({ address: counterparty, includeEventTimeline: true });
+    expect(report.firstHopBlacklistFacts).toEqual([expect.objectContaining({
+      counterpartyAddress: counterparty,
+      direction: "inbound",
+      principalAmountRaw: "12000000000",
+      directionalPrincipalShare: 1,
+      shareSemantics: "exact",
+      transferTxHashes: ["tx-active-blacklist", "tx-before-blacklist"],
+      temporalRelation: "mixed",
+      beforeEffectiveAmountRaw: "6000000000",
+      activeAmountRaw: "6000000000",
+      unknownTimingAmountRaw: "0",
+      timelineCoverage: "complete",
+      timelineEvents: [expect.objectContaining({ txHash: "tx-added-blacklist", logIndex: 3 })]
+    })]);
+    expect(report.firstHopLabelFacts).toEqual([expect.objectContaining({
+      counterpartyAddress: counterparty,
+      direction: "inbound",
+      principalAmountRaw: "12000000000",
+      directionalPrincipalShare: 1,
+      transferTxHashes: ["tx-active-blacklist", "tx-before-blacklist"],
+      // Deep has no typed selected Where/Incoming identity yet; the later caller join owns this link.
+      linkedToSelectedProvenance: false
+    })]);
+    expect(report.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      scope: "all_time",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "complete",
+      blacklistCheckCoverage: "complete",
+      completeTimelineFactCount: 1,
+      partialTimelineFactCount: 0
+    });
+    expect(report.directHardEvidenceSnapshots?.[0]?.usdtRestriction?.blacklistTimeline).toMatchObject({
+      pagination: "complete",
+      events: [expect.objectContaining({ txHash: "tx-added-blacklist" })]
+    });
+    expect(JSON.parse(JSON.stringify(report.firstHopBlacklistFacts))).toEqual(report.firstHopBlacklistFacts);
+  });
+
+  it("builds partial first-hop facts only from the bounded checked window", async () => {
+    const sourceAddress = "TSubjectFirstHopBounded111111111111";
+    const inWindowCounterparty = "TFirstHopBoundedInside111111111111";
+    const outsideCounterparty = "TFirstHopBoundedOutside11111111111";
+    const windowTransfers = [transfer({
+      id: "tx-inside-window",
+      from: sourceAddress,
+      to: inWindowCounterparty,
+      amountRaw: "10000000000",
+      at: "2026-05-20T00:00:00.000Z"
+    })];
+    const sparseFallbackTransfers = [
+      ...windowTransfers,
+      transfer({
+        id: "tx-outside-window",
+        from: outsideCounterparty,
+        to: sourceAddress,
+        amountRaw: "90000000000",
+        at: "2026-04-01T00:00:00.000Z"
+      })
+    ];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          if (address !== sourceAddress) return [];
+          return options?.minTimestamp === undefined ? sparseFallbackTransfers : windowTransfers;
+        }
+      },
+      getLabelsForAddress: async (address) => address === inWindowCounterparty ? [label(address)] : [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => ({
+        ...usdtRestriction(address),
+        isBlacklisted: address === inWindowCounterparty || address === outsideCounterparty,
+        blacklistTimeline: null
+      })
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(report.firstHopBlacklistFacts).toEqual([expect.objectContaining({
+      counterpartyAddress: inWindowCounterparty,
+      direction: "outbound",
+      principalAmountRaw: "10000000000",
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable",
+      transferTxHashes: ["tx-inside-window"],
+      directTransferCoverage: "partial",
+      timelineCoverage: "partial"
+    })]);
+    expect(report.firstHopBlacklistFacts?.some((fact) =>
+      fact.counterpartyAddress === outsideCounterparty || fact.transferTxHashes.includes("tx-outside-window")
+    )).toBe(false);
+    expect(report.firstHopLabelFacts).toEqual([expect.objectContaining({
+      counterpartyAddress: inWindowCounterparty,
+      direction: "outbound",
+      directionalPrincipalShare: null,
+      shareSemantics: "unavailable",
+      linkedToSelectedProvenance: false
+    })]);
+    expect(report.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      scope: "checked_window",
+      windowStart: "2026-05-01T00:00:00.000Z",
+      windowEnd: "2026-05-24T00:00:00.000Z",
+      directPrincipalTransferCoverage: "partial",
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: expect.stringContaining("partial")
+    });
+  });
+
+  it("fails closed when an indexed direct principal row is invalid", async () => {
+    const sourceAddress = "TSubjectInvalidFirstHop1111111111111";
+    const counterparty = "TInvalidFirstHopCounterparty111111111";
+    const invalid = indexed({
+      id: "tx-invalid-first-hop",
+      from: counterparty,
+      to: sourceAddress,
+      amountRaw: "10000000000",
+      at: "2026-05-20T00:00:00.000Z"
+    });
+    invalid.amountRaw = "not-a-number";
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => address === sourceAddress
+        ? [invalid].slice(options.offset ?? 0, (options.offset ?? 0) + options.limit)
+        : [],
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 1, 1),
+      allTimeMode: "strict"
+    });
+
+    expect(report.firstHopBlacklistFacts).toEqual([]);
+    expect(report.firstHopLabelFacts).toEqual([]);
+    expect(report.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      scope: "checked_window",
+      directPrincipalTransferCoverage: "partial",
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: expect.stringMatching(/invalid.*clean/i)
+    });
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringMatching(/invalid.*clean/i)
+    ]));
+  });
+
+  it("downgrades conflicting all-time transaction chronology instead of reporting clean complete coverage", async () => {
+    const sourceAddress = "TSubjectConflictFirstHop111111111111";
+    const first = "TConflictFirstHopA111111111111111111";
+    const second = "TConflictFirstHopB11111111111111111";
+    const transfers = [
+      indexed({
+        id: "tx-conflicting-first-hop",
+        from: first,
+        to: sourceAddress,
+        amountRaw: "10000000000",
+        at: "2026-05-20T00:00:00.000Z"
+      }),
+      indexed({
+        id: "tx-conflicting-first-hop",
+        from: second,
+        to: sourceAddress,
+        amountRaw: "10000000000",
+        at: "2026-05-21T00:00:00.000Z",
+        eventIndex: 1
+      })
+    ];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => address === sourceAddress
+        ? transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit)
+        : [],
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => ({
+        ...usdtRestriction(address),
+        isBlacklisted: true,
+        blacklistTimeline: {
+          address,
+          events: [{
+            eventKind: "added" as const,
+            address,
+            tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+            occurredAt: "2026-05-10T00:00:00.000Z",
+            txHash: `tx-added-${address}`,
+            blockNumber: 10,
+            logIndex: 0,
+            verification: "verified_contract_log" as const
+          }],
+          pagination: "complete" as const,
+          failureReason: null,
+          checkedAt: "2026-05-24T00:00:00.000Z"
+        }
+      })
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 2, 2),
+      allTimeMode: "strict"
+    });
+
+    expect(report.firstHopBlacklistFacts).toHaveLength(2);
+    expect(report.firstHopBlacklistFacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        directTransferCoverage: "partial",
+        directionalPrincipalShare: null,
+        shareSemantics: "unavailable",
+        temporalRelation: "unknown",
+        unknownTimingAmountRaw: "10000000000"
+      })
+    ]));
+    expect(report.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      scope: "checked_window",
+      directPrincipalTransferCoverage: "partial",
+      blacklistCheckCoverage: "history_partial",
+      incompleteReason: expect.stringMatching(/conflicting timestamps/i)
+    });
   });
 
   it("reports incomplete all-time direct hard evidence when live blacklist lookup fails", async () => {
@@ -1192,7 +1506,9 @@ describe("deep forensic address check", () => {
     expect(calls).toContain(hinted);
     expect(calls).not.toContain(top);
     expect(restrictionCalls).toContain(hinted);
-    expect(restrictionCalls).not.toContain(top);
+    // Fast-snapshot enrichment still prioritizes the hint, while the independent
+    // first-hop evidence pass checks the absolute-material top counterparty.
+    expect(restrictionCalls).toContain(top);
   });
 
   it("does not turn hint metadata alone into evidence observations or score", async () => {

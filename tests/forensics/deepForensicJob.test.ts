@@ -5794,6 +5794,102 @@ describe("deep forensic job runner", () => {
     ]);
   });
 
+  it("persists JSON-safe first-hop timeline facts and coverage in deep result and progress", async () => {
+    const counterparty = "TJobFirstHopBlacklisted1111111111111";
+    const sourceJob = job();
+    const completeForensicCheckJob = vi.fn(async (_input: DeepForensicCompletionInput) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      upsertAddressLabelAssertion: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === subject ? [transfer({
+          id: "tx-job-first-hop",
+          from: counterparty,
+          to: subject,
+          amountRaw: "10000000000",
+          at: "2026-05-20T10:00:00.000Z"
+        })] : []
+      },
+      getLabelsForAddress: async (address) => address === counterparty ? [{
+        address,
+        label: "phishing",
+        source: "service_admin",
+        createdByTelegramId: "1",
+        createdAt: new Date("2026-05-01T00:00:00.000Z")
+      }] : [],
+      getUsdtRestrictionStatus: async (address, options) => ({
+        ...usdtRestrictionProfile({
+          subjectAddress: address,
+          isBlacklisted: address === counterparty,
+          blacklistEventTxHash: address === counterparty ? "tx-job-added" : null,
+          blacklistEventTimestamp: address === counterparty ? "2026-05-10T00:00:00.000Z" : null,
+          blacklistEventBlock: address === counterparty ? 10 : null
+        }),
+        blacklistTimeline: address === counterparty && options?.includeEventTimeline === true ? {
+          address,
+          events: [{
+            eventKind: "added" as const,
+            address,
+            tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+            occurredAt: "2026-05-10T00:00:00.000Z",
+            txHash: "tx-job-added",
+            blockNumber: 10,
+            logIndex: 2,
+            verification: "verified_contract_log" as const
+          }],
+          pagination: "complete" as const,
+          failureReason: null,
+          checkedAt: "2026-05-24T00:00:00.000Z"
+        } : null
+      })
+    }, {
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      extendedSearchMode: "disabled",
+      recentFallbackMinTransferCount: 0,
+      recentFallbackTransferLimit: 0
+    });
+
+    expect(handled).toBe(true);
+    const completion = completeForensicCheckJob.mock.calls[0]?.[0];
+    const serialized = JSON.parse(JSON.stringify(completion));
+    expect(serialized.resultJson).toMatchObject({
+      firstHopBlacklistFacts: [expect.objectContaining({
+        counterpartyAddress: counterparty,
+        direction: "inbound",
+        principalAmountRaw: "10000000000",
+        transferTxHashes: ["tx-job-first-hop"],
+        activeAmountRaw: "10000000000",
+        timelineEvents: [expect.objectContaining({ txHash: "tx-job-added", logIndex: 2 })]
+      })],
+      firstHopLabelFacts: [expect.objectContaining({
+        counterpartyAddress: counterparty,
+        direction: "inbound",
+        principalAmountRaw: "10000000000",
+        transferTxHashes: ["tx-job-first-hop"],
+        linkedToSelectedProvenance: false
+      })],
+      firstHopBlacklistCoverage: expect.objectContaining({
+        requiredForDecision: true,
+        scope: "checked_window",
+        directPrincipalTransferCoverage: "partial",
+        blacklistCheckCoverage: "history_partial"
+      })
+    });
+    expect(serialized.progressJson).toMatchObject({
+      firstHopBlacklistFacts: serialized.resultJson.firstHopBlacklistFacts,
+      firstHopLabelFacts: serialized.resultJson.firstHopLabelFacts,
+      firstHopBlacklistCoverage: serialized.resultJson.firstHopBlacklistCoverage
+    });
+  });
+
   it("keeps a completed deep job completed when Telegram result delivery fails", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [

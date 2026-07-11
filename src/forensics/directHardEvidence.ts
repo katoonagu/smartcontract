@@ -7,7 +7,6 @@ import type {
   FirstHopLabelFact,
   ForensicRouteEdge,
   ServiceClassification,
-  StablecoinRestrictionProfile,
   TimelineBearingStablecoinRestrictionProfile,
   UsdtBlacklistTimeline,
   UsdtBlacklistTimelineEvent
@@ -27,7 +26,7 @@ export type DirectHardEvidenceSnapshot = {
   address: string;
   labels: AddressLabel[];
   classification: ServiceClassification | null;
-  usdtRestriction: StablecoinRestrictionProfile | null;
+  usdtRestriction: TimelineBearingStablecoinRestrictionProfile | null;
   evidenceStatus: "live_checked" | "local_only";
   hasHardEvidence: boolean;
   reasons: string[];
@@ -257,6 +256,7 @@ function completeActiveTimeline(timeline: UsdtBlacklistTimeline | null | undefin
   if (timeline?.pagination !== "complete" || timeline.failureReason !== null) return false;
   const events = sortedVerifiedTimeline(timeline.events);
   if (events.length !== timeline.events.length) return false;
+  if (events.some((event) => !Number.isFinite(Date.parse(event.occurredAt)))) return false;
   return events.reduce((active, event) => event.eventKind === "added", false);
 }
 
@@ -493,7 +493,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       input.getLabelsForAddress(address),
       input.getClassificationForAddress(address)
     ]);
-    let usdtRestriction: StablecoinRestrictionProfile | null = null;
+    let usdtRestriction: TimelineBearingStablecoinRestrictionProfile | null = null;
     if (liveAddresses.has(address) && input.getUsdtRestrictionStatus) {
       try {
         usdtRestriction = await input.getUsdtRestrictionStatus(address, { includeEventTimeline: true });
@@ -534,7 +534,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       : liveAddresses.size >= addresses.length ? "complete" : "live_budget_exhausted";
   const snapshotsByAddress = new Map(snapshots.map((snapshot) => [normalizedAddress(snapshot.address), snapshot]));
   const blacklistFacts = materialGroups.flatMap((group) => {
-    const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction as TimelineBearingStablecoinRestrictionProfile | null | undefined;
+    const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction;
     return restriction?.isBlacklisted
       ? [buildBlacklistFact({ group, restriction, directTransferCoverage, conflictingTxHashes })]
       : [];
