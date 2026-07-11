@@ -1482,7 +1482,7 @@ export function buildWalletNarrativeCase(input: WalletNarrativeCase): WalletNarr
       ...(meaningTextRu ? { meaningTextRu } : { meaningTextRu: undefined }),
       ...(meaningTextEn ? { meaningTextEn } : { meaningTextEn: undefined })
     };
-    return normalized.id && localizedFactText(normalized, input.locale) ? [normalized] : [];
+    return normalized.id && localizedFindingText(normalized, input.locale) ? [normalized] : [];
   });
 
   const coverage = input.coverageExplanation;
@@ -1579,6 +1579,23 @@ function fitsBody(parts: string[]): boolean {
   return parts.length === 0 || `\n\n${parts.join("\n\n")}`.length <= MAX_BODY_LENGTH;
 }
 
+function factPresentationPart(
+  fact: NarrativeFact,
+  locale: WalletNarrativeLocale,
+  heading: string,
+  existingParts: string[]
+): { part: string; text: string } | null {
+  const finding = localizedFindingText(fact, locale);
+  const full = localizedFactText(fact, locale);
+  const candidates = full === finding ? [finding] : [full, finding];
+  for (const text of candidates) {
+    if (text.length > MAX_PART_LENGTH) continue;
+    const part = `${heading}\n${text}`;
+    if (fitsBody([...existingParts, part])) return { part, text };
+  }
+  return null;
+}
+
 export type PreliminaryNarrativeSections = {
   findings: string[];
   conclusion: string | null;
@@ -1647,20 +1664,22 @@ export function buildPreliminaryNarrativeSections(input: Pick<
 export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string {
   const caseData = buildWalletNarrativeCase(input);
   const selected = selectNarrativeFacts(caseData);
-  const factParts = selected.map((fact, index) => [
-    caseData.locale === "en"
-      ? index === 0 ? "Finding" : "Conclusion"
-      : index === 0 ? "Что нашли" : "Вывод",
-    localizedFactText(fact, caseData.locale)
-  ].join("\n"));
+  const parts: string[] = [];
+  const primaryPresentation = selected[0]
+    ? factPresentationPart(
+        selected[0],
+        caseData.locale,
+        caseData.locale === "en" ? "Finding" : "Что нашли",
+        parts
+      )
+    : null;
+  if (primaryPresentation) parts.push(primaryPresentation.part);
 
   let coveragePart: string | null = null;
   const coverage = caseData.coverageExplanation;
   if (coverage) {
     const coverageText = localizedCoverageText(coverage, caseData.locale);
-    const usedSentences = new Set(selected.slice(0, 1).flatMap((fact) =>
-      sentenceKeys(localizedFactText(fact, caseData.locale))
-    ));
+    const usedSentences = new Set(sentenceKeys(primaryPresentation?.text ?? ""));
     if (!sentenceKeys(coverageText).some((sentence) => usedSentences.has(sentence))) {
       coveragePart = [
         caseData.locale === "en" ? "Coverage limits" : "Границы проверки",
@@ -1669,20 +1688,26 @@ export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string
     }
   }
 
-  const parts = factParts.slice(0, 1);
-  const conclusionPart = factParts[1];
-  const conclusionDuplicatesCoverage = coverage && selected[1]
-    ? sentenceKeys(localizedFactText(selected[1], caseData.locale))
+  const conclusionPresentation = selected[1]
+    ? factPresentationPart(
+        selected[1],
+        caseData.locale,
+        caseData.locale === "en" ? "Conclusion" : "Вывод",
+        parts
+      )
+    : null;
+  const conclusionDuplicatesCoverage = coverage && conclusionPresentation
+    ? sentenceKeys(conclusionPresentation.text)
         .some((sentence) => sentenceKeys(localizedCoverageText(coverage, caseData.locale)).includes(sentence))
     : false;
   const fittingDuplicateCoverage = conclusionDuplicatesCoverage && coveragePart &&
     fitsBody([...parts, coveragePart]);
-  if (conclusionPart && !fittingDuplicateCoverage && fitsBody([...parts, conclusionPart])) {
-    parts.push(conclusionPart);
+  if (conclusionPresentation && !fittingDuplicateCoverage) {
+    parts.push(conclusionPresentation.part);
   }
   if (coveragePart) {
     if (fitsBody([...parts, coveragePart])) parts.push(coveragePart);
-  } else if (coverage === null && parts.length === factParts.length) {
+  } else if (coverage === null && parts.length === selected.length) {
     const selectedIds = new Set(selected.map((fact) => fact.id));
     const technicalFee = caseData.facts
       .filter((fact) =>
@@ -1692,11 +1717,13 @@ export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string
       )
       .sort((left, right) => compareLexical(left.id, right.id))[0];
     if (technicalFee) {
-      const technicalPart = [
+      const technicalPresentation = factPresentationPart(
+        technicalFee,
+        caseData.locale,
         caseData.locale === "en" ? "Technical detail" : "Техническая деталь",
-        localizedFactText(technicalFee, caseData.locale)
-      ].join("\n");
-      if (fitsBody([...parts, technicalPart])) parts.push(technicalPart);
+        parts
+      );
+      if (technicalPresentation) parts.push(technicalPresentation.part);
     }
   }
 

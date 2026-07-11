@@ -232,6 +232,81 @@ describe("formatWalletNarrativeSummary", () => {
     expect(body.length).toBeLessThanOrEqual(500);
   });
 
+  it("keeps a complete 280-character finding and drops an oversized final meaning", () => {
+    const finding = `Finding: ${"f".repeat(271)}`;
+    const meaning = `Meaning: ${"m".repeat(271)}`;
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      locale: "en",
+      facts: [{
+        id: "max-copy",
+        kind: "usdt_blacklist",
+        factTextRu: finding,
+        factTextEn: finding,
+        meaningTextRu: meaning,
+        meaningTextEn: meaning
+      }]
+    }));
+    const completeBody = output.slice(output.indexOf("\n\n"));
+    const findingCopy = output.split("Finding\n")[1];
+
+    expect(finding).toHaveLength(280);
+    expect(meaning).toHaveLength(280);
+    expect(completeBody.length).toBeLessThanOrEqual(500);
+    expect(findingCopy).toBe(finding);
+    expect(findingCopy?.length).toBeLessThanOrEqual(280);
+    expect(output).not.toContain(meaning);
+  });
+
+  it.each([
+    {
+      locale: "ru" as const,
+      emptyFact: { factTextRu: "   ", factTextEn: "English finding." },
+      meaning: { meaningTextRu: "Только интерпретация.", meaningTextEn: "Interpretation only." },
+      validFinding: "Подтверждённый факт."
+    },
+    {
+      locale: "en" as const,
+      emptyFact: { factTextRu: "Русский факт.", factTextEn: "   " },
+      meaning: { meaningTextRu: "Только интерпретация.", meaningTextEn: "Interpretation only." },
+      validFinding: "Confirmed finding."
+    }
+  ])("drops an interpretation-only $locale fact before selection", ({
+    locale,
+    emptyFact,
+    meaning,
+    validFinding
+  }) => {
+    const caseData = buildWalletNarrativeCase({
+      locale,
+      decision: "DECLINE",
+      score: 95,
+      facts: [
+        {
+          id: "interpretation-only",
+          kind: "usdt_blacklist",
+          ...emptyFact,
+          ...meaning
+        },
+        {
+          id: "valid",
+          kind: "bridge_route",
+          factTextRu: "Подтверждённый факт.",
+          factTextEn: "Confirmed finding."
+        }
+      ],
+      preferredFactId: "interpretation-only",
+      coverageExplanation: null
+    });
+    const selected = selectNarrativeFacts(caseData);
+    const output = formatWalletNarrativeSummary(caseData);
+
+    expect(caseData.facts.map((fact) => fact.id)).toEqual(["valid"]);
+    expect(caseData.preferredFactId).toBeNull();
+    expect(selected.map((fact) => fact.id)).toEqual(["valid"]);
+    expect(output).toContain(validFinding);
+    expect(output).not.toContain(locale === "en" ? meaning.meaningTextEn : meaning.meaningTextRu);
+  });
+
   it("keeps action in the final header and out of a sanctioned shared fact", () => {
     const [fact] = catalogueApi.sourceAndRouteFacts({
       paths: [postDesignationHtxPath()],
