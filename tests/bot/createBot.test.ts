@@ -3191,16 +3191,24 @@ describe("bot command and inline UX smoke coverage", () => {
           subjectAddress: whereReport.subjectAddress,
           whereIsMoneyReport: whereReport
         }
-      })
+      }),
+      getLatestDeepForensicCheckJobForAddressAnyStatus: async () => null
     });
 
     await bot.handleUpdate(messageUpdate("/check_status where-job-1", userId));
 
-    const text = lastPlainText(calls);
-    expectCompactNoFinalNarrative(text);
-    expect(text).toContain("fresh DeepCheck");
-    expect(text).toContain("Runtime: worker-a");
-    expect(text).not.toContain("Deep forensic status");
+    const normal = lastPlainText(calls);
+    await bot.handleUpdate(messageUpdate("/check_status where-job-1 detailed", userId));
+    const detailed = lastPlainText(calls);
+
+    expectCompactNoFinalNarrative(normal);
+    expect(normal).toContain("fresh DeepCheck");
+    expect(normal).toContain("Runtime: worker-a");
+    expect(normal).not.toContain("Deep forensic status");
+    expect(detailed).toContain("Detailed address report");
+    expect(detailed).toContain("Decision: NO_FINAL_DECISION.");
+    expect(detailed).toContain("fresh DeepCheck");
+    expect(detailed).not.toMatch(/\d+\/100/);
   });
 
   it("keeps support details out of normal check_status when detailed is not requested", async () => {
@@ -3985,6 +3993,8 @@ describe("bot command and inline UX smoke coverage", () => {
       fastReport: riskReportForTest({
         level: "CRITICAL",
         score: 90,
+        launderingPatternScore: 90,
+        dominantRiskType: "laundering_pattern",
         reasons: [
           {
             code: "forensic_address_behavior",
@@ -3997,9 +4007,34 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expectCompactScoredNarrative(text, 59);
-    expect(text).not.toContain("Быстрая проверка нашла поведенческий риск");
+    expect(text).toContain("Быстрая проверка выявила транзитное движение средств через кошелёк");
+    expect(text).not.toContain("forensic_address_behavior");
+    expect(text).not.toContain("Address shows high-volume transit-like behavior");
     expect(text).not.toContain("Hard evidence");
     expect(text).not.toContain("Жёсткое доказательство");
+  });
+
+  it("explains an exact Fast internal label for the checked address without leaking raw fields", () => {
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest(),
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        reasons: [{
+          code: "internal_label_scam",
+          message: "RAW ADMIN LABEL MUST NOT LEAK",
+          scoreImpact: 90,
+          evidenceRef: "label:scam:wallet"
+        }]
+      }),
+      locale: "ru"
+    });
+
+    expectCompactScoredNarrative(text, 90);
+    expect(text).toContain("Проверяемый адрес отмечен во внутренней базе как мошеннический");
+    expect(text).not.toContain("internal_label_scam");
+    expect(text).not.toContain("RAW ADMIN LABEL MUST NOT LEAK");
   });
 
   it("attributes DeepCheck-only exact approval-drain evidence to the DeepCheck detailed section", () => {
@@ -9263,6 +9298,48 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(mismatched).toMatch(/^⚪ No final result/u);
       expect(mismatched).toContain("fresh check");
       expect(mismatched).not.toMatch(/\d+\/100/);
+    });
+
+    it("keeps detailed diagnostics but suppresses its final score when current Deep prerequisites are missing", () => {
+      const detailed = formatUnifiedAddressDetailedReportForTest({
+        address: walletAddress,
+        whereReport: whereIsMoneyReportForTest(),
+        deepReport: null,
+        fastReport: riskReportForTest({
+          score: 90,
+          level: "CRITICAL",
+          reasons: [{
+            code: "forensic_address_behavior",
+            message: "Address shows high-volume transit-like behavior.",
+            scoreImpact: 90
+          }]
+        }),
+        locale: "en"
+      });
+
+      expect(detailed).toContain("Detailed address report");
+      expect(detailed).toContain("Decision: NO_FINAL_DECISION.");
+      expect(detailed).toContain("FastCheck");
+      expect(detailed).toContain("Where Is Money");
+      expect(detailed).toContain("DeepCheck");
+      expect(detailed).toContain("fresh DeepCheck");
+      expect(detailed).not.toMatch(/\d+\/100/);
+    });
+
+    it("escapes a 271-character narrative text without truncating its tail", () => {
+      const escapeNarrative = (createBotModule as typeof createBotModule & {
+        escapePlainTelegramText?: (value: string) => string;
+      }).escapePlainTelegramText;
+      expect(escapeNarrative).toBeTypeOf("function");
+      const hostile = `<tag title="x">&'${"a".repeat(250)}TAIL`;
+      expect(hostile).toHaveLength(271);
+
+      const escaped = escapeNarrative!(hostile);
+
+      expect(escaped).toContain("&lt;tag title=&quot;x&quot;&gt;&amp;&#39;");
+      expect(escaped).not.toContain("<tag");
+      expect(escaped).not.toContain("...");
+      expect(escaped.endsWith("TAIL")).toBe(true);
     });
 
     it("keeps normal HTML safe and exposes diagnostics only on explicit beta output", () => {

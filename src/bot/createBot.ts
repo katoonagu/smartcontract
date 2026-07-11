@@ -35,6 +35,7 @@ import {
   formatWalletNarrativeSummary,
   type ApprovalDrainNarrativeEvidence,
   type CoverageExplanation,
+  type NarrativeFact,
   type WalletNarrativeEvidenceInput
 } from "./walletNarrativeSummary";
 import type { Db } from "../storage/db";
@@ -3357,8 +3358,15 @@ function currentScoringPolicyDeepReport(report: DeepAddressForensicReport | null
   return report?.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION ? report : null;
 }
 
-function escapePlainTelegramText(value: string): string {
-  return value.split(/\r?\n/).map((line) => escapeHtml(line)).join("\n");
+export function escapePlainTelegramText(value: string): string {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function compactWalletNarrativeMessage(
@@ -3438,7 +3446,10 @@ function selectApprovalDrainNarrativeEvidence(
 }
 
 function buildUnifiedWalletNarrativeEvidence(
-  input: UnifiedAddressFinalReportInput & { deepReport: DeepAddressForensicReport }
+  input: UnifiedAddressFinalReportInput & {
+    deepReport: DeepAddressForensicReport;
+    unifiedRisk: UnifiedWalletRiskResult;
+  }
 ): ReturnType<typeof buildWalletNarrativeEvidence> {
   const restriction = [...(input.deepReport.stablecoinRestrictionProfiles ?? [])]
     .filter((profile) => profile.subjectAddress === input.address)
@@ -3470,7 +3481,149 @@ function buildUnifiedWalletNarrativeEvidence(
     operationalFlowProfiles: input.deepReport.operationalFlowProfiles ?? [],
     boundaryExposureProfiles: input.deepReport.boundaryExposureProfiles ?? []
   };
-  return buildWalletNarrativeEvidence(evidence);
+  const built = buildWalletNarrativeEvidence(evidence);
+  const fastFact = dominantFastNarrativeFact(input, built.facts);
+  return fastFact ? { ...built, facts: [...built.facts, fastFact] } : built;
+}
+
+const strongerThanFastBehavior = new Set<NarrativeFact["kind"]>([
+  "usdt_blacklist",
+  "direct_counterparty_blacklist",
+  "approval_drain",
+  "direct_counterparty_sanction",
+  "direct_counterparty_exact_label",
+  "sanctioned_source",
+  "verify20_template",
+  "bridge_route",
+  "unknown_contract",
+  "risky_counterparty",
+  "collector"
+]);
+
+function dominantFastNarrativeFact(
+  input: UnifiedAddressFinalReportInput & { unifiedRisk: UnifiedWalletRiskResult },
+  existingFacts: NarrativeFact[]
+): NarrativeFact | null {
+  const fast = input.fastReport;
+  const winner = input.unifiedRisk.matrixScore.winningCandidate;
+  if (
+    !fast ||
+    fast.subjectAddress !== input.address ||
+    winner.subject.address !== input.address ||
+    winner.subject.decisionScope !== "wallet_unified"
+  ) return null;
+
+  const reasons = fast.reasons.filter((reason) => winner.atomicSignals.includes(reason.code));
+  if (reasons.length === 0) return null;
+  const reason = reasons.find((candidate) => fastNarrativeCopy(candidate.code, fast) !== null);
+  if (!reason) return null;
+  const copy = fastNarrativeCopy(reason.code, fast);
+  if (!copy) return null;
+  if (copy.proofStrength === "context" && winner.row !== "behavior_only_prior") return null;
+  if (
+    (reason.code === "forensic_approval_drain_provenance" || reason.code === "internal_label_approval_drain_proximity") &&
+    existingFacts.some((fact) => fact.kind === "approval_drain")
+  ) return null;
+  if (
+    winner.row === "behavior_only_prior" &&
+    existingFacts.some((fact) => strongerThanFastBehavior.has(fact.kind))
+  ) return null;
+
+  return {
+    id: `fast-subject:${reason.code}`,
+    kind: copy.kind,
+    evidenceIds: [...new Set([
+      ...winner.evidenceIds,
+      ...(reason.evidenceRef ? [reason.evidenceRef] : [])
+    ])].sort(),
+    role: null,
+    proofStrength: copy.proofStrength,
+    factTextRu: copy.ru,
+    factTextEn: copy.en
+  };
+}
+
+function fastNarrativeCopy(
+  code: string,
+  fast: RiskReport
+): Pick<NarrativeFact, "kind" | "proofStrength"> & { ru: string; en: string } | null {
+  if (code === "stablecoin_usdt_blacklisted") {
+    return {
+      kind: "usdt_blacklist",
+      proofStrength: "exact",
+      ru: "Проверяемый адрес находится в чёрном списке USDT: переводы токена заблокированы, а USDT на адресе заморожен.",
+      en: "The checked address is on the USDT blacklist: token transfers are blocked and USDT at the address is frozen."
+    };
+  }
+  if (code === "forensic_approval_drain_provenance" || code === "internal_label_approval_drain_proximity") {
+    return {
+      kind: "approval_drain",
+      proofStrength: "exact",
+      ru: "Система связала проверяемый адрес с подтверждённой цепочкой списания USDT после разрешения контракту.",
+      en: "The system linked the checked address to a confirmed USDT debit route that followed a contract approval."
+    };
+  }
+  const labels: Record<string, { ru: string; en: string }> = {
+    internal_label_scam: {
+      ru: "Проверяемый адрес отмечен во внутренней базе как мошеннический.",
+      en: "The checked address is labeled as a scam address in the internal database."
+    },
+    internal_label_reported_scam: {
+      ru: "Проверяемый адрес отмечен во внутренней базе по подтверждённой жалобе на мошенничество.",
+      en: "The checked address has a confirmed scam report in the internal database."
+    },
+    internal_label_stolen_funds: {
+      ru: "Проверяемый адрес отмечен во внутренней базе как связанный с украденными средствами.",
+      en: "The checked address is labeled as linked to stolen funds in the internal database."
+    },
+    internal_label_phishing: {
+      ru: "Проверяемый адрес отмечен во внутренней базе как фишинговый.",
+      en: "The checked address is labeled as a phishing address in the internal database."
+    },
+    internal_label_risky_contract: {
+      ru: "Проверяемый адрес отмечен во внутренней базе как рискованный контракт.",
+      en: "The checked address is labeled as a risky contract in the internal database."
+    },
+    internal_label_whitebit: {
+      ru: "Проверяемый адрес отмечен во внутренней базе как связанный с WhiteBIT.",
+      en: "The checked address is labeled as linked to WhiteBIT in the internal database."
+    },
+    internal_label_darknet_exchange: {
+      ru: "Проверяемый адрес отмечен во внутренней базе как связанный с даркнет-обменником.",
+      en: "The checked address is labeled as linked to a darknet exchange in the internal database."
+    }
+  };
+  const label = labels[code];
+  if (label) {
+    return {
+      kind: "direct_counterparty_exact_label",
+      proofStrength: "exact",
+      ...label
+    };
+  }
+  if (code === "address_behavior_deposit_then_drain" || code === "address_behavior_fast_post_deposit_exit") {
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
+      en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
+    };
+  }
+  if (code === "forensic_address_behavior") {
+    const transit = fast.dominantRiskType === "laundering_pattern" ||
+      (fast.launderingPatternScore ?? 0) > (fast.taintScore ?? 0);
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: transit
+        ? "Быстрая проверка выявила транзитное движение средств через кошелёк. Операцию нужно проверить вручную."
+        : "Быстрая проверка выявила необычное движение средств через кошелёк. Операцию нужно проверить вручную.",
+      en: transit
+        ? "FastCheck found transit movement through the wallet. Review the operation manually."
+        : "FastCheck found unusual movement through the wallet. Review the operation manually."
+    };
+  }
+  return null;
 }
 
 function freshDeepPrerequisiteFailure(
@@ -3626,7 +3779,8 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   try {
     const evidence = buildUnifiedWalletNarrativeEvidence({
       ...currentInput,
-      deepReport: deepReport as DeepAddressForensicReport
+      deepReport: deepReport as DeepAddressForensicReport,
+      unifiedRisk
     });
     if (unifiedRisk.finalDecision === "NO_FINAL_DECISION") {
       const ratio = input.whereReport.coverage.coverageRatio ?? input.whereReport.coverage.currentBalanceCoverageRatio;
@@ -3666,13 +3820,31 @@ export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalRep
     return formatLegacyUnifiedAddressFinalReport(input);
   }
   input = { ...input, deepReport: currentScoringPolicyDeepReport(input.deepReport) };
-  const unifiedRisk = calculateUnifiedWalletRisk({
+  const prerequisiteFailure = freshDeepPrerequisiteFailure(input, input.deepReport ?? null);
+  const calculatedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,
     deepReport: input.deepReport,
     smartContractReport: input.smartContractReport,
     whereReport: input.whereReport
   });
+  const unifiedRisk: UnifiedWalletRiskResult = prerequisiteFailure
+    ? {
+        ...calculatedRisk,
+        finalScore: null,
+        finalLevel: null,
+        finalDecision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        decisionBasis: "technical_stop",
+        coverage: {
+          ...calculatedRisk.coverage,
+          required: "invalid",
+          overall: "partial",
+          invalidModes: [...new Set([...calculatedRisk.coverage.invalidModes, "deep_first_hop_blacklist"])],
+          caveats: [...new Set([...calculatedRisk.coverage.caveats, prerequisiteFailure.textEn])]
+        }
+      }
+    : calculatedRisk;
   const summary = buildRiskExplanationSummary({
     address: input.address,
     whereReport: input.whereReport,
@@ -3697,7 +3869,12 @@ export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalRep
       bulletList(summaryPossibleMeanings(summary, locale))
     ]),
     section(locale === "en" ? "Limits" : "Ограничения", [
-      bulletList(summaryLimitations(summary, locale))
+      bulletList(uniqueFinalLines([
+        ...summaryLimitations(summary, locale),
+        ...(prerequisiteFailure
+          ? [locale === "en" ? prerequisiteFailure.textEn : prerequisiteFailure.textRu]
+          : [])
+      ]))
     ]),
     section(locale === "en" ? "Recommendation" : "Рекомендация", [
       bulletList(summaryRecommendations(summary, locale))
