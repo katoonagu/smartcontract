@@ -290,7 +290,7 @@ describe("smart contract check", () => {
         verified: true,
         sourceStatus: "available",
         lowMetadata: false,
-        activityLevel: "high",
+        activityLevel: "low",
         serviceTag: "Router",
         providerTags: [{ kind: "blueTag", label: "Router", url: null }],
         txCount: "1000",
@@ -369,7 +369,7 @@ describe("smart contract check", () => {
         verified: true,
         sourceStatus: "available",
         lowMetadata: false,
-        activityLevel: "high",
+        activityLevel: "low",
         serviceTag: null,
         publicTag: null,
         publicTagDesc: null,
@@ -386,6 +386,65 @@ describe("smart contract check", () => {
       verify20Fingerprint: { matched: false, blockedByTrustedService: true }
     });
     expect(normalizeSmartContractCheckReport(JSON.parse(JSON.stringify(report)), subjectAddress)).not.toBeNull();
+  });
+
+  it("finds a later authoritative service-like provider tag without requiring activity", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "low",
+        serviceTag: null,
+        providerTags: [
+          { kind: "blueTag", label: "Foundation", url: null },
+          { kind: "blueTag", label: "Router", url: null }
+        ],
+        publicTags: []
+      }),
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      serviceLabel: "Router",
+      decision: "ACCEPTABLE",
+      riskScore: 10,
+      verify20Fingerprint: { matched: false, blockedByTrustedService: true }
+    });
+  });
+
+  it("does not exempt unverified authoritative-looking tags or provider-risk contracts", () => {
+    const unverified = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ tag: "Router", verified: false }),
+      contractProfile: exactVerify20Profile({ activityLevel: "low", serviceTag: "Router" }),
+      relatedApprovals: []
+    });
+    const providerRisk = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        activityLevel: "high",
+        serviceTag: "Router",
+        providerRisk: true
+      }),
+      relatedApprovals: []
+    });
+
+    expect(unverified).toMatchObject({
+      serviceLabel: null,
+      decision: "DECLINE",
+      riskScore: 85,
+      verify20Fingerprint: { matched: true }
+    });
+    expect(providerRisk.serviceLabel).toBeNull();
+    expect(providerRisk.verify20Fingerprint.matched).toBe(true);
+    expect(providerRisk.riskScore).toBe(90);
   });
 
   it("does not treat a verified display name as a generic standalone service identity", () => {
@@ -802,7 +861,7 @@ describe("smart contract check", () => {
     expect(report.reasons).toContain("active_unlimited_usdt_approval_spender");
   });
 
-  it("skips LLM analysis for a known verified service without approval risk", async () => {
+  it("skips LLM analysis for an authoritative verified service tag even with low activity", async () => {
     let analyzerCalls = 0;
     const report = await checkSmartContractAddress({
       address: subjectAddress,
@@ -812,7 +871,7 @@ describe("smart contract check", () => {
         verified: true,
         sourceStatus: "available",
         lowMetadata: false,
-        activityLevel: "high",
+        activityLevel: "low",
         serviceTag: "Bridgers:Cross-chain Bridge",
         providerTags: [{ kind: "blueTag", label: "Bridgers:Cross-chain Bridge", url: null }],
         txCount: "4380107",

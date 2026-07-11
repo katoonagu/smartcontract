@@ -3638,7 +3638,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Риск:");
     expect(text).toContain("В выбранной сумме найден источник HTX/Huobi: 70%.");
     expect(text).toContain("Цепочка дошла до биржи или сервиса.");
-    expect(text).toContain("Точных признаков кражи, drainer-цепочки или USDT blacklist не найдено.");
+    expect(text).not.toContain("Точных признаков кражи, drainer-цепочки или USDT blacklist не найдено.");
     expect(text).toContain("Запросить подтверждение происхождения средств.");
     expect(text).not.toContain("matrix");
     expect(text).not.toContain("Matrix");
@@ -3801,8 +3801,8 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Ограничения");
     expect(text).toContain("Рекомендация");
     expect(text).toContain("70% выбранной суммы связано с HTX/Huobi.");
-    expect(text).toContain("Exact approval-drain не найден.");
-    expect(text).toContain("USDT blacklist не найден.");
+    expect(text).not.toContain("Exact approval-drain не найден.");
+    expect(text).not.toContain("USDT blacklist не найден.");
     expect(text).not.toContain("matrix");
     expect(text).not.toContain("Matrix");
     expect(text).not.toContain("Weighted layer score");
@@ -5437,10 +5437,24 @@ describe("bot command and inline UX smoke coverage", () => {
       whereJob,
       { locale: "en" }
     ).text);
+    const whereFirstRu = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
+      whereJob,
+      whereReport,
+      "completed",
+      deepJob,
+      { locale: "ru" }
+    ).text);
     expect(whereFirst).toContain("85/100");
     expect(deepFirst).toContain("85/100");
     expect(whereFirst).toContain("DECLINE");
     expect(deepFirst).toContain("DECLINE");
+    expect(whereFirst).toContain("full Verify20 contract pattern often used by drainers");
+    expect(whereFirstRu).toContain("полный шаблон Verify20, который часто используют дрейнеры");
+    expect(whereFirst).toContain("does not prove a specific theft");
+    expect(whereFirst).not.toContain("No exact theft");
+    expect(whereFirst).not.toContain("No deterministic bad evidence");
+    expect(whereFirstRu).not.toContain("Точных признаков кражи");
+    expect(whereFirstRu).not.toContain("Жёстких плохих доказательств");
   });
 
   it("does not forge a Verify20 floor from malformed or legacy progress", () => {
@@ -6521,7 +6535,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Decision: DECLINE");
     expect(text).toContain("70/100");
     expect(text).toContain("Source-policy evidence reached the decline or manual-review threshold.");
-    expect(text).toContain("No deterministic bad evidence was found.");
+    expect(text).not.toContain("No deterministic bad evidence was found.");
     expect(text).not.toContain("Evidence type");
     expect(text).not.toContain("direct scam proof");
     expect(text).not.toContain("Job:");

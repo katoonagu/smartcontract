@@ -1938,6 +1938,11 @@ describe("startAdminServer", () => {
       finalDecision: "DECLINE",
       finalScore: 85
     });
+    const humanSummary = JSON.stringify(graph.summary.humanSummary);
+    expect(humanSummary).toContain("полный шаблон Verify20, который часто используют дрейнеры");
+    expect(humanSummary).toContain("не доказывает конкретную кражу");
+    expect(humanSummary).not.toContain("Точных признаков кражи");
+    expect(humanSummary).not.toContain("Жёстких плохих доказательств");
   });
 
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {

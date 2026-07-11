@@ -137,6 +137,25 @@ function verifiedServiceLabel(
   return verified && serviceEvidence ? label : null;
 }
 
+function authoritativeVerify20ServiceLabel(
+  metadata: AddressMetadata,
+  contractProfile: ContractIntelligenceProfile | null
+): string | null {
+  if (contractProfile?.providerRisk === true) return null;
+  const verified = metadata.verified === true ||
+    contractProfile?.isVerified === true ||
+    contractProfile?.verified === true;
+  if (!verified) return null;
+  const labels = [
+    metadata.tag,
+    contractProfile?.serviceTag,
+    ...(contractProfile?.providerTags ?? []).map((tag) => tag.label),
+    contractProfile?.publicTag,
+    ...(contractProfile?.publicTags ?? []).map((tag) => tag.label)
+  ];
+  return labels.find((label): label is string => typeof label === "string" && isServiceLikeLabel(label)) ?? null;
+}
+
 function activityLabel(contractProfile: ContractIntelligenceProfile | null): SmartContractCheckReport["activityLabel"] {
   const level = contractProfile?.activityLevel;
   if (level === "none" || level === "low" || level === "normal" || level === "high" || level === "unknown") {
@@ -377,11 +396,12 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
   const llmVerdict = input.llmVerdict ?? null;
   const reasons: string[] = [];
   const limitations = [EXACT_DRAIN_NOT_PROVEN];
-  const serviceLabel = verifiedServiceLabel(input.metadata, contractProfile);
+  const verify20ServiceLabel = authoritativeVerify20ServiceLabel(input.metadata, contractProfile);
+  const serviceLabel = verify20ServiceLabel ?? verifiedServiceLabel(input.metadata, contractProfile);
   const verify20Fingerprint = detectVerify20Fingerprint({
     methodMap: contractProfile?.methodMap,
     topMethods: contractProfile?.topMethods,
-    serviceLabel
+    serviceLabel: verify20ServiceLabel
   });
   const activeUnlimited = activeUnlimitedApprovals(input.subjectAddress, relatedApprovals);
   const activeRiskyRelated = activeRiskyRelatedApprovals(input.subjectAddress, relatedApprovals);
@@ -574,7 +594,8 @@ export function normalizeSmartContractCheckReport(
   if (profile && !validPersistedContractProfile(profile, report.subjectAddress)) return null;
   if (report.activityLabel !== activityLabel(profile)) return null;
 
-  const trustedServiceLabel = verifiedServiceLabel(metadata, profile);
+  const verify20ServiceLabel = authoritativeVerify20ServiceLabel(metadata, profile);
+  const trustedServiceLabel = verify20ServiceLabel ?? verifiedServiceLabel(metadata, profile);
   if (report.serviceLabel !== trustedServiceLabel) return null;
 
   const fingerprint = record(report.verify20Fingerprint);
@@ -584,7 +605,7 @@ export function normalizeSmartContractCheckReport(
   const derived = detectVerify20Fingerprint({
     methodMap: profile?.methodMap as Record<string, string> | undefined,
     topMethods: profile?.topMethods as ContractIntelligenceProfile["topMethods"] | undefined,
-    serviceLabel: trustedServiceLabel
+    serviceLabel: verify20ServiceLabel
   });
   if (!sameFingerprint(fingerprint as Verify20FingerprintResult, derived)) return null;
   if (derived.matched && (report.decision !== "DECLINE" || report.riskScore < 85 || report.serviceLabel !== null)) return null;
@@ -604,7 +625,8 @@ function shouldAnalyzeStandaloneContract(input: {
 }
 
 export async function checkSmartContractAddress(input: CheckSmartContractAddressInput): Promise<SmartContractCheckReport> {
-  const serviceLabel = verifiedServiceLabel(input.metadata, input.contractProfile);
+  const serviceLabel = authoritativeVerify20ServiceLabel(input.metadata, input.contractProfile) ??
+    verifiedServiceLabel(input.metadata, input.contractProfile);
   const activeUnlimited = activeUnlimitedApprovals(input.address, input.relatedApprovals);
   let llmVerdict: ContractLlmVerdictSummary | null = null;
 
