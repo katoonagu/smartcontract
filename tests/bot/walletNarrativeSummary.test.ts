@@ -22,6 +22,15 @@ import type {
   StablecoinRestrictionProfile,
   WhereIsMoneyCoverage
 } from "../../src/types";
+import {
+  TGYT_DIRECT_BLACKLIST_CASE,
+  tgytBridgePath,
+  tgytBridgePolicyEvidence,
+  tgytDirectInteractionProfiles,
+  tgytFirstHopBlacklistFact,
+  tgytFirstHopCoverage,
+  tgytSubjectRestriction
+} from "../fixtures/forensics/directBlacklistCases";
 
 const primaryFact: NarrativeFact = {
   id: "primary",
@@ -2548,5 +2557,46 @@ describe("wallet narrative signal catalogue", () => {
     }).facts.map((fact) => fact.id);
 
     expect(build([left, right, left])).toEqual(build([right, left]));
+  });
+
+  it("keeps exact TGyt blacklist evidence primary and shows its separate GasFree fee before bridge context", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: TGYT_DIRECT_BLACKLIST_CASE.subjectAddress,
+      subjectRestriction: tgytSubjectRestriction(),
+      firstHopBlacklistFacts: [tgytFirstHopBlacklistFact()],
+      firstHopBlacklistCoverage: tgytFirstHopCoverage(),
+      directCounterpartyInteractionProfiles: tgytDirectInteractionProfiles(),
+      paths: [tgytBridgePath()],
+      sourcePolicyEvidence: [tgytBridgePolicyEvidence()]
+    });
+    const text = formatWalletNarrativeSummary({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 90,
+      facts: evidence.facts,
+      coverageExplanation: evidence.coverageExplanation
+    });
+
+    expect(evidence.facts.map((fact) => fact.kind)).toEqual([
+      "direct_counterparty_blacklist",
+      "bridge_route",
+      "gasfree_fee"
+    ]);
+    expect(evidence.facts[0]?.evidenceIds).toEqual([
+      TGYT_DIRECT_BLACKLIST_CASE.smallPrincipalTxHash,
+      TGYT_DIRECT_BLACKLIST_CASE.largePrincipalTxHash
+    ]);
+    expect(evidence.facts[2]?.evidenceIds).toEqual([TGYT_DIRECT_BLACKLIST_CASE.gasFreeFeeTxHash]);
+    expect(text).toMatch(/^🔴 90\/100 — критический риск\. Операцию не проводить\./u);
+    expect(text).toContain("TWGC…TdTm");
+    expect(text).toContain("1 176 317 USDT");
+    expect(text).toContain("100% исходящей суммы");
+    expect(text).toContain("сейчас в чёрном списке USDT");
+    expect(text).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
+    expect(text).toContain("Сам проверяемый адрес не в чёрном списке");
+    expect(text).toMatch(/GasFree удержал 3 USDT.*комиссия сервиса.*не основная сумма/u);
+    expect(text.match(/GasFree/gu)).toHaveLength(1);
+    expect(text).not.toContain("UsdtOFT");
+    expect(text).not.toMatch(/45 с|1 176 320|TGyt.*ч[её]рном списке|risky_counterparty|cross_chain_boundary/iu);
   });
 });

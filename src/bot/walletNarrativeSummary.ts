@@ -458,8 +458,8 @@ function firstHopChronology(
 ): { ru: string; en: string } {
   if (fact.temporalRelation === "active_at_transfer") {
     return {
-      ru: "Перевод выполнен, когда контрагент уже находился в чёрном списке USDT.",
-      en: "The transfer was made while the counterparty was already on the USDT blacklist."
+      ru: "Во время перевода контрагент уже находился в чёрном списке.",
+      en: "The counterparty was already on the blacklist during the transfer."
     };
   }
   if (fact.temporalRelation === "mixed") {
@@ -470,8 +470,8 @@ function firstHopChronology(
   }
   if (fact.temporalRelation === "unknown") {
     return {
-      ru: "На момент проверки контрагент находился в чёрном списке USDT. Дату блокировки установить не удалось.",
-      en: "The counterparty was on the USDT blacklist when checked. The listing date could not be established."
+      ru: "Дату блокировки установить не удалось.",
+      en: "The listing date could not be established."
     };
   }
   const transfer = selectedChronologyTransfer(fact, profiles);
@@ -480,13 +480,13 @@ function firstHopChronology(
   const elapsed = durationParts(effectiveMs - transferMs);
   if (!transfer || !elapsed) {
     return {
-      ru: "Контрагента внесли в чёрный список USDT после этих переводов.",
-      en: "The counterparty was added to the USDT blacklist after these transfers."
+      ru: "Его внесли туда после этих переводов.",
+      en: "It was listed after these transfers."
     };
   }
   return {
-    ru: `Контрагента внесли в список через ${elapsed.ru} после перевода на ${formatUsdtRaw(transfer.amountRaw, "ru")} USDT.`,
-    en: `The counterparty was listed ${elapsed.en} after the ${formatUsdtRaw(transfer.amountRaw, "en")} USDT transfer.`
+    ru: `Его внесли туда через ${elapsed.ru} после перевода на ${formatUsdtRaw(transfer.amountRaw, "ru")} USDT.`,
+    en: `It was listed ${elapsed.en} after the ${formatUsdtRaw(transfer.amountRaw, "en")} USDT transfer.`
   };
 }
 
@@ -511,31 +511,35 @@ export function firstHopBlacklistFacts(
       const address = shortAddress(fact.counterpartyAddress);
       const direction = fact.direction === "inbound"
         ? {
-            ru: `Входящий: адрес получил ${amountRu} USDT от контрагента ${address} в чёрном списке USDT (${russianDirectTransferCount(fact.principalTxCount)}).`,
-            en: `Inbound: the address received ${amountEn} USDT from blacklisted counterparty ${address} (${englishDirectTransferCount(fact.principalTxCount)}).`
+            ru: `Входящий: адрес получил ${amountRu} USDT от контрагента ${address}`,
+            en: `Inbound: the address received ${amountEn} USDT from blacklisted counterparty ${address}`,
+            shareRu: "входящей суммы",
+            shareEn: "of the incoming amount"
           }
         : {
-            ru: `Исходящий: адрес отправил ${amountRu} USDT контрагенту ${address} в чёрном списке USDT (${russianDirectTransferCount(fact.principalTxCount)}).`,
-            en: `Outbound: the address sent ${amountEn} USDT to blacklisted counterparty ${address} (${englishDirectTransferCount(fact.principalTxCount)}).`
+            ru: `Исходящий: адрес отправил ${amountRu} USDT контрагенту ${address}`,
+            en: `Outbound: the address sent ${amountEn} USDT to blacklisted counterparty ${address}`,
+            shareRu: "исходящей суммы",
+            shareEn: "of the outgoing amount"
           };
       const share = fact.shareSemantics === "exact" && fact.directionalPrincipalShare !== null
         ? {
-            ru: ` Это ${formatPercent(fact.directionalPrincipalShare, "ru")}% суммы направления.`,
-            en: ` This is ${formatPercent(fact.directionalPrincipalShare, "en")}% of that direction's amount.`
+            ru: ` — ${formatPercent(fact.directionalPrincipalShare, "ru")}% ${direction.shareRu}`,
+            en: ` — ${formatPercent(fact.directionalPrincipalShare, "en")}% ${direction.shareEn}`
           }
         : { ru: "", en: "" };
       const chronology = firstHopChronology(fact, profiles);
       const subjectClear = subjectKnownClear
         ? {
-            ru: " Сам проверяемый адрес в чёрный список не внесён.",
-            en: " The checked address itself is not on the USDT blacklist."
+            ru: " Сам проверяемый адрес не в чёрном списке.",
+            en: " The checked address itself is not on the blacklist."
           }
         : { ru: "", en: "" };
       return narrativeFact(
         `first-hop-blacklist:${fact.direction}:${fact.counterpartyAddress}:${fact.transferTxHashes.slice().sort().join(",")}`,
         "direct_counterparty_blacklist",
-        `${direction.ru}${share.ru} ${chronology.ru}${subjectClear.ru}`,
-        `${direction.en}${share.en} ${chronology.en}${subjectClear.en}`,
+        `${direction.ru}${share.ru} (${russianDirectTransferCount(fact.principalTxCount)}). Контрагент сейчас в чёрном списке USDT. ${chronology.ru}${subjectClear.ru}`,
+        `${direction.en}${share.en} (${englishDirectTransferCount(fact.principalTxCount)}). ${chronology.en}${subjectClear.en}`,
         null,
         "exact",
         fact.transferTxHashes
@@ -1205,7 +1209,12 @@ function canonicalFacts(facts: NarrativeFact[]): NarrativeFact[] {
     const overlapsSameKind = ids.size > 0 && selected.some((existing) =>
       existing.kind === fact.kind && existing.evidenceIds?.some((id) => ids.has(id))
     );
-    if (!overlapsSameKind) selected.push(fact);
+    const overlapsDirectBlacklist = fact.kind === "risky_counterparty" && ids.size > 0 &&
+      selected.some((existing) =>
+        existing.kind === "direct_counterparty_blacklist" &&
+        existing.evidenceIds?.some((id) => ids.has(id))
+      );
+    if (!overlapsSameKind && !overlapsDirectBlacklist) selected.push(fact);
   }
   return selected;
 }
@@ -1448,9 +1457,21 @@ export function selectNarrativeFacts(caseData: WalletNarrativeCase): NarrativeFa
   }
   const facts = [...canonicalById.values()].sort(compareFacts);
   const preferred = caseData.preferredFactId ? canonicalById.get(caseData.preferredFactId) : null;
-  const orderedFacts = preferred
+  let orderedFacts = preferred
     ? [preferred, ...facts.filter((fact) => fact.id !== preferred.id)]
     : facts;
+  if (orderedFacts[0]?.kind === "direct_counterparty_blacklist") {
+    const primary = orderedFacts[0];
+    const rest = orderedFacts.slice(1);
+    orderedFacts = [
+      primary,
+      ...rest.filter((fact) => factRank[fact.kind] <= factRank.verify20_template),
+      ...rest.filter((fact) => fact.kind === "gasfree_fee"),
+      ...rest.filter((fact) =>
+        factRank[fact.kind] > factRank.verify20_template && fact.kind !== "gasfree_fee"
+      )
+    ];
+  }
 
   for (const fact of orderedFacts) {
     const sentences = sentenceKeys(localizedFactText(fact, caseData.locale));

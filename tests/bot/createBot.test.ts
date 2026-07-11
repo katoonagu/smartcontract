@@ -15,6 +15,15 @@ import type { Db } from "../../src/storage/db";
 import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
+import {
+  TGYT_DIRECT_BLACKLIST_CASE,
+  tgytBridgePath,
+  tgytBridgePolicyEvidence,
+  tgytDirectInteractionProfiles,
+  tgytFirstHopBlacklistFact,
+  tgytFirstHopCoverage,
+  tgytSubjectRestriction
+} from "../fixtures/forensics/directBlacklistCases";
 
 const walletAddress = `T${"1".repeat(33)}`;
 const secondWalletAddress = `T${"2".repeat(33)}`;
@@ -9441,6 +9450,76 @@ describe("bot command and inline UX smoke coverage", () => {
   });
 
   describe("compact wallet narrative integration", () => {
+    it("keeps legacy TGyt at 78 and publishes the exact fresh v2 blacklist result at 90", () => {
+      const value = TGYT_DIRECT_BLACKLIST_CASE;
+      const bridgePolicy = tgytBridgePolicyEvidence();
+      const whereReport = whereIsMoneyReportForTest({
+        subjectAddress: value.subjectAddress,
+        decision: "REVIEW",
+        userDecision: "REVIEW",
+        internalDecision: "REVIEW",
+        proofLevel: "exchange_policy_decline",
+        riskScore: 78,
+        decisionReasons: [],
+        originPaths: [tgytBridgePath()],
+        assessment: {
+          ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 78 }),
+          sourcePolicyEvidence: [bridgePolicy]
+        },
+        coverage: {
+          selectedInboundTxCount: 1,
+          targetAmountRaw: value.totalPrincipalRaw,
+          selectedAmountRaw: value.totalPrincipalRaw,
+          selectedInboundVolumeRaw: value.totalPrincipalRaw,
+          coverageRatio: 1,
+          currentBalanceCoverageRatio: 1,
+          maxDepth: 7,
+          fetchedAddressCount: 3,
+          partial: false,
+          notes: []
+        }
+      });
+      const deepReport = freshNarrativeDeepReportForTest({
+        subjectAddress: value.subjectAddress,
+        stablecoinRestrictionProfiles: [tgytSubjectRestriction()],
+        firstHopBlacklistFacts: [tgytFirstHopBlacklistFact()],
+        firstHopBlacklistCoverage: tgytFirstHopCoverage(),
+        directCounterpartyInteractionProfiles: tgytDirectInteractionProfiles()
+      });
+      const fresh = formatUnifiedAddressFinalReportForTest({
+        address: value.subjectAddress,
+        whereReport,
+        deepReport,
+        locale: "ru"
+      });
+      const legacyWhere = {
+        ...whereReport,
+        scoringPolicyVersion: "scoring-signal-matrix-v1"
+      } as unknown as WhereIsMoneyReport;
+      const legacy = formatUnifiedAddressFinalReportForTest({
+        address: value.subjectAddress,
+        whereReport: legacyWhere,
+        deepReport,
+        locale: "ru"
+      });
+
+      expect(fresh).toMatch(/^🔴 90\/100 — критический риск\. Операцию не проводить\./u);
+      expect(fresh).toContain("1 176 317 USDT");
+      expect(fresh).toContain("TWGC…TdTm");
+      expect(fresh).toContain("100% исходящей суммы");
+      expect(fresh).toContain("Контрагент сейчас в чёрном списке USDT");
+      expect(fresh).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
+      expect(fresh).toContain("Сам проверяемый адрес не в чёрном списке");
+      expect(fresh).toMatch(/GasFree удержал 3 USDT.*комиссия сервиса/u);
+      expect(fresh).not.toMatch(/45 с|1 176 320|UsdtOFT|risky_counterparty|cross_chain_boundary/u);
+
+      expect(legacy).toContain("78/100");
+      expect(legacy).toMatch(/устаревш|свеж/u);
+      expect(legacy).not.toContain("90/100");
+      expect(legacy).not.toContain("TWGC…TdTm");
+      expect(legacy).not.toContain("2 ч 52 мин");
+    });
+
     it("uses compact RU and EN scored finals for canonical subject and direct-counterparty blacklist facts", () => {
       const firstHop = persistedFirstHopEvidenceForTest();
       const directFact = firstHop.firstHopBlacklistFacts[0];
