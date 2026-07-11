@@ -4,7 +4,7 @@ import {
   formatScoringAuditMarkdown
 } from "../../src/forensics/scoringAuditReport";
 import type { ScoringAuditRow } from "../../src/risk/scoringAudit";
-import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
+import { SHADOW_SCORING_POLICY_VERSION } from "../../src/risk/shadowScoring";
 
 function row(overrides: Partial<ScoringAuditRow> = {}): ScoringAuditRow {
   return {
@@ -53,7 +53,7 @@ describe("scoring audit report", () => {
       decline_without_hard_evidence: 1,
       hard_evidence_cases: 0
     });
-    expect(report.shadowComparisons[0]?.candidatePolicyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
+    expect(report.shadowComparisons[0]?.candidatePolicyVersion).toBe(SHADOW_SCORING_POLICY_VERSION);
   });
 
   it("formats compact markdown with sorted readable flagged rows", () => {

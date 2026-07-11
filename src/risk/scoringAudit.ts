@@ -74,6 +74,8 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
   const assessment = Object.keys(reportAssessment).length > 0 ? reportAssessment : resultAssessment;
   const coverage = firstRecord(report["coverage"], result["coverage"], result["coverageDebug"]);
   const unified = record(result["unifiedRiskSummary"]);
+  const resultMatrix = record(result["matrixScore"]);
+  const reportMatrix = record(report["matrixScore"]);
   const activeAnchor = record(unified["activeAnchor"]);
   const finalScore = firstNumber(
     numberField(unified, "finalScore"),
@@ -95,7 +97,14 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     ?? progress["finalDecision"]
   );
   const matrixDecision = normalizeDecision(unified["matrixDecision"]);
-  const winningRow = stringField(unified, "winningRow");
+  const hasPersistedMatrixV2Marker = [
+    stringField(result, "scoringPolicyVersion"),
+    stringField(report, "scoringPolicyVersion"),
+    stringField(unified, "scoringPolicyVersion"),
+    stringField(unified, "policyVersion"),
+    stringField(resultMatrix, "policyVersion"),
+    stringField(reportMatrix, "policyVersion")
+  ].some((policyVersion) => policyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   const unifiedDecision = matrixDecision === "MANUAL_REQUIRED"
     ? normalizeDecision(unified["finalDecision"])
     : matrixDecision;
@@ -166,7 +175,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     activeAnchorCode: stringField(activeAnchor, "code"),
     activeAnchorScore: numberField(activeAnchor, "score"),
     dampener: numberField(unified, "dampener"),
-    policyVersion: winningRow ? SCORING_SIGNAL_MATRIX_POLICY_VERSION : clarity.policyVersion,
+    policyVersion: hasPersistedMatrixV2Marker ? SCORING_SIGNAL_MATRIX_POLICY_VERSION : clarity.policyVersion,
     missingChecks,
     cohorts: rowCohorts,
     limitations: clarity.limitations,

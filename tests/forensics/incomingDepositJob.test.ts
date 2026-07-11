@@ -1285,6 +1285,15 @@ describe("buildIncomingDepositReport", () => {
         firstSeen: validProgressJson.timestamp,
         lastSeen: validProgressJson.timestamp,
         txHashes: [depositTxHash],
+        transfers: [{
+          txHash: depositTxHash,
+          fromAddress: validProgressJson.sender,
+          toAddress: validProgressJson.watchedWallet,
+          amountRaw: validProgressJson.amountRaw,
+          timestamp: validProgressJson.timestamp,
+          method: "transfer",
+          edgeType: "normal_transfer"
+        }],
         serviceCategory: null,
         identity: null,
         snapshot: {

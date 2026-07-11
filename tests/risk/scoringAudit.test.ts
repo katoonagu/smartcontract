@@ -77,7 +77,7 @@ describe("scoring audit rows", () => {
     ]));
   });
 
-  it("uses matrix insufficient evidence as the audit decision and policy version", () => {
+  it("does not infer matrix v2 from a legacy winning row without a persisted marker", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",
       resultJson: {
@@ -103,6 +103,25 @@ describe("scoring audit rows", () => {
 
     expect(row.auditDecision).toBe("INSUFFICIENT_COVERAGE");
     expect(row.cohorts).toContain("low_score_incomplete_coverage");
+    expect(row.policyVersion).toBe("incoming-deposit-risk-v1");
+  });
+
+  it("attributes matrix v2 only from an exact persisted scoring marker", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "incoming_deposit_check",
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        decision: "DECLINE",
+        depositRiskScore: 90,
+        unifiedRiskSummary: {
+          finalScore: 90,
+          finalDecision: "DECLINE",
+          matrixDecision: "DECLINE",
+          winningRow: "direct_counterparty_policy"
+        }
+      }
+    }));
+
     expect(row.policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 

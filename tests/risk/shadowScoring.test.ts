@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareShadowScoring } from "../../src/risk/shadowScoring";
-import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
+import { compareShadowScoring, SHADOW_SCORING_POLICY_VERSION } from "../../src/risk/shadowScoring";
 import type { ScoringAuditRow } from "../../src/risk/scoringAudit";
 
 function row(overrides: Partial<ScoringAuditRow> = {}): ScoringAuditRow {
@@ -46,7 +45,7 @@ describe("shadow scoring comparison", () => {
         candidateScore: 20,
         candidateDecision: "INSUFFICIENT_COVERAGE",
         delta: 0,
-        candidatePolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
+        candidatePolicyVersion: SHADOW_SCORING_POLICY_VERSION
       });
       expect(comparison.deltaReasons).toContain(
         "Low score has limited coverage; candidate policy avoids calling it acceptable."

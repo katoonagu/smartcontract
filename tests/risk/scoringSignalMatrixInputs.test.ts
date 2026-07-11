@@ -58,16 +58,31 @@ function firstHopBlacklistFact(overrides: Partial<FirstHopBlacklistFact> = {}): 
 function directCounterpartyProfile(
   overrides: Partial<DirectCounterpartyInteractionProfile> = {}
 ): DirectCounterpartyInteractionProfile {
+  const subjectAddress = overrides.subjectAddress ?? address;
+  const direction = overrides.direction ?? "outbound";
+  const counterpartyAddress = overrides.counterpartyAddress ?? blacklistedCounterparty;
+  const volumeRaw = overrides.volumeRaw ?? "10000000000";
+  const txHashes = overrides.txHashes ?? [directTxHash];
+  const transfers = overrides.transfers ?? txHashes.map((txHash, index) => ({
+    txHash,
+    fromAddress: direction === "inbound" ? counterpartyAddress : subjectAddress,
+    toAddress: direction === "inbound" ? subjectAddress : counterpartyAddress,
+    amountRaw: index === 0 ? volumeRaw : "0",
+    timestamp: "2026-05-24T00:00:00.000Z",
+    method: "transfer",
+    edgeType: "normal_transfer" as const
+  }));
   return {
-    subjectAddress: address,
-    direction: "outbound",
-    counterpartyAddress: blacklistedCounterparty,
-    volumeRaw: "10000000000",
+    subjectAddress,
+    direction,
+    counterpartyAddress,
+    volumeRaw,
     volumeRatio: 1,
     txCount: 1,
     firstSeen: "2026-05-24T00:00:00.000Z",
     lastSeen: "2026-05-24T00:00:00.000Z",
-    txHashes: [directTxHash],
+    txHashes,
+    transfers,
     serviceCategory: null,
     identity: null,
     snapshot: {
@@ -374,7 +389,9 @@ const freshHtxExposure = (): IncomingFreshBundleExposure => ({
 
 function directPolicyCandidates(
   fact: FirstHopBlacklistFact,
-  profiles: DirectCounterpartyInteractionProfile[] = [directCounterpartyProfile()]
+  profiles: DirectCounterpartyInteractionProfile[] = [directCounterpartyProfile({
+    volumeRaw: fact.principalAmountRaw
+  })]
 ) {
   return buildWalletMatrixCandidates({
     address,
@@ -464,9 +481,7 @@ describe("scoring signal matrix input mappers", () => {
       directCounterpartyProfile({ txHashes: ["c".repeat(64)], scoreContribution: 97 })
     ];
 
-    expect(directPolicyCandidates(exactFact, unrelated)).toEqual([
-      expect.objectContaining({ score: 60 })
-    ]);
+    expect(directPolicyCandidates(exactFact, unrelated)).toEqual([]);
     expect(directPolicyCandidates(exactFact, [directCounterpartyProfile({ scoreContribution: 95 })])).toEqual([
       expect.objectContaining({ score: 90, caps: ["direct_counterparty_policy_cap_90"] })
     ]);
@@ -508,6 +523,73 @@ describe("scoring signal matrix input mappers", () => {
       }),
       whereReport: whereReport()
     }).some((candidate) => candidate.row === "direct_counterparty_policy")).toBe(false);
+  });
+
+  it("requires an exact transfer-hash, amount, and count binding before absolute policy", () => {
+    const secondTxHash = "c".repeat(64);
+    const exactFact = firstHopBlacklistFact({
+      transferTxHashes: [directTxHash, secondTxHash],
+      principalTxCount: 2
+    });
+    const validTransfers = [
+      directCounterpartyProfile().transfers![0],
+      { ...directCounterpartyProfile().transfers![0], txHash: secondTxHash, amountRaw: "0" }
+    ];
+    const invalidProfiles = [
+      directCounterpartyProfile({ txHashes: [directTxHash], transfers: [validTransfers[0]] }),
+      directCounterpartyProfile({
+        txHashes: [directTxHash, secondTxHash],
+        transfers: [{ ...validTransfers[0], amountRaw: "9999999999" }, validTransfers[1]]
+      }),
+      directCounterpartyProfile({
+        txHashes: [directTxHash, secondTxHash],
+        transfers: validTransfers.slice(0, 1)
+      })
+    ];
+
+    for (const profile of invalidProfiles) {
+      expect(directPolicyCandidates(exactFact, [profile])).toEqual([]);
+    }
+  });
+
+  it("rejects fee-only, malformed, and endpoint-inconsistent transfer profiles", () => {
+    const transfer = directCounterpartyProfile().transfers![0];
+    const invalidTransfers: DirectCounterpartyInteractionProfile["transfers"][] = [
+      [{ ...transfer, economicRole: "service_fee", economicProtocol: "tron_gasfree" }],
+      [{ ...transfer, amountRaw: "01" }],
+      [{ ...transfer, amountRaw: "-1" }],
+      [{ ...transfer, fromAddress: blacklistedCounterparty, toAddress: address }],
+      []
+    ];
+
+    for (const transfers of invalidTransfers) {
+      expect(directPolicyCandidates(firstHopBlacklistFact(), [
+        directCounterpartyProfile({ transfers })
+      ])).toEqual([]);
+    }
+  });
+
+  it("rejects a noncanonical fact amount even when its numeric value matches principal transfers", () => {
+    const fact = firstHopBlacklistFact({
+      principalAmountRaw: "010000000000",
+      beforeEffectiveAmountRaw: "010000000000"
+    });
+
+    expect(directPolicyCandidates(fact, [directCounterpartyProfile()])).toEqual([]);
+  });
+
+  it("rejects nonfinite and out-of-range joined profile contributions", () => {
+    const exactFact = firstHopBlacklistFact({
+      directTransferCoverage: "complete",
+      shareSemantics: "exact",
+      directionalPrincipalShare: 1
+    });
+
+    for (const scoreContribution of [Number.NaN, Number.POSITIVE_INFINITY, -1, 101]) {
+      expect(directPolicyCandidates(exactFact, [
+        directCounterpartyProfile({ scoreContribution })
+      ])).toEqual([]);
+    }
   });
 
   it("maps the checked subject blacklist to the highest-priority restriction row", () => {
