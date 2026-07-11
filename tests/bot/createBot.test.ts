@@ -9652,8 +9652,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
       expect(approvalText).toContain("первым получил 309 000 USDT");
       expect(approvalText).toContain("подтверждённой дрейнер-цепочке");
-      expect(bridgeText).toContain("83% проверенной суммы — через мост UsdtOFT");
-      expect(bridgeText).toContain("вне TRON");
+      expect(bridgeText).toContain("83 000 USDT (83%) пришло через мост UsdtOFT");
+      expect(bridgeText).toContain("затруднить проверку происхождения");
       expect(bridgeText).not.toContain("raw_bridge_reason_must_not_leak");
     });
 
