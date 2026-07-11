@@ -2,7 +2,7 @@ import { Bot, type Context, type InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config";
 import { checkAddress, checkTransactionHash } from "../check/manualCheck";
 import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck";
-import { mergeContractSafetyContext, type SmartContractCheckReport } from "../check/smartContractCheck";
+import { mergeContractSafetyContext, normalizeSmartContractCheckReport, type SmartContractCheckReport } from "../check/smartContractCheck";
 import { loadTheftReportTransfer } from "../check/theftReportTransaction";
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import {
@@ -480,6 +480,7 @@ type UnifiedAddressFinalReportInput = {
   whereReport: WhereIsMoneyReport;
   deepReport?: DeepAddressForensicReport | null;
   fastReport?: RiskReport | null;
+  smartContractReport?: SmartContractCheckReport | null;
   locale?: BotLocale;
   runtimeLabel?: string;
   showBetaDiagnostics?: boolean;
@@ -1095,6 +1096,16 @@ function fastRiskSnapshot(job: ForensicCheckJob): FastRiskSnapshot {
   return { score, level };
 }
 
+export function extractSmartContractCheckReportFromJob(
+  job: ForensicCheckJob | null | undefined,
+  subjectAddress: string
+): SmartContractCheckReport | null {
+  if (!job || !isRecord(job.progressJson)) return null;
+  const analysis = job.progressJson.contractSafetyAnalysis;
+  if (!isRecord(analysis) || analysis.status !== "completed") return null;
+  return normalizeSmartContractCheckReport(analysis.report, subjectAddress);
+}
+
 function riskDeltaLabel(current: RiskReport, previous: FastRiskSnapshot): "risk increased" | "risk confirmed" | "risk changed" {
   if (current.score > previous.score || riskLevelRank[current.level] > riskLevelRank[previous.level]) return "risk increased";
   if (current.score === previous.score || current.level === previous.level) return "risk confirmed";
@@ -1407,6 +1418,10 @@ function smartContractReasonText(reason: string, locale: BotLocale): string {
     address_is_smart_contract: {
       en: "This is a smart contract, not a regular wallet.",
       ru: "Это смарт-контракт, не обычный кошелёк."
+    },
+    exact_verify20_contract_pattern: {
+      en: "The contract contains the full Verify20 pattern often used by drainers; this does not prove a specific theft, amount, or victim.",
+      ru: "В контракте найден полный шаблон Verify20, который часто используют дрейнеры; это не доказывает конкретную кражу, сумму или жертву."
     },
     exact_drain_not_proven_in_standalone_check: {
       en: "Exact theft is not proven in this standalone check.",
@@ -1876,6 +1891,8 @@ export function formatDeepForensicUserDeliveryReport(
         address: report.subjectAddress,
         whereReport,
         deepReport: report,
+        smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress) ??
+          extractSmartContractCheckReportFromJob(whereJob, report.subjectAddress),
         runtimeLabel: options.runtimeLabel,
         locale,
         showBetaDiagnostics: options.showBetaDiagnostics
@@ -2200,6 +2217,8 @@ export function formatWhereIsMoneyUserDeliveryReport(
       address: report.subjectAddress,
       whereReport: report,
       deepReport,
+      smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress) ??
+        extractSmartContractCheckReportFromJob(deepJob, report.subjectAddress),
       runtimeLabel: options.runtimeLabel,
       locale,
       showBetaDiagnostics: options.showBetaDiagnostics
@@ -3413,6 +3432,7 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     address: input.address,
     fastReport: input.fastReport,
     deepReport: input.deepReport,
+    smartContractReport: input.smartContractReport,
     whereReport: input.whereReport
   });
   if (unifiedRisk.finalDecision === "NO_FINAL_DECISION") {
@@ -3484,6 +3504,7 @@ export function formatUnifiedAddressDetailedReport(input: UnifiedAddressFinalRep
     address: input.address,
     fastReport: input.fastReport,
     deepReport: input.deepReport,
+    smartContractReport: input.smartContractReport,
     whereReport: input.whereReport
   });
   const summary = buildRiskExplanationSummary({
@@ -3699,6 +3720,7 @@ export function formatWhereIsMoneyReport(
   return formatUnifiedAddressFinalReport({
     address: report.subjectAddress,
     whereReport: report,
+    smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress),
     locale,
     runtimeLabel: options.runtimeLabel,
     showBetaDiagnostics: options.showBetaDiagnostics
@@ -4643,6 +4665,8 @@ export function createBot(
           address: job.subjectAddress,
           whereReport,
           deepReport: extractDeepForensicReportFromJob(deepJob, job.subjectAddress),
+          smartContractReport: extractSmartContractCheckReportFromJob(job, job.subjectAddress) ??
+            extractSmartContractCheckReportFromJob(deepJob, job.subjectAddress),
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         }));
@@ -4657,6 +4681,8 @@ export function createBot(
             address: job.subjectAddress,
             whereReport: matchingWhereReport,
             deepReport,
+            smartContractReport: extractSmartContractCheckReportFromJob(job, job.subjectAddress) ??
+              extractSmartContractCheckReportFromJob(matchingWhereJob, job.subjectAddress),
             runtimeLabel: config.runtimeInstanceLabel,
             locale
           }));

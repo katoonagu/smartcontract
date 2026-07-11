@@ -1,4 +1,5 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import type { SmartContractCheckReport } from "../check/smartContractCheck";
 import { resolveFinalDisposition } from "./finalDisposition";
 import {
   scoreMatrixCandidates,
@@ -79,6 +80,7 @@ export type UnifiedWalletRiskInput = {
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
+  smartContractReport?: SmartContractCheckReport | null;
 };
 
 export type UnifiedForensicRiskSubject =
@@ -563,6 +565,13 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const rawPolicyFloor = maxScore(policyCandidates.map((candidate) => candidate.score));
   const rawAssetContinuationFloor = maxScore(assetContinuationCandidates.map((candidate) => candidate.score));
   const rawPatternFloor = maxScore(patternCandidates.map((candidate) => candidate.score));
+  const exactVerify20PatternFloor = patternCandidates.some((candidate) =>
+    candidate.row === "contract_suspicion" &&
+    candidate.score >= 85 &&
+    candidate.atomicSignals.length === 1 &&
+    candidate.atomicSignals[0] === "exact_verify20_contract_pattern" &&
+    candidate.modifiers.includes("direct_contract_subject_anchor")
+  );
   const coverageFloorScore = maxScore(coverageCandidates.map((candidate) => candidate.score));
   const coverageLevelValue = coverageLevel(input);
 
@@ -585,7 +594,9 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const contextScore = clampScore(weightedLayerScore - dampener);
   const coverageAdjustedContextScore = coverageLevelValue === "limited" ? Math.max(contextScore, 30) : contextScore;
   const legacyFinalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
-  const legacyFinalScore = rawHardEvidenceFloor === 0 ? Math.min(legacyFinalBeforeHardCap, 84) : legacyFinalBeforeHardCap;
+  const legacyFinalScore = rawHardEvidenceFloor === 0 && !exactVerify20PatternFloor
+    ? Math.min(legacyFinalBeforeHardCap, 84)
+    : legacyFinalBeforeHardCap;
   const decisionCoverage = walletDecisionCoverage(input.whereReport, input.deepReport, coverageLevelValue);
   const disposition = resolveFinalDisposition({
     subject: { decisionScope: "wallet_unified", address: input.address, txHash: null },
@@ -610,7 +621,9 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   ]
     .filter((candidate) => candidate !== decisiveCandidate)
     .map((candidate) => matrixCandidateReason(candidate, "deep_research", false));
-  const noHardEvidenceCriticalCapApplied = rawHardEvidenceFloor === 0 && legacyFinalBeforeHardCap > legacyFinalScore;
+  const noHardEvidenceCriticalCapApplied = rawHardEvidenceFloor === 0 &&
+    !exactVerify20PatternFloor &&
+    legacyFinalBeforeHardCap > legacyFinalScore;
 
   const reasons = [
     ...(decisiveReason ? [decisiveReason] : []),

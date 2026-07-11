@@ -4,8 +4,56 @@ import * as adminServerModule from "../../src/admin/adminServer";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
 import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositories";
 import { SHADOW_SCORING_POLICY_VERSION } from "../../src/risk/shadowScoring";
+import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
 
 const servers: Array<{ close(): Promise<void> }> = [];
+const subjectAddress = "TSubject111111111111111111111111111111";
+
+function exactVerify20Report() {
+  const now = new Date("2026-07-11T00:00:00.000Z");
+  return evaluateSmartContractAddress({
+    subjectAddress,
+    metadata: {
+      address: subjectAddress,
+      source: "tronscan",
+      name: null,
+      tag: null,
+      isContract: true,
+      verified: false,
+      accountType: null,
+      rawJson: {},
+      fetchedAt: now,
+      expiresAt: now
+    },
+    contractProfile: {
+      contractAddress: subjectAddress,
+      providerTags: [],
+      publicTags: [],
+      isVerified: false,
+      verifyStatus: null,
+      sourceStatus: "missing",
+      contractCreatedAt: null,
+      contractAgeDays: null,
+      txCount: "1",
+      recentCallCount: null,
+      totalCallCount: "1",
+      totalCallerCount: "1",
+      topMethods: [],
+      topCallers: [],
+      methodMap: {
+        "5082dd12": "Verify20(address,address,address,uint256)",
+        "fc61dd23": "Verify10(address,uint256)",
+        "ea4418d9": "withdrawAllTrxTo(address)",
+        "f2fde38b": "transferOwnership(address)"
+      },
+      providerRisk: false,
+      rawPayload: {},
+      fetchedAt: now,
+      expiresAt: now
+    },
+    relatedApprovals: []
+  });
+}
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
   return {
@@ -60,6 +108,22 @@ function theftReport(overrides: Partial<TheftReport> = {}): TheftReport {
     ...overrides
   };
 }
+
+it("strictly extracts persisted Verify20 contract reports for Admin reconstruction", () => {
+  const extractor = (adminServerModule as unknown as Record<string, unknown>).extractSmartContractCheckReportFromAdminJob as
+    ((job: ForensicCheckJob, subjectAddress: string) => unknown) | undefined;
+  expect(extractor).toBeTypeOf("function");
+  const persisted = JSON.parse(JSON.stringify(exactVerify20Report()));
+  expect(extractor!(job({
+    progressJson: { contractSafetyAnalysis: { status: "completed", report: persisted } }
+  }), subjectAddress)).toMatchObject({ verify20Fingerprint: { matched: true }, riskScore: 85 });
+
+  persisted.contractProfile.methodMap = {};
+  expect(extractor!(job({
+    progressJson: { contractSafetyAnalysis: { status: "completed", report: persisted } }
+  }), subjectAddress)).toBeNull();
+  expect(extractor!(job({ progressJson: {} }), subjectAddress)).toBeNull();
+});
 
 function adminFirstHopEvidenceForTest() {
   const address = "TAdminFirstHop1111111111111111111111";
@@ -1835,6 +1899,37 @@ describe("startAdminServer", () => {
     expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 95 });
     expect(graph.summary.humanSummary.conclusion).toMatch(/сильный риск/i);
     expect(JSON.stringify(graph.summary.humanSummary)).not.toContain("Legacy result");
+  });
+
+  it("uses a validated persisted Verify20 report in Admin unified-risk reconstruction", async () => {
+    const whereJob = job({
+      id: "job-verify20-admin",
+      progressJson: {
+        contractSafetyAnalysis: {
+          status: "completed",
+          report: JSON.parse(JSON.stringify(exactVerify20Report()))
+        }
+      },
+      resultJson: {
+        subjectAddress,
+        whereIsMoneyReport: whereReportForAdminTest({ riskScore: 20 })
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async () => [],
+      getJob: async (id) => id === whereJob.id ? whereJob : null
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/${whereJob.id}/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+    const graph = (await response.json()).graph;
+    expect(graph.summary).toMatchObject({ decision: "DECLINE", riskScore: 85, riskLevel: "CRITICAL" });
+    expect(graph.nodes.find((node: { kind: string }) => node.kind === "subject")?.metadata).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85
+    });
   });
 
   it("returns a Russian human summary for graph reports with matching Where and Deep evidence", async () => {

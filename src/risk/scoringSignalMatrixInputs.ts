@@ -1,4 +1,5 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import type { SmartContractCheckReport } from "../check/smartContractCheck";
 import { calculateHistoricalTransitBreakdown } from "../forensics/historicalTransitScore";
 import type {
   CounterpartyRiskDirection,
@@ -23,6 +24,7 @@ export type WalletMatrixCandidateInput = {
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
+  smartContractReport?: SmartContractCheckReport | null;
 };
 
 export type IncomingDepositMatrixCandidateInput = {
@@ -1008,6 +1010,51 @@ function buildAddressEvidenceCandidates(
   return candidates;
 }
 
+function directContractCandidates(
+  context: MatrixCandidateContext,
+  report: SmartContractCheckReport | null | undefined
+): MatrixCandidate[] {
+  if (!report || !sameAddress(report.subjectAddress, context.subjectAddress)) return [];
+  if (report.exactDrainProven) {
+    const evidenceId = `contract:${context.subjectAddress}:exact_drain`;
+    return [candidate(context, { kind: "exact_hard", proofSource: "approval_drain_exact" }, {
+      row: "hard_proof",
+      actionUnit: "wallet",
+      score: 95,
+      evidenceIds: [evidenceId],
+      evidenceEpisodeIds: [evidenceId],
+      atomicSignals: [
+        "exact_contract_approval_drain",
+        ...(report.verify20Fingerprint?.matched ? ["exact_verify20_contract_pattern"] : [])
+      ],
+      modifiers: ["hard_anchor", "direct_contract_subject_anchor"],
+      caps: [],
+      dampeners: [],
+      caveats: report.limitations
+    })];
+  }
+  const fingerprint = report.verify20Fingerprint;
+  if (!fingerprint?.matched || fingerprint.blockedByTrustedService || report.serviceLabel !== null ||
+    fingerprint.missingSelectors.length > 0 || fingerprint.mismatchedSelectors.length > 0) return [];
+  const evidenceId = `contract:${context.subjectAddress}:verify20`;
+  return [candidate(context, {
+    kind: "pattern",
+    decisionEligibility: "can_decline",
+    coverageDependency: "none"
+  }, {
+    row: "contract_suspicion",
+    actionUnit: "wallet",
+    score: 85,
+    evidenceIds: [evidenceId],
+    evidenceEpisodeIds: [evidenceId],
+    atomicSignals: ["exact_verify20_contract_pattern"],
+    modifiers: ["direct_contract_subject_anchor"],
+    caps: [],
+    dampeners: [],
+    caveats: report.limitations
+  })];
+}
+
 export function buildWalletMatrixCandidates(input: WalletMatrixCandidateInput): MatrixCandidate[] {
   const context: MatrixCandidateContext = {
     decisionScope: "wallet_unified",
@@ -1016,9 +1063,13 @@ export function buildWalletMatrixCandidates(input: WalletMatrixCandidateInput): 
     requiredCoverage: "wallet_provenance"
   };
   if (!sameAddress(input.whereReport.subjectAddress, input.address)) {
-    return [coverageCandidate(context, "coverage:where_subject_mismatch")];
+    return [
+      ...directContractCandidates(context, input.smartContractReport),
+      coverageCandidate(context, "coverage:where_subject_mismatch")
+    ];
   }
   const candidates = buildAddressEvidenceCandidates(context, input);
+  candidates.push(...directContractCandidates(context, input.smartContractReport));
 
   const deepReport = sameAddress(input.deepReport?.subjectAddress, input.address) ? input.deepReport : null;
   const deepSparse = deepReport ? (deepReport.coverage?.transferEdges ?? 0) < 10 : true;

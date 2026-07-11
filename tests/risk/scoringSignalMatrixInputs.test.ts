@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildIncomingDepositMatrixCandidates, buildWalletMatrixCandidates } from "../../src/risk/scoringSignalMatrixInputs";
+import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
 import { scoreMatrixCandidates, type MatrixCandidateContext } from "../../src/risk/scoringSignalMatrix";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type {
@@ -405,6 +406,75 @@ function directPolicyCandidates(
 }
 
 describe("scoring signal matrix input mappers", () => {
+  it("maps an exact Verify20 report only for the checked contract subject", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress: address,
+      metadata: {
+        address,
+        source: "tronscan",
+        name: null,
+        tag: null,
+        isContract: true,
+        verified: false,
+        accountType: null,
+        rawJson: {},
+        fetchedAt: new Date("2026-07-11T00:00:00.000Z"),
+        expiresAt: new Date("2026-07-12T00:00:00.000Z")
+      },
+      contractProfile: {
+        contractAddress: address,
+        providerTags: [],
+        publicTags: [],
+        isVerified: false,
+        verifyStatus: null,
+        sourceStatus: "missing",
+        contractCreatedAt: null,
+        contractAgeDays: null,
+        txCount: "1",
+        recentCallCount: null,
+        totalCallCount: "1",
+        totalCallerCount: "1",
+        topMethods: [],
+        topCallers: [],
+        methodMap: {
+          "5082dd12": "Verify20(address,address,address,uint256)",
+          "fc61dd23": "Verify10(address,uint256)",
+          "ea4418d9": "withdrawAllTrxTo(address)",
+          "f2fde38b": "transferOwnership(address)"
+        },
+        providerRisk: false,
+        rawPayload: {},
+        fetchedAt: new Date("2026-07-11T00:00:00.000Z"),
+        expiresAt: new Date("2026-07-12T00:00:00.000Z")
+      },
+      relatedApprovals: []
+    });
+
+    const candidates = buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport(),
+      smartContractReport: report
+    });
+    expect(candidates).toContainEqual(expect.objectContaining({
+      row: "contract_suspicion",
+      actionUnit: "wallet",
+      score: 85,
+      authority: { kind: "pattern", decisionEligibility: "can_decline", coverageDependency: "none" },
+      atomicSignals: ["exact_verify20_contract_pattern"],
+      subject: { decisionScope: "wallet_unified", address, txHash: null }
+    }));
+
+    expect(buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport(),
+      smartContractReport: { ...report, subjectAddress: "TOtherContract11111111111111111111111" }
+    }).some((candidate) => candidate.atomicSignals.includes("exact_verify20_contract_pattern"))).toBe(false);
+  });
+
   it("maps a material active official first-hop blacklist fact to independent wallet policy", () => {
     const candidates = buildWalletMatrixCandidates({
       address,

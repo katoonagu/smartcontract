@@ -66,6 +66,30 @@ function independentDirectPolicyCandidate(
     .sort((left, right) => right.score - left.score)[0] ?? null;
 }
 
+function independentDirectVerify20Candidate(
+  matrix: MatrixScoringResult,
+  subject: DecisionSubject
+): ClassifiedMatrixCandidate | null {
+  return (matrix.riskVector.contract_suspicion ?? [])
+    .filter((candidate) =>
+      candidate.row === "contract_suspicion" &&
+      candidate.actionUnit === "wallet" &&
+      candidate.authority.kind === "pattern" &&
+      candidate.authority.decisionEligibility === "can_decline" &&
+      candidate.authority.coverageDependency === "none" &&
+      candidate.evidenceClass === "pattern" &&
+      candidate.proofLevel === "corroborated_pattern" &&
+      candidate.decisionEligibility === "can_decline" &&
+      candidate.coverageDependency === "none" &&
+      candidate.score >= 85 &&
+      candidate.atomicSignals.length === 1 &&
+      candidate.atomicSignals[0] === "exact_verify20_contract_pattern" &&
+      candidate.modifiers.includes("direct_contract_subject_anchor") &&
+      sameSubject(candidate, subject)
+    )
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+}
+
 export function resolveFinalDisposition(input: {
   subject: DecisionSubject;
   matrixScore: MatrixScoringResult;
@@ -89,7 +113,8 @@ export function resolveFinalDisposition(input: {
     };
   }
 
-  const independentPolicy = independentDirectPolicyCandidate(input.matrixScore, input.subject);
+  const independentPolicy = independentDirectPolicyCandidate(input.matrixScore, input.subject) ??
+    independentDirectVerify20Candidate(input.matrixScore, input.subject);
   if (independentPolicy) {
     return {
       decision: "DECLINE",

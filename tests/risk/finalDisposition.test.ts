@@ -102,6 +102,21 @@ const directPolicyMatrix = (subjectAddress: string, score = 60): MatrixScoringRe
     coverageDependency: "none"
   })], matrixContext(subjectAddress));
 
+const exactVerify20PatternMatrix = (subjectAddress: string, score = 85): MatrixScoringResult =>
+  scoreMatrixCandidates([matrixCandidate(subjectAddress, {
+    row: "contract_suspicion",
+    actionUnit: "wallet",
+    score,
+    atomicSignals: ["exact_verify20_contract_pattern"],
+    modifiers: ["direct_contract_subject_anchor"],
+    evidenceIds: [`contract:${subjectAddress}:verify20`],
+    evidenceEpisodeIds: [`contract:${subjectAddress}:verify20`]
+  }, {
+    kind: "pattern",
+    decisionEligibility: "can_decline",
+    coverageDependency: "none"
+  })], matrixContext(subjectAddress));
+
 describe("resolveFinalDisposition", () => {
   it("keeps exact hard DECLINE when unrelated coverage is partial", () => {
     const result = resolveFinalDisposition({
@@ -169,6 +184,41 @@ describe("resolveFinalDisposition", () => {
       score: 73,
       evidenceIds: ["evidence:1"]
     });
+  });
+
+  it("keeps only the exact direct-contract Verify20 pattern decisive through unrelated partial coverage", () => {
+    const result = resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore: exactVerify20PatternMatrix(address),
+      coverage: coverage("invalid", "partial"),
+      observedContextScore: 85
+    });
+
+    expect(result).toMatchObject({
+      decision: "DECLINE",
+      finalScore: 85,
+      scoreValid: true,
+      decisionBasis: "independent_policy",
+      decisiveCandidate: {
+        row: "contract_suspicion",
+        score: 85,
+        atomicSignals: ["exact_verify20_contract_pattern"],
+        evidenceClass: "pattern",
+        coverageDependency: "none"
+      }
+    });
+
+    const generic = scoreMatrixCandidates([matrixCandidate(address, {
+      row: "contract_suspicion",
+      score: 85,
+      atomicSignals: ["generic_contract_suspicion"]
+    }, { kind: "pattern", decisionEligibility: "can_decline", coverageDependency: "none" })], matrixContext(address));
+    expect(resolveFinalDisposition({
+      subject: { decisionScope: "wallet_unified", address, txHash: null },
+      matrixScore: generic,
+      coverage: coverage("invalid", "partial"),
+      observedContextScore: 85
+    }).decision).toBe("NO_FINAL_DECISION");
   });
 
   it("keeps exact hard proof ahead of a higher-scoring independent direct policy", () => {

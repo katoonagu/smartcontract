@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as createBotModule from "../../src/bot/createBot";
 import type { AppConfig } from "../../src/config";
-import { createBot, extractDeepForensicReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
+import { createBot, extractDeepForensicReportFromJob, extractSmartContractCheckReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
 import { tronscanApprovalsUrl } from "../../src/alerts/keyboards";
 import { normalizeNotificationReason } from "../../src/alerts/notificationText";
@@ -1495,8 +1495,10 @@ function smartContractReportForTest(overrides: Partial<SmartContractCheckReport>
       serviceTag: "Test Router",
       isVerified: true,
       activityLevel: "normal",
-      hasTransferFromSelector: true
-    } as SmartContractCheckReport["contractProfile"],
+      hasTransferFromSelector: true,
+      methodMap: {},
+      topMethods: []
+    } as unknown as SmartContractCheckReport["contractProfile"],
     relatedApprovals: [],
     llmVerdict: {
       contractAddress: walletAddress,
@@ -1515,6 +1517,13 @@ function smartContractReportForTest(overrides: Partial<SmartContractCheckReport>
       cacheMatch: null
     },
     exactDrainProven: false,
+    verify20Fingerprint: {
+      matched: false,
+      selectors: [],
+      blockedByTrustedService: true,
+      missingSelectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      mismatchedSelectors: []
+    },
     serviceLabel: "Test Router",
     activityLabel: "normal",
     reasons: [
@@ -1524,6 +1533,36 @@ function smartContractReportForTest(overrides: Partial<SmartContractCheckReport>
     limitations: ["exact_drain_not_proven_in_standalone_check"],
     ...overrides
   };
+}
+
+function exactVerify20ContractReportForTest(): SmartContractCheckReport {
+  const base = smartContractReportForTest();
+  return smartContractReportForTest({
+    decision: "DECLINE",
+    decisionScope: "contract_safety",
+    riskScore: 85,
+    riskLevel: "CRITICAL",
+    serviceLabel: null,
+    contractProfile: {
+      ...base.contractProfile!,
+      serviceTag: null,
+      methodMap: {
+        "5082dd12": "Verify20(address,address,address,uint256)",
+        "fc61dd23": "Verify10(address,uint256)",
+        "ea4418d9": "withdrawAllTrxTo(address)",
+        "f2fde38b": "transferOwnership(address)"
+      },
+      topMethods: []
+    },
+    verify20Fingerprint: {
+      matched: true,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: false,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    },
+    reasons: ["address_is_smart_contract", "exact_verify20_contract_pattern"]
+  });
 }
 
 function lastMessagePayload(calls: ReplyCall[]): Record<string, any> {
@@ -3089,6 +3128,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const deepReport = deepReportForTest();
     const whereJob = whereIsMoneyJobForTest({
       id: "where-job-1",
+      progressJson: { contractSafetyAnalysis: { status: "completed", report: exactVerify20ContractReportForTest() } },
       resultJson: {
         subjectAddress: whereReport.subjectAddress,
         whereIsMoneyReport: whereReport
@@ -3110,6 +3150,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = lastPlainText(calls);
     expect(text).toContain("Расширенный отчёт по адресу");
     expect(text).toContain(walletAddress);
+    expect(text).toContain("85/100");
     expect(text).not.toContain("Where-is-money — support/debug");
   });
 
@@ -3119,6 +3160,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const deepJob = whereIsMoneyJobForTest({
       id: "deep-job-1",
       kind: "address_deep_check",
+      progressJson: { contractSafetyAnalysis: { status: "completed", report: exactVerify20ContractReportForTest() } },
       resultJson: persistedDeepResultJsonForTest(deepReport)
     });
     const whereJob = whereIsMoneyJobForTest({
@@ -3138,6 +3180,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = lastPlainText(calls);
     expect(text).toContain("Detailed address report");
     expect(text).toContain(walletAddress);
+    expect(text).toContain("85/100");
     expect(text).not.toContain("Deep forensic status");
   });
 
@@ -5329,6 +5372,67 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(malformedHardEvidenceReport?.assetContinuationProfiles).toEqual([]);
     expect(extractDeepForensicReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
+  });
+
+  it("explains exact Verify20 standalone findings in RU and EN without alleging a specific theft", () => {
+    const report = exactVerify20ContractReportForTest();
+    const ru = plainTelegramText(formatSmartContractCheckReport(report, { locale: "ru" }).text);
+    const en = plainTelegramText(formatSmartContractCheckReport(report, { locale: "en" }).text);
+
+    expect(ru).toContain("В контракте найден полный шаблон Verify20, который часто используют дрейнеры");
+    expect(en).toContain("full Verify20 pattern often used by drainers");
+    expect(`${ru}\n${en}`).toMatch(/не доказывает конкретную кражу|does not prove a specific theft/);
+    expect(`${ru}\n${en}`).not.toMatch(/украл \d|stole \d|victim address/i);
+  });
+
+  it("normalizes the same persisted Verify20 report for Where-first and Deep-first final delivery", () => {
+    const contractReport = exactVerify20ContractReportForTest();
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const deepReport = deepReportForTest();
+    const progressJson = {
+      contractSafetyAnalysis: { status: "completed", report: JSON.parse(JSON.stringify(contractReport)) }
+    };
+    const whereJob = whereIsMoneyJobForTest({
+      progressJson,
+      resultJson: { subjectAddress: walletAddress, whereIsMoneyReport: whereReport }
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      kind: "address_deep_check",
+      progressJson,
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+
+    expect(extractSmartContractCheckReportFromJob(whereJob, walletAddress)).toMatchObject({
+      subjectAddress: walletAddress,
+      verify20Fingerprint: { matched: true }
+    });
+    const whereFirst = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
+      whereJob,
+      whereReport,
+      "completed",
+      deepJob,
+      { locale: "en" }
+    ).text);
+    const deepFirst = plainTelegramText(formatDeepForensicUserDeliveryReport(
+      deepJob,
+      deepReport,
+      "completed",
+      whereJob,
+      { locale: "en" }
+    ).text);
+    expect(whereFirst).toContain("85/100");
+    expect(deepFirst).toContain("85/100");
+    expect(whereFirst).toContain("DECLINE");
+    expect(deepFirst).toContain("DECLINE");
+  });
+
+  it("does not forge a Verify20 floor from malformed or legacy progress", () => {
+    const malformed = JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()));
+    malformed.contractProfile.methodMap = {};
+    expect(extractSmartContractCheckReportFromJob(whereIsMoneyJobForTest({
+      progressJson: { contractSafetyAnalysis: { status: "completed", report: malformed } }
+    }), walletAddress)).toBeNull();
+    expect(extractSmartContractCheckReportFromJob(whereIsMoneyJobForTest({ progressJson: {} }), walletAddress)).toBeNull();
   });
 
   it("extracts validated persisted first-hop evidence without dropping timeline fields", () => {

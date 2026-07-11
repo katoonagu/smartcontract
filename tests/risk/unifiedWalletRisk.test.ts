@@ -14,6 +14,7 @@ import {
   type DeepAddressForensicReport
 } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
+import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type {
   ApprovalDrainProvenanceProfile,
   BoundaryExposureProfile,
@@ -39,6 +40,33 @@ const address = `T${"1".repeat(33)}`;
 const directPolicyCounterparty = `T${"2".repeat(33)}`;
 const directPolicyTxHash = "a".repeat(64);
 const directPolicyEventTxHash = "b".repeat(64);
+
+function exactVerify20Report(overrides: Partial<SmartContractCheckReport> = {}): SmartContractCheckReport {
+  return {
+    subjectAddress: address,
+    decision: "DECLINE",
+    decisionScope: "contract_safety",
+    riskScore: 85,
+    riskLevel: "CRITICAL",
+    verify20Fingerprint: {
+      matched: true,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: false,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    },
+    exactDrainProven: false,
+    serviceLabel: null,
+    activityLabel: "low",
+    reasons: ["exact_verify20_contract_pattern"],
+    limitations: ["exact_drain_not_proven_in_standalone_check"],
+    metadata: {} as SmartContractCheckReport["metadata"],
+    contractProfile: null,
+    relatedApprovals: [],
+    llmVerdict: null,
+    ...overrides
+  };
+}
 
 function coverageDebug(summaryOverrides: Partial<CoverageDebugReport["summary"]> = {}): CoverageDebugReport {
   return {
@@ -1406,6 +1434,43 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 });
 
 describe("calculateUnifiedWalletRisk", () => {
+  it("keeps exact Verify20 at 85 through unrelated invalid coverage and exact drain at 95", () => {
+    const invalidWhere = whereReport(20, {
+      scoreValid: false,
+      scoreBlockedReason: "insufficient_coverage",
+      technicalStatus: "provider_cap_unresolved",
+      coverage: { ...whereReport(20).coverage, partial: true }
+    });
+    const verify20 = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: null,
+      whereReport: invalidWhere,
+      smartContractReport: exactVerify20Report()
+    });
+    const exactDrain = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: null,
+      whereReport: invalidWhere,
+      smartContractReport: exactVerify20Report({ exactDrainProven: true, riskScore: 95 })
+    });
+
+    expect(verify20).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85,
+      finalLevel: "CRITICAL",
+      decisionBasis: "independent_policy",
+      patternFloor: 85,
+      scoreValid: true,
+      scoreBreakdown: {
+        activeAnchor: { row: "contract_suspicion", score: 85 },
+        noHardEvidenceCriticalCap: { applied: false, maxScore: 84 }
+      }
+    });
+    expect(exactDrain).toMatchObject({ finalDecision: "DECLINE", finalScore: 95, hardEvidenceFloor: 95 });
+  });
+
   it("scores incoming deposits through the shared scorer without auto-declining insufficient coverage", () => {
     const result = calculateUnifiedForensicRisk({
       subject: {

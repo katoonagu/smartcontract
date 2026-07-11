@@ -3,7 +3,8 @@ import {
   buildStandaloneContractAnalysisCaseFile,
   checkSmartContractAddress,
   evaluateSmartContractAddress,
-  mergeContractSafetyContext
+  mergeContractSafetyContext,
+  normalizeSmartContractCheckReport
 } from "../../src/check/smartContractCheck";
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
@@ -65,6 +66,16 @@ function contractProfile(overrides: Partial<ContractIntelligenceProfile> = {}): 
     rawJson: {},
     ...overrides
   };
+}
+
+function exactVerify20Profile(overrides: Partial<ContractIntelligenceProfile> = {}): ContractIntelligenceProfile {
+  const methodMap = {
+    "5082dd12": "Verify20(address,address,address,uint256)",
+    "fc61dd23": "Verify10(address,uint256)",
+    "ea4418d9": "withdrawAllTrxTo(address)",
+    "f2fde38b": "transferOwnership(address)"
+  };
+  return contractProfile({ methodMap, ...overrides });
 }
 
 function activeUnlimitedApproval(overrides: Partial<WalletApprovalSpenderRelation> = {}): WalletApprovalSpenderRelation {
@@ -247,6 +258,84 @@ describe("merge contract safety context", () => {
 });
 
 describe("smart contract check", () => {
+  it("declines an exact Verify20 fingerprint without claiming a specific theft", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    });
+
+    expect(report).toMatchObject({
+      decision: "DECLINE",
+      riskScore: 85,
+      riskLevel: "CRITICAL",
+      verify20Fingerprint: {
+        matched: true,
+        blockedByTrustedService: false,
+        missingSelectors: [],
+        mismatchedSelectors: []
+      }
+    });
+    expect(report.reasons).toContain("exact_verify20_contract_pattern");
+    expect(report.reasons.join(" ")).not.toMatch(/victim|amount|stolen transfer/i);
+  });
+
+  it("does not apply the Verify20 floor to trusted services or incomplete fingerprints", () => {
+    const trusted = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Verified Router", tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: "Router",
+        providerTags: [{ kind: "blueTag", label: "Router", url: null }],
+        txCount: "1000",
+        totalCallCount: "1000",
+        totalCallerCount: "100"
+      }),
+      relatedApprovals: []
+    });
+    const partial = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile({
+        methodMap: {
+          "5082dd12": "Verify20(address,address,address,uint256)",
+          "fc61dd23": "Verify10(address,uint256)",
+          "ea4418d9": "withdrawAllTrxTo(address)"
+        }
+      }),
+      relatedApprovals: []
+    });
+
+    expect(trusted.verify20Fingerprint).toMatchObject({ matched: false, blockedByTrustedService: true });
+    expect(trusted.riskScore).toBe(10);
+    expect(partial.verify20Fingerprint).toMatchObject({ matched: false, missingSelectors: ["f2fde38b"] });
+    expect(partial.riskScore).toBe(35);
+  });
+
+  it("rejects persisted reports whose matched fingerprint contradicts their profile", () => {
+    const report = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    });
+    const persisted = JSON.parse(JSON.stringify(report));
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toMatchObject({
+      subjectAddress,
+      verify20Fingerprint: { matched: true }
+    });
+    persisted.contractProfile.methodMap = {};
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({ ...persisted, verify20Fingerprint: undefined }, subjectAddress)).toBeNull();
+  });
+
   it("declines a TNKG-style unverified active unlimited approval spender without exact drain proof", () => {
     const report = evaluateSmartContractAddress({
       subjectAddress,

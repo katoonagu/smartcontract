@@ -215,6 +215,14 @@ function withCap(
 
 function applyRowCaps(candidate: ClassifiedMatrixCandidate): ClassifiedMatrixCandidate {
   const score = clampScore(candidate.score);
+  const exactDirectVerify20Pattern = candidate.row === "contract_suspicion" &&
+    candidate.actionUnit === "wallet" &&
+    candidate.authority.kind === "pattern" &&
+    candidate.authority.decisionEligibility === "can_decline" &&
+    candidate.authority.coverageDependency === "none" &&
+    candidate.atomicSignals.length === 1 &&
+    candidate.atomicSignals[0] === "exact_verify20_contract_pattern" &&
+    candidate.modifiers.includes("direct_contract_subject_anchor");
   if (candidate.evidenceClass === "coverage") {
     return withCap(candidate, 0, "coverage_uncertainty_no_badness");
   }
@@ -227,7 +235,7 @@ function applyRowCaps(candidate: ClassifiedMatrixCandidate): ClassifiedMatrixCan
   if (candidate.row === "behavior_only_prior" && score >= 60) {
     return withCap(candidate, 59, "behavior_only_cap_59");
   }
-  if (candidate.row === "contract_suspicion" && score >= 60) {
+  if (candidate.row === "contract_suspicion" && score >= 60 && !exactDirectVerify20Pattern) {
     return withCap(candidate, 59, "contract_suspicion_cap_59");
   }
   if (candidate.row === "typology_subgraph_pattern" && !hasAnchor(candidate) && score >= 60) {

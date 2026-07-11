@@ -5,6 +5,10 @@ import {
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractIntelligenceProfile } from "../approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../storage/repositories";
+import {
+  detectVerify20Fingerprint,
+  type Verify20FingerprintResult
+} from "../forensics/verify20Fingerprint";
 import type {
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
@@ -25,6 +29,7 @@ export type SmartContractCheckReport = {
   relatedApprovals: WalletApprovalSpenderRelation[];
   llmVerdict: ContractLlmVerdictSummary | null;
   exactDrainProven: boolean;
+  verify20Fingerprint: Verify20FingerprintResult;
   serviceLabel: string | null;
   activityLabel: "none" | "low" | "normal" | "high" | "unknown";
   reasons: string[];
@@ -358,8 +363,9 @@ function decisionForScore(input: {
   knownVerifiedService: boolean;
   hasApprovalSafetyRisk: boolean;
   hasProviderRisk: boolean;
+  exactVerify20Pattern: boolean;
 }): ExchangeDecision {
-  if (input.hasProviderRisk || input.hasApprovalSafetyRisk) return "DECLINE";
+  if (input.hasProviderRisk || input.hasApprovalSafetyRisk || input.exactVerify20Pattern) return "DECLINE";
   if (input.knownVerifiedService && input.score <= 20) return "ACCEPTABLE";
   if (input.score >= 35) return "REVIEW";
   return "ACCEPTABLE";
@@ -372,6 +378,11 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
   const reasons: string[] = [];
   const limitations = [EXACT_DRAIN_NOT_PROVEN];
   const serviceLabel = verifiedServiceLabel(input.metadata, contractProfile);
+  const verify20Fingerprint = detectVerify20Fingerprint({
+    methodMap: contractProfile?.methodMap,
+    topMethods: contractProfile?.topMethods,
+    serviceLabel
+  });
   const activeUnlimited = activeUnlimitedApprovals(input.subjectAddress, relatedApprovals);
   const activeRiskyRelated = activeRiskyRelatedApprovals(input.subjectAddress, relatedApprovals);
   const knownVerifiedService = serviceLabel !== null;
@@ -397,6 +408,11 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
   } else if (verifiedWithoutServiceEvidence) {
     addReason(reasons, "verified_contract_without_service_evidence");
     riskScore = Math.max(riskScore, 35);
+  }
+
+  if (verify20Fingerprint.matched) {
+    addReason(reasons, "exact_verify20_contract_pattern");
+    riskScore = Math.max(riskScore, 85);
   }
 
   if (hasWeakUnknownMetadata(input.metadata, contractProfile, serviceLabel)) {
@@ -435,7 +451,8 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
       score: finalScore,
       knownVerifiedService,
       hasApprovalSafetyRisk,
-      hasProviderRisk: providerRisk
+      hasProviderRisk: providerRisk,
+      exactVerify20Pattern: verify20Fingerprint.matched
     }),
     decisionScope: hasApprovalSafetyRisk ? "approval_safety" : "contract_safety",
     riskScore: finalScore,
@@ -445,11 +462,83 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
     relatedApprovals,
     llmVerdict,
     exactDrainProven: false,
+    verify20Fingerprint,
     serviceLabel,
     activityLabel: activityLabel(contractProfile),
     reasons,
     limitations
   };
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function sameAddress(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function sameFingerprint(left: Verify20FingerprintResult, right: Verify20FingerprintResult): boolean {
+  return left.matched === right.matched &&
+    left.blockedByTrustedService === right.blockedByTrustedService &&
+    left.selectors.join(":") === right.selectors.join(":") &&
+    left.missingSelectors.join(":") === right.missingSelectors.join(":") &&
+    left.mismatchedSelectors.join(":") === right.mismatchedSelectors.join(":");
+}
+
+/** Treat persisted contract analysis as untrusted; exact fingerprints are re-derived from the saved profile. */
+export function normalizeSmartContractCheckReport(
+  value: unknown,
+  expectedSubjectAddress?: string
+): SmartContractCheckReport | null {
+  const report = record(value);
+  if (!report || typeof report.subjectAddress !== "string" || report.subjectAddress.length === 0) return null;
+  if (expectedSubjectAddress && !sameAddress(report.subjectAddress, expectedSubjectAddress)) return null;
+  if (report.decision !== "ACCEPTABLE" && report.decision !== "REVIEW" && report.decision !== "DECLINE") return null;
+  if (report.decisionScope !== "contract_safety" && report.decisionScope !== "approval_safety") return null;
+  if (typeof report.riskScore !== "number" || !Number.isInteger(report.riskScore) || report.riskScore < 0 || report.riskScore > 100) return null;
+  if (report.riskLevel !== riskLevelFromScore(report.riskScore)) return null;
+  if (typeof report.exactDrainProven !== "boolean") return null;
+  if (report.serviceLabel !== null && typeof report.serviceLabel !== "string") return null;
+  if (report.activityLabel !== "none" && report.activityLabel !== "low" && report.activityLabel !== "normal" && report.activityLabel !== "high" && report.activityLabel !== "unknown") return null;
+  if (!stringArray(report.reasons) || !stringArray(report.limitations) || !Array.isArray(report.relatedApprovals)) return null;
+  if (report.llmVerdict !== null && !record(report.llmVerdict)) return null;
+
+  const metadata = record(report.metadata);
+  if (!metadata || typeof metadata.address !== "string" || !sameAddress(metadata.address, report.subjectAddress)) return null;
+  const profile = report.contractProfile === null ? null : record(report.contractProfile);
+  if (report.contractProfile !== null && !profile) return null;
+  if (profile) {
+    if (typeof profile.contractAddress !== "string" || !sameAddress(profile.contractAddress, report.subjectAddress)) return null;
+    if (!record(profile.methodMap) || !Array.isArray(profile.topMethods)) return null;
+    if (!Object.values(profile.methodMap as Record<string, unknown>).every((item) => typeof item === "string")) return null;
+    if (!profile.topMethods.every((item) => {
+      const method = record(item);
+      return method !== null && typeof method.methodId === "string" &&
+        (method.signature === null || typeof method.signature === "string");
+    })) return null;
+  }
+
+  const fingerprint = record(report.verify20Fingerprint);
+  if (!fingerprint || typeof fingerprint.matched !== "boolean" ||
+    typeof fingerprint.blockedByTrustedService !== "boolean" ||
+    !stringArray(fingerprint.selectors) || !stringArray(fingerprint.missingSelectors) || !stringArray(fingerprint.mismatchedSelectors)) return null;
+  const derived = detectVerify20Fingerprint({
+    methodMap: profile?.methodMap as Record<string, string> | undefined,
+    topMethods: profile?.topMethods as ContractIntelligenceProfile["topMethods"] | undefined,
+    serviceLabel: report.serviceLabel as string | null
+  });
+  if (!sameFingerprint(fingerprint as Verify20FingerprintResult, derived)) return null;
+  if (derived.matched && (report.decision !== "DECLINE" || report.riskScore < 85 || report.serviceLabel !== null)) return null;
+  if (report.exactDrainProven && (report.decision !== "DECLINE" || report.riskScore < 95)) return null;
+
+  return report as unknown as SmartContractCheckReport;
 }
 
 function shouldAnalyzeStandaloneContract(input: {

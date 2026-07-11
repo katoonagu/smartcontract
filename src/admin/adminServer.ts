@@ -10,6 +10,10 @@ import {
   type DeepAddressForensicReport
 } from "../check/deepForensicCheck";
 import {
+  normalizeSmartContractCheckReport,
+  type SmartContractCheckReport
+} from "../check/smartContractCheck";
+import {
   buildRiskExplanationSummary,
   factAction,
   factDetail,
@@ -425,6 +429,15 @@ function stringProgressField(job: ForensicCheckJob, key: string): string | undef
 function recordProgressField(job: ForensicCheckJob, key: string): Record<string, unknown> | undefined {
   const value = job.progressJson[key];
   return isRecord(value) ? value : undefined;
+}
+
+export function extractSmartContractCheckReportFromAdminJob(
+  job: ForensicCheckJob,
+  subjectAddress: string
+): SmartContractCheckReport | null {
+  const analysis = recordProgressField(job, "contractSafetyAnalysis");
+  if (!analysis || analysis.status !== "completed") return null;
+  return normalizeSmartContractCheckReport(analysis.report, subjectAddress);
 }
 
 function jobResultRecord(job: ForensicCheckJob): Record<string, unknown> {
@@ -1087,11 +1100,13 @@ function buildAdminRiskPresentation(input: {
   whereReport: WhereIsMoneyReport;
   fastReport: RiskReport | null;
   deepReport: DeepAddressForensicReport | null;
+  smartContractReport: SmartContractCheckReport | null;
 }): { unifiedRisk: UnifiedWalletRiskResult; humanSummary: AdminForensicsHumanSummary } {
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,
     deepReport: input.deepReport,
+    smartContractReport: input.smartContractReport,
     whereReport: input.whereReport
   });
   return {
@@ -1167,13 +1182,17 @@ async function enrichHumanRiskSummary(
 
   const deepReport = jobs.map((candidate) => extractDeepForensicReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
   const fastReport = jobs.map((candidate) => extractFastRiskReportFromAdminJob(candidate, job.subjectAddress)).find((report) => report !== null) ?? null;
+  const smartContractReport = jobs
+    .map((candidate) => extractSmartContractCheckReportFromAdminJob(candidate, job.subjectAddress))
+    .find((report) => report !== null) ?? null;
   let presentation: ReturnType<typeof buildAdminRiskPresentation> | null = null;
   try {
     presentation = buildAdminRiskPresentation({
       address: job.subjectAddress,
       whereReport,
       fastReport,
-      deepReport
+      deepReport,
+      smartContractReport
     });
   } catch {
     presentation = null;
