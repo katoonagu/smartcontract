@@ -6,6 +6,7 @@ const ADDED_BLACKLIST_TOPIC = TronWeb.sha3("AddedBlackList(address)").toLowerCas
 const REMOVED_BLACKLIST_TOPIC = TronWeb.sha3("RemovedBlackList(address)").toLowerCase();
 const TX_HASH_PATTERN = /^[0-9a-f]{64}$/i;
 const MAX_UNIX_SECONDS = 9_999_999_999;
+const TRON_MAINNET_GENESIS_MS = Date.UTC(2018, 5, 25);
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -19,6 +20,13 @@ function nonEmptyString(value: unknown): string | null {
 
 function safeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+}
+
+function nonNegativeSafeInteger(value: unknown): number | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value)) return null;
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) ? numeric : null;
 }
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
@@ -132,6 +140,12 @@ function eventKindFromName(value: unknown): UsdtBlacklistTimelineEvent["eventKin
   return null;
 }
 
+function eventKindFromSignature(value: unknown): UsdtBlacklistTimelineEvent["eventKind"] | null {
+  if (value === "AddedBlackList(address)") return "added";
+  if (value === "RemovedBlackList(address)") return "removed";
+  return null;
+}
+
 function eventKindFromTopic(value: unknown): UsdtBlacklistTimelineEvent["eventKind"] | null {
   const topic = normalizedTopic(value);
   if (topic === ADDED_BLACKLIST_TOPIC) return "added";
@@ -141,9 +155,8 @@ function eventKindFromTopic(value: unknown): UsdtBlacklistTimelineEvent["eventKi
 
 function eventTimestamp(value: unknown): string | null {
   const timestamp = safeInteger(value);
-  if (timestamp === null || timestamp < 0) return null;
-  const milliseconds = timestamp <= MAX_UNIX_SECONDS ? timestamp * 1_000 : timestamp;
-  const date = new Date(milliseconds);
+  if (timestamp === null || timestamp < TRON_MAINNET_GENESIS_MS) return null;
+  const date = new Date(timestamp);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
@@ -182,10 +195,12 @@ function verifyEvent(value: unknown, expectedAddress: string): UsdtBlacklistTime
   if (Array.isArray(topics) && topics.length !== 2) return null;
   const topicKind = topicsPresent && Array.isArray(topics) ? eventKindFromTopic(topics[0]) : null;
   const namedKind = resolveAliases(event, ["event_name", "eventName"], eventKindFromName);
-  if (!namedKind) return null;
+  const signatureKind = resolveAliases(event, ["event"], eventKindFromSignature);
+  if (!namedKind || !signatureKind) return null;
   if (Array.isArray(topics) && !topicKind) return null;
   if (namedKind.present && topicKind && namedKind.value !== topicKind) return null;
-  const eventKind = topicKind ?? namedKind.value;
+  const eventKind = topicKind ?? namedKind.value ?? signatureKind.value;
+  if (signatureKind.present && eventKind && signatureKind.value !== eventKind) return null;
   if (!eventKind) return null;
 
   const result = hasOwn(event, "result") ? objectRecord(event.result) : null;
@@ -199,7 +214,7 @@ function verifyEvent(value: unknown, expectedAddress: string): UsdtBlacklistTime
 
   const txHash = resolveAliases(event, ["transaction_id", "transactionId", "transaction"], normalizedTxHash);
   const blockNumber = resolveAliases(event, ["block_number", "blockNumber"], safeInteger);
-  const logIndex = resolveAliases(event, ["event_index", "log_index", "eventIndex", "logIndex"], safeInteger);
+  const logIndex = resolveAliases(event, ["event_index", "log_index", "eventIndex", "logIndex"], nonNegativeSafeInteger);
   const occurredAt = resolveAliases(event, ["block_timestamp", "blockTimestamp", "blockTimeStamp"], eventTimestamp);
   if (
     !txHash?.present ||

@@ -8,6 +8,7 @@ const WRONG_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 const TX = "a".repeat(64);
 const ADDED_TOPIC = TronWeb.sha3("AddedBlackList(address)");
 const REMOVED_TOPIC = TronWeb.sha3("RemovedBlackList(address)");
+const TRON_MAINNET_GENESIS_MS = Date.UTC(2018, 5, 25);
 
 function hexAddress(address: string): string {
   return `0x${TronWeb.address.toHex(address).slice(2).toLowerCase()}`;
@@ -82,6 +83,25 @@ describe("verifyBlacklistEvent", () => {
       blockNumber: 73_456_789,
       logIndex: 2,
       verification: "verified_contract_log"
+    });
+  });
+
+  it("parses a realistic official decoded event with a canonical decimal string event index", () => {
+    expect(verifyBlacklistEvent([{
+      transaction_id: TX,
+      block_number: 73_456_789,
+      block_timestamp: 1_783_763_343_000,
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      event_name: "AddedBlackList",
+      event: "AddedBlackList(address)",
+      event_index: "2",
+      result: { _user: hexAddress(ADDRESS) },
+      confirmed: true,
+      contractRet: "SUCCESS"
+    }], ADDRESS)).toMatchObject({
+      eventKind: "added",
+      occurredAt: "2026-07-11T09:49:03.000Z",
+      logIndex: 2
     });
   });
 
@@ -228,5 +248,33 @@ describe("verifyBlacklistEvent", () => {
       event_name: "RemovedBlackList",
       topics: [REMOVED_TOPIC, addressTopic(ADDRESS), extraTopic]
     })], ADDRESS)).toBeNull();
+  });
+
+  it("accepts only canonical non-negative safe event-index integers across aliases", () => {
+    expect(verifyBlacklistEvent([contractEvent({ event_index: "2", logIndex: 2 })], ADDRESS)).toMatchObject({ logIndex: 2 });
+    for (const eventIndex of ["02", "+2", "-1", "2.0", "9007199254740992", -1, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(verifyBlacklistEvent([contractEvent({ event_index: eventIndex })], ADDRESS)).toBeNull();
+    }
+    expect(verifyBlacklistEvent([contractEvent({ event_index: "2", logIndex: 3 })], ADDRESS)).toBeNull();
+  });
+
+  it("rejects contradictory or malformed documented event signatures", () => {
+    expect(verifyBlacklistEvent([contractEvent({ event: "Transfer(address,address,uint256)" })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({ event: "RemovedBlackList(address)" })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({
+      event: "AddedBlackList(address)",
+      event_name: "RemovedBlackList",
+      topics: [REMOVED_TOPIC, addressTopic(ADDRESS)]
+    })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({ event: 42 })], ADDRESS)).toBeNull();
+  });
+
+  it("treats event block timestamps as milliseconds with a TRON mainnet lower bound", () => {
+    expect(verifyBlacklistEvent([contractEvent({ block_timestamp: 1_783_763_343 })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({ block_timestamp: TRON_MAINNET_GENESIS_MS - 1 })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({ block_timestamp: "1783763343000" })], ADDRESS)).toBeNull();
+    expect(verifyBlacklistEvent([contractEvent({ block_timestamp: TRON_MAINNET_GENESIS_MS })], ADDRESS)).toMatchObject({
+      occurredAt: "2018-06-25T00:00:00.000Z"
+    });
   });
 });
