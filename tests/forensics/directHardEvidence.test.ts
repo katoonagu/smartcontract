@@ -334,6 +334,8 @@ describe("direct hard evidence helper", () => {
 
     const result = await buildDirectHardEvidenceSnapshots({
       addresses: Array.from({ length: 8 }, (_, index) => `TDirect${index}`),
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
       liveLimit: 5,
       concurrency: 2,
       getLabelsForAddress: async () => [],
@@ -358,6 +360,8 @@ describe("direct hard evidence helper", () => {
   it("does not report complete when a live blacklist lookup fails", async () => {
     const result = await buildDirectHardEvidenceSnapshots({
       addresses: ["TDirect0", "TDirect1"],
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
       liveLimit: 2,
       concurrency: 2,
       getLabelsForAddress: async () => [],
@@ -660,6 +664,168 @@ describe("direct hard evidence helper", () => {
       completeTimelineFactCount: 0,
       partialTimelineFactCount: 1
     });
+  });
+
+  it("assigns every movement in one transaction to unknown when its timestamps imply conflicting relations", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({
+          id: "1",
+          fromAddress: "TConflictingTx",
+          toAddress: SUBJECT,
+          amountRaw: 6_000_000000n,
+          txHash: "tx-conflicting-time",
+          timestamp: new Date("2026-07-01T00:00:00.000Z")
+        }),
+        edge({
+          id: "2",
+          fromAddress: "TConflictingTx",
+          toAddress: SUBJECT,
+          amountRaw: 6_000_000000n,
+          txHash: "tx-conflicting-time",
+          timestamp: new Date("2026-07-03T00:00:00.000Z")
+        })
+      ]
+    });
+    const added = {
+      eventKind: "added" as const,
+      occurredAt: "2026-07-02T00:00:00.000Z",
+      txHash: "tx-added",
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 100,
+      logIndex: 1,
+      verification: "verified_contract_log" as const
+    };
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TConflictingTx"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address, {
+        isBlacklisted: true,
+        blacklistTimeline: { events: [added], pagination: "complete", failureReason: null }
+      })
+    });
+
+    expect(result.blacklistFacts[0]).toMatchObject({
+      temporalRelation: "unknown",
+      principalAmountRaw: "12000000000",
+      principalTxCount: 1,
+      beforeEffectiveAmountRaw: "0",
+      beforeEffectiveTxCount: 0,
+      activeAmountRaw: "0",
+      activeTxCount: 0,
+      unknownTimingAmountRaw: "12000000000",
+      unknownTimingTxCount: 1
+    });
+  });
+
+  it("keeps complete removal and re-add lifecycles temporally unknown", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({
+        id: "1",
+        fromAddress: "TReadded",
+        toAddress: SUBJECT,
+        amountRaw: 10_000_000000n,
+        timestamp: new Date("2026-07-04T00:00:00.000Z")
+      })]
+    });
+    const timelineEvents: UsdtBlacklistTimeline["events"] = [
+      {
+        eventKind: "added",
+        occurredAt: "2026-07-01T00:00:00.000Z",
+        txHash: "tx-added-1",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        blockNumber: 100,
+        logIndex: 1,
+        verification: "verified_contract_log"
+      },
+      {
+        eventKind: "removed",
+        occurredAt: "2026-07-02T00:00:00.000Z",
+        txHash: "tx-removed",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        blockNumber: 101,
+        logIndex: 1,
+        verification: "verified_contract_log"
+      },
+      {
+        eventKind: "added",
+        occurredAt: "2026-07-03T00:00:00.000Z",
+        txHash: "tx-added-2",
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        blockNumber: 102,
+        logIndex: 1,
+        verification: "verified_contract_log"
+      }
+    ];
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TReadded"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address, {
+        isBlacklisted: true,
+        blacklistTimeline: { events: timelineEvents, pagination: "complete", failureReason: null }
+      })
+    });
+
+    expect(result.blacklistFacts[0]).toMatchObject({
+      temporalRelation: "unknown",
+      timelineCoverage: "complete",
+      beforeEffectiveAmountRaw: "0",
+      activeAmountRaw: "0",
+      unknownTimingAmountRaw: "10000000000",
+      unknownTimingTxCount: 1
+    });
+  });
+
+  it("keeps legacy address-only snapshots outside coherent material decision coverage", async () => {
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TLegacy0", "TLegacy1"],
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    });
+
+    expect(result.liveCheckedCount).toBe(2);
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: false,
+      scope: "checked_window",
+      windowStart: "2026-07-01T00:00:00.000Z",
+      windowEnd: "2026-07-03T00:00:00.000Z",
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 0,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "history_partial"
+    });
+    expect(result.firstHopBlacklistCoverage.incompleteReason).toMatch(/directed principal groups/i);
+
+    await expect(buildDirectHardEvidenceSnapshots({
+      addresses: ["TLegacy0"],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    })).rejects.toThrow(/window/i);
+
+    await expect(buildDirectHardEvidenceSnapshots({
+      addresses: ["TLegacy0"],
+      windowStart: new Date("2026-07-03T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-01T00:00:00.000Z"),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    })).rejects.toThrow(/window/i);
   });
 
   it("rejects malformed or conflicting direct transfer rows instead of producing clean coverage", () => {

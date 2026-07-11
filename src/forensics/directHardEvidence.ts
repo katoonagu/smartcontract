@@ -291,16 +291,29 @@ function buildBlacklistFact(input: {
   const timeline = input.restriction.blacklistTimeline ?? null;
   const events = sortedVerifiedTimeline(timeline?.events ?? []);
   const timelineComplete = completeActiveTimeline(timeline);
+  const repeatedAdditionLifecycle = events.filter((event) => event.eventKind === "added").length > 1;
   const amounts: Record<TransferTiming, bigint> = { before: 0n, active: 0n, unknown: 0n };
   const hashes: Record<TransferTiming, Set<string>> = {
     before: new Set<string>(),
     active: new Set<string>(),
     unknown: new Set<string>()
   };
+  const transfersByTxHash = new Map<string, DirectPrincipalCounterpartyGroup["principalTransfers"]>();
   for (const transfer of input.group.principalTransfers) {
-    const timing = transferTiming(transfer.occurredAt, events, timelineComplete);
-    amounts[timing] += transfer.amountRaw;
-    hashes[timing].add(transfer.txHash);
+    const transfers = transfersByTxHash.get(transfer.txHash) ?? [];
+    transfers.push(transfer);
+    transfersByTxHash.set(transfer.txHash, transfers);
+  }
+  for (const [txHash, transfers] of transfersByTxHash) {
+    const occurredAtValues = new Set(transfers.map((transfer) => transfer.occurredAt));
+    const transferTimings = new Set(transfers.map((transfer) =>
+      transferTiming(transfer.occurredAt, events, timelineComplete)
+    ));
+    const timing = repeatedAdditionLifecycle || occurredAtValues.size !== 1 || transferTimings.size !== 1
+      ? "unknown"
+      : [...transferTimings][0];
+    amounts[timing] += transfers.reduce((sum, transfer) => sum + transfer.amountRaw, 0n);
+    hashes[timing].add(txHash);
   }
   const temporalRelation = hashes.unknown.size > 0
     ? "unknown" as const
@@ -376,12 +389,24 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     options?: { includeEventTimeline?: boolean }
   ): Promise<RestrictionWithTimeline>;
 }): Promise<DirectHardEvidenceResult> {
+  const hasDirectedPrincipalGroups = input.principalGroups !== undefined;
+  const directTransferCoverage = hasDirectedPrincipalGroups
+    ? input.directTransferCoverage ?? "partial"
+    : "partial";
   if (
-    input.principalGroups &&
-    input.directTransferCoverage !== "complete" &&
+    directTransferCoverage !== "complete" &&
     (input.windowStart === null || input.windowStart === undefined || input.windowEnd === null || input.windowEnd === undefined)
   ) {
     throw new Error("Partial first-hop coverage requires explicit checked-window bounds.");
+  }
+  const checkedWindowStart = directTransferCoverage === "complete" ? null : isoOrNull(input.windowStart);
+  const checkedWindowEnd = directTransferCoverage === "complete" ? null : isoOrNull(input.windowEnd);
+  if (
+    checkedWindowStart !== null &&
+    checkedWindowEnd !== null &&
+    Date.parse(checkedWindowStart) > Date.parse(checkedWindowEnd)
+  ) {
+    throw new Error("First-hop checked-window start must not be after its end.");
   }
   const principalGroups = input.principalGroups ?? [];
   const materialGroups = principalGroups.filter((group) => group.material);
@@ -447,7 +472,6 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       ? "local_only_partial"
       : liveAddresses.size >= addresses.length ? "complete" : "live_budget_exhausted";
   const snapshotsByAddress = new Map(snapshots.map((snapshot) => [normalizedAddress(snapshot.address), snapshot]));
-  const directTransferCoverage = input.directTransferCoverage ?? "partial";
   const blacklistFacts = materialGroups.flatMap((group) => {
     const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction as RestrictionWithTimeline | null | undefined;
     return restriction?.isBlacklisted
@@ -472,39 +496,43 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     }));
   });
   const materialCounterpartyCount = materialAddresses.length;
-  const checkedMaterialCounterpartyCount = checkedAddresses.size;
-  const failedMaterialCounterpartyCount = failedAddresses.size;
+  const checkedMaterialCounterpartyCount = hasDirectedPrincipalGroups ? checkedAddresses.size : 0;
+  const failedMaterialCounterpartyCount = hasDirectedPrincipalGroups ? failedAddresses.size : 0;
   const uncheckedMaterialCounterpartyCount = Math.max(
     0,
     materialCounterpartyCount - checkedMaterialCounterpartyCount - failedMaterialCounterpartyCount
   );
   const completeTimelineFactCount = blacklistFacts.filter((fact) => fact.timelineCoverage === "complete").length;
   const partialTimelineFactCount = blacklistFacts.filter((fact) => fact.timelineCoverage === "partial").length;
-  const blacklistCheckCoverage = !input.getUsdtRestrictionStatus
-    ? "running" as const
-    : failedMaterialCounterpartyCount > 0
-      ? "provider_failed" as const
-      : uncheckedMaterialCounterpartyCount > 0
-        ? "budget_exhausted" as const
-        : directTransferCoverage === "partial" || partialTimelineFactCount > 0
-          ? "history_partial" as const
-          : "complete" as const;
-  const incompleteReason = blacklistCheckCoverage === "complete"
-    ? null
-    : blacklistCheckCoverage === "running"
-      ? "USDT blacklist provider is not available for this run."
-      : blacklistCheckCoverage === "provider_failed"
-        ? `${failedMaterialCounterpartyCount} material counterparty blacklist lookup(s) failed.`
-        : blacklistCheckCoverage === "budget_exhausted"
-          ? `${uncheckedMaterialCounterpartyCount} material counterparty blacklist lookup(s) were outside the live budget.`
-          : directTransferCoverage === "partial"
-            ? "Direct principal transfer history is partial."
-            : "A confirmed adverse blacklist fact has only partial timeline history.";
+  const blacklistCheckCoverage = !hasDirectedPrincipalGroups
+    ? "history_partial" as const
+    : !input.getUsdtRestrictionStatus
+      ? "running" as const
+      : failedMaterialCounterpartyCount > 0
+        ? "provider_failed" as const
+        : uncheckedMaterialCounterpartyCount > 0
+          ? "budget_exhausted" as const
+          : directTransferCoverage === "partial" || partialTimelineFactCount > 0
+            ? "history_partial" as const
+            : "complete" as const;
+  const incompleteReason = !hasDirectedPrincipalGroups
+    ? "Directed principal groups were not supplied; legacy snapshots are excluded from first-hop decision coverage."
+    : blacklistCheckCoverage === "complete"
+      ? null
+      : blacklistCheckCoverage === "running"
+        ? "USDT blacklist provider is not available for this run."
+        : blacklistCheckCoverage === "provider_failed"
+          ? `${failedMaterialCounterpartyCount} material counterparty blacklist lookup(s) failed.`
+          : blacklistCheckCoverage === "budget_exhausted"
+            ? `${uncheckedMaterialCounterpartyCount} material counterparty blacklist lookup(s) were outside the live budget.`
+            : directTransferCoverage === "partial"
+              ? "Direct principal transfer history is partial."
+              : "A confirmed adverse blacklist fact has only partial timeline history.";
   const firstHopBlacklistCoverage: FirstHopBlacklistCoverage = {
-    requiredForDecision: input.requiredForDecision ?? materialCounterpartyCount > 0,
+    requiredForDecision: hasDirectedPrincipalGroups && (input.requiredForDecision ?? materialCounterpartyCount > 0),
     scope: directTransferCoverage === "complete" ? "all_time" : "checked_window",
-    windowStart: directTransferCoverage === "complete" ? null : isoOrNull(input.windowStart),
-    windowEnd: directTransferCoverage === "complete" ? null : isoOrNull(input.windowEnd),
+    windowStart: checkedWindowStart,
+    windowEnd: checkedWindowEnd,
     directPrincipalTransferCoverage: directTransferCoverage,
     materialCounterpartyCount,
     checkedMaterialCounterpartyCount,
