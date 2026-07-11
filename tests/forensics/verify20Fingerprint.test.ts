@@ -11,6 +11,13 @@ const signatures = {
   f2fde38b: "transferOwnership(address)"
 } as const;
 
+const methodNames = {
+  "5082dd12": "Verify20",
+  fc61dd23: "Verify10",
+  ea4418d9: "withdrawAllTrxTo",
+  f2fde38b: "transferOwnership"
+} as const;
+
 function exactProfile(): Verify20FingerprintInput {
   return {
     methodMap: { ...signatures },
@@ -121,7 +128,7 @@ describe("Verify20 fingerprint", () => {
 
     expect(collision).toMatchObject({
       matched: false,
-      missingSelectors: [],
+      missingSelectors: ["5082dd12"],
       mismatchedSelectors: ["5082dd12", "fc61dd23"]
     });
   });
@@ -149,6 +156,75 @@ describe("Verify20 fingerprint", () => {
       matched: false,
       selectors: [],
       blockedByTrustedService: false
+    });
+  });
+
+  it.each(["selector-only", "unknown", "name-only"] as const)(
+    "requires a full signature for every selector when top-method metadata is %s",
+    (metadata) => {
+      const topMethods = Object.keys(signatures).map((methodId) => ({
+        methodId,
+        signature: null,
+        method: metadata === "selector-only"
+          ? undefined
+          : metadata === "unknown"
+            ? "unknown"
+            : methodNames[methodId as keyof typeof methodNames],
+        count: 1,
+        ratio: 0.25
+      }));
+
+      expect(detectVerify20Fingerprint({ methodMap: {}, topMethods })).toEqual({
+        matched: false,
+        selectors: [],
+        blockedByTrustedService: false,
+        missingSelectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+        mismatchedSelectors: []
+      });
+    }
+  );
+
+  it("uses full-signature content regardless of which profile field supplied it", () => {
+    const result = detectVerify20Fingerprint({
+      methodMap: { ...methodNames },
+      topMethods: Object.entries(signatures).map(([methodId, signature]) => ({
+        methodId,
+        signature: methodNames[methodId as keyof typeof methodNames],
+        method: signature,
+        count: 1,
+        ratio: 0.25
+      }))
+    });
+
+    expect(result).toEqual({
+      matched: true,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: false,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    });
+  });
+
+  it("keeps plain provider names neutral beside exact signatures but blocks conflicting full signatures", () => {
+    const topMethods: NonNullable<Verify20FingerprintInput["topMethods"]> = Object.entries(methodNames).map(([methodId, method]) => ({
+      methodId,
+      signature: null,
+      method,
+      count: 1,
+      ratio: 0.25
+    }));
+    const withPlainNames = detectVerify20Fingerprint({ methodMap: { ...signatures }, topMethods });
+
+    expect(withPlainNames.matched).toBe(true);
+
+    topMethods[0] = {
+      ...topMethods[0],
+      method: "Verify20(address,uint256)"
+    };
+    expect(detectVerify20Fingerprint({ methodMap: { ...signatures }, topMethods })).toMatchObject({
+      matched: false,
+      missingSelectors: [],
+      mismatchedSelectors: ["5082dd12"]
     });
   });
 });

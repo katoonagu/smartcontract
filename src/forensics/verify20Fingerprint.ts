@@ -22,11 +22,6 @@ export type Verify20FingerprintResult = {
   mismatchedSelectors: RequiredSelector[];
 };
 
-type MethodObservation = {
-  value: string;
-  requireFullSignature: boolean;
-};
-
 function normalizeSelector(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -35,58 +30,48 @@ function normalizeSelector(value: unknown): string | null {
 }
 
 function addObservation(
-  observations: Map<string, MethodObservation[]>,
+  observations: Map<string, string[]>,
   selector: string,
-  value: unknown,
-  requireFullSignature: boolean
+  value: unknown
 ): void {
   if (typeof value !== "string" || !value.trim()) return;
   const current = observations.get(selector) ?? [];
-  current.push({ value: value.trim().toLowerCase(), requireFullSignature });
+  current.push(value.trim().toLowerCase());
   observations.set(selector, current);
 }
 
-function observationContradicts(
-  selector: RequiredSelector,
-  expectedSignature: string,
-  observation: MethodObservation
-): boolean {
-  const expected = expectedSignature.toLowerCase();
-  if (observation.value === expected) return false;
-  if (normalizeSelector(observation.value) === selector || observation.value === "unknown") return false;
-  if (!observation.requireFullSignature && observation.value === expected.slice(0, expected.indexOf("("))) return false;
-  return true;
+function isFullSignature(observation: string): boolean {
+  return observation.includes("(");
 }
 
 export function detectVerify20Fingerprint(input: Verify20FingerprintInput): Verify20FingerprintResult {
-  const observedSelectors = new Set<string>();
-  const observations = new Map<string, MethodObservation[]>();
+  const observations = new Map<string, string[]>();
 
   for (const [rawSelector, signature] of Object.entries(input.methodMap ?? {})) {
     const selector = normalizeSelector(rawSelector);
     if (!selector) continue;
-    observedSelectors.add(selector);
-    addObservation(observations, selector, signature, true);
+    addObservation(observations, selector, signature);
   }
 
   for (const method of input.topMethods ?? []) {
     const selector = normalizeSelector(method.methodId);
     if (!selector) continue;
-    observedSelectors.add(selector);
-    addObservation(observations, selector, method.signature, true);
-    addObservation(observations, selector, method.method, false);
+    addObservation(observations, selector, method.signature);
+    addObservation(observations, selector, method.method);
   }
 
   const selectors = REQUIRED_METHODS
-    .filter(({ selector }) => observedSelectors.has(selector))
+    .filter(({ selector, signature }) =>
+      (observations.get(selector) ?? []).some((observation) => observation === signature.toLowerCase())
+    )
     .map(({ selector }) => selector);
   const missingSelectors = REQUIRED_METHODS
-    .filter(({ selector }) => !observedSelectors.has(selector))
+    .filter(({ selector }) => !selectors.includes(selector))
     .map(({ selector }) => selector);
   const mismatchedSelectors = REQUIRED_METHODS
     .filter(({ selector, signature }) =>
       (observations.get(selector) ?? []).some((observation) =>
-        observationContradicts(selector, signature, observation)
+        isFullSignature(observation) && observation !== signature.toLowerCase()
       )
     )
     .map(({ selector }) => selector);
