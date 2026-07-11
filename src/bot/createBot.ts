@@ -3483,22 +3483,24 @@ function buildUnifiedWalletNarrativeEvidence(
   };
   const built = buildWalletNarrativeEvidence(evidence);
   const fastFact = dominantFastNarrativeFact(input, built.facts);
-  return fastFact ? { ...built, facts: [...built.facts, fastFact] } : built;
+  if (!fastFact) return built;
+  if (input.unifiedRisk.matrixScore.winningRow !== "behavior_only_prior") {
+    return { ...built, facts: [...built.facts, fastFact] };
+  }
+  const hardFacts = built.facts.filter((fact) =>
+    fact.proofStrength === "exact" || fact.proofStrength === "strong"
+  );
+  const secondary = built.facts
+    .filter((fact) => fact.proofStrength !== "exact" && fact.proofStrength !== "strong")
+    .sort((left, right) =>
+      (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER) ||
+      left.id.localeCompare(right.id)
+    )[0];
+  return {
+    ...built,
+    facts: [...hardFacts, fastFact, ...(secondary ? [secondary] : [])]
+  };
 }
-
-const strongerThanFastBehavior = new Set<NarrativeFact["kind"]>([
-  "usdt_blacklist",
-  "direct_counterparty_blacklist",
-  "approval_drain",
-  "direct_counterparty_sanction",
-  "direct_counterparty_exact_label",
-  "sanctioned_source",
-  "verify20_template",
-  "bridge_route",
-  "unknown_contract",
-  "risky_counterparty",
-  "collector"
-]);
 
 function dominantFastNarrativeFact(
   input: UnifiedAddressFinalReportInput & { unifiedRisk: UnifiedWalletRiskResult },
@@ -3524,11 +3526,6 @@ function dominantFastNarrativeFact(
     (reason.code === "forensic_approval_drain_provenance" || reason.code === "internal_label_approval_drain_proximity") &&
     existingFacts.some((fact) => fact.kind === "approval_drain")
   ) return null;
-  if (
-    winner.row === "behavior_only_prior" &&
-    existingFacts.some((fact) => strongerThanFastBehavior.has(fact.kind))
-  ) return null;
-
   return {
     id: `fast-subject:${reason.code}`,
     kind: copy.kind,
@@ -3607,6 +3604,46 @@ function fastNarrativeCopy(
       proofStrength: "context",
       ru: "Кошелёк получает средства и вскоре переводит их дальше. Это похоже на транзитное движение денег.",
       en: "The wallet receives funds and sends them onward soon afterward. This looks like transit flow."
+    };
+  }
+  if (code === "address_behavior_large_inflow_preserved_outflow") {
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: "Кошелёк получил значительное поступление и перевёл дальше большую часть суммы. Так может работать транзитный или операционный кошелёк.",
+      en: "The wallet received a material inflow and sent most of it onward. This can match a transit or operational wallet."
+    };
+  }
+  if (code === "address_behavior_drain_to_service_infrastructure") {
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: "Кошелёк направил значительную часть поступивших средств в сервисную инфраструктуру. Нужна ручная проверка назначения перевода.",
+      en: "The wallet sent a material share of received funds into service infrastructure. Review the transfer purpose manually."
+    };
+  }
+  if (code === "address_behavior_high_volume_transit" || code === "address_behavior_fan_in_fan_out") {
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: "Через кошелёк проходит много входящих и исходящих переводов. Это похоже на транзитный или операционный кошелёк.",
+      en: "Many incoming and outgoing transfers pass through the wallet. It looks like a transit or operational wallet."
+    };
+  }
+  if (code === "address_behavior_collector_like_wallet") {
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: "Кошелёк собирает поступления и переводит средства дальше. Это похоже на кошелёк-сборщик или операционный кошелёк.",
+      en: "The wallet collects incoming funds and sends them onward. It looks like a collector or operational wallet."
+    };
+  }
+  if (code === "address_behavior_large_outgoing_concentration" || code === "address_behavior_top_counterparty_concentration") {
+    return {
+      kind: "risky_counterparty",
+      proofStrength: "context",
+      ru: "Большая часть исходящих средств направляется основным получателям. Это концентрация потока, которую нужно проверить вручную.",
+      en: "A large share of outgoing funds goes to the main recipients. This flow concentration requires manual review."
     };
   }
   if (code === "forensic_address_behavior") {

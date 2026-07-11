@@ -4014,6 +4014,151 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Жёсткое доказательство");
   });
 
+  it.each([
+    ["address_behavior_deposit_then_drain", "Кошелёк получает средства и вскоре переводит их дальше"],
+    ["address_behavior_fast_post_deposit_exit", "Кошелёк получает средства и вскоре переводит их дальше"],
+    ["address_behavior_large_inflow_preserved_outflow", "Кошелёк получил значительное поступление и перевёл дальше большую часть суммы"],
+    ["address_behavior_drain_to_service_infrastructure", "Кошелёк направил значительную часть поступивших средств в сервисную инфраструктуру"],
+    ["address_behavior_high_volume_transit", "Через кошелёк проходит много входящих и исходящих переводов"],
+    ["address_behavior_fan_in_fan_out", "Через кошелёк проходит много входящих и исходящих переводов"],
+    ["address_behavior_collector_like_wallet", "Кошелёк собирает поступления и переводит средства дальше"],
+    ["address_behavior_large_outgoing_concentration", "Большая часть исходящих средств направляется основным получателям"],
+    ["address_behavior_top_counterparty_concentration", "Большая часть исходящих средств направляется основным получателям"]
+  ])("explains canonical Fast behavior %s without raw fields", (code, expected) => {
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest(),
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        launderingPatternScore: 90,
+        dominantRiskType: "laundering_pattern",
+        reasons: [{
+          code,
+          message: "RAW FAST MESSAGE MUST NOT LEAK",
+          scoreImpact: 90,
+          evidenceRef: `fast-evidence:${code}`
+        }]
+      }),
+      locale: "ru"
+    });
+
+    expectCompactScoredNarrative(text, 59);
+    expect(text).toContain(expected);
+    expect(text).not.toContain(code);
+    expect(text).not.toContain("RAW FAST MESSAGE MUST NOT LEAK");
+  });
+
+  it("keeps the winning Fast behavior reason beside secondary bridge, collector, and risky-counterparty facts", () => {
+    const deepReport = freshNarrativeDeepReportForTest({
+      boundaryExposureProfiles: [boundaryExposureProfile()],
+      addressBehaviorProfiles: [{
+        subjectAddress: walletAddress,
+        incomingVolumeRaw: "100000000000",
+        outgoingVolumeRaw: "90000000000",
+        incomingTxCount: 5,
+        outgoingTxCount: 5,
+        uniqueIncomingCounterparties: 3,
+        uniqueOutgoingCounterparties: 3,
+        largestIncomingRaw: "30000000000",
+        largestOutgoingRaw: "40000000000",
+        topOutgoingCounterpartyAddress: secondWalletAddress,
+        topOutgoingCounterpartyRaw: "50000000000",
+        topOutgoingCounterpartyTxCount: 2,
+        topOutgoingCounterpartyRatio: 0.55,
+        inflowToOutflowRatio: 0.9,
+        drainToServiceRatio: 0,
+        timeToFirstOutgoingMs: 60_000,
+        timeToFirstServiceExitMs: null,
+        depositThenDrainScore: 0,
+        transitScore: 10,
+        dampenerScore: 0,
+        features: [{
+          code: "address_behavior_collector_like_wallet",
+          label: "RAW COLLECTOR MESSAGE MUST NOT LEAK",
+          scoreImpact: 10
+        }]
+      }],
+      operationalFlowProfiles: [operationalFlowProfile({
+        incomingVolumeRaw: "100000000000",
+        outgoingVolumeRaw: "10000000000",
+        inflowToOutflowRatio: 0.1,
+        topOutgoingCounterparties: [{
+          address: "THTX11111111111111111111111111111111",
+          direction: "outgoing",
+          volumeRaw: "10000000000",
+          txCount: 1,
+          volumeRatio: 1,
+          category: "cex",
+          identity: "HTX",
+          isTerminalLiquidity: true,
+          isHtxHuobi: true
+        }],
+        bridgeDexRouterOutgoingRatio: 0,
+        unknownContractOutgoingRatio: 0
+      })],
+      directCounterpartyInteractionProfiles: [{
+        subjectAddress: walletAddress,
+        direction: "inbound",
+        counterpartyAddress: secondWalletAddress,
+        volumeRaw: "10000000",
+        volumeRatio: 0.1,
+        txCount: 1,
+        firstSeen: "2026-05-10T01:00:00.000Z",
+        lastSeen: "2026-05-10T01:00:00.000Z",
+        txHashes: ["tx-secondary-risky"],
+        transfers: [{
+          txHash: "tx-secondary-risky",
+          fromAddress: secondWalletAddress,
+          toAddress: walletAddress,
+          amountRaw: "10000000",
+          timestamp: "2026-05-10T01:00:00.000Z",
+          method: "transfer",
+          edgeType: "normal_transfer"
+        }],
+        serviceCategory: null,
+        identity: null,
+        snapshot: {
+          address: secondWalletAddress,
+          riskScore: 70,
+          riskLevel: "HIGH",
+          source: "fast_address_check",
+          evidenceClass: "counterparty_behavior_context",
+          reasons: [],
+          partialNotes: []
+        },
+        interactionWeight: 0.1,
+        scoreContribution: 10,
+        evidenceClass: "counterparty_behavior_context",
+        skippedReason: null
+      }]
+    });
+    const code = "address_behavior_high_volume_transit";
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: walletAddress,
+      whereReport: whereIsMoneyReportForTest(),
+      deepReport,
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        launderingPatternScore: 90,
+        dominantRiskType: "laundering_pattern",
+        reasons: [{
+          code,
+          message: "RAW WINNER MUST NOT LEAK",
+          scoreImpact: 90,
+          evidenceRef: "fast-evidence:high-volume-transit"
+        }]
+      }),
+      locale: "ru"
+    });
+
+    expectCompactScoredNarrative(text, 59);
+    expect(text).toContain("Через кошелёк проходит много входящих и исходящих переводов");
+    expect(text).not.toContain(code);
+    expect(text).not.toContain("RAW WINNER MUST NOT LEAK");
+  });
+
   it("explains an exact Fast internal label for the checked address without leaking raw fields", () => {
     const text = formatUnifiedAddressFinalReportForTest({
       address: walletAddress,
