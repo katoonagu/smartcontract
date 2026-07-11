@@ -1,3 +1,4 @@
+import { TronWeb } from "tronweb";
 import { describe, expect, it, vi } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import { TronscanClient } from "../../src/tron/tronClient";
@@ -25,6 +26,79 @@ function tronGridTransfer(transactionId: string, value: string): Record<string, 
     from: "TSource111111111111111111111111111111",
     to: "TSubject111111111111111111111111111111",
     value
+  };
+}
+
+const BLACKLIST_ADDRESS = "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm";
+const OTHER_ADDRESS = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
+const ADDED_BLACKLIST_TOPIC = TronWeb.sha3("AddedBlackList(address)");
+const REMOVED_BLACKLIST_TOPIC = TronWeb.sha3("RemovedBlackList(address)");
+
+function blacklistAddressHex(address = BLACKLIST_ADDRESS): string {
+  return `0x${TronWeb.address.toHex(address).slice(2).toLowerCase()}`;
+}
+
+function blacklistAddressTopic(address = BLACKLIST_ADDRESS): string {
+  return `0x${TronWeb.address.toHex(address).slice(2).padStart(64, "0").toLowerCase()}`;
+}
+
+function blacklistProviderRow(
+  txHash: string,
+  time: number,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    blackAddress: BLACKLIST_ADDRESS,
+    tokenName: "USDT",
+    num: "0",
+    time,
+    transHash: txHash,
+    contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+    ...overrides
+  };
+}
+
+function confirmedBlacklistTransaction(
+  txHash: string,
+  time: number,
+  block: number,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    hash: txHash,
+    timestamp: time * 1000,
+    block,
+    confirmed: true,
+    revert: false,
+    contractRet: "SUCCESS",
+    // Multisig wrappers may target another contract; the verified event is authoritative.
+    contractData: { contract_address: OTHER_ADDRESS },
+    ...overrides
+  };
+}
+
+function blacklistContractEvent(
+  txHash: string,
+  time: number,
+  block: number,
+  logIndex: number,
+  kind: "added" | "removed" = "added",
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const added = kind === "added";
+  return {
+    transaction_id: txHash,
+    block_number: block,
+    block_timestamp: time * 1000,
+    event_index: logIndex,
+    event_name: added ? "AddedBlackList" : "RemovedBlackList",
+    event: added ? "AddedBlackList(address)" : "RemovedBlackList(address)",
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    result: { _user: blacklistAddressHex() },
+    topics: [added ? ADDED_BLACKLIST_TOPIC : REMOVED_BLACKLIST_TOPIC, blacklistAddressTopic()],
+    confirmed: true,
+    contractRet: "SUCCESS",
+    ...overrides
   };
 }
 
@@ -1008,7 +1082,278 @@ describe("TronscanClient", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it("reads TRON USDT blacklist state and balance from the contract", async () => {
+  it("paginates and verifies the complete address-scoped USDT blacklist timeline", async () => {
+    const rows = Array.from({ length: 21 }, (_, index) => {
+      const txHash = (index + 1).toString(16).padStart(64, "0");
+      return {
+        txHash,
+        time: 1_700_000_000 + index,
+        block: 60_000_000 + index,
+        logIndex: index % 2,
+        kind: (index % 2 === 0 ? "added" : "removed") as "added" | "removed"
+      };
+    });
+    const byHash = new Map(rows.map((row) => [row.txHash, row]));
+    const newestFirst = [...rows].reverse();
+    const fetchFn = vi.fn(async (input: URL | RequestInfo) => {
+      const url = input as URL;
+      if (url.pathname === "/api/stableCoin/blackList") {
+        const start = Number(url.searchParams.get("start"));
+        const limit = Number(url.searchParams.get("limit"));
+        return jsonResponse({
+          total: rows.length,
+          data: newestFirst.slice(start, start + limit).map((row) => blacklistProviderRow(row.txHash, row.time))
+        });
+      }
+      if (url.pathname === "/api/transaction-info") {
+        const row = byHash.get(String(url.searchParams.get("hash")));
+        return jsonResponse(row ? confirmedBlacklistTransaction(row.txHash, row.time, row.block) : {});
+      }
+      const txHash = url.pathname.match(/^\/v1\/transactions\/([0-9a-f]{64})\/events$/)?.[1];
+      const row = txHash ? byHash.get(txHash) : null;
+      return jsonResponse({
+        data: row ? [blacklistContractEvent(row.txHash, row.time, row.block, row.logIndex, row.kind)] : []
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      apiKey: "tronscan-secret",
+      fullNodeApiKey: "fullnode-secret",
+      fetchFn
+    });
+
+    const result = await client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS, {
+      limit: 20,
+      currentState: true
+    });
+
+    expect(result).toEqual({
+      events: rows.map((row) => ({
+        eventKind: row.kind,
+        occurredAt: new Date(row.time * 1000).toISOString(),
+        txHash: row.txHash,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        blockNumber: row.block,
+        logIndex: row.logIndex,
+        verification: "verified_contract_log"
+      })),
+      pagination: "complete",
+      failureReason: null
+    });
+    const pageCalls = (fetchFn.mock.calls as unknown as Array<[URL, RequestInit]>)
+      .filter(([url]) => url.pathname === "/api/stableCoin/blackList");
+    expect(pageCalls.map(([url]) => url.searchParams.get("start"))).toEqual(["0", "20"]);
+    for (const [url, init] of pageCalls) {
+      expect(url.searchParams.get("blackAddress")).toBe(BLACKLIST_ADDRESS);
+      expect(url.searchParams.get("tokenAddress")).toBe(TRON_USDT_CONTRACT_ADDRESS);
+      expect(url.searchParams.get("sort")).toBe("2");
+      expect(url.searchParams.get("direction")).toBe("2");
+      expect(url.searchParams.get("limit")).toBe("20");
+      expect(headerValue(init.headers, "TRON-PRO-API-KEY")).toBe("tronscan-secret");
+    }
+    const eventCalls = (fetchFn.mock.calls as unknown as Array<[URL, RequestInit]>)
+      .filter(([url]) => url.pathname.endsWith("/events"));
+    expect(eventCalls).toHaveLength(21);
+    expect(eventCalls.every(([, init]) => headerValue(init.headers, "TRON-PRO-API-KEY") === "fullnode-secret")).toBe(true);
+  });
+
+  it("bounds the blacklist provider page size to its documented maximum", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({ total: 0, data: [] }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    await expect(client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS, { limit: 500 })).resolves.toEqual({
+      events: [],
+      pagination: "complete",
+      failureReason: null
+    });
+    const [url] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.searchParams.get("limit")).toBe("100");
+  });
+
+  it.each([
+    ["address_mismatch", { blackAddress: OTHER_ADDRESS }],
+    ["wrong_contract", { contractAddress: OTHER_ADDRESS }]
+  ] as const)("returns partial %s evidence for a mismatched provider row", async (failureReason, overrides) => {
+    const txHash = "a".repeat(64);
+    const fetchFn = vi.fn(async () => jsonResponse({
+      total: 1,
+      data: [blacklistProviderRow(txHash, 1_700_000_000, overrides)]
+    }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    await expect(client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS)).resolves.toEqual({
+      events: [],
+      pagination: "partial",
+      failureReason
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns partial transaction_unconfirmed evidence when a listed transaction is not final", async () => {
+    const txHash = "b".repeat(64);
+    const time = 1_700_000_001;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ total: 1, data: [blacklistProviderRow(txHash, time)] }))
+      .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(txHash, time, 60_000_001, { confirmed: false })));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    await expect(client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS)).resolves.toEqual({
+      events: [],
+      pagination: "partial",
+      failureReason: "transaction_unconfirmed"
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns partial event_log_unverified evidence for a wrong transaction-scoped log", async () => {
+    const txHash = "c".repeat(64);
+    const time = 1_700_000_002;
+    const block = 60_000_002;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ total: 1, data: [blacklistProviderRow(txHash, time)] }))
+      .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(txHash, time, block)))
+      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(txHash, time, block, 0, "added", {
+        contract_address: OTHER_ADDRESS
+      })] }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn
+    });
+
+    await expect(client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS)).resolves.toEqual({
+      events: [],
+      pagination: "partial",
+      failureReason: "event_log_unverified"
+    });
+  });
+
+  it("uses verified block and log order for removal and re-add events sharing one Unix second", async () => {
+    const time = 1_700_000_003;
+    const history = [
+      { txHash: "d".repeat(64), block: 60_000_003, logIndex: 0, kind: "added" as const },
+      { txHash: "e".repeat(64), block: 60_000_004, logIndex: 1, kind: "removed" as const },
+      { txHash: "f".repeat(64), block: 60_000_004, logIndex: 2, kind: "added" as const }
+    ];
+    const byHash = new Map(history.map((item) => [item.txHash, item]));
+    const fetchFn = vi.fn(async (input: URL | RequestInfo) => {
+      const url = input as URL;
+      if (url.pathname === "/api/stableCoin/blackList") {
+        return jsonResponse({ total: 3, data: [...history].reverse().map((item) => blacklistProviderRow(item.txHash, time)) });
+      }
+      if (url.pathname === "/api/transaction-info") {
+        const item = byHash.get(String(url.searchParams.get("hash")))!;
+        return jsonResponse(confirmedBlacklistTransaction(item.txHash, time, item.block));
+      }
+      const txHash = url.pathname.split("/")[3];
+      const item = byHash.get(txHash)!;
+      return jsonResponse({ data: [blacklistContractEvent(item.txHash, time, item.block, item.logIndex, item.kind)] });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn
+    });
+
+    const result = await client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS, { currentState: true });
+
+    expect(result.pagination).toBe("complete");
+    expect(result.events.map((event) => [event.eventKind, event.blockNumber, event.logIndex])).toEqual([
+      ["added", 60_000_003, 0],
+      ["removed", 60_000_004, 1],
+      ["added", 60_000_004, 2]
+    ]);
+  });
+
+  it("rejects truly ambiguous same-timestamp event ordering", async () => {
+    const time = 1_700_000_004;
+    const firstHash = "1".repeat(64);
+    const secondHash = "2".repeat(64);
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ total: 2, data: [
+        blacklistProviderRow(secondHash, time),
+        blacklistProviderRow(firstHash, time)
+      ] }))
+      .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(secondHash, time, 60_000_005)))
+      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(secondHash, time, 60_000_005, 0, "removed")] }))
+      .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(firstHash, time, 60_000_005)))
+      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(firstHash, time, 60_000_005, 0, "added")] }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn
+    });
+
+    await expect(client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS)).resolves.toMatchObject({
+      pagination: "partial",
+      failureReason: "event_log_unverified"
+    });
+  });
+
+  it("keeps current contract state authoritative when reconstructed history disagrees", async () => {
+    const txHash = "3".repeat(64);
+    const time = 1_700_000_005;
+    const block = 60_000_006;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ total: 1, data: [blacklistProviderRow(txHash, time)] }))
+      .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(txHash, time, block)))
+      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(txHash, time, block, 0, "removed")] }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn
+    });
+
+    await expect(client.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS, { currentState: true })).resolves.toEqual({
+      events: [{
+        eventKind: "removed",
+        occurredAt: new Date(time * 1000).toISOString(),
+        txHash,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        blockNumber: block,
+        logIndex: 0,
+        verification: "verified_contract_log"
+      }],
+      pagination: "partial",
+      failureReason: "state_timeline_inconsistent"
+    });
+  });
+
+  it("never turns incomplete pagination or exhausted provider errors into an empty complete timeline", async () => {
+    const incompleteFetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ total: 2, data: [] }));
+    const incompleteClient = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn: incompleteFetch });
+    await expect(incompleteClient.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS)).resolves.toEqual({
+      events: [],
+      pagination: "partial",
+      failureReason: "provider_failed"
+    });
+
+    const failedFetch = vi.fn(async () => jsonResponse({ error: "unavailable" }, { status: 503 }));
+    const failedClient = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: failedFetch,
+      retryAttempts: 1,
+      retryBaseDelayMs: 0
+    });
+    await expect(failedClient.getUsdtBlacklistTimeline(BLACKLIST_ADDRESS)).resolves.toEqual({
+      events: [],
+      pagination: "partial",
+      failureReason: "provider_failed"
+    });
+    expect(failedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads TRON USDT blacklist state, balance, and verified timeline from authoritative sources", async () => {
+    const txHash = "4".repeat(64);
+    const time = 1_779_518_958;
+    const block = 82_950_110;
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({
@@ -1020,18 +1365,11 @@ describe("TronscanClient", () => {
         constant_result: ["000000000000000000000000000000000000000000000000000002674ff0d3f0"]
       }))
       .mockResolvedValueOnce(jsonResponse({
-        data: [
-          {
-            event_name: "AddedBlackList",
-            transaction_id: "tx-blacklist",
-            block_timestamp: 1_779_518_958_000,
-            block_number: 82_950_110,
-            result: {
-              _user: "0xde997eee7b6e10e9f25cd385d170592b80544e91"
-            }
-          }
-        ]
-      }));
+        total: 1,
+        data: [blacklistProviderRow(txHash, time)]
+      }))
+      .mockResolvedValueOnce(jsonResponse(confirmedBlacklistTransaction(txHash, time, block)))
+      .mockResolvedValueOnce(jsonResponse({ data: [blacklistContractEvent(txHash, time, block, 0)] }));
     const client = new TronscanClient({
       baseUrl: "https://apilist.tronscanapi.com",
       fullNodeBaseUrl: "https://api.trongrid.io",
@@ -1052,11 +1390,16 @@ describe("TronscanClient", () => {
       isBlacklisted: true,
       balanceRaw: "2642746070000",
       evidenceStrength: "exact_contract_state",
-      blacklistEventTxHash: "tx-blacklist",
+      blacklistEventTxHash: txHash,
       blacklistEventTimestamp: "2026-05-23T06:49:18.000Z",
       blacklistEventBlock: 82950110
     });
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(result.blacklistTimeline).toMatchObject({
+      pagination: "complete",
+      failureReason: null,
+      events: [{ eventKind: "added", txHash, blockNumber: block, logIndex: 0 }]
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(5);
     const [blacklistUrl, blacklistInit] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
     expect(blacklistUrl.pathname).toBe("/wallet/triggerconstantcontract");
     expect(headerValue(blacklistInit.headers, "TRON-PRO-API-KEY")).toBe("fullnode-secret");
@@ -1064,9 +1407,36 @@ describe("TronscanClient", () => {
       function_selector: "isBlackListed(address)",
       contract_address: "41a614f803b6fd780986a42c78ec9c7f77e6ded13c"
     });
-    const [eventUrl] = fetchFn.mock.calls[2] as unknown as [URL, RequestInit];
-    expect(eventUrl.pathname).toBe(`/v1/contracts/${TRON_USDT_CONTRACT_ADDRESS}/events`);
-    expect(eventUrl.searchParams.get("event_name")).toBe("AddedBlackList");
+    const [historyUrl] = fetchFn.mock.calls[2] as unknown as [URL, RequestInit];
+    expect(historyUrl.pathname).toBe("/api/stableCoin/blackList");
+    const [eventUrl] = fetchFn.mock.calls[4] as unknown as [URL, RequestInit];
+    expect(eventUrl.pathname).toBe(`/v1/transactions/${txHash}/events`);
+  });
+
+  it("does not fetch a timeline for an inactive current blacklist state", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["0".repeat(64)]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["0".repeat(64)]
+      }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn
+    });
+
+    const result = await client.getUsdtRestrictionStatus(BLACKLIST_ADDRESS, { includeEventTimeline: true });
+
+    expect(result).toMatchObject({ isBlacklisted: false, blacklistTimeline: null });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect((fetchFn.mock.calls as unknown as Array<[URL, RequestInit]>).map(([url]) => url.pathname)).not.toContain(
+      "/api/stableCoin/blackList"
+    );
   });
 
   it("keeps blacklist event lookup out of the default status path", async () => {

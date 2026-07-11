@@ -1,12 +1,29 @@
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { TronScanBlacklistRow, UsdtBlacklistTimelineEvent } from "../types";
+import type { TronScanBlacklistRow, UsdtBlacklistTimeline, UsdtBlacklistTimelineEvent } from "../types";
 
 const ADDED_BLACKLIST_TOPIC = TronWeb.sha3("AddedBlackList(address)").toLowerCase();
 const REMOVED_BLACKLIST_TOPIC = TronWeb.sha3("RemovedBlackList(address)").toLowerCase();
 const TX_HASH_PATTERN = /^[0-9a-f]{64}$/i;
 const MAX_UNIX_SECONDS = 9_999_999_999;
 const TRON_MAINNET_GENESIS_MS = Date.UTC(2018, 5, 25);
+
+type TimelineFailureReason = Exclude<UsdtBlacklistTimeline["failureReason"], null>;
+
+export class BlacklistTimelineValidationError extends Error {
+  constructor(
+    readonly failureReason: TimelineFailureReason,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+export type VerifiedBlacklistTransaction = {
+  txHash: string;
+  timestampMs: number;
+  blockNumber: number;
+};
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -104,18 +121,22 @@ function parseBlacklistRow(value: unknown): TronScanBlacklistRow | null {
 
 export function parseBlacklistRows(rows: unknown, expectedAddress: string): TronScanBlacklistRow[] {
   const address = normalizeTronAddress(expectedAddress);
-  if (!address) throw new TypeError("Expected blacklist address is malformed");
-  if (!Array.isArray(rows)) throw new TypeError("Blacklist rows are malformed");
+  if (!address) throw new BlacklistTimelineValidationError("address_mismatch", "Expected blacklist address is malformed");
+  if (!Array.isArray(rows)) throw new BlacklistTimelineValidationError("provider_failed", "Blacklist rows are malformed");
 
   const byTransaction = new Map<string, TronScanBlacklistRow>();
   for (const value of rows) {
     const row = parseBlacklistRow(value);
-    if (!row) throw new TypeError("Blacklist row is malformed");
-    if (row.blackAddress !== address) throw new Error("Blacklist row address mismatch");
-    if (row.contractAddress !== TRON_USDT_CONTRACT_ADDRESS) throw new Error("Blacklist row contract mismatch");
+    if (!row) throw new BlacklistTimelineValidationError("provider_failed", "Blacklist row is malformed");
+    if (row.blackAddress !== address) {
+      throw new BlacklistTimelineValidationError("address_mismatch", "Blacklist row address mismatch");
+    }
+    if (row.contractAddress !== TRON_USDT_CONTRACT_ADDRESS) {
+      throw new BlacklistTimelineValidationError("wrong_contract", "Blacklist row contract mismatch");
+    }
     const existing = byTransaction.get(row.transHash);
     if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
-      throw new Error("Blacklist row has an ambiguous duplicate transaction");
+      throw new BlacklistTimelineValidationError("provider_failed", "Blacklist row has an ambiguous duplicate transaction");
     }
     byTransaction.set(row.transHash, row);
   }
@@ -241,4 +262,94 @@ export function verifyBlacklistEvent(events: unknown, address: string): UsdtBlac
     .map((event) => verifyEvent(event, expectedAddress))
     .filter((event): event is UsdtBlacklistTimelineEvent => event !== null);
   return verified.length === 1 ? verified[0] : null;
+}
+
+export function verifyBlacklistTransaction(
+  value: unknown,
+  row: TronScanBlacklistRow
+): VerifiedBlacklistTransaction | null {
+  const transaction = objectRecord(value);
+  if (!transaction) return null;
+  const txHash = normalizedTxHash(transaction.hash);
+  const timestampMs = safeInteger(transaction.timestamp);
+  const blockNumber = safeInteger(transaction.block);
+  if (
+    txHash !== row.transHash ||
+    transaction.confirmed !== true ||
+    transaction.revert !== false ||
+    nonEmptyString(transaction.contractRet)?.toUpperCase() !== "SUCCESS" ||
+    timestampMs === null ||
+    timestampMs < TRON_MAINNET_GENESIS_MS ||
+    Math.floor(timestampMs / 1000) !== row.time ||
+    blockNumber === null ||
+    blockNumber < 0
+  ) {
+    return null;
+  }
+  return { txHash, timestampMs, blockNumber };
+}
+
+export function verifyBlacklistEventForRow(
+  events: unknown,
+  address: string,
+  row: TronScanBlacklistRow,
+  transaction: VerifiedBlacklistTransaction
+): UsdtBlacklistTimelineEvent | null {
+  if (!Array.isArray(events)) return null;
+  const normalizedEvents = events.map((value) => {
+    const event = objectRecord(value);
+    if (!event) return value;
+    const receipt = objectRecord(event.receipt);
+    const hasSuccess = hasOwn(event, "contractRet") ||
+      hasOwn(event, "contract_ret") ||
+      (receipt ? hasOwn(receipt, "result") : false);
+    return {
+      ...event,
+      ...(hasOwn(event, "confirmed") ? {} : { confirmed: true }),
+      ...(hasSuccess ? {} : { contractRet: "SUCCESS" })
+    };
+  });
+  const event = verifyBlacklistEvent(normalizedEvents, address);
+  if (!event) return null;
+  if (
+    event.txHash !== row.transHash ||
+    event.blockNumber !== transaction.blockNumber ||
+    Math.floor(Date.parse(event.occurredAt) / 1000) !== row.time ||
+    Date.parse(event.occurredAt) !== transaction.timestampMs
+  ) {
+    return null;
+  }
+  return event;
+}
+
+export function sortBlacklistTimelineEvents(
+  events: readonly UsdtBlacklistTimelineEvent[]
+): UsdtBlacklistTimelineEvent[] | null {
+  const sorted = [...events].sort((left, right) =>
+    (left.blockNumber ?? -1) - (right.blockNumber ?? -1) ||
+    (left.logIndex ?? -1) - (right.logIndex ?? -1)
+  );
+  for (let index = 1; index < sorted.length; index++) {
+    const previous = sorted[index - 1];
+    const current = sorted[index];
+    if (
+      previous.blockNumber === null ||
+      previous.logIndex === null ||
+      current.blockNumber === null ||
+      current.logIndex === null ||
+      Date.parse(previous.occurredAt) > Date.parse(current.occurredAt) ||
+      (
+        previous.txHash !== current.txHash &&
+        previous.blockNumber === current.blockNumber &&
+        previous.logIndex === current.logIndex
+      )
+    ) {
+      return null;
+    }
+  }
+  return sorted;
+}
+
+export function reconstructedBlacklistState(events: readonly UsdtBlacklistTimelineEvent[]): boolean {
+  return events.at(-1)?.eventKind === "added";
 }
