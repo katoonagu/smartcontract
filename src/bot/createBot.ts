@@ -2202,12 +2202,16 @@ function formatWhereIsMoneyPreliminaryReport(
       : null
   });
   if (narrative.diagnosticCode) {
-    options.onPreliminaryDiagnostic?.({
-      code: narrative.diagnosticCode,
-      jobId: job.id,
-      subjectAddress: report.subjectAddress,
-      riskScore: report.riskScore
-    });
+    try {
+      options.onPreliminaryDiagnostic?.({
+        code: narrative.diagnosticCode,
+        jobId: job.id,
+        subjectAddress: report.subjectAddress,
+        riskScore: report.riskScore
+      });
+    } catch {
+      // Delivery diagnostics are best-effort and must not block the user message.
+    }
   }
 
   return telegramHtmlMessage([

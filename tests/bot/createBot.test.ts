@@ -6439,6 +6439,30 @@ describe("bot command and inline UX smoke coverage", () => {
     }]);
   });
 
+  it("keeps preliminary delivery unchanged when the optional diagnostic callback throws", () => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.originPaths = [];
+    report.assessment.sourcePolicyEvidence = [];
+    const baseline = preliminaryDelivery(report, { locale: "ru" });
+    let callbackCalls = 0;
+    let actual: ReturnType<typeof preliminaryDelivery> | undefined;
+
+    expect(() => {
+      actual = preliminaryDelivery(report, {
+        locale: "ru",
+        onPreliminaryDiagnostic: () => {
+          callbackCalls += 1;
+          throw new Error("raw diagnostic callback failure");
+        }
+      });
+    }).not.toThrow();
+
+    expect(callbackCalls).toBe(1);
+    expect(actual).toEqual(baseline);
+    expect(actual?.text).toContain("Предварительный риск не рассчитан");
+    expect(actual?.text).not.toContain("raw diagnostic callback failure");
+  });
+
   it("prefers the explicit English locale and does not leak Russian headings", () => {
     const text = preliminaryDeliveryText(bridgeWhereReportFixture(), { locale: "en" });
 
@@ -6540,20 +6564,26 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toMatch(/Verify20|\/100/);
   });
 
-  it.each(["failed", "mismatched"] as const)(
-    "keeps the standalone Where route for %s DeepCheck",
-    (kind) => {
+  it.each([
+    { name: "failed", status: "failed", subjectAddress: walletAddress },
+    { name: "running subject-mismatched", status: "running", subjectAddress: secondWalletAddress },
+    { name: "completed subject-mismatched", status: "completed", subjectAddress: secondWalletAddress }
+  ] as const)(
+    "keeps the standalone Where route for $name DeepCheck",
+    ({ status, subjectAddress }) => {
       const report = bridgeWhereReportFixture();
       const deepJob = whereIsMoneyJobForTest({
         kind: "address_deep_check",
-        status: kind === "failed" ? "failed" : "running",
-        subjectAddress: kind === "failed" ? report.subjectAddress : secondWalletAddress
+        status,
+        subjectAddress
       });
       const text = plainTelegramText(formatWhereIsMoneyUserDeliveryReport(
         whereIsMoneyJobForTest(), report, "completed", deepJob, { locale: "ru" }
       ).text);
 
       expect(text).not.toContain("предварительный результат");
+      expectCompactNoFinalNarrative(text);
+      expect(text).toMatch(/^⚪ Итог не рассчитан/u);
     }
   );
 
