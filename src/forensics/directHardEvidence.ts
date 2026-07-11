@@ -242,11 +242,28 @@ function uniqueAddresses(addresses: string[]): string[] {
 
 type TransferTiming = "before" | "active" | "unknown";
 
+export function isPersistableUsdtBlacklistTimelineEvent(
+  value: unknown
+): value is UsdtBlacklistTimelineEvent {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Record<string, unknown>;
+  const occurredAt = event.occurredAt;
+  const index = (candidate: unknown): boolean =>
+    candidate === null || typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0;
+  return (event.eventKind === "added" || event.eventKind === "removed") &&
+    typeof occurredAt === "string" &&
+    Number.isFinite(Date.parse(occurredAt)) &&
+    new Date(occurredAt).toISOString() === occurredAt &&
+    typeof event.txHash === "string" && /^[0-9a-f]{64}$/.test(event.txHash) &&
+    event.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
+    index(event.blockNumber) &&
+    index(event.logIndex) &&
+    event.verification === "verified_contract_log";
+}
+
 function sortedVerifiedTimeline(events: UsdtBlacklistTimelineEvent[]): UsdtBlacklistTimelineEvent[] {
   return [...events]
-    .filter((event) => event.verification === "verified_contract_log" &&
-      event.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
-      Number.isFinite(Date.parse(event.occurredAt)))
+    .filter(isPersistableUsdtBlacklistTimelineEvent)
     .sort((left, right) =>
       Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
       (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||

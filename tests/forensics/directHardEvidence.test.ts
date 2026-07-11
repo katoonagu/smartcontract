@@ -4,6 +4,7 @@ import {
   groupDirectPrincipalCounterparties,
   selectDirectPrincipalLookupAddresses
 } from "../../src/forensics/directHardEvidence";
+import { normalizePersistedDeepFirstHopEvidence } from "../../src/check/deepForensicCheck";
 import type {
   ForensicRouteEdge,
   TimelineBearingStablecoinRestrictionProfile,
@@ -422,7 +423,7 @@ describe("direct hard evidence helper", () => {
     const validEvent = {
       eventKind: "added" as const,
       occurredAt: "2026-07-02T00:00:00.000Z",
-      txHash: "valid-event",
+      txHash: "b".repeat(64),
       tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
       blockNumber: 100,
       logIndex: 1,
@@ -456,8 +457,12 @@ describe("direct hard evidence helper", () => {
         isBlacklisted: true,
         blacklistTimeline: {
           events: [
-            { ...validEvent, occurredAt: "not-a-date", txHash: "invalid-date" },
-            { ...validEvent, tokenContract: "TWrongContract", txHash: "wrong-contract" },
+            { ...validEvent, occurredAt: "not-a-date" },
+            { ...validEvent, occurredAt: "2026-07-02T00:00:00Z" },
+            { ...validEvent, txHash: "valid-event" },
+            { ...validEvent, eventKind: "paused" as never },
+            { ...validEvent, blockNumber: Number.MAX_SAFE_INTEGER + 1 },
+            { ...validEvent, tokenContract: "TWrongContract" },
             validEvent
           ],
           pagination: "complete",
@@ -479,6 +484,65 @@ describe("direct hard evidence helper", () => {
       "service:cex",
       "usdt_blacklist"
     ]);
+  });
+
+  it("survives producer JSON persistence through the shared first-hop decoder", async () => {
+    const address = "TRoundTripEvidence";
+    const directTxHash = "a".repeat(64);
+    const event = {
+      eventKind: "added" as const,
+      occurredAt: "2026-07-02T00:00:00.000Z",
+      txHash: "b".repeat(64),
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 100,
+      logIndex: 1,
+      verification: "verified_contract_log" as const
+    };
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({
+        id: "1",
+        fromAddress: address,
+        toAddress: SUBJECT,
+        amountRaw: 10_000_000000n,
+        txHash: directTxHash,
+        timestamp: new Date("2026-07-03T00:00:00.000Z")
+      })]
+    });
+    const produced = await buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [{
+        address,
+        label: "phishing",
+        source: "service_admin",
+        createdByTelegramId: "1",
+        createdAt: new Date("2026-07-01T00:00:00.000Z")
+      }],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async () => restriction(address, {
+        isBlacklisted: true,
+        blacklistEventTimestamp: event.occurredAt,
+        blacklistEventTxHash: event.txHash,
+        blacklistEventBlock: event.blockNumber,
+        blacklistTimeline: { events: [event], pagination: "complete", failureReason: null }
+      })
+    });
+    const persisted = JSON.parse(JSON.stringify({
+      firstHopBlacklistFacts: produced.blacklistFacts,
+      firstHopLabelFacts: produced.labelFacts,
+      firstHopBlacklistCoverage: produced.firstHopBlacklistCoverage,
+      directHardEvidenceSnapshots: produced.snapshots
+    })) as Record<string, unknown>;
+
+    expect(normalizePersistedDeepFirstHopEvidence(persisted)).toEqual({
+      firstHopBlacklistFacts: produced.blacklistFacts,
+      firstHopLabelFacts: produced.labelFacts,
+      firstHopBlacklistCoverage: produced.firstHopBlacklistCoverage,
+      directHardEvidenceSnapshots: produced.snapshots
+    });
   });
 
   it("applies liveLimit after combining material and non-material directions for each address", async () => {
@@ -565,7 +629,7 @@ describe("direct hard evidence helper", () => {
     const added = {
       eventKind: "added" as const,
       occurredAt: "2026-07-02T00:00:00.000Z",
-      txHash: "tx-added",
+      txHash: "c".repeat(64),
       tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
       blockNumber: 100,
       logIndex: 1,
@@ -957,7 +1021,7 @@ describe("direct hard evidence helper", () => {
     const added = {
       eventKind: "added" as const,
       occurredAt: "2026-07-02T00:00:00.000Z",
-      txHash: "tx-added",
+      txHash: "d".repeat(64),
       tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
       blockNumber: 100,
       logIndex: 1,
@@ -1062,7 +1126,7 @@ describe("direct hard evidence helper", () => {
       {
         eventKind: "added",
         occurredAt: "2026-07-01T00:00:00.000Z",
-        txHash: "tx-added-1",
+        txHash: "e".repeat(64),
         tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
         blockNumber: 100,
         logIndex: 1,
@@ -1071,7 +1135,7 @@ describe("direct hard evidence helper", () => {
       {
         eventKind: "removed",
         occurredAt: "2026-07-02T00:00:00.000Z",
-        txHash: "tx-removed",
+        txHash: "f".repeat(64),
         tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
         blockNumber: 101,
         logIndex: 1,
@@ -1080,7 +1144,7 @@ describe("direct hard evidence helper", () => {
       {
         eventKind: "added",
         occurredAt: "2026-07-03T00:00:00.000Z",
-        txHash: "tx-added-2",
+        txHash: "0".repeat(64),
         tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
         blockNumber: 102,
         logIndex: 1,

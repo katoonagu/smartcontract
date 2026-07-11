@@ -560,6 +560,7 @@ describe("deep forensic address check", () => {
   it("carries exact all-time first-hop facts with timeline chronology into the fresh report", async () => {
     const sourceAddress = "TSubjectFirstHopAllTime111111111111";
     const counterparty = "TFirstHopAllTimeBlacklisted111111111";
+    const blacklistEventTxHash = "b".repeat(64);
     const transfers = [
       indexed({
         id: "tx-before-blacklist",
@@ -593,7 +594,7 @@ describe("deep forensic address check", () => {
         return {
           ...usdtRestriction(address),
           isBlacklisted: address === counterparty,
-          blacklistEventTxHash: address === counterparty ? "tx-added-blacklist" : null,
+          blacklistEventTxHash: address === counterparty ? blacklistEventTxHash : null,
           blacklistEventTimestamp: address === counterparty ? "2026-06-01T00:00:00.000Z" : null,
           blacklistEventBlock: address === counterparty ? 200 : null,
           blacklistTimeline: address === counterparty ? {
@@ -603,7 +604,7 @@ describe("deep forensic address check", () => {
               address,
               tokenContract: TRON_USDT_CONTRACT_ADDRESS,
               occurredAt: "2026-06-01T00:00:00.000Z",
-              txHash: "tx-added-blacklist",
+              txHash: blacklistEventTxHash,
               blockNumber: 200,
               logIndex: 3,
               verification: "verified_contract_log" as const
@@ -639,7 +640,7 @@ describe("deep forensic address check", () => {
       activeAmountRaw: "6000000000",
       unknownTimingAmountRaw: "0",
       timelineCoverage: "complete",
-      timelineEvents: [expect.objectContaining({ txHash: "tx-added-blacklist", logIndex: 3 })]
+      timelineEvents: [expect.objectContaining({ txHash: blacklistEventTxHash, logIndex: 3 })]
     })]);
     expect(report.firstHopLabelFacts).toEqual([expect.objectContaining({
       counterpartyAddress: counterparty,
@@ -662,7 +663,7 @@ describe("deep forensic address check", () => {
     });
     expect(report.directHardEvidenceSnapshots?.[0]?.usdtRestriction?.blacklistTimeline).toMatchObject({
       pagination: "complete",
-      events: [expect.objectContaining({ txHash: "tx-added-blacklist" })]
+      events: [expect.objectContaining({ txHash: blacklistEventTxHash })]
     });
     expect(JSON.parse(JSON.stringify(report.firstHopBlacklistFacts))).toEqual(report.firstHopBlacklistFacts);
   });
@@ -3327,6 +3328,9 @@ describe("deep forensic address check", () => {
     const maliciousEnvelopes = [
       { ...validEnvelope, firstHopBlacklistFacts: [validFact, { ...validFact, statusAtCheck: "pending" }] },
       { ...validEnvelope, firstHopLabelFacts: [validLabelFact, { ...validLabelFact, labelCode: "arbitrary_future_string" }] },
+      { ...validEnvelope, firstHopLabelFacts: [{ ...validLabelFact, labelCode: "victim" }] },
+      { ...validEnvelope, firstHopLabelFacts: [{ ...validLabelFact, evidenceAuthority: "derived" }] },
+      { ...validEnvelope, firstHopLabelFacts: [{ ...validLabelFact, recordedAt: "2026-05-02T00:00:00.000Z" }] },
       { ...validEnvelope, firstHopBlacklistFacts: [{ ...validFact, checkedAt: "2026-05-24T00:00:00Z" }] },
       { ...validEnvelope, firstHopBlacklistFacts: [{
         ...validFact,

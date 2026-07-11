@@ -129,7 +129,13 @@ function adminFirstHopEvidenceForTest() {
     },
     directHardEvidenceSnapshots: [{
       address,
-      labels: [],
+      labels: [{
+        address,
+        label: "phishing",
+        source: "service_admin",
+        createdByTelegramId: "1",
+        createdAt: "2026-05-01T00:00:00.000Z"
+      }],
       classification: null,
       usdtRestriction: {
         subjectAddress: address,
@@ -146,7 +152,7 @@ function adminFirstHopEvidenceForTest() {
       },
       evidenceStatus: "live_checked",
       hasHardEvidence: true,
-      reasons: ["usdt_blacklist"]
+      reasons: ["label:phishing", "usdt_blacklist"]
     }]
   };
 }
@@ -346,7 +352,10 @@ describe("startAdminServer", () => {
     expect(report?.firstHopBlacklistFacts).toEqual(evidence.firstHopBlacklistFacts);
     expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
     expect(report?.firstHopBlacklistCoverage).toEqual(evidence.firstHopBlacklistCoverage);
-    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots);
+    expect(report?.directHardEvidenceSnapshots).toEqual(evidence.directHardEvidenceSnapshots.map((snapshot) => ({
+      ...snapshot,
+      labels: snapshot.labels.map((label) => ({ ...label, createdAt: new Date(label.createdAt) }))
+    })));
   });
 
   it("fails closed atomically when persisted first-hop counters contradict the envelope", () => {

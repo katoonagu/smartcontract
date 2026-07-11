@@ -19,6 +19,7 @@ import {
   DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
   buildDirectHardEvidenceSnapshots,
   groupDirectPrincipalCounterparties,
+  isPersistableUsdtBlacklistTimelineEvent,
   type DirectHardEvidenceResult,
   type DirectHardEvidenceSnapshot
 } from "../forensics/directHardEvidence";
@@ -194,17 +195,6 @@ function persistedShare(value: unknown, semantics: unknown): boolean {
     typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-function persistedTimelineEvent(value: unknown): value is UsdtBlacklistTimelineEvent {
-  if (!persistedRecord(value)) return false;
-  return (value.eventKind === "added" || value.eventKind === "removed") &&
-    persistedIsoDate(value.occurredAt) &&
-    persistedTxHash(value.txHash) &&
-    value.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
-    (value.blockNumber === null || persistedCount(value.blockNumber)) &&
-    (value.logIndex === null || persistedCount(value.logIndex)) &&
-    value.verification === "verified_contract_log";
-}
-
 function comparePersistedTimelineEvents(left: UsdtBlacklistTimelineEvent, right: UsdtBlacklistTimelineEvent): number {
   return Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
     (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
@@ -213,7 +203,7 @@ function comparePersistedTimelineEvents(left: UsdtBlacklistTimelineEvent, right:
 }
 
 function persistedTimeline(value: unknown): boolean {
-  if (!persistedRecord(value) || !Array.isArray(value.events) || !value.events.every(persistedTimelineEvent)) return false;
+  if (!persistedRecord(value) || !Array.isArray(value.events) || !value.events.every(isPersistableUsdtBlacklistTimelineEvent)) return false;
   const failures = new Set([
     "provider_failed",
     "address_mismatch",
@@ -275,7 +265,7 @@ function persistedBlacklistFact(value: unknown): value is FirstHopBlacklistFact 
     (value.directTransferCoverage !== "complete" && value.directTransferCoverage !== "partial") ||
     (value.timelineCoverage !== "complete" && value.timelineCoverage !== "partial") ||
     !Array.isArray(value.timelineEvents) ||
-    !value.timelineEvents.every(persistedTimelineEvent)
+    !value.timelineEvents.every(isPersistableUsdtBlacklistTimelineEvent)
   ) return false;
   return BigInt(value.beforeEffectiveAmountRaw) + BigInt(value.activeAmountRaw) + BigInt(value.unknownTimingAmountRaw) === BigInt(value.principalAmountRaw) &&
     value.beforeEffectiveTxCount + value.activeTxCount + value.unknownTimingTxCount === value.principalTxCount &&
@@ -515,7 +505,14 @@ function persistedEnvelopeConsistent(input: PersistedDeepFirstHopEvidence): bool
     if (fact.effectiveAt !== effectiveAt || fact.effectiveTxHash !== effectiveTxHash) return false;
   }
   for (const fact of labelFacts) {
-    if (!snapshotsByAddress.has(fact.counterpartyAddress) || !persistedShareMatchesCoverage(fact, coverage)) return false;
+    const snapshot = snapshotsByAddress.get(fact.counterpartyAddress);
+    const matchingLabel = snapshot?.labels.some((label) =>
+      label.address === fact.counterpartyAddress &&
+      label.label === fact.labelCode &&
+      (label.source === "service_admin" ? "exact_internal" : "derived") === fact.evidenceAuthority &&
+      label.createdAt.toISOString() === fact.recordedAt
+    );
+    if (!matchingLabel || !persistedShareMatchesCoverage(fact, coverage)) return false;
   }
   return true;
 }
