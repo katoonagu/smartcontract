@@ -21,6 +21,33 @@ function safeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+type AliasResolution<T> =
+  | { present: false; value: null }
+  | { present: true; value: T };
+
+function resolveAliases<T>(
+  record: Record<string, unknown>,
+  aliases: readonly string[],
+  parse: (value: unknown) => T | null
+): AliasResolution<T> | null {
+  let resolved: T | null = null;
+  let present = false;
+  for (const alias of aliases) {
+    if (!hasOwn(record, alias)) continue;
+    present = true;
+    const parsed = parse(record[alias]);
+    if (parsed === null || (resolved !== null && resolved !== parsed)) return null;
+    resolved = parsed;
+  }
+  return present && resolved !== null
+    ? { present: true, value: resolved }
+    : { present: false, value: null };
+}
+
 function normalizeTronAddress(value: unknown): string | null {
   const raw = nonEmptyString(value);
   if (!raw) return null;
@@ -119,47 +146,72 @@ function eventTimestamp(value: unknown): string | null {
 }
 
 function eventSuccess(event: Record<string, unknown>): boolean {
-  const receipt = objectRecord(event.receipt);
-  const result = nonEmptyString(event.contractRet ?? event.contract_ret ?? receipt?.result);
-  return event.confirmed === true && result?.toUpperCase() === "SUCCESS";
+  const values: unknown[] = [];
+  for (const alias of ["contractRet", "contract_ret"] as const) {
+    if (hasOwn(event, alias)) values.push(event[alias]);
+  }
+  if (hasOwn(event, "receipt")) {
+    const receipt = objectRecord(event.receipt);
+    if (!receipt) return false;
+    if (hasOwn(receipt, "result")) values.push(receipt.result);
+  }
+  let success: string | null = null;
+  for (const value of values) {
+    const parsed = nonEmptyString(value)?.toUpperCase() ?? null;
+    if (!parsed || (success !== null && success !== parsed)) return false;
+    success = parsed;
+  }
+  return event.confirmed === true && success === "SUCCESS";
 }
 
 function verifyEvent(value: unknown, expectedAddress: string): UsdtBlacklistTimelineEvent | null {
   const event = objectRecord(value);
   if (!event || !eventSuccess(event)) return null;
-  const contractAddress = normalizeTronAddress(event.contract_address ?? event.contractAddress ?? event.address);
-  if (contractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+  const contractAddress = resolveAliases(
+    event,
+    ["contract_address", "contractAddress", "address"],
+    normalizeTronAddress
+  );
+  if (!contractAddress?.present || contractAddress.value !== TRON_USDT_CONTRACT_ADDRESS) return null;
 
   const topics = event.topics;
-  if (topics !== undefined && !Array.isArray(topics)) return null;
-  const topicKind = Array.isArray(topics) ? eventKindFromTopic(topics[0]) : null;
-  const namedKind = eventKindFromName(event.event_name ?? event.eventName);
+  const topicsPresent = hasOwn(event, "topics");
+  if (topicsPresent && !Array.isArray(topics)) return null;
+  const topicKind = topicsPresent && Array.isArray(topics) ? eventKindFromTopic(topics[0]) : null;
+  const namedKind = resolveAliases(event, ["event_name", "eventName"], eventKindFromName);
+  if (!namedKind) return null;
   if (Array.isArray(topics) && !topicKind) return null;
-  if (namedKind && topicKind && namedKind !== topicKind) return null;
-  const eventKind = topicKind ?? namedKind;
+  if (namedKind.present && topicKind && namedKind.value !== topicKind) return null;
+  const eventKind = topicKind ?? namedKind.value;
   if (!eventKind) return null;
 
-  const result = objectRecord(event.result);
-  const decodedUser = result?._user === undefined ? null : normalizeTronAddress(result._user);
+  const result = hasOwn(event, "result") ? objectRecord(event.result) : null;
+  if (hasOwn(event, "result") && !result) return null;
+  const decodedUser = result && hasOwn(result, "_user") ? normalizeTronAddress(result._user) : null;
   const topicUser = Array.isArray(topics) ? addressFromTopic(topics[1]) : null;
-  if (result?._user !== undefined && !decodedUser) return null;
+  if (result && hasOwn(result, "_user") && !decodedUser) return null;
   if (Array.isArray(topics) && !topicUser) return null;
   if (decodedUser && topicUser && decodedUser !== topicUser) return null;
   if ((topicUser ?? decodedUser) !== expectedAddress) return null;
 
-  const txHash = normalizedTxHash(event.transaction_id ?? event.transactionId ?? event.transaction);
-  const blockNumber = safeInteger(event.block_number ?? event.blockNumber);
-  const logIndex = safeInteger(event.event_index ?? event.log_index ?? event.eventIndex ?? event.logIndex);
-  const occurredAt = eventTimestamp(event.block_timestamp ?? event.blockTimestamp ?? event.blockTimeStamp);
-  if (!txHash || blockNumber === null || blockNumber < 0 || logIndex === null || logIndex < 0 || !occurredAt) return null;
+  const txHash = resolveAliases(event, ["transaction_id", "transactionId", "transaction"], normalizedTxHash);
+  const blockNumber = resolveAliases(event, ["block_number", "blockNumber"], safeInteger);
+  const logIndex = resolveAliases(event, ["event_index", "log_index", "eventIndex", "logIndex"], safeInteger);
+  const occurredAt = resolveAliases(event, ["block_timestamp", "blockTimestamp", "blockTimeStamp"], eventTimestamp);
+  if (
+    !txHash?.present ||
+    !blockNumber?.present || blockNumber.value < 0 ||
+    !logIndex?.present || logIndex.value < 0 ||
+    !occurredAt?.present
+  ) return null;
 
   return {
     eventKind,
-    occurredAt,
-    txHash,
+    occurredAt: occurredAt.value,
+    txHash: txHash.value,
     tokenContract: TRON_USDT_CONTRACT_ADDRESS,
-    blockNumber,
-    logIndex,
+    blockNumber: blockNumber.value,
+    logIndex: logIndex.value,
     verification: "verified_contract_log"
   };
 }
