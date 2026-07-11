@@ -8,6 +8,7 @@ import type {
   ForensicRouteEdge,
   ServiceClassification,
   StablecoinRestrictionProfile,
+  TimelineBearingStablecoinRestrictionProfile,
   UsdtBlacklistTimeline,
   UsdtBlacklistTimelineEvent
 } from "../types";
@@ -239,10 +240,6 @@ function uniqueAddresses(addresses: string[]): string[] {
   return result;
 }
 
-type RestrictionWithTimeline = StablecoinRestrictionProfile & {
-  blacklistTimeline?: UsdtBlacklistTimeline | null;
-};
-
 type TransferTiming = "before" | "active" | "unknown";
 
 function sortedVerifiedTimeline(events: UsdtBlacklistTimelineEvent[]): UsdtBlacklistTimelineEvent[] {
@@ -285,7 +282,7 @@ function transferTiming(
 
 function buildBlacklistFact(input: {
   group: DirectPrincipalCounterpartyGroup;
-  restriction: RestrictionWithTimeline;
+  restriction: TimelineBearingStablecoinRestrictionProfile;
   directTransferCoverage: "complete" | "partial";
   conflictingTxHashes: Set<string>;
 }): FirstHopBlacklistFact {
@@ -340,9 +337,11 @@ function buildBlacklistFact(input: {
     checkedAt: input.restriction.checkedAt,
     principalAmountRaw: input.group.principalAmountRaw.toString(),
     principalTxCount: input.group.principalTxCount,
-    directionalPrincipalShare: input.group.directionalPrincipalShare,
-    shareSemantics: input.group.shareSemantics,
-    transferTxHashes: [...input.group.transferTxHashes],
+    directionalPrincipalShare: input.directTransferCoverage === "complete"
+      ? input.group.directionalPrincipalShare
+      : null,
+    shareSemantics: input.directTransferCoverage === "complete" ? "exact" : "unavailable",
+    transferTxHashes: [...input.group.transferTxHashes].sort(compareText),
     beforeEffectiveAmountRaw: amounts.before.toString(),
     beforeEffectiveTxCount: hashes.before.size,
     activeAmountRaw: amounts.active.toString(),
@@ -364,7 +363,8 @@ function isoOrNull(value: Date | string | null | undefined): string | null {
 
 function sanctionReason(
   classification: ServiceClassification | null,
-  groups: DirectPrincipalCounterpartyGroup[]
+  groups: DirectPrincipalCounterpartyGroup[],
+  selectedProvenanceTxHashes: Set<string>
 ): string | null {
   if (!classification) return null;
   const service = matchSanctionedCryptoService([
@@ -372,9 +372,34 @@ function sanctionReason(
     ...classification.evidence
   ].filter(Boolean).join(" "));
   if (!service) return null;
-  return groups.some((group) => group.principalTransfers.some((transfer) =>
+  return groups.some((group) => group.direction === "inbound" && group.principalTransfers.some((transfer) =>
+    selectedProvenanceTxHashes.has(transfer.txHash) &&
     sanctionedCryptoServiceActiveAt(service, transfer.occurredAt)
   )) ? `sanctioned_service:${service.key}` : null;
+}
+
+function validateCoverageShareEnvelope(
+  groups: DirectPrincipalCounterpartyGroup[],
+  coverage: "complete" | "partial"
+): void {
+  for (const group of groups) {
+    const exactShare = group.shareSemantics === "exact" && group.directionalPrincipalShare !== null;
+    const unavailableShare = group.shareSemantics === "unavailable" && group.directionalPrincipalShare === null;
+    if (coverage === "complete" ? !exactShare : !unavailableShare) {
+      throw new Error(
+        `Direct transfer coverage/share mismatch for ${group.direction}:${group.address}.`
+      );
+    }
+  }
+}
+
+function comparePersistedPrincipal(
+  left: { principalAmountRaw: string; counterpartyAddress: string; direction: CounterpartyRiskDirection },
+  right: { principalAmountRaw: string; counterpartyAddress: string; direction: CounterpartyRiskDirection }
+): number {
+  return compareBigintDesc(BigInt(left.principalAmountRaw), BigInt(right.principalAmountRaw)) ||
+    compareText(left.counterpartyAddress, right.counterpartyAddress) ||
+    compareText(left.direction, right.direction);
 }
 
 function conflictingPrincipalTxHashes(groups: DirectPrincipalCounterpartyGroup[]): Set<string> {
@@ -397,6 +422,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   windowStart?: Date | string | null;
   windowEnd?: Date | string | null;
   requiredForDecision?: boolean;
+  selectedProvenanceTxHashes?: string[];
   concurrency?: number;
   liveLimit?: number;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
@@ -404,16 +430,17 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   getUsdtRestrictionStatus?(
     address: string,
     options?: { includeEventTimeline?: boolean }
-  ): Promise<RestrictionWithTimeline>;
+  ): Promise<TimelineBearingStablecoinRestrictionProfile>;
 }): Promise<DirectHardEvidenceResult> {
   const hasDirectedPrincipalGroups = input.principalGroups !== undefined;
   const principalGroups = input.principalGroups ?? [];
   const materialGroups = principalGroups.filter((group) => group.material);
-  const materialAddresses = selectDirectPrincipalLookupAddresses(materialGroups, Number.MAX_SAFE_INTEGER);
+  const materialAddresses = selectDirectPrincipalLookupAddresses(principalGroups, Number.MAX_SAFE_INTEGER);
   const conflictingTxHashes = conflictingPrincipalTxHashes(materialGroups);
   const requestedDirectTransferCoverage = hasDirectedPrincipalGroups
     ? input.directTransferCoverage ?? "partial"
     : "partial";
+  if (hasDirectedPrincipalGroups) validateCoverageShareEnvelope(principalGroups, requestedDirectTransferCoverage);
   const directTransferCoverage = conflictingTxHashes.size > 0
     ? "partial" as const
     : requestedDirectTransferCoverage;
@@ -450,8 +477,11 @@ export async function buildDirectHardEvidenceSnapshots(input: {
   const missingChecks: string[] = [];
   const checkedAddresses = new Set<string>();
   const failedAddresses = new Set<string>();
+  const selectedProvenanceTxHashes = new Set(
+    (input.selectedProvenanceTxHashes ?? []).filter((txHash) => txHash.length > 0)
+  );
   const groupsByAddress = new Map<string, DirectPrincipalCounterpartyGroup[]>();
-  for (const group of materialGroups) {
+  for (const group of principalGroups) {
     const key = normalizedAddress(group.address);
     const groups = groupsByAddress.get(key) ?? [];
     groups.push(group);
@@ -474,7 +504,7 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       }
     }
     const relatedGroups = groupsByAddress.get(normalizedAddress(address)) ?? [];
-    const sanctioned = sanctionReason(classification, relatedGroups);
+    const sanctioned = sanctionReason(classification, relatedGroups, selectedProvenanceTxHashes);
     const reasons = [
       ...labels.map((label) => `label:${label.label}`),
       ...(classification?.isBoundary ? [`service:${classification.identity ?? classification.category}`] : []),
@@ -504,11 +534,11 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       : liveAddresses.size >= addresses.length ? "complete" : "live_budget_exhausted";
   const snapshotsByAddress = new Map(snapshots.map((snapshot) => [normalizedAddress(snapshot.address), snapshot]));
   const blacklistFacts = materialGroups.flatMap((group) => {
-    const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction as RestrictionWithTimeline | null | undefined;
+    const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction as TimelineBearingStablecoinRestrictionProfile | null | undefined;
     return restriction?.isBlacklisted
       ? [buildBlacklistFact({ group, restriction, directTransferCoverage, conflictingTxHashes })]
       : [];
-  });
+  }).sort(comparePersistedPrincipal);
   const labelFacts = materialGroups.flatMap((group): FirstHopLabelFact[] => {
     const labels = snapshotsByAddress.get(normalizedAddress(group.address))?.labels ?? [];
     return labels.map((label) => ({
@@ -520,12 +550,21 @@ export async function buildDirectHardEvidenceSnapshots(input: {
       effectiveAt: null,
       principalAmountRaw: group.principalAmountRaw.toString(),
       principalTxCount: group.principalTxCount,
-      directionalPrincipalShare: group.directionalPrincipalShare,
-      shareSemantics: group.shareSemantics,
-      transferTxHashes: [...group.transferTxHashes],
-      linkedToSelectedProvenance: true
+      directionalPrincipalShare: directTransferCoverage === "complete"
+        ? group.directionalPrincipalShare
+        : null,
+      shareSemantics: directTransferCoverage === "complete" ? "exact" : "unavailable",
+      transferTxHashes: [...group.transferTxHashes].sort(compareText),
+      linkedToSelectedProvenance: group.transferTxHashes.some((txHash) =>
+        selectedProvenanceTxHashes.has(txHash)
+      )
     }));
-  });
+  }).sort((left, right) =>
+    comparePersistedPrincipal(left, right) ||
+    compareText(left.labelCode, right.labelCode) ||
+    compareText(left.recordedAt, right.recordedAt) ||
+    compareText(left.evidenceAuthority, right.evidenceAuthority)
+  );
   const materialCounterpartyCount = materialAddresses.length;
   const checkedMaterialCounterpartyCount = hasDirectedPrincipalGroups ? checkedAddresses.size : 0;
   const failedMaterialCounterpartyCount = hasDirectedPrincipalGroups ? failedAddresses.size : 0;
@@ -589,6 +628,6 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     labelFacts,
     firstHopBlacklistCoverage,
     snapshots,
-    missingChecks
+    missingChecks: missingChecks.sort(compareText)
   };
 }

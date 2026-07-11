@@ -4,7 +4,11 @@ import {
   groupDirectPrincipalCounterparties,
   selectDirectPrincipalLookupAddresses
 } from "../../src/forensics/directHardEvidence";
-import type { ForensicRouteEdge, StablecoinRestrictionProfile, UsdtBlacklistTimeline } from "../../src/types";
+import type {
+  ForensicRouteEdge,
+  TimelineBearingStablecoinRestrictionProfile,
+  UsdtBlacklistTimeline
+} from "../../src/types";
 
 const SUBJECT = "TSubject";
 
@@ -34,8 +38,8 @@ function edge(input: {
 
 function restriction(
   address: string,
-  overrides: Partial<StablecoinRestrictionProfile> & { blacklistTimeline?: UsdtBlacklistTimeline | null } = {}
-): StablecoinRestrictionProfile & { blacklistTimeline?: UsdtBlacklistTimeline | null } {
+  overrides: Partial<TimelineBearingStablecoinRestrictionProfile> = {}
+): TimelineBearingStablecoinRestrictionProfile {
   return {
     subjectAddress: address,
     tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -378,6 +382,75 @@ describe("direct hard evidence helper", () => {
     expect(result.missingChecks[0]).toContain("TDirect1");
   });
 
+  it("applies liveLimit after combining material and non-material directions for each address", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [
+        edge({ id: "1", fromAddress: "TBoth", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+        edge({ id: "2", fromAddress: SUBJECT, toAddress: "TBoth", amountRaw: 9_000_000000n }),
+        edge({ id: "3", fromAddress: "TSingle", toAddress: SUBJECT, amountRaw: 15_000_000000n })
+      ]
+    });
+    const checked: string[] = [];
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "partial",
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+      liveLimit: 1,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => {
+        checked.push(address);
+        return restriction(address);
+      }
+    });
+
+    expect(checked).toEqual(["TBoth"]);
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      materialCounterpartyCount: 2,
+      checkedMaterialCounterpartyCount: 1,
+      uncheckedMaterialCounterpartyCount: 1,
+      blacklistCheckCoverage: "budget_exhausted"
+    });
+  });
+
+  it("rejects complete coverage when any directed group lacks an exact share", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [edge({ id: "1", fromAddress: "TUnavailableShare", toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+    await expect(buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    })).rejects.toThrow(/share|coverage/i);
+  });
+
+  it("rejects partial coverage when a directed group exposes an exact share", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({ id: "1", fromAddress: "TExactShare", toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+    await expect(buildDirectHardEvidenceSnapshots({
+      addresses: [],
+      principalGroups: groups,
+      directTransferCoverage: "partial",
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    })).rejects.toThrow(/share|coverage/i);
+  });
+
   it("persists directed blacklist facts with exact chronology partitions", async () => {
     const groups = groupDirectPrincipalCounterparties({
       subjectAddress: SUBJECT,
@@ -539,8 +612,9 @@ describe("direct hard evidence helper", () => {
     });
     const result = await buildDirectHardEvidenceSnapshots({
       addresses: ["TLabelled"],
-      principalGroups: groups,
+      principalGroups: [...groups].reverse(),
       directTransferCoverage: "complete",
+      selectedProvenanceTxHashes: ["2"],
       liveLimit: 1,
       getLabelsForAddress: async () => [
         {
@@ -570,16 +644,35 @@ describe("direct hard evidence helper", () => {
 
     expect(result.labelFacts).toHaveLength(4);
     expect(result.labelFacts[0]).toMatchObject({
+      direction: "outbound",
       labelCode: "approval_drain_proximity",
       evidenceAuthority: "derived",
       recordedAt: "2026-06-01T00:00:00.000Z",
       effectiveAt: null,
       linkedToSelectedProvenance: true
     });
+    expect(result.labelFacts.find((fact) => fact.direction === "inbound" && fact.labelCode === "approval_drain_proximity"))
+      .toMatchObject({ linkedToSelectedProvenance: false });
     expect(result.labelFacts.some((fact) =>
       fact.labelCode === "reported_scam" && fact.evidenceAuthority === "exact_internal"
     )).toBe(true);
-    expect(result.snapshots[0].reasons).toContain("sanctioned_service:htx_huobi");
+    expect(result.snapshots[0].reasons).not.toContain("sanctioned_service:htx_huobi");
+
+    const withoutSelection = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TLabelled"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [{
+        address: "TLabelled",
+        label: "reported_scam",
+        source: "service_admin",
+        createdByTelegramId: "42",
+        createdAt: new Date("2026-06-02T00:00:00.000Z")
+      }],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    });
+    expect(withoutSelection.labelFacts.every((fact) => fact.linkedToSelectedProvenance === false)).toBe(true);
 
     const preDesignationGroups = groupDirectPrincipalCounterparties({
       subjectAddress: SUBJECT,
@@ -596,6 +689,7 @@ describe("direct hard evidence helper", () => {
       addresses: ["TPreDesignation"],
       principalGroups: preDesignationGroups,
       directTransferCoverage: "complete",
+      selectedProvenanceTxHashes: ["9"],
       liveLimit: 1,
       getLabelsForAddress: async () => [],
       getClassificationForAddress: async () => ({
@@ -608,6 +702,36 @@ describe("direct hard evidence helper", () => {
       getUsdtRestrictionStatus: async (address) => restriction(address)
     });
     expect(preDesignation.snapshots[0].reasons).not.toContain("sanctioned_service:htx_huobi");
+
+    const postDesignationGroups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({
+        id: "10",
+        fromAddress: "TPostDesignation",
+        toAddress: SUBJECT,
+        amountRaw: 10_000_000000n,
+        txHash: "tx-selected-inbound",
+        timestamp: new Date("2026-05-27T00:00:00.000Z")
+      })]
+    });
+    const postDesignation = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TPostDesignation"],
+      principalGroups: postDesignationGroups,
+      directTransferCoverage: "complete",
+      selectedProvenanceTxHashes: ["tx-selected-inbound"],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => ({
+        category: "cex",
+        identity: "HTX/Huobi Global",
+        confidence: "high",
+        evidence: ["sanctioned_service:htx_huobi"],
+        isBoundary: true
+      }),
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    });
+    expect(postDesignation.snapshots[0].reasons).toContain("sanctioned_service:htx_huobi");
+    expect(() => JSON.stringify(postDesignation)).not.toThrow();
   });
 
   it("distinguishes budget-limited unchecked unique addresses from checked clean addresses", async () => {

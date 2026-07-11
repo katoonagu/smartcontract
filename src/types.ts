@@ -2528,6 +2528,10 @@ export type StablecoinRestrictionProfile = {
   };
 };
 
+export type TimelineBearingStablecoinRestrictionProfile = StablecoinRestrictionProfile & {
+  blacklistTimeline?: UsdtBlacklistTimeline | null;
+};
+
 export type RouteSearchOptions = {
   sourceAddress: string;
   targetAddress: string;
