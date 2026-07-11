@@ -366,7 +366,7 @@ describe("formatWalletNarrativeSummary", () => {
     expect(formatWalletNarrativeSummary(forward)).toBe(formatWalletNarrativeSummary(reversed));
   });
 
-  it("reserves the 500-character body budget for coverage before the optional conclusion", () => {
+  it("keeps both selected facts before an optional coverage part", () => {
     const primary = `Главный факт ${"а".repeat(225)}`;
     const secondary = `Дополнительный вывод ${"б".repeat(215)}`;
     const limitation = `Не проверена старая история ${"в".repeat(170)}`;
@@ -385,9 +385,9 @@ describe("formatWalletNarrativeSummary", () => {
 
     expect(body.length).toBeLessThanOrEqual(500);
     expect(output).toContain(primary);
-    expect(output).toContain(limitation);
-    expect(output).not.toContain(secondary);
-    expect(output).not.toContain("Вывод\n");
+    expect(output).toContain(secondary);
+    expect(output).not.toContain(limitation);
+    expect(output).toContain("Вывод\n");
   });
 
   it("keeps a coverage limitation instead of a conclusion with the same sentence", () => {
@@ -613,11 +613,6 @@ describe("formatWalletNarrativeSummary", () => {
       name: "empty fact evidence id",
       value: { facts: [{ ...primaryFact, evidenceIds: [""] }] },
       error: /fact evidence ids must contain non-empty strings/
-    },
-    {
-      name: "empty related fact id",
-      value: { facts: [{ ...primaryFact, relatedFactIds: [""] }] },
-      error: /related fact ids must contain non-empty strings/
     },
     {
       name: "coverage object",
@@ -1224,16 +1219,16 @@ describe("wallet narrative signal catalogue", () => {
     {
       relation: "active_at_transfer" as const,
       direction: "inbound" as const,
-      expectedRu: /Входящий:.*получил 25 000 USDT.*контрагент/i,
+      expectedRu: /Входящий:.*T222…2222.*25 000 USDT.*Контрагент/i,
       chronologyRu: /уже находился в ч[её]рном списке/i,
-      expectedEn: /Inbound:.*received 25,000 USDT/i
+      expectedEn: /Inbound:.*25,000 USDT.*T222…2222/i
     },
     {
       relation: "active_at_transfer" as const,
       direction: "outbound" as const,
-      expectedRu: /Исходящий:.*отправил 25 000 USDT.*контрагент/i,
+      expectedRu: /Исходящий:.*T222…2222.*25 000 USDT.*Контрагент/i,
       chronologyRu: /уже находился в ч[её]рном списке/i,
-      expectedEn: /Outbound:.*sent 25,000 USDT/i
+      expectedEn: /Outbound:.*25,000 USDT.*T222…2222/i
     },
     {
       relation: "mixed" as const,
@@ -1269,8 +1264,6 @@ describe("wallet narrative signal catalogue", () => {
     expect(fact?.factTextRu).toMatch(row.expectedRu);
     expect(fact?.factTextRu).toMatch(row.chronologyRu);
     expect(fact?.factTextEn).toMatch(row.expectedEn);
-    expect(fact?.factTextRu).toMatch(/2 перевода/i);
-    expect(fact?.factTextEn).toMatch(/2 transfers/i);
     if (row.forbidden) expect(copy).not.toMatch(row.forbidden);
     if (row.direction === "outbound") {
       expect(copy).not.toMatch(/источник (?:текущего )?баланса|source of (?:the )?(?:current )?balance/i);
@@ -1348,10 +1341,10 @@ describe("wallet narrative signal catalogue", () => {
   });
 
   it.each([
-    [1, /1 перевод\)/, /1 transfer\)/],
-    [2, /2 перевода\)/, /2 transfers\)/],
-    [5, /5 переводов\)/, /5 transfers\)/]
-  ])("uses correct transfer-count grammar for %s direct blacklist transfers", (count, ru, en) => {
+    [1, /1 перевод\./, /in 1 transfer\./],
+    [2, /2 перевода\./, /in 2 transfers\./],
+    [5, /5 переводов\./, /in 5 transfers\./]
+  ])("uses compact transfer-count grammar for %s direct transfers", (count, ru, en) => {
     const [fact] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact({ principalTxCount: count })]);
 
     expect(fact?.factTextRu).toMatch(ru);
@@ -1374,9 +1367,9 @@ describe("wallet narrative signal catalogue", () => {
     const [proved] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact()], [], exactNegative);
     const [unknown] = catalogueApi.firstHopBlacklistFacts(subject, [blacklistFact()]);
 
-    expect(proved?.factTextRu).toMatch(/сам проверяемый адрес.*ч[её]рн.*спис.*не|сам проверяемый адрес.*не.*ч[её]рн.*спис/i);
-    expect(proved?.factTextEn).toMatch(/checked address itself is not.*blacklist/i);
-    expect(`${unknown?.factTextRu}\n${unknown?.factTextEn}`).not.toMatch(/сам проверяемый адрес.*не|checked address itself is not/i);
+    expect(proved?.factTextRu).toMatch(/сам адрес не в списке/i);
+    expect(proved?.factTextEn).toMatch(/checked address not blacklisted/i);
+    expect(`${unknown?.factTextRu}\n${unknown?.factTextEn}`).not.toMatch(/сам адрес не|checked address not/i);
   });
 
   it("does not apply a subject-clear restriction from another wallet", () => {
@@ -1611,9 +1604,9 @@ describe("wallet narrative signal catalogue", () => {
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
 
     expect(copy).toMatch(/83%.*UsdtOFT/i);
-    expect(copy).toMatch(/другой сети.*не видна в TRON|another chain.*not visible on TRON/is);
-    expect(copy).toMatch(/обычн.*обмен.*скры.*происхожд.*AML-риск|ordinary swaps.*hide.*origin.*AML risk/is);
-    if (repeated) expect(copy).toMatch(/10 перевод|10 transfers.*нетипич|unusual/is);
+    expect(copy).toMatch(/история.*вне TRON|earlier history.*outside TRON/is);
+    expect(copy).toMatch(/обменивает.*усложняет.*происхожд|swap.*hinder.*origin/is);
+    if (repeated) expect(copy).toMatch(/10 перевод.*нетипич|10 transfers.*unusual/is);
   });
 
   it.each([
@@ -1639,9 +1632,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(forward?.factTextRu).toMatch(ru);
     expect(forward?.factTextEn).toMatch(en);
     expect(copy).not.toMatch(/50%.*(?:пришло|прошло|came|passed).*Alpha Route/i);
-    if (kind === "cross_chain_boundary") {
-      expect(copy).toMatch(/история до этих сервисов.*History before these services/is);
-    }
+    if (kind === "cross_chain_boundary") expect(copy).toMatch(/история до него.*earlier history/is);
     expect(reversed).toEqual(forward);
   });
 
@@ -1667,7 +1658,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(forward?.factTextRu).toMatch(ru);
     expect(forward?.factTextEn).toMatch(en);
     if (kind === "cross_chain_boundary") {
-      expect(`${forward?.factTextRu}\n${forward?.factTextEn}`).toMatch(/история до этих сервисов.*History before these services/is);
+      expect(`${forward?.factTextRu}\n${forward?.factTextEn}`).toMatch(/история до него.*earlier history/is);
     }
     expect(reversed).toEqual(forward);
   });
@@ -1747,7 +1738,7 @@ describe("wallet narrative signal catalogue", () => {
     expect(english[2]).toMatch(/unnamed DEX\/router service/i);
     expect(english[3]).toMatch(/unnamed exchange service/i);
     expect(english.join("\n")).not.toMatch(/[А-Яа-яЁё]/);
-    expect(crossChain?.factTextRu).toMatch(/история до этого сервиса/i);
+    expect(crossChain?.factTextRu).toMatch(/история до него/i);
     expect(crossChain?.factTextRu).not.toMatch(/история до границы/i);
   });
 
@@ -2101,7 +2092,7 @@ describe("wallet narrative signal catalogue", () => {
 
     expect(bridgeFacts).toHaveLength(1);
     expect(bridgeFacts[0]?.evidenceIds).toEqual([firstHash, secondHash, "9".repeat(64)]);
-    expect(bridgeFacts[0]?.factTextEn).toMatch(/another chain.*not visible on TRON/i);
+    expect(bridgeFacts[0]?.factTextEn).toMatch(/earlier history.*outside TRON/i);
     expect(reversed).toEqual(forward);
   });
 
@@ -2219,6 +2210,17 @@ describe("wallet narrative signal catalogue", () => {
         economicProtocol: "tron_gasfree"
       },
       {
+        txHash: "c".repeat(64),
+        fromAddress: subject,
+        toAddress: `T${"6".repeat(33)}`,
+        amountRaw: "1500000",
+        timestamp: "2026-05-26T10:00:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer",
+        economicRole: "service_fee",
+        economicProtocol: "tron_gasfree"
+      },
+      {
         txHash: "f".repeat(64),
         fromAddress: subject,
         toAddress: `T${"8".repeat(33)}`,
@@ -2239,11 +2241,12 @@ describe("wallet narrative signal catalogue", () => {
       })
     ], [profile]);
 
-    expect(fee?.factTextRu).toBe("Отдельно GasFree удержал 3 USDT комиссии. Она не входит в основную сумму.");
-    expect(fee?.factTextEn).toBe("Separately, GasFree retained a 3 USDT fee. It is excluded from the principal amount.");
+    expect(fee?.factTextRu).toBe("Отдельно GasFree удержал 4,5 USDT комиссии. Она не входит в основную сумму.");
+    expect(fee?.factTextEn).toBe("GasFree separately retained a 4.5 USDT fee. It is not principal.");
     expect(principal?.factTextRu).toContain("1 176 317 USDT");
     expect(principal?.factTextRu).not.toContain("1 176 320");
     expect(`${fee?.factTextRu}\n${fee?.factTextEn}`).not.toMatch(/риск|risk|санкц|blacklist/i);
+    expect(`${fee?.factTextRu}\n${fee?.factTextEn}`).not.toMatch(/связан|linked|settlement|перед|before/i);
   });
 
   it("does not turn a fee-only GasFree provider into direct adverse evidence", () => {
@@ -2599,21 +2602,30 @@ describe("wallet narrative signal catalogue", () => {
       TGYT_DIRECT_BLACKLIST_CASE.largePrincipalTxHash
     ]);
     expect(evidence.facts[2]?.evidenceIds).toEqual([TGYT_DIRECT_BLACKLIST_CASE.gasFreeFeeTxHash]);
-    expect(evidence.facts[2]?.relatedFactIds).toEqual([evidence.facts[0]?.id]);
+    expect(selectNarrativeFacts(buildWalletNarrativeCase({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 90,
+      facts: evidence.facts,
+      coverageExplanation: null
+    })).map((fact) => fact.kind)).toEqual(["direct_counterparty_blacklist", "bridge_route"]);
     expect(text).toMatch(/^🔴 90\/100 — критический риск\. Операцию не проводить\./u);
     expect(text).toContain("TWGC…TdTm");
     expect(text).toContain("1 176 317 USDT");
     expect(text).toContain("100% исходящей суммы");
-    expect(text).toContain("сейчас в чёрном списке USDT");
+    expect(text).toContain("Контрагент в чёрном списке USDT");
     expect(text).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
-    expect(text).toContain("Сам проверяемый адрес не в чёрном списке");
+    expect(text).toContain("Сам адрес не в списке");
     expect(text).toMatch(/Отдельно GasFree удержал 3 USDT комиссии.*не входит в основную сумму/u);
     expect(text.match(/GasFree/gu)).toHaveLength(1);
+    expect(text).toContain("Техническая деталь");
+    expect(text).toContain("UsdtOFT");
     expect(text).not.toMatch(/перед переводом/u);
-    expect(text).not.toContain("UsdtOFT");
     expect(text).not.toMatch(/45 с|1 176 320|TGyt.*ч[её]рном списке|risky_counterparty|cross_chain_boundary/iu);
-    expect(english).toMatch(/to counterparty TWGC…TdTm.*The counterparty is currently on the USDT blacklist.*It was listed 2 h 52 m after the 1,176,302 USDT transfer/u);
+    expect(english).toMatch(/1,176,317 USDT went to TWGC…TdTm.*100% of the outgoing amount.*Counterparty now on USDT blacklist.*Listed 2 h 52 m after the 1,176,302 USDT transfer/u);
     expect(english).not.toMatch(/blacklisted counterparty|before the transfer/u);
+    expect(text.length - text.indexOf("\n\n")).toBeLessThanOrEqual(450);
+    expect(english.length - english.indexOf("\n\n")).toBeLessThanOrEqual(450);
   });
 
   it("does not promote an unrelated GasFree fee above material bridge context", () => {
@@ -2647,12 +2659,60 @@ describe("wallet narrative signal catalogue", () => {
       "bridge_route",
       "gasfree_fee"
     ]);
-    expect(evidence.facts[2]?.relatedFactIds).toBeUndefined();
     expect(text).toContain("UsdtOFT");
+    expect(text).toContain("Техническая деталь");
+    expect(text).toContain("GasFree");
+  });
+
+  it("keeps coverage above the optional GasFree technical detail", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: TGYT_DIRECT_BLACKLIST_CASE.subjectAddress,
+      subjectRestriction: tgytSubjectRestriction(),
+      firstHopBlacklistFacts: [tgytFirstHopBlacklistFact()],
+      firstHopBlacklistCoverage: tgytFirstHopCoverage(),
+      directCounterpartyInteractionProfiles: tgytDirectInteractionProfiles(),
+      paths: [tgytBridgePath()],
+      sourcePolicyEvidence: [tgytBridgePolicyEvidence()]
+    });
+    const text = formatWalletNarrativeSummary({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 90,
+      facts: evidence.facts,
+      coverageExplanation: {
+        textRu: "Проверена вся доступная сумма.",
+        textEn: "The full available amount was checked.",
+        isRiskEvidence: false
+      }
+    });
+
+    expect(text).toContain("Границы проверки");
+    expect(text).toContain("UsdtOFT");
+    expect(text).not.toContain("Техническая деталь");
     expect(text).not.toContain("GasFree");
   });
 
-  it("keeps stronger exact evidence above a linked GasFree fee", () => {
+  it("does not duplicate a GasFree fee already selected as the second fact", () => {
+    const evidence = catalogueApi.buildWalletNarrativeEvidence({
+      checkedAddress: TGYT_DIRECT_BLACKLIST_CASE.subjectAddress,
+      subjectRestriction: tgytSubjectRestriction(),
+      firstHopBlacklistFacts: [tgytFirstHopBlacklistFact()],
+      firstHopBlacklistCoverage: tgytFirstHopCoverage(),
+      directCounterpartyInteractionProfiles: tgytDirectInteractionProfiles()
+    });
+    const text = formatWalletNarrativeSummary({
+      locale: "ru",
+      decision: "DECLINE",
+      score: 90,
+      facts: evidence.facts,
+      coverageExplanation: null
+    });
+
+    expect(text.match(/GasFree/gu)).toHaveLength(1);
+    expect(text).not.toContain("Техническая деталь");
+  });
+
+  it("keeps stronger exact evidence above the optional GasFree technical detail", () => {
     const evidence = catalogueApi.buildWalletNarrativeEvidence({
       checkedAddress: TGYT_DIRECT_BLACKLIST_CASE.subjectAddress,
       subjectRestriction: tgytSubjectRestriction(),
@@ -2676,6 +2736,7 @@ describe("wallet narrative signal catalogue", () => {
     });
 
     expect(text).toContain("подтверждённая дрейнер-цепочка");
-    expect(text).not.toContain("GasFree удержал");
+    expect(text.indexOf("подтверждённая дрейнер-цепочка")).toBeLessThan(text.indexOf("Техническая деталь"));
+    expect(text).toContain("GasFree удержал");
   });
 });

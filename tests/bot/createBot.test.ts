@@ -9507,11 +9507,12 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(fresh).toContain("1 176 317 USDT");
       expect(fresh).toContain("TWGC…TdTm");
       expect(fresh).toContain("100% исходящей суммы");
-      expect(fresh).toContain("Контрагент сейчас в чёрном списке USDT");
+      expect(fresh).toContain("Контрагент в чёрном списке USDT");
       expect(fresh).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
-      expect(fresh).toContain("Сам проверяемый адрес не в чёрном списке");
-      expect(fresh).toMatch(/Отдельно GasFree удержал 3 USDT комиссии.*не входит в основную сумму/u);
-      expect(fresh).not.toMatch(/45 с|1 176 320|UsdtOFT|risky_counterparty|cross_chain_boundary/u);
+      expect(fresh).toContain("Сам адрес не в списке");
+      expect(fresh).toContain("UsdtOFT");
+      expect(fresh).toContain("Границы проверки");
+      expect(fresh).not.toMatch(/GasFree|Техническая деталь|45 с|1 176 320|risky_counterparty|cross_chain_boundary/u);
 
       expect(legacy).toContain("78/100");
       expect(legacy).toMatch(/устаревш|свеж/u);
@@ -9581,7 +9582,7 @@ describe("bot command and inline UX smoke coverage", () => {
       });
 
       expect(ru).toMatch(/^[🟢🟡🟠🔴] \d+\/100 —/u);
-      expect(ru).toContain("Входящий: адрес получил 10 000 USDT");
+      expect(ru).toMatch(/Входящий:.*10 000 USDT/u);
       expect(ru).toContain("чёрном списке USDT");
       expect(en).toMatch(/^[🟢🟡🟠🔴] \d+\/100 —/u);
       expect(en).toContain("The address is on the USDT blacklist");
@@ -9651,8 +9652,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
       expect(approvalText).toContain("первым получил 309 000 USDT");
       expect(approvalText).toContain("подтверждённой дрейнер-цепочке");
-      expect(bridgeText).toContain("83% проверяемой суммы пришло через UsdtOFT");
-      expect(bridgeText).toContain("не видна в TRON");
+      expect(bridgeText).toContain("83% проверенной суммы — через мост UsdtOFT");
+      expect(bridgeText).toContain("вне TRON");
       expect(bridgeText).not.toContain("raw_bridge_reason_must_not_leak");
     });
 
@@ -9791,7 +9792,7 @@ describe("bot command and inline UX smoke coverage", () => {
       const detailed = lastPlainText(calls);
 
       expect(normal).toMatch(/^[🟢🟡🟠🔴] \d+\/100 —/u);
-      expect(normal).toMatch(/counterparty.*currently on the USDT blacklist/i);
+      expect(normal).toMatch(/counterparty.*now on USDT blacklist/i);
       expect(normal).not.toContain("support/debug");
       expect(detailed).toContain("Detailed address report");
       expect(detailed).toContain("Where Is Money");

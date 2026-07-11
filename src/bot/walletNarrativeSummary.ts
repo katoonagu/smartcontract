@@ -56,7 +56,6 @@ export type NarrativeFact = {
   id: string;
   kind: NarrativeFactKind;
   evidenceIds?: string[];
-  relatedFactIds?: string[];
   role?: NarrativeAddressRole | null;
   proofStrength?: "exact" | "strong" | "context" | "limitation";
   priority?: number;
@@ -460,7 +459,7 @@ function firstHopChronology(
   if (fact.temporalRelation === "active_at_transfer") {
     return {
       ru: "Во время перевода контрагент уже находился в чёрном списке.",
-      en: "The counterparty was already on the blacklist during the transfer."
+      en: "Already blacklisted during the transfer."
     };
   }
   if (fact.temporalRelation === "mixed") {
@@ -472,7 +471,7 @@ function firstHopChronology(
   if (fact.temporalRelation === "unknown") {
     return {
       ru: "Дату блокировки установить не удалось.",
-      en: "The listing date could not be established."
+      en: "Listing date could not be established."
     };
   }
   const transfer = selectedChronologyTransfer(fact, profiles);
@@ -481,13 +480,13 @@ function firstHopChronology(
   const elapsed = durationParts(effectiveMs - transferMs);
   if (!transfer || !elapsed) {
     return {
-      ru: "Его внесли туда после этих переводов.",
-      en: "It was listed after these transfers."
+      ru: "Внесли после этих переводов.",
+      en: "Listed after these transfers."
     };
   }
   return {
-    ru: `Его внесли туда через ${elapsed.ru} после перевода на ${formatUsdtRaw(transfer.amountRaw, "ru")} USDT.`,
-    en: `It was listed ${elapsed.en} after the ${formatUsdtRaw(transfer.amountRaw, "en")} USDT transfer.`
+    ru: `Внесли через ${elapsed.ru} после перевода на ${formatUsdtRaw(transfer.amountRaw, "ru")} USDT.`,
+    en: `Listed ${elapsed.en} after the ${formatUsdtRaw(transfer.amountRaw, "en")} USDT transfer.`
   };
 }
 
@@ -512,16 +511,16 @@ export function firstHopBlacklistFacts(
       const address = shortAddress(fact.counterpartyAddress);
       const direction = fact.direction === "inbound"
         ? {
-            ru: `Входящий: адрес получил ${amountRu} USDT от контрагента ${address}`,
-            en: `Inbound: address received ${amountEn} USDT from counterparty ${address}`,
+            ru: `Входящий: от ${address} получили ${amountRu} USDT`,
+            en: `Inbound: ${amountEn} USDT came from ${address}`,
             shareRu: "входящей суммы",
-            shareEn: "incoming amount"
+            shareEn: "of the incoming amount"
           }
         : {
-            ru: `Исходящий: адрес отправил ${amountRu} USDT контрагенту ${address}`,
-            en: `Outbound: address sent ${amountEn} USDT to counterparty ${address}`,
+            ru: `Исходящий: на ${address} отправили ${amountRu} USDT`,
+            en: `Outbound: ${amountEn} USDT went to ${address}`,
             shareRu: "исходящей суммы",
-            shareEn: "outgoing amount"
+            shareEn: "of the outgoing amount"
           };
       const share = fact.shareSemantics === "exact" && fact.directionalPrincipalShare !== null
         ? {
@@ -532,15 +531,15 @@ export function firstHopBlacklistFacts(
       const chronology = firstHopChronology(fact, profiles);
       const subjectClear = subjectKnownClear
         ? {
-            ru: " Сам проверяемый адрес не в чёрном списке.",
-            en: " The checked address itself is not blacklisted."
+            ru: " Сам адрес не в списке.",
+            en: " Checked address not blacklisted."
           }
         : { ru: "", en: "" };
       return narrativeFact(
         `first-hop-blacklist:${fact.direction}:${fact.counterpartyAddress}:${fact.transferTxHashes.slice().sort().join(",")}`,
         "direct_counterparty_blacklist",
-        `${direction.ru}${share.ru} (${russianDirectTransferCount(fact.principalTxCount)}). Контрагент сейчас в чёрном списке USDT. ${chronology.ru}${subjectClear.ru}`,
-        `${direction.en}${share.en} (${englishDirectTransferCount(fact.principalTxCount)}). The counterparty is currently on the USDT blacklist. ${chronology.en}${subjectClear.en}`,
+        `${direction.ru}${share.ru}, ${russianDirectTransferCount(fact.principalTxCount)}. Контрагент в чёрном списке USDT. ${chronology.ru}${subjectClear.ru}`,
+        `${direction.en}${share.en} in ${englishDirectTransferCount(fact.principalTxCount)}. Counterparty now on USDT blacklist. ${chronology.en}${subjectClear.en}`,
         null,
         "exact",
         fact.transferTxHashes
@@ -828,14 +827,14 @@ function crossChainFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   const count = txHashes.length;
   const repeatedRu = count > 1 ? ` в ${count} переводах` : "";
   const repeatedEn = count > 1 ? ` in ${count} transfers` : "";
-  const historyRu = identity.multiple ? "История до этих сервисов" : "История до этого сервиса";
-  const historyEn = identity.multiple ? "History before these services" : "History before this service";
+  const routeRu = identity.named ? `мост ${identity.ru}` : identity.ru;
+  const routeEn = identity.named ? `the ${identity.en} bridge` : identity.en;
   const ids = routeEvidenceIds(routePaths, policy);
   return [narrativeFact(
     `cross-chain:${ids.join(",")}`,
     "bridge_route",
-    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${identity.ru}${repeatedRu}. ${historyRu} находится в другой сети и не видна в TRON. Такие маршруты подходят для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
-    `${sourceShareText(share, amountRaw, "en")} of the checked amount came through ${identity.en}${repeatedEn}. ${historyEn} is on another chain and not visible on TRON. Such routes support ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
+    `${sourceShareText(share, amountRaw, "ru")} проверенной суммы — через ${routeRu}${repeatedRu}. Мост обменивает токены или усложняет проверку происхождения; история до него вне TRON.${count > 1 ? " Повторный маршрут нетипичен для депозита." : ""}`,
+    `${sourceShareText(share, amountRaw, "en")} of checked funds came through ${routeEn}${repeatedEn}. Bridges swap tokens or hinder origin checks; earlier history is outside TRON.${count > 1 ? " A repeated route is unusual for a deposit." : ""}`,
     null,
     count > 1 ? "strong" : "context",
     ids
@@ -1073,36 +1072,11 @@ export function gasFreeFeeFact(
     `gasfree-fee:${[...fees.keys()].sort().join(",")}`,
     "gasfree_fee",
     `Отдельно GasFree удержал ${formatUsdtRaw(total.toString(), "ru")} USDT комиссии. Она не входит в основную сумму.`,
-    `Separately, GasFree retained a ${formatUsdtRaw(total.toString(), "en")} USDT fee. It is excluded from the principal amount.`,
+    `GasFree separately retained a ${formatUsdtRaw(total.toString(), "en")} USDT fee. It is not principal.`,
     null,
     "exact",
     txHashes
   );
-}
-
-function linkGasFreeFeeToDirectFacts(
-  fee: NarrativeFact,
-  facts: NarrativeFact[],
-  profiles: DirectCounterpartyInteractionProfile[]
-): NarrativeFact {
-  const principalSettlementTxHashes = new Set(profiles.flatMap((profile) =>
-    (profile.transfers ?? [])
-      .filter((transfer) =>
-        transfer.economicRole === "principal" && transfer.economicProtocol === "tron_gasfree"
-      )
-      .map((transfer) => transfer.txHash)
-  ));
-  const feeSettlementTxHashes = new Set((fee.evidenceIds ?? [])
-    .filter((txHash) => principalSettlementTxHashes.has(txHash)));
-  if (feeSettlementTxHashes.size === 0) return fee;
-  const relatedFactIds = facts
-    .filter((fact) =>
-      fact.kind === "direct_counterparty_blacklist" &&
-      fact.evidenceIds?.some((txHash) => feeSettlementTxHashes.has(txHash))
-    )
-    .map((fact) => fact.id)
-    .sort(compareLexical);
-  return relatedFactIds.length > 0 ? { ...fee, relatedFactIds } : fee;
 }
 
 function traceHistoryReason(
@@ -1317,7 +1291,7 @@ export function buildWalletNarrativeEvidence(
     boundaryExposureProfiles: input.boundaryExposureProfiles
   }));
   const fee = gasFreeFeeFact(profiles);
-  if (fee) facts.push(linkGasFreeFeeToDirectFacts(fee, facts, profiles));
+  if (fee) facts.push(fee);
 
   const coverageExplanation = input.firstHopBlacklistCoverage
       ? coverageExplanationFor({
@@ -1409,13 +1383,6 @@ function validateWalletNarrativeCase(input: unknown): asserts input is WalletNar
     ) {
       throw new Error("Wallet narrative fact evidence ids must contain non-empty strings.");
     }
-    if (
-      fact.relatedFactIds !== undefined &&
-      (!Array.isArray(fact.relatedFactIds) ||
-        fact.relatedFactIds.some((id) => typeof id !== "string" || id.length === 0))
-    ) {
-      throw new Error("Wallet narrative related fact ids must contain non-empty strings.");
-    }
   });
   if (input.coverageExplanation === null) return;
   if (!isRecord(input.coverageExplanation)) {
@@ -1493,21 +1460,6 @@ export function selectNarrativeFacts(caseData: WalletNarrativeCase): NarrativeFa
   let orderedFacts = preferred
     ? [preferred, ...facts.filter((fact) => fact.id !== preferred.id)]
     : facts;
-  if (orderedFacts[0]?.kind === "direct_counterparty_blacklist") {
-    const primary = orderedFacts[0];
-    const rest = orderedFacts.slice(1);
-    const linkedFees = rest.filter((fact) =>
-      fact.kind === "gasfree_fee" && fact.relatedFactIds?.includes(primary.id)
-    );
-    orderedFacts = [
-      primary,
-      ...rest.filter((fact) => factRank[fact.kind] <= factRank.verify20_template),
-      ...linkedFees,
-      ...rest.filter((fact) =>
-        factRank[fact.kind] > factRank.verify20_template && !linkedFees.includes(fact)
-      )
-    ];
-  }
 
   for (const fact of orderedFacts) {
     const sentences = sentenceKeys(localizedFactText(fact, caseData.locale));
@@ -1565,7 +1517,6 @@ export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string
   ].join("\n"));
 
   let coveragePart: string | null = null;
-  const coverageSentences = new Set<string>();
   const coverage = caseData.coverageExplanation;
   if (coverage) {
     const coverageText = localizedCoverageText(coverage, caseData.locale);
@@ -1573,7 +1524,6 @@ export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string
       sentenceKeys(localizedFactText(fact, caseData.locale))
     ));
     if (!sentenceKeys(coverageText).some((sentence) => usedSentences.has(sentence))) {
-      sentenceKeys(coverageText).forEach((sentence) => coverageSentences.add(sentence));
       coveragePart = [
         caseData.locale === "en" ? "Coverage limits" : "Границы проверки",
         coverageText
@@ -1582,19 +1532,34 @@ export function formatWalletNarrativeSummary(input: WalletNarrativeCase): string
   }
 
   const parts = factParts.slice(0, 1);
-  if (coveragePart && fitsBody([...parts, coveragePart])) {
-    parts.push(coveragePart);
-  } else {
-    coveragePart = null;
-    coverageSentences.clear();
-  }
   const conclusionPart = factParts[1];
-  const conclusionIndex = parts.length > 0 ? 1 : 0;
-  const conclusionDuplicatesCoverage = selected[1] && sentenceKeys(localizedFactText(selected[1], caseData.locale))
-    .some((sentence) => coverageSentences.has(sentence));
-  const withConclusion = [...parts.slice(0, conclusionIndex), conclusionPart, ...parts.slice(conclusionIndex)];
-  if (conclusionPart && !conclusionDuplicatesCoverage && fitsBody(withConclusion)) {
-    parts.splice(conclusionIndex, 0, conclusionPart);
+  const conclusionDuplicatesCoverage = coverage && selected[1]
+    ? sentenceKeys(localizedFactText(selected[1], caseData.locale))
+        .some((sentence) => sentenceKeys(localizedCoverageText(coverage, caseData.locale)).includes(sentence))
+    : false;
+  const fittingDuplicateCoverage = conclusionDuplicatesCoverage && coveragePart &&
+    fitsBody([...parts, coveragePart]);
+  if (conclusionPart && !fittingDuplicateCoverage && fitsBody([...parts, conclusionPart])) {
+    parts.push(conclusionPart);
+  }
+  if (coveragePart) {
+    if (fitsBody([...parts, coveragePart])) parts.push(coveragePart);
+  } else if (coverage === null && parts.length === factParts.length) {
+    const selectedIds = new Set(selected.map((fact) => fact.id));
+    const technicalFee = caseData.facts
+      .filter((fact) =>
+        fact.kind === "gasfree_fee" &&
+        fact.proofStrength === "exact" &&
+        !selectedIds.has(fact.id)
+      )
+      .sort((left, right) => compareLexical(left.id, right.id))[0];
+    if (technicalFee) {
+      const technicalPart = [
+        caseData.locale === "en" ? "Technical detail" : "Техническая деталь",
+        localizedFactText(technicalFee, caseData.locale)
+      ].join("\n");
+      if (fitsBody([...parts, technicalPart])) parts.push(technicalPart);
+    }
   }
 
   return [header(caseData), ...parts].join("\n\n");
