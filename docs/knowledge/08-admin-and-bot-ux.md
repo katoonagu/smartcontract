@@ -14,7 +14,6 @@ code_refs:
   - src/alerts/formatters.ts
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminConsole.test.ts
-  - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminServer.test.ts
   - tests/bot/createBot.test.ts
   - tests/bot/wherePreliminaryNarrative.test.ts
