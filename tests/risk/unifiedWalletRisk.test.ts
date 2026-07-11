@@ -560,7 +560,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       finalDecision: "DECLINE",
       hardEvidenceFloor: 95,
       activeAnchor: {
-        code: "matrix:hard_proof",
+        code: "matrix:subject_restriction",
         score: 95,
         source: "hard_evidence"
       }
@@ -1115,7 +1115,7 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.matrixScore).toMatchObject({
-      policyVersion: "scoring-signal-matrix-v1",
+      policyVersion: "scoring-signal-matrix-v2",
       policyScore: 70,
       matrixDecision: "DECLINE",
       winningRow: "source_policy",

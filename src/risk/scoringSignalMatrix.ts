@@ -5,6 +5,8 @@ export type MatrixDecision =
   | "INSUFFICIENT_EVIDENCE";
 
 export type MatrixEvidenceRow =
+  | "subject_restriction"
+  | "direct_counterparty_policy"
   | "hard_proof"
   | "source_policy"
   | "incoming_deposit_source_policy"
@@ -98,8 +100,10 @@ export type MatrixUncertaintyState = {
 
 export type MatrixRiskVector = Partial<Record<MatrixEvidenceRow, ClassifiedMatrixCandidate[]>>;
 
+export const SCORING_SIGNAL_MATRIX_POLICY_VERSION = "scoring-signal-matrix-v2" as const;
+
 export type MatrixScoringResult = {
-  policyVersion: "scoring-signal-matrix-v1";
+  policyVersion: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   policyScore: number | null;
   matrixDecision: MatrixDecision;
   winningRow: MatrixEvidenceRow;
@@ -112,6 +116,8 @@ export type MatrixScoringResult = {
 };
 
 const rowPriority: MatrixEvidenceRow[] = [
+  "subject_restriction",
+  "direct_counterparty_policy",
   "hard_proof",
   "source_policy",
   "incoming_deposit_source_policy",
@@ -173,7 +179,11 @@ function classifyCandidate(candidate: MatrixCandidate): ClassifiedMatrixCandidat
                 decisionEligibility: "review_only" as const,
                 coverageDependency: "none" as const
               };
-  if (candidate.authority.kind === "exact_hard" && candidate.row !== "hard_proof") {
+  if (
+    candidate.authority.kind === "exact_hard" &&
+    candidate.row !== "subject_restriction" &&
+    candidate.row !== "hard_proof"
+  ) {
     throw new Error("exact hard authority requires the hard_proof matrix row");
   }
   return { ...candidate, ...metadata };
@@ -326,7 +336,7 @@ export function scoreMatrixCandidates(
   const policyScore = winner.evidenceClass === "coverage" ? null : winner.score;
 
   return {
-    policyVersion: "scoring-signal-matrix-v1",
+    policyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     policyScore,
     matrixDecision,
     winningRow: winner.row,

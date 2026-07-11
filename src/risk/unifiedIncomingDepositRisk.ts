@@ -34,6 +34,7 @@ export type CalculateUnifiedIncomingDepositRiskInput = {
   senderStablecoinState: StablecoinRestrictionProfile | null;
   whereReport: WhereIsMoneyReport;
   deepReport?: DeepAddressForensicReport | null;
+  receiverDeepReport?: DeepAddressForensicReport | null;
   freshBundleExposure?: IncomingFreshBundleExposure | null;
   walletExposureProfile?: IncomingWalletExposureProfile | null;
   decisionCoverage?: DecisionCoverage;
@@ -185,6 +186,7 @@ export function calculateUnifiedIncomingDepositRisk(
     txHash: input.txHash,
     fastReport: fastSenderRisk,
     deepReport: input.deepReport,
+    receiverDeepReport: input.receiverDeepReport,
     whereReport: input.whereReport,
     freshBundleExposure: input.freshBundleExposure,
     walletExposureProfile: input.walletExposureProfile

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildScoringAuditRow, cohortCounts } from "../../src/risk/scoringAudit";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
@@ -102,7 +103,7 @@ describe("scoring audit rows", () => {
 
     expect(row.auditDecision).toBe("INSUFFICIENT_COVERAGE");
     expect(row.cohorts).toContain("low_score_incomplete_coverage");
-    expect(row.policyVersion).toBe("scoring-signal-matrix-v1");
+    expect(row.policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
   it("flags hard evidence cases", () => {

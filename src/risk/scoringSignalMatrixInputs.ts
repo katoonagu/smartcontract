@@ -1,6 +1,7 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { calculateHistoricalTransitBreakdown } from "../forensics/historicalTransitScore";
 import type {
+  FirstHopBlacklistFact,
   IncomingFreshBundleExposure,
   IncomingWalletExposureProfile,
   RiskLabel,
@@ -28,6 +29,7 @@ export type IncomingDepositMatrixCandidateInput = {
   txHash: string;
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
+  receiverDeepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
   freshBundleExposure?: IncomingFreshBundleExposure | null;
   walletExposureProfile?: IncomingWalletExposureProfile | null;
@@ -75,6 +77,113 @@ function contextScore(value: number, max = 59): number {
   return Math.max(0, Math.min(max, Math.round(value)));
 }
 
+const DIRECT_POLICY_ABSOLUTE_RAW = 10_000n * 1_000_000n;
+const DIRECT_POLICY_RELATIVE_MIN_RAW = 100n * 1_000_000n;
+const DIRECT_POLICY_RELATIVE_MIN_SHARE = 0.01;
+
+function directPolicyProfileScore(
+  report: DeepAddressForensicReport,
+  fact: FirstHopBlacklistFact
+): number {
+  const factTxHashes = new Set(fact.transferTxHashes);
+  return Math.max(0, ...arrayOrEmpty(report.directCounterpartyInteractionProfiles)
+    .filter((profile) =>
+      sameAddress(profile.subjectAddress, report.subjectAddress) &&
+      sameAddress(profile.counterpartyAddress, fact.counterpartyAddress) &&
+      profile.direction === fact.direction &&
+      profile.txHashes.some((txHash) => factTxHashes.has(txHash))
+    )
+    .map((profile) => profile.scoreContribution));
+}
+
+function verifiedBlacklistEventTxHash(fact: FirstHopBlacklistFact): string | null {
+  if (!fact.effectiveTxHash) return null;
+  return fact.timelineEvents.some((event) =>
+    event.txHash === fact.effectiveTxHash && event.verification === "verified_contract_log"
+  ) ? fact.effectiveTxHash : null;
+}
+
+function directCounterpartyPolicyCandidate(
+  context: MatrixCandidateContext,
+  report: DeepAddressForensicReport,
+  fact: FirstHopBlacklistFact,
+  actionUnit: "wallet" | "incoming_deposit"
+): MatrixCandidate | null {
+  if (
+    fact.evidenceKind !== "usdt_blacklist" ||
+    fact.evidenceAuthority !== "official_contract" ||
+    fact.statusAtCheck !== "active" ||
+    !/^\d+$/.test(fact.principalAmountRaw) ||
+    BigInt(fact.principalAmountRaw) <= 0n ||
+    fact.principalTxCount <= 0 ||
+    fact.transferTxHashes.length === 0
+  ) return null;
+
+  const principalAmountRaw = BigInt(fact.principalAmountRaw);
+  const absoluteMaterial = principalAmountRaw >= DIRECT_POLICY_ABSOLUTE_RAW;
+  const exactShare = fact.directTransferCoverage === "complete" && fact.shareSemantics === "exact";
+  const relativeMaterial = exactShare &&
+    fact.directionalPrincipalShare !== null &&
+    principalAmountRaw >= DIRECT_POLICY_RELATIVE_MIN_RAW &&
+    fact.directionalPrincipalShare >= DIRECT_POLICY_RELATIVE_MIN_SHARE;
+  if (!absoluteMaterial && !relativeMaterial) return null;
+
+  const currentStateId = `usdt_blacklist_state:${fact.counterpartyAddress}:${fact.checkedAt}`;
+  const eventTxHash = verifiedBlacklistEventTxHash(fact);
+  const ids = [...new Set([
+    ...fact.transferTxHashes,
+    ...(eventTxHash ? [eventTxHash] : []),
+    currentStateId
+  ])].sort((left, right) => left.localeCompare(right));
+  const profileScore = exactShare ? directPolicyProfileScore(report, fact) : 0;
+  return candidate(context, {
+    kind: "policy",
+    decisionEligibility: "can_decline",
+    coverageDependency: "none"
+  }, {
+    row: "direct_counterparty_policy",
+    actionUnit,
+    score: exactShare ? Math.max(60, Math.min(90, Math.round(profileScore))) : 60,
+    evidenceIds: ids,
+    evidenceEpisodeIds: [`direct_counterparty_policy:${fact.direction}:${fact.counterpartyAddress}`],
+    atomicSignals: ["direct_counterparty_current_usdt_blacklist"],
+    modifiers: [`direction_${fact.direction}`, `blacklist_timing_${fact.temporalRelation}`],
+    caps: profileScore > 90 ? ["direct_counterparty_policy_cap_90"] : [],
+    dampeners: [],
+    caveats: []
+  });
+}
+
+function walletDirectCounterpartyPolicyCandidates(
+  context: MatrixCandidateContext,
+  report: DeepAddressForensicReport | null | undefined
+): MatrixCandidate[] {
+  if (!report || !sameAddress(report.subjectAddress, context.subjectAddress)) return [];
+  return arrayOrEmpty(report.firstHopBlacklistFacts)
+    .map((fact) => directCounterpartyPolicyCandidate(context, report, fact, "wallet"))
+    .filter((item): item is MatrixCandidate => item !== null);
+}
+
+function incomingDirectCounterpartyPolicyCandidates(
+  context: MatrixCandidateContext,
+  input: Pick<IncomingDepositMatrixCandidateInput, "senderAddress" | "receiverAddress" | "txHash" | "receiverDeepReport">
+): MatrixCandidate[] {
+  const report = input.receiverDeepReport;
+  if (!report || !sameAddress(report.subjectAddress, input.receiverAddress)) return [];
+  return arrayOrEmpty(report.firstHopBlacklistFacts)
+    .filter((fact) =>
+      fact.direction === "inbound" &&
+      sameAddress(fact.counterpartyAddress, input.senderAddress) &&
+      fact.transferTxHashes.includes(input.txHash)
+    )
+    .map((fact) => directCounterpartyPolicyCandidate(context, report, fact, "incoming_deposit"))
+    .filter((item): item is MatrixCandidate => item !== null)
+    .map((item) => ({
+      ...item,
+      modifiers: [...item.modifiers, `deposit_receiver_${input.receiverAddress}`]
+    }));
+}
+
 function coverageCandidate(context: MatrixCandidateContext, reason: string): MatrixCandidate {
   return candidate(context, { kind: "coverage", coverageDependency: context.requiredCoverage }, {
     row: "coverage_uncertainty",
@@ -117,7 +226,7 @@ function fastHardProofCandidates(
     context,
     { kind: "exact_hard", proofSource: "fast_exact_code" },
     {
-      row: "hard_proof",
+      row: item.code === "stablecoin_usdt_blacklisted" ? "subject_restriction" : "hard_proof",
       actionUnit: "wallet",
       score: item.score,
       evidenceIds: [item.evidenceId],
@@ -170,7 +279,7 @@ function deepCandidates(
   for (const profile of arrayOrEmpty(report.stablecoinRestrictionProfiles)) {
     if (!profile.isBlacklisted || !sameAddress(profile.subjectAddress, context.subjectAddress)) continue;
     candidates.push(candidate(context, { kind: "exact_hard", proofSource: "stablecoin_restriction" }, {
-      row: "hard_proof",
+      row: "subject_restriction",
       actionUnit: "wallet",
       score: 95,
       evidenceIds: [`stablecoin:${profile.subjectAddress}:${profile.tokenSymbol}`],
@@ -181,6 +290,10 @@ function deepCandidates(
       dampeners: [],
       caveats: []
     }));
+  }
+
+  if (context.decisionScope !== "incoming_unified") {
+    candidates.push(...walletDirectCounterpartyPolicyCandidates(context, report));
   }
 
   for (const profile of arrayOrEmpty(report.approvalDrainProvenanceProfiles)) {
@@ -797,6 +910,7 @@ export function buildIncomingDepositMatrixCandidates(input: IncomingDepositMatri
     requiredCoverage: "deposit_provenance"
   };
   const candidates = buildAddressEvidenceCandidates(context, input, input.txHash);
+  candidates.push(...incomingDirectCounterpartyPolicyCandidates(context, input));
   const exposure = input.freshBundleExposure;
   const backgroundScore = Math.max(0, Math.min(20, Math.round(input.walletExposureProfile?.scoreContribution ?? 0)));
   if (backgroundScore > 0) {

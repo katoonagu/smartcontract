@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
+import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import {
   buildIncomingDepositReport,
   runSingleIncomingDepositJobCycle,
@@ -204,6 +205,7 @@ async function runCompleteIncomingTargetedMaterializationScenario(input: {
   amountRaw?: string;
   coveringStateOnly?: boolean;
   senderBlacklisted?: boolean;
+  receiverDeepReport?: DeepAddressForensicReport | null;
 }) {
   const hub = "TIncomingMaterializedHub111111111111111";
   const upstreamSource = "TIncomingMaterializedCex111111111111111";
@@ -314,6 +316,7 @@ async function runCompleteIncomingTargetedMaterializationScenario(input: {
     sender: validProgressJson.sender,
     amountRaw,
     timestamp: new Date(validProgressJson.timestamp),
+    receiverDeepReport: input.receiverDeepReport,
     localIndexMaterializationMaxRows: input.localIndexMaterializationMaxRows,
     persistProgress: async (patch) => patch
   });
@@ -1244,6 +1247,74 @@ describe("runSingleIncomingDepositJobCycle", () => {
 });
 
 describe("buildIncomingDepositReport", () => {
+  it("passes an optional receiver Deep report with the exact checked deposit context", async () => {
+    const receiverDeepReport = {
+      subjectAddress: validProgressJson.watchedWallet,
+      firstHopBlacklistFacts: [{
+        counterpartyAddress: validProgressJson.sender,
+        direction: "inbound",
+        evidenceKind: "usdt_blacklist",
+        evidenceAuthority: "official_contract",
+        statusAtCheck: "active",
+        temporalRelation: "unknown",
+        effectiveAt: null,
+        effectiveTxHash: null,
+        checkedAt: "2026-05-29T14:02:00.000Z",
+        principalAmountRaw: validProgressJson.amountRaw,
+        principalTxCount: 1,
+        directionalPrincipalShare: 1,
+        shareSemantics: "exact",
+        transferTxHashes: [depositTxHash],
+        beforeEffectiveAmountRaw: "0",
+        beforeEffectiveTxCount: 0,
+        activeAmountRaw: "0",
+        activeTxCount: 0,
+        unknownTimingAmountRaw: validProgressJson.amountRaw,
+        unknownTimingTxCount: 1,
+        directTransferCoverage: "complete",
+        timelineCoverage: "partial",
+        timelineEvents: []
+      }],
+      directCounterpartyInteractionProfiles: [{
+        subjectAddress: validProgressJson.watchedWallet,
+        direction: "inbound",
+        counterpartyAddress: validProgressJson.sender,
+        volumeRaw: validProgressJson.amountRaw,
+        volumeRatio: 1,
+        txCount: 1,
+        firstSeen: validProgressJson.timestamp,
+        lastSeen: validProgressJson.timestamp,
+        txHashes: [depositTxHash],
+        serviceCategory: null,
+        identity: null,
+        snapshot: {
+          address: validProgressJson.sender,
+          riskScore: 95,
+          riskLevel: "CRITICAL",
+          source: "stablecoin_blacklist",
+          evidenceClass: "exact_labeled_counterparty",
+          reasons: [],
+          partialNotes: []
+        },
+        interactionWeight: 1,
+        scoreContribution: 90,
+        evidenceClass: "exact_labeled_counterparty",
+        skippedReason: null
+      }]
+    } as unknown as DeepAddressForensicReport;
+
+    const { result } = await runCompleteIncomingTargetedMaterializationScenario({
+      hopRows: incomingMaterializationRows,
+      receiverDeepReport
+    });
+
+    expect(result).toMatchObject({
+      decision: "DECLINE",
+      scoreValid: true,
+      depositRiskScore: 90
+    });
+  });
+
   it("records report-level performance stages without changing the report", async () => {
     const timingStages: string[] = [];
     const timing = {

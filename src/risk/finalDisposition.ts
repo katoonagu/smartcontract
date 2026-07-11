@@ -31,7 +31,10 @@ function exactHardCandidate(
   matrix: MatrixScoringResult,
   subject: DecisionSubject
 ): ClassifiedMatrixCandidate | null {
-  return [...(matrix.riskVector.hard_proof ?? [])]
+  return [
+    ...(matrix.riskVector.subject_restriction ?? []),
+    ...(matrix.riskVector.hard_proof ?? [])
+  ]
     .filter((candidate) =>
       candidate.evidenceClass === "exact_hard" &&
       candidate.proofLevel === "exact" &&

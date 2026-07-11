@@ -3,6 +3,7 @@ import { adminConsoleHtml } from "../../src/admin/adminConsole";
 import * as adminServerModule from "../../src/admin/adminServer";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
 import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositories";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -1396,7 +1397,7 @@ describe("startAdminServer", () => {
           kind: "where_is_money_check"
         }],
         shadowComparisons: [{
-          candidatePolicyVersion: "scoring-signal-matrix-v1"
+          candidatePolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
         }]
       }
     });

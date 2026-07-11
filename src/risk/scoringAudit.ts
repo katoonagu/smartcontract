@@ -12,6 +12,7 @@ import {
   type RiskClarityEvidenceClass,
   type RiskClarityRiskLevel
 } from "./riskClarity";
+import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "./scoringSignalMatrix";
 
 export type ScoringAuditDecision =
   | "ACCEPTABLE"
@@ -165,7 +166,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     activeAnchorCode: stringField(activeAnchor, "code"),
     activeAnchorScore: numberField(activeAnchor, "score"),
     dampener: numberField(unified, "dampener"),
-    policyVersion: winningRow ? "scoring-signal-matrix-v1" : clarity.policyVersion,
+    policyVersion: winningRow ? SCORING_SIGNAL_MATRIX_POLICY_VERSION : clarity.policyVersion,
     missingChecks,
     cohorts: rowCohorts,
     limitations: clarity.limitations,
