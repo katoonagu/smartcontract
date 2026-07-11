@@ -12,6 +12,7 @@ import {
   coverageExplanationFor,
   fastNarrativeCopy,
   gasFreeFeeFactFromBalanceTransfers,
+  isNarrativePresentationError,
   sourceAndRouteFacts,
   verify20RoleFact,
   type CoverageExplanation,
@@ -39,6 +40,10 @@ type WhereNarrativeDriver = {
   evidenceIds: string[];
   signalKeys: string[];
 };
+
+type DriverResolution =
+  | { status: "resolved"; driver: WhereNarrativeDriver }
+  | { status: "none" | "invalid_or_ambiguous"; driver: null };
 
 function stableKeys(...values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))]
@@ -87,20 +92,48 @@ function driverKey(driver: WhereNarrativeDriver): string {
   return `${driver.signalKeys.join("\u0000")}\u0001${driver.evidenceIds.slice().sort().join("\u0000")}`;
 }
 
-function driverFromReport(report: WhereIsMoneyReport): WhereNarrativeDriver | null {
-  if (!Number.isInteger(report.riskScore)) return null;
-  if (report.assessment.dominantRiskLayer?.score === report.riskScore) {
-    return layerDriver(report.assessment.dominantRiskLayer);
+function validScore(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 100;
+}
+
+function publishedScore(report: WhereIsMoneyReport): number | null {
+  const mirrors: unknown[] = [report.riskScore, report.assessment.riskScore];
+  if (!mirrors.every(validScore)) return null;
+  return mirrors[0] === mirrors[1] ? mirrors[0] as number : null;
+}
+
+function validDriver(driver: WhereNarrativeDriver): boolean {
+  return validScore(driver.score) &&
+    driver.kind.trim().length > 0 &&
+    driver.evidenceIds.length > 0 &&
+    driver.evidenceIds.every((id) => id.trim().length > 0);
+}
+
+function driverFromReport(report: WhereIsMoneyReport, score: number | null): DriverResolution {
+  if (score === null) return { status: "invalid_or_ambiguous", driver: null };
+  if (report.assessment.dominantRiskLayer) {
+    const dominant = layerDriver(report.assessment.dominantRiskLayer);
+    return dominant.score === score && validDriver(dominant)
+      ? { status: "resolved", driver: dominant }
+      : { status: "invalid_or_ambiguous", driver: null };
   }
   const candidates = [
+    ...report.assessment.riskLayers.map(layerDriver),
     ...report.assessment.hardBadEvidence.map(hardDriver),
     ...report.assessment.sourcePolicyEvidence.map(sourceDriver),
     ...report.assessment.contractSuspicionEvidence.map(layerDriver),
     ...report.assessment.unknownOriginEvidence.map(layerDriver)
   ];
-  return candidates.filter((candidate) => candidate.score === report.riskScore).sort((left, right) =>
-    right.score - left.score || driverKey(left).localeCompare(driverKey(right))
-  )[0] ?? null;
+  const exact = new Map(candidates
+    .filter((candidate) => candidate.score === score && validDriver(candidate))
+    .map((candidate) => [driverKey(candidate), candidate]));
+  if (exact.size === 1) {
+    return { status: "resolved", driver: [...exact.values()][0]! };
+  }
+  if (exact.size > 1 || candidates.length > 0) {
+    return { status: "invalid_or_ambiguous", driver: null };
+  }
+  return { status: "none", driver: null };
 }
 
 function plainFact(input: {
@@ -290,26 +323,23 @@ function semanticallyCompatible(fact: NarrativeFact, driver: WhereNarrativeDrive
 function matchesDriver(fact: NarrativeFact, driver: WhereNarrativeDriver): boolean {
   if (!semanticallyCompatible(fact, driver)) return false;
   const factIds = fact.evidenceIds ?? [];
-  if (driver.kind === "fast_critical") {
-    return driver.evidenceIds.length > 0 && factIds.length > 0 && overlaps(factIds, driver.evidenceIds);
-  }
-  return driver.evidenceIds.length === 0 || factIds.length === 0 || overlaps(factIds, driver.evidenceIds);
+  return driver.evidenceIds.length > 0 && factIds.length > 0 && overlaps(factIds, driver.evidenceIds);
 }
 
 function preferredFactId(
   facts: NarrativeFact[],
-  driver: WhereNarrativeDriver | null,
+  resolution: DriverResolution,
   report: WhereIsMoneyReport
 ): string | null {
   const eligible = facts.filter((fact) =>
     fact.kind !== "gasfree_fee" &&
     (fact.kind !== "cex_source" || fact.sourceIdentityKnown === true)
   );
-  if (driver) {
-    const matching = eligible.find((fact) => matchesDriver(fact, driver));
-    if (matching) return matching.id;
+  if (resolution.status === "resolved") {
+    const matching = eligible.filter((fact) => matchesDriver(fact, resolution.driver));
+    if (matching.length === 1) return matching[0]!.id;
   }
-  if (!driver && report.riskScore < 30) {
+  if (resolution.status === "none" && report.riskScore < 30) {
     const namedSource = eligible.find((fact) =>
       fact.kind === "cex_source" && fact.sourceIdentityKnown === true
     );
@@ -377,10 +407,17 @@ export function buildWherePreliminaryNarrative(
 ): WherePreliminaryNarrative {
   const validity = [report.scoreValid, report.assessment.scoreValid];
   const scoreValid = !validity.includes(false) && validity.includes(true);
-  const facts = whereFacts(report, options.verify20);
-  const driver = driverFromReport(report);
-  const preferred = preferredFactId(facts, driver, report);
-  const publishScore = scoreValid && preferred !== null;
+  const score = publishedScore(report);
+  const resolution = driverFromReport(report, score);
+  let facts: NarrativeFact[];
+  try {
+    facts = whereFacts(report, options.verify20);
+  } catch (error) {
+    if (!isNarrativePresentationError(error)) throw error;
+    facts = [];
+  }
+  const preferred = preferredFactId(facts, resolution, report);
+  const publishScore = scoreValid && score !== null && preferred !== null;
   const coverage = reportCoverage(report, !publishScore);
   const sections = buildPreliminaryNarrativeSections({
     locale: options.locale,
@@ -389,7 +426,7 @@ export function buildWherePreliminaryNarrative(
     coverageExplanation: coverage
   });
   return {
-    score: publishScore ? report.riskScore : null,
+    score: publishScore ? score : null,
     sections,
     preferredFactId: publishScore ? preferred : null,
     diagnosticCode: scoreValid && preferred === null

@@ -6488,6 +6488,33 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(message.text).not.toContain("&amp;lt;");
   });
 
+  it.each([
+    ["overlong", "X".repeat(260)],
+    ["internal code", "provider_cap_unresolved"],
+    ["forbidden heading", "Coverage limits"]
+  ])("delivers the bridge score when an unrelated CEX has an unsafe %s label", (_name, label) => {
+    const report = bridgeWhereReportFixture({ score: 78, share: 0.83, transferCount: 2 });
+    const unrelated = sourceWhereReportFixture({
+      kind: "allowlisted_cex", score: 18, share: 0.17, label
+    });
+    report.originPaths.push(...unrelated.originPaths);
+
+    let message: ReturnType<typeof preliminaryDelivery> | undefined;
+    expect(() => {
+      message = preliminaryDelivery(report);
+    }).not.toThrow();
+    const plain = plainTelegramText(message!.text);
+    expect(plain).toContain("🟠 78/100");
+    expect(plain).toContain("UsdtOFT");
+    expect(plain).not.toContain(label);
+  });
+
+  it("does not show a coverage-limits section for complete 100% coverage", () => {
+    const text = preliminaryDeliveryText(bridgeWhereReportFixture());
+
+    expect(text).not.toContain("Границы проверки");
+  });
+
   it("uses exact Verify20 only from the validated subject-bound Where job", () => {
     const driver = whereRiskLayerFixture("verify20_template", 85, "contract_suspicion", ["verify20:5082dd12"]);
     const report = whereReportFixture({
@@ -9694,8 +9721,9 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(fresh).toMatch(/2 ч 52 мин.*1 176 302 USDT/u);
       expect(fresh).toContain("Сам адрес не в списке");
       expect(fresh).toContain("UsdtOFT");
-      expect(fresh).toContain("Границы проверки");
-      expect(fresh).not.toMatch(/GasFree|Техническая деталь|45 с|1 176 320|risky_counterparty|cross_chain_boundary/u);
+      expect(fresh).not.toContain("Границы проверки");
+      expect(fresh).toMatch(/GasFree|Техническая деталь/u);
+      expect(fresh).not.toMatch(/45 с|1 176 320|risky_counterparty|cross_chain_boundary/u);
 
       expect(legacy).toContain("78/100");
       expect(legacy).toMatch(/устаревш|свеж/u);

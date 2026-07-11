@@ -125,6 +125,57 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
   });
 
+  it("fails closed when the dominant driver has no evidence ids", () => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.assessment.dominantRiskLayer!.evidenceIds = [];
+
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+
+    expect(result.score).toBeNull();
+    expect(result.preferredFactId).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+  });
+
+  it("fails closed when two distinct typed drivers match the exact published score", () => {
+    const bridge = sourceWhereReportFixture({
+      kind: "cross_chain_boundary", score: 78, share: 0.5, label: "Bridge A"
+    });
+    const dex = sourceWhereReportFixture({
+      kind: "bridge_router_dex", score: 78, share: 0.3, label: "DEX B"
+    });
+    bridge.originPaths.push(...dex.originPaths);
+    bridge.assessment.sourcePolicyEvidence.push(...dex.assessment.sourcePolicyEvidence);
+    bridge.assessment.dominantRiskLayer = null;
+
+    const result = buildWherePreliminaryNarrative(bridge, { locale: "en" });
+
+    expect(result.score).toBeNull();
+    expect(result.preferredFactId).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+  });
+
+  it("fails closed when report and assessment score mirrors conflict", () => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.assessment.riskScore = 90;
+
+    const result = buildWherePreliminaryNarrative(report, { locale: "ru" });
+
+    expect(result.score).toBeNull();
+    expect(result.preferredFactId).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+  });
+
+  it.each([78.5, -1, 101])("fails closed for invalid explicit report score %s", (riskScore) => {
+    const report = bridgeWhereReportFixture({ score: 78 });
+    report.riskScore = riskScore;
+    report.assessment.riskScore = riskScore;
+
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+  });
+
   it.each([
     ["victim", /жертва/i, /дрейнер-контракт/i],
     ["first_receiver", /перв(ым|ый) получ/i, /жертва/i],
@@ -612,6 +663,42 @@ describe("buildWherePreliminaryNarrative", () => {
     expect(result.preferredFactId).toMatch(/^cex:/);
   });
 
+  it.each([
+    ["overlong", "X".repeat(260)],
+    ["internal code", "provider_cap_unresolved"],
+    ["forbidden heading", "Coverage limits"]
+  ])("keeps a valid bridge result when an unrelated CEX has an unsafe %s label", (_name, label) => {
+    const report = bridgeWhereReportFixture({ score: 78, share: 0.83, transferCount: 2 });
+    const unrelated = sourceWhereReportFixture({
+      kind: "allowlisted_cex", score: 18, share: 0.17, label
+    });
+    report.originPaths.push(...unrelated.originPaths);
+
+    let result: ReturnType<typeof buildWherePreliminaryNarrative> | undefined;
+    expect(() => {
+      result = buildWherePreliminaryNarrative(report, { locale: "en" });
+    }).not.toThrow();
+    expect(result?.score).toBe(78);
+    expect(result?.sections.findings[0]).toContain("UsdtOFT");
+    expect(text(result!)).not.toContain(label);
+  });
+
+  it("does not use the named low-risk CEX fallback when an adverse typed risk layer exists", () => {
+    const report = sourceWhereReportFixture({
+      kind: "allowlisted_cex", score: 18, share: 1, label: "Binance"
+    });
+    report.assessment.dominantRiskLayer = null;
+    report.assessment.sourcePolicyEvidence = [];
+    report.assessment.riskLayers = [
+      whereRiskLayerFixture("drainer_like", 72, "contract_suspicion", ["contract-adverse"])
+    ];
+
+    const result = buildWherePreliminaryNarrative(report, { locale: "en" });
+
+    expect(result.score).toBeNull();
+    expect(result.diagnosticCode).toBe("where_preliminary_score_without_structured_fact");
+  });
+
   it("uses a report-score-matched fallback instead of a higher mismatched candidate", () => {
     const bridge = sourceWhereReportFixture({ kind: "cross_chain_boundary", score: 68, label: "Bridge A" });
     const contract = whereRiskLayerFixture("unknown_suspicious", 72, "contract_suspicion", ["contract-high"]);
@@ -642,6 +729,9 @@ describe("buildWherePreliminaryNarrative", () => {
   ] as const)("uses correct %s coverage grammar for %s", (locale, count, expected) => {
     const report = sourceWhereReportFixture({ kind: "allowlisted_cex", score: 18, label: "Binance" });
     report.coverage.selectedInboundTxCount = count;
+    report.coverage.partial = true;
+    report.coverage.coverageRatio = 0.83;
+    report.coverage.currentBalanceCoverageRatio = 0.83;
     const result = buildWherePreliminaryNarrative(report, { locale });
     expect(result.sections.coverage).toContain(expected);
     if (locale === "en" && count === 1) {

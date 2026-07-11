@@ -3078,6 +3078,30 @@ describe("wallet narrative signal catalogue", () => {
     expect(coverage?.textEn).toMatch(/remaining 17%.*untraced.*provider.*older transfers/i);
   });
 
+  it("omits Where coverage when the selected amount is completely traced", () => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      whereCoverage: whereCoverage({
+        coverageRatio: 1,
+        currentBalanceCoverageRatio: 1,
+        selectedAmountRaw: "100000000000",
+        partial: false
+      })
+    });
+
+    expect(coverage).toBeNull();
+  });
+
+  it("states the untraced remainder without inventing a provider reason", () => {
+    const coverage = catalogueApi.coverageExplanationFor({
+      whereCoverage: whereCoverage(),
+      traceHistoryCoverage: []
+    });
+
+    expect(coverage?.textRu).toContain("Оставшиеся 17% не удалось отнести к подтверждённому источнику.");
+    expect(coverage?.textEn).toContain("The remaining 17% could not be attributed to a confirmed source.");
+    expect(`${coverage?.textRu}\n${coverage?.textEn}`).not.toMatch(/provider|провайдер|источник данных|сервис/i);
+  });
+
   it.each([
     ["provider cap", { providerCapHit: true, statusReason: "partial_provider_cap" as const }, /источник данных.*старые переводы|provider.*older transfers/i],
     ["budget", { budgetExhausted: true, statusReason: "partial_budget_exhausted" as const }, /техническ.*лимит|technical limit/i],

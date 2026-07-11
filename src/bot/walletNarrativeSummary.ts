@@ -107,7 +107,10 @@ export type WalletNarrativeCase = {
 
 const MAX_PART_LENGTH = 280;
 const MAX_BODY_LENGTH = 500;
+const MAX_EXTERNAL_DISPLAY_LABEL_LENGTH = 80;
 const FORBIDDEN_COPY = /Почему|Что это может значить|Что важно учесть|drain episode|anchor coverage/i;
+const FORBIDDEN_EXTERNAL_LABEL = /Что нашли|Вывод|Границы проверки|Finding|Conclusion|Coverage limits/i;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
 const KNOWN_INTERNAL_CODES = new Set([
   "approval_drain_exact",
   "approval_drain_proximity",
@@ -185,13 +188,35 @@ function containsKnownInternalCode(value: string): boolean {
     .some((token) => KNOWN_INTERNAL_CODES.has(token.toLowerCase()));
 }
 
+class NarrativePresentationError extends Error {}
+
+export function isNarrativePresentationError(error: unknown): boolean {
+  return error instanceof NarrativePresentationError;
+}
+
+function safeExternalDisplayLabel(value: string | null | undefined): string | null {
+  if (typeof value !== "string" || !value || CONTROL_CHARACTERS.test(value)) return null;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_EXTERNAL_DISPLAY_LABEL_LENGTH ||
+    (FORBIDDEN_COPY.test(normalized) || FORBIDDEN_EXTERNAL_LABEL.test(normalized)) ||
+    containsKnownInternalCode(normalized)
+  ) return null;
+  return normalized;
+}
+
 function normalizeCopy(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length > MAX_PART_LENGTH) {
-    throw new RangeError(`Wallet narrative parts must not exceed ${MAX_PART_LENGTH} characters.`);
+    throw new NarrativePresentationError(
+      `Wallet narrative parts must not exceed ${MAX_PART_LENGTH} characters.`
+    );
   }
   if (FORBIDDEN_COPY.test(normalized) || containsKnownInternalCode(normalized)) {
-    throw new Error("Forbidden normal narrative copy must be translated before formatting.");
+    throw new NarrativePresentationError(
+      "Forbidden normal narrative copy must be translated before formatting."
+    );
   }
   return normalized;
 }
@@ -792,7 +817,7 @@ function aggregateSourceIdentity(
   named: boolean;
   multiple: boolean;
 } {
-  const labels = paths.map((path) => path.exposureSourceLabel?.trim() || null);
+  const labels = paths.map((path) => safeExternalDisplayLabel(path.exposureSourceLabel));
   const names = [...new Set(labels.filter((label): label is string => label !== null))]
     .sort(compareLexical);
   if (labels.every((label) => label !== null) && names.length === 1) {
@@ -873,8 +898,9 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
     )];
   });
   const unmatched = allSanctionedPaths.filter((path) => !matchedPaths.has(path)).map((path) => {
-    const nameRu = path.exposureSourceLabel?.trim() || "санкционным сервисом без установленного названия";
-    const nameEn = path.exposureSourceLabel?.trim() || "an unnamed sanctioned service";
+    const name = safeExternalDisplayLabel(path.exposureSourceLabel);
+    const nameRu = name || "санкционным сервисом без установленного названия";
+    const nameEn = name || "an unnamed sanctioned service";
     const ids = [...pathEvidenceIds(path)].sort(compareLexical);
     return narrativeFact(
       `sanctioned-source-context:${ids.join(",")}`,
@@ -929,7 +955,7 @@ function htxContextFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   }
   const matched = new Set(matchedHistorical);
   facts.push(...routePaths.filter((path) => !matched.has(path)).map((path) => {
-    const name = path.exposureSourceLabel?.trim() || "HTX/Huobi";
+    const name = safeExternalDisplayLabel(path.exposureSourceLabel) || "HTX/Huobi";
     const ids = [...pathEvidenceIds(path)].sort(compareLexical);
     return narrativeFact(
       `htx-context:${ids.join(",")}`,
@@ -955,8 +981,8 @@ function outboundHtxFacts(profiles: OperationalFlowProfile[]): NarrativeFact[] {
     .map((row) => narrativeFact(
       `htx-outbound:${row.address}`,
       "direct_counterparty_sanction",
-      `Исходящий: адрес отправил ${formatUsdtRaw(row.volumeRaw, "ru")} USDT на ${row.identity ?? shortAddress(row.address)} (${russianDirectTransferCount(row.txCount)}). Это прямая историческая связь.`,
-      `Outbound: the address sent ${formatUsdtRaw(row.volumeRaw, "en")} USDT to ${row.identity ?? shortAddress(row.address)} (${englishDirectTransferCount(row.txCount)}). This is a direct historical link.`,
+      `Исходящий: адрес отправил ${formatUsdtRaw(row.volumeRaw, "ru")} USDT на ${safeExternalDisplayLabel(row.identity) ?? shortAddress(row.address)} (${russianDirectTransferCount(row.txCount)}). Это прямая историческая связь.`,
+      `Outbound: the address sent ${formatUsdtRaw(row.volumeRaw, "en")} USDT to ${safeExternalDisplayLabel(row.identity) ?? shortAddress(row.address)} (${englishDirectTransferCount(row.txCount)}). This is a direct historical link.`,
       null,
       "context"
     )));
@@ -1165,7 +1191,7 @@ function cexFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
   const groups = new Map<string, MoneyOriginPath[]>();
   for (const path of paths) {
     if (path.sourceExposureKind !== "allowlisted_cex" && path.rootSourceType !== "allowlist_cex") continue;
-    const name = path.exposureSourceLabel?.trim() || "";
+    const name = safeExternalDisplayLabel(path.exposureSourceLabel) ?? "";
     groups.set(name, [...(groups.get(name) ?? []), path]);
   }
   return [...groups.entries()].map(([name, group]) => {
@@ -1217,7 +1243,7 @@ function unknownContractFacts(paths: MoneyOriginPath[]): NarrativeFact[] {
   const groups = new Map<string, MoneyOriginPath[]>();
   for (const path of paths) {
     if (path.sourceExposureKind !== "unknown_contract") continue;
-    const name = path.exposureSourceLabel?.trim() || "";
+    const name = safeExternalDisplayLabel(path.exposureSourceLabel) ?? "";
     groups.set(name, [...(groups.get(name) ?? []), path]);
   }
   return [...groups.entries()].map(([name, group]) => {
@@ -1250,7 +1276,7 @@ function serviceBoundaryFacts(profiles: BoundaryExposureProfile[]): NarrativeFac
     const txHashes = profile.flows
       .filter((flow) => flow.boundaryAddress === entity.address)
       .flatMap((flow) => [flow.subjectTxHash, flow.boundaryTxHash]);
-    const name = entity.identity ?? shortAddress(entity.address);
+    const name = safeExternalDisplayLabel(entity.identity) ?? shortAddress(entity.address);
     return narrativeFact(
       `service:${entity.address}:${[...new Set(txHashes)].sort().join(",")}`,
       entity.category === "cex" ? "cex_source" : "unknown_contract",
@@ -1281,7 +1307,7 @@ function collectorFacts(
     if (!destination) return [];
     const shareRu = formatRawSharePercent(destination.volumeRaw, operational.incomingVolumeRaw, "ru");
     const shareEn = formatRawSharePercent(destination.volumeRaw, operational.incomingVolumeRaw, "en");
-    const destinationName = destination.identity ?? shortAddress(destination.address);
+    const destinationName = safeExternalDisplayLabel(destination.identity) ?? shortAddress(destination.address);
     const flowRu = shareRu === null
       ? `отправляет ${formatUsdtRaw(destination.volumeRaw, "ru")} USDT на ${destinationName}`
       : `отправляет ${shareRu}% поступлений на ${destinationName}`;
@@ -1647,13 +1673,25 @@ function whereCoverageText(
       en: `We could not trace the source of the amount because ${reason.en}.`
     };
   }
+  if (ratio >= 1 && !reason) return null;
   const percent = checkedPercent(ratio * 100);
   const base = {
     ru: `${russianCheckedInboundTransferCount(coverage.selectedInboundTxCount)}; прослежено ${percent.replace(".", ",")}% суммы.`,
     en: `${englishCheckedInboundTransferCount(coverage.selectedInboundTxCount)}; traced ${percent}% of the amount.`
   };
-  if (!coverage.partial || ratio >= 1 || !reason) return base;
+  if (ratio >= 1) {
+    return {
+      ru: `Проверка имеет техническое ограничение: ${reason!.ru}.`,
+      en: `The check has a technical limitation: ${reason!.en}.`
+    };
+  }
   const remaining = checkedPercent((1 - ratio) * 100);
+  if (!reason) {
+    return {
+      ru: `${base.ru} Оставшиеся ${remaining.replace(".", ",")}% не удалось отнести к подтверждённому источнику.`,
+      en: `${base.en} The remaining ${remaining}% could not be attributed to a confirmed source.`
+    };
+  }
   return {
     ru: `${base.ru} Остальные ${remaining.replace(".", ",")}% не прослежены: ${reason.ru}.`,
     en: `${base.en} The remaining ${remaining}% is untraced: ${reason.en}.`
