@@ -24,7 +24,7 @@ export type FinalDisposition = {
 
 function sameSubject(candidate: ClassifiedMatrixCandidate, subject: DecisionSubject): boolean {
   return candidate.subject.decisionScope === subject.decisionScope &&
-    candidate.subject.address.toLowerCase() === subject.address.toLowerCase() &&
+    candidate.subject.address === subject.address &&
     candidate.subject.txHash === subject.txHash;
 }
 

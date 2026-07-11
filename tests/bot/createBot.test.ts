@@ -1493,7 +1493,13 @@ function smartContractReportForTest(overrides: Partial<SmartContractCheckReport>
       contractAddress: walletAddress,
       name: "Test Router",
       serviceTag: "Test Router",
+      publicTag: null,
+      publicTagDesc: null,
+      providerTags: [],
+      publicTags: [],
       isVerified: true,
+      verified: true,
+      providerRisk: false,
       activityLevel: "normal",
       hasTransferFromSelector: true,
       methodMap: {},
@@ -1543,9 +1549,20 @@ function exactVerify20ContractReportForTest(): SmartContractCheckReport {
     riskScore: 85,
     riskLevel: "CRITICAL",
     serviceLabel: null,
+    activityLabel: "low",
+    metadata: {
+      ...base.metadata,
+      name: null,
+      tag: null,
+      verified: false
+    },
     contractProfile: {
       ...base.contractProfile!,
+      name: null,
       serviceTag: null,
+      isVerified: false,
+      verified: false,
+      activityLevel: "low",
       methodMap: {
         "5082dd12": "Verify20(address,address,address,uint256)",
         "fc61dd23": "Verify10(address,uint256)",
@@ -5433,6 +5450,13 @@ describe("bot command and inline UX smoke coverage", () => {
       progressJson: { contractSafetyAnalysis: { status: "completed", report: malformed } }
     }), walletAddress)).toBeNull();
     expect(extractSmartContractCheckReportFromJob(whereIsMoneyJobForTest({ progressJson: {} }), walletAddress)).toBeNull();
+
+    const forgedExactDrain = JSON.parse(JSON.stringify(exactVerify20ContractReportForTest()));
+    forgedExactDrain.exactDrainProven = true;
+    forgedExactDrain.riskScore = 95;
+    expect(extractSmartContractCheckReportFromJob(whereIsMoneyJobForTest({
+      progressJson: { contractSafetyAnalysis: { status: "completed", report: forgedExactDrain } }
+    }), walletAddress)).toBeNull();
   });
 
   it("extracts validated persisted first-hop evidence without dropping timeline fields", () => {

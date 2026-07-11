@@ -481,7 +481,63 @@ function stringArray(value: unknown): value is string[] {
 }
 
 function sameAddress(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
+  return left === right;
+}
+
+function nullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function optionalNullableString(value: unknown): boolean {
+  return value === undefined || nullableString(value);
+}
+
+function optionalNullableBoolean(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "boolean";
+}
+
+function validPersistedMetadata(value: Record<string, unknown>, subjectAddress: string): value is AddressMetadata & Record<string, unknown> {
+  return value.address === subjectAddress &&
+    value.source === "tronscan" &&
+    nullableString(value.name) &&
+    nullableString(value.tag) &&
+    (value.isContract === null || typeof value.isContract === "boolean") &&
+    (value.verified === null || typeof value.verified === "boolean") &&
+    (value.accountType === null || typeof value.accountType === "number" && Number.isFinite(value.accountType)) &&
+    record(value.rawJson) !== null;
+}
+
+function validPersistedContractProfile(
+  value: Record<string, unknown>,
+  subjectAddress: string
+): value is ContractIntelligenceProfile & Record<string, unknown> {
+  if (value.contractAddress !== subjectAddress ||
+    !Array.isArray(value.providerTags) ||
+    !Array.isArray(value.publicTags) ||
+    (value.isVerified !== null && typeof value.isVerified !== "boolean") ||
+    !optionalNullableBoolean(value.verified) ||
+    (value.providerRisk !== null && typeof value.providerRisk !== "boolean") ||
+    !optionalNullableString(value.serviceTag) ||
+    !optionalNullableString(value.publicTag) ||
+    !optionalNullableString(value.publicTagDesc) ||
+    (value.activityLevel !== "none" && value.activityLevel !== "low" && value.activityLevel !== "normal" && value.activityLevel !== "high" && value.activityLevel !== "unknown") ||
+    !record(value.methodMap) ||
+    !Array.isArray(value.topMethods)) return false;
+  if (!value.providerTags.every((item) => {
+    const tag = record(item);
+    return tag !== null && typeof tag.label === "string";
+  })) return false;
+  if (!value.publicTags.every((item) => {
+    const tag = record(item);
+    return tag !== null && typeof tag.label === "string" && optionalNullableString(tag.description);
+  })) return false;
+  if (!Object.values(value.methodMap as Record<string, unknown>).every((item) => typeof item === "string")) return false;
+  return value.topMethods.every((item) => {
+    const method = record(item);
+    return method !== null && typeof method.methodId === "string" &&
+      nullableString(method.signature) &&
+      (method.method === undefined || typeof method.method === "string");
+  });
 }
 
 function sameFingerprint(left: Verify20FingerprintResult, right: Verify20FingerprintResult): boolean {
@@ -505,25 +561,21 @@ export function normalizeSmartContractCheckReport(
   if (typeof report.riskScore !== "number" || !Number.isInteger(report.riskScore) || report.riskScore < 0 || report.riskScore > 100) return null;
   if (report.riskLevel !== riskLevelFromScore(report.riskScore)) return null;
   if (typeof report.exactDrainProven !== "boolean") return null;
+  if (report.exactDrainProven) return null;
   if (report.serviceLabel !== null && typeof report.serviceLabel !== "string") return null;
   if (report.activityLabel !== "none" && report.activityLabel !== "low" && report.activityLabel !== "normal" && report.activityLabel !== "high" && report.activityLabel !== "unknown") return null;
   if (!stringArray(report.reasons) || !stringArray(report.limitations) || !Array.isArray(report.relatedApprovals)) return null;
   if (report.llmVerdict !== null && !record(report.llmVerdict)) return null;
 
   const metadata = record(report.metadata);
-  if (!metadata || typeof metadata.address !== "string" || !sameAddress(metadata.address, report.subjectAddress)) return null;
+  if (!metadata || !validPersistedMetadata(metadata, report.subjectAddress)) return null;
   const profile = report.contractProfile === null ? null : record(report.contractProfile);
   if (report.contractProfile !== null && !profile) return null;
-  if (profile) {
-    if (typeof profile.contractAddress !== "string" || !sameAddress(profile.contractAddress, report.subjectAddress)) return null;
-    if (!record(profile.methodMap) || !Array.isArray(profile.topMethods)) return null;
-    if (!Object.values(profile.methodMap as Record<string, unknown>).every((item) => typeof item === "string")) return null;
-    if (!profile.topMethods.every((item) => {
-      const method = record(item);
-      return method !== null && typeof method.methodId === "string" &&
-        (method.signature === null || typeof method.signature === "string");
-    })) return null;
-  }
+  if (profile && !validPersistedContractProfile(profile, report.subjectAddress)) return null;
+  if (report.activityLabel !== activityLabel(profile)) return null;
+
+  const trustedServiceLabel = verifiedServiceLabel(metadata, profile);
+  if (report.serviceLabel !== trustedServiceLabel) return null;
 
   const fingerprint = record(report.verify20Fingerprint);
   if (!fingerprint || typeof fingerprint.matched !== "boolean" ||
@@ -532,11 +584,10 @@ export function normalizeSmartContractCheckReport(
   const derived = detectVerify20Fingerprint({
     methodMap: profile?.methodMap as Record<string, string> | undefined,
     topMethods: profile?.topMethods as ContractIntelligenceProfile["topMethods"] | undefined,
-    serviceLabel: report.serviceLabel as string | null
+    serviceLabel: trustedServiceLabel
   });
   if (!sameFingerprint(fingerprint as Verify20FingerprintResult, derived)) return null;
   if (derived.matched && (report.decision !== "DECLINE" || report.riskScore < 85 || report.serviceLabel !== null)) return null;
-  if (report.exactDrainProven && (report.decision !== "DECLINE" || report.riskScore < 95)) return null;
 
   return report as unknown as SmartContractCheckReport;
 }

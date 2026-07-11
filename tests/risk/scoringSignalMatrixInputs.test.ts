@@ -473,6 +473,13 @@ describe("scoring signal matrix input mappers", () => {
       whereReport: whereReport(),
       smartContractReport: { ...report, subjectAddress: "TOtherContract11111111111111111111111" }
     }).some((candidate) => candidate.atomicSignals.includes("exact_verify20_contract_pattern"))).toBe(false);
+    expect(buildWalletMatrixCandidates({
+      address,
+      fastReport: null,
+      deepReport: null,
+      whereReport: whereReport(),
+      smartContractReport: { ...report, subjectAddress: `t${report.subjectAddress.slice(1)}` }
+    }).some((candidate) => candidate.atomicSignals.includes("exact_verify20_contract_pattern"))).toBe(false);
   });
 
   it("maps a material active official first-hop blacklist fact to independent wallet policy", () => {

@@ -336,6 +336,101 @@ describe("smart contract check", () => {
     expect(normalizeSmartContractCheckReport({ ...persisted, verify20Fingerprint: undefined }, subjectAddress)).toBeNull();
   });
 
+  it("rejects a forged persisted service label but preserves a verified activity-backed service guard", () => {
+    const exact = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    });
+    const forged = JSON.parse(JSON.stringify(exact));
+    forged.serviceLabel = "Trusted Router";
+    forged.verify20Fingerprint = {
+      matched: false,
+      selectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      blockedByTrustedService: true,
+      missingSelectors: [],
+      mismatchedSelectors: []
+    };
+    forged.decision = "ACCEPTABLE";
+    forged.riskScore = 10;
+    forged.riskLevel = "LOW";
+    expect(normalizeSmartContractCheckReport(forged, subjectAddress)).toBeNull();
+
+    const missingTrustField = JSON.parse(JSON.stringify(exact));
+    delete missingTrustField.contractProfile.activityLevel;
+    expect(normalizeSmartContractCheckReport(missingTrustField, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({ ...exact, activityLabel: "high" }, subjectAddress)).toBeNull();
+
+    const aiOnly = JSON.parse(JSON.stringify(exact));
+    aiOnly.llmVerdict = { verdict: "legitimate_service", reasons: ["Trusted Router"] };
+    expect(normalizeSmartContractCheckReport(aiOnly, subjectAddress)).toMatchObject({
+      serviceLabel: null,
+      verify20Fingerprint: { matched: true }
+    });
+    const nameOnly = JSON.parse(JSON.stringify(exact));
+    nameOnly.metadata.name = "Trusted Router";
+    nameOnly.metadata.tag = "Router";
+    expect(normalizeSmartContractCheckReport(nameOnly, subjectAddress)).toMatchObject({
+      serviceLabel: null,
+      verify20Fingerprint: { matched: true }
+    });
+
+    const legitimate = evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata({ name: "Verified Router", tag: "Router", verified: true }),
+      contractProfile: exactVerify20Profile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: "Router",
+        providerTags: [{ kind: "blueTag", label: "Router", url: null }]
+      }),
+      relatedApprovals: []
+    });
+    expect(normalizeSmartContractCheckReport(JSON.parse(JSON.stringify(legitimate)), subjectAddress)).toMatchObject({
+      serviceLabel: "Router",
+      verify20Fingerprint: { matched: false, blockedByTrustedService: true }
+    });
+  });
+
+  it("rejects persisted exactDrainProven without typed approve-transferFrom proof", () => {
+    const persisted = JSON.parse(JSON.stringify(evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    })));
+    persisted.exactDrainProven = true;
+    persisted.riskScore = 95;
+    persisted.riskLevel = "CRITICAL";
+    persisted.decision = "DECLINE";
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
+  });
+
+  it("rejects case-mutated persisted TRON subjects and nested addresses", () => {
+    const persisted = JSON.parse(JSON.stringify(evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: exactVerify20Profile(),
+      relatedApprovals: []
+    })));
+    const caseMutated = subjectAddress.replace("C", "c");
+
+    expect(normalizeSmartContractCheckReport({ ...persisted, subjectAddress: caseMutated }, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({
+      ...persisted,
+      metadata: { ...persisted.metadata, address: caseMutated }
+    }, subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport({
+      ...persisted,
+      contractProfile: { ...persisted.contractProfile, contractAddress: caseMutated }
+    }, subjectAddress)).toBeNull();
+  });
+
   it("declines a TNKG-style unverified active unlimited approval spender without exact drain proof", () => {
     const report = evaluateSmartContractAddress({
       subjectAddress,

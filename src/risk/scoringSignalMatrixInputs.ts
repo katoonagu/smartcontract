@@ -370,7 +370,7 @@ function fastHardProofCandidates(
 }
 
 function sameAddress(left: string | null | undefined, right: string): boolean {
-  return (left ?? "").toLowerCase() === right.toLowerCase();
+  return (left ?? "") === right;
 }
 
 function fastContextCandidates(
@@ -1015,24 +1015,6 @@ function directContractCandidates(
   report: SmartContractCheckReport | null | undefined
 ): MatrixCandidate[] {
   if (!report || !sameAddress(report.subjectAddress, context.subjectAddress)) return [];
-  if (report.exactDrainProven) {
-    const evidenceId = `contract:${context.subjectAddress}:exact_drain`;
-    return [candidate(context, { kind: "exact_hard", proofSource: "approval_drain_exact" }, {
-      row: "hard_proof",
-      actionUnit: "wallet",
-      score: 95,
-      evidenceIds: [evidenceId],
-      evidenceEpisodeIds: [evidenceId],
-      atomicSignals: [
-        "exact_contract_approval_drain",
-        ...(report.verify20Fingerprint?.matched ? ["exact_verify20_contract_pattern"] : [])
-      ],
-      modifiers: ["hard_anchor", "direct_contract_subject_anchor"],
-      caps: [],
-      dampeners: [],
-      caveats: report.limitations
-    })];
-  }
   const fingerprint = report.verify20Fingerprint;
   if (!fingerprint?.matched || fingerprint.blockedByTrustedService || report.serviceLabel !== null ||
     fingerprint.missingSelectors.length > 0 || fingerprint.mismatchedSelectors.length > 0) return [];

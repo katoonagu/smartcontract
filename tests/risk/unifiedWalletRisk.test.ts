@@ -1434,7 +1434,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 });
 
 describe("calculateUnifiedWalletRisk", () => {
-  it("keeps exact Verify20 at 85 through unrelated invalid coverage and exact drain at 95", () => {
+  it("keeps Verify20 at 85 for a forged contract exact-drain flag and canonical Deep proof at 95", () => {
     const invalidWhere = whereReport(20, {
       scoreValid: false,
       scoreBlockedReason: "insufficient_coverage",
@@ -1448,12 +1448,19 @@ describe("calculateUnifiedWalletRisk", () => {
       whereReport: invalidWhere,
       smartContractReport: exactVerify20Report()
     });
-    const exactDrain = calculateUnifiedWalletRisk({
+    const forgedContractExactDrain = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(0),
       deepReport: null,
       whereReport: invalidWhere,
       smartContractReport: exactVerify20Report({ exactDrainProven: true, riskScore: 95 })
+    });
+    const exactDrain = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] }),
+      whereReport: invalidWhere,
+      smartContractReport: exactVerify20Report()
     });
 
     expect(verify20).toMatchObject({
@@ -1468,7 +1475,18 @@ describe("calculateUnifiedWalletRisk", () => {
         noHardEvidenceCriticalCap: { applied: false, maxScore: 84 }
       }
     });
-    expect(exactDrain).toMatchObject({ finalDecision: "DECLINE", finalScore: 95, hardEvidenceFloor: 95 });
+    expect(forgedContractExactDrain).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 85,
+      hardEvidenceFloor: 0,
+      patternFloor: 85
+    });
+    expect(exactDrain).toMatchObject({
+      finalDecision: "DECLINE",
+      finalScore: 95,
+      hardEvidenceFloor: 95,
+      decisionBasis: "exact_hard_proof"
+    });
   });
 
   it("scores incoming deposits through the shared scorer without auto-declining insufficient coverage", () => {

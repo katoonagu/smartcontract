@@ -191,7 +191,7 @@ function classifyCandidate(candidate: MatrixCandidate): ClassifiedMatrixCandidat
 
 function sameMatrixSubject(candidate: ClassifiedMatrixCandidate, context: MatrixCandidateContext): boolean {
   return candidate.subject.decisionScope === context.decisionScope &&
-    candidate.subject.address.toLowerCase() === context.subjectAddress.toLowerCase() &&
+    candidate.subject.address === context.subjectAddress &&
     candidate.subject.txHash === context.subjectTxHash;
 }
 

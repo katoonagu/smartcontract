@@ -46,6 +46,7 @@ function exactVerify20Report() {
         "ea4418d9": "withdrawAllTrxTo(address)",
         "f2fde38b": "transferOwnership(address)"
       },
+      activityLevel: "low",
       providerRisk: false,
       rawPayload: {},
       fetchedAt: now,
@@ -123,6 +124,13 @@ it("strictly extracts persisted Verify20 contract reports for Admin reconstructi
     progressJson: { contractSafetyAnalysis: { status: "completed", report: persisted } }
   }), subjectAddress)).toBeNull();
   expect(extractor!(job({ progressJson: {} }), subjectAddress)).toBeNull();
+
+  const forgedExactDrain = JSON.parse(JSON.stringify(exactVerify20Report()));
+  forgedExactDrain.exactDrainProven = true;
+  forgedExactDrain.riskScore = 95;
+  expect(extractor!(job({
+    progressJson: { contractSafetyAnalysis: { status: "completed", report: forgedExactDrain } }
+  }), subjectAddress)).toBeNull();
 });
 
 function adminFirstHopEvidenceForTest() {
