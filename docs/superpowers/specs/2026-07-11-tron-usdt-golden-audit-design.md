@@ -15,6 +15,8 @@ analyzers, jobs, индекса или пользовательских реше
 
 - идентичность Wallet, Incoming Deposit, Selected Amount, Route и History cases;
 - формат frozen evidence, facts, routes, coverage и policy expectations;
+- протокол независимого manual web/on-chain research;
+- authority явных TronScan service labels;
 - слепой независимый второй проход;
 - правила adjudication и release;
 - измеримость качества и runtime-показателей;
@@ -85,6 +87,12 @@ read-only transaction. Live и replay не открывают production DB.
 
 Полный runtime на disposable DB clone откладывается до измерения очередей,
 targeted indexing, restart/retry и экспериментов с количеством ключей.
+
+### 3.5 Manual research отдельно от runner
+
+Manual analysts формируют независимый эталон, используя источники шире текущей
+системы. Golden Runner не делает свободный web research и не может быть автором
+golden facts; он измеряет только фактический output production modules.
 
 ## 4. Модель идентичности
 
@@ -171,9 +179,212 @@ Wallet — `as_of`, для History — exact window. Seed без такого an
 
 Observed и synthetic cases всегда находятся в разных cohorts и denominators.
 
-## 6. Adjudication workflow
+## 6. Manual Forensic Research Protocol
 
-### 6.1 Neutral envelope
+### 6.1 Разделение ответственности
+
+Golden truth строит ручной forensic research, а не Golden Runner. Для каждого
+pilot/legacy investigation создаются отдельные blind analyst sessions. Analyst
+может свободно использовать explorers, API, интернет-поиск, официальные
+документы и внешние расследования, чтобы найти факты, отсутствующие в текущей
+системе.
+
+Golden Runner начинает работу только после lock ручных expectations. Он:
+
+- не занимается свободным поиском в интернете;
+- не выбирает новые сервисы для golden dataset;
+- не сообщает analyst результаты Fast/Deep/Where/Incoming до adjudication;
+- воспроизводимо запускает текущую систему;
+- передаёт Comparator frozen outputs и metrics.
+
+Это предотвращает круговую проверку, при которой ручной эталон копирует только
+те же данные и выводы, которые уже использует production.
+
+### 6.2 Обязательный порядок исследования
+
+Для каждого investigation analyst выполняет:
+
+1. **Общую идентификацию:** валидность адреса, EOA/contract, current blacklist,
+   TronScan labels, известные entities и observation time.
+2. **Доступную USDT-историю:** входящие/исходящие transfers, amounts, dates,
+   balance-forming candidates, повторяющиеся counterparties, contract-driven
+   transfers и fees отдельно от principal.
+3. **Transaction/contract inspection:** logs, calls, ABI, approve/permit,
+   `transferFrom`, proxy/implementation relationship и service interaction.
+4. **Материальные маршруты:** direction, ordered hops, amount preservation,
+   split/merge/cycle, delays, transit behavior и service boundaries.
+5. **Внешнее исследование:** address, transaction hash, contract, entity name,
+   official service documentation, sanctions/blacklist sources, public warnings
+   и расследования.
+6. **Scope split:** отдельные Wallet, Incoming Deposit, Selected Amount, Route и
+   History cases без переноса disposition между ними.
+7. **Досье:** facts, assertions, leads, routes, amounts/shares, temporal
+   relations, limitations, alternatives, sources, dates и content hashes.
+
+Analyst сохраняет не только найденный вывод, но и отрицательный результат
+поиска: какие источники и окна проверены и что осталось неизвестным.
+
+### 6.3 TronScan service label authority
+
+Явный service label, отображаемый TronScan для конкретного адреса, является
+достаточным доказательством того, что адрес принадлежит указанной entity и
+service category. Для подтверждения самой identity не требуется второй внешний
+источник.
+
+Authority называется `tronscan_service_label` и может создавать
+`verified_service_assertion` для CEX, bridge, DEX, mixer, payment/exchange
+service или другой явно названной категории.
+
+Каждый reviewer независимо сохраняет:
+
+- address;
+- exact displayed label;
+- normalized entity name;
+- normalized service category;
+- TronScan page/API locator;
+- raw API response либо screenshot;
+- `observed_at`;
+- content hash;
+- reviewer capture id.
+
+Два независимых captures должны показывать согласованную identity. Если label
+между captures изменился или исчез, assertion получает `timeline_conflict` либо
+versioned intervals; один reviewer не копирует screenshot другого.
+
+### 6.4 Границы доказательства TronScan label
+
+| Label доказывает | Label не доказывает автоматически |
+| --- | --- |
+| Принадлежность конкретного адреса named service | Принадлежность соседних unlabeled addresses тому же service |
+| Service category адреса | Что конкретный перевод clean, adverse или будет принят биржей |
+| Наличие on-chain service boundary | Продолжение маршрута внутри custody/service boundary |
+| Mixer identity, если label явно называет mixer | Amount, direction, temporal applicability и materiality конкретной связи |
+| CEX/bridge/DEX identity | Sanctions status и designation interval |
+| Identity на observation time | Что тот же label уже существовал на любую историческую дату |
+
+Следствия:
+
+- `Binance`, `KuCoin` или другой CEX label подтверждает CEX identity; `clean`,
+  `allowed` или `risky` остаётся отдельным versioned policy property.
+- Bridge label подтверждает bridge identity и границу публичной трассировки.
+- DEX label подтверждает DEX identity, но не незаконность и не adverse origin.
+- Mixer label подтверждает mixer identity; policy всё равно проверяет route,
+  amount, event time и materiality.
+- Drainer/scam label может подтверждать classification адреса, но exact drain
+  конкретной транзакции требует approve/permit/transferFrom proof.
+- Sanctions подтверждаются official list/authority и temporal interval.
+- USDT blacklist подтверждается contract state/events.
+- Отсутствие TronScan label не доказывает, что адрес не принадлежит сервису.
+
+### 6.5 Другие внешние источники
+
+Информация не из явного TronScan service label классифицируется отдельно:
+
+| Статус | Смысл |
+| --- | --- |
+| `official_assertion` | Официальный contract, registry, service documentation или authority document |
+| `corroborated_assertion` | Согласующиеся независимые источники с достаточной entity linkage |
+| `lead` | Неподтверждённое упоминание, статья, пост или search result |
+| `behavior_pattern` | Наблюдаемое exchange/bridge/mixer/transit-like поведение без установленной identity |
+| `unresolved_entity` | Исследование не установило service identity |
+
+`lead` не становится fact из-за повторения в нескольких копирующих источниках.
+Behavior может поддерживать `REVIEW`, но не подменяет named service identity.
+
+### 6.6 Adaptive depth и materiality
+
+Research не обязан бесконечно обходить каждый dust-сосед. Trace продолжается,
+если выполняется хотя бы одно условие:
+
+- сохраняется материальная доля principal или сопоставимая сумма;
+- короткий временной interval поддерживает continuity;
+- направление ведёт к blacklist, sanctions, drainer или mixer;
+- появляется DEX, bridge, CEX, proxy/aggregator либо unknown contract;
+- адрес демонстрирует transit/collector/mule behavior;
+- route повторяется;
+- split/merge может изменить attribution;
+- existing evidence допускает competing material hypotheses.
+
+Hop depth сама по себе не является stop/risk rule. Dust фиксируется как факт,
+но не расширяет research без materiality или отдельного exact adverse evidence.
+
+### 6.7 Статусы новых адресов
+
+Каждый найденный сосед получает один статус:
+
+- `supporting_node` — нужен для доказательства route;
+- `candidate_service` — потенциальная новая service identity;
+- `candidate_golden_case` — проверяет самостоятельный action unit или новую
+  способность системы;
+- `locator_only` — нематериальная или случайная связь;
+- `unresolved_entity` — данных недостаточно.
+
+Не каждый supporting node становится golden case. Promotion требует отдельного
+scope/anchor и измеримой способности системы, которую он проверяет.
+
+### 6.8 Stop rules
+
+Research может остановиться, когда выполнено одно из условий:
+
+- mandatory fact/route подтверждён с требуемой authority;
+- достигнута verified service boundary;
+- material amount полностью распределён по disjoint ledger;
+- дальнейшие branches нематериальны по case-specific rule;
+- два analyst независимо фиксируют одинаковый data-source limit;
+- provider/history gap делает следующий вывод недоказуемым;
+- все remaining hypotheses сохранены как contested/unresolved.
+
+Stop reason, checked sources, deepest material hop, unresolved amount и gaps
+обязательны. Stop никогда не интерпретируется как clean или adverse.
+
+### 6.9 Incremental service registry
+
+Полный dataset всех CEX/bridge/DEX/mixer/proxy addresses не является
+предусловием пилота или `golden v0`. Registry пополняется case-driven:
+
+```text
+service encountered
+→ independent source captures
+→ entity/category normalization
+→ dual review
+→ versioned registry assertion
+→ use in new case revisions
+```
+
+TronScan-labeled address после согласованных captures может быть добавлен как
+`verified_service_assertion`. Unlabeled address добавляется только с authority,
+которую установил manual research. Registry entry хранит source, observed time,
+content hash, validity knowledge и history изменений.
+
+Новая/изменённая label создаёт новую registry version и не переписывает старые
+golden facts. Historical event использует assertion, temporal applicability
+которой явно установлена; current label может оставаться `current_state_only`
+для вопроса о прошлом.
+
+### 6.10 Golden coverage gaps и versioning
+
+Каждая service/case category имеет dataset coverage status:
+
+- `observed_verified`;
+- `synthetic_only`;
+- `unresolved_candidates`;
+- `missing`.
+
+`golden v0` может быть выпущен с `missing` или `synthetic_only` categories, если:
+
+- gaps перечислены в manifest;
+- quality metrics по отсутствующему class не рассчитываются;
+- product coverage не заявляется шире фактического panel;
+- unresolved entities не считаются ни clean, ни adverse;
+- новые cases выпускаются как versioned `v0.x` additions;
+- предыдущие runs/reports остаются immutable.
+
+Добавление service/case расширяет dataset coverage, но не меняет truth старых
+cases без новой evidence-backed revision.
+
+## 7. Adjudication workflow
+
+### 7.1 Neutral envelope
 
 Координатор фиксирует только:
 
@@ -187,20 +398,24 @@ Observed и synthetic cases всегда находятся в разных coho
 Neutral envelope не содержит legacy manual outcome, текущий production score/
 decision, Analyst 1 output или system-derived label, представленный как truth.
 
-### 6.2 Frozen source bundle
+### 7.2 Frozen source bundle
 
 До review сохраняются:
 
 - redacted historical job payloads;
 - raw provider/chain responses, необходимые для mandatory facts;
+- external web/official source snapshots, URLs и retrieval dates;
+- independent TronScan label captures;
 - registry/service/label/sanctions assertions с retrieval time;
 - official source references;
 - exact source locators и content hashes;
 - DB/index snapshot identity;
 - known source limitations.
 
-Saved job является P1 observation, а не ground truth. System label хранится как
-assertion с authority, source и validity interval.
+Saved job является P1 observation, а не ground truth. Явный TronScan service
+label создаёт sufficient `tronscan_service_label` authority для service
+identity/category по правилам раздела 6.3. Derived/system/provider labels другого
+типа хранятся как assertions с собственной authority, source и validity.
 
 Frozen archive и reviewer input являются разными projections одного snapshot.
 Archive может сохранять redacted historical score/decision для последующего
@@ -209,14 +424,16 @@ baseline diff, но blind reviewer bundle обязан исключать:
 - legacy manual outcome;
 - production decision, score и risk band;
 - policy reasons и presentation text;
-- derived label, если он не показан только как versioned assertion с authority;
+- derived/system label, если он не показан только как versioned assertion с
+  authority; independent TronScan service-label capture остаётся допустимым
+  source evidence;
 - outputs другого reviewer.
 
 Verifier проверяет отсутствие этих полей до выдачи workspace. Доступ reviewer к
 полному archive до lock фиксируется как `blinding_breach`; affected review
 аннулируется и выполняется новой независимой сессией/reviewer.
 
-### 6.3 Analyst 1
+### 7.3 Analyst 1
 
 Analyst 1 не видит legacy/current automatic outcomes. Он:
 
@@ -231,7 +448,7 @@ Analyst 1 не видит legacy/current automatic outcomes. Он:
 9. сохраняет expected/allowed outcomes и rationale;
 10. блокирует output content hash.
 
-### 6.4 Analyst 2
+### 7.4 Analyst 2
 
 Analyst 2 получает тот же neutral envelope и не видит Analyst 1 output. Он
 независимо выполняет те же десять шагов и отдельно проверяет полноту scope
@@ -242,7 +459,7 @@ inventory.
 второй analyst начинает с neutral anchor, самостоятельно отбирает raw/official
 sources и создаёт отдельный reconstruction bundle.
 
-### 6.5 Unblind и adjudication
+### 7.5 Unblind и adjudication
 
 После блокировки обоих outputs сравниваются:
 
@@ -273,7 +490,7 @@ Human resolver вызывается только при конфликте и н
 второй проход. Для спорного compliance-case после AI review resolver должен быть
 человеком.
 
-### 6.6 Reveal production output
+### 7.6 Reveal production output
 
 Historical/current automated outputs раскрываются только после lock и
 adjudication. Затем comparator фиксирует:
@@ -288,7 +505,7 @@ adjudication. Затем comparator фиксирует:
 
 Golden expectation никогда не передаётся production scorer.
 
-### 6.7 State machine
+### 7.7 State machine
 
 ```text
 candidate
@@ -318,9 +535,9 @@ Blocking states:
 Затронутая часть требует нового слепого второго прохода; прежний reviewer не
 может снова считаться blind.
 
-## 7. Critical reconstruction contract
+## 8. Critical reconstruction contract
 
-### 7.1 Blacklist
+### 8.1 Blacklist
 
 Обязательно независимо восстановить:
 
@@ -333,7 +550,7 @@ Blocking states:
 - relation `active_at_event`, `became_active_after_event`, `current_state_only`
   или другое допустимое temporal state.
 
-### 7.2 Sanctions
+### 8.2 Sanctions
 
 Обязательно независимо восстановить:
 
@@ -344,7 +561,11 @@ Blocking states:
 - применимость assertion к entity/service;
 - route amount и service boundary.
 
-### 7.3 Drainer
+Service identity predicate может быть подтверждён `tronscan_service_label`.
+Юридический sanctions status и designation/removal interval всё равно требуют
+official authority source.
+
+### 8.3 Drainer
 
 Exact relation требует независимой проверки:
 
@@ -359,19 +580,20 @@ Exact relation требует независимой проверки:
 Downstream hop > 0 хранится отдельно как route-correlated. Campaign/Verify20
 pattern не повышается до exact transaction relation.
 
-### 7.4 Mixer
+### 8.4 Mixer
 
-Обязательно независимо восстановить verified service identity, authority,
-route, amount, time и boundary. Text label или похожее поведение не являются
-доказательством mixer identity.
+Обязательно независимо восстановить service identity, authority, route, amount,
+time и boundary. Явный TronScan mixer label достаточен для mixer identity при
+двух independent captures. Неподтверждённый text mention из другого источника
+или похожее поведение не являются named mixer identity.
 
-### 7.5 DECLINE
+### 8.5 DECLINE
 
 Второй reviewer воспроизводит каждый decisive fact и каждый temporal/identity/
 amount/coverage predicate policy. Совпадение score или outcome не считается
 реконструкцией.
 
-## 8. AI second review
+## 9. AI second review
 
 Отдельная AI-session/model может быть вторым reviewer, если:
 
@@ -387,7 +609,7 @@ Case получает явный reviewer composition, например `human_a
 human confirmation, dataset status остаётся `provisional`. Human confirmation
 является evidence-level adjudication, а не отметкой согласия.
 
-## 9. Golden case schema
+## 10. Golden case schema
 
 Каждый final `case.json` содержит минимум:
 
@@ -408,6 +630,7 @@ human confirmation, dataset status остаётся `provisional`. Human confirm
 - observations с exact locators;
 - facts с direction, amount, share semantics и authority;
 - source/date/content hash;
+- TronScan label text/category/capture ids, если применимо;
 - assertion validity interval;
 - supporting и contradicting evidence;
 - limitations и unresolved authority.
@@ -467,7 +690,7 @@ Profile definitions в golden pack являются adjudication expectations, �
 - human confirmation при необходимости;
 - eligibility для fact/route/unique-decision metrics.
 
-## 10. Audit tooling alternatives
+## 11. Audit tooling alternatives
 
 ### A. Расширить существующие scripts
 
@@ -488,9 +711,9 @@ artifact-local store или fail closed.
 Отложен. Используется после quality baseline для job lifecycle, waits, restart,
 targeted indexing и controlled key-scaling experiments.
 
-## 11. Golden Runner
+## 12. Golden Runner
 
-### 11.1 CLI
+### 12.1 CLI
 
 Один entrypoint без новых dependencies:
 
@@ -506,7 +729,7 @@ npm run forensic:golden -- verify --path <bundle-or-run>
 CLI reviewer id является audit metadata, а не authentication. Реальная reviewer
 identity подтверждается организационным процессом и code review/commit history.
 
-### 11.2 Freeze
+### 12.2 Freeze
 
 Только `freeze` может открыть source DB. Он:
 
@@ -523,7 +746,7 @@ identity подтверждается организационным проце�
 Официальный freeze выполняется с отдельными read-only DB credentials. Любая
 write-capable audit connection является configuration error.
 
-### 11.3 Live
+### 12.3 Live
 
 Live mode:
 
@@ -540,7 +763,7 @@ Live mode:
 Execution fidelity фиксируется как `analyzer_direct_frozen_db_live_provider`, а
 не как production E2E.
 
-### 11.4 Replay
+### 12.4 Replay
 
 Replay mode:
 
@@ -555,7 +778,7 @@ Replay mode:
 
 Volatile run metadata не входит в semantic output hash и сравнивается отдельно.
 
-### 11.5 Разрешённые production entrypoints
+### 12.5 Разрешённые production entrypoints
 
 Runner может вызывать через explicit adapters:
 
@@ -571,7 +794,7 @@ Runner исполняет только текущую production policy и ма�
 `current_system`. Он не симулирует ещё не реализованные base/strict/compliance
 profiles.
 
-### 11.6 Запрещённые вызовы
+### 12.6 Запрещённые вызовы
 
 Runner не импортирует/не вызывает:
 
@@ -592,9 +815,9 @@ Runner не импортирует/не вызывает:
 Forbidden port invocation завершает case как `isolation_violation` и делает run
 invalid.
 
-## 12. Артефакты
+## 13. Артефакты
 
-### 12.1 Staging и run output
+### 13.1 Staging и run output
 
 ```text
 artifacts/forensic-audit/<run-id>/
@@ -608,7 +831,7 @@ artifacts/forensic-audit/<run-id>/
 Artifacts записываются через staging file и atomic rename. Existing immutable
 run не перезаписывается.
 
-### 12.2 Curated golden pack
+### 13.2 Curated golden pack
 
 ```text
 docs/audit/2026-07-system-audit/golden/
@@ -616,13 +839,14 @@ docs/audit/2026-07-system-audit/golden/
   protocol.json
   cases/<case-id>.json
   evidence/<sha256>.json
+  evidence/screenshots/<sha256>.<ext>
 ```
 
 Final pack self-contained для обязательных evidence. Full diagnostic payload,
 не влияющий на adjudication, может оставаться в run archive, но его hash и
 retention location фиксируются.
 
-### 12.3 Canonical JSON
+### 13.3 Canonical JSON
 
 `canonical-json-v1` определяет:
 
@@ -637,7 +861,7 @@ retention location фиксируются.
 
 Deterministic content и volatile runtime metadata имеют разные hashes.
 
-### 12.4 Redaction
+### 13.4 Redaction
 
 Persisted config строится allowlist-ом. Удаляются:
 
@@ -658,7 +882,7 @@ Public chain address/transaction/block/amount/time сохраняются как
 Перед finalization выполняется secret-canary scan по точным загруженным secret
 values. Existing probe `redactUrl` не переиспользуется.
 
-## 13. Run manifest и request accounting
+## 14. Run manifest и request accounting
 
 Каждый run сохраняет:
 
@@ -692,7 +916,7 @@ Request accounting:
 
 Старое неоднозначное поле `requestCount` не используется в baseline metrics.
 
-## 14. Error model
+## 15. Error model
 
 Case terminal statuses:
 
@@ -714,9 +938,9 @@ Hash, schema, redaction, replay или isolation violation делают run inva
 Partial diagnostic artifact сохраняется до возврата ошибки, если его запись не
 нарушает redaction/hash contract.
 
-## 15. Метрики
+## 16. Метрики
 
-### 15.1 Evidence
+### 16.1 Evidence
 
 - mandatory fact recall;
 - detected fact precision;
@@ -727,7 +951,7 @@ Partial diagnostic artifact сохраняется до возврата оши�
 - temporal applicability accuracy;
 - structured explanation completeness.
 
-### 15.2 Decision
+### 16.2 Decision
 
 - false `ACCEPTABLE` count/rate/share;
 - false `DECLINE` count/rate/share;
@@ -738,7 +962,7 @@ Partial diagnostic artifact сохраняется до возврата оши�
 Decision metrics считаются только по eligible `case × profile`. Disputed policy
 case может участвовать в fact/route metrics, но не в unique-decision denominator.
 
-### 15.3 Runtime
+### 16.3 Runtime
 
 - queue wait, processing и E2E для clone runs;
 - direct analyzer time для Golden Runner;
@@ -752,9 +976,9 @@ case может участвовать в fact/route metrics, но не в uniqu
 Pilot из пяти cases проверяет корректность denominators и instrumentation. Он не
 используется для утверждения статистических targets или calibration.
 
-## 16. Verification и acceptance
+## 17. Verification и acceptance
 
-### 16.1 Tooling checks
+### 17.1 Tooling checks
 
 - intentional write внутри freeze transaction отклоняется read-only DB;
 - live/replay выполняют zero production DB writes;
@@ -770,11 +994,14 @@ Pilot из пяти cases проверяет корректность denominato
 - scope identity детерминирована;
 - все 73 historical jobs импортированы ровно один раз как runs.
 
-### 16.2 Review checks
+### 17.2 Review checks
 
 - pass 1 и pass 2 получают одинаковый neutral input hash;
 - pass 2 bundle не содержит pass 1/current/legacy outcomes;
 - оба reviewers создают independent case inventory;
+- TronScan service identity опирается на два independent captures с exact label,
+  address, observed time и content hash;
+- отсутствие TronScan label не преобразуется в `not_a_service`;
 - diff покрывает 100% A-only/B-only/shared elements;
 - critical reconstruction checklist завершён;
 - amount ledger сходится;
@@ -783,7 +1010,7 @@ Pilot из пяти cases проверяет корректность denominato
 - AI-reviewed disputed compliance case имеет human confirmation до golden
   release.
 
-### 16.3 Pilot gate
+### 17.3 Pilot gate
 
 Пилот принят, если:
 
@@ -800,19 +1027,22 @@ Pilot из пяти cases проверяет корректность denominato
 Если harness показывает полностью зелёный результат для известных TGyt/TNAra
 дефектов, пилот считается проваленным.
 
-## 17. Rollout после пилота
+## 18. Rollout после пилота
 
 1. Заморозить pilot source bundles.
-2. Провести оба независимых прохода.
-3. Выполнить adjudication и pilot retrospective.
-4. Зафиксировать `adjudication-protocol-v1`.
-5. При материальном изменении protocol повторить затронутые pilot cases.
-6. Нормализовать все 31 legacy rows и 73 runs.
-7. Сформировать и дважды проверить все scope-specific cases.
-8. Добавить отсутствующие observed/synthetic controls.
-9. Запустить полный current-system quality baseline.
-10. Составить quality report и пересмотреть target product/architecture options.
-11. На disposable DB clone измерить lifecycle и 4/10/exact `K>10` arms, когда
+2. Провести два независимых manual web/on-chain исследования.
+3. Выполнить adjudication и заморозить manual expectations.
+4. Запустить Golden Runner и Comparator.
+5. Провести pilot retrospective.
+6. Зафиксировать `adjudication-protocol-v1`.
+7. При материальном изменении protocol повторить затронутые pilot cases.
+8. Нормализовать все 31 legacy rows и 73 runs.
+9. Сформировать и дважды проверить все scope-specific cases.
+10. Пополнять incremental service registry и добавлять отсутствующие
+    observed/synthetic controls.
+11. Запустить полный current-system quality baseline.
+12. Составить quality report и пересмотреть target product/architecture options.
+13. На disposable DB clone измерить lifecycle и 4/10/exact `K>10` arms, когда
     доступны необходимые keys.
 
 Только после quality baseline снова рассматриваются target evidence/scoring
@@ -820,7 +1050,7 @@ model, product modes и architecture A/B/C. Phased implementation plan productio
 системы начинается только после отдельного approval итоговой product/technical
 spec.
 
-## 18. Approval boundaries
+## 19. Approval boundaries
 
 Утверждение этого документа разрешает только последующее проектирование и
 реализацию изолированного audit tooling отдельным решением. Оно не разрешает
