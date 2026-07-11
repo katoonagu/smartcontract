@@ -667,31 +667,39 @@ function isHtxName(value: string): boolean {
   return /(?:^|[^a-z])(?:htx|huobi)(?:[^a-z]|$)/i.test(value);
 }
 
-function sanctionedSourceIdentity(paths: MoneyOriginPath[]): {
+function aggregateSourceIdentity(
+  paths: MoneyOriginPath[],
+  copy: {
+    multipleRu: string;
+    multipleEn: string;
+    unnamedRu: string;
+    unnamedEn: string;
+  }
+): {
   ru: string;
   en: string;
   named: boolean;
-  htx: boolean;
+  multiple: boolean;
 } {
   const labels = paths.map((path) => path.exposureSourceLabel?.trim() || null);
   const names = [...new Set(labels.filter((label): label is string => label !== null))]
     .sort(compareLexical);
   if (labels.every((label) => label !== null) && names.length === 1) {
-    return { ru: names[0]!, en: names[0]!, named: true, htx: isHtxName(names[0]!) };
+    return { ru: names[0]!, en: names[0]!, named: true, multiple: false };
   }
   if (paths.length > 1 || names.length > 1) {
     return {
-      ru: "нескольких санкционных сервисов",
-      en: "multiple sanctioned services",
+      ru: copy.multipleRu,
+      en: copy.multipleEn,
       named: false,
-      htx: false
+      multiple: true
     };
   }
   return {
-    ru: "санкционного сервиса без установленного названия",
-    en: "an unnamed sanctioned service",
+    ru: copy.unnamedRu,
+    en: copy.unnamedEn,
     named: false,
-    htx: false
+    multiple: false
   };
 }
 
@@ -707,20 +715,26 @@ function sanctionedSourceFacts(paths: MoneyOriginPath[], evidence: SourcePolicyE
     const matching = sanctionedPaths.filter((path) => policyMatchesPath(item, path));
     if (matching.length === 0) return [];
     matching.forEach((path) => matchedPaths.add(path));
-    const identity = sanctionedSourceIdentity(matching);
+    const identity = aggregateSourceIdentity(matching, {
+      multipleRu: "нескольких санкционных сервисов",
+      multipleEn: "multiple sanctioned services",
+      unnamedRu: "санкционного сервиса без установленного названия",
+      unnamedEn: "an unnamed sanctioned service"
+    });
     const share = item.shareDetail!.rawShare;
     const amountRaw = item.shareDetail!.affectedAmountRaw;
     const ids = [...new Set([...item.evidenceIds, ...matching.flatMap((path) => [...pathEvidenceIds(path)])])]
       .sort(compareLexical);
     const sourceRu = identity.named ? `с ${identity.ru}` : `от ${identity.ru}`;
     const sourceEn = `from ${identity.en}`;
+    const htx = identity.named && isHtxName(identity.ru);
     return [narrativeFact(
       `sanctioned-source:${ids.join(",")}`,
       "sanctioned_source",
-      identity.htx
+      htx
         ? `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. HTX/Huobi под санкциями Великобритании с 26 мая 2026 года. Это санкционный источник. Операцию не проводить.`
         : `${sourceAmountAndShareText(share, amountRaw, "ru")} пришло ${sourceRu}. Это подтверждённый санкционный источник. Операцию не проводить.`,
-      identity.htx
+      htx
         ? `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. HTX/Huobi has been under UK sanctions since 26 May 2026. This is a sanctioned source. Do not proceed.`
         : `${sourceAmountAndShareText(share, amountRaw, "en")} came ${sourceEn}. This is a confirmed sanctioned source. Do not proceed.`,
       null,
@@ -798,22 +812,24 @@ function crossChainFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEvidenc
   const share = policy?.shareDetail?.rawShare ?? policy?.aggregateShare ??
     routePaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
   const amountRaw = policy?.shareDetail?.affectedAmountRaw ?? sumRaw(routePaths.map(pathAmountRaw));
-  const name = routePaths
-    .map((path) => path.exposureSourceLabel?.trim())
-    .filter((value): value is string => Boolean(value))
-    .sort(compareLexical)[0];
-  const nameRu = name ?? "cross-chain сервис без установленного названия";
-  const nameEn = name ?? "an unnamed cross-chain service";
+  const identity = aggregateSourceIdentity(routePaths, {
+    multipleRu: "несколько cross-chain сервисов",
+    multipleEn: "multiple cross-chain services",
+    unnamedRu: "cross-chain сервис без установленного названия",
+    unnamedEn: "an unnamed cross-chain service"
+  });
   const txHashes = [...new Set(routePaths.map((path) => path.balanceTransferTxHash))].sort(compareLexical);
   const count = txHashes.length;
   const repeatedRu = count > 1 ? ` в ${count} переводах` : "";
   const repeatedEn = count > 1 ? ` in ${count} transfers` : "";
+  const historyRu = identity.multiple ? "История до этих сервисов" : "История до этого сервиса";
+  const historyEn = identity.multiple ? "History before these services" : "History before this service";
   const ids = routeEvidenceIds(routePaths, policy);
   return [narrativeFact(
     `cross-chain:${ids.join(",")}`,
     "bridge_route",
-    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${nameRu}${repeatedRu}. История до этого сервиса находится в другой сети и не видна в TRON. Такие маршруты подходят для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
-    `${sourceShareText(share, amountRaw, "en")} of the checked amount came through ${nameEn}${repeatedEn}. History before this service is on another chain and not visible on TRON. Such routes support ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
+    `${sourceShareText(share, amountRaw, "ru")} проверяемой суммы пришло через ${identity.ru}${repeatedRu}. ${historyRu} находится в другой сети и не видна в TRON. Такие маршруты подходят для обычных обменов и сокрытия происхождения; маршрут${count > 1 ? " нетипичен для депозита и" : ""} повышает AML-риск.`,
+    `${sourceShareText(share, amountRaw, "en")} of the checked amount came through ${identity.en}${repeatedEn}. ${historyEn} is on another chain and not visible on TRON. Such routes support ordinary swaps and can hide origin; this route${count > 1 ? " is unusual for a deposit and" : ""} increases AML risk.`,
     null,
     count > 1 ? "strong" : "context",
     ids
@@ -827,12 +843,14 @@ function bridgeRouterDexFacts(paths: MoneyOriginPath[], evidence: SourcePolicyEv
   const share = policy?.shareDetail?.rawShare ?? policy?.aggregateShare ??
     routePaths.reduce((sum, path) => sum + (path.balanceShare ?? 0), 0);
   const amountRaw = policy?.shareDetail?.affectedAmountRaw ?? sumRaw(routePaths.map(pathAmountRaw));
-  const name = routePaths
-    .map((path) => path.exposureSourceLabel?.trim())
-    .filter((value): value is string => Boolean(value))
-    .sort(compareLexical)[0];
-  const nameRu = name ? `${name}, DEX/router-сервис` : "DEX/router-сервис без установленного названия";
-  const nameEn = name ? `${name}, a DEX/router service` : "an unnamed DEX/router service";
+  const identity = aggregateSourceIdentity(routePaths, {
+    multipleRu: "несколько DEX/router-сервисов",
+    multipleEn: "multiple DEX/router services",
+    unnamedRu: "DEX/router-сервис без установленного названия",
+    unnamedEn: "an unnamed DEX/router service"
+  });
+  const nameRu = identity.named ? `${identity.ru}, DEX/router-сервис` : identity.ru;
+  const nameEn = identity.named ? `${identity.en}, a DEX/router service` : identity.en;
   const ids = routeEvidenceIds(routePaths, policy);
   return [narrativeFact(
     `dex-router:${ids.join(",")}`,

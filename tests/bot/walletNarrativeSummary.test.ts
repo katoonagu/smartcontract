@@ -800,6 +800,37 @@ function originPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
   };
 }
 
+function aggregateRoutePath(
+  kind: "cross_chain_boundary" | "bridge_router_dex",
+  label: string | null,
+  txHash: string,
+  share: number,
+  amountRaw: string
+): MoneyOriginPath {
+  return originPath({
+    balanceTransferTxHash: txHash,
+    rootSourceType: "decline_boundary",
+    exposureSourceLabel: label,
+    sourceExposureKind: kind,
+    balanceShare: share,
+    txHashes: [txHash],
+    amountUsage: {
+      anchorAmountRaw: "100000000000",
+      originalAmountRaw: amountRaw,
+      usedAmountRaw: amountRaw,
+      coverageShare: share,
+      role: "anchor"
+    },
+    steps: [{
+      txHash,
+      fromAddress: counterparty,
+      toAddress: subject,
+      amountRaw,
+      timestamp: "2026-05-27T00:00:00.000Z"
+    }]
+  });
+}
+
 function policyEvidence(overrides: Partial<SourcePolicyEvidence> = {}): SourcePolicyEvidence {
   return {
     kind: "htx_huobi",
@@ -831,6 +862,29 @@ function policyEvidence(overrides: Partial<SourcePolicyEvidence> = {}): SourcePo
     },
     ...overrides
   };
+}
+
+function aggregateRouteFact(
+  kind: "cross_chain_boundary" | "bridge_router_dex",
+  paths: MoneyOriginPath[]
+): NarrativeFact | undefined {
+  return catalogueApi.sourceAndRouteFacts({
+    paths,
+    sourcePolicyEvidence: [policyEvidence({
+      kind,
+      aggregateShare: 0.5,
+      effectiveShare: 0.5,
+      pathCount: paths.length,
+      proofLevel: "exchange_policy_context",
+      evidenceIds: paths.flatMap((path) => path.txHashes),
+      shareDetail: {
+        ...policyEvidence().shareDetail!,
+        affectedAmountRaw: "50000000000",
+        rawShare: 0.5,
+        effectiveShare: 0.5
+      }
+    })]
+  }).find((fact) => fact.kind === "bridge_route");
 }
 
 function whereCoverage(overrides: Partial<WhereIsMoneyCoverage> = {}): WhereIsMoneyCoverage {
@@ -1507,6 +1561,79 @@ describe("wallet narrative signal catalogue", () => {
     expect(copy).toMatch(/другой сети.*не видна в TRON|another chain.*not visible on TRON/is);
     expect(copy).toMatch(/обычн.*обмен.*скры.*происхожд.*AML-риск|ordinary swaps.*hide.*origin.*AML risk/is);
     if (repeated) expect(copy).toMatch(/10 перевод|10 transfers.*нетипич|unusual/is);
+  });
+
+  it.each([
+    {
+      kind: "cross_chain_boundary" as const,
+      ru: /50%.*несколько cross-chain сервисов/i,
+      en: /50%.*multiple cross-chain services/i
+    },
+    {
+      kind: "bridge_router_dex" as const,
+      ru: /50%.*несколько DEX\/router-сервисов/i,
+      en: /50%.*multiple DEX\/router services/i
+    }
+  ])("uses aggregate $kind wording for multiple route identities", ({ kind, ru, en }) => {
+    const paths = [
+      aggregateRoutePath(kind, "Zulu Route", "1".repeat(64), 0.2, "20000000000"),
+      aggregateRoutePath(kind, "Alpha Route", "2".repeat(64), 0.3, "30000000000")
+    ];
+    const forward = aggregateRouteFact(kind, paths);
+    const reversed = aggregateRouteFact(kind, [...paths].reverse());
+    const copy = `${forward?.factTextRu}\n${forward?.factTextEn}`;
+
+    expect(forward?.factTextRu).toMatch(ru);
+    expect(forward?.factTextEn).toMatch(en);
+    expect(copy).not.toMatch(/50%.*(?:пришло|прошло|came|passed).*Alpha Route/i);
+    if (kind === "cross_chain_boundary") {
+      expect(copy).toMatch(/история до этих сервисов.*History before these services/is);
+    }
+    expect(reversed).toEqual(forward);
+  });
+
+  it.each([
+    {
+      kind: "cross_chain_boundary" as const,
+      ru: /несколько cross-chain сервисов/i,
+      en: /multiple cross-chain services/i
+    },
+    {
+      kind: "bridge_router_dex" as const,
+      ru: /несколько DEX\/router-сервисов/i,
+      en: /multiple DEX\/router services/i
+    }
+  ])("keeps $kind aggregate when one route identity is unnamed", ({ kind, ru, en }) => {
+    const paths = [
+      aggregateRoutePath(kind, "Alpha Route", "3".repeat(64), 0.2, "20000000000"),
+      aggregateRoutePath(kind, null, "4".repeat(64), 0.3, "30000000000")
+    ];
+    const forward = aggregateRouteFact(kind, paths);
+    const reversed = aggregateRouteFact(kind, [...paths].reverse());
+
+    expect(forward?.factTextRu).toMatch(ru);
+    expect(forward?.factTextEn).toMatch(en);
+    if (kind === "cross_chain_boundary") {
+      expect(`${forward?.factTextRu}\n${forward?.factTextEn}`).toMatch(/история до этих сервисов.*History before these services/is);
+    }
+    expect(reversed).toEqual(forward);
+  });
+
+  it.each([
+    { kind: "cross_chain_boundary" as const },
+    { kind: "bridge_router_dex" as const }
+  ])("keeps one proven $kind identity for an aggregate", ({ kind }) => {
+    const paths = [
+      aggregateRoutePath(kind, "Alpha Route", "5".repeat(64), 0.2, "20000000000"),
+      aggregateRoutePath(kind, "Alpha Route", "6".repeat(64), 0.3, "30000000000")
+    ];
+    const forward = aggregateRouteFact(kind, paths);
+    const reversed = aggregateRouteFact(kind, [...paths].reverse());
+    const copy = `${forward?.factTextRu}\n${forward?.factTextEn}`;
+
+    expect(copy).toMatch(/50%.*Alpha Route/is);
+    expect(copy).not.toMatch(/несколько cross-chain|multiple cross-chain|несколько DEX\/router|multiple DEX\/router/i);
+    expect(reversed).toEqual(forward);
   });
 
   it("describes a SUN.io bridge-router-DEX route without claiming a cross-chain boundary", () => {
