@@ -2247,7 +2247,81 @@ export type DirectPrincipalCounterpartyGroup = {
   directionalPrincipalShare: number | null;
   shareSemantics: "exact" | "unavailable";
   transferTxHashes: string[];
+  principalTransfers: Array<{
+    txHash: string;
+    amountRaw: bigint;
+    occurredAt: string;
+  }>;
   material: boolean;
+};
+
+export type FirstHopTemporalRelation =
+  | "active_at_transfer"
+  | "became_active_after"
+  | "mixed"
+  | "unknown";
+
+export type FirstHopBlacklistFact = {
+  counterpartyAddress: string;
+  direction: CounterpartyRiskDirection;
+  evidenceKind: "usdt_blacklist";
+  evidenceAuthority: "official_contract";
+  statusAtCheck: "active" | "inactive" | "unknown";
+  temporalRelation: FirstHopTemporalRelation;
+  effectiveAt: string | null;
+  effectiveTxHash: string | null;
+  checkedAt: string;
+  principalAmountRaw: string;
+  principalTxCount: number;
+  directionalPrincipalShare: number | null;
+  shareSemantics: "exact" | "lower_bound" | "unavailable";
+  transferTxHashes: string[];
+  beforeEffectiveAmountRaw: string;
+  beforeEffectiveTxCount: number;
+  activeAmountRaw: string;
+  activeTxCount: number;
+  unknownTimingAmountRaw: string;
+  unknownTimingTxCount: number;
+  directTransferCoverage: "complete" | "partial";
+  timelineCoverage: "complete" | "partial";
+  timelineEvents: UsdtBlacklistTimelineEvent[];
+};
+
+export type FirstHopLabelFact = {
+  counterpartyAddress: string;
+  direction: CounterpartyRiskDirection;
+  labelCode: RiskLabel;
+  evidenceAuthority: "exact_internal" | "derived";
+  recordedAt: string;
+  effectiveAt: null;
+  principalAmountRaw: string;
+  principalTxCount: number;
+  directionalPrincipalShare: number | null;
+  shareSemantics: "exact" | "lower_bound" | "unavailable";
+  transferTxHashes: string[];
+  linkedToSelectedProvenance: boolean;
+};
+
+export type FirstHopBlacklistCoverage = {
+  requiredForDecision: boolean;
+  scope: "all_time" | "checked_window";
+  windowStart: string | null;
+  windowEnd: string | null;
+  directPrincipalTransferCoverage: "complete" | "partial";
+  materialCounterpartyCount: number;
+  checkedMaterialCounterpartyCount: number;
+  failedMaterialCounterpartyCount: number;
+  uncheckedMaterialCounterpartyCount: number;
+  blacklistCheckCoverage:
+    | "complete"
+    | "running"
+    | "provider_failed"
+    | "budget_exhausted"
+    | "history_partial";
+  incompleteReason: string | null;
+  confirmedAdverseFactCount: number;
+  completeTimelineFactCount: number;
+  partialTimelineFactCount: number;
 };
 
 export type CounterpartyRiskProfile = {

@@ -4,7 +4,7 @@ import {
   groupDirectPrincipalCounterparties,
   selectDirectPrincipalLookupAddresses
 } from "../../src/forensics/directHardEvidence";
-import type { ForensicRouteEdge, StablecoinRestrictionProfile } from "../../src/types";
+import type { ForensicRouteEdge, StablecoinRestrictionProfile, UsdtBlacklistTimeline } from "../../src/types";
 
 const SUBJECT = "TSubject";
 
@@ -16,6 +16,7 @@ function edge(input: {
   txHash?: string;
   economicRole?: ForensicRouteEdge["economicRole"];
   economicProtocol?: ForensicRouteEdge["economicProtocol"];
+  timestamp?: Date;
 }): ForensicRouteEdge {
   return {
     id: input.id,
@@ -23,7 +24,7 @@ function edge(input: {
     toAddress: input.toAddress,
     amountRaw: input.amountRaw.toString(),
     txHash: input.txHash ?? input.id,
-    timestamp: new Date(`2026-07-02T00:00:${input.id.padStart(2, "0")}.000Z`),
+    timestamp: input.timestamp ?? new Date(`2026-07-02T00:00:${input.id.padStart(2, "0")}.000Z`),
     method: "transfer",
     edgeType: "normal_transfer",
     ...(input.economicRole ? { economicRole: input.economicRole } : {}),
@@ -31,7 +32,10 @@ function edge(input: {
   };
 }
 
-function restriction(address: string): StablecoinRestrictionProfile {
+function restriction(
+  address: string,
+  overrides: Partial<StablecoinRestrictionProfile> & { blacklistTimeline?: UsdtBlacklistTimeline | null } = {}
+): StablecoinRestrictionProfile & { blacklistTimeline?: UsdtBlacklistTimeline | null } {
   return {
     subjectAddress: address,
     tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -48,7 +52,8 @@ function restriction(address: string): StablecoinRestrictionProfile {
     methods: {
       blacklist: "isBlackListed(address)",
       balance: "balanceOf(address)"
-    }
+    },
+    ...overrides
   };
 }
 
@@ -367,5 +372,330 @@ describe("direct hard evidence helper", () => {
     expect(result.liveCheckedCount).toBe(1);
     expect(result.liveFailedCount).toBe(1);
     expect(result.missingChecks[0]).toContain("TDirect1");
+  });
+
+  it("persists directed blacklist facts with exact chronology partitions", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({ id: "1", fromAddress: "TActive", toAddress: SUBJECT, amountRaw: 10_000_000000n, timestamp: new Date("2026-07-02T12:00:00.000Z") }),
+        edge({ id: "2", fromAddress: SUBJECT, toAddress: "TAfter", amountRaw: 11_000_000000n, timestamp: new Date("2026-07-01T12:00:00.000Z") }),
+        edge({ id: "3", fromAddress: "TMixed", toAddress: SUBJECT, amountRaw: 6_000_000000n, timestamp: new Date("2026-07-01T12:00:00.000Z") }),
+        edge({ id: "4", fromAddress: "TMixed", toAddress: SUBJECT, amountRaw: 6_000_000000n, timestamp: new Date("2026-07-03T12:00:00.000Z") }),
+        edge({ id: "5", fromAddress: "TUnknown", toAddress: SUBJECT, amountRaw: 12_000_000000n, timestamp: new Date("2026-07-02T00:00:00.000Z") })
+      ]
+    });
+    const added = {
+      eventKind: "added" as const,
+      occurredAt: "2026-07-02T00:00:00.000Z",
+      txHash: "tx-added",
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      blockNumber: 100,
+      logIndex: 1,
+      verification: "verified_contract_log" as const
+    };
+
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: groups.map((group) => group.address),
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      liveLimit: 10,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address, options) => {
+        expect(options).toEqual({ includeEventTimeline: true });
+        return restriction(address, {
+          isBlacklisted: true,
+          blacklistEventTimestamp: added.occurredAt,
+          blacklistEventTxHash: added.txHash,
+          blacklistTimeline: { events: [added], pagination: "complete", failureReason: null }
+        }) as never;
+      }
+    });
+
+    expect(result.blacklistFacts.map((fact) => [fact.counterpartyAddress, fact.temporalRelation])).toEqual([
+      ["TMixed", "mixed"],
+      ["TUnknown", "unknown"],
+      ["TAfter", "became_active_after"],
+      ["TActive", "active_at_transfer"]
+    ]);
+    expect(result.blacklistFacts[0]).toMatchObject({
+      evidenceKind: "usdt_blacklist",
+      evidenceAuthority: "official_contract",
+      statusAtCheck: "active",
+      effectiveAt: added.occurredAt,
+      effectiveTxHash: added.txHash,
+      checkedAt: "2026-07-02T00:00:00.000Z",
+      principalAmountRaw: "12000000000",
+      principalTxCount: 2,
+      beforeEffectiveAmountRaw: "6000000000",
+      beforeEffectiveTxCount: 1,
+      activeAmountRaw: "6000000000",
+      activeTxCount: 1,
+      unknownTimingAmountRaw: "0",
+      unknownTimingTxCount: 0,
+      directTransferCoverage: "complete",
+      timelineCoverage: "complete",
+      timelineEvents: [added]
+    });
+    expect(result.blacklistFacts[1]).toMatchObject({
+      beforeEffectiveAmountRaw: "0",
+      activeAmountRaw: "0",
+      unknownTimingAmountRaw: "12000000000",
+      unknownTimingTxCount: 1
+    });
+    for (const fact of result.blacklistFacts) {
+      expect(BigInt(fact.beforeEffectiveAmountRaw) + BigInt(fact.activeAmountRaw) + BigInt(fact.unknownTimingAmountRaw))
+        .toBe(BigInt(fact.principalAmountRaw));
+      expect(fact.beforeEffectiveTxCount + fact.activeTxCount + fact.unknownTimingTxCount).toBe(fact.principalTxCount);
+      expect(() => JSON.stringify(fact)).not.toThrow();
+    }
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      requiredForDecision: true,
+      scope: "all_time",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "complete",
+      materialCounterpartyCount: 4,
+      checkedMaterialCounterpartyCount: 4,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "complete",
+      incompleteReason: null,
+      confirmedAdverseFactCount: 4,
+      completeTimelineFactCount: 4,
+      partialTimelineFactCount: 0
+    });
+  });
+
+  it("keeps current active facts adverse with partial history and never promotes inactive or failed lookups", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [
+        edge({ id: "1", fromAddress: "TActive", toAddress: SUBJECT, amountRaw: 12_000_000000n }),
+        edge({ id: "2", fromAddress: "TInactive", toAddress: SUBJECT, amountRaw: 11_000_000000n }),
+        edge({ id: "3", fromAddress: "TFailed", toAddress: SUBJECT, amountRaw: 10_000_000000n })
+      ]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: groups.map((group) => group.address),
+      principalGroups: groups,
+      directTransferCoverage: "partial",
+      windowStart: new Date("2026-07-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T00:00:00.000Z"),
+      liveLimit: 3,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => {
+        if (address === "TFailed") throw new Error("provider down");
+        return restriction(address, {
+          isBlacklisted: address === "TActive",
+          blacklistTimeline: address === "TActive"
+            ? { events: [], pagination: "partial", failureReason: "provider_failed" }
+            : null
+        }) as never;
+      }
+    });
+
+    expect(result.blacklistFacts).toHaveLength(1);
+    expect(result.blacklistFacts[0]).toMatchObject({
+      counterpartyAddress: "TActive",
+      statusAtCheck: "active",
+      temporalRelation: "unknown",
+      timelineCoverage: "partial",
+      unknownTimingAmountRaw: "12000000000",
+      unknownTimingTxCount: 1
+    });
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      scope: "checked_window",
+      windowStart: "2026-07-01T00:00:00.000Z",
+      windowEnd: "2026-07-04T00:00:00.000Z",
+      directPrincipalTransferCoverage: "partial",
+      materialCounterpartyCount: 3,
+      checkedMaterialCounterpartyCount: 2,
+      failedMaterialCounterpartyCount: 1,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "provider_failed",
+      confirmedAdverseFactCount: 1,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 1
+    });
+  });
+
+  it("persists typed internal labels without treating record time as effective time and dates sanctions by transfer", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({ id: "1", fromAddress: "TLabelled", toAddress: SUBJECT, amountRaw: 10_000_000000n, timestamp: new Date("2026-05-20T00:00:00.000Z") }),
+        edge({ id: "2", fromAddress: SUBJECT, toAddress: "TLabelled", amountRaw: 11_000_000000n, timestamp: new Date("2026-05-27T00:00:00.000Z") })
+      ]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TLabelled"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      liveLimit: 1,
+      getLabelsForAddress: async () => [
+        {
+          address: "TLabelled",
+          label: "approval_drain_proximity",
+          source: "system",
+          createdByTelegramId: null,
+          createdAt: new Date("2026-06-01T00:00:00.000Z")
+        },
+        {
+          address: "TLabelled",
+          label: "reported_scam",
+          source: "service_admin",
+          createdByTelegramId: "42",
+          createdAt: new Date("2026-06-02T00:00:00.000Z")
+        }
+      ],
+      getClassificationForAddress: async () => ({
+        category: "cex",
+        identity: "HTX/Huobi Global",
+        confidence: "high",
+        evidence: ["sanctioned_service:htx_huobi"],
+        isBoundary: true
+      }),
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    });
+
+    expect(result.labelFacts).toHaveLength(4);
+    expect(result.labelFacts[0]).toMatchObject({
+      labelCode: "approval_drain_proximity",
+      evidenceAuthority: "derived",
+      recordedAt: "2026-06-01T00:00:00.000Z",
+      effectiveAt: null,
+      linkedToSelectedProvenance: true
+    });
+    expect(result.labelFacts.some((fact) =>
+      fact.labelCode === "reported_scam" && fact.evidenceAuthority === "exact_internal"
+    )).toBe(true);
+    expect(result.snapshots[0].reasons).toContain("sanctioned_service:htx_huobi");
+
+    const preDesignationGroups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({
+        id: "9",
+        fromAddress: "TPreDesignation",
+        toAddress: SUBJECT,
+        amountRaw: 10_000_000000n,
+        timestamp: new Date("2026-05-20T00:00:00.000Z")
+      })]
+    });
+    const preDesignation = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TPreDesignation"],
+      principalGroups: preDesignationGroups,
+      directTransferCoverage: "complete",
+      liveLimit: 1,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => ({
+        category: "cex",
+        identity: "HTX/Huobi Global",
+        confidence: "high",
+        evidence: ["sanctioned_service:htx_huobi"],
+        isBoundary: true
+      }),
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    });
+    expect(preDesignation.snapshots[0].reasons).not.toContain("sanctioned_service:htx_huobi");
+  });
+
+  it("distinguishes budget-limited unchecked unique addresses from checked clean addresses", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [
+        edge({ id: "1", fromAddress: "TBoth", toAddress: SUBJECT, amountRaw: 10_000_000000n }),
+        edge({ id: "2", fromAddress: SUBJECT, toAddress: "TBoth", amountRaw: 10_000_000000n }),
+        edge({ id: "3", fromAddress: "TOther", toAddress: SUBJECT, amountRaw: 11_000_000000n })
+      ]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TBoth", "TOther"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      liveLimit: 1,
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    });
+
+    expect(result.blacklistFacts).toEqual([]);
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      materialCounterpartyCount: 2,
+      checkedMaterialCounterpartyCount: 1,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 1,
+      blacklistCheckCoverage: "budget_exhausted"
+    });
+  });
+
+  it("reports history_partial when an active fact has only a partial verified timeline", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [edge({ id: "1", fromAddress: "TPartialTimeline", toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+    const result = await buildDirectHardEvidenceSnapshots({
+      addresses: ["TPartialTimeline"],
+      principalGroups: groups,
+      directTransferCoverage: "complete",
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address, {
+        isBlacklisted: true,
+        blacklistTimeline: { events: [], pagination: "partial", failureReason: "provider_failed" }
+      })
+    });
+
+    expect(result.blacklistFacts[0].timelineCoverage).toBe("partial");
+    expect(result.firstHopBlacklistCoverage).toMatchObject({
+      blacklistCheckCoverage: "history_partial",
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 1
+    });
+  });
+
+  it("rejects malformed or conflicting direct transfer rows instead of producing clean coverage", () => {
+    expect(() => groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [{ ...edge({ id: "bad", fromAddress: "TBad", toAddress: SUBJECT, amountRaw: 1n }), amountRaw: "not-an-amount" }]
+    })).toThrow(/amount/i);
+
+    const first = edge({
+      id: "same",
+      fromAddress: "TBad",
+      toAddress: SUBJECT,
+      amountRaw: 10_000_000000n,
+      timestamp: new Date("2026-07-02T00:00:00.000Z")
+    });
+    expect(() => groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "complete",
+      edges: [first, { ...first, amountRaw: "11000000000" }]
+    })).toThrow(/conflicting/i);
+  });
+
+  it("rejects partial first-hop coverage without an explicit checked window", async () => {
+    const groups = groupDirectPrincipalCounterparties({
+      subjectAddress: SUBJECT,
+      directTransferCoverage: "partial",
+      edges: [edge({ id: "1", fromAddress: "TPartial", toAddress: SUBJECT, amountRaw: 10_000_000000n })]
+    });
+    await expect(buildDirectHardEvidenceSnapshots({
+      addresses: ["TPartial"],
+      principalGroups: groups,
+      directTransferCoverage: "partial",
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getUsdtRestrictionStatus: async (address) => restriction(address)
+    })).rejects.toThrow(/window/i);
   });
 });

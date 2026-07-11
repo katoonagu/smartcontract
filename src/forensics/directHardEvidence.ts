@@ -2,11 +2,20 @@ import type {
   AddressLabel,
   CounterpartyRiskDirection,
   DirectPrincipalCounterpartyGroup,
+  FirstHopBlacklistCoverage,
+  FirstHopBlacklistFact,
+  FirstHopLabelFact,
   ForensicRouteEdge,
   ServiceClassification,
-  StablecoinRestrictionProfile
+  StablecoinRestrictionProfile,
+  UsdtBlacklistTimeline,
+  UsdtBlacklistTimelineEvent
 } from "../types";
 import { isGasFreeServiceFeeEdge } from "./gasFreeSettlement";
+import {
+  matchSanctionedCryptoService,
+  sanctionedCryptoServiceActiveAt
+} from "./sanctionedServiceRegistry";
 
 export const DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS = 50_000;
 export const DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE = 1_000;
@@ -30,6 +39,9 @@ export type DirectHardEvidenceResult = {
   liveFailedCount: number;
   serviceCount: number;
   blacklistedCount: number;
+  blacklistFacts: FirstHopBlacklistFact[];
+  labelFacts: FirstHopLabelFact[];
+  firstHopBlacklistCoverage: FirstHopBlacklistCoverage;
   snapshots: DirectHardEvidenceSnapshot[];
   missingChecks: string[];
 };
@@ -40,6 +52,7 @@ type MutableDirectPrincipalCounterpartyGroup = {
   principalAmountRaw: bigint;
   transferTxHashes: string[];
   seenTxHashes: Set<string>;
+  principalTransfers: DirectPrincipalCounterpartyGroup["principalTransfers"];
 };
 
 function normalizedAddress(address: string): string {
@@ -47,7 +60,8 @@ function normalizedAddress(address: string): string {
 }
 
 function principalAmountRaw(amountRaw: string): bigint {
-  return /^\d+$/.test(amountRaw) ? BigInt(amountRaw) : 0n;
+  if (!/^\d+$/.test(amountRaw)) throw new Error(`Invalid direct principal amount: ${amountRaw}`);
+  return BigInt(amountRaw);
 }
 
 function exactShare(numerator: bigint, denominator: bigint): number {
@@ -78,6 +92,7 @@ export function groupDirectPrincipalCounterparties(input: {
     outbound: 0n
   };
   const seenEdgeIds = new Set<string>();
+  const edgeSignatures = new Map<string, string>();
 
   for (const edge of input.edges) {
     if (isGasFreeServiceFeeEdge(edge)) continue;
@@ -92,10 +107,25 @@ export function groupDirectPrincipalCounterparties(input: {
     if (!direction) continue;
     const amountRaw = principalAmountRaw(edge.amountRaw);
     if (amountRaw <= 0n) continue;
+    if (!Number.isFinite(edge.timestamp.getTime())) throw new Error(`Invalid direct principal timestamp for ${edge.txHash}`);
     const edgeId = typeof edge.id === "string" && edge.id.trim().length > 0 ? edge.id : null;
     if (edgeId !== null) {
+      const signature = JSON.stringify({
+        fromAddress: edge.fromAddress,
+        toAddress: edge.toAddress,
+        amountRaw: edge.amountRaw,
+        txHash: edge.txHash,
+        timestamp: edge.timestamp.toISOString(),
+        economicRole: edge.economicRole ?? null,
+        economicProtocol: edge.economicProtocol ?? null
+      });
+      const previous = edgeSignatures.get(edgeId);
+      if (previous !== undefined && previous !== signature) {
+        throw new Error(`Conflicting direct principal edge id: ${edgeId}`);
+      }
       if (seenEdgeIds.has(edgeId)) continue;
       seenEdgeIds.add(edgeId);
+      edgeSignatures.set(edgeId, signature);
     }
     const address = (direction === "inbound" ? edge.fromAddress : edge.toAddress).trim();
     const key = `${direction}:${normalizedAddress(address)}`;
@@ -104,9 +134,15 @@ export function groupDirectPrincipalCounterparties(input: {
       direction,
       principalAmountRaw: 0n,
       transferTxHashes: [],
-      seenTxHashes: new Set<string>()
+      seenTxHashes: new Set<string>(),
+      principalTransfers: []
     };
     group.principalAmountRaw += amountRaw;
+    group.principalTransfers.push({
+      txHash: edge.txHash,
+      amountRaw,
+      occurredAt: edge.timestamp.toISOString()
+    });
     if (!group.seenTxHashes.has(edge.txHash)) {
       group.seenTxHashes.add(edge.txHash);
       group.transferTxHashes.push(edge.txHash);
@@ -127,6 +163,7 @@ export function groupDirectPrincipalCounterparties(input: {
         directionalPrincipalShare: shareExact ? exactShare(group.principalAmountRaw, denominator) : null,
         shareSemantics: shareExact ? "exact" : "unavailable",
         transferTxHashes: group.transferTxHashes,
+        principalTransfers: group.principalTransfers,
         material: group.principalAmountRaw >= DIRECT_PRINCIPAL_ABSOLUTE_MATERIAL_RAW || (
           shareExact &&
           group.principalAmountRaw >= DIRECT_PRINCIPAL_RELATIVE_MINIMUM_RAW &&
@@ -202,18 +239,168 @@ function uniqueAddresses(addresses: string[]): string[] {
   return result;
 }
 
+type RestrictionWithTimeline = StablecoinRestrictionProfile & {
+  blacklistTimeline?: UsdtBlacklistTimeline | null;
+};
+
+type TransferTiming = "before" | "active" | "unknown";
+
+function sortedVerifiedTimeline(events: UsdtBlacklistTimelineEvent[]): UsdtBlacklistTimelineEvent[] {
+  return [...events]
+    .filter((event) => event.verification === "verified_contract_log")
+    .sort((left, right) =>
+      Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+      (left.blockNumber ?? Number.MAX_SAFE_INTEGER) - (right.blockNumber ?? Number.MAX_SAFE_INTEGER) ||
+      (left.logIndex ?? Number.MAX_SAFE_INTEGER) - (right.logIndex ?? Number.MAX_SAFE_INTEGER) ||
+      compareText(left.txHash, right.txHash)
+    );
+}
+
+function completeActiveTimeline(timeline: UsdtBlacklistTimeline | null | undefined): boolean {
+  if (timeline?.pagination !== "complete" || timeline.failureReason !== null) return false;
+  const events = sortedVerifiedTimeline(timeline.events);
+  if (events.length !== timeline.events.length) return false;
+  return events.reduce((active, event) => event.eventKind === "added", false);
+}
+
+function transferTiming(
+  occurredAt: string,
+  events: UsdtBlacklistTimelineEvent[],
+  timelineComplete: boolean
+): TransferTiming {
+  if (!timelineComplete) return "unknown";
+  const transferTime = Date.parse(occurredAt);
+  if (!Number.isFinite(transferTime)) return "unknown";
+  let active = false;
+  for (const event of events) {
+    const eventTime = Date.parse(event.occurredAt);
+    if (!Number.isFinite(eventTime)) return "unknown";
+    // A direct transfer has no log index, so equal wall-clock time cannot prove ordering.
+    if (eventTime === transferTime) return "unknown";
+    if (eventTime > transferTime) break;
+    active = event.eventKind === "added";
+  }
+  return active ? "active" : "before";
+}
+
+function buildBlacklistFact(input: {
+  group: DirectPrincipalCounterpartyGroup;
+  restriction: RestrictionWithTimeline;
+  directTransferCoverage: "complete" | "partial";
+}): FirstHopBlacklistFact {
+  const timeline = input.restriction.blacklistTimeline ?? null;
+  const events = sortedVerifiedTimeline(timeline?.events ?? []);
+  const timelineComplete = completeActiveTimeline(timeline);
+  const amounts: Record<TransferTiming, bigint> = { before: 0n, active: 0n, unknown: 0n };
+  const hashes: Record<TransferTiming, Set<string>> = {
+    before: new Set<string>(),
+    active: new Set<string>(),
+    unknown: new Set<string>()
+  };
+  for (const transfer of input.group.principalTransfers) {
+    const timing = transferTiming(transfer.occurredAt, events, timelineComplete);
+    amounts[timing] += transfer.amountRaw;
+    hashes[timing].add(transfer.txHash);
+  }
+  const temporalRelation = hashes.unknown.size > 0
+    ? "unknown" as const
+    : hashes.active.size > 0 && hashes.before.size > 0
+      ? "mixed" as const
+      : hashes.active.size > 0
+        ? "active_at_transfer" as const
+        : "became_active_after" as const;
+  const effectiveEvent = [...events].reverse().find((event) => event.eventKind === "added") ?? null;
+
+  return {
+    counterpartyAddress: input.group.address,
+    direction: input.group.direction,
+    evidenceKind: "usdt_blacklist",
+    evidenceAuthority: "official_contract",
+    statusAtCheck: "active",
+    temporalRelation,
+    effectiveAt: effectiveEvent?.occurredAt ?? input.restriction.blacklistEventTimestamp ?? null,
+    effectiveTxHash: effectiveEvent?.txHash ?? input.restriction.blacklistEventTxHash ?? null,
+    checkedAt: input.restriction.checkedAt,
+    principalAmountRaw: input.group.principalAmountRaw.toString(),
+    principalTxCount: input.group.principalTxCount,
+    directionalPrincipalShare: input.group.directionalPrincipalShare,
+    shareSemantics: input.group.shareSemantics,
+    transferTxHashes: [...input.group.transferTxHashes],
+    beforeEffectiveAmountRaw: amounts.before.toString(),
+    beforeEffectiveTxCount: hashes.before.size,
+    activeAmountRaw: amounts.active.toString(),
+    activeTxCount: hashes.active.size,
+    unknownTimingAmountRaw: amounts.unknown.toString(),
+    unknownTimingTxCount: hashes.unknown.size,
+    directTransferCoverage: input.directTransferCoverage,
+    timelineCoverage: timelineComplete ? "complete" : "partial",
+    timelineEvents: events
+  };
+}
+
+function isoOrNull(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error(`Invalid first-hop coverage bound: ${String(value)}`);
+  return date.toISOString();
+}
+
+function sanctionReason(
+  classification: ServiceClassification | null,
+  groups: DirectPrincipalCounterpartyGroup[]
+): string | null {
+  if (!classification) return null;
+  const service = matchSanctionedCryptoService([
+    classification.identity,
+    ...classification.evidence
+  ].filter(Boolean).join(" "));
+  if (!service) return null;
+  return groups.some((group) => group.principalTransfers.some((transfer) =>
+    sanctionedCryptoServiceActiveAt(service, transfer.occurredAt)
+  )) ? `sanctioned_service:${service.key}` : null;
+}
+
 export async function buildDirectHardEvidenceSnapshots(input: {
   addresses: string[];
+  principalGroups?: DirectPrincipalCounterpartyGroup[];
+  directTransferCoverage?: "complete" | "partial";
+  windowStart?: Date | string | null;
+  windowEnd?: Date | string | null;
+  requiredForDecision?: boolean;
   concurrency?: number;
   liveLimit?: number;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
-  getUsdtRestrictionStatus?(address: string): Promise<StablecoinRestrictionProfile>;
+  getUsdtRestrictionStatus?(
+    address: string,
+    options?: { includeEventTimeline?: boolean }
+  ): Promise<RestrictionWithTimeline>;
 }): Promise<DirectHardEvidenceResult> {
-  const addresses = uniqueAddresses(input.addresses);
+  if (
+    input.principalGroups &&
+    input.directTransferCoverage !== "complete" &&
+    (input.windowStart === null || input.windowStart === undefined || input.windowEnd === null || input.windowEnd === undefined)
+  ) {
+    throw new Error("Partial first-hop coverage requires explicit checked-window bounds.");
+  }
+  const principalGroups = input.principalGroups ?? [];
+  const materialGroups = principalGroups.filter((group) => group.material);
+  const materialAddresses = selectDirectPrincipalLookupAddresses(materialGroups, Number.MAX_SAFE_INTEGER);
+  const addresses = input.principalGroups
+    ? materialAddresses
+    : uniqueAddresses(input.addresses);
   const liveLimit = Math.max(0, Math.trunc(input.liveLimit ?? 250));
   const liveAddresses = input.getUsdtRestrictionStatus ? new Set(addresses.slice(0, liveLimit)) : new Set<string>();
   const missingChecks: string[] = [];
+  const checkedAddresses = new Set<string>();
+  const failedAddresses = new Set<string>();
+  const groupsByAddress = new Map<string, DirectPrincipalCounterpartyGroup[]>();
+  for (const group of materialGroups) {
+    const key = normalizedAddress(group.address);
+    const groups = groupsByAddress.get(key) ?? [];
+    groups.push(group);
+    groupsByAddress.set(key, groups);
+  }
 
   const snapshots = await mapWithConcurrency(addresses, input.concurrency ?? 8, async (address) => {
     const [labels, classification] = await Promise.all([
@@ -223,14 +410,19 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     let usdtRestriction: StablecoinRestrictionProfile | null = null;
     if (liveAddresses.has(address) && input.getUsdtRestrictionStatus) {
       try {
-        usdtRestriction = await input.getUsdtRestrictionStatus(address);
+        usdtRestriction = await input.getUsdtRestrictionStatus(address, { includeEventTimeline: true });
+        checkedAddresses.add(address);
       } catch (error) {
+        failedAddresses.add(address);
         missingChecks.push(`Direct hard evidence USDT blacklist lookup incomplete for ${address}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    const relatedGroups = groupsByAddress.get(normalizedAddress(address)) ?? [];
+    const sanctioned = sanctionReason(classification, relatedGroups);
     const reasons = [
       ...labels.map((label) => `label:${label.label}`),
       ...(classification?.isBoundary ? [`service:${classification.identity ?? classification.category}`] : []),
+      ...(sanctioned ? [sanctioned] : []),
       ...(usdtRestriction?.isBlacklisted ? ["usdt_blacklist"] : [])
     ];
 
@@ -254,6 +446,76 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     : liveFailedCount > 0
       ? "local_only_partial"
       : liveAddresses.size >= addresses.length ? "complete" : "live_budget_exhausted";
+  const snapshotsByAddress = new Map(snapshots.map((snapshot) => [normalizedAddress(snapshot.address), snapshot]));
+  const directTransferCoverage = input.directTransferCoverage ?? "partial";
+  const blacklistFacts = materialGroups.flatMap((group) => {
+    const restriction = snapshotsByAddress.get(normalizedAddress(group.address))?.usdtRestriction as RestrictionWithTimeline | null | undefined;
+    return restriction?.isBlacklisted
+      ? [buildBlacklistFact({ group, restriction, directTransferCoverage })]
+      : [];
+  });
+  const labelFacts = materialGroups.flatMap((group): FirstHopLabelFact[] => {
+    const labels = snapshotsByAddress.get(normalizedAddress(group.address))?.labels ?? [];
+    return labels.map((label) => ({
+      counterpartyAddress: group.address,
+      direction: group.direction,
+      labelCode: label.label,
+      evidenceAuthority: label.source === "service_admin" ? "exact_internal" : "derived",
+      recordedAt: label.createdAt.toISOString(),
+      effectiveAt: null,
+      principalAmountRaw: group.principalAmountRaw.toString(),
+      principalTxCount: group.principalTxCount,
+      directionalPrincipalShare: group.directionalPrincipalShare,
+      shareSemantics: group.shareSemantics,
+      transferTxHashes: [...group.transferTxHashes],
+      linkedToSelectedProvenance: true
+    }));
+  });
+  const materialCounterpartyCount = materialAddresses.length;
+  const checkedMaterialCounterpartyCount = checkedAddresses.size;
+  const failedMaterialCounterpartyCount = failedAddresses.size;
+  const uncheckedMaterialCounterpartyCount = Math.max(
+    0,
+    materialCounterpartyCount - checkedMaterialCounterpartyCount - failedMaterialCounterpartyCount
+  );
+  const completeTimelineFactCount = blacklistFacts.filter((fact) => fact.timelineCoverage === "complete").length;
+  const partialTimelineFactCount = blacklistFacts.filter((fact) => fact.timelineCoverage === "partial").length;
+  const blacklistCheckCoverage = !input.getUsdtRestrictionStatus
+    ? "running" as const
+    : failedMaterialCounterpartyCount > 0
+      ? "provider_failed" as const
+      : uncheckedMaterialCounterpartyCount > 0
+        ? "budget_exhausted" as const
+        : directTransferCoverage === "partial" || partialTimelineFactCount > 0
+          ? "history_partial" as const
+          : "complete" as const;
+  const incompleteReason = blacklistCheckCoverage === "complete"
+    ? null
+    : blacklistCheckCoverage === "running"
+      ? "USDT blacklist provider is not available for this run."
+      : blacklistCheckCoverage === "provider_failed"
+        ? `${failedMaterialCounterpartyCount} material counterparty blacklist lookup(s) failed.`
+        : blacklistCheckCoverage === "budget_exhausted"
+          ? `${uncheckedMaterialCounterpartyCount} material counterparty blacklist lookup(s) were outside the live budget.`
+          : directTransferCoverage === "partial"
+            ? "Direct principal transfer history is partial."
+            : "A confirmed adverse blacklist fact has only partial timeline history.";
+  const firstHopBlacklistCoverage: FirstHopBlacklistCoverage = {
+    requiredForDecision: input.requiredForDecision ?? materialCounterpartyCount > 0,
+    scope: directTransferCoverage === "complete" ? "all_time" : "checked_window",
+    windowStart: directTransferCoverage === "complete" ? null : isoOrNull(input.windowStart),
+    windowEnd: directTransferCoverage === "complete" ? null : isoOrNull(input.windowEnd),
+    directPrincipalTransferCoverage: directTransferCoverage,
+    materialCounterpartyCount,
+    checkedMaterialCounterpartyCount,
+    failedMaterialCounterpartyCount,
+    uncheckedMaterialCounterpartyCount,
+    blacklistCheckCoverage,
+    incompleteReason,
+    confirmedAdverseFactCount: blacklistFacts.length,
+    completeTimelineFactCount,
+    partialTimelineFactCount
+  };
 
   return {
     status,
@@ -262,6 +524,9 @@ export async function buildDirectHardEvidenceSnapshots(input: {
     liveFailedCount,
     serviceCount: snapshots.filter((snapshot) => snapshot.labels.length > 0 || snapshot.classification?.isBoundary).length,
     blacklistedCount: snapshots.filter((snapshot) => snapshot.usdtRestriction?.isBlacklisted).length,
+    blacklistFacts,
+    labelFacts,
+    firstHopBlacklistCoverage,
     snapshots,
     missingChecks
   };
