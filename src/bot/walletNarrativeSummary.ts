@@ -230,6 +230,28 @@ function rawAmount(value: string): bigint {
   return BigInt(value);
 }
 
+function tryRawAmount(value: string): bigint | null {
+  return /^\d+$/.test(value) ? BigInt(value) : null;
+}
+
+function formatRawSharePercent(
+  numeratorRaw: string,
+  denominatorRaw: string,
+  locale: WalletNarrativeLocale
+): string | null {
+  const numerator = tryRawAmount(numeratorRaw);
+  const denominator = tryRawAmount(denominatorRaw);
+  if (numerator === null || denominator === null || denominator === 0n || numerator > denominator) {
+    return null;
+  }
+  const tenths = (numerator * 1000n + denominator / 2n) / denominator;
+  const whole = tenths / 10n;
+  const fraction = tenths % 10n;
+  return fraction === 0n
+    ? whole.toString()
+    : `${whole}${locale === "ru" ? "," : "."}${fraction}`;
+}
+
 function groupWhole(value: string, separator: string): string {
   return value.replace(/\B(?=(\d{3})+(?!\d))/g, separator);
 }
@@ -877,15 +899,27 @@ function collectorFacts(
     if (behavior.transitScore <= 0 || behavior.uniqueIncomingCounterparties < 2) return [];
     const operational = operationalProfiles.find((profile) => profile.subjectAddress === behavior.subjectAddress);
     const destination = operational?.topOutgoingCounterparties
-      .filter((row) => row.isTerminalLiquidity || row.category !== null)
-      .sort((left, right) => right.volumeRatio - left.volumeRatio || compareLexical(left.address, right.address))[0];
+      .filter((row) => row.isTerminalLiquidity === true && tryRawAmount(row.volumeRaw) !== null)
+      .sort((left, right) => {
+        const leftVolume = rawAmount(left.volumeRaw);
+        const rightVolume = rawAmount(right.volumeRaw);
+        return rightVolume > leftVolume ? 1 : rightVolume < leftVolume ? -1 : compareLexical(left.address, right.address);
+      })[0];
     if (!destination) return [];
-    const share = destination.volumeRatio;
+    const shareRu = formatRawSharePercent(destination.volumeRaw, behavior.incomingVolumeRaw, "ru");
+    const shareEn = formatRawSharePercent(destination.volumeRaw, behavior.incomingVolumeRaw, "en");
+    const destinationName = destination.identity ?? shortAddress(destination.address);
+    const flowRu = shareRu === null
+      ? `отправляет ${formatUsdtRaw(destination.volumeRaw, "ru")} USDT на ${destinationName}`
+      : `отправляет ${shareRu}% поступлений на ${destinationName}`;
+    const flowEn = shareEn === null
+      ? `sends ${formatUsdtRaw(destination.volumeRaw, "en")} USDT to ${destinationName}`
+      : `sends ${shareEn}% of inflows to ${destinationName}`;
     return [narrativeFact(
       `collector:${behavior.subjectAddress}:${destination.address}`,
       "collector",
-      `Кошелёк собирает переводы от ${behavior.uniqueIncomingCounterparties} адресов и отправляет ${formatPercent(share, "ru")}% поступлений на ${destination.identity ?? shortAddress(destination.address)}. Это транзитный кошелёк-сборщик ликвидности.`,
-      `The wallet collects transfers from ${behavior.uniqueIncomingCounterparties} addresses and sends ${formatPercent(share, "en")}% of inflows to ${destination.identity ?? shortAddress(destination.address)}. It is a transit liquidity collector wallet.`,
+      `Кошелёк собирает переводы от ${behavior.uniqueIncomingCounterparties} адресов и ${flowRu}. Это транзитный кошелёк-сборщик ликвидности.`,
+      `The wallet collects transfers from ${behavior.uniqueIncomingCounterparties} addresses and ${flowEn}. It is a transit liquidity collector wallet.`,
       "collector",
       "context"
     )];

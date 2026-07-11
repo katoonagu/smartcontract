@@ -1536,11 +1536,22 @@ describe("wallet narrative signal catalogue", () => {
         {
           address: `T${"7".repeat(33)}`,
           direction: "outgoing",
-          volumeRaw: "70000000000",
+          volumeRaw: "50000000000",
           txCount: 4,
-          volumeRatio: 0.7,
+          volumeRatio: 0.5,
           category: null,
           identity: "Ordinary peer",
+          isTerminalLiquidity: false,
+          isHtxHuobi: false
+        },
+        {
+          address: `T${"8".repeat(33)}`,
+          direction: "outgoing",
+          volumeRaw: "25000000000",
+          txCount: 2,
+          volumeRatio: 0.25,
+          category: "unknown_contract",
+          identity: "Unknown contract",
           isTerminalLiquidity: false,
           isHtxHuobi: false
         },
@@ -1549,7 +1560,7 @@ describe("wallet narrative signal catalogue", () => {
           direction: "outgoing",
           volumeRaw: "20000000000",
           txCount: 2,
-          volumeRatio: 0.2,
+          volumeRatio: 0.25,
           category: "cex",
           identity: "Bybit",
           isTerminalLiquidity: true,
@@ -1564,7 +1575,7 @@ describe("wallet narrative signal catalogue", () => {
     const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
 
     expect(copy).toMatch(/18 адресов.*20%.*Bybit.*кошел[её]к-сборщик|18 addresses.*20%.*Bybit.*collector wallet/is);
-    expect(copy).not.toMatch(/Ordinary peer|70%|98%/i);
+    expect(copy).not.toMatch(/Ordinary peer|Unknown contract|25%|50%|98%/i);
     expect(copy).not.toMatch(/грязн|винов|dirty|guilt/i);
   });
 
@@ -1588,6 +1599,34 @@ describe("wallet narrative signal catalogue", () => {
     });
 
     expect(facts.some((fact) => fact.kind === "collector")).toBe(false);
+  });
+
+  it.each([
+    { name: "zero inflow", incomingVolumeRaw: "0" },
+    { name: "invalid inflow", incomingVolumeRaw: "invalid" },
+    { name: "destination above inflow", incomingVolumeRaw: "10000000000" }
+  ])("uses amount-only collector copy for $name", ({ incomingVolumeRaw }) => {
+    const [fact] = catalogueApi.sourceAndRouteFacts({
+      addressBehaviorProfiles: [behaviorProfile({ incomingVolumeRaw })],
+      operationalFlowProfiles: [operationalProfile({
+        topOutgoingCounterparties: [{
+          address: counterparty,
+          direction: "outgoing",
+          volumeRaw: "20000000000",
+          txCount: 2,
+          volumeRatio: 0.25,
+          category: "cex",
+          identity: "Bybit",
+          isTerminalLiquidity: true,
+          isHtxHuobi: false
+        }]
+      })]
+    });
+    const copy = `${fact?.factTextRu}\n${fact?.factTextEn}`;
+
+    expect(fact?.factTextRu).toMatch(/18 адресов.*отправляет 20 000 USDT.*Bybit.*кошел[её]к-сборщик/is);
+    expect(fact?.factTextEn).toMatch(/18 addresses.*sends 20,000 USDT.*Bybit.*collector wallet/is);
+    expect(copy).not.toContain("%");
   });
 
   it.each([
