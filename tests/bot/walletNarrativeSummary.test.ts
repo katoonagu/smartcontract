@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildWalletNarrativeCase,
   formatWalletNarrativeSummary,
@@ -257,6 +257,35 @@ describe("formatWalletNarrativeSummary", () => {
     expect(output.match(/Адрес находится в чёрном списке USDT/g)).toHaveLength(1);
   });
 
+  it("deduplicates Turkish I sentences without depending on the default locale", () => {
+    const original = String.prototype.toLocaleLowerCase;
+    const localeSpy = vi.spyOn(String.prototype, "toLocaleLowerCase")
+      .mockImplementation(function (this: string) {
+        return original.call(this, "tr");
+      });
+    const upper: NarrativeFact = {
+      id: "upper",
+      kind: "usdt_blacklist",
+      factTextRu: "DIRECT I ROUTE.",
+      factTextEn: "DIRECT I ROUTE."
+    };
+    const lower: NarrativeFact = {
+      id: "lower",
+      kind: "bridge_route",
+      factTextRu: "direct i route.",
+      factTextEn: "direct i route."
+    };
+
+    try {
+      const forward = narrativeCase({ facts: [upper, lower] });
+      const reversed = narrativeCase({ facts: [lower, upper] });
+      expect(selectNarrativeFacts(forward).map((fact) => fact.id)).toEqual(["upper"]);
+      expect(formatWalletNarrativeSummary(forward)).toBe(formatWalletNarrativeSummary(reversed));
+    } finally {
+      localeSpy.mockRestore();
+    }
+  });
+
   it("canonicalizes duplicate episode ids independently of input order", () => {
     const first: NarrativeFact = {
       id: "episode-1",
@@ -437,7 +466,10 @@ describe("formatWalletNarrativeSummary", () => {
     "Incomplete anchor coverage.",
     "provider_cap_unresolved",
     "PROVIDER_CAP_UNRESOLVED",
-    "Provider_Cap_Unresolved"
+    "Provider_Cap_Unresolved",
+    "approval_drain_exact",
+    "INSUFFICIENT_COVERAGE",
+    "EDD_SOF"
   ])("rejects forbidden normal copy: %s", (factTextRu) => {
     expect(() => narrativeCase({
       facts: [{
@@ -447,6 +479,82 @@ describe("formatWalletNarrativeSummary", () => {
         factTextEn: factTextRu
       }]
     })).toThrow(/normal narrative copy/i);
+  });
+
+  it("allows legitimate display labels that contain underscores", () => {
+    const output = formatWalletNarrativeSummary(narrativeCase({
+      facts: [{
+        id: "service",
+        kind: "cex_source",
+        factTextRu: "Сумма пришла через SUN_IO V2.",
+        factTextEn: "The amount arrived through SUN_IO V2."
+      }]
+    }));
+
+    expect(output).toContain("SUN_IO V2");
+  });
+
+  it.each([
+    {
+      name: "locale",
+      value: { locale: "tr" },
+      error: /locale must be "ru" or "en"/
+    },
+    {
+      name: "decision",
+      value: { decision: "UNKNOWN" },
+      error: /decision is invalid/
+    },
+    {
+      name: "facts array",
+      value: { facts: {} },
+      error: /facts must be an array/
+    },
+    {
+      name: "fact kind",
+      value: { facts: [{ ...primaryFact, kind: "bridge" }] },
+      error: /fact kind is invalid/
+    },
+    {
+      name: "fact id",
+      value: { facts: [{ ...primaryFact, id: 42 }] },
+      error: /fact id must be a string/
+    },
+    {
+      name: "fact text",
+      value: { facts: [{ ...primaryFact, factTextRu: 42 }] },
+      error: /fact texts must be strings/
+    },
+    {
+      name: "coverage object",
+      value: { coverageExplanation: [] },
+      error: /coverage must be an object or null/
+    },
+    {
+      name: "coverage text",
+      value: {
+        coverageExplanation: { textRu: 42, textEn: "Coverage.", isRiskEvidence: false }
+      },
+      error: /coverage texts must be strings/
+    },
+    {
+      name: "coverage evidence flag",
+      value: {
+        coverageExplanation: { textRu: "Ограничение.", textEn: "Coverage.", isRiskEvidence: true }
+      },
+      error: /coverage must be a limitation/
+    },
+    {
+      name: "score type",
+      value: { score: "95" },
+      error: /score must be an integer between 0 and 100/
+    }
+  ])("formatter fails closed with a controlled validation error for invalid $name", ({ value, error }) => {
+    const invalid = {
+      ...narrativeCase(),
+      ...value
+    } as unknown as WalletNarrativeCase;
+    expect(() => formatWalletNarrativeSummary(invalid)).toThrow(error);
   });
 
   it("rejects an oversized fact instead of cutting an amount or address", () => {

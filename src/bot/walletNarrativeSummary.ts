@@ -44,8 +44,34 @@ export type WalletNarrativeCase = {
 
 const MAX_PART_LENGTH = 280;
 const MAX_BODY_LENGTH = 500;
-const RAW_REASON_CODE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i;
 const FORBIDDEN_COPY = /Почему|Что это может значить|Что важно учесть|drain episode|anchor coverage/i;
+const KNOWN_INTERNAL_CODES = new Set([
+  "approval_drain_exact",
+  "approval_drain_proximity",
+  "clean_cex_source",
+  "drainer_like",
+  "edd_sof",
+  "forensic_approval_drain_provenance",
+  "hard_safety_limit_exceeded",
+  "htx_huobi_source",
+  "incoming_history_not_fetched",
+  "insufficient_coverage",
+  "internal_scam_label",
+  "llm_contract_suspicion",
+  "local_budget_limited",
+  "local_index_read_failed",
+  "manual_review_required",
+  "partial_budget_exhausted",
+  "provider_cap_unresolved",
+  "provider_error",
+  "provider_inconsistent",
+  "rate_limited_after_retries",
+  "service_boundary",
+  "unknown_contract_boundary",
+  "unknown_suspicious",
+  "usdt_blacklist",
+  "whitebit_source"
+]);
 
 const factRank: Record<NarrativeFactKind, number> = {
   usdt_blacklist: 0,
@@ -63,12 +89,29 @@ const factRank: Record<NarrativeFactKind, number> = {
   gasfree_fee: 9
 };
 
+const narrativeFactKinds = new Set<string>(Object.keys(factRank));
+const narrativeDecisions = new Set<string>([
+  "ACCEPTABLE",
+  "REVIEW",
+  "DECLINE",
+  "NO_FINAL_DECISION"
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function containsKnownInternalCode(value: string): boolean {
+  return (value.match(/[A-Za-z][A-Za-z0-9_]*/g) ?? [])
+    .some((token) => KNOWN_INTERNAL_CODES.has(token.toLowerCase()));
+}
+
 function normalizeCopy(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length > MAX_PART_LENGTH) {
     throw new RangeError(`Wallet narrative parts must not exceed ${MAX_PART_LENGTH} characters.`);
   }
-  if (FORBIDDEN_COPY.test(normalized) || RAW_REASON_CODE.test(normalized)) {
+  if (FORBIDDEN_COPY.test(normalized) || containsKnownInternalCode(normalized)) {
     throw new Error("Forbidden normal narrative copy must be translated before formatting.");
   }
   return normalized;
@@ -88,7 +131,7 @@ function localizedCoverageText(
 function sentenceKeys(value: string): string[] {
   return value
     .split(/(?<=[.!?])\s+/)
-    .map((sentence) => sentence.trim().toLocaleLowerCase())
+    .map((sentence) => sentence.trim().toLowerCase())
     .filter(Boolean);
 }
 
@@ -103,8 +146,43 @@ function validateScore(decision: WalletNarrativeDecision, score: number | null):
   }
 }
 
+function validateWalletNarrativeCase(input: unknown): asserts input is WalletNarrativeCase {
+  if (!isRecord(input)) throw new Error("Wallet narrative case must be an object.");
+  if (input.locale !== "ru" && input.locale !== "en") {
+    throw new Error('Wallet narrative locale must be "ru" or "en".');
+  }
+  if (typeof input.decision !== "string" || !narrativeDecisions.has(input.decision)) {
+    throw new Error("Wallet narrative decision is invalid.");
+  }
+  validateScore(input.decision as WalletNarrativeDecision, input.score as number | null);
+  if (!Array.isArray(input.facts)) throw new Error("Wallet narrative facts must be an array.");
+  input.facts.forEach((fact, index) => {
+    if (!isRecord(fact)) throw new Error(`Wallet narrative fact at index ${index} must be an object.`);
+    if (typeof fact.id !== "string") throw new Error("Wallet narrative fact id must be a string.");
+    if (typeof fact.kind !== "string" || !narrativeFactKinds.has(fact.kind)) {
+      throw new Error("Wallet narrative fact kind is invalid.");
+    }
+    if (typeof fact.factTextRu !== "string" || typeof fact.factTextEn !== "string") {
+      throw new Error("Wallet narrative fact texts must be strings.");
+    }
+  });
+  if (input.coverageExplanation === null) return;
+  if (!isRecord(input.coverageExplanation)) {
+    throw new Error("Wallet narrative coverage must be an object or null.");
+  }
+  if (
+    typeof input.coverageExplanation.textRu !== "string" ||
+    typeof input.coverageExplanation.textEn !== "string"
+  ) {
+    throw new Error("Wallet narrative coverage texts must be strings.");
+  }
+  if (input.coverageExplanation.isRiskEvidence !== false) {
+    throw new Error("Wallet narrative coverage must be a limitation, not risk evidence.");
+  }
+}
+
 export function buildWalletNarrativeCase(input: WalletNarrativeCase): WalletNarrativeCase {
-  validateScore(input.decision, input.score);
+  validateWalletNarrativeCase(input);
 
   const facts = input.facts.flatMap((fact) => {
     const normalized: NarrativeFact = {
