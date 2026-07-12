@@ -74,11 +74,14 @@ canonical relationship transfer still counts when that flag is true.
 Completion requires authoritative, internally consistent provider/range
 metadata. Saved audit data includes provider identity, requested/start/next
 offsets, raw count, `total`, `rangeTotal`, complete/consistent flags, raw and
-canonical hashes, per-fact provider identity, and overlap ids. Mixed providers,
-missing or contradictory totals, `rangeTotal > total`, short nonterminal or
-oversized pages, unexplained no progress, repeated rows inside a logical page,
-or overlap with a previous claim keep coverage partial. They can support a
-positive candidate or exact disqualifier, but never a negative `clear`.
+canonical hashes, per-fact provider identity, and overlap ids. A non-null
+authoritative `rangeTotal` is required for completion; `total` may be null. If
+both are present, they must be consistent and `rangeTotal <= total`. Mixed
+providers, missing or contradictory `rangeTotal`, contradictory paired totals,
+short nonterminal or oversized pages, unexplained no progress, repeated rows
+inside a logical page, or overlap with a previous claim keep coverage partial.
+They can support a positive candidate or exact disqualifier, but never a
+negative `clear`.
 
 A consistent full page advances the saved logical offset. The worker can
 continue for at most five pages. A negative partial result remains
@@ -90,7 +93,9 @@ most two lookups concurrently. Check and Telegram-delivery phases run behind
 separate guards. Queue and latency logs use these events and fields:
 
 - `address_poisoning_lookup_completed`: `txHash`, `providerLatencyMs`,
-  `pageCount`, `fetchedCount`, and `coverage`;
+  `pageCount`, `fetchedCount`, and `coverage`; successful page processing also
+  logs the accumulated `provider`, while a failed lookup logs
+  `coverage=failed` without `provider`;
 - `address_poisoning_cycle_completed`: `queueDepth`, `oldestQueueAgeMs`,
   `claimed`, `durationMs`, and `timeoutCount`;
 - `address_poisoning_alert_sent`: `candidateId`, `classification`,

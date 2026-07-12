@@ -72,11 +72,13 @@ of these decisions, update this file in the same work.
   canonical relationship. Match ranking is deterministic and one incoming
   transaction creates at most one candidate and one logical alert.
 - Complete negative coverage requires authoritative provider/range metadata.
-  Provider identity, offsets, totals, range totals, completion flags, raw and
-  canonical hashes, and overlaps are stored. Mixed provider evidence, missing
-  or contradictory totals, impossible totals, oversized/short-nonterminal or
-  non-progressing pages, and internal or cross-claim overlap remain partial and
-  cannot become clean.
+  Provider identity, offsets, `total`, `rangeTotal`, completion flags, raw and
+  canonical hashes, and overlaps are stored. A non-null authoritative
+  `rangeTotal` is required; `total` may be null. When both exist they must be
+  consistent and `rangeTotal <= total`. Mixed provider evidence, missing or
+  contradictory `rangeTotal`, contradictory paired totals,
+  oversized/short-nonterminal or non-progressing pages, and internal or
+  cross-claim overlap remain partial and cannot become clean.
 - Partial negative coverage is `inconclusive`, never `clear`. Partial evidence
   can decide a positive candidate or an exact disqualifier: a prior direct
   relation, an authorized `service_admin` trusted/false-positive label, or an

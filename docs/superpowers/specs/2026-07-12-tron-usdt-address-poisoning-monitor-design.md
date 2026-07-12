@@ -176,13 +176,15 @@ non-reverted official-USDT transfers earlier than the lure. A provider
 otherwise canonical relationship transfer, and the raw flag remains in saved
 provider evidence.
 
-Persist the pinned provider, requested/start/next offsets, totals and range
-totals, completion and consistency flags, raw and canonical response hashes,
-per-fact provider identity, and internal/cross-claim overlaps. Mixed provider
-evidence, missing or contradictory totals, `rangeTotal > total`, an oversized
-page, a short nonterminal page, unexplained no progress, or overlap never proves
-complete negative coverage. Such a result stays partial/inconclusive rather
-than becoming `clear`.
+Persist the pinned provider, requested/start/next offsets, `total`,
+`rangeTotal`, completion and consistency flags, raw and canonical response
+hashes, per-fact provider identity, and internal/cross-claim overlaps. Complete
+coverage requires a non-null authoritative `rangeTotal`; `total` may be null.
+When both values exist they must remain consistent, with
+`rangeTotal <= total`. Mixed provider evidence, a missing `rangeTotal`,
+contradictory totals, an oversized page, a short nonterminal page, unexplained
+no progress, or overlap never proves complete negative coverage. Such a result
+stays partial/inconclusive rather than becoming `clear`.
 
 A positive visual/amount match is usable with partial coverage. An exact
 disqualifier is also usable: an earlier direct relationship, an exact
@@ -548,7 +550,9 @@ Operational events are exact and avoid sensitive addresses, Telegram user/chat
 ids, API keys, and tokens:
 
 - `address_poisoning_lookup_completed`: `txHash`, `providerLatencyMs`,
-  `pageCount`, `fetchedCount`, `coverage`, and the accumulated `provider`;
+  `pageCount`, `fetchedCount`, and `coverage`; a successfully processed page
+  also includes the accumulated `provider`, while a failed lookup reports
+  `coverage=failed` without `provider`;
 - `address_poisoning_cycle_completed`: `queueDepth`, `oldestQueueAgeMs`,
   `claimed`, `durationMs`, `timeoutCount`;
 - `address_poisoning_alert_sent`: `candidateId`, `classification`,
