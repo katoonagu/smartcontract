@@ -2,10 +2,10 @@
 
 ## Status
 
-Approved in conversation on 2026-07-12. This document specifies the first
-release: an automatic immediate USDT warning for watched wallets. Recipient
-checking before a transfer is the next phase and must reuse the evidence saved
-by this release.
+Revised after an approve-with-changes review on 2026-07-12 and pending final
+user review. This document specifies the first release: an automatic immediate
+USDT warning for watched wallets. Recipient checking before a transfer is the
+next phase and must reuse the evidence saved by this release.
 
 ## Problem
 
@@ -91,23 +91,28 @@ poisoning condition.
 
 ## Architecture
 
-Add one pure detector and a thin monitor integration:
+Add one pure detector, a thin monitor enqueue step, and a separately scheduled
+lightweight poisoning worker:
 
 ```text
 confirmed small incoming USDT
-  -> load bounded recent USDT relationships
+  -> apply freshness and eligibility gates
+  -> persist a pending poisoning check
+  -> continue normal Incoming Deposit workflow
+  -> lightweight worker loads bounded recent USDT relationships
   -> compare sender with earlier outgoing recipients
   -> build typed poisoning evidence
   -> persist candidate idempotently
   -> send immediate dedicated warning
-  -> continue normal Incoming Deposit workflow
 ```
 
 Recommended code boundary:
 
 - `src/monitor/addressPoisoning.ts`: pure comparison and classification;
-- `src/monitor/monitorWorker.ts`: trigger, persistence, and delivery order;
-- existing TronScan client: one bounded related-transfer lookup;
+- `src/monitor/monitorWorker.ts`: freshness gate and non-blocking enqueue;
+- `src/monitor/addressPoisoningWorker.ts`: bounded claim, lookup, persistence,
+  retry, and delivery;
+- existing TronScan client: bounded paginated related-transfer lookup;
 - storage repositories: check state, candidate lifecycle, and alert delivery;
 - alert formatter and keyboard: dedicated Russian-first message.
 
@@ -129,38 +134,64 @@ without pretending that the current monitor already ingests them.
 
 ## Monitor Integration
 
-Run poisoning detection after `claimObservedTransactionForUserAlert` succeeds
-and before the normal Incoming Deposit job is queued.
+After `claimObservedTransactionForUserAlert` succeeds, apply the cheap local
+eligibility gates and persist a pending poisoning check. Do not perform the
+TronScan relationship lookup inline. Queue the normal Incoming Deposit job
+without waiting for poisoning analysis.
 
 Only trigger the live lookup when all conditions hold:
 
 - transfer is confirmed and successful;
 - token contract is official TRON USDT;
 - watched wallet is active and not `paused`;
+- event age does not exceed the existing
+  `incomingDepositRealtimeMaxAgeMs` value at claim time;
 - incoming amount is greater than zero and at most configurable
   `ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT`, default `100`;
 - sender and watched wallet are different valid TRON addresses.
 
-The lookup reads at most the most recent 100 related USDT transfers within the
-24 hours before the suspicious incoming transfer. It filters them locally to
+An older event is historical backfill. Persist
+`poisoning_check_status = skipped_backfill` and do not perform a lookup or send
+a security warning. The ordinary Incoming Deposit path keeps its existing
+backfill behavior. Retries re-check event age before claiming work so a stale
+pending row cannot produce a late warning after downtime.
+
+The first lookup reads the most recent 100 related USDT transfers within the 24
+hours before the suspicious incoming transfer. It filters them locally to
 earlier outgoing transfers from the watched wallet. A later transfer must never
 be used to explain an earlier alert. Persist whether the result covers the full
-24-hour window or was truncated by the 100-transfer limit. A positive visual
-and amount match remains usable with partial coverage; a sender must never be
-described as new outside the checked window.
+24-hour window or was truncated by the page limit.
+
+A positive visual/amount match is usable with partial coverage. An exact
+disqualifier is also usable: an earlier direct relationship, a manual trusted
+label, or an authoritative service-registry match. Without a candidate or an
+exact disqualifier, a truncated lookup is `inconclusive`, never `clear`.
+
+The lightweight worker may continue an inconclusive lookup by one saved page
+per claim, up to five pages or 500 transfers for the event. It stores the
+cursor, oldest covered timestamp, page count, and fetched-transfer count. If it
+still cannot cover the full 24-hour window, it remains `inconclusive` after the
+retry budget is exhausted; it does not become clean by default. A sender must
+never be described as new outside the checked window.
 
 The poisoning check is separate from ordinary alert status. Detection failure
 must not prevent the Incoming Deposit job or ordinary alert from continuing.
 Persist a small check state on `observed_transactions`:
 
-- `poisoning_check_status = pending | running | clear | candidate | failed | skipped`;
+- `poisoning_check_status = pending | running | inconclusive | clear | candidate | failed | skipped | skipped_backfill`;
 - `poisoning_check_attempts`;
 - `poisoning_check_last_error`;
+- lookup cursor, page count, fetched-transfer count, oldest covered timestamp,
+  and `coverage = complete | partial`;
 - `poisoning_checked_at`.
 
-Retry failed or stale-running eligible checks at the start of later polling
-cycles with bounded attempts. A clear result is persisted so the same transfer
-does not repeat provider work.
+The dedicated worker claims `pending`, retryable `inconclusive`, `failed`, or
+stale `running` rows with `for update skip locked`. A clear result is persisted
+only after complete negative coverage or an exact disqualifier, so the same
+transfer does not repeat provider work. An `inconclusive` row is retryable only
+while its page count is below five and the event remains fresh. After that it
+stays non-retryable `inconclusive` until an explicit future policy or manual
+review changes it.
 
 ## Address Similarity
 
@@ -196,8 +227,8 @@ history strictly before the incoming transfer:
 
 - no earlier direct transfer between the watched wallet and sender in the
   bounded 24-hour relationship result;
-- no manual trusted/false-positive label for the sender;
-- sender is not a registered service address;
+- no authorized manual trusted/false-positive decision for the sender;
+- sender has no exact address match in the authoritative service registry;
 - sender is not the exact real recipient.
 
 Do not mark a sender trusted merely because the wallet later sends money to it.
@@ -236,20 +267,37 @@ All required:
 ### No User Alert
 
 A small incoming transfer from a sender absent from the checked recent history,
-but without a similar recent recipient, is not poisoning evidence. Persist the
-check as `clear`; do not send a warning or increase risk. If the lookup was
-truncated, retain `coverage = partial` on the check rather than implying that
-the sender is new across the wallet's full history.
+but without a similar recent recipient, is not poisoning evidence only when the
+full 24-hour relationship window was covered. Persist that result as `clear`;
+do not send a warning or increase risk.
+
+If the lookup was truncated and found neither a candidate nor an exact
+disqualifier, persist `inconclusive` with `coverage = partial`. Do not alert, do
+not label the sender clean or new, and retry within the bounded lookup budget.
 
 ## Evidence Contract
 
-Create typed raw evidence with source `address_poisoning_detector` and a risk
-observation whose code describes the exact match, for example:
+Create typed raw evidence with source `address_poisoning_detector` and a
+wallet-safety observation whose code describes the exact match, for example:
 
 ```text
 address_poisoning_exact_amount_suffix_match
 address_poisoning_visual_match_without_exact_amount
 ```
+
+This requires a new `RiskSignalGroup` and database value:
+
+```text
+signal_group = wallet_safety
+score_impact = 0
+```
+
+Add a database constraint that every `wallet_safety` observation has
+`score_impact = 0`. Unified wallet risk, Incoming Deposit risk, matrix scoring,
+FastCheck, Where Is Money, and DeepCheck must explicitly exclude this group
+from score and disposition inputs. This exclusion is required even if an old or
+manually corrupted row has a non-zero value. Wallet-safety observations may be
+read only by safety alerts, Admin safety views, and the future recipient check.
 
 Evidence contains:
 
@@ -282,15 +330,29 @@ monitoring and future recipient checking:
 - incoming/outgoing raw amounts and timestamps;
 - meaningful prefix and suffix lengths;
 - classification and confidence;
+- primary-match rank inputs and secondary matches inside raw evidence;
 - `status = candidate | confirmed | dismissed`;
+- compact opaque callback token bound to the candidate;
 - raw evidence id;
 - Telegram alert status, attempts, error, sent time, and message fingerprint;
 - optional later loss tx hash and post-loss route evidence id;
 - created and updated times.
 
-Use a unique key over watched wallet, token contract, suspicious incoming tx,
-and matched outgoing tx. Reprocessing the same event updates the existing
-candidate and never sends a second successful alert with the same fingerprint.
+Persist at most one candidate per watched wallet, token contract, and
+suspicious incoming tx. Rank every eligible match deterministically and select
+one primary match in this order:
+
+1. `CRITICAL` before `HIGH`;
+2. more matched address characters;
+3. exact raw-amount equality before non-equality;
+4. smaller absolute time difference;
+5. newer outgoing transfer;
+6. lexicographically smaller outgoing tx hash as the final stable tie-breaker.
+
+Store all non-primary matches in the raw evidence, not as additional candidate
+rows. Use a unique key over watched wallet, token contract, and suspicious
+incoming tx. Reprocessing updates the same candidate and never sends more than
+one successful alert for that incoming transfer.
 
 Indexes support:
 
@@ -302,6 +364,19 @@ Indexes support:
 Manual `Это знакомый адрес` sets this candidate to `dismissed`; it does not
 globally trust every future transfer from the address. `Пометить как подмену`
 sets it to `confirmed` and retains the immutable detector evidence.
+
+Both actions require server-side authorization. Callback data contains the
+action plus a compact opaque candidate token bound to one candidate; it never
+contains authority by itself. The handler loads the candidate with its watched
+wallet and requires `ctx.from.id` to equal the wallet owner's
+`telegram_user_id`. It does not trust the message chat, forwarded-message
+metadata, or a caller-supplied wallet id. An unauthorized or unknown callback
+returns a neutral unavailable response and changes nothing.
+
+Status transitions use a compare-and-set repository method. The first owner
+transition from `candidate` to `confirmed` or `dismissed` wins; repeating the
+same action is idempotent, and the opposite action does not silently reverse a
+terminal decision. Reopening a terminal decision is outside this release.
 
 ## USDD PSM Separation
 
@@ -338,7 +413,8 @@ Canonical Russian copy:
 Кошелёк: THJc…FMD7
 
 Что произошло
-Пришло 10 USDT от адреса, которого не было в проверенной истории:
+Пришло 10 USDT от адреса, который не встречался среди переводов за проверенные
+24 часа:
 TABPfWW3Q7vCnfPQgQ8BCpjHqFqhCd58Fg
 
 Он повторяет последние 6 символов адреса:
@@ -366,10 +442,28 @@ The alert says `возможна подмена` until a user confirms it or exa
 evidence is attached. It never says that theft has already happened based only
 on the lure.
 
+Ordinary Incoming Deposit analysis remains independent. If it finishes after
+an active poisoning candidate exists, append:
+
+```text
+⚠️ Предупреждение о возможной подмене адреса остаётся активным.
+```
+
+A low AML score or benign source-of-funds result must not hide, downgrade, or
+contradict the separate wallet-safety warning. If Incoming Deposit finishes
+first, it stays unchanged and the dedicated safety alert follows separately.
+
 ## Performance And Failure Handling
 
-- One bounded related-transfer lookup is allowed only after an eligible small
-  incoming USDT transfer.
+- The main monitor performs no poisoning provider lookup; it only persists an
+  eligible pending check.
+- A separately scheduled lightweight worker runs independently of wallet
+  polling. Defaults: every 30 seconds, at most 20 claimed checks per cycle,
+  concurrency two, and a five-second timeout per provider request. Worker
+  cycles do not overlap; a scheduler tick is skipped while the prior cycle is
+  still running.
+- Each claim fetches at most one page of 100 transfers. Continuations use the
+  saved cursor and never restart page one.
 - Deduplicate concurrent checks for the same watched wallet and incoming tx.
 - A short-lived per-wallet cache may reuse the same recent transfer page for
   multiple small incoming events.
@@ -379,6 +473,17 @@ on the lure.
   transfers after the suspicious event are ignored.
 - Alert delivery retries use the candidate fingerprint and persisted state.
 - Detector output is deterministic; no LLM key or response is involved.
+- Under a healthy provider and queue depth within configured cycle capacity,
+  the alert SLO is no more than two wallet-polling cycles and normally no more
+  than 120 seconds after the confirmed transfer is observed. Queue age, queue
+  depth, lookup latency, timeout count, and alert latency are recorded as
+  metrics. Flooding may delay analysis but cannot block wallet polling or turn
+  partial coverage into `clear`.
+
+Automatic suppression is allowed only for an owner/manual trusted or
+false-positive decision, or an exact address match in the authoritative service
+registry. A provider label, contract name, token name, or free-text metadata is
+not sufficient to suppress a warning.
 
 ## Tests And Acceptance Criteria
 
@@ -409,15 +514,35 @@ The fixture must prove:
 - raw token equality respects token contract and decimals;
 - future/later transfers are never used in the initial decision;
 - missing sender creation time does not suppress an exact candidate;
-- manual trusted/false-positive sender suppresses automatic warning;
-- registered service sender suppresses automatic warning;
-- small new deposit with no similar recipient is clear;
+- an authorized manual trusted/false-positive decision suppresses the warning;
+- an exact authoritative service-registry address suppresses the warning;
+- provider labels, contract names, token names, and free text do not suppress
+  the warning;
+- a complete 24-hour lookup with no match is clear;
+- a truncated lookup with no match is inconclusive, not clear;
+- partial coverage still permits a positive candidate or exact disqualifier;
+- an inconclusive lookup resumes from its saved cursor and never restarts page
+  one;
+- exceeding the five-page budget remains inconclusive;
+- an event older than `incomingDepositRealtimeMaxAgeMs` is
+  `skipped_backfill` and sends no safety alert;
 - repeated processing is idempotent;
+- multiple eligible outgoing matches produce one candidate and one alert using
+  the documented deterministic rank;
 - failed detection retries without blocking normal Incoming work;
 - successful alert fingerprint is not delivered twice;
 - `risk_only` and `digest` receive the security warning immediately;
 - `paused` receives no warning;
 - Telegram includes both full addresses and both transaction links;
+- only the watched-wallet owner can confirm or dismiss a candidate;
+- a forwarded button, guessed token, wrong owner, repeated action, and opposite
+  terminal action cannot mutate the candidate incorrectly;
+- every `wallet_safety` observation has zero score impact and is excluded from
+  every AML/unified scoring path even when a malformed fixture uses a non-zero
+  stored value;
+- a later low-risk Incoming result keeps the active poisoning-warning line;
+- the healthy-provider alert SLO is checked with fake timers and queue latency
+  metrics;
 - no LLM is called.
 
 ## Future Recipient Check
