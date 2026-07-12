@@ -12,6 +12,7 @@ import type {
   AddressLabel,
   AddressFeaturesDaily,
   AddressLabelCacheEntry,
+  ApprovalAllowanceStateV2,
   BotLocale,
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
@@ -62,6 +63,10 @@ import type {
   ContractLlmVerdictFingerprintCacheLookup
 } from "../forensics/contractLlmVerdict";
 import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contractIntelligence";
+import {
+  UINT256_MAX_RAW,
+  validateApprovalAllowanceStateV2
+} from "../approvals/allowanceState";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import type { Db } from "./db";
 
@@ -234,6 +239,7 @@ export type WalletApproval = {
   amountRaw: string;
   isUnlimited: boolean;
   currentAllowanceRaw: string;
+  allowanceStateV2?: ApprovalAllowanceStateV2 | null;
   spenderType: WalletApprovalSpenderType;
   status: WalletApprovalStatus;
   lastApprovalTxHash: string | null;
@@ -1962,16 +1968,22 @@ function mapWalletApprovalPollStateRow(row: Record<string, any>): WalletApproval
   };
 }
 
-function mapWalletApprovalRow(row: Record<string, any>): WalletApproval {
+function mapWalletApprovalRow(row: Record<string, any>, evaluatedAt = new Date()): WalletApproval {
+  const allowanceStateV2 = mapApprovalAllowanceStateV2(row, evaluatedAt);
   return {
     watchedWalletId: row.watched_wallet_id,
     tokenContract: row.token_contract,
     spenderAddress: row.spender_address,
     amountRaw: row.amount_raw,
-    isUnlimited: row.is_unlimited,
+    isUnlimited: allowanceStateV2?.isUnlimited === true,
     currentAllowanceRaw: row.current_allowance_raw,
+    allowanceStateV2,
     spenderType: parseWalletApprovalSpenderType(row.spender_type),
-    status: parseWalletApprovalStatus(row.status),
+    status: allowanceStateV2?.state === "confirmed_active"
+      ? "active"
+      : allowanceStateV2?.state === "confirmed_zero"
+        ? "revoked"
+        : "unknown",
     lastApprovalTxHash: row.last_approval_tx_hash,
     lastApprovalAt: row.last_approval_at,
     riskLevel: row.risk_level,
@@ -1994,6 +2006,40 @@ function mapWalletApprovalRow(row: Record<string, any>): WalletApproval {
     approvalFinalContextAlertSentAt: row.approval_final_context_alert_sent_at ?? null,
     updatedAt: row.updated_at
   };
+}
+
+function timestampText(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : String(value);
+}
+
+function mapApprovalAllowanceStateV2(row: Record<string, any>, evaluatedAt: Date): ApprovalAllowanceStateV2 | null {
+  if (row.allowance_check_status === null || row.allowance_check_status === undefined) return null;
+  const confirmedAllowanceRaw = row.allowance_confirmed_raw === null
+    ? null
+    : String(row.allowance_confirmed_raw);
+  const state = String(row.allowance_check_status) as ApprovalAllowanceStateV2["state"];
+  const allowance: ApprovalAllowanceStateV2 = {
+    version: "approval-allowance-v2",
+    ownerAddress: String(row.watched_wallet_address ?? ""),
+    spenderAddress: String(row.spender_address),
+    tokenContract: String(row.token_contract),
+    confirmedAllowanceRaw,
+    isUnlimited: state === "confirmed_active"
+      ? confirmedAllowanceRaw === UINT256_MAX_RAW
+      : state === "confirmed_zero"
+        ? false
+        : null,
+    state,
+    confirmedAt: timestampText(row.allowance_checked_at),
+    freshUntil: timestampText(row.allowance_fresh_until),
+    lastAttemptAt: timestampText(row.allowance_last_attempt_at),
+    failureCode: row.allowance_failure_code === null ? null : String(row.allowance_failure_code),
+    source: "official_usdt_allowance",
+    observedApprovalTxHash: row.last_approval_tx_hash === null ? null : String(row.last_approval_tx_hash)
+  };
+  return validateApprovalAllowanceStateV2(allowance, evaluatedAt);
 }
 
 function mapAddressMetadataRow(row: Record<string, any>): AddressMetadata {
@@ -4167,6 +4213,12 @@ export async function upsertWalletApproval(
        current_allowance_raw,
        spender_type,
        status,
+       allowance_confirmed_raw,
+       allowance_check_status,
+       allowance_checked_at,
+       allowance_fresh_until,
+       allowance_last_attempt_at,
+       allowance_failure_code,
        last_approval_tx_hash,
        last_approval_at,
        risk_level,
@@ -4174,29 +4226,78 @@ export async function upsertWalletApproval(
        risk_reasons,
        last_alerted_tx_hash
      )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
      on conflict (watched_wallet_id, token_contract, spender_address) do update set
        amount_raw = excluded.amount_raw,
-       is_unlimited = excluded.is_unlimited,
-       current_allowance_raw = excluded.current_allowance_raw,
+       is_unlimited = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.is_unlimited else wallet_approvals.is_unlimited end,
+       current_allowance_raw = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.current_allowance_raw else wallet_approvals.current_allowance_raw end,
        spender_type = excluded.spender_type,
-       status = excluded.status,
+       status = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.status else wallet_approvals.status end,
+       allowance_confirmed_raw = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_confirmed_raw else wallet_approvals.allowance_confirmed_raw end,
+       allowance_check_status = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_check_status else wallet_approvals.allowance_check_status end,
+       allowance_checked_at = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_checked_at else wallet_approvals.allowance_checked_at end,
+       allowance_fresh_until = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_fresh_until else wallet_approvals.allowance_fresh_until end,
+       allowance_last_attempt_at = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_last_attempt_at else wallet_approvals.allowance_last_attempt_at end,
+       allowance_failure_code = case when excluded.last_approval_at is not null and (
+         wallet_approvals.allowance_last_attempt_at is null
+         or excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at
+       ) then excluded.allowance_failure_code else wallet_approvals.allowance_failure_code end,
        last_approval_tx_hash = excluded.last_approval_tx_hash,
        last_approval_at = excluded.last_approval_at,
        risk_level = excluded.risk_level,
        risk_score = excluded.risk_score,
        risk_reasons = excluded.risk_reasons,
        last_alerted_tx_hash = coalesce(excluded.last_alerted_tx_hash, wallet_approvals.last_alerted_tx_hash),
-       updated_at = now()`,
+       updated_at = now()
+     where (
+       excluded.last_approval_at is not null
+       and (
+         wallet_approvals.last_approval_at is null
+         or excluded.last_approval_at >= wallet_approvals.last_approval_at
+       )
+     ) or (
+       excluded.last_approval_at is null
+       and wallet_approvals.last_approval_at is null
+     )`,
     [
       input.watchedWalletId,
       input.tokenContract,
       input.spenderAddress,
       input.amountRaw,
-      input.isUnlimited,
-      input.currentAllowanceRaw ?? input.amountRaw,
+      false,
+      "0",
       input.spenderType,
-      input.status ?? "active",
+      "unknown",
+      null,
+      "stale",
+      null,
+      null,
+      null,
+      null,
       input.lastApprovalTxHash,
       input.lastApprovalAt,
       input.riskLevel,
@@ -4205,6 +4306,153 @@ export async function upsertWalletApproval(
       input.lastAlertedTxHash ?? null
     ]
   );
+}
+
+export async function saveWalletApprovalAllowanceStateV2(
+  db: Db,
+  input: { watchedWalletId: string; allowance: ApprovalAllowanceStateV2 }
+): Promise<void> {
+  const allowance = validateApprovalAllowanceStateV2(input.allowance, new Date());
+  if (allowance.state !== input.allowance.state) throw new Error("allowance_state_not_current");
+  const confirmed = allowance.state === "confirmed_active" || allowance.state === "confirmed_zero";
+  const currentAllowanceRaw = confirmed ? allowance.confirmedAllowanceRaw! : "0";
+  const isUnlimited = confirmed && allowance.confirmedAllowanceRaw === UINT256_MAX_RAW;
+  const status: WalletApprovalStatus = allowance.state === "confirmed_active"
+    ? "active"
+    : allowance.state === "confirmed_zero"
+      ? "revoked"
+      : "unknown";
+
+  const result = await db.query(
+    `with bound_owner as (
+       select id
+       from watched_wallets
+       where id = $1 and address = $20
+     ), write_result as (
+       insert into wallet_approvals (
+       watched_wallet_id,
+       token_contract,
+       spender_address,
+       amount_raw,
+       is_unlimited,
+       current_allowance_raw,
+       spender_type,
+       status,
+       allowance_confirmed_raw,
+       allowance_check_status,
+       allowance_checked_at,
+       allowance_fresh_until,
+       allowance_last_attempt_at,
+       allowance_failure_code,
+       last_approval_tx_hash,
+       last_approval_at,
+       risk_level,
+       risk_score,
+       risk_reasons
+       )
+       select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+       from bound_owner
+       on conflict (watched_wallet_id, token_contract, spender_address) do update set
+         is_unlimited = excluded.is_unlimited,
+         current_allowance_raw = excluded.current_allowance_raw,
+         status = excluded.status,
+         allowance_confirmed_raw = excluded.allowance_confirmed_raw,
+         allowance_check_status = excluded.allowance_check_status,
+         allowance_checked_at = excluded.allowance_checked_at,
+         allowance_fresh_until = excluded.allowance_fresh_until,
+         allowance_last_attempt_at = excluded.allowance_last_attempt_at,
+         allowance_failure_code = excluded.allowance_failure_code,
+         updated_at = now()
+       where (
+         excluded.allowance_last_attempt_at is not null
+         and (
+           wallet_approvals.last_approval_at is null
+           or excluded.allowance_last_attempt_at >= wallet_approvals.last_approval_at
+         )
+         and (
+           wallet_approvals.allowance_last_attempt_at is null
+           or excluded.allowance_last_attempt_at > wallet_approvals.allowance_last_attempt_at
+           or (
+             excluded.allowance_last_attempt_at = wallet_approvals.allowance_last_attempt_at
+             and row(
+               excluded.allowance_confirmed_raw,
+               excluded.allowance_check_status,
+               excluded.allowance_checked_at,
+               excluded.allowance_fresh_until,
+               excluded.allowance_last_attempt_at,
+               excluded.allowance_failure_code,
+               excluded.current_allowance_raw,
+               excluded.is_unlimited,
+               excluded.status
+             ) is not distinct from row(
+               wallet_approvals.allowance_confirmed_raw,
+               wallet_approvals.allowance_check_status,
+               wallet_approvals.allowance_checked_at,
+               wallet_approvals.allowance_fresh_until,
+               wallet_approvals.allowance_last_attempt_at,
+               wallet_approvals.allowance_failure_code,
+               wallet_approvals.current_allowance_raw,
+               wallet_approvals.is_unlimited,
+               wallet_approvals.status
+             )
+           )
+         )
+       ) or (
+         excluded.allowance_last_attempt_at is null
+         and wallet_approvals.allowance_last_attempt_at is null
+         and wallet_approvals.last_approval_at is null
+         and row(
+           excluded.allowance_confirmed_raw,
+           excluded.allowance_check_status,
+           excluded.allowance_checked_at,
+           excluded.allowance_fresh_until,
+           excluded.allowance_last_attempt_at,
+           excluded.allowance_failure_code,
+           excluded.current_allowance_raw,
+           excluded.is_unlimited,
+           excluded.status
+         ) is not distinct from row(
+           wallet_approvals.allowance_confirmed_raw,
+           wallet_approvals.allowance_check_status,
+           wallet_approvals.allowance_checked_at,
+           wallet_approvals.allowance_fresh_until,
+           wallet_approvals.allowance_last_attempt_at,
+           wallet_approvals.allowance_failure_code,
+           wallet_approvals.current_allowance_raw,
+           wallet_approvals.is_unlimited,
+           wallet_approvals.status
+         )
+       )
+       returning watched_wallet_id
+     )
+     select exists(select 1 from bound_owner) as owner_matches,
+       exists(select 1 from write_result) as write_applied`,
+    [
+      input.watchedWalletId,
+      allowance.tokenContract,
+      allowance.spenderAddress,
+      "0",
+      isUnlimited,
+      currentAllowanceRaw,
+      "unknown",
+      status,
+      allowance.confirmedAllowanceRaw,
+      allowance.state,
+      allowance.confirmedAt ? new Date(allowance.confirmedAt) : null,
+      allowance.freshUntil ? new Date(allowance.freshUntil) : null,
+      allowance.lastAttemptAt ? new Date(allowance.lastAttemptAt) : null,
+      allowance.failureCode,
+      allowance.observedApprovalTxHash,
+      null,
+      "LOW",
+      0,
+      JSON.stringify([]),
+      allowance.ownerAddress
+    ]
+  );
+  const outcome = result.rows[0];
+  if (outcome?.owner_matches !== true) throw new Error("allowance_owner_binding_mismatch");
+  if (outcome.write_applied !== true) throw new Error("allowance_state_stale_write");
 }
 
 export async function claimObservedApprovalEvent(
@@ -4607,6 +4855,8 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
   const result = await db.query(
     `select wa.watched_wallet_id, wa.token_contract, wa.spender_address, wa.amount_raw,
        wa.is_unlimited, wa.current_allowance_raw, wa.spender_type, wa.status,
+       wa.allowance_confirmed_raw, wa.allowance_check_status, wa.allowance_checked_at,
+       wa.allowance_fresh_until, wa.allowance_last_attempt_at, wa.allowance_failure_code,
        wa.last_approval_tx_hash, wa.last_approval_at, wa.risk_level, wa.risk_score,
        wa.risk_reasons, wa.last_alerted_tx_hash, wa.updated_at,
        am.name as metadata_name,
@@ -4628,19 +4878,24 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
         oae.context_status as approval_context_status,
         oae.context_result as approval_context_result,
         oae.context_deadline_at as approval_context_deadline_at,
-        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at
+        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at,
+       w.address as watched_wallet_address
       from wallet_approvals wa
+      join watched_wallets w on w.id = wa.watched_wallet_id
       left join address_metadata am on am.address = wa.spender_address
       left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
       left join observed_approval_events oae
         on oae.watched_wallet_id = wa.watched_wallet_id
        and oae.approval_tx_hash = wa.last_approval_tx_hash
+       and oae.token_contract = wa.token_contract
        and oae.spender_address = wa.spender_address
+       and oae.owner_address = w.address
       where wa.watched_wallet_id = $1
      order by wa.risk_score desc, wa.updated_at desc`,
     [watchedWalletId]
   );
-  return result.rows.map(mapWalletApprovalRow);
+  const evaluatedAt = new Date();
+  return result.rows.map((row) => mapWalletApprovalRow(row, evaluatedAt));
 }
 
 export async function listWalletApprovalsBySpenderForTelegramUser(
@@ -4650,6 +4905,8 @@ export async function listWalletApprovalsBySpenderForTelegramUser(
   const result = await db.query(
     `select wa.watched_wallet_id, wa.token_contract, wa.spender_address, wa.amount_raw,
        wa.is_unlimited, wa.current_allowance_raw, wa.spender_type, wa.status,
+       wa.allowance_confirmed_raw, wa.allowance_check_status, wa.allowance_checked_at,
+       wa.allowance_fresh_until, wa.allowance_last_attempt_at, wa.allowance_failure_code,
        wa.last_approval_tx_hash, wa.last_approval_at, wa.risk_level, wa.risk_score,
        wa.risk_reasons, wa.last_alerted_tx_hash, wa.updated_at,
        am.name as metadata_name,
@@ -4688,8 +4945,9 @@ export async function listWalletApprovalsBySpenderForTelegramUser(
      order by wa.risk_score desc, wa.updated_at desc`,
     [input.telegramUserId, input.spenderAddress]
   );
+  const evaluatedAt = new Date();
   return result.rows.map((row) => ({
-    ...mapWalletApprovalRow(row),
+    ...mapWalletApprovalRow(row, evaluatedAt),
     watchedWalletAddress: row.watched_wallet_address,
     watchedWalletTelegramUserId: row.watched_wallet_telegram_user_id
   }));

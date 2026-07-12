@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import {
   claimAddressPoisoningAlertsForDelivery,
@@ -114,10 +114,12 @@ function compactSql(sql: string): string {
 }
 
 function insertParamsByColumn(query: { sql: string; params: unknown[] }): Record<string, unknown> {
-  const match = query.sql.match(/insert\s+into\s+wallet_approvals\s*\(([\s\S]*?)\)\s*values\s*\(([\s\S]*?)\)/i);
-  if (!match) throw new Error("wallet_approvals insert mapping not found");
-  const columns = match[1].split(",").map((value) => value.trim());
-  const values = match[2].split(",").map((value) => value.trim());
+  const columnsMatch = query.sql.match(/insert\s+into\s+wallet_approvals\s*\(([\s\S]*?)\)\s*(?:values|select)/i);
+  const valuesMatch = query.sql.match(/\)\s*values\s*\(([\s\S]*?)\)/i)
+    ?? query.sql.match(/\)\s*select\s+([\s\S]*?)\s+from\s+(?:watched_wallets|bound_owner)/i);
+  if (!columnsMatch || !valuesMatch) throw new Error("wallet_approvals insert mapping not found");
+  const columns = columnsMatch[1].split(",").map((value) => value.trim());
+  const values = valuesMatch[1].split(",").map((value) => value.trim());
   if (columns.length !== values.length) throw new Error("wallet_approvals insert mapping is not one-to-one");
   return Object.fromEntries(columns.map((column, index) => {
     const placeholder = /^\$(\d+)$/.exec(values[index]);
@@ -976,6 +978,8 @@ describe("approval guard repositories", () => {
 
     expect(queries[0].sql).toContain("allowance_check_status");
     expect(queries[0].sql).toContain("allowance_confirmed_raw");
+    expect(queries[0].sql).toContain("excluded.last_approval_at > wallet_approvals.allowance_last_attempt_at");
+    expect(queries[0].sql).toContain("excluded.last_approval_at >= wallet_approvals.last_approval_at");
     expect(allowancePersistenceParams(queries[0])).toEqual({
       allowance_confirmed_raw: null,
       allowance_check_status: "stale",
@@ -993,9 +997,15 @@ describe("approval guard repositories", () => {
     const { saveWalletApprovalAllowanceStateV2 } = await import("../../src/storage/repositories");
     expect(saveWalletApprovalAllowanceStateV2).toBeTypeOf("function");
     if (typeof saveWalletApprovalAllowanceStateV2 !== "function") return;
-    const { db, queries } = createMockDb();
-    for (const allowance of [maxAllowanceState, zeroAllowanceState, failedAllowanceState, expiredAllowanceState]) {
-      await saveWalletApprovalAllowanceStateV2(db, { watchedWalletId: "wallet-1", allowance });
+    const { db, queries } = createMockDb(1, [{ owner_matches: true, write_applied: true }]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:10:00.000Z"));
+    try {
+      for (const allowance of [maxAllowanceState, zeroAllowanceState, failedAllowanceState, expiredAllowanceState]) {
+        await saveWalletApprovalAllowanceStateV2(db, { watchedWalletId: "wallet-1", allowance });
+      }
+    } finally {
+      vi.useRealTimers();
     }
 
     expect(queries).toHaveLength(4);
@@ -1056,6 +1066,87 @@ describe("approval guard repositories", () => {
     ]);
   });
 
+  it("[REQ-19][DATA] binds an authoritative allowance write to the exact watched-wallet owner", async () => {
+    const { saveWalletApprovalAllowanceStateV2 } = await import("../../src/storage/repositories");
+    const { db, queries } = createMockDb(1, [{ owner_matches: false, write_applied: false }]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:10:00.000Z"));
+    try {
+      await expect(saveWalletApprovalAllowanceStateV2(db, {
+        watchedWalletId: "wallet-wrong-owner",
+        allowance: maxAllowanceState
+      })).rejects.toThrow("allowance_owner_binding_mismatch");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(queries).toHaveLength(1);
+    expect(queries[0].sql).toContain("from watched_wallets");
+    expect(queries[0].sql).toContain("address = $20");
+    expect(queries[0].params).toContain(maxAllowanceState.ownerAddress);
+  });
+
+  it.each([
+    "older max-active after newer confirmed-zero",
+    "older max-active after newer failed attempt",
+    "older max-active after a newer approval event reset the row to stale",
+    "equal-timestamp conflicting authoritative payload"
+  ])("[REQ-19][DATA] rejects %s without updating the row", async () => {
+    const { saveWalletApprovalAllowanceStateV2 } = await import("../../src/storage/repositories");
+    const { db, queries } = createMockDb(1, [{ owner_matches: true, write_applied: false }]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:10:00.000Z"));
+    try {
+      await expect(saveWalletApprovalAllowanceStateV2(db, {
+        watchedWalletId: "wallet-1",
+        allowance: maxAllowanceState
+      })).rejects.toThrow("allowance_state_stale_write");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(queries).toHaveLength(1);
+    expect(queries[0].sql).toContain("wallet_approvals.allowance_last_attempt_at");
+    expect(queries[0].sql).toContain("wallet_approvals.last_approval_at");
+    expect(queries[0].sql).toContain("is not distinct from");
+    expect(compactSql(queries[0].sql)).toContain(
+      "excluded.allowance_last_attempt_at >= wallet_approvals.last_approval_at"
+    );
+    expect(compactSql(queries[0].sql)).toContain(
+      "excluded.allowance_last_attempt_at > wallet_approvals.allowance_last_attempt_at"
+    );
+  });
+
+  it("[REQ-19][DATA] accepts an exact idempotent replay of one authoritative state", async () => {
+    const { saveWalletApprovalAllowanceStateV2 } = await import("../../src/storage/repositories");
+    const { db, queries } = createMockDb(1, [{ owner_matches: true, write_applied: true }]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:10:00.000Z"));
+    try {
+      await expect(saveWalletApprovalAllowanceStateV2(db, {
+        watchedWalletId: "wallet-1",
+        allowance: maxAllowanceState
+      })).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(queries).toHaveLength(1);
+  });
+
+  it("[REQ-19][DATA] rejects an expired confirmed state before issuing a write", async () => {
+    const { saveWalletApprovalAllowanceStateV2 } = await import("../../src/storage/repositories");
+    const { db, queries } = createMockDb(1, [{ owner_matches: true, write_applied: true }]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-12T12:15:00.001Z"));
+    try {
+      await expect(saveWalletApprovalAllowanceStateV2(db, {
+        watchedWalletId: "wallet-1",
+        allowance: maxAllowanceState
+      })).rejects.toThrow("allowance_state_not_current");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(queries).toHaveLength(0);
+  });
+
   it("[REQ-19][DATA] maps authoritative allowance raw without trusting the legacy unlimited mirror", async () => {
     const updatedAt = new Date("2026-05-23T00:00:00.000Z");
     const telegramUserId = "42";
@@ -1063,7 +1154,7 @@ describe("approval guard repositories", () => {
     const { db, queries } = createMockDb(1, [
       {
         watched_wallet_id: "wallet-1",
-        token_contract: "TR7",
+        token_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
         spender_address: spenderAddress,
         amount_raw: "999",
         is_unlimited: true,
@@ -1103,7 +1194,17 @@ describe("approval guard repositories", () => {
       }
     ]);
 
-    const relations = await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress });
+    vi.useFakeTimers();
+    let relations: Awaited<ReturnType<typeof listWalletApprovalsBySpenderForTelegramUser>>;
+    let expiredRelations: Awaited<ReturnType<typeof listWalletApprovalsBySpenderForTelegramUser>>;
+    try {
+      vi.setSystemTime(new Date(updatedAt.getTime() + 10 * 60 * 1000));
+      relations = await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress });
+      vi.setSystemTime(new Date(updatedAt.getTime() + 15 * 60 * 1000 + 1));
+      expiredRelations = await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress });
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(queries[0].sql).toContain("join watched_wallets w");
     expect(queries[0].sql).toContain("left join address_metadata am");
@@ -1131,6 +1232,11 @@ describe("approval guard repositories", () => {
       contractHasTransferFromSelector: true,
       approvalContextStatus: "resolved",
       approvalContextResult: "collector_drain"
+    });
+    expect(expiredRelations[0]).toMatchObject({
+      isUnlimited: false,
+      status: "unknown",
+      allowanceStateV2: { state: "stale", isUnlimited: null }
     });
   });
 
@@ -1344,7 +1450,7 @@ describe("approval guard repositories", () => {
     expect(queries[0].params).toEqual(["wallet-1", 5]);
   });
 
-  it("builds a wallet approval summary from current approvals", async () => {
+  it("[REQ-19][DATA] does not count legacy event mirrors as current unlimited approvals", async () => {
     const updatedAt = new Date("2026-05-23T00:00:00.000Z");
     const queries: { sql: string; params: unknown[] }[] = [];
     const approvalRows = [
@@ -1452,7 +1558,7 @@ describe("approval guard repositories", () => {
     const summary = await getWalletApprovalSummary(db, "wallet-1");
 
     expect(summary.usdtApprovalCount).toBe(2);
-    expect(summary.unlimitedApprovalCount).toBe(1);
+    expect(summary.unlimitedApprovalCount).toBe(0);
     expect(summary.highRiskApprovalCount).toBe(1);
     expect(summary.topRiskyApprovals[0].spenderAddress).toBe("TSpenderRisk");
     expect(summary.topRiskyApprovals[0].approvalContextStatus).toBe("resolved");

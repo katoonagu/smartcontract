@@ -38,6 +38,35 @@ describe("ApprovalAllowanceStateV2", () => {
     expect(validate(expiredAllowanceState)).toMatchObject({ state: "stale", isUnlimited: null });
   });
 
+  it("[REQ-19][AC-24] downgrades an expired persisted confirmation and rejects premature stale", () => {
+    expect(validateApprovalAllowanceStateV2(maxAllowanceState, new Date("2026-07-12T12:15:00.001Z"))).toMatchObject({
+      state: "stale",
+      isUnlimited: null
+    });
+    expect(() => validateApprovalAllowanceStateV2({
+      ...maxAllowanceState,
+      state: "stale",
+      isUnlimited: null
+    }, NOW)).toThrow("allowance_stale_not_expired");
+    expect(() => validateApprovalAllowanceStateV2({
+      ...maxAllowanceState,
+      confirmedAllowanceRaw: "0"
+    }, new Date("2026-07-12T12:15:00.001Z"))).toThrow("allowance_active_state_zero");
+  });
+
+  it.each([
+    ["partial failed history", { ...failedAllowanceState, confirmedAllowanceRaw: "1" }],
+    ["partial stale history", { ...expiredAllowanceState, freshUntil: null }],
+    ["failed history after a future confirmation", {
+      ...failedAllowanceState,
+      confirmedAllowanceRaw: "1",
+      confirmedAt: "2026-07-12T12:05:00.000Z",
+      freshUntil: "2026-07-12T12:20:00.000Z"
+    }]
+  ])("rejects %s", (_name, input) => {
+    expect(() => validateApprovalAllowanceStateV2(input as ApprovalAllowanceStateV2, NOW)).toThrow();
+  });
+
   it("[AC-20][DATA] preserves exact owner binding for a later balance-at-risk lookup", () => {
     expect(validate(maxAllowanceState).ownerAddress).toBe(TNARA_OWNER);
   });
