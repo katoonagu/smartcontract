@@ -3168,7 +3168,7 @@ describe("address poisoning persistence", () => {
     expect(partial.queries[0].params).toContain(100);
     expect(compactSql(partial.queries[0].sql)).toContain("poisoning_page_count = $6");
     expect(compactSql(partial.queries[0].sql)).toContain("poisoning_updated_at = $12");
-    expect(compactSql(partial.queries[0].sql)).toContain("case when $10 is null then now()");
+    expect(compactSql(partial.queries[0].sql)).toContain("case when $10::timestamptz is null then now()");
     expect(await markAddressPoisoningCheckSkipped(skipped.db, {
       txHash: "incoming-1", watchedWalletId: "wallet-1", reason: "ineligible", leaseVersion: now
     })).toBe(true);
@@ -4543,6 +4543,39 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
        where tx_hash = $1 and watched_wallet_id = $2`,
       [txHash, walletId]
     )).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("persists a typed retry time for retryable partial inconclusive checks", async () => {
+    const txHash = `${txPrefix}retryable-inconclusive`;
+    await seedObserved(txHash);
+    const work = await claimCheck(txHash, eventAt);
+    if (!work) throw new Error("retryable inconclusive check was not claimed");
+    const retryAt = new Date(eventAt.getTime() + 30_000);
+    expect(await markAddressPoisoningCheckInconclusive(pgDb as unknown as Db, {
+      txHash,
+      watchedWalletId: walletId,
+      coverage: "partial",
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: eventAt,
+      accumulatedLookupJson: { version: 2 },
+      nextRetryAt: retryAt,
+      reason: "incomplete_history",
+      leaseVersion: work.leaseVersion
+    })).toBe(true);
+
+    const stored = await pgDb.query(
+      `select poisoning_next_retry_at, poisoning_checked_at
+       from observed_transactions where tx_hash = $1 and watched_wallet_id = $2`,
+      [txHash, walletId]
+    );
+    expect(stored.rows[0]).toEqual({
+      poisoning_next_retry_at: retryAt,
+      poisoning_checked_at: null
+    });
+    expect(await claimCheck(txHash, new Date(retryAt.getTime() - 1))).toBeUndefined();
+    expect(await claimCheck(txHash, retryAt)).toMatchObject({ txHash, logicalOffset: 100, pageCount: 1 });
   });
 
   it("enforces clear coverage and reason combinations in PostgreSQL", async () => {

@@ -156,9 +156,11 @@ pages before any accepted transfer reaches the detector: provider, offsets,
 range totals, completion, exact raw-row identities, and SHA-256 page hashes must
 all agree. An invalid live page is discarded before merge, does not advance
 offset/page/fetched progress, and uses the bounded provider-failure retry at the
-same offset. Only a strictly validated exhausted page may make trusted
-historical partiality terminal. Rejected facts already present in a persisted
-audit remain visible but cannot create or suppress a warning.
+same offset. Before the fifth-page limit, only a strictly validated exhausted
+page may make trusted historical partiality terminal; a valid non-exhausted
+fifth page is still terminal at the configured cap. For rejected persisted
+facts, only raw-row identities and page-audit metadata remain visible; the
+rejected facts themselves cannot create or suppress a warning.
 
 One positive check atomically stores raw evidence, one zero-impact
 `wallet_safety` observation, one candidate, and the observed-row terminal state.

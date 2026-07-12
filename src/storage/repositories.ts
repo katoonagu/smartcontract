@@ -3601,10 +3601,10 @@ export async function markAddressPoisoningCheckInconclusive(
        poisoning_fetched_count = $7,
        poisoning_oldest_fetched_at = $8,
        poisoning_accumulated_lookup_json = $9,
-       poisoning_next_retry_at = $10,
+       poisoning_next_retry_at = $10::timestamptz,
        poisoning_last_error = $11,
        poisoning_updated_at = now(),
-       poisoning_checked_at = case when $10 is null then now() else null end
+       poisoning_checked_at = case when $10::timestamptz is null then now() else null end
      where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = $3
        and $4 = 'partial' and poisoning_updated_at = $12`,
     [
