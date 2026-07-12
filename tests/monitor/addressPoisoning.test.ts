@@ -69,6 +69,32 @@ describe("compareTronAddresses", () => {
     });
   });
 
+  it("classifies six meaningful prefix characters as strong without suffix help", () => {
+    const real = THJ_POISONING_CASE.realRecipient;
+    const candidate = `T${real.slice(1, 7)}${"A".repeat(27)}`;
+
+    expect(compareTronAddresses(real, candidate)).toEqual({
+      rawPrefixLength: 7,
+      meaningfulPrefixLength: 6,
+      suffixLength: 0,
+      combinedPrefixSuffixMatch: false,
+      strength: "strong"
+    });
+  });
+
+  it("classifies exactly five meaningful prefix characters as moderate without suffix help", () => {
+    const real = THJ_POISONING_CASE.realRecipient;
+    const candidate = `T${real.slice(1, 6)}${"A".repeat(28)}`;
+
+    expect(compareTronAddresses(real, candidate)).toEqual({
+      rawPrefixLength: 6,
+      meaningfulPrefixLength: 5,
+      suffixLength: 0,
+      combinedPrefixSuffixMatch: false,
+      strength: "moderate"
+    });
+  });
+
   it("never treats an identical address as a visual match", () => {
     expect(compareTronAddresses(THJ_POISONING_CASE.realRecipient, THJ_POISONING_CASE.realRecipient)).toEqual({
       rawPrefixLength: 34,
@@ -147,6 +173,22 @@ describe("detectAddressPoisoning", () => {
   });
 
   it.each([
+    ["zero elapsed time", 0],
+    ["exactly 24 hours", 24 * HOUR_MS]
+  ])("includes the %s boundary in CRITICAL eligibility", (_name, elapsedMs) => {
+    const result = detectAddressPoisoning(detectionInput({
+      checkedTransfers: [outgoing({
+        occurredAt: new Date(THJ_POISONING_CASE.incomingAt.getTime() - elapsedMs)
+      })]
+    }));
+
+    expect(result).toMatchObject({
+      kind: "candidate",
+      primary: { classification: "CRITICAL", elapsedMs }
+    });
+  });
+
+  it.each([
     ["token contract", { tokenContract: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj" }],
     ["token decimals", { tokenDecimals: 18 }]
   ])("does not compare transfers with a different %s", (_name, transferOverride) => {
@@ -219,14 +261,20 @@ describe("detectAddressPoisoning", () => {
     }).kind).toBe("candidate");
   });
 
-  it("compares raw amounts with BigInt precision", () => {
-    const amount = 90_071_992_547_409_931_234_567_890n;
+  it("does not collapse distinct raw BigInt amounts that Number cannot distinguish", () => {
+    const incomingAmount = 9_007_199_254_740_992n;
+    const outgoingAmount = 9_007_199_254_740_993n;
+    expect(Number(incomingAmount)).toBe(Number(outgoingAmount));
+
     const result = detectAddressPoisoning(detectionInput({
-      incoming: incoming({ amountRaw: amount }),
-      checkedTransfers: [outgoing({ amountRaw: amount })]
+      incoming: incoming({ amountRaw: incomingAmount }),
+      checkedTransfers: [outgoing({ amountRaw: outgoingAmount })]
     }));
 
-    expect(result).toMatchObject({ kind: "candidate", primary: { classification: "CRITICAL", exactAmount: true } });
+    expect(result).toMatchObject({
+      kind: "candidate",
+      primary: { classification: "HIGH", exactAmount: false }
+    });
   });
 
   it("selects a stable primary and secondary order across multiple matches", () => {
@@ -260,21 +308,54 @@ describe("detectAddressPoisoning", () => {
 });
 
 describe("match ranking", () => {
+  const base: AddressPoisoningMatch = {
+    classification: "HIGH",
+    genuineRecipient: THJ_POISONING_CASE.realRecipient,
+    outgoingTxHash: "same-hash",
+    outgoingAt: THJ_POISONING_CASE.outgoingAt,
+    outgoingAmountRaw: "1",
+    rawPrefixLength: 1,
+    meaningfulPrefixLength: 0,
+    suffixLength: 5,
+    combinedPrefixSuffixMatch: false,
+    exactAmount: false,
+    elapsedMs: 45_000
+  };
+
+  it("prefers more total matched characters when classification ties", () => {
+    const fewerCharacters = { ...base, meaningfulPrefixLength: 1 };
+    const moreCharacters = { ...base, meaningfulPrefixLength: 2 };
+
+    expect(rankAddressPoisoningMatches([fewerCharacters, moreCharacters])[0])
+      .toBe(moreCharacters);
+  });
+
+  it("prefers exact amount after classification and total matched characters tie", () => {
+    const inexactAmount = { ...base, exactAmount: false };
+    const exactAmount = { ...base, exactAmount: true };
+
+    expect(rankAddressPoisoningMatches([inexactAmount, exactAmount])[0])
+      .toBe(exactAmount);
+  });
+
+  it("prefers smaller elapsed time after preceding rank fields tie", () => {
+    const longerElapsed = { ...base, elapsedMs: 60_000 };
+    const shorterElapsed = { ...base, elapsedMs: 30_000 };
+
+    expect(rankAddressPoisoningMatches([longerElapsed, shorterElapsed])[0])
+      .toBe(shorterElapsed);
+  });
+
+  it("prefers newer outgoing time after preceding rank fields tie", () => {
+    const olderOutgoing = { ...base, outgoingAt: new Date("2026-07-01T12:00:00.000Z") };
+    const newerOutgoing = { ...base, outgoingAt: new Date("2026-07-01T12:01:00.000Z") };
+
+    expect(rankAddressPoisoningMatches([olderOutgoing, newerOutgoing])[0])
+      .toBe(newerOutgoing);
+  });
+
   it("uses the documented final lexical transaction-hash tie breaker without mutating input", () => {
-    const base: AddressPoisoningMatch = {
-      classification: "HIGH",
-      genuineRecipient: THJ_POISONING_CASE.realRecipient,
-      outgoingTxHash: "b-hash",
-      outgoingAt: THJ_POISONING_CASE.outgoingAt,
-      outgoingAmountRaw: "1",
-      rawPrefixLength: 1,
-      meaningfulPrefixLength: 0,
-      suffixLength: 5,
-      combinedPrefixSuffixMatch: false,
-      exactAmount: false,
-      elapsedMs: 45_000
-    };
-    const input = [base, { ...base, outgoingTxHash: "a-hash" }];
+    const input = [{ ...base, outgoingTxHash: "b-hash" }, { ...base, outgoingTxHash: "a-hash" }];
 
     expect(compareMatches(input[0], input[1])).toBeGreaterThan(0);
     expect(rankAddressPoisoningMatches(input).map((match) => match.outgoingTxHash)).toEqual(["a-hash", "b-hash"]);
