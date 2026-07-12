@@ -218,6 +218,7 @@ export type AddressPoisoningCandidate = {
   alertStatus: AddressPoisoningAlertStatus;
   /** Delivery executions consumed by claims, including stale-sending reclaims; maximum 4. */
   alertAttempts: number;
+  alertLeaseUpdatedAt: Date | null;
   alertNextRetryAt: Date | null;
   alertLastError: string | null;
   telegramChatId: string | null;
@@ -235,7 +236,10 @@ export type AddressPoisoningCandidateDelivery = AddressPoisoningCandidate & {
   telegramUserId: string;
   locale: BotLocale | null;
   alertMode: WalletAlertMode;
-  leaseVersion: Date;
+  /** Monotonic delivery-claim generation, equal to alertAttempts for this work item. */
+  alertAttempt: number;
+  /** Dedicated delivery lease; unrelated candidate updatedAt changes do not invalidate it. */
+  alertLeaseVersion: Date;
 };
 
 export type PersistAddressPoisoningCandidateInput = {

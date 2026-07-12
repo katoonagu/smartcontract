@@ -1911,6 +1911,7 @@ function mapAddressPoisoningCandidateRow(row: Record<string, any>): AddressPoiso
     alertFingerprint: row.alert_fingerprint,
     alertStatus: parseAddressPoisoningAlertStatus(row.alert_status),
     alertAttempts: Number(row.alert_attempts ?? 0),
+    alertLeaseUpdatedAt: row.alert_lease_updated_at ?? null,
     alertNextRetryAt: row.alert_next_retry_at ?? null,
     alertLastError: row.alert_last_error ?? null,
     telegramChatId: row.telegram_chat_id ?? null,
@@ -1927,13 +1928,18 @@ function mapAddressPoisoningCandidateRow(row: Record<string, any>): AddressPoiso
 }
 
 function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): AddressPoisoningCandidateDelivery {
+  const candidate = mapAddressPoisoningCandidateRow(row);
+  if (candidate.alertAttempts <= 0 || candidate.alertLeaseUpdatedAt === null) {
+    throw new Error("Address poisoning delivery row is missing its dedicated lease generation");
+  }
   return {
-    ...mapAddressPoisoningCandidateRow(row),
+    ...candidate,
     walletAddress: row.wallet_address,
     telegramUserId: row.telegram_user_id,
     locale: normalizeNullableBotLocale(row.locale),
     alertMode: parseWalletAlertMode(row.alert_mode),
-    leaseVersion: row.updated_at
+    alertAttempt: candidate.alertAttempts,
+    alertLeaseVersion: candidate.alertLeaseUpdatedAt
   };
 }
 
@@ -3844,13 +3850,14 @@ export async function claimAddressPoisoningAlertsForDelivery(
     `with terminalized as (
        update address_poisoning_candidates candidate
        set alert_status = 'failed',
+         alert_lease_updated_at = null,
          alert_next_retry_at = null,
          alert_last_error = coalesce(candidate.alert_last_error, 'delivery_attempts_exhausted'),
          updated_at = $2
        where candidate.status = 'candidate'
          and candidate.alert_status = 'sending'
          and candidate.alert_attempts >= 4
-         and candidate.updated_at < $3
+         and coalesce(candidate.alert_lease_updated_at, candidate.updated_at) < $3
        returning candidate.id
      ), claimed as (
        select candidate.id
@@ -3860,7 +3867,8 @@ export async function claimAddressPoisoningAlertsForDelivery(
          and (
            candidate.alert_status = 'pending'
            or (candidate.alert_status = 'failed' and coalesce(candidate.alert_next_retry_at, $2) <= $2)
-           or (candidate.alert_status = 'sending' and candidate.updated_at < $3)
+           or (candidate.alert_status = 'sending'
+             and coalesce(candidate.alert_lease_updated_at, candidate.updated_at) < $3)
          )
          and not exists (select 1 from terminalized where terminalized.id = candidate.id)
        order by candidate.suspicious_incoming_at desc
@@ -3870,6 +3878,7 @@ export async function claimAddressPoisoningAlertsForDelivery(
      update address_poisoning_candidates candidate
      set alert_status = 'sending',
        alert_attempts = candidate.alert_attempts + 1,
+       alert_lease_updated_at = $2,
        alert_next_retry_at = null,
        alert_last_error = null,
        updated_at = $2
@@ -3891,7 +3900,8 @@ export async function markAddressPoisoningAlertSent(
     telegramChatId: string;
     telegramMessageId: string;
     sentAt: Date;
-    leaseVersion: Date;
+    alertAttempt: number;
+    alertLeaseVersion: Date;
   }
 ): Promise<boolean> {
   if (!/^[a-f0-9]{64}$/.test(input.fingerprint)) {
@@ -3900,15 +3910,18 @@ export async function markAddressPoisoningAlertSent(
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'sent', alert_fingerprint = $2, telegram_chat_id = $3, telegram_message_id = $4,
-       alert_next_retry_at = null, alert_last_error = null, alert_sent_at = $5, updated_at = $5
-     where id = $1 and alert_status = 'sending' and updated_at = $6`,
+       alert_lease_updated_at = null, alert_next_retry_at = null, alert_last_error = null,
+       alert_sent_at = $5, updated_at = $5
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $6 and alert_lease_updated_at = $7`,
     [
       input.candidateId,
       input.fingerprint,
       input.telegramChatId,
       input.telegramMessageId,
       input.sentAt,
-      input.leaseVersion
+      input.alertAttempt,
+      input.alertLeaseVersion
     ]
   );
   return (result.rowCount ?? 0) === 1;
@@ -3916,16 +3929,17 @@ export async function markAddressPoisoningAlertSent(
 
 export async function renewAddressPoisoningAlertLease(
   db: Db,
-  input: { candidateId: string; leaseVersion: Date; now: Date }
+  input: { candidateId: string; alertAttempt: number; alertLeaseVersion: Date; now: Date }
 ): Promise<Date | null> {
   const result = await db.query(
     `update address_poisoning_candidates
-     set updated_at = $3
-     where id = $1 and alert_status = 'sending' and updated_at = $2
-     returning updated_at`,
-    [input.candidateId, input.leaseVersion, input.now]
+     set alert_lease_updated_at = $4
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $2 and alert_lease_updated_at = $3
+     returning alert_lease_updated_at`,
+    [input.candidateId, input.alertAttempt, input.alertLeaseVersion, input.now]
   );
-  const value = result.rows[0]?.updated_at;
+  const value = result.rows[0]?.alert_lease_updated_at;
   if (value === undefined) return null;
   const renewedAt = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(renewedAt.getTime())) throw new Error("Invalid renewed address-poisoning alert lease");
@@ -3934,11 +3948,18 @@ export async function renewAddressPoisoningAlertLease(
 
 export async function markAddressPoisoningAlertFailed(
   db: Db,
-  input: { candidateId: string; error: string; now: Date; leaseVersion: Date }
+  input: {
+    candidateId: string;
+    error: string;
+    now: Date;
+    alertAttempt: number;
+    alertLeaseVersion: Date;
+  }
 ): Promise<boolean> {
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'failed',
+       alert_lease_updated_at = null,
        alert_next_retry_at = case alert_attempts
          when 1 then $3::timestamptz + interval '30 seconds'
          when 2 then $3::timestamptz + interval '60 seconds'
@@ -3947,21 +3968,35 @@ export async function markAddressPoisoningAlertFailed(
        end,
        alert_last_error = $2,
        updated_at = $3
-     where id = $1 and alert_status = 'sending' and updated_at = $4`,
-    [input.candidateId, boundedUserAlertError(input.error), input.now, input.leaseVersion]
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $4 and alert_lease_updated_at = $5`,
+    [
+      input.candidateId,
+      boundedUserAlertError(input.error),
+      input.now,
+      input.alertAttempt,
+      input.alertLeaseVersion
+    ]
   );
   return (result.rowCount ?? 0) === 1;
 }
 
 export async function markAddressPoisoningAlertSkipped(
   db: Db,
-  input: { candidateId: string; reason: string; leaseVersion: Date }
+  input: { candidateId: string; reason: string; alertAttempt: number; alertLeaseVersion: Date }
 ): Promise<boolean> {
   const result = await db.query(
     `update address_poisoning_candidates
-     set alert_status = 'skipped', alert_next_retry_at = null, alert_last_error = $2, updated_at = now()
-     where id = $1 and alert_status = 'sending' and updated_at = $3`,
-    [input.candidateId, boundedUserAlertError(input.reason), input.leaseVersion]
+     set alert_status = 'skipped', alert_lease_updated_at = null,
+       alert_next_retry_at = null, alert_last_error = $2, updated_at = now()
+     where id = $1 and alert_status = 'sending'
+       and alert_attempts = $3 and alert_lease_updated_at = $4`,
+    [
+      input.candidateId,
+      boundedUserAlertError(input.reason),
+      input.alertAttempt,
+      input.alertLeaseVersion
+    ]
   );
   return (result.rowCount ?? 0) === 1;
 }

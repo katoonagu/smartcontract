@@ -51,6 +51,7 @@ function candidate(overrides: Partial<AddressPoisoningCandidateDelivery> = {}): 
     alertFingerprint: "provisional-fingerprint",
     alertStatus: "sending",
     alertAttempts: 1,
+    alertLeaseUpdatedAt: new Date("2026-07-01T12:47:43.000Z"),
     alertNextRetryAt: null,
     alertLastError: null,
     telegramChatId: null,
@@ -61,7 +62,8 @@ function candidate(overrides: Partial<AddressPoisoningCandidateDelivery> = {}): 
     updatedAt: new Date("2026-07-01T12:47:43.000Z"),
     resolvedAt: null,
     alertSentAt: null,
-    leaseVersion: new Date("2026-07-01T12:47:43.000Z"),
+    alertAttempt: 1,
+    alertLeaseVersion: new Date("2026-07-01T12:47:43.000Z"),
     ...overrides
   };
 }

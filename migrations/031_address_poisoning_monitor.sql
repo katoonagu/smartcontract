@@ -89,6 +89,7 @@ create table if not exists address_poisoning_candidates (
   alert_fingerprint text not null unique,
   alert_status text not null default 'pending',
   alert_attempts integer not null default 0,
+  alert_lease_updated_at timestamptz,
   alert_next_retry_at timestamptz,
   alert_last_error text,
   telegram_chat_id text,
@@ -101,6 +102,14 @@ create table if not exists address_poisoning_candidates (
   alert_sent_at timestamptz,
   unique (watched_wallet_id, token_contract, suspicious_incoming_tx_hash)
 );
+
+alter table address_poisoning_candidates
+  add column if not exists alert_lease_updated_at timestamptz;
+
+update address_poisoning_candidates
+set alert_lease_updated_at = updated_at
+where alert_status = 'sending'
+  and alert_lease_updated_at is null;
 
 alter table address_poisoning_candidates drop constraint if exists address_poisoning_candidates_classification_check;
 alter table address_poisoning_candidates
@@ -142,8 +151,9 @@ create index if not exists address_poisoning_candidates_active_idx
 create index if not exists address_poisoning_candidates_sender_idx
   on address_poisoning_candidates(suspicious_sender, suspicious_incoming_at desc);
 
-create index if not exists address_poisoning_candidates_alert_delivery_idx
-  on address_poisoning_candidates(alert_status, alert_next_retry_at, suspicious_incoming_at desc)
+drop index if exists address_poisoning_candidates_alert_delivery_idx;
+create index address_poisoning_candidates_alert_delivery_idx
+  on address_poisoning_candidates(alert_status, alert_next_retry_at, alert_lease_updated_at, suspicious_incoming_at desc)
   where alert_status in ('pending', 'sending', 'failed');
 
 alter table risk_signal_observations drop constraint if exists risk_signal_observations_group_check;

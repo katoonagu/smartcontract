@@ -510,7 +510,7 @@ async function markDeliveryFailure(
   metrics: AddressPoisoningCycleMetrics,
   failedAt: Date,
   logger: Logger,
-  leaseVersion = candidate.leaseVersion
+  alertLeaseVersion = candidate.alertLeaseVersion
 ): Promise<void> {
   logger.warn("address_poisoning_alert_delivery_failed", {
     candidateId: candidate.id,
@@ -521,7 +521,8 @@ async function markDeliveryFailure(
       candidateId: candidate.id,
       error: boundedDeliveryError(error),
       now: failedAt,
-      leaseVersion
+      alertAttempt: candidate.alertAttempt,
+      alertLeaseVersion
     });
     updated ? metrics.alertsFailed += 1 : metrics.alertsStale += 1;
   } catch (persistenceError) {
@@ -540,7 +541,7 @@ function startAlertDeliveryHeartbeat(
   metrics: AddressPoisoningCycleMetrics,
   logger: Logger
 ): { latestLease(): Date; stop(): Promise<void> } {
-  let leaseVersion = new Date(candidate.leaseVersion.getTime());
+  let alertLeaseVersion = new Date(candidate.alertLeaseVersion.getTime());
   let stopped = false;
   let ownershipLost = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -555,7 +556,8 @@ function startAlertDeliveryHeartbeat(
           const renewedAt = currentTime(deps);
           const renewedLease = await repository.renewAlertLease(deps.db, {
             candidateId: candidate.id,
-            leaseVersion,
+            alertAttempt: candidate.alertAttempt,
+            alertLeaseVersion,
             now: renewedAt
           });
           if (renewedLease === null) {
@@ -563,7 +565,7 @@ function startAlertDeliveryHeartbeat(
             logger.warn("address_poisoning_alert_heartbeat_lease_lost", { candidateId: candidate.id });
             return;
           }
-          leaseVersion = new Date(renewedLease.getTime());
+          alertLeaseVersion = new Date(renewedLease.getTime());
         } catch (error) {
           metrics.alertsPersistenceFailed += 1;
           logger.error("address_poisoning_alert_heartbeat_failed", {
@@ -581,7 +583,7 @@ function startAlertDeliveryHeartbeat(
   schedule();
 
   return {
-    latestLease: () => new Date(leaseVersion.getTime()),
+    latestLease: () => new Date(alertLeaseVersion.getTime()),
     stop: async () => {
       stopped = true;
       if (timer !== null) {
@@ -605,7 +607,8 @@ async function deliverCandidateAlert(
       const updated = await repository.markAlertSkipped(deps.db, {
         candidateId: candidate.id,
         reason: "wallet_alert_mode_paused",
-        leaseVersion: candidate.leaseVersion
+        alertAttempt: candidate.alertAttempt,
+        alertLeaseVersion: candidate.alertLeaseVersion
       });
       updated ? metrics.alertsSkipped += 1 : metrics.alertsStale += 1;
     } catch (error) {
@@ -636,7 +639,7 @@ async function deliverCandidateAlert(
   }
 
   const sendStartedAt = currentTime(deps);
-  if (sendStartedAt.getTime() - candidate.leaseVersion.getTime() > ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS) {
+  if (sendStartedAt.getTime() - candidate.alertLeaseVersion.getTime() > ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS) {
     metrics.alertsStale += 1;
     logger.warn("address_poisoning_alert_lease_expired_before_send", { candidateId: candidate.id });
     return;
@@ -674,7 +677,8 @@ async function deliverCandidateAlert(
       telegramChatId: String(sent.chat.id),
       telegramMessageId: String(sent.message_id),
       sentAt: currentTime(deps),
-      leaseVersion: heartbeat.latestLease()
+      alertAttempt: candidate.alertAttempt,
+      alertLeaseVersion: heartbeat.latestLease()
     });
     updated ? metrics.alertsSent += 1 : metrics.alertsStale += 1;
   } catch (error) {

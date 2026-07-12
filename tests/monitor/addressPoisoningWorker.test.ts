@@ -124,6 +124,7 @@ function deliveryCandidate(
     alertFingerprint: "provisional-fingerprint",
     alertStatus: "sending",
     alertAttempts: 1,
+    alertLeaseUpdatedAt: NOW,
     alertNextRetryAt: null,
     alertLastError: null,
     telegramChatId: null,
@@ -134,7 +135,8 @@ function deliveryCandidate(
     updatedAt: NOW,
     resolvedAt: null,
     alertSentAt: null,
-    leaseVersion: NOW,
+    alertAttempt: 1,
+    alertLeaseVersion: NOW,
     ...overrides
   };
 }
@@ -535,7 +537,8 @@ describe("address poisoning worker", () => {
       telegramChatId: "42",
       telegramMessageId: "1001",
       sentAt: NOW,
-      leaseVersion: NOW
+      alertAttempt: 1,
+      alertLeaseVersion: NOW
     }));
   });
 
@@ -552,7 +555,8 @@ describe("address poisoning worker", () => {
     expect(repo.markAlertSkipped).toHaveBeenCalledWith(expect.anything(), {
       candidateId: "candidate-delivery-1",
       reason: "wallet_alert_mode_paused",
-      leaseVersion: NOW
+      alertAttempt: 1,
+      alertLeaseVersion: NOW
     });
     expect(metrics.alertsSkipped).toBe(1);
   });
@@ -600,7 +604,8 @@ describe("address poisoning worker", () => {
       candidateId: "first",
       error: expect.not.stringContaining("\n"),
       now: NOW,
-      leaseVersion: NOW
+      alertAttempt: 1,
+      alertLeaseVersion: NOW
     }));
     const failure = (repo.markAlertFailed as ReturnType<typeof vi.fn>).mock.calls[0][1].error as string;
     expect(failure.length).toBeLessThanOrEqual(500);
@@ -621,7 +626,12 @@ describe("address poisoning worker", () => {
       if (!claimable) return [];
       state.status = "sending";
       state.updatedAt = input.now;
-      return [deliveryCandidate("realtime", { leaseVersion: input.now, updatedAt: input.now })];
+      return [deliveryCandidate("realtime", {
+        alertAttempt: 1,
+        alertLeaseUpdatedAt: input.now,
+        alertLeaseVersion: input.now,
+        updatedAt: input.now
+      })];
     });
     (repo.markAlertSent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("database connection lost"));
     (repo.markAlertFailed as ReturnType<typeof vi.fn>).mockImplementation(async () => {
@@ -832,7 +842,11 @@ describe("address poisoning worker", () => {
     ];
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      deliveryCandidate("realtime", { leaseVersion: claimAt, updatedAt: claimAt })
+      deliveryCandidate("realtime", {
+        alertLeaseUpdatedAt: claimAt,
+        alertLeaseVersion: claimAt,
+        updatedAt: claimAt
+      })
     ]);
     const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
 
@@ -872,12 +886,18 @@ describe("address poisoning worker", () => {
       state.attempts += 1;
       return [deliveryCandidate("realtime", {
         alertAttempts: state.attempts,
+        alertAttempt: state.attempts,
+        alertLeaseUpdatedAt: input.now,
         updatedAt: input.now,
-        leaseVersion: input.now
+        alertLeaseVersion: input.now
       })];
     });
     (repo.markAlertSent as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
-      if (state.status !== "sending" || state.updatedAt.getTime() !== input.leaseVersion.getTime()) return false;
+      if (
+        state.status !== "sending"
+        || state.attempts !== input.alertAttempt
+        || state.updatedAt.getTime() !== input.alertLeaseVersion.getTime()
+      ) return false;
       state.status = "sent";
       return true;
     });
@@ -933,17 +953,27 @@ describe("address poisoning worker", () => {
         state.attempts += 1;
         return [deliveryCandidate("realtime", {
           alertAttempts: state.attempts,
+          alertAttempt: state.attempts,
+          alertLeaseUpdatedAt: input.now,
           updatedAt: input.now,
-          leaseVersion: input.now
+          alertLeaseVersion: input.now
         })];
       });
       (repo.renewAlertLease as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
-        if (state.status !== "sending" || state.updatedAt.getTime() !== input.leaseVersion.getTime()) return null;
+        if (
+          state.status !== "sending"
+          || state.attempts !== input.alertAttempt
+          || state.updatedAt.getTime() !== input.alertLeaseVersion.getTime()
+        ) return null;
         state.updatedAt = input.now;
         return input.now;
       });
       (repo.markAlertSent as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
-        if (state.status !== "sending" || state.updatedAt.getTime() !== input.leaseVersion.getTime()) return false;
+        if (
+          state.status !== "sending"
+          || state.attempts !== input.alertAttempt
+          || state.updatedAt.getTime() !== input.alertLeaseVersion.getTime()
+        ) return false;
         state.status = "sent";
         return true;
       });
@@ -967,8 +997,88 @@ describe("address poisoning worker", () => {
       release({ chat: { id: 42 }, message_id: 1001 });
       await workerA;
       expect(state.status).toBe("sent");
-      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].leaseVersion)
+      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].alertLeaseVersion)
         .toEqual(new Date(NOW.getTime() + 160_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps sending ownership when a callback changes candidate status and generic updatedAt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      let release!: (value: { chat: { id: number }; message_id: number }) => void;
+      const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+        release = resolve;
+      });
+      const state = {
+        candidateStatus: "candidate" as "candidate" | "confirmed",
+        alertStatus: "pending" as "pending" | "sending" | "sent",
+        alertAttempt: 0,
+        alertLease: null as Date | null,
+        genericUpdatedAt: NOW
+      };
+      const repo = repository();
+      (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+        if (state.alertStatus !== "pending") return [];
+        state.alertStatus = "sending";
+        state.alertAttempt += 1;
+        state.alertLease = input.now;
+        state.genericUpdatedAt = input.now;
+        return [deliveryCandidate("realtime", {
+          status: state.candidateStatus,
+          alertAttempts: state.alertAttempt,
+          alertAttempt: state.alertAttempt,
+          alertLeaseUpdatedAt: input.now,
+          alertLeaseVersion: input.now,
+          updatedAt: state.genericUpdatedAt
+        })];
+      });
+      (repo.renewAlertLease as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+        if (
+          state.alertStatus !== "sending"
+          || state.alertAttempt !== input.alertAttempt
+          || state.alertLease?.getTime() !== input.alertLeaseVersion.getTime()
+        ) return null;
+        state.alertLease = input.now;
+        return input.now;
+      });
+      (repo.markAlertSent as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+        if (
+          state.alertStatus !== "sending"
+          || state.alertAttempt !== input.alertAttempt
+          || state.alertLease?.getTime() !== input.alertLeaseVersion.getTime()
+        ) return false;
+        state.alertStatus = "sent";
+        state.alertLease = null;
+        return true;
+      });
+      const cycle = runSingleAddressPoisoningCycle(deps(
+        repo,
+        undefined,
+        vi.fn(async () => heldSend),
+        () => new Date(Date.now())
+      ), { claimLimit: 1, concurrency: 1 });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      state.candidateStatus = "confirmed";
+      state.genericUpdatedAt = new Date(Date.now());
+      const callbackUpdatedAt = state.genericUpdatedAt;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(1);
+      expect(state.alertLease).toEqual(new Date(NOW.getTime() + 40_000));
+      expect(state.genericUpdatedAt).toEqual(callbackUpdatedAt);
+
+      release({ chat: { id: 42 }, message_id: 1001 });
+      await cycle;
+      expect(state).toMatchObject({
+        candidateStatus: "confirmed",
+        alertStatus: "sent",
+        alertAttempt: 1,
+        alertLease: null,
+        genericUpdatedAt: callbackUpdatedAt
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -1005,7 +1115,7 @@ describe("address poisoning worker", () => {
       const finalInput = outcome === "success"
         ? (repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1]
         : (repo.markAlertFailed as ReturnType<typeof vi.fn>).mock.calls[0][1];
-      expect(finalInput.leaseVersion).toEqual(new Date(NOW.getTime() + 40_000));
+      expect(finalInput.alertLeaseVersion).toEqual(new Date(NOW.getTime() + 40_000));
     } finally {
       vi.useRealTimers();
     }
@@ -1034,7 +1144,7 @@ describe("address poisoning worker", () => {
       expect(repo.renewAlertLease).toHaveBeenCalledTimes(1);
       release({ chat: { id: 42 }, message_id: 1001 });
       await expect(cycle).resolves.toMatchObject({ alertsStale: expect.any(Number) });
-      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].leaseVersion).toEqual(NOW);
+      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].alertLeaseVersion).toEqual(NOW);
     } finally {
       vi.useRealTimers();
     }
@@ -1064,7 +1174,7 @@ describe("address poisoning worker", () => {
       expect(repo.renewAlertLease).toHaveBeenCalledTimes(2);
       release({ chat: { id: 42 }, message_id: 1001 });
       await expect(cycle).resolves.toMatchObject({ alertsPersistenceFailed: 1 });
-      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].leaseVersion)
+      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].alertLeaseVersion)
         .toEqual(new Date(NOW.getTime() + 80_000));
     } finally {
       vi.useRealTimers();
