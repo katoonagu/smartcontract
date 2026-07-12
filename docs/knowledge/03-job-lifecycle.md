@@ -144,6 +144,21 @@ Provider failures consume at most four executions: the initial execution and
 three retries after 30, 60, and 120 seconds. The repository owns this attempt
 policy; the fourth failure is terminal. An inconclusive history lookup instead
 continues one saved page per claim up to five pages and never restarts page one.
+A retryable `inconclusive` row has a non-null retry time and no `checked_at`;
+an exhausted provider range or the fifth page produces terminal
+`inconclusive` with no retry time and a populated `checked_at`. Terminal partial
+rows are excluded from claims and queue-depth metrics even when the provider
+range ended before page five.
+
+The saved 24-hour lookup window must exactly match the timestamp of the current
+incoming transfer. The same strict audit validates live and persisted TronScan
+pages before any accepted transfer reaches the detector: provider, offsets,
+range totals, completion, exact raw-row identities, and SHA-256 page hashes must
+all agree. An invalid live page is discarded before merge, does not advance
+offset/page/fetched progress, and uses the bounded provider-failure retry at the
+same offset. Only a strictly validated exhausted page may make trusted
+historical partiality terminal. Rejected facts already present in a persisted
+audit remain visible but cannot create or suppress a warning.
 
 One positive check atomically stores raw evidence, one zero-impact
 `wallet_safety` observation, one candidate, and the observed-row terminal state.

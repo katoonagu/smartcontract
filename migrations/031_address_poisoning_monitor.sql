@@ -23,6 +23,39 @@ alter table observed_transactions
   check (poisoning_lookup_coverage is null or poisoning_lookup_coverage in ('complete','partial'));
 
 update observed_transactions
+set poisoning_lookup_coverage = 'partial'
+where poisoning_check_status = 'inconclusive'
+  and poisoning_lookup_coverage is distinct from 'partial';
+
+update observed_transactions
+set poisoning_checked_at = null
+where poisoning_check_status = 'inconclusive'
+  and poisoning_page_count < 5
+  and poisoning_next_retry_at is not null
+  and poisoning_checked_at is not null;
+
+update observed_transactions
+set poisoning_next_retry_at = null,
+  poisoning_checked_at = coalesce(poisoning_checked_at, poisoning_updated_at, now())
+where poisoning_check_status = 'inconclusive'
+  and not (poisoning_page_count < 5 and poisoning_next_retry_at is not null)
+  and (poisoning_next_retry_at is not null or poisoning_checked_at is null);
+
+alter table observed_transactions drop constraint if exists observed_transactions_poisoning_inconclusive_state_check;
+alter table observed_transactions
+  add constraint observed_transactions_poisoning_inconclusive_state_check
+  check (
+    poisoning_check_status <> 'inconclusive'
+    or (
+      poisoning_lookup_coverage = 'partial'
+      and (
+        (poisoning_page_count < 5 and poisoning_next_retry_at is not null and poisoning_checked_at is null)
+        or (poisoning_next_retry_at is null and poisoning_checked_at is not null)
+      )
+    )
+  );
+
+update observed_transactions
 set poisoning_check_status = 'skipped_backfill',
   poisoning_last_error = 'legacy_clear_reason_unknown'
 where poisoning_check_status = 'clear'

@@ -3425,7 +3425,9 @@ export async function claimAddressPoisoningChecks(
           or (
             tx.poisoning_check_status = 'inconclusive'
             and tx.poisoning_page_count < 5
-            and coalesce(tx.poisoning_next_retry_at, $2) <= $2
+            and tx.poisoning_checked_at is null
+            and tx.poisoning_next_retry_at is not null
+            and tx.poisoning_next_retry_at <= $2
           )
        ) and tx.timestamp >= $4
        order by tx.timestamp desc
@@ -3587,6 +3589,9 @@ export async function markAddressPoisoningCheckInconclusive(
   }
 ): Promise<boolean> {
   if (input.coverage !== "partial") throw new Error("Address poisoning inconclusive requires partial coverage");
+  if (input.nextRetryAt !== null && input.pageCount >= 5) {
+    throw new Error("Address poisoning inconclusive cannot retry after the page limit");
+  }
   const result = await db.query(
     `update observed_transactions
      set poisoning_check_status = 'inconclusive',
@@ -3599,7 +3604,7 @@ export async function markAddressPoisoningCheckInconclusive(
        poisoning_next_retry_at = $10,
        poisoning_last_error = $11,
        poisoning_updated_at = now(),
-       poisoning_checked_at = case when $6 >= 5 then now() else poisoning_checked_at end
+       poisoning_checked_at = case when $10 is null then now() else null end
      where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = $3
        and $4 = 'partial' and poisoning_updated_at = $12`,
     [
@@ -4115,7 +4120,11 @@ export async function getAddressPoisoningQueueMetrics(
      from observed_transactions
      where poisoning_check_status = 'pending'
        or (poisoning_check_status = 'failed' and poisoning_attempts < 4 and coalesce(poisoning_next_retry_at, $1) <= $1)
-       or (poisoning_check_status = 'inconclusive' and poisoning_page_count < 5 and coalesce(poisoning_next_retry_at, $1) <= $1)`,
+       or (poisoning_check_status = 'inconclusive'
+         and poisoning_page_count < 5
+         and poisoning_checked_at is null
+         and poisoning_next_retry_at is not null
+         and poisoning_next_retry_at <= $1)`,
     [now]
   );
   const row = result.rows[0] ?? {};

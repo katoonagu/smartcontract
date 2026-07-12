@@ -196,6 +196,50 @@ export function rawProviderTxRowPaginationId(
     : `${provider}:tx:${txHash}:event:${eventIndex}`;
 }
 
+function canonicalTronscanTransferRow(
+  transfer: RawTronscanTrc20Transfer
+): Record<string, string | number | null> {
+  const row = transfer as Record<string, unknown>;
+  const tokenInfoValue = row.tokenInfo ?? row.token_info;
+  const tokenInfo = tokenInfoValue !== null && typeof tokenInfoValue === "object" && !Array.isArray(tokenInfoValue)
+    ? tokenInfoValue as Record<string, unknown>
+    : null;
+  const stringValue = (value: unknown): string | null => {
+    if (typeof value === "string" && value.trim().length > 0) return value;
+    if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+    return null;
+  };
+  const safeInteger = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+    if (typeof value === "string" && /^\d+$/.test(value)) {
+      const parsed = Number(value);
+      return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
+  };
+  return {
+    tx: stringValue(row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash),
+    block: safeInteger(row.block ?? row.block_number ?? row.blockNumber ?? row.block_num),
+    event_index: safeInteger(row.event_index ?? row.eventIndex),
+    log_index: safeInteger(row.log_index ?? row.logIndex),
+    event_type: stringValue(row.event_type ?? row.eventType ?? row.event_name ?? row.eventName),
+    from: stringValue(row.from_address ?? row.fromAddress ?? row.from),
+    to: stringValue(row.to_address ?? row.toAddress ?? row.to),
+    contract: stringValue(row.contract_address ?? row.contractAddress ?? tokenInfo?.tokenId ?? tokenInfo?.address),
+    amount: stringValue(row.quant ?? row.amount ?? row.amount_str ?? row.value),
+    ts: safeInteger(row.block_ts ?? row.block_timestamp ?? row.timestamp ?? row.time)
+  };
+}
+
+export function rawProviderRowPaginationId(
+  provider: TronscanTrc20TransferPage["provider"],
+  transfer: RawTronscanTrc20Transfer
+): string {
+  const txIdentity = rawProviderTxRowPaginationId(provider, transfer);
+  if (txIdentity) return txIdentity;
+  return `${provider}:raw:${sha256Json(canonicalTronscanTransferRow(transfer))}`;
+}
+
 export type ListTransactionsOptions = {
   start?: number;
   limit?: number;
@@ -1312,29 +1356,14 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   private canonicalTronscanTransferRow(transfer: RawTronscanTrc20Transfer): Record<string, string | number | null> {
-    const row = transfer as Record<string, unknown>;
-    const tokenInfo = this.objectField(row.tokenInfo ?? row.token_info);
-    return {
-      tx: this.stringField(row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash),
-      block: this.safeIntegerField(row.block ?? row.block_number ?? row.blockNumber ?? row.block_num),
-      event_index: this.safeIntegerField(row.event_index ?? row.eventIndex),
-      log_index: this.safeIntegerField(row.log_index ?? row.logIndex),
-      event_type: this.stringField(row.event_type ?? row.eventType ?? row.event_name ?? row.eventName),
-      from: this.stringField(row.from_address ?? row.fromAddress ?? row.from),
-      to: this.stringField(row.to_address ?? row.toAddress ?? row.to),
-      contract: this.stringField(row.contract_address ?? row.contractAddress ?? tokenInfo?.tokenId ?? tokenInfo?.address),
-      amount: this.stringField(row.quant ?? row.amount ?? row.amount_str ?? row.value),
-      ts: this.safeIntegerField(row.block_ts ?? row.block_timestamp ?? row.timestamp ?? row.time)
-    };
+    return canonicalTronscanTransferRow(transfer);
   }
 
   private rawProviderRowPaginationId(
     provider: TronscanTrc20TransferPage["provider"],
     transfer: RawTronscanTrc20Transfer
   ): string {
-    const txIdentity = rawProviderTxRowPaginationId(provider, transfer);
-    if (txIdentity) return txIdentity;
-    return `${provider}:raw:${sha256Json(this.canonicalTronscanTransferRow(transfer))}`;
+    return rawProviderRowPaginationId(provider, transfer);
   }
 
   private async fetchTronGridTransferArray(input: {

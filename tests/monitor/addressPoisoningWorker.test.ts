@@ -20,7 +20,11 @@ import {
   type StartupWorkLabel
 } from "../../src/runtime/startupSchedule";
 import type { AddressPoisoningCandidateDelivery, AddressPoisoningCheckWorkItem, AddressLabel, WalletAlertMode } from "../../src/types";
-import { TronscanClient, type PinnedTronscanTransferPage } from "../../src/tron/tronClient";
+import {
+  rawProviderRowPaginationId,
+  TronscanClient,
+  type PinnedTronscanTransferPage
+} from "../../src/tron/tronClient";
 import { createTronscanScheduler } from "../../src/tron/tronscanScheduler";
 import { THJ_POISONING_CASE } from "../fixtures/monitor/addressPoisoningCases";
 
@@ -472,6 +476,7 @@ function deps(
     const start = options.start ?? 0;
     const requestedLimit = options.limit ?? 100;
     const complete = transfers.length < requestedLimit;
+    const hashCount = Math.max(1, Math.ceil(transfers.length / 50));
     return {
       provider: "tronscan",
       transfers,
@@ -483,8 +488,8 @@ function deps(
       rangeTotal: complete ? start + transfers.length : start + transfers.length + 1,
       complete,
       metadataConsistent: true,
-      rawResponseHashes: ["raw-test-page"],
-      canonicalTransferHashes: ["canonical-test-page"]
+      rawResponseHashes: Array.from({ length: hashCount }, (_, index) => testSha256(80_000 + index)),
+      canonicalTransferHashes: Array.from({ length: hashCount }, (_, index) => testSha256(80_100 + index))
     };
   });
   return {
@@ -956,7 +961,7 @@ describe("address poisoning worker", () => {
     expect(repo.markClear).toHaveBeenCalledTimes(25);
   });
 
-  it("keeps mixed provider continuation partial and labels every persisted fact truthfully", async () => {
+  it("rejects a fallback continuation without advancing saved TronScan progress", async () => {
     let current = workItem();
     const repo = repository();
     (repo.claimChecks as ReturnType<typeof vi.fn>).mockImplementation(async () => [current]);
@@ -970,19 +975,23 @@ describe("address poisoning worker", () => {
       });
       return true;
     });
+    const firstTransfers = Array.from({ length: 100 }, (_, index) => rawTransfer({
+      transaction_id: `tronscan-context-${index}`,
+      contract_address: OTHER_WALLET
+    }));
     const tronscanPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
-      transfers: [rawTransfer({ transaction_id: "tronscan-context" })],
-      rawProviderRowIds: ["tronscan:tx:tronscan-context"],
+      transfers: firstTransfers,
+      rawProviderRowIds: testRawProviderRowIds(firstTransfers),
       start: 0,
       requestedLimit: 100,
-      nextOffset: 1,
-      total: 2,
-      rangeTotal: 2,
+      nextOffset: 100,
+      total: 101,
+      rangeTotal: 101,
       complete: false,
       metadataConsistent: true,
-      rawResponseHashes: ["tronscan-raw"],
-      canonicalTransferHashes: ["tronscan-canonical"]
+      rawResponseHashes: [testSha256(93_001), testSha256(93_002)],
+      canonicalTransferHashes: [testSha256(93_003), testSha256(93_004)]
     };
     const fallbackMatch = rawTransfer({
       transaction_id: THJ_POISONING_CASE.outgoingTxHash,
@@ -993,15 +1002,15 @@ describe("address poisoning worker", () => {
       provider: "trongrid_fallback",
       transfers: [fallbackMatch],
       rawProviderRowIds: testRawProviderRowIds([fallbackMatch], "trongrid_fallback"),
-      start: 1,
+      start: 100,
       requestedLimit: 100,
-      nextOffset: 2,
-      total: 2,
-      rangeTotal: 2,
+      nextOffset: 101,
+      total: 101,
+      rangeTotal: 101,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["fallback-raw"],
-      canonicalTransferHashes: ["fallback-canonical"]
+      rawResponseHashes: [testSha256(93_005)],
+      canonicalTransferHashes: [testSha256(93_006)]
     };
     const pages = vi.fn().mockResolvedValueOnce(tronscanPage).mockResolvedValueOnce(fallbackPage);
 
@@ -1009,15 +1018,16 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
 
     expect(repo.markClear).not.toHaveBeenCalled();
-    const candidate = (repo.persistCandidate as ReturnType<typeof vi.fn>).mock.calls[0][1];
-    expect(candidate.coverage).toBe("partial");
-    expect(candidate.evidenceJson.lookupProvider).toBe("mixed");
-    expect(candidate.evidenceJson.providerFactProviders).toEqual(["trongrid_fallback"]);
-    expect(candidate.evidenceJson.providerTransferIds).toEqual([expect.stringMatching(/^trongrid_fallback:/)]);
-    expect(candidate.evidenceJson.providerPages).toEqual([
-      expect.objectContaining({ provider: "tronscan", start: 0, nextOffset: 1 }),
-      expect.objectContaining({ provider: "trongrid_fallback", start: 1, nextOffset: 2 })
-    ]);
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledTimes(1);
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
+    expect(current).toMatchObject({ logicalOffset: 100, pageCount: 1, fetchedCount: 100 });
+    expect(current.accumulatedLookupJson).toMatchObject({
+      lookupProvider: "tronscan",
+      providerPages: [expect.objectContaining({ provider: "tronscan", start: 0, nextOffset: 100 })]
+    });
   });
 
   it("never clears when authoritative range totals contradict across claims", async () => {
@@ -1045,8 +1055,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 200,
       complete: false,
       metadataConsistent: true,
-      rawResponseHashes: ["range-first-raw"],
-      canonicalTransferHashes: ["range-first-canonical"]
+      rawResponseHashes: [testSha256(95_001), testSha256(95_002)],
+      canonicalTransferHashes: [testSha256(95_003), testSha256(95_004)]
     };
     const contradictory: PinnedTronscanTransferPage = {
       provider: "tronscan",
@@ -1059,8 +1069,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 100,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["range-second-raw"],
-      canonicalTransferHashes: ["range-second-canonical"]
+      rawResponseHashes: [testSha256(95_005)],
+      canonicalTransferHashes: [testSha256(95_006)]
     };
     const pages = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(contradictory);
 
@@ -1071,6 +1081,7 @@ describe("address poisoning worker", () => {
     expect(repo.markInconclusive).toHaveBeenCalledTimes(2);
     const second = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[1][1];
     expect(second.coverage).toBe("partial");
+    expect(second.nextRetryAt).toBeNull();
     expect(second.accumulatedLookupJson.providerMetadataConsistent).toBe(false);
     expect(second.accumulatedLookupJson.providerPages).toEqual([
       expect.objectContaining({ rangeTotal: 200 }),
@@ -1241,36 +1252,41 @@ describe("address poisoning worker", () => {
     });
     const firstTxLess = rawTransfer({ transaction_id: "", quant: "1" });
     const changedTxLess = rawTransfer({ transaction_id: "", quant: "2", block_ts: THJ_POISONING_CASE.outgoingAt.getTime() - 1 });
-    const firstRawId = "tronscan:raw:first-fingerprint";
-    const changedRawId = "tronscan:raw:changed-fingerprint";
+    const firstPadding = Array.from({ length: 99 }, (_, index) => rawTransfer({
+      transaction_id: `txless-padding-${index}`,
+      contract_address: OTHER_WALLET
+    }));
+    const firstTransfers = [firstTxLess, ...firstPadding];
+    const firstRawId = rawProviderRowPaginationId("tronscan", firstTxLess);
+    const changedRawId = rawProviderRowPaginationId("tronscan", changedTxLess);
     const pages = vi.fn()
       .mockResolvedValueOnce({
         provider: "tronscan",
-        transfers: [firstTxLess],
-        rawProviderRowIds: [firstRawId],
+        transfers: firstTransfers,
+        rawProviderRowIds: firstTransfers.map((transfer) => rawProviderRowPaginationId("tronscan", transfer)),
         start: 0,
         requestedLimit: 100,
-        nextOffset: 1,
-        total: 2,
-        rangeTotal: 2,
+        nextOffset: 100,
+        total: 101,
+        rangeTotal: 101,
         complete: false,
         metadataConsistent: true,
-        rawResponseHashes: ["tx-less-first-raw"],
-        canonicalTransferHashes: ["tx-less-first-canonical"]
+        rawResponseHashes: [testSha256(96_001), testSha256(96_002)],
+        canonicalTransferHashes: [testSha256(96_003), testSha256(96_004)]
       } satisfies PinnedTronscanTransferPage)
       .mockResolvedValueOnce({
         provider: "tronscan",
         transfers: [changedTxLess],
         rawProviderRowIds: [changedRawId],
-        start: 1,
+        start: 100,
         requestedLimit: 100,
-        nextOffset: 2,
-        total: 2,
-        rangeTotal: 2,
+        nextOffset: 101,
+        total: 101,
+        rangeTotal: 101,
         complete: true,
         metadataConsistent: true,
-        rawResponseHashes: ["tx-less-second-raw"],
-        canonicalTransferHashes: ["tx-less-second-canonical"]
+        rawResponseHashes: [testSha256(96_005)],
+        canonicalTransferHashes: [testSha256(96_006)]
       } satisfies PinnedTronscanTransferPage);
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
@@ -1280,9 +1296,10 @@ describe("address poisoning worker", () => {
     const second = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[1][1];
     expect(second.coverage).toBe("partial");
     expect(second.accumulatedLookupJson.providerMetadataConsistent).toBe(false);
-    expect(second.accumulatedLookupJson.rawProviderRowIds).toEqual([changedRawId, firstRawId]);
+    expect(second.accumulatedLookupJson.rawProviderRowIds).toContain(changedRawId);
+    expect(second.accumulatedLookupJson.rawProviderRowIds).toContain(firstRawId);
     expect(second.accumulatedLookupJson.providerPages).toEqual([
-      expect.objectContaining({ rawProviderRowIds: [firstRawId] }),
+      expect.objectContaining({ rawProviderRowIds: expect.arrayContaining([firstRawId]) }),
       expect.objectContaining({ rawProviderRowIds: [changedRawId] })
     ]);
     expect(second.accumulatedLookupJson.providerTransferIds).toEqual([]);
@@ -1306,8 +1323,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 100,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["unpersisted-raw"],
-      canonicalTransferHashes: ["unpersisted-canonical"]
+      rawResponseHashes: [testSha256(90_001), testSha256(90_002)],
+      canonicalTransferHashes: [testSha256(90_003), testSha256(90_004)]
     };
     const lookup = vi.fn(async () => page);
 
@@ -1502,8 +1519,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 0,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["legacy-v2-final-raw"],
-      canonicalTransferHashes: ["legacy-v2-final-canonical"]
+      rawResponseHashes: [testSha256(97_001)],
+      canonicalTransferHashes: [testSha256(97_002)]
     };
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
@@ -1589,8 +1606,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 0,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["v2-empty-final-raw"],
-      canonicalTransferHashes: ["v2-empty-final-canonical"]
+      rawResponseHashes: [testSha256(91_001)],
+      canonicalTransferHashes: [testSha256(91_002)]
     };
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
@@ -1646,8 +1663,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 1,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["mismatch-final-raw"],
-      canonicalTransferHashes: ["mismatch-final-canonical"]
+      rawResponseHashes: [testSha256(97_003)],
+      canonicalTransferHashes: [testSha256(97_004)]
     };
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
@@ -1705,8 +1722,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 2,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["historical-overlap-final-raw"],
-      canonicalTransferHashes: ["historical-overlap-final-canonical"]
+      rawResponseHashes: [testSha256(97_005)],
+      canonicalTransferHashes: [testSha256(97_006)]
     };
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
@@ -1735,8 +1752,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 1,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["accepted-final-raw"],
-      canonicalTransferHashes: ["accepted-final-canonical"]
+      rawResponseHashes: [testSha256(97_007)],
+      canonicalTransferHashes: [testSha256(97_008)]
     };
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
@@ -1746,7 +1763,7 @@ describe("address poisoning worker", () => {
     expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
   });
 
-  it.each(persistedCoverageMismatches)("reconstructs persisted pagination and rejects %s", async (_name, mutate) => {
+  it.each(persistedCoverageMismatches)("reconstructs persisted pagination and rejects %s", async (name, mutate) => {
     const accumulated = twoPageCoverageProgress();
     const finalPage = finalCoveragePage();
     mutate(accumulated, finalPage);
@@ -1761,7 +1778,14 @@ describe("address poisoning worker", () => {
 
     expect(repo.markClear).not.toHaveBeenCalled();
     expect(repo.persistCandidate).not.toHaveBeenCalled();
-    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+    if (name === "a lookup provider mismatch") {
+      expect(repo.markInconclusive).not.toHaveBeenCalled();
+      expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        error: expect.stringContaining("integrity validation")
+      }));
+    } else {
+      expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+    }
   });
 
   it.each([
@@ -1929,7 +1953,10 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
 
     expect(repo.markClear).not.toHaveBeenCalled();
-    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
   });
 
   it("continues a short authoritative page that reports remaining rows", async () => {
@@ -1952,9 +1979,9 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
 
     expect(repo.markClear).not.toHaveBeenCalled();
-    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      coverage: "partial",
-      logicalOffset: 1
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
     }));
   });
 
@@ -1971,8 +1998,8 @@ describe("address poisoning worker", () => {
       rangeTotal: 1,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["raw-complete"],
-      canonicalTransferHashes: ["canonical-complete"]
+      rawResponseHashes: [testSha256(92_001)],
+      canonicalTransferHashes: [testSha256(92_002)]
     };
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
@@ -2003,9 +2030,9 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
 
     expect(repo.markClear).not.toHaveBeenCalled();
-    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      coverage: "partial",
-      logicalOffset: 0
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
     }));
   });
 
@@ -2029,10 +2056,236 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
 
     expect(repo.markClear).not.toHaveBeenCalled();
-    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
-    const stored = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[0][1].accumulatedLookupJson;
-    expect(stored.providerMetadataConsistent).toBe(false);
-    expect(stored.providerPages[0]).toMatchObject({ total: 50, rangeTotal: 100 });
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
+  });
+
+  it("never treats an empty complete fallback page as proof of a clean history", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "trongrid_fallback",
+      transfers: [],
+      rawProviderRowIds: [],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 0,
+      total: 0,
+      rangeTotal: 0,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(90_001)],
+      canonicalTransferHashes: [testSha256(90_002)]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
+  });
+
+  it.each([
+    ["a missing hash", []],
+    ["a malformed hash", ["not-a-sha256"]]
+  ] as const)("excludes live accepted facts when hash evidence has %s", async (_name, rawResponseHashes) => {
+    const repo = repository([workItem()]);
+    const match = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient
+    });
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [match],
+      rawProviderRowIds: [`tronscan:tx:${match.transaction_id}`],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [...rawResponseHashes],
+      canonicalTransferHashes: [testSha256(90_003)]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
+  });
+
+  it("excludes a live accepted fact whose raw ID does not match its provider row", async () => {
+    const repo = repository([workItem()]);
+    const match = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient
+    });
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [match],
+      rawProviderRowIds: ["tronscan:tx:unrelated-live-row"],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(90_004)],
+      canonicalTransferHashes: [testSha256(90_005)]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
+  });
+
+  it("rejects a short nonterminal page without advancing lookup progress", async () => {
+    const repo = repository([workItem()]);
+    const match = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient
+    });
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [match],
+      rawProviderRowIds: [`tronscan:tx:${match.transaction_id}`],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 2,
+      rangeTotal: 2,
+      complete: false,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(90_006)],
+      canonicalTransferHashes: [testSha256(90_007)]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("integrity validation")
+    }));
+  });
+
+  it("retries an invalid page at the same offset and can find a candidate on the valid response", async () => {
+    const item = workItem();
+    const repo = repository([item]);
+    const match = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient
+    });
+    const basePage: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [match],
+      rawProviderRowIds: testRawProviderRowIds([match]),
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(94_001)],
+      canonicalTransferHashes: [testSha256(94_002)]
+    };
+    const pages = vi.fn()
+      .mockResolvedValueOnce({ ...basePage, rawResponseHashes: ["bad-hash"] })
+      .mockResolvedValueOnce(basePage);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+
+    expect(pages).toHaveBeenNthCalledWith(1, item.walletAddress, expect.objectContaining({ start: 0 }));
+    expect(pages).toHaveBeenNthCalledWith(2, item.walletAddress, expect.objectContaining({ start: 0 }));
+    expect(repo.markFailed).toHaveBeenCalledTimes(1);
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("never uses accepted prior relationships from a persisted lookup with the wrong event window", async () => {
+    const accumulated = acceptedPoisoningProgress();
+    const relation = rawTransfer({
+      transaction_id: "wrong-window-prior-relation",
+      to_address: THJ_POISONING_CASE.lookalike,
+      quant: "1000000"
+    });
+    const normalized = normalizeTronscanTransferForAddressIndex(relation, "tronscan");
+    const relationRawId = `tronscan:tx:${relation.transaction_id}`;
+    const paddingRawIds = Array.from({ length: 99 }, (_, index) => `tronscan:tx:wrong-window-padding-${index}`);
+    accumulated.windowStart = new Date(THJ_POISONING_CASE.incomingAt.getTime() - 86_400_001).toISOString();
+    accumulated.transfers = [{
+      transferId: normalized.transferId,
+      txHash: normalized.txHash,
+      sender: normalized.fromAddress,
+      receiver: normalized.toAddress,
+      amountRaw: normalized.amountRaw,
+      occurredAt: normalized.blockTimestamp.toISOString()
+    }];
+    accumulated.providerFacts = [relation];
+    accumulated.providerTransferIds = [normalized.transferId];
+    accumulated.providerFactProviders = ["tronscan"];
+    accumulated.providerFactRawRowIds = [relationRawId];
+    accumulated.rawProviderRowIds = [relationRawId, ...paddingRawIds].sort();
+    accumulated.providerPages = [{
+      ...accumulated.providerPages[0],
+      start: 0,
+      nextOffset: 100,
+      rawCount: 100,
+      total: 101,
+      rangeTotal: 101,
+      complete: false,
+      rawProviderRowIds: [relationRawId, ...paddingRawIds],
+      rawResponseHashes: [testSha256(91_001), testSha256(91_002)],
+      canonicalTransferHashes: [testSha256(91_003), testSha256(91_004)]
+    }];
+    const finalTransfer = rawTransfer({ transaction_id: "wrong-window-final", contract_address: OTHER_WALLET });
+    const finalPage: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [finalTransfer],
+      rawProviderRowIds: [`tronscan:tx:${finalTransfer.transaction_id}`],
+      start: 100,
+      requestedLimit: 100,
+      nextOffset: 101,
+      total: 101,
+      rangeTotal: 101,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(91_005)],
+      canonicalTransferHashes: [testSha256(91_006)]
+    };
+    const repo = repository([workItem({
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => finalPage)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coverage: "partial",
+      nextRetryAt: null
+    }));
   });
 
   it("skips a candidate that ages out while its provider request is queued", async () => {

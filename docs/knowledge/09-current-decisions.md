@@ -95,6 +95,19 @@ of these decisions, update this file in the same work.
   relation, an authorized `service_admin` trusted/false-positive label, or an
   exact authoritative service-registry address. Provider names, contract names,
   tags, phrases, token labels, and AI output never suppress a warning.
+- Retryable `inconclusive` has a scheduled retry and no completion timestamp.
+  Exhausting the authoritative provider range or reaching five pages produces
+  terminal `inconclusive` with no scheduled retry and a completion timestamp;
+  it is excluded from claims and queue metrics. This distinction uses existing
+  fields and is enforced by PostgreSQL rather than a second terminal flag.
+- Live and persisted pages use the same fail-closed evidence validator. The
+  saved window must equal the exact 24 hours before the incoming transfer, and
+  TronScan provider identity, offsets, range totals, completion, exact raw-row
+  IDs, and SHA-256 hashes must agree before accepted facts reach the detector.
+  An invalid live page is discarded and retried through the bounded failure
+  policy at the same offset; it cannot advance progress or prove range
+  exhaustion. A strictly valid exhausted page may still end as terminal
+  `inconclusive` when trusted historical audit state keeps coverage partial.
 - Provider failures get the initial execution plus three retries after 30, 60,
   and 120 seconds. The fourth failure is terminal. The repository is the only
   authority for attempt count and retry timing.

@@ -44,6 +44,7 @@ import type {
   PersistAddressPoisoningCandidateInput
 } from "../types";
 import {
+  rawProviderRowPaginationId,
   rawProviderTxRowPaginationId,
   type ListRelatedTrc20TransfersOptions,
   type PinnedTronscanTransferPage
@@ -312,7 +313,10 @@ function isProviderPageAudit(value: unknown): value is ProviderPageAudit {
     && stringArray(page.canonicalTransferHashes, MAX_PERSISTED_PAGE_HASHES);
 }
 
-function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLookup {
+function parseAccumulatedLookup(
+  value: Record<string, unknown>,
+  expectedWindow?: { start: string; end: string }
+): AccumulatedLookup {
   if (Object.keys(value).length === 0) return emptyLookup();
   const legacy = value.version === 1;
   if (
@@ -363,6 +367,8 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     && persistedRawProviderRowIds.every((id) => !(id as string).includes(":raw:"));
   const windowStart = typeof value.windowStart === "string" ? value.windowStart : null;
   const windowEnd = typeof value.windowEnd === "string" ? value.windowEnd : null;
+  const windowMatchesExpected = expectedWindow === undefined
+    || (windowStart === expectedWindow.start && windowEnd === expectedWindow.end);
   if (
     !(lookupProvider === null || lookupProvider === "tronscan"
       || lookupProvider === "trongrid_fallback" || lookupProvider === "mixed")
@@ -458,8 +464,17 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     || value.providerFactProviders.length > 0
     || (providerFactRawRowIds?.length ?? 0) > 0
     || providerPages.length > 0;
+  const windowEvidenceConsistent = !hasPriorProviderEvidence || windowMatchesExpected;
+  const trustedEmptyRange = rawProviderRowIds.length === 0
+    && providerPages.length === 1
+    && providerPages[0]?.provider === "tronscan"
+    && providerPages[0].rawCount === 0
+    && providerPages[0].rangeTotal === 0
+    && providerPages[0].complete === true
+    && providerPages[0].metadataConsistent === true;
   const rawIdentityEvidenceConsistent = hasRawProviderRowIds
-    && (!hasPriorProviderEvidence || rawProviderRowIds.length > 0)
+    && windowEvidenceConsistent
+    && (!hasPriorProviderEvidence || rawProviderRowIds.length > 0 || trustedEmptyRange)
     && auditedRawProviderRowIdSet.size === rawProviderRowIdSet.size
     && [...auditedRawProviderRowIdSet].every((id) => rawProviderRowIdSet.has(id))
     && pageRawAuditConsistent
@@ -543,6 +558,7 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     windowEnd,
     lookupProvider,
     providerMetadataConsistent: value.providerMetadataConsistent
+      && windowEvidenceConsistent
       && rawIdentityEvidenceConsistent
       && acceptedEvidenceConsistent
       && acceptedOverlapAuditConsistent
@@ -769,18 +785,27 @@ function pinnedPageMetadataIsConsistent(
   expectedLimit: number
 ): boolean {
   const actualNextOffset = expectedStart + page.transfers.length;
+  const sha256Hash = /^[0-9a-f]{64}$/i;
+  const expectedHashCount = Math.max(1, Math.ceil(page.transfers.length / 50));
   const totalValid = page.total === null || (Number.isSafeInteger(page.total) && page.total >= 0);
-  const rangeTotalValid = page.rangeTotal === null
-    || (Number.isSafeInteger(page.rangeTotal) && page.rangeTotal >= 0);
+  const rangeTotalValid = Number.isSafeInteger(page.rangeTotal) && page.rangeTotal !== null && page.rangeTotal >= 0;
   const totalsRelationallyValid = page.total === null
     || page.rangeTotal === null
     || page.rangeTotal <= page.total;
-  const completionTruthful = !page.complete
-    || (page.rangeTotal !== null && actualNextOffset >= page.rangeTotal);
+  const completionTruthful = page.rangeTotal !== null
+    && page.complete === (actualNextOffset >= page.rangeTotal);
+  const shortPageTruthful = page.rangeTotal !== null
+    && !(page.transfers.length < expectedLimit && actualNextOffset < page.rangeTotal);
   const rawIdsValid = page.rawProviderRowIds.length === page.transfers.length
     && new Set(page.rawProviderRowIds).size === page.rawProviderRowIds.length
-    && page.rawProviderRowIds.every((id) => !id.includes(":raw:"));
+    && page.rawProviderRowIds.every((id, index) =>
+      id === rawProviderRowPaginationId(page.provider, page.transfers[index]!));
+  const hashesValid = page.rawResponseHashes.length === expectedHashCount
+    && page.canonicalTransferHashes.length === expectedHashCount
+    && page.rawResponseHashes.every((hash) => sha256Hash.test(hash))
+    && page.canonicalTransferHashes.every((hash) => sha256Hash.test(hash));
   return page.metadataConsistent
+    && page.provider === "tronscan"
     && page.start === expectedStart
     && page.requestedLimit === expectedLimit
     && page.nextOffset === actualNextOffset
@@ -789,7 +814,9 @@ function pinnedPageMetadataIsConsistent(
     && rangeTotalValid
     && totalsRelationallyValid
     && rawIdsValid
-    && completionTruthful;
+    && hashesValid
+    && completionTruthful
+    && shortPageTruthful;
 }
 
 async function gateExpiredCheck(
@@ -838,7 +865,11 @@ async function processWorkItem(
   logger: Logger
 ): Promise<void> {
   try {
-    const accumulatedBefore = parseAccumulatedLookup(item.accumulatedLookupJson);
+    const expectedWindow = {
+      start: new Date(item.timestamp.getTime() - LOOKBACK_MS).toISOString(),
+      end: new Date(item.timestamp.getTime() - 1).toISOString()
+    };
+    const accumulatedBefore = parseAccumulatedLookup(item.accumulatedLookupJson, expectedWindow);
     const auditedPageCount = accumulatedBefore.providerPages.length;
     const auditedLogicalOffset = accumulatedBefore.providerPages.at(-1)?.nextOffset ?? 0;
     const auditedFetchedCount = accumulatedBefore.providerPages.reduce((sum, page) => sum + page.rawCount, 0);
@@ -889,6 +920,7 @@ async function processWorkItem(
       || (page.provider !== "tronscan" && page.provider !== "trongrid_fallback")
       || !Array.isArray(page.transfers)
       || page.transfers.length > MAX_PERSISTED_PAGE_ROWS
+      || !page.transfers.every((transfer) => transfer !== null && typeof transfer === "object" && !Array.isArray(transfer))
       || !Array.isArray(page.rawProviderRowIds)
       || page.rawProviderRowIds.length > MAX_PERSISTED_PAGE_ROWS
       || !page.rawProviderRowIds.every((id) => typeof id === "string" && id.length > 0)
@@ -905,7 +937,13 @@ async function processWorkItem(
     ) throw new Error("Address-poisoning provider page is malformed");
 
     const pageMetadataConsistent = pinnedPageMetadataIsConsistent(page, item.logicalOffset, options.pageSize);
-    const accumulated = mergePage(accumulatedBefore, page, pageMetadataConsistent, item.timestamp);
+    if (!pageMetadataConsistent) {
+      throw new Error("Address-poisoning provider page failed integrity validation");
+    }
+    const accumulated = parseAccumulatedLookup(
+      mergePage(accumulatedBefore, page, pageMetadataConsistent, item.timestamp),
+      expectedWindow
+    );
     const coverage = page.complete && accumulated.providerMetadataConsistent
       ? "complete" as const
       : "partial" as const;
@@ -1016,14 +1054,17 @@ async function processWorkItem(
       return;
     }
 
-    const terminal = pageCount >= options.maxPages;
+    const providerRangeExhausted = page.rangeTotal !== null && page.nextOffset >= page.rangeTotal;
+    const terminal = providerRangeExhausted || pageCount >= options.maxPages;
     const gate = await gateExpiredCheck(deps, repository, item, metrics, logger);
     if (gate.stop) return;
     const updated = await repository.markInconclusive(deps.db, {
       ...commonProgress,
       coverage: "partial",
       nextRetryAt: terminal ? null : new Date(gate.now.getTime() + options.retryDelayMs),
-      reason: terminal ? "max_pages_reached" : result.reason
+      reason: providerRangeExhausted
+        ? "provider_range_exhausted_partial"
+        : terminal ? "max_pages_reached" : result.reason
     });
     updated ? metrics.inconclusive += 1 : metrics.stale += 1;
   } catch (error) {

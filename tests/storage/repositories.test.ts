@@ -3051,6 +3051,8 @@ describe("address poisoning persistence", () => {
     expect(sql).toContain("for update of tx skip locked");
     expect(sql).toContain("order by tx.timestamp desc");
     expect(sql).toContain("poisoning_page_count < 5");
+    expect(sql).toContain("poisoning_next_retry_at is not null");
+    expect(sql).toContain("poisoning_checked_at is null");
     expect(sql).toContain("poisoning_attempts < 4");
     expect(sql).toContain("poisoning_check_status = 'running'");
     expect(sql).toContain("poisoning_updated_at = $2");
@@ -3166,6 +3168,7 @@ describe("address poisoning persistence", () => {
     expect(partial.queries[0].params).toContain(100);
     expect(compactSql(partial.queries[0].sql)).toContain("poisoning_page_count = $6");
     expect(compactSql(partial.queries[0].sql)).toContain("poisoning_updated_at = $12");
+    expect(compactSql(partial.queries[0].sql)).toContain("case when $10 is null then now()");
     expect(await markAddressPoisoningCheckSkipped(skipped.db, {
       txHash: "incoming-1", watchedWalletId: "wallet-1", reason: "ineligible", leaseVersion: now
     })).toBe(true);
@@ -3670,7 +3673,7 @@ describe("address poisoning persistence", () => {
       fetchedCount: 500,
       oldestFetchedAt: now,
       accumulatedLookupJson: { transfers: [] },
-      nextRetryAt: now,
+      nextRetryAt: null,
       reason: "provider_cap",
       leaseVersion: now
     });
@@ -3815,6 +3818,8 @@ describe("address poisoning persistence", () => {
     expect(await getAddressPoisoningQueueMetrics(metrics.db, now)).toEqual({ queueDepth: 4, oldestQueueAgeMs: 91000 });
     expect(compactSql(metrics.queries[0].sql)).toContain("extract(epoch from ($1 - min(timestamp))) * 1000");
     expect(compactSql(metrics.queries[0].sql)).toContain("poisoning_attempts < 4");
+    expect(compactSql(metrics.queries[0].sql)).toContain("poisoning_next_retry_at is not null");
+    expect(compactSql(metrics.queries[0].sql)).toContain("poisoning_checked_at is null");
   });
 });
 
@@ -4480,6 +4485,64 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       queueDepth: 1,
       oldestQueueAgeMs: 5000
     });
+  });
+
+  it("keeps an exhausted partial inconclusive terminal and out of queue metrics", async () => {
+    const txHash = `${txPrefix}terminal-inconclusive`;
+    await seedObserved(txHash);
+    const work = await claimCheck(txHash, eventAt);
+    if (!work) throw new Error("terminal inconclusive check was not claimed");
+    expect(await markAddressPoisoningCheckInconclusive(pgDb as unknown as Db, {
+      txHash,
+      watchedWalletId: walletId,
+      coverage: "partial",
+      logicalOffset: 1,
+      pageCount: 1,
+      fetchedCount: 1,
+      oldestFetchedAt: null,
+      accumulatedLookupJson: { version: 2 },
+      nextRetryAt: null,
+      reason: "provider_range_exhausted_partial",
+      leaseVersion: work.leaseVersion
+    })).toBe(true);
+
+    const stored = await pgDb.query(
+      `select poisoning_check_status, poisoning_next_retry_at, poisoning_checked_at
+       from observed_transactions where tx_hash = $1 and watched_wallet_id = $2`,
+      [txHash, walletId]
+    );
+    expect(stored.rows[0]).toMatchObject({
+      poisoning_check_status: "inconclusive",
+      poisoning_next_retry_at: null,
+      poisoning_checked_at: expect.any(Date)
+    });
+    expect(await claimCheck(txHash, new Date(eventAt.getTime() + 60_000))).toBeUndefined();
+    expect(await getAddressPoisoningQueueMetrics(pgDb as unknown as Db, new Date(eventAt.getTime() + 60_000))).toEqual({
+      queueDepth: 0,
+      oldestQueueAgeMs: null
+    });
+    const migrationSql = readFileSync("migrations/031_address_poisoning_monitor.sql", "utf8");
+    await pgDb.query(migrationSql);
+    const afterFirstMigration = await pgDb.query(
+      `select poisoning_check_status, poisoning_lookup_coverage, poisoning_page_count,
+         poisoning_next_retry_at, poisoning_checked_at
+       from observed_transactions where tx_hash = $1 and watched_wallet_id = $2`,
+      [txHash, walletId]
+    );
+    await pgDb.query(migrationSql);
+    const afterSecondMigration = await pgDb.query(
+      `select poisoning_check_status, poisoning_lookup_coverage, poisoning_page_count,
+         poisoning_next_retry_at, poisoning_checked_at
+       from observed_transactions where tx_hash = $1 and watched_wallet_id = $2`,
+      [txHash, walletId]
+    );
+    expect(afterSecondMigration.rows[0]).toEqual(afterFirstMigration.rows[0]);
+    await expect(pgDb.query(
+      `update observed_transactions
+       set poisoning_checked_at = null, poisoning_next_retry_at = null
+       where tx_hash = $1 and watched_wallet_id = $2`,
+      [txHash, walletId]
+    )).rejects.toMatchObject({ code: "23514" });
   });
 
   it("enforces clear coverage and reason combinations in PostgreSQL", async () => {
