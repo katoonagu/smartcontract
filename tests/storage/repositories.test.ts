@@ -4005,6 +4005,137 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     )).rejects.toThrow();
   });
 
+  it("rejects a callback from the wrong Telegram owner without changing candidate state", async () => {
+    const candidate = await createCandidate(`${txPrefix}callback-wrong-owner`);
+    const before = await pgDb.query(
+      "select status, resolved_at, updated_at from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+
+    const result = await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
+      callbackToken: candidate.callbackToken,
+      telegramUserId: `${telegramUserId}-outsider`,
+      resolution: "confirmed"
+    });
+
+    expect(result).toEqual({ outcome: "unavailable", candidate: null });
+    const after = await pgDb.query(
+      "select status, resolved_at, updated_at from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+  });
+
+  it("rejects an unknown callback token without changing candidate state", async () => {
+    const candidate = await createCandidate(`${txPrefix}callback-unknown-token`);
+    const before = await pgDb.query(
+      "select status, resolved_at, updated_at from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+
+    const result = await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
+      callbackToken: "unknownToken_12345",
+      telegramUserId,
+      resolution: "dismissed"
+    });
+
+    expect(result).toEqual({ outcome: "unavailable", candidate: null });
+    const after = await pgDb.query(
+      "select status, resolved_at, updated_at from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+  });
+
+  it("returns the same terminal candidate for an owner's repeated identical resolution", async () => {
+    const candidate = await createCandidate(`${txPrefix}callback-idempotent-owner`);
+
+    const first = await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
+      callbackToken: candidate.callbackToken,
+      telegramUserId,
+      resolution: "confirmed"
+    });
+    const repeated = await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
+      callbackToken: candidate.callbackToken,
+      telegramUserId,
+      resolution: "confirmed"
+    });
+
+    expect(first).toMatchObject({ outcome: "updated", candidate: { id: candidate.id, status: "confirmed" } });
+    expect(repeated).toMatchObject({ outcome: "idempotent", candidate: { id: candidate.id, status: "confirmed" } });
+    const stored = await pgDb.query(
+      "select status, resolved_at from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+    expect(stored.rows[0]).toMatchObject({ status: "confirmed", resolved_at: first.candidate?.resolvedAt });
+  });
+
+  it("returns no candidate for an owner's opposite action after a terminal resolution", async () => {
+    const candidate = await createCandidate(`${txPrefix}callback-opposite-owner`);
+    await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
+      callbackToken: candidate.callbackToken,
+      telegramUserId,
+      resolution: "confirmed"
+    });
+
+    const conflict = await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
+      callbackToken: candidate.callbackToken,
+      telegramUserId,
+      resolution: "dismissed"
+    });
+
+    expect(conflict).toEqual({ outcome: "conflict", candidate: null });
+    const stored = await pgDb.query(
+      "select status from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+    expect(stored.rows[0]?.status).toBe("confirmed");
+  });
+
+  it("serializes concurrent opposite owner actions so exactly one terminal decision wins", async () => {
+    const candidate = await createCandidate(`${txPrefix}callback-concurrent-owner`);
+    const confirmClient = await pgDb.connect();
+    const dismissClient = await pgDb.connect();
+    let releaseStart!: () => void;
+    const start = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    try {
+      const confirm = (async () => {
+        await start;
+        return resolveAddressPoisoningCandidate(confirmClient as unknown as Db, {
+          callbackToken: candidate.callbackToken,
+          telegramUserId,
+          resolution: "confirmed"
+        });
+      })();
+      const dismiss = (async () => {
+        await start;
+        return resolveAddressPoisoningCandidate(dismissClient as unknown as Db, {
+          callbackToken: candidate.callbackToken,
+          telegramUserId,
+          resolution: "dismissed"
+        });
+      })();
+      releaseStart();
+
+      const results = await Promise.all([confirm, dismiss]);
+      expect(results.map((result) => result.outcome).sort()).toEqual(["conflict", "updated"]);
+      const winner = results.find((result) => result.outcome === "updated");
+      const loser = results.find((result) => result.outcome === "conflict");
+      expect(winner?.candidate?.status === "confirmed" || winner?.candidate?.status === "dismissed").toBe(true);
+      expect(loser?.candidate).toBeNull();
+      const stored = await pgDb.query(
+        "select status from address_poisoning_candidates where id = $1",
+        [candidate.id]
+      );
+      expect(stored.rows[0]?.status).toBe(winner?.candidate?.status);
+    } finally {
+      confirmClient.release();
+      dismissClient.release();
+    }
+  });
+
   it("backfills a legacy sending lease and reapplies migration 031 idempotently", async () => {
     const candidate = await createCandidate(`${txPrefix}migration-lease-backfill`);
     await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
