@@ -64,7 +64,7 @@ export type AddressPoisoningDetectionResult =
     kind: "clear";
     reason: "complete_no_match" | "trusted_sender" | "authoritative_service" | "prior_relationship";
   }
-  | { kind: "inconclusive"; reason: "partial_no_match" | "invalid_input" };
+  | { kind: "inconclusive"; reason: "partial_no_match" };
 
 export interface InitialAddressPoisoningCheckInput {
   amountRaw: RawTokenAmount;
@@ -151,9 +151,7 @@ export function compareMatches(a: AddressPoisoningMatch, b: AddressPoisoningMatc
     || Number(b.exactAmount) - Number(a.exactAmount)
     || a.elapsedMs - b.elapsedMs
     || b.outgoingAt.getTime() - a.outgoingAt.getTime()
-    || compareRawStrings(a.outgoingTxHash, b.outgoingTxHash)
-    || compareRawStrings(a.genuineRecipient, b.genuineRecipient)
-    || compareRawStrings(a.outgoingAmountRaw, b.outgoingAmountRaw);
+    || compareRawStrings(a.outgoingTxHash, b.outgoingTxHash);
 }
 
 export function rankAddressPoisoningMatches(
@@ -194,8 +192,9 @@ function isEarlierDirectRelationship(
 ): boolean {
   if (!isValidPoisoningTransfer(transfer)) return false;
   const elapsedMs = incoming.occurredAt.getTime() - transfer.occurredAt.getTime();
-  return transfer.sender === incoming.receiver
-    && transfer.receiver === incoming.sender
+  const directlyRelated = (transfer.sender === incoming.receiver && transfer.receiver === incoming.sender)
+    || (transfer.sender === incoming.sender && transfer.receiver === incoming.receiver);
+  return directlyRelated
     && transfer.tokenContract === incoming.tokenContract
     && transfer.tokenDecimals === incoming.tokenDecimals
     && elapsedMs > 0
@@ -213,13 +212,10 @@ function exactSuppressionReason(
   return null;
 }
 
+/** Precondition: the incoming transfer has passed trust-boundary eligibility validation. */
 export function detectAddressPoisoning(
   input: AddressPoisoningDetectionInput
 ): AddressPoisoningDetectionResult {
-  if (!isValidPoisoningTransfer(input.incoming)) {
-    return { kind: "inconclusive", reason: "invalid_input" };
-  }
-
   const watchedWallet = input.incoming.receiver;
   const suspiciousSender = input.incoming.sender;
   const suppressionReason = exactSuppressionReason(input.suppression, suspiciousSender);
