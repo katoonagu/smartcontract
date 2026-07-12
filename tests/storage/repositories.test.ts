@@ -3508,7 +3508,9 @@ const postgresAddressPoisoningDescribe = process.env.TEST_DATABASE_URL ? describ
 
 postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () => {
   let pgDb: pg.Pool;
-  const walletId = "pg-wallet-1";
+  const telegramUserId = "codex-address-poisoning-pg-user";
+  const walletId = "codex-address-poisoning-pg-wallet";
+  const txPrefix = "codex-address-poisoning-pg-";
   const walletAddress = "TWallet111111111111111111111111111111";
   const sender = "TSuspicious1111111111111111111111111";
   const eventAt = new Date("2026-07-12T12:00:00.000Z");
@@ -3518,17 +3520,44 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
   });
 
   afterAll(async () => {
+    await cleanupReservedRows();
     await pgDb.end();
   });
 
+  async function cleanupReservedRows(): Promise<void> {
+    const client = await pgDb.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "delete from address_poisoning_candidates where watched_wallet_id = $1 or suspicious_incoming_tx_hash like $2",
+        [walletId, `${txPrefix}%`]
+      );
+      await client.query("delete from risk_signal_observations where observed_transaction_hash like $1", [`${txPrefix}%`]);
+      await client.query("delete from raw_evidence where observed_transaction_hash like $1", [`${txPrefix}%`]);
+      await client.query(
+        "delete from observed_transactions where watched_wallet_id = $1 or tx_hash like $2",
+        [walletId, `${txPrefix}%`]
+      );
+      await client.query("delete from watched_wallets where id = $1", [walletId]);
+      await client.query("delete from telegram_users where telegram_user_id = $1", [telegramUserId]);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   beforeEach(async () => {
+    await cleanupReservedRows();
     await pgDb.query(
-      "truncate table address_poisoning_candidates, risk_signal_observations, raw_evidence, observed_transactions, watched_wallets, telegram_users cascade"
+      "insert into telegram_users (telegram_user_id, username, locale) values ($1, 'pg-test', 'ru')",
+      [telegramUserId]
     );
-    await pgDb.query("insert into telegram_users (telegram_user_id, username, locale) values ('42', 'pg-test', 'ru')");
     await pgDb.query(
-      "insert into watched_wallets (id, telegram_user_id, address, alert_mode) values ($1, '42', $2, 'realtime')",
-      [walletId, walletAddress]
+      "insert into watched_wallets (id, telegram_user_id, address, alert_mode) values ($1, $2, $3, 'realtime')",
+      [walletId, telegramUserId, walletAddress]
     );
   });
 
@@ -3591,7 +3620,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
   }
 
   it("enforces real provider retry boundaries and stops after the fourth failure", async () => {
-    const txHash = "pg-provider-retry";
+    const txHash = `${txPrefix}provider-retry`;
     await seedObserved(txHash);
     let work = await claimCheck(txHash, eventAt);
     expect(work?.attemptCount).toBe(0);
@@ -3632,7 +3661,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
   });
 
   it("caps stale sending reclaims at four real delivery executions", async () => {
-    await createCandidate("pg-stale-alert");
+    await createCandidate(`${txPrefix}stale-alert`);
     const claimTimes = [0, 60, 120, 180].map((seconds) => new Date(eventAt.getTime() + seconds * 1_000));
     for (const [index, claimAt] of claimTimes.entries()) {
       const rows = await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
@@ -3653,7 +3682,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
   });
 
   it("enforces real delivery failure retry boundaries without double counting claims", async () => {
-    const candidate = await createCandidate("pg-failed-alert");
+    const candidate = await createCandidate(`${txPrefix}failed-alert`);
     let claimAt = eventAt;
     for (const [index, delaySeconds] of [30, 60, 120].entries()) {
       const delivery = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
@@ -3693,7 +3722,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
   });
 
   it("rejects mismatched candidate facts before writing evidence", async () => {
-    const txHash = "pg-mismatch";
+    const txHash = `${txPrefix}mismatch`;
     await seedObserved(txHash);
     const work = await claimCheck(txHash, eventAt);
     await expect(persistAddressPoisoningCandidate(pgDb as unknown as Db, {
@@ -3716,15 +3745,17 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
          tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
          poisoning_check_status, poisoning_attempts, poisoning_next_retry_at
        ) values
-         ('pg-due-third-retry', $1, $2, $3, 'USDT', '10', $4, 'failed', 3, $5),
-         ('pg-terminal-fourth', $1, $2, $3, 'USDT', '10', $6, 'failed', 4, null)`,
+         ($7, $1, $2, $3, 'USDT', '10', $4, 'failed', 3, $5),
+         ($8, $1, $2, $3, 'USDT', '10', $6, 'failed', 4, null)`,
       [
         walletId,
         sender,
         walletAddress,
         new Date(metricsAt.getTime() - 5_000),
         new Date(metricsAt.getTime() - 1),
-        new Date(metricsAt.getTime() - 100_000)
+        new Date(metricsAt.getTime() - 100_000),
+        `${txPrefix}due-third-retry`,
+        `${txPrefix}terminal-fourth`
       ]
     );
     expect(await getAddressPoisoningQueueMetrics(pgDb as unknown as Db, metricsAt)).toEqual({
