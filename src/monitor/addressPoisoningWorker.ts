@@ -112,7 +112,7 @@ export type AddressPoisoningWorkerDeps = {
     telegramUserId: string,
     message: string,
     options: { reply_markup: ReturnType<typeof addressPoisoningAlertKeyboard>; parse_mode: "HTML" }
-  ): Promise<{ chatId: string | number; messageId: string | number }>;
+  ): Promise<{ chat: { id: number }; message_id: number }>;
   now?: () => Date;
   logger?: Logger;
   repository?: AddressPoisoningWorkerRepository;
@@ -329,6 +329,11 @@ function boundedDeliveryError(error: unknown): string {
   return (clean || "telegram_delivery_failed").slice(0, 500);
 }
 
+function currentTime(deps: Pick<AddressPoisoningWorkerDeps, "now">): Date {
+  const value = deps.now?.() ?? new Date();
+  return new Date(value.getTime());
+}
+
 function lostLease(error: unknown): boolean {
   return error instanceof Error && error.message.includes("lost its running check lease");
 }
@@ -493,7 +498,7 @@ async function markDeliveryFailure(
   candidate: AddressPoisoningCandidateDelivery,
   error: unknown,
   metrics: AddressPoisoningCycleMetrics,
-  now: Date,
+  failedAt: Date,
   logger: Logger
 ): Promise<void> {
   logger.warn("address_poisoning_alert_delivery_failed", {
@@ -504,7 +509,7 @@ async function markDeliveryFailure(
     const updated = await repository.markAlertFailed(deps.db, {
       candidateId: candidate.id,
       error: boundedDeliveryError(error),
-      now,
+      now: failedAt,
       leaseVersion: candidate.leaseVersion
     });
     updated ? metrics.alertsFailed += 1 : metrics.alertsStale += 1;
@@ -522,7 +527,6 @@ async function deliverCandidateAlert(
   repository: AddressPoisoningWorkerRepository,
   candidate: AddressPoisoningCandidateDelivery,
   metrics: AddressPoisoningCycleMetrics,
-  now: Date,
   logger: Logger
 ): Promise<void> {
   if (candidate.alertMode === "paused") {
@@ -555,18 +559,18 @@ async function deliverCandidateAlert(
     });
     fingerprint = addressPoisoningAlertFingerprint(candidate);
   } catch (error) {
-    await markDeliveryFailure(deps, repository, candidate, error, metrics, now, logger);
+    await markDeliveryFailure(deps, repository, candidate, error, metrics, currentTime(deps), logger);
     return;
   }
 
-  let sent: { chatId: string | number; messageId: string | number };
+  let sent: { chat: { id: number }; message_id: number };
   try {
     sent = await deps.sendUserAlert(candidate.telegramUserId, message.text, {
       reply_markup: keyboard,
       parse_mode: message.parseMode
     });
   } catch (error) {
-    await markDeliveryFailure(deps, repository, candidate, error, metrics, now, logger);
+    await markDeliveryFailure(deps, repository, candidate, error, metrics, currentTime(deps), logger);
     return;
   }
 
@@ -576,9 +580,9 @@ async function deliverCandidateAlert(
     const updated = await repository.markAlertSent(deps.db, {
       candidateId: candidate.id,
       fingerprint,
-      telegramChatId: String(sent.chatId),
-      telegramMessageId: String(sent.messageId),
-      sentAt: now,
+      telegramChatId: String(sent.chat.id),
+      telegramMessageId: String(sent.message_id),
+      sentAt: currentTime(deps),
       leaseVersion: candidate.leaseVersion
     });
     updated ? metrics.alertsSent += 1 : metrics.alertsStale += 1;
@@ -613,7 +617,7 @@ async function deliverCandidateAlerts(
   }
   metrics.alertsClaimed = claimed.length;
   for (const candidate of claimed) {
-    await deliverCandidateAlert(deps, repository, candidate, metrics, now, logger);
+    await deliverCandidateAlert(deps, repository, candidate, metrics, logger);
   }
 }
 
@@ -623,7 +627,7 @@ export async function runSingleAddressPoisoningCycle(
 ): Promise<AddressPoisoningCycleMetrics> {
   const options = workerOptions(optionsInput);
   const repository = deps.repository ?? defaultRepository;
-  const now = deps.now?.() ?? new Date();
+  const now = currentTime(deps);
   const logger = deps.logger ?? defaultLogger;
   const metrics: AddressPoisoningCycleMetrics = {
     expiredSkipped: 0,

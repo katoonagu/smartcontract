@@ -142,7 +142,8 @@ type RelatedTransferLookup = Parameters<typeof runSingleAddressPoisoningCycle>[0
 function deps(
   repo: AddressPoisoningWorkerRepository,
   listRelatedTrc20Transfers: RelatedTransferLookup = vi.fn(async () => []),
-  sendUserAlert = vi.fn(async () => ({ chatId: "42", messageId: "1001" }))
+  sendUserAlert = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 })),
+  now = () => NOW
 ) {
   return {
     db: {} as never,
@@ -150,7 +151,7 @@ function deps(
     tronClient: { listRelatedTrc20Transfers },
     realtimeMaxAgeMs: 120_000,
     sendUserAlert,
-    now: () => NOW,
+    now,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   };
 }
@@ -513,7 +514,7 @@ describe("address poisoning worker", () => {
   it.each(["realtime", "risk_only", "digest"] as const)("delivers %s safety alerts immediately even when no checks were claimed", async (mode) => {
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate(mode)]);
-    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001, text: "accepted" }));
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
 
@@ -537,7 +538,7 @@ describe("address poisoning worker", () => {
   it("marks paused alerts skipped under the claimed lease without sending", async () => {
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate("paused")]);
-    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
 
@@ -558,7 +559,7 @@ describe("address poisoning worker", () => {
     ]);
     const send = vi.fn()
       .mockRejectedValueOnce(new Error(`Telegram refused ${"x".repeat(2_000)}\nsecret`))
-      .mockResolvedValueOnce({ chatId: "42", messageId: "1002" });
+      .mockResolvedValueOnce({ chat: { id: 42 }, message_id: 1002 });
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
 
@@ -586,7 +587,7 @@ describe("address poisoning worker", () => {
       state.status = "failed";
       return true;
     });
-    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
 
@@ -630,7 +631,7 @@ describe("address poisoning worker", () => {
       state.fingerprint = input.fingerprint;
       return true;
     });
-    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
     await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
@@ -638,6 +639,63 @@ describe("address poisoning worker", () => {
     expect(state.status).toBe("sent");
     expect(state.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("anchors the sent timestamp after Grammy accepts the message and persists Grammy ids", async () => {
+    const startedAt = new Date("2026-07-01T12:48:00.000Z");
+    const acceptedAt = new Date("2026-07-01T12:48:07.250Z");
+    const times = [startedAt, acceptedAt];
+    const clock = vi.fn(() => times.shift()!);
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate()]);
+    const send = vi.fn(async () => ({ chat: { id: -1001234567890 }, message_id: 9876, date: 1 }));
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+
+    expect(clock).toHaveBeenCalledTimes(2);
+    expect(repo.markAlertSent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      telegramChatId: "-1001234567890",
+      telegramMessageId: "9876",
+      sentAt: acceptedAt
+    }));
+  });
+
+  it("anchors retry scheduling to the actual Telegram failure time", async () => {
+    const startedAt = new Date("2026-07-01T12:48:00.000Z");
+    const failedAt = new Date("2026-07-01T12:48:09.500Z");
+    const times = [startedAt, failedAt];
+    const clock = vi.fn(() => times.shift()!);
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate()]);
+
+    await runSingleAddressPoisoningCycle(deps(
+      repo,
+      undefined,
+      vi.fn(async () => { throw new Error("Telegram timeout"); }),
+      clock
+    ));
+
+    expect(repo.markAlertFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ now: failedAt }));
+  });
+
+  it("records distinct completion times for multiple accepted alerts", async () => {
+    const startedAt = new Date("2026-07-01T12:48:00.000Z");
+    const firstAcceptedAt = new Date("2026-07-01T12:48:01.000Z");
+    const secondAcceptedAt = new Date("2026-07-01T12:48:04.000Z");
+    const times = [startedAt, firstAcceptedAt, secondAcceptedAt];
+    const clock = vi.fn(() => times.shift()!);
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([
+      deliveryCandidate("realtime", { id: "first" }),
+      deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" })
+    ]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, vi.fn(async () => ({
+      chat: { id: 42 }, message_id: 1001
+    })), clock));
+
+    expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[1].sentAt))
+      .toEqual([firstAcceptedAt, secondAcceptedAt]);
   });
 });
 
