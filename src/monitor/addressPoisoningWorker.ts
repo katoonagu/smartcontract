@@ -22,6 +22,7 @@ import {
 import {
   claimAddressPoisoningAlertsForDelivery,
   claimAddressPoisoningChecks,
+  getAddressPoisoningQueueMetrics,
   listAddressLabels,
   markAddressPoisoningAlertFailed,
   markAddressPoisoningAlertSent,
@@ -75,6 +76,7 @@ export type AddressPoisoningCycleMetrics = {
   alertsSkipped: number;
   alertsStale: number;
   alertsPersistenceFailed: number;
+  timeoutCount: number;
 };
 
 type MarkClearInput = Parameters<typeof markAddressPoisoningCheckClear>[1];
@@ -105,6 +107,7 @@ export type AddressPoisoningWorkerRepository = {
   markAlertFailed(db: Db, input: MarkAlertFailedInput): Promise<boolean>;
   markAlertSkipped(db: Db, input: MarkAlertSkippedInput): Promise<boolean>;
   renewAlertLease(db: Db, input: RenewAlertLeaseInput): Promise<Date | null>;
+  getQueueMetrics(db: Db, now: Date): Promise<{ queueDepth: number; oldestQueueAgeMs: number | null }>;
 };
 
 export type AddressPoisoningWorkerDeps = {
@@ -150,7 +153,7 @@ type AccumulatedLookup = {
   providerTransferIds: string[];
 };
 
-const defaultRepository: AddressPoisoningWorkerRepository = {
+export const addressPoisoningWorkerRepository: AddressPoisoningWorkerRepository = {
   skipExpiredChecks: skipExpiredAddressPoisoningChecks,
   skipPausedChecks: skipPausedAddressPoisoningChecks,
   claimChecks: claimAddressPoisoningChecks,
@@ -163,7 +166,8 @@ const defaultRepository: AddressPoisoningWorkerRepository = {
   markAlertSent: markAddressPoisoningAlertSent,
   markAlertFailed: markAddressPoisoningAlertFailed,
   markAlertSkipped: markAddressPoisoningAlertSkipped,
-  renewAlertLease: renewAddressPoisoningAlertLease
+  renewAlertLease: renewAddressPoisoningAlertLease,
+  getQueueMetrics: getAddressPoisoningQueueMetrics
 };
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, maximum?: number): number {
@@ -333,6 +337,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function nonnegativeDurationMs(startedAt: Date, endedAt: Date): number {
+  return Math.max(0, endedAt.getTime() - startedAt.getTime());
+}
+
+function isProviderTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function boundedDeliveryError(error: unknown): string {
   const clean = errorMessage(error).replace(/[\r\n\t\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
   return (clean || "telegram_delivery_failed").slice(0, 500);
@@ -361,12 +373,27 @@ async function processWorkItem(
     const incomingAmountRaw = parseUsdtDecimalToRaw(item.amount);
     if (!incomingAmountRaw) throw new Error("Invalid observed USDT amount for address-poisoning lookup");
 
-    const page = await deps.tronClient.listRelatedTrc20Transfers(item.walletAddress, {
-      start: item.logicalOffset,
-      limit: options.pageSize,
-      minTimestamp: item.timestamp.getTime() - LOOKBACK_MS,
-      endTimestamp: item.timestamp.getTime() - 1
-    });
+    const providerStartedAt = currentTime(deps);
+    let page: RawTronscanTrc20Transfer[];
+    try {
+      page = await deps.tronClient.listRelatedTrc20Transfers(item.walletAddress, {
+        start: item.logicalOffset,
+        limit: options.pageSize,
+        minTimestamp: item.timestamp.getTime() - LOOKBACK_MS,
+        endTimestamp: item.timestamp.getTime() - 1
+      });
+    } catch (error) {
+      const providerFinishedAt = currentTime(deps);
+      if (isProviderTimeout(error)) metrics.timeoutCount += 1;
+      logger.info("address_poisoning_lookup_completed", {
+        txHash: item.txHash,
+        providerLatencyMs: nonnegativeDurationMs(providerStartedAt, providerFinishedAt),
+        pageCount: item.pageCount,
+        fetchedCount: item.fetchedCount,
+        coverage: "failed"
+      });
+      throw error;
+    }
     if (!Array.isArray(page)) throw new Error("Address-poisoning provider page is not an array");
 
     const accumulated = mergePage(accumulatedBefore, page, item.timestamp);
@@ -375,6 +402,13 @@ async function processWorkItem(
     const logicalOffset = item.logicalOffset + page.length;
     const pageCount = item.pageCount + 1;
     const fetchedCount = item.fetchedCount + page.length;
+    logger.info("address_poisoning_lookup_completed", {
+      txHash: item.txHash,
+      providerLatencyMs: nonnegativeDurationMs(providerStartedAt, currentTime(deps)),
+      pageCount,
+      fetchedCount,
+      coverage
+    });
     const oldest = oldestAcceptedTransferAt(accumulated);
     const senderSeen = senderAppearedInCheckedHistory(accumulated, item.walletAddress, item.sender, item.timestamp);
     const labels = await repository.listAddressLabels(deps.db, item.sender);
@@ -674,16 +708,27 @@ async function deliverCandidateAlert(
   // ponytail: Telegram send and DB acknowledgement cannot be atomic. A crash here leaves
   // `sending` retryable, so delivery is intentionally at-least-once with at most four claims.
   try {
+    const sentAt = currentTime(deps);
     const updated = await repository.markAlertSent(deps.db, {
       candidateId: candidate.id,
       fingerprint,
       telegramChatId: String(sent.chat.id),
       telegramMessageId: String(sent.message_id),
-      sentAt: currentTime(deps),
+      sentAt,
       alertAttempt: candidate.alertAttempt,
       alertLeaseVersion: heartbeat.latestLease()
     });
-    updated ? metrics.alertsSent += 1 : metrics.alertsStale += 1;
+    if (updated) {
+      metrics.alertsSent += 1;
+      logger.info("address_poisoning_alert_sent", {
+        candidateId: candidate.id,
+        classification: candidate.classification,
+        queueAgeMs: nonnegativeDurationMs(candidate.createdAt, sentAt),
+        alertLatencyMs: nonnegativeDurationMs(candidate.suspiciousIncomingAt, sentAt)
+      });
+    } else {
+      metrics.alertsStale += 1;
+    }
   } catch (error) {
     metrics.alertsPersistenceFailed += 1;
     logger.error("address_poisoning_alert_sent_persistence_failed", {
@@ -742,7 +787,7 @@ export async function runSingleAddressPoisoningCycle(
   optionsInput: AddressPoisoningWorkerOptions = ADDRESS_POISONING_WORKER_DEFAULTS
 ): Promise<AddressPoisoningCycleMetrics> {
   const options = workerOptions(optionsInput);
-  const repository = deps.repository ?? defaultRepository;
+  const repository = deps.repository ?? addressPoisoningWorkerRepository;
   const now = currentTime(deps);
   const logger = deps.logger ?? defaultLogger;
   const metrics: AddressPoisoningCycleMetrics = {
@@ -760,29 +805,52 @@ export async function runSingleAddressPoisoningCycle(
     alertsFailed: 0,
     alertsSkipped: 0,
     alertsStale: 0,
-    alertsPersistenceFailed: 0
+    alertsPersistenceFailed: 0,
+    timeoutCount: 0
   };
 
-  metrics.expiredSkipped = await repository.skipExpiredChecks(deps.db, {
-    expiredBefore: new Date(now.getTime() - deps.realtimeMaxAgeMs)
-  });
-  metrics.pausedSkipped = await repository.skipPausedChecks(deps.db);
-  const claimed = await repository.claimChecks(deps.db, {
-    limit: options.claimLimit,
-    now,
-    staleRunningBefore: new Date(now.getTime() - options.retryDelayMs)
-  });
-  metrics.claimed = claimed.length;
-  if (claimed.length > 0) {
-    let cursor = 0;
-    const consume = async () => {
-      while (cursor < claimed.length) {
-        const item = claimed[cursor++];
-        await processWorkItem(deps, repository, item, options, metrics, now, logger);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));
+  try {
+    metrics.expiredSkipped = await repository.skipExpiredChecks(deps.db, {
+      expiredBefore: new Date(now.getTime() - deps.realtimeMaxAgeMs)
+    });
+    metrics.pausedSkipped = await repository.skipPausedChecks(deps.db);
+    const claimed = await repository.claimChecks(deps.db, {
+      limit: options.claimLimit,
+      now,
+      staleRunningBefore: new Date(now.getTime() - options.retryDelayMs)
+    });
+    metrics.claimed = claimed.length;
+    if (claimed.length > 0) {
+      let cursor = 0;
+      const consume = async () => {
+        while (cursor < claimed.length) {
+          const item = claimed[cursor++];
+          await processWorkItem(deps, repository, item, options, metrics, now, logger);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));
+    }
+    await deliverCandidateAlerts(deps, repository, options, metrics, logger);
+    return metrics;
+  } finally {
+    const completedAt = currentTime(deps);
+    let queueDepth = 0;
+    let oldestQueueAgeMs: number | null = null;
+    try {
+      const queue = await repository.getQueueMetrics(deps.db, completedAt);
+      queueDepth = Number.isFinite(queue.queueDepth) ? Math.max(0, queue.queueDepth) : 0;
+      oldestQueueAgeMs = queue.oldestQueueAgeMs === null || !Number.isFinite(queue.oldestQueueAgeMs)
+        ? null
+        : Math.max(0, queue.oldestQueueAgeMs);
+    } catch (error) {
+      logger.error("address_poisoning_queue_metrics_failed", { error: errorMessage(error) });
+    }
+    logger.info("address_poisoning_cycle_completed", {
+      queueDepth,
+      oldestQueueAgeMs,
+      claimed: metrics.claimed,
+      durationMs: nonnegativeDurationMs(now, completedAt),
+      timeoutCount: metrics.timeoutCount
+    });
   }
-  await deliverCandidateAlerts(deps, repository, options, metrics, logger);
-  return metrics;
 }

@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ADDRESS_POISONING_INTERVAL_MS,
   buildStartupWorkSchedule,
+  createNonOverlappingStartupWork,
   startStartupWorkSchedule,
   type StartupWorkLabel
 } from "../../src/runtime/startupSchedule";
 
-const labels: StartupWorkLabel[] = ["poll", "where_forensic", "incoming_deposit", "deep_forensic", "address_index"];
+const labels: StartupWorkLabel[] = [
+  "poll",
+  "where_forensic",
+  "incoming_deposit",
+  "deep_forensic",
+  "address_index",
+  "address_poisoning"
+];
 
 function buildWork() {
   return Object.fromEntries(labels.map((label) => [label, vi.fn(async () => undefined)])) as Record<
@@ -30,8 +39,10 @@ describe("startup work schedule", () => {
       { label: "where_forensic", delayMs: 3_000 },
       { label: "incoming_deposit", delayMs: 6_000 },
       { label: "deep_forensic", delayMs: 12_000 },
-      { label: "address_index", delayMs: 12_000 }
+      { label: "address_index", delayMs: 12_000 },
+      { label: "address_poisoning", delayMs: 5_000 }
     ]);
+    expect(ADDRESS_POISONING_INTERVAL_MS).toBe(30_000);
   });
 
   it("does not run workers before their configured start delays", async () => {
@@ -52,7 +63,8 @@ describe("startup work schedule", () => {
         where_forensic: 100,
         incoming_deposit: 100,
         deep_forensic: 100,
-        address_index: 100
+        address_index: 100,
+        address_poisoning: ADDRESS_POISONING_INTERVAL_MS
       },
       onError: vi.fn()
     });
@@ -62,9 +74,11 @@ describe("startup work schedule", () => {
     expect(startupWork.incoming_deposit).not.toHaveBeenCalled();
     expect(startupWork.deep_forensic).not.toHaveBeenCalled();
     expect(startupWork.address_index).not.toHaveBeenCalled();
+    expect(startupWork.address_poisoning).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(24);
     expect(startupWork.poll).toHaveBeenCalledTimes(1);
+    expect(startupWork.address_poisoning).toHaveBeenCalledTimes(1);
     expect(startupWork.where_forensic).not.toHaveBeenCalled();
     expect(startupWork.incoming_deposit).not.toHaveBeenCalled();
     expect(startupWork.deep_forensic).not.toHaveBeenCalled();
@@ -94,7 +108,8 @@ describe("startup work schedule", () => {
         where_forensic: 25,
         incoming_deposit: 25,
         deep_forensic: 25,
-        address_index: 25
+        address_index: 25,
+        address_poisoning: ADDRESS_POISONING_INTERVAL_MS
       },
       onError: vi.fn()
     });
@@ -124,7 +139,8 @@ describe("startup work schedule", () => {
         where_forensic: 25,
         incoming_deposit: 25,
         deep_forensic: 25,
-        address_index: 25
+        address_index: 25,
+        address_poisoning: ADDRESS_POISONING_INTERVAL_MS
       },
       onError: vi.fn()
     });
@@ -133,5 +149,122 @@ describe("startup work schedule", () => {
     await vi.advanceTimersByTimeAsync(100);
 
     expect(startupWork.deep_forensic).not.toHaveBeenCalled();
+  });
+
+  it("shares one active poisoning cycle across overlapping ticks and runs again after settle", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const worker = vi.fn()
+      .mockImplementationOnce(async () => held)
+      .mockResolvedValue(undefined);
+    const guarded = createNonOverlappingStartupWork(worker);
+
+    const first = guarded.run();
+    const overlap = guarded.run();
+    expect(first).toBe(overlap);
+    expect(worker).toHaveBeenCalledTimes(1);
+    expect(guarded.active()).toBe(first);
+
+    release();
+    await first;
+    expect(guarded.active()).toBeNull();
+
+    await guarded.run();
+    expect(worker).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the active poisoning cycle after an error so a later tick recovers", async () => {
+    const worker = vi.fn()
+      .mockRejectedValueOnce(new Error("provider unavailable"))
+      .mockResolvedValue(undefined);
+    const guarded = createNonOverlappingStartupWork(worker);
+
+    await expect(guarded.run()).rejects.toThrow("provider unavailable");
+    expect(guarded.active()).toBeNull();
+    await expect(guarded.run()).resolves.toBeUndefined();
+    expect(worker).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports one poisoning cycle error through the schedule and runs the next interval", async () => {
+    vi.useFakeTimers();
+    const worker = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary provider error"))
+      .mockResolvedValue(undefined);
+    const guarded = createNonOverlappingStartupWork(worker);
+    const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
+      ...buildWork(),
+      address_poisoning: guarded.run
+    };
+    const onError = vi.fn();
+    const started = startStartupWorkSchedule({
+      schedule: [{ label: "address_poisoning", delayMs: 0 }],
+      startupWork,
+      intervalByLabel: {
+        poll: 60_000,
+        where_forensic: 60_000,
+        incoming_deposit: 60_000,
+        deep_forensic: 60_000,
+        address_index: 60_000,
+        address_poisoning: ADDRESS_POISONING_INTERVAL_MS
+      },
+      initialErrorEventByLabel: { address_poisoning: "initial_address_poisoning_cycle_failed" },
+      intervalErrorEventByLabel: { address_poisoning: "address_poisoning_cycle_failed" },
+      onError
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledWith(
+      "initial_address_poisoning_cycle_failed",
+      expect.objectContaining({ message: "temporary provider error" }),
+      "address_poisoning"
+    );
+    await vi.advanceTimersByTimeAsync(ADDRESS_POISONING_INTERVAL_MS);
+    expect(worker).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+    started.stop();
+  });
+
+  it("does not start a new poisoning cycle after shutdown and exposes the active one to await", async () => {
+    vi.useFakeTimers();
+    let shuttingDown = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const worker = vi.fn(async () => held);
+    const guarded = createNonOverlappingStartupWork(worker, () => shuttingDown);
+    const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
+      ...buildWork(),
+      address_poisoning: guarded.run
+    };
+    const started = startStartupWorkSchedule({
+      schedule: [{ label: "address_poisoning", delayMs: 0 }],
+      startupWork,
+      intervalByLabel: {
+        poll: 60_000,
+        where_forensic: 60_000,
+        incoming_deposit: 60_000,
+        deep_forensic: 60_000,
+        address_index: 60_000,
+        address_poisoning: ADDRESS_POISONING_INTERVAL_MS
+      },
+      onError: vi.fn()
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const active = guarded.active();
+    expect(active).not.toBeNull();
+    shuttingDown = true;
+    started.stop();
+    expect(guarded.run()).toBe(active);
+    release();
+    await active!;
+    await guarded.run();
+    await vi.advanceTimersByTimeAsync(2 * ADDRESS_POISONING_INTERVAL_MS);
+
+    expect(worker).toHaveBeenCalledTimes(1);
+    expect(guarded.active()).toBeNull();
   });
 });

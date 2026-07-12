@@ -27,10 +27,16 @@ import { extractWalletIntelligenceFromJob } from "./forensics/walletIntelligence
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
+import {
+  addressPoisoningWorkerRepository,
+  runSingleAddressPoisoningCycle
+} from "./monitor/addressPoisoningWorker";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
 import {
+  ADDRESS_POISONING_INTERVAL_MS,
   buildStartupWorkSchedule,
+  createNonOverlappingStartupWork,
   startStartupWorkSchedule,
   type StartupWorkLabel,
   type StartupWorkScheduleController
@@ -155,6 +161,18 @@ const tronClient = new TronscanClient({
   fullNodeApiKey: config.tronFullNodeApiKey,
   timeoutMs: config.tronscanTimeoutMs,
   retryAttempts: config.tronscanRetryAttempts,
+  retryBaseDelayMs: config.tronscanRetryBaseDelayMs,
+  requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+  rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+  scheduler: tronscanScheduler
+});
+const addressPoisoningTronClient = new TronscanClient({
+  baseUrl: config.tronscanBaseUrl,
+  fullNodeBaseUrl: config.tronFullNodeBaseUrl,
+  apiKey: config.tronscanApiKeys,
+  fullNodeApiKey: config.tronFullNodeApiKey,
+  timeoutMs: 5_000,
+  retryAttempts: 0,
   retryBaseDelayMs: config.tronscanRetryBaseDelayMs,
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
@@ -1141,12 +1159,25 @@ async function incomingDepositOnce(): Promise<void> {
   return activeIncomingDepositPoll;
 }
 
+const addressPoisoningWork = createNonOverlappingStartupWork(async () => {
+  await runSingleAddressPoisoningCycle({
+    db,
+    repository: addressPoisoningWorkerRepository,
+    tronClient: addressPoisoningTronClient,
+    realtimeMaxAgeMs: config.incomingDepositRealtimeMaxAgeMs,
+    sendUserAlert: async (telegramUserId, message, options) =>
+      bot.api.sendMessage(telegramUserId, message, options),
+    logger
+  });
+}, () => shuttingDown);
+
 const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
   poll: pollOnce,
   where_forensic: whereForensicOnce,
   incoming_deposit: incomingDepositOnce,
   deep_forensic: deepForensicOnce,
-  address_index: addressIndexOnce
+  address_index: addressIndexOnce,
+  address_poisoning: addressPoisoningWork.run
 };
 
 const intervalByLabel: Record<StartupWorkLabel, number> = {
@@ -1154,7 +1185,8 @@ const intervalByLabel: Record<StartupWorkLabel, number> = {
   where_forensic: config.forensicWherePollIntervalMs,
   incoming_deposit: config.forensicIncomingPollIntervalMs,
   deep_forensic: config.forensicDeepPollIntervalMs,
-  address_index: config.tronAddressIndexPollIntervalMs ?? 15_000
+  address_index: config.tronAddressIndexPollIntervalMs ?? 15_000,
+  address_poisoning: ADDRESS_POISONING_INTERVAL_MS
 };
 
 let startupWorkSchedule: StartupWorkScheduleController | null = null;
@@ -1171,14 +1203,16 @@ function startBackgroundWorkSchedule(): void {
       where_forensic: "initial_where_forensic_cycle_failed",
       incoming_deposit: "initial_incoming_deposit_cycle_failed",
       deep_forensic: "initial_deep_forensic_cycle_failed",
-      address_index: "initial_address_index_cycle_failed"
+      address_index: "initial_address_index_cycle_failed",
+      address_poisoning: "initial_address_poisoning_cycle_failed"
     },
     intervalErrorEventByLabel: {
       poll: "polling_cycle_failed",
       where_forensic: "where_forensic_cycle_failed",
       incoming_deposit: "incoming_deposit_worker_failed",
       deep_forensic: "deep_forensic_cycle_failed",
-      address_index: "address_index_cycle_failed"
+      address_index: "address_index_cycle_failed",
+      address_poisoning: "address_poisoning_cycle_failed"
     },
     onError: (eventName, error) => {
       logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
@@ -1231,6 +1265,17 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       await activeAddressIndexPoll;
     } catch (error) {
       logger.error("active_address_index_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  const activeAddressPoisoningPoll = addressPoisoningWork.active();
+  if (activeAddressPoisoningPoll) {
+    try {
+      await activeAddressPoisoningPoll;
+    } catch (error) {
+      logger.error("active_address_poisoning_shutdown_wait_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
