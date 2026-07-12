@@ -415,16 +415,20 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     if (pageRawIdSet.size !== pageRawIds.length || expectedOverlapSet.size > 0) {
       historicalRawPaginationUnique = false;
     }
-    const hashEvidenceConsistent = page.rawResponseHashes.length > 0
-      && page.rawResponseHashes.length === page.canonicalTransferHashes.length
-      && page.rawResponseHashes.length <= Math.ceil(page.requestedLimit / 50)
-      && page.rawResponseHashes.every((hash) => hash.length > 0)
-      && page.canonicalTransferHashes.every((hash) => hash.length > 0);
+    const expectedHashCount = Math.max(1, Math.ceil(page.rawCount / 50));
+    const sha256Hash = /^[0-9a-f]{64}$/i;
+    const hashEvidenceConsistent = page.rawResponseHashes.length === expectedHashCount
+      && page.canonicalTransferHashes.length === expectedHashCount
+      && page.rawResponseHashes.every((hash) => sha256Hash.test(hash))
+      && page.canonicalTransferHashes.every((hash) => sha256Hash.test(hash));
     if (
       page.start !== expectedPageStart
       || page.nextOffset !== page.start + page.rawCount
       || page.rawCount !== pageRawIds.length
       || page.rawCount > page.requestedLimit
+      || (page.rangeTotal !== null
+        && page.rawCount < page.requestedLimit
+        && page.nextOffset < page.rangeTotal)
       || page.metadataConsistent !== true
       || !hashEvidenceConsistent
       || (historicalProvider !== null && page.provider !== historicalProvider)
@@ -468,6 +472,9 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
       && page.overlappingRawRowIds.every((id) => page.rawProviderRowIds.includes(id))
       && page.overlappingTransferIds.every((id) => providerTransferIds.includes(id)));
   const storedTransfersById = new Map(storedTransfers.map((transfer) => [transfer.transferId, transfer]));
+  const providerTransferIdSet = new Set(providerTransferIds);
+  const storedTransferIdSet = new Set(storedTransfers.map((transfer) => transfer.transferId));
+  const providerFactRawRowIdSet = new Set(providerFactRawRowIds ?? []);
   const acceptedEvidenceConsistent = providerFacts.length === 0
     ? storedTransfers.length === 0
       && providerTransferIds.length === 0
@@ -477,6 +484,10 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
       && providerFactRawRowIds.length === providerFacts.length
       && storedTransfers.length === providerFacts.length
       && storedTransfersById.size === storedTransfers.length
+      && providerTransferIdSet.size === providerTransferIds.length
+      && providerFactRawRowIdSet.size === providerFactRawRowIds.length
+      && storedTransferIdSet.size === providerTransferIdSet.size
+      && [...storedTransferIdSet].every((id) => providerTransferIdSet.has(id))
       && providerFacts.length <= rawProviderRowIds.length
       && providerFacts.every((fact, index) => {
         const provider = providerFactProviders[index];
@@ -502,7 +513,30 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
           && stored.amountRaw === normalized.amountRaw
           && stored.occurredAt === normalized.blockTimestamp.toISOString();
       });
-  const acceptedEvidenceTrustworthy = rawIdentityEvidenceConsistent && acceptedEvidenceConsistent;
+  const acceptedIdByRawRowId = new Map((providerFactRawRowIds ?? []).map(
+    (rawRowId, index) => [rawRowId, providerTransferIds[index]]
+  ));
+  const priorAcceptedTransferIds = new Set<string>();
+  let acceptedOverlapAuditConsistent = true;
+  let historicalAcceptedPaginationUnique = true;
+  for (const page of providerPages) {
+    const pageAcceptedTransferIds = new Set(page.rawProviderRowIds
+      .map((rawRowId) => acceptedIdByRawRowId.get(rawRowId))
+      .filter((id): id is string => typeof id === "string"));
+    const expectedAcceptedOverlaps = new Set([...pageAcceptedTransferIds]
+      .filter((id) => priorAcceptedTransferIds.has(id)));
+    const declaredAcceptedOverlaps = new Set(page.overlappingTransferIds);
+    const declarationExact = declaredAcceptedOverlaps.size === expectedAcceptedOverlaps.size
+      && [...expectedAcceptedOverlaps].every((id) => declaredAcceptedOverlaps.has(id));
+    if (declaredAcceptedOverlaps.size !== page.overlappingTransferIds.length || !declarationExact) {
+      acceptedOverlapAuditConsistent = false;
+    }
+    if (expectedAcceptedOverlaps.size > 0) historicalAcceptedPaginationUnique = false;
+    for (const id of pageAcceptedTransferIds) priorAcceptedTransferIds.add(id);
+  }
+  const acceptedEvidenceTrustworthy = rawIdentityEvidenceConsistent
+    && acceptedEvidenceConsistent
+    && acceptedOverlapAuditConsistent;
   return {
     version: 2,
     windowStart,
@@ -511,6 +545,8 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     providerMetadataConsistent: value.providerMetadataConsistent
       && rawIdentityEvidenceConsistent
       && acceptedEvidenceConsistent
+      && acceptedOverlapAuditConsistent
+      && historicalAcceptedPaginationUnique
       && historicalRawPaginationUnique
       && rawRowsHaveProviderTxHashes
       && (value.providerPages.length === 0 || (windowStart !== null && windowEnd !== null))
@@ -803,6 +839,27 @@ async function processWorkItem(
 ): Promise<void> {
   try {
     const accumulatedBefore = parseAccumulatedLookup(item.accumulatedLookupJson);
+    const auditedPageCount = accumulatedBefore.providerPages.length;
+    const auditedLogicalOffset = accumulatedBefore.providerPages.at(-1)?.nextOffset ?? 0;
+    const auditedFetchedCount = accumulatedBefore.providerPages.reduce((sum, page) => sum + page.rawCount, 0);
+    const emptyAccumulatedEvidence = auditedPageCount === 0
+      && accumulatedBefore.lookupProvider === null
+      && accumulatedBefore.windowStart === null
+      && accumulatedBefore.windowEnd === null
+      && accumulatedBefore.transfers.length === 0
+      && accumulatedBefore.providerFacts.length === 0
+      && accumulatedBefore.providerTransferIds.length === 0
+      && accumulatedBefore.providerFactProviders.length === 0
+      && accumulatedBefore.providerFactRawRowIds.length === 0
+      && accumulatedBefore.rawProviderRowIds.length === 0;
+    if (
+      item.pageCount !== auditedPageCount
+      || item.logicalOffset !== auditedLogicalOffset
+      || item.fetchedCount !== auditedFetchedCount
+      || (auditedPageCount === 0
+        && (!emptyAccumulatedEvidence || item.pageCount !== 0 || item.logicalOffset !== 0 || item.fetchedCount !== 0))
+      || accumulatedBefore.providerPages.at(-1)?.complete === true
+    ) throw new Error("Accumulated address-poisoning lookup disagrees with queue progress");
     const incomingAmountRaw = parseUsdtDecimalToRaw(item.amount);
     if (!incomingAmountRaw) throw new Error("Invalid observed USDT amount for address-poisoning lookup");
 

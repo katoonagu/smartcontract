@@ -28,6 +28,10 @@ const NOW = new Date("2026-07-01T12:48:00.000Z");
 const OTHER_WALLET = "TYDaeeSEuipFoJ2bzVdJ8daGU57emWqQPC";
 let rawTransferSequence = 0;
 
+function testSha256(value: number): string {
+  return value.toString(16).padStart(64, "0");
+}
+
 function workItem(overrides: Partial<AddressPoisoningCheckWorkItem> = {}): AddressPoisoningCheckWorkItem {
   return {
     txHash: THJ_POISONING_CASE.incomingTxHash,
@@ -112,15 +116,15 @@ function accumulatedLookupAtLimits() {
       requestedLimit: 100,
       nextOffset: (pageIndex + 1) * 100,
       rawCount: 100,
-      total: 500,
-      rangeTotal: 500,
-      complete: pageIndex === 4,
+      total: 501,
+      rangeTotal: 501,
+      complete: false,
       metadataConsistent: true,
       overlappingTransferIds: [] as string[],
       rawProviderRowIds: rawProviderRowIds.slice(pageIndex * 100, (pageIndex + 1) * 100),
       overlappingRawRowIds: [] as string[],
-      rawResponseHashes: [`raw-${pageIndex}-0`, `raw-${pageIndex}-1`],
-      canonicalTransferHashes: [`canonical-${pageIndex}-0`, `canonical-${pageIndex}-1`]
+      rawResponseHashes: [testSha256(pageIndex * 4 + 1), testSha256(pageIndex * 4 + 2)],
+      canonicalTransferHashes: [testSha256(pageIndex * 4 + 3), testSha256(pageIndex * 4 + 4)]
     }))
   };
 }
@@ -217,9 +221,63 @@ function twoPageCoverageProgress() {
       overlappingTransferIds: [] as string[],
       rawProviderRowIds: rawProviderRowIds.slice(start, start + 100),
       overlappingRawRowIds: [] as string[],
-      rawResponseHashes: [`coverage-raw-${start}-0`, `coverage-raw-${start}-1`],
-      canonicalTransferHashes: [`coverage-canonical-${start}-0`, `coverage-canonical-${start}-1`]
+      rawResponseHashes: [testSha256(start + 1), testSha256(start + 2)],
+      canonicalTransferHashes: [testSha256(start + 3), testSha256(start + 4)]
     }))
+  };
+}
+
+function fourPageCoverageProgress() {
+  const rawProviderRowIds = Array.from({ length: 400 }, (_, index) => `tronscan:tx:four-page-${index}`);
+  return {
+    version: 2,
+    windowStart: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 86_400_000).toISOString(),
+    windowEnd: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 1).toISOString(),
+    lookupProvider: "tronscan",
+    providerMetadataConsistent: true,
+    transfers: [],
+    providerFacts: [],
+    providerTransferIds: [],
+    providerFactProviders: [],
+    providerFactRawRowIds: [],
+    rawProviderRowIds,
+    providerPages: [0, 100, 200, 300].map((start) => ({
+      provider: "tronscan",
+      start,
+      requestedLimit: 100,
+      nextOffset: start + 100,
+      rawCount: 100,
+      total: 501,
+      rangeTotal: 501,
+      complete: false,
+      metadataConsistent: true,
+      overlappingTransferIds: [] as string[],
+      rawProviderRowIds: rawProviderRowIds.slice(start, start + 100),
+      overlappingRawRowIds: [] as string[],
+      rawResponseHashes: [testSha256(60_000 + start), testSha256(60_001 + start)],
+      canonicalTransferHashes: [testSha256(60_002 + start), testSha256(60_003 + start)]
+    }))
+  };
+}
+
+function finalCoveragePage(): PinnedTronscanTransferPage {
+  const transfers = Array.from({ length: 100 }, (_, index) => rawTransfer({
+    transaction_id: `coverage-final-${index}`,
+    contract_address: OTHER_WALLET
+  }));
+  return {
+    provider: "tronscan",
+    transfers,
+    rawProviderRowIds: transfers.map((row) => `tronscan:tx:${row.transaction_id}`),
+    start: 200,
+    requestedLimit: 100,
+    nextOffset: 300,
+    total: 300,
+    rangeTotal: 300,
+    complete: true,
+    metadataConsistent: true,
+    rawResponseHashes: [testSha256(10_001), testSha256(10_002)],
+    canonicalTransferHashes: [testSha256(10_003), testSha256(10_004)]
   };
 }
 
@@ -489,6 +547,7 @@ describe("address poisoning worker", () => {
       const transfers = start === 200
         ? [rawTransfer({ transaction_id: "final-200" })]
         : Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `${start}-${index}` }));
+      const hashCount = Math.max(1, Math.ceil(transfers.length / 50));
       return {
         provider: "tronscan",
         transfers,
@@ -500,8 +559,8 @@ describe("address poisoning worker", () => {
         rangeTotal: 201,
         complete: start + transfers.length >= 201,
         metadataConsistent: true,
-        rawResponseHashes: [`raw-${start}`],
-        canonicalTransferHashes: [`canonical-${start}`]
+        rawResponseHashes: Array.from({ length: hashCount }, (_, index) => testSha256(start * 10 + index + 1)),
+        canonicalTransferHashes: Array.from({ length: hashCount }, (_, index) => testSha256(start * 10 + index + 3))
       };
     });
 
@@ -522,7 +581,12 @@ describe("address poisoning worker", () => {
   });
 
   it("leaves a full fifth page terminal and non-retryable", async () => {
-    const item = workItem({ logicalOffset: 400, pageCount: 4, fetchedCount: 400 });
+    const item = workItem({
+      logicalOffset: 400,
+      pageCount: 4,
+      fetchedCount: 400,
+      accumulatedLookupJson: fourPageCoverageProgress()
+    });
     const repo = repository([item]);
     const page = Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `last-${index}` }));
 
@@ -668,7 +732,15 @@ describe("address poisoning worker", () => {
   });
 
   it("retains persisted progress on provider failure and treats a stale lease as benign", async () => {
-    const repo = repository([workItem({ logicalOffset: 100, pageCount: 1, fetchedCount: 100 })]);
+    const progress = twoPageCoverageProgress();
+    progress.providerPages = progress.providerPages.slice(0, 1);
+    progress.rawProviderRowIds = [...progress.providerPages[0].rawProviderRowIds];
+    const repo = repository([workItem({
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      accumulatedLookupJson: progress
+    })]);
     (repo.markFailed as ReturnType<typeof vi.fn>).mockResolvedValue(false);
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, vi.fn(async () => { throw new Error("provider down"); })));
@@ -832,7 +904,8 @@ describe("address poisoning worker", () => {
       watchedWalletId: `oversized-wallet-${index}`,
       pageCount: 4,
       logicalOffset: 400,
-      fetchedCount: 400
+      fetchedCount: 400,
+      accumulatedLookupJson: fourPageCoverageProgress()
     }));
     const repo = repository(items);
     let active = 0;
@@ -939,11 +1012,8 @@ describe("address poisoning worker", () => {
     const candidate = (repo.persistCandidate as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(candidate.coverage).toBe("partial");
     expect(candidate.evidenceJson.lookupProvider).toBe("mixed");
-    expect(candidate.evidenceJson.providerFactProviders).toEqual(expect.arrayContaining(["tronscan", "trongrid_fallback"]));
-    expect(candidate.evidenceJson.providerTransferIds).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^tronscan:/),
-      expect.stringMatching(/^trongrid_fallback:/)
-    ]));
+    expect(candidate.evidenceJson.providerFactProviders).toEqual(["trongrid_fallback"]);
+    expect(candidate.evidenceJson.providerTransferIds).toEqual([expect.stringMatching(/^trongrid_fallback:/)]);
     expect(candidate.evidenceJson.providerPages).toEqual([
       expect.objectContaining({ provider: "tronscan", start: 0, nextOffset: 1 }),
       expect.objectContaining({ provider: "trongrid_fallback", start: 1, nextOffset: 2 })
@@ -1043,8 +1113,8 @@ describe("address poisoning worker", () => {
         rangeTotal: 200,
         complete: false,
         metadataConsistent: true,
-        rawResponseHashes: ["cross-first-raw"],
-        canonicalTransferHashes: ["cross-first-canonical"]
+        rawResponseHashes: [testSha256(70_001), testSha256(70_002)],
+        canonicalTransferHashes: [testSha256(70_003), testSha256(70_004)]
       } satisfies PinnedTronscanTransferPage)
       .mockResolvedValueOnce({
         provider: "tronscan",
@@ -1057,8 +1127,8 @@ describe("address poisoning worker", () => {
         rangeTotal: 200,
         complete: true,
         metadataConsistent: true,
-        rawResponseHashes: ["cross-second-raw"],
-        canonicalTransferHashes: ["cross-second-canonical"]
+        rawResponseHashes: [testSha256(70_005), testSha256(70_006)],
+        canonicalTransferHashes: [testSha256(70_007), testSha256(70_008)]
       } satisfies PinnedTronscanTransferPage);
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
@@ -1123,8 +1193,8 @@ describe("address poisoning worker", () => {
         rangeTotal: 200,
         complete: false,
         metadataConsistent: true,
-        rawResponseHashes: ["raw-rejected-first"],
-        canonicalTransferHashes: ["canonical-rejected-first"]
+        rawResponseHashes: [testSha256(71_001), testSha256(71_002)],
+        canonicalTransferHashes: [testSha256(71_003), testSha256(71_004)]
       } satisfies PinnedTronscanTransferPage & { rawProviderRowIds: string[] })
       .mockResolvedValueOnce({
         provider: "tronscan",
@@ -1137,8 +1207,8 @@ describe("address poisoning worker", () => {
         rangeTotal: 200,
         complete: true,
         metadataConsistent: true,
-        rawResponseHashes: ["raw-rejected-second"],
-        canonicalTransferHashes: ["canonical-rejected-second"]
+        rawResponseHashes: [testSha256(71_005), testSha256(71_006)],
+        canonicalTransferHashes: [testSha256(71_007), testSha256(71_008)]
       } satisfies PinnedTronscanTransferPage & { rawProviderRowIds: string[] });
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
@@ -1288,6 +1358,121 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
 
     expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("queue progress")
+    }));
+  });
+
+  it("rejects duplicate accepted IDs even when an extra forged stored relationship balances counts", async () => {
+    const accumulated = acceptedPoisoningProgress();
+    const originalFact = accumulated.providerFacts[0];
+    const originalId = accumulated.providerTransferIds[0];
+    const originalRawId = accumulated.providerFactRawRowIds[0];
+    accumulated.providerFacts.push({ ...originalFact });
+    accumulated.providerTransferIds.push(originalId);
+    accumulated.providerFactProviders.push("tronscan");
+    accumulated.providerFactRawRowIds.push(originalRawId);
+    accumulated.transfers.push({
+      ...accumulated.transfers[0],
+      transferId: "tronscan:forged-extra-relationship",
+      txHash: "forged-extra-relationship"
+    });
+    const forgedRawId = "tronscan:tx:forged-extra-raw";
+    accumulated.rawProviderRowIds.push(forgedRawId);
+    accumulated.providerPages[0].rawProviderRowIds.push(forgedRawId);
+    accumulated.providerPages[0].rawCount = 2;
+    accumulated.providerPages[0].nextOffset = 2;
+    accumulated.providerPages[0].total = 3;
+    accumulated.providerPages[0].rangeTotal = 3;
+    accumulated.providerPages[0].rawResponseHashes = [testSha256(40_001)];
+    accumulated.providerPages[0].canonicalTransferHashes = [testSha256(40_002)];
+    const finalTransfer = rawTransfer({ transaction_id: "forged-extra-final", contract_address: OTHER_WALLET });
+    const finalPage: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [finalTransfer],
+      rawProviderRowIds: [`tronscan:tx:${finalTransfer.transaction_id}`],
+      start: 2,
+      requestedLimit: 100,
+      nextOffset: 3,
+      total: 3,
+      rangeTotal: 3,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(40_003)],
+      canonicalTransferHashes: [testSha256(40_004)]
+    };
+    const repo = repository([workItem({
+      logicalOffset: 2,
+      pageCount: 1,
+      fetchedCount: 2,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => finalPage)));
+
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
+  it.each([
+    ["an omitted declaration", []],
+    ["a forged declaration", ["tronscan:forged-accepted-overlap"]]
+  ] as const)("recomputes accepted overlap and rejects %s", async (_name, declaredAcceptedOverlaps) => {
+    const accumulated = acceptedPoisoningProgress();
+    const acceptedRawId = accumulated.providerFactRawRowIds[0];
+    const firstOnly = Array.from({ length: 99 }, (_, index) => `tronscan:tx:accepted-first-${index}`);
+    const secondOnly = Array.from({ length: 99 }, (_, index) => `tronscan:tx:accepted-second-${index}`);
+    accumulated.rawProviderRowIds = [acceptedRawId, ...firstOnly, ...secondOnly].sort();
+    accumulated.providerPages = [{
+      ...accumulated.providerPages[0],
+      start: 0,
+      nextOffset: 100,
+      rawCount: 100,
+      total: 201,
+      rangeTotal: 201,
+      rawProviderRowIds: [acceptedRawId, ...firstOnly],
+      rawResponseHashes: [testSha256(50_001), testSha256(50_002)],
+      canonicalTransferHashes: [testSha256(50_003), testSha256(50_004)]
+    }, {
+      ...accumulated.providerPages[0],
+      start: 100,
+      nextOffset: 200,
+      rawCount: 100,
+      total: 201,
+      rangeTotal: 201,
+      rawProviderRowIds: [acceptedRawId, ...secondOnly],
+      overlappingRawRowIds: [acceptedRawId],
+      overlappingTransferIds: [...declaredAcceptedOverlaps],
+      rawResponseHashes: [testSha256(50_005), testSha256(50_006)],
+      canonicalTransferHashes: [testSha256(50_007), testSha256(50_008)]
+    }];
+    const finalTransfer = rawTransfer({ transaction_id: "accepted-overlap-final", contract_address: OTHER_WALLET });
+    const finalPage: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [finalTransfer],
+      rawProviderRowIds: [`tronscan:tx:${finalTransfer.transaction_id}`],
+      start: 200,
+      requestedLimit: 100,
+      nextOffset: 201,
+      total: 201,
+      rangeTotal: 201,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: [testSha256(50_009)],
+      canonicalTransferHashes: [testSha256(50_010)]
+    };
+    const repo = repository([workItem({
+      logicalOffset: 200,
+      pageCount: 2,
+      fetchedCount: 200,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => finalPage)));
+
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
     expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
   });
 
@@ -1372,7 +1557,9 @@ describe("address poisoning worker", () => {
     await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
 
     expect(repo.markClear).not.toHaveBeenCalled();
-    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("queue progress")
+    }));
   });
 
   it("allows empty raw IDs only for an explicit version-two state with no prior provider evidence", async () => {
@@ -1561,27 +1748,155 @@ describe("address poisoning worker", () => {
 
   it.each(persistedCoverageMismatches)("reconstructs persisted pagination and rejects %s", async (_name, mutate) => {
     const accumulated = twoPageCoverageProgress();
-    const finalTransfers = Array.from({ length: 100 }, (_, index) => rawTransfer({
-      transaction_id: `coverage-final-${index}`,
+    const finalPage = finalCoveragePage();
+    mutate(accumulated, finalPage);
+    const repo = repository([workItem({
+      logicalOffset: finalPage.start,
+      pageCount: 2,
+      fetchedCount: 200,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => finalPage)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
+  it.each([
+    ["pageCount", { pageCount: 1 }],
+    ["logicalOffset", { logicalOffset: 199 }],
+    ["fetchedCount", { fetchedCount: 199 }]
+  ] as const)("rejects a persisted lookup whose queue %s disagrees with page audit", async (_name, counters) => {
+    const provider = vi.fn(async () => { throw new Error("provider must not run"); });
+    const repo = repository([workItem({
+      logicalOffset: 200,
+      pageCount: 2,
+      fetchedCount: 200,
+      accumulatedLookupJson: twoPageCoverageProgress(),
+      ...counters
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, provider));
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalled();
+  });
+
+  it("rejects continuation after the persisted last page is already complete", async () => {
+    const accumulated = twoPageCoverageProgress();
+    accumulated.providerPages.forEach((page) => {
+      page.total = 200;
+      page.rangeTotal = 200;
+    });
+    accumulated.providerPages[1].complete = true;
+    const provider = vi.fn(async () => { throw new Error("provider must not run"); });
+    const repo = repository([workItem({
+      logicalOffset: 200,
+      pageCount: 2,
+      fetchedCount: 200,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, provider));
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalled();
+  });
+
+  it("rejects nonzero queue counters for an otherwise empty persisted lookup", async () => {
+    const provider = vi.fn(async () => { throw new Error("provider must not run"); });
+    const repo = repository([workItem({
+      pageCount: 1,
+      accumulatedLookupJson: {
+        version: 2,
+        windowStart: null,
+        windowEnd: null,
+        lookupProvider: null,
+        providerMetadataConsistent: true,
+        transfers: [],
+        providerFacts: [],
+        providerTransferIds: [],
+        providerFactProviders: [],
+        providerFactRawRowIds: [],
+        rawProviderRowIds: [],
+        providerPages: []
+      }
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, provider));
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalled();
+  });
+
+  it("never trusts a metadata-consistent short historical page before range exhaustion", async () => {
+    const rawProviderRowIds = Array.from({ length: 50 }, (_, index) => `tronscan:tx:short-history-${index}`);
+    const accumulated = {
+      ...twoPageCoverageProgress(),
+      rawProviderRowIds,
+      providerPages: [{
+        ...twoPageCoverageProgress().providerPages[0],
+        nextOffset: 50,
+        rawCount: 50,
+        total: 100,
+        rangeTotal: 100,
+        rawProviderRowIds,
+        rawResponseHashes: [testSha256(20_001)],
+        canonicalTransferHashes: [testSha256(20_002)]
+      }]
+    };
+    const finalTransfers = Array.from({ length: 50 }, (_, index) => rawTransfer({
+      transaction_id: `short-history-final-${index}`,
       contract_address: OTHER_WALLET
     }));
     const finalPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: finalTransfers,
       rawProviderRowIds: finalTransfers.map((row) => `tronscan:tx:${row.transaction_id}`),
-      start: 200,
+      start: 50,
       requestedLimit: 100,
-      nextOffset: 300,
-      total: 300,
-      rangeTotal: 300,
+      nextOffset: 100,
+      total: 100,
+      rangeTotal: 100,
       complete: true,
       metadataConsistent: true,
-      rawResponseHashes: ["coverage-final-raw-0", "coverage-final-raw-1"],
-      canonicalTransferHashes: ["coverage-final-canonical-0", "coverage-final-canonical-1"]
+      rawResponseHashes: [testSha256(20_003)],
+      canonicalTransferHashes: [testSha256(20_004)]
     };
-    mutate(accumulated, finalPage);
     const repo = repository([workItem({
-      logicalOffset: finalPage.start,
+      logicalOffset: 50,
+      pageCount: 1,
+      fetchedCount: 50,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => finalPage)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
+  it.each([
+    ["one missing hash", (value: TwoPageCoverageProgress) => {
+      value.providerPages[0].rawResponseHashes = [testSha256(30_001)];
+      value.providerPages[0].canonicalTransferHashes = [testSha256(30_002)];
+    }],
+    ["a non-SHA256 hash", (value: TwoPageCoverageProgress) => {
+      value.providerPages[0].rawResponseHashes[0] = "not-a-sha256";
+    }]
+  ] as const)("rejects persisted page hash audit with %s", async (_name, mutate) => {
+    const accumulated = twoPageCoverageProgress();
+    mutate(accumulated);
+    const finalPage = finalCoveragePage();
+    const repo = repository([workItem({
+      logicalOffset: 200,
       pageCount: 2,
       fetchedCount: 200,
       accumulatedLookupJson: accumulated
