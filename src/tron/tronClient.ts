@@ -53,6 +53,10 @@ export type TronDashboardClient = TronClient & {
     address: string,
     options?: ListRelatedTrc20TransfersOptions
   ): Promise<TronscanTrc20TransferPage>;
+  listRelatedTrc20TransferPagePinned?(
+    address: string,
+    options?: ListRelatedTrc20TransfersOptions
+  ): Promise<PinnedTronscanTransferPage>;
   listTransactions(address: string, options?: ListTransactionsOptions): Promise<unknown[]>;
 };
 
@@ -150,6 +154,20 @@ export type TronscanTrc20TransferPage = {
   rangeTotal: number | null;
   rawResponseHash: string | null;
   canonicalTransferHash: string | null;
+};
+
+export type PinnedTronscanTransferPage = {
+  provider: "tronscan" | "trongrid_fallback";
+  transfers: RawTronscanTrc20Transfer[];
+  start: number;
+  requestedLimit: number;
+  nextOffset: number;
+  total: number | null;
+  rangeTotal: number | null;
+  complete: boolean;
+  metadataConsistent: boolean;
+  rawResponseHashes: string[];
+  canonicalTransferHashes: string[];
 };
 
 export type ListTransactionsOptions = {
@@ -766,6 +784,62 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     });
   }
 
+  async listRelatedTrc20TransferPagePinned(
+    address: string,
+    options: ListRelatedTrc20TransfersOptions = {}
+  ): Promise<PinnedTronscanTransferPage> {
+    const start = Math.max(0, Math.floor(options.start ?? 0));
+    const requestedLimit = Math.max(0, Math.floor(options.limit ?? TRONSCAN_TRANSFER_PAGE_LIMIT));
+    const transfers: RawTronscanTrc20Transfer[] = [];
+    const rawResponseHashes: string[] = [];
+    const canonicalTransferHashes: string[] = [];
+    let total: number | null | undefined;
+    let rangeTotal: number | null | undefined;
+    let metadataConsistent = true;
+
+    while (transfers.length < requestedLimit) {
+      const pageStart = start + transfers.length;
+      const pageLimit = Math.min(TRONSCAN_TRANSFER_PAGE_LIMIT, requestedLimit - transfers.length);
+      const pageOptions = { ...options, start: pageStart, limit: pageLimit };
+      const url = this.buildTronscanTransferHistoryUrl(address, "related", pageOptions);
+      // Poisoning evidence must remain pinned to one provider; this intentionally bypasses fallback.
+      const page = await this.fetchTronscanTransferPage(url);
+      if (total === undefined) total = page.total;
+      else if (total !== page.total) metadataConsistent = false;
+      if (rangeTotal === undefined) rangeTotal = page.rangeTotal;
+      else if (rangeTotal !== page.rangeTotal) metadataConsistent = false;
+      if (page.rawResponseHash) rawResponseHashes.push(page.rawResponseHash);
+      if (page.canonicalTransferHash) canonicalTransferHashes.push(page.canonicalTransferHash);
+      if (page.transfers.length > pageLimit) metadataConsistent = false;
+      transfers.push(...page.transfers);
+
+      const nextOffset = start + transfers.length;
+      if (rangeTotal !== null && rangeTotal !== undefined && nextOffset > rangeTotal) {
+        metadataConsistent = false;
+      }
+      if (page.transfers.length === 0) break;
+      if (rangeTotal !== null && rangeTotal !== undefined && nextOffset >= rangeTotal) break;
+    }
+
+    const nextOffset = start + transfers.length;
+    const authoritativeRangeTotal = rangeTotal ?? null;
+    return {
+      provider: "tronscan",
+      transfers,
+      start,
+      requestedLimit,
+      nextOffset,
+      total: total ?? null,
+      rangeTotal: authoritativeRangeTotal,
+      complete: metadataConsistent
+        && authoritativeRangeTotal !== null
+        && nextOffset >= authoritativeRangeTotal,
+      metadataConsistent,
+      rawResponseHashes,
+      canonicalTransferHashes
+    };
+  }
+
   async listRelatedTrc20TransfersAllTokens(
     address: string,
     options: ListRelatedTrc20TransfersOptions = {}
@@ -1118,7 +1192,6 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     } catch (error) {
       if (!this.shouldFallbackToTronGridTransferHistory(error)) throw error;
       this.logger.warn("trongrid_transfer_history_fallback", {
-        address: fallback.address,
         direction: fallback.direction,
         path: url.pathname,
         start: fallback.options.start ?? 0,
@@ -1463,13 +1536,14 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     apiKey?: string | null,
     options: FetchJsonOptions = {}
   ): Promise<unknown> {
+    const logPath = this.safeRequestLogPath(requestName, url);
     for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
       try {
         const json = await this.fetchJsonOnce(url, requestName, init, apiKey, attempt);
         this.logger.info("tronscan_request_success", {
           request_name: requestName,
           attempt,
-          path: url.pathname
+          path: logPath
         });
         return json;
       } catch (error) {
@@ -1479,7 +1553,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
             this.logger.error("tronscan_request_failed", {
               request_name: requestName,
               attempt,
-              path: url.pathname,
+              path: logPath,
               error: error instanceof Error ? error.message : String(error)
             });
           }
@@ -1489,7 +1563,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           request_name: requestName,
           attempt,
           next_attempt: attempt + 1,
-          path: url.pathname,
+          path: logPath,
           error: error instanceof Error ? error.message : String(error)
         });
         await this.delay(this.retryBaseDelayMs * 2 ** attempt);
@@ -1507,6 +1581,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     attempt = 0
   ): Promise<unknown> {
     const endpointBucket = this.endpointBucketForRequest(requestName);
+    const logPath = this.safeRequestLogPath(requestName, url);
     const work = async (context: { apiKey: string | null; apiKeyIndex: number | null }) => {
       const actualApiKeyIndex = apiKey === undefined ? context.apiKeyIndex : null;
       const controller = new AbortController();
@@ -1516,7 +1591,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         this.logger.info("tronscan_request_attempt", {
           request_name: requestName,
           attempt,
-          path: url.pathname,
+          path: logPath,
           api_key_index: actualApiKeyIndex,
           endpoint_bucket: endpointBucket
         });
@@ -1544,7 +1619,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return this.scheduler.schedule(
       {
         requestName,
-        path: url.pathname,
+        path: logPath,
         priority: this.priorityForRequest(requestName),
         cacheKey: requestName === "transfer"
           ? `${this.schedulerDedupeNamespace}:${url.toString()}`
@@ -1579,6 +1654,12 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       return "contract";
     }
     return "default";
+  }
+
+  private safeRequestLogPath(requestName: string, url: URL): string {
+    return requestName === "trongrid_transfer_history"
+      ? "/v1/accounts/:address/transactions/trc20"
+      : url.pathname;
   }
 
   private priorityForRequest(requestName: string): TronscanRequestPriority {
@@ -1811,7 +1892,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (this.rateLimitCooldownMs <= 0) return;
     this.logger.warn("tronscan_rate_limit_cooldown", {
       request_name: input.requestName,
-      path: input.url.pathname,
+      path: this.safeRequestLogPath(input.requestName, input.url),
       endpoint_bucket: input.endpointBucket,
       api_key_index: input.apiKeyIndex,
       cooldown_ms: this.rateLimitCooldownMs

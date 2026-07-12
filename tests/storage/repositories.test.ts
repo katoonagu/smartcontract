@@ -64,6 +64,7 @@ import {
   markAddressPoisoningCheckFailed,
   markAddressPoisoningCheckInconclusive,
   markAddressPoisoningCheckSkipped,
+  skipAddressPoisoningCheckIfExpired,
   removeCustomerAlertRecipient,
   recordObservedTransactionRisk,
   persistAddressPoisoningCandidate,
@@ -3039,7 +3040,13 @@ describe("address poisoning persistence", () => {
 
   it("claims fresh work with a row lock and leaves fifth-page partials terminal", async () => {
     const { db, queries } = createMockDb();
-    await claimAddressPoisoningChecks(db, { limit: 10, now, staleRunningBefore: new Date(now.getTime() - 30_000) });
+    const freshEventCutoff = new Date(now.getTime() - 120_000);
+    await claimAddressPoisoningChecks(db, {
+      limit: 10,
+      now,
+      staleRunningBefore: new Date(now.getTime() - 30_000),
+      freshEventCutoff
+    });
     const sql = compactSql(queries[0].sql);
     expect(sql).toContain("for update of tx skip locked");
     expect(sql).toContain("order by tx.timestamp desc");
@@ -3047,6 +3054,8 @@ describe("address poisoning persistence", () => {
     expect(sql).toContain("poisoning_attempts < 4");
     expect(sql).toContain("poisoning_check_status = 'running'");
     expect(sql).toContain("poisoning_updated_at = $2");
+    expect(sql).toContain("tx.timestamp >= $4");
+    expect(queries[0].params[3]).toEqual(freshEventCutoff);
     expect(sql).toContain("tx.poisoning_updated_at");
   });
 
@@ -3074,7 +3083,8 @@ describe("address poisoning persistence", () => {
     const work = await claimAddressPoisoningChecks(claimed.db, {
       limit: 1,
       now,
-      staleRunningBefore: new Date(now.getTime() - 30_000)
+      staleRunningBefore: new Date(now.getTime() - 30_000),
+      freshEventCutoff: new Date(0)
     });
     expect(work[0].leaseVersion).toEqual(now);
     expect(claimed.queries[0].params[1]).toEqual(now);
@@ -3090,6 +3100,24 @@ describe("address poisoning persistence", () => {
     expect(compactSql(paused.queries[0].sql)).toContain("from watched_wallets w");
     expect(compactSql(paused.queries[0].sql)).toContain("w.alert_mode = 'paused'");
     expect(compactSql(paused.queries[0].sql)).toContain("('pending', 'running', 'failed', 'inconclusive')");
+  });
+
+  it("uses a lease-bound fresh cutoff before changing a running check to skipped_backfill", async () => {
+    const mock = createMockDb(1);
+    const cutoff = new Date(now.getTime() - 120_000);
+    expect(await skipAddressPoisoningCheckIfExpired(mock.db, {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      freshEventCutoff: cutoff,
+      now,
+      leaseVersion: now
+    })).toBe(true);
+    const sql = compactSql(mock.queries[0].sql);
+    expect(sql).toContain("poisoning_check_status = 'skipped_backfill'");
+    expect(sql).toContain("poisoning_last_error = 'expired_during_processing'");
+    expect(sql).toContain("poisoning_check_status = 'running'");
+    expect(sql).toContain("poisoning_updated_at = $5");
+    expect(sql).toContain("timestamp < $3");
   });
 
   it("persists continuation state and only clears a complete negative", async () => {
@@ -3616,7 +3644,9 @@ describe("address poisoning persistence", () => {
       });
       expect(state.nextRetryAt).toEqual(seconds === null ? null : new Date(now.getTime() + seconds * 1000));
     }
-    expect(await claimAddressPoisoningChecks(db, { limit: 1, now, staleRunningBefore: now })).toEqual([]);
+    expect(await claimAddressPoisoningChecks(db, {
+      limit: 1, now, staleRunningBefore: now, freshEventCutoff: new Date(0)
+    })).toEqual([]);
   });
 
   it("models a full fifth partial page as terminal inconclusive", async () => {
@@ -3645,7 +3675,9 @@ describe("address poisoning persistence", () => {
       reason: "provider_cap",
       leaseVersion: now
     });
-    expect(await claimAddressPoisoningChecks(db, { limit: 1, now, staleRunningBefore: now })).toEqual([]);
+    expect(await claimAddressPoisoningChecks(db, {
+      limit: 1, now, staleRunningBefore: now, freshEventCutoff: new Date(0)
+    })).toEqual([]);
   });
 
   it("invalidates a running check when its wallet becomes paused", async () => {
@@ -3862,7 +3894,8 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     const rows = await claimAddressPoisoningChecks(pgDb as unknown as Db, {
       limit: 10,
       now,
-      staleRunningBefore: new Date(0)
+      staleRunningBefore: new Date(0),
+      freshEventCutoff: new Date(0)
     });
     return rows.find((row) => row.txHash === txHash);
   }
@@ -3906,6 +3939,57 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     if (!work) throw new Error("test candidate check was not claimed");
     return persistAddressPoisoningCandidate(pgDb as unknown as Db, candidateInput(txHash, work.leaseVersion));
   }
+
+  it("does not claim a row that aged out after the bulk skip pass", async () => {
+    const txHash = `${txPrefix}claim-freshness`;
+    await seedObserved(txHash);
+    expect(await skipExpiredAddressPoisoningChecks(pgDb as unknown as Db, {
+      expiredBefore: eventAt
+    })).toBe(0);
+    const claimAt = new Date(eventAt.getTime() + 120_001);
+    const rows = await claimAddressPoisoningChecks(pgDb as unknown as Db, {
+      limit: 10,
+      now: claimAt,
+      staleRunningBefore: new Date(0),
+      freshEventCutoff: new Date(eventAt.getTime() + 1)
+    });
+    expect(rows.some((row) => row.txHash === txHash)).toBe(false);
+    const stored = await pgDb.query(
+      "select poisoning_check_status from observed_transactions where tx_hash = $1 and watched_wallet_id = $2",
+      [txHash, walletId]
+    );
+    expect(stored.rows[0].poisoning_check_status).toBe("pending");
+  });
+
+  it("expires a claimed row only while its exact running lease is still owned", async () => {
+    const txHash = `${txPrefix}post-wait-expiry`;
+    await seedObserved(txHash);
+    const work = await claimCheck(txHash, eventAt);
+    if (!work) throw new Error("fresh row was not claimed");
+    const finishedAt = new Date(eventAt.getTime() + 120_001);
+    expect(await skipAddressPoisoningCheckIfExpired(pgDb as unknown as Db, {
+      txHash,
+      watchedWalletId: walletId,
+      freshEventCutoff: new Date(eventAt.getTime() + 1),
+      now: finishedAt,
+      leaseVersion: work.leaseVersion
+    })).toBe(true);
+    expect(await skipAddressPoisoningCheckIfExpired(pgDb as unknown as Db, {
+      txHash,
+      watchedWalletId: walletId,
+      freshEventCutoff: new Date(eventAt.getTime() + 1),
+      now: new Date(finishedAt.getTime() + 1),
+      leaseVersion: work.leaseVersion
+    })).toBe(false);
+    const stored = await pgDb.query(
+      "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1 and watched_wallet_id = $2",
+      [txHash, walletId]
+    );
+    expect(stored.rows[0]).toMatchObject({
+      poisoning_check_status: "skipped_backfill",
+      poisoning_last_error: "expired_during_processing"
+    });
+  });
 
   it("enforces real provider retry boundaries and stops after the fourth failure", async () => {
     const txHash = `${txPrefix}provider-retry`;

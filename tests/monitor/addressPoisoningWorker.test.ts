@@ -16,7 +16,7 @@ import {
   type StartupWorkLabel
 } from "../../src/runtime/startupSchedule";
 import type { AddressPoisoningCandidateDelivery, AddressPoisoningCheckWorkItem, AddressLabel, WalletAlertMode } from "../../src/types";
-import { TronscanClient } from "../../src/tron/tronClient";
+import { TronscanClient, type PinnedTronscanTransferPage } from "../../src/tron/tronClient";
 import { createTronscanScheduler } from "../../src/tron/tronscanScheduler";
 import { THJ_POISONING_CASE } from "../fixtures/monitor/addressPoisoningCases";
 
@@ -82,6 +82,7 @@ function repository(claimed: AddressPoisoningCheckWorkItem[] = []): AddressPoiso
     markClear: vi.fn(async () => true),
     markInconclusive: vi.fn(async () => true),
     markFailed: vi.fn(async () => true),
+    skipCheckIfExpired: vi.fn(async () => false),
     persistCandidate: vi.fn(async () => ({ id: "candidate-1" })),
     claimAlerts: vi.fn(async () => []),
     renewAlertLease: vi.fn(async (_db, input) => input.now),
@@ -153,18 +154,45 @@ function deliveryCandidate(
   };
 }
 
-type RelatedTransferLookup = Parameters<typeof runSingleAddressPoisoningCycle>[0]["tronClient"]["listRelatedTrc20Transfers"];
+type RelatedTransferLookup = (
+  address: string,
+  options?: { start?: number; limit?: number; minTimestamp?: number; endTimestamp?: number }
+) => Promise<RawTronscanTrc20Transfer[]>;
+type PinnedTransferLookup = (
+  address: string,
+  options?: { start?: number; limit?: number; minTimestamp?: number; endTimestamp?: number }
+) => Promise<PinnedTronscanTransferPage>;
 
 function deps(
   repo: AddressPoisoningWorkerRepository,
   listRelatedTrc20Transfers: RelatedTransferLookup = vi.fn(async () => []),
   sendUserAlert = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 })),
-  now = () => NOW
+  now = () => NOW,
+  pinnedLookup?: PinnedTransferLookup
 ) {
+  const listRelatedTrc20TransferPagePinned: PinnedTransferLookup = pinnedLookup ?? (async (address, options = {}) => {
+    const transfers = await listRelatedTrc20Transfers(address, options);
+    const start = options.start ?? 0;
+    const requestedLimit = options.limit ?? 100;
+    const complete = transfers.length < requestedLimit;
+    return {
+      provider: "tronscan",
+      transfers,
+      start,
+      requestedLimit,
+      nextOffset: start + transfers.length,
+      total: complete ? start + transfers.length : start + transfers.length + 1,
+      rangeTotal: complete ? start + transfers.length : start + transfers.length + 1,
+      complete,
+      metadataConsistent: true,
+      rawResponseHashes: ["raw-test-page"],
+      canonicalTransferHashes: ["canonical-test-page"]
+    };
+  });
   return {
     db: {} as never,
     repository: repo,
-    tronClient: { listRelatedTrc20Transfers },
+    tronClient: { listRelatedTrc20TransferPagePinned },
     realtimeMaxAgeMs: 120_000,
     sendUserAlert,
     now,
@@ -193,6 +221,9 @@ describe("address poisoning worker", () => {
     expect(repo.skipExpiredChecks).toHaveBeenCalledBefore(repo.skipPausedChecks as ReturnType<typeof vi.fn>);
     expect(repo.skipPausedChecks).toHaveBeenCalledBefore(repo.claimChecks as ReturnType<typeof vi.fn>);
     expect(repo.claimChecks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ limit: 20 }));
+    expect(repo.claimChecks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      freshEventCutoff: new Date(NOW.getTime() - 120_000)
+    }));
   });
 
   it("continues logical pages 0 to 100 to 200, deduplicates accumulated facts, then clears on a short page", async () => {
@@ -213,12 +244,13 @@ describe("address poisoning worker", () => {
       return true;
     });
     const repeated = rawTransfer({ transaction_id: "repeat" });
-    const client = vi.fn(async (_address: string, options: { start?: number }) => {
-      starts.push(options.start ?? -1);
-      if (options.start === 200) return [repeated];
+    const client = vi.fn(async (_address: string, options?: { start?: number }) => {
+      const start = options?.start ?? 0;
+      starts.push(start);
+      if (start === 200) return [repeated];
       return Array.from({ length: 100 }, (_, index) => index === 0
         ? repeated
-        : rawTransfer({ transaction_id: `${options.start}-${index}` }));
+        : rawTransfer({ transaction_id: `${start}-${index}` }));
     });
 
     await runSingleAddressPoisoningCycle(deps(repo, client));
@@ -259,7 +291,8 @@ describe("address poisoning worker", () => {
       transaction_id: THJ_POISONING_CASE.outgoingTxHash,
       to_address: THJ_POISONING_CASE.realRecipient,
       quant: THJ_POISONING_CASE.amountRaw,
-      block_ts: THJ_POISONING_CASE.outgoingAt.getTime()
+      block_ts: THJ_POISONING_CASE.outgoingAt.getTime(),
+      riskTransaction: true
     });
     const page = [
       match,
@@ -284,6 +317,8 @@ describe("address poisoning worker", () => {
     const input = (repo.persistCandidate as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(input.evidenceJson.providerFacts).toHaveLength(99);
     expect(input.evidenceJson.providerTransferIds).toHaveLength(99);
+    expect((input.evidenceJson.providerFacts as RawTronscanTrc20Transfer[])
+      .find((fact) => fact.transaction_id === THJ_POISONING_CASE.outgoingTxHash)?.riskTransaction).toBe(true);
     expect(input.evidenceJson).toMatchObject({
       windowStart: "2026-06-30T12:47:42.000Z",
       windowEnd: "2026-07-01T12:47:41.999Z",
@@ -367,7 +402,8 @@ describe("address poisoning worker", () => {
       rawTransfer({ transaction_id: "old", to_address: THJ_POISONING_CASE.realRecipient, block_ts: THJ_POISONING_CASE.incomingAt.getTime() - 86_400_001 }),
       rawTransfer({ transaction_id: "invalid", to_address: "bad" }),
       rawTransfer({ transaction_id: "wrong-token", to_address: THJ_POISONING_CASE.realRecipient, contract_address: OTHER_WALLET }),
-      rawTransfer({ transaction_id: "unconfirmed", to_address: THJ_POISONING_CASE.realRecipient, confirmed: false })
+      rawTransfer({ transaction_id: "unconfirmed", to_address: THJ_POISONING_CASE.realRecipient, confirmed: false }),
+      rawTransfer({ transaction_id: "reverted", to_address: THJ_POISONING_CASE.realRecipient, revert: true })
     ];
 
     await runSingleAddressPoisoningCycle(deps(repo, vi.fn(async () => rows)));
@@ -531,6 +567,220 @@ describe("address poisoning worker", () => {
     expect(repo.markClear).toHaveBeenCalledTimes(25);
   });
 
+  it("keeps mixed provider continuation partial and labels every persisted fact truthfully", async () => {
+    let current = workItem();
+    const repo = repository();
+    (repo.claimChecks as ReturnType<typeof vi.fn>).mockImplementation(async () => [current]);
+    (repo.markInconclusive as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      current = workItem({
+        logicalOffset: input.logicalOffset,
+        pageCount: input.pageCount,
+        fetchedCount: input.fetchedCount,
+        accumulatedLookupJson: input.accumulatedLookupJson,
+        leaseVersion: new Date(current.leaseVersion.getTime() + 1_000)
+      });
+      return true;
+    });
+    const tronscanPage: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [rawTransfer({ transaction_id: "tronscan-context" })],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 2,
+      rangeTotal: 2,
+      complete: false,
+      metadataConsistent: true,
+      rawResponseHashes: ["tronscan-raw"],
+      canonicalTransferHashes: ["tronscan-canonical"]
+    };
+    const fallbackMatch = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient,
+      riskTransaction: true
+    });
+    const fallbackPage: PinnedTronscanTransferPage = {
+      provider: "trongrid_fallback",
+      transfers: [fallbackMatch],
+      start: 1,
+      requestedLimit: 100,
+      nextOffset: 2,
+      total: 2,
+      rangeTotal: 2,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["fallback-raw"],
+      canonicalTransferHashes: ["fallback-canonical"]
+    };
+    const pages = vi.fn().mockResolvedValueOnce(tronscanPage).mockResolvedValueOnce(fallbackPage);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    const candidate = (repo.persistCandidate as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(candidate.coverage).toBe("partial");
+    expect(candidate.evidenceJson.lookupProvider).toBe("mixed");
+    expect(candidate.evidenceJson.providerFactProviders).toEqual(expect.arrayContaining(["tronscan", "trongrid_fallback"]));
+    expect(candidate.evidenceJson.providerTransferIds).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^tronscan:/),
+      expect.stringMatching(/^trongrid_fallback:/)
+    ]));
+    expect(candidate.evidenceJson.providerPages).toEqual([
+      expect.objectContaining({ provider: "tronscan", start: 0, nextOffset: 1 }),
+      expect.objectContaining({ provider: "trongrid_fallback", start: 1, nextOffset: 2 })
+    ]);
+  });
+
+  it("continues a short authoritative page that reports remaining rows", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [rawTransfer({ transaction_id: "short-incomplete" })],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 100,
+      rangeTotal: 100,
+      complete: false,
+      metadataConsistent: true,
+      rawResponseHashes: ["raw-short"],
+      canonicalTransferHashes: ["canonical-short"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coverage: "partial",
+      logicalOffset: 1
+    }));
+  });
+
+  it("clears a short page only when pinned metadata proves the range exhausted", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [rawTransfer({ transaction_id: "short-complete" })],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["raw-complete"],
+      canonicalTransferHashes: ["canonical-complete"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coverage: "complete",
+      reason: "complete_no_match"
+    }));
+  });
+
+  it("never clears inconsistent or zero-progress provider metadata", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 0,
+      total: 10,
+      rangeTotal: 10,
+      complete: true,
+      metadataConsistent: false,
+      rawResponseHashes: ["raw-inconsistent"],
+      canonicalTransferHashes: ["canonical-inconsistent"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coverage: "partial",
+      logicalOffset: 0
+    }));
+  });
+
+  it("skips a candidate that ages out while its provider request is queued", async () => {
+    let clock = new Date(THJ_POISONING_CASE.incomingAt.getTime() + 60_000);
+    const repo = repository([workItem()]);
+    (repo.skipCheckIfExpired as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) =>
+      THJ_POISONING_CASE.incomingAt < input.freshEventCutoff);
+    const match = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient
+    });
+    const page = vi.fn(async () => {
+      clock = new Date(THJ_POISONING_CASE.incomingAt.getTime() + 120_001);
+      return {
+        provider: "tronscan" as const,
+        transfers: [match],
+        start: 0,
+        requestedLimit: 100,
+        nextOffset: 1,
+        total: 1,
+        rangeTotal: 1,
+        complete: true,
+        metadataConsistent: true,
+        rawResponseHashes: ["raw"],
+        canonicalTransferHashes: ["canonical"]
+      };
+    });
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, () => clock, page));
+
+    expect(repo.skipCheckIfExpired).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      freshEventCutoff: new Date(THJ_POISONING_CASE.incomingAt.getTime() + 1)
+    }));
+    expect(metrics.expiredSkipped).toBe(1);
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
+    expect(repo.markFailed).not.toHaveBeenCalled();
+  });
+
+  it("applies the same post-wait freshness gate before provider failure persistence", async () => {
+    let clock = new Date(THJ_POISONING_CASE.incomingAt.getTime() + 60_000);
+    const repo = repository([workItem()]);
+    (repo.skipCheckIfExpired as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) =>
+      THJ_POISONING_CASE.incomingAt < input.freshEventCutoff);
+    const page = vi.fn(async () => {
+      clock = new Date(THJ_POISONING_CASE.incomingAt.getTime() + 120_001);
+      throw new Error("provider failed after queue");
+    });
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, () => clock, page));
+
+    expect(repo.skipCheckIfExpired).toHaveBeenCalled();
+    expect(repo.markFailed).not.toHaveBeenCalled();
+  });
+
+  it("keeps an event fresh at the exact inclusive cutoff boundary", async () => {
+    const boundaryNow = new Date(THJ_POISONING_CASE.incomingAt.getTime() + 120_000);
+    const repo = repository([workItem()]);
+    const match = rawTransfer({
+      transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+      to_address: THJ_POISONING_CASE.realRecipient
+    });
+
+    await runSingleAddressPoisoningCycle(deps(
+      repo,
+      vi.fn(async () => [match]),
+      undefined,
+      () => boundaryNow
+    ));
+
+    expect(repo.skipCheckIfExpired).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      freshEventCutoff: THJ_POISONING_CASE.incomingAt
+    }));
+    expect(repo.persistCandidate).toHaveBeenCalledTimes(1);
+  });
+
   it("logs one lookup and one cycle metric with exact operational fields", async () => {
     let timeMs = NOW.getTime();
     const repo = repository([workItem()]);
@@ -556,7 +806,8 @@ describe("address poisoning worker", () => {
       providerLatencyMs: 125,
       pageCount: 1,
       fetchedCount: 0,
-      coverage: "complete"
+      coverage: "complete",
+      provider: "tronscan"
     });
     expect(workerDeps.logger.info).toHaveBeenCalledWith("address_poisoning_cycle_completed", {
       queueDepth: 3,

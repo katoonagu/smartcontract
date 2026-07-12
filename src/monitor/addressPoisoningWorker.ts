@@ -32,6 +32,7 @@ import {
   markAddressPoisoningCheckFailed,
   markAddressPoisoningCheckInconclusive,
   persistAddressPoisoningCandidate,
+  skipAddressPoisoningCheckIfExpired,
   skipExpiredAddressPoisoningChecks,
   skipPausedAddressPoisoningChecks
 } from "../storage/repositories";
@@ -42,7 +43,7 @@ import type {
   AddressPoisoningCheckWorkItem,
   PersistAddressPoisoningCandidateInput
 } from "../types";
-import type { ListRelatedTrc20TransfersOptions } from "../tron/tronClient";
+import type { ListRelatedTrc20TransfersOptions, PinnedTronscanTransferPage } from "../tron/tronClient";
 
 export const ADDRESS_POISONING_WORKER_DEFAULTS = {
   claimLimit: 20,
@@ -82,6 +83,7 @@ export type AddressPoisoningCycleMetrics = {
 type MarkClearInput = Parameters<typeof markAddressPoisoningCheckClear>[1];
 type MarkInconclusiveInput = Parameters<typeof markAddressPoisoningCheckInconclusive>[1];
 type MarkFailedInput = Parameters<typeof markAddressPoisoningCheckFailed>[1];
+type SkipCheckIfExpiredInput = Parameters<typeof skipAddressPoisoningCheckIfExpired>[1];
 type MarkAlertSentInput = Parameters<typeof markAddressPoisoningAlertSent>[1];
 type MarkAlertFailedInput = Parameters<typeof markAddressPoisoningAlertFailed>[1];
 type MarkAlertSkippedInput = Parameters<typeof markAddressPoisoningAlertSkipped>[1];
@@ -92,12 +94,13 @@ export type AddressPoisoningWorkerRepository = {
   skipPausedChecks(db: Db): Promise<number>;
   claimChecks(
     db: Db,
-    input: { limit: number; now: Date; staleRunningBefore: Date }
+    input: { limit: number; now: Date; staleRunningBefore: Date; freshEventCutoff: Date }
   ): Promise<AddressPoisoningCheckWorkItem[]>;
   listAddressLabels(db: Db, address: string): Promise<AddressLabel[]>;
   markClear(db: Db, input: MarkClearInput): Promise<boolean>;
   markInconclusive(db: Db, input: MarkInconclusiveInput): Promise<boolean>;
   markFailed(db: Db, input: MarkFailedInput): Promise<boolean>;
+  skipCheckIfExpired(db: Db, input: SkipCheckIfExpiredInput): Promise<boolean>;
   persistCandidate(db: Db, input: PersistAddressPoisoningCandidateInput): Promise<unknown>;
   claimAlerts(
     db: Db,
@@ -113,10 +116,10 @@ export type AddressPoisoningWorkerRepository = {
 export type AddressPoisoningWorkerDeps = {
   db: Db;
   tronClient: {
-    listRelatedTrc20Transfers(
+    listRelatedTrc20TransferPagePinned(
       address: string,
       options?: ListRelatedTrc20TransfersOptions
-    ): Promise<RawTronscanTrc20Transfer[]>;
+    ): Promise<PinnedTronscanTransferPage>;
   };
   realtimeMaxAgeMs: number;
   sendUserAlert(
@@ -147,10 +150,28 @@ type StoredTransfer = {
 };
 
 type AccumulatedLookup = {
-  version: 1;
+  version: 2;
+  lookupProvider: "tronscan" | "trongrid_fallback" | "mixed" | null;
+  providerMetadataConsistent: boolean;
   transfers: StoredTransfer[];
   providerFacts: RawTronscanTrc20Transfer[];
   providerTransferIds: string[];
+  providerFactProviders: Array<"tronscan" | "trongrid_fallback" | "unknown">;
+  providerPages: ProviderPageAudit[];
+};
+
+type ProviderPageAudit = {
+  provider: "tronscan" | "trongrid_fallback";
+  start: number;
+  requestedLimit: number;
+  nextOffset: number;
+  rawCount: number;
+  total: number | null;
+  rangeTotal: number | null;
+  complete: boolean;
+  metadataConsistent: boolean;
+  rawResponseHashes: string[];
+  canonicalTransferHashes: string[];
 };
 
 export const addressPoisoningWorkerRepository: AddressPoisoningWorkerRepository = {
@@ -161,6 +182,7 @@ export const addressPoisoningWorkerRepository: AddressPoisoningWorkerRepository 
   markClear: markAddressPoisoningCheckClear,
   markInconclusive: markAddressPoisoningCheckInconclusive,
   markFailed: markAddressPoisoningCheckFailed,
+  skipCheckIfExpired: skipAddressPoisoningCheckIfExpired,
   persistCandidate: persistAddressPoisoningCandidate,
   claimAlerts: claimAddressPoisoningAlertsForDelivery,
   markAlertSent: markAddressPoisoningAlertSent,
@@ -202,7 +224,16 @@ function workerOptions(options: AddressPoisoningWorkerOptions) {
 }
 
 function emptyLookup(): AccumulatedLookup {
-  return { version: 1, transfers: [], providerFacts: [], providerTransferIds: [] };
+  return {
+    version: 2,
+    lookupProvider: null,
+    providerMetadataConsistent: true,
+    transfers: [],
+    providerFacts: [],
+    providerTransferIds: [],
+    providerFactProviders: [],
+    providerPages: []
+  };
 }
 
 function isStoredTransfer(value: unknown): value is StoredTransfer {
@@ -218,10 +249,31 @@ function isStoredTransfer(value: unknown): value is StoredTransfer {
     && Number.isFinite(new Date(row.occurredAt).getTime());
 }
 
+function isProviderPageAudit(value: unknown): value is ProviderPageAudit {
+  if (!value || typeof value !== "object") return false;
+  const page = value as Record<string, unknown>;
+  const nullableCount = (count: unknown) => count === null
+    || (typeof count === "number" && Number.isSafeInteger(count) && count >= 0);
+  const stringArray = (items: unknown) => Array.isArray(items)
+    && items.every((item) => typeof item === "string");
+  return (page.provider === "tronscan" || page.provider === "trongrid_fallback")
+    && typeof page.start === "number" && Number.isSafeInteger(page.start) && page.start >= 0
+    && typeof page.requestedLimit === "number" && Number.isSafeInteger(page.requestedLimit) && page.requestedLimit > 0
+    && typeof page.nextOffset === "number" && Number.isSafeInteger(page.nextOffset) && page.nextOffset >= 0
+    && typeof page.rawCount === "number" && Number.isSafeInteger(page.rawCount) && page.rawCount >= 0
+    && nullableCount(page.total)
+    && nullableCount(page.rangeTotal)
+    && typeof page.complete === "boolean"
+    && typeof page.metadataConsistent === "boolean"
+    && stringArray(page.rawResponseHashes)
+    && stringArray(page.canonicalTransferHashes);
+}
+
 function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLookup {
   if (Object.keys(value).length === 0) return emptyLookup();
+  const legacy = value.version === 1;
   if (
-    value.version !== 1
+    (!legacy && value.version !== 2)
     || !Array.isArray(value.transfers)
     || !value.transfers.every(isStoredTransfer)
     || !Array.isArray(value.providerFacts)
@@ -232,11 +284,42 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
   ) {
     throw new Error("Malformed accumulated address-poisoning lookup");
   }
+  if (legacy) {
+    const providerFacts = value.providerFacts as RawTronscanTrc20Transfer[];
+    const hasLegacyEvidence = providerFacts.length > 0 || value.transfers.length > 0;
+    return {
+      ...emptyLookup(),
+      lookupProvider: hasLegacyEvidence ? "mixed" : null,
+      providerMetadataConsistent: !hasLegacyEvidence,
+      transfers: [...value.transfers],
+      providerFacts,
+      providerTransferIds: [...value.providerTransferIds],
+      providerFactProviders: providerFacts.map(() => "unknown")
+    };
+  }
+  const lookupProvider = value.lookupProvider;
+  if (
+    !(lookupProvider === null || lookupProvider === "tronscan"
+      || lookupProvider === "trongrid_fallback" || lookupProvider === "mixed")
+    || typeof value.providerMetadataConsistent !== "boolean"
+    || !Array.isArray(value.providerFactProviders)
+    || !value.providerFactProviders.every((provider) =>
+      provider === "tronscan" || provider === "trongrid_fallback" || provider === "unknown")
+    || value.providerFactProviders.length !== value.providerFacts.length
+    || !Array.isArray(value.providerPages)
+    || !value.providerPages.every(isProviderPageAudit)
+  ) {
+    throw new Error("Malformed accumulated address-poisoning provider metadata");
+  }
   return {
-    version: 1,
+    version: 2,
+    lookupProvider,
+    providerMetadataConsistent: value.providerMetadataConsistent,
     transfers: [...value.transfers],
     providerFacts: value.providerFacts as RawTronscanTrc20Transfer[],
-    providerTransferIds: [...value.providerTransferIds]
+    providerTransferIds: [...value.providerTransferIds],
+    providerFactProviders: [...value.providerFactProviders] as AccumulatedLookup["providerFactProviders"],
+    providerPages: value.providerPages as ProviderPageAudit[]
   };
 }
 
@@ -250,14 +333,21 @@ function validNormalizedTransfer(transfer: StoredTransfer): boolean {
 
 function mergePage(
   accumulated: AccumulatedLookup,
-  page: RawTronscanTrc20Transfer[],
+  page: PinnedTronscanTransferPage,
+  metadataConsistent: boolean,
   incomingAt: Date
 ): AccumulatedLookup {
   const byId = new Map(accumulated.transfers.map((transfer) => [transfer.transferId, transfer]));
   const factsById = new Map(accumulated.providerTransferIds.map((id, index) => [id, accumulated.providerFacts[index]]));
-  for (const raw of page) {
-    if (!shouldIndexCanonicalTronscanUsdtTransfer(raw)) continue;
-    const normalized = normalizeTronscanTransferForAddressIndex(raw, "tronscan");
+  const factProvidersById = new Map(accumulated.providerTransferIds.map(
+    (id, index) => [id, accumulated.providerFactProviders[index]]
+  ));
+  for (const raw of page.transfers) {
+    const canonicalForPoisoning = raw.riskTransaction === true
+      ? shouldIndexCanonicalTronscanUsdtTransfer({ ...raw, riskTransaction: false })
+      : shouldIndexCanonicalTronscanUsdtTransfer(raw);
+    if (!canonicalForPoisoning) continue;
+    const normalized = normalizeTronscanTransferForAddressIndex(raw, page.provider);
     if (!normalized.transferId) continue;
     const elapsedMs = incomingAt.getTime() - normalized.blockTimestamp.getTime();
     const stored: StoredTransfer = {
@@ -271,16 +361,40 @@ function mergePage(
     if (elapsedMs <= 0 || elapsedMs > LOOKBACK_MS || !validNormalizedTransfer(stored)) continue;
     if (!byId.has(stored.transferId)) byId.set(stored.transferId, stored);
     if (!factsById.has(stored.transferId)) factsById.set(stored.transferId, raw);
+    if (!factProvidersById.has(stored.transferId)) factProvidersById.set(stored.transferId, page.provider);
   }
   const transfers = [...byId.values()].sort((left, right) =>
     new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime()
     || left.transferId.localeCompare(right.transferId));
   const providerTransferIds = [...factsById.keys()].sort();
+  const providerChanged = accumulated.lookupProvider !== null
+    && accumulated.lookupProvider !== page.provider;
+  const lookupProvider = accumulated.lookupProvider === "mixed" || providerChanged
+    ? "mixed" as const
+    : accumulated.lookupProvider ?? page.provider;
   return {
-    version: 1,
+    version: 2,
+    lookupProvider,
+    providerMetadataConsistent: accumulated.providerMetadataConsistent
+      && metadataConsistent
+      && !providerChanged,
     transfers,
     providerTransferIds,
-    providerFacts: providerTransferIds.map((id) => factsById.get(id)!)
+    providerFacts: providerTransferIds.map((id) => factsById.get(id)!),
+    providerFactProviders: providerTransferIds.map((id) => factProvidersById.get(id) ?? "unknown"),
+    providerPages: [...accumulated.providerPages, {
+      provider: page.provider,
+      start: page.start,
+      requestedLimit: page.requestedLimit,
+      nextOffset: page.nextOffset,
+      rawCount: page.transfers.length,
+      total: page.total,
+      rangeTotal: page.rangeTotal,
+      complete: page.complete,
+      metadataConsistent,
+      rawResponseHashes: [...page.rawResponseHashes],
+      canonicalTransferHashes: [...page.canonicalTransferHashes]
+    }]
   };
 }
 
@@ -359,13 +473,70 @@ function lostLease(error: unknown): boolean {
   return error instanceof Error && error.message.includes("lost its running check lease");
 }
 
+function pinnedPageMetadataIsConsistent(
+  page: PinnedTronscanTransferPage,
+  expectedStart: number,
+  expectedLimit: number
+): boolean {
+  const actualNextOffset = expectedStart + page.transfers.length;
+  const totalValid = page.total === null || (Number.isSafeInteger(page.total) && page.total >= 0);
+  const rangeTotalValid = page.rangeTotal === null
+    || (Number.isSafeInteger(page.rangeTotal) && page.rangeTotal >= 0);
+  const completionTruthful = !page.complete
+    || (page.rangeTotal !== null && actualNextOffset >= page.rangeTotal);
+  return page.metadataConsistent
+    && page.start === expectedStart
+    && page.requestedLimit === expectedLimit
+    && page.nextOffset === actualNextOffset
+    && page.transfers.length <= expectedLimit
+    && totalValid
+    && rangeTotalValid
+    && completionTruthful;
+}
+
+async function gateExpiredCheck(
+  deps: AddressPoisoningWorkerDeps,
+  repository: AddressPoisoningWorkerRepository,
+  item: AddressPoisoningCheckWorkItem,
+  metrics: AddressPoisoningCycleMetrics,
+  logger: Logger
+): Promise<{ now: Date; stop: boolean }> {
+  const now = currentTime(deps);
+  const freshEventCutoff = new Date(now.getTime() - deps.realtimeMaxAgeMs);
+  try {
+    const skipped = await repository.skipCheckIfExpired(deps.db, {
+      txHash: item.txHash,
+      watchedWalletId: item.watchedWalletId,
+      freshEventCutoff,
+      now,
+      leaseVersion: item.leaseVersion
+    });
+    if (skipped) {
+      metrics.expiredSkipped += 1;
+      return { now, stop: true };
+    }
+    if (item.timestamp < freshEventCutoff) {
+      metrics.stale += 1;
+      return { now, stop: true };
+    }
+    return { now, stop: false };
+  } catch (error) {
+    metrics.failed += 1;
+    logger.error("address_poisoning_expiry_persistence_failed", {
+      txHash: item.txHash,
+      watchedWalletId: item.watchedWalletId,
+      error: errorMessage(error)
+    });
+    return { now, stop: true };
+  }
+}
+
 async function processWorkItem(
   deps: AddressPoisoningWorkerDeps,
   repository: AddressPoisoningWorkerRepository,
   item: AddressPoisoningCheckWorkItem,
   options: ReturnType<typeof workerOptions>,
   metrics: AddressPoisoningCycleMetrics,
-  now: Date,
   logger: Logger
 ): Promise<void> {
   try {
@@ -374,9 +545,9 @@ async function processWorkItem(
     if (!incomingAmountRaw) throw new Error("Invalid observed USDT amount for address-poisoning lookup");
 
     const providerStartedAt = currentTime(deps);
-    let page: RawTronscanTrc20Transfer[];
+    let page: PinnedTronscanTransferPage;
     try {
-      page = await deps.tronClient.listRelatedTrc20Transfers(item.walletAddress, {
+      page = await deps.tronClient.listRelatedTrc20TransferPagePinned(item.walletAddress, {
         start: item.logicalOffset,
         limit: options.pageSize,
         minTimestamp: item.timestamp.getTime() - LOOKBACK_MS,
@@ -394,20 +565,29 @@ async function processWorkItem(
       });
       throw error;
     }
-    if (!Array.isArray(page)) throw new Error("Address-poisoning provider page is not an array");
+    if (
+      !page
+      || (page.provider !== "tronscan" && page.provider !== "trongrid_fallback")
+      || !Array.isArray(page.transfers)
+      || !Array.isArray(page.rawResponseHashes)
+      || !Array.isArray(page.canonicalTransferHashes)
+    ) throw new Error("Address-poisoning provider page is malformed");
 
-    const accumulated = mergePage(accumulatedBefore, page, item.timestamp);
-    const complete = page.length < options.pageSize;
-    const coverage = complete ? "complete" as const : "partial" as const;
-    const logicalOffset = item.logicalOffset + page.length;
+    const pageMetadataConsistent = pinnedPageMetadataIsConsistent(page, item.logicalOffset, options.pageSize);
+    const accumulated = mergePage(accumulatedBefore, page, pageMetadataConsistent, item.timestamp);
+    const coverage = page.complete && accumulated.providerMetadataConsistent
+      ? "complete" as const
+      : "partial" as const;
+    const logicalOffset = item.logicalOffset + page.transfers.length;
     const pageCount = item.pageCount + 1;
-    const fetchedCount = item.fetchedCount + page.length;
+    const fetchedCount = item.fetchedCount + page.transfers.length;
     logger.info("address_poisoning_lookup_completed", {
       txHash: item.txHash,
       providerLatencyMs: nonnegativeDurationMs(providerStartedAt, currentTime(deps)),
       pageCount,
       fetchedCount,
-      coverage
+      coverage,
+      provider: accumulated.lookupProvider
     });
     const oldest = oldestAcceptedTransferAt(accumulated);
     const senderSeen = senderAppearedInCheckedHistory(accumulated, item.walletAddress, item.sender, item.timestamp);
@@ -439,6 +619,8 @@ async function processWorkItem(
     };
 
     if (result.kind === "candidate") {
+      const gate = await gateExpiredCheck(deps, repository, item, metrics, logger);
+      if (gate.stop) return;
       const primary = result.primary;
       await repository.persistCandidate(deps.db, {
         policyVersion: ADDRESS_POISONING_POLICY_VERSION,
@@ -472,6 +654,8 @@ async function processWorkItem(
           oldestFetchedAt: oldest?.toISOString() ?? null,
           oldestFetchedAtBasis: "oldest_accepted_canonical_transfer",
           senderAppearedInCheckedHistory: senderSeen,
+          lookupProvider: accumulated.lookupProvider,
+          providerMetadataConsistent: accumulated.providerMetadataConsistent,
           incoming: {
             txHash: item.txHash,
             sender: item.sender,
@@ -481,7 +665,9 @@ async function processWorkItem(
           },
           primaryMatch: serializableMatch(primary),
           providerFacts: accumulated.providerFacts,
-          providerTransferIds: accumulated.providerTransferIds
+          providerTransferIds: accumulated.providerTransferIds,
+          providerFactProviders: accumulated.providerFactProviders,
+          providerPages: accumulated.providerPages
         },
         ...commonProgress
       });
@@ -490,16 +676,20 @@ async function processWorkItem(
     }
 
     if (result.kind === "clear") {
+      const gate = await gateExpiredCheck(deps, repository, item, metrics, logger);
+      if (gate.stop) return;
       const updated = await repository.markClear(deps.db, { ...commonProgress, reason: result.reason });
       updated ? metrics.cleared += 1 : metrics.stale += 1;
       return;
     }
 
     const terminal = pageCount >= options.maxPages;
+    const gate = await gateExpiredCheck(deps, repository, item, metrics, logger);
+    if (gate.stop) return;
     const updated = await repository.markInconclusive(deps.db, {
       ...commonProgress,
       coverage: "partial",
-      nextRetryAt: terminal ? null : new Date(now.getTime() + options.retryDelayMs),
+      nextRetryAt: terminal ? null : new Date(gate.now.getTime() + options.retryDelayMs),
       reason: terminal ? "max_pages_reached" : result.reason
     });
     updated ? metrics.inconclusive += 1 : metrics.stale += 1;
@@ -513,12 +703,14 @@ async function processWorkItem(
       watchedWalletId: item.watchedWalletId,
       error: errorMessage(error)
     });
+    const gate = await gateExpiredCheck(deps, repository, item, metrics, logger);
+    if (gate.stop) return;
     try {
       const updated = await repository.markFailed(deps.db, {
         txHash: item.txHash,
         watchedWalletId: item.watchedWalletId,
         error: errorMessage(error),
-        now,
+        now: gate.now,
         leaseVersion: item.leaseVersion
       });
       updated ? metrics.failed += 1 : metrics.stale += 1;
@@ -821,7 +1013,8 @@ export async function runSingleAddressPoisoningCheckCycle(
     const claimed = await repository.claimChecks(deps.db, {
       limit: options.claimLimit,
       now,
-      staleRunningBefore: new Date(now.getTime() - options.retryDelayMs)
+      staleRunningBefore: new Date(now.getTime() - options.retryDelayMs),
+      freshEventCutoff: new Date(now.getTime() - deps.realtimeMaxAgeMs)
     });
     metrics.claimed = claimed.length;
     if (claimed.length > 0) {
@@ -829,7 +1022,7 @@ export async function runSingleAddressPoisoningCheckCycle(
       const consume = async () => {
         while (cursor < claimed.length) {
           const item = claimed[cursor++];
-          await processWorkItem(deps, repository, item, options, metrics, now, logger);
+          await processWorkItem(deps, repository, item, options, metrics, logger);
         }
       };
       await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));

@@ -3407,14 +3407,15 @@ function assertWalletSafetyObservationsHaveZeroImpact(observations: readonly Ris
 
 export async function claimAddressPoisoningChecks(
   db: Db,
-  input: { limit: number; now: Date; staleRunningBefore: Date }
+  input: { limit: number; now: Date; staleRunningBefore: Date; freshEventCutoff: Date }
 ): Promise<AddressPoisoningCheckWorkItem[]> {
   const result = await db.query(
     `with claimed as (
        select tx.tx_hash, tx.watched_wallet_id
        from observed_transactions tx
        join watched_wallets w on w.id = tx.watched_wallet_id
-       where tx.poisoning_check_status = 'pending'
+       where (
+         tx.poisoning_check_status = 'pending'
           or (tx.poisoning_check_status = 'running' and tx.poisoning_updated_at < $3)
           or (
             tx.poisoning_check_status = 'failed'
@@ -3426,6 +3427,7 @@ export async function claimAddressPoisoningChecks(
             and tx.poisoning_page_count < 5
             and coalesce(tx.poisoning_next_retry_at, $2) <= $2
           )
+       ) and tx.timestamp >= $4
        order by tx.timestamp desc
        limit $1
        for update of tx skip locked
@@ -3444,7 +3446,7 @@ export async function claimAddressPoisoningChecks(
        tx.poisoning_check_status, tx.poisoning_attempts, tx.poisoning_logical_offset,
        tx.poisoning_page_count, tx.poisoning_fetched_count, tx.poisoning_oldest_fetched_at,
        tx.poisoning_lookup_coverage, tx.poisoning_accumulated_lookup_json, tx.poisoning_updated_at`,
-    [input.limit, input.now, input.staleRunningBefore]
+    [input.limit, input.now, input.staleRunningBefore, input.freshEventCutoff]
   );
   return result.rows.map(mapAddressPoisoningCheckWorkItemRow);
 }
@@ -3464,6 +3466,38 @@ export async function skipExpiredAddressPoisoningChecks(
     [input.expiredBefore]
   );
   return result.rowCount ?? 0;
+}
+
+export async function skipAddressPoisoningCheckIfExpired(
+  db: Db,
+  input: {
+    txHash: string;
+    watchedWalletId: string;
+    freshEventCutoff: Date;
+    now: Date;
+    leaseVersion: Date;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'skipped_backfill',
+       poisoning_last_error = 'expired_during_processing',
+       poisoning_next_retry_at = null,
+       poisoning_updated_at = $4,
+       poisoning_checked_at = $4
+     where tx_hash = $1 and watched_wallet_id = $2
+       and timestamp < $3
+       and poisoning_check_status = 'running'
+       and poisoning_updated_at = $5`,
+    [
+      input.txHash,
+      input.watchedWalletId,
+      input.freshEventCutoff,
+      input.now,
+      input.leaseVersion
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
 }
 
 export async function skipPausedAddressPoisoningChecks(db: Db): Promise<number> {
