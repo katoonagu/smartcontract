@@ -3,6 +3,7 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
 import { buildForensicCoverageV2 } from "../forensics/forensicCoverageV2";
+import { collectUsddPsmRouteObservations } from "../forensics/usddPsmRouteObservation";
 import {
   LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW,
   selectRecentFlowProvenanceTransfers
@@ -454,6 +455,7 @@ function walletProfileZeroBalanceReport(input: {
     riskScore,
     decisionReasons,
     coverageV2: input.coverageV2,
+    usddPsmRouteObservations: [],
     coverage: {
       selectedInboundTxCount: 0,
       currentBalanceRaw: input.currentBalanceRaw,
@@ -561,6 +563,7 @@ function fallbackReviewReport(input: {
     decisionReasons,
     coverageV2: input.coverageV2,
     recentFlowPrincipalTransfers: input.recentFlowPrincipalTransfers,
+    usddPsmRouteObservations: [],
     coverage: {
       selectedInboundTxCount: 0,
       currentBalanceRaw: input.currentBalanceRaw,
@@ -2115,6 +2118,11 @@ export async function runWhereIsMoneyCheck(
           evidenceIds: exactFeeTransfers.map(({ evidenceId }) => evidenceId)
         }]
   });
+  const usddPsmRouteObservations = collectUsddPsmRouteObservations({
+    mode: selection.provenanceScope === "recent_flow" ? "recent_flow" : "where",
+    selectedAmountRaw: provenanceSelection.selectedAmountRaw,
+    paths: originPaths
+  });
 
   return {
     subjectAddress: sourceAddress,
@@ -2139,6 +2147,7 @@ export async function runWhereIsMoneyCheck(
     sourceProvenanceMateriality: assessment.sourceProvenanceMateriality ?? null,
     coverageV2,
     recentFlowPrincipalTransfers: selection.recentFlowPrincipalTransfers,
+    usddPsmRouteObservations,
     ...whereDecisionFields({
       decision,
       decisionReasons,
