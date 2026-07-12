@@ -1,5 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type {
+  AddressPoisoningAlertStatus,
+  AddressPoisoningCandidate,
+  AddressPoisoningCandidateDelivery,
+  AddressPoisoningCandidateStatus,
+  AddressPoisoningCheckStatus,
+  AddressPoisoningCheckWorkItem,
+  AddressPoisoningClassification,
+  AddressPoisoningCoverage,
   AddressLabel,
   AddressFeaturesDaily,
   AddressLabelCacheEntry,
@@ -24,6 +32,7 @@ import type {
   IndexedTronUsdtTransfer,
   RawEvidenceInput,
   RawEvidenceSourceType,
+  PersistAddressPoisoningCandidateInput,
   RiskConfidence,
   RiskLabel,
   RiskReport,
@@ -55,6 +64,10 @@ import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contra
 import type { Db } from "./db";
 
 export type {
+  AddressPoisoningCandidate,
+  AddressPoisoningCandidateDelivery,
+  AddressPoisoningCheckWorkItem,
+  PersistAddressPoisoningCandidateInput,
   RawEvidenceInput,
   RiskSignalObservationInput
 } from "../types";
@@ -784,8 +797,16 @@ const riskSignalGroups = new Set<RiskSignalGroup>([
   "behavior",
   "incoming_context",
   "approval",
-  "manual"
+  "manual",
+  "wallet_safety"
 ]);
+const addressPoisoningCheckStatuses = new Set<AddressPoisoningCheckStatus>([
+  "pending", "running", "inconclusive", "clear", "candidate", "failed", "skipped", "skipped_backfill"
+]);
+const addressPoisoningCoverages = new Set<AddressPoisoningCoverage>(["complete", "partial"]);
+const addressPoisoningClassifications = new Set<AddressPoisoningClassification>(["CRITICAL", "HIGH"]);
+const addressPoisoningCandidateStatuses = new Set<AddressPoisoningCandidateStatus>(["candidate", "confirmed", "dismissed"]);
+const addressPoisoningAlertStatuses = new Set<AddressPoisoningAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
 const riskConfidences = new Set<RiskConfidence>(["low", "medium", "high"]);
 const riskSeverities = new Set<RiskSeverity>(["info", "low", "medium", "high", "critical"]);
 const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial", "failed"]);
@@ -942,6 +963,42 @@ function parseRiskSignalGroup(value: string): RiskSignalGroup {
     throw new Error(`Invalid risk signal group from database: ${value}`);
   }
   return value as RiskSignalGroup;
+}
+
+function parseAddressPoisoningCheckStatus(value: string): AddressPoisoningCheckStatus {
+  if (!addressPoisoningCheckStatuses.has(value as AddressPoisoningCheckStatus)) {
+    throw new Error(`Invalid address poisoning check status from database: ${value}`);
+  }
+  return value as AddressPoisoningCheckStatus;
+}
+
+function parseAddressPoisoningCoverage(value: string | null): AddressPoisoningCoverage | null {
+  if (value === null) return null;
+  if (!addressPoisoningCoverages.has(value as AddressPoisoningCoverage)) {
+    throw new Error(`Invalid address poisoning coverage from database: ${value}`);
+  }
+  return value as AddressPoisoningCoverage;
+}
+
+function parseAddressPoisoningClassification(value: string): AddressPoisoningClassification {
+  if (!addressPoisoningClassifications.has(value as AddressPoisoningClassification)) {
+    throw new Error(`Invalid address poisoning classification from database: ${value}`);
+  }
+  return value as AddressPoisoningClassification;
+}
+
+function parseAddressPoisoningCandidateStatus(value: string): AddressPoisoningCandidateStatus {
+  if (!addressPoisoningCandidateStatuses.has(value as AddressPoisoningCandidateStatus)) {
+    throw new Error(`Invalid address poisoning candidate status from database: ${value}`);
+  }
+  return value as AddressPoisoningCandidateStatus;
+}
+
+function parseAddressPoisoningAlertStatus(value: string): AddressPoisoningAlertStatus {
+  if (!addressPoisoningAlertStatuses.has(value as AddressPoisoningAlertStatus)) {
+    throw new Error(`Invalid address poisoning alert status from database: ${value}`);
+  }
+  return value as AddressPoisoningAlertStatus;
 }
 
 function parseRiskConfidence(value: string): RiskConfidence {
@@ -1788,6 +1845,80 @@ function mapObservedTransactionDigestItemRow(row: Record<string, any>): Observed
     riskScore: row.risk_score,
     riskReasons: Array.isArray(row.risk_reasons) ? row.risk_reasons : JSON.parse(row.risk_reasons ?? "[]"),
     digestSentAt: row.digest_sent_at
+  };
+}
+
+function mapAddressPoisoningCheckWorkItemRow(row: Record<string, any>): AddressPoisoningCheckWorkItem {
+  parseAddressPoisoningCheckStatus(row.poisoning_check_status);
+  return {
+    txHash: row.tx_hash,
+    watchedWalletId: row.watched_wallet_id,
+    walletAddress: row.wallet_address,
+    telegramUserId: row.telegram_user_id,
+    sender: row.sender,
+    receiver: row.receiver,
+    token: row.token,
+    amount: row.amount,
+    timestamp: row.timestamp,
+    attemptCount: Number(row.poisoning_attempts ?? 0),
+    logicalOffset: Number(row.poisoning_logical_offset ?? 0),
+    pageCount: Number(row.poisoning_page_count ?? 0),
+    fetchedCount: Number(row.poisoning_fetched_count ?? 0),
+    oldestFetchedAt: row.poisoning_oldest_fetched_at ?? null,
+    coverage: parseAddressPoisoningCoverage(row.poisoning_lookup_coverage ?? null),
+    accumulatedLookupJson: mapJsonObject(row.poisoning_accumulated_lookup_json)
+  };
+}
+
+function mapAddressPoisoningCandidateRow(row: Record<string, any>): AddressPoisoningCandidate {
+  return {
+    id: row.id,
+    callbackToken: row.callback_token,
+    watchedWalletId: row.watched_wallet_id,
+    tokenContract: row.token_contract,
+    tokenSymbol: row.token_symbol,
+    tokenDecimals: Number(row.token_decimals),
+    suspiciousIncomingTxHash: row.suspicious_incoming_tx_hash,
+    suspiciousSender: row.suspicious_sender,
+    suspiciousAmountRaw: String(row.suspicious_amount_raw),
+    suspiciousIncomingAt: row.suspicious_incoming_at,
+    matchedOutgoingTxHash: row.matched_outgoing_tx_hash,
+    genuineRecipient: row.genuine_recipient,
+    matchedOutgoingAmountRaw: String(row.matched_outgoing_amount_raw),
+    matchedOutgoingAt: row.matched_outgoing_at,
+    rawPrefixLength: Number(row.raw_prefix_length),
+    meaningfulPrefixLength: Number(row.meaningful_prefix_length),
+    suffixLength: Number(row.suffix_length),
+    classification: parseAddressPoisoningClassification(row.classification),
+    confidence: parseRiskConfidence(row.confidence),
+    rawEvidenceId: row.raw_evidence_id,
+    secondaryMatches: mapJsonArray(row.secondary_matches_json),
+    evidenceJson: mapJsonObject(row.evidence_json),
+    status: parseAddressPoisoningCandidateStatus(row.status),
+    alertFingerprint: row.alert_fingerprint,
+    alertStatus: parseAddressPoisoningAlertStatus(row.alert_status),
+    alertAttempts: Number(row.alert_attempts ?? 0),
+    alertNextRetryAt: row.alert_next_retry_at ?? null,
+    alertLastError: row.alert_last_error ?? null,
+    telegramChatId: row.telegram_chat_id ?? null,
+    telegramMessageId: row.telegram_message_id ?? null,
+    laterLossTxHash: row.later_loss_tx_hash ?? null,
+    laterLossEvidenceJson: row.later_loss_evidence_json === null || row.later_loss_evidence_json === undefined
+      ? null
+      : mapJsonObject(row.later_loss_evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at ?? null,
+    alertSentAt: row.alert_sent_at ?? null
+  };
+}
+
+function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): AddressPoisoningCandidateDelivery {
+  return {
+    ...mapAddressPoisoningCandidateRow(row),
+    walletAddress: row.wallet_address,
+    telegramUserId: row.telegram_user_id,
+    locale: normalizeNullableBotLocale(row.locale)
   };
 }
 
@@ -3221,6 +3352,490 @@ export async function recordObservedTransactionRisk(
     [input.txHash, input.watchedWalletId, input.report.level, input.report.score, JSON.stringify(input.report.reasons)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function claimAddressPoisoningChecks(
+  db: Db,
+  input: { limit: number; now: Date; staleRunningBefore: Date }
+): Promise<AddressPoisoningCheckWorkItem[]> {
+  const result = await db.query(
+    `with claimed as (
+       select tx.tx_hash, tx.watched_wallet_id
+       from observed_transactions tx
+       join watched_wallets w on w.id = tx.watched_wallet_id
+       where tx.poisoning_check_status = 'pending'
+          or (tx.poisoning_check_status = 'running' and tx.poisoning_updated_at < $3)
+          or (
+            tx.poisoning_check_status = 'failed'
+            and tx.poisoning_attempts < 3
+            and coalesce(tx.poisoning_next_retry_at, $2) <= $2
+          )
+          or (
+            tx.poisoning_check_status = 'inconclusive'
+            and tx.poisoning_page_count < 5
+            and coalesce(tx.poisoning_next_retry_at, $2) <= $2
+          )
+       order by tx.timestamp desc
+       limit $1
+       for update of tx skip locked
+     )
+     update observed_transactions tx
+     set poisoning_check_status = 'running',
+       poisoning_next_retry_at = null,
+       poisoning_last_error = null,
+       poisoning_updated_at = $2
+     from claimed, watched_wallets w
+     where tx.tx_hash = claimed.tx_hash
+       and tx.watched_wallet_id = claimed.watched_wallet_id
+       and w.id = tx.watched_wallet_id
+     returning tx.tx_hash, tx.watched_wallet_id, w.address as wallet_address,
+       w.telegram_user_id, tx.sender, tx.receiver, tx.token, tx.amount, tx.timestamp,
+       tx.poisoning_check_status, tx.poisoning_attempts, tx.poisoning_logical_offset,
+       tx.poisoning_page_count, tx.poisoning_fetched_count, tx.poisoning_oldest_fetched_at,
+       tx.poisoning_lookup_coverage, tx.poisoning_accumulated_lookup_json`,
+    [input.limit, input.now, input.staleRunningBefore]
+  );
+  return result.rows.map(mapAddressPoisoningCheckWorkItemRow);
+}
+
+export async function skipExpiredAddressPoisoningChecks(
+  db: Db,
+  input: { expiredBefore: Date }
+): Promise<number> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'skipped',
+       poisoning_last_error = 'expired_before_processing',
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     where poisoning_check_status in ('pending', 'failed', 'inconclusive')
+       and timestamp < $1`,
+    [input.expiredBefore]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function skipPausedAddressPoisoningChecks(db: Db): Promise<number> {
+  const result = await db.query(
+    `update observed_transactions tx
+     set poisoning_check_status = 'skipped',
+       poisoning_last_error = 'wallet_paused',
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     from watched_wallets w
+     where w.id = tx.watched_wallet_id
+       and w.alert_mode = 'paused'
+       and tx.poisoning_check_status in ('pending', 'failed', 'inconclusive')`,
+    []
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function markAddressPoisoningCheckClear(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string; coverage: AddressPoisoningCoverage }
+): Promise<boolean> {
+  if (input.coverage !== "complete") throw new Error("Address poisoning clear requires complete coverage");
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'clear',
+       poisoning_lookup_coverage = 'complete',
+       poisoning_next_retry_at = null,
+       poisoning_last_error = null,
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningCheckInconclusive(
+  db: Db,
+  input: {
+    txHash: string;
+    watchedWalletId: string;
+    coverage: AddressPoisoningCoverage;
+    logicalOffset: number;
+    pageCount: number;
+    fetchedCount: number;
+    oldestFetchedAt: Date | null;
+    accumulatedLookupJson: Record<string, unknown>;
+    nextRetryAt: Date | null;
+    reason: string;
+  }
+): Promise<boolean> {
+  if (input.coverage !== "partial") throw new Error("Address poisoning inconclusive requires partial coverage");
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'inconclusive',
+       poisoning_lookup_coverage = 'partial',
+       poisoning_logical_offset = $5,
+       poisoning_page_count = $6,
+       poisoning_fetched_count = $7,
+       poisoning_oldest_fetched_at = $8,
+       poisoning_accumulated_lookup_json = $9,
+       poisoning_next_retry_at = $10,
+       poisoning_last_error = $11,
+       poisoning_updated_at = now(),
+       poisoning_checked_at = case when $6 >= 5 then now() else poisoning_checked_at end
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = $3
+       and $4 = 'partial'`,
+    [
+      input.txHash,
+      input.watchedWalletId,
+      "running",
+      input.coverage,
+      input.logicalOffset,
+      input.pageCount,
+      input.fetchedCount,
+      input.oldestFetchedAt,
+      input.accumulatedLookupJson,
+      input.nextRetryAt,
+      boundedUserAlertError(input.reason)
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningCheckFailed(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string; error: string; now: Date }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'failed',
+       poisoning_attempts = poisoning_attempts + 1,
+       poisoning_next_retry_at = $4 + case poisoning_attempts
+         when 0 then interval '30 seconds'
+         when 1 then interval '60 seconds'
+         else interval '120 seconds'
+       end,
+       poisoning_last_error = $3,
+       poisoning_updated_at = $4,
+       poisoning_checked_at = case when poisoning_attempts + 1 >= 3 then $4 else poisoning_checked_at end
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error), input.now]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningCheckSkipped(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string; reason: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set poisoning_check_status = 'skipped',
+       poisoning_next_retry_at = null,
+       poisoning_last_error = $3,
+       poisoning_updated_at = now(),
+       poisoning_checked_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2
+       and poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason)]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+function deterministicAddressPoisoningId(kind: string, input: PersistAddressPoisoningCandidateInput): string {
+  const digest = createHash("sha256")
+    .update([
+      input.policyVersion,
+      input.watchedWalletId,
+      input.tokenContract,
+      input.suspiciousIncomingTxHash
+    ].join(":"))
+    .digest("hex");
+  return `address-poisoning-${kind}-${digest}`;
+}
+
+export async function persistAddressPoisoningCandidate(
+  db: Db,
+  input: PersistAddressPoisoningCandidateInput
+): Promise<AddressPoisoningCandidate> {
+  parseAddressPoisoningClassification(input.classification);
+  parseRiskConfidence(input.confidence);
+  const evidenceId = deterministicAddressPoisoningId("evidence", input);
+  const observationId = deterministicAddressPoisoningId("observation", input);
+  const candidateId = deterministicAddressPoisoningId("candidate", input);
+  const alertFingerprint = deterministicAddressPoisoningId("alert", input);
+  const callbackToken = randomBytes(15).toString("base64url");
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `insert into raw_evidence (
+         id, source, source_type, chain, address, tx_hash,
+         observed_transaction_hash, evidence_json
+       ) values ($1, 'address_poisoning_detector', 'detector_output', 'tron', $2, $3, $3, $4)
+       on conflict (id) do update set evidence_json = excluded.evidence_json`,
+      [
+        evidenceId,
+        input.walletAddress,
+        input.suspiciousIncomingTxHash,
+        {
+          ...input.evidenceJson,
+          secondaryMatches: input.secondaryMatches,
+          policyVersion: input.policyVersion
+        }
+      ]
+    );
+    await client.query(
+      `insert into risk_signal_observations (
+         id, subject_chain, subject_address, subject_tx_hash,
+         observed_transaction_hash, signal_group, code, message,
+         score_impact, confidence, severity, source, policy_version, raw_evidence_id
+       ) values ($1, 'tron', $2, $3, $3, 'wallet_safety', 'address_poisoning_candidate',
+         'Possible address substitution detected', 0, $4, $5, 'address_poisoning_detector', $6, $7)
+       on conflict (id) do update set
+         signal_group = 'wallet_safety',
+         code = 'address_poisoning_candidate',
+         message = 'Possible address substitution detected',
+         score_impact = 0,
+         confidence = excluded.confidence,
+         severity = excluded.severity,
+         source = 'address_poisoning_detector',
+         policy_version = excluded.policy_version,
+         raw_evidence_id = excluded.raw_evidence_id`,
+      [
+        observationId,
+        input.walletAddress,
+        input.suspiciousIncomingTxHash,
+        input.confidence,
+        input.classification === "CRITICAL" ? "critical" : "high",
+        input.policyVersion,
+        evidenceId
+      ]
+    );
+    const candidateResult = await client.query(
+      `insert into address_poisoning_candidates (
+         id, callback_token, watched_wallet_id, token_contract, token_symbol, token_decimals,
+         suspicious_incoming_tx_hash, suspicious_sender, suspicious_amount_raw, suspicious_incoming_at,
+         matched_outgoing_tx_hash, genuine_recipient, matched_outgoing_amount_raw, matched_outgoing_at,
+         raw_prefix_length, meaningful_prefix_length, suffix_length, classification, confidence,
+         raw_evidence_id, secondary_matches_json, evidence_json, alert_fingerprint
+       ) values (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+       )
+       on conflict (watched_wallet_id, token_contract, suspicious_incoming_tx_hash) do update set
+         matched_outgoing_tx_hash = excluded.matched_outgoing_tx_hash,
+         genuine_recipient = excluded.genuine_recipient,
+         matched_outgoing_amount_raw = excluded.matched_outgoing_amount_raw,
+         matched_outgoing_at = excluded.matched_outgoing_at,
+         raw_prefix_length = excluded.raw_prefix_length,
+         meaningful_prefix_length = excluded.meaningful_prefix_length,
+         suffix_length = excluded.suffix_length,
+         classification = excluded.classification,
+         confidence = excluded.confidence,
+         raw_evidence_id = excluded.raw_evidence_id,
+         secondary_matches_json = excluded.secondary_matches_json,
+         evidence_json = excluded.evidence_json,
+         updated_at = now()
+       returning *`,
+      [
+        candidateId,
+        callbackToken,
+        input.watchedWalletId,
+        input.tokenContract,
+        input.tokenSymbol,
+        input.tokenDecimals,
+        input.suspiciousIncomingTxHash,
+        input.suspiciousSender,
+        input.suspiciousAmountRaw,
+        input.suspiciousIncomingAt,
+        input.matchedOutgoingTxHash,
+        input.genuineRecipient,
+        input.matchedOutgoingAmountRaw,
+        input.matchedOutgoingAt,
+        input.rawPrefixLength,
+        input.meaningfulPrefixLength,
+        input.suffixLength,
+        input.classification,
+        input.confidence,
+        evidenceId,
+        input.secondaryMatches,
+        input.evidenceJson,
+        alertFingerprint
+      ]
+    );
+    const transitioned = await client.query(
+      `update observed_transactions
+       set poisoning_check_status = 'candidate',
+         poisoning_lookup_coverage = coalesce(poisoning_lookup_coverage, 'partial'),
+         poisoning_next_retry_at = null,
+         poisoning_last_error = null,
+         poisoning_updated_at = now(),
+         poisoning_checked_at = now()
+       where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
+      [input.suspiciousIncomingTxHash, input.watchedWalletId]
+    );
+    if ((transitioned.rowCount ?? 0) !== 1 || !candidateResult.rows[0]) {
+      throw new Error("Address poisoning candidate lost its running check lease");
+    }
+    await client.query("commit");
+    return mapAddressPoisoningCandidateRow(candidateResult.rows[0]);
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function claimAddressPoisoningAlertsForDelivery(
+  db: Db,
+  input: { limit: number; now: Date; staleSendingBefore: Date }
+): Promise<AddressPoisoningCandidateDelivery[]> {
+  const result = await db.query(
+    `with claimed as (
+       select candidate.id
+       from address_poisoning_candidates candidate
+       where candidate.status = 'candidate'
+         and candidate.alert_attempts < 3
+         and (
+           candidate.alert_status = 'pending'
+           or (candidate.alert_status = 'failed' and coalesce(candidate.alert_next_retry_at, $2) <= $2)
+           or (candidate.alert_status = 'sending' and candidate.updated_at < $3)
+         )
+       order by candidate.suspicious_incoming_at desc
+       limit $1
+       for update of candidate skip locked
+     )
+     update address_poisoning_candidates candidate
+     set alert_status = 'sending', alert_next_retry_at = null, alert_last_error = null, updated_at = $2
+     from claimed, watched_wallets w, telegram_users u
+     where candidate.id = claimed.id
+       and w.id = candidate.watched_wallet_id
+       and u.telegram_user_id = w.telegram_user_id
+     returning candidate.*, w.address as wallet_address, w.telegram_user_id, u.locale`,
+    [input.limit, input.now, input.staleSendingBefore]
+  );
+  return result.rows.map(mapAddressPoisoningCandidateDeliveryRow);
+}
+
+export async function markAddressPoisoningAlertSent(
+  db: Db,
+  input: { candidateId: string; telegramChatId: string; telegramMessageId: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_status = 'sent', telegram_chat_id = $2, telegram_message_id = $3,
+       alert_next_retry_at = null, alert_last_error = null, alert_sent_at = now(), updated_at = now()
+     where id = $1 and alert_status = 'sending'`,
+    [input.candidateId, input.telegramChatId, input.telegramMessageId]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningAlertFailed(
+  db: Db,
+  input: { candidateId: string; error: string; now: Date }
+): Promise<boolean> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_status = 'failed',
+       alert_attempts = alert_attempts + 1,
+       alert_next_retry_at = $3 + case alert_attempts
+         when 0 then interval '30 seconds'
+         when 1 then interval '60 seconds'
+         else interval '120 seconds'
+       end,
+       alert_last_error = $2,
+       updated_at = $3
+     where id = $1 and alert_status = 'sending'`,
+    [input.candidateId, boundedUserAlertError(input.error), input.now]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markAddressPoisoningAlertSkipped(
+  db: Db,
+  input: { candidateId: string; reason: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set alert_status = 'skipped', alert_next_retry_at = null, alert_last_error = $2, updated_at = now()
+     where id = $1 and alert_status in ('pending', 'sending', 'failed')`,
+    [input.candidateId, boundedUserAlertError(input.reason)]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function resolveAddressPoisoningCandidate(
+  db: Db,
+  input: { callbackToken: string; telegramUserId: string; resolution: "confirmed" | "dismissed" }
+): Promise<{
+  outcome: "updated" | "idempotent" | "conflict" | "unavailable";
+  candidate: AddressPoisoningCandidate | null;
+}> {
+  const result = await db.query(
+    `with eligible as (
+       select candidate.*
+       from address_poisoning_candidates candidate
+       join watched_wallets w on w.id = candidate.watched_wallet_id
+       where candidate.callback_token = $1 and w.telegram_user_id = $2
+       for update of candidate
+     ), updated as (
+       update address_poisoning_candidates candidate
+       set status = $3, resolved_at = now(), updated_at = now()
+       from eligible
+       where candidate.id = eligible.id and candidate.status = 'candidate'
+       returning candidate.id
+     )
+     select eligible.*,
+       case
+         when updated.id is not null then 'updated'
+         when eligible.status = $3 then 'idempotent'
+         else 'conflict'
+       end as outcome,
+       case when updated.id is not null then $3 else eligible.status end as status
+     from eligible left join updated on updated.id = eligible.id`,
+    [input.callbackToken, input.telegramUserId, input.resolution]
+  );
+  const row = result.rows[0];
+  if (!row) return { outcome: "unavailable", candidate: null };
+  return {
+    outcome: row.outcome as "updated" | "idempotent" | "conflict",
+    candidate: mapAddressPoisoningCandidateRow(row)
+  };
+}
+
+export async function hasUndismissedAddressPoisoningCandidateForIncoming(
+  db: Db,
+  input: { watchedWalletId: string; txHash: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `select exists (
+       select 1 from address_poisoning_candidates
+       where watched_wallet_id = $1 and suspicious_incoming_tx_hash = $2 and status <> 'dismissed'
+     ) as exists`,
+    [input.watchedWalletId, input.txHash]
+  );
+  return result.rows[0]?.exists === true;
+}
+
+export async function getAddressPoisoningQueueMetrics(
+  db: Db,
+  now: Date
+): Promise<{ queueDepth: number; oldestQueueAgeMs: number | null }> {
+  const result = await db.query(
+    `select count(*) as queue_depth,
+       extract(epoch from ($1 - min(timestamp))) * 1000 as oldest_queue_age_ms
+     from observed_transactions
+     where poisoning_check_status = 'pending'
+       or (poisoning_check_status = 'failed' and poisoning_attempts < 3 and coalesce(poisoning_next_retry_at, $1) <= $1)
+       or (poisoning_check_status = 'inconclusive' and poisoning_page_count < 5 and coalesce(poisoning_next_retry_at, $1) <= $1)`,
+    [now]
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    queueDepth: Number(row.queue_depth ?? 0),
+    oldestQueueAgeMs: row.oldest_queue_age_ms === null || row.oldest_queue_age_ms === undefined
+      ? null
+      : Number(row.oldest_queue_age_ms)
+  };
 }
 
 export async function upsertWalletApproval(

@@ -106,7 +106,8 @@ export type RiskReport = {
 
 export type RiskConfidence = "low" | "medium" | "high";
 export type RiskSeverity = "info" | "low" | "medium" | "high" | "critical";
-export type RiskSignalGroup = "internal_label" | "provider" | "graph" | "behavior" | "incoming_context" | "approval" | "manual";
+export type ScoringRiskSignalGroup = "internal_label" | "provider" | "graph" | "behavior" | "incoming_context" | "approval" | "manual";
+export type RiskSignalGroup = ScoringRiskSignalGroup | "wallet_safety";
 export type RawEvidenceSourceType = "internal_label" | "provider_response" | "detector_output" | "transfer_context" | "manual_input";
 export type TronUsdtTransferMethod = "transfer" | "transferFrom";
 export type CachedAddressLabelProvider = "tronscan" | "oklink" | "arkham" | "manual";
@@ -147,6 +148,108 @@ export type RiskSignalObservationInput = {
   source: string;
   policyVersion: string;
   rawEvidenceId: string | null;
+};
+
+export type AddressPoisoningCheckStatus =
+  | "pending"
+  | "running"
+  | "inconclusive"
+  | "clear"
+  | "candidate"
+  | "failed"
+  | "skipped"
+  | "skipped_backfill";
+export type AddressPoisoningCoverage = "complete" | "partial";
+export type AddressPoisoningClassification = "CRITICAL" | "HIGH";
+export type AddressPoisoningCandidateStatus = "candidate" | "confirmed" | "dismissed";
+export type AddressPoisoningAlertStatus = "pending" | "sending" | "sent" | "failed" | "skipped";
+
+export type AddressPoisoningCheckWorkItem = {
+  txHash: string;
+  watchedWalletId: string;
+  walletAddress: string;
+  telegramUserId: string;
+  sender: string;
+  receiver: string;
+  token: "USDT";
+  amount: string;
+  timestamp: Date;
+  attemptCount: number;
+  logicalOffset: number;
+  pageCount: number;
+  fetchedCount: number;
+  oldestFetchedAt: Date | null;
+  coverage: AddressPoisoningCoverage | null;
+  accumulatedLookupJson: Record<string, unknown>;
+};
+
+export type AddressPoisoningCandidate = {
+  id: string;
+  callbackToken: string;
+  watchedWalletId: string;
+  tokenContract: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  suspiciousIncomingTxHash: string;
+  suspiciousSender: string;
+  suspiciousAmountRaw: string;
+  suspiciousIncomingAt: Date;
+  matchedOutgoingTxHash: string;
+  genuineRecipient: string;
+  matchedOutgoingAmountRaw: string;
+  matchedOutgoingAt: Date;
+  rawPrefixLength: number;
+  meaningfulPrefixLength: number;
+  suffixLength: number;
+  classification: AddressPoisoningClassification;
+  confidence: RiskConfidence;
+  rawEvidenceId: string;
+  secondaryMatches: unknown[];
+  evidenceJson: Record<string, unknown>;
+  status: AddressPoisoningCandidateStatus;
+  alertFingerprint: string;
+  alertStatus: AddressPoisoningAlertStatus;
+  alertAttempts: number;
+  alertNextRetryAt: Date | null;
+  alertLastError: string | null;
+  telegramChatId: string | null;
+  telegramMessageId: string | null;
+  laterLossTxHash: string | null;
+  laterLossEvidenceJson: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+  resolvedAt: Date | null;
+  alertSentAt: Date | null;
+};
+
+export type AddressPoisoningCandidateDelivery = AddressPoisoningCandidate & {
+  walletAddress: string;
+  telegramUserId: string;
+  locale: BotLocale | null;
+};
+
+export type PersistAddressPoisoningCandidateInput = {
+  policyVersion: string;
+  watchedWalletId: string;
+  walletAddress: string;
+  tokenContract: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  suspiciousIncomingTxHash: string;
+  suspiciousSender: string;
+  suspiciousAmountRaw: string;
+  suspiciousIncomingAt: Date;
+  matchedOutgoingTxHash: string;
+  genuineRecipient: string;
+  matchedOutgoingAmountRaw: string;
+  matchedOutgoingAt: Date;
+  rawPrefixLength: number;
+  meaningfulPrefixLength: number;
+  suffixLength: number;
+  classification: AddressPoisoningClassification;
+  confidence: RiskConfidence;
+  secondaryMatches: unknown[];
+  evidenceJson: Record<string, unknown>;
 };
 
 export type ForensicCaseStatus = "completed" | "partial" | "failed";

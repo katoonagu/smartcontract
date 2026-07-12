@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  claimAddressPoisoningAlertsForDelivery,
+  claimAddressPoisoningChecks,
   cancelTheftReport,
   claimObservedTransactionForUserAlert,
   claimDigestTransactions,
@@ -34,6 +36,8 @@ import {
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
   listRecentRiskSignalObservations,
+  getAddressPoisoningQueueMetrics,
+  hasUndismissedAddressPoisoningCandidateForIncoming,
   getObservedTransactionForIncomingDeposit,
   markDigestSent,
   listTheftReports,
@@ -49,13 +53,23 @@ import {
   markUserAlertFailed,
   markUserAlertSent,
   markUserAlertSkipped,
+  markAddressPoisoningAlertFailed,
+  markAddressPoisoningAlertSent,
+  markAddressPoisoningCheckClear,
+  markAddressPoisoningCheckFailed,
+  markAddressPoisoningCheckInconclusive,
+  markAddressPoisoningCheckSkipped,
   removeCustomerAlertRecipient,
   recordObservedTransactionRisk,
+  persistAddressPoisoningCandidate,
   recordApprovalPollFailure,
   recordApprovalPollSuccess,
   recordApprovalRisk,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
+  resolveAddressPoisoningCandidate,
+  skipExpiredAddressPoisoningChecks,
+  skipPausedAddressPoisoningChecks,
   rebuildAddressFeaturesDaily,
   setTelegramUserPendingAction,
   claimQueuedTronAddressUsdtIndexStates,
@@ -2810,5 +2824,232 @@ describe("customer alert recipient repositories", () => {
     ]);
 
     await expect(listCustomerAlertRecipients(db, "42")).rejects.toThrow("Invalid customer alert mode from database: everything");
+  });
+});
+
+describe("address poisoning persistence", () => {
+  const now = new Date("2026-07-12T12:00:00.000Z");
+  const candidateRow = {
+    id: "candidate-1",
+    callback_token: "abcdefghijklmnopqrst",
+    watched_wallet_id: "wallet-1",
+    token_contract: "TToken111111111111111111111111111111",
+    token_symbol: "USDT",
+    token_decimals: 6,
+    suspicious_incoming_tx_hash: "incoming-1",
+    suspicious_sender: "TSuspicious1111111111111111111111111",
+    suspicious_amount_raw: "10000000",
+    suspicious_incoming_at: now,
+    matched_outgoing_tx_hash: "outgoing-1",
+    genuine_recipient: "TGenuine11111111111111111111111111111",
+    matched_outgoing_amount_raw: "10000000",
+    matched_outgoing_at: new Date("2026-07-12T11:59:00.000Z"),
+    raw_prefix_length: 1,
+    meaningful_prefix_length: 0,
+    suffix_length: 7,
+    classification: "CRITICAL",
+    confidence: "high",
+    raw_evidence_id: "raw-id",
+    secondary_matches_json: [],
+    evidence_json: { exactAmount: true },
+    status: "candidate",
+    alert_fingerprint: "fingerprint-1",
+    alert_status: "pending",
+    alert_attempts: 0,
+    alert_next_retry_at: null,
+    alert_last_error: null,
+    telegram_chat_id: null,
+    telegram_message_id: null,
+    later_loss_tx_hash: null,
+    later_loss_evidence_json: null,
+    created_at: now,
+    updated_at: now,
+    resolved_at: null,
+    alert_sent_at: null
+  };
+
+  const persistInput = {
+    policyVersion: "address-poisoning-v1",
+    watchedWalletId: "wallet-1",
+    walletAddress: "TWallet111111111111111111111111111111",
+    tokenContract: candidateRow.token_contract,
+    tokenSymbol: "USDT",
+    tokenDecimals: 6,
+    suspiciousIncomingTxHash: candidateRow.suspicious_incoming_tx_hash,
+    suspiciousSender: candidateRow.suspicious_sender,
+    suspiciousAmountRaw: candidateRow.suspicious_amount_raw,
+    suspiciousIncomingAt: candidateRow.suspicious_incoming_at,
+    matchedOutgoingTxHash: candidateRow.matched_outgoing_tx_hash,
+    genuineRecipient: candidateRow.genuine_recipient,
+    matchedOutgoingAmountRaw: candidateRow.matched_outgoing_amount_raw,
+    matchedOutgoingAt: candidateRow.matched_outgoing_at,
+    rawPrefixLength: 1,
+    meaningfulPrefixLength: 0,
+    suffixLength: 7,
+    classification: "CRITICAL" as const,
+    confidence: "high" as const,
+    secondaryMatches: [],
+    evidenceJson: { exactAmount: true }
+  };
+
+  it("migrates historical rows to skipped_backfill and keeps that safe default", () => {
+    const sql = readFileSync("migrations/031_address_poisoning_monitor.sql", "utf8");
+    expect(compactSql(sql)).toContain("poisoning_check_status text not null default 'skipped_backfill'");
+    expect(sql).toContain("'wallet_safety'");
+    expect(compactSql(sql)).toContain("signal_group <> 'wallet_safety' or score_impact = 0");
+    expect(sql).toContain("unique (watched_wallet_id, token_contract, suspicious_incoming_tx_hash)");
+  });
+
+  it("claims fresh work with a row lock and leaves fifth-page partials terminal", async () => {
+    const { db, queries } = createMockDb();
+    await claimAddressPoisoningChecks(db, { limit: 10, now, staleRunningBefore: new Date(now.getTime() - 30_000) });
+    const sql = compactSql(queries[0].sql);
+    expect(sql).toContain("for update of tx skip locked");
+    expect(sql).toContain("order by tx.timestamp desc");
+    expect(sql).toContain("poisoning_page_count < 5");
+    expect(sql).toContain("poisoning_attempts < 3");
+    expect(sql).toContain("poisoning_check_status = 'running'");
+  });
+
+  it("skips expired and paused queued checks without claiming them", async () => {
+    const expired = createMockDb(2);
+    const paused = createMockDb(3);
+    expect(await skipExpiredAddressPoisoningChecks(expired.db, { expiredBefore: now })).toBe(2);
+    expect(compactSql(expired.queries[0].sql)).toContain("poisoning_check_status in ('pending', 'failed', 'inconclusive')");
+    expect(await skipPausedAddressPoisoningChecks(paused.db)).toBe(3);
+    expect(compactSql(paused.queries[0].sql)).toContain("from watched_wallets w");
+    expect(compactSql(paused.queries[0].sql)).toContain("w.alert_mode = 'paused'");
+  });
+
+  it("persists continuation state and only clears a complete negative", async () => {
+    const clear = createMockDb(1);
+    const partial = createMockDb(1);
+    const skipped = createMockDb(1);
+    expect(await markAddressPoisoningCheckClear(clear.db, {
+      txHash: "incoming-1", watchedWalletId: "wallet-1", coverage: "complete"
+    })).toBe(true);
+    expect(compactSql(clear.queries[0].sql)).toContain("poisoning_lookup_coverage = 'complete'");
+    expect(await markAddressPoisoningCheckInconclusive(partial.db, {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      coverage: "partial",
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: new Date("2026-07-12T11:00:00.000Z"),
+      accumulatedLookupJson: { transfers: ["tx-1"] },
+      nextRetryAt: new Date("2026-07-12T12:01:00.000Z"),
+      reason: "provider_cap"
+    })).toBe(true);
+    expect(partial.queries[0].params).toContain(100);
+    expect(compactSql(partial.queries[0].sql)).toContain("poisoning_page_count = $6");
+    expect(await markAddressPoisoningCheckSkipped(skipped.db, {
+      txHash: "incoming-1", watchedWalletId: "wallet-1", reason: "ineligible"
+    })).toBe(true);
+    expect(compactSql(skipped.queries[0].sql)).toContain("poisoning_check_status = 'skipped'");
+  });
+
+  it("records the 30/60/120 retry schedule and stops claiming after three failures", async () => {
+    for (const seconds of [30, 60, 120]) {
+      const failed = createMockDb(1);
+      expect(await markAddressPoisoningCheckFailed(failed.db, {
+        txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now
+      })).toBe(true);
+      expect(compactSql(failed.queries[0].sql)).toContain(`${seconds} seconds`);
+    }
+  });
+
+  it("atomically writes deterministic zero-impact safety evidence and preserves candidate state", async () => {
+    const queries: { sql: string; params: unknown[] }[] = [];
+    const client = {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined
+    };
+    const db = { connect: async () => client } as unknown as Db;
+    const first = await persistAddressPoisoningCandidate(db, persistInput);
+    const secondQueries: { sql: string; params: unknown[] }[] = [];
+    const secondClient = {
+      query: async (sql: string, params: unknown[] = []) => {
+        secondQueries.push({ sql, params });
+        if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [{ ...candidateRow, status: "confirmed", alert_status: "sent" }] };
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined
+    };
+    await persistAddressPoisoningCandidate({ connect: async () => secondClient } as unknown as Db, persistInput);
+    expect(first.callbackToken).toBe(candidateRow.callback_token);
+    expect(queries[0].sql).toBe("begin");
+    const observation = queries.find((query) => query.sql.includes("insert into risk_signal_observations"));
+    expect(compactSql(observation!.sql)).toContain("'wallet_safety'");
+    expect(compactSql(observation!.sql)).toContain("0, $4");
+    expect(queries.find((query) => query.sql.includes("insert into raw_evidence"))?.params[0]).toBe(
+      secondQueries.find((query) => query.sql.includes("insert into raw_evidence"))?.params[0]
+    );
+    const upsert = compactSql(queries.find((query) => query.sql.includes("insert into address_poisoning_candidates"))!.sql);
+    expect(upsert).toContain("on conflict (watched_wallet_id, token_contract, suspicious_incoming_tx_hash)");
+    expect(upsert).not.toContain("status = excluded.status");
+    expect(upsert).not.toContain("callback_token = excluded.callback_token");
+    expect(upsert).not.toContain("alert_status = excluded.alert_status");
+    expect(compactSql(queries.at(-2)!.sql)).toContain("poisoning_check_status = 'running'");
+    expect(queries.at(-1)?.sql).toBe("commit");
+  });
+
+  it("rolls back the whole candidate transaction when the observation cannot be saved", async () => {
+    const tx = createMockTransactionalDb({ failOnRiskObservation: true });
+    await expect(persistAddressPoisoningCandidate(tx.db, persistInput)).rejects.toThrow("risk observation insert failed");
+    expect(tx.queries.at(-1)?.sql).toBe("rollback");
+  });
+
+  it("claims alerts with a lease and supports delivery transitions", async () => {
+    const claimed = createMockDb(1, [candidateRow]);
+    const rows = await claimAddressPoisoningAlertsForDelivery(claimed.db, {
+      limit: 10, now, staleSendingBefore: new Date(now.getTime() - 30_000)
+    });
+    expect(rows).toHaveLength(1);
+    expect(compactSql(claimed.queries[0].sql)).toContain("for update of candidate skip locked");
+    const sent = createMockDb(1);
+    expect(await markAddressPoisoningAlertSent(sent.db, {
+      candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99"
+    })).toBe(true);
+    expect(compactSql(sent.queries[0].sql)).toContain("alert_status = 'sent'");
+    const failed = createMockDb(1);
+    expect(await markAddressPoisoningAlertFailed(failed.db, { candidateId: "candidate-1", error: "telegram", now })).toBe(true);
+    expect(compactSql(failed.queries[0].sql)).toContain("alert_attempts = alert_attempts + 1");
+  });
+
+  it("resolves callbacks only through an owner-bound mutation and maps CAS outcomes", async () => {
+    for (const [outcome, rows] of [
+      ["updated", [{ ...candidateRow, outcome: "updated", status: "confirmed" }]],
+      ["idempotent", [{ ...candidateRow, outcome: "idempotent", status: "confirmed" }]],
+      ["conflict", [{ ...candidateRow, outcome: "conflict", status: "dismissed" }]],
+      ["unavailable", []]
+    ] as const) {
+      const mock = createMockDb(rows.length, [...rows]);
+      const result = await resolveAddressPoisoningCandidate(mock.db, {
+        callbackToken: candidateRow.callback_token,
+        telegramUserId: "42",
+        resolution: "confirmed"
+      });
+      expect(result.outcome).toBe(outcome);
+      const sql = compactSql(mock.queries[0].sql);
+      expect(sql).toContain("join watched_wallets w");
+      expect(sql).toContain("w.telegram_user_id = $2");
+      expect(sql).toContain("candidate.callback_token = $1");
+    }
+  });
+
+  it("looks up active candidates and reports queue age", async () => {
+    const active = createMockDb(1, [{ exists: true }]);
+    expect(await hasUndismissedAddressPoisoningCandidateForIncoming(active.db, {
+      watchedWalletId: "wallet-1", txHash: "incoming-1"
+    })).toBe(true);
+    expect(compactSql(active.queries[0].sql)).toContain("status <> 'dismissed'");
+    const metrics = createMockDb(1, [{ queue_depth: "4", oldest_queue_age_ms: "91000" }]);
+    expect(await getAddressPoisoningQueueMetrics(metrics.db, now)).toEqual({ queueDepth: 4, oldestQueueAgeMs: 91000 });
+    expect(compactSql(metrics.queries[0].sql)).toContain("extract(epoch from ($1 - min(timestamp))) * 1000");
   });
 });
