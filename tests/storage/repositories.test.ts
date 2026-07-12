@@ -2971,6 +2971,7 @@ describe("address poisoning persistence", () => {
     status: "candidate",
     alert_fingerprint: "fingerprint-1",
     alert_status: "pending",
+    alert_locale: null,
     alert_attempts: 0,
     alert_lease_updated_at: null,
     alert_next_retry_at: null,
@@ -3029,6 +3030,8 @@ describe("address poisoning persistence", () => {
     expect(compactSql(sql)).toContain("poisoning_check_status = 'skipped_backfill'");
     expect(compactSql(sql)).toContain("poisoning_last_error = 'legacy_clear_reason_unknown'");
     expect(compactSql(sql)).toContain("alert_lease_updated_at timestamptz");
+    expect(compactSql(sql)).toContain("alert_locale text");
+    expect(compactSql(sql)).toContain("check (alert_locale is null or alert_locale in ('ru','en'))");
     expect(compactSql(sql)).toContain("set alert_lease_updated_at = updated_at where alert_status = 'sending' and alert_lease_updated_at is null");
     expect(compactSql(sql)).toContain("address_poisoning_candidates_alert_delivery_idx on address_poisoning_candidates(alert_status, alert_next_retry_at, alert_lease_updated_at");
     expect(compactSql(sql)).not.toContain("set poisoning_last_error = 'complete_no_match' where poisoning_check_status = 'clear'");
@@ -3287,7 +3290,13 @@ describe("address poisoning persistence", () => {
   });
 
   it("claims alerts with a lease and supports delivery transitions", async () => {
-    const claimed = createMockDb(1, [{ ...candidateRow, alert_attempts: 1, alert_lease_updated_at: now }]);
+    const claimed = createMockDb(1, [{
+      ...candidateRow,
+      alert_attempts: 1,
+      alert_lease_updated_at: now,
+      alert_locale: "ru",
+      locale: "en"
+    }]);
     const rows = await claimAddressPoisoningAlertsForDelivery(claimed.db, {
       limit: 10, now, staleSendingBefore: new Date(now.getTime() - 30_000)
     });
@@ -3295,10 +3304,13 @@ describe("address poisoning persistence", () => {
     expect(rows[0].alertMode).toBe("paused");
     expect(rows[0].alertAttempt).toBe(1);
     expect(rows[0].alertLeaseVersion).toEqual(now);
+    expect(rows[0].alertLocale).toBe("ru");
+    expect(rows[0].locale).toBe("ru");
     expect(compactSql(claimed.queries[0].sql)).toContain("for update of candidate skip locked");
     expect(compactSql(claimed.queries[0].sql)).toContain("alert_attempts = candidate.alert_attempts + 1");
     expect(compactSql(claimed.queries[0].sql)).toContain("candidate.alert_attempts < 4");
     expect(compactSql(claimed.queries[0].sql)).toContain("alert_lease_updated_at = $2");
+    expect(compactSql(claimed.queries[0].sql)).toContain("alert_locale = coalesce(candidate.alert_locale, u.locale)");
     expect(compactSql(claimed.queries[0].sql)).toContain("coalesce(candidate.alert_lease_updated_at, candidate.updated_at) < $3");
     const sent = createMockDb(1);
     expect(await markAddressPoisoningAlertSent(sent.db, {
@@ -3340,6 +3352,28 @@ describe("address poisoning persistence", () => {
     }
   });
 
+  it.each(["ru", "en"] as const)("stores and returns %s as the fixed locale on the first alert claim", async (locale) => {
+    const claimed = createMockDb(1, [{
+      ...candidateRow,
+      alert_attempts: 1,
+      alert_lease_updated_at: now,
+      alert_locale: locale,
+      locale: locale === "ru" ? "en" : "ru"
+    }]);
+
+    const [delivery] = await claimAddressPoisoningAlertsForDelivery(claimed.db, {
+      limit: 1,
+      now,
+      staleSendingBefore: new Date(0)
+    });
+
+    expect(delivery.alertLocale).toBe(locale);
+    expect(delivery.locale).toBe(locale);
+    expect(compactSql(claimed.queries[0].sql)).toContain(
+      "alert_locale = coalesce(candidate.alert_locale, u.locale)"
+    );
+  });
+
   it("renews only the current sending lease without changing delivery state", async () => {
     const renewedAt = new Date(now.getTime() + 40_000);
     const renewed = createMockDb(1, [{ alert_lease_updated_at: renewedAt }]);
@@ -3369,11 +3403,11 @@ describe("address poisoning persistence", () => {
     })).resolves.toBeNull();
   });
 
-  it("resolves callbacks only through an owner-bound mutation and maps CAS outcomes", async () => {
+  it("resolves callbacks only through an owner-bound mutation and returns no candidate facts on conflict", async () => {
     for (const [outcome, rows] of [
-      ["updated", [{ ...candidateRow, outcome: "updated", status: "confirmed" }]],
-      ["idempotent", [{ ...candidateRow, outcome: "idempotent", status: "confirmed" }]],
-      ["conflict", [{ ...candidateRow, outcome: "conflict", status: "dismissed" }]],
+      ["updated", [{ ...candidateRow, alert_locale: "ru", outcome: "updated", status: "confirmed" }]],
+      ["idempotent", [{ ...candidateRow, alert_locale: "ru", outcome: "idempotent", status: "confirmed" }]],
+      ["conflict", [{ outcome: "conflict" }]],
       ["unavailable", []]
     ] as const) {
       const mock = createMockDb(rows.length, [...rows]);
@@ -3383,13 +3417,24 @@ describe("address poisoning persistence", () => {
         resolution: "confirmed"
       });
       expect(result.outcome).toBe(outcome);
+      if (outcome === "updated" || outcome === "idempotent") {
+        expect(result.candidate).toMatchObject({ alertLocale: "ru", status: "confirmed" });
+      } else {
+        expect(result.candidate).toBeNull();
+      }
       const sql = compactSql(mock.queries[0].sql);
       expect(sql).toContain("join watched_wallets w");
       expect(sql).toContain("w.telegram_user_id = $2");
       expect(sql).toContain("candidate.callback_token = $1");
-      expect(sql).toContain("returning candidate.*");
+      expect(sql).toContain("returning candidate.id");
+      expect(sql).toContain("left join address_poisoning_candidates candidate on candidate.id = resolution.candidate_id");
       expect(sql).not.toContain("alert_attempts =");
       expect(sql).not.toContain("alert_lease_updated_at =");
+      expect(mock.queries).toHaveLength(1);
+      if (outcome === "conflict" || outcome === "unavailable") {
+        expect(rows[0] ?? {}).not.toHaveProperty("callback_token");
+        expect(rows[0] ?? {}).not.toHaveProperty("suspicious_sender");
+      }
     }
   });
 
@@ -3402,6 +3447,7 @@ describe("address poisoning persistence", () => {
       alert_fingerprint: "immutable-fingerprint",
       alert_attempts: 2,
       alert_lease_updated_at: null,
+      alert_locale: "ru",
       matched_outgoing_tx_hash: "original-outgoing"
     };
     const queries: { sql: string; params: unknown[] }[] = [];
@@ -3428,6 +3474,7 @@ describe("address poisoning persistence", () => {
     expect(replay.alertStatus).toBe("sent");
     expect(replay.alertAttempts).toBe(2);
     expect(replay.alertLeaseUpdatedAt).toBeNull();
+    expect(replay.alertLocale).toBe("ru");
     expect(queries.some((query) => query.sql.includes("insert into raw_evidence"))).toBe(false);
     expect(queries.some((query) => query.sql.includes("insert into address_poisoning_candidates"))).toBe(false);
     expect(queries.at(-1)?.sql).toBe("commit");
@@ -3502,24 +3549,15 @@ describe("address poisoning persistence", () => {
   it("returns updated callback timestamps from the successful CAS row", async () => {
     const resolvedAt = new Date("2026-07-12T12:01:00.000Z");
     const updatedAt = new Date("2026-07-12T12:01:01.000Z");
-    const queries: string[] = [];
-    const db = {
-      query: async (sql: string) => {
-        queries.push(sql);
-        const returnsUpdatedRow = compactSql(sql).includes("returning candidate.*");
-        return {
-          rowCount: 1,
-          rows: [{
-            ...candidateRow,
-            outcome: "updated",
-            status: returnsUpdatedRow ? "confirmed" : "candidate",
-            resolved_at: returnsUpdatedRow ? resolvedAt : null,
-            updated_at: returnsUpdatedRow ? updatedAt : candidateRow.updated_at
-          }]
-        };
-      }
-    } as unknown as Db;
-    const result = await resolveAddressPoisoningCandidate(db, {
+    const db = createMockDb(1, [{
+        ...candidateRow,
+        alert_locale: "en",
+        outcome: "updated",
+        status: "confirmed",
+        resolved_at: resolvedAt,
+        updated_at: updatedAt
+      }]);
+    const result = await resolveAddressPoisoningCandidate(db.db, {
       callbackToken: candidateRow.callback_token,
       telegramUserId: "42",
       resolution: "confirmed"
@@ -3528,18 +3566,20 @@ describe("address poisoning persistence", () => {
     expect(result.candidate?.status).toBe("confirmed");
     expect(result.candidate?.resolvedAt).toEqual(resolvedAt);
     expect(result.candidate?.updatedAt).toEqual(updatedAt);
+    expect(result.candidate?.alertLocale).toBe("en");
   });
 
   it("returns the existing resolved row accurately for an idempotent callback", async () => {
     const resolvedAt = new Date("2026-07-12T12:02:00.000Z");
     const updatedAt = new Date("2026-07-12T12:02:01.000Z");
     const db = createMockDb(1, [{
-      ...candidateRow,
-      outcome: "idempotent",
-      status: "dismissed",
-      resolved_at: resolvedAt,
-      updated_at: updatedAt
-    }]);
+        ...candidateRow,
+        alert_locale: "ru",
+        outcome: "idempotent",
+        status: "dismissed",
+        resolved_at: resolvedAt,
+        updated_at: updatedAt
+      }]);
     const result = await resolveAddressPoisoningCandidate(db.db, {
       callbackToken: candidateRow.callback_token,
       telegramUserId: "42",
@@ -3547,7 +3587,7 @@ describe("address poisoning persistence", () => {
     });
     expect(result).toMatchObject({
       outcome: "idempotent",
-      candidate: { status: "dismissed", resolvedAt, updatedAt }
+      candidate: { status: "dismissed", alertLocale: "ru", resolvedAt, updatedAt }
     });
   });
 
@@ -3929,6 +3969,42 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     expect(terminal.rows[0]).toMatchObject({ alert_attempts: 4, alert_status: "failed" });
   });
 
+  it("fixes the alert locale on first claim and preserves it after the user changes locale", async () => {
+    const candidate = await createCandidate(`${txPrefix}fixed-alert-locale`);
+    const first = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: eventAt,
+      staleSendingBefore: new Date(0)
+    }))[0];
+    expect(first.alertLocale).toBe("ru");
+    expect(first.locale).toBe("ru");
+    await pgDb.query("update telegram_users set locale = 'en' where telegram_user_id = $1", [telegramUserId]);
+    expect(await markAddressPoisoningAlertFailed(pgDb as unknown as Db, {
+      candidateId: candidate.id,
+      error: "telegram",
+      now: eventAt,
+      alertAttempt: first.alertAttempt,
+      alertLeaseVersion: first.alertLeaseVersion
+    })).toBe(true);
+    const retry = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: new Date(eventAt.getTime() + 30_000),
+      staleSendingBefore: new Date(0)
+    }))[0];
+    expect(retry.alertLocale).toBe("ru");
+    expect(retry.locale).toBe("ru");
+    const stored = await pgDb.query("select alert_locale from address_poisoning_candidates where id = $1", [candidate.id]);
+    expect(stored.rows[0]?.alert_locale).toBe("ru");
+  });
+
+  it("enforces the persisted alert-locale domain", async () => {
+    const candidate = await createCandidate(`${txPrefix}alert-locale-constraint`);
+    await expect(pgDb.query(
+      "update address_poisoning_candidates set alert_locale = 'de' where id = $1",
+      [candidate.id]
+    )).rejects.toThrow();
+  });
+
   it("backfills a legacy sending lease and reapplies migration 031 idempotently", async () => {
     const candidate = await createCandidate(`${txPrefix}migration-lease-backfill`);
     await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
@@ -3943,7 +4019,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     const migrationSql = readFileSync("migrations/031_address_poisoning_monitor.sql", "utf8");
     await pgDb.query(migrationSql);
     const first = await pgDb.query(
-      `select alert_status, updated_at, alert_lease_updated_at
+      `select alert_status, alert_locale, updated_at, alert_lease_updated_at
        from address_poisoning_candidates where id = $1`,
       [candidate.id]
     );
@@ -3953,7 +4029,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     });
     await pgDb.query(migrationSql);
     const reapplied = await pgDb.query(
-      `select alert_status, updated_at, alert_lease_updated_at
+      `select alert_status, alert_locale, updated_at, alert_lease_updated_at
        from address_poisoning_candidates where id = $1`,
       [candidate.id]
     );
@@ -4013,12 +4089,13 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       now: eventAt,
       staleSendingBefore: new Date(0)
     }))[0];
+    expect(delivery.alertLocale).toBe("ru");
     const resolved = await resolveAddressPoisoningCandidate(pgDb as unknown as Db, {
       callbackToken: candidate.callbackToken,
       telegramUserId,
       resolution: "confirmed"
     });
-    expect(resolved).toMatchObject({ outcome: "updated", candidate: { status: "confirmed" } });
+    expect(resolved).toMatchObject({ outcome: "updated", candidate: { status: "confirmed", alertLocale: "ru" } });
 
     const renewedAt = new Date(resolved.candidate!.updatedAt.getTime() + 40_000);
     const renewedLease = await renewAddressPoisoningAlertLease(pgDb as unknown as Db, {

@@ -5112,9 +5112,9 @@ export function createBot(
       const action = callback.kind === "address_poisoning_confirm" ? "confirm" : "dismiss";
       const resolution = action === "confirm" ? "confirmed" : "dismissed";
       const callerId = ctx.from?.id ? String(ctx.from.id) : null;
-      const locale = callerId ? await getBotLocale(db, callerId) : DEFAULT_BOT_LOCALE;
+      const callerLocale = callerId ? await getBotLocale(db, callerId) : DEFAULT_BOT_LOCALE;
       if (!callerId) {
-        await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(locale, action, false));
+        await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(callerLocale, action, false));
         return;
       }
 
@@ -5127,15 +5127,21 @@ export function createBot(
         });
       } catch (error) {
         console.error("Address poisoning decision failed", error);
-        await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(locale, action, false));
+        await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(callerLocale, action, false));
         return;
       }
 
       const candidate = resolved.candidate;
+      const alertLocale = candidate?.alertLocale ?? null;
       const available = (resolved.outcome === "updated" || resolved.outcome === "idempotent")
-        && candidate !== null;
-      await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(locale, action, available));
-      if (!available || !candidate) return;
+        && candidate !== null
+        && alertLocale !== null;
+      await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(
+        available ? alertLocale : callerLocale,
+        action,
+        available
+      ));
+      if (!available || !candidate || !alertLocale) return;
 
       try {
         await ctx.editMessageReplyMarkup({
@@ -5144,7 +5150,7 @@ export function createBot(
             incomingTxHash: candidate.suspiciousIncomingTxHash,
             outgoingTxHash: candidate.matchedOutgoingTxHash,
             terminal: true,
-            locale
+            locale: alertLocale
           })
         });
       } catch (error) {

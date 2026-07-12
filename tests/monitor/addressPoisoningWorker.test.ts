@@ -123,6 +123,7 @@ function deliveryCandidate(
     status: "candidate",
     alertFingerprint: "provisional-fingerprint",
     alertStatus: "sending",
+    alertLocale: "ru",
     alertAttempts: 1,
     alertLeaseUpdatedAt: NOW,
     alertNextRetryAt: null,
@@ -564,7 +565,7 @@ describe("address poisoning worker", () => {
   it("passes the candidate locale to the delivered keyboard", async () => {
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      deliveryCandidate("realtime", { locale: "en" })
+      deliveryCandidate("realtime", { alertLocale: "en", locale: "ru" })
     ]);
     const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
 
@@ -585,6 +586,25 @@ describe("address poisoning worker", () => {
       "I know this address",
       "Mark as replacement"
     ]);
+  });
+
+  it("does not send an alert without a locale fixed by the delivery claim", async () => {
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      deliveryCandidate("realtime", { alertLocale: null, locale: "en" })
+    ]);
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send), {
+      claimLimit: 1,
+      concurrency: 1
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(repo.markAlertFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      candidateId: "candidate-delivery-1",
+      error: expect.stringContaining("fixed alert locale")
+    }));
   });
 
   it("persists a bounded delivery failure and continues with later alerts", async () => {

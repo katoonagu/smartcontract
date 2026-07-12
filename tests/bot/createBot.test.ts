@@ -67,6 +67,7 @@ function poisoningCandidate(overrides: Partial<AddressPoisoningCandidate> = {}):
     status: "candidate",
     alertFingerprint: "poisoning-fingerprint-1",
     alertStatus: "sent",
+    alertLocale: "en",
     alertAttempts: 1,
     alertLeaseUpdatedAt: null,
     alertNextRetryAt: null,
@@ -1985,7 +1986,7 @@ describe("bot command and inline UX smoke coverage", () => {
         resolverInputs.push(input);
         return {
           outcome,
-          candidate: outcome === "conflict" ? poisoningCandidate({ status: "dismissed" }) : null
+          candidate: null
         };
       }
     });
@@ -2055,7 +2056,7 @@ describe("bot command and inline UX smoke coverage", () => {
   });
 
   it("localizes Russian poisoning decisions", async () => {
-    const candidate = poisoningCandidate({ status: "dismissed" });
+    const candidate = poisoningCandidate({ status: "dismissed", alertLocale: "ru" });
     const { bot, calls } = await createSmokeBot({
       defaultLocale: "ru",
       resolveAddressPoisoningCandidate: async () => ({ outcome: "updated", candidate })
@@ -2071,6 +2072,42 @@ describe("bot command and inline UX smoke coverage", () => {
       "Входящий перевод",
       "Исходящий перевод"
     ]);
+  });
+
+  it("uses the locale fixed on the sent alert even after the owner changes their preference", async () => {
+    const candidate = poisoningCandidate({ status: "confirmed", alertLocale: "ru" });
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "en",
+      resolveAddressPoisoningCandidate: async () => ({ outcome: "updated", candidate })
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId));
+
+    expect(calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Адрес помечен как подмена."
+    ]);
+    const edit = calls.find((call) => call.method === "editMessageReplyMarkup");
+    expect(edit?.payload.reply_markup.inline_keyboard[0].map((button: { text: string }) => button.text)).toEqual([
+      "Входящий перевод",
+      "Исходящий перевод"
+    ]);
+  });
+
+  it("fails closed when an authorized candidate has no fixed alert locale", async () => {
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "en",
+      resolveAddressPoisoningCandidate: async () => ({
+        outcome: "idempotent",
+        candidate: poisoningCandidate({ status: "confirmed", alertLocale: null })
+      })
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId));
+
+    expect(calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Action unavailable. A decision may already have been made."
+    ]);
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(false);
   });
 
   it("does not answer twice or reverse state when the terminal keyboard edit fails", async () => {

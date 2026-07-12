@@ -50,6 +50,7 @@ function candidate(overrides: Partial<AddressPoisoningCandidateDelivery> = {}): 
     status: "candidate",
     alertFingerprint: "provisional-fingerprint",
     alertStatus: "sending",
+    alertLocale: "ru",
     alertAttempts: 1,
     alertLeaseUpdatedAt: new Date("2026-07-01T12:47:43.000Z"),
     alertNextRetryAt: null,

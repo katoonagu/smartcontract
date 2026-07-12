@@ -1910,6 +1910,7 @@ function mapAddressPoisoningCandidateRow(row: Record<string, any>): AddressPoiso
     status: parseAddressPoisoningCandidateStatus(row.status),
     alertFingerprint: row.alert_fingerprint,
     alertStatus: parseAddressPoisoningAlertStatus(row.alert_status),
+    alertLocale: normalizeNullableBotLocale(row.alert_locale),
     alertAttempts: Number(row.alert_attempts ?? 0),
     alertLeaseUpdatedAt: row.alert_lease_updated_at ?? null,
     alertNextRetryAt: row.alert_next_retry_at ?? null,
@@ -1929,6 +1930,9 @@ function mapAddressPoisoningCandidateRow(row: Record<string, any>): AddressPoiso
 
 function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): AddressPoisoningCandidateDelivery {
   const candidate = mapAddressPoisoningCandidateRow(row);
+  if (candidate.alertLocale === null) {
+    throw new Error("Address poisoning delivery row is missing its fixed alert locale");
+  }
   if (candidate.alertAttempts <= 0 || candidate.alertLeaseUpdatedAt === null) {
     throw new Error("Address poisoning delivery row is missing its dedicated lease generation");
   }
@@ -1936,7 +1940,7 @@ function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): Addr
     ...candidate,
     walletAddress: row.wallet_address,
     telegramUserId: row.telegram_user_id,
-    locale: normalizeNullableBotLocale(row.locale),
+    locale: candidate.alertLocale,
     alertMode: parseWalletAlertMode(row.alert_mode),
     alertAttempt: candidate.alertAttempts,
     alertLeaseVersion: candidate.alertLeaseUpdatedAt
@@ -3877,6 +3881,7 @@ export async function claimAddressPoisoningAlertsForDelivery(
      )
      update address_poisoning_candidates candidate
      set alert_status = 'sending',
+       alert_locale = coalesce(candidate.alert_locale, u.locale),
        alert_attempts = candidate.alert_attempts + 1,
        alert_lease_updated_at = $2,
        alert_next_retry_at = null,
@@ -3886,7 +3891,7 @@ export async function claimAddressPoisoningAlertsForDelivery(
      where candidate.id = claimed.id
        and w.id = candidate.watched_wallet_id
        and u.telegram_user_id = w.telegram_user_id
-     returning candidate.*, w.address as wallet_address, w.telegram_user_id, w.alert_mode, u.locale`,
+     returning candidate.*, w.address as wallet_address, w.telegram_user_id, w.alert_mode`,
     [input.limit, input.now, input.staleSendingBefore]
   );
   return result.rows.map(mapAddressPoisoningCandidateDeliveryRow);
@@ -4010,7 +4015,7 @@ export async function resolveAddressPoisoningCandidate(
 }> {
   const result = await db.query(
     `with eligible as (
-       select candidate.*
+       select candidate.id, candidate.status, candidate.resolved_at, candidate.updated_at
        from address_poisoning_candidates candidate
        join watched_wallets w on w.id = candidate.watched_wallet_id
        where candidate.callback_token = $1 and w.telegram_user_id = $2
@@ -4020,22 +4025,40 @@ export async function resolveAddressPoisoningCandidate(
        set status = $3, resolved_at = now(), updated_at = now()
        from eligible
        where candidate.id = eligible.id and candidate.status = 'candidate'
-       returning candidate.*
+       returning candidate.id, candidate.status, candidate.resolved_at, candidate.updated_at
+     ), resolution as (
+       select updated.id as candidate_id, 'updated' as outcome,
+         updated.status as resolved_status, updated.resolved_at as resolution_resolved_at,
+         updated.updated_at as resolution_updated_at
+       from updated
+       union all
+       select case when eligible.status = $3 then eligible.id else null end as candidate_id,
+         case when eligible.status = $3 then 'idempotent' else 'conflict' end as outcome,
+         case when eligible.status = $3 then eligible.status else null end as resolved_status,
+         case when eligible.status = $3 then eligible.resolved_at else null end as resolution_resolved_at,
+         case when eligible.status = $3 then eligible.updated_at else null end as resolution_updated_at
+       from eligible
+       where not exists (select 1 from updated)
      )
-     select updated.*, 'updated' as outcome
-     from updated
-     union all
-     select eligible.*,
-       case when eligible.status = $3 then 'idempotent' else 'conflict' end as outcome
-     from eligible
-     where not exists (select 1 from updated)`,
+     select candidate.*, resolution.outcome, resolution.resolved_status,
+       resolution.resolution_resolved_at, resolution.resolution_updated_at
+     from resolution
+     left join address_poisoning_candidates candidate on candidate.id = resolution.candidate_id`,
     [input.callbackToken, input.telegramUserId, input.resolution]
   );
   const row = result.rows[0];
   if (!row) return { outcome: "unavailable", candidate: null };
+  if (row.outcome === "conflict" || !row.id) {
+    return { outcome: "conflict", candidate: null };
+  }
   return {
-    outcome: row.outcome as "updated" | "idempotent" | "conflict",
-    candidate: mapAddressPoisoningCandidateRow(row)
+    outcome: row.outcome as "updated" | "idempotent",
+    candidate: mapAddressPoisoningCandidateRow({
+      ...row,
+      status: row.resolved_status ?? row.status,
+      resolved_at: row.resolution_resolved_at ?? row.resolved_at,
+      updated_at: row.resolution_updated_at ?? row.updated_at
+    })
   };
 }
 

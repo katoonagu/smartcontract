@@ -88,6 +88,7 @@ create table if not exists address_poisoning_candidates (
   status text not null default 'candidate',
   alert_fingerprint text not null unique,
   alert_status text not null default 'pending',
+  alert_locale text,
   alert_attempts integer not null default 0,
   alert_lease_updated_at timestamptz,
   alert_next_retry_at timestamptz,
@@ -104,7 +105,8 @@ create table if not exists address_poisoning_candidates (
 );
 
 alter table address_poisoning_candidates
-  add column if not exists alert_lease_updated_at timestamptz;
+  add column if not exists alert_lease_updated_at timestamptz,
+  add column if not exists alert_locale text;
 
 update address_poisoning_candidates
 set alert_lease_updated_at = updated_at
@@ -130,6 +132,11 @@ alter table address_poisoning_candidates drop constraint if exists address_poiso
 alter table address_poisoning_candidates
   add constraint address_poisoning_candidates_alert_status_check
   check (alert_status in ('pending','sending','sent','failed','skipped'));
+
+alter table address_poisoning_candidates drop constraint if exists address_poisoning_candidates_alert_locale_check;
+alter table address_poisoning_candidates
+  add constraint address_poisoning_candidates_alert_locale_check
+  check (alert_locale is null or alert_locale in ('ru','en'));
 
 alter table address_poisoning_candidates drop constraint if exists address_poisoning_candidates_progress_check;
 alter table address_poisoning_candidates

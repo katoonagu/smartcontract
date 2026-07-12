@@ -14,7 +14,6 @@ import {
 import { authoritativeRegisteredService } from "../forensics/serviceClassifier";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
-import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import {
   addressPoisoningAlertFingerprint,
   addressPoisoningAlertKeyboard,
@@ -625,14 +624,18 @@ async function deliverCandidateAlert(
   let keyboard: ReturnType<typeof addressPoisoningAlertKeyboard>;
   let fingerprint: string;
   try {
-    message = formatAddressPoisoningAlert(candidate);
+    if (candidate.alertLocale === null) {
+      throw new Error("Address poisoning delivery is missing its fixed alert locale");
+    }
+    const localizedCandidate = { ...candidate, locale: candidate.alertLocale };
+    message = formatAddressPoisoningAlert(localizedCandidate);
     keyboard = addressPoisoningAlertKeyboard({
       callbackToken: candidate.callbackToken,
       incomingTxHash: candidate.suspiciousIncomingTxHash,
       outgoingTxHash: candidate.matchedOutgoingTxHash,
-      locale: candidate.locale ?? DEFAULT_BOT_LOCALE
+      locale: candidate.alertLocale
     });
-    fingerprint = addressPoisoningAlertFingerprint(candidate);
+    fingerprint = addressPoisoningAlertFingerprint(localizedCandidate);
   } catch (error) {
     await markDeliveryFailure(deps, repository, candidate, error, metrics, currentTime(deps), logger);
     return;

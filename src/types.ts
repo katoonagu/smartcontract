@@ -216,6 +216,8 @@ export type AddressPoisoningCandidate = {
   status: AddressPoisoningCandidateStatus;
   alertFingerprint: string;
   alertStatus: AddressPoisoningAlertStatus;
+  /** Locale fixed atomically when this alert first becomes delivery-owned. */
+  alertLocale: BotLocale | null;
   /** Delivery executions consumed by claims, including stale-sending reclaims; maximum 4. */
   alertAttempts: number;
   alertLeaseUpdatedAt: Date | null;
