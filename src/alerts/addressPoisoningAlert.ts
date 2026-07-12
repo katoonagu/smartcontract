@@ -136,17 +136,19 @@ export function addressPoisoningAlertKeyboard(input: {
   incomingTxHash: string;
   outgoingTxHash: string;
   terminal?: boolean;
+  locale?: BotLocale;
 }): InlineKeyboard {
   if (!CALLBACK_TOKEN.test(input.callbackToken)) throw new Error("Invalid address-poisoning callback token");
+  const english = input.locale === "en";
   const keyboard = new InlineKeyboard()
-    .url("Входящий перевод", tronscanTransactionUrl(input.incomingTxHash))
-    .url("Исходящий перевод", tronscanTransactionUrl(input.outgoingTxHash));
+    .url(english ? "Incoming transfer" : "Входящий перевод", tronscanTransactionUrl(input.incomingTxHash))
+    .url(english ? "Outgoing transfer" : "Исходящий перевод", tronscanTransactionUrl(input.outgoingTxHash));
   if (!input.terminal) {
     keyboard
       .row()
-      .text("Это знакомый адрес", `poison:dismiss:${input.callbackToken}`)
+      .text(english ? "I know this address" : "Это знакомый адрес", `poison:dismiss:${input.callbackToken}`)
       .row()
-      .text("Пометить как подмену", `poison:confirm:${input.callbackToken}`);
+      .text(english ? "Mark as replacement" : "Пометить как подмену", `poison:confirm:${input.callbackToken}`);
   }
   return keyboard;
 }
@@ -158,7 +160,8 @@ export function addressPoisoningAlertFingerprint(candidate: AddressPoisoningCand
     callbackToken: candidate.callbackToken,
     incomingTxHash: candidate.suspiciousIncomingTxHash,
     outgoingTxHash: candidate.matchedOutgoingTxHash,
-    terminal: candidate.status !== "candidate"
+    terminal: candidate.status !== "candidate",
+    locale
   });
   const facts = {
     policy: ADDRESS_POISONING_ALERT_FORMAT_VERSION,

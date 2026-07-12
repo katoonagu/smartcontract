@@ -161,6 +161,39 @@ describe("address poisoning Telegram alert", () => {
     })).toThrow("callback token");
   });
 
+  it("localizes every English keyboard label while preserving URLs and callbacks", () => {
+    const keyboard = addressPoisoningAlertKeyboard({
+      callbackToken: CALLBACK_TOKEN,
+      incomingTxHash: THJ_POISONING_CASE.incomingTxHash,
+      outgoingTxHash: THJ_POISONING_CASE.outgoingTxHash,
+      locale: "en"
+    });
+    const buttons = keyboard.inline_keyboard.flat();
+    expect(buttons.map((button) => button.text)).toEqual([
+      "Incoming transfer",
+      "Outgoing transfer",
+      "I know this address",
+      "Mark as replacement"
+    ]);
+    expect(buttons.every((button) => !/[А-Яа-яЁё]/.test(button.text))).toBe(true);
+    expect(buttons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: tronscanTransactionUrl(THJ_POISONING_CASE.incomingTxHash) }),
+      expect.objectContaining({ url: tronscanTransactionUrl(THJ_POISONING_CASE.outgoingTxHash) }),
+      expect.objectContaining({ callback_data: `poison:dismiss:${CALLBACK_TOKEN}` }),
+      expect.objectContaining({ callback_data: `poison:confirm:${CALLBACK_TOKEN}` })
+    ]));
+
+    const terminal = addressPoisoningAlertKeyboard({
+      callbackToken: CALLBACK_TOKEN,
+      incomingTxHash: THJ_POISONING_CASE.incomingTxHash,
+      outgoingTxHash: THJ_POISONING_CASE.outgoingTxHash,
+      terminal: true,
+      locale: "en"
+    });
+    expect(terminal.inline_keyboard.flat().map((button) => button.text))
+      .toEqual(["Incoming transfer", "Outgoing transfer"]);
+  });
+
   it("fingerprints the policy, locale, immutable evidence facts, rendered text, and buttons", () => {
     const base = candidate();
     const first = addressPoisoningAlertFingerprint(base);

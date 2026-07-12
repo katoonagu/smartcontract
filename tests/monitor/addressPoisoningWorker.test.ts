@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import {
+  ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS,
   ADDRESS_POISONING_WORKER_DEFAULTS,
   runSingleAddressPoisoningCycle,
   type AddressPoisoningWorkerRepository
@@ -513,7 +514,9 @@ describe("address poisoning worker", () => {
 
   it.each(["realtime", "risk_only", "digest"] as const)("delivers %s safety alerts immediately even when no checks were claimed", async (mode) => {
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate(mode)]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate(mode)])
+      .mockResolvedValue([]);
     const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001, text: "accepted" }));
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
@@ -537,7 +540,9 @@ describe("address poisoning worker", () => {
 
   it("marks paused alerts skipped under the claimed lease without sending", async () => {
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate("paused")]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate("paused")])
+      .mockResolvedValue([]);
     const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
@@ -551,12 +556,38 @@ describe("address poisoning worker", () => {
     expect(metrics.alertsSkipped).toBe(1);
   });
 
+  it("passes the candidate locale to the delivered keyboard", async () => {
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      deliveryCandidate("realtime", { locale: "en" })
+    ]);
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send), {
+      claimLimit: 1,
+      concurrency: 1
+    });
+
+    const calls = send.mock.calls as unknown as Array<[
+      string,
+      string,
+      { reply_markup: { inline_keyboard: Array<Array<{ text: string }>> } }
+    ]>;
+    const keyboard = calls[0]![2].reply_markup;
+    expect(keyboard.inline_keyboard.flat().map((button) => button.text)).toEqual([
+      "Incoming transfer",
+      "Outgoing transfer",
+      "I know this address",
+      "Mark as replacement"
+    ]);
+  });
+
   it("persists a bounded delivery failure and continues with later alerts", async () => {
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([
-      deliveryCandidate("realtime", { id: "first" }),
-      deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" })
-    ]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate("realtime", { id: "first" })])
+      .mockResolvedValueOnce([deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" })])
+      .mockResolvedValue([]);
     const send = vi.fn()
       .mockRejectedValueOnce(new Error(`Telegram refused ${"x".repeat(2_000)}\nsecret`))
       .mockResolvedValueOnce({ chat: { id: 42 }, message_id: 1002 });
@@ -578,10 +609,19 @@ describe("address poisoning worker", () => {
   });
 
   it("leaves sending retryable when Telegram accepted but sent persistence crashes", async () => {
-    const state = { status: "sending" as "sending" | "sent" | "failed" };
+    const state = {
+      status: "pending" as "pending" | "sending" | "sent" | "failed",
+      updatedAt: NOW
+    };
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async () =>
-      state.status === "sending" ? [deliveryCandidate()] : []);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      const claimable = state.status === "pending"
+        || (state.status === "sending" && state.updatedAt < input.staleSendingBefore);
+      if (!claimable) return [];
+      state.status = "sending";
+      state.updatedAt = input.now;
+      return [deliveryCandidate("realtime", { leaseVersion: input.now, updatedAt: input.now })];
+    });
     (repo.markAlertSent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("database connection lost"));
     (repo.markAlertFailed as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       state.status = "failed";
@@ -595,15 +635,19 @@ describe("address poisoning worker", () => {
     expect(repo.markAlertFailed).not.toHaveBeenCalled();
     expect(state.status).toBe("sending");
     expect(metrics.alertsPersistenceFailed).toBe(1);
-    expect(await repo.claimAlerts({} as never, { limit: 1, now: NOW, staleSendingBefore: NOW })).toHaveLength(1);
+    expect(await repo.claimAlerts({} as never, {
+      limit: 1,
+      now: new Date(NOW.getTime() + ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS + 1),
+      staleSendingBefore: new Date(NOW.getTime() + 1)
+    })).toHaveLength(1);
   });
 
   it("treats a stale sent CAS as benign and does not let one failed alert stop others", async () => {
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([
-      deliveryCandidate("realtime", { id: "stale" }),
-      deliveryCandidate("realtime", { id: "fresh", callbackToken: "AbCdEf0123_-xyZ8" })
-    ]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate("realtime", { id: "stale" })])
+      .mockResolvedValueOnce([deliveryCandidate("realtime", { id: "fresh", callbackToken: "AbCdEf0123_-xyZ8" })])
+      .mockResolvedValue([]);
     (repo.markAlertSent as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
@@ -621,7 +665,7 @@ describe("address poisoning worker", () => {
     };
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      if (state.status === "sent") return [];
+      if (state.status !== "pending") return [];
       state.status = "sending";
       return [deliveryCandidate()];
     });
@@ -644,15 +688,20 @@ describe("address poisoning worker", () => {
   it("anchors the sent timestamp after Grammy accepts the message and persists Grammy ids", async () => {
     const startedAt = new Date("2026-07-01T12:48:00.000Z");
     const acceptedAt = new Date("2026-07-01T12:48:07.250Z");
-    const times = [startedAt, acceptedAt];
+    const times = [startedAt, startedAt, startedAt, acceptedAt];
     const clock = vi.fn(() => times.shift()!);
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate()]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate()])
+      .mockResolvedValue([]);
     const send = vi.fn(async () => ({ chat: { id: -1001234567890 }, message_id: 9876, date: 1 }));
 
-    await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock), {
+      claimLimit: 1,
+      concurrency: 1
+    });
 
-    expect(clock).toHaveBeenCalledTimes(2);
+    expect(clock).toHaveBeenCalledTimes(4);
     expect(repo.markAlertSent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       telegramChatId: "-1001234567890",
       telegramMessageId: "9876",
@@ -663,17 +712,19 @@ describe("address poisoning worker", () => {
   it("anchors retry scheduling to the actual Telegram failure time", async () => {
     const startedAt = new Date("2026-07-01T12:48:00.000Z");
     const failedAt = new Date("2026-07-01T12:48:09.500Z");
-    const times = [startedAt, failedAt];
+    const times = [startedAt, startedAt, startedAt, failedAt];
     const clock = vi.fn(() => times.shift()!);
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate()]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate()])
+      .mockResolvedValue([]);
 
     await runSingleAddressPoisoningCycle(deps(
       repo,
       undefined,
       vi.fn(async () => { throw new Error("Telegram timeout"); }),
       clock
-    ));
+    ), { claimLimit: 1, concurrency: 1 });
 
     expect(repo.markAlertFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ now: failedAt }));
   });
@@ -682,20 +733,180 @@ describe("address poisoning worker", () => {
     const startedAt = new Date("2026-07-01T12:48:00.000Z");
     const firstAcceptedAt = new Date("2026-07-01T12:48:01.000Z");
     const secondAcceptedAt = new Date("2026-07-01T12:48:04.000Z");
-    const times = [startedAt, firstAcceptedAt, secondAcceptedAt];
+    const times = [
+      startedAt,
+      startedAt,
+      startedAt,
+      firstAcceptedAt,
+      firstAcceptedAt,
+      firstAcceptedAt,
+      secondAcceptedAt
+    ];
     const clock = vi.fn(() => times.shift()!);
     const repo = repository();
-    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([
-      deliveryCandidate("realtime", { id: "first" }),
-      deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" })
-    ]);
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate("realtime", { id: "first" })])
+      .mockResolvedValueOnce([deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" })])
+      .mockResolvedValue([]);
 
     await runSingleAddressPoisoningCycle(deps(repo, undefined, vi.fn(async () => ({
       chat: { id: 42 }, message_id: 1001
-    })), clock));
+    })), clock), { claimLimit: 2, concurrency: 1 });
 
     expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[1].sentAt))
       .toEqual([firstAcceptedAt, secondAcceptedAt]);
+  });
+
+  it("claims each queued alert only immediately before its bounded send slot is free", async () => {
+    let releaseFirst!: (value: { chat: { id: number }; message_id: number }) => void;
+    const firstSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const events: string[] = [];
+    const queued = [
+      deliveryCandidate("realtime", { id: "first" }),
+      deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" }),
+      deliveryCandidate("realtime", { id: "third", callbackToken: "AbCdEf0123_-xyZ7" })
+    ];
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      expect(input.limit).toBe(1);
+      const next = queued.shift();
+      events.push(next ? `claim:${next.id}` : "claim:empty");
+      return next ? [next] : [];
+    });
+    let sendCount = 0;
+    const send = vi.fn(async () => {
+      sendCount += 1;
+      events.push(`send:${sendCount}`);
+      if (sendCount === 1) return firstSend;
+      return { chat: { id: 42 }, message_id: 1000 + sendCount };
+    });
+
+    const cycle = runSingleAddressPoisoningCycle(deps(repo, undefined, send), {
+      claimLimit: 3,
+      concurrency: 1
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(events).toEqual(["claim:first", "send:1"]);
+
+    releaseFirst({ chat: { id: 42 }, message_id: 1001 });
+    await cycle;
+
+    expect(events).toEqual([
+      "claim:first", "send:1",
+      "claim:second", "send:2",
+      "claim:third", "send:3"
+    ]);
+    expect(repo.claimAlerts).toHaveBeenCalledTimes(3);
+  });
+
+  it("shares one alert claim budget across both delivery consumers", async () => {
+    let candidateIndex = 0;
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      candidateIndex += 1;
+      return [deliveryCandidate("realtime", {
+        id: `candidate-${candidateIndex}`,
+        callbackToken: `AbCdEf0123_-xy${candidateIndex}Z`
+      })];
+    });
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo), {
+      claimLimit: 3,
+      concurrency: 2
+    });
+
+    expect(repo.claimAlerts).toHaveBeenCalledTimes(3);
+    expect(metrics.alertsClaimed).toBe(3);
+    expect(metrics.alertsSent).toBe(3);
+  });
+
+  it("does not call Telegram when the freshly claimed lease is already known stale", async () => {
+    const claimAt = NOW;
+    const times = [
+      claimAt,
+      claimAt,
+      new Date(claimAt.getTime() + ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS + 1)
+    ];
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      deliveryCandidate("realtime", { leaseVersion: claimAt, updatedAt: claimAt })
+    ]);
+    const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(
+      repo,
+      undefined,
+      send,
+      () => times.shift()!
+    ), { claimLimit: 1, concurrency: 1 });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(repo.markAlertSent).not.toHaveBeenCalled();
+    expect(repo.markAlertFailed).not.toHaveBeenCalled();
+    expect(metrics.alertsStale).toBe(1);
+  });
+
+  it("does not reclaim an active send at 31 seconds but reclaims it after the delivery lease", async () => {
+    const startedAt = NOW.getTime();
+    let currentMs = startedAt;
+    const clock = () => new Date(currentMs);
+    let releaseFirst!: (value: { chat: { id: number }; message_id: number }) => void;
+    const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const state: { status: "pending" | "sending" | "sent"; updatedAt: Date; attempts: number } = {
+      status: "pending",
+      updatedAt: new Date(0),
+      attempts: 0
+    };
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      const claimable = state.status === "pending"
+        || (state.status === "sending" && state.updatedAt < input.staleSendingBefore);
+      if (!claimable || state.attempts >= 4) return [];
+      state.status = "sending";
+      state.updatedAt = input.now;
+      state.attempts += 1;
+      return [deliveryCandidate("realtime", {
+        alertAttempts: state.attempts,
+        updatedAt: input.now,
+        leaseVersion: input.now
+      })];
+    });
+    (repo.markAlertSent as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      if (state.status !== "sending" || state.updatedAt.getTime() !== input.leaseVersion.getTime()) return false;
+      state.status = "sent";
+      return true;
+    });
+    let sendCount = 0;
+    const send = vi.fn(async () => {
+      sendCount += 1;
+      if (sendCount === 1) return heldSend;
+      return { chat: { id: 42 }, message_id: 1000 + sendCount };
+    });
+
+    const workerA = runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    currentMs = startedAt + 31_000;
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+    expect(send).toHaveBeenCalledTimes(1);
+    const workerBClaim = (repo.claimAlerts as ReturnType<typeof vi.fn>).mock.calls.find((call) =>
+      (call[1].now as Date).getTime() === currentMs);
+    expect((workerBClaim![1].staleSendingBefore as Date).getTime())
+      .toBe(currentMs - ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS);
+
+    currentMs = startedAt + ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS + 1;
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(state.attempts).toBe(2);
+    expect(state.status).toBe("sent");
+
+    releaseFirst({ chat: { id: 42 }, message_id: 1001 });
+    await workerA;
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
 

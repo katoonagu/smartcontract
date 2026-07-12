@@ -14,6 +14,7 @@ import {
 import { authoritativeRegisteredService } from "../forensics/serviceClassifier";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
+import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import {
   addressPoisoningAlertFingerprint,
   addressPoisoningAlertKeyboard,
@@ -49,6 +50,10 @@ export const ADDRESS_POISONING_WORKER_DEFAULTS = {
   maxPages: 5,
   retryDelayMs: 30_000
 } as const;
+
+// Telegram sends have no tighter enforced request timeout in the current adapter. Keep an
+// active send leased for two minutes before another app worker may retry it.
+export const ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS = 120_000;
 
 const LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
@@ -555,11 +560,19 @@ async function deliverCandidateAlert(
     keyboard = addressPoisoningAlertKeyboard({
       callbackToken: candidate.callbackToken,
       incomingTxHash: candidate.suspiciousIncomingTxHash,
-      outgoingTxHash: candidate.matchedOutgoingTxHash
+      outgoingTxHash: candidate.matchedOutgoingTxHash,
+      locale: candidate.locale ?? DEFAULT_BOT_LOCALE
     });
     fingerprint = addressPoisoningAlertFingerprint(candidate);
   } catch (error) {
     await markDeliveryFailure(deps, repository, candidate, error, metrics, currentTime(deps), logger);
+    return;
+  }
+
+  const sendStartedAt = currentTime(deps);
+  if (sendStartedAt.getTime() - candidate.leaseVersion.getTime() > ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS) {
+    metrics.alertsStale += 1;
+    logger.warn("address_poisoning_alert_lease_expired_before_send", { candidateId: candidate.id });
     return;
   }
 
@@ -600,25 +613,43 @@ async function deliverCandidateAlerts(
   repository: AddressPoisoningWorkerRepository,
   options: ReturnType<typeof workerOptions>,
   metrics: AddressPoisoningCycleMetrics,
-  now: Date,
   logger: Logger
 ): Promise<void> {
-  let claimed: AddressPoisoningCandidateDelivery[];
-  try {
-    claimed = await repository.claimAlerts(deps.db, {
-      limit: options.claimLimit,
-      now,
-      staleSendingBefore: new Date(now.getTime() - options.retryDelayMs)
-    });
-  } catch (error) {
-    metrics.alertsPersistenceFailed += 1;
-    logger.error("address_poisoning_alert_claim_failed", { error: boundedDeliveryError(error) });
-    return;
-  }
-  metrics.alertsClaimed = claimed.length;
-  for (const candidate of claimed) {
-    await deliverCandidateAlert(deps, repository, candidate, metrics, logger);
-  }
+  let claimReservations = 0;
+  let stopped = false;
+  // ponytail: this reservation has no await, so the JS event loop makes the per-process
+  // budget atomic; cross-process exclusivity remains the repository's SKIP LOCKED job.
+  const reserveClaim = (): boolean => {
+    if (stopped || claimReservations >= options.claimLimit) return false;
+    claimReservations += 1;
+    return true;
+  };
+  const consume = async () => {
+    while (reserveClaim()) {
+      const claimAt = currentTime(deps);
+      let claimed: AddressPoisoningCandidateDelivery[];
+      try {
+        claimed = await repository.claimAlerts(deps.db, {
+          limit: 1,
+          now: claimAt,
+          staleSendingBefore: new Date(claimAt.getTime() - ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS)
+        });
+      } catch (error) {
+        stopped = true;
+        metrics.alertsPersistenceFailed += 1;
+        logger.error("address_poisoning_alert_claim_failed", { error: boundedDeliveryError(error) });
+        return;
+      }
+      const candidate = claimed[0];
+      if (!candidate) {
+        stopped = true;
+        return;
+      }
+      metrics.alertsClaimed += 1;
+      await deliverCandidateAlert(deps, repository, candidate, metrics, logger);
+    }
+  };
+  await Promise.all(Array.from({ length: options.concurrency }, consume));
 }
 
 export async function runSingleAddressPoisoningCycle(
@@ -667,6 +698,6 @@ export async function runSingleAddressPoisoningCycle(
     };
     await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));
   }
-  await deliverCandidateAlerts(deps, repository, options, metrics, now, logger);
+  await deliverCandidateAlerts(deps, repository, options, metrics, logger);
   return metrics;
 }
