@@ -3500,6 +3500,7 @@ describe("address poisoning persistence", () => {
     const metrics = createMockDb(1, [{ queue_depth: "4", oldest_queue_age_ms: "91000" }]);
     expect(await getAddressPoisoningQueueMetrics(metrics.db, now)).toEqual({ queueDepth: 4, oldestQueueAgeMs: 91000 });
     expect(compactSql(metrics.queries[0].sql)).toContain("extract(epoch from ($1 - min(timestamp))) * 1000");
+    expect(compactSql(metrics.queries[0].sql)).toContain("poisoning_attempts < 4");
   });
 });
 
@@ -3706,5 +3707,29 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
          (select count(*)::int from risk_signal_observations) as observations`
     );
     expect(counts.rows[0]).toEqual({ candidates: 0, evidence: 0, observations: 0 });
+  });
+
+  it("counts a due third retry while excluding the terminal fourth failure", async () => {
+    const metricsAt = new Date(eventAt.getTime() + 121_000);
+    await pgDb.query(
+      `insert into observed_transactions (
+         tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+         poisoning_check_status, poisoning_attempts, poisoning_next_retry_at
+       ) values
+         ('pg-due-third-retry', $1, $2, $3, 'USDT', '10', $4, 'failed', 3, $5),
+         ('pg-terminal-fourth', $1, $2, $3, 'USDT', '10', $6, 'failed', 4, null)`,
+      [
+        walletId,
+        sender,
+        walletAddress,
+        new Date(metricsAt.getTime() - 5_000),
+        new Date(metricsAt.getTime() - 1),
+        new Date(metricsAt.getTime() - 100_000)
+      ]
+    );
+    expect(await getAddressPoisoningQueueMetrics(pgDb as unknown as Db, metricsAt)).toEqual({
+      queueDepth: 1,
+      oldestQueueAgeMs: 5000
+    });
   });
 });

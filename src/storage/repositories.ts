@@ -3945,7 +3945,7 @@ export async function getAddressPoisoningQueueMetrics(
        extract(epoch from ($1 - min(timestamp))) * 1000 as oldest_queue_age_ms
      from observed_transactions
      where poisoning_check_status = 'pending'
-       or (poisoning_check_status = 'failed' and poisoning_attempts < 3 and coalesce(poisoning_next_retry_at, $1) <= $1)
+       or (poisoning_check_status = 'failed' and poisoning_attempts < 4 and coalesce(poisoning_next_retry_at, $1) <= $1)
        or (poisoning_check_status = 'inconclusive' and poisoning_page_count < 5 and coalesce(poisoning_next_retry_at, $1) <= $1)`,
     [now]
   );
