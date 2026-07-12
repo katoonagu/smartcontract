@@ -319,9 +319,10 @@ supersedes:
 ## Address-Poisoning Protection
 
 - Telegram has no idempotent send operation. A crash after Telegram accepts the
-  warning but before the database records that delivery can cause one bounded
-  duplicate on retry. Retry and lease mechanics are documented in
-  `docs/knowledge/03-job-lifecycle.md` and `08-admin-and-bot-ux.md`.
+  warning but before the database records that delivery can cause the warning
+  to be delivered more than once. Retry and send attempts are bounded; their
+  mechanics are documented in `docs/knowledge/03-job-lifecycle.md` and
+  `08-admin-and-bot-ux.md`.
 - The current protection starts after a small incoming official-USDT lure is
   observed. A recipient precheck before signing or broadcasting is the next
   phase. The saved candidate, callback status, raw provider facts, normalized

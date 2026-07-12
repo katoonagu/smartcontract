@@ -265,7 +265,8 @@ TronScan transaction links, and owner-only buttons to mark the address as
 familiar or as a replacement.
 `realtime`, `risk_only`, and `digest` receive this warning immediately;
 `paused` does not. Failed deliveries retry. In a rare process-restart window,
-the same warning may arrive twice. See the
+the same warning may be delivered more than once, but retry attempts are
+bounded. See the
 [delivery details](docs/knowledge/08-admin-and-bot-ux.md#address-poisoning-warning).
 
 This signal is wallet safety, not AML. It is stored with score impact `0` and
