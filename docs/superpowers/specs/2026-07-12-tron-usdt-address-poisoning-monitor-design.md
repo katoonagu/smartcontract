@@ -186,6 +186,15 @@ contradictory totals, an oversized page, a short nonterminal page, unexplained
 no progress, or overlap never proves complete negative coverage. Such a result
 stays partial/inconclusive rather than becoming `clear`.
 
+Every raw provider row receives a pagination identity. Rows with a transaction
+hash use that hash plus an event index when available. A row without a
+transaction hash is retained for audit under a content fingerprint, but its
+`:raw:` identity makes provider metadata incomplete. Even one tx-less row in an
+otherwise exhausted range cannot support negative `clear`. If its content
+changes later, both fingerprints remain auditable and coverage still stays
+partial. Persisted version-2 or legacy lookup state without complete raw-row
+identity evidence also fails closed when it already contains provider rows.
+
 A positive visual/amount match is usable with partial coverage. An exact
 disqualifier is also usable: an earlier direct relationship, an exact
 `service_admin` `trusted` or `false_positive` label for the sender, or an exact
@@ -193,11 +202,19 @@ authoritative service-address registry match. Without a candidate or an exact
 disqualifier, a truncated lookup is `inconclusive`, never `clear`.
 
 The lightweight worker may continue an inconclusive lookup by one saved page
-per claim, up to five pages or 500 transfers for the event. It stores the
-cursor, oldest covered timestamp, page count, and fetched-transfer count. If it
-still cannot cover the full 24-hour window, it remains `inconclusive` after the
-retry budget is exhausted; it does not become clean by default. A sender must
-never be described as new outside the checked window.
+per claim. Hard product limits are five logical pages and at most 500 entries
+in each top-level evidence collection: transfers, provider facts, accepted ids,
+raw ids, and provider identities. Each page is limited to 100
+entries in each raw-id or overlap-id list and two raw plus two canonical
+response hashes. Persisted state is validated against these bounds before
+arrays are copied or sets/maps are built; live pages and aggregate growth are
+checked before merge. Oversized or malformed evidence becomes a bounded failed
+check and can never become `clear`.
+
+The worker stores the cursor, oldest covered timestamp, page count, and fetched
+transfer count. If it still cannot cover the full 24-hour window, it remains
+`inconclusive` after the retry budget is exhausted; it does not become clean by
+default. A sender must never be described as new outside the checked window.
 
 The poisoning check is separate from ordinary alert status. Detection failure
 must not prevent the Incoming Deposit job or ordinary alert from continuing.
@@ -341,6 +358,8 @@ Evidence contains:
 - exact-amount flag and elapsed time;
 - relationship window, fetched-transfer count, coverage state, and whether the
   sender appeared in the checked history;
+- raw provider-row identities, including content fingerprints for tx-less rows,
+  plus page hashes and overlap audit data;
 - optional sender activation time and transaction counts;
 - detector policy version;
 - every provider or local evidence id used.
@@ -600,6 +619,11 @@ The fixture must prove:
 - poisoning pages stay pinned to TronScan while ordinary client fallback remains;
 - missing, inconsistent, overlapping, or non-progressing pagination cannot
   produce `clear`;
+- a tx-less provider row keeps its raw content fingerprint for audit but forces
+  partial coverage, including an exhausted one-row range or changed content;
+- persisted and live evidence over five pages, 500 entries in any top-level
+  evidence collection, 100 entries in any per-page id/overlap list, or two
+  hashes of either kind per page fails bounded and never produces `clear`;
 - `riskTransaction` remains raw contextual metadata and does not invalidate an
   otherwise canonical relationship transfer;
 - an event that expires during provider/scheduler wait becomes

@@ -74,14 +74,33 @@ canonical relationship transfer still counts when that flag is true.
 Completion requires authoritative, internally consistent provider/range
 metadata. Saved audit data includes provider identity, requested/start/next
 offsets, raw count, `total`, `rangeTotal`, complete/consistent flags, raw and
-canonical hashes, per-fact provider identity, and overlap ids. A non-null
-authoritative `rangeTotal` is required for completion; `total` may be null. If
-both are present, they must be consistent and `rangeTotal <= total`. Mixed
-providers, missing or contradictory `rangeTotal`, contradictory paired totals,
-short nonterminal or oversized pages, unexplained no progress, repeated rows
-inside a logical page, or overlap with a previous claim keep coverage partial.
-They can support a positive candidate or exact disqualifier, but never a
-negative `clear`.
+canonical hashes, per-fact provider identity, raw provider-row identities, and
+accepted/raw overlap ids. A non-null authoritative `rangeTotal` is required for
+completion; `total` may be null. If both are present, they must be consistent
+and `rangeTotal <= total`. Mixed providers, missing or contradictory
+`rangeTotal`, contradictory paired totals, short nonterminal or oversized
+pages, unexplained no progress, repeated rows inside a logical page, or overlap
+with a previous claim keep coverage partial. They can support a positive
+candidate or exact disqualifier, but never a negative `clear`.
+
+Raw pagination identity prefers transaction hash plus event index. A provider
+row without a transaction hash is still retained under a deterministic content
+fingerprint for audit, but it cannot prove complete negative coverage. One
+tx-less row keeps even an exhausted range partial. Changed tx-less content gets
+a different stored fingerprint; both rows remain visible and neither repairs
+coverage. Persisted version-2 and legacy state without trustworthy raw-row ids
+also remains partial when it already contains provider rows.
+
+Lookup evidence has fixed bounds before copies, sets, or maps are created:
+
+- at most five logical pages;
+- at most 500 entries in each top-level transfer, provider-fact, accepted-id,
+  raw-id, or provider-identity collection;
+- at most 100 entries in each per-page raw-id or overlap-id list;
+- at most two raw response hashes and two canonical hashes per page.
+
+The same limits are enforced on live pages before merge. Oversized or malformed
+state becomes a bounded failed check, never negative `clear`.
 
 A consistent full page advances the saved logical offset. The worker can
 continue for at most five pages. A negative partial result remains

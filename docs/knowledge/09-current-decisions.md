@@ -79,6 +79,17 @@ of these decisions, update this file in the same work.
   contradictory `rangeTotal`, contradictory paired totals,
   oversized/short-nonterminal or non-progressing pages, and internal or
   cross-claim overlap remain partial and cannot become clean.
+- Every provider row keeps a raw pagination identity. A missing transaction
+  hash falls back to a content fingerprint for audit, but any such `:raw:` row
+  makes negative coverage partial, even when the one-row range is exhausted or
+  changed content produces a second fingerprint. Persisted/legacy state without
+  trustworthy raw-row identities also fails closed when prior provider rows are
+  present.
+- Lookup evidence is bounded before copying or building sets/maps: five pages,
+  500 entries in each top-level transfer/fact/id/provider collection, 100
+  entries in each per-page raw-id or overlap-id list, and two hashes of each
+  kind per page. Live growth is checked before merge. Oversized or malformed
+  evidence becomes a bounded failure and never `clear`.
 - Partial negative coverage is `inconclusive`, never `clear`. Partial evidence
   can decide a positive candidate or an exact disqualifier: a prior direct
   relation, an authorized `service_admin` trusted/false-positive label, or an
