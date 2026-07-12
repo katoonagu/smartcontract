@@ -23,10 +23,13 @@ alter table observed_transactions
   check (poisoning_lookup_coverage is null or poisoning_lookup_coverage in ('complete','partial'));
 
 update observed_transactions
-set poisoning_last_error = 'complete_no_match'
+set poisoning_check_status = 'skipped_backfill',
+  poisoning_last_error = 'legacy_clear_reason_unknown'
 where poisoning_check_status = 'clear'
-  and poisoning_lookup_coverage = 'complete'
-  and poisoning_last_error is null;
+  and (
+    poisoning_last_error is null
+    or poisoning_last_error not in ('complete_no_match','prior_relationship','trusted_sender','authoritative_service')
+  );
 
 alter table observed_transactions drop constraint if exists observed_transactions_poisoning_clear_reason_check;
 alter table observed_transactions

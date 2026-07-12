@@ -3487,8 +3487,12 @@ export async function markAddressPoisoningCheckClear(
     leaseVersion: Date;
   }
 ): Promise<boolean> {
+  if (input.coverage !== "complete" && input.coverage !== "partial") {
+    throw new Error(`Invalid address poisoning clear coverage: ${String(input.coverage)}`);
+  }
+  const coverage = input.coverage;
   const reason = parseAddressPoisoningClearReason(input.reason);
-  if (reason === "complete_no_match" && input.coverage !== "complete") {
+  if (reason === "complete_no_match" && coverage !== "complete") {
     throw new Error("Address poisoning complete_no_match requires complete coverage");
   }
   const result = await db.query(
@@ -3509,7 +3513,7 @@ export async function markAddressPoisoningCheckClear(
     [
       input.txHash,
       input.watchedWalletId,
-      input.coverage,
+      coverage,
       input.logicalOffset,
       input.pageCount,
       input.fetchedCount,

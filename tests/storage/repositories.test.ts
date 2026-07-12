@@ -3024,6 +3024,9 @@ describe("address poisoning persistence", () => {
     expect(compactSql(sql)).toContain("check (confidence in ('low','medium','high'))");
     expect(compactSql(sql)).toContain("observed_transactions_poisoning_clear_reason_check");
     expect(compactSql(sql)).toContain("poisoning_last_error in ('prior_relationship','trusted_sender','authoritative_service')");
+    expect(compactSql(sql)).toContain("poisoning_check_status = 'skipped_backfill'");
+    expect(compactSql(sql)).toContain("poisoning_last_error = 'legacy_clear_reason_unknown'");
+    expect(compactSql(sql)).not.toContain("set poisoning_last_error = 'complete_no_match' where poisoning_check_status = 'clear'");
   });
 
   it("claims fresh work with a row lock and leaves fifth-page partials terminal", async () => {
@@ -3177,6 +3180,28 @@ describe("address poisoning persistence", () => {
       reason: "unknown_reason" as AddressPoisoningClearReason
     })).rejects.toThrow("Invalid address poisoning clear reason");
     expect(unknown.queries).toEqual([]);
+  });
+
+  it("rejects bogus or null clear coverage before touching the database", async () => {
+    const base = {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      reason: "prior_relationship" as const,
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: now,
+      accumulatedLookupJson: { transfers: [] },
+      leaseVersion: now
+    };
+    for (const coverage of ["bogus", null]) {
+      const mock = createMockDb(1);
+      await expect(markAddressPoisoningCheckClear(mock.db, {
+        ...base,
+        coverage: coverage as "complete"
+      })).rejects.toThrow("Invalid address poisoning clear coverage");
+      expect(mock.queries).toEqual([]);
+    }
   });
 
   it("records the 30/60/120 retry schedule and stops claiming after three failures", async () => {
@@ -3928,5 +3953,33 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       await expect(updateClear(`partial-${reason}`, "partial", reason)).resolves.toMatchObject({ rowCount: 1 });
     }
     await expect(updateClear("complete-no-match", "complete", "complete_no_match")).resolves.toMatchObject({ rowCount: 1 });
+  });
+
+  it("moves a legacy reasonless clear to truthful skipped_backfill on migration reapply", async () => {
+    const txHash = `${txPrefix}legacy-clear-null`;
+    await seedObserved(txHash);
+    await pgDb.query("alter table observed_transactions drop constraint observed_transactions_poisoning_clear_reason_check");
+    await pgDb.query(
+      `update observed_transactions
+       set poisoning_check_status = 'clear', poisoning_lookup_coverage = 'complete', poisoning_last_error = null
+       where tx_hash = $1`,
+      [txHash]
+    );
+    const migrationSql = readFileSync("migrations/031_address_poisoning_monitor.sql", "utf8");
+    await pgDb.query(migrationSql);
+    const first = await pgDb.query(
+      "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1",
+      [txHash]
+    );
+    expect(first.rows[0]).toEqual({
+      poisoning_check_status: "skipped_backfill",
+      poisoning_last_error: "legacy_clear_reason_unknown"
+    });
+    await pgDb.query(migrationSql);
+    const reapplied = await pgDb.query(
+      "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1",
+      [txHash]
+    );
+    expect(reapplied.rows[0]).toEqual(first.rows[0]);
   });
 });
