@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import pg from "pg";
 import {
   claimAddressPoisoningAlertsForDelivery,
   claimAddressPoisoningChecks,
@@ -144,7 +145,7 @@ function createMockTransactionalDb(options: { failOnRiskObservation?: boolean } 
     query: async (sql: string, params: unknown[] = []) => {
       queries.push({ sql, params });
       if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-        return { rows: [{ poisoning_check_status: "running" }], rowCount: 1 };
+        return { rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "running" }], rowCount: 1 };
       }
       if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("for update of candidate")) {
         return { rows: [], rowCount: 0 };
@@ -177,6 +178,18 @@ const event: TronTransferEvent = {
   receiver: "receiver",
   amount: "10",
   timestamp: new Date("2026-05-20T00:00:00.000Z")
+};
+
+const poisoningCanonicalObservedRow = {
+  tx_hash: "incoming-1",
+  watched_wallet_id: "wallet-1",
+  poisoning_check_status: "running",
+  sender: "TSuspicious1111111111111111111111111",
+  receiver: "TWallet111111111111111111111111111111",
+  token: "USDT",
+  amount: "10",
+  timestamp: new Date("2026-07-12T12:00:00.000Z"),
+  wallet_address: "TWallet111111111111111111111111111111"
 };
 
 const theftReportCreatedAt = new Date("2026-05-27T09:00:00.000Z");
@@ -2840,7 +2853,7 @@ describe("address poisoning persistence", () => {
     id: "candidate-1",
     callback_token: "abcdefghijklmnopqrst",
     watched_wallet_id: "wallet-1",
-    token_contract: "TToken111111111111111111111111111111",
+    token_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
     token_symbol: "USDT",
     token_decimals: 6,
     suspicious_incoming_tx_hash: "incoming-1",
@@ -2923,7 +2936,7 @@ describe("address poisoning persistence", () => {
     expect(sql).toContain("for update of tx skip locked");
     expect(sql).toContain("order by tx.timestamp desc");
     expect(sql).toContain("poisoning_page_count < 5");
-    expect(sql).toContain("poisoning_attempts < 3");
+    expect(sql).toContain("poisoning_attempts < 4");
     expect(sql).toContain("poisoning_check_status = 'running'");
     expect(sql).toContain("poisoning_updated_at = $2");
     expect(sql).toContain("tx.poisoning_updated_at");
@@ -3029,7 +3042,8 @@ describe("address poisoning persistence", () => {
       })).toBe(true);
       expect(compactSql(failed.queries[0].sql)).toContain(`${seconds} seconds`);
       expect(compactSql(failed.queries[0].sql)).toContain("poisoning_updated_at = $5");
-      expect(compactSql(failed.queries[0].sql)).toContain("$4::timestamptz + case");
+      expect(compactSql(failed.queries[0].sql)).toContain("when 2 then $4::timestamptz + interval '120 seconds'");
+      expect(compactSql(failed.queries[0].sql)).toContain("else null");
     }
   });
 
@@ -3039,7 +3053,7 @@ describe("address poisoning persistence", () => {
       query: async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
         if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+          return { rowCount: 1, rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "running" }] };
         }
         if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("for update of candidate")) {
           return { rowCount: 0, rows: [] };
@@ -3056,7 +3070,7 @@ describe("address poisoning persistence", () => {
       query: async (sql: string, params: unknown[] = []) => {
         secondQueries.push({ sql, params });
         if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+          return { rowCount: 1, rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "running" }] };
         }
         if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("for update of candidate")) {
           return { rowCount: 0, rows: [] };
@@ -3106,6 +3120,8 @@ describe("address poisoning persistence", () => {
     expect(rows[0].alertMode).toBe("paused");
     expect(rows[0].leaseVersion).toEqual(now);
     expect(compactSql(claimed.queries[0].sql)).toContain("for update of candidate skip locked");
+    expect(compactSql(claimed.queries[0].sql)).toContain("alert_attempts = candidate.alert_attempts + 1");
+    expect(compactSql(claimed.queries[0].sql)).toContain("candidate.alert_attempts < 4");
     const sent = createMockDb(1);
     expect(await markAddressPoisoningAlertSent(sent.db, {
       candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99", leaseVersion: now
@@ -3114,9 +3130,11 @@ describe("address poisoning persistence", () => {
     expect(compactSql(sent.queries[0].sql)).toContain("updated_at = $4");
     const failed = createMockDb(1);
     expect(await markAddressPoisoningAlertFailed(failed.db, { candidateId: "candidate-1", error: "telegram", now, leaseVersion: now })).toBe(true);
-    expect(compactSql(failed.queries[0].sql)).toContain("alert_attempts = alert_attempts + 1");
+    expect(compactSql(failed.queries[0].sql)).not.toContain("alert_attempts = alert_attempts + 1");
+    expect(compactSql(failed.queries[0].sql)).toContain("when 3 then $3::timestamptz + interval '120 seconds'");
+    expect(compactSql(failed.queries[0].sql)).toContain("else null");
     expect(compactSql(failed.queries[0].sql)).toContain("updated_at = $4");
-    expect(compactSql(failed.queries[0].sql)).toContain("$3::timestamptz + case");
+    expect(compactSql(failed.queries[0].sql)).toContain("when 3 then $3::timestamptz + interval '120 seconds'");
     const skipped = createMockDb(1);
     expect(await markAddressPoisoningAlertSkipped(skipped.db, { candidateId: "candidate-1", reason: "paused", leaseVersion: now })).toBe(true);
     expect(compactSql(skipped.queries[0].sql)).toContain("updated_at = $3");
@@ -3158,7 +3176,7 @@ describe("address poisoning persistence", () => {
       query: async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
         if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-          return { rowCount: 1, rows: [{ poisoning_check_status: "candidate" }] };
+          return { rowCount: 1, rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "candidate" }] };
         }
         if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("suspicious_incoming_tx_hash")) {
           return { rowCount: 1, rows: [immutable] };
@@ -3186,7 +3204,7 @@ describe("address poisoning persistence", () => {
       query: async (sql: string) => {
         queries.push(sql);
         if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+          return { rowCount: 1, rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "running" }] };
         }
         if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
         if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
@@ -3200,13 +3218,36 @@ describe("address poisoning persistence", () => {
     expect(queries.at(-1)).toBe("rollback");
   });
 
+  it("rolls back before evidence persistence when candidate input mismatches the locked event", async () => {
+    const queries: string[] = [];
+    const client = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+          return {
+            rowCount: 1,
+            rows: [{ ...poisoningCanonicalObservedRow, sender: "TWrongSender11111111111111111111111111" }]
+          };
+        }
+        if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
+        if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined
+    };
+    await expect(persistAddressPoisoningCandidate({ connect: async () => client } as unknown as Db, persistInput))
+      .rejects.toThrow("does not match locked observed transaction");
+    expect(queries.some((sql) => sql.includes("insert into raw_evidence"))).toBe(false);
+    expect(queries.at(-1)).toBe("rollback");
+  });
+
   it("persists partial candidate progress without coercing it", async () => {
     const queries: { sql: string; params: unknown[] }[] = [];
     const client = {
       query: async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
         if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+          return { rowCount: 1, rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "running" }] };
         }
         if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
         if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
@@ -3275,30 +3316,30 @@ describe("address poisoning persistence", () => {
     });
   });
 
-  it("models 30/60/120 provider retries and leaves the third failure terminal", async () => {
+  it("models 30/60/120 provider retries and leaves the fourth failure terminal", async () => {
     const state = { status: "running", attempts: 0, nextRetryAt: null as Date | null };
     const db = {
       query: async (sql: string, params: unknown[] = []) => {
         if (sql.includes("update observed_transactions")) {
           if (state.status !== "running") return { rowCount: 0, rows: [] };
-          const seconds = [30, 60, 120][Math.min(state.attempts, 2)];
+          const seconds = [30, 60, 120, null][Math.min(state.attempts, 3)];
           state.attempts += 1;
           state.status = "failed";
-          state.nextRetryAt = new Date((params[3] as Date).getTime() + seconds * 1000);
+          state.nextRetryAt = seconds === null ? null : new Date((params[3] as Date).getTime() + seconds * 1000);
           return { rowCount: 1, rows: [] };
         }
         if (sql.includes("with claimed as")) {
-          return { rowCount: state.attempts < 3 ? 1 : 0, rows: [] };
+          return { rowCount: state.attempts < 4 ? 1 : 0, rows: [] };
         }
         return { rowCount: 0, rows: [] };
       }
     } as unknown as Db;
-    for (const seconds of [30, 60, 120]) {
+    for (const seconds of [30, 60, 120, null]) {
       state.status = "running";
       await markAddressPoisoningCheckFailed(db, {
         txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now, leaseVersion: now
       });
-      expect(state.nextRetryAt).toEqual(new Date(now.getTime() + seconds * 1000));
+      expect(state.nextRetryAt).toEqual(seconds === null ? null : new Date(now.getTime() + seconds * 1000));
     }
     expect(await claimAddressPoisoningChecks(db, { limit: 1, now, staleRunningBefore: now })).toEqual([]);
   });
@@ -3386,7 +3427,7 @@ describe("address poisoning persistence", () => {
         query: async (sql: string, params: unknown[] = []) => {
           queries.push(sql);
           if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
-            return { rowCount: 1, rows: [{ poisoning_check_status: "running", poisoning_updated_at: lease2 }] };
+            return { rowCount: 1, rows: [{ ...poisoningCanonicalObservedRow, poisoning_check_status: "running", poisoning_updated_at: lease2 }] };
           }
           if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
           if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
@@ -3459,5 +3500,211 @@ describe("address poisoning persistence", () => {
     const metrics = createMockDb(1, [{ queue_depth: "4", oldest_queue_age_ms: "91000" }]);
     expect(await getAddressPoisoningQueueMetrics(metrics.db, now)).toEqual({ queueDepth: 4, oldestQueueAgeMs: 91000 });
     expect(compactSql(metrics.queries[0].sql)).toContain("extract(epoch from ($1 - min(timestamp))) * 1000");
+  });
+});
+
+const postgresAddressPoisoningDescribe = process.env.TEST_DATABASE_URL ? describe : describe.skip;
+
+postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () => {
+  let pgDb: pg.Pool;
+  const walletId = "pg-wallet-1";
+  const walletAddress = "TWallet111111111111111111111111111111";
+  const sender = "TSuspicious1111111111111111111111111";
+  const eventAt = new Date("2026-07-12T12:00:00.000Z");
+
+  beforeAll(() => {
+    pgDb = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  });
+
+  afterAll(async () => {
+    await pgDb.end();
+  });
+
+  beforeEach(async () => {
+    await pgDb.query(
+      "truncate table address_poisoning_candidates, risk_signal_observations, raw_evidence, observed_transactions, watched_wallets, telegram_users cascade"
+    );
+    await pgDb.query("insert into telegram_users (telegram_user_id, username, locale) values ('42', 'pg-test', 'ru')");
+    await pgDb.query(
+      "insert into watched_wallets (id, telegram_user_id, address, alert_mode) values ($1, '42', $2, 'realtime')",
+      [walletId, walletAddress]
+    );
+  });
+
+  async function seedObserved(txHash: string): Promise<void> {
+    await pgDb.query(
+      `insert into observed_transactions (
+         tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp, poisoning_check_status
+       ) values ($1, $2, $3, $4, 'USDT', '10', $5, 'pending')`,
+      [txHash, walletId, sender, walletAddress, eventAt]
+    );
+  }
+
+  async function claimCheck(txHash: string, now: Date): Promise<Awaited<ReturnType<typeof claimAddressPoisoningChecks>>[number] | undefined> {
+    const rows = await claimAddressPoisoningChecks(pgDb as unknown as Db, {
+      limit: 10,
+      now,
+      staleRunningBefore: new Date(0)
+    });
+    return rows.find((row) => row.txHash === txHash);
+  }
+
+  function candidateInput(txHash: string, leaseVersion: Date) {
+    return {
+      policyVersion: "address-poisoning-v1",
+      watchedWalletId: walletId,
+      walletAddress,
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      tokenSymbol: "USDT",
+      tokenDecimals: 6,
+      suspiciousIncomingTxHash: txHash,
+      suspiciousSender: sender,
+      suspiciousAmountRaw: "10000000",
+      suspiciousIncomingAt: eventAt,
+      matchedOutgoingTxHash: `outgoing-${txHash}`,
+      genuineRecipient: "TGenuine11111111111111111111111111111",
+      matchedOutgoingAmountRaw: "10000000",
+      matchedOutgoingAt: new Date(eventAt.getTime() - 60_000),
+      rawPrefixLength: 1,
+      meaningfulPrefixLength: 0,
+      suffixLength: 7,
+      classification: "CRITICAL" as const,
+      confidence: "high" as const,
+      secondaryMatches: [],
+      evidenceJson: { exactAmount: true },
+      coverage: "partial" as const,
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: eventAt,
+      accumulatedLookupJson: { transfers: [`outgoing-${txHash}`] },
+      leaseVersion
+    };
+  }
+
+  async function createCandidate(txHash: string) {
+    await seedObserved(txHash);
+    const work = await claimCheck(txHash, eventAt);
+    if (!work) throw new Error("test candidate check was not claimed");
+    return persistAddressPoisoningCandidate(pgDb as unknown as Db, candidateInput(txHash, work.leaseVersion));
+  }
+
+  it("enforces real provider retry boundaries and stops after the fourth failure", async () => {
+    const txHash = "pg-provider-retry";
+    await seedObserved(txHash);
+    let work = await claimCheck(txHash, eventAt);
+    expect(work?.attemptCount).toBe(0);
+    const failures = [
+      { delaySeconds: 30, failureAt: eventAt },
+      { delaySeconds: 60, failureAt: new Date(eventAt.getTime() + 30_000) },
+      { delaySeconds: 120, failureAt: new Date(eventAt.getTime() + 90_000) }
+    ];
+    for (const [index, step] of failures.entries()) {
+      expect(await markAddressPoisoningCheckFailed(pgDb as unknown as Db, {
+        txHash,
+        watchedWalletId: walletId,
+        error: `provider-${index + 1}`,
+        now: step.failureAt,
+        leaseVersion: work!.leaseVersion
+      })).toBe(true);
+      expect(await claimCheck(txHash, new Date(step.failureAt.getTime() + step.delaySeconds * 1_000 - 1))).toBeUndefined();
+      work = await claimCheck(txHash, new Date(step.failureAt.getTime() + step.delaySeconds * 1_000));
+      expect(work?.attemptCount).toBe(index + 1);
+    }
+    expect(await markAddressPoisoningCheckFailed(pgDb as unknown as Db, {
+      txHash,
+      watchedWalletId: walletId,
+      error: "provider-4",
+      now: new Date(eventAt.getTime() + 210_000),
+      leaseVersion: work!.leaseVersion
+    })).toBe(true);
+    expect(await claimCheck(txHash, new Date(eventAt.getTime() + 1_000_000))).toBeUndefined();
+    const terminal = await pgDb.query(
+      "select poisoning_attempts, poisoning_next_retry_at, poisoning_check_status from observed_transactions where tx_hash = $1",
+      [txHash]
+    );
+    expect(terminal.rows[0]).toMatchObject({
+      poisoning_attempts: 4,
+      poisoning_next_retry_at: null,
+      poisoning_check_status: "failed"
+    });
+  });
+
+  it("caps stale sending reclaims at four real delivery executions", async () => {
+    await createCandidate("pg-stale-alert");
+    const claimTimes = [0, 60, 120, 180].map((seconds) => new Date(eventAt.getTime() + seconds * 1_000));
+    for (const [index, claimAt] of claimTimes.entries()) {
+      const rows = await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+        limit: 1,
+        now: claimAt,
+        staleSendingBefore: index === 0 ? new Date(0) : new Date(claimTimes[index - 1].getTime() + 1)
+      });
+      expect(rows[0]?.alertAttempts).toBe(index + 1);
+    }
+    const fifth = await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: new Date(eventAt.getTime() + 240_000),
+      staleSendingBefore: new Date(eventAt.getTime() + 180_001)
+    });
+    expect(fifth).toEqual([]);
+    const terminal = await pgDb.query("select alert_attempts, alert_status from address_poisoning_candidates");
+    expect(terminal.rows[0]).toMatchObject({ alert_attempts: 4, alert_status: "failed" });
+  });
+
+  it("enforces real delivery failure retry boundaries without double counting claims", async () => {
+    const candidate = await createCandidate("pg-failed-alert");
+    let claimAt = eventAt;
+    for (const [index, delaySeconds] of [30, 60, 120].entries()) {
+      const delivery = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+        limit: 1,
+        now: claimAt,
+        staleSendingBefore: new Date(0)
+      }))[0];
+      expect(delivery.alertAttempts).toBe(index + 1);
+      expect(await markAddressPoisoningAlertFailed(pgDb as unknown as Db, {
+        candidateId: candidate.id,
+        error: `telegram-${index + 1}`,
+        now: claimAt,
+        leaseVersion: delivery.leaseVersion
+      })).toBe(true);
+      expect((await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+        limit: 1,
+        now: new Date(claimAt.getTime() + delaySeconds * 1_000 - 1),
+        staleSendingBefore: new Date(0)
+      }))).toEqual([]);
+      claimAt = new Date(claimAt.getTime() + delaySeconds * 1_000);
+    }
+    const fourth = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1, now: claimAt, staleSendingBefore: new Date(0)
+    }))[0];
+    expect(fourth.alertAttempts).toBe(4);
+    expect(await markAddressPoisoningAlertFailed(pgDb as unknown as Db, {
+      candidateId: candidate.id,
+      error: "telegram-4",
+      now: claimAt,
+      leaseVersion: fourth.leaseVersion
+    })).toBe(true);
+    expect((await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1, now: new Date(claimAt.getTime() + 1_000_000), staleSendingBefore: new Date(0)
+    }))).toEqual([]);
+    const terminal = await pgDb.query("select alert_attempts, alert_next_retry_at from address_poisoning_candidates");
+    expect(terminal.rows[0]).toMatchObject({ alert_attempts: 4, alert_next_retry_at: null });
+  });
+
+  it("rejects mismatched candidate facts before writing evidence", async () => {
+    const txHash = "pg-mismatch";
+    await seedObserved(txHash);
+    const work = await claimCheck(txHash, eventAt);
+    await expect(persistAddressPoisoningCandidate(pgDb as unknown as Db, {
+      ...candidateInput(txHash, work!.leaseVersion),
+      suspiciousSender: "TWrongSender11111111111111111111111111"
+    })).rejects.toThrow("does not match locked observed transaction");
+    const counts = await pgDb.query(
+      `select
+         (select count(*)::int from address_poisoning_candidates) as candidates,
+         (select count(*)::int from raw_evidence) as evidence,
+         (select count(*)::int from risk_signal_observations) as observations`
+    );
+    expect(counts.rows[0]).toEqual({ candidates: 0, evidence: 0, observations: 0 });
   });
 });

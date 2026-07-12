@@ -61,6 +61,7 @@ import type {
   ContractLlmVerdictFingerprintCacheLookup
 } from "../forensics/contractLlmVerdict";
 import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contractIntelligence";
+import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import type { Db } from "./db";
 
 export type {
@@ -3370,7 +3371,7 @@ export async function claimAddressPoisoningChecks(
           or (tx.poisoning_check_status = 'running' and tx.poisoning_updated_at < $3)
           or (
             tx.poisoning_check_status = 'failed'
-            and tx.poisoning_attempts < 3
+            and tx.poisoning_attempts < 4
             and coalesce(tx.poisoning_next_retry_at, $2) <= $2
           )
           or (
@@ -3536,14 +3537,15 @@ export async function markAddressPoisoningCheckFailed(
     `update observed_transactions
      set poisoning_check_status = 'failed',
        poisoning_attempts = poisoning_attempts + 1,
-       poisoning_next_retry_at = $4::timestamptz + case poisoning_attempts
-         when 0 then interval '30 seconds'
-         when 1 then interval '60 seconds'
-         else interval '120 seconds'
+       poisoning_next_retry_at = case poisoning_attempts
+         when 0 then $4::timestamptz + interval '30 seconds'
+         when 1 then $4::timestamptz + interval '60 seconds'
+         when 2 then $4::timestamptz + interval '120 seconds'
+         else null
        end,
        poisoning_last_error = $3,
        poisoning_updated_at = $4,
-       poisoning_checked_at = case when poisoning_attempts + 1 >= 3 then $4 else poisoning_checked_at end
+       poisoning_checked_at = case when poisoning_attempts + 1 >= 4 then $4 else poisoning_checked_at end
      where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
        and poisoning_updated_at = $5`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error), input.now, input.leaseVersion]
@@ -3597,15 +3599,37 @@ export async function persistAddressPoisoningCandidate(
   try {
     await client.query("begin");
     const observedResult = await client.query(
-      `select tx.poisoning_check_status
+      `select tx.tx_hash, tx.watched_wallet_id, tx.sender, tx.receiver, tx.token, tx.amount,
+         tx.timestamp, tx.poisoning_check_status, tx.poisoning_updated_at, w.address as wallet_address
        from observed_transactions tx
+       join watched_wallets w on w.id = tx.watched_wallet_id
        where tx.tx_hash = $1 and tx.watched_wallet_id = $2
        for update of tx`,
       [input.suspiciousIncomingTxHash, input.watchedWalletId]
     );
-    const observedStatus = observedResult.rows[0]?.poisoning_check_status;
+    const observedRow = observedResult.rows[0];
+    const observedStatus = observedRow?.poisoning_check_status;
     if (observedStatus === undefined) throw new Error("Address poisoning observed transaction is unavailable");
     parseAddressPoisoningCheckStatus(observedStatus);
+    const observedAmountRaw = parseUsdtDecimalToRaw(observedRow.amount);
+    const observedAtMs = observedRow.timestamp instanceof Date
+      ? observedRow.timestamp.getTime()
+      : new Date(observedRow.timestamp).getTime();
+    if (
+      observedRow.tx_hash !== input.suspiciousIncomingTxHash
+      || observedRow.watched_wallet_id !== input.watchedWalletId
+      || observedRow.wallet_address !== input.walletAddress
+      || observedRow.receiver !== input.walletAddress
+      || observedRow.sender !== input.suspiciousSender
+      || observedRow.token !== input.tokenSymbol
+      || observedAmountRaw !== input.suspiciousAmountRaw
+      || observedAtMs !== input.suspiciousIncomingAt.getTime()
+      || input.tokenContract !== tronUsdtContractAddress
+      || input.tokenSymbol !== "USDT"
+      || input.tokenDecimals !== 6
+    ) {
+      throw new Error("Address poisoning candidate does not match locked observed transaction");
+    }
 
     const existingResult = await client.query(
       `select candidate.*
@@ -3770,22 +3794,38 @@ export async function claimAddressPoisoningAlertsForDelivery(
   input: { limit: number; now: Date; staleSendingBefore: Date }
 ): Promise<AddressPoisoningCandidateDelivery[]> {
   const result = await db.query(
-    `with claimed as (
+    `with terminalized as (
+       update address_poisoning_candidates candidate
+       set alert_status = 'failed',
+         alert_next_retry_at = null,
+         alert_last_error = coalesce(candidate.alert_last_error, 'delivery_attempts_exhausted'),
+         updated_at = $2
+       where candidate.status = 'candidate'
+         and candidate.alert_status = 'sending'
+         and candidate.alert_attempts >= 4
+         and candidate.updated_at < $3
+       returning candidate.id
+     ), claimed as (
        select candidate.id
        from address_poisoning_candidates candidate
        where candidate.status = 'candidate'
-         and candidate.alert_attempts < 3
+         and candidate.alert_attempts < 4
          and (
            candidate.alert_status = 'pending'
            or (candidate.alert_status = 'failed' and coalesce(candidate.alert_next_retry_at, $2) <= $2)
            or (candidate.alert_status = 'sending' and candidate.updated_at < $3)
          )
+         and not exists (select 1 from terminalized where terminalized.id = candidate.id)
        order by candidate.suspicious_incoming_at desc
        limit $1
        for update of candidate skip locked
      )
      update address_poisoning_candidates candidate
-     set alert_status = 'sending', alert_next_retry_at = null, alert_last_error = null, updated_at = $2
+     set alert_status = 'sending',
+       alert_attempts = candidate.alert_attempts + 1,
+       alert_next_retry_at = null,
+       alert_last_error = null,
+       updated_at = $2
      from claimed, watched_wallets w, telegram_users u
      where candidate.id = claimed.id
        and w.id = candidate.watched_wallet_id
@@ -3817,11 +3857,11 @@ export async function markAddressPoisoningAlertFailed(
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'failed',
-       alert_attempts = alert_attempts + 1,
-       alert_next_retry_at = $3::timestamptz + case alert_attempts
-         when 0 then interval '30 seconds'
-         when 1 then interval '60 seconds'
-         else interval '120 seconds'
+       alert_next_retry_at = case alert_attempts
+         when 1 then $3::timestamptz + interval '30 seconds'
+         when 2 then $3::timestamptz + interval '60 seconds'
+         when 3 then $3::timestamptz + interval '120 seconds'
+         else null
        end,
        alert_last_error = $2,
        updated_at = $3

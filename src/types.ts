@@ -174,6 +174,7 @@ export type AddressPoisoningCheckWorkItem = {
   token: "USDT";
   amount: string;
   timestamp: Date;
+  /** Completed provider failures: the initial execution starts at 0, failures 1..3 schedule retries, and failure 4 is terminal. */
   attemptCount: number;
   logicalOffset: number;
   pageCount: number;
@@ -210,6 +211,7 @@ export type AddressPoisoningCandidate = {
   status: AddressPoisoningCandidateStatus;
   alertFingerprint: string;
   alertStatus: AddressPoisoningAlertStatus;
+  /** Delivery executions consumed by claims, including stale-sending reclaims; maximum 4. */
   alertAttempts: number;
   alertNextRetryAt: Date | null;
   alertLastError: string | null;
