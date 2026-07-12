@@ -3294,10 +3294,18 @@ describe("address poisoning persistence", () => {
     expect(compactSql(claimed.queries[0].sql)).toContain("candidate.alert_attempts < 4");
     const sent = createMockDb(1);
     expect(await markAddressPoisoningAlertSent(sent.db, {
-      candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99", leaseVersion: now
+      candidateId: "candidate-1",
+      fingerprint: "a".repeat(64),
+      telegramChatId: "42",
+      telegramMessageId: "99",
+      sentAt: now,
+      leaseVersion: now
     })).toBe(true);
     expect(compactSql(sent.queries[0].sql)).toContain("alert_status = 'sent'");
-    expect(compactSql(sent.queries[0].sql)).toContain("updated_at = $4");
+    expect(compactSql(sent.queries[0].sql)).toContain("alert_fingerprint = $2");
+    expect(compactSql(sent.queries[0].sql)).toContain("alert_sent_at = $5");
+    expect(compactSql(sent.queries[0].sql)).toContain("updated_at = $6");
+    expect(sent.queries[0].params).toEqual(["candidate-1", "a".repeat(64), "42", "99", now, now]);
     const failed = createMockDb(1);
     expect(await markAddressPoisoningAlertFailed(failed.db, { candidateId: "candidate-1", error: "telegram", now, leaseVersion: now })).toBe(true);
     expect(compactSql(failed.queries[0].sql)).not.toContain("alert_attempts = alert_attempts + 1");
@@ -3308,6 +3316,9 @@ describe("address poisoning persistence", () => {
     const skipped = createMockDb(1);
     expect(await markAddressPoisoningAlertSkipped(skipped.db, { candidateId: "candidate-1", reason: "paused", leaseVersion: now })).toBe(true);
     expect(compactSql(skipped.queries[0].sql)).toContain("updated_at = $3");
+    for (const query of [...claimed.queries, ...sent.queries, ...failed.queries, ...skipped.queries]) {
+      expect(compactSql(query.sql)).not.toContain("user_alert_status");
+    }
   });
 
   it("resolves callbacks only through an owner-bound mutation and maps CAS outcomes", async () => {
@@ -3644,7 +3655,12 @@ describe("address poisoning persistence", () => {
       } as unknown as Db;
       const invoke = (leaseVersion: Date) => kind === "sent"
         ? markAddressPoisoningAlertSent(db, {
-          candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99", leaseVersion
+          candidateId: "candidate-1",
+          fingerprint: "a".repeat(64),
+          telegramChatId: "42",
+          telegramMessageId: "99",
+          sentAt: failureAt,
+          leaseVersion
         })
         : kind === "failed"
           ? markAddressPoisoningAlertFailed(db, {

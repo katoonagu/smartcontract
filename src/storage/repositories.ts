@@ -3885,14 +3885,31 @@ export async function claimAddressPoisoningAlertsForDelivery(
 
 export async function markAddressPoisoningAlertSent(
   db: Db,
-  input: { candidateId: string; telegramChatId: string; telegramMessageId: string; leaseVersion: Date }
+  input: {
+    candidateId: string;
+    fingerprint: string;
+    telegramChatId: string;
+    telegramMessageId: string;
+    sentAt: Date;
+    leaseVersion: Date;
+  }
 ): Promise<boolean> {
+  if (!/^[a-f0-9]{64}$/.test(input.fingerprint)) {
+    throw new Error("Invalid address-poisoning alert fingerprint");
+  }
   const result = await db.query(
     `update address_poisoning_candidates
-     set alert_status = 'sent', telegram_chat_id = $2, telegram_message_id = $3,
-       alert_next_retry_at = null, alert_last_error = null, alert_sent_at = now(), updated_at = now()
-     where id = $1 and alert_status = 'sending' and updated_at = $4`,
-    [input.candidateId, input.telegramChatId, input.telegramMessageId, input.leaseVersion]
+     set alert_status = 'sent', alert_fingerprint = $2, telegram_chat_id = $3, telegram_message_id = $4,
+       alert_next_retry_at = null, alert_last_error = null, alert_sent_at = $5, updated_at = $5
+     where id = $1 and alert_status = 'sending' and updated_at = $6`,
+    [
+      input.candidateId,
+      input.fingerprint,
+      input.telegramChatId,
+      input.telegramMessageId,
+      input.sentAt,
+      input.leaseVersion
+    ]
   );
   return (result.rowCount ?? 0) === 1;
 }

@@ -6,7 +6,7 @@ import {
   type AddressPoisoningWorkerRepository
 } from "../../src/monitor/addressPoisoningWorker";
 import { authoritativeRegisteredService } from "../../src/forensics/serviceClassifier";
-import type { AddressPoisoningCheckWorkItem, AddressLabel } from "../../src/types";
+import type { AddressPoisoningCandidateDelivery, AddressPoisoningCheckWorkItem, AddressLabel, WalletAlertMode } from "../../src/types";
 import { THJ_POISONING_CASE } from "../fixtures/monitor/addressPoisoningCases";
 
 const NOW = new Date("2026-07-01T12:48:00.000Z");
@@ -71,7 +71,69 @@ function repository(claimed: AddressPoisoningCheckWorkItem[] = []): AddressPoiso
     markClear: vi.fn(async () => true),
     markInconclusive: vi.fn(async () => true),
     markFailed: vi.fn(async () => true),
-    persistCandidate: vi.fn(async () => ({ id: "candidate-1" }))
+    persistCandidate: vi.fn(async () => ({ id: "candidate-1" })),
+    claimAlerts: vi.fn(async () => []),
+    markAlertSent: vi.fn(async () => true),
+    markAlertFailed: vi.fn(async () => true),
+    markAlertSkipped: vi.fn(async () => true)
+  };
+}
+
+function deliveryCandidate(
+  alertMode: WalletAlertMode = "realtime",
+  overrides: Partial<AddressPoisoningCandidateDelivery> = {}
+): AddressPoisoningCandidateDelivery {
+  return {
+    id: "candidate-delivery-1",
+    callbackToken: "AbCdEf0123_-xyZ9",
+    watchedWalletId: "wallet-1",
+    walletAddress: THJ_POISONING_CASE.watchedWallet,
+    telegramUserId: "42",
+    locale: "ru",
+    alertMode,
+    tokenContract: THJ_POISONING_CASE.tokenContract,
+    tokenSymbol: "USDT",
+    tokenDecimals: 6,
+    suspiciousIncomingTxHash: THJ_POISONING_CASE.incomingTxHash,
+    suspiciousSender: THJ_POISONING_CASE.lookalike,
+    suspiciousAmountRaw: THJ_POISONING_CASE.amountRaw,
+    suspiciousIncomingAt: THJ_POISONING_CASE.incomingAt,
+    matchedOutgoingTxHash: THJ_POISONING_CASE.outgoingTxHash,
+    genuineRecipient: THJ_POISONING_CASE.realRecipient,
+    matchedOutgoingAmountRaw: THJ_POISONING_CASE.amountRaw,
+    matchedOutgoingAt: THJ_POISONING_CASE.outgoingAt,
+    rawPrefixLength: 1,
+    meaningfulPrefixLength: 0,
+    suffixLength: 6,
+    classification: "CRITICAL",
+    confidence: "high",
+    rawEvidenceId: "evidence-1",
+    secondaryMatches: [],
+    evidenceJson: {
+      policyVersion: "address-poisoning-v1",
+      coverage: "complete",
+      windowStart: "2026-06-30T12:47:42.000Z",
+      windowEnd: "2026-07-01T12:47:41.999Z",
+      fetchedCount: 37,
+      pageCount: 1,
+      logicalOffset: 37
+    },
+    status: "candidate",
+    alertFingerprint: "provisional-fingerprint",
+    alertStatus: "sending",
+    alertAttempts: 1,
+    alertNextRetryAt: null,
+    alertLastError: null,
+    telegramChatId: null,
+    telegramMessageId: null,
+    laterLossTxHash: null,
+    laterLossEvidenceJson: null,
+    createdAt: THJ_POISONING_CASE.incomingAt,
+    updatedAt: NOW,
+    resolvedAt: null,
+    alertSentAt: null,
+    leaseVersion: NOW,
+    ...overrides
   };
 }
 
@@ -79,13 +141,15 @@ type RelatedTransferLookup = Parameters<typeof runSingleAddressPoisoningCycle>[0
 
 function deps(
   repo: AddressPoisoningWorkerRepository,
-  listRelatedTrc20Transfers: RelatedTransferLookup = vi.fn(async () => [])
+  listRelatedTrc20Transfers: RelatedTransferLookup = vi.fn(async () => []),
+  sendUserAlert = vi.fn(async () => ({ chatId: "42", messageId: "1001" }))
 ) {
   return {
     db: {} as never,
     repository: repo,
     tronClient: { listRelatedTrc20Transfers },
     realtimeMaxAgeMs: 120_000,
+    sendUserAlert,
     now: () => NOW,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   };
@@ -444,6 +508,136 @@ describe("address poisoning worker", () => {
     expect(metrics.claimed).toBe(25);
     expect(metrics.processed).toBe(25);
     expect(repo.markClear).toHaveBeenCalledTimes(25);
+  });
+
+  it.each(["realtime", "risk_only", "digest"] as const)("delivers %s safety alerts immediately even when no checks were claimed", async (mode) => {
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate(mode)]);
+    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
+
+    expect(metrics.claimed).toBe(0);
+    expect(metrics.alertsClaimed).toBe(1);
+    expect(metrics.alertsSent).toBe(1);
+    expect(send).toHaveBeenCalledWith("42", expect.stringContaining("Возможна подмена адреса"), expect.objectContaining({
+      parse_mode: "HTML",
+      reply_markup: expect.anything()
+    }));
+    expect(repo.markAlertSent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      candidateId: "candidate-delivery-1",
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      telegramChatId: "42",
+      telegramMessageId: "1001",
+      sentAt: NOW,
+      leaseVersion: NOW
+    }));
+  });
+
+  it("marks paused alerts skipped under the claimed lease without sending", async () => {
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([deliveryCandidate("paused")]);
+    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
+
+    expect(send).not.toHaveBeenCalled();
+    expect(repo.markAlertSkipped).toHaveBeenCalledWith(expect.anything(), {
+      candidateId: "candidate-delivery-1",
+      reason: "wallet_alert_mode_paused",
+      leaseVersion: NOW
+    });
+    expect(metrics.alertsSkipped).toBe(1);
+  });
+
+  it("persists a bounded delivery failure and continues with later alerts", async () => {
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([
+      deliveryCandidate("realtime", { id: "first" }),
+      deliveryCandidate("realtime", { id: "second", callbackToken: "AbCdEf0123_-xyZ8" })
+    ]);
+    const send = vi.fn()
+      .mockRejectedValueOnce(new Error(`Telegram refused ${"x".repeat(2_000)}\nsecret`))
+      .mockResolvedValueOnce({ chatId: "42", messageId: "1002" });
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(repo.markAlertFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      candidateId: "first",
+      error: expect.not.stringContaining("\n"),
+      now: NOW,
+      leaseVersion: NOW
+    }));
+    const failure = (repo.markAlertFailed as ReturnType<typeof vi.fn>).mock.calls[0][1].error as string;
+    expect(failure.length).toBeLessThanOrEqual(500);
+    expect(repo.markAlertSent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ candidateId: "second" }));
+    expect(metrics.alertsFailed).toBe(1);
+    expect(metrics.alertsSent).toBe(1);
+  });
+
+  it("leaves sending retryable when Telegram accepted but sent persistence crashes", async () => {
+    const state = { status: "sending" as "sending" | "sent" | "failed" };
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async () =>
+      state.status === "sending" ? [deliveryCandidate()] : []);
+    (repo.markAlertSent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("database connection lost"));
+    (repo.markAlertFailed as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      state.status = "failed";
+      return true;
+    });
+    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(repo.markAlertFailed).not.toHaveBeenCalled();
+    expect(state.status).toBe("sending");
+    expect(metrics.alertsPersistenceFailed).toBe(1);
+    expect(await repo.claimAlerts({} as never, { limit: 1, now: NOW, staleSendingBefore: NOW })).toHaveLength(1);
+  });
+
+  it("treats a stale sent CAS as benign and does not let one failed alert stop others", async () => {
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValue([
+      deliveryCandidate("realtime", { id: "stale" }),
+      deliveryCandidate("realtime", { id: "fresh", callbackToken: "AbCdEf0123_-xyZ8" })
+    ]);
+    (repo.markAlertSent as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const metrics = await runSingleAddressPoisoningCycle(deps(repo));
+
+    expect(metrics.alertsStale).toBe(1);
+    expect(metrics.alertsSent).toBe(1);
+  });
+
+  it("stores the sent fingerprint once and never reclaims the sent candidate", async () => {
+    const state: { status: "pending" | "sending" | "sent"; fingerprint: string | null } = {
+      status: "pending",
+      fingerprint: null
+    };
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      if (state.status === "sent") return [];
+      state.status = "sending";
+      return [deliveryCandidate()];
+    });
+    (repo.markAlertSent as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      if (state.status !== "sending") return false;
+      state.status = "sent";
+      state.fingerprint = input.fingerprint;
+      return true;
+    });
+    const send = vi.fn(async () => ({ chatId: "42", messageId: "1001" }));
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, send));
+
+    expect(state.status).toBe("sent");
+    expect(state.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

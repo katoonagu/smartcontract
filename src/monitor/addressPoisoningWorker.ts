@@ -15,8 +15,17 @@ import { authoritativeRegisteredService } from "../forensics/serviceClassifier";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import {
+  addressPoisoningAlertFingerprint,
+  addressPoisoningAlertKeyboard,
+  formatAddressPoisoningAlert
+} from "../alerts/addressPoisoningAlert";
+import {
+  claimAddressPoisoningAlertsForDelivery,
   claimAddressPoisoningChecks,
   listAddressLabels,
+  markAddressPoisoningAlertFailed,
+  markAddressPoisoningAlertSent,
+  markAddressPoisoningAlertSkipped,
   markAddressPoisoningCheckClear,
   markAddressPoisoningCheckFailed,
   markAddressPoisoningCheckInconclusive,
@@ -27,6 +36,7 @@ import {
 import type { Db } from "../storage/db";
 import type {
   AddressLabel,
+  AddressPoisoningCandidateDelivery,
   AddressPoisoningCheckWorkItem,
   PersistAddressPoisoningCandidateInput
 } from "../types";
@@ -53,11 +63,20 @@ export type AddressPoisoningCycleMetrics = {
   inconclusive: number;
   failed: number;
   stale: number;
+  alertsClaimed: number;
+  alertsSent: number;
+  alertsFailed: number;
+  alertsSkipped: number;
+  alertsStale: number;
+  alertsPersistenceFailed: number;
 };
 
 type MarkClearInput = Parameters<typeof markAddressPoisoningCheckClear>[1];
 type MarkInconclusiveInput = Parameters<typeof markAddressPoisoningCheckInconclusive>[1];
 type MarkFailedInput = Parameters<typeof markAddressPoisoningCheckFailed>[1];
+type MarkAlertSentInput = Parameters<typeof markAddressPoisoningAlertSent>[1];
+type MarkAlertFailedInput = Parameters<typeof markAddressPoisoningAlertFailed>[1];
+type MarkAlertSkippedInput = Parameters<typeof markAddressPoisoningAlertSkipped>[1];
 
 export type AddressPoisoningWorkerRepository = {
   skipExpiredChecks(db: Db, input: { expiredBefore: Date }): Promise<number>;
@@ -71,6 +90,13 @@ export type AddressPoisoningWorkerRepository = {
   markInconclusive(db: Db, input: MarkInconclusiveInput): Promise<boolean>;
   markFailed(db: Db, input: MarkFailedInput): Promise<boolean>;
   persistCandidate(db: Db, input: PersistAddressPoisoningCandidateInput): Promise<unknown>;
+  claimAlerts(
+    db: Db,
+    input: { limit: number; now: Date; staleSendingBefore: Date }
+  ): Promise<AddressPoisoningCandidateDelivery[]>;
+  markAlertSent(db: Db, input: MarkAlertSentInput): Promise<boolean>;
+  markAlertFailed(db: Db, input: MarkAlertFailedInput): Promise<boolean>;
+  markAlertSkipped(db: Db, input: MarkAlertSkippedInput): Promise<boolean>;
 };
 
 export type AddressPoisoningWorkerDeps = {
@@ -82,6 +108,11 @@ export type AddressPoisoningWorkerDeps = {
     ): Promise<RawTronscanTrc20Transfer[]>;
   };
   realtimeMaxAgeMs: number;
+  sendUserAlert(
+    telegramUserId: string,
+    message: string,
+    options: { reply_markup: ReturnType<typeof addressPoisoningAlertKeyboard>; parse_mode: "HTML" }
+  ): Promise<{ chatId: string | number; messageId: string | number }>;
   now?: () => Date;
   logger?: Logger;
   repository?: AddressPoisoningWorkerRepository;
@@ -119,7 +150,11 @@ const defaultRepository: AddressPoisoningWorkerRepository = {
   markClear: markAddressPoisoningCheckClear,
   markInconclusive: markAddressPoisoningCheckInconclusive,
   markFailed: markAddressPoisoningCheckFailed,
-  persistCandidate: persistAddressPoisoningCandidate
+  persistCandidate: persistAddressPoisoningCandidate,
+  claimAlerts: claimAddressPoisoningAlertsForDelivery,
+  markAlertSent: markAddressPoisoningAlertSent,
+  markAlertFailed: markAddressPoisoningAlertFailed,
+  markAlertSkipped: markAddressPoisoningAlertSkipped
 };
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, maximum?: number): number {
@@ -289,6 +324,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function boundedDeliveryError(error: unknown): string {
+  const clean = errorMessage(error).replace(/[\r\n\t\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return (clean || "telegram_delivery_failed").slice(0, 500);
+}
+
 function lostLease(error: unknown): boolean {
   return error instanceof Error && error.message.includes("lost its running check lease");
 }
@@ -447,6 +487,136 @@ async function processWorkItem(
   }
 }
 
+async function markDeliveryFailure(
+  deps: AddressPoisoningWorkerDeps,
+  repository: AddressPoisoningWorkerRepository,
+  candidate: AddressPoisoningCandidateDelivery,
+  error: unknown,
+  metrics: AddressPoisoningCycleMetrics,
+  now: Date,
+  logger: Logger
+): Promise<void> {
+  logger.warn("address_poisoning_alert_delivery_failed", {
+    candidateId: candidate.id,
+    error: boundedDeliveryError(error)
+  });
+  try {
+    const updated = await repository.markAlertFailed(deps.db, {
+      candidateId: candidate.id,
+      error: boundedDeliveryError(error),
+      now,
+      leaseVersion: candidate.leaseVersion
+    });
+    updated ? metrics.alertsFailed += 1 : metrics.alertsStale += 1;
+  } catch (persistenceError) {
+    metrics.alertsPersistenceFailed += 1;
+    logger.error("address_poisoning_alert_failure_persistence_failed", {
+      candidateId: candidate.id,
+      error: boundedDeliveryError(persistenceError)
+    });
+  }
+}
+
+async function deliverCandidateAlert(
+  deps: AddressPoisoningWorkerDeps,
+  repository: AddressPoisoningWorkerRepository,
+  candidate: AddressPoisoningCandidateDelivery,
+  metrics: AddressPoisoningCycleMetrics,
+  now: Date,
+  logger: Logger
+): Promise<void> {
+  if (candidate.alertMode === "paused") {
+    try {
+      const updated = await repository.markAlertSkipped(deps.db, {
+        candidateId: candidate.id,
+        reason: "wallet_alert_mode_paused",
+        leaseVersion: candidate.leaseVersion
+      });
+      updated ? metrics.alertsSkipped += 1 : metrics.alertsStale += 1;
+    } catch (error) {
+      metrics.alertsPersistenceFailed += 1;
+      logger.error("address_poisoning_alert_skip_persistence_failed", {
+        candidateId: candidate.id,
+        error: boundedDeliveryError(error)
+      });
+    }
+    return;
+  }
+
+  let message: ReturnType<typeof formatAddressPoisoningAlert>;
+  let keyboard: ReturnType<typeof addressPoisoningAlertKeyboard>;
+  let fingerprint: string;
+  try {
+    message = formatAddressPoisoningAlert(candidate);
+    keyboard = addressPoisoningAlertKeyboard({
+      callbackToken: candidate.callbackToken,
+      incomingTxHash: candidate.suspiciousIncomingTxHash,
+      outgoingTxHash: candidate.matchedOutgoingTxHash
+    });
+    fingerprint = addressPoisoningAlertFingerprint(candidate);
+  } catch (error) {
+    await markDeliveryFailure(deps, repository, candidate, error, metrics, now, logger);
+    return;
+  }
+
+  let sent: { chatId: string | number; messageId: string | number };
+  try {
+    sent = await deps.sendUserAlert(candidate.telegramUserId, message.text, {
+      reply_markup: keyboard,
+      parse_mode: message.parseMode
+    });
+  } catch (error) {
+    await markDeliveryFailure(deps, repository, candidate, error, metrics, now, logger);
+    return;
+  }
+
+  // ponytail: Telegram send and DB acknowledgement cannot be atomic. A crash here leaves
+  // `sending` retryable, so delivery is intentionally at-least-once with at most four claims.
+  try {
+    const updated = await repository.markAlertSent(deps.db, {
+      candidateId: candidate.id,
+      fingerprint,
+      telegramChatId: String(sent.chatId),
+      telegramMessageId: String(sent.messageId),
+      sentAt: now,
+      leaseVersion: candidate.leaseVersion
+    });
+    updated ? metrics.alertsSent += 1 : metrics.alertsStale += 1;
+  } catch (error) {
+    metrics.alertsPersistenceFailed += 1;
+    logger.error("address_poisoning_alert_sent_persistence_failed", {
+      candidateId: candidate.id,
+      error: boundedDeliveryError(error)
+    });
+  }
+}
+
+async function deliverCandidateAlerts(
+  deps: AddressPoisoningWorkerDeps,
+  repository: AddressPoisoningWorkerRepository,
+  options: ReturnType<typeof workerOptions>,
+  metrics: AddressPoisoningCycleMetrics,
+  now: Date,
+  logger: Logger
+): Promise<void> {
+  let claimed: AddressPoisoningCandidateDelivery[];
+  try {
+    claimed = await repository.claimAlerts(deps.db, {
+      limit: options.claimLimit,
+      now,
+      staleSendingBefore: new Date(now.getTime() - options.retryDelayMs)
+    });
+  } catch (error) {
+    metrics.alertsPersistenceFailed += 1;
+    logger.error("address_poisoning_alert_claim_failed", { error: boundedDeliveryError(error) });
+    return;
+  }
+  metrics.alertsClaimed = claimed.length;
+  for (const candidate of claimed) {
+    await deliverCandidateAlert(deps, repository, candidate, metrics, now, logger);
+  }
+}
+
 export async function runSingleAddressPoisoningCycle(
   deps: AddressPoisoningWorkerDeps,
   optionsInput: AddressPoisoningWorkerOptions = ADDRESS_POISONING_WORKER_DEFAULTS
@@ -464,7 +634,13 @@ export async function runSingleAddressPoisoningCycle(
     cleared: 0,
     inconclusive: 0,
     failed: 0,
-    stale: 0
+    stale: 0,
+    alertsClaimed: 0,
+    alertsSent: 0,
+    alertsFailed: 0,
+    alertsSkipped: 0,
+    alertsStale: 0,
+    alertsPersistenceFailed: 0
   };
 
   metrics.expiredSkipped = await repository.skipExpiredChecks(deps.db, {
@@ -477,15 +653,16 @@ export async function runSingleAddressPoisoningCycle(
     staleRunningBefore: new Date(now.getTime() - options.retryDelayMs)
   });
   metrics.claimed = claimed.length;
-  if (claimed.length === 0) return metrics;
-
-  let cursor = 0;
-  const consume = async () => {
-    while (cursor < claimed.length) {
-      const item = claimed[cursor++];
-      await processWorkItem(deps, repository, item, options, metrics, now, logger);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));
+  if (claimed.length > 0) {
+    let cursor = 0;
+    const consume = async () => {
+      while (cursor < claimed.length) {
+        const item = claimed[cursor++];
+        await processWorkItem(deps, repository, item, options, metrics, now, logger);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));
+  }
+  await deliverCandidateAlerts(deps, repository, options, metrics, now, logger);
   return metrics;
 }
