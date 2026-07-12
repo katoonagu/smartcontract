@@ -81,6 +81,11 @@ alter table address_poisoning_candidates
   add constraint address_poisoning_candidates_classification_check
   check (classification in ('CRITICAL','HIGH'));
 
+alter table address_poisoning_candidates drop constraint if exists address_poisoning_candidates_confidence_check;
+alter table address_poisoning_candidates
+  add constraint address_poisoning_candidates_confidence_check
+  check (confidence in ('low','medium','high'));
+
 alter table address_poisoning_candidates drop constraint if exists address_poisoning_candidates_status_check;
 alter table address_poisoning_candidates
   add constraint address_poisoning_candidates_status_check

@@ -226,6 +226,7 @@ export type AddressPoisoningCandidateDelivery = AddressPoisoningCandidate & {
   walletAddress: string;
   telegramUserId: string;
   locale: BotLocale | null;
+  alertMode: WalletAlertMode;
 };
 
 export type PersistAddressPoisoningCandidateInput = {
@@ -250,6 +251,12 @@ export type PersistAddressPoisoningCandidateInput = {
   confidence: RiskConfidence;
   secondaryMatches: unknown[];
   evidenceJson: Record<string, unknown>;
+  coverage: AddressPoisoningCoverage;
+  logicalOffset: number;
+  pageCount: number;
+  fetchedCount: number;
+  oldestFetchedAt: Date | null;
+  accumulatedLookupJson: Record<string, unknown>;
 };
 
 export type ForensicCaseStatus = "completed" | "partial" | "failed";

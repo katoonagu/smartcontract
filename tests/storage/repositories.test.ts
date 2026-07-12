@@ -54,6 +54,7 @@ import {
   markUserAlertSent,
   markUserAlertSkipped,
   markAddressPoisoningAlertFailed,
+  markAddressPoisoningAlertSkipped,
   markAddressPoisoningAlertSent,
   markAddressPoisoningCheckClear,
   markAddressPoisoningCheckFailed,
@@ -142,6 +143,12 @@ function createMockTransactionalDb(options: { failOnRiskObservation?: boolean } 
   const client = {
     query: async (sql: string, params: unknown[] = []) => {
       queries.push({ sql, params });
+      if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+        return { rows: [{ poisoning_check_status: "running" }], rowCount: 1 };
+      }
+      if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("for update of candidate")) {
+        return { rows: [], rowCount: 0 };
+      }
       if (options.failOnRiskObservation && sql.includes("insert into risk_signal_observations")) {
         throw new Error("risk observation insert failed");
       }
@@ -2865,7 +2872,8 @@ describe("address poisoning persistence", () => {
     created_at: now,
     updated_at: now,
     resolved_at: null,
-    alert_sent_at: null
+    alert_sent_at: null,
+    alert_mode: "paused"
   };
 
   const persistInput = {
@@ -2889,7 +2897,13 @@ describe("address poisoning persistence", () => {
     classification: "CRITICAL" as const,
     confidence: "high" as const,
     secondaryMatches: [],
-    evidenceJson: { exactAmount: true }
+    evidenceJson: { exactAmount: true },
+    coverage: "complete" as const,
+    logicalOffset: 200,
+    pageCount: 2,
+    fetchedCount: 183,
+    oldestFetchedAt: new Date("2026-07-11T12:00:00.000Z"),
+    accumulatedLookupJson: { transfers: ["outgoing-1"] }
   };
 
   it("migrates historical rows to skipped_backfill and keeps that safe default", () => {
@@ -2898,6 +2912,7 @@ describe("address poisoning persistence", () => {
     expect(sql).toContain("'wallet_safety'");
     expect(compactSql(sql)).toContain("signal_group <> 'wallet_safety' or score_impact = 0");
     expect(sql).toContain("unique (watched_wallet_id, token_contract, suspicious_incoming_tx_hash)");
+    expect(compactSql(sql)).toContain("check (confidence in ('low','medium','high'))");
   });
 
   it("claims fresh work with a row lock and leaves fifth-page partials terminal", async () => {
@@ -2915,7 +2930,8 @@ describe("address poisoning persistence", () => {
     const expired = createMockDb(2);
     const paused = createMockDb(3);
     expect(await skipExpiredAddressPoisoningChecks(expired.db, { expiredBefore: now })).toBe(2);
-    expect(compactSql(expired.queries[0].sql)).toContain("poisoning_check_status in ('pending', 'failed', 'inconclusive')");
+    expect(compactSql(expired.queries[0].sql)).toContain("poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')");
+    expect(compactSql(expired.queries[0].sql)).toContain("poisoning_check_status = 'skipped_backfill'");
     expect(await skipPausedAddressPoisoningChecks(paused.db)).toBe(3);
     expect(compactSql(paused.queries[0].sql)).toContain("from watched_wallets w");
     expect(compactSql(paused.queries[0].sql)).toContain("w.alert_mode = 'paused'");
@@ -2926,9 +2942,26 @@ describe("address poisoning persistence", () => {
     const partial = createMockDb(1);
     const skipped = createMockDb(1);
     expect(await markAddressPoisoningCheckClear(clear.db, {
-      txHash: "incoming-1", watchedWalletId: "wallet-1", coverage: "complete"
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      coverage: "complete",
+      logicalOffset: 240,
+      pageCount: 3,
+      fetchedCount: 212,
+      oldestFetchedAt: new Date("2026-07-11T10:00:00.000Z"),
+      accumulatedLookupJson: { transfers: ["tx-final"] }
     })).toBe(true);
     expect(compactSql(clear.queries[0].sql)).toContain("poisoning_lookup_coverage = 'complete'");
+    expect(compactSql(clear.queries[0].sql)).toContain("poisoning_logical_offset = $3");
+    expect(clear.queries[0].params).toEqual([
+      "incoming-1",
+      "wallet-1",
+      240,
+      3,
+      212,
+      new Date("2026-07-11T10:00:00.000Z"),
+      { transfers: ["tx-final"] }
+    ]);
     expect(await markAddressPoisoningCheckInconclusive(partial.db, {
       txHash: "incoming-1",
       watchedWalletId: "wallet-1",
@@ -2964,6 +2997,12 @@ describe("address poisoning persistence", () => {
     const client = {
       query: async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
+        if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+        }
+        if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("for update of candidate")) {
+          return { rowCount: 0, rows: [] };
+        }
         if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
         return { rowCount: 1, rows: [] };
       },
@@ -2975,6 +3014,12 @@ describe("address poisoning persistence", () => {
     const secondClient = {
       query: async (sql: string, params: unknown[] = []) => {
         secondQueries.push({ sql, params });
+        if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+        }
+        if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("for update of candidate")) {
+          return { rowCount: 0, rows: [] };
+        }
         if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [{ ...candidateRow, status: "confirmed", alert_status: "sent" }] };
         return { rowCount: 1, rows: [] };
       },
@@ -2991,10 +3036,16 @@ describe("address poisoning persistence", () => {
     );
     const upsert = compactSql(queries.find((query) => query.sql.includes("insert into address_poisoning_candidates"))!.sql);
     expect(upsert).toContain("on conflict (watched_wallet_id, token_contract, suspicious_incoming_tx_hash)");
+    expect(upsert).toContain("do nothing");
     expect(upsert).not.toContain("status = excluded.status");
     expect(upsert).not.toContain("callback_token = excluded.callback_token");
     expect(upsert).not.toContain("alert_status = excluded.alert_status");
     expect(compactSql(queries.at(-2)!.sql)).toContain("poisoning_check_status = 'running'");
+    expect(compactSql(queries.at(-2)!.sql)).toContain("poisoning_lookup_coverage = $3");
+    expect(queries.at(-2)!.params).toEqual([
+      "incoming-1", "wallet-1", "complete", 200, 2, 183,
+      new Date("2026-07-11T12:00:00.000Z"), { transfers: ["outgoing-1"] }
+    ]);
     expect(queries.at(-1)?.sql).toBe("commit");
   });
 
@@ -3010,6 +3061,7 @@ describe("address poisoning persistence", () => {
       limit: 10, now, staleSendingBefore: new Date(now.getTime() - 30_000)
     });
     expect(rows).toHaveLength(1);
+    expect(rows[0].alertMode).toBe("paused");
     expect(compactSql(claimed.queries[0].sql)).toContain("for update of candidate skip locked");
     const sent = createMockDb(1);
     expect(await markAddressPoisoningAlertSent(sent.db, {
@@ -3019,6 +3071,8 @@ describe("address poisoning persistence", () => {
     const failed = createMockDb(1);
     expect(await markAddressPoisoningAlertFailed(failed.db, { candidateId: "candidate-1", error: "telegram", now })).toBe(true);
     expect(compactSql(failed.queries[0].sql)).toContain("alert_attempts = alert_attempts + 1");
+    const skipped = createMockDb(1);
+    expect(await markAddressPoisoningAlertSkipped(skipped.db, { candidateId: "candidate-1", reason: "paused" })).toBe(true);
   });
 
   it("resolves callbacks only through an owner-bound mutation and maps CAS outcomes", async () => {
@@ -3039,7 +3093,195 @@ describe("address poisoning persistence", () => {
       expect(sql).toContain("join watched_wallets w");
       expect(sql).toContain("w.telegram_user_id = $2");
       expect(sql).toContain("candidate.callback_token = $1");
+      expect(sql).toContain("returning candidate.*");
     }
+  });
+
+  it("returns the committed candidate on replay without rewriting evidence or terminal alert facts", async () => {
+    const immutable = {
+      ...candidateRow,
+      status: "confirmed",
+      alert_status: "sent",
+      callback_token: "immutablecallbacktok",
+      alert_fingerprint: "immutable-fingerprint",
+      matched_outgoing_tx_hash: "original-outgoing"
+    };
+    const queries: { sql: string; params: unknown[] }[] = [];
+    const client = {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+          return { rowCount: 1, rows: [{ poisoning_check_status: "candidate" }] };
+        }
+        if (sql.includes("from address_poisoning_candidates candidate") && sql.includes("suspicious_incoming_tx_hash")) {
+          return { rowCount: 1, rows: [immutable] };
+        }
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined
+    };
+    const replay = await persistAddressPoisoningCandidate({ connect: async () => client } as unknown as Db, {
+      ...persistInput,
+      matchedOutgoingTxHash: "replacement-outgoing"
+    });
+    expect(replay.matchedOutgoingTxHash).toBe("original-outgoing");
+    expect(replay.callbackToken).toBe("immutablecallbacktok");
+    expect(replay.alertFingerprint).toBe("immutable-fingerprint");
+    expect(replay.alertStatus).toBe("sent");
+    expect(queries.some((query) => query.sql.includes("insert into raw_evidence"))).toBe(false);
+    expect(queries.some((query) => query.sql.includes("insert into address_poisoning_candidates"))).toBe(false);
+    expect(queries.at(-1)?.sql).toBe("commit");
+  });
+
+  it("rolls back a new candidate when the observed running-to-candidate CAS loses", async () => {
+    const queries: string[] = [];
+    const client = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+        }
+        if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
+        if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
+        if (sql.includes("update observed_transactions")) return { rowCount: 0, rows: [] };
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined
+    };
+    await expect(persistAddressPoisoningCandidate({ connect: async () => client } as unknown as Db, persistInput))
+      .rejects.toThrow("running check lease");
+    expect(queries.at(-1)).toBe("rollback");
+  });
+
+  it("persists partial candidate progress without coercing it", async () => {
+    const queries: { sql: string; params: unknown[] }[] = [];
+    const client = {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+          return { rowCount: 1, rows: [{ poisoning_check_status: "running" }] };
+        }
+        if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
+        if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined
+    };
+    await persistAddressPoisoningCandidate({ connect: async () => client } as unknown as Db, {
+      ...persistInput,
+      coverage: "partial"
+    });
+    const finalized = queries.find((query) => query.sql.includes("update observed_transactions"))!;
+    expect(finalized.params).toContain("partial");
+    expect(compactSql(finalized.sql)).not.toContain("coalesce(poisoning_lookup_coverage, 'partial')");
+  });
+
+  it("returns updated callback timestamps from the successful CAS row", async () => {
+    const resolvedAt = new Date("2026-07-12T12:01:00.000Z");
+    const updatedAt = new Date("2026-07-12T12:01:01.000Z");
+    const queries: string[] = [];
+    const db = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        const returnsUpdatedRow = compactSql(sql).includes("returning candidate.*");
+        return {
+          rowCount: 1,
+          rows: [{
+            ...candidateRow,
+            outcome: "updated",
+            status: returnsUpdatedRow ? "confirmed" : "candidate",
+            resolved_at: returnsUpdatedRow ? resolvedAt : null,
+            updated_at: returnsUpdatedRow ? updatedAt : candidateRow.updated_at
+          }]
+        };
+      }
+    } as unknown as Db;
+    const result = await resolveAddressPoisoningCandidate(db, {
+      callbackToken: candidateRow.callback_token,
+      telegramUserId: "42",
+      resolution: "confirmed"
+    });
+    expect(result.outcome).toBe("updated");
+    expect(result.candidate?.status).toBe("confirmed");
+    expect(result.candidate?.resolvedAt).toEqual(resolvedAt);
+    expect(result.candidate?.updatedAt).toEqual(updatedAt);
+  });
+
+  it("returns the existing resolved row accurately for an idempotent callback", async () => {
+    const resolvedAt = new Date("2026-07-12T12:02:00.000Z");
+    const updatedAt = new Date("2026-07-12T12:02:01.000Z");
+    const db = createMockDb(1, [{
+      ...candidateRow,
+      outcome: "idempotent",
+      status: "dismissed",
+      resolved_at: resolvedAt,
+      updated_at: updatedAt
+    }]);
+    const result = await resolveAddressPoisoningCandidate(db.db, {
+      callbackToken: candidateRow.callback_token,
+      telegramUserId: "42",
+      resolution: "dismissed"
+    });
+    expect(result).toMatchObject({
+      outcome: "idempotent",
+      candidate: { status: "dismissed", resolvedAt, updatedAt }
+    });
+  });
+
+  it("models 30/60/120 provider retries and leaves the third failure terminal", async () => {
+    const state = { status: "running", attempts: 0, nextRetryAt: null as Date | null };
+    const db = {
+      query: async (sql: string, params: unknown[] = []) => {
+        if (sql.includes("update observed_transactions")) {
+          if (state.status !== "running") return { rowCount: 0, rows: [] };
+          const seconds = [30, 60, 120][Math.min(state.attempts, 2)];
+          state.attempts += 1;
+          state.status = "failed";
+          state.nextRetryAt = new Date((params[3] as Date).getTime() + seconds * 1000);
+          return { rowCount: 1, rows: [] };
+        }
+        if (sql.includes("with claimed as")) {
+          return { rowCount: state.attempts < 3 ? 1 : 0, rows: [] };
+        }
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+    for (const seconds of [30, 60, 120]) {
+      state.status = "running";
+      await markAddressPoisoningCheckFailed(db, {
+        txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now
+      });
+      expect(state.nextRetryAt).toEqual(new Date(now.getTime() + seconds * 1000));
+    }
+    expect(await claimAddressPoisoningChecks(db, { limit: 1, now, staleRunningBefore: now })).toEqual([]);
+  });
+
+  it("models a full fifth partial page as terminal inconclusive", async () => {
+    const state = { status: "running", pageCount: 0 };
+    const db = {
+      query: async (sql: string, params: unknown[] = []) => {
+        if (sql.includes("set poisoning_check_status = 'inconclusive'")) {
+          state.status = "inconclusive";
+          state.pageCount = Number(params[5]);
+          return { rowCount: 1, rows: [] };
+        }
+        if (sql.includes("with claimed as")) return { rowCount: state.pageCount < 5 ? 1 : 0, rows: [] };
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+    await markAddressPoisoningCheckInconclusive(db, {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      coverage: "partial",
+      logicalOffset: 500,
+      pageCount: 5,
+      fetchedCount: 500,
+      oldestFetchedAt: now,
+      accumulatedLookupJson: { transfers: [] },
+      nextRetryAt: now,
+      reason: "provider_cap"
+    });
+    expect(await claimAddressPoisoningChecks(db, { limit: 1, now, staleRunningBefore: now })).toEqual([]);
   });
 
   it("looks up active candidates and reports queue age", async () => {

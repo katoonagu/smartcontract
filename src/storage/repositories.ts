@@ -1918,7 +1918,8 @@ function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): Addr
     ...mapAddressPoisoningCandidateRow(row),
     walletAddress: row.wallet_address,
     telegramUserId: row.telegram_user_id,
-    locale: normalizeNullableBotLocale(row.locale)
+    locale: normalizeNullableBotLocale(row.locale),
+    alertMode: parseWalletAlertMode(row.alert_mode)
   };
 }
 
@@ -3404,11 +3405,11 @@ export async function skipExpiredAddressPoisoningChecks(
 ): Promise<number> {
   const result = await db.query(
     `update observed_transactions
-     set poisoning_check_status = 'skipped',
+     set poisoning_check_status = 'skipped_backfill',
        poisoning_last_error = 'expired_before_processing',
        poisoning_updated_at = now(),
        poisoning_checked_at = now()
-     where poisoning_check_status in ('pending', 'failed', 'inconclusive')
+     where poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')
        and timestamp < $1`,
     [input.expiredBefore]
   );
@@ -3433,19 +3434,41 @@ export async function skipPausedAddressPoisoningChecks(db: Db): Promise<number> 
 
 export async function markAddressPoisoningCheckClear(
   db: Db,
-  input: { txHash: string; watchedWalletId: string; coverage: AddressPoisoningCoverage }
+  input: {
+    txHash: string;
+    watchedWalletId: string;
+    coverage: AddressPoisoningCoverage;
+    logicalOffset: number;
+    pageCount: number;
+    fetchedCount: number;
+    oldestFetchedAt: Date | null;
+    accumulatedLookupJson: Record<string, unknown>;
+  }
 ): Promise<boolean> {
   if (input.coverage !== "complete") throw new Error("Address poisoning clear requires complete coverage");
   const result = await db.query(
     `update observed_transactions
      set poisoning_check_status = 'clear',
        poisoning_lookup_coverage = 'complete',
+       poisoning_logical_offset = $3,
+       poisoning_page_count = $4,
+       poisoning_fetched_count = $5,
+       poisoning_oldest_fetched_at = $6,
+       poisoning_accumulated_lookup_json = $7,
        poisoning_next_retry_at = null,
        poisoning_last_error = null,
        poisoning_updated_at = now(),
        poisoning_checked_at = now()
      where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
-    [input.txHash, input.watchedWalletId]
+    [
+      input.txHash,
+      input.watchedWalletId,
+      input.logicalOffset,
+      input.pageCount,
+      input.fetchedCount,
+      input.oldestFetchedAt,
+      input.accumulatedLookupJson
+    ]
   );
   return (result.rowCount ?? 0) === 1;
 }
@@ -3556,14 +3579,80 @@ export async function persistAddressPoisoningCandidate(
 ): Promise<AddressPoisoningCandidate> {
   parseAddressPoisoningClassification(input.classification);
   parseRiskConfidence(input.confidence);
+  parseAddressPoisoningCoverage(input.coverage);
   const evidenceId = deterministicAddressPoisoningId("evidence", input);
   const observationId = deterministicAddressPoisoningId("observation", input);
   const candidateId = deterministicAddressPoisoningId("candidate", input);
   const alertFingerprint = deterministicAddressPoisoningId("alert", input);
-  const callbackToken = randomBytes(15).toString("base64url");
   const client = await db.connect();
   try {
     await client.query("begin");
+    const observedResult = await client.query(
+      `select tx.poisoning_check_status
+       from observed_transactions tx
+       where tx.tx_hash = $1 and tx.watched_wallet_id = $2
+       for update of tx`,
+      [input.suspiciousIncomingTxHash, input.watchedWalletId]
+    );
+    const observedStatus = observedResult.rows[0]?.poisoning_check_status;
+    if (observedStatus === undefined) throw new Error("Address poisoning observed transaction is unavailable");
+    parseAddressPoisoningCheckStatus(observedStatus);
+
+    const existingResult = await client.query(
+      `select candidate.*
+       from address_poisoning_candidates candidate
+       where candidate.watched_wallet_id = $1
+         and candidate.token_contract = $2
+         and candidate.suspicious_incoming_tx_hash = $3
+       for update of candidate`,
+      [input.watchedWalletId, input.tokenContract, input.suspiciousIncomingTxHash]
+    );
+    const existing = existingResult.rows[0]
+      ? mapAddressPoisoningCandidateRow(existingResult.rows[0])
+      : null;
+    if (observedStatus === "candidate" && existing) {
+      await client.query("commit");
+      return existing;
+    }
+    if (observedStatus !== "running") {
+      throw new Error("Address poisoning candidate lost its running check lease");
+    }
+
+    const finalizeObservedCandidate = () => client.query(
+      `update observed_transactions
+       set poisoning_check_status = 'candidate',
+         poisoning_lookup_coverage = $3,
+         poisoning_logical_offset = $4,
+         poisoning_page_count = $5,
+         poisoning_fetched_count = $6,
+         poisoning_oldest_fetched_at = $7,
+         poisoning_accumulated_lookup_json = $8,
+         poisoning_next_retry_at = null,
+         poisoning_last_error = null,
+         poisoning_updated_at = now(),
+         poisoning_checked_at = now()
+       where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
+      [
+        input.suspiciousIncomingTxHash,
+        input.watchedWalletId,
+        input.coverage,
+        input.logicalOffset,
+        input.pageCount,
+        input.fetchedCount,
+        input.oldestFetchedAt,
+        input.accumulatedLookupJson
+      ]
+    );
+
+    if (existing) {
+      const transitioned = await finalizeObservedCandidate();
+      if ((transitioned.rowCount ?? 0) !== 1) {
+        throw new Error("Address poisoning candidate lost its running check lease");
+      }
+      await client.query("commit");
+      return existing;
+    }
+
     await client.query(
       `insert into raw_evidence (
          id, source, source_type, chain, address, tx_hash,
@@ -3608,6 +3697,7 @@ export async function persistAddressPoisoningCandidate(
         evidenceId
       ]
     );
+    const callbackToken = randomBytes(15).toString("base64url");
     const candidateResult = await client.query(
       `insert into address_poisoning_candidates (
          id, callback_token, watched_wallet_id, token_contract, token_symbol, token_decimals,
@@ -3619,20 +3709,7 @@ export async function persistAddressPoisoningCandidate(
          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
        )
-       on conflict (watched_wallet_id, token_contract, suspicious_incoming_tx_hash) do update set
-         matched_outgoing_tx_hash = excluded.matched_outgoing_tx_hash,
-         genuine_recipient = excluded.genuine_recipient,
-         matched_outgoing_amount_raw = excluded.matched_outgoing_amount_raw,
-         matched_outgoing_at = excluded.matched_outgoing_at,
-         raw_prefix_length = excluded.raw_prefix_length,
-         meaningful_prefix_length = excluded.meaningful_prefix_length,
-         suffix_length = excluded.suffix_length,
-         classification = excluded.classification,
-         confidence = excluded.confidence,
-         raw_evidence_id = excluded.raw_evidence_id,
-         secondary_matches_json = excluded.secondary_matches_json,
-         evidence_json = excluded.evidence_json,
-         updated_at = now()
+       on conflict (watched_wallet_id, token_contract, suspicious_incoming_tx_hash) do nothing
        returning *`,
       [
         candidateId,
@@ -3660,18 +3737,11 @@ export async function persistAddressPoisoningCandidate(
         alertFingerprint
       ]
     );
-    const transitioned = await client.query(
-      `update observed_transactions
-       set poisoning_check_status = 'candidate',
-         poisoning_lookup_coverage = coalesce(poisoning_lookup_coverage, 'partial'),
-         poisoning_next_retry_at = null,
-         poisoning_last_error = null,
-         poisoning_updated_at = now(),
-         poisoning_checked_at = now()
-       where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
-      [input.suspiciousIncomingTxHash, input.watchedWalletId]
-    );
-    if ((transitioned.rowCount ?? 0) !== 1 || !candidateResult.rows[0]) {
+    if (!candidateResult.rows[0]) {
+      throw new Error("Address poisoning candidate conflicted during persistence");
+    }
+    const transitioned = await finalizeObservedCandidate();
+    if ((transitioned.rowCount ?? 0) !== 1) {
       throw new Error("Address poisoning candidate lost its running check lease");
     }
     await client.query("commit");
@@ -3709,7 +3779,7 @@ export async function claimAddressPoisoningAlertsForDelivery(
      where candidate.id = claimed.id
        and w.id = candidate.watched_wallet_id
        and u.telegram_user_id = w.telegram_user_id
-     returning candidate.*, w.address as wallet_address, w.telegram_user_id, u.locale`,
+     returning candidate.*, w.address as wallet_address, w.telegram_user_id, w.alert_mode, u.locale`,
     [input.limit, input.now, input.staleSendingBefore]
   );
   return result.rows.map(mapAddressPoisoningCandidateDeliveryRow);
@@ -3782,16 +3852,15 @@ export async function resolveAddressPoisoningCandidate(
        set status = $3, resolved_at = now(), updated_at = now()
        from eligible
        where candidate.id = eligible.id and candidate.status = 'candidate'
-       returning candidate.id
+       returning candidate.*
      )
+     select updated.*, 'updated' as outcome
+     from updated
+     union all
      select eligible.*,
-       case
-         when updated.id is not null then 'updated'
-         when eligible.status = $3 then 'idempotent'
-         else 'conflict'
-       end as outcome,
-       case when updated.id is not null then $3 else eligible.status end as status
-     from eligible left join updated on updated.id = eligible.id`,
+       case when eligible.status = $3 then 'idempotent' else 'conflict' end as outcome
+     from eligible
+     where not exists (select 1 from updated)`,
     [input.callbackToken, input.telegramUserId, input.resolution]
   );
   const row = result.rows[0];
