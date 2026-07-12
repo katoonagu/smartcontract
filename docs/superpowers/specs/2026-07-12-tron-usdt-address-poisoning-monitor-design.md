@@ -155,8 +155,11 @@ Only trigger the live lookup when all conditions hold:
 An older event is historical backfill. Persist
 `poisoning_check_status = skipped_backfill` and do not perform a lookup or send
 a security warning. The ordinary Incoming Deposit path keeps its existing
-backfill behavior. Retries re-check event age before claiming work so a stale
-pending row cannot produce a late warning after downtime.
+backfill behavior. The repository applies the fresh-event cutoff inside the
+atomic `for update skip locked` claim. After any scheduler or provider wait,
+the worker checks freshness again before every terminal write, bound to the
+running check lease. An expired candidate, clear, inconclusive, or error path
+becomes `skipped_backfill`, so downtime cannot create a late warning.
 
 Migration 031 uses `skipped_backfill` as the safe default for all pre-existing
 and unspecified rows. Any legacy `clear` without an allowed typed reason is
@@ -164,10 +167,22 @@ rewritten to `skipped_backfill` with `legacy_clear_reason_unknown`; migration
 never invents `complete_no_match` coverage.
 
 Each worker claim reads one logical page of at most 100 related USDT transfers
-within the strict 24 hours before the suspicious incoming transfer. It filters
-them locally to canonical official-USDT transfers earlier than the lure. A
-later transfer must never be used to explain an earlier alert. Persist whether
-the result covers the full 24-hour window or was truncated by the page limit.
+within the strict 24 hours before the suspicious incoming transfer. The
+poisoning path uses the pinned TronScan-only page API; it does not use the
+ordinary client's TronGrid fallback. One logical 100-row page uses at most two
+internal 50-row provider calls. It filters locally to confirmed, successful,
+non-reverted official-USDT transfers earlier than the lure. A provider
+`riskTransaction` flag remains contextual metadata: it does not invalidate an
+otherwise canonical relationship transfer, and the raw flag remains in saved
+provider evidence.
+
+Persist the pinned provider, requested/start/next offsets, totals and range
+totals, completion and consistency flags, raw and canonical response hashes,
+per-fact provider identity, and internal/cross-claim overlaps. Mixed provider
+evidence, missing or contradictory totals, `rangeTotal > total`, an oversized
+page, a short nonterminal page, unexplained no progress, or overlap never proves
+complete negative coverage. Such a result stays partial/inconclusive rather
+than becoming `clear`.
 
 A positive visual/amount match is usable with partial coverage. An exact
 disqualifier is also usable: an earlier direct relationship, an exact
@@ -498,19 +513,27 @@ continues. The query changes neither score, disposition, nor `shouldSend`.
   namespace.
 - Check and Telegram-delivery phases have independent non-overlap guards. A
   scheduler tick skips only the phase whose prior cycle is still running.
-- Each claim fetches at most one page of 100 transfers. Continuations use the
-  saved cursor and never restart page one.
+- Each claim fetches at most one pinned logical page of 100 transfers, built
+  from no more than two internal TronScan calls. Continuations use the saved
+  cursor and never restart page one. Ordinary non-poisoning client methods keep
+  their existing fallback behavior.
 - Deduplicate concurrent checks for the same watched wallet and incoming tx.
 - Provider timeout marks the poisoning check failed/retryable and does not fail
   normal Incoming analysis.
 - Invalid addresses, token mismatch, reverted transfers, self-transfers, and
   transfers after the suspicious event are ignored.
 - Alert delivery claims one candidate only when a bounded send slot is free.
-  The claim generation allows at most four executions. A dedicated lease is
-  renewed every 40 seconds and stale `sending` work is reclaimable after 120
-  seconds. Rows whose status is `sent` are excluded from claims. The persisted
-  fingerprint identifies the rendered immutable candidate facts; delivery
-  claims do not use it as their predicate.
+  The Telegram request receives a real abort signal after 30 seconds; no
+  `Promise.race` wrapper is used. This timeout is below the 40-second heartbeat
+  interval and 120-second stale-delivery lease.
+- Delivery ownership has two separate fields. The alert lease timestamp drives
+  heartbeat, liveness, and stale reclaim. The monotonic `alertAttempt`
+  generation drives `sent`, `failed`, and `skipped` terminal compare-and-set
+  writes. Once started, the heartbeat remains active through the final database
+  acknowledgement. Reclaim and finalization serialize by generation, and at
+  most four send executions are claimed. Rows whose status is `sent` are
+  excluded from claims. The persisted fingerprint identifies the rendered
+  immutable candidate facts; delivery claims do not use it as their predicate.
 - Detector output is deterministic; no LLM key or response is involved.
 - Under a healthy provider and queue depth within configured cycle capacity,
   the alert SLO is no more than two wallet-polling cycles and normally no more
@@ -525,7 +548,7 @@ Operational events are exact and avoid sensitive addresses, Telegram user/chat
 ids, API keys, and tokens:
 
 - `address_poisoning_lookup_completed`: `txHash`, `providerLatencyMs`,
-  `pageCount`, `fetchedCount`, `coverage`;
+  `pageCount`, `fetchedCount`, `coverage`, and the accumulated `provider`;
 - `address_poisoning_cycle_completed`: `queueDepth`, `oldestQueueAgeMs`,
   `claimed`, `durationMs`, `timeoutCount`;
 - `address_poisoning_alert_sent`: `candidateId`, `classification`,
@@ -570,6 +593,13 @@ The fixture must prove:
 - same evidence after 24 hours does not meet the critical time rule;
 - raw token equality respects token contract and decimals;
 - future/later transfers are never used in the initial decision;
+- poisoning pages stay pinned to TronScan while ordinary client fallback remains;
+- missing, inconsistent, overlapping, or non-progressing pagination cannot
+  produce `clear`;
+- `riskTransaction` remains raw contextual metadata and does not invalidate an
+  otherwise canonical relationship transfer;
+- an event that expires during provider/scheduler wait becomes
+  `skipped_backfill` before any terminal write, including the error path;
 - missing sender creation time does not suppress an exact candidate;
 - an exact `service_admin` trusted/false-positive sender label suppresses the
   warning;
@@ -594,6 +624,9 @@ The fixture must prove:
   predicate;
 - a crash between Telegram acceptance and the `sent` database write is covered
   as an explicit at-least-once delivery limitation;
+- Telegram delivery has an abortable 30-second timeout without `Promise.race`;
+- the lease controls delivery liveness, while `alertAttempt` generation controls
+  terminal writes and serializes finalization against reclaim;
 - `risk_only` and `digest` receive the security warning immediately;
 - `paused` receives no warning;
 - Telegram includes both full addresses and both transaction links;

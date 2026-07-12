@@ -63,11 +63,20 @@ of these decisions, update this file in the same work.
   transaction. The default maximum lure amount is 100 USDT. It never fetches
   relationship history inline.
 - The dedicated worker runs every 30 seconds, claims at most 20 checks with
-  concurrency two, fetches one logical page of 100 rows per claim, and stops
-  after five pages. The lookup window is strictly the 24 hours before the lure
-  and accepts only canonical official-USDT transfers. Match ranking is
-  deterministic and one incoming transaction creates at most one candidate and
-  one logical alert.
+  concurrency two, fetches one pinned TronScan-only logical page of at most 100
+  rows per claim, and stops after five pages. A logical page uses at most two
+  internal calls of 50 rows; ordinary client methods retain provider fallback.
+  The lookup window is strictly the 24 hours before the lure and accepts only
+  confirmed, successful, non-reverted official-USDT transfers. Provider
+  `riskTransaction` remains saved context and does not invalidate an otherwise
+  canonical relationship. Match ranking is deterministic and one incoming
+  transaction creates at most one candidate and one logical alert.
+- Complete negative coverage requires authoritative provider/range metadata.
+  Provider identity, offsets, totals, range totals, completion flags, raw and
+  canonical hashes, and overlaps are stored. Mixed provider evidence, missing
+  or contradictory totals, impossible totals, oversized/short-nonterminal or
+  non-progressing pages, and internal or cross-claim overlap remain partial and
+  cannot become clean.
 - Partial negative coverage is `inconclusive`, never `clear`. Partial evidence
   can decide a positive candidate or an exact disqualifier: a prior direct
   relation, an authorized `service_admin` trusted/false-positive label, or an
@@ -76,6 +85,9 @@ of these decisions, update this file in the same work.
 - Provider failures get the initial execution plus three retries after 30, 60,
   and 120 seconds. The fourth failure is terminal. The repository is the only
   authority for attempt count and retry timing.
+- Freshness is enforced inside the atomic claim and again with the running
+  lease after scheduler/provider wait before every terminal write. An expired
+  candidate, clear, inconclusive, or failure path becomes `skipped_backfill`.
 - Poisoning evidence is `wallet_safety`, not AML. Its score impact is exactly
   zero, database and runtime guards enforce that invariant, and AML/unified
   scoring allowlists exclude the group. A safety classification cannot change
@@ -90,10 +102,14 @@ of these decisions, update this file in the same work.
   `dismissed` removes it. Lookup failure cannot fail Incoming delivery, and the
   warning changes no AML decision or alert-routing result.
 - Check and delivery phases have independent non-overlap guards. Delivery is
-  at-least-once: a maximum of four just-in-time send claims, a 40-second lease
-  heartbeat, 120-second stale reclaim, and persisted fingerprint reduce
-  duplicates, but Telegram acceptance cannot be atomic with the final database
-  `sent` write.
+  at-least-once. Telegram send has a real abortable 30-second timeout without
+  `Promise.race`, below the 40-second heartbeat and 120-second stale reclaim.
+  The lease timestamp controls heartbeat/liveness/reclaim; the monotonic
+  `alertAttempt` generation controls `sent`/`failed`/`skipped` terminal writes.
+  A started heartbeat stays active through final acknowledgement, and reclaim
+  versus finalization serializes by generation. At most four just-in-time send
+  claims and the persisted fingerprint reduce duplicates, but Telegram
+  acceptance cannot be atomic with the final database write.
 - The healthy-capacity regression uses the real shared scheduler and the
   worst-phase two-tick path: alert at 60 seconds, within the product target of
   120 seconds. Queue, lookup, cycle, timeout, and alert latency are logged

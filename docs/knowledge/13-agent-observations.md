@@ -5,6 +5,9 @@ owner_area: docs
 code_refs:
   - AGENTS.md
   - docs/knowledge/AGENT_BRIEF.md
+  - src/monitor/addressPoisoningWorker.ts
+  - src/storage/repositories.ts
+  - src/tron/tronClient.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
 ---
@@ -178,7 +181,25 @@ candidate changes could steal or invalidate an active Telegram send.
 
 Correct rule:
 
-Long external delivery needs a dedicated generation and lease timestamp. Renew
-that lease while the call is active, compare it on every terminal write, and
-state the remaining external crash gap honestly instead of claiming exactly-once
-delivery.
+Long external delivery needs both a monotonic claim generation and a dedicated
+lease timestamp. The lease owns heartbeat, liveness, and stale reclaim. The
+generation owns terminal compare-and-set writes. Keep the heartbeat active
+through final acknowledgement, serialize reclaim against finalization by
+generation, and state the external crash gap honestly instead of claiming
+exactly-once delivery.
+
+## 2026-07-12: Coverage Metadata Needs A Pinned Authority
+
+Agent mistake:
+
+Fallback rows, changing totals, short pages, or provider risk labels were
+treated as enough to prove a complete clean history.
+
+Correct rule:
+
+Evidence used to prove negative coverage must stay pinned to one authoritative
+provider and retain its range metadata, offsets, totals, hashes, and overlaps.
+Missing, contradictory, mixed, or non-progressing pagination stays partial.
+Provider risk labels are context, not transaction validity: a confirmed,
+successful, non-reverted official-USDT relationship still counts, with the raw
+flag preserved in evidence.

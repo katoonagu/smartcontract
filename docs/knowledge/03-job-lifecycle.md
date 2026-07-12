@@ -127,8 +127,14 @@ pending -> running -> candidate | clear | inconclusive | failed
 Old rows and historical backfill default to `skipped_backfill`. A fresh row is
 eligible only for official USDT, an active non-paused watched wallet, and an
 amount up to the configured raw-unit threshold. Each worker claim reads one
-logical page of at most 100 transfers and saves its offset, accepted evidence,
-page count, oldest accepted transfer time, and `complete` or `partial` coverage.
+logical page of at most 100 transfers and saves its provider/range metadata,
+offsets, hashes, overlaps, accepted evidence, page count, oldest accepted
+transfer time, and `complete` or `partial` coverage.
+
+Freshness is part of ownership, not a best-effort check. The cutoff is inside
+the atomic repository claim. After scheduler/provider delay, a lease-bound gate
+runs before candidate, clear, inconclusive, or failure persistence. If the
+event expired, that gate writes `skipped_backfill`, including on the error path.
 Partial negative evidence is `inconclusive`, never `clear`. Partial evidence may
 become `clear` only from an exact earlier direct relationship, an authorized
 `service_admin` trusted/false-positive label, or an exact authoritative service
@@ -153,10 +159,19 @@ pending -> sending -> sent | failed | skipped
 
 Delivery claims are taken just before a send slot is free. The locale is fixed
 on the first claim. A claim increments a generation counter; at most four send
-executions are allowed. A dedicated lease timestamp is renewed every 40 seconds
-and a `sending` row may be reclaimed after 120 seconds. Check and delivery phases
-have independent non-overlap guards, so a slow Telegram send does not stop new
-poisoning checks.
+executions are allowed. Telegram receives an abortable 30-second deadline,
+implemented with `AbortController` rather than `Promise.race`; it is shorter
+than the 40-second heartbeat and 120-second stale reclaim window.
+
+The dedicated alert lease timestamp owns heartbeat/liveness and stale reclaim.
+The monotonic `alertAttempt` generation separately owns `sent`, `failed`, and
+`skipped` terminal compare-and-set writes. A started heartbeat stays active
+until the final database acknowledgement finishes. Repository row locking plus
+the generation predicate serializes stale reclaim against finalization; an old
+generation cannot acknowledge a reclaimed send. Check and delivery phases have
+independent non-overlap guards, so a slow Telegram send does not stop new
+poisoning checks. Telegram delivery remains at-least-once because its external
+acceptance cannot be atomic with the database acknowledgement.
 
 Normal Incoming Deposit analysis remains independent. Immediately before its
 message is formatted, it queries whether the same incoming transaction has an

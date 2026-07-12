@@ -407,11 +407,16 @@ it adds one line that the address-substitution warning remains active.
 not change the Incoming score, decision, or delivery routing. If the safety
 lookup fails, Incoming delivery continues normally.
 
-Telegram delivery is intentionally at-least-once. A persisted fingerprint,
-just-in-time single-row claims, a maximum of four executions, a 40-second lease
-heartbeat, and 120-second stale reclaim reduce duplicates. Telegram acceptance
-and the final database `sent` write cannot be atomic, so a process crash in that
-narrow external gap can still produce a duplicate on retry.
+Telegram delivery is intentionally at-least-once. The actual send is abortable
+after 30 seconds, below the 40-second heartbeat and 120-second stale-reclaim
+window; it does not use `Promise.race`. The lease timestamp controls heartbeat,
+liveness, and reclaim, while the monotonic alert-attempt generation controls
+the `sent`, `failed`, and `skipped` terminal update. A started heartbeat remains
+active through that final database update, and reclaim versus finalization is
+serialized by generation. Just-in-time claims, at most four executions, and a
+persisted fingerprint reduce duplicates. Telegram acceptance and the database
+acknowledgement still cannot be atomic, so the warning may be delivered more
+than once after a crash in that gap.
 
 ## Admin Purpose
 

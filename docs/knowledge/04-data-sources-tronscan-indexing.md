@@ -56,20 +56,34 @@ request timeout, zero client retries, `interactive_fast` priority, and an
 request from sharing a cached in-flight result with a deeper transfer request
 that has different latency requirements.
 
+Poisoning uses `listRelatedTrc20TransferPagePinned`, which calls TronScan only
+and never switches provider inside the evidence page. Ordinary transfer methods
+retain their current TronGrid fallback. A logical poisoning page contains at
+most 100 rows and uses at most two internal provider calls of 50 rows each.
+
 The main wallet monitor does not fetch relationship history. It only writes a
 fresh eligible poisoning check together with the observed official-USDT
 transfer. A dedicated worker requests one logical page per claim, at most 100
 provider rows, with strict bounds from 24 hours before the incoming timestamp
-through one millisecond before it. It accepts only canonical successful
-transfers of the official TRON USDT contract and persists provider facts plus
-normalized raw amounts for reuse.
+through one millisecond before it. It accepts confirmed, successful,
+non-reverted transfers of the official TRON USDT contract and persists raw
+provider facts plus normalized raw amounts for reuse. TronScan's
+`riskTransaction` flag is saved as context but is not transaction validity: a
+canonical relationship transfer still counts when that flag is true.
 
-A short provider page completes the bounded window. A full page means partial
-coverage and advances the saved logical offset. The worker can continue for at
-most five pages. A positive candidate or exact disqualifier is valid from the
-evidence fetched so far; a negative partial result remains `inconclusive`.
-Therefore provider pagination or local limits cannot silently turn unknown
-history into a clean sender.
+Completion requires authoritative, internally consistent provider/range
+metadata. Saved audit data includes provider identity, requested/start/next
+offsets, raw count, `total`, `rangeTotal`, complete/consistent flags, raw and
+canonical hashes, per-fact provider identity, and overlap ids. Mixed providers,
+missing or contradictory totals, `rangeTotal > total`, short nonterminal or
+oversized pages, unexplained no progress, repeated rows inside a logical page,
+or overlap with a previous claim keep coverage partial. They can support a
+positive candidate or exact disqualifier, but never a negative `clear`.
+
+A consistent full page advances the saved logical offset. The worker can
+continue for at most five pages. A negative partial result remains
+`inconclusive`, so provider pagination or local limits cannot silently turn
+unknown history into a clean sender.
 
 The worker runs every 30 seconds, claims at most 20 checks, and processes at
 most two lookups concurrently. Check and Telegram-delivery phases run behind
