@@ -51,6 +51,7 @@ import { indexedTransferToRouteEdge } from "../forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
 import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
+import { buildDeepCoverageV2 } from "../forensics/forensicCoverageV2";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import type { AddressMetadata } from "../storage/repositories";
@@ -2524,6 +2525,22 @@ export async function runDeepAddressForensicCheck(
     missingChecks,
     apiKeyConfigured: input.apiKeyConfigured
   });
+  const coverageV2 = buildDeepCoverageV2({
+    subjectAddress: input.sourceAddress,
+    sourceEdges: sourceTransfers.edges,
+    subjectAllTimeComplete: input.allTimeSubjectIndexState ? subjectAllTimeComplete : null,
+    authoritativeCoverageExact: input.allTimeSubjectIndexState?.statusReason === "complete_provider_windowed" &&
+      input.allTimeSubjectIndexState.provider !== null &&
+      input.allTimeSubjectIndexState.provider !== "mixed",
+    localMaterializationExact: allTimeDirectBoundaryActive,
+    authoritativeTransferCount: input.allTimeSubjectIndexState?.totalReported !== null &&
+      input.allTimeSubjectIndexState?.totalReported !== undefined &&
+      input.allTimeSubjectIndexState.totalReported === input.allTimeSubjectIndexState.fetchedTransferCount
+      ? input.allTimeSubjectIndexState.totalReported
+      : null,
+    providerCapHit: input.allTimeSubjectIndexState?.providerCapHit,
+    providerInconsistent: input.allTimeSubjectIndexState?.providerInconsistent
+  });
 
   return {
     ...exposureReport,
@@ -2582,6 +2599,7 @@ export async function runDeepAddressForensicCheck(
     firstHopLabelFacts: directHardEvidence.labelFacts,
     firstHopBlacklistCoverage: directHardEvidence.firstHopBlacklistCoverage,
     directHardEvidenceSnapshots: directHardEvidence.snapshots,
+    coverageV2,
     coverage,
     coverageDebug
   };

@@ -607,6 +607,12 @@ describe("runWhereIsMoneyCheck", () => {
     );
     expect(report.decision).toBe("REVIEW");
     expect(report.riskScore).toBe(0);
+    expect(report.coverageV2?.exclusions).toEqual([expect.objectContaining({
+      reason: "exact_gasfree_service_fee",
+      txCount: 1,
+      amountRaw: "3000000",
+      evidenceIds: [expect.stringContaining(`where-transfer:${feeTxHash}:`)]
+    })]);
   });
 
   it("preserves an uncovered requested amount when only an exact GasFree fee was selected", async () => {
@@ -1578,6 +1584,54 @@ describe("runWhereIsMoneyCheck", () => {
       txCount: 1,
       amountRaw: "3000000"
     }));
+  });
+
+  it("[REQ-31][AC-13] attributes same-transaction transfer events by stable evidence identity", async () => {
+    const duplicateSubject = "TDuplicateSubject111111111111111111111";
+    const exactSender = "TDuplicateExact11111111111111111111111";
+    const incompleteSender = "TDuplicateUnknown11111111111111111111";
+    const sharedTxHash = "shared-multi-event-transaction";
+    const exactEvent = {
+      ...edge("exact-event-id", exactSender, duplicateSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      txHash: sharedTxHash
+    };
+    const incompleteEvent = {
+      ...edge("incomplete-event-id", incompleteSender, duplicateSubject, "1000000", "2026-07-12T12:00:00.000Z"),
+      txHash: sharedTxHash
+    };
+    const run = (sourceEdges: ForensicRouteEdge[]) => runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000",
+      fetchEdgesForAddress: async (address) => address === duplicateSubject ? sourceEdges : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === exactSender
+        ? service("cex", "Binance")
+        : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: duplicateSubject,
+      requestedAmountRaw: "2000000",
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    for (const sourceEdges of [
+      [exactEvent, incompleteEvent],
+      [incompleteEvent, exactEvent]
+    ]) {
+      const report = await run(sourceEdges);
+      expect(report.originPaths.map((path) => path.balanceTransferEvidenceId).sort()).toEqual([
+        "exact-event-id",
+        "incomplete-event-id"
+      ]);
+      expect(report.coverageV2).toMatchObject({
+        selectedAmountRaw: "2000000",
+        tracedAmountRaw: "1000000",
+        tracedShare: 0.5,
+        unresolvedAmountRaw: "1000000",
+        unresolvedShare: 0.5
+      });
+    }
   });
 
   it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {

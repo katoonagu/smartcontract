@@ -1154,6 +1154,7 @@ export type BalanceTransferAmountUsage = {
 };
 
 export type BalanceFormingTransfer = {
+  evidenceId?: string;
   txHash: string;
   fromAddress: string;
   toAddress: string;
@@ -1841,6 +1842,8 @@ export type MoneyOriginLayerSummary = {
 
 export type MoneyOriginPath = {
   balanceTransferTxHash: string;
+  /** Exact selected transfer event identity; absent only on legacy persisted paths. */
+  balanceTransferEvidenceId?: string;
   rootSourceAddress: string | null;
   rootSourceType: MoneyOriginRootSourceType;
   balanceShare?: number;

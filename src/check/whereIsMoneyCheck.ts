@@ -2,6 +2,7 @@ import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
+import { buildForensicCoverageV2 } from "../forensics/forensicCoverageV2";
 import {
   LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW,
   selectRecentFlowProvenanceTransfers
@@ -48,6 +49,7 @@ import type {
   ExchangeDecision,
   ForensicScoreBlockedReason,
   ForensicTechnicalStatus,
+  ForensicCoverageV2,
   ForensicRouteEdge,
   MoneyOriginPath,
   MoneyOriginTraceHistoryCoverage,
@@ -366,6 +368,7 @@ function walletProfileZeroBalanceReport(input: {
   checkedScope?: NonNullable<WhereIsMoneyCoverage["checkedScope"]>;
   anchorCoverageRatio?: number | null;
   episodeCoverageRatio?: number | null;
+  coverageV2: ForensicCoverageV2;
 }): WhereIsMoneyReport {
   const labelReasons = input.labels
     .map((label) => ({ label: label.label, score: walletProfileLabelScore(label.label) }))
@@ -450,6 +453,7 @@ function walletProfileZeroBalanceReport(input: {
     ...decisionFields,
     riskScore,
     decisionReasons,
+    coverageV2: input.coverageV2,
     coverage: {
       selectedInboundTxCount: 0,
       currentBalanceRaw: input.currentBalanceRaw,
@@ -496,6 +500,7 @@ function fallbackReviewReport(input: {
     technicalStatus: ForensicTechnicalStatus;
   } | null;
   notes: string[];
+  coverageV2: ForensicCoverageV2;
 }): WhereIsMoneyReport {
   const decision: ExchangeDecision = "REVIEW";
   const technicalFailure = input.currentBalanceRaw === null
@@ -552,6 +557,7 @@ function fallbackReviewReport(input: {
     }),
     riskScore: assessment.riskScore,
     decisionReasons,
+    coverageV2: input.coverageV2,
     coverage: {
       selectedInboundTxCount: 0,
       currentBalanceRaw: input.currentBalanceRaw,
@@ -1076,9 +1082,88 @@ function seededBalanceFormingSelection(input: {
     provenanceScope: "transaction_seed",
     anchorTransfer: null,
     dataScopeNote: "Transaction check: the checked transaction is the provenance seed.",
+    availableInboundTxCount: input.seedTransfers.length,
+    coverageExclusions: [],
     selectionMethod: "transaction_seed",
     notes: ["Transaction check: balance-forming transfer was supplied from the checked transaction."]
   };
+}
+
+function coverageV2ForSelection(input: {
+  selection: BalanceFormingSelection;
+  tracedAmountRaw: string | null;
+  limitations?: ForensicCoverageV2["limitations"];
+  exclusions?: ForensicCoverageV2["exclusions"];
+}): ForensicCoverageV2 {
+  return buildForensicCoverageV2({
+    scope: input.selection.provenanceScope,
+    availableInboundTxCount: input.selection.availableInboundTxCount ?? null,
+    selectedInboundTxCount: input.selection.transfers.length,
+    selectedAmountRaw: /^\d+$/.test(input.selection.selectedAmountRaw) ? input.selection.selectedAmountRaw : null,
+    tracedAmountRaw: input.tracedAmountRaw,
+    exclusions: [
+      ...(input.selection.coverageExclusions ?? []),
+      ...(input.exclusions ?? [])
+    ],
+    limitations: input.limitations ?? []
+  });
+}
+
+function exactWhereTracedAmountRaw(
+  selection: BalanceFormingSelection,
+  paths: MoneyOriginPath[]
+): string {
+  const selectedByTxHash = new Map<string, BalanceFormingTransfer[]>();
+  const pathsByTxHash = new Map<string, MoneyOriginPath[]>();
+  const pathsByEvidenceId = new Map<string, MoneyOriginPath>();
+  const selectedEvidenceCounts = new Map<string, number>();
+  const pathEvidenceCounts = new Map<string, number>();
+  for (const transfer of selection.transfers) {
+    selectedByTxHash.set(transfer.txHash, [...(selectedByTxHash.get(transfer.txHash) ?? []), transfer]);
+    if (transfer.evidenceId) selectedEvidenceCounts.set(
+      transfer.evidenceId,
+      (selectedEvidenceCounts.get(transfer.evidenceId) ?? 0) + 1
+    );
+  }
+  for (const path of paths) {
+    pathsByTxHash.set(path.balanceTransferTxHash, [...(pathsByTxHash.get(path.balanceTransferTxHash) ?? []), path]);
+    if (path.balanceTransferEvidenceId) {
+      pathsByEvidenceId.set(path.balanceTransferEvidenceId, path);
+      pathEvidenceCounts.set(
+        path.balanceTransferEvidenceId,
+        (pathEvidenceCounts.get(path.balanceTransferEvidenceId) ?? 0) + 1
+      );
+    }
+  }
+  return selection.transfers.reduce((sum, transfer) => {
+    const path = transfer.evidenceId &&
+      selectedEvidenceCounts.get(transfer.evidenceId) === 1 &&
+      pathEvidenceCounts.get(transfer.evidenceId) === 1
+      ? pathsByEvidenceId.get(transfer.evidenceId)
+      : selectedByTxHash.get(transfer.txHash)?.length === 1 &&
+          pathsByTxHash.get(transfer.txHash)?.length === 1 &&
+          !pathsByTxHash.get(transfer.txHash)?.[0]?.balanceTransferEvidenceId
+        ? pathsByTxHash.get(transfer.txHash)![0]
+        : undefined;
+    if (!path || path.rootSourceType === "incomplete" || path.rootSourceType === "unknown") return sum;
+    if ((path.sourceProvenance ?? []).some((item) =>
+      item.proofClass !== "exact" && item.proofClass !== "service_boundary"
+    )) return sum;
+    const raw = transfer.amountRaw;
+    return /^\d+$/.test(raw) ? sum + BigInt(raw) : sum;
+  }, 0n).toString();
+}
+
+function balanceTransferCoverageEvidenceId(transfer: BalanceFormingTransfer, ordinal: number): string {
+  return transfer.evidenceId ?? [
+    "where-transfer",
+    transfer.txHash,
+    transfer.fromAddress,
+    transfer.toAddress,
+    transfer.amountRaw,
+    transfer.timestamp,
+    ordinal
+  ].join(":");
 }
 
 function broadTargetedHistoryKey(input: BroadTargetedHistoryRequest): string {
@@ -1206,6 +1291,8 @@ export async function runWhereIsMoneyCheck(
     : undefined;
   let globalAddressBudgetExhausted = false;
   let recoverableEdgeFetchFailed = false;
+  const providerCoverageLimitationIds = new Set<string>();
+  const localCoverageLimitationIds = new Set<string>();
   let lastTraceProgressAt = Date.now();
   const emitTraceProgress = async (): Promise<void> => {
     const now = Date.now();
@@ -1300,8 +1387,24 @@ export async function runWhereIsMoneyCheck(
     const historyCoverage = deps.getHistoryCoverageForAddress
       ? await deps.getHistoryCoverageForAddress(address, options).catch(() => null)
       : null;
+    const coverageEvidenceId = `where:coverage:${address}:${options.latestTimestamp?.getTime() ?? input.windowEnd.getTime()}`;
     if (historyCoverage?.providerInconsistent === true) {
       recoverableEdgeFetchFailed = true;
+      providerCoverageLimitationIds.add(`${coverageEvidenceId}:provider`);
+    }
+    if (
+      historyCoverage?.providerCapHit === true ||
+      historyCoverage?.statusReason === "partial_provider_cap" ||
+      historyCoverage?.statusReason === "partial_provider_inconsistent" ||
+      historyCoverage?.statusReason === "partial_rate_limited"
+    ) {
+      providerCoverageLimitationIds.add(`${coverageEvidenceId}:provider`);
+    }
+    if (
+      historyCoverage?.localMaterializationStatus === "local_limit" ||
+      historyCoverage?.localMaterializationStatus === "read_failed"
+    ) {
+      localCoverageLimitationIds.add(`${coverageEvidenceId}:local`);
     }
     const shouldUseFallback = fallbackMinTransferCount > 0 &&
       fallbackTransferLimit > 0 &&
@@ -1445,8 +1548,32 @@ export async function runWhereIsMoneyCheck(
     });
   }
   const checkedScope = checkedScopeFor(selection.provenanceScope, drainEpisode, selection.anchorTransfer ?? null);
+  const currentCoverageLimitations = (): ForensicCoverageV2["limitations"] => [
+    ...(recoverableEdgeFetchFailed || providerCoverageLimitationIds.size > 0
+      ? [{
+          reason: "provider_history_unavailable" as const,
+          evidenceIds: providerCoverageLimitationIds.size > 0
+            ? [...providerCoverageLimitationIds]
+            : ["where:coverage:provider-history"]
+        }]
+      : []),
+    ...(globalAddressBudgetExhausted || localCoverageLimitationIds.size > 0
+      ? [{
+          reason: "local_materialization_failed" as const,
+          evidenceIds: localCoverageLimitationIds.size > 0
+            ? [...localCoverageLimitationIds]
+            : ["where:coverage:address-budget"]
+        }]
+      : [])
+  ];
 
   if (selection.transfers.length === 0) {
+    const limitations = currentCoverageLimitations();
+    const coverageV2 = coverageV2ForSelection({
+      selection,
+      tracedAmountRaw: limitations.length > 0 ? null : "0",
+      limitations
+    });
     const hasMeaningfulRecentFlow = selection.provenanceScope === "recent_flow" && Boolean(selection.anchorTransfer);
     if (input.mode === "wallet_profile" && rawBalanceIsZero(currentBalanceRaw) && !hasMeaningfulRecentFlow) {
       const labels = await deps.getLabelsForAddress(sourceAddress).catch(() => []);
@@ -1462,7 +1589,8 @@ export async function runWhereIsMoneyCheck(
         drainEpisode,
         checkedScope,
         anchorCoverageRatio: selection.coverageRatio,
-        episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null
+        episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null,
+        coverageV2
       });
     }
     return fallbackReviewReport({
@@ -1486,7 +1614,8 @@ export async function runWhereIsMoneyCheck(
       technicalFailure: recoverableEdgeFetchFailed
         ? { scoreBlockedReason: "provider_error", technicalStatus: "provider_error" }
         : null,
-      notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."]
+      notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."],
+      coverageV2
     });
   }
 
@@ -1950,6 +2079,35 @@ export async function runWhereIsMoneyCheck(
   const riskScore = assessment.riskScore;
   const decisionReasons = assessment.reasons;
   const layerSummary = buildLayerSummary(fastWalletRisk, finalCoverage.checkedScope ?? "current_balance");
+  const coverageLimitations = currentCoverageLimitations();
+  const existingCoverageEvidenceIds = new Set(
+    (provenanceSelection.coverageExclusions ?? []).flatMap((item) => item.evidenceIds)
+  );
+  const exactFeeTransfers = balanceFormingTransfers
+    .map((transfer, ordinal) => ({
+      transfer,
+      evidenceId: balanceTransferCoverageEvidenceId(transfer, ordinal)
+    }))
+    .filter(({ transfer }) => isGasFreeServiceFeeEdge(transfer))
+    .filter(({ evidenceId }) => !existingCoverageEvidenceIds.has(evidenceId));
+  const coverageV2 = coverageV2ForSelection({
+    selection: provenanceSelection,
+    tracedAmountRaw: exactWhereTracedAmountRaw(provenanceSelection, provenanceOriginPaths),
+    limitations: coverageLimitations,
+    exclusions: exactFeeTransfers.length === 0
+      ? []
+      : [{
+          reason: "exact_gasfree_service_fee",
+          direction: exactFeeTransfers.every(({ transfer }) => transfer.fromAddress === sourceAddress)
+            ? "outgoing"
+            : exactFeeTransfers.every(({ transfer }) => transfer.toAddress === sourceAddress)
+              ? "incoming"
+              : null,
+          txCount: exactFeeTransfers.length,
+          amountRaw: sumRawAmounts(exactFeeTransfers.map(({ transfer }) => transfer.amountRaw)),
+          evidenceIds: exactFeeTransfers.map(({ evidenceId }) => evidenceId)
+        }]
+  });
 
   return {
     subjectAddress: sourceAddress,
@@ -1972,6 +2130,7 @@ export async function runWhereIsMoneyCheck(
     scoreBlockedReason: assessment.scoreBlockedReason,
     technicalStatus: assessment.technicalStatus,
     sourceProvenanceMateriality: assessment.sourceProvenanceMateriality ?? null,
+    coverageV2,
     ...whereDecisionFields({
       decision,
       decisionReasons,

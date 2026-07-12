@@ -181,4 +181,29 @@ describe("selectBalanceFormingTransfers", () => {
       evidenceIds: Array.from({ length: 14 }, (_, index) => `coverage-${index}`)
     }]);
   });
+
+  it("[REQ-31][AC-13][DATA] preserves distinct event evidence when one transaction has multiple transfers", () => {
+    const duplicateTxA = {
+      ...edge("event-a", senderA, subject, "100000000", "2026-07-12T12:00:00.000Z"),
+      txHash: "shared-transaction"
+    };
+    const duplicateTxB = {
+      ...edge("event-b", senderB, subject, "200000000", "2026-07-12T12:00:01.000Z"),
+      txHash: "shared-transaction"
+    };
+    const selected = edge("selected-event", senderC, subject, "300000000", "2026-07-12T12:00:02.000Z");
+    const result = selectBalanceFormingTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "300000000",
+      edges: [duplicateTxA, duplicateTxB, selected]
+    });
+    expect(result.availableInboundTxCount).toBe(3);
+    expect(result.coverageExclusions).toEqual([{
+      reason: "different_selected_scope",
+      direction: "incoming",
+      txCount: 2,
+      amountRaw: "300000000",
+      evidenceIds: ["event-a", "event-b"]
+    }]);
+  });
 });

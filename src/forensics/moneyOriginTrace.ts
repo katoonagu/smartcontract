@@ -1041,7 +1041,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
   }
 
   if (terminals.length === 0) {
-    return incompletePath({
+    const path = incompletePath({
       state: initialState,
       balanceTransferTxHash: input.balanceTransfer.txHash,
       balanceShare: initialState.balanceShare,
@@ -1049,7 +1049,13 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       stoppedReason: "data_budget_exhausted",
       message: "Trace ended without terminal candidates; source remains unproven."
     });
+    return input.balanceTransfer.evidenceId
+      ? { ...path, balanceTransferEvidenceId: input.balanceTransfer.evidenceId }
+      : path;
   }
 
-  return terminals.sort((left, right) => terminalRank(right) - terminalRank(left))[0];
+  const path = terminals.sort((left, right) => terminalRank(right) - terminalRank(left))[0]!;
+  return input.balanceTransfer.evidenceId
+    ? { ...path, balanceTransferEvidenceId: input.balanceTransfer.evidenceId }
+    : path;
 }

@@ -32,6 +32,7 @@ function selectionTransfer(
   selectedReason: BalanceFormingTransfer["selectedReason"]
 ): BalanceFormingTransfer {
   return {
+    evidenceId: edge.id,
     txHash: edge.txHash,
     fromAddress: edge.fromAddress,
     toAddress: edge.toAddress,
@@ -61,6 +62,18 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
   const selectedReason: BalanceFormingTransfer["selectedReason"] = hasRequestedAmount
     ? "covers_requested_amount"
     : "covers_current_balance";
+  const inboundAvailable = input.edges
+    .filter((edge) => edge.toAddress === input.subjectAddress)
+    .filter((edge) => parseAmount(edge.amountRaw) > 0n);
+  const coverageExclusionFor = (unselected: ForensicRouteEdge[]) => unselected.length === 0
+    ? []
+    : [{
+        reason: "different_selected_scope" as const,
+        direction: "incoming" as const,
+        txCount: unselected.length,
+        amountRaw: unselected.reduce((sum, edge) => sum + parseAmount(edge.amountRaw), 0n).toString(),
+        evidenceIds: unselected.map((edge) => edge.id)
+      }];
   if (!hasRequestedAmount && currentBalanceRaw <= 0n) {
     return {
       transfers: [],
@@ -75,6 +88,8 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
       provenanceScope,
       anchorTransfer: null,
       dataScopeNote: null,
+      availableInboundTxCount: inboundAvailable.length,
+      coverageExclusions: coverageExclusionFor(inboundAvailable),
       selectionMethod,
       notes: ["Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds."]
     };
@@ -83,10 +98,7 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
   const selected: Array<{ edge: ForensicRouteEdge; coveredAmountRaw: bigint }> = [];
   let selectedVolumeRaw = 0n;
   let selectedCoverageRaw = 0n;
-  const inbound = input.edges
-    .filter((edge) => edge.toAddress === input.subjectAddress)
-    .filter((edge) => parseAmount(edge.amountRaw) > 0n)
-    .sort(compareNewestFirst);
+  const inbound = [...inboundAvailable].sort(compareNewestFirst);
 
   for (const edge of inbound) {
     if (selectedCoverageRaw >= targetAmountRaw) break;
@@ -105,6 +117,8 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
   const notes = partial
     ? [`Selected inbound USDT transfers cover ${Math.round(coverageRatio * 100)}% of the ${targetDescription}; balance-origin coverage is partial.`]
     : [];
+  const selectedEvidenceIds = new Set(selected.map((item) => item.edge.id));
+  const unselectedInbound = inboundAvailable.filter((edge) => !selectedEvidenceIds.has(edge.id));
 
   return {
     transfers: selected.map((item) => selectionTransfer(item.edge, targetAmountRaw, item.coveredAmountRaw, selectedReason)),
@@ -119,6 +133,8 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     provenanceScope,
     anchorTransfer: null,
     dataScopeNote: null,
+    availableInboundTxCount: inboundAvailable.length,
+    coverageExclusions: coverageExclusionFor(unselectedInbound),
     selectionMethod,
     notes
   };

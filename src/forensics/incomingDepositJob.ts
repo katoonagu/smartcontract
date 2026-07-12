@@ -97,6 +97,7 @@ import {
 } from "./targetedHistoryCoordinator";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
 import { extractGasFreeEdgeContext } from "./gasFreeSettlement";
+import { buildIncomingCoverageV2 } from "./forensicCoverageV2";
 
 type CompleteJobInput = {
   id: string;
@@ -380,6 +381,7 @@ function mapWalletRole(role: WalletRole): string | null {
 
 function incomingSeedTransfer(input: BuildIncomingDepositReportInput): BalanceFormingTransfer {
   return {
+    evidenceId: `incoming_deposit:${input.depositTxHash}`,
     txHash: input.depositTxHash,
     fromAddress: input.sender,
     toAddress: input.watchedWallet,
@@ -402,6 +404,7 @@ function fundingCandidateSeedTransfers(input: {
   depositAmountRaw: string;
 }): BalanceFormingTransfer[] {
   return input.candidates.map((candidate) => ({
+    evidenceId: candidate.edge.id,
     txHash: candidate.edge.txHash,
     fromAddress: candidate.edge.fromAddress,
     toAddress: candidate.edge.toAddress,
@@ -2093,22 +2096,37 @@ export async function buildIncomingDepositReport(
   const bothSenderSourcesFailed =
     failedSenderWindowSources.has("indexed") &&
     failedSenderWindowSources.has("live");
-  return measureReportStage("assemble", async () => ({
-    ...report,
-    dataQuality: bothSenderSourcesFailed ? "low" : report.dataQuality,
-    senderRole: incomingSenderRoleFromCoverage({
-      inferredRole: senderRole ?? report.senderRole,
-      cleanSourceCoverageRatio: report.fundingCoverage.cleanSourceCoverageRatio
-    }),
-    reasons: incomingReasonsFromCoverage({
-      reasons: report.reasons,
-      cleanSourceCoverageRatio: report.fundingCoverage.cleanSourceCoverageRatio
-    }),
-    warnings: uniqueStrings([
-      ...report.warnings,
-      ...fetchWarnings
-    ])
-  }));
+  return measureReportStage("assemble", async () => {
+    const assembled: IncomingDepositRiskReport = {
+      ...report,
+      dataQuality: bothSenderSourcesFailed ? "low" : report.dataQuality,
+      senderRole: incomingSenderRoleFromCoverage({
+        inferredRole: senderRole ?? report.senderRole,
+        cleanSourceCoverageRatio: report.fundingCoverage.cleanSourceCoverageRatio
+      }),
+      reasons: incomingReasonsFromCoverage({
+        reasons: report.reasons,
+        cleanSourceCoverageRatio: report.fundingCoverage.cleanSourceCoverageRatio
+      }),
+      warnings: uniqueStrings([
+        ...report.warnings,
+        ...fetchWarnings
+      ])
+    };
+    return {
+      ...assembled,
+      coverageV2: buildIncomingCoverageV2({
+        deposit: {
+          txHash: input.depositTxHash,
+          watchedWallet: input.watchedWallet,
+          sender: input.sender,
+          amountRaw: input.amountRaw,
+          timestamp: input.timestamp
+        },
+        report: assembled
+      })
+    };
+  });
 }
 
 function riskLevelFromIncoming(report: IncomingDepositRiskReport): RiskLevel {
