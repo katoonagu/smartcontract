@@ -931,6 +931,31 @@ describe("address poisoning worker", () => {
     }));
   });
 
+  it("never clears impossible same-page totals even when the provider marks them complete", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `impossible-worker-${index}` })),
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 100,
+      total: 50,
+      rangeTotal: 100,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["impossible-worker-raw"],
+      canonicalTransferHashes: ["impossible-worker-canonical"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+    const stored = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[0][1].accumulatedLookupJson;
+    expect(stored.providerMetadataConsistent).toBe(false);
+    expect(stored.providerPages[0]).toMatchObject({ total: 50, rangeTotal: 100 });
+  });
+
   it("skips a candidate that ages out while its provider request is queued", async () => {
     let clock = new Date(THJ_POISONING_CASE.incomingAt.getTime() + 60_000);
     const repo = repository([workItem()]);

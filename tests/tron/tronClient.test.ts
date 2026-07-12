@@ -1049,7 +1049,99 @@ describe("TronscanClient", () => {
     expect(page.transfers).toHaveLength(10);
     expect(page.nextOffset).toBe(10);
     expect(page.complete).toBe(false);
-    expect(page.metadataConsistent).toBe(true);
+    expect(page.metadataConsistent).toBe(false);
+  });
+
+  it("bounds sparse pinned logical pages to two provider subrequests", async () => {
+    const starts: number[] = [];
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      const start = Number(requestUrl.searchParams.get("start"));
+      starts.push(start);
+      return jsonResponse({
+        total: 100,
+        rangeTotal: 100,
+        token_transfers: [{
+          transaction_id: `sparse-${start}`,
+          from_address: "TSource111111111111111111111111111111",
+          to_address: "TSubject111111111111111111111111111111",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          quant: "1",
+          block_ts: 1_780_090_000_000 - start
+        }]
+      });
+    });
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 100 }
+    );
+
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(starts).toEqual([0, 1]);
+    expect(page.transfers).toHaveLength(2);
+    expect(page.nextOffset).toBe(2);
+    expect(page.metadataConsistent).toBe(false);
+    expect(page.complete).toBe(false);
+  });
+
+  it("caps oversized provider subpages to the requested logical chunk", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({
+      total: 60,
+      rangeTotal: 60,
+      token_transfers: Array.from({ length: 60 }, (_, index) => ({
+        transaction_id: `oversized-provider-${index}`,
+        from_address: "TSource111111111111111111111111111111",
+        to_address: "TSubject111111111111111111111111111111",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        quant: "1",
+        block_ts: 1_780_090_000_000 - index
+      }))
+    }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 50 }
+    );
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(page.transfers).toHaveLength(50);
+    expect(page.nextOffset).toBe(50);
+    expect(page.metadataConsistent).toBe(false);
+    expect(page.complete).toBe(false);
+  });
+
+  it("rejects impossible pinned totals where rangeTotal exceeds total", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      const start = Number(requestUrl.searchParams.get("start"));
+      return jsonResponse({
+        total: 50,
+        rangeTotal: 100,
+        token_transfers: Array.from({ length: 50 }, (_, index) => ({
+          transaction_id: `impossible-${start + index}`,
+          from_address: "TSource111111111111111111111111111111",
+          to_address: "TSubject111111111111111111111111111111",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          quant: "1",
+          block_ts: 1_780_090_000_000 - start - index
+        }))
+      });
+    });
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 100 }
+    );
+
+    expect(page.transfers).toHaveLength(100);
+    expect(page.total).toBe(50);
+    expect(page.rangeTotal).toBe(100);
+    expect(page.metadataConsistent).toBe(false);
+    expect(page.complete).toBe(false);
   });
 
   it("hashes canonical related transfer page content independent of row order and labels", async () => {

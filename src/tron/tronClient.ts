@@ -794,36 +794,52 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const rawResponseHashes: string[] = [];
     const canonicalTransferHashes: string[] = [];
     const seenTransferIdentities = new Set<string>();
+    const maxSubrequests = Math.ceil(requestedLimit / TRONSCAN_TRANSFER_PAGE_LIMIT);
     let total: number | null | undefined;
     let rangeTotal: number | null | undefined;
     let metadataConsistent = true;
 
-    while (transfers.length < requestedLimit) {
+    for (
+      let subrequest = 0;
+      subrequest < maxSubrequests && transfers.length < requestedLimit;
+      subrequest += 1
+    ) {
       const pageStart = start + transfers.length;
-      const pageLimit = Math.min(TRONSCAN_TRANSFER_PAGE_LIMIT, requestedLimit - transfers.length);
+      const remaining = requestedLimit - transfers.length;
+      const pageLimit = Math.min(TRONSCAN_TRANSFER_PAGE_LIMIT, remaining);
       const pageOptions = { ...options, start: pageStart, limit: pageLimit };
       const url = this.buildTronscanTransferHistoryUrl(address, "related", pageOptions);
       // Poisoning evidence must remain pinned to one provider; this intentionally bypasses fallback.
       const page = await this.fetchTronscanTransferPage(url);
+      const consumedTransfers = page.transfers.slice(0, pageLimit);
       if (total === undefined) total = page.total;
       else if (total !== page.total) metadataConsistent = false;
       if (rangeTotal === undefined) rangeTotal = page.rangeTotal;
       else if (rangeTotal !== page.rangeTotal) metadataConsistent = false;
+      if (page.total !== null && page.rangeTotal !== null && page.rangeTotal > page.total) {
+        metadataConsistent = false;
+      }
       if (page.rawResponseHash) rawResponseHashes.push(page.rawResponseHash);
       if (page.canonicalTransferHash) canonicalTransferHashes.push(page.canonicalTransferHash);
       if (page.transfers.length > pageLimit) metadataConsistent = false;
-      for (const transfer of page.transfers) {
+      for (const transfer of consumedTransfers) {
         const identity = JSON.stringify(this.canonicalTronscanTransferRow(transfer));
         if (seenTransferIdentities.has(identity)) metadataConsistent = false;
         seenTransferIdentities.add(identity);
       }
-      transfers.push(...page.transfers);
+      transfers.push(...consumedTransfers);
 
       const nextOffset = start + transfers.length;
       if (rangeTotal !== null && rangeTotal !== undefined && nextOffset > rangeTotal) {
         metadataConsistent = false;
       }
-      if (page.transfers.length === 0) break;
+      if (
+        consumedTransfers.length < pageLimit
+        && (rangeTotal === null || rangeTotal === undefined || nextOffset < rangeTotal)
+      ) {
+        metadataConsistent = false;
+      }
+      if (consumedTransfers.length === 0) break;
       if (rangeTotal !== null && rangeTotal !== undefined && nextOffset >= rangeTotal) break;
     }
 

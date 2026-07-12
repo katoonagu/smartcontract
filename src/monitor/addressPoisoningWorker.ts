@@ -518,6 +518,9 @@ function pinnedPageMetadataIsConsistent(
   const totalValid = page.total === null || (Number.isSafeInteger(page.total) && page.total >= 0);
   const rangeTotalValid = page.rangeTotal === null
     || (Number.isSafeInteger(page.rangeTotal) && page.rangeTotal >= 0);
+  const totalsRelationallyValid = page.total === null
+    || page.rangeTotal === null
+    || page.rangeTotal <= page.total;
   const completionTruthful = !page.complete
     || (page.rangeTotal !== null && actualNextOffset >= page.rangeTotal);
   return page.metadataConsistent
@@ -527,6 +530,7 @@ function pinnedPageMetadataIsConsistent(
     && page.transfers.length <= expectedLimit
     && totalValid
     && rangeTotalValid
+    && totalsRelationallyValid
     && completionTruthful;
 }
 
