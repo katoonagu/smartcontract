@@ -36,7 +36,9 @@ import {
   listWalletApprovalDrainObservations,
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
+  listRecentAmlRiskSignalObservations,
   listRecentRiskSignalObservations,
+  listRecentWalletSafetyObservations,
   getAddressPoisoningQueueMetrics,
   hasUndismissedAddressPoisoningCandidateForIncoming,
   getObservedTransactionForIncomingDeposit,
@@ -68,6 +70,7 @@ import {
   recordApprovalPollSuccess,
   recordApprovalRisk,
   releaseApprovalContextAfterFailure,
+  saveForensicRouteSearchResult,
   saveRiskEvaluationEvidence,
   resolveAddressPoisoningCandidate,
   skipExpiredAddressPoisoningChecks,
@@ -2706,6 +2709,48 @@ describe("risk evidence repositories", () => {
     expect(tx.released).toBe(true);
   });
 
+  it.each([
+    ["risk evaluation", (db: Db, unsafe: RiskSignalObservationInput) => saveRiskEvaluationEvidence(db, {
+      rawEvidence: [], observations: [unsafe]
+    })],
+    ["forensic route", (db: Db, unsafe: RiskSignalObservationInput) => saveForensicRouteSearchResult(db, {
+      case: {
+        id: "case-1",
+        sourceAddress: observation.subjectAddress,
+        targetAddress: `T${"2".repeat(33)}`,
+        amountUsdt: null,
+        windowStart: new Date("2026-07-11T00:00:00.000Z"),
+        windowEnd: new Date("2026-07-12T00:00:00.000Z"),
+        status: "completed"
+      },
+      rawEvidence: [],
+      observations: [unsafe],
+      paths: []
+    })]
+  ])("rejects nonzero wallet safety evidence before connecting in the %s persistence path", async (_name, persist) => {
+    let connectCalls = 0;
+    const db = {
+      connect: async () => {
+        connectCalls += 1;
+        throw new Error("must not connect");
+      }
+    } as unknown as Db;
+    const unsafe = { ...observation, signalGroup: "wallet_safety" as const, scoreImpact: 90 };
+
+    await expect(persist(db, unsafe)).rejects.toThrow("wallet_safety observations must have scoreImpact 0");
+    expect(connectCalls).toBe(0);
+  });
+
+  it("accepts zero-impact wallet safety evidence into the audit store", async () => {
+    const tx = createMockTransactionalDb();
+    const auditObservation = { ...observation, signalGroup: "wallet_safety" as const, scoreImpact: 0 };
+
+    await saveRiskEvaluationEvidence(tx.db, { rawEvidence: [], observations: [auditObservation] });
+
+    expect(tx.queries.find((query) => query.sql.includes("insert into risk_signal_observations"))?.params).toContain("wallet_safety");
+    expect(tx.queries.at(-1)?.sql).toBe("commit");
+  });
+
   it("lists recent risk observations for an address with default chain and limit", async () => {
     const { db, queries } = createMockDb(1, [
       {
@@ -2733,6 +2778,56 @@ describe("risk evidence repositories", () => {
     expect(observations).toEqual([observation]);
     expect(queries[0].sql).toContain("from risk_signal_observations");
     expect(queries[0].params).toEqual(["tron", "TSubject111111111111111111111111111111", 25]);
+  });
+
+  it("keeps the all-observation audit read while exposing separately filtered AML and wallet safety reads", async () => {
+    const walletSafetyRow = {
+      id: "observation-safety",
+      subject_chain: "tron",
+      subject_address: observation.subjectAddress,
+      subject_tx_hash: null,
+      observed_transaction_hash: "tx-2",
+      signal_group: "wallet_safety",
+      code: "address_poisoning_candidate",
+      message: "Possible address substitution detected",
+      score_impact: 0,
+      confidence: "high",
+      severity: "critical",
+      source: "address_poisoning_detector",
+      policy_version: "test-v1",
+      raw_evidence_id: "evidence-2"
+    };
+    const amlRow = {
+      id: observation.id,
+      subject_chain: observation.subjectChain,
+      subject_address: observation.subjectAddress,
+      subject_tx_hash: observation.subjectTxHash,
+      observed_transaction_hash: observation.observedTransactionHash,
+      signal_group: observation.signalGroup,
+      code: observation.code,
+      message: observation.message,
+      score_impact: observation.scoreImpact,
+      confidence: observation.confidence,
+      severity: observation.severity,
+      source: observation.source,
+      policy_version: observation.policyVersion,
+      raw_evidence_id: observation.rawEvidenceId
+    };
+    const all = createMockDb(2, [walletSafetyRow, amlRow]);
+    const aml = createMockDb(1, [amlRow]);
+    const safety = createMockDb(1, [walletSafetyRow]);
+    const params = { subjectAddress: observation.subjectAddress, chain: "tron", limit: 7 };
+
+    expect((await listRecentRiskSignalObservations(all.db, params)).map((item) => item.signalGroup)).toEqual([
+      "wallet_safety", "internal_label"
+    ]);
+    expect(await listRecentAmlRiskSignalObservations(aml.db, params)).toEqual([observation]);
+    expect((await listRecentWalletSafetyObservations(safety.db, params))[0].signalGroup).toBe("wallet_safety");
+    expect(compactSql(all.queries[0].sql)).not.toContain("signal_group <>");
+    expect(compactSql(aml.queries[0].sql)).toContain("signal_group <> 'wallet_safety'");
+    expect(compactSql(safety.queries[0].sql)).toContain("signal_group = 'wallet_safety'");
+    expect(aml.queries[0].params).toEqual(["tron", observation.subjectAddress, 7]);
+    expect(safety.queries[0].params).toEqual(["tron", observation.subjectAddress, 7]);
   });
 });
 

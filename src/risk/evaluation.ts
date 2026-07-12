@@ -6,7 +6,7 @@ import type {
   RiskConfidence,
   RiskReport,
   RiskSeverity,
-  RiskSignalGroup,
+  ScoringRiskSignalGroup,
   RiskSignalObservationInput
 } from "../types";
 
@@ -45,7 +45,7 @@ type ReasonMetadata = {
   confidence: RiskConfidence;
   severity: RiskSeverity;
   evidenceRef: string | null;
-  signalGroup: RiskSignalGroup;
+  signalGroup: ScoringRiskSignalGroup;
 };
 
 function stableId(parts: unknown[]): string {
@@ -65,7 +65,7 @@ function labelConfidence(label: AddressLabel): RiskConfidence {
   return label.source === "service_admin" ? "high" : "medium";
 }
 
-function inferSignalGroup(signal: RiskSignal, fallback: RiskSignalGroup): RiskSignalGroup {
+function inferSignalGroup(signal: RiskSignal, fallback: ScoringRiskSignalGroup): ScoringRiskSignalGroup {
   if (signal.source?.startsWith("graph")) return "graph";
   if (signal.source?.startsWith("aml")) return "provider";
   if (signal.source?.startsWith("provider")) return "provider";
@@ -80,7 +80,7 @@ function buildSignalMetadata(
   amlSignals: RiskSignal[]
 ): Map<string, ReasonMetadata> {
   const metadata = new Map<string, ReasonMetadata>();
-  const add = (signal: RiskSignal, signalGroup: RiskSignalGroup) => {
+  const add = (signal: RiskSignal, signalGroup: ScoringRiskSignalGroup) => {
     metadata.set(signal.code, {
       source: signal.source ?? signalGroup,
       confidence: signal.confidence ?? "medium",
@@ -178,7 +178,7 @@ function rawEvidenceFromLabels(input: {
 
 function observationFromReason(input: {
   reason: RiskReport["reasons"][number];
-  signalGroup: RiskSignalGroup;
+  signalGroup: ScoringRiskSignalGroup;
   context: Required<Pick<RiskEvaluationContext, "subjectAddress">> & RiskEvaluationContext;
   chain: string;
   policyVersion: string;
@@ -209,7 +209,7 @@ function observationFromReason(input: {
   };
 }
 
-function groupForReason(reason: RiskReport["reasons"][number], metadata: Map<string, ReasonMetadata>): RiskSignalGroup {
+function groupForReason(reason: RiskReport["reasons"][number], metadata: Map<string, ReasonMetadata>): ScoringRiskSignalGroup {
   if (reason.code.startsWith("internal_label_")) return "internal_label";
   return metadata.get(reason.code)?.signalGroup ?? "behavior";
 }

@@ -3358,6 +3358,12 @@ export async function recordObservedTransactionRisk(
   return (result.rowCount ?? 0) > 0;
 }
 
+function assertWalletSafetyObservationsHaveZeroImpact(observations: readonly RiskSignalObservationInput[]): void {
+  if (observations.some((observation) => observation.signalGroup === "wallet_safety" && observation.scoreImpact !== 0)) {
+    throw new Error("wallet_safety observations must have scoreImpact 0");
+  }
+}
+
 export async function claimAddressPoisoningChecks(
   db: Db,
   input: { limit: number; now: Date; staleRunningBefore: Date }
@@ -5775,6 +5781,7 @@ export async function saveRiskEvaluationEvidence(
     observations: RiskSignalObservationInput[];
   }
 ): Promise<void> {
+  assertWalletSafetyObservationsHaveZeroImpact(input.observations);
   const client = await db.connect();
   try {
     await client.query("begin");
@@ -7657,6 +7664,7 @@ export async function saveForensicRouteSearchResult(
     paths: ForensicRoutePath[];
   }
 ): Promise<void> {
+  assertWalletSafetyObservationsHaveZeroImpact(input.observations);
   parseForensicCaseStatus(input.case.status);
   const client = await db.connect();
   try {
@@ -7827,6 +7835,42 @@ export async function listRecentRiskSignalObservations(
      from risk_signal_observations
      where subject_chain = $1 and subject_address = $2
      order by created_at desc
+     limit $3`,
+    [input.chain ?? "tron", input.subjectAddress, input.limit ?? 25]
+  );
+  return result.rows.map(mapRiskSignalObservationRow);
+}
+
+export async function listRecentAmlRiskSignalObservations(
+  db: Db,
+  input: { subjectAddress: string; chain?: string; limit?: number }
+): Promise<RiskSignalObservationInput[]> {
+  const result = await db.query(
+    `select id, subject_chain, subject_address, subject_tx_hash,
+       observed_transaction_hash, signal_group, code, message, score_impact,
+       confidence, severity, source, policy_version, raw_evidence_id
+     from risk_signal_observations
+     where subject_chain = $1 and subject_address = $2
+       and signal_group <> 'wallet_safety'
+     order by created_at desc, id desc
+     limit $3`,
+    [input.chain ?? "tron", input.subjectAddress, input.limit ?? 25]
+  );
+  return result.rows.map(mapRiskSignalObservationRow);
+}
+
+export async function listRecentWalletSafetyObservations(
+  db: Db,
+  input: { subjectAddress: string; chain?: string; limit?: number }
+): Promise<RiskSignalObservationInput[]> {
+  const result = await db.query(
+    `select id, subject_chain, subject_address, subject_tx_hash,
+       observed_transaction_hash, signal_group, code, message, score_impact,
+       confidence, severity, source, policy_version, raw_evidence_id
+     from risk_signal_observations
+     where subject_chain = $1 and subject_address = $2
+       and signal_group = 'wallet_safety'
+     order by created_at desc, id desc
      limit $3`,
     [input.chain ?? "tron", input.subjectAddress, input.limit ?? 25]
   );
