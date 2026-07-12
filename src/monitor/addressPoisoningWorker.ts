@@ -57,6 +57,8 @@ export const ADDRESS_POISONING_WORKER_DEFAULTS = {
 // active send leased for two minutes before another app worker may retry it.
 export const ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS = 120_000;
 export const ADDRESS_POISONING_ALERT_HEARTBEAT_MS = 40_000;
+export const ADDRESS_POISONING_TELEGRAM_TIMEOUT_MS = 30_000;
+const ADDRESS_POISONING_TELEGRAM_TIMEOUT_MIN_MS = 1_000;
 
 const LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
@@ -125,7 +127,11 @@ export type AddressPoisoningWorkerDeps = {
   sendUserAlert(
     telegramUserId: string,
     message: string,
-    options: { reply_markup: ReturnType<typeof addressPoisoningAlertKeyboard>; parse_mode: "HTML" }
+    options: {
+      reply_markup: ReturnType<typeof addressPoisoningAlertKeyboard>;
+      parse_mode: "HTML";
+      signal: AbortSignal;
+    }
   ): Promise<{ chat: { id: number }; message_id: number }>;
   now?: () => Date;
   logger?: Logger;
@@ -138,6 +144,7 @@ export type AddressPoisoningWorkerOptions = {
   pageSize?: number;
   maxPages?: number;
   retryDelayMs?: number;
+  telegramTimeoutMs?: number;
 };
 
 type StoredTransfer = {
@@ -222,7 +229,15 @@ function workerOptions(options: AddressPoisoningWorkerOptions) {
       ADDRESS_POISONING_WORKER_DEFAULTS.maxPages,
       ADDRESS_POISONING_WORKER_DEFAULTS.maxPages
     ),
-    retryDelayMs: boundedPositiveInteger(options.retryDelayMs, ADDRESS_POISONING_WORKER_DEFAULTS.retryDelayMs)
+    retryDelayMs: boundedPositiveInteger(options.retryDelayMs, ADDRESS_POISONING_WORKER_DEFAULTS.retryDelayMs),
+    telegramTimeoutMs: Math.max(
+      ADDRESS_POISONING_TELEGRAM_TIMEOUT_MIN_MS,
+      boundedPositiveInteger(
+        options.telegramTimeoutMs,
+        ADDRESS_POISONING_TELEGRAM_TIMEOUT_MS,
+        Math.min(ADDRESS_POISONING_ALERT_HEARTBEAT_MS, ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS) - 1
+      )
+    )
   };
 }
 
@@ -767,6 +782,24 @@ async function processWorkItem(
   }
 }
 
+type AlertDeliveryHeartbeat = {
+  latestLease(): Date;
+  ownershipLost(): boolean;
+  stop(): Promise<void>;
+};
+
+async function persistWithLatestDeliveryLease(
+  heartbeat: AlertDeliveryHeartbeat,
+  persist: (alertLeaseVersion: Date) => Promise<boolean>
+): Promise<boolean> {
+  const firstLease = heartbeat.latestLease();
+  const updated = await persist(firstLease);
+  if (updated || heartbeat.ownershipLost()) return updated;
+  const latestLease = heartbeat.latestLease();
+  if (latestLease.getTime() === firstLease.getTime()) return false;
+  return persist(latestLease);
+}
+
 async function markDeliveryFailure(
   deps: AddressPoisoningWorkerDeps,
   repository: AddressPoisoningWorkerRepository,
@@ -775,20 +808,24 @@ async function markDeliveryFailure(
   metrics: AddressPoisoningCycleMetrics,
   failedAt: Date,
   logger: Logger,
-  alertLeaseVersion = candidate.alertLeaseVersion
+  alertLeaseVersion = candidate.alertLeaseVersion,
+  heartbeat?: AlertDeliveryHeartbeat
 ): Promise<void> {
   logger.warn("address_poisoning_alert_delivery_failed", {
     candidateId: candidate.id,
     error: boundedDeliveryError(error)
   });
   try {
-    const updated = await repository.markAlertFailed(deps.db, {
+    const persist = (lease: Date) => repository.markAlertFailed(deps.db, {
       candidateId: candidate.id,
       error: boundedDeliveryError(error),
       now: failedAt,
       alertAttempt: candidate.alertAttempt,
-      alertLeaseVersion
+      alertLeaseVersion: lease
     });
+    const updated = heartbeat
+      ? await persistWithLatestDeliveryLease(heartbeat, persist)
+      : await persist(alertLeaseVersion);
     updated ? metrics.alertsFailed += 1 : metrics.alertsStale += 1;
   } catch (persistenceError) {
     metrics.alertsPersistenceFailed += 1;
@@ -796,6 +833,8 @@ async function markDeliveryFailure(
       candidateId: candidate.id,
       error: boundedDeliveryError(persistenceError)
     });
+  } finally {
+    if (heartbeat) await heartbeat.stop();
   }
 }
 
@@ -805,7 +844,7 @@ function startAlertDeliveryHeartbeat(
   candidate: AddressPoisoningCandidateDelivery,
   metrics: AddressPoisoningCycleMetrics,
   logger: Logger
-): { latestLease(): Date; stop(): Promise<void> } {
+): AlertDeliveryHeartbeat {
   let alertLeaseVersion = new Date(candidate.alertLeaseVersion.getTime());
   let stopped = false;
   let ownershipLost = false;
@@ -849,6 +888,7 @@ function startAlertDeliveryHeartbeat(
 
   return {
     latestLease: () => new Date(alertLeaseVersion.getTime()),
+    ownershipLost: () => ownershipLost,
     stop: async () => {
       stopped = true;
       if (timer !== null) {
@@ -864,6 +904,7 @@ async function deliverCandidateAlert(
   deps: AddressPoisoningWorkerDeps,
   repository: AddressPoisoningWorkerRepository,
   candidate: AddressPoisoningCandidateDelivery,
+  options: ReturnType<typeof workerOptions>,
   metrics: AddressPoisoningCycleMetrics,
   logger: Logger
 ): Promise<void> {
@@ -916,40 +957,56 @@ async function deliverCandidateAlert(
 
   let sent: { chat: { id: number }; message_id: number };
   const heartbeat = startAlertDeliveryHeartbeat(deps, repository, candidate, metrics, logger);
+  const abortController = new AbortController();
+  let telegramTimedOut = false;
+  const telegramTimeout = setTimeout(() => {
+    telegramTimedOut = true;
+    abortController.abort();
+  }, options.telegramTimeoutMs);
+  let sendFailed = false;
+  let sendError: unknown;
   try {
     sent = await deps.sendUserAlert(candidate.telegramUserId, message.text, {
       reply_markup: keyboard,
-      parse_mode: message.parseMode
+      parse_mode: message.parseMode,
+      signal: abortController.signal
     });
   } catch (error) {
-    await heartbeat.stop();
+    sendFailed = true;
+    sendError = error;
+  } finally {
+    clearTimeout(telegramTimeout);
+  }
+  if (sendFailed) {
+    if (telegramTimedOut) metrics.timeoutCount += 1;
     await markDeliveryFailure(
       deps,
       repository,
       candidate,
-      error,
+      sendError,
       metrics,
       currentTime(deps),
       logger,
-      heartbeat.latestLease()
+      heartbeat.latestLease(),
+      heartbeat
     );
     return;
   }
-  await heartbeat.stop();
 
   // ponytail: Telegram send and DB acknowledgement cannot be atomic. A crash here leaves
   // `sending` retryable, so delivery is intentionally at-least-once with at most four claims.
   try {
     const sentAt = currentTime(deps);
-    const updated = await repository.markAlertSent(deps.db, {
-      candidateId: candidate.id,
-      fingerprint,
-      telegramChatId: String(sent.chat.id),
-      telegramMessageId: String(sent.message_id),
-      sentAt,
-      alertAttempt: candidate.alertAttempt,
-      alertLeaseVersion: heartbeat.latestLease()
-    });
+    const updated = await persistWithLatestDeliveryLease(heartbeat, (alertLeaseVersion) =>
+      repository.markAlertSent(deps.db, {
+        candidateId: candidate.id,
+        fingerprint,
+        telegramChatId: String(sent.chat.id),
+        telegramMessageId: String(sent.message_id),
+        sentAt,
+        alertAttempt: candidate.alertAttempt,
+        alertLeaseVersion
+      }));
     if (updated) {
       metrics.alertsSent += 1;
       logger.info("address_poisoning_alert_sent", {
@@ -967,6 +1024,8 @@ async function deliverCandidateAlert(
       candidateId: candidate.id,
       error: boundedDeliveryError(error)
     });
+  } finally {
+    await heartbeat.stop();
   }
 }
 
@@ -1008,7 +1067,7 @@ async function deliverCandidateAlerts(
         return;
       }
       metrics.alertsClaimed += 1;
-      await deliverCandidateAlert(deps, repository, candidate, metrics, logger);
+      await deliverCandidateAlert(deps, repository, candidate, options, metrics, logger);
     }
   };
   await Promise.all(Array.from({ length: options.concurrency }, consume));
@@ -1116,6 +1175,7 @@ export async function runSingleAddressPoisoningCycle(
     alertsFailed: deliveryMetrics.alertsFailed,
     alertsSkipped: deliveryMetrics.alertsSkipped,
     alertsStale: deliveryMetrics.alertsStale,
-    alertsPersistenceFailed: deliveryMetrics.alertsPersistenceFailed
+    alertsPersistenceFailed: deliveryMetrics.alertsPersistenceFailed,
+    timeoutCount: checkMetrics.timeoutCount + deliveryMetrics.timeoutCount
   };
 }

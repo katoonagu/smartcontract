@@ -1168,8 +1168,15 @@ const addressPoisoningWorkerDeps: AddressPoisoningWorkerDeps = {
   repository: addressPoisoningWorkerRepository,
   tronClient: addressPoisoningTronClient,
   realtimeMaxAgeMs: config.incomingDepositRealtimeMaxAgeMs,
-  sendUserAlert: async (telegramUserId, message, options) =>
-    bot.api.sendMessage(telegramUserId, message, options),
+  sendUserAlert: async (telegramUserId, message, options) => {
+    const { signal, ...telegramOptions } = options;
+    return bot.api.sendMessage(
+      telegramUserId,
+      message,
+      telegramOptions,
+      signal as Parameters<typeof bot.api.sendMessage>[3]
+    );
+  },
   logger
 };
 const addressPoisoningCheckWork = createNonOverlappingStartupWork(
