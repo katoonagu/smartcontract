@@ -949,6 +949,74 @@ describe("TronscanClient", () => {
     expect(page.canonicalTransferHashes).toHaveLength(2);
   });
 
+  it("marks a pinned logical page inconsistent when provider offsets overlap", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      const start = Number(requestUrl.searchParams.get("start"));
+      const indexes = start === 0
+        ? Array.from({ length: 50 }, (_, index) => index)
+        : [49, ...Array.from({ length: 49 }, (_, index) => index + 50)];
+      return jsonResponse({
+        total: 100,
+        rangeTotal: 100,
+        token_transfers: indexes.map((index) => ({
+          transaction_id: `overlap-${index}`,
+          event_index: index,
+          from_address: "TSource111111111111111111111111111111",
+          to_address: "TSubject111111111111111111111111111111",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          quant: "1",
+          block_ts: 1_780_090_000_000 - index
+        }))
+      });
+    });
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 100 }
+    );
+
+    expect(page.transfers).toHaveLength(100);
+    expect(page.transfers.filter((row) => row.transaction_id === "overlap-49")).toHaveLength(2);
+    expect(page.metadataConsistent).toBe(false);
+    expect(page.complete).toBe(false);
+  });
+
+  it("keeps separate events in one transaction distinct when event indexes are present", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      const start = Number(requestUrl.searchParams.get("start"));
+      return jsonResponse({
+        total: 100,
+        rangeTotal: 100,
+        token_transfers: Array.from({ length: 50 }, (_, offset) => {
+          const index = start + offset;
+          const multiEvent = index === 49 || index === 50;
+          return {
+            transaction_id: multiEvent ? "multi-event-tx" : `distinct-${index}`,
+            event_index: index,
+            from_address: "TSource111111111111111111111111111111",
+            to_address: "TSubject111111111111111111111111111111",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            quant: "1",
+            block_ts: multiEvent ? 1_780_090_000_000 : 1_780_090_000_000 - index
+          };
+        })
+      });
+    });
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 100 }
+    );
+
+    expect(page.transfers.filter((row) => row.transaction_id === "multi-event-tx")).toHaveLength(2);
+    expect(page.metadataConsistent).toBe(true);
+    expect(page.complete).toBe(true);
+  });
+
   it("continues a short pinned subpage at its actual next offset and reports no progress safely", async () => {
     const starts: number[] = [];
     const fetchFn = vi.fn(async (url: URL | RequestInfo) => {

@@ -151,6 +151,8 @@ type StoredTransfer = {
 
 type AccumulatedLookup = {
   version: 2;
+  windowStart: string | null;
+  windowEnd: string | null;
   lookupProvider: "tronscan" | "trongrid_fallback" | "mixed" | null;
   providerMetadataConsistent: boolean;
   transfers: StoredTransfer[];
@@ -226,6 +228,8 @@ function workerOptions(options: AddressPoisoningWorkerOptions) {
 function emptyLookup(): AccumulatedLookup {
   return {
     version: 2,
+    windowStart: null,
+    windowEnd: null,
     lookupProvider: null,
     providerMetadataConsistent: true,
     transfers: [],
@@ -298,6 +302,8 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     };
   }
   const lookupProvider = value.lookupProvider;
+  const windowStart = typeof value.windowStart === "string" ? value.windowStart : null;
+  const windowEnd = typeof value.windowEnd === "string" ? value.windowEnd : null;
   if (
     !(lookupProvider === null || lookupProvider === "tronscan"
       || lookupProvider === "trongrid_fallback" || lookupProvider === "mixed")
@@ -313,8 +319,11 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
   }
   return {
     version: 2,
+    windowStart,
+    windowEnd,
     lookupProvider,
-    providerMetadataConsistent: value.providerMetadataConsistent,
+    providerMetadataConsistent: value.providerMetadataConsistent
+      && (value.providerPages.length === 0 || (windowStart !== null && windowEnd !== null)),
     transfers: [...value.transfers],
     providerFacts: value.providerFacts as RawTronscanTrc20Transfer[],
     providerTransferIds: [...value.providerTransferIds],
@@ -337,6 +346,8 @@ function mergePage(
   metadataConsistent: boolean,
   incomingAt: Date
 ): AccumulatedLookup {
+  const windowStart = new Date(incomingAt.getTime() - LOOKBACK_MS).toISOString();
+  const windowEnd = new Date(incomingAt.getTime() - 1).toISOString();
   const byId = new Map(accumulated.transfers.map((transfer) => [transfer.transferId, transfer]));
   const factsById = new Map(accumulated.providerTransferIds.map((id, index) => [id, accumulated.providerFacts[index]]));
   const factProvidersById = new Map(accumulated.providerTransferIds.map(
@@ -369,15 +380,28 @@ function mergePage(
   const providerTransferIds = [...factsById.keys()].sort();
   const providerChanged = accumulated.lookupProvider !== null
     && accumulated.lookupProvider !== page.provider;
+  const priorPagesExist = accumulated.providerPages.length > 0;
+  const windowConsistent = !priorPagesExist
+    || (accumulated.windowStart === windowStart && accumulated.windowEnd === windowEnd);
+  const rangeTotalConsistent = page.rangeTotal !== null
+    && accumulated.providerPages.every((prior) =>
+      prior.rangeTotal !== null && prior.rangeTotal === page.rangeTotal);
+  const continuationConsistent = !priorPagesExist
+    || accumulated.providerPages.at(-1)?.nextOffset === page.start;
   const lookupProvider = accumulated.lookupProvider === "mixed" || providerChanged
     ? "mixed" as const
     : accumulated.lookupProvider ?? page.provider;
   return {
     version: 2,
+    windowStart: accumulated.windowStart ?? windowStart,
+    windowEnd: accumulated.windowEnd ?? windowEnd,
     lookupProvider,
     providerMetadataConsistent: accumulated.providerMetadataConsistent
       && metadataConsistent
-      && !providerChanged,
+      && !providerChanged
+      && windowConsistent
+      && rangeTotalConsistent
+      && continuationConsistent,
     transfers,
     providerTransferIds,
     providerFacts: providerTransferIds.map((id) => factsById.get(id)!),

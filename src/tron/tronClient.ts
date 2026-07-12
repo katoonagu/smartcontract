@@ -793,6 +793,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const transfers: RawTronscanTrc20Transfer[] = [];
     const rawResponseHashes: string[] = [];
     const canonicalTransferHashes: string[] = [];
+    const seenTransferIdentities = new Set<string>();
     let total: number | null | undefined;
     let rangeTotal: number | null | undefined;
     let metadataConsistent = true;
@@ -811,6 +812,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       if (page.rawResponseHash) rawResponseHashes.push(page.rawResponseHash);
       if (page.canonicalTransferHash) canonicalTransferHashes.push(page.canonicalTransferHash);
       if (page.transfers.length > pageLimit) metadataConsistent = false;
+      for (const transfer of page.transfers) {
+        const identity = JSON.stringify(this.canonicalTronscanTransferRow(transfer));
+        if (seenTransferIdentities.has(identity)) metadataConsistent = false;
+        seenTransferIdentities.add(identity);
+      }
       transfers.push(...page.transfers);
 
       const nextOffset = start + transfers.length;

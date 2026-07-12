@@ -244,18 +244,32 @@ describe("address poisoning worker", () => {
       return true;
     });
     const repeated = rawTransfer({ transaction_id: "repeat" });
-    const client = vi.fn(async (_address: string, options?: { start?: number }) => {
+    const client: PinnedTransferLookup = vi.fn(async (_address: string, options = {}): Promise<PinnedTronscanTransferPage> => {
       const start = options?.start ?? 0;
       starts.push(start);
-      if (start === 200) return [repeated];
-      return Array.from({ length: 100 }, (_, index) => index === 0
+      const transfers = start === 200
+        ? [repeated]
+        : Array.from({ length: 100 }, (_, index) => index === 0
         ? repeated
         : rawTransfer({ transaction_id: `${start}-${index}` }));
+      return {
+        provider: "tronscan",
+        transfers,
+        start,
+        requestedLimit: 100,
+        nextOffset: start + transfers.length,
+        total: 201,
+        rangeTotal: 201,
+        complete: start + transfers.length >= 201,
+        metadataConsistent: true,
+        rawResponseHashes: [`raw-${start}`],
+        canonicalTransferHashes: [`canonical-${start}`]
+      };
     });
 
-    await runSingleAddressPoisoningCycle(deps(repo, client));
-    await runSingleAddressPoisoningCycle(deps(repo, client));
-    await runSingleAddressPoisoningCycle(deps(repo, client));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, client));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, client));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, client));
 
     expect(starts).toEqual([0, 100, 200]);
     expect(repo.markClear).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -630,6 +644,124 @@ describe("address poisoning worker", () => {
       expect.objectContaining({ provider: "tronscan", start: 0, nextOffset: 1 }),
       expect.objectContaining({ provider: "trongrid_fallback", start: 1, nextOffset: 2 })
     ]);
+  });
+
+  it("never clears when authoritative range totals contradict across claims", async () => {
+    let current = workItem();
+    const repo = repository();
+    (repo.claimChecks as ReturnType<typeof vi.fn>).mockImplementation(async () => [current]);
+    (repo.markInconclusive as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      current = workItem({
+        logicalOffset: input.logicalOffset,
+        pageCount: input.pageCount,
+        fetchedCount: input.fetchedCount,
+        accumulatedLookupJson: input.accumulatedLookupJson,
+        leaseVersion: new Date(current.leaseVersion.getTime() + 1_000)
+      });
+      return true;
+    });
+    const first: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `range-first-${index}` })),
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 100,
+      total: 200,
+      rangeTotal: 200,
+      complete: false,
+      metadataConsistent: true,
+      rawResponseHashes: ["range-first-raw"],
+      canonicalTransferHashes: ["range-first-canonical"]
+    };
+    const contradictory: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      start: 100,
+      requestedLimit: 100,
+      nextOffset: 100,
+      total: 100,
+      rangeTotal: 100,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["range-second-raw"],
+      canonicalTransferHashes: ["range-second-canonical"]
+    };
+    const pages = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(contradictory);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledTimes(2);
+    const second = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[1][1];
+    expect(second.coverage).toBe("partial");
+    expect(second.accumulatedLookupJson.providerMetadataConsistent).toBe(false);
+    expect(second.accumulatedLookupJson.providerPages).toEqual([
+      expect.objectContaining({ rangeTotal: 200 }),
+      expect.objectContaining({ rangeTotal: 100 })
+    ]);
+  });
+
+  it("does not upgrade persisted unknown provider metadata to a complete clear", async () => {
+    const legacyTransfer = rawTransfer({ transaction_id: "legacy-unknown" });
+    const repo = repository([workItem({
+      logicalOffset: 1,
+      pageCount: 1,
+      fetchedCount: 1,
+      accumulatedLookupJson: {
+        version: 1,
+        transfers: [{
+          transferId: "tronscan:legacy",
+          txHash: legacyTransfer.transaction_id,
+          sender: legacyTransfer.from_address,
+          receiver: legacyTransfer.to_address,
+          amountRaw: legacyTransfer.quant,
+          occurredAt: new Date(legacyTransfer.block_ts).toISOString()
+        }],
+        providerFacts: [legacyTransfer],
+        providerTransferIds: ["tronscan:legacy"]
+      }
+    })]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      start: 1,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["legacy-final-raw"],
+      canonicalTransferHashes: ["legacy-final-canonical"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
+  it("keeps an overlapping full logical page partial", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `overlap-worker-${index}` })),
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 100,
+      total: 100,
+      rangeTotal: 100,
+      complete: false,
+      metadataConsistent: false,
+      rawResponseHashes: ["overlap-a", "overlap-b"],
+      canonicalTransferHashes: ["overlap-ca", "overlap-cb"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
   });
 
   it("continues a short authoritative page that reports remaining rows", async () => {
