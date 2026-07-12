@@ -2903,7 +2903,8 @@ describe("address poisoning persistence", () => {
     pageCount: 2,
     fetchedCount: 183,
     oldestFetchedAt: new Date("2026-07-11T12:00:00.000Z"),
-    accumulatedLookupJson: { transfers: ["outgoing-1"] }
+    accumulatedLookupJson: { transfers: ["outgoing-1"] },
+    leaseVersion: now
   };
 
   it("migrates historical rows to skipped_backfill and keeps that safe default", () => {
@@ -2924,6 +2925,38 @@ describe("address poisoning persistence", () => {
     expect(sql).toContain("poisoning_page_count < 5");
     expect(sql).toContain("poisoning_attempts < 3");
     expect(sql).toContain("poisoning_check_status = 'running'");
+    expect(sql).toContain("poisoning_updated_at = $2");
+    expect(sql).toContain("tx.poisoning_updated_at");
+  });
+
+  it("returns the exact supplied check claim time as the opaque lease version", async () => {
+    const claimed = createMockDb(1, [{
+      tx_hash: "incoming-1",
+      watched_wallet_id: "wallet-1",
+      wallet_address: "TWallet111111111111111111111111111111",
+      telegram_user_id: "42",
+      sender: "TSuspicious1111111111111111111111111",
+      receiver: "TWallet111111111111111111111111111111",
+      token: "USDT",
+      amount: "10",
+      timestamp: now,
+      poisoning_check_status: "running",
+      poisoning_attempts: 0,
+      poisoning_logical_offset: 0,
+      poisoning_page_count: 0,
+      poisoning_fetched_count: 0,
+      poisoning_oldest_fetched_at: null,
+      poisoning_lookup_coverage: null,
+      poisoning_accumulated_lookup_json: {},
+      poisoning_updated_at: now
+    }]);
+    const work = await claimAddressPoisoningChecks(claimed.db, {
+      limit: 1,
+      now,
+      staleRunningBefore: new Date(now.getTime() - 30_000)
+    });
+    expect(work[0].leaseVersion).toEqual(now);
+    expect(claimed.queries[0].params[1]).toEqual(now);
   });
 
   it("skips expired and paused queued checks without claiming them", async () => {
@@ -2935,6 +2968,7 @@ describe("address poisoning persistence", () => {
     expect(await skipPausedAddressPoisoningChecks(paused.db)).toBe(3);
     expect(compactSql(paused.queries[0].sql)).toContain("from watched_wallets w");
     expect(compactSql(paused.queries[0].sql)).toContain("w.alert_mode = 'paused'");
+    expect(compactSql(paused.queries[0].sql)).toContain("('pending', 'running', 'failed', 'inconclusive')");
   });
 
   it("persists continuation state and only clears a complete negative", async () => {
@@ -2949,7 +2983,8 @@ describe("address poisoning persistence", () => {
       pageCount: 3,
       fetchedCount: 212,
       oldestFetchedAt: new Date("2026-07-11T10:00:00.000Z"),
-      accumulatedLookupJson: { transfers: ["tx-final"] }
+      accumulatedLookupJson: { transfers: ["tx-final"] },
+      leaseVersion: now
     })).toBe(true);
     expect(compactSql(clear.queries[0].sql)).toContain("poisoning_lookup_coverage = 'complete'");
     expect(compactSql(clear.queries[0].sql)).toContain("poisoning_logical_offset = $3");
@@ -2960,7 +2995,8 @@ describe("address poisoning persistence", () => {
       3,
       212,
       new Date("2026-07-11T10:00:00.000Z"),
-      { transfers: ["tx-final"] }
+      { transfers: ["tx-final"] },
+      now
     ]);
     expect(await markAddressPoisoningCheckInconclusive(partial.db, {
       txHash: "incoming-1",
@@ -2972,23 +3008,28 @@ describe("address poisoning persistence", () => {
       oldestFetchedAt: new Date("2026-07-12T11:00:00.000Z"),
       accumulatedLookupJson: { transfers: ["tx-1"] },
       nextRetryAt: new Date("2026-07-12T12:01:00.000Z"),
-      reason: "provider_cap"
+      reason: "provider_cap",
+      leaseVersion: now
     })).toBe(true);
     expect(partial.queries[0].params).toContain(100);
     expect(compactSql(partial.queries[0].sql)).toContain("poisoning_page_count = $6");
+    expect(compactSql(partial.queries[0].sql)).toContain("poisoning_updated_at = $12");
     expect(await markAddressPoisoningCheckSkipped(skipped.db, {
-      txHash: "incoming-1", watchedWalletId: "wallet-1", reason: "ineligible"
+      txHash: "incoming-1", watchedWalletId: "wallet-1", reason: "ineligible", leaseVersion: now
     })).toBe(true);
     expect(compactSql(skipped.queries[0].sql)).toContain("poisoning_check_status = 'skipped'");
+    expect(compactSql(skipped.queries[0].sql)).toContain("poisoning_updated_at = $4");
   });
 
   it("records the 30/60/120 retry schedule and stops claiming after three failures", async () => {
     for (const seconds of [30, 60, 120]) {
       const failed = createMockDb(1);
       expect(await markAddressPoisoningCheckFailed(failed.db, {
-        txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now
+        txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now, leaseVersion: now
       })).toBe(true);
       expect(compactSql(failed.queries[0].sql)).toContain(`${seconds} seconds`);
+      expect(compactSql(failed.queries[0].sql)).toContain("poisoning_updated_at = $5");
+      expect(compactSql(failed.queries[0].sql)).toContain("$4::timestamptz + case");
     }
   });
 
@@ -3042,9 +3083,10 @@ describe("address poisoning persistence", () => {
     expect(upsert).not.toContain("alert_status = excluded.alert_status");
     expect(compactSql(queries.at(-2)!.sql)).toContain("poisoning_check_status = 'running'");
     expect(compactSql(queries.at(-2)!.sql)).toContain("poisoning_lookup_coverage = $3");
+    expect(compactSql(queries.at(-2)!.sql)).toContain("poisoning_updated_at = $9");
     expect(queries.at(-2)!.params).toEqual([
       "incoming-1", "wallet-1", "complete", 200, 2, 183,
-      new Date("2026-07-11T12:00:00.000Z"), { transfers: ["outgoing-1"] }
+      new Date("2026-07-11T12:00:00.000Z"), { transfers: ["outgoing-1"] }, now
     ]);
     expect(queries.at(-1)?.sql).toBe("commit");
   });
@@ -3062,17 +3104,22 @@ describe("address poisoning persistence", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].alertMode).toBe("paused");
+    expect(rows[0].leaseVersion).toEqual(now);
     expect(compactSql(claimed.queries[0].sql)).toContain("for update of candidate skip locked");
     const sent = createMockDb(1);
     expect(await markAddressPoisoningAlertSent(sent.db, {
-      candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99"
+      candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99", leaseVersion: now
     })).toBe(true);
     expect(compactSql(sent.queries[0].sql)).toContain("alert_status = 'sent'");
+    expect(compactSql(sent.queries[0].sql)).toContain("updated_at = $4");
     const failed = createMockDb(1);
-    expect(await markAddressPoisoningAlertFailed(failed.db, { candidateId: "candidate-1", error: "telegram", now })).toBe(true);
+    expect(await markAddressPoisoningAlertFailed(failed.db, { candidateId: "candidate-1", error: "telegram", now, leaseVersion: now })).toBe(true);
     expect(compactSql(failed.queries[0].sql)).toContain("alert_attempts = alert_attempts + 1");
+    expect(compactSql(failed.queries[0].sql)).toContain("updated_at = $4");
+    expect(compactSql(failed.queries[0].sql)).toContain("$3::timestamptz + case");
     const skipped = createMockDb(1);
-    expect(await markAddressPoisoningAlertSkipped(skipped.db, { candidateId: "candidate-1", reason: "paused" })).toBe(true);
+    expect(await markAddressPoisoningAlertSkipped(skipped.db, { candidateId: "candidate-1", reason: "paused", leaseVersion: now })).toBe(true);
+    expect(compactSql(skipped.queries[0].sql)).toContain("updated_at = $3");
   });
 
   it("resolves callbacks only through an owner-bound mutation and maps CAS outcomes", async () => {
@@ -3249,7 +3296,7 @@ describe("address poisoning persistence", () => {
     for (const seconds of [30, 60, 120]) {
       state.status = "running";
       await markAddressPoisoningCheckFailed(db, {
-        txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now
+        txHash: "incoming-1", watchedWalletId: "wallet-1", error: "provider", now, leaseVersion: now
       });
       expect(state.nextRetryAt).toEqual(new Date(now.getTime() + seconds * 1000));
     }
@@ -3279,9 +3326,128 @@ describe("address poisoning persistence", () => {
       oldestFetchedAt: now,
       accumulatedLookupJson: { transfers: [] },
       nextRetryAt: now,
-      reason: "provider_cap"
+      reason: "provider_cap",
+      leaseVersion: now
     });
     expect(await claimAddressPoisoningChecks(db, { limit: 1, now, staleRunningBefore: now })).toEqual([]);
+  });
+
+  it("invalidates a running check when its wallet becomes paused", async () => {
+    const state = { status: "running" };
+    const db = {
+      query: async (sql: string) => {
+        if (compactSql(sql).includes("('pending', 'running', 'failed', 'inconclusive')")) {
+          state.status = "skipped";
+          return { rowCount: 1, rows: [] };
+        }
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+    expect(await skipPausedAddressPoisoningChecks(db)).toBe(1);
+    expect(state.status).toBe("skipped");
+  });
+
+  it("rejects stale check worker A after worker B reclaims the row", async () => {
+    const lease1 = new Date("2026-07-12T12:00:00.000Z");
+    const lease2 = new Date("2026-07-12T12:01:00.000Z");
+    const state = { status: "running", lease: lease2 };
+    const db = {
+      query: async (_sql: string, params: unknown[] = []) => {
+        const lease = params.at(-1);
+        if (lease instanceof Date && lease.getTime() === state.lease.getTime() && state.status === "running") {
+          state.status = "clear";
+          return { rowCount: 1, rows: [] };
+        }
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+    const base = {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      coverage: "complete" as const,
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: now,
+      accumulatedLookupJson: { transfers: [] }
+    };
+    expect(await markAddressPoisoningCheckClear(db, { ...base, leaseVersion: lease1 })).toBe(false);
+    expect(state.status).toBe("running");
+    expect(await markAddressPoisoningCheckClear(db, { ...base, leaseVersion: lease2 })).toBe(true);
+    expect(state.status).toBe("clear");
+  });
+
+  it("rolls back stale candidate worker A while current worker B succeeds", async () => {
+    const lease1 = new Date("2026-07-12T12:00:00.000Z");
+    const lease2 = new Date("2026-07-12T12:01:00.000Z");
+    const makeDb = (claimedLease: Date) => {
+      const queries: string[] = [];
+      const client = {
+        query: async (sql: string, params: unknown[] = []) => {
+          queries.push(sql);
+          if (sql.includes("from observed_transactions tx") && sql.includes("for update of tx")) {
+            return { rowCount: 1, rows: [{ poisoning_check_status: "running", poisoning_updated_at: lease2 }] };
+          }
+          if (sql.includes("from address_poisoning_candidates candidate")) return { rowCount: 0, rows: [] };
+          if (sql.includes("insert into address_poisoning_candidates")) return { rowCount: 1, rows: [candidateRow] };
+          if (sql.includes("update observed_transactions")) {
+            const suppliedLease = params.at(-1);
+            return {
+              rowCount: suppliedLease instanceof Date && suppliedLease.getTime() === lease2.getTime() ? 1 : 0,
+              rows: []
+            };
+          }
+          return { rowCount: 1, rows: [] };
+        },
+        release: () => undefined
+      };
+      return { db: { connect: async () => client } as unknown as Db, queries, claimedLease };
+    };
+    const stale = makeDb(lease1);
+    await expect(persistAddressPoisoningCandidate(stale.db, { ...persistInput, leaseVersion: stale.claimedLease }))
+      .rejects.toThrow("running check lease");
+    expect(stale.queries.at(-1)).toBe("rollback");
+    const current = makeDb(lease2);
+    await expect(persistAddressPoisoningCandidate(current.db, { ...persistInput, leaseVersion: current.claimedLease }))
+      .resolves.toMatchObject({ id: candidateRow.id });
+    expect(current.queries.at(-1)).toBe("commit");
+  });
+
+  it("rejects stale alert worker transitions after a sending lease is reclaimed", async () => {
+    const lease1 = new Date("2026-07-12T12:00:00.000Z");
+    const lease2 = new Date("2026-07-12T12:01:00.000Z");
+    const failureAt = new Date("2026-07-12T12:02:00.000Z");
+    const run = async (kind: "sent" | "failed" | "skipped") => {
+      const state = { status: "sending", lease: lease2 };
+      const db = {
+        query: async (_sql: string, params: unknown[] = []) => {
+          const suppliedLease = params.at(-1);
+          if (!(suppliedLease instanceof Date) || suppliedLease.getTime() !== state.lease.getTime()) {
+            return { rowCount: 0, rows: [] };
+          }
+          state.status = kind;
+          if (kind === "failed") state.lease = params[2] as Date;
+          return { rowCount: 1, rows: [] };
+        }
+      } as unknown as Db;
+      const invoke = (leaseVersion: Date) => kind === "sent"
+        ? markAddressPoisoningAlertSent(db, {
+          candidateId: "candidate-1", telegramChatId: "42", telegramMessageId: "99", leaseVersion
+        })
+        : kind === "failed"
+          ? markAddressPoisoningAlertFailed(db, {
+            candidateId: "candidate-1", error: "telegram", now: failureAt, leaseVersion
+          })
+          : markAddressPoisoningAlertSkipped(db, { candidateId: "candidate-1", reason: "paused", leaseVersion });
+      expect(await invoke(lease1)).toBe(false);
+      expect(state.status).toBe("sending");
+      expect(await invoke(lease2)).toBe(true);
+      expect(state.status).toBe(kind);
+      if (kind === "failed") expect(state.lease).toEqual(failureAt);
+    };
+    await run("sent");
+    await run("failed");
+    await run("skipped");
   });
 
   it("looks up active candidates and reports queue age", async () => {

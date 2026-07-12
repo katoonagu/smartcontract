@@ -1866,7 +1866,8 @@ function mapAddressPoisoningCheckWorkItemRow(row: Record<string, any>): AddressP
     fetchedCount: Number(row.poisoning_fetched_count ?? 0),
     oldestFetchedAt: row.poisoning_oldest_fetched_at ?? null,
     coverage: parseAddressPoisoningCoverage(row.poisoning_lookup_coverage ?? null),
-    accumulatedLookupJson: mapJsonObject(row.poisoning_accumulated_lookup_json)
+    accumulatedLookupJson: mapJsonObject(row.poisoning_accumulated_lookup_json),
+    leaseVersion: row.poisoning_updated_at
   };
 }
 
@@ -1919,7 +1920,8 @@ function mapAddressPoisoningCandidateDeliveryRow(row: Record<string, any>): Addr
     walletAddress: row.wallet_address,
     telegramUserId: row.telegram_user_id,
     locale: normalizeNullableBotLocale(row.locale),
-    alertMode: parseWalletAlertMode(row.alert_mode)
+    alertMode: parseWalletAlertMode(row.alert_mode),
+    leaseVersion: row.updated_at
   };
 }
 
@@ -3393,7 +3395,7 @@ export async function claimAddressPoisoningChecks(
        w.telegram_user_id, tx.sender, tx.receiver, tx.token, tx.amount, tx.timestamp,
        tx.poisoning_check_status, tx.poisoning_attempts, tx.poisoning_logical_offset,
        tx.poisoning_page_count, tx.poisoning_fetched_count, tx.poisoning_oldest_fetched_at,
-       tx.poisoning_lookup_coverage, tx.poisoning_accumulated_lookup_json`,
+       tx.poisoning_lookup_coverage, tx.poisoning_accumulated_lookup_json, tx.poisoning_updated_at`,
     [input.limit, input.now, input.staleRunningBefore]
   );
   return result.rows.map(mapAddressPoisoningCheckWorkItemRow);
@@ -3426,7 +3428,7 @@ export async function skipPausedAddressPoisoningChecks(db: Db): Promise<number> 
      from watched_wallets w
      where w.id = tx.watched_wallet_id
        and w.alert_mode = 'paused'
-       and tx.poisoning_check_status in ('pending', 'failed', 'inconclusive')`,
+       and tx.poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')`,
     []
   );
   return result.rowCount ?? 0;
@@ -3443,6 +3445,7 @@ export async function markAddressPoisoningCheckClear(
     fetchedCount: number;
     oldestFetchedAt: Date | null;
     accumulatedLookupJson: Record<string, unknown>;
+    leaseVersion: Date;
   }
 ): Promise<boolean> {
   if (input.coverage !== "complete") throw new Error("Address poisoning clear requires complete coverage");
@@ -3459,7 +3462,8 @@ export async function markAddressPoisoningCheckClear(
        poisoning_last_error = null,
        poisoning_updated_at = now(),
        poisoning_checked_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
+       and poisoning_updated_at = $8`,
     [
       input.txHash,
       input.watchedWalletId,
@@ -3467,7 +3471,8 @@ export async function markAddressPoisoningCheckClear(
       input.pageCount,
       input.fetchedCount,
       input.oldestFetchedAt,
-      input.accumulatedLookupJson
+      input.accumulatedLookupJson,
+      input.leaseVersion
     ]
   );
   return (result.rowCount ?? 0) === 1;
@@ -3486,6 +3491,7 @@ export async function markAddressPoisoningCheckInconclusive(
     accumulatedLookupJson: Record<string, unknown>;
     nextRetryAt: Date | null;
     reason: string;
+    leaseVersion: Date;
   }
 ): Promise<boolean> {
   if (input.coverage !== "partial") throw new Error("Address poisoning inconclusive requires partial coverage");
@@ -3503,7 +3509,7 @@ export async function markAddressPoisoningCheckInconclusive(
        poisoning_updated_at = now(),
        poisoning_checked_at = case when $6 >= 5 then now() else poisoning_checked_at end
      where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = $3
-       and $4 = 'partial'`,
+       and $4 = 'partial' and poisoning_updated_at = $12`,
     [
       input.txHash,
       input.watchedWalletId,
@@ -3515,7 +3521,8 @@ export async function markAddressPoisoningCheckInconclusive(
       input.oldestFetchedAt,
       input.accumulatedLookupJson,
       input.nextRetryAt,
-      boundedUserAlertError(input.reason)
+      boundedUserAlertError(input.reason),
+      input.leaseVersion
     ]
   );
   return (result.rowCount ?? 0) === 1;
@@ -3523,13 +3530,13 @@ export async function markAddressPoisoningCheckInconclusive(
 
 export async function markAddressPoisoningCheckFailed(
   db: Db,
-  input: { txHash: string; watchedWalletId: string; error: string; now: Date }
+  input: { txHash: string; watchedWalletId: string; error: string; now: Date; leaseVersion: Date }
 ): Promise<boolean> {
   const result = await db.query(
     `update observed_transactions
      set poisoning_check_status = 'failed',
        poisoning_attempts = poisoning_attempts + 1,
-       poisoning_next_retry_at = $4 + case poisoning_attempts
+       poisoning_next_retry_at = $4::timestamptz + case poisoning_attempts
          when 0 then interval '30 seconds'
          when 1 then interval '60 seconds'
          else interval '120 seconds'
@@ -3537,15 +3544,16 @@ export async function markAddressPoisoningCheckFailed(
        poisoning_last_error = $3,
        poisoning_updated_at = $4,
        poisoning_checked_at = case when poisoning_attempts + 1 >= 3 then $4 else poisoning_checked_at end
-     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
-    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error), input.now]
+     where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
+       and poisoning_updated_at = $5`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error), input.now, input.leaseVersion]
   );
   return (result.rowCount ?? 0) === 1;
 }
 
 export async function markAddressPoisoningCheckSkipped(
   db: Db,
-  input: { txHash: string; watchedWalletId: string; reason: string }
+  input: { txHash: string; watchedWalletId: string; reason: string; leaseVersion: Date }
 ): Promise<boolean> {
   const result = await db.query(
     `update observed_transactions
@@ -3555,8 +3563,9 @@ export async function markAddressPoisoningCheckSkipped(
        poisoning_updated_at = now(),
        poisoning_checked_at = now()
      where tx_hash = $1 and watched_wallet_id = $2
-       and poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')`,
-    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason)]
+       and poisoning_check_status in ('pending', 'running', 'failed', 'inconclusive')
+       and poisoning_updated_at = $4`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason), input.leaseVersion]
   );
   return (result.rowCount ?? 0) === 1;
 }
@@ -3631,7 +3640,8 @@ export async function persistAddressPoisoningCandidate(
          poisoning_last_error = null,
          poisoning_updated_at = now(),
          poisoning_checked_at = now()
-       where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'`,
+       where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
+         and poisoning_updated_at = $9`,
       [
         input.suspiciousIncomingTxHash,
         input.watchedWalletId,
@@ -3640,7 +3650,8 @@ export async function persistAddressPoisoningCandidate(
         input.pageCount,
         input.fetchedCount,
         input.oldestFetchedAt,
-        input.accumulatedLookupJson
+        input.accumulatedLookupJson,
+        input.leaseVersion
       ]
     );
 
@@ -3787,48 +3798,48 @@ export async function claimAddressPoisoningAlertsForDelivery(
 
 export async function markAddressPoisoningAlertSent(
   db: Db,
-  input: { candidateId: string; telegramChatId: string; telegramMessageId: string }
+  input: { candidateId: string; telegramChatId: string; telegramMessageId: string; leaseVersion: Date }
 ): Promise<boolean> {
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'sent', telegram_chat_id = $2, telegram_message_id = $3,
        alert_next_retry_at = null, alert_last_error = null, alert_sent_at = now(), updated_at = now()
-     where id = $1 and alert_status = 'sending'`,
-    [input.candidateId, input.telegramChatId, input.telegramMessageId]
+     where id = $1 and alert_status = 'sending' and updated_at = $4`,
+    [input.candidateId, input.telegramChatId, input.telegramMessageId, input.leaseVersion]
   );
   return (result.rowCount ?? 0) === 1;
 }
 
 export async function markAddressPoisoningAlertFailed(
   db: Db,
-  input: { candidateId: string; error: string; now: Date }
+  input: { candidateId: string; error: string; now: Date; leaseVersion: Date }
 ): Promise<boolean> {
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'failed',
        alert_attempts = alert_attempts + 1,
-       alert_next_retry_at = $3 + case alert_attempts
+       alert_next_retry_at = $3::timestamptz + case alert_attempts
          when 0 then interval '30 seconds'
          when 1 then interval '60 seconds'
          else interval '120 seconds'
        end,
        alert_last_error = $2,
        updated_at = $3
-     where id = $1 and alert_status = 'sending'`,
-    [input.candidateId, boundedUserAlertError(input.error), input.now]
+     where id = $1 and alert_status = 'sending' and updated_at = $4`,
+    [input.candidateId, boundedUserAlertError(input.error), input.now, input.leaseVersion]
   );
   return (result.rowCount ?? 0) === 1;
 }
 
 export async function markAddressPoisoningAlertSkipped(
   db: Db,
-  input: { candidateId: string; reason: string }
+  input: { candidateId: string; reason: string; leaseVersion: Date }
 ): Promise<boolean> {
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'skipped', alert_next_retry_at = null, alert_last_error = $2, updated_at = now()
-     where id = $1 and alert_status in ('pending', 'sending', 'failed')`,
-    [input.candidateId, boundedUserAlertError(input.reason)]
+     where id = $1 and alert_status = 'sending' and updated_at = $3`,
+    [input.candidateId, boundedUserAlertError(input.reason), input.leaseVersion]
   );
   return (result.rowCount ?? 0) === 1;
 }

@@ -181,6 +181,7 @@ export type AddressPoisoningCheckWorkItem = {
   oldestFetchedAt: Date | null;
   coverage: AddressPoisoningCoverage | null;
   accumulatedLookupJson: Record<string, unknown>;
+  leaseVersion: Date;
 };
 
 export type AddressPoisoningCandidate = {
@@ -227,6 +228,7 @@ export type AddressPoisoningCandidateDelivery = AddressPoisoningCandidate & {
   telegramUserId: string;
   locale: BotLocale | null;
   alertMode: WalletAlertMode;
+  leaseVersion: Date;
 };
 
 export type PersistAddressPoisoningCandidateInput = {
@@ -257,6 +259,7 @@ export type PersistAddressPoisoningCandidateInput = {
   fetchedCount: number;
   oldestFetchedAt: Date | null;
   accumulatedLookupJson: Record<string, unknown>;
+  leaseVersion: Date;
 };
 
 export type ForensicCaseStatus = "completed" | "partial" | "failed";
