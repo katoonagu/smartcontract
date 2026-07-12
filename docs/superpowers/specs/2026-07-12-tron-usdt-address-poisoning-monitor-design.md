@@ -2,10 +2,10 @@
 
 ## Status
 
-Revised after an approve-with-changes review on 2026-07-12 and pending final
-user review. This document specifies the first release: an automatic immediate
-USDT warning for watched wallets. Recipient checking before a transfer is the
-next phase and must reuse the evidence saved by this release.
+Approved after review on 2026-07-12. This document specifies the first release:
+an automatic immediate USDT warning for watched wallets. Recipient checking
+before a transfer is the next phase and must reuse the evidence saved by this
+release.
 
 ## Problem
 
@@ -339,8 +339,8 @@ monitoring and future recipient checking:
 - created and updated times.
 
 Persist at most one candidate per watched wallet, token contract, and
-suspicious incoming tx. Rank every eligible match deterministically and select
-one primary match in this order:
+suspicious incoming tx. Rank every eligible match in the successfully fetched
+evidence at decision time and select one primary match in this order:
 
 1. `CRITICAL` before `HIGH`;
 2. more matched address characters;
@@ -349,10 +349,17 @@ one primary match in this order:
 5. newer outgoing transfer;
 6. lexicographically smaller outgoing tx hash as the final stable tie-breaker.
 
-Store all non-primary matches in the raw evidence, not as additional candidate
-rows. Use a unique key over watched wallet, token contract, and suspicious
-incoming tx. Reprocessing updates the same candidate and never sends more than
-one successful alert for that incoming transfer.
+Store all fetched non-primary matches in the raw evidence, not as additional
+candidate rows. A positive match may finish the live lookup with partial
+coverage so the warning is not delayed while older pages are fetched; unfetched
+history is not represented as checked or ranked. Use a unique key over watched
+wallet, token contract, and suspicious incoming tx. Reprocessing updates the
+same candidate and never sends more than one logical alert for that incoming
+transfer. After `alert_status = sent` is
+stored, the fingerprint is never reclaimed. Telegram has no idempotency key, so
+a process crash after Telegram accepts the message but before the database marks
+it sent leaves a narrow unavoidable duplicate-delivery window. Delivery is
+therefore at-least-once with persisted deduplication, not strict exactly-once.
 
 Indexes support:
 
@@ -530,7 +537,9 @@ The fixture must prove:
 - multiple eligible outgoing matches produce one candidate and one alert using
   the documented deterministic rank;
 - failed detection retries without blocking normal Incoming work;
-- successful alert fingerprint is not delivered twice;
+- a stored successful alert fingerprint is not reclaimed for delivery;
+- a crash between Telegram acceptance and the `sent` database write is covered
+  as an explicit at-least-once delivery limitation;
 - `risk_only` and `digest` receive the security warning immediately;
 - `paused` receives no warning;
 - Telegram includes both full addresses and both transaction links;
