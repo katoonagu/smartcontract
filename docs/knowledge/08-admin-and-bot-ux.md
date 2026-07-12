@@ -380,7 +380,8 @@ message shows:
 
 - `🔴` for `CRITICAL` or `🟠` for `HIGH` and says that address replacement is
   possible, not that theft is already proven;
-- the full watched wallet, suspicious sender, and genuine recipient addresses;
+- the full watched wallet, suspicious sender, and previously used recipient
+  addresses;
 - the incoming amount, earlier outgoing amount, elapsed time, and exact prefix
   or suffix similarity;
 - TronScan links for both the incoming and matched outgoing transactions;

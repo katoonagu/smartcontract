@@ -260,12 +260,13 @@ bounded worker, so TronScan history lookup and Telegram delivery do not block
 normal wallet polling or Incoming Deposit analysis.
 
 A matching sender produces a separate Russian or English safety warning with
-the full suspicious and genuine addresses, both TronScan transaction links,
-and owner-only buttons to mark the address as familiar or as a replacement.
+the full suspicious address and the previously used recipient address, both
+TronScan transaction links, and owner-only buttons to mark the address as
+familiar or as a replacement.
 `realtime`, `risk_only`, and `digest` receive this warning immediately;
-`paused` does not. Delivery is retried and deduplicated from stored state, but
-remains at-least-once because Telegram acceptance cannot be committed
-atomically with the database write.
+`paused` does not. Failed deliveries retry. In a rare process-restart window,
+the same warning may arrive twice. See the
+[delivery details](docs/knowledge/08-admin-and-bot-ux.md#address-poisoning-warning).
 
 This signal is wallet safety, not AML. It is stored with score impact `0` and
 does not change Fast, Deep, Where, Incoming, or unified risk results. USDD/USDD

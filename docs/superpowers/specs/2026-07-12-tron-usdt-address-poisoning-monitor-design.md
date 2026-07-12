@@ -240,7 +240,7 @@ history strictly before the incoming transfer:
   bounded 24-hour relationship result;
 - no authorized manual trusted/false-positive decision for the sender;
 - sender has no exact address match in the authoritative service registry;
-- sender is not the exact real recipient.
+- sender is not the exact matched earlier recipient.
 
 Do not mark a sender trusted merely because the wallet later sends money to it.
 Trust requires manual confirmation, an address-book entry in the future, or a
@@ -318,7 +318,7 @@ Evidence contains:
 - watched wallet;
 - token symbol, contract, and decimals;
 - suspicious incoming tx, sender, amount, and timestamp;
-- matched genuine recipient and outgoing tx;
+- matched earlier recipient and outgoing tx;
 - outgoing amount and timestamp;
 - prefix/suffix match lengths;
 - exact-amount flag and elapsed time;
@@ -340,7 +340,7 @@ monitoring and future recipient checking:
 - `watched_wallet_id`;
 - token contract, symbol, and decimals;
 - suspicious incoming tx hash and sender;
-- genuine recipient and matched outgoing tx hash;
+- matched earlier recipient and outgoing tx hash;
 - incoming/outgoing raw amounts and timestamps;
 - meaningful prefix and suffix lengths;
 - classification and confidence;
@@ -619,17 +619,20 @@ That phase may warn before signing or broadcasting. Telegram cannot cancel an
 already signed transaction, so actual hot-wallet blocking requires a separate
 integration outside this MVP.
 
-## Documentation Updates During Implementation
+## Documentation Updated During Implementation
 
-Update these current knowledge pages in the implementation commit:
+Implementation documentation was synchronized with the implemented branch
+behavior in these surfaces:
 
+- `README.md`;
 - `docs/knowledge/02-check-modes.md`;
 - `docs/knowledge/03-job-lifecycle.md`;
 - `docs/knowledge/04-data-sources-tronscan-indexing.md`;
+- `docs/knowledge/07-risk-scoring-matrix.md`;
 - `docs/knowledge/08-admin-and-bot-ux.md`;
 - `docs/knowledge/09-current-decisions.md`;
 - `docs/knowledge/10-open-problems.md`;
 - `docs/knowledge/13-agent-observations.md`.
 
-The implementation docs must distinguish current USDT-only runtime support
-from the token-independent detector interface and future recipient-check phase.
+They distinguish current USDT-only runtime support from the token-aware pure
+detector interface and the future recipient-check phase.

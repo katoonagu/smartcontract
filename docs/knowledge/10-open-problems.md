@@ -318,13 +318,10 @@ supersedes:
 
 ## Address-Poisoning Protection
 
-- Telegram delivery is at-least-once, not exactly-once. The worker claims one
-  candidate only when a send slot is free, fixes locale on first claim, allows
-  at most four executions, renews its dedicated lease every 40 seconds, and
-  reclaims stale `sending` rows after 120 seconds. These controls reduce
-  duplicates, but Telegram acceptance and the database `sent` acknowledgement
-  cannot be one atomic transaction. A crash in that narrow external gap can
-  send the same logical warning again on retry.
+- Telegram has no idempotent send operation. A crash after Telegram accepts the
+  warning but before the database records that delivery can cause one bounded
+  duplicate on retry. Retry and lease mechanics are documented in
+  `docs/knowledge/03-job-lifecycle.md` and `08-admin-and-bot-ux.md`.
 - The current protection starts after a small incoming official-USDT lure is
   observed. A recipient precheck before signing or broadcasting is the next
   phase. The saved candidate, callback status, raw provider facts, normalized
