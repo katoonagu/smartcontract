@@ -37,8 +37,7 @@ export const ADDRESS_POISONING_WORKER_DEFAULTS = {
   concurrency: 2,
   pageSize: 100,
   maxPages: 5,
-  retryDelayMs: 30_000,
-  maxFailureAttempts: 4
+  retryDelayMs: 30_000
 } as const;
 
 const LOOKBACK_MS = 24 * 60 * 60 * 1_000;
@@ -88,7 +87,13 @@ export type AddressPoisoningWorkerDeps = {
   repository?: AddressPoisoningWorkerRepository;
 };
 
-export type AddressPoisoningWorkerOptions = Partial<typeof ADDRESS_POISONING_WORKER_DEFAULTS>;
+export type AddressPoisoningWorkerOptions = {
+  claimLimit?: number;
+  concurrency?: number;
+  pageSize?: number;
+  maxPages?: number;
+  retryDelayMs?: number;
+};
 
 type StoredTransfer = {
   transferId: string;
@@ -117,18 +122,34 @@ const defaultRepository: AddressPoisoningWorkerRepository = {
   persistCandidate: persistAddressPoisoningCandidate
 };
 
-function positiveInteger(value: number, fallback: number): number {
-  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+function boundedPositiveInteger(value: number | undefined, fallback: number, maximum?: number): number {
+  if (value === undefined || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return maximum === undefined ? value : Math.min(value, maximum);
 }
 
 function workerOptions(options: AddressPoisoningWorkerOptions) {
   return {
-    claimLimit: positiveInteger(options.claimLimit ?? ADDRESS_POISONING_WORKER_DEFAULTS.claimLimit, ADDRESS_POISONING_WORKER_DEFAULTS.claimLimit),
-    concurrency: positiveInteger(options.concurrency ?? ADDRESS_POISONING_WORKER_DEFAULTS.concurrency, ADDRESS_POISONING_WORKER_DEFAULTS.concurrency),
-    pageSize: positiveInteger(options.pageSize ?? ADDRESS_POISONING_WORKER_DEFAULTS.pageSize, ADDRESS_POISONING_WORKER_DEFAULTS.pageSize),
-    maxPages: positiveInteger(options.maxPages ?? ADDRESS_POISONING_WORKER_DEFAULTS.maxPages, ADDRESS_POISONING_WORKER_DEFAULTS.maxPages),
-    retryDelayMs: positiveInteger(options.retryDelayMs ?? ADDRESS_POISONING_WORKER_DEFAULTS.retryDelayMs, ADDRESS_POISONING_WORKER_DEFAULTS.retryDelayMs),
-    maxFailureAttempts: positiveInteger(options.maxFailureAttempts ?? ADDRESS_POISONING_WORKER_DEFAULTS.maxFailureAttempts, ADDRESS_POISONING_WORKER_DEFAULTS.maxFailureAttempts)
+    claimLimit: boundedPositiveInteger(
+      options.claimLimit,
+      ADDRESS_POISONING_WORKER_DEFAULTS.claimLimit,
+      ADDRESS_POISONING_WORKER_DEFAULTS.claimLimit
+    ),
+    concurrency: boundedPositiveInteger(
+      options.concurrency,
+      ADDRESS_POISONING_WORKER_DEFAULTS.concurrency,
+      ADDRESS_POISONING_WORKER_DEFAULTS.concurrency
+    ),
+    pageSize: boundedPositiveInteger(
+      options.pageSize,
+      ADDRESS_POISONING_WORKER_DEFAULTS.pageSize,
+      ADDRESS_POISONING_WORKER_DEFAULTS.pageSize
+    ),
+    maxPages: boundedPositiveInteger(
+      options.maxPages,
+      ADDRESS_POISONING_WORKER_DEFAULTS.maxPages,
+      ADDRESS_POISONING_WORKER_DEFAULTS.maxPages
+    ),
+    retryDelayMs: boundedPositiveInteger(options.retryDelayMs, ADDRESS_POISONING_WORKER_DEFAULTS.retryDelayMs)
   };
 }
 
@@ -239,14 +260,25 @@ function exactSuppression(labels: AddressLabel[], sender: string): AddressPoison
     : null;
 }
 
-function oldestFetchedAt(current: Date | null, accumulated: AccumulatedLookup): Date | null {
-  const pageOldest = accumulated.transfers.reduce<Date | null>((oldest, transfer) => {
+function oldestAcceptedTransferAt(accumulated: AccumulatedLookup): Date | null {
+  return accumulated.transfers.reduce<Date | null>((oldest, transfer) => {
     const occurredAt = new Date(transfer.occurredAt);
     return !oldest || occurredAt < oldest ? occurredAt : oldest;
   }, null);
-  if (!current) return pageOldest;
-  if (!pageOldest) return current;
-  return current < pageOldest ? current : pageOldest;
+}
+
+function senderAppearedInCheckedHistory(
+  accumulated: AccumulatedLookup,
+  walletAddress: string,
+  suspiciousSender: string,
+  incomingAt: Date
+): boolean {
+  return accumulated.transfers.some((transfer) => {
+    const elapsedMs = incomingAt.getTime() - new Date(transfer.occurredAt).getTime();
+    const directRelation = (transfer.sender === walletAddress && transfer.receiver === suspiciousSender)
+      || (transfer.sender === suspiciousSender && transfer.receiver === walletAddress);
+    return directRelation && elapsedMs > 0 && elapsedMs <= LOOKBACK_MS;
+  });
 }
 
 function serializableMatch(match: AddressPoisoningMatch): Record<string, unknown> {
@@ -289,7 +321,8 @@ async function processWorkItem(
     const logicalOffset = item.logicalOffset + page.length;
     const pageCount = item.pageCount + 1;
     const fetchedCount = item.fetchedCount + page.length;
-    const oldest = oldestFetchedAt(item.oldestFetchedAt, accumulated);
+    const oldest = oldestAcceptedTransferAt(accumulated);
+    const senderSeen = senderAppearedInCheckedHistory(accumulated, item.walletAddress, item.sender, item.timestamp);
     const labels = await repository.listAddressLabels(deps.db, item.sender);
     const result = detectAddressPoisoning({
       incoming: {
@@ -342,6 +375,15 @@ async function processWorkItem(
         evidenceJson: {
           policyVersion: ADDRESS_POISONING_POLICY_VERSION,
           coverage,
+          windowStart: new Date(item.timestamp.getTime() - LOOKBACK_MS).toISOString(),
+          windowEnd: new Date(item.timestamp.getTime() - 1).toISOString(),
+          fetchedCount,
+          acceptedTransferCount: accumulated.transfers.length,
+          pageCount,
+          logicalOffset,
+          oldestFetchedAt: oldest?.toISOString() ?? null,
+          oldestFetchedAtBasis: "oldest_accepted_canonical_transfer",
+          senderAppearedInCheckedHistory: senderSeen,
           incoming: {
             txHash: item.txHash,
             sender: item.sender,
@@ -429,11 +471,11 @@ export async function runSingleAddressPoisoningCycle(
     expiredBefore: new Date(now.getTime() - deps.realtimeMaxAgeMs)
   });
   metrics.pausedSkipped = await repository.skipPausedChecks(deps.db);
-  const claimed = (await repository.claimChecks(deps.db, {
+  const claimed = await repository.claimChecks(deps.db, {
     limit: options.claimLimit,
     now,
     staleRunningBefore: new Date(now.getTime() - options.retryDelayMs)
-  })).slice(0, options.claimLimit);
+  });
   metrics.claimed = claimed.length;
   if (claimed.length === 0) return metrics;
 

@@ -98,8 +98,7 @@ describe("address poisoning worker", () => {
       concurrency: 2,
       pageSize: 100,
       maxPages: 5,
-      retryDelayMs: 30_000,
-      maxFailureAttempts: 4
+      retryDelayMs: 30_000
     });
     const repo = repository();
 
@@ -177,7 +176,11 @@ describe("address poisoning worker", () => {
       quant: THJ_POISONING_CASE.amountRaw,
       block_ts: THJ_POISONING_CASE.outgoingAt.getTime()
     });
-    const page = [match, ...Array.from({ length: 99 }, (_, index) => rawTransfer({ transaction_id: `noise-${index}` }))];
+    const page = [
+      match,
+      rawTransfer({ transaction_id: "noncanonical-noise", contract_address: OTHER_WALLET }),
+      ...Array.from({ length: 98 }, (_, index) => rawTransfer({ transaction_id: `noise-${index}` }))
+    ];
     const client = vi.fn(async () => page);
 
     const metrics = await runSingleAddressPoisoningCycle(deps(repo, client));
@@ -194,8 +197,19 @@ describe("address poisoning worker", () => {
       fetchedCount: 100
     }));
     const input = (repo.persistCandidate as ReturnType<typeof vi.fn>).mock.calls[0][1];
-    expect(input.evidenceJson.providerFacts).toHaveLength(100);
-    expect(input.evidenceJson.providerTransferIds).toHaveLength(100);
+    expect(input.evidenceJson.providerFacts).toHaveLength(99);
+    expect(input.evidenceJson.providerTransferIds).toHaveLength(99);
+    expect(input.evidenceJson).toMatchObject({
+      windowStart: "2026-06-30T12:47:42.000Z",
+      windowEnd: "2026-07-01T12:47:41.999Z",
+      fetchedCount: input.fetchedCount,
+      acceptedTransferCount: 99,
+      pageCount: input.pageCount,
+      logicalOffset: input.logicalOffset,
+      oldestFetchedAt: THJ_POISONING_CASE.outgoingAt.toISOString(),
+      oldestFetchedAtBasis: "oldest_accepted_canonical_transfer",
+      senderAppearedInCheckedHistory: false
+    });
   });
 
   it("ranks multiple HIGH matches deterministically before persistence", async () => {
@@ -353,10 +367,83 @@ describe("address poisoning worker", () => {
     expect(metrics.failed).toBe(1);
   });
 
-  it("caps a misbehaving claim source at twenty", async () => {
+  it("supports smaller injected worker bounds", async () => {
+    const repo = repository([workItem()]);
+    const client = vi.fn(async () => [
+      rawTransfer({ transaction_id: "small-page-1" }),
+      rawTransfer({ transaction_id: "small-page-2" })
+    ]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, client), {
+      claimLimit: 3,
+      concurrency: 1,
+      pageSize: 2,
+      maxPages: 2,
+      retryDelayMs: 1
+    });
+
+    expect(repo.claimChecks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ limit: 3 }));
+    expect(client).toHaveBeenCalledWith(THJ_POISONING_CASE.watchedWallet, expect.objectContaining({ limit: 2 }));
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      nextRetryAt: new Date(NOW.getTime() + 1)
+    }));
+  });
+
+  it("clamps oversized bounds to the product maxima", async () => {
+    const items = Array.from({ length: 3 }, (_, index) => workItem({
+      txHash: `oversized-${index}`,
+      watchedWalletId: `oversized-wallet-${index}`,
+      pageCount: 4,
+      logicalOffset: 400,
+      fetchedCount: 400
+    }));
+    const repo = repository(items);
+    let active = 0;
+    let maximum = 0;
+    const client = vi.fn(async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `bounded-${index}` }));
+    });
+
+    await runSingleAddressPoisoningCycle(deps(repo, client), {
+      claimLimit: 999,
+      concurrency: 999,
+      pageSize: 999,
+      maxPages: 999,
+      retryDelayMs: 1
+    });
+
+    expect(repo.claimChecks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ limit: 20 }));
+    expect(client).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ limit: 100 }));
+    expect(maximum).toBe(2);
+    expect(repo.markInconclusive).toHaveBeenCalledTimes(3);
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      pageCount: 5,
+      nextRetryAt: null
+    }));
+  });
+
+  it("falls back consistently for zero and non-finite bounds", async () => {
+    const repo = repository();
+    await runSingleAddressPoisoningCycle(deps(repo), {
+      claimLimit: 0,
+      concurrency: Number.NaN,
+      pageSize: 0,
+      maxPages: Number.POSITIVE_INFINITY,
+      retryDelayMs: 0
+    });
+    expect(repo.claimChecks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ limit: 20 }));
+  });
+
+  it("processes every claimed row even when a fake repository returns more than requested", async () => {
     const repo = repository(Array.from({ length: 25 }, (_, index) => workItem({ txHash: `tx-${index}` })));
     const metrics = await runSingleAddressPoisoningCycle(deps(repo));
-    expect(metrics.claimed).toBe(20);
+    expect(metrics.claimed).toBe(25);
+    expect(metrics.processed).toBe(25);
+    expect(repo.markClear).toHaveBeenCalledTimes(25);
   });
 });
 
