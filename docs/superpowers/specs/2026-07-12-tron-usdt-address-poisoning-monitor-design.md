@@ -170,9 +170,10 @@ later transfer must never be used to explain an earlier alert. Persist whether
 the result covers the full 24-hour window or was truncated by the page limit.
 
 A positive visual/amount match is usable with partial coverage. An exact
-disqualifier is also usable: an earlier direct relationship, a manual trusted
-label, or an authoritative service-registry match. Without a candidate or an
-exact disqualifier, a truncated lookup is `inconclusive`, never `clear`.
+disqualifier is also usable: an earlier direct relationship, an exact
+`service_admin` `trusted` or `false_positive` label for the sender, or an exact
+authoritative service-address registry match. Without a candidate or an exact
+disqualifier, a truncated lookup is `inconclusive`, never `clear`.
 
 The lightweight worker may continue an inconclusive lookup by one saved page
 per claim, up to five pages or 500 transfers for the event. It stores the
@@ -287,13 +288,16 @@ not label the sender clean or new, and retry within the bounded lookup budget.
 
 ## Evidence Contract
 
-Create typed raw evidence with source `address_poisoning_detector` and a
-wallet-safety observation whose code describes the exact match, for example:
+Create typed raw evidence with source `address_poisoning_detector` and one
+generic wallet-safety observation:
 
 ```text
-address_poisoning_exact_amount_suffix_match
-address_poisoning_visual_match_without_exact_amount
+code = address_poisoning_candidate
 ```
+
+The observation is only the queryable safety marker. Match type,
+classification, prefix/suffix lengths, raw-amount equality, transfer facts,
+coverage, and ranking details live in the typed evidence JSON.
 
 This requires a new `RiskSignalGroup` and database value:
 
@@ -346,7 +350,7 @@ monitoring and future recipient checking:
 - raw evidence id;
 - Telegram alert status, fixed locale, attempt generation, dedicated lease,
   retry time, error, sent time, and message fingerprint;
-- optional later loss tx hash and post-loss route evidence id;
+- optional later-loss transaction hash and `later_loss_evidence_json`;
 - created and updated times.
 
 Persist at most one candidate per watched wallet, token contract, and
@@ -366,11 +370,13 @@ coverage so the warning is not delayed while older pages are fetched; unfetched
 history is not represented as checked or ranked. Use a unique key over watched
 wallet, token contract, and suspicious incoming tx. Reprocessing updates the
 same candidate and never sends more than one logical alert for that incoming
-transfer. After `alert_status = sent` is
-stored, the fingerprint is never reclaimed. Telegram has no idempotency key, so
-a process crash after Telegram accepts the message but before the database marks
-it sent leaves a narrow unavoidable duplicate-delivery window. Delivery is
-therefore at-least-once with persisted deduplication, not strict exactly-once.
+transfer. After `alert_status = sent` is stored, the status exclusion prevents
+the row from being reclaimed. The fingerprint records the delivery identity of
+the rendered immutable candidate facts; it is not the claim predicate.
+Telegram has no idempotency key, so a process crash after Telegram accepts the
+message but before the database marks it sent leaves a narrow unavoidable
+duplicate-delivery window. Delivery is therefore at-least-once with persisted
+deduplication, not strict exactly-once.
 
 Indexes support:
 
@@ -433,7 +439,7 @@ Canonical Russian copy:
 ```text
 🔴 Возможна подмена адреса
 
-Кошелёк: THJc…FMD7
+Кошелёк: THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7
 
 Что произошло
 Пришло 10 USDT от адреса, который не встречался среди переводов за проверенные
@@ -502,7 +508,9 @@ continues. The query changes neither score, disposition, nor `shouldSend`.
 - Alert delivery claims one candidate only when a bounded send slot is free.
   The claim generation allows at most four executions. A dedicated lease is
   renewed every 40 seconds and stale `sending` work is reclaimable after 120
-  seconds. The persisted fingerprint prevents reclaim after `sent`.
+  seconds. Rows whose status is `sent` are excluded from claims. The persisted
+  fingerprint identifies the rendered immutable candidate facts; delivery
+  claims do not use it as their predicate.
 - Detector output is deterministic; no LLM key or response is involved.
 - Under a healthy provider and queue depth within configured cycle capacity,
   the alert SLO is no more than two wallet-polling cycles and normally no more
@@ -526,10 +534,13 @@ ids, API keys, and tokens:
 If queue metrics cannot be read, `queueDepth` and `oldestQueueAgeMs` are `null`,
 not zero.
 
-Automatic suppression is allowed only for an owner/manual trusted or
-false-positive decision, or an exact address match in the authoritative service
-registry. A provider label, contract name, token name, or free-text metadata is
-not sufficient to suppress a warning.
+Automatic suppression is allowed only for an exact sender label written by
+`service_admin` as `trusted` or `false_positive`, an exact sender match in the
+authoritative service-address registry, or an earlier direct relationship in
+the checked history. A provider label, contract name, token name, or free-text
+metadata is not sufficient. The owner's `Это знакомый адрес` action dismisses
+only that existing candidate; it does not create trust or suppress future
+sender events.
 
 ## Tests And Acceptance Criteria
 
@@ -560,8 +571,10 @@ The fixture must prove:
 - raw token equality respects token contract and decimals;
 - future/later transfers are never used in the initial decision;
 - missing sender creation time does not suppress an exact candidate;
-- an authorized manual trusted/false-positive decision suppresses the warning;
+- an exact `service_admin` trusted/false-positive sender label suppresses the
+  warning;
 - an exact authoritative service-registry address suppresses the warning;
+- an earlier direct relationship suppresses the warning;
 - provider labels, contract names, token names, and free text do not suppress
   the warning;
 - a complete 24-hour lookup with no match is clear;
@@ -576,7 +589,9 @@ The fixture must prove:
 - multiple eligible outgoing matches produce one candidate and one alert using
   the documented deterministic rank;
 - failed detection retries without blocking normal Incoming work;
-- a stored successful alert fingerprint is not reclaimed for delivery;
+- a candidate whose alert status is `sent` is not reclaimed; the stored
+  fingerprint identifies rendered immutable facts but is not the claim
+  predicate;
 - a crash between Telegram acceptance and the `sent` database write is covered
   as an explicit at-least-once delivery limitation;
 - `risk_only` and `digest` receive the security warning immediately;
