@@ -1915,6 +1915,7 @@ export type WhereIsMoneyCoverage = {
   selectedInboundVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   provenanceScope?: MoneyOriginProvenanceScope;
+  selectionMethod?: BalanceFormingSelection["selectionMethod"];
   anchorTransfer?: MoneyOriginRecentFlowAnchor | null;
   lowBalanceThresholdRaw?: string | null;
   dataScopeNote?: string | null;

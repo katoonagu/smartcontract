@@ -1532,7 +1532,7 @@ describe("runWhereIsMoneyCheck", () => {
       drainEpisode: null,
       lowBalanceThresholdRaw: "1000000000",
       currentBalanceCoverageRatio: 0,
-      fetchedAddressCount: 1,
+      fetchedAddressCount: 3,
       selectionMethod: "recent_five_principal"
     });
     expect(report.layerSummary?.whereIsMoney.checkedScope).toBe("recent_flow");
@@ -1573,17 +1573,78 @@ describe("runWhereIsMoneyCheck", () => {
       "recent-older-principal"
     ]);
     expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual([
-      "recent-in-305",
-      "recent-out-305",
       "recent-contract-principal",
-      "recent-gasfree-principal",
-      "recent-older-principal"
+      "recent-gasfree-principal"
     ]);
     expect(report.coverageV2?.exclusions).toContainEqual(expect.objectContaining({
       reason: "exact_gasfree_service_fee",
       txCount: 1,
       amountRaw: "3000000"
     }));
+  });
+
+  it("[REQ-30][AC-10] persists the inspected outgoing slice when no earlier funding inbound exists", async () => {
+    const lowBalanceSubject = "TNoEarlierFunding11111111111111111111";
+    const sourceEdges = [
+      edge("recent-outgoing-only", lowBalanceSubject, "TRecentReceiver", "305000000", "2026-07-12T12:08:00.000Z")
+    ];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "23791",
+      fetchEdgesForAddress: async (address) => address === lowBalanceSubject ? sourceEdges : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.balanceFormingTransfers).toEqual([]);
+    expect(report.recentFlowPrincipalTransfers?.map((item) => item.txHash)).toEqual(["recent-outgoing-only"]);
+    expect(report.coverage.selectionMethod).toBe("recent_five_principal");
+  });
+
+  it("[REQ-30][AC-10] uses capped allocation for selected and traced recent-flow amounts", async () => {
+    const lowBalanceSubject = "TRecentOverfund111111111111111111111";
+    const funder = "TRecentOverfundSource11111111111111111";
+    const sourceEdges = [
+      edge("recent-out-100", lowBalanceSubject, "TRecentReceiver", "100000000", "2026-07-12T12:08:00.000Z"),
+      edge("recent-in-200", funder, lowBalanceSubject, "200000000", "2026-07-12T12:07:00.000Z")
+    ];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "23791",
+      fetchEdgesForAddress: async (address) => address === lowBalanceSubject ? sourceEdges : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === funder
+        ? service("cex", "Binance")
+        : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.balanceFormingTransfers[0]?.amountUsage).toMatchObject({
+      originalAmountRaw: "200000000",
+      usedAmountRaw: "100000000"
+    });
+    expect(report.coverage).toMatchObject({
+      selectedAmountRaw: "100000000",
+      selectedInboundVolumeRaw: "100000000",
+      coverageRatio: 1
+    });
+    expect(report.coverageV2).toMatchObject({
+      selectedAmountRaw: "100000000",
+      tracedAmountRaw: "100000000",
+      unresolvedAmountRaw: "0",
+      unresolvedShare: 0
+    });
   });
 
   it("[REQ-31][AC-13] attributes same-transaction transfer events by stable evidence identity", async () => {

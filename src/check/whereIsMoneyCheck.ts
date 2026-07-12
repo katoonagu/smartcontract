@@ -495,6 +495,8 @@ function fallbackReviewReport(input: {
   checkedScope?: NonNullable<WhereIsMoneyCoverage["checkedScope"]>;
   anchorCoverageRatio?: number | null;
   episodeCoverageRatio?: number | null;
+  selectionMethod?: BalanceFormingSelection["selectionMethod"];
+  recentFlowPrincipalTransfers?: BalanceFormingSelection["recentFlowPrincipalTransfers"];
   technicalFailure?: {
     scoreBlockedReason: ForensicScoreBlockedReason;
     technicalStatus: ForensicTechnicalStatus;
@@ -558,6 +560,7 @@ function fallbackReviewReport(input: {
     riskScore: assessment.riskScore,
     decisionReasons,
     coverageV2: input.coverageV2,
+    recentFlowPrincipalTransfers: input.recentFlowPrincipalTransfers,
     coverage: {
       selectedInboundTxCount: 0,
       currentBalanceRaw: input.currentBalanceRaw,
@@ -572,6 +575,7 @@ function fallbackReviewReport(input: {
       selectedInboundVolumeRaw: "0",
       currentBalanceCoverageRatio: 0,
       provenanceScope: input.provenanceScope,
+      selectionMethod: input.selectionMethod,
       anchorTransfer: input.anchorTransfer ?? null,
       lowBalanceThresholdRaw: input.lowBalanceThresholdRaw ?? null,
       dataScopeNote: input.dataScopeNote ?? null,
@@ -1149,8 +1153,7 @@ function exactWhereTracedAmountRaw(
     if ((path.sourceProvenance ?? []).some((item) =>
       item.proofClass !== "exact" && item.proofClass !== "service_boundary"
     )) return sum;
-    const raw = transfer.amountRaw;
-    return /^\d+$/.test(raw) ? sum + BigInt(raw) : sum;
+    return sum + selectedTransferAmountRaw(transfer);
   }, 0n).toString();
 }
 
@@ -1444,10 +1447,11 @@ export async function runWhereIsMoneyCheck(
       hasKnownCurrentBalance &&
       currentBalanceAmount < lowBalanceThreshold;
     selection = shouldUseRecentFlow
-      ? selectRecentFlowProvenanceTransfers({
+      ? await selectRecentFlowProvenanceTransfers({
           subjectAddress: sourceAddress,
           currentBalanceRaw,
-          edges: sourceEdges
+          edges: sourceEdges,
+          resolveEconomicContext
         })
       : selectBalanceFormingTransfers({
           subjectAddress: sourceAddress,
@@ -1609,6 +1613,8 @@ export async function runWhereIsMoneyCheck(
       dataScopeNote: selection.dataScopeNote ?? null,
       drainEpisode,
       checkedScope,
+      selectionMethod: selection.selectionMethod,
+      recentFlowPrincipalTransfers: selection.recentFlowPrincipalTransfers,
       anchorCoverageRatio: selection.coverageRatio,
       episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null,
       technicalFailure: recoverableEdgeFetchFailed
@@ -1842,6 +1848,7 @@ export async function runWhereIsMoneyCheck(
     selectedInboundVolumeRaw: selection.selectedVolumeRaw,
     currentBalanceCoverageRatio: selection.currentBalanceCoverageRatio,
     provenanceScope: selection.provenanceScope,
+    selectionMethod: selection.selectionMethod,
     anchorTransfer: selection.anchorTransfer ?? null,
     lowBalanceThresholdRaw: selection.provenanceScope === "recent_flow"
       ? LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW
@@ -2131,6 +2138,7 @@ export async function runWhereIsMoneyCheck(
     technicalStatus: assessment.technicalStatus,
     sourceProvenanceMateriality: assessment.sourceProvenanceMateriality ?? null,
     coverageV2,
+    recentFlowPrincipalTransfers: selection.recentFlowPrincipalTransfers,
     ...whereDecisionFields({
       decision,
       decisionReasons,
