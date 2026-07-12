@@ -53,8 +53,8 @@ export const ADDRESS_POISONING_WORKER_DEFAULTS = {
   retryDelayMs: 30_000
 } as const;
 
-// Telegram sends have no tighter enforced request timeout in the current adapter. Keep an
-// active send leased for two minutes before another app worker may retry it.
+// The worker aborts Telegram sends after 30 seconds, before the 40-second heartbeat and
+// 120-second delivery lease; delivery does not rely on Grammy's default request timeout.
 export const ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS = 120_000;
 export const ADDRESS_POISONING_ALERT_HEARTBEAT_MS = 40_000;
 export const ADDRESS_POISONING_TELEGRAM_TIMEOUT_MS = 30_000;
