@@ -25,7 +25,7 @@ import type {
   EvmTransactionReceipt
 } from "../../src/forensics/evmExplorerClient";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
-import type { AddressLabel, ContractLlmVerdictSummary, ForensicRouteEdge, RiskReport, ServiceClassification, ServiceExposureProfile } from "../../src/types";
+import type { AddressLabel, ContractLlmVerdictSummary, ForensicRouteEdge, RecentFlowPrincipalTransferV1, RiskReport, ServiceClassification, ServiceExposureProfile } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 import {
   manualGaryAddresses,
@@ -1492,7 +1492,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.notes.join(" ")).toContain("rather than current balance origin");
   });
 
-  it("preserves recent-flow metadata when low-balance wallets have only dust inbound history", async () => {
+  it("[AC-10] persists sub-1000 principal rows in the recent-flow slice", async () => {
     const lowBalanceSubject = "TSubjectDustOnly111111111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [
@@ -1516,23 +1516,68 @@ describe("runWhereIsMoneyCheck", () => {
       windowEnd: new Date("2026-05-30T00:00:00.000Z")
     });
 
-    expect(report.balanceFormingTransfers).toEqual([]);
+    expect(report.recentFlowPrincipalTransfers).toBeDefined();
+    expect((report.recentFlowPrincipalTransfers ?? []).map((item: RecentFlowPrincipalTransferV1) => item.txHash)).toEqual(["dust-b", "dust-a"]);
+    expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["dust-b", "dust-a"]);
     expect(report.coverage).toMatchObject({
-      selectedInboundTxCount: 0,
+      selectedInboundTxCount: 2,
       provenanceScope: "recent_flow",
       checkedScope: "recent_flow",
       drainEpisode: null,
-      anchorTransfer: null,
       lowBalanceThresholdRaw: "1000000000",
       currentBalanceCoverageRatio: 0,
       fetchedAddressCount: 1,
-      partial: true
+      selectionMethod: "recent_five_principal"
     });
-    expect(report.coverage.anchorCoverageRatio).toBe(report.coverage.coverageRatio);
-    expect(report.coverage.episodeCoverageRatio).toBeNull();
     expect(report.layerSummary?.whereIsMoney.checkedScope).toBe("recent_flow");
-    expect(report.coverage.dataScopeNote).toContain("no meaningful recent USDT flow");
-    expect(report.coverage.notes.join(" ")).toContain("no meaningful recent USDT flow");
+  });
+
+  it("[REQ-02][REQ-30][AC-11] enriches a GasFree candidate before taking the five-row slice", async () => {
+    const feeTxHash = "preselect-gasfree-settlement";
+    const getTransaction = vi.fn(async (txHash: string) => txHash === feeTxHash ? gasFreeTransaction() : null);
+    const sourceEdges = [
+      edge("recent-in-305", "TRecentFunder", gasFreeAccount, "305000000", "2026-07-12T12:09:00.000Z"),
+      edge("recent-out-305", gasFreeAccount, "TRecentReceiver", "305000000", "2026-07-12T12:08:00.000Z"),
+      edge("recent-contract-principal", "TContractPrincipal", gasFreeAccount, "47000000", "2026-07-12T12:07:00.000Z"),
+      edge(feeTxHash, gasFreeAccount, gasFreeTlnt, "3000000", "2026-07-12T12:06:30.000Z"),
+      edge("recent-gasfree-principal", gasFreeUser, gasFreeAccount, "97000000", "2026-07-12T12:06:00.000Z"),
+      edge("recent-older-principal", gasFreeAccount, "TOlderReceiver", "12000000", "2026-07-12T12:05:00.000Z")
+    ];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "23791",
+      fetchEdgesForAddress: async (address) => address === gasFreeAccount ? sourceEdges : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction
+    }, {
+      sourceAddress: gasFreeAccount,
+      windowStart: new Date("2026-07-12T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-13T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(getTransaction).toHaveBeenCalledWith(feeTxHash);
+    expect(report.recentFlowPrincipalTransfers?.map((item: RecentFlowPrincipalTransferV1) => item.txHash)).toEqual([
+      "recent-in-305",
+      "recent-out-305",
+      "recent-contract-principal",
+      "recent-gasfree-principal",
+      "recent-older-principal"
+    ]);
+    expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual([
+      "recent-in-305",
+      "recent-out-305",
+      "recent-contract-principal",
+      "recent-gasfree-principal",
+      "recent-older-principal"
+    ]);
+    expect(report.coverageV2?.exclusions).toContainEqual(expect.objectContaining({
+      reason: "exact_gasfree_service_fee",
+      txCount: 1,
+      amountRaw: "3000000"
+    }));
   });
 
   it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {

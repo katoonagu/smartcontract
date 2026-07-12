@@ -102,9 +102,43 @@ import {
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 import type { AddressPoisoningClearReason, RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent } from "../../src/types";
+import {
+  expiredAllowanceState,
+  failedAllowanceState,
+  maxAllowanceState,
+  zeroAllowanceState
+} from "../fixtures/forensics/remediationDataCases";
 
 function compactSql(sql: string): string {
   return sql.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
+}
+
+function insertParamsByColumn(query: { sql: string; params: unknown[] }): Record<string, unknown> {
+  const match = query.sql.match(/insert\s+into\s+wallet_approvals\s*\(([\s\S]*?)\)\s*values\s*\(([\s\S]*?)\)/i);
+  if (!match) throw new Error("wallet_approvals insert mapping not found");
+  const columns = match[1].split(",").map((value) => value.trim());
+  const values = match[2].split(",").map((value) => value.trim());
+  if (columns.length !== values.length) throw new Error("wallet_approvals insert mapping is not one-to-one");
+  return Object.fromEntries(columns.map((column, index) => {
+    const placeholder = /^\$(\d+)$/.exec(values[index]);
+    if (!placeholder) throw new Error(`wallet_approvals ${column} does not use one exact parameter`);
+    return [column, query.params[Number(placeholder[1]) - 1]];
+  }));
+}
+
+function allowancePersistenceParams(query: { sql: string; params: unknown[] }): Record<string, unknown> {
+  const values = insertParamsByColumn(query);
+  return Object.fromEntries([
+    "allowance_confirmed_raw",
+    "allowance_check_status",
+    "allowance_checked_at",
+    "allowance_fresh_until",
+    "allowance_last_attempt_at",
+    "allowance_failure_code",
+    "current_allowance_raw",
+    "is_unlimited",
+    "status"
+  ].map((column) => [column, values[column]]));
 }
 
 function createMockDb(rowCount = 0, rows: Record<string, unknown>[] = []): { db: Db; queries: { sql: string; params: unknown[] }[] } {
@@ -924,7 +958,105 @@ describe("approval guard repositories", () => {
     expect(queries[0].params).toContain("HIGH");
   });
 
-  it("lists wallet approvals by spender for a telegram user", async () => {
+  it("[REQ-19][DATA] keeps an event-only approval conservative until an authoritative allowance call", async () => {
+    const { db, queries } = createMockDb();
+    await upsertWalletApproval(db, {
+      watchedWalletId: "wallet-1",
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      spenderAddress: "TD5gsCwxykWsLN9aPrq2TAfNjByuZKYp4E",
+      amountRaw: (2n ** 256n - 1n).toString(),
+      isUnlimited: true,
+      spenderType: "contract",
+      lastApprovalTxHash: "event-only-approval",
+      lastApprovalAt: new Date("2026-07-12T11:55:00.000Z"),
+      riskLevel: "HIGH",
+      riskScore: 80,
+      riskReasons: []
+    });
+
+    expect(queries[0].sql).toContain("allowance_check_status");
+    expect(queries[0].sql).toContain("allowance_confirmed_raw");
+    expect(allowancePersistenceParams(queries[0])).toEqual({
+      allowance_confirmed_raw: null,
+      allowance_check_status: "stale",
+      allowance_checked_at: null,
+      allowance_fresh_until: null,
+      allowance_last_attempt_at: null,
+      allowance_failure_code: null,
+      current_allowance_raw: "0",
+      is_unlimited: false,
+      status: "unknown"
+    });
+  });
+
+  it("[REQ-19][DATA] atomically saves every authoritative allowance state", async () => {
+    const { saveWalletApprovalAllowanceStateV2 } = await import("../../src/storage/repositories");
+    expect(saveWalletApprovalAllowanceStateV2).toBeTypeOf("function");
+    if (typeof saveWalletApprovalAllowanceStateV2 !== "function") return;
+    const { db, queries } = createMockDb();
+    for (const allowance of [maxAllowanceState, zeroAllowanceState, failedAllowanceState, expiredAllowanceState]) {
+      await saveWalletApprovalAllowanceStateV2(db, { watchedWalletId: "wallet-1", allowance });
+    }
+
+    expect(queries).toHaveLength(4);
+    expect(queries.every(({ sql }) => sql.includes("insert into wallet_approvals") && sql.includes("on conflict"))).toBe(true);
+    expect(queries.every(({ sql }) => [
+      "allowance_confirmed_raw",
+      "allowance_check_status",
+      "allowance_checked_at",
+      "allowance_fresh_until",
+      "allowance_last_attempt_at",
+      "allowance_failure_code"
+    ].every((column) => sql.includes(column)))).toBe(true);
+    expect(queries.map(allowancePersistenceParams)).toEqual([
+      {
+        allowance_confirmed_raw: maxAllowanceState.confirmedAllowanceRaw,
+        allowance_check_status: "confirmed_active",
+        allowance_checked_at: new Date(maxAllowanceState.confirmedAt!),
+        allowance_fresh_until: new Date(maxAllowanceState.freshUntil!),
+        allowance_last_attempt_at: new Date(maxAllowanceState.lastAttemptAt!),
+        allowance_failure_code: null,
+        current_allowance_raw: maxAllowanceState.confirmedAllowanceRaw,
+        is_unlimited: true,
+        status: "active"
+      },
+      {
+        allowance_confirmed_raw: "0",
+        allowance_check_status: "confirmed_zero",
+        allowance_checked_at: new Date(zeroAllowanceState.confirmedAt!),
+        allowance_fresh_until: new Date(zeroAllowanceState.freshUntil!),
+        allowance_last_attempt_at: new Date(zeroAllowanceState.lastAttemptAt!),
+        allowance_failure_code: null,
+        current_allowance_raw: "0",
+        is_unlimited: false,
+        status: "revoked"
+      },
+      {
+        allowance_confirmed_raw: null,
+        allowance_check_status: "failed",
+        allowance_checked_at: null,
+        allowance_fresh_until: null,
+        allowance_last_attempt_at: new Date(failedAllowanceState.lastAttemptAt!),
+        allowance_failure_code: "provider_unavailable",
+        current_allowance_raw: "0",
+        is_unlimited: false,
+        status: "unknown"
+      },
+      {
+        allowance_confirmed_raw: expiredAllowanceState.confirmedAllowanceRaw,
+        allowance_check_status: "stale",
+        allowance_checked_at: new Date(expiredAllowanceState.confirmedAt!),
+        allowance_fresh_until: new Date(expiredAllowanceState.freshUntil!),
+        allowance_last_attempt_at: new Date(expiredAllowanceState.lastAttemptAt!),
+        allowance_failure_code: null,
+        current_allowance_raw: "0",
+        is_unlimited: false,
+        status: "unknown"
+      }
+    ]);
+  });
+
+  it("[REQ-19][DATA] maps authoritative allowance raw without trusting the legacy unlimited mirror", async () => {
     const updatedAt = new Date("2026-05-23T00:00:00.000Z");
     const telegramUserId = "42";
     const spenderAddress = "TNKG4Mji5CjwaEZ8QXk5B4PaDDtax5pxQ5";
@@ -936,6 +1068,13 @@ describe("approval guard repositories", () => {
         amount_raw: "999",
         is_unlimited: true,
         current_allowance_raw: "999",
+        allowance_confirmed_raw: "123456789",
+        allowance_check_status: "confirmed_active",
+        allowance_checked_at: updatedAt,
+        allowance_fresh_until: new Date(updatedAt.getTime() + 15 * 60 * 1000),
+        allowance_last_attempt_at: updatedAt,
+        allowance_failure_code: null,
+        allowance_source: "official_usdt_allowance",
         spender_type: "contract",
         status: "active",
         last_approval_tx_hash: "approval-tx",
@@ -970,6 +1109,8 @@ describe("approval guard repositories", () => {
     expect(queries[0].sql).toContain("left join address_metadata am");
     expect(queries[0].sql).toContain("left join contract_intelligence_profiles cip");
     expect(queries[0].sql).toContain("left join observed_approval_events oae");
+    expect(queries[0].sql).toContain("wa.allowance_confirmed_raw");
+    expect(queries[0].sql).toContain("wa.allowance_check_status");
     expect(queries[0].sql).toContain("oae.token_contract = wa.token_contract");
     expect(queries[0].sql).toContain("oae.owner_address = w.address");
     expect(queries[0].sql).toContain("wa.spender_address = $2");
@@ -978,7 +1119,13 @@ describe("approval guard repositories", () => {
       watchedWalletAddress: "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe",
       watchedWalletTelegramUserId: telegramUserId,
       spenderAddress: "TNKG4Mji5CjwaEZ8QXk5B4PaDDtax5pxQ5",
-      isUnlimited: true,
+      isUnlimited: false,
+      currentAllowanceRaw: "999",
+      allowanceStateV2: {
+        state: "confirmed_active",
+        confirmedAllowanceRaw: "123456789",
+        isUnlimited: false
+      },
       status: "active",
       metadataName: "Suspicious spender",
       contractHasTransferFromSelector: true,

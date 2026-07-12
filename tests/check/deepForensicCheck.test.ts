@@ -1027,7 +1027,7 @@ describe("deep forensic address check", () => {
     ]));
   });
 
-  it("includes run profile and provider budget state in the report", async () => {
+  it("[REQ-31][AC-13][DEEP] includes run profile, budget and deep-history coverage", async () => {
     const report = await runDeepAddressForensicCheck({
       tronClient: {
         listRelatedTrc20Transfers: async () => []
@@ -1059,6 +1059,15 @@ describe("deep forensic address check", () => {
       approvalCallBudget: 0,
       elapsedTimeBudgetMs: 30000,
       exhausted: false
+    });
+    expect(report.coverageV2).toMatchObject({
+      version: "forensic-coverage-v2",
+      scope: "deep_history",
+      availableInboundTxCount: null,
+      selectedInboundTxCount: 0,
+      excludedInboundTxCount: null,
+      completeness: "unknown",
+      limitations: [expect.objectContaining({ reason: "provider_history_unavailable" })]
     });
   });
 

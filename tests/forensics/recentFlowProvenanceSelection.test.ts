@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { ForensicRouteEdge } from "../../src/types";
+import type { ForensicRouteEdge, RecentFlowPrincipalTransferV1 } from "../../src/types";
 import { selectRecentFlowProvenanceTransfers } from "../../src/forensics/recentFlowProvenanceSelection";
+import {
+  contractPrincipalInput,
+  resolveSyntheticEconomicContext,
+  syntheticGasFreeFeeEdge,
+  syntheticTkgEdges,
+  SYNTHETIC_TKG_SUBJECT
+} from "../fixtures/forensics/remediationDataCases";
 
 const subject = "TSubject";
 const counterparty = "TCounterparty";
@@ -25,8 +32,8 @@ function edge(input: {
 }
 
 describe("selectRecentFlowProvenanceTransfers", () => {
-  it("anchors on the latest meaningful outgoing and selects prior funding inbounds", () => {
-    const result = selectRecentFlowProvenanceTransfers({
+  it("anchors on the latest meaningful outgoing and selects prior funding inbounds", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "147000",
       edges: [
@@ -63,8 +70,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.transfers.every((item) => item.selectedReason === "funds_recent_outgoing")).toBe(true);
   });
 
-  it("accounts for earlier outgoing spend before selecting funding candidates", () => {
-    const result = selectRecentFlowProvenanceTransfers({
+  it("accounts for earlier outgoing spend before selecting funding candidates", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "0",
       edges: [
@@ -104,8 +111,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageRatio).toBeGreaterThan(0.99);
   });
 
-  it("stores original and used amounts separately for a large funding transfer", () => {
-    const result = selectRecentFlowProvenanceTransfers({
+  it("stores original and used amounts separately for a large funding transfer", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "1492633",
       edges: [
@@ -141,8 +148,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     });
   });
 
-  it("does not count same-timestamp outgoing transfers as prior spend for the anchor", () => {
-    const result = selectRecentFlowProvenanceTransfers({
+  it("does not count same-timestamp outgoing transfers as prior spend for the anchor", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "0",
       edges: [
@@ -175,8 +182,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageRatio).toBeGreaterThan(0.99);
   });
 
-  it("falls back to recent significant inbound transfers when no outgoing anchor exists", () => {
-    const result = selectRecentFlowProvenanceTransfers({
+  it("falls back to recent significant inbound transfers when no outgoing anchor exists", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "120000",
       edges: [
@@ -210,8 +217,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.transfers.every((item) => item.selectedReason === "recent_large_inbound")).toBe(true);
   });
 
-  it("does not fall back to dust-only inbound transfers as complete recent-flow provenance", () => {
-    const result = selectRecentFlowProvenanceTransfers({
+  it("does not fall back to dust-only inbound transfers as complete recent-flow provenance", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "120000",
       edges: [
@@ -238,5 +245,78 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageRatio).toBe(0);
     expect(result.partial).toBe(true);
     expect(result.dataScopeNote).toContain("no meaningful recent USDT flow");
+  });
+
+  it("[REQ-30][AC-10] selects the synthetic TKg latest-five principal slice including the 305 pair", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: SYNTHETIC_TKG_SUBJECT,
+      currentBalanceRaw: "23791",
+      edges: syntheticTkgEdges,
+      resolveEconomicContext: resolveSyntheticEconomicContext
+    });
+
+    const principalTransfers = result.recentFlowPrincipalTransfers ?? [];
+    expect(result.selectionMethod).toBe("recent_five_principal");
+    expect(result.recentFlowPrincipalTransfers).toBeDefined();
+    expect(principalTransfers).toHaveLength(5);
+    expect(principalTransfers.map((item: RecentFlowPrincipalTransferV1) => item.txHash)).toEqual([
+      "tk-in-305",
+      "tk-out-305",
+      "contract-principal",
+      "gasfree-account-principal",
+      "tk-older-principal"
+    ]);
+  });
+
+  it("[REQ-02][REQ-30][AC-11] excludes exact GasFree fee before taking five principal rows", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: SYNTHETIC_TKG_SUBJECT,
+      currentBalanceRaw: "23791",
+      edges: syntheticTkgEdges,
+      resolveEconomicContext: resolveSyntheticEconomicContext
+    });
+
+    const principalTransfers = result.recentFlowPrincipalTransfers ?? [];
+    expect(result.recentFlowPrincipalTransfers).toBeDefined();
+    expect(principalTransfers.map((item: RecentFlowPrincipalTransferV1) => item.txHash)).toEqual([
+      "tk-in-305",
+      "tk-out-305",
+      "contract-principal",
+      "gasfree-account-principal",
+      "tk-older-principal"
+    ]);
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      reason: "exact_gasfree_service_fee",
+      txCount: 1,
+      amountRaw: "1500000"
+    }));
+  });
+
+  it("[REQ-34][AC-12] reports no principal activity only after exact exclusions", async () => {
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: SYNTHETIC_TKG_SUBJECT,
+      currentBalanceRaw: "0",
+      edges: [syntheticGasFreeFeeEdge],
+      resolveEconomicContext: resolveSyntheticEconomicContext
+    });
+
+    expect(result.recentFlowPrincipalTransfers).toBeDefined();
+    expect(result.recentFlowPrincipalTransfers ?? []).toEqual([]);
+    expect(result.principalActivity).toBe("none");
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      reason: "exact_gasfree_service_fee",
+      txCount: 1,
+      amountRaw: "1500000"
+    }));
+  });
+
+  it("[REQ-01][DATA] keeps contract and GasFree-account principal transfers in the slice", async () => {
+    const result = await selectRecentFlowProvenanceTransfers(contractPrincipalInput);
+    const principalTransfers = result.recentFlowPrincipalTransfers ?? [];
+    expect(result.recentFlowPrincipalTransfers).toBeDefined();
+    expect(principalTransfers.map((item: RecentFlowPrincipalTransferV1) => item.txHash)).toEqual(expect.arrayContaining([
+      "contract-principal",
+      "gasfree-account-principal"
+    ]));
   });
 });

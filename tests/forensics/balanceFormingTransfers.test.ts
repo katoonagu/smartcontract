@@ -156,4 +156,29 @@ describe("selectBalanceFormingTransfers", () => {
     expect(result.partial).toBe(true);
     expect(result.notes).toEqual(["Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds."]);
   });
+
+  it("[REQ-31][AC-13][DATA] records the ordinary inbound denominator before selection", () => {
+    const inbound = Array.from({ length: 24 }, (_, index) => edge(
+      `coverage-${index}`,
+      `TSyntheticSender${index.toString().padStart(2, "0")}`,
+      subject,
+      "100000000",
+      new Date(Date.UTC(2026, 6, 12, 12, 0, index)).toISOString()
+    ));
+    const result = selectBalanceFormingTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "1000000000",
+      edges: inbound
+    });
+
+    expect(result.transfers).toHaveLength(10);
+    expect(result.availableInboundTxCount).toBe(24);
+    expect(result.coverageExclusions).toEqual([{
+      reason: "different_selected_scope",
+      direction: "incoming",
+      txCount: 14,
+      amountRaw: "1400000000",
+      evidenceIds: Array.from({ length: 14 }, (_, index) => `coverage-${index}`)
+    }]);
+  });
 });

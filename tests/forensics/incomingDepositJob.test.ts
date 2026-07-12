@@ -1399,7 +1399,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
 });
 
 describe("buildIncomingDepositReport", () => {
-  it("passes an optional receiver Deep report with the exact checked deposit context", async () => {
+  it("[REQ-31][AC-13][INCOMING] persists transaction-seed coverage with the checked deposit context", async () => {
     const receiverDeepReport = {
       subjectAddress: validProgressJson.watchedWallet,
       firstHopBlacklistFacts: [{
@@ -1473,6 +1473,14 @@ describe("buildIncomingDepositReport", () => {
       decision: "DECLINE",
       scoreValid: true,
       depositRiskScore: 90
+    });
+    expect(result.coverageV2).toMatchObject({
+      version: "forensic-coverage-v2",
+      scope: "transaction_seed",
+      availableInboundTxCount: 1,
+      selectedInboundTxCount: 1,
+      excludedInboundTxCount: 0,
+      selectedAmountRaw: validProgressJson.amountRaw
     });
   });
 
