@@ -16,6 +16,7 @@ import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerCli
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
+import { parseUsdtDecimalToRaw } from "./forensics/usdtAmount";
 import { indexedTransferToRouteEdge } from "./forensics/localTronUsdtIndex";
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
@@ -126,6 +127,13 @@ import { createTronscanScheduler } from "./tron/tronscanScheduler";
 import type { TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
 
 const config = loadConfig();
+const parsedAddressPoisoningSmallTransferMaxRaw = config.addressPoisoningSmallTransferMaxUsdt === "0"
+  ? "0"
+  : parseUsdtDecimalToRaw(config.addressPoisoningSmallTransferMaxUsdt);
+if (parsedAddressPoisoningSmallTransferMaxRaw === null) {
+  throw new Error("ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT could not be converted to raw USDT units");
+}
+const addressPoisoningSmallTransferMaxRaw: string = parsedAddressPoisoningSmallTransferMaxRaw;
 const db = createDb(config.databaseUrl);
 const tronscanScheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
@@ -645,6 +653,7 @@ async function pollOnce(): Promise<void> {
       maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
       backfillLookbackMs: config.tronscanBackfillLookbackMs,
       incomingDepositRealtimeMaxAgeMs: config.incomingDepositRealtimeMaxAgeMs,
+      addressPoisoningSmallTransferMaxRaw,
       isWatchedWalletActive: (watchedWalletId) => watchedWalletExists(db, watchedWalletId),
       getWalletPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
       upsertWalletPollState: (input) => upsertWalletPollState(db, input),

@@ -3,6 +3,8 @@ import { userIncomingAlertKeyboard } from "../alerts/keyboards";
 import type { InlineKeyboard } from "grammy";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import { parseTrc20IncomingTransfer } from "../parser/transactionParser";
+import { initialAddressPoisoningCheckStatus } from "./addressPoisoning";
+import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import { evaluateAddressRisk, type RiskEvaluation } from "../risk/evaluation";
 import type { RiskSignal } from "../risk/riskEngine";
 import type {
@@ -60,13 +62,19 @@ export type PollingCycleDeps = {
   maxPagesPerWallet: number;
   backfillLookbackMs: number;
   incomingDepositRealtimeMaxAgeMs?: number;
+  addressPoisoningSmallTransferMaxRaw?: string;
   now?: () => Date;
   isWatchedWalletActive?(watchedWalletId: string): Promise<boolean>;
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   upsertWalletPollState(input: WalletPollStateInput): Promise<void>;
   recordWalletPollSuccess?(input: WalletPollSuccessInput): Promise<void>;
   recordWalletPollFailure?(input: { watchedWalletId: string; error: string }): Promise<void>;
-  claimObservedTransactionForUserAlert(input: { watchedWalletId: string; event: TronTransferEvent }): Promise<boolean>;
+  claimObservedTransactionForUserAlert(input: {
+    watchedWalletId: string;
+    event: TronTransferEvent;
+    poisoningCheckStatus: "pending" | "skipped" | "skipped_backfill";
+    poisoningCheckReason: string | null;
+  }): Promise<boolean>;
   claimUserAlertsForRetry(input: { limit: number; staleSendingBefore: Date }): Promise<ObservedTransactionUserAlert[]>;
   claimDigestTransactions(input: { limit: number; now: Date }): Promise<ObservedTransactionDigestItem[]>;
   recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
@@ -106,6 +114,7 @@ export type PollingCycleDeps = {
 };
 
 const DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS = 15 * 60_000;
+const DEFAULT_ADDRESS_POISONING_SMALL_TRANSFER_MAX_RAW = "100000000";
 const BACKFILL_STALE_TRANSACTION_REASON = "backfill_stale_transaction";
 
 type CollectedWalletEvents = {
@@ -181,6 +190,11 @@ function incomingDepositRealtimeMaxAgeMs(deps: PollingCycleDeps): number {
   const value = deps.incomingDepositRealtimeMaxAgeMs ?? DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS;
   if (!Number.isFinite(value)) return DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS;
   return Math.max(0, Math.floor(value));
+}
+
+function normalizedEventAmountRaw(amount: string): string {
+  if (amount === "0") return "0";
+  return parseUsdtDecimalToRaw(amount) ?? "invalid";
 }
 
 async function skipStaleIncomingDepositBackfill(
@@ -737,7 +751,22 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
   let skippedCount = 0;
 
   for (const event of events) {
-    const claimed = await deps.claimObservedTransactionForUserAlert({ watchedWalletId: wallet.id, event });
+    const poisoning = initialAddressPoisoningCheckStatus({
+      amountRaw: normalizedEventAmountRaw(event.amount),
+      sender: event.sender,
+      receiver: event.receiver,
+      eventAt: event.timestamp,
+      now: (deps.now ?? (() => new Date()))(),
+      realtimeMaxAgeMs: incomingDepositRealtimeMaxAgeMs(deps),
+      maxAmountRaw: deps.addressPoisoningSmallTransferMaxRaw ?? DEFAULT_ADDRESS_POISONING_SMALL_TRANSFER_MAX_RAW,
+      alertMode: wallet.alertMode
+    });
+    const claimed = await deps.claimObservedTransactionForUserAlert({
+      watchedWalletId: wallet.id,
+      event,
+      poisoningCheckStatus: poisoning.status,
+      poisoningCheckReason: poisoning.reason
+    });
     if (!claimed) {
       skippedCount += 1;
       continue;

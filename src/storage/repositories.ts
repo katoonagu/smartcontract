@@ -3219,8 +3219,15 @@ export async function saveObservedTransaction(db: Db, input: { watchedWalletId: 
 
 export async function claimObservedTransactionForUserAlert(
   db: Db,
-  input: { watchedWalletId: string; event: TronTransferEvent }
+  input: {
+    watchedWalletId: string;
+    event: TronTransferEvent;
+    poisoningCheckStatus?: "pending" | "skipped" | "skipped_backfill";
+    poisoningCheckReason?: string | null;
+  }
 ): Promise<boolean> {
+  const poisoningCheckStatus = input.poisoningCheckStatus ?? "skipped_backfill";
+  const poisoningCheckReason = input.poisoningCheckReason ?? null;
   const result = await db.query(
     `insert into observed_transactions (
        tx_hash,
@@ -3232,11 +3239,24 @@ export async function claimObservedTransactionForUserAlert(
        timestamp,
        user_alert_status,
        user_alert_attempts,
-       user_alert_updated_at
+       user_alert_updated_at,
+       poisoning_check_status,
+       poisoning_last_error,
+       poisoning_updated_at
      )
-     values ($1, $2, $3, $4, $5, $6, $7, 'sending', 0, now())
+     values ($1, $2, $3, $4, $5, $6, $7, 'sending', 0, now(), $8, $9, now())
      on conflict (tx_hash, watched_wallet_id) do nothing`,
-    [input.event.txHash, input.watchedWalletId, input.event.sender, input.event.receiver, input.event.token, input.event.amount, input.event.timestamp]
+    [
+      input.event.txHash,
+      input.watchedWalletId,
+      input.event.sender,
+      input.event.receiver,
+      input.event.token,
+      input.event.amount,
+      input.event.timestamp,
+      poisoningCheckStatus,
+      poisoningCheckReason
+    ]
   );
   return (result.rowCount ?? 0) === 1;
 }

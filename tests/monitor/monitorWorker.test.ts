@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runSinglePollingCycle } from "../../src/monitor/monitorWorker";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
+import { claimObservedTransactionForUserAlert } from "../../src/storage/repositories";
 import type { AddressLabel, RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent, WatchedWallet } from "../../src/types";
 import type { ObservedTransactionUserAlert, UserAlertStatus, WalletPollState } from "../../src/storage/repositories";
 
@@ -15,11 +16,11 @@ const watchedWallet: WatchedWallet = {
   locale: "en"
 };
 
-function rawTransfer(input: { txHash: string; sender?: string; timestamp: number; amount?: string }) {
+function rawTransfer(input: { txHash: string; sender?: string; receiver?: string; timestamp: number; amount?: string }) {
   return {
     transaction_id: input.txHash,
     from_address: input.sender ?? `TSender${input.txHash.padEnd(28, "1")}`,
-    to_address: watchedWallet.address,
+    to_address: input.receiver ?? watchedWallet.address,
     quant: input.amount ?? "1000000",
     contract_address: TRON_USDT_CONTRACT_ADDRESS,
     confirmed: true,
@@ -61,6 +62,12 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
   const sentDigestMessages: string[] = [];
   const sentDigestAlertOptions: Array<{ parse_mode?: "HTML" } | undefined> = [];
   const claimed: string[] = [];
+  const claimInputs: Array<{
+    watchedWalletId: string;
+    event: TronTransferEvent;
+    poisoningCheckStatus: "pending" | "skipped" | "skipped_backfill";
+    poisoningCheckReason: string | null;
+  }> = [];
   const sentMarks: string[] = [];
   const skippedMarks: string[] = [];
   const skippedReasons: Array<{ txHash: string; reason: string }> = [];
@@ -124,7 +131,9 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
       pollStates.set(state.watchedWalletId, next);
       updatedStates.push(next);
     },
-    claimObservedTransactionForUserAlert: async ({ event }) => {
+    claimObservedTransactionForUserAlert: async (input) => {
+      claimInputs.push(input);
+      const { event } = input;
       if (claimed.includes(event.txHash)) return false;
       claimed.push(event.txHash);
       return true;
@@ -197,6 +206,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     sentDigestMessages,
     sentDigestAlertOptions,
     claimed,
+    claimInputs,
     sentMarks,
     skippedMarks,
     skippedReasons,
@@ -215,6 +225,162 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
 }
 
 describe("runSinglePollingCycle", () => {
+  const poisoningWallet: WatchedWallet = {
+    ...watchedWallet,
+    address: "THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7"
+  };
+  const poisoningSender = "TABPfWW3Q7vCnfPQgQ8BCpjHqFqhCd58Fg";
+
+  function poisoningTransfer(input: { amount: string; timestamp?: number; sender?: string; receiver?: string }) {
+    return rawTransfer({
+      txHash: `poison-${input.amount}`,
+      sender: input.sender ?? poisoningSender,
+      receiver: input.receiver ?? poisoningWallet.address,
+      timestamp: input.timestamp ?? Date.parse("2026-05-20T00:59:00.000Z"),
+      amount: input.amount
+    });
+  }
+
+  it("atomically enqueues a fresh small-transfer check without a history lookup and keeps ordinary Incoming queueing", async () => {
+    let relatedHistoryCalls = 0;
+    const ctx = createDeps({
+      wallets: [poisoningWallet],
+      addressPoisoningSmallTransferMaxRaw: "100000000",
+      tronClient: {
+        async listIncomingTrc20Transfers() {
+          return [poisoningTransfer({ amount: "10000000" })];
+        },
+        async listRelatedTrc20Transfers() {
+          relatedHistoryCalls += 1;
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      } as never,
+      queueIncomingDepositJob: async (input) => {
+        ctx.queuedIncomingDepositJobs.push(input);
+        return { id: "job-1" };
+      },
+      markUserAlertAnalyzing: async () => true
+    });
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimInputs).toEqual([
+      expect.objectContaining({
+        watchedWalletId: poisoningWallet.id,
+        poisoningCheckStatus: "pending",
+        poisoningCheckReason: null
+      })
+    ]);
+    expect(ctx.queuedIncomingDepositJobs).toHaveLength(1);
+    expect(relatedHistoryCalls).toBe(0);
+  });
+
+  it.each([
+    { label: "the exact configured maximum", amount: "100000000", status: "pending", reason: null },
+    { label: "one raw unit above the maximum", amount: "100000001", status: "skipped", reason: "above_max_amount" },
+    { label: "zero", amount: "0", status: "skipped", reason: "zero_amount" }
+  ])("stores the initial poisoning status for $label", async ({ amount, status, reason }) => {
+    const ctx = createDeps({ wallets: [poisoningWallet], addressPoisoningSmallTransferMaxRaw: "100000000" });
+    ctx.pages.set(0, [poisoningTransfer({ amount })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimInputs[0]).toMatchObject({ poisoningCheckStatus: status, poisoningCheckReason: reason });
+  });
+
+  it("marks stale events as skipped backfill for poisoning", async () => {
+    const ctx = createDeps({ wallets: [poisoningWallet], incomingDepositRealtimeMaxAgeMs: 15 * 60_000 });
+    ctx.pages.set(0, [poisoningTransfer({ amount: "10000000", timestamp: Date.parse("2026-05-20T00:40:00.000Z") })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimInputs[0]).toMatchObject({
+      poisoningCheckStatus: "skipped_backfill",
+      poisoningCheckReason: "older_than_realtime_window"
+    });
+  });
+
+  it.each([
+    { label: "paused wallet", wallet: { ...poisoningWallet, alertMode: "paused" as const }, sender: poisoningSender, reason: "paused" },
+    { label: "self transfer", wallet: poisoningWallet, sender: poisoningWallet.address, reason: "self_transfer" },
+    { label: "invalid sender", wallet: poisoningWallet, sender: "not-a-tron-address", reason: "invalid_input" }
+  ])("marks $label as skipped for poisoning", async ({ wallet, sender, reason }) => {
+    const ctx = createDeps({ wallets: [wallet] });
+    ctx.pages.set(0, [poisoningTransfer({ amount: "10000000", sender, receiver: wallet.address })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimInputs[0]).toMatchObject({ poisoningCheckStatus: "skipped", poisoningCheckReason: reason });
+  });
+
+  it("does not queue an extra ordinary job when the atomic observation was already claimed", async () => {
+    let ordinaryJobs = 0;
+    const ctx = createDeps({
+      wallets: [poisoningWallet],
+      claimObservedTransactionForUserAlert: async () => false,
+      queueIncomingDepositJob: async () => {
+        ordinaryJobs += 1;
+        return { id: "job-1" };
+      },
+      markUserAlertAnalyzing: async () => true
+    });
+    ctx.pages.set(0, [poisoningTransfer({ amount: "10000000" })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ordinaryJobs).toBe(0);
+  });
+
+  it("persists the initial poisoning status and reason in the atomic observation insert", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const event: TronTransferEvent = {
+      txHash: "atomic-poisoning",
+      token: "USDT",
+      sender: poisoningSender,
+      receiver: poisoningWallet.address,
+      amount: "10",
+      timestamp: new Date("2026-05-20T00:59:00.000Z")
+    };
+
+    await claimObservedTransactionForUserAlert({
+      async query(sql: string, params: unknown[]) {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as never, {
+      watchedWalletId: poisoningWallet.id,
+      event,
+      poisoningCheckStatus: "skipped",
+      poisoningCheckReason: "above_max_amount"
+    });
+
+    expect(queries[0].sql).toContain("poisoning_check_status");
+    expect(queries[0].sql).toContain("poisoning_last_error");
+    expect(queries[0].params).toEqual([
+      event.txHash,
+      poisoningWallet.id,
+      event.sender,
+      event.receiver,
+      event.token,
+      event.amount,
+      event.timestamp,
+      "skipped",
+      "above_max_amount"
+    ]);
+
+    await claimObservedTransactionForUserAlert({
+      async query(sql: string, params: unknown[]) {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as never, { watchedWalletId: poisoningWallet.id, event });
+
+    expect(queries[1].params.slice(-2)).toEqual(["skipped_backfill", null]);
+  });
+
   it("skips stale watched wallets that were removed after the cycle loaded", async () => {
     const warnings: string[] = [];
     let transferCalls = 0;

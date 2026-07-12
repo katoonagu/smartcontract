@@ -379,6 +379,7 @@ function createConfig(): AppConfig {
     pollIntervalMs: 60_000,
     pollStartDelayMs: 0,
     incomingDepositRealtimeMaxAgeMs: 15 * 60 * 1000,
+    addressPoisoningSmallTransferMaxUsdt: "100",
     forensicWhereStartDelayMs: 3_000,
     forensicIncomingStartDelayMs: 6_000,
     forensicDeepStartDelayMs: 12_000,

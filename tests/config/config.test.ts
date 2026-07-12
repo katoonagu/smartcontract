@@ -98,6 +98,7 @@ describe("loadConfig", () => {
     expect(config.llmEnrichmentRetryDelayMs).toBe(15000);
     expect(config.pollStartDelayMs).toBe(5000);
     expect(config.incomingDepositRealtimeMaxAgeMs).toBe(900000);
+    expect(config.addressPoisoningSmallTransferMaxUsdt).toBe("100");
     expect(config.forensicWhereStartDelayMs).toBe(3000);
     expect(config.forensicIncomingStartDelayMs).toBe(6000);
     expect(config.forensicDeepStartDelayMs).toBe(12000);
@@ -107,6 +108,26 @@ describe("loadConfig", () => {
     expect(config.adminDashboardToken).toBe(null);
     expect(config.runtimeInstanceLabel).toBeUndefined();
   });
+
+  it.each(["0", "100", "100.000001", "9007199254740993000000.123456"])(
+    "keeps valid address poisoning threshold %s as an exact decimal string",
+    (value) => {
+      setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: value });
+
+      expect(loadConfig().addressPoisoningSmallTransferMaxUsdt).toBe(value);
+    }
+  );
+
+  it.each(["-1", "abc", "1.0000001", "01", "1."])(
+    "rejects invalid address poisoning threshold %s",
+    (value) => {
+      setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: value });
+
+      expect(() => loadConfig()).toThrow(
+        "ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT must be a non-negative decimal with up to 6 fractional digits"
+      );
+    }
+  );
 
   it("parses admin dashboard config", () => {
     setRequiredEnv({

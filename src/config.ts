@@ -82,6 +82,7 @@ export type AppConfig = {
   pollIntervalMs: number;
   pollStartDelayMs: number;
   incomingDepositRealtimeMaxAgeMs: number;
+  addressPoisoningSmallTransferMaxUsdt: string;
   forensicWhereStartDelayMs: number;
   forensicIncomingStartDelayMs: number;
   forensicDeepStartDelayMs: number;
@@ -111,6 +112,13 @@ function parsePositiveInteger(name: string, rawValue: string, minimum: number): 
     throw new Error(`${name} must be a safe integer greater than or equal to ${minimum}`);
   }
   return value;
+}
+
+function parseNonNegativeUsdtDecimal(name: string, rawValue: string): string {
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(rawValue)) {
+    throw new Error(`${name} must be a non-negative decimal with up to 6 fractional digits`);
+  }
+  return rawValue;
 }
 
 function parseIntegerInRange(name: string, rawValue: string, minimum: number, maximum: number): number {
@@ -501,6 +509,10 @@ export function loadConfig(): AppConfig {
       "INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS",
       process.env.INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS ?? "900000",
       0
+    ),
+    addressPoisoningSmallTransferMaxUsdt: parseNonNegativeUsdtDecimal(
+      "ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT",
+      process.env.ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT ?? "100"
     ),
     forensicWhereStartDelayMs: parsePositiveInteger(
       "FORENSIC_WHERE_START_DELAY_MS",
