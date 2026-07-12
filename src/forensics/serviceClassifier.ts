@@ -94,6 +94,11 @@ const KNOWN_POOLED_SERVICE_ADDRESSES = new Map([
   ]
 ]);
 
+export function authoritativeRegisteredService(address: string): { identity: string; evidence: string } | null {
+  const registered = KNOWN_POOLED_SERVICE_ADDRESSES.get(address);
+  return registered ? { identity: registered.identity, evidence: registered.evidence } : null;
+}
+
 function knownCexIdentity(text: string): string | null {
   return KNOWN_CEX_IDENTITIES.find((item) => hasAny(text, item.keywords))?.identity ?? null;
 }

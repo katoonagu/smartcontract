@@ -476,6 +476,53 @@ describe("TronscanClient", () => {
     }
   });
 
+  it("aborts a dedicated poisoning lookup at five seconds without retrying or changing ordinary retry behavior", async () => {
+    vi.useFakeTimers();
+    try {
+      const scheduler = {
+        schedule: vi.fn(async (_bucket: unknown, operation: (context: { apiKey: string | null }) => Promise<unknown>) =>
+          operation({ apiKey: null }))
+      };
+      const hangingFetch = vi.fn(
+        (_url: URL | RequestInfo, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("poisoning timeout", "AbortError")));
+          })
+      );
+      const poisoningClient = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn: hangingFetch,
+        timeoutMs: 5_000,
+        retryAttempts: 0,
+        scheduler: scheduler as never
+      });
+      const poisoningLookup = expect(poisoningClient.listRelatedTrc20Transfers(
+        "TReceiver11111111111111111111111111111"
+      )).rejects.toThrow("poisoning timeout");
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(hangingFetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await poisoningLookup;
+      expect(hangingFetch).toHaveBeenCalledTimes(1);
+
+      const ordinaryFetch = vi.fn(async () => { throw new TypeError("ordinary network failure"); });
+      const ordinaryClient = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn: ordinaryFetch,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        scheduler: scheduler as never
+      });
+      await expect(ordinaryClient.listRelatedTrc20Transfers(
+        "TReceiver11111111111111111111111111111"
+      )).rejects.toThrow("ordinary network failure");
+      expect(ordinaryFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects non-https base urls", () => {
     expect(() => new TronscanClient("http://apilist.tronscanapi.com")).toThrow("baseUrl must use https");
   });
