@@ -57,6 +57,7 @@ import {
   getCoveringTronAddressUsdtIndexState,
   getTronAddressUsdtIndexState,
   getWalletPollState,
+  hasUndismissedAddressPoisoningCandidateForIncoming,
   completeForensicCheckJob,
   failTronAddressUsdtIndexState,
   markApprovalContextExpired,
@@ -1115,6 +1116,11 @@ async function incomingDepositOnce(): Promise<void> {
         markUserAlertSent: (input) => markUserAlertSent(db, input),
         markUserAlertFailed: (input) => markUserAlertFailed(db, input),
         recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
+        hasUndismissedAddressPoisoningCandidateForIncoming: (input) =>
+          hasUndismissedAddressPoisoningCandidateForIncoming(db, {
+            watchedWalletId: input.watchedWalletId,
+            txHash: input.incomingTxHash
+          }),
         formatIncomingDepositRiskAlert,
         sendUserAlert: async (telegramUserId, message, options) => {
           await bot.api.sendMessage(telegramUserId, message, options as Parameters<typeof bot.api.sendMessage>[2]);

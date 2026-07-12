@@ -317,6 +317,7 @@ export function formatIncomingDepositRiskAlert(input: {
   txHash: string;
   timestamp?: Date | null;
   locale?: BotLocale;
+  addressPoisoningWarningActive?: boolean;
   report: IncomingDepositRiskReport;
 }): IncomingDepositRiskAlertMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
@@ -336,6 +337,11 @@ export function formatIncomingDepositRiskAlert(input: {
     `${bold(decisionLabel(locale))}: ${code(input.report.decision)}`,
     riskLine,
     contextLine,
+    input.addressPoisoningWarningActive
+      ? locale === "en"
+        ? "⚠️ Address substitution warning remains active."
+        : "⚠️ Предупреждение о возможной подмене адреса остаётся активным."
+      : null,
     [
       `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(`${input.amount} USDT`)}`,
       `${bold(locale === "en" ? "Watched wallet" : "Кошелек")}: ${code(input.watchedWallet)}`,

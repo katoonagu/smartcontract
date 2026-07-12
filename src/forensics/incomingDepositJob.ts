@@ -193,6 +193,10 @@ export type RunSingleIncomingDepositJobCycleDeps = {
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
   recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
+  hasUndismissedAddressPoisoningCandidateForIncoming(input: {
+    watchedWalletId: string;
+    incomingTxHash: string;
+  }): Promise<boolean>;
   sendUserAlert(
     telegramUserId: string,
     message: string,
@@ -209,6 +213,7 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     txHash: string;
     timestamp?: Date | null;
     locale?: BotLocale;
+    addressPoisoningWarningActive?: boolean;
     report: IncomingDepositRiskReport;
   }): { text: string; parseMode: "HTML"; replyMarkup?: unknown };
   buildReport(input: {
@@ -2324,6 +2329,20 @@ export async function runSingleIncomingDepositJobCycle(
     }
 
     if (shouldSend(alertMode, report)) {
+      let addressPoisoningWarningActive = false;
+      try {
+        addressPoisoningWarningActive = await deps.hasUndismissedAddressPoisoningCandidateForIncoming({
+          watchedWalletId,
+          incomingTxHash: depositTxHash
+        });
+      } catch (error) {
+        safeLoggerWarn(logger, "incoming_deposit_poisoning_warning_lookup_failed", {
+          job_id: job.id,
+          deposit_tx_hash: depositTxHash,
+          watched_wallet_id: watchedWalletId,
+          error: formatErrorMessage(error)
+        });
+      }
       const message = await timing.measure("format_alert", async () => deps.formatIncomingDepositRiskAlert({
         jobId: job.id,
         amount: stringField(job.progressJson.amount) ?? amountRaw,
@@ -2332,6 +2351,7 @@ export async function runSingleIncomingDepositJobCycle(
         txHash: depositTxHash,
         timestamp,
         locale,
+        addressPoisoningWarningActive,
         report
       }));
       await persistProgress({ jobPhase: "notification_delivery" }, "persist_phase_notification_delivery");

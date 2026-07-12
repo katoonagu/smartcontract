@@ -135,6 +135,40 @@ describe("alert formatters", () => {
     expect(message.text).not.toContain("Data quality");
   });
 
+  it("keeps the Russian address-substitution warning prominent without changing the AML result", () => {
+    const baseline = formatIncomingDepositRiskAlert(incomingDepositBaseInput);
+    const explicitlyInactive = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      addressPoisoningWarningActive: false
+    });
+    const active = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      addressPoisoningWarningActive: true
+    });
+    const warning = "⚠️ Предупреждение о возможной подмене адреса остаётся активным.";
+
+    expect(explicitlyInactive).toEqual(baseline);
+    expect(active.text.split(warning)).toHaveLength(2);
+    expect(active.text.indexOf(warning)).toBeGreaterThan(active.text.indexOf("<b>Риск депозита</b>"));
+    expect(active.text.indexOf(warning)).toBeLessThan(active.text.indexOf("<b>Сумма</b>"));
+    expect(active.text.replace(`\n\n${warning}`, "")).toBe(baseline.text);
+  });
+
+  it("keeps the English address-substitution warning prominent without changing the AML result", () => {
+    const baseline = formatIncomingDepositRiskAlert({ ...incomingDepositBaseInput, locale: "en" });
+    const active = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      addressPoisoningWarningActive: true
+    });
+    const warning = "⚠️ Address substitution warning remains active.";
+
+    expect(active.text.split(warning)).toHaveLength(2);
+    expect(active.text.indexOf(warning)).toBeGreaterThan(active.text.indexOf("<b>Deposit risk</b>"));
+    expect(active.text.indexOf(warning)).toBeLessThan(active.text.indexOf("<b>Amount</b>"));
+    expect(active.text.replace(`\n\n${warning}`, "")).toBe(baseline.text);
+  });
+
   it("renders an Incoming technical stop without inventing a numeric final risk", () => {
     const message = formatIncomingDepositRiskAlert({
       ...incomingDepositBaseInput,

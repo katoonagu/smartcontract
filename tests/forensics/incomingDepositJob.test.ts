@@ -5,7 +5,7 @@ import type { ForensicCheckJob } from "../../src/storage/repositories";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import {
   buildIncomingDepositReport,
-  runSingleIncomingDepositJobCycle,
+  runSingleIncomingDepositJobCycle as runSingleIncomingDepositJobCycleImpl,
   type BuildIncomingDepositReportInput,
   type IncomingDepositRuntimeDeps,
   type RunSingleIncomingDepositJobCycleDeps
@@ -163,6 +163,21 @@ function job(progressJson: Record<string, unknown>): ForensicCheckJob {
     startedAt: new Date("2026-05-29T14:02:01.000Z"),
     completedAt: null
   };
+}
+
+type IncomingDepositJobTestDeps = Omit<
+  RunSingleIncomingDepositJobCycleDeps,
+  "hasUndismissedAddressPoisoningCandidateForIncoming"
+> & Partial<Pick<
+  RunSingleIncomingDepositJobCycleDeps,
+  "hasUndismissedAddressPoisoningCandidateForIncoming"
+>>;
+
+function runSingleIncomingDepositJobCycle(deps: IncomingDepositJobTestDeps): Promise<boolean> {
+  return runSingleIncomingDepositJobCycleImpl({
+    hasUndismissedAddressPoisoningCandidateForIncoming: async () => false,
+    ...deps
+  });
 }
 
 function indexedTransfer(overrides: Partial<IndexedTronUsdtTransfer>): IndexedTronUsdtTransfer {
@@ -418,6 +433,119 @@ describe("runSingleIncomingDepositJobCycle", () => {
       locale: "en"
     }));
     expect(events).toEqual(["send", "markSent", "complete:completed"]);
+  });
+
+  it("looks up the exact incoming poisoning candidate immediately before formatting and preserves AML output", async () => {
+    const events: string[] = [];
+    const lookup = vi.fn(async () => {
+      events.push("lookup");
+      return true;
+    });
+    const formatAlert = vi.fn((input: Parameters<RunSingleIncomingDepositJobCycleDeps["formatIncomingDepositRiskAlert"]>[0]) => {
+      events.push("format");
+      return {
+        text: input.addressPoisoningWarningActive ? "warning-active" : "ordinary",
+        parseMode: "HTML" as const
+      };
+    });
+    const buildReport = vi.fn(async (input: Parameters<RunSingleIncomingDepositJobCycleDeps["buildReport"]>[0]) => {
+      events.push("build");
+      expect(input).not.toHaveProperty("addressPoisoningWarningActive");
+      return report();
+    });
+    const complete = vi.fn(async (input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]) => {
+      events.push("complete");
+      expect(input.resultJson).toEqual(expect.objectContaining({
+        decision: "ACCEPTABLE",
+        depositRiskScore: 32
+      }));
+      return true;
+    });
+    const send = vi.fn(async (_telegramUserId: string, message: string) => {
+      events.push("send");
+      expect(message).toBe("warning-active");
+    });
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => {
+        events.push("record");
+        return true;
+      },
+      hasUndismissedAddressPoisoningCandidateForIncoming: lookup,
+      sendUserAlert: send,
+      formatIncomingDepositRiskAlert: formatAlert,
+      buildReport
+    });
+
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledWith({ watchedWalletId, incomingTxHash: depositTxHash });
+    expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({ addressPoisoningWarningActive: true }));
+    expect(events).toEqual(["build", "record", "lookup", "format", "send", "complete"]);
+  });
+
+  it("does not wait or retry when no active poisoning candidate exists", async () => {
+    const lookup = vi.fn(async () => false);
+    const formatAlert = vi.fn((input: Parameters<RunSingleIncomingDepositJobCycleDeps["formatIncomingDepositRiskAlert"]>[0]) => ({
+      text: input.addressPoisoningWarningActive ? "warning-active" : "ordinary",
+      parseMode: "HTML" as const
+    }));
+    const send = vi.fn(async () => undefined);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      hasUndismissedAddressPoisoningCandidateForIncoming: lookup,
+      sendUserAlert: send,
+      formatIncomingDepositRiskAlert: formatAlert,
+      buildReport: async () => report()
+    });
+
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({ addressPoisoningWarningActive: false }));
+    expect(send).toHaveBeenCalledWith("42", "ordinary", expect.any(Object));
+  });
+
+  it("logs a poisoning lookup failure and still sends the unchanged Incoming result", async () => {
+    const lookup = vi.fn(async () => {
+      throw new Error("poisoning store unavailable");
+    });
+    const formatAlert = vi.fn((input: Parameters<RunSingleIncomingDepositJobCycleDeps["formatIncomingDepositRiskAlert"]>[0]) => ({
+      text: input.addressPoisoningWarningActive ? "warning-active" : "ordinary",
+      parseMode: "HTML" as const
+    }));
+    const send = vi.fn(async () => undefined);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      hasUndismissedAddressPoisoningCandidateForIncoming: lookup,
+      sendUserAlert: send,
+      formatIncomingDepositRiskAlert: formatAlert,
+      buildReport: async () => report(),
+      logger
+    });
+
+    expect(handled).toBe(true);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith("incoming_deposit_poisoning_warning_lookup_failed", {
+      job_id: "job-incoming-1",
+      deposit_tx_hash: depositTxHash,
+      watched_wallet_id: watchedWalletId,
+      error: "poisoning store unavailable"
+    });
+    expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({ addressPoisoningWarningActive: false }));
+    expect(send).toHaveBeenCalledWith("42", "ordinary", expect.any(Object));
   });
 
   it("does not persist a generic observed risk for a completed no-final incoming result", async () => {
@@ -905,6 +1033,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     const send = vi.fn(async () => undefined);
     const markSent = vi.fn(async () => true);
     const recordRisk = vi.fn(async () => true);
+    const lookup = vi.fn(async () => true);
 
     const handled = await runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job({ ...validProgressJson, alertMode: "risk_only" }),
@@ -912,6 +1041,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       markUserAlertSent: markSent,
       markUserAlertFailed: async () => true,
       recordObservedTransactionRisk: recordRisk,
+      hasUndismissedAddressPoisoningCandidateForIncoming: lookup,
       sendUserAlert: send,
       formatIncomingDepositRiskAlert: () => ({
         text: "<b>Incoming USDT</b>",
@@ -924,6 +1054,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(recordRisk).toHaveBeenCalledWith(expect.objectContaining({ txHash: depositTxHash, watchedWalletId }));
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
     expect(send).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
     expect(markSent).toHaveBeenCalledWith({ txHash: depositTxHash, watchedWalletId });
   });
 
