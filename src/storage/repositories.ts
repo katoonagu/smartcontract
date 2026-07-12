@@ -3914,6 +3914,24 @@ export async function markAddressPoisoningAlertSent(
   return (result.rowCount ?? 0) === 1;
 }
 
+export async function renewAddressPoisoningAlertLease(
+  db: Db,
+  input: { candidateId: string; leaseVersion: Date; now: Date }
+): Promise<Date | null> {
+  const result = await db.query(
+    `update address_poisoning_candidates
+     set updated_at = $3
+     where id = $1 and alert_status = 'sending' and updated_at = $2
+     returning updated_at`,
+    [input.candidateId, input.leaseVersion, input.now]
+  );
+  const value = result.rows[0]?.updated_at;
+  if (value === undefined) return null;
+  const renewedAt = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(renewedAt.getTime())) throw new Error("Invalid renewed address-poisoning alert lease");
+  return renewedAt;
+}
+
 export async function markAddressPoisoningAlertFailed(
   db: Db,
   input: { candidateId: string; error: string; now: Date; leaseVersion: Date }

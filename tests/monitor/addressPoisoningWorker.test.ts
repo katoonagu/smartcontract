@@ -74,6 +74,7 @@ function repository(claimed: AddressPoisoningCheckWorkItem[] = []): AddressPoiso
     markFailed: vi.fn(async () => true),
     persistCandidate: vi.fn(async () => ({ id: "candidate-1" })),
     claimAlerts: vi.fn(async () => []),
+    renewAlertLease: vi.fn(async (_db, input) => input.now),
     markAlertSent: vi.fn(async () => true),
     markAlertFailed: vi.fn(async () => true),
     markAlertSkipped: vi.fn(async () => true)
@@ -907,6 +908,206 @@ describe("address poisoning worker", () => {
     releaseFirst({ chat: { id: 42 }, message_id: 1001 });
     await workerA;
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("heartbeats a held Telegram send so other workers cannot reclaim it after 120 seconds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      let release!: (value: { chat: { id: number }; message_id: number }) => void;
+      const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+        release = resolve;
+      });
+      const state: { status: "pending" | "sending" | "sent"; updatedAt: Date; attempts: number } = {
+        status: "pending",
+        updatedAt: new Date(0),
+        attempts: 0
+      };
+      const repo = repository();
+      (repo.claimAlerts as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+        const claimable = state.status === "pending"
+          || (state.status === "sending" && state.updatedAt < input.staleSendingBefore);
+        if (!claimable || state.attempts >= 4) return [];
+        state.status = "sending";
+        state.updatedAt = input.now;
+        state.attempts += 1;
+        return [deliveryCandidate("realtime", {
+          alertAttempts: state.attempts,
+          updatedAt: input.now,
+          leaseVersion: input.now
+        })];
+      });
+      (repo.renewAlertLease as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+        if (state.status !== "sending" || state.updatedAt.getTime() !== input.leaseVersion.getTime()) return null;
+        state.updatedAt = input.now;
+        return input.now;
+      });
+      (repo.markAlertSent as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+        if (state.status !== "sending" || state.updatedAt.getTime() !== input.leaseVersion.getTime()) return false;
+        state.status = "sent";
+        return true;
+      });
+      const send = vi.fn(async () => heldSend);
+      const clock = () => new Date(Date.now());
+
+      const workerA = runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(121_000);
+      await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+      expect(send).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(40_000);
+      await runSingleAddressPoisoningCycle(deps(repo, undefined, send, clock));
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((repo.renewAlertLease as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[1].now.getTime()))
+        .toEqual([40_000, 80_000, 120_000, 160_000].map((offset) => NOW.getTime() + offset));
+
+      release({ chat: { id: 42 }, message_id: 1001 });
+      await workerA;
+      expect(state.status).toBe("sent");
+      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].leaseVersion)
+        .toEqual(new Date(NOW.getTime() + 160_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["success", "failure"] as const)("stops the heartbeat immediately after Telegram %s", async (outcome) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      let resolveSend!: (value: { chat: { id: number }; message_id: number }) => void;
+      let rejectSend!: (error: Error) => void;
+      const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve, reject) => {
+        resolveSend = resolve;
+        rejectSend = reject;
+      });
+      const repo = repository();
+      (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([deliveryCandidate()]);
+      const cycle = runSingleAddressPoisoningCycle(deps(
+        repo,
+        undefined,
+        vi.fn(async () => heldSend),
+        () => new Date(Date.now())
+      ), { claimLimit: 1, concurrency: 1 });
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(1);
+
+      if (outcome === "success") resolveSend({ chat: { id: 42 }, message_id: 1001 });
+      else rejectSend(new Error("Telegram failed"));
+      await cycle;
+      const renewalsAfterSettle = (repo.renewAlertLease as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(200_000);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(renewalsAfterSettle);
+      const finalInput = outcome === "success"
+        ? (repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1]
+        : (repo.markAlertFailed as ReturnType<typeof vi.fn>).mock.calls[0][1];
+      expect(finalInput.leaseVersion).toEqual(new Date(NOW.getTime() + 40_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the old lease after a stale heartbeat and treats the final CAS as benign", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      let release!: (value: { chat: { id: number }; message_id: number }) => void;
+      const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+        release = resolve;
+      });
+      const repo = repository();
+      (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([deliveryCandidate()]);
+      (repo.renewAlertLease as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      (repo.markAlertSent as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+      const cycle = runSingleAddressPoisoningCycle(deps(
+        repo,
+        undefined,
+        vi.fn(async () => heldSend),
+        () => new Date(Date.now())
+      ), { claimLimit: 1, concurrency: 1 });
+
+      await vi.advanceTimersByTimeAsync(200_000);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(1);
+      release({ chat: { id: 42 }, message_id: 1001 });
+      await expect(cycle).resolves.toMatchObject({ alertsStale: expect.any(Number) });
+      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].leaseVersion).toEqual(NOW);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("contains heartbeat errors and retries without overwriting the confirmed lease", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      let release!: (value: { chat: { id: number }; message_id: number }) => void;
+      const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+        release = resolve;
+      });
+      const repo = repository();
+      (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([deliveryCandidate()]);
+      (repo.renewAlertLease as ReturnType<typeof vi.fn>)
+        .mockRejectedValueOnce(new Error("temporary database error"))
+        .mockImplementationOnce(async (_db, input) => input.now);
+      const cycle = runSingleAddressPoisoningCycle(deps(
+        repo,
+        undefined,
+        vi.fn(async () => heldSend),
+        () => new Date(Date.now())
+      ), { claimLimit: 1, concurrency: 1 });
+
+      await vi.advanceTimersByTimeAsync(80_000);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(2);
+      release({ chat: { id: 42 }, message_id: 1001 });
+      await expect(cycle).resolves.toMatchObject({ alertsPersistenceFailed: 1 });
+      expect((repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].leaseVersion)
+        .toEqual(new Date(NOW.getTime() + 80_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never overlaps heartbeat renewals when a database renewal is slow", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      let releaseSend!: (value: { chat: { id: number }; message_id: number }) => void;
+      const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+        releaseSend = resolve;
+      });
+      let releaseRenewal!: (value: Date) => void;
+      const slowRenewal = new Promise<Date>((resolve) => {
+        releaseRenewal = resolve;
+      });
+      const repo = repository();
+      (repo.claimAlerts as ReturnType<typeof vi.fn>).mockResolvedValueOnce([deliveryCandidate()]);
+      (repo.renewAlertLease as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => slowRenewal)
+        .mockImplementationOnce(async (_db, input) => input.now);
+      const cycle = runSingleAddressPoisoningCycle(deps(
+        repo,
+        undefined,
+        vi.fn(async () => heldSend),
+        () => new Date(Date.now())
+      ), { claimLimit: 1, concurrency: 1 });
+
+      await vi.advanceTimersByTimeAsync(160_000);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(1);
+      releaseRenewal(new Date(NOW.getTime() + 40_000));
+      await vi.advanceTimersByTimeAsync(39_999);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(repo.renewAlertLease).toHaveBeenCalledTimes(2);
+
+      releaseSend({ chat: { id: 42 }, message_id: 1001 });
+      await cycle;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

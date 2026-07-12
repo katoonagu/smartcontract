@@ -27,6 +27,7 @@ import {
   markAddressPoisoningAlertFailed,
   markAddressPoisoningAlertSent,
   markAddressPoisoningAlertSkipped,
+  renewAddressPoisoningAlertLease,
   markAddressPoisoningCheckClear,
   markAddressPoisoningCheckFailed,
   markAddressPoisoningCheckInconclusive,
@@ -54,6 +55,7 @@ export const ADDRESS_POISONING_WORKER_DEFAULTS = {
 // Telegram sends have no tighter enforced request timeout in the current adapter. Keep an
 // active send leased for two minutes before another app worker may retry it.
 export const ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS = 120_000;
+export const ADDRESS_POISONING_ALERT_HEARTBEAT_MS = 40_000;
 
 const LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
@@ -82,6 +84,7 @@ type MarkFailedInput = Parameters<typeof markAddressPoisoningCheckFailed>[1];
 type MarkAlertSentInput = Parameters<typeof markAddressPoisoningAlertSent>[1];
 type MarkAlertFailedInput = Parameters<typeof markAddressPoisoningAlertFailed>[1];
 type MarkAlertSkippedInput = Parameters<typeof markAddressPoisoningAlertSkipped>[1];
+type RenewAlertLeaseInput = Parameters<typeof renewAddressPoisoningAlertLease>[1];
 
 export type AddressPoisoningWorkerRepository = {
   skipExpiredChecks(db: Db, input: { expiredBefore: Date }): Promise<number>;
@@ -102,6 +105,7 @@ export type AddressPoisoningWorkerRepository = {
   markAlertSent(db: Db, input: MarkAlertSentInput): Promise<boolean>;
   markAlertFailed(db: Db, input: MarkAlertFailedInput): Promise<boolean>;
   markAlertSkipped(db: Db, input: MarkAlertSkippedInput): Promise<boolean>;
+  renewAlertLease(db: Db, input: RenewAlertLeaseInput): Promise<Date | null>;
 };
 
 export type AddressPoisoningWorkerDeps = {
@@ -159,7 +163,8 @@ const defaultRepository: AddressPoisoningWorkerRepository = {
   claimAlerts: claimAddressPoisoningAlertsForDelivery,
   markAlertSent: markAddressPoisoningAlertSent,
   markAlertFailed: markAddressPoisoningAlertFailed,
-  markAlertSkipped: markAddressPoisoningAlertSkipped
+  markAlertSkipped: markAddressPoisoningAlertSkipped,
+  renewAlertLease: renewAddressPoisoningAlertLease
 };
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, maximum?: number): number {
@@ -504,7 +509,8 @@ async function markDeliveryFailure(
   error: unknown,
   metrics: AddressPoisoningCycleMetrics,
   failedAt: Date,
-  logger: Logger
+  logger: Logger,
+  leaseVersion = candidate.leaseVersion
 ): Promise<void> {
   logger.warn("address_poisoning_alert_delivery_failed", {
     candidateId: candidate.id,
@@ -515,7 +521,7 @@ async function markDeliveryFailure(
       candidateId: candidate.id,
       error: boundedDeliveryError(error),
       now: failedAt,
-      leaseVersion: candidate.leaseVersion
+      leaseVersion
     });
     updated ? metrics.alertsFailed += 1 : metrics.alertsStale += 1;
   } catch (persistenceError) {
@@ -525,6 +531,66 @@ async function markDeliveryFailure(
       error: boundedDeliveryError(persistenceError)
     });
   }
+}
+
+function startAlertDeliveryHeartbeat(
+  deps: AddressPoisoningWorkerDeps,
+  repository: AddressPoisoningWorkerRepository,
+  candidate: AddressPoisoningCandidateDelivery,
+  metrics: AddressPoisoningCycleMetrics,
+  logger: Logger
+): { latestLease(): Date; stop(): Promise<void> } {
+  let leaseVersion = new Date(candidate.leaseVersion.getTime());
+  let stopped = false;
+  let ownershipLost = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight: Promise<void> | null = null;
+
+  const schedule = () => {
+    if (stopped || ownershipLost) return;
+    timer = setTimeout(() => {
+      timer = null;
+      const renew = async () => {
+        try {
+          const renewedAt = currentTime(deps);
+          const renewedLease = await repository.renewAlertLease(deps.db, {
+            candidateId: candidate.id,
+            leaseVersion,
+            now: renewedAt
+          });
+          if (renewedLease === null) {
+            ownershipLost = true;
+            logger.warn("address_poisoning_alert_heartbeat_lease_lost", { candidateId: candidate.id });
+            return;
+          }
+          leaseVersion = new Date(renewedLease.getTime());
+        } catch (error) {
+          metrics.alertsPersistenceFailed += 1;
+          logger.error("address_poisoning_alert_heartbeat_failed", {
+            candidateId: candidate.id,
+            error: boundedDeliveryError(error)
+          });
+        }
+      };
+      inFlight = renew().then(() => {
+        inFlight = null;
+        schedule();
+      });
+    }, ADDRESS_POISONING_ALERT_HEARTBEAT_MS);
+  };
+  schedule();
+
+  return {
+    latestLease: () => new Date(leaseVersion.getTime()),
+    stop: async () => {
+      stopped = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (inFlight) await inFlight;
+    }
+  };
 }
 
 async function deliverCandidateAlert(
@@ -577,15 +643,27 @@ async function deliverCandidateAlert(
   }
 
   let sent: { chat: { id: number }; message_id: number };
+  const heartbeat = startAlertDeliveryHeartbeat(deps, repository, candidate, metrics, logger);
   try {
     sent = await deps.sendUserAlert(candidate.telegramUserId, message.text, {
       reply_markup: keyboard,
       parse_mode: message.parseMode
     });
   } catch (error) {
-    await markDeliveryFailure(deps, repository, candidate, error, metrics, currentTime(deps), logger);
+    await heartbeat.stop();
+    await markDeliveryFailure(
+      deps,
+      repository,
+      candidate,
+      error,
+      metrics,
+      currentTime(deps),
+      logger,
+      heartbeat.latestLease()
+    );
     return;
   }
+  await heartbeat.stop();
 
   // ponytail: Telegram send and DB acknowledgement cannot be atomic. A crash here leaves
   // `sending` retryable, so delivery is intentionally at-least-once with at most four claims.
@@ -596,7 +674,7 @@ async function deliverCandidateAlert(
       telegramChatId: String(sent.chat.id),
       telegramMessageId: String(sent.message_id),
       sentAt: currentTime(deps),
-      leaseVersion: candidate.leaseVersion
+      leaseVersion: heartbeat.latestLease()
     });
     updated ? metrics.alertsSent += 1 : metrics.alertsStale += 1;
   } catch (error) {

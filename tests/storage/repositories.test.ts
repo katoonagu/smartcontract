@@ -59,6 +59,7 @@ import {
   markAddressPoisoningAlertFailed,
   markAddressPoisoningAlertSkipped,
   markAddressPoisoningAlertSent,
+  renewAddressPoisoningAlertLease,
   markAddressPoisoningCheckClear,
   markAddressPoisoningCheckFailed,
   markAddressPoisoningCheckInconclusive,
@@ -3321,6 +3322,32 @@ describe("address poisoning persistence", () => {
     }
   });
 
+  it("renews only the current sending lease without changing delivery state", async () => {
+    const renewedAt = new Date(now.getTime() + 40_000);
+    const renewed = createMockDb(1, [{ updated_at: renewedAt }]);
+
+    await expect(renewAddressPoisoningAlertLease(renewed.db, {
+      candidateId: "candidate-1",
+      leaseVersion: now,
+      now: renewedAt
+    })).resolves.toEqual(renewedAt);
+
+    const sql = compactSql(renewed.queries[0].sql);
+    expect(sql).toContain("set updated_at = $3");
+    expect(sql).toContain("id = $1 and alert_status = 'sending' and updated_at = $2");
+    expect(sql).toContain("returning updated_at");
+    expect(sql.slice(sql.indexOf(" set "), sql.indexOf(" where ")))
+      .not.toMatch(/alert_attempts\s*=|alert_status\s*=|alert_fingerprint\s*=|alert_last_error\s*=/);
+    expect(renewed.queries[0].params).toEqual(["candidate-1", now, renewedAt]);
+
+    const stale = createMockDb(0, []);
+    await expect(renewAddressPoisoningAlertLease(stale.db, {
+      candidateId: "candidate-1",
+      leaseVersion: now,
+      now: renewedAt
+    })).resolves.toBeNull();
+  });
+
   it("resolves callbacks only through an owner-bound mutation and maps CAS outcomes", async () => {
     for (const [outcome, rows] of [
       ["updated", [{ ...candidateRow, outcome: "updated", status: "confirmed" }]],
@@ -3866,6 +3893,50 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     expect(fifth).toEqual([]);
     const terminal = await pgDb.query("select alert_attempts, alert_status from address_poisoning_candidates");
     expect(terminal.rows[0]).toMatchObject({ alert_attempts: 4, alert_status: "failed" });
+  });
+
+  it("renews the real sending lease by CAS and reclaims only after the renewed lease expires", async () => {
+    const candidate = await createCandidate(`${txPrefix}heartbeat-alert`);
+    const first = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: eventAt,
+      staleSendingBefore: new Date(0)
+    }))[0];
+    const before = await pgDb.query(
+      `select alert_status, alert_attempts, alert_fingerprint, alert_last_error
+       from address_poisoning_candidates where id = $1`,
+      [candidate.id]
+    );
+    const renewedAt = new Date(eventAt.getTime() + 40_000);
+    await expect(renewAddressPoisoningAlertLease(pgDb as unknown as Db, {
+      candidateId: candidate.id,
+      leaseVersion: first.leaseVersion,
+      now: renewedAt
+    })).resolves.toEqual(renewedAt);
+    await expect(renewAddressPoisoningAlertLease(pgDb as unknown as Db, {
+      candidateId: candidate.id,
+      leaseVersion: first.leaseVersion,
+      now: new Date(renewedAt.getTime() + 1)
+    })).resolves.toBeNull();
+    const after = await pgDb.query(
+      `select alert_status, alert_attempts, alert_fingerprint, alert_last_error
+       from address_poisoning_candidates where id = $1`,
+      [candidate.id]
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+
+    const atExpiry = await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: new Date(renewedAt.getTime() + 120_000),
+      staleSendingBefore: renewedAt
+    });
+    expect(atExpiry).toEqual([]);
+    const reclaimed = await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: new Date(renewedAt.getTime() + 120_001),
+      staleSendingBefore: new Date(renewedAt.getTime() + 1)
+    });
+    expect(reclaimed[0]?.alertAttempts).toBe(2);
   });
 
   it("enforces real delivery failure retry boundaries without double counting claims", async () => {
