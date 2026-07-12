@@ -190,6 +190,81 @@ const acceptedEvidenceMismatches: Array<[string, (value: AcceptedPoisoningProgre
   }]
 ];
 
+function twoPageCoverageProgress() {
+  const rawProviderRowIds = Array.from({ length: 200 }, (_, index) => `tronscan:tx:coverage-${index}`);
+  return {
+    version: 2,
+    windowStart: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 86_400_000).toISOString(),
+    windowEnd: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 1).toISOString(),
+    lookupProvider: "tronscan",
+    providerMetadataConsistent: true,
+    transfers: [],
+    providerFacts: [],
+    providerTransferIds: [],
+    providerFactProviders: [],
+    providerFactRawRowIds: [],
+    rawProviderRowIds,
+    providerPages: [0, 100].map((start) => ({
+      provider: "tronscan",
+      start,
+      requestedLimit: 100,
+      nextOffset: start + 100,
+      rawCount: 100,
+      total: 300,
+      rangeTotal: 300,
+      complete: false,
+      metadataConsistent: true,
+      overlappingTransferIds: [] as string[],
+      rawProviderRowIds: rawProviderRowIds.slice(start, start + 100),
+      overlappingRawRowIds: [] as string[],
+      rawResponseHashes: [`coverage-raw-${start}-0`, `coverage-raw-${start}-1`],
+      canonicalTransferHashes: [`coverage-canonical-${start}-0`, `coverage-canonical-${start}-1`]
+    }))
+  };
+}
+
+type TwoPageCoverageProgress = ReturnType<typeof twoPageCoverageProgress>;
+
+type CoverageMutation = (value: TwoPageCoverageProgress, finalPage: PinnedTronscanTransferPage) => void;
+
+const persistedCoverageMismatches: Array<[string, CoverageMutation]> = [
+  ["a gap between ordered pages", (value, finalPage) => {
+    value.providerPages[0].total = value.providerPages[0].rangeTotal = 400;
+    value.providerPages[1].start = 200;
+    value.providerPages[1].nextOffset = 300;
+    value.providerPages[1].total = value.providerPages[1].rangeTotal = 400;
+    finalPage.start = 300;
+    finalPage.nextOffset = 400;
+    finalPage.total = finalPage.rangeTotal = 400;
+  }],
+  ["an impossible local next offset", (value, finalPage) => {
+    value.providerPages[0].total = value.providerPages[0].rangeTotal = 350;
+    value.providerPages[1].nextOffset = 250;
+    value.providerPages[1].total = value.providerPages[1].rangeTotal = 350;
+    finalPage.start = 250;
+    finalPage.nextOffset = 350;
+    finalPage.total = finalPage.rangeTotal = 350;
+  }],
+  ["a historical provider switch", (value) => {
+    value.providerPages[1].provider = "trongrid_fallback";
+    value.providerPages[1].rawProviderRowIds = value.providerPages[1].rawProviderRowIds
+      .map((id) => id.replace(/^tronscan:/, "trongrid_fallback:"));
+    value.rawProviderRowIds = [
+      ...value.providerPages[0].rawProviderRowIds,
+      ...value.providerPages[1].rawProviderRowIds
+    ];
+  }],
+  ["a lookup provider mismatch", (value, finalPage) => {
+    value.lookupProvider = "trongrid_fallback";
+    finalPage.provider = "trongrid_fallback";
+    finalPage.rawProviderRowIds = finalPage.rawProviderRowIds
+      .map((id) => id.replace(/^tronscan:/, "trongrid_fallback:"));
+  }],
+  ["an impossible historical completion flag", (value) => {
+    value.providerPages[0].complete = true;
+  }]
+];
+
 const oversizedAccumulatedMutations: Array<[string, (value: TestAccumulatedLookup) => void]> = [
   ["top-level transfers", (value) => {
     value.transfers.push({ ...value.transfers[0], transferId: "tronscan:accepted:overflow-transfer" });
@@ -1481,6 +1556,41 @@ describe("address poisoning worker", () => {
 
     expect(repo.persistCandidate).not.toHaveBeenCalled();
     expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
+  it.each(persistedCoverageMismatches)("reconstructs persisted pagination and rejects %s", async (_name, mutate) => {
+    const accumulated = twoPageCoverageProgress();
+    const finalTransfers = Array.from({ length: 100 }, (_, index) => rawTransfer({
+      transaction_id: `coverage-final-${index}`,
+      contract_address: OTHER_WALLET
+    }));
+    const finalPage: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: finalTransfers,
+      rawProviderRowIds: finalTransfers.map((row) => `tronscan:tx:${row.transaction_id}`),
+      start: 200,
+      requestedLimit: 100,
+      nextOffset: 300,
+      total: 300,
+      rangeTotal: 300,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["coverage-final-raw-0", "coverage-final-raw-1"],
+      canonicalTransferHashes: ["coverage-final-canonical-0", "coverage-final-canonical-1"]
+    };
+    mutate(accumulated, finalPage);
+    const repo = repository([workItem({
+      logicalOffset: finalPage.start,
+      pageCount: 2,
+      fetchedCount: 200,
+      accumulatedLookupJson: accumulated
+    })]);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => finalPage)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
     expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
   });
 

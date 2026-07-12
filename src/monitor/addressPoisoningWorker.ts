@@ -394,7 +394,12 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
   const priorPageRawRowIds = new Set<string>();
   let pageRawAuditConsistent = true;
   let historicalRawPaginationUnique = true;
-  for (const page of providerPages) {
+  let orderedPageCoverageConsistent = providerPages.length === 0 || providerPages[0].start === 0;
+  let expectedPageStart = 0;
+  let historicalProvider: ProviderPageAudit["provider"] | null = null;
+  let authoritativeRangeTotal: number | null = null;
+  let previousTotal: number | null = null;
+  for (const [pageIndex, page] of providerPages.entries()) {
     const pageRawIds = Array.isArray(page.rawProviderRowIds) ? page.rawProviderRowIds : [];
     const declaredOverlaps = Array.isArray(page.overlappingRawRowIds) ? page.overlappingRawRowIds : [];
     const pageRawIdSet = new Set(pageRawIds);
@@ -410,7 +415,35 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     if (pageRawIdSet.size !== pageRawIds.length || expectedOverlapSet.size > 0) {
       historicalRawPaginationUnique = false;
     }
+    const hashEvidenceConsistent = page.rawResponseHashes.length > 0
+      && page.rawResponseHashes.length === page.canonicalTransferHashes.length
+      && page.rawResponseHashes.length <= Math.ceil(page.requestedLimit / 50)
+      && page.rawResponseHashes.every((hash) => hash.length > 0)
+      && page.canonicalTransferHashes.every((hash) => hash.length > 0);
+    if (
+      page.start !== expectedPageStart
+      || page.nextOffset !== page.start + page.rawCount
+      || page.rawCount !== pageRawIds.length
+      || page.rawCount > page.requestedLimit
+      || page.metadataConsistent !== true
+      || !hashEvidenceConsistent
+      || (historicalProvider !== null && page.provider !== historicalProvider)
+      || page.rangeTotal === null
+      || (authoritativeRangeTotal !== null && page.rangeTotal !== authoritativeRangeTotal)
+      || page.nextOffset > page.rangeTotal
+      || (page.total !== null && page.total < page.rangeTotal)
+      || (previousTotal !== null && page.total !== null && page.total < previousTotal)
+      || page.complete !== (page.nextOffset >= page.rangeTotal)
+      || (page.complete && pageIndex !== providerPages.length - 1)
+    ) orderedPageCoverageConsistent = false;
+    expectedPageStart = page.nextOffset;
+    historicalProvider ??= page.provider;
+    authoritativeRangeTotal ??= page.rangeTotal;
+    if (page.total !== null) previousTotal = page.total;
     for (const id of pageRawIds) priorPageRawRowIds.add(id);
+  }
+  if (providerPages.length > 0 && lookupProvider !== historicalProvider) {
+    orderedPageCoverageConsistent = false;
   }
   const hasPriorProviderEvidence = lookupProvider !== null
     || windowStart !== null
@@ -426,6 +459,7 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     && auditedRawProviderRowIdSet.size === rawProviderRowIdSet.size
     && [...auditedRawProviderRowIdSet].every((id) => rawProviderRowIdSet.has(id))
     && pageRawAuditConsistent
+    && orderedPageCoverageConsistent
     && providerPages.every((page) =>
       Array.isArray(page.rawProviderRowIds)
       && Array.isArray(page.overlappingRawRowIds)
