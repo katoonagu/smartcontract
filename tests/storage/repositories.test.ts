@@ -3957,29 +3957,42 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
 
   it("moves a legacy reasonless clear to truthful skipped_backfill on migration reapply", async () => {
     const txHash = `${txPrefix}legacy-clear-null`;
-    await seedObserved(txHash);
-    await pgDb.query("alter table observed_transactions drop constraint observed_transactions_poisoning_clear_reason_check");
-    await pgDb.query(
-      `update observed_transactions
-       set poisoning_check_status = 'clear', poisoning_lookup_coverage = 'complete', poisoning_last_error = null
-       where tx_hash = $1`,
-      [txHash]
-    );
-    const migrationSql = readFileSync("migrations/031_address_poisoning_monitor.sql", "utf8");
-    await pgDb.query(migrationSql);
-    const first = await pgDb.query(
-      "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1",
-      [txHash]
-    );
-    expect(first.rows[0]).toEqual({
-      poisoning_check_status: "skipped_backfill",
-      poisoning_last_error: "legacy_clear_reason_unknown"
-    });
-    await pgDb.query(migrationSql);
-    const reapplied = await pgDb.query(
-      "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1",
-      [txHash]
-    );
-    expect(reapplied.rows[0]).toEqual(first.rows[0]);
+    const client = await pgDb.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into observed_transactions (
+           tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+           poisoning_check_status, poisoning_lookup_coverage, poisoning_last_error
+         ) values ($1, $2, $3, $4, 'USDT', '10', $5, 'pending', null, null)`,
+        [txHash, walletId, sender, walletAddress, eventAt]
+      );
+      await client.query("alter table observed_transactions drop constraint observed_transactions_poisoning_clear_reason_check");
+      await client.query(
+        `update observed_transactions
+         set poisoning_check_status = 'clear', poisoning_lookup_coverage = 'complete', poisoning_last_error = null
+         where tx_hash = $1`,
+        [txHash]
+      );
+      const migrationSql = readFileSync("migrations/031_address_poisoning_monitor.sql", "utf8");
+      await client.query(migrationSql);
+      const first = await client.query(
+        "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1",
+        [txHash]
+      );
+      expect(first.rows[0]).toEqual({
+        poisoning_check_status: "skipped_backfill",
+        poisoning_last_error: "legacy_clear_reason_unknown"
+      });
+      await client.query(migrationSql);
+      const reapplied = await client.query(
+        "select poisoning_check_status, poisoning_last_error from observed_transactions where tx_hash = $1",
+        [txHash]
+      );
+      expect(reapplied.rows[0]).toEqual(first.rows[0]);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
   });
 });
