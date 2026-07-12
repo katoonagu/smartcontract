@@ -12,7 +12,7 @@ import type { CoverageDebugReport } from "../../src/forensics/coverageDebugRepor
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { Db } from "../../src/storage/db";
-import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AddressPoisoningCandidate, AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 import {
@@ -38,6 +38,50 @@ const secondWalletAddress = `T${"2".repeat(33)}`;
 const txHash = "a".repeat(64);
 const adminId = "9001";
 const userId = "42";
+const poisoningCallbackToken = "poisoningToken_1234";
+
+function poisoningCandidate(overrides: Partial<AddressPoisoningCandidate> = {}): AddressPoisoningCandidate {
+  return {
+    id: "poisoning-candidate-1",
+    callbackToken: poisoningCallbackToken,
+    watchedWalletId: "wallet-1",
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    tokenSymbol: "USDT",
+    tokenDecimals: 6,
+    suspiciousIncomingTxHash: "b".repeat(64),
+    suspiciousSender: `T${"3".repeat(33)}`,
+    suspiciousAmountRaw: "10000000",
+    suspiciousIncomingAt: new Date("2026-07-12T12:00:45.000Z"),
+    matchedOutgoingTxHash: "c".repeat(64),
+    genuineRecipient: `T${"4".repeat(33)}`,
+    matchedOutgoingAmountRaw: "10000000",
+    matchedOutgoingAt: new Date("2026-07-12T12:00:00.000Z"),
+    rawPrefixLength: 3,
+    meaningfulPrefixLength: 2,
+    suffixLength: 8,
+    classification: "CRITICAL",
+    confidence: "high",
+    rawEvidenceId: "poisoning-evidence-1",
+    secondaryMatches: [],
+    evidenceJson: {},
+    status: "candidate",
+    alertFingerprint: "poisoning-fingerprint-1",
+    alertStatus: "sent",
+    alertAttempts: 1,
+    alertLeaseUpdatedAt: null,
+    alertNextRetryAt: null,
+    alertLastError: null,
+    telegramChatId: userId,
+    telegramMessageId: "10",
+    laterLossTxHash: null,
+    laterLossEvidenceJson: null,
+    createdAt: new Date("2026-07-12T12:01:00.000Z"),
+    updatedAt: new Date("2026-07-12T12:01:00.000Z"),
+    resolvedAt: null,
+    alertSentAt: new Date("2026-07-12T12:01:00.000Z"),
+    ...overrides
+  };
+}
 
 function emptyCoverageDebug(subjectAddress = walletAddress): CoverageDebugReport {
   return {
@@ -1770,6 +1814,7 @@ function createQueuedForensicJobCaptureDb(defaultLocale: BotLocale = "en"): {
 
 async function createSmokeBot(options: {
   failAnswerCallbackQuery?: boolean;
+  failEditMessageReplyMarkup?: boolean;
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
@@ -1778,6 +1823,14 @@ async function createSmokeBot(options: {
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   getLatestWhereIsMoneyCheckJobForAddress?: BotOptions["getLatestWhereIsMoneyCheckJobForAddress"];
   getLatestDeepForensicCheckJobForAddressAnyStatus?: BotOptions["getLatestDeepForensicCheckJobForAddressAnyStatus"];
+  resolveAddressPoisoningCandidate?: (input: {
+    callbackToken: string;
+    telegramUserId: string;
+    resolution: "confirmed" | "dismissed";
+  }) => Promise<{
+    outcome: "updated" | "idempotent" | "conflict" | "unavailable";
+    candidate: AddressPoisoningCandidate | null;
+  }>;
   tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
@@ -1815,7 +1868,8 @@ async function createSmokeBot(options: {
     })),
     getForensicCheckJob: options.getForensicCheckJob,
     getLatestWhereIsMoneyCheckJobForAddress: options.getLatestWhereIsMoneyCheckJobForAddress,
-    getLatestDeepForensicCheckJobForAddressAnyStatus: options.getLatestDeepForensicCheckJobForAddressAnyStatus
+    getLatestDeepForensicCheckJobForAddressAnyStatus: options.getLatestDeepForensicCheckJobForAddressAnyStatus,
+    resolveAddressPoisoningCandidate: options.resolveAddressPoisoningCandidate
   });
   const calls: ReplyCall[] = [];
   bot.api.config.use(async (_prev, method, payload): Promise<any> => {
@@ -1834,6 +1888,9 @@ async function createSmokeBot(options: {
       throw new Error("Call to 'answerCallbackQuery' failed! (400: Bad Request: query is too old and response timeout expired or query ID is invalid)");
     }
     calls.push({ method, payload: payload as Record<string, unknown> });
+    if (method === "editMessageReplyMarkup" && options.failEditMessageReplyMarkup) {
+      throw new Error("Call to 'editMessageReplyMarkup' failed");
+    }
     return { ok: true, result: true };
   });
   await bot.init();
@@ -1841,6 +1898,216 @@ async function createSmokeBot(options: {
 }
 
 describe("bot command and inline UX smoke coverage", () => {
+  it("strictly parses address-poisoning decisions", () => {
+    expect(parseCallbackData(`poison:confirm:${poisoningCallbackToken}`)).toEqual({
+      kind: "address_poisoning_confirm",
+      callbackToken: poisoningCallbackToken
+    });
+    expect(parseCallbackData(`poison:dismiss:${poisoningCallbackToken}`)).toEqual({
+      kind: "address_poisoning_dismiss",
+      callbackToken: poisoningCallbackToken
+    });
+
+    for (const malformed of [
+      `poison:confirm:${"a".repeat(15)}`,
+      `poison:confirm:${"a".repeat(25)}`,
+      "poison:confirm:invalid.token1234",
+      `poison:confirm:${poisoningCallbackToken}:extra`,
+      `poison:unknown:${poisoningCallbackToken}`,
+      `Poison:confirm:${poisoningCallbackToken}`,
+      `poison:Confirm:${poisoningCallbackToken}`,
+      ` poison:confirm:${poisoningCallbackToken}`,
+      `poison:confirm:${poisoningCallbackToken} `,
+      `wrong:confirm:${poisoningCallbackToken}`
+    ]) {
+      expect(parseCallbackData(malformed), malformed).toBeNull();
+    }
+  });
+
+  it.each([
+    ["confirm", "confirmed", "Address marked as replacement."],
+    ["dismiss", "dismissed", "Address marked as familiar."]
+  ] as const)("lets the owner %s a poisoning candidate and removes only mutation buttons", async (action, resolution, successText) => {
+    const resolverInputs: unknown[] = [];
+    const candidate = poisoningCandidate({ status: resolution });
+    const { bot, calls } = await createSmokeBot({
+      resolveAddressPoisoningCandidate: async (input) => {
+        resolverInputs.push(input);
+        return { outcome: "updated", candidate };
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:${action}:${poisoningCallbackToken}`, userId));
+
+    expect(resolverInputs).toEqual([{
+      callbackToken: poisoningCallbackToken,
+      telegramUserId: userId,
+      resolution
+    }]);
+    const answers = calls.filter((call) => call.method === "answerCallbackQuery");
+    expect(answers).toHaveLength(1);
+    expect(answers[0].payload.text).toBe(successText);
+    const edits = calls.filter((call) => call.method === "editMessageReplyMarkup");
+    expect(edits).toHaveLength(1);
+    expect(edits[0].payload).not.toHaveProperty("text");
+    const buttons = edits[0].payload.reply_markup.inline_keyboard.flat();
+    expect(buttons).toHaveLength(2);
+    expect(buttons.every((button: Record<string, unknown>) => typeof button.url === "string")).toBe(true);
+    expect(buttons.every((button: Record<string, unknown>) => button.callback_data === undefined)).toBe(true);
+  });
+
+  it("treats an identical replay as successful and retries the terminal keyboard edit", async () => {
+    let resolverCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      resolveAddressPoisoningCandidate: async () => {
+        resolverCalls += 1;
+        return { outcome: "idempotent", candidate: poisoningCandidate({ status: "confirmed" }) };
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId));
+    await bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId));
+
+    expect(resolverCalls).toBe(2);
+    expect(calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Address marked as replacement.",
+      "Address marked as replacement."
+    ]);
+    expect(calls.filter((call) => call.method === "editMessageReplyMarkup")).toHaveLength(2);
+  });
+
+  it.each(["unavailable", "conflict"] as const)("does not leak candidate facts for a %s outcome", async (outcome) => {
+    const resolverInputs: unknown[] = [];
+    const update = callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, "99");
+    update.callback_query.message.chat.id = Number(userId);
+    const { bot, calls } = await createSmokeBot({
+      resolveAddressPoisoningCandidate: async (input) => {
+        resolverInputs.push(input);
+        return {
+          outcome,
+          candidate: outcome === "conflict" ? poisoningCandidate({ status: "dismissed" }) : null
+        };
+      }
+    });
+
+    await bot.handleUpdate(update);
+
+    expect(resolverInputs).toEqual([{
+      callbackToken: poisoningCallbackToken,
+      telegramUserId: "99",
+      resolution: "confirmed"
+    }]);
+    const answers = calls.filter((call) => call.method === "answerCallbackQuery");
+    expect(answers).toHaveLength(1);
+    expect(answers[0].payload.text).toBe("Action unavailable. A decision may already have been made.");
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(false);
+  });
+
+  it("uses the same neutral response for an unknown token and never edits the message", async () => {
+    const resolverInputs: unknown[] = [];
+    const unknownToken = "unknownToken_12345";
+    const { bot, calls } = await createSmokeBot({
+      resolveAddressPoisoningCandidate: async (input) => {
+        resolverInputs.push(input);
+        return { outcome: "unavailable", candidate: null };
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:dismiss:${unknownToken}`, userId));
+
+    expect(resolverInputs).toEqual([{
+      callbackToken: unknownToken,
+      telegramUserId: userId,
+      resolution: "dismissed"
+    }]);
+    expect(calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Action unavailable. A decision may already have been made."
+    ]);
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(false);
+  });
+
+  it("fails closed when the callback has no sender or an updated outcome has no candidate", async () => {
+    let resolverCalls = 0;
+    const missingSender = callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId);
+    delete (missingSender.callback_query as { from?: unknown }).from;
+    const first = await createSmokeBot({
+      defaultLocale: "ru",
+      resolveAddressPoisoningCandidate: async () => {
+        resolverCalls += 1;
+        return { outcome: "updated", candidate: poisoningCandidate({ status: "confirmed" }) };
+      }
+    });
+    await first.bot.handleUpdate(missingSender as never);
+    expect(resolverCalls).toBe(0);
+    expect(first.calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Действие недоступно. Возможно, решение уже принято."
+    ]);
+    expect(first.calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(false);
+
+    const second = await createSmokeBot({
+      resolveAddressPoisoningCandidate: async () => ({ outcome: "updated", candidate: null })
+    });
+    await second.bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId));
+    expect(second.calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Action unavailable. A decision may already have been made."
+    ]);
+    expect(second.calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(false);
+  });
+
+  it("localizes Russian poisoning decisions", async () => {
+    const candidate = poisoningCandidate({ status: "dismissed" });
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      resolveAddressPoisoningCandidate: async () => ({ outcome: "updated", candidate })
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:dismiss:${poisoningCallbackToken}`, userId));
+
+    expect(calls.filter((call) => call.method === "answerCallbackQuery").map((call) => call.payload.text)).toEqual([
+      "Адрес отмечен как знакомый."
+    ]);
+    const edit = calls.find((call) => call.method === "editMessageReplyMarkup");
+    expect(edit?.payload.reply_markup.inline_keyboard[0].map((button: { text: string }) => button.text)).toEqual([
+      "Входящий перевод",
+      "Исходящий перевод"
+    ]);
+  });
+
+  it("does not answer twice or reverse state when the terminal keyboard edit fails", async () => {
+    let resolverCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      failEditMessageReplyMarkup: true,
+      resolveAddressPoisoningCandidate: async () => {
+        resolverCalls += 1;
+        return { outcome: "updated", candidate: poisoningCandidate({ status: "confirmed" }) };
+      }
+    });
+
+    await expect(bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId))).resolves.toBeUndefined();
+
+    expect(resolverCalls).toBe(1);
+    expect(calls.filter((call) => call.method === "answerCallbackQuery")).toHaveLength(1);
+    expect(calls.filter((call) => call.method === "editMessageReplyMarkup")).toHaveLength(1);
+  });
+
+  it("keeps existing callbacks unchanged and never resolves malformed poisoning data", async () => {
+    let resolverCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      resolveAddressPoisoningCandidate: async () => {
+        resolverCalls += 1;
+        return { outcome: "unavailable", candidate: null };
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate("help", userId));
+    expect(calls.filter((call) => call.method === "answerCallbackQuery")).toHaveLength(1);
+    expect(lastText(calls)).toContain("TRON Guard help");
+
+    await bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${"x".repeat(15)}`, userId));
+    expect(resolverCalls).toBe(0);
+    expect(calls.filter((call) => call.method === "answerCallbackQuery")).toHaveLength(2);
+  });
+
   it("parses incoming deposit job check callbacks", () => {
     expect(parseCallbackData("check:deposit:42a0a912-dc6a-45b5-b281-a2f0c7ac034e")).toEqual({
       kind: "check_deposit_job",

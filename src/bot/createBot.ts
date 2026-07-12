@@ -72,6 +72,7 @@ import {
   markTheftReportAwaitingDeposit,
   removeCustomerAlertRecipient,
   removeWatchedWallet,
+  resolveAddressPoisoningCandidate,
   saveAddressLabel,
   saveAddressFastCheckJob as saveAddressFastCheckJobRecord,
   createOrReuseForensicCheckJob,
@@ -88,6 +89,7 @@ import {
 } from "../storage/repositories";
 import type { AddressFastCheckJobInput, CustomerAlertMode, ForensicCheckJob, TheftReport } from "../storage/repositories";
 import type {
+  AddressPoisoningCandidate,
   ApprovalDrainProvenanceProfile,
   BalanceFormingTransfer,
   BoundaryExposureProfile,
@@ -108,6 +110,7 @@ import type {
   WalletRoleProfile,
   WatchedWallet
 } from "../types";
+import { addressPoisoningAlertKeyboard } from "../alerts/addressPoisoningAlert";
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
@@ -249,6 +252,14 @@ type CreateBotOptions = {
     windowStart: Date | null;
     windowEnd: Date | null;
   }) => Promise<ForensicCheckJob | null>;
+  resolveAddressPoisoningCandidate?: (input: {
+    callbackToken: string;
+    telegramUserId: string;
+    resolution: "confirmed" | "dismissed";
+  }) => Promise<{
+    outcome: "updated" | "idempotent" | "conflict" | "unavailable";
+    candidate: AddressPoisoningCandidate | null;
+  }>;
 };
 
 function relatedJobLookupInput(job: ForensicCheckJob) {
@@ -4184,14 +4195,30 @@ async function ensureTelegramUserContext(ctx: Context, db: Db): Promise<{ id: st
   return { id, locale: await getBotLocale(db, id) };
 }
 
-async function answerCallbackQuerySafely(ctx: Context): Promise<void> {
+async function answerCallbackQuerySafely(ctx: Context, text?: string): Promise<void> {
   try {
-    await ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery(text ? { text } : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.toLowerCase().includes("query is too old")) return;
     throw error;
   }
+}
+
+function addressPoisoningDecisionText(
+  locale: BotLocale,
+  action: "confirm" | "dismiss",
+  available: boolean
+): string {
+  if (!available) {
+    return locale === "en"
+      ? "Action unavailable. A decision may already have been made."
+      : "Действие недоступно. Возможно, решение уже принято.";
+  }
+  if (action === "confirm") {
+    return locale === "en" ? "Address marked as replacement." : "Адрес помечен как подмена.";
+  }
+  return locale === "en" ? "Address marked as familiar." : "Адрес отмечен как знакомый.";
 }
 
 async function replyWithCheck(
@@ -4712,6 +4739,9 @@ export function createBot(
   const resolveLatestDeepForensicCheckJobForAddressAnyStatus = options.getLatestDeepForensicCheckJobForAddressAnyStatus
     ?? ((input: Parameters<NonNullable<CreateBotOptions["getLatestDeepForensicCheckJobForAddressAnyStatus"]>>[0]) =>
       getLatestDeepForensicCheckJobForAddressAnyStatus(db, input));
+  const resolvePoisoningCandidate = options.resolveAddressPoisoningCandidate
+    ?? ((input: Parameters<NonNullable<CreateBotOptions["resolveAddressPoisoningCandidate"]>>[0]) =>
+      resolveAddressPoisoningCandidate(db, input));
 
   bot.catch((error) => {
     console.error("Telegram bot update failed", error.error);
@@ -5077,6 +5107,52 @@ export function createBot(
   });
 
   bot.on("callback_query:data", async (ctx) => {
+    const callback = parseCallbackData(ctx.callbackQuery.data);
+    if (callback?.kind === "address_poisoning_confirm" || callback?.kind === "address_poisoning_dismiss") {
+      const action = callback.kind === "address_poisoning_confirm" ? "confirm" : "dismiss";
+      const resolution = action === "confirm" ? "confirmed" : "dismissed";
+      const callerId = ctx.from?.id ? String(ctx.from.id) : null;
+      const locale = callerId ? await getBotLocale(db, callerId) : DEFAULT_BOT_LOCALE;
+      if (!callerId) {
+        await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(locale, action, false));
+        return;
+      }
+
+      let resolved: Awaited<ReturnType<typeof resolvePoisoningCandidate>>;
+      try {
+        resolved = await resolvePoisoningCandidate({
+          callbackToken: callback.callbackToken,
+          telegramUserId: callerId,
+          resolution
+        });
+      } catch (error) {
+        console.error("Address poisoning decision failed", error);
+        await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(locale, action, false));
+        return;
+      }
+
+      const candidate = resolved.candidate;
+      const available = (resolved.outcome === "updated" || resolved.outcome === "idempotent")
+        && candidate !== null;
+      await answerCallbackQuerySafely(ctx, addressPoisoningDecisionText(locale, action, available));
+      if (!available || !candidate) return;
+
+      try {
+        await ctx.editMessageReplyMarkup({
+          reply_markup: addressPoisoningAlertKeyboard({
+            callbackToken: candidate.callbackToken,
+            incomingTxHash: candidate.suspiciousIncomingTxHash,
+            outgoingTxHash: candidate.matchedOutgoingTxHash,
+            terminal: true,
+            locale
+          })
+        });
+      } catch (error) {
+        console.error("Address poisoning terminal keyboard update failed", error);
+      }
+      return;
+    }
+
     const id = telegramId(ctx);
     await answerCallbackQuerySafely(ctx);
     await upsertTelegramUser(db, {
@@ -5085,7 +5161,6 @@ export function createBot(
     });
     let locale = await getBotLocale(db, id);
 
-    const callback = parseCallbackData(ctx.callbackQuery.data);
     if (!callback) {
       await replyOrEdit(ctx, locale === "en" ? "Unknown action." : "Неизвестное действие.", mainMenuKeyboard(locale));
       return;

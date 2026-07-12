@@ -39,6 +39,8 @@ export type BotCallback =
   | { kind: "settings_language"; locale: BotLocale }
   | { kind: "settings_remove_admin" }
   | { kind: "settings_remove_admin_value"; recipientTelegramUserId: string }
+  | { kind: "address_poisoning_dismiss"; callbackToken: string }
+  | { kind: "address_poisoning_confirm"; callbackToken: string }
   | { kind: "cancel" };
 
 export function shortAddress(address: string): string {
@@ -102,6 +104,14 @@ export function parseCallbackData(data: string): BotCallback | null {
       default:
         return null;
     }
+  }
+
+  const poisoningMatch = /^poison:(dismiss|confirm):([A-Za-z0-9_-]{16,24})$/.exec(data);
+  if (poisoningMatch) {
+    return {
+      kind: poisoningMatch[1] === "confirm" ? "address_poisoning_confirm" : "address_poisoning_dismiss",
+      callbackToken: poisoningMatch[2]
+    };
   }
 
   const alertModeSetMatch = /^wl:mode:([^:]+):(realtime|risk_only|digest|paused)(?::(\d{1,2}))?$/.exec(data);
