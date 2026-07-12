@@ -64,7 +64,7 @@ export type AddressPoisoningDetectionResult =
     kind: "clear";
     reason: "complete_no_match" | "trusted_sender" | "authoritative_service" | "prior_relationship";
   }
-  | { kind: "inconclusive"; reason: "partial_no_match" };
+  | { kind: "inconclusive"; reason: "partial_no_match" | "invalid_input" };
 
 export interface InitialAddressPoisoningCheckInput {
   amountRaw: RawTokenAmount;
@@ -141,13 +141,19 @@ function classificationRank(value: AddressPoisoningMatch): number {
   return value.classification === "CRITICAL" ? 2 : 1;
 }
 
+function compareRawStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function compareMatches(a: AddressPoisoningMatch, b: AddressPoisoningMatch): number {
   return classificationRank(b) - classificationRank(a)
     || (b.meaningfulPrefixLength + b.suffixLength) - (a.meaningfulPrefixLength + a.suffixLength)
     || Number(b.exactAmount) - Number(a.exactAmount)
     || a.elapsedMs - b.elapsedMs
     || b.outgoingAt.getTime() - a.outgoingAt.getTime()
-    || a.outgoingTxHash.localeCompare(b.outgoingTxHash);
+    || compareRawStrings(a.outgoingTxHash, b.outgoingTxHash)
+    || compareRawStrings(a.genuineRecipient, b.genuineRecipient)
+    || compareRawStrings(a.outgoingAmountRaw, b.outgoingAmountRaw);
 }
 
 export function rankAddressPoisoningMatches(
@@ -168,15 +174,32 @@ function validTransferToken(transfer: AddressPoisoningTransfer): boolean {
     && transfer.tokenDecimals >= 0;
 }
 
+function isValidPoisoningTransfer(transfer: AddressPoisoningTransfer): boolean {
+  const amount = parseRawAmount(transfer.amountRaw);
+  return isValidTronAddress(transfer.sender)
+    && isValidTronAddress(transfer.receiver)
+    && transfer.sender !== transfer.receiver
+    && validTransferToken(transfer)
+    && amount !== null
+    && amount > 0n
+    && transfer.occurredAt instanceof Date
+    && Number.isFinite(transfer.occurredAt.getTime())
+    && typeof transfer.txHash === "string"
+    && transfer.txHash.trim().length > 0;
+}
+
 function isEarlierDirectRelationship(
   transfer: AddressPoisoningTransfer,
-  watchedWallet: string,
-  suspiciousSender: string,
-  incomingAtMs: number
+  incoming: AddressPoisoningTransfer
 ): boolean {
-  if (!Number.isFinite(transfer.occurredAt.getTime()) || transfer.occurredAt.getTime() >= incomingAtMs) return false;
-  return (transfer.sender === watchedWallet && transfer.receiver === suspiciousSender)
-    || (transfer.sender === suspiciousSender && transfer.receiver === watchedWallet);
+  if (!isValidPoisoningTransfer(transfer)) return false;
+  const elapsedMs = incoming.occurredAt.getTime() - transfer.occurredAt.getTime();
+  return transfer.sender === incoming.receiver
+    && transfer.receiver === incoming.sender
+    && transfer.tokenContract === incoming.tokenContract
+    && transfer.tokenDecimals === incoming.tokenDecimals
+    && elapsedMs > 0
+    && elapsedMs <= MAX_MATCH_ELAPSED_MS;
 }
 
 function exactSuppressionReason(
@@ -193,42 +216,32 @@ function exactSuppressionReason(
 export function detectAddressPoisoning(
   input: AddressPoisoningDetectionInput
 ): AddressPoisoningDetectionResult {
+  if (!isValidPoisoningTransfer(input.incoming)) {
+    return { kind: "inconclusive", reason: "invalid_input" };
+  }
+
   const watchedWallet = input.incoming.receiver;
   const suspiciousSender = input.incoming.sender;
   const suppressionReason = exactSuppressionReason(input.suppression, suspiciousSender);
   if (suppressionReason) return { kind: "clear", reason: suppressionReason };
 
   const incomingAtMs = input.incoming.occurredAt.getTime();
-  if (input.checkedTransfers.some((transfer) => isEarlierDirectRelationship(
-    transfer,
-    watchedWallet,
-    suspiciousSender,
-    incomingAtMs
-  ))) {
+  if (input.checkedTransfers.some((transfer) => isEarlierDirectRelationship(transfer, input.incoming))) {
     return { kind: "clear", reason: "prior_relationship" };
   }
 
   const incomingAmount = parseRawAmount(input.incoming.amountRaw);
   const matches: AddressPoisoningMatch[] = [];
-  if (
-    incomingAmount !== null
-    && Number.isFinite(incomingAtMs)
-    && isValidTronAddress(watchedWallet)
-    && isValidTronAddress(suspiciousSender)
-    && watchedWallet !== suspiciousSender
-    && validTransferToken(input.incoming)
-  ) {
+  if (incomingAmount !== null) {
     for (const transfer of input.checkedTransfers) {
+      if (!isValidPoisoningTransfer(transfer)) continue;
       const outgoingAtMs = transfer.occurredAt.getTime();
       const elapsedMs = incomingAtMs - outgoingAtMs;
       if (
         transfer.sender !== watchedWallet
         || transfer.receiver === watchedWallet
-        || !isValidTronAddress(transfer.receiver)
-        || !validTransferToken(transfer)
         || transfer.tokenContract !== input.incoming.tokenContract
         || transfer.tokenDecimals !== input.incoming.tokenDecimals
-        || !Number.isFinite(outgoingAtMs)
         || elapsedMs < 0
         || elapsedMs > MAX_MATCH_ELAPSED_MS
       ) continue;

@@ -58,6 +58,16 @@ function addressWithSuffix(real: string, suffixLength: number, fill = "A"): stri
   return `T${fill.repeat(33 - suffixLength)}${real.slice(-suffixLength)}`;
 }
 
+function priorRelationship(overrides: Partial<AddressPoisoningTransfer> = {}): AddressPoisoningTransfer {
+  return outgoing({
+    txHash: "prior-direct-relation",
+    receiver: THJ_POISONING_CASE.lookalike,
+    amountRaw: "1",
+    occurredAt: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 1_000),
+    ...overrides
+  });
+}
+
 describe("compareTronAddresses", () => {
   it("does not count the universal leading T as a meaningful prefix", () => {
     expect(compareTronAddresses(THJ_POISONING_CASE.realRecipient, THJ_POISONING_CASE.lookalike)).toEqual({
@@ -153,6 +163,28 @@ describe("detectAddressPoisoning", () => {
     expect(JSON.stringify(result)).not.toContain(THJ_POST_LOSS_FACTS.psmTxHash);
   });
 
+  it.each([
+    ["unparseable raw amount", { amountRaw: "not-an-integer" }],
+    ["zero raw amount", { amountRaw: "0" }],
+    ["invalid event date", { occurredAt: new Date(Number.NaN) }],
+    ["invalid sender address", { sender: "not-a-tron-address" }],
+    ["invalid receiver address", { receiver: "not-a-tron-address" }],
+    ["self transfer", { sender: THJ_POISONING_CASE.watchedWallet }],
+    ["invalid token contract", { tokenContract: "not-a-tron-contract" }],
+    ["negative token decimals", { tokenDecimals: -1 }],
+    ["fractional token decimals", { tokenDecimals: 1.5 }],
+    ["empty transaction hash", { txHash: "" }]
+  ] satisfies Array<[string, Partial<AddressPoisoningTransfer>]>) (
+    "returns invalid_input instead of clear for complete coverage with %s",
+    (_name, incomingOverride) => {
+      expect(detectAddressPoisoning(detectionInput({
+        incoming: incoming(incomingOverride),
+        checkedTransfers: [],
+        coverage: "complete"
+      }))).toEqual({ kind: "inconclusive", reason: "invalid_input" });
+    }
+  );
+
   it("classifies a five-character suffix match as HIGH", () => {
     const fiveCharacterLookalike = addressWithSuffix(THJ_POISONING_CASE.realRecipient, 5);
     const result = detectAddressPoisoning(detectionInput({ incoming: incoming({ sender: fiveCharacterLookalike }) }));
@@ -209,17 +241,58 @@ describe("detectAddressPoisoning", () => {
     expect(result).toEqual({ kind: "clear", reason: "complete_no_match" });
   });
 
-  it("clears a sender with an earlier direct relationship to the watched wallet", () => {
-    const earlierRelationship = outgoing({
-      txHash: "prior-direct-relation",
-      receiver: THJ_POISONING_CASE.lookalike,
-      amountRaw: "1",
-      occurredAt: new Date(THJ_POISONING_CASE.outgoingAt.getTime() - 1_000)
-    });
-
+  it("clears a sender when the wallet sent to it exactly 24 hours earlier in the same token", () => {
     expect(detectAddressPoisoning(detectionInput({
-      checkedTransfers: [outgoing(), earlierRelationship]
+      checkedTransfers: [outgoing(), priorRelationship({
+        occurredAt: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 24 * HOUR_MS)
+      })]
     }))).toEqual({ kind: "clear", reason: "prior_relationship" });
+  });
+
+  it("does not suppress from a relationship older than 24 hours by one millisecond", () => {
+    expect(detectAddressPoisoning(detectionInput({
+      checkedTransfers: [outgoing(), priorRelationship({
+        occurredAt: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 24 * HOUR_MS - 1)
+      })]
+    })).kind).toBe("candidate");
+  });
+
+  it.each([
+    ["token contract", { tokenContract: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj" }],
+    ["token decimals", { tokenDecimals: 18 }]
+  ] satisfies Array<[string, Partial<AddressPoisoningTransfer>]>) (
+    "does not suppress from a prior relationship with mismatched %s",
+    (_name, relationshipOverride) => {
+      expect(detectAddressPoisoning(detectionInput({
+        checkedTransfers: [outgoing(), priorRelationship(relationshipOverride)]
+      })).kind).toBe("candidate");
+    }
+  );
+
+  it.each([
+    ["equal-time", 0],
+    ["future", -1]
+  ] as const)("does not suppress from an %s relationship", (_name, elapsedMs) => {
+    expect(detectAddressPoisoning(detectionInput({
+      checkedTransfers: [outgoing(), priorRelationship({
+        occurredAt: new Date(THJ_POISONING_CASE.incomingAt.getTime() - elapsedMs)
+      })]
+    })).kind).toBe("candidate");
+  });
+
+  it("does not suppress from an invalid prior relationship transfer", () => {
+    expect(detectAddressPoisoning(detectionInput({
+      checkedTransfers: [outgoing(), priorRelationship({ txHash: "" })]
+    })).kind).toBe("candidate");
+  });
+
+  it("does not treat an earlier incoming transfer from the sender as a prior outgoing relationship", () => {
+    expect(detectAddressPoisoning(detectionInput({
+      checkedTransfers: [outgoing(), priorRelationship({
+        sender: THJ_POISONING_CASE.lookalike,
+        receiver: THJ_POISONING_CASE.watchedWallet
+      })]
+    })).kind).toBe("candidate");
   });
 
   it("returns clear for a complete negative lookup", () => {
@@ -360,6 +433,16 @@ describe("match ranking", () => {
     expect(compareMatches(input[0], input[1])).toBeGreaterThan(0);
     expect(rankAddressPoisoningMatches(input).map((match) => match.outgoingTxHash)).toEqual(["a-hash", "b-hash"]);
     expect(input.map((match) => match.outgoingTxHash)).toEqual(["b-hash", "a-hash"]);
+  });
+
+  it("uses genuine recipient as a deterministic raw-code-unit tie breaker for duplicate hashes", () => {
+    const lexicalFirst = { ...base, genuineRecipient: THJ_POISONING_CASE.lookalike };
+    const lexicalSecond = { ...base, genuineRecipient: THJ_POISONING_CASE.realRecipient };
+    const forward = rankAddressPoisoningMatches([lexicalSecond, lexicalFirst]);
+    const reverse = rankAddressPoisoningMatches([lexicalFirst, lexicalSecond]);
+
+    expect(forward[0].genuineRecipient).toBe(THJ_POISONING_CASE.lookalike);
+    expect(reverse[0].genuineRecipient).toBe(THJ_POISONING_CASE.lookalike);
   });
 });
 
