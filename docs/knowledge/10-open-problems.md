@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -25,6 +25,8 @@ code_refs:
   - src/forensics/incomingDepositJob.ts
   - src/check/deepForensicCheck.ts
   - src/bot/riskExplanationSummary.ts
+  - src/monitor/addressPoisoningWorker.ts
+  - src/alerts/addressPoisoningAlert.ts
   - src/forensics/strictProvenanceBenchmark.ts
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/deepForensicJob.test.ts
@@ -313,6 +315,21 @@ supersedes:
   Forensics graph through neutral cross-run node badges and selected-node source
   job links. Remaining open work: a global multi-job graph view that is not tied
   to one selected Forensics job.
+
+## Address-Poisoning Protection
+
+- Telegram delivery is at-least-once, not exactly-once. The worker claims one
+  candidate only when a send slot is free, fixes locale on first claim, allows
+  at most four executions, renews its dedicated lease every 40 seconds, and
+  reclaims stale `sending` rows after 120 seconds. These controls reduce
+  duplicates, but Telegram acceptance and the database `sent` acknowledgement
+  cannot be one atomic transaction. A crash in that narrow external gap can
+  send the same logical warning again on retry.
+- The current protection starts after a small incoming official-USDT lure is
+  observed. A recipient precheck before signing or broadcasting is the next
+  phase. The saved candidate, callback status, raw provider facts, normalized
+  transfers, and detector policy version are ready to be reused, but the
+  precheck product surface is not implemented in this release.
 
 ## Planned Behavior
 

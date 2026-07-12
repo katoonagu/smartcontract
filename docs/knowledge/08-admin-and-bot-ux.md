@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -12,6 +12,8 @@ code_refs:
   - src/bot/walletNarrativeSummary.ts
   - src/bot/riskExplanationSummary.ts
   - src/alerts/formatters.ts
+  - src/alerts/addressPoisoningAlert.ts
+  - src/monitor/addressPoisoningWorker.ts
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminConsole.test.ts
   - tests/admin/adminServer.test.ts
@@ -370,6 +372,46 @@ and observed context for new invalid-score final reports without inventing a
 numeric final risk. It does not yet have a complete live progress UX for
 ordinary long Where/Incoming indexing.
 
+### Address-Poisoning Warning
+
+An address-poisoning candidate has a dedicated concise Russian or English
+security message. It is not inserted into the normal AML explanation. The
+message shows:
+
+- `🔴` for `CRITICAL` or `🟠` for `HIGH` and says that address replacement is
+  possible, not that theft is already proven;
+- the full watched wallet, suspicious sender, and genuine recipient addresses;
+- the incoming amount, earlier outgoing amount, elapsed time, and exact prefix
+  or suffix similarity;
+- TronScan links for both the incoming and matched outgoing transactions;
+- a direct instruction not to copy the recipient from transaction history and
+  to compare every character before sending.
+
+Full addresses are intentional here because visual comparison is the product
+action. Dynamic values are escaped for Telegram HTML. The user's locale is
+fixed when delivery is first claimed, so retries and later callback edits cannot
+switch the message language.
+
+Safety warnings are immediate for `realtime`, `risk_only`, and `digest` wallet
+modes. A paused wallet is skipped. The buttons `Это знакомый адрес` / `I know
+this address` and `Пометить как подмену` / `Mark as replacement` are accepted
+only from the watched-wallet owner. Unknown token, wrong owner, forwarded
+button, unavailable row, or opposite terminal decision returns a neutral
+unavailable answer and changes no data. After an accepted or repeated
+idempotent decision, action buttons disappear while both TronScan links remain.
+
+If the normal Incoming result is formatted after an active candidate exists,
+it adds one line that the address-substitution warning remains active.
+`candidate` and `confirmed` keep the line; `dismissed` removes it. The line does
+not change the Incoming score, decision, or delivery routing. If the safety
+lookup fails, Incoming delivery continues normally.
+
+Telegram delivery is intentionally at-least-once. A persisted fingerprint,
+just-in-time single-row claims, a maximum of four executions, a 40-second lease
+heartbeat, and 120-second stale reclaim reduce duplicates. Telegram acceptance
+and the final database `sent` write cannot be atomic, so a process crash in that
+narrow external gap can still produce a duplicate on retry.
+
 ## Admin Purpose
 
 Admin is the analyst workbench. It should show jobs, graphs, selected flows,
@@ -481,3 +523,6 @@ valid score, show a technical stop. Do not present technical stops as decline.
   live runs more clearly.
 - Job-start buttons should confirm the address and queued job id in a way that
   is obvious to the analyst.
+- Telegram can warn only after an incoming lure is observed. Checking a
+  proposed recipient before signing is the next phase and is not implemented
+  in this release.

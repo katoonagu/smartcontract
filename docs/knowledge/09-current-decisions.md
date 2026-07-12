@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -16,6 +16,9 @@ code_refs:
   - src/check/deepForensicCheck.ts
   - src/bot/createBot.ts
   - src/bot/wherePreliminaryNarrative.ts
+  - src/monitor/addressPoisoning.ts
+  - src/monitor/addressPoisoningWorker.ts
+  - src/alerts/addressPoisoningAlert.ts
   - src/bot/walletNarrativeSummary.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/incomingDepositJob.ts
@@ -47,6 +50,56 @@ of these decisions, update this file in the same work.
 - `Where is money` explains where relevant wallet funds came from.
 - `Incoming deposit` explains one concrete deposit.
 - `DeepCheck` builds a wider forensic profile.
+
+## 2026-07-12 Realtime USDT Address-Poisoning Protection
+
+- The first release warns watched-wallet owners after a fresh small incoming
+  official TRON USDT transfer resembles an earlier outgoing recipient. USDD and
+  USDD PSM may be attached later as post-loss route evidence; they never trigger
+  the initial candidate. Runtime is USDT-only, while the pure detector keeps
+  token contract and decimals in its interface.
+- The main monitor performs only exact raw-unit eligibility checks and writes
+  `pending`, `skipped`, or `skipped_backfill` atomically with the observed
+  transaction. The default maximum lure amount is 100 USDT. It never fetches
+  relationship history inline.
+- The dedicated worker runs every 30 seconds, claims at most 20 checks with
+  concurrency two, fetches one logical page of 100 rows per claim, and stops
+  after five pages. The lookup window is strictly the 24 hours before the lure
+  and accepts only canonical official-USDT transfers. Match ranking is
+  deterministic and one incoming transaction creates at most one candidate and
+  one logical alert.
+- Partial negative coverage is `inconclusive`, never `clear`. Partial evidence
+  can decide a positive candidate or an exact disqualifier: a prior direct
+  relation, an authorized `service_admin` trusted/false-positive label, or an
+  exact authoritative service-registry address. Provider names, contract names,
+  tags, phrases, token labels, and AI output never suppress a warning.
+- Provider failures get the initial execution plus three retries after 30, 60,
+  and 120 seconds. The fourth failure is terminal. The repository is the only
+  authority for attempt count and retry timing.
+- Poisoning evidence is `wallet_safety`, not AML. Its score impact is exactly
+  zero, database and runtime guards enforce that invariant, and AML/unified
+  scoring allowlists exclude the group. A safety classification cannot change
+  Fast, Deep, Where, Incoming, or unified score and disposition.
+- The dedicated RU/EN warning is immediate in `realtime`, `risk_only`, and
+  `digest`; `paused` is skipped. It shows full addresses and both TronScan
+  transaction links. Locale is fixed on the first delivery claim. Owner-only
+  callbacks confirm or dismiss one candidate with idempotent compare-and-set
+  transitions; terminal messages retain the links.
+- Normal Incoming formatting queries the active candidate immediately before
+  building the message. `candidate` and `confirmed` keep the warning line;
+  `dismissed` removes it. Lookup failure cannot fail Incoming delivery, and the
+  warning changes no AML decision or alert-routing result.
+- Check and delivery phases have independent non-overlap guards. Delivery is
+  at-least-once: a maximum of four just-in-time send claims, a 40-second lease
+  heartbeat, 120-second stale reclaim, and persisted fingerprint reduce
+  duplicates, but Telegram acceptance cannot be atomic with the final database
+  `sent` write.
+- The healthy-capacity regression uses the real shared scheduler and the
+  worst-phase two-tick path: alert at 60 seconds, within the product target of
+  120 seconds. Queue, lookup, cycle, timeout, and alert latency are logged
+  without sensitive addresses, chat/user ids, API keys, or tokens.
+- Recipient checking before a transfer is the next phase. It is not implemented
+  here and will reuse the persisted candidate and raw evidence.
 
 ## 2026-07-10 Forensic And Scoring Correctness
 

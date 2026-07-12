@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 owner_area: scoring
 code_refs:
   - src/risk/fastEvidence.ts
@@ -11,6 +11,8 @@ code_refs:
   - src/risk/unifiedIncomingDepositRisk.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/moneyOriginPolicy.ts
+  - src/risk/riskSignalGroups.ts
+  - src/monitor/addressPoisoningWorker.ts
   - tests/risk/fastEvidence.test.ts
   - tests/risk/scoringSignalMatrix.test.ts
   - tests/risk/finalDisposition.test.ts
@@ -36,6 +38,22 @@ A numeric score never creates hard proof. Proof authority comes from explicit
 evidence code, evidence class, proof level, decision scope, subject, and
 eligibility. A generic Fast score of 90 is context and produces at most
 `REVIEW`; only allowlisted exact Fast evidence codes enter the hard-proof row.
+
+## Wallet Safety Is Not AML
+
+Address-poisoning evidence belongs to `signal_group=wallet_safety`. Every such
+observation has `score_impact=0`; both the database constraint and repository
+write guard reject a non-zero value. AML reads explicitly exclude this group,
+and the runtime scoring type accepts only the allowlisted scoring groups:
+`internal_label`, `provider`, `graph`, `behavior`, `incoming_context`,
+`approval`, and `manual`.
+
+A `HIGH` or `CRITICAL` poisoning classification controls the dedicated safety
+warning only. It cannot change Fast, Deep, Where, Incoming, unified score,
+decision, floor, or `shouldSend` result, even if a malformed stored fixture has
+a non-zero wallet-safety value. Conversely, a low AML score does not dismiss an
+active address-poisoning warning. Security action and AML disposition remain
+separate outputs.
 
 ## Important Fields
 

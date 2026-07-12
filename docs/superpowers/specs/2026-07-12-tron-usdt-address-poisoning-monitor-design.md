@@ -2,10 +2,11 @@
 
 ## Status
 
-Approved after review on 2026-07-12. This document specifies the first release:
-an automatic immediate USDT warning for watched wallets. Recipient checking
-before a transfer is the next phase and must reuse the evidence saved by this
-release.
+Approved after review and implemented on the feature branch on 2026-07-12.
+This document describes the first release: an automatic immediate USDT warning
+for watched wallets. It does not claim production deployment. Recipient
+checking before a transfer is the next phase and must reuse the evidence saved
+by this release.
 
 ## Problem
 
@@ -134,10 +135,11 @@ without pretending that the current monitor already ingests them.
 
 ## Monitor Integration
 
-After `claimObservedTransactionForUserAlert` succeeds, apply the cheap local
-eligibility gates and persist a pending poisoning check. Do not perform the
-TronScan relationship lookup inline. Queue the normal Incoming Deposit job
-without waiting for poisoning analysis.
+Before the observed transaction insert, compute the cheap local eligibility
+status. `claimObservedTransactionForUserAlert` stores the transfer and its
+`pending`, `skipped`, or `skipped_backfill` poisoning state atomically. Do not
+perform the TronScan relationship lookup inline. Queue the normal Incoming
+Deposit job without waiting for poisoning analysis.
 
 Only trigger the live lookup when all conditions hold:
 
@@ -156,11 +158,16 @@ a security warning. The ordinary Incoming Deposit path keeps its existing
 backfill behavior. Retries re-check event age before claiming work so a stale
 pending row cannot produce a late warning after downtime.
 
-The first lookup reads the most recent 100 related USDT transfers within the 24
-hours before the suspicious incoming transfer. It filters them locally to
-earlier outgoing transfers from the watched wallet. A later transfer must never
-be used to explain an earlier alert. Persist whether the result covers the full
-24-hour window or was truncated by the page limit.
+Migration 031 uses `skipped_backfill` as the safe default for all pre-existing
+and unspecified rows. Any legacy `clear` without an allowed typed reason is
+rewritten to `skipped_backfill` with `legacy_clear_reason_unknown`; migration
+never invents `complete_no_match` coverage.
+
+Each worker claim reads one logical page of at most 100 related USDT transfers
+within the strict 24 hours before the suspicious incoming transfer. It filters
+them locally to canonical official-USDT transfers earlier than the lure. A
+later transfer must never be used to explain an earlier alert. Persist whether
+the result covers the full 24-hour window or was truncated by the page limit.
 
 A positive visual/amount match is usable with partial coverage. An exact
 disqualifier is also usable: an earlier direct relationship, a manual trusted
@@ -186,7 +193,10 @@ Persist a small check state on `observed_transactions`:
 - `poisoning_checked_at`.
 
 The dedicated worker claims `pending`, retryable `inconclusive`, `failed`, or
-stale `running` rows with `for update skip locked`. A clear result is persisted
+stale `running` rows with `for update skip locked`. Provider failures have one
+initial execution and three retries after 30, 60, and 120 seconds; the fourth
+failure is terminal. The repository is the sole attempt-policy authority. A
+clear result is persisted
 only after complete negative coverage or an exact disqualifier, so the same
 transfer does not repeat provider work. An `inconclusive` row is retryable only
 while its page count is below five and the event remains fresh. After that it
@@ -334,7 +344,8 @@ monitoring and future recipient checking:
 - `status = candidate | confirmed | dismissed`;
 - compact opaque callback token bound to the candidate;
 - raw evidence id;
-- Telegram alert status, attempts, error, sent time, and message fingerprint;
+- Telegram alert status, fixed locale, attempt generation, dedicated lease,
+  retry time, error, sent time, and message fingerprint;
 - optional later loss tx hash and post-loss route evidence id;
 - created and updated times.
 
@@ -384,6 +395,9 @@ Status transitions use a compare-and-set repository method. The first owner
 transition from `candidate` to `confirmed` or `dismissed` wins; repeating the
 same action is idempotent, and the opposite action does not silently reverse a
 terminal decision. Reopening a terminal decision is outside this release.
+The callback edits only candidate status/timestamps and the terminal keyboard;
+it does not rewrite detector facts. Unknown, unauthorized, unavailable, or
+conflicting callbacks return a neutral response and no candidate payload.
 
 ## USDD PSM Separation
 
@@ -410,7 +424,9 @@ or recipient-check phase to add those facts idempotently.
 ## Telegram Alert
 
 Security warnings override `risk_only` and `digest` delivery delay. They are
-sent immediately for every active watched wallet except `paused`.
+sent immediately in `realtime`, `risk_only`, and `digest`; `paused` is skipped.
+The owner's locale is fixed atomically when the first delivery claim is taken,
+so retries and callback edits keep the same language.
 
 Canonical Russian copy:
 
@@ -459,6 +475,10 @@ an active poisoning candidate exists, append:
 A low AML score or benign source-of-funds result must not hide, downgrade, or
 contradict the separate wallet-safety warning. If Incoming Deposit finishes
 first, it stays unchanged and the dedicated safety alert follows separately.
+Immediately before formatting, Incoming queries the candidate for the same
+watched wallet and incoming tx. `candidate` and `confirmed` keep the warning;
+`dismissed` removes it. Lookup failure is logged and Incoming delivery
+continues. The query changes neither score, disposition, nor `shouldSend`.
 
 ## Performance And Failure Handling
 
@@ -467,25 +487,44 @@ first, it stays unchanged and the dedicated safety alert follows separately.
 - A separately scheduled lightweight worker runs independently of wallet
   polling. Defaults: every 30 seconds, at most 20 claimed checks per cycle,
   concurrency two, and a five-second timeout per provider request. Worker
-  cycles do not overlap; a scheduler tick is skipped while the prior cycle is
-  still running.
+  uses zero client retries. Its client shares the existing key/rate scheduler,
+  but uses `interactive_fast` priority and an `address_poisoning` deduplication
+  namespace.
+- Check and Telegram-delivery phases have independent non-overlap guards. A
+  scheduler tick skips only the phase whose prior cycle is still running.
 - Each claim fetches at most one page of 100 transfers. Continuations use the
   saved cursor and never restart page one.
 - Deduplicate concurrent checks for the same watched wallet and incoming tx.
-- A short-lived per-wallet cache may reuse the same recent transfer page for
-  multiple small incoming events.
 - Provider timeout marks the poisoning check failed/retryable and does not fail
   normal Incoming analysis.
 - Invalid addresses, token mismatch, reverted transfers, self-transfers, and
   transfers after the suspicious event are ignored.
-- Alert delivery retries use the candidate fingerprint and persisted state.
+- Alert delivery claims one candidate only when a bounded send slot is free.
+  The claim generation allows at most four executions. A dedicated lease is
+  renewed every 40 seconds and stale `sending` work is reclaimable after 120
+  seconds. The persisted fingerprint prevents reclaim after `sent`.
 - Detector output is deterministic; no LLM key or response is involved.
 - Under a healthy provider and queue depth within configured cycle capacity,
   the alert SLO is no more than two wallet-polling cycles and normally no more
   than 120 seconds after the confirmed transfer is observed. Queue age, queue
   depth, lookup latency, timeout count, and alert latency are recorded as
-  metrics. Flooding may delay analysis but cannot block wallet polling or turn
+  metrics. The real shared-scheduler regression places lookup and delivery in
+  worst-phase consecutive ticks and sends at 60 seconds, within the 120-second
+  target. Flooding may delay analysis but cannot block wallet polling or turn
   partial coverage into `clear`.
+
+Operational events are exact and avoid sensitive addresses, Telegram user/chat
+ids, API keys, and tokens:
+
+- `address_poisoning_lookup_completed`: `txHash`, `providerLatencyMs`,
+  `pageCount`, `fetchedCount`, `coverage`;
+- `address_poisoning_cycle_completed`: `queueDepth`, `oldestQueueAgeMs`,
+  `claimed`, `durationMs`, `timeoutCount`;
+- `address_poisoning_alert_sent`: `candidateId`, `classification`,
+  `queueAgeMs`, `alertLatencyMs`.
+
+If queue metrics cannot be read, `queueDepth` and `oldestQueueAgeMs` are `null`,
+not zero.
 
 Automatic suppression is allowed only for an owner/manual trusted or
 false-positive decision, or an exact address match in the authoritative service

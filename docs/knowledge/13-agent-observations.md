@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -129,3 +129,56 @@ material `REVIEW` compliance context and must be named plainly, because a
 receiving service may delay the funds and request additional source-of-funds
 checks. Do not call a pre-designation transfer sanctioned at that timestamp,
 and do not flatten it into an ordinary clean CEX source.
+
+## 2026-07-12: Wallet Safety Is Not An AML Score
+
+Agent mistake:
+
+A critical security warning can be treated as permission to raise the wallet's
+AML score or change a source-of-funds decision.
+
+Correct rule:
+
+Keep the action urgent but keep the domains separate. Address poisoning is
+`wallet_safety` with exactly zero score impact and is excluded from AML inputs.
+A low AML result also cannot cancel an active safety warning.
+
+## 2026-07-12: Unknown Or Partial History Is Not Clean
+
+Agent mistake:
+
+A bounded lookup found no match, so the sender was described as new or safe
+even though the full window was not covered.
+
+Correct rule:
+
+Negative partial coverage is `inconclusive`. It becomes `clear` only after
+complete negative coverage or an exact disqualifier that is already proven in
+the checked evidence.
+
+## 2026-07-12: Names Do Not Establish Trust
+
+Agent mistake:
+
+Provider text, a public tag, contract name, token label, or AI phrase was used
+as if it authorized automatic suppression.
+
+Correct rule:
+
+Suppress only from an authorized manual trusted/false-positive decision, an
+exact authoritative address-registry match, or an exact prior direct relation.
+Names and free text are context, not authority.
+
+## 2026-07-12: Async Ownership Needs Its Own Lease
+
+Agent mistake:
+
+A generic row `updated_at` was treated as delivery ownership, so unrelated
+candidate changes could steal or invalidate an active Telegram send.
+
+Correct rule:
+
+Long external delivery needs a dedicated generation and lease timestamp. Renew
+that lease while the call is active, compare it on every terminal write, and
+state the remaining external crash gap honestly instead of claiming exactly-once
+delivery.

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-12
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -18,6 +18,7 @@ code_refs:
   - src/storage/repositories.ts
   - src/index.ts
   - src/config.ts
+  - src/monitor/addressPoisoningWorker.ts
   - scripts/repairTargetedIndexCoverage.ts
   - tests/config/config.test.ts
   - tests/tron/tronscanScheduler.test.ts
@@ -45,6 +46,45 @@ supersedes:
 
 The project uses TronScan as the primary source for TRON USDT transfer history
 in this phase. There is no manual CSV product workflow.
+
+### Bounded Address-Poisoning Lookup
+
+The realtime poisoning monitor uses the same TronScan key pool and scheduler as
+the other checks, but a separate client is configured with a five-second
+request timeout, zero client retries, `interactive_fast` priority, and an
+`address_poisoning` deduplication namespace. The namespace prevents a poisoning
+request from sharing a cached in-flight result with a deeper transfer request
+that has different latency requirements.
+
+The main wallet monitor does not fetch relationship history. It only writes a
+fresh eligible poisoning check together with the observed official-USDT
+transfer. A dedicated worker requests one logical page per claim, at most 100
+provider rows, with strict bounds from 24 hours before the incoming timestamp
+through one millisecond before it. It accepts only canonical successful
+transfers of the official TRON USDT contract and persists provider facts plus
+normalized raw amounts for reuse.
+
+A short provider page completes the bounded window. A full page means partial
+coverage and advances the saved logical offset. The worker can continue for at
+most five pages. A positive candidate or exact disqualifier is valid from the
+evidence fetched so far; a negative partial result remains `inconclusive`.
+Therefore provider pagination or local limits cannot silently turn unknown
+history into a clean sender.
+
+The worker runs every 30 seconds, claims at most 20 checks, and processes at
+most two lookups concurrently. Check and Telegram-delivery phases run behind
+separate guards. Queue and latency logs use these events and fields:
+
+- `address_poisoning_lookup_completed`: `txHash`, `providerLatencyMs`,
+  `pageCount`, `fetchedCount`, and `coverage`;
+- `address_poisoning_cycle_completed`: `queueDepth`, `oldestQueueAgeMs`,
+  `claimed`, `durationMs`, and `timeoutCount`;
+- `address_poisoning_alert_sent`: `candidateId`, `classification`,
+  `queueAgeMs`, and `alertLatencyMs`.
+
+If queue metrics cannot be read, depth and age are logged as `null`, not as a
+false zero. Operational logs do not include full watched/sender addresses,
+Telegram user or chat identifiers, provider keys, or tokens.
 
 The Telegram theft-report transaction parser validates the parent TronScan
 transaction as confirmed/successful. Nested `trc20TransferInfo` rows can omit

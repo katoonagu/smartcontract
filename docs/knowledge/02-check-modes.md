@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-10
+last_verified: 2026-07-12
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -9,6 +9,8 @@ code_refs:
   - src/check/deepForensicCheck.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/incomingDepositJob.ts
+  - src/monitor/addressPoisoning.ts
+  - src/monitor/addressPoisoningWorker.ts
   - src/risk/unifiedWalletRisk.ts
   - tests/bot/createBot.test.ts
   - tests/check/smartContractCheck.test.ts
@@ -99,3 +101,21 @@ and the ordinary Fast, Where, and Deep transfer modes independently. A contract
 safety failure or unavailable contract profile does not suppress transfer
 analysis. The `isContract` fact is context for those modes, not a replacement
 for address-boundary policy.
+
+## Address-Poisoning Protection
+
+Address-poisoning protection is a separate wallet-safety monitor. It does not
+replace Fast, Deep, Where, Incoming, or unified `/check`, and it does not add
+points to their AML scores.
+
+The current runtime starts only from a fresh small incoming transfer of official
+TRON USDT to an active watched wallet. It compares the sender with recipients of
+earlier outgoing USDT transfers in a bounded 24-hour window. A similar address,
+especially with the same raw amount, can produce an immediate `HIGH` or
+`CRITICAL` safety warning. USDD and USDD PSM may appear later as evidence of what
+happened after a loss, but they never trigger the initial warning.
+
+The pure detector keeps token contract and decimals in its inputs so the same
+rules can be reused later. Runtime monitoring is USDT-only in this release.
+Checking a proposed recipient before a transfer is the next phase; it will reuse
+the saved candidate and raw evidence rather than reinterpret old alerts.

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-12
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -13,6 +13,7 @@ code_refs:
   - src/admin/adminConsole.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/strictProvenanceBenchmark.ts
+  - src/monitor/addressPoisoningWorker.ts
   - tests/forensics/deepForensicJob.test.ts
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
@@ -111,6 +112,57 @@ indexed transfers so `moneyOriginOperationalAssessment` can apply materiality
 rules. Non-provider-cap terminal reasons still use the technical terminal path,
 and provider-cap with no usable cached evidence can still finish as an invalid
 technical stop.
+
+### Address-Poisoning Safety Lifecycle
+
+The poisoning monitor has its own small state machine on each observed incoming
+transaction. The main wallet poll writes the initial state atomically with the
+new `observed_transactions` row and never waits for relationship history:
+
+```text
+pending -> running -> candidate | clear | inconclusive | failed
+                 \-> skipped | skipped_backfill
+```
+
+Old rows and historical backfill default to `skipped_backfill`. A fresh row is
+eligible only for official USDT, an active non-paused watched wallet, and an
+amount up to the configured raw-unit threshold. Each worker claim reads one
+logical page of at most 100 transfers and saves its offset, accepted evidence,
+page count, oldest accepted transfer time, and `complete` or `partial` coverage.
+Partial negative evidence is `inconclusive`, never `clear`. Partial evidence may
+become `clear` only from an exact earlier direct relationship, an authorized
+`service_admin` trusted/false-positive label, or an exact authoritative service
+address.
+
+Provider failures consume at most four executions: the initial execution and
+three retries after 30, 60, and 120 seconds. The repository owns this attempt
+policy; the fourth failure is terminal. An inconclusive history lookup instead
+continues one saved page per claim up to five pages and never restarts page one.
+
+One positive check atomically stores raw evidence, one zero-impact
+`wallet_safety` observation, one candidate, and the observed-row terminal state.
+Candidate status is `candidate`, `confirmed`, or `dismissed`. Owner callbacks
+are compare-and-set transitions: the first terminal choice wins, repeating the
+same choice is idempotent, and the opposite choice returns a neutral conflict.
+
+Alert delivery has a separate lifecycle:
+
+```text
+pending -> sending -> sent | failed | skipped
+```
+
+Delivery claims are taken just before a send slot is free. The locale is fixed
+on the first claim. A claim increments a generation counter; at most four send
+executions are allowed. A dedicated lease timestamp is renewed every 40 seconds
+and a `sending` row may be reclaimed after 120 seconds. Check and delivery phases
+have independent non-overlap guards, so a slow Telegram send does not stop new
+poisoning checks.
+
+Normal Incoming Deposit analysis remains independent. Immediately before its
+message is formatted, it queries whether the same incoming transaction has an
+active `candidate` or `confirmed` warning. A dismissed candidate removes the
+line. A lookup failure is logged and Incoming delivery continues; the safety
+lookup never changes its score, decision, or `shouldSend` result.
 
 ## Planned Behavior
 
