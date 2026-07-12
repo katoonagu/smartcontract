@@ -172,6 +172,7 @@ type ProviderPageAudit = {
   rangeTotal: number | null;
   complete: boolean;
   metadataConsistent: boolean;
+  overlappingTransferIds: string[];
   rawResponseHashes: string[];
   canonicalTransferHashes: string[];
 };
@@ -269,6 +270,7 @@ function isProviderPageAudit(value: unknown): value is ProviderPageAudit {
     && nullableCount(page.rangeTotal)
     && typeof page.complete === "boolean"
     && typeof page.metadataConsistent === "boolean"
+    && (page.overlappingTransferIds === undefined || stringArray(page.overlappingTransferIds))
     && stringArray(page.rawResponseHashes)
     && stringArray(page.canonicalTransferHashes);
 }
@@ -328,7 +330,12 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     providerFacts: value.providerFacts as RawTronscanTrc20Transfer[],
     providerTransferIds: [...value.providerTransferIds],
     providerFactProviders: [...value.providerFactProviders] as AccumulatedLookup["providerFactProviders"],
-    providerPages: value.providerPages as ProviderPageAudit[]
+    providerPages: value.providerPages.map((page) => ({
+      ...(page as ProviderPageAudit),
+      overlappingTransferIds: Array.isArray((page as Partial<ProviderPageAudit>).overlappingTransferIds)
+        ? [...(page as ProviderPageAudit).overlappingTransferIds]
+        : []
+    }))
   };
 }
 
@@ -349,6 +356,8 @@ function mergePage(
   const windowStart = new Date(incomingAt.getTime() - LOOKBACK_MS).toISOString();
   const windowEnd = new Date(incomingAt.getTime() - 1).toISOString();
   const byId = new Map(accumulated.transfers.map((transfer) => [transfer.transferId, transfer]));
+  const persistedTransferIds = new Set(accumulated.providerTransferIds);
+  const overlappingTransferIds = new Set<string>();
   const factsById = new Map(accumulated.providerTransferIds.map((id, index) => [id, accumulated.providerFacts[index]]));
   const factProvidersById = new Map(accumulated.providerTransferIds.map(
     (id, index) => [id, accumulated.providerFactProviders[index]]
@@ -370,6 +379,7 @@ function mergePage(
       occurredAt: normalized.blockTimestamp.toISOString()
     };
     if (elapsedMs <= 0 || elapsedMs > LOOKBACK_MS || !validNormalizedTransfer(stored)) continue;
+    if (persistedTransferIds.has(stored.transferId)) overlappingTransferIds.add(stored.transferId);
     if (!byId.has(stored.transferId)) byId.set(stored.transferId, stored);
     if (!factsById.has(stored.transferId)) factsById.set(stored.transferId, raw);
     if (!factProvidersById.has(stored.transferId)) factProvidersById.set(stored.transferId, page.provider);
@@ -401,7 +411,8 @@ function mergePage(
       && !providerChanged
       && windowConsistent
       && rangeTotalConsistent
-      && continuationConsistent,
+      && continuationConsistent
+      && overlappingTransferIds.size === 0,
     transfers,
     providerTransferIds,
     providerFacts: providerTransferIds.map((id) => factsById.get(id)!),
@@ -416,6 +427,7 @@ function mergePage(
       rangeTotal: page.rangeTotal,
       complete: page.complete,
       metadataConsistent,
+      overlappingTransferIds: [...overlappingTransferIds].sort(),
       rawResponseHashes: [...page.rawResponseHashes],
       canonicalTransferHashes: [...page.canonicalTransferHashes]
     }]

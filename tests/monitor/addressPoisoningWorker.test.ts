@@ -226,7 +226,7 @@ describe("address poisoning worker", () => {
     }));
   });
 
-  it("continues logical pages 0 to 100 to 200, deduplicates accumulated facts, then clears on a short page", async () => {
+  it("continues distinct logical pages 0 to 100 to 200, then clears on authoritative exhaustion", async () => {
     let current = workItem();
     const starts: number[] = [];
     const repo = repository();
@@ -243,15 +243,12 @@ describe("address poisoning worker", () => {
       });
       return true;
     });
-    const repeated = rawTransfer({ transaction_id: "repeat" });
     const client: PinnedTransferLookup = vi.fn(async (_address: string, options = {}): Promise<PinnedTronscanTransferPage> => {
       const start = options?.start ?? 0;
       starts.push(start);
       const transfers = start === 200
-        ? [repeated]
-        : Array.from({ length: 100 }, (_, index) => index === 0
-        ? repeated
-        : rawTransfer({ transaction_id: `${start}-${index}` }));
+        ? [rawTransfer({ transaction_id: "final-200" })]
+        : Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `${start}-${index}` }));
       return {
         provider: "tronscan",
         transfers,
@@ -280,7 +277,7 @@ describe("address poisoning worker", () => {
       coverage: "complete"
     }));
     const clearInput = (repo.markClear as ReturnType<typeof vi.fn>).mock.calls[0][1];
-    expect((clearInput.accumulatedLookupJson.transfers as unknown[]).filter((row: any) => row.txHash === "repeat")).toHaveLength(1);
+    expect(clearInput.accumulatedLookupJson.transfers).toHaveLength(201);
   });
 
   it("leaves a full fifth page terminal and non-retryable", async () => {
@@ -700,6 +697,102 @@ describe("address poisoning worker", () => {
       expect.objectContaining({ rangeTotal: 200 }),
       expect.objectContaining({ rangeTotal: 100 })
     ]);
+  });
+
+  it("never clears when a later logical page overlaps persisted transfer evidence", async () => {
+    let current = workItem();
+    const repo = repository();
+    (repo.claimChecks as ReturnType<typeof vi.fn>).mockImplementation(async () => [current]);
+    (repo.markInconclusive as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      current = workItem({
+        logicalOffset: input.logicalOffset,
+        pageCount: input.pageCount,
+        fetchedCount: input.fetchedCount,
+        accumulatedLookupJson: input.accumulatedLookupJson,
+        leaseVersion: new Date(current.leaseVersion.getTime() + 1_000)
+      });
+      return true;
+    });
+    const repeated = rawTransfer({ transaction_id: "cross-claim-overlap" });
+    const firstTransfers = [
+      repeated,
+      ...Array.from({ length: 99 }, (_, index) => rawTransfer({ transaction_id: `cross-first-${index}` }))
+    ];
+    const secondTransfers = [
+      repeated,
+      ...Array.from({ length: 99 }, (_, index) => rawTransfer({ transaction_id: `cross-second-${index}` }))
+    ];
+    const pages = vi.fn()
+      .mockResolvedValueOnce({
+        provider: "tronscan",
+        transfers: firstTransfers,
+        start: 0,
+        requestedLimit: 100,
+        nextOffset: 100,
+        total: 200,
+        rangeTotal: 200,
+        complete: false,
+        metadataConsistent: true,
+        rawResponseHashes: ["cross-first-raw"],
+        canonicalTransferHashes: ["cross-first-canonical"]
+      } satisfies PinnedTronscanTransferPage)
+      .mockResolvedValueOnce({
+        provider: "tronscan",
+        transfers: secondTransfers,
+        start: 100,
+        requestedLimit: 100,
+        nextOffset: 200,
+        total: 200,
+        rangeTotal: 200,
+        complete: true,
+        metadataConsistent: true,
+        rawResponseHashes: ["cross-second-raw"],
+        canonicalTransferHashes: ["cross-second-canonical"]
+      } satisfies PinnedTronscanTransferPage);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledTimes(2);
+    const second = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[1][1];
+    expect(second.coverage).toBe("partial");
+    expect(second.accumulatedLookupJson.providerMetadataConsistent).toBe(false);
+    expect(second.accumulatedLookupJson.providerTransferIds).toHaveLength(199);
+    expect(second.accumulatedLookupJson.transfers).toHaveLength(199);
+    expect(second.accumulatedLookupJson.providerPages[1].overlappingTransferIds).toHaveLength(1);
+    expect(second.accumulatedLookupJson.providerPages[1].overlappingTransferIds[0]).toMatch(/^tronscan:/);
+  });
+
+  it("does not treat a retried but previously unpersisted page as cross-claim overlap", async () => {
+    const item = workItem();
+    const repo = repository([item]);
+    (repo.markClear as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("clear persistence failed"))
+      .mockResolvedValueOnce(true);
+    const transfers = Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `unpersisted-${index}` }));
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers,
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 100,
+      total: 100,
+      rangeTotal: 100,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["unpersisted-raw"],
+      canonicalTransferHashes: ["unpersisted-canonical"]
+    };
+    const lookup = vi.fn(async () => page);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, lookup));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, lookup));
+
+    expect(repo.markFailed).toHaveBeenCalledTimes(1);
+    expect(repo.markClear).toHaveBeenCalledTimes(2);
+    expect((repo.markClear as ReturnType<typeof vi.fn>).mock.calls[1][1]).toMatchObject({ coverage: "complete" });
+    expect(repo.markInconclusive).not.toHaveBeenCalled();
   });
 
   it("does not upgrade persisted unknown provider metadata to a complete clear", async () => {
