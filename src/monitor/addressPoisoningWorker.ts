@@ -62,6 +62,10 @@ const ADDRESS_POISONING_TELEGRAM_TIMEOUT_MIN_MS = 1_000;
 
 const LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
+const MAX_PERSISTED_LOOKUP_PAGES = ADDRESS_POISONING_WORKER_DEFAULTS.maxPages;
+const MAX_PERSISTED_LOOKUP_ROWS = ADDRESS_POISONING_WORKER_DEFAULTS.pageSize * MAX_PERSISTED_LOOKUP_PAGES;
+const MAX_PERSISTED_PAGE_ROWS = ADDRESS_POISONING_WORKER_DEFAULTS.pageSize;
+const MAX_PERSISTED_PAGE_HASHES = Math.ceil(ADDRESS_POISONING_WORKER_DEFAULTS.pageSize / 50);
 
 export type AddressPoisoningCycleMetrics = {
   expiredSkipped: number;
@@ -278,22 +282,28 @@ function isProviderPageAudit(value: unknown): value is ProviderPageAudit {
   const page = value as Record<string, unknown>;
   const nullableCount = (count: unknown) => count === null
     || (typeof count === "number" && Number.isSafeInteger(count) && count >= 0);
-  const stringArray = (items: unknown) => Array.isArray(items)
+  const stringArray = (items: unknown, maximum: number) => Array.isArray(items)
+    && items.length <= maximum
     && items.every((item) => typeof item === "string");
   return (page.provider === "tronscan" || page.provider === "trongrid_fallback")
     && typeof page.start === "number" && Number.isSafeInteger(page.start) && page.start >= 0
-    && typeof page.requestedLimit === "number" && Number.isSafeInteger(page.requestedLimit) && page.requestedLimit > 0
+    && typeof page.requestedLimit === "number" && Number.isSafeInteger(page.requestedLimit)
+    && page.requestedLimit > 0 && page.requestedLimit <= MAX_PERSISTED_PAGE_ROWS
     && typeof page.nextOffset === "number" && Number.isSafeInteger(page.nextOffset) && page.nextOffset >= 0
-    && typeof page.rawCount === "number" && Number.isSafeInteger(page.rawCount) && page.rawCount >= 0
+    && typeof page.rawCount === "number" && Number.isSafeInteger(page.rawCount)
+    && page.rawCount >= 0 && page.rawCount <= MAX_PERSISTED_PAGE_ROWS
     && nullableCount(page.total)
     && nullableCount(page.rangeTotal)
     && typeof page.complete === "boolean"
     && typeof page.metadataConsistent === "boolean"
-    && (page.overlappingTransferIds === undefined || stringArray(page.overlappingTransferIds))
-    && (page.rawProviderRowIds === undefined || stringArray(page.rawProviderRowIds))
-    && (page.overlappingRawRowIds === undefined || stringArray(page.overlappingRawRowIds))
-    && stringArray(page.rawResponseHashes)
-    && stringArray(page.canonicalTransferHashes);
+    && (page.overlappingTransferIds === undefined
+      || stringArray(page.overlappingTransferIds, MAX_PERSISTED_PAGE_ROWS))
+    && (page.rawProviderRowIds === undefined
+      || stringArray(page.rawProviderRowIds, MAX_PERSISTED_PAGE_ROWS))
+    && (page.overlappingRawRowIds === undefined
+      || stringArray(page.overlappingRawRowIds, MAX_PERSISTED_PAGE_ROWS))
+    && stringArray(page.rawResponseHashes, MAX_PERSISTED_PAGE_HASHES)
+    && stringArray(page.canonicalTransferHashes, MAX_PERSISTED_PAGE_HASHES);
 }
 
 function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLookup {
@@ -302,14 +312,18 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
   if (
     (!legacy && value.version !== 2)
     || !Array.isArray(value.transfers)
+    || value.transfers.length > MAX_PERSISTED_LOOKUP_ROWS
     || !value.transfers.every(isStoredTransfer)
     || !Array.isArray(value.providerFacts)
+    || value.providerFacts.length > MAX_PERSISTED_LOOKUP_ROWS
     || !value.providerFacts.every((fact) => fact !== null && typeof fact === "object" && !Array.isArray(fact))
     || !Array.isArray(value.providerTransferIds)
+    || value.providerTransferIds.length > MAX_PERSISTED_LOOKUP_ROWS
     || !value.providerTransferIds.every((id) => typeof id === "string")
     || value.providerFacts.length !== value.providerTransferIds.length
     || (value.rawProviderRowIds !== undefined
       && (!Array.isArray(value.rawProviderRowIds)
+        || value.rawProviderRowIds.length > MAX_PERSISTED_LOOKUP_ROWS
         || !value.rawProviderRowIds.every((id) => typeof id === "string")))
   ) {
     throw new Error("Malformed accumulated address-poisoning lookup");
@@ -328,9 +342,14 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     };
   }
   const lookupProvider = value.lookupProvider;
-  const hasRawProviderRowIds = Array.isArray(value.rawProviderRowIds)
-    && value.rawProviderRowIds.every((id) => typeof id === "string" && id.length > 0)
-    && new Set(value.rawProviderRowIds).size === value.rawProviderRowIds.length;
+  const persistedRawProviderRowIds = Array.isArray(value.rawProviderRowIds)
+    ? value.rawProviderRowIds as unknown[]
+    : null;
+  const hasRawProviderRowIds = persistedRawProviderRowIds !== null
+    && persistedRawProviderRowIds.every((id) => typeof id === "string" && id.length > 0)
+    && new Set(persistedRawProviderRowIds).size === persistedRawProviderRowIds.length;
+  const rawRowsHaveProviderTxHashes = hasRawProviderRowIds
+    && persistedRawProviderRowIds.every((id) => !(id as string).includes(":raw:"));
   const windowStart = typeof value.windowStart === "string" ? value.windowStart : null;
   const windowEnd = typeof value.windowEnd === "string" ? value.windowEnd : null;
   if (
@@ -338,10 +357,12 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
       || lookupProvider === "trongrid_fallback" || lookupProvider === "mixed")
     || typeof value.providerMetadataConsistent !== "boolean"
     || !Array.isArray(value.providerFactProviders)
+    || value.providerFactProviders.length > MAX_PERSISTED_LOOKUP_ROWS
     || !value.providerFactProviders.every((provider) =>
       provider === "tronscan" || provider === "trongrid_fallback" || provider === "unknown")
     || value.providerFactProviders.length !== value.providerFacts.length
     || !Array.isArray(value.providerPages)
+    || value.providerPages.length > MAX_PERSISTED_LOOKUP_PAGES
     || !value.providerPages.every(isProviderPageAudit)
   ) {
     throw new Error("Malformed accumulated address-poisoning provider metadata");
@@ -353,6 +374,7 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     lookupProvider,
     providerMetadataConsistent: value.providerMetadataConsistent
       && hasRawProviderRowIds
+      && rawRowsHaveProviderTxHashes
       && (value.providerPages.length === 0 || (windowStart !== null && windowEnd !== null))
       && value.providerPages.every((page) =>
         Array.isArray((page as Partial<ProviderPageAudit>).rawProviderRowIds)
@@ -362,7 +384,7 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     providerFacts: value.providerFacts as RawTronscanTrc20Transfer[],
     providerTransferIds: [...value.providerTransferIds],
     providerFactProviders: [...value.providerFactProviders] as AccumulatedLookup["providerFactProviders"],
-    rawProviderRowIds: hasRawProviderRowIds ? [...(value.rawProviderRowIds as string[])] : [],
+    rawProviderRowIds: hasRawProviderRowIds ? [...persistedRawProviderRowIds] as string[] : [],
     providerPages: value.providerPages.map((page) => ({
       ...(page as ProviderPageAudit),
       overlappingTransferIds: Array.isArray((page as Partial<ProviderPageAudit>).overlappingTransferIds)
@@ -574,7 +596,8 @@ function pinnedPageMetadataIsConsistent(
   const completionTruthful = !page.complete
     || (page.rangeTotal !== null && actualNextOffset >= page.rangeTotal);
   const rawIdsValid = page.rawProviderRowIds.length === page.transfers.length
-    && new Set(page.rawProviderRowIds).size === page.rawProviderRowIds.length;
+    && new Set(page.rawProviderRowIds).size === page.rawProviderRowIds.length
+    && page.rawProviderRowIds.every((id) => !id.includes(":raw:"));
   return page.metadataConsistent
     && page.start === expectedStart
     && page.requestedLimit === expectedLimit
@@ -662,10 +685,20 @@ async function processWorkItem(
       !page
       || (page.provider !== "tronscan" && page.provider !== "trongrid_fallback")
       || !Array.isArray(page.transfers)
+      || page.transfers.length > MAX_PERSISTED_PAGE_ROWS
       || !Array.isArray(page.rawProviderRowIds)
+      || page.rawProviderRowIds.length > MAX_PERSISTED_PAGE_ROWS
       || !page.rawProviderRowIds.every((id) => typeof id === "string" && id.length > 0)
       || !Array.isArray(page.rawResponseHashes)
+      || page.rawResponseHashes.length > MAX_PERSISTED_PAGE_HASHES
+      || !page.rawResponseHashes.every((hash) => typeof hash === "string")
       || !Array.isArray(page.canonicalTransferHashes)
+      || page.canonicalTransferHashes.length > MAX_PERSISTED_PAGE_HASHES
+      || !page.canonicalTransferHashes.every((hash) => typeof hash === "string")
+      || accumulatedBefore.providerPages.length >= MAX_PERSISTED_LOOKUP_PAGES
+      || accumulatedBefore.rawProviderRowIds.length + page.rawProviderRowIds.length > MAX_PERSISTED_LOOKUP_ROWS
+      || accumulatedBefore.providerFacts.length + page.transfers.length > MAX_PERSISTED_LOOKUP_ROWS
+      || accumulatedBefore.transfers.length + page.transfers.length > MAX_PERSISTED_LOOKUP_ROWS
     ) throw new Error("Address-poisoning provider page is malformed");
 
     const pageMetadataConsistent = pinnedPageMetadataIsConsistent(page, item.logicalOffset, options.pageSize);

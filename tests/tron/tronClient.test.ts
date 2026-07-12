@@ -1092,7 +1092,11 @@ describe("TronscanClient", () => {
       const start = Number(requestUrl.searchParams.get("start"));
       const rows = Array.from({ length: 50 }, (_, offset) =>
         start === 0 && offset === 49 || start === 50 && offset === 0
-          ? missingTx
+          ? {
+            ...missingTx,
+            quant: start === 50 ? "2" : missingTx.quant,
+            block_ts: start === 50 ? missingTx.block_ts - 1 : missingTx.block_ts
+          }
           : {
             ...missingTx,
             transaction_id: `fallback-distinct-${start + offset}`,
@@ -1108,9 +1112,35 @@ describe("TronscanClient", () => {
     );
 
     const rawIds = (page as PinnedTronscanTransferPage & { rawProviderRowIds: string[] }).rawProviderRowIds;
-    expect(rawIds[49]).toBe(rawIds[50]);
+    expect(rawIds[49]).not.toBe(rawIds[50]);
     expect(rawIds[49]).toMatch(/^tronscan:raw:/);
+    expect(rawIds[50]).toMatch(/^tronscan:raw:/);
     expect(page.metadataConsistent).toBe(false);
+  });
+
+  it("never completes a negative page containing a tx-less provider row", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({
+      total: 1,
+      rangeTotal: 1,
+      token_transfers: [{
+        from_address: "TSource111111111111111111111111111111",
+        to_address: "TSubject111111111111111111111111111111",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        quant: "1",
+        block_ts: 1_780_090_000_000
+      }]
+    }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 100 }
+    );
+
+    expect(page.rawProviderRowIds).toHaveLength(1);
+    expect(page.rawProviderRowIds[0]).toMatch(/^tronscan:raw:/);
+    expect(page.metadataConsistent).toBe(false);
+    expect(page.complete).toBe(false);
   });
 
   it("continues a short pinned subpage at its actual next offset and reports no progress safely", async () => {

@@ -78,6 +78,88 @@ function testRawProviderRowIds(
   });
 }
 
+function accumulatedLookupAtLimits() {
+  const providerFacts = Array.from({ length: 500 }, (_, index) => rawTransfer({
+    transaction_id: `bounded-${index}`,
+    block_ts: THJ_POISONING_CASE.outgoingAt.getTime() - index
+  }));
+  const providerTransferIds = providerFacts.map((_, index) => `tronscan:accepted:${index}`);
+  const rawProviderRowIds = providerFacts.map((_, index) => `tronscan:tx:bounded-${index}`);
+  return {
+    version: 2,
+    windowStart: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 86_400_000).toISOString(),
+    windowEnd: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 1).toISOString(),
+    lookupProvider: "tronscan",
+    providerMetadataConsistent: true,
+    transfers: providerFacts.map((fact, index) => ({
+      transferId: providerTransferIds[index],
+      txHash: fact.transaction_id,
+      sender: fact.from_address,
+      receiver: fact.to_address,
+      amountRaw: fact.quant,
+      occurredAt: new Date(fact.block_ts).toISOString()
+    })),
+    providerFacts,
+    providerTransferIds,
+    providerFactProviders: providerFacts.map(() => "tronscan"),
+    rawProviderRowIds,
+    providerPages: Array.from({ length: 5 }, (_, pageIndex) => ({
+      provider: "tronscan",
+      start: pageIndex * 100,
+      requestedLimit: 100,
+      nextOffset: (pageIndex + 1) * 100,
+      rawCount: 100,
+      total: 500,
+      rangeTotal: 500,
+      complete: pageIndex === 4,
+      metadataConsistent: true,
+      overlappingTransferIds: [] as string[],
+      rawProviderRowIds: rawProviderRowIds.slice(pageIndex * 100, (pageIndex + 1) * 100),
+      overlappingRawRowIds: [] as string[],
+      rawResponseHashes: [`raw-${pageIndex}-0`, `raw-${pageIndex}-1`],
+      canonicalTransferHashes: [`canonical-${pageIndex}-0`, `canonical-${pageIndex}-1`]
+    }))
+  };
+}
+
+type TestAccumulatedLookup = ReturnType<typeof accumulatedLookupAtLimits>;
+
+const oversizedAccumulatedMutations: Array<[string, (value: TestAccumulatedLookup) => void]> = [
+  ["top-level transfers", (value) => {
+    value.transfers.push({ ...value.transfers[0], transferId: "tronscan:accepted:overflow-transfer" });
+  }],
+  ["top-level facts", (value) => {
+    value.providerFacts.push(rawTransfer({ transaction_id: "overflow-fact" }));
+    value.providerTransferIds.push("tronscan:accepted:overflow-fact");
+    value.providerFactProviders.push("tronscan");
+  }],
+  ["top-level provider transfer IDs", (value) => {
+    value.providerTransferIds.push("tronscan:accepted:overflow-id");
+  }],
+  ["top-level raw row IDs", (value) => {
+    value.rawProviderRowIds.push("tronscan:tx:overflow-raw");
+  }],
+  ["provider pages", (value) => {
+    value.providerPages.push({ ...value.providerPages[4], start: 500, nextOffset: 600 });
+  }],
+  ["per-page raw row IDs", (value) => {
+    value.providerPages[0].rawProviderRowIds.push("tronscan:tx:overflow-page-raw");
+    value.providerPages[0].rawCount = 101;
+  }],
+  ["per-page accepted overlap IDs", (value) => {
+    value.providerPages[0].overlappingTransferIds = Array.from({ length: 101 }, (_, index) => `accepted-overlap-${index}`);
+  }],
+  ["per-page raw overlap IDs", (value) => {
+    value.providerPages[0].overlappingRawRowIds = Array.from({ length: 101 }, (_, index) => `raw-overlap-${index}`);
+  }],
+  ["per-page raw response hashes", (value) => {
+    value.providerPages[0].rawResponseHashes.push("raw-overflow");
+  }],
+  ["per-page canonical hashes", (value) => {
+    value.providerPages[0].canonicalTransferHashes.push("canonical-overflow");
+  }]
+];
+
 function labels(...values: Array<Pick<AddressLabel, "label" | "source">>): AddressLabel[] {
   return values.map((value) => ({
     address: THJ_POISONING_CASE.lookalike,
@@ -467,6 +549,67 @@ describe("address poisoning worker", () => {
       error: expect.stringContaining("accumulated")
     }));
     expect(metrics.failed).toBe(1);
+  });
+
+  it.each(oversizedAccumulatedMutations)("rejects oversized persisted %s before provider work", async (_name, mutate) => {
+    const accumulated = accumulatedLookupAtLimits();
+    mutate(accumulated);
+    const repo = repository([workItem({
+      logicalOffset: 500,
+      pageCount: 5,
+      fetchedCount: 500,
+      accumulatedLookupJson: accumulated
+    })]);
+    const provider = vi.fn(async () => { throw new Error("provider must not run"); });
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, provider));
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.persistCandidate).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("accumulated")
+    }));
+  });
+
+  it("accepts persisted lookup arrays exactly at their product limits", async () => {
+    const repo = repository([workItem({
+      logicalOffset: 500,
+      pageCount: 5,
+      fetchedCount: 500,
+      accumulatedLookupJson: accumulatedLookupAtLimits()
+    })]);
+    const provider = vi.fn(async () => { throw new Error("provider reached"); });
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, provider));
+
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ error: "provider reached" }));
+  });
+
+  it("rejects an oversized live page before copying it into persisted progress", async () => {
+    const repo = repository([workItem()]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      rawProviderRowIds: [],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 0,
+      total: 0,
+      rangeTotal: 0,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["raw-0", "raw-1", "raw-overflow"],
+      canonicalTransferHashes: ["canonical-0"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      error: expect.stringContaining("provider page")
+    }));
   });
 
   it("bounds provider concurrency at two and continues after one item fails", async () => {
@@ -866,6 +1009,69 @@ describe("address poisoning worker", () => {
     expect(second.accumulatedLookupJson.transfers).toHaveLength(198);
     expect(second.accumulatedLookupJson.providerPages[1].overlappingRawRowIds).toEqual([repeatedRawId]);
     expect(second.accumulatedLookupJson.providerPages[1].overlappingTransferIds).toEqual([]);
+  });
+
+  it("keeps changed tx-less rows as audit evidence but never clears them", async () => {
+    let current = workItem();
+    const repo = repository();
+    (repo.claimChecks as ReturnType<typeof vi.fn>).mockImplementation(async () => [current]);
+    (repo.markInconclusive as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      current = workItem({
+        logicalOffset: input.logicalOffset,
+        pageCount: input.pageCount,
+        fetchedCount: input.fetchedCount,
+        accumulatedLookupJson: input.accumulatedLookupJson,
+        leaseVersion: new Date(current.leaseVersion.getTime() + 1_000)
+      });
+      return true;
+    });
+    const firstTxLess = rawTransfer({ transaction_id: "", quant: "1" });
+    const changedTxLess = rawTransfer({ transaction_id: "", quant: "2", block_ts: THJ_POISONING_CASE.outgoingAt.getTime() - 1 });
+    const firstRawId = "tronscan:raw:first-fingerprint";
+    const changedRawId = "tronscan:raw:changed-fingerprint";
+    const pages = vi.fn()
+      .mockResolvedValueOnce({
+        provider: "tronscan",
+        transfers: [firstTxLess],
+        rawProviderRowIds: [firstRawId],
+        start: 0,
+        requestedLimit: 100,
+        nextOffset: 1,
+        total: 2,
+        rangeTotal: 2,
+        complete: false,
+        metadataConsistent: true,
+        rawResponseHashes: ["tx-less-first-raw"],
+        canonicalTransferHashes: ["tx-less-first-canonical"]
+      } satisfies PinnedTronscanTransferPage)
+      .mockResolvedValueOnce({
+        provider: "tronscan",
+        transfers: [changedTxLess],
+        rawProviderRowIds: [changedRawId],
+        start: 1,
+        requestedLimit: 100,
+        nextOffset: 2,
+        total: 2,
+        rangeTotal: 2,
+        complete: true,
+        metadataConsistent: true,
+        rawResponseHashes: ["tx-less-second-raw"],
+        canonicalTransferHashes: ["tx-less-second-canonical"]
+      } satisfies PinnedTronscanTransferPage);
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    const second = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[1][1];
+    expect(second.coverage).toBe("partial");
+    expect(second.accumulatedLookupJson.providerMetadataConsistent).toBe(false);
+    expect(second.accumulatedLookupJson.rawProviderRowIds).toEqual([changedRawId, firstRawId]);
+    expect(second.accumulatedLookupJson.providerPages).toEqual([
+      expect.objectContaining({ rawProviderRowIds: [firstRawId] }),
+      expect.objectContaining({ rawProviderRowIds: [changedRawId] })
+    ]);
+    expect(second.accumulatedLookupJson.providerTransferIds).toEqual([]);
   });
 
   it("does not treat a retried but previously unpersisted page as cross-claim overlap", async () => {

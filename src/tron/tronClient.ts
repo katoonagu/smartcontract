@@ -826,6 +826,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       if (page.transfers.length > pageLimit) metadataConsistent = false;
       for (const transfer of consumedTransfers) {
         const identity = this.rawProviderRowPaginationId(page.provider, transfer);
+        if (identity.startsWith(`${page.provider}:raw:`)) metadataConsistent = false;
         if (seenTransferIdentities.has(identity)) metadataConsistent = false;
         seenTransferIdentities.add(identity);
         rawProviderRowIds.push(identity);
