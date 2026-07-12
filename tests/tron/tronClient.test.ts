@@ -2,6 +2,7 @@ import { TronWeb } from "tronweb";
 import { describe, expect, it, vi } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import { TronscanClient } from "../../src/tron/tronClient";
+import { createTronscanScheduler } from "../../src/tron/tronscanScheduler";
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -518,6 +519,107 @@ describe("TronscanClient", () => {
         "TReceiver11111111111111111111111111111"
       )).rejects.toThrow("ordinary network failure");
       expect(ordinaryFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps ordinary and poisoning timeout/retry policies isolated on one real scheduler", async () => {
+    vi.useFakeTimers();
+    try {
+      const scheduler = createTronscanScheduler({
+        requestMinIntervalMs: 0,
+        rateLimitCooldownMs: 0,
+        maxInFlight: 2
+      });
+      const ordinaryFetch = vi.fn()
+        .mockRejectedValueOnce(new TypeError("ordinary transient failure"))
+        .mockResolvedValueOnce(jsonResponse({ token_transfers: [] }));
+      const poisoningFetch = vi.fn(
+        (_url: URL | RequestInfo, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("poisoning timeout", "AbortError")));
+          })
+      );
+      const ordinaryClient = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn: ordinaryFetch,
+        timeoutMs: 20_000,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        scheduler
+      });
+      const poisoningClient = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn: poisoningFetch,
+        timeoutMs: 5_000,
+        retryAttempts: 0,
+        schedulerDedupeNamespace: "address_poisoning",
+        scheduler
+      });
+
+      const ordinary = ordinaryClient.listRelatedTrc20Transfers("TReceiver11111111111111111111111111111");
+      const poisoning = poisoningClient.listRelatedTrc20Transfers("TReceiver11111111111111111111111111111")
+        .then(() => "resolved", (error: Error) => error.name);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(ordinary).resolves.toEqual([]);
+      await expect(poisoning).resolves.toBe("AbortError");
+      expect(ordinaryFetch).toHaveBeenCalledTimes(2);
+      expect(poisoningFetch).toHaveBeenCalledTimes(1);
+      expect(scheduler.diagnostics().dispatchedRequests).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispatches a queued poisoning transfer before bulk work and starts its timeout only at dispatch", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseBlocker!: () => void;
+      const blockerGate = new Promise<void>((resolve) => {
+        releaseBlocker = resolve;
+      });
+      const scheduler = createTronscanScheduler({
+        requestMinIntervalMs: 0,
+        rateLimitCooldownMs: 0,
+        maxInFlight: 1
+      });
+      const blocker = scheduler.schedule({ requestName: "blocker", path: "/blocker" }, async () => blockerGate);
+      await Promise.resolve();
+      const events: string[] = [];
+      const bulkClient = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn: vi.fn(async () => {
+          events.push("bulk");
+          return jsonResponse({ token_transfers: [] });
+        }),
+        scheduler
+      });
+      const poisoningFetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+        events.push("poisoning");
+        expect(init?.signal?.aborted).toBe(false);
+        return jsonResponse({ token_transfers: [] });
+      });
+      const poisoningClient = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn: poisoningFetch,
+        timeoutMs: 5_000,
+        retryAttempts: 0,
+        schedulerDedupeNamespace: "address_poisoning",
+        transferSchedulingPriority: "interactive_fast",
+        scheduler
+      });
+
+      const bulk = bulkClient.listRelatedTrc20Transfers("TBulk11111111111111111111111111111111");
+      const poisoning = poisoningClient.listRelatedTrc20Transfers("TPoison111111111111111111111111111111");
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(poisoningFetch).not.toHaveBeenCalled();
+
+      releaseBlocker();
+      await blocker;
+      await Promise.all([bulk, poisoning]);
+      expect(events).toEqual(["poisoning", "bulk"]);
     } finally {
       vi.useRealTimers();
     }

@@ -782,15 +782,8 @@ async function deliverCandidateAlerts(
   await Promise.all(Array.from({ length: options.concurrency }, consume));
 }
 
-export async function runSingleAddressPoisoningCycle(
-  deps: AddressPoisoningWorkerDeps,
-  optionsInput: AddressPoisoningWorkerOptions = ADDRESS_POISONING_WORKER_DEFAULTS
-): Promise<AddressPoisoningCycleMetrics> {
-  const options = workerOptions(optionsInput);
-  const repository = deps.repository ?? addressPoisoningWorkerRepository;
-  const now = currentTime(deps);
-  const logger = deps.logger ?? defaultLogger;
-  const metrics: AddressPoisoningCycleMetrics = {
+function emptyCycleMetrics(): AddressPoisoningCycleMetrics {
+  return {
     expiredSkipped: 0,
     pausedSkipped: 0,
     claimed: 0,
@@ -808,6 +801,17 @@ export async function runSingleAddressPoisoningCycle(
     alertsPersistenceFailed: 0,
     timeoutCount: 0
   };
+}
+
+export async function runSingleAddressPoisoningCheckCycle(
+  deps: AddressPoisoningWorkerDeps,
+  optionsInput: AddressPoisoningWorkerOptions = ADDRESS_POISONING_WORKER_DEFAULTS
+): Promise<AddressPoisoningCycleMetrics> {
+  const options = workerOptions(optionsInput);
+  const repository = deps.repository ?? addressPoisoningWorkerRepository;
+  const now = currentTime(deps);
+  const logger = deps.logger ?? defaultLogger;
+  const metrics = emptyCycleMetrics();
 
   try {
     metrics.expiredSkipped = await repository.skipExpiredChecks(deps.db, {
@@ -830,14 +834,12 @@ export async function runSingleAddressPoisoningCycle(
       };
       await Promise.all(Array.from({ length: Math.min(options.concurrency, claimed.length) }, consume));
     }
-    await deliverCandidateAlerts(deps, repository, options, metrics, logger);
     return metrics;
   } finally {
-    const completedAt = currentTime(deps);
-    let queueDepth = 0;
+    let queueDepth: number | null = null;
     let oldestQueueAgeMs: number | null = null;
     try {
-      const queue = await repository.getQueueMetrics(deps.db, completedAt);
+      const queue = await repository.getQueueMetrics(deps.db, currentTime(deps));
       queueDepth = Number.isFinite(queue.queueDepth) ? Math.max(0, queue.queueDepth) : 0;
       oldestQueueAgeMs = queue.oldestQueueAgeMs === null || !Number.isFinite(queue.oldestQueueAgeMs)
         ? null
@@ -845,6 +847,7 @@ export async function runSingleAddressPoisoningCycle(
     } catch (error) {
       logger.error("address_poisoning_queue_metrics_failed", { error: errorMessage(error) });
     }
+    const completedAt = currentTime(deps);
     logger.info("address_poisoning_cycle_completed", {
       queueDepth,
       oldestQueueAgeMs,
@@ -853,4 +856,33 @@ export async function runSingleAddressPoisoningCycle(
       timeoutCount: metrics.timeoutCount
     });
   }
+}
+
+export async function runSingleAddressPoisoningAlertDeliveryCycle(
+  deps: AddressPoisoningWorkerDeps,
+  optionsInput: AddressPoisoningWorkerOptions = ADDRESS_POISONING_WORKER_DEFAULTS
+): Promise<AddressPoisoningCycleMetrics> {
+  const options = workerOptions(optionsInput);
+  const repository = deps.repository ?? addressPoisoningWorkerRepository;
+  const logger = deps.logger ?? defaultLogger;
+  const metrics = emptyCycleMetrics();
+  await deliverCandidateAlerts(deps, repository, options, metrics, logger);
+  return metrics;
+}
+
+export async function runSingleAddressPoisoningCycle(
+  deps: AddressPoisoningWorkerDeps,
+  optionsInput: AddressPoisoningWorkerOptions = ADDRESS_POISONING_WORKER_DEFAULTS
+): Promise<AddressPoisoningCycleMetrics> {
+  const checkMetrics = await runSingleAddressPoisoningCheckCycle(deps, optionsInput);
+  const deliveryMetrics = await runSingleAddressPoisoningAlertDeliveryCycle(deps, optionsInput);
+  return {
+    ...checkMetrics,
+    alertsClaimed: deliveryMetrics.alertsClaimed,
+    alertsSent: deliveryMetrics.alertsSent,
+    alertsFailed: deliveryMetrics.alertsFailed,
+    alertsSkipped: deliveryMetrics.alertsSkipped,
+    alertsStale: deliveryMetrics.alertsStale,
+    alertsPersistenceFailed: deliveryMetrics.alertsPersistenceFailed
+  };
 }

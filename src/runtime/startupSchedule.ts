@@ -65,7 +65,7 @@ export function createNonOverlappingStartupWork(
   let active: Promise<void> | null = null;
   return {
     run() {
-      if (active) return active;
+      if (active) return Promise.resolve();
       if (isStopped()) return Promise.resolve();
       let cycle: Promise<void>;
       try {

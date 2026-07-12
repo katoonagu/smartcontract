@@ -310,6 +310,8 @@ export type TronscanClientOptions = {
   apiKeyGroups?: readonly TronscanApiKeyGroup[];
   accountGroupRequestMinIntervalMs?: number;
   scheduler?: TronscanScheduler;
+  schedulerDedupeNamespace?: string;
+  transferSchedulingPriority?: TronscanRequestPriority;
   fetchFn?: FetchLike;
   logger?: Logger;
 };
@@ -334,6 +336,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   private readonly fetchFn: FetchLike;
   private readonly logger: Logger;
   private readonly scheduler: TronscanScheduler;
+  private readonly schedulerDedupeNamespace: string;
+  private readonly transferSchedulingPriority: TronscanRequestPriority;
 
   constructor(options: TronscanClientOptions | string | URL) {
     const normalizedOptions = options instanceof URL || typeof options === "string" ? { baseUrl: options } : options;
@@ -356,6 +360,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     this.rateLimitCooldownMs = Math.max(0, normalizedOptions.rateLimitCooldownMs ?? 0);
     this.fetchFn = normalizedOptions.fetchFn ?? fetch;
     this.logger = normalizedOptions.logger ?? defaultLogger;
+    this.schedulerDedupeNamespace = normalizedOptions.schedulerDedupeNamespace?.trim() || "default";
+    this.transferSchedulingPriority = normalizedOptions.transferSchedulingPriority ?? "deep_transfer";
     this.scheduler = normalizedOptions.scheduler ?? createTronscanScheduler({
       requestMinIntervalMs,
       rateLimitCooldownMs: this.rateLimitCooldownMs,
@@ -1540,7 +1546,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         requestName,
         path: url.pathname,
         priority: this.priorityForRequest(requestName),
-        cacheKey: requestName === "transfer" ? url.toString() : undefined,
+        cacheKey: requestName === "transfer"
+          ? `${this.schedulerDedupeNamespace}:${url.toString()}`
+          : undefined,
         slotScope: apiKey === undefined ? "pool" : "single",
         endpointBucket
       },
@@ -1575,7 +1583,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
 
   private priorityForRequest(requestName: string): TronscanRequestPriority {
     if (requestName === "trongrid_transfer_history") return "interactive_fast";
-    if (requestName === "transfer" || requestName === "transaction_history") return "deep_transfer";
+    if (requestName === "transfer" || requestName === "transaction_history") return this.transferSchedulingPriority;
     if (requestName === "account") return "metadata";
     if (
       requestName === "transaction" ||

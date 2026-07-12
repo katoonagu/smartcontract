@@ -29,7 +29,9 @@ import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
 import {
   addressPoisoningWorkerRepository,
-  runSingleAddressPoisoningCycle
+  runSingleAddressPoisoningAlertDeliveryCycle,
+  runSingleAddressPoisoningCheckCycle,
+  type AddressPoisoningWorkerDeps
 } from "./monitor/addressPoisoningWorker";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
@@ -174,6 +176,8 @@ const addressPoisoningTronClient = new TronscanClient({
   timeoutMs: 5_000,
   retryAttempts: 0,
   retryBaseDelayMs: config.tronscanRetryBaseDelayMs,
+  schedulerDedupeNamespace: "address_poisoning",
+  transferSchedulingPriority: "interactive_fast",
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
@@ -1159,17 +1163,27 @@ async function incomingDepositOnce(): Promise<void> {
   return activeIncomingDepositPoll;
 }
 
-const addressPoisoningWork = createNonOverlappingStartupWork(async () => {
-  await runSingleAddressPoisoningCycle({
-    db,
-    repository: addressPoisoningWorkerRepository,
-    tronClient: addressPoisoningTronClient,
-    realtimeMaxAgeMs: config.incomingDepositRealtimeMaxAgeMs,
-    sendUserAlert: async (telegramUserId, message, options) =>
-      bot.api.sendMessage(telegramUserId, message, options),
-    logger
-  });
-}, () => shuttingDown);
+const addressPoisoningWorkerDeps: AddressPoisoningWorkerDeps = {
+  db,
+  repository: addressPoisoningWorkerRepository,
+  tronClient: addressPoisoningTronClient,
+  realtimeMaxAgeMs: config.incomingDepositRealtimeMaxAgeMs,
+  sendUserAlert: async (telegramUserId, message, options) =>
+    bot.api.sendMessage(telegramUserId, message, options),
+  logger
+};
+const addressPoisoningCheckWork = createNonOverlappingStartupWork(
+  () => runSingleAddressPoisoningCheckCycle(addressPoisoningWorkerDeps).then(() => undefined),
+  () => shuttingDown
+);
+const addressPoisoningDeliveryWork = createNonOverlappingStartupWork(
+  () => runSingleAddressPoisoningAlertDeliveryCycle(addressPoisoningWorkerDeps).then(() => undefined),
+  () => shuttingDown
+);
+const addressPoisoningOnce = () => Promise.all([
+  addressPoisoningCheckWork.run(),
+  addressPoisoningDeliveryWork.run()
+]).then(() => undefined);
 
 const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
   poll: pollOnce,
@@ -1177,7 +1191,7 @@ const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
   incoming_deposit: incomingDepositOnce,
   deep_forensic: deepForensicOnce,
   address_index: addressIndexOnce,
-  address_poisoning: addressPoisoningWork.run
+  address_poisoning: addressPoisoningOnce
 };
 
 const intervalByLabel: Record<StartupWorkLabel, number> = {
@@ -1268,12 +1282,22 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     }
   }
 
-  const activeAddressPoisoningPoll = addressPoisoningWork.active();
-  if (activeAddressPoisoningPoll) {
+  const activeAddressPoisoningCheck = addressPoisoningCheckWork.active();
+  const activeAddressPoisoningDelivery = addressPoisoningDeliveryWork.active();
+  if (activeAddressPoisoningCheck) {
     try {
-      await activeAddressPoisoningPoll;
+      await activeAddressPoisoningCheck;
     } catch (error) {
-      logger.error("active_address_poisoning_shutdown_wait_failed", {
+      logger.error("active_address_poisoning_check_shutdown_wait_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  if (activeAddressPoisoningDelivery) {
+    try {
+      await activeAddressPoisoningDelivery;
+    } catch (error) {
+      logger.error("active_address_poisoning_delivery_shutdown_wait_failed", {
         error: error instanceof Error ? error.message : String(error)
       });
     }

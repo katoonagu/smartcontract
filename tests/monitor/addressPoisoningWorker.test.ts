@@ -3,16 +3,21 @@ import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../..
 import {
   ADDRESS_POISONING_ALERT_DELIVERY_LEASE_MS,
   ADDRESS_POISONING_WORKER_DEFAULTS,
+  runSingleAddressPoisoningAlertDeliveryCycle,
+  runSingleAddressPoisoningCheckCycle,
   runSingleAddressPoisoningCycle,
   type AddressPoisoningWorkerRepository
 } from "../../src/monitor/addressPoisoningWorker";
 import { authoritativeRegisteredService } from "../../src/forensics/serviceClassifier";
 import {
   ADDRESS_POISONING_INTERVAL_MS,
+  createNonOverlappingStartupWork,
   startStartupWorkSchedule,
   type StartupWorkLabel
 } from "../../src/runtime/startupSchedule";
 import type { AddressPoisoningCandidateDelivery, AddressPoisoningCheckWorkItem, AddressLabel, WalletAlertMode } from "../../src/types";
+import { TronscanClient } from "../../src/tron/tronClient";
+import { createTronscanScheduler } from "../../src/tron/tronscanScheduler";
 import { THJ_POISONING_CASE } from "../fixtures/monitor/addressPoisoningCases";
 
 const NOW = new Date("2026-07-01T12:48:00.000Z");
@@ -529,8 +534,10 @@ describe("address poisoning worker", () => {
   it("logs one lookup and one cycle metric with exact operational fields", async () => {
     let timeMs = NOW.getTime();
     const repo = repository([workItem()]);
-    (repo.getQueueMetrics as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({ queueDepth: 3, oldestQueueAgeMs: 12_000 });
+    (repo.getQueueMetrics as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeMs += 75;
+      return { queueDepth: 3, oldestQueueAgeMs: 12_000 };
+    });
     const workerDeps = deps(
       repo,
       vi.fn(async () => {
@@ -555,7 +562,7 @@ describe("address poisoning worker", () => {
       queueDepth: 3,
       oldestQueueAgeMs: 12_000,
       claimed: 1,
-      durationMs: 125,
+      durationMs: 200,
       timeoutCount: 0
     });
     const metricCalls = (workerDeps.logger.info as ReturnType<typeof vi.fn>).mock.calls
@@ -568,6 +575,101 @@ describe("address poisoning worker", () => {
       expect(fields).not.toHaveProperty("apiKey");
       expect(fields).not.toHaveProperty("providerFacts");
     }
+  });
+
+  it("reports unavailable queue metrics as null and includes the failed query in cycle duration", async () => {
+    let timeMs = NOW.getTime();
+    const repo = repository();
+    (repo.getQueueMetrics as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeMs += 40;
+      throw new Error("metrics database unavailable");
+    });
+    const workerDeps = deps(repo, undefined, undefined, () => new Date(timeMs));
+
+    await runSingleAddressPoisoningCheckCycle(workerDeps);
+
+    expect(workerDeps.logger.error).toHaveBeenCalledWith("address_poisoning_queue_metrics_failed", {
+      error: "metrics database unavailable"
+    });
+    expect(workerDeps.logger.info).toHaveBeenCalledWith("address_poisoning_cycle_completed", {
+      queueDepth: null,
+      oldestQueueAgeMs: null,
+      claimed: 0,
+      durationMs: 40,
+      timeoutCount: 0
+    });
+  });
+
+  it("continues detection on a later tick while a Telegram delivery remains held", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    let releaseSend!: (value: { chat: { id: number }; message_id: number }) => void;
+    const heldSend = new Promise<{ chat: { id: number }; message_id: number }>((resolve) => {
+      releaseSend = resolve;
+    });
+    const repo = repository();
+    (repo.claimAlerts as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([deliveryCandidate()])
+      .mockResolvedValue([]);
+    const workerDeps = deps(
+      repo,
+      vi.fn(async () => [rawTransfer({
+        transaction_id: THJ_POISONING_CASE.outgoingTxHash,
+        to_address: THJ_POISONING_CASE.realRecipient,
+        quant: THJ_POISONING_CASE.amountRaw,
+        block_ts: THJ_POISONING_CASE.outgoingAt.getTime()
+      })]),
+      vi.fn(async () => heldSend),
+      () => new Date(Date.now())
+    );
+    const checkGuard = createNonOverlappingStartupWork(() =>
+      runSingleAddressPoisoningCheckCycle(workerDeps).then(() => undefined));
+    const deliveryGuard = createNonOverlappingStartupWork(() =>
+      runSingleAddressPoisoningAlertDeliveryCycle(workerDeps).then(() => undefined));
+    const tick = () => Promise.all([checkGuard.run(), deliveryGuard.run()]).then(() => undefined);
+    const noOp = vi.fn(async () => undefined);
+    const startupWork = Object.fromEntries([
+      "poll",
+      "where_forensic",
+      "incoming_deposit",
+      "deep_forensic",
+      "address_index"
+    ].map((label) => [label, noOp])) as unknown as Record<StartupWorkLabel, () => Promise<void>>;
+    startupWork.address_poisoning = tick;
+    const started = startStartupWorkSchedule({
+      schedule: [{ label: "address_poisoning", delayMs: 0 }],
+      startupWork,
+      intervalByLabel: {
+        poll: 60_000,
+        where_forensic: 60_000,
+        incoming_deposit: 60_000,
+        deep_forensic: 60_000,
+        address_index: 60_000,
+        address_poisoning: ADDRESS_POISONING_INTERVAL_MS
+      },
+      onError: vi.fn()
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deliveryGuard.active()).not.toBeNull();
+    const deliveryClaimsWhileHeld = (repo.claimAlerts as ReturnType<typeof vi.fn>).mock.calls.length;
+    (repo.claimChecks as ReturnType<typeof vi.fn>).mockResolvedValueOnce([workItem()]);
+
+    await vi.advanceTimersByTimeAsync(ADDRESS_POISONING_INTERVAL_MS);
+
+    expect(repo.persistCandidate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      suspiciousIncomingTxHash: THJ_POISONING_CASE.incomingTxHash,
+      classification: "CRITICAL"
+    }));
+    expect(deliveryGuard.active()).not.toBeNull();
+    expect(workerDeps.sendUserAlert).toHaveBeenCalledTimes(1);
+    expect(repo.claimAlerts).toHaveBeenCalledTimes(deliveryClaimsWhileHeld);
+    expect(repo.claimChecks).toHaveBeenCalledTimes(2);
+
+    releaseSend({ chat: { id: 42 }, message_id: 1001 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deliveryGuard.active()).toBeNull();
+    started.stop();
   });
 
   it("counts only AbortError provider failures as timeouts and logs the failed lookup", async () => {
@@ -648,7 +750,7 @@ describe("address poisoning worker", () => {
     expect(staleDeps.logger.info).not.toHaveBeenCalledWith("address_poisoning_alert_sent", expect.anything());
   });
 
-  it("alerts a worst-phase eligible THJ event on the next 30-second cycle within the 120-second SLO", async () => {
+  it("alerts a worst-phase THJ event within 120 seconds through a busy real shared scheduler", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(THJ_POISONING_CASE.incomingAt);
     const queued: AddressPoisoningCheckWorkItem[] = [];
@@ -679,7 +781,46 @@ describe("address poisoning worker", () => {
       block_ts: THJ_POISONING_CASE.outgoingAt.getTime()
     });
     const send = vi.fn(async () => ({ chat: { id: 42 }, message_id: 1001 }));
-    const workerDeps = deps(repo, vi.fn(async () => [match]), send, () => new Date(Date.now()));
+    const schedulerEvents: string[] = [];
+    let releaseScheduler!: () => void;
+    const schedulerBlocker = new Promise<void>((resolve) => {
+      releaseScheduler = resolve;
+    });
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      maxInFlight: 1
+    });
+    const poisoningClient = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => {
+        schedulerEvents.push("poisoning");
+        return new Response(JSON.stringify({ token_transfers: [match] }), {
+          headers: { "content-type": "application/json" }
+        });
+      }),
+      timeoutMs: 5_000,
+      retryAttempts: 0,
+      schedulerDedupeNamespace: "address_poisoning",
+      transferSchedulingPriority: "interactive_fast",
+      scheduler
+    });
+    const bulkClient = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => {
+        schedulerEvents.push("bulk");
+        return new Response(JSON.stringify({ token_transfers: [] }), {
+          headers: { "content-type": "application/json" }
+        });
+      }),
+      scheduler
+    });
+    const workerDeps = deps(
+      repo,
+      poisoningClient.listRelatedTrc20Transfers.bind(poisoningClient),
+      send,
+      () => new Date(Date.now())
+    );
     const noOp = vi.fn(async () => undefined);
     const startupWork = Object.fromEntries([
       "poll",
@@ -688,7 +829,11 @@ describe("address poisoning worker", () => {
       "deep_forensic",
       "address_index"
     ].map((label) => [label, noOp])) as unknown as Record<StartupWorkLabel, () => Promise<void>>;
-    startupWork.address_poisoning = () => runSingleAddressPoisoningCycle(workerDeps).then(() => undefined);
+    const checkGuard = createNonOverlappingStartupWork(() =>
+      runSingleAddressPoisoningCheckCycle(workerDeps).then(() => undefined));
+    const deliveryGuard = createNonOverlappingStartupWork(() =>
+      runSingleAddressPoisoningAlertDeliveryCycle(workerDeps).then(() => undefined));
+    startupWork.address_poisoning = () => Promise.all([checkGuard.run(), deliveryGuard.run()]).then(() => undefined);
     const started = startStartupWorkSchedule({
       schedule: [{ label: "address_poisoning", delayMs: 0 }],
       startupWork,
@@ -705,14 +850,23 @@ describe("address poisoning worker", () => {
 
     await vi.advanceTimersByTimeAsync(0);
     queued.push(workItem({ timestamp: THJ_POISONING_CASE.incomingAt }));
+    const blocker = scheduler.schedule({ requestName: "blocker", path: "/blocker" }, async () => schedulerBlocker);
+    await Promise.resolve();
+    const bulk = bulkClient.listRelatedTrc20Transfers("TBulk11111111111111111111111111111111");
     await vi.advanceTimersByTimeAsync(ADDRESS_POISONING_INTERVAL_MS - 1);
     expect(send).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
+    expect(send).not.toHaveBeenCalled();
+    releaseScheduler();
+    await blocker;
+    await bulk;
+    expect(schedulerEvents).toEqual(["poisoning", "bulk"]);
+    await vi.advanceTimersByTimeAsync(ADDRESS_POISONING_INTERVAL_MS);
 
     expect(send).toHaveBeenCalledTimes(1);
     const sentAt = (repo.markAlertSent as ReturnType<typeof vi.fn>).mock.calls[0][1].sentAt as Date;
     const latencyMs = sentAt.getTime() - THJ_POISONING_CASE.incomingAt.getTime();
-    expect(latencyMs).toBe(ADDRESS_POISONING_INTERVAL_MS);
+    expect(latencyMs).toBe(2 * ADDRESS_POISONING_INTERVAL_MS);
     expect(latencyMs).toBeLessThanOrEqual(120_000);
     expect(latencyMs).toBeLessThanOrEqual(2 * 60_000);
     started.stop();
@@ -921,7 +1075,7 @@ describe("address poisoning worker", () => {
   it("anchors the sent timestamp after Grammy accepts the message and persists Grammy ids", async () => {
     const startedAt = new Date("2026-07-01T12:48:00.000Z");
     const acceptedAt = new Date("2026-07-01T12:48:07.250Z");
-    const times = [startedAt, startedAt, startedAt, acceptedAt, acceptedAt];
+    const times = [startedAt, startedAt, startedAt, startedAt, acceptedAt, acceptedAt];
     const clock = vi.fn(() => times.shift()!);
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>)
@@ -934,7 +1088,7 @@ describe("address poisoning worker", () => {
       concurrency: 1
     });
 
-    expect(clock).toHaveBeenCalledTimes(5);
+    expect(clock).toHaveBeenCalledTimes(6);
     expect(repo.markAlertSent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       telegramChatId: "-1001234567890",
       telegramMessageId: "9876",
@@ -945,7 +1099,7 @@ describe("address poisoning worker", () => {
   it("anchors retry scheduling to the actual Telegram failure time", async () => {
     const startedAt = new Date("2026-07-01T12:48:00.000Z");
     const failedAt = new Date("2026-07-01T12:48:09.500Z");
-    const times = [startedAt, startedAt, startedAt, failedAt];
+    const times = [startedAt, startedAt, startedAt, startedAt, startedAt, failedAt];
     const clock = vi.fn(() => times.shift()!);
     const repo = repository();
     (repo.claimAlerts as ReturnType<typeof vi.fn>)
@@ -967,6 +1121,8 @@ describe("address poisoning worker", () => {
     const firstAcceptedAt = new Date("2026-07-01T12:48:01.000Z");
     const secondAcceptedAt = new Date("2026-07-01T12:48:04.000Z");
     const times = [
+      startedAt,
+      startedAt,
       startedAt,
       startedAt,
       startedAt,

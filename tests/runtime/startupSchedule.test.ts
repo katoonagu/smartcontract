@@ -151,7 +151,7 @@ describe("startup work schedule", () => {
     expect(startupWork.deep_forensic).not.toHaveBeenCalled();
   });
 
-  it("shares one active poisoning cycle across overlapping ticks and runs again after settle", async () => {
+  it("skips overlapping poisoning ticks without returning the active promise and runs again after settle", async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -163,7 +163,8 @@ describe("startup work schedule", () => {
 
     const first = guarded.run();
     const overlap = guarded.run();
-    expect(first).toBe(overlap);
+    expect(overlap).not.toBe(first);
+    await expect(overlap).resolves.toBeUndefined();
     expect(worker).toHaveBeenCalledTimes(1);
     expect(guarded.active()).toBe(first);
 
@@ -189,8 +190,12 @@ describe("startup work schedule", () => {
 
   it("reports one poisoning cycle error through the schedule and runs the next interval", async () => {
     vi.useFakeTimers();
+    let rejectFirst!: (error: Error) => void;
+    const heldFailure = new Promise<void>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
     const worker = vi.fn()
-      .mockRejectedValueOnce(new Error("temporary provider error"))
+      .mockImplementationOnce(async () => heldFailure)
       .mockResolvedValue(undefined);
     const guarded = createNonOverlappingStartupWork(worker);
     const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
@@ -214,6 +219,11 @@ describe("startup work schedule", () => {
       onError
     });
 
+    await vi.advanceTimersByTimeAsync(3 * ADDRESS_POISONING_INTERVAL_MS);
+    expect(worker).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+
+    rejectFirst(new Error("temporary provider error"));
     await vi.advanceTimersByTimeAsync(0);
     expect(onError).toHaveBeenCalledWith(
       "initial_address_poisoning_cycle_failed",
@@ -258,7 +268,7 @@ describe("startup work schedule", () => {
     expect(active).not.toBeNull();
     shuttingDown = true;
     started.stop();
-    expect(guarded.run()).toBe(active);
+    expect(guarded.run()).not.toBe(active);
     release();
     await active!;
     await guarded.run();
