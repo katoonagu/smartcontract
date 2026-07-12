@@ -783,22 +783,8 @@ async function processWorkItem(
 }
 
 type AlertDeliveryHeartbeat = {
-  latestLease(): Date;
-  ownershipLost(): boolean;
   stop(): Promise<void>;
 };
-
-async function persistWithLatestDeliveryLease(
-  heartbeat: AlertDeliveryHeartbeat,
-  persist: (alertLeaseVersion: Date) => Promise<boolean>
-): Promise<boolean> {
-  const firstLease = heartbeat.latestLease();
-  const updated = await persist(firstLease);
-  if (updated || heartbeat.ownershipLost()) return updated;
-  const latestLease = heartbeat.latestLease();
-  if (latestLease.getTime() === firstLease.getTime()) return false;
-  return persist(latestLease);
-}
 
 async function markDeliveryFailure(
   deps: AddressPoisoningWorkerDeps,
@@ -808,7 +794,6 @@ async function markDeliveryFailure(
   metrics: AddressPoisoningCycleMetrics,
   failedAt: Date,
   logger: Logger,
-  alertLeaseVersion = candidate.alertLeaseVersion,
   heartbeat?: AlertDeliveryHeartbeat
 ): Promise<void> {
   logger.warn("address_poisoning_alert_delivery_failed", {
@@ -816,16 +801,12 @@ async function markDeliveryFailure(
     error: boundedDeliveryError(error)
   });
   try {
-    const persist = (lease: Date) => repository.markAlertFailed(deps.db, {
+    const updated = await repository.markAlertFailed(deps.db, {
       candidateId: candidate.id,
       error: boundedDeliveryError(error),
       now: failedAt,
-      alertAttempt: candidate.alertAttempt,
-      alertLeaseVersion: lease
+      alertAttempt: candidate.alertAttempt
     });
-    const updated = heartbeat
-      ? await persistWithLatestDeliveryLease(heartbeat, persist)
-      : await persist(alertLeaseVersion);
     updated ? metrics.alertsFailed += 1 : metrics.alertsStale += 1;
   } catch (persistenceError) {
     metrics.alertsPersistenceFailed += 1;
@@ -887,8 +868,6 @@ function startAlertDeliveryHeartbeat(
   schedule();
 
   return {
-    latestLease: () => new Date(alertLeaseVersion.getTime()),
-    ownershipLost: () => ownershipLost,
     stop: async () => {
       stopped = true;
       if (timer !== null) {
@@ -913,8 +892,7 @@ async function deliverCandidateAlert(
       const updated = await repository.markAlertSkipped(deps.db, {
         candidateId: candidate.id,
         reason: "wallet_alert_mode_paused",
-        alertAttempt: candidate.alertAttempt,
-        alertLeaseVersion: candidate.alertLeaseVersion
+        alertAttempt: candidate.alertAttempt
       });
       updated ? metrics.alertsSkipped += 1 : metrics.alertsStale += 1;
     } catch (error) {
@@ -955,7 +933,7 @@ async function deliverCandidateAlert(
     return;
   }
 
-  let sent: { chat: { id: number }; message_id: number };
+  let sent!: { chat: { id: number }; message_id: number };
   const heartbeat = startAlertDeliveryHeartbeat(deps, repository, candidate, metrics, logger);
   const abortController = new AbortController();
   let telegramTimedOut = false;
@@ -987,26 +965,23 @@ async function deliverCandidateAlert(
       metrics,
       currentTime(deps),
       logger,
-      heartbeat.latestLease(),
       heartbeat
     );
     return;
   }
 
-  // ponytail: Telegram send and DB acknowledgement cannot be atomic. A crash here leaves
-  // `sending` retryable, so delivery is intentionally at-least-once with at most four claims.
+  // ponytail: Telegram send and DB acknowledgement cannot be atomic. `alertAttempt` is the
+  // ownership generation for this CAS; the heartbeat lease only keeps that generation alive.
   try {
     const sentAt = currentTime(deps);
-    const updated = await persistWithLatestDeliveryLease(heartbeat, (alertLeaseVersion) =>
-      repository.markAlertSent(deps.db, {
-        candidateId: candidate.id,
-        fingerprint,
-        telegramChatId: String(sent.chat.id),
-        telegramMessageId: String(sent.message_id),
-        sentAt,
-        alertAttempt: candidate.alertAttempt,
-        alertLeaseVersion
-      }));
+    const updated = await repository.markAlertSent(deps.db, {
+      candidateId: candidate.id,
+      fingerprint,
+      telegramChatId: String(sent.chat.id),
+      telegramMessageId: String(sent.message_id),
+      sentAt,
+      alertAttempt: candidate.alertAttempt
+    });
     if (updated) {
       metrics.alertsSent += 1;
       logger.info("address_poisoning_alert_sent", {

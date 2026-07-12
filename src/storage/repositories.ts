@@ -3940,7 +3940,6 @@ export async function markAddressPoisoningAlertSent(
     telegramMessageId: string;
     sentAt: Date;
     alertAttempt: number;
-    alertLeaseVersion: Date;
   }
 ): Promise<boolean> {
   if (!/^[a-f0-9]{64}$/.test(input.fingerprint)) {
@@ -3952,15 +3951,14 @@ export async function markAddressPoisoningAlertSent(
        alert_lease_updated_at = null, alert_next_retry_at = null, alert_last_error = null,
        alert_sent_at = $5, updated_at = $5
      where id = $1 and alert_status = 'sending'
-       and alert_attempts = $6 and alert_lease_updated_at = $7`,
+       and alert_attempts = $6`,
     [
       input.candidateId,
       input.fingerprint,
       input.telegramChatId,
       input.telegramMessageId,
       input.sentAt,
-      input.alertAttempt,
-      input.alertLeaseVersion
+      input.alertAttempt
     ]
   );
   return (result.rowCount ?? 0) === 1;
@@ -3992,7 +3990,6 @@ export async function markAddressPoisoningAlertFailed(
     error: string;
     now: Date;
     alertAttempt: number;
-    alertLeaseVersion: Date;
   }
 ): Promise<boolean> {
   const result = await db.query(
@@ -4008,13 +4005,12 @@ export async function markAddressPoisoningAlertFailed(
        alert_last_error = $2,
        updated_at = $3
      where id = $1 and alert_status = 'sending'
-       and alert_attempts = $4 and alert_lease_updated_at = $5`,
+       and alert_attempts = $4`,
     [
       input.candidateId,
       boundedUserAlertError(input.error),
       input.now,
-      input.alertAttempt,
-      input.alertLeaseVersion
+      input.alertAttempt
     ]
   );
   return (result.rowCount ?? 0) === 1;
@@ -4022,19 +4018,18 @@ export async function markAddressPoisoningAlertFailed(
 
 export async function markAddressPoisoningAlertSkipped(
   db: Db,
-  input: { candidateId: string; reason: string; alertAttempt: number; alertLeaseVersion: Date }
+  input: { candidateId: string; reason: string; alertAttempt: number }
 ): Promise<boolean> {
   const result = await db.query(
     `update address_poisoning_candidates
      set alert_status = 'skipped', alert_lease_updated_at = null,
        alert_next_retry_at = null, alert_last_error = $2, updated_at = now()
      where id = $1 and alert_status = 'sending'
-       and alert_attempts = $3 and alert_lease_updated_at = $4`,
+       and alert_attempts = $3`,
     [
       input.candidateId,
       boundedUserAlertError(input.reason),
-      input.alertAttempt,
-      input.alertLeaseVersion
+      input.alertAttempt
     ]
   );
   return (result.rowCount ?? 0) === 1;

@@ -3347,34 +3347,33 @@ describe("address poisoning persistence", () => {
       telegramChatId: "42",
       telegramMessageId: "99",
       sentAt: now,
-      alertAttempt: 1,
-      alertLeaseVersion: now
+      alertAttempt: 1
     })).toBe(true);
     expect(compactSql(sent.queries[0].sql)).toContain("alert_status = 'sent'");
     expect(compactSql(sent.queries[0].sql)).toContain("alert_fingerprint = $2");
     expect(compactSql(sent.queries[0].sql)).toContain("alert_sent_at = $5");
     expect(compactSql(sent.queries[0].sql)).toContain("alert_lease_updated_at = null");
     expect(compactSql(sent.queries[0].sql)).toContain("alert_attempts = $6");
-    expect(compactSql(sent.queries[0].sql)).toContain("alert_lease_updated_at = $7");
-    expect(sent.queries[0].params).toEqual(["candidate-1", "a".repeat(64), "42", "99", now, 1, now]);
+    expect(compactSql(sent.queries[0].sql)).not.toContain("and alert_lease_updated_at =");
+    expect(sent.queries[0].params).toEqual(["candidate-1", "a".repeat(64), "42", "99", now, 1]);
     const failed = createMockDb(1);
     expect(await markAddressPoisoningAlertFailed(failed.db, {
-      candidateId: "candidate-1", error: "telegram", now, alertAttempt: 1, alertLeaseVersion: now
+      candidateId: "candidate-1", error: "telegram", now, alertAttempt: 1
     })).toBe(true);
     expect(compactSql(failed.queries[0].sql)).not.toContain("alert_attempts = alert_attempts + 1");
     expect(compactSql(failed.queries[0].sql)).toContain("when 3 then $3::timestamptz + interval '120 seconds'");
     expect(compactSql(failed.queries[0].sql)).toContain("else null");
     expect(compactSql(failed.queries[0].sql)).toContain("alert_lease_updated_at = null");
     expect(compactSql(failed.queries[0].sql)).toContain("alert_attempts = $4");
-    expect(compactSql(failed.queries[0].sql)).toContain("alert_lease_updated_at = $5");
+    expect(compactSql(failed.queries[0].sql)).not.toContain("and alert_lease_updated_at =");
     expect(compactSql(failed.queries[0].sql)).toContain("when 3 then $3::timestamptz + interval '120 seconds'");
     const skipped = createMockDb(1);
     expect(await markAddressPoisoningAlertSkipped(skipped.db, {
-      candidateId: "candidate-1", reason: "paused", alertAttempt: 1, alertLeaseVersion: now
+      candidateId: "candidate-1", reason: "paused", alertAttempt: 1
     })).toBe(true);
     expect(compactSql(skipped.queries[0].sql)).toContain("alert_lease_updated_at = null");
     expect(compactSql(skipped.queries[0].sql)).toContain("alert_attempts = $3");
-    expect(compactSql(skipped.queries[0].sql)).toContain("alert_lease_updated_at = $4");
+    expect(compactSql(skipped.queries[0].sql)).not.toContain("and alert_lease_updated_at =");
     for (const query of [...claimed.queries, ...sent.queries, ...failed.queries, ...skipped.queries]) {
       expect(compactSql(query.sql)).not.toContain("user_alert_status");
     }
@@ -3762,49 +3761,44 @@ describe("address poisoning persistence", () => {
     expect(current.queries.at(-1)).toBe("commit");
   });
 
-  it("rejects stale alert worker transitions after a sending lease is reclaimed", async () => {
-    const lease1 = new Date("2026-07-12T12:00:00.000Z");
-    const lease2 = new Date("2026-07-12T12:01:00.000Z");
+  it("rejects terminal transitions from an old claim generation after delivery is reclaimed", async () => {
     const failureAt = new Date("2026-07-12T12:02:00.000Z");
     const run = async (kind: "sent" | "failed" | "skipped") => {
-      const state = { status: "sending", lease: lease2 };
+      const state = { status: "sending", attempt: 2 };
       const db = {
-        query: async (_sql: string, params: unknown[] = []) => {
-          const suppliedLease = params.at(-1);
-          if (!(suppliedLease instanceof Date) || suppliedLease.getTime() !== state.lease.getTime()) {
+        query: async (sql: string, params: unknown[] = []) => {
+          const suppliedAttempt = kind === "sent" ? params[5] : kind === "failed" ? params[3] : params[2];
+          expect(compactSql(sql)).not.toContain("and alert_lease_updated_at =");
+          if (suppliedAttempt !== state.attempt) {
             return { rowCount: 0, rows: [] };
           }
           state.status = kind;
-          if (kind === "failed") state.lease = params[2] as Date;
           return { rowCount: 1, rows: [] };
         }
       } as unknown as Db;
-      const invoke = (alertLeaseVersion: Date) => kind === "sent"
+      const invoke = (alertAttempt: number) => kind === "sent"
         ? markAddressPoisoningAlertSent(db, {
           candidateId: "candidate-1",
           fingerprint: "a".repeat(64),
           telegramChatId: "42",
           telegramMessageId: "99",
           sentAt: failureAt,
-          alertAttempt: 1,
-          alertLeaseVersion
+          alertAttempt
         })
         : kind === "failed"
           ? markAddressPoisoningAlertFailed(db, {
             candidateId: "candidate-1",
             error: "telegram",
             now: failureAt,
-            alertAttempt: 1,
-            alertLeaseVersion
+            alertAttempt
           })
           : markAddressPoisoningAlertSkipped(db, {
-            candidateId: "candidate-1", reason: "paused", alertAttempt: 1, alertLeaseVersion
+            candidateId: "candidate-1", reason: "paused", alertAttempt
           });
-      expect(await invoke(lease1)).toBe(false);
+      expect(await invoke(1)).toBe(false);
       expect(state.status).toBe("sending");
-      expect(await invoke(lease2)).toBe(true);
+      expect(await invoke(2)).toBe(true);
       expect(state.status).toBe(kind);
-      if (kind === "failed") expect(state.lease).toEqual(failureAt);
     };
     await run("sent");
     await run("failed");
@@ -4053,6 +4047,53 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
     expect(terminal.rows[0]).toMatchObject({ alert_attempts: 4, alert_status: "failed" });
   });
 
+  it("serializes a terminal acknowledgement against a stale delivery reclaim", async () => {
+    const candidate = await createCandidate(`${txPrefix}terminal-reclaim-race`);
+    const first = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+      limit: 1,
+      now: eventAt,
+      staleSendingBefore: new Date(0)
+    }))[0];
+    const sentInput = {
+      candidateId: candidate.id,
+      fingerprint: "c".repeat(64),
+      telegramChatId: "42",
+      telegramMessageId: "1001",
+      sentAt: new Date(eventAt.getTime() + 200_001),
+      alertAttempt: first.alertAttempt
+    };
+
+    const [oldGenerationSent, reclaimed] = await Promise.all([
+      markAddressPoisoningAlertSent(pgDb as unknown as Db, sentInput),
+      claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
+        limit: 1,
+        now: sentInput.sentAt,
+        staleSendingBefore: new Date(first.alertLeaseVersion.getTime() + 1)
+      })
+    ]);
+
+    expect(oldGenerationSent === (reclaimed.length === 0)).toBe(true);
+    if (reclaimed.length > 0) {
+      expect(reclaimed[0].alertAttempt).toBe(first.alertAttempt + 1);
+      expect(await markAddressPoisoningAlertSent(pgDb as unknown as Db, {
+        ...sentInput,
+        telegramMessageId: "1002",
+        alertAttempt: reclaimed[0].alertAttempt
+      })).toBe(true);
+    }
+    expect(await markAddressPoisoningAlertSent(pgDb as unknown as Db, sentInput)).toBe(false);
+
+    const stored = await pgDb.query(
+      "select alert_status, alert_attempts, telegram_message_id from address_poisoning_candidates where id = $1",
+      [candidate.id]
+    );
+    expect(stored.rows[0]).toMatchObject({
+      alert_status: "sent",
+      alert_attempts: reclaimed[0]?.alertAttempt ?? first.alertAttempt,
+      telegram_message_id: reclaimed.length > 0 ? "1002" : "1001"
+    });
+  });
+
   it("fixes the alert locale on first claim and preserves it after the user changes locale", async () => {
     const candidate = await createCandidate(`${txPrefix}fixed-alert-locale`);
     const first = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
@@ -4067,8 +4108,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       candidateId: candidate.id,
       error: "telegram",
       now: eventAt,
-      alertAttempt: first.alertAttempt,
-      alertLeaseVersion: first.alertLeaseVersion
+      alertAttempt: first.alertAttempt
     })).toBe(true);
     const retry = (await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
       limit: 1,
@@ -4340,8 +4380,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       telegramChatId: "42",
       telegramMessageId: "1001",
       sentAt: new Date(renewedAt.getTime() + 10_000),
-      alertAttempt: delivery.alertAttempt,
-      alertLeaseVersion: renewedAt
+      alertAttempt: delivery.alertAttempt
     })).toBe(true);
     const stored = await pgDb.query(
       `select status, alert_status, alert_attempts, alert_lease_updated_at,
@@ -4374,8 +4413,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
         candidateId: candidate.id,
         error: `telegram-${index + 1}`,
         now: claimAt,
-        alertAttempt: delivery.alertAttempt,
-        alertLeaseVersion: delivery.alertLeaseVersion
+        alertAttempt: delivery.alertAttempt
       })).toBe(true);
       expect((await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
         limit: 1,
@@ -4392,8 +4430,7 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       candidateId: candidate.id,
       error: "telegram-4",
       now: claimAt,
-      alertAttempt: fourth.alertAttempt,
-      alertLeaseVersion: fourth.alertLeaseVersion
+      alertAttempt: fourth.alertAttempt
     })).toBe(true);
     expect((await claimAddressPoisoningAlertsForDelivery(pgDb as unknown as Db, {
       limit: 1, now: new Date(claimAt.getTime() + 1_000_000), staleSendingBefore: new Date(0)
