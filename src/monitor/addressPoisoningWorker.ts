@@ -367,13 +367,41 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
   ) {
     throw new Error("Malformed accumulated address-poisoning provider metadata");
   }
+  const rawProviderRowIds = hasRawProviderRowIds ? [...persistedRawProviderRowIds] as string[] : [];
+  const providerTransferIds = [...value.providerTransferIds] as string[];
+  const providerPages = value.providerPages as ProviderPageAudit[];
+  const auditedRawProviderRowIds = providerPages.flatMap((page) =>
+    Array.isArray(page.rawProviderRowIds) ? page.rawProviderRowIds : []);
+  const auditedRawProviderRowIdSet = new Set(auditedRawProviderRowIds);
+  const rawProviderRowIdSet = new Set(rawProviderRowIds);
+  const hasPriorProviderEvidence = lookupProvider !== null
+    || windowStart !== null
+    || windowEnd !== null
+    || value.transfers.length > 0
+    || value.providerFacts.length > 0
+    || value.providerTransferIds.length > 0
+    || value.providerFactProviders.length > 0
+    || providerPages.length > 0;
+  const rawIdentityEvidenceConsistent = hasRawProviderRowIds
+    && (!hasPriorProviderEvidence || rawProviderRowIds.length > 0)
+    && auditedRawProviderRowIdSet.size === rawProviderRowIdSet.size
+    && [...auditedRawProviderRowIdSet].every((id) => rawProviderRowIdSet.has(id))
+    && value.providerFacts.length <= rawProviderRowIds.length
+    && value.transfers.length === value.providerFacts.length
+    && providerPages.every((page) =>
+      Array.isArray(page.rawProviderRowIds)
+      && Array.isArray(page.overlappingRawRowIds)
+      && Array.isArray(page.overlappingTransferIds)
+      && page.rawProviderRowIds.every((id) => id.startsWith(`${page.provider}:`))
+      && page.overlappingRawRowIds.every((id) => page.rawProviderRowIds.includes(id))
+      && page.overlappingTransferIds.every((id) => providerTransferIds.includes(id)));
   return {
     version: 2,
     windowStart,
     windowEnd,
     lookupProvider,
     providerMetadataConsistent: value.providerMetadataConsistent
-      && hasRawProviderRowIds
+      && rawIdentityEvidenceConsistent
       && rawRowsHaveProviderTxHashes
       && (value.providerPages.length === 0 || (windowStart !== null && windowEnd !== null))
       && value.providerPages.every((page) =>
@@ -382,9 +410,9 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
         && Array.isArray((page as Partial<ProviderPageAudit>).overlappingRawRowIds)),
     transfers: [...value.transfers],
     providerFacts: value.providerFacts as RawTronscanTrc20Transfer[],
-    providerTransferIds: [...value.providerTransferIds],
+    providerTransferIds,
     providerFactProviders: [...value.providerFactProviders] as AccumulatedLookup["providerFactProviders"],
-    rawProviderRowIds: hasRawProviderRowIds ? [...persistedRawProviderRowIds] as string[] : [],
+    rawProviderRowIds,
     providerPages: value.providerPages.map((page) => ({
       ...(page as ProviderPageAudit),
       overlappingTransferIds: Array.isArray((page as Partial<ProviderPageAudit>).overlappingTransferIds)

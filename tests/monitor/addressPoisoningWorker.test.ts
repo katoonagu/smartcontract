@@ -1183,6 +1183,148 @@ describe("address poisoning worker", () => {
     expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
   });
 
+  it("never trusts empty raw IDs when version-two progress already contains provider facts", async () => {
+    const prior = rawTransfer({ transaction_id: "v2-prior-fact", quant: "1000000" });
+    const repo = repository([workItem({
+      logicalOffset: 1,
+      pageCount: 1,
+      fetchedCount: 1,
+      accumulatedLookupJson: {
+        version: 2,
+        windowStart: null,
+        windowEnd: null,
+        lookupProvider: "tronscan",
+        providerMetadataConsistent: true,
+        transfers: [{
+          transferId: "tronscan:accepted:v2-prior-fact",
+          txHash: prior.transaction_id,
+          sender: prior.from_address,
+          receiver: prior.to_address,
+          amountRaw: prior.quant,
+          occurredAt: new Date(prior.block_ts).toISOString()
+        }],
+        providerFacts: [prior],
+        providerTransferIds: ["tronscan:accepted:v2-prior-fact"],
+        providerFactProviders: ["tronscan"],
+        rawProviderRowIds: [],
+        providerPages: []
+      }
+    })]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      rawProviderRowIds: [],
+      start: 1,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["v2-prior-final-raw"],
+      canonicalTransferHashes: ["v2-prior-final-canonical"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
+  it("allows empty raw IDs only for an explicit version-two state with no prior provider evidence", async () => {
+    const repo = repository([workItem({
+      accumulatedLookupJson: {
+        version: 2,
+        windowStart: null,
+        windowEnd: null,
+        lookupProvider: null,
+        providerMetadataConsistent: true,
+        transfers: [],
+        providerFacts: [],
+        providerTransferIds: [],
+        providerFactProviders: [],
+        rawProviderRowIds: [],
+        providerPages: []
+      }
+    })]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      rawProviderRowIds: [],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 0,
+      total: 0,
+      rangeTotal: 0,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["v2-empty-final-raw"],
+      canonicalTransferHashes: ["v2-empty-final-canonical"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coverage: "complete",
+      reason: "complete_no_match"
+    }));
+  });
+
+  it("fails closed when persisted page raw IDs do not reconcile with top-level raw IDs", async () => {
+    const repo = repository([workItem({
+      logicalOffset: 1,
+      pageCount: 1,
+      fetchedCount: 1,
+      accumulatedLookupJson: {
+        version: 2,
+        windowStart: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 86_400_000).toISOString(),
+        windowEnd: new Date(THJ_POISONING_CASE.incomingAt.getTime() - 1).toISOString(),
+        lookupProvider: "tronscan",
+        providerMetadataConsistent: true,
+        transfers: [],
+        providerFacts: [],
+        providerTransferIds: [],
+        providerFactProviders: [],
+        rawProviderRowIds: ["tronscan:tx:top-level-row"],
+        providerPages: [{
+          provider: "tronscan",
+          start: 0,
+          requestedLimit: 100,
+          nextOffset: 1,
+          rawCount: 1,
+          total: 1,
+          rangeTotal: 1,
+          complete: false,
+          metadataConsistent: true,
+          overlappingTransferIds: [],
+          rawProviderRowIds: ["tronscan:tx:different-page-row"],
+          overlappingRawRowIds: [],
+          rawResponseHashes: ["mismatch-prior-raw"],
+          canonicalTransferHashes: ["mismatch-prior-canonical"]
+        }]
+      }
+    })]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      rawProviderRowIds: [],
+      start: 1,
+      requestedLimit: 100,
+      nextOffset: 1,
+      total: 1,
+      rangeTotal: 1,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["mismatch-final-raw"],
+      canonicalTransferHashes: ["mismatch-final-canonical"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
   it("keeps an overlapping full logical page partial", async () => {
     const repo = repository([workItem()]);
     const page: PinnedTronscanTransferPage = {
