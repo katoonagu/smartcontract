@@ -99,7 +99,7 @@ import {
   upsertWalletPollState
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
-import type { RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent } from "../../src/types";
+import type { AddressPoisoningClearReason, RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent } from "../../src/types";
 
 function compactSql(sql: string): string {
   return sql.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
@@ -3022,6 +3022,8 @@ describe("address poisoning persistence", () => {
     expect(compactSql(sql)).toContain("signal_group <> 'wallet_safety' or score_impact = 0");
     expect(sql).toContain("unique (watched_wallet_id, token_contract, suspicious_incoming_tx_hash)");
     expect(compactSql(sql)).toContain("check (confidence in ('low','medium','high'))");
+    expect(compactSql(sql)).toContain("observed_transactions_poisoning_clear_reason_check");
+    expect(compactSql(sql)).toContain("poisoning_last_error in ('prior_relationship','trusted_sender','authoritative_service')");
   });
 
   it("claims fresh work with a row lock and leaves fifth-page partials terminal", async () => {
@@ -3087,6 +3089,7 @@ describe("address poisoning persistence", () => {
       txHash: "incoming-1",
       watchedWalletId: "wallet-1",
       coverage: "complete",
+      reason: "complete_no_match",
       logicalOffset: 240,
       pageCount: 3,
       fetchedCount: 212,
@@ -3094,16 +3097,18 @@ describe("address poisoning persistence", () => {
       accumulatedLookupJson: { transfers: ["tx-final"] },
       leaseVersion: now
     })).toBe(true);
-    expect(compactSql(clear.queries[0].sql)).toContain("poisoning_lookup_coverage = 'complete'");
-    expect(compactSql(clear.queries[0].sql)).toContain("poisoning_logical_offset = $3");
+    expect(compactSql(clear.queries[0].sql)).toContain("poisoning_lookup_coverage = $3");
+    expect(compactSql(clear.queries[0].sql)).toContain("poisoning_logical_offset = $4");
     expect(clear.queries[0].params).toEqual([
       "incoming-1",
       "wallet-1",
+      "complete",
       240,
       3,
       212,
       new Date("2026-07-11T10:00:00.000Z"),
       { transfers: ["tx-final"] },
+      "complete_no_match",
       now
     ]);
     expect(await markAddressPoisoningCheckInconclusive(partial.db, {
@@ -3127,6 +3132,51 @@ describe("address poisoning persistence", () => {
     })).toBe(true);
     expect(compactSql(skipped.queries[0].sql)).toContain("poisoning_check_status = 'skipped'");
     expect(compactSql(skipped.queries[0].sql)).toContain("poisoning_updated_at = $4");
+  });
+
+  it("allows partial clear only for exact disqualifier reasons", async () => {
+    const progress = {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      coverage: "partial" as const,
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: now,
+      accumulatedLookupJson: { transfers: [] },
+      leaseVersion: now
+    };
+    for (const reason of ["prior_relationship", "trusted_sender", "authoritative_service"] as AddressPoisoningClearReason[]) {
+      const mock = createMockDb(1);
+      expect(await markAddressPoisoningCheckClear(mock.db, { ...progress, reason })).toBe(true);
+      expect(compactSql(mock.queries[0].sql)).toContain("poisoning_lookup_coverage = $3");
+      expect(mock.queries[0].params).toContain("partial");
+      expect(mock.queries[0].params).toContain(reason);
+    }
+  });
+
+  it("rejects incomplete no-match and unknown clear reasons before touching the database", async () => {
+    const progress = {
+      txHash: "incoming-1",
+      watchedWalletId: "wallet-1",
+      coverage: "partial" as const,
+      logicalOffset: 100,
+      pageCount: 1,
+      fetchedCount: 100,
+      oldestFetchedAt: now,
+      accumulatedLookupJson: { transfers: [] },
+      leaseVersion: now
+    };
+    const incomplete = createMockDb(1);
+    await expect(markAddressPoisoningCheckClear(incomplete.db, { ...progress, reason: "complete_no_match" }))
+      .rejects.toThrow("complete_no_match requires complete coverage");
+    expect(incomplete.queries).toEqual([]);
+    const unknown = createMockDb(1);
+    await expect(markAddressPoisoningCheckClear(unknown.db, {
+      ...progress,
+      reason: "unknown_reason" as AddressPoisoningClearReason
+    })).rejects.toThrow("Invalid address poisoning clear reason");
+    expect(unknown.queries).toEqual([]);
   });
 
   it("records the 30/60/120 retry schedule and stops claiming after three failures", async () => {
@@ -3501,6 +3551,7 @@ describe("address poisoning persistence", () => {
       txHash: "incoming-1",
       watchedWalletId: "wallet-1",
       coverage: "complete" as const,
+      reason: "complete_no_match" as const,
       logicalOffset: 100,
       pageCount: 1,
       fetchedCount: 100,
@@ -3857,5 +3908,25 @@ postgresAddressPoisoningDescribe("address poisoning PostgreSQL lifecycle", () =>
       queueDepth: 1,
       oldestQueueAgeMs: 5000
     });
+  });
+
+  it("enforces clear coverage and reason combinations in PostgreSQL", async () => {
+    const updateClear = async (suffix: string, coverage: "complete" | "partial", reason: string | null) => {
+      const txHash = `${txPrefix}clear-${suffix}`;
+      await seedObserved(txHash);
+      return pgDb.query(
+        `update observed_transactions
+         set poisoning_check_status = 'clear', poisoning_lookup_coverage = $2, poisoning_last_error = $3
+         where tx_hash = $1`,
+        [txHash, coverage, reason]
+      );
+    };
+    await expect(updateClear("partial-no-match", "partial", "complete_no_match")).rejects.toMatchObject({ code: "23514" });
+    await expect(updateClear("partial-null", "partial", null)).rejects.toMatchObject({ code: "23514" });
+    await expect(updateClear("partial-bogus", "partial", "bogus")).rejects.toMatchObject({ code: "23514" });
+    for (const reason of ["prior_relationship", "trusted_sender", "authoritative_service"]) {
+      await expect(updateClear(`partial-${reason}`, "partial", reason)).resolves.toMatchObject({ rowCount: 1 });
+    }
+    await expect(updateClear("complete-no-match", "complete", "complete_no_match")).resolves.toMatchObject({ rowCount: 1 });
   });
 });

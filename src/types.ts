@@ -160,6 +160,11 @@ export type AddressPoisoningCheckStatus =
   | "skipped"
   | "skipped_backfill";
 export type AddressPoisoningCoverage = "complete" | "partial";
+export type AddressPoisoningClearReason =
+  | "complete_no_match"
+  | "prior_relationship"
+  | "trusted_sender"
+  | "authoritative_service";
 export type AddressPoisoningClassification = "CRITICAL" | "HIGH";
 export type AddressPoisoningCandidateStatus = "candidate" | "confirmed" | "dismissed";
 export type AddressPoisoningAlertStatus = "pending" | "sending" | "sent" | "failed" | "skipped";

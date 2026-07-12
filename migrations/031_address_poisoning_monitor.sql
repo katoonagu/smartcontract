@@ -22,6 +22,29 @@ alter table observed_transactions
   add constraint observed_transactions_poisoning_lookup_coverage_check
   check (poisoning_lookup_coverage is null or poisoning_lookup_coverage in ('complete','partial'));
 
+update observed_transactions
+set poisoning_last_error = 'complete_no_match'
+where poisoning_check_status = 'clear'
+  and poisoning_lookup_coverage = 'complete'
+  and poisoning_last_error is null;
+
+alter table observed_transactions drop constraint if exists observed_transactions_poisoning_clear_reason_check;
+alter table observed_transactions
+  add constraint observed_transactions_poisoning_clear_reason_check
+  check (
+    poisoning_check_status <> 'clear'
+    or (
+      poisoning_lookup_coverage is not null
+      and poisoning_last_error is not null
+      and poisoning_lookup_coverage in ('complete','partial')
+      and poisoning_last_error in ('complete_no_match','prior_relationship','trusted_sender','authoritative_service')
+      and (
+        poisoning_lookup_coverage = 'complete'
+        or poisoning_last_error in ('prior_relationship','trusted_sender','authoritative_service')
+      )
+    )
+  );
+
 alter table observed_transactions drop constraint if exists observed_transactions_poisoning_progress_check;
 alter table observed_transactions
   add constraint observed_transactions_poisoning_progress_check

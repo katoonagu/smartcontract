@@ -4,6 +4,7 @@ import type {
   AddressPoisoningCandidate,
   AddressPoisoningCandidateDelivery,
   AddressPoisoningCandidateStatus,
+  AddressPoisoningClearReason,
   AddressPoisoningCheckStatus,
   AddressPoisoningCheckWorkItem,
   AddressPoisoningClassification,
@@ -805,6 +806,9 @@ const addressPoisoningCheckStatuses = new Set<AddressPoisoningCheckStatus>([
   "pending", "running", "inconclusive", "clear", "candidate", "failed", "skipped", "skipped_backfill"
 ]);
 const addressPoisoningCoverages = new Set<AddressPoisoningCoverage>(["complete", "partial"]);
+const addressPoisoningClearReasons = new Set<AddressPoisoningClearReason>([
+  "complete_no_match", "prior_relationship", "trusted_sender", "authoritative_service"
+]);
 const addressPoisoningClassifications = new Set<AddressPoisoningClassification>(["CRITICAL", "HIGH"]);
 const addressPoisoningCandidateStatuses = new Set<AddressPoisoningCandidateStatus>(["candidate", "confirmed", "dismissed"]);
 const addressPoisoningAlertStatuses = new Set<AddressPoisoningAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
@@ -979,6 +983,13 @@ function parseAddressPoisoningCoverage(value: string | null): AddressPoisoningCo
     throw new Error(`Invalid address poisoning coverage from database: ${value}`);
   }
   return value as AddressPoisoningCoverage;
+}
+
+function parseAddressPoisoningClearReason(value: string): AddressPoisoningClearReason {
+  if (!addressPoisoningClearReasons.has(value as AddressPoisoningClearReason)) {
+    throw new Error(`Invalid address poisoning clear reason: ${value}`);
+  }
+  return value as AddressPoisoningClearReason;
 }
 
 function parseAddressPoisoningClassification(value: string): AddressPoisoningClassification {
@@ -3467,6 +3478,7 @@ export async function markAddressPoisoningCheckClear(
     txHash: string;
     watchedWalletId: string;
     coverage: AddressPoisoningCoverage;
+    reason: AddressPoisoningClearReason;
     logicalOffset: number;
     pageCount: number;
     fetchedCount: number;
@@ -3475,30 +3487,35 @@ export async function markAddressPoisoningCheckClear(
     leaseVersion: Date;
   }
 ): Promise<boolean> {
-  if (input.coverage !== "complete") throw new Error("Address poisoning clear requires complete coverage");
+  const reason = parseAddressPoisoningClearReason(input.reason);
+  if (reason === "complete_no_match" && input.coverage !== "complete") {
+    throw new Error("Address poisoning complete_no_match requires complete coverage");
+  }
   const result = await db.query(
     `update observed_transactions
      set poisoning_check_status = 'clear',
-       poisoning_lookup_coverage = 'complete',
-       poisoning_logical_offset = $3,
-       poisoning_page_count = $4,
-       poisoning_fetched_count = $5,
-       poisoning_oldest_fetched_at = $6,
-       poisoning_accumulated_lookup_json = $7,
+       poisoning_lookup_coverage = $3,
+       poisoning_logical_offset = $4,
+       poisoning_page_count = $5,
+       poisoning_fetched_count = $6,
+       poisoning_oldest_fetched_at = $7,
+       poisoning_accumulated_lookup_json = $8,
        poisoning_next_retry_at = null,
-       poisoning_last_error = null,
+       poisoning_last_error = $9,
        poisoning_updated_at = now(),
        poisoning_checked_at = now()
      where tx_hash = $1 and watched_wallet_id = $2 and poisoning_check_status = 'running'
-       and poisoning_updated_at = $8`,
+       and poisoning_updated_at = $10`,
     [
       input.txHash,
       input.watchedWalletId,
+      input.coverage,
       input.logicalOffset,
       input.pageCount,
       input.fetchedCount,
       input.oldestFetchedAt,
       input.accumulatedLookupJson,
+      reason,
       input.leaseVersion
     ]
   );
