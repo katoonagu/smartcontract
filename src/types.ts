@@ -1070,6 +1070,7 @@ export type IncomingDepositRiskReport = ForensicScoreValidity & {
   dataQuality: IncomingDepositDataQuality;
   senderRole: string | null;
   targetedHistoryCoverage?: IncomingDepositTargetedCoverageSummary;
+  coverageV2?: ForensicCoverageV2;
   sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
@@ -1277,6 +1278,102 @@ export type MoneyOriginProvenanceScope =
   | "transaction_seed"
   | "recent_flow";
 
+export type CoverageExclusionReasonV1 =
+  | "after_checked_operation"
+  | "consumed_by_earlier_spend"
+  | "exact_gasfree_service_fee"
+  | "different_selected_scope"
+  | "provider_history_unavailable"
+  | "local_materialization_failed"
+  | "other_proven_not_selected";
+
+export type CoverageExclusionV1 = {
+  reason: CoverageExclusionReasonV1;
+  direction: "incoming" | "outgoing" | null;
+  txCount: number;
+  amountRaw: string | null;
+  evidenceIds: string[];
+};
+
+export type CoverageLimitationV1 = {
+  reason: "provider_history_unavailable" | "local_materialization_failed";
+  evidenceIds: string[];
+};
+
+export type ForensicCoverageV2 = {
+  version: "forensic-coverage-v2";
+  scope: "current_balance" | "requested_amount" | "transaction_seed" | "recent_flow" | "deep_history";
+  availableInboundTxCount: number | null;
+  selectedInboundTxCount: number;
+  excludedInboundTxCount: number | null;
+  selectedAmountRaw: string | null;
+  tracedAmountRaw: string | null;
+  tracedShare: number | null;
+  unresolvedAmountRaw: string | null;
+  unresolvedShare: number | null;
+  exclusions: CoverageExclusionV1[];
+  limitations: CoverageLimitationV1[];
+  completeness: "complete" | "partial" | "unknown";
+};
+
+export type RecentFlowPrincipalTransferV1 = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  direction: "incoming" | "outgoing";
+  amountRaw: string;
+  timestamp: string;
+  economicRole: "principal";
+};
+
+export type ApprovalAllowanceStateV2 = {
+  version: "approval-allowance-v2";
+  ownerAddress: string;
+  spenderAddress: string;
+  tokenContract: string;
+  confirmedAllowanceRaw: string | null;
+  isUnlimited: boolean | null;
+  state: "confirmed_active" | "confirmed_zero" | "failed" | "stale";
+  confirmedAt: string | null;
+  freshUntil: string | null;
+  lastAttemptAt: string | null;
+  failureCode: string | null;
+  source: "official_usdt_allowance";
+  observedApprovalTxHash: string | null;
+};
+
+export type UsddPsmExposureV1 = {
+  mode: "where" | "incoming" | "recent_flow" | "deep_history";
+  direction: "inbound_from_psm" | "outbound_to_psm";
+  amountRaw: string;
+  selectedAmountRaw: string;
+  share: number;
+  hopCount: 1 | 2;
+  serviceIdentityExact: boolean;
+  amountContinuityExact: boolean;
+  baseModifier: 3 | 7 | 12 | 18 | 25;
+  modeAdjustedModifier: number;
+  appliedModifier: number;
+  roundingPolicy: "half_up_non_negative";
+  evidenceIds: string[];
+};
+
+export type UsddPsmRouteObservationV1 = {
+  version: "usdd-psm-route-observation-v1";
+  mode: "where" | "incoming" | "recent_flow" | "deep_history";
+  serviceId: "usdd_psm_gemjoin";
+  serviceAddress: string | null;
+  direction: "inbound_from_psm" | "outbound_to_psm" | "unknown";
+  amountRaw: string;
+  selectedAmountRaw: string;
+  hopCount: 1 | 2 | null;
+  serviceIdentityExact: boolean;
+  amountContinuityExact: boolean;
+  scoringEligible: boolean;
+  ineligibilityReason: "label_only" | "amount_discontinuous" | "unsupported_hop" | "invalid_amount" | null;
+  evidenceIds: string[];
+};
+
 export type MoneyOriginRecentFlowAnchor = {
   txHash: string;
   direction: "outgoing" | "inbound";
@@ -1300,10 +1397,15 @@ export type BalanceFormingSelection = {
   provenanceScope: MoneyOriginProvenanceScope;
   anchorTransfer?: MoneyOriginRecentFlowAnchor | null;
   dataScopeNote?: string | null;
+  recentFlowPrincipalTransfers?: RecentFlowPrincipalTransferV1[];
+  principalActivity?: "present" | "none";
+  coverageExclusions?: CoverageExclusionV1[];
+  availableInboundTxCount?: number | null;
   selectionMethod:
     | "current_balance"
     | "requested_amount"
     | "transaction_seed"
+    | "recent_five_principal"
     | "recent_outgoing"
     | "recent_large_inbound";
   notes: string[];
@@ -2000,6 +2102,9 @@ export type WhereIsMoneyReport = ForensicScoreValidity & {
   // Backcompat risk mirror of assessment.riskScore for existing bot/job consumers.
   riskScore: number;
   sourceProvenanceMateriality?: MoneyOriginSourceProvenanceMaterialitySummary | null;
+  coverageV2?: ForensicCoverageV2;
+  recentFlowPrincipalTransfers?: RecentFlowPrincipalTransferV1[];
+  usddPsmRouteObservations?: UsddPsmRouteObservationV1[];
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;
   layerSummary?: MoneyOriginLayerSummary;

@@ -74,6 +74,7 @@ import type {
   FirstHopBlacklistCoverage,
   FirstHopBlacklistFact,
   FirstHopLabelFact,
+  ForensicCoverageV2,
   ForensicRouteEdge,
   IndexedTronUsdtTransfer,
   InboundProvenanceProfile,
@@ -124,6 +125,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   firstHopLabelFacts?: FirstHopLabelFact[];
   /** Absent on legacy stored reports created before first-hop evidence persistence. */
   firstHopBlacklistCoverage?: FirstHopBlacklistCoverage;
+  coverageV2?: ForensicCoverageV2;
   /** Timeline-bearing direct restriction snapshots; absent on legacy stored reports. */
   directHardEvidenceSnapshots?: DirectHardEvidenceSnapshot[];
   coverage: {
