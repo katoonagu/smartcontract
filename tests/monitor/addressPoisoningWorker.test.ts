@@ -67,6 +67,17 @@ function rawTransfer(overrides: Partial<RawTronscanTrc20Transfer> = {}): RawTron
   };
 }
 
+function testRawProviderRowIds(
+  transfers: RawTronscanTrc20Transfer[],
+  provider: PinnedTronscanTransferPage["provider"] = "tronscan"
+): string[] {
+  return transfers.map((transfer) => {
+    const row = transfer as RawTronscanTrc20Transfer & { event_index?: number; log_index?: number };
+    const eventIndex = row.event_index ?? row.log_index;
+    return `${provider}:tx:${transfer.transaction_id.toLowerCase()}${eventIndex === undefined ? "" : `:event:${eventIndex}`}`;
+  });
+}
+
 function labels(...values: Array<Pick<AddressLabel, "label" | "source">>): AddressLabel[] {
   return values.map((value) => ({
     address: THJ_POISONING_CASE.lookalike,
@@ -183,6 +194,7 @@ function deps(
     return {
       provider: "tronscan",
       transfers,
+      rawProviderRowIds: testRawProviderRowIds(transfers),
       start,
       requestedLimit,
       nextOffset: start + transfers.length,
@@ -257,6 +269,7 @@ describe("address poisoning worker", () => {
       return {
         provider: "tronscan",
         transfers,
+        rawProviderRowIds: testRawProviderRowIds(transfers),
         start,
         requestedLimit: 100,
         nextOffset: start + transfers.length,
@@ -600,6 +613,7 @@ describe("address poisoning worker", () => {
     const tronscanPage: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [rawTransfer({ transaction_id: "tronscan-context" })],
+      rawProviderRowIds: ["tronscan:tx:tronscan-context"],
       start: 0,
       requestedLimit: 100,
       nextOffset: 1,
@@ -618,6 +632,7 @@ describe("address poisoning worker", () => {
     const fallbackPage: PinnedTronscanTransferPage = {
       provider: "trongrid_fallback",
       transfers: [fallbackMatch],
+      rawProviderRowIds: testRawProviderRowIds([fallbackMatch], "trongrid_fallback"),
       start: 1,
       requestedLimit: 100,
       nextOffset: 2,
@@ -665,6 +680,7 @@ describe("address poisoning worker", () => {
     const first: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `range-first-${index}` })),
+      rawProviderRowIds: Array.from({ length: 100 }, (_, index) => `tronscan:tx:range-first-${index}`),
       start: 0,
       requestedLimit: 100,
       nextOffset: 100,
@@ -678,6 +694,7 @@ describe("address poisoning worker", () => {
     const contradictory: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [],
+      rawProviderRowIds: [],
       start: 100,
       requestedLimit: 100,
       nextOffset: 100,
@@ -731,6 +748,7 @@ describe("address poisoning worker", () => {
       .mockResolvedValueOnce({
         provider: "tronscan",
         transfers: firstTransfers,
+        rawProviderRowIds: testRawProviderRowIds(firstTransfers),
         start: 0,
         requestedLimit: 100,
         nextOffset: 100,
@@ -744,6 +762,7 @@ describe("address poisoning worker", () => {
       .mockResolvedValueOnce({
         provider: "tronscan",
         transfers: secondTransfers,
+        rawProviderRowIds: testRawProviderRowIds(secondTransfers),
         start: 100,
         requestedLimit: 100,
         nextOffset: 200,
@@ -769,6 +788,86 @@ describe("address poisoning worker", () => {
     expect(second.accumulatedLookupJson.providerPages[1].overlappingTransferIds[0]).toMatch(/^tronscan:/);
   });
 
+  it("audits raw row overlap before rejecting rows from detector evidence", async () => {
+    let current = workItem();
+    const repo = repository();
+    (repo.claimChecks as ReturnType<typeof vi.fn>).mockImplementation(async () => [current]);
+    (repo.markInconclusive as ReturnType<typeof vi.fn>).mockImplementation(async (_db, input) => {
+      current = workItem({
+        logicalOffset: input.logicalOffset,
+        pageCount: input.pageCount,
+        fetchedCount: input.fetchedCount,
+        accumulatedLookupJson: input.accumulatedLookupJson,
+        leaseVersion: new Date(current.leaseVersion.getTime() + 1_000)
+      });
+      return true;
+    });
+    const rejectedFirst = rawTransfer({
+      transaction_id: "rejected-raw-overlap",
+      ...({ event_index: 7 } as Record<string, unknown>),
+      contractRet: "REVERT",
+      revert: true
+    });
+    const rejectedChanged = rawTransfer({
+      transaction_id: "rejected-raw-overlap",
+      ...({ event_index: 7 } as Record<string, unknown>),
+      quant: "99999999",
+      contractRet: "REVERT",
+      revert: true
+    });
+    const firstTransfers = [
+      rejectedFirst,
+      ...Array.from({ length: 99 }, (_, index) => rawTransfer({ transaction_id: `raw-first-${index}` }))
+    ];
+    const secondTransfers = [
+      rejectedChanged,
+      ...Array.from({ length: 99 }, (_, index) => rawTransfer({ transaction_id: `raw-second-${index}` }))
+    ];
+    const repeatedRawId = "tronscan:tx:rejected-raw-overlap:event:7";
+    const pages = vi.fn()
+      .mockResolvedValueOnce({
+        provider: "tronscan",
+        transfers: firstTransfers,
+        rawProviderRowIds: [repeatedRawId, ...firstTransfers.slice(1).map((row) => `tronscan:tx:${row.transaction_id}`)],
+        start: 0,
+        requestedLimit: 100,
+        nextOffset: 100,
+        total: 200,
+        rangeTotal: 200,
+        complete: false,
+        metadataConsistent: true,
+        rawResponseHashes: ["raw-rejected-first"],
+        canonicalTransferHashes: ["canonical-rejected-first"]
+      } satisfies PinnedTronscanTransferPage & { rawProviderRowIds: string[] })
+      .mockResolvedValueOnce({
+        provider: "tronscan",
+        transfers: secondTransfers,
+        rawProviderRowIds: [repeatedRawId, ...secondTransfers.slice(1).map((row) => `tronscan:tx:${row.transaction_id}`)],
+        start: 100,
+        requestedLimit: 100,
+        nextOffset: 200,
+        total: 200,
+        rangeTotal: 200,
+        complete: true,
+        metadataConsistent: true,
+        rawResponseHashes: ["raw-rejected-second"],
+        canonicalTransferHashes: ["canonical-rejected-second"]
+      } satisfies PinnedTronscanTransferPage & { rawProviderRowIds: string[] });
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, pages));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    const second = (repo.markInconclusive as ReturnType<typeof vi.fn>).mock.calls[1][1];
+    expect(second.coverage).toBe("partial");
+    expect(second.accumulatedLookupJson.providerMetadataConsistent).toBe(false);
+    expect(second.accumulatedLookupJson.rawProviderRowIds).toHaveLength(199);
+    expect(second.accumulatedLookupJson.providerTransferIds).toHaveLength(198);
+    expect(second.accumulatedLookupJson.transfers).toHaveLength(198);
+    expect(second.accumulatedLookupJson.providerPages[1].overlappingRawRowIds).toEqual([repeatedRawId]);
+    expect(second.accumulatedLookupJson.providerPages[1].overlappingTransferIds).toEqual([]);
+  });
+
   it("does not treat a retried but previously unpersisted page as cross-claim overlap", async () => {
     const item = workItem();
     const repo = repository([item]);
@@ -779,6 +878,7 @@ describe("address poisoning worker", () => {
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers,
+      rawProviderRowIds: testRawProviderRowIds(transfers),
       start: 0,
       requestedLimit: 100,
       nextOffset: 100,
@@ -823,6 +923,7 @@ describe("address poisoning worker", () => {
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [],
+      rawProviderRowIds: [],
       start: 1,
       requestedLimit: 100,
       nextOffset: 1,
@@ -840,11 +941,48 @@ describe("address poisoning worker", () => {
     expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
   });
 
+  it("fails closed when a version-two accumulated lookup predates raw row IDs", async () => {
+    const repo = repository([workItem({
+      accumulatedLookupJson: {
+        version: 2,
+        windowStart: null,
+        windowEnd: null,
+        lookupProvider: null,
+        providerMetadataConsistent: true,
+        transfers: [],
+        providerFacts: [],
+        providerTransferIds: [],
+        providerFactProviders: [],
+        providerPages: []
+      }
+    })]);
+    const page: PinnedTronscanTransferPage = {
+      provider: "tronscan",
+      transfers: [],
+      rawProviderRowIds: [],
+      start: 0,
+      requestedLimit: 100,
+      nextOffset: 0,
+      total: 0,
+      rangeTotal: 0,
+      complete: true,
+      metadataConsistent: true,
+      rawResponseHashes: ["legacy-v2-final-raw"],
+      canonicalTransferHashes: ["legacy-v2-final-canonical"]
+    };
+
+    await runSingleAddressPoisoningCycle(deps(repo, undefined, undefined, undefined, vi.fn(async () => page)));
+
+    expect(repo.markClear).not.toHaveBeenCalled();
+    expect(repo.markInconclusive).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ coverage: "partial" }));
+  });
+
   it("keeps an overlapping full logical page partial", async () => {
     const repo = repository([workItem()]);
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `overlap-worker-${index}` })),
+      rawProviderRowIds: Array.from({ length: 100 }, (_, index) => `tronscan:tx:overlap-worker-${index}`),
       start: 0,
       requestedLimit: 100,
       nextOffset: 100,
@@ -867,6 +1005,7 @@ describe("address poisoning worker", () => {
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [rawTransfer({ transaction_id: "short-incomplete" })],
+      rawProviderRowIds: ["tronscan:tx:short-incomplete"],
       start: 0,
       requestedLimit: 100,
       nextOffset: 1,
@@ -892,6 +1031,7 @@ describe("address poisoning worker", () => {
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [rawTransfer({ transaction_id: "short-complete" })],
+      rawProviderRowIds: ["tronscan:tx:short-complete"],
       start: 0,
       requestedLimit: 100,
       nextOffset: 1,
@@ -916,6 +1056,7 @@ describe("address poisoning worker", () => {
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: [],
+      rawProviderRowIds: [],
       start: 0,
       requestedLimit: 100,
       nextOffset: 0,
@@ -941,6 +1082,7 @@ describe("address poisoning worker", () => {
     const page: PinnedTronscanTransferPage = {
       provider: "tronscan",
       transfers: Array.from({ length: 100 }, (_, index) => rawTransfer({ transaction_id: `impossible-worker-${index}` })),
+      rawProviderRowIds: Array.from({ length: 100 }, (_, index) => `tronscan:tx:impossible-worker-${index}`),
       start: 0,
       requestedLimit: 100,
       nextOffset: 100,
@@ -975,6 +1117,7 @@ describe("address poisoning worker", () => {
       return {
         provider: "tronscan" as const,
         transfers: [match],
+        rawProviderRowIds: testRawProviderRowIds([match]),
         start: 0,
         requestedLimit: 100,
         nextOffset: 1,

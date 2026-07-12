@@ -159,6 +159,7 @@ export type TronscanTrc20TransferPage = {
 export type PinnedTronscanTransferPage = {
   provider: "tronscan" | "trongrid_fallback";
   transfers: RawTronscanTrc20Transfer[];
+  rawProviderRowIds: string[];
   start: number;
   requestedLimit: number;
   nextOffset: number;
@@ -793,6 +794,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const transfers: RawTronscanTrc20Transfer[] = [];
     const rawResponseHashes: string[] = [];
     const canonicalTransferHashes: string[] = [];
+    const rawProviderRowIds: string[] = [];
     const seenTransferIdentities = new Set<string>();
     const maxSubrequests = Math.ceil(requestedLimit / TRONSCAN_TRANSFER_PAGE_LIMIT);
     let total: number | null | undefined;
@@ -823,9 +825,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       if (page.canonicalTransferHash) canonicalTransferHashes.push(page.canonicalTransferHash);
       if (page.transfers.length > pageLimit) metadataConsistent = false;
       for (const transfer of consumedTransfers) {
-        const identity = JSON.stringify(this.canonicalTronscanTransferRow(transfer));
+        const identity = this.rawProviderRowPaginationId(page.provider, transfer);
         if (seenTransferIdentities.has(identity)) metadataConsistent = false;
         seenTransferIdentities.add(identity);
+        rawProviderRowIds.push(identity);
       }
       transfers.push(...consumedTransfers);
 
@@ -848,6 +851,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return {
       provider: "tronscan",
       transfers,
+      rawProviderRowIds,
       start,
       requestedLimit,
       nextOffset,
@@ -1296,6 +1300,25 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       amount: this.stringField(row.quant ?? row.amount ?? row.amount_str ?? row.value),
       ts: this.safeIntegerField(row.block_ts ?? row.block_timestamp ?? row.timestamp ?? row.time)
     };
+  }
+
+  private rawProviderRowPaginationId(
+    provider: TronscanTrc20TransferPage["provider"],
+    transfer: RawTronscanTrc20Transfer
+  ): string {
+    const row = transfer as Record<string, unknown>;
+    const txHash = this.stringField(
+      row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash
+    )?.trim().toLowerCase();
+    const eventIndex = [row.event_index, row.eventIndex, row.log_index, row.logIndex]
+      .map((value) => this.safeIntegerField(value))
+      .find((value) => value !== null) ?? null;
+    if (txHash) {
+      return eventIndex === null
+        ? `${provider}:tx:${txHash}`
+        : `${provider}:tx:${txHash}:event:${eventIndex}`;
+    }
+    return `${provider}:raw:${sha256Json(this.canonicalTronscanTransferRow(transfer))}`;
   }
 
   private async fetchTronGridTransferArray(input: {
