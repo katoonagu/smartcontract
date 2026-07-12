@@ -171,6 +171,31 @@ export type PinnedTronscanTransferPage = {
   canonicalTransferHashes: string[];
 };
 
+export function rawProviderTxRowPaginationId(
+  provider: TronscanTrc20TransferPage["provider"],
+  transfer: RawTronscanTrc20Transfer
+): string | null {
+  const row = transfer as Record<string, unknown>;
+  const txValue = row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash;
+  const txHash = typeof txValue === "string" && txValue.trim().length > 0
+    ? txValue.trim().toLowerCase()
+    : typeof txValue === "number" && Number.isSafeInteger(txValue) ? String(txValue) : null;
+  if (!txHash) return null;
+  const eventIndex = [row.event_index, row.eventIndex, row.log_index, row.logIndex]
+    .map((value) => {
+      if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+      if (typeof value === "string" && /^\d+$/.test(value)) {
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) ? parsed : null;
+      }
+      return null;
+    })
+    .find((value) => value !== null) ?? null;
+  return eventIndex === null
+    ? `${provider}:tx:${txHash}`
+    : `${provider}:tx:${txHash}:event:${eventIndex}`;
+}
+
 export type ListTransactionsOptions = {
   start?: number;
   limit?: number;
@@ -1307,18 +1332,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     provider: TronscanTrc20TransferPage["provider"],
     transfer: RawTronscanTrc20Transfer
   ): string {
-    const row = transfer as Record<string, unknown>;
-    const txHash = this.stringField(
-      row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash
-    )?.trim().toLowerCase();
-    const eventIndex = [row.event_index, row.eventIndex, row.log_index, row.logIndex]
-      .map((value) => this.safeIntegerField(value))
-      .find((value) => value !== null) ?? null;
-    if (txHash) {
-      return eventIndex === null
-        ? `${provider}:tx:${txHash}`
-        : `${provider}:tx:${txHash}:event:${eventIndex}`;
-    }
+    const txIdentity = rawProviderTxRowPaginationId(provider, transfer);
+    if (txIdentity) return txIdentity;
     return `${provider}:raw:${sha256Json(this.canonicalTronscanTransferRow(transfer))}`;
   }
 

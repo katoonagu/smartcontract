@@ -43,7 +43,11 @@ import type {
   AddressPoisoningCheckWorkItem,
   PersistAddressPoisoningCandidateInput
 } from "../types";
-import type { ListRelatedTrc20TransfersOptions, PinnedTronscanTransferPage } from "../tron/tronClient";
+import {
+  rawProviderTxRowPaginationId,
+  type ListRelatedTrc20TransfersOptions,
+  type PinnedTronscanTransferPage
+} from "../tron/tronClient";
 
 export const ADDRESS_POISONING_WORKER_DEFAULTS = {
   claimLimit: 20,
@@ -170,6 +174,7 @@ type AccumulatedLookup = {
   providerFacts: RawTronscanTrc20Transfer[];
   providerTransferIds: string[];
   providerFactProviders: Array<"tronscan" | "trongrid_fallback" | "unknown">;
+  providerFactRawRowIds: string[];
   rawProviderRowIds: string[];
   providerPages: ProviderPageAudit[];
 };
@@ -259,6 +264,7 @@ function emptyLookup(): AccumulatedLookup {
     providerFacts: [],
     providerTransferIds: [],
     providerFactProviders: [],
+    providerFactRawRowIds: [],
     rawProviderRowIds: [],
     providerPages: []
   };
@@ -321,6 +327,10 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     || value.providerTransferIds.length > MAX_PERSISTED_LOOKUP_ROWS
     || !value.providerTransferIds.every((id) => typeof id === "string")
     || value.providerFacts.length !== value.providerTransferIds.length
+    || (value.providerFactRawRowIds !== undefined
+      && (!Array.isArray(value.providerFactRawRowIds)
+        || value.providerFactRawRowIds.length > MAX_PERSISTED_LOOKUP_ROWS
+        || !value.providerFactRawRowIds.every((id) => typeof id === "string")))
     || (value.rawProviderRowIds !== undefined
       && (!Array.isArray(value.rawProviderRowIds)
         || value.rawProviderRowIds.length > MAX_PERSISTED_LOOKUP_ROWS
@@ -335,10 +345,11 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
       ...emptyLookup(),
       lookupProvider: hasLegacyEvidence ? "mixed" : null,
       providerMetadataConsistent: !hasLegacyEvidence,
-      transfers: [...value.transfers],
-      providerFacts,
-      providerTransferIds: [...value.providerTransferIds],
-      providerFactProviders: providerFacts.map(() => "unknown")
+      transfers: [],
+      providerFacts: [],
+      providerTransferIds: [],
+      providerFactProviders: [],
+      providerFactRawRowIds: []
     };
   }
   const lookupProvider = value.lookupProvider;
@@ -369,11 +380,38 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
   }
   const rawProviderRowIds = hasRawProviderRowIds ? [...persistedRawProviderRowIds] as string[] : [];
   const providerTransferIds = [...value.providerTransferIds] as string[];
+  const providerFacts = value.providerFacts as RawTronscanTrc20Transfer[];
+  const providerFactProviders = [...value.providerFactProviders] as AccumulatedLookup["providerFactProviders"];
+  const providerFactRawRowIds = Array.isArray(value.providerFactRawRowIds)
+    ? [...value.providerFactRawRowIds] as string[]
+    : null;
+  const storedTransfers = [...value.transfers] as StoredTransfer[];
   const providerPages = value.providerPages as ProviderPageAudit[];
   const auditedRawProviderRowIds = providerPages.flatMap((page) =>
     Array.isArray(page.rawProviderRowIds) ? page.rawProviderRowIds : []);
   const auditedRawProviderRowIdSet = new Set(auditedRawProviderRowIds);
   const rawProviderRowIdSet = new Set(rawProviderRowIds);
+  const priorPageRawRowIds = new Set<string>();
+  let pageRawAuditConsistent = true;
+  let historicalRawPaginationUnique = true;
+  for (const page of providerPages) {
+    const pageRawIds = Array.isArray(page.rawProviderRowIds) ? page.rawProviderRowIds : [];
+    const declaredOverlaps = Array.isArray(page.overlappingRawRowIds) ? page.overlappingRawRowIds : [];
+    const pageRawIdSet = new Set(pageRawIds);
+    const declaredOverlapSet = new Set(declaredOverlaps);
+    const expectedOverlapSet = new Set(pageRawIds.filter((id) => priorPageRawRowIds.has(id)));
+    const overlapDeclarationExact = declaredOverlapSet.size === expectedOverlapSet.size
+      && [...expectedOverlapSet].every((id) => declaredOverlapSet.has(id));
+    if (
+      pageRawIdSet.size !== pageRawIds.length
+      || declaredOverlapSet.size !== declaredOverlaps.length
+      || !overlapDeclarationExact
+    ) pageRawAuditConsistent = false;
+    if (pageRawIdSet.size !== pageRawIds.length || expectedOverlapSet.size > 0) {
+      historicalRawPaginationUnique = false;
+    }
+    for (const id of pageRawIds) priorPageRawRowIds.add(id);
+  }
   const hasPriorProviderEvidence = lookupProvider !== null
     || windowStart !== null
     || windowEnd !== null
@@ -381,13 +419,13 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     || value.providerFacts.length > 0
     || value.providerTransferIds.length > 0
     || value.providerFactProviders.length > 0
+    || (providerFactRawRowIds?.length ?? 0) > 0
     || providerPages.length > 0;
   const rawIdentityEvidenceConsistent = hasRawProviderRowIds
     && (!hasPriorProviderEvidence || rawProviderRowIds.length > 0)
     && auditedRawProviderRowIdSet.size === rawProviderRowIdSet.size
     && [...auditedRawProviderRowIdSet].every((id) => rawProviderRowIdSet.has(id))
-    && value.providerFacts.length <= rawProviderRowIds.length
-    && value.transfers.length === value.providerFacts.length
+    && pageRawAuditConsistent
     && providerPages.every((page) =>
       Array.isArray(page.rawProviderRowIds)
       && Array.isArray(page.overlappingRawRowIds)
@@ -395,6 +433,42 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
       && page.rawProviderRowIds.every((id) => id.startsWith(`${page.provider}:`))
       && page.overlappingRawRowIds.every((id) => page.rawProviderRowIds.includes(id))
       && page.overlappingTransferIds.every((id) => providerTransferIds.includes(id)));
+  const storedTransfersById = new Map(storedTransfers.map((transfer) => [transfer.transferId, transfer]));
+  const acceptedEvidenceConsistent = providerFacts.length === 0
+    ? storedTransfers.length === 0
+      && providerTransferIds.length === 0
+      && providerFactProviders.length === 0
+      && (providerFactRawRowIds === null || providerFactRawRowIds.length === 0)
+    : providerFactRawRowIds !== null
+      && providerFactRawRowIds.length === providerFacts.length
+      && storedTransfers.length === providerFacts.length
+      && storedTransfersById.size === storedTransfers.length
+      && providerFacts.length <= rawProviderRowIds.length
+      && providerFacts.every((fact, index) => {
+        const provider = providerFactProviders[index];
+        if (provider === undefined || provider === "unknown") return false;
+        const canonicalForPoisoning = fact.riskTransaction === true
+          ? shouldIndexCanonicalTronscanUsdtTransfer({ ...fact, riskTransaction: false })
+          : shouldIndexCanonicalTronscanUsdtTransfer(fact);
+        if (!canonicalForPoisoning) return false;
+        const normalized = normalizeTronscanTransferForAddressIndex(fact, provider);
+        const providerTransferId = providerTransferIds[index];
+        const rawRowId = providerFactRawRowIds[index];
+        const expectedRawRowId = rawProviderTxRowPaginationId(provider, fact);
+        const stored = storedTransfersById.get(providerTransferId);
+        return expectedRawRowId !== null
+          && rawRowId === expectedRawRowId
+          && rawProviderRowIdSet.has(rawRowId)
+          && normalized.transferId === providerTransferId
+          && stored !== undefined
+          && stored.transferId === normalized.transferId
+          && stored.txHash === normalized.txHash
+          && stored.sender === normalized.fromAddress
+          && stored.receiver === normalized.toAddress
+          && stored.amountRaw === normalized.amountRaw
+          && stored.occurredAt === normalized.blockTimestamp.toISOString();
+      });
+  const acceptedEvidenceTrustworthy = rawIdentityEvidenceConsistent && acceptedEvidenceConsistent;
   return {
     version: 2,
     windowStart,
@@ -402,16 +476,19 @@ function parseAccumulatedLookup(value: Record<string, unknown>): AccumulatedLook
     lookupProvider,
     providerMetadataConsistent: value.providerMetadataConsistent
       && rawIdentityEvidenceConsistent
+      && acceptedEvidenceConsistent
+      && historicalRawPaginationUnique
       && rawRowsHaveProviderTxHashes
       && (value.providerPages.length === 0 || (windowStart !== null && windowEnd !== null))
       && value.providerPages.every((page) =>
         Array.isArray((page as Partial<ProviderPageAudit>).rawProviderRowIds)
         && (page as ProviderPageAudit).rawProviderRowIds.length === (page as ProviderPageAudit).rawCount
         && Array.isArray((page as Partial<ProviderPageAudit>).overlappingRawRowIds)),
-    transfers: [...value.transfers],
-    providerFacts: value.providerFacts as RawTronscanTrc20Transfer[],
-    providerTransferIds,
-    providerFactProviders: [...value.providerFactProviders] as AccumulatedLookup["providerFactProviders"],
+    transfers: acceptedEvidenceTrustworthy ? storedTransfers : [],
+    providerFacts: acceptedEvidenceTrustworthy ? providerFacts : [],
+    providerTransferIds: acceptedEvidenceTrustworthy ? providerTransferIds : [],
+    providerFactProviders: acceptedEvidenceTrustworthy ? providerFactProviders : [],
+    providerFactRawRowIds: acceptedEvidenceTrustworthy ? providerFactRawRowIds ?? [] : [],
     rawProviderRowIds,
     providerPages: value.providerPages.map((page) => ({
       ...(page as ProviderPageAudit),
@@ -458,7 +535,10 @@ function mergePage(
   const factProvidersById = new Map(accumulated.providerTransferIds.map(
     (id, index) => [id, accumulated.providerFactProviders[index]]
   ));
-  for (const raw of page.transfers) {
+  const factRawRowIdsById = new Map(accumulated.providerTransferIds.map(
+    (id, index) => [id, accumulated.providerFactRawRowIds[index]]
+  ));
+  for (const [rawIndex, raw] of page.transfers.entries()) {
     const canonicalForPoisoning = raw.riskTransaction === true
       ? shouldIndexCanonicalTronscanUsdtTransfer({ ...raw, riskTransaction: false })
       : shouldIndexCanonicalTronscanUsdtTransfer(raw);
@@ -479,6 +559,9 @@ function mergePage(
     if (!byId.has(stored.transferId)) byId.set(stored.transferId, stored);
     if (!factsById.has(stored.transferId)) factsById.set(stored.transferId, raw);
     if (!factProvidersById.has(stored.transferId)) factProvidersById.set(stored.transferId, page.provider);
+    if (!factRawRowIdsById.has(stored.transferId)) {
+      factRawRowIdsById.set(stored.transferId, page.rawProviderRowIds[rawIndex]);
+    }
   }
   const transfers = [...byId.values()].sort((left, right) =>
     new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime()
@@ -514,6 +597,7 @@ function mergePage(
     providerTransferIds,
     providerFacts: providerTransferIds.map((id) => factsById.get(id)!),
     providerFactProviders: providerTransferIds.map((id) => factProvidersById.get(id) ?? "unknown"),
+    providerFactRawRowIds: providerTransferIds.map((id) => factRawRowIdsById.get(id) ?? ""),
     rawProviderRowIds: [...rawProviderRowIds].sort(),
     providerPages: [...accumulated.providerPages, {
       provider: page.provider,
@@ -823,6 +907,7 @@ async function processWorkItem(
           providerFacts: accumulated.providerFacts,
           providerTransferIds: accumulated.providerTransferIds,
           providerFactProviders: accumulated.providerFactProviders,
+          providerFactRawRowIds: accumulated.providerFactRawRowIds,
           rawProviderRowIds: accumulated.rawProviderRowIds,
           providerPages: accumulated.providerPages
         },
