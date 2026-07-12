@@ -6,7 +6,7 @@ import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
 import { checkSmartContractAddress as runSmartContractAddressCheck } from "./check/smartContractCheck";
-import { loadConfig } from "./config";
+import { addressPoisoningSmallTransferMaxRaw as parseAddressPoisoningSmallTransferMaxRaw, loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
 import { runAddressIndexWorkerOnce } from "./forensics/addressIndexWorker";
@@ -16,7 +16,6 @@ import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerCli
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
-import { parseUsdtDecimalToRaw } from "./forensics/usdtAmount";
 import { indexedTransferToRouteEdge } from "./forensics/localTronUsdtIndex";
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
@@ -127,13 +126,9 @@ import { createTronscanScheduler } from "./tron/tronscanScheduler";
 import type { TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
 
 const config = loadConfig();
-const parsedAddressPoisoningSmallTransferMaxRaw = config.addressPoisoningSmallTransferMaxUsdt === "0"
-  ? "0"
-  : parseUsdtDecimalToRaw(config.addressPoisoningSmallTransferMaxUsdt);
-if (parsedAddressPoisoningSmallTransferMaxRaw === null) {
-  throw new Error("ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT could not be converted to raw USDT units");
-}
-const addressPoisoningSmallTransferMaxRaw: string = parsedAddressPoisoningSmallTransferMaxRaw;
+const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMaxRaw(
+  config.addressPoisoningSmallTransferMaxUsdt
+);
 const db = createDb(config.databaseUrl);
 const tronscanScheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { runSinglePollingCycle } from "../../src/monitor/monitorWorker";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import { claimObservedTransactionForUserAlert } from "../../src/storage/repositories";
@@ -110,6 +110,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     maxPagesPerWallet: 3,
     backfillLookbackMs: 86_400_000,
     incomingDepositRealtimeMaxAgeMs: 24 * 60 * 60_000,
+    addressPoisoningSmallTransferMaxRaw: "100000000",
     now: () => new Date("2026-05-20T01:00:00.000Z"),
     getWalletPollState: async (watchedWalletId) => pollStates.get(watchedWalletId) ?? null,
     upsertWalletPollState: async (state) => {
@@ -230,6 +231,12 @@ describe("runSinglePollingCycle", () => {
     address: "THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7"
   };
   const poisoningSender = "TABPfWW3Q7vCnfPQgQ8BCpjHqFqhCd58Fg";
+
+  it("requires an explicit raw poisoning threshold in monitor dependencies", () => {
+    expectTypeOf<Parameters<typeof runSinglePollingCycle>[0]>()
+      .toHaveProperty("addressPoisoningSmallTransferMaxRaw")
+      .toEqualTypeOf<string>();
+  });
 
   function poisoningTransfer(input: { amount: string; timestamp?: number; sender?: string; receiver?: string }) {
     return rawTransfer({

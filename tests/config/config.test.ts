@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../../src/config";
+import { addressPoisoningSmallTransferMaxRaw, loadConfig } from "../../src/config";
 
 const originalEnv = process.env;
 
@@ -109,7 +109,7 @@ describe("loadConfig", () => {
     expect(config.runtimeInstanceLabel).toBeUndefined();
   });
 
-  it.each(["0", "100", "100.000001", "9007199254740993000000.123456"])(
+  it.each(["0", "100", "100.000001", "9007199254740993000000.123456", "9".repeat(78)])(
     "keeps valid address poisoning threshold %s as an exact decimal string",
     (value) => {
       setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: value });
@@ -118,16 +118,38 @@ describe("loadConfig", () => {
     }
   );
 
-  it.each(["-1", "abc", "1.0000001", "01", "1."])(
+  it.each(["-1", "abc", "1.0000001", "1.", "9".repeat(79)])(
     "rejects invalid address poisoning threshold %s",
     (value) => {
       setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: value });
 
       expect(() => loadConfig()).toThrow(
-        "ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT must be a non-negative decimal with up to 6 fractional digits"
+        "ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT must be a non-negative decimal with at most 78 integer digits and 6 fractional digits"
       );
     }
   );
+
+  it.each([
+    { input: "0.0", expected: "0" },
+    { input: "0.000000", expected: "0" },
+    { input: "000000", expected: "0" },
+    { input: "000100", expected: "100" },
+    { input: "000100.000001", expected: "100.000001" }
+  ])("canonicalizes address poisoning threshold $input to $expected", ({ input, expected }) => {
+    setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: input });
+
+    expect(loadConfig().addressPoisoningSmallTransferMaxUsdt).toBe(expected);
+  });
+
+  it("converts canonical zero and large thresholds to raw USDT without floating point", () => {
+    setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: "0.000000" });
+    expect(addressPoisoningSmallTransferMaxRaw(loadConfig().addressPoisoningSmallTransferMaxUsdt)).toBe("0");
+
+    const large = "9007199254740993000000.123456";
+    setRequiredEnv({ ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT: large });
+    expect(addressPoisoningSmallTransferMaxRaw(loadConfig().addressPoisoningSmallTransferMaxUsdt))
+      .toBe("9007199254740993000000123456");
+  });
 
   it("parses admin dashboard config", () => {
     setRequiredEnv({

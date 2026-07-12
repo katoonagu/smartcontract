@@ -62,7 +62,7 @@ export type PollingCycleDeps = {
   maxPagesPerWallet: number;
   backfillLookbackMs: number;
   incomingDepositRealtimeMaxAgeMs?: number;
-  addressPoisoningSmallTransferMaxRaw?: string;
+  addressPoisoningSmallTransferMaxRaw: string;
   now?: () => Date;
   isWatchedWalletActive?(watchedWalletId: string): Promise<boolean>;
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
@@ -114,7 +114,6 @@ export type PollingCycleDeps = {
 };
 
 const DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS = 15 * 60_000;
-const DEFAULT_ADDRESS_POISONING_SMALL_TRANSFER_MAX_RAW = "100000000";
 const BACKFILL_STALE_TRANSACTION_REASON = "backfill_stale_transaction";
 
 type CollectedWalletEvents = {
@@ -758,7 +757,7 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
       eventAt: event.timestamp,
       now: (deps.now ?? (() => new Date()))(),
       realtimeMaxAgeMs: incomingDepositRealtimeMaxAgeMs(deps),
-      maxAmountRaw: deps.addressPoisoningSmallTransferMaxRaw ?? DEFAULT_ADDRESS_POISONING_SMALL_TRANSFER_MAX_RAW,
+      maxAmountRaw: deps.addressPoisoningSmallTransferMaxRaw,
       alertMode: wallet.alertMode
     });
     const claimed = await deps.claimObservedTransactionForUserAlert({

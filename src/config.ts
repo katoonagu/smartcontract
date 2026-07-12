@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { parseUsdtDecimalToRaw } from "./forensics/usdtAmount";
 
 export type CrossChainStage2Config = {
   crossChainStage2Enabled: boolean;
@@ -115,10 +116,26 @@ function parsePositiveInteger(name: string, rawValue: string, minimum: number): 
 }
 
 function parseNonNegativeUsdtDecimal(name: string, rawValue: string): string {
-  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(rawValue)) {
-    throw new Error(`${name} must be a non-negative decimal with up to 6 fractional digits`);
+  const match = /^(\d+)(?:\.(\d{1,6}))?$/.exec(rawValue);
+  if (!match) {
+    throw new Error(`${name} must be a non-negative decimal with at most 78 integer digits and 6 fractional digits`);
   }
-  return rawValue;
+  const whole = match[1].replace(/^0+/, "") || "0";
+  if (whole.length > 78) {
+    throw new Error(`${name} must be a non-negative decimal with at most 78 integer digits and 6 fractional digits`);
+  }
+  const fraction = match[2];
+  if (whole === "0" && (!fraction || /^0+$/.test(fraction))) return "0";
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+export function addressPoisoningSmallTransferMaxRaw(value: string): string {
+  if (value === "0") return "0";
+  const raw = parseUsdtDecimalToRaw(value);
+  if (raw === null) {
+    throw new Error("ADDRESS_POISONING_SMALL_TRANSFER_MAX_USDT could not be converted to raw USDT units");
+  }
+  return raw;
 }
 
 function parseIntegerInRange(name: string, rawValue: string, minimum: number, maximum: number): number {
