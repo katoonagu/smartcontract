@@ -1,14 +1,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Db } from "../../src/storage/db";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import {
   REQUIRED_SCHEMA_FILENAME,
   REQUIRED_SCHEMA_VERSION,
+  SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE,
   SCHEMA_MIGRATION_LOCK_ID,
   type Schema032Verification,
   checksumMigrationBytes,
   verifyRequiredSchema032,
-  verifySchema032Structure
+  verifySchema032Structure,
+  verifyTrackedMigrationReceipt
 } from "../../src/storage/schemaMigrations";
 
 const CHECKSUM = "a".repeat(64);
@@ -36,13 +39,20 @@ const REQUIRED_CONSTRAINT_DEFINITIONS = {
     "CHECK ((((allowance_check_status = ANY (ARRAY['confirmed_active'::text, 'confirmed_zero'::text])) AND (allowance_checked_at IS NOT NULL) AND (allowance_last_attempt_at IS NOT NULL) AND (allowance_fresh_until IS NOT NULL) AND (allowance_last_attempt_at = allowance_checked_at) AND (allowance_fresh_until = (allowance_checked_at + '00:15:00'::interval))) OR ((allowance_check_status = 'failed'::text) AND (allowance_last_attempt_at IS NOT NULL) AND (((allowance_confirmed_raw IS NULL) AND (allowance_checked_at IS NULL) AND (allowance_fresh_until IS NULL)) OR ((allowance_confirmed_raw IS NOT NULL) AND (allowance_checked_at IS NOT NULL) AND (allowance_fresh_until IS NOT NULL) AND (allowance_last_attempt_at >= allowance_checked_at) AND (allowance_fresh_until = (allowance_checked_at + '00:15:00'::interval))))) OR ((allowance_check_status = 'stale'::text) AND (((allowance_confirmed_raw IS NULL) AND (allowance_checked_at IS NULL) AND (allowance_fresh_until IS NULL) AND (allowance_last_attempt_at IS NULL)) OR ((allowance_confirmed_raw IS NOT NULL) AND (allowance_checked_at IS NOT NULL) AND (allowance_fresh_until IS NOT NULL) AND (allowance_last_attempt_at = allowance_checked_at) AND (allowance_fresh_until = (allowance_checked_at + '00:15:00'::interval)))))))"
 } as const;
 
-type QueryResult = { rows: Record<string, unknown>[]; rowCount?: number };
+type QueryResult = {
+  rows?: Record<string, unknown>[];
+  pages?: Record<string, unknown>[][];
+  rowCount?: number;
+};
 
 function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
+  const calls: Record<string, number> = {};
+  const valuesByKey: Record<string, unknown[][]> = {};
   const results: Record<string, QueryResult> = {
     schema_migration_receipts: {
       rows: [{ version: 32, filename: "032_telegram_runtime_forensics_data_contracts.sql", checksum_sha256: CHECKSUM }]
     },
+    to_regclass: { rows: [{ receipt_table: "schema_migration_receipts" }] },
     information_schema_columns: {
       rows: [
         { table_name: "schema_migration_receipts", column_name: "version", data_type: "integer", is_nullable: "NO", column_default: null },
@@ -59,11 +69,15 @@ function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
     },
     pg_constraint: {
       rows: [
-        { conname: "schema_migration_receipts_pkey", contype: "p" },
-        { conname: "schema_migration_receipts_filename_key", contype: "u" },
+        { conname: "schema_migration_receipts_pkey", contype: "p", convalidated: true, table_name: "schema_migration_receipts", definition: "PRIMARY KEY (version)" },
+        { conname: "schema_migration_receipts_filename_key", contype: "u", convalidated: true, table_name: "schema_migration_receipts", definition: "UNIQUE (filename)" },
         ...REQUIRED_CONSTRAINTS.map((conname) => ({
           conname,
           contype: "c",
+          convalidated: true,
+          table_name: conname === "schema_migration_receipts_checksum_check"
+            ? "schema_migration_receipts"
+            : "wallet_approvals",
           definition: REQUIRED_CONSTRAINT_DEFINITIONS[conname]
         }))
       ]
@@ -74,24 +88,35 @@ function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
         columns: ["allowance_check_status", "allowance_fresh_until"]
       }]
     },
-    legacy_backfill: { rows: [{ false_confirmed_count: "0" }] },
+    legacy_backfill: { rows: [{ false_confirmed_count: "0", stale_not_expired_count: "0" }] },
+    allowance_states: { rows: [] },
     ...overrides
   };
   return {
-    query: async (sql: string) => {
+    query: async (sql: string, values?: unknown[]) => {
       const normalized = sql.toLowerCase();
       const key = normalized.includes("information_schema.columns")
         ? "information_schema_columns"
+        : normalized.includes("to_regclass")
+          ? "to_regclass"
         : normalized.includes("pg_constraint")
           ? "pg_constraint"
+          : normalized.includes("join") && normalized.includes("watched_wallets")
+            ? "allowance_states"
           : normalized.includes("pg_indexes") || normalized.includes("pg_index")
             ? "pg_indexes"
             : normalized.includes("false_confirmed") || normalized.includes("current_allowance_raw")
               ? "legacy_backfill"
               : "schema_migration_receipts";
       const result = results[key] ?? { rows: [] };
-      return { rowCount: result.rowCount ?? result.rows.length, rows: result.rows };
-    }
+      calls[key] = (calls[key] ?? 0) + 1;
+      valuesByKey[key] ??= [];
+      valuesByKey[key].push(values ?? []);
+      const rows = result.pages?.[calls[key] - 1] ?? result.rows ?? [];
+      return { rowCount: result.rowCount ?? rows.length, rows };
+    },
+    __calls: calls,
+    __values: valuesByKey
   } as unknown as Db;
 }
 
@@ -128,6 +153,13 @@ describe("verified schema 032 metadata", () => {
       schemaDb({ schema_migration_receipts: { rows: [] } }),
       CHECKSUM
     )).rejects.toThrow("schema_032_receipt_missing");
+    await expect(verifyRequiredSchema032(
+      schemaDb({ to_regclass: { rows: [{ receipt_table: null }] } }),
+      CHECKSUM
+    )).rejects.toThrow("schema_032_receipt_missing");
+    await expect(verifyRequiredSchema032(schemaDb(), "A".repeat(64))).rejects.toThrow(
+      "schema_032_invalid_expected_checksum"
+    );
   });
 
   it("rejects a missing named constraint, wrong column default and wrong ordered index", async () => {
@@ -135,6 +167,8 @@ describe("verified schema 032 metadata", () => {
       pg_constraint: { rows: REQUIRED_CONSTRAINTS.slice(1).map((conname) => ({
         conname,
         contype: "c",
+        convalidated: true,
+        table_name: "wallet_approvals",
         definition: REQUIRED_CONSTRAINT_DEFINITIONS[conname]
       })) }
     }))).rejects.toThrow("schema_032_constraint_missing");
@@ -142,11 +176,28 @@ describe("verified schema 032 metadata", () => {
       pg_constraint: { rows: REQUIRED_CONSTRAINTS.map((conname) => ({
         conname,
         contype: "c",
+        convalidated: true,
+        table_name: conname === "schema_migration_receipts_checksum_check"
+          ? "schema_migration_receipts"
+          : "wallet_approvals",
         definition: conname === "wallet_approvals_allowance_shape_v2_check"
           ? "CHECK (true)"
           : REQUIRED_CONSTRAINT_DEFINITIONS[conname]
       })) }
     }))).rejects.toThrow("schema_032_constraint_definition_mismatch");
+    await expect(verifySchema032Structure(schemaDb({
+      pg_constraint: { rows: [
+        { conname: "schema_migration_receipts_pkey", contype: "p", convalidated: true, table_name: "schema_migration_receipts", definition: "PRIMARY KEY (version)" },
+        { conname: "schema_migration_receipts_filename_key", contype: "u", convalidated: true, table_name: "schema_migration_receipts", definition: "UNIQUE (filename)" },
+        ...REQUIRED_CONSTRAINTS.map((conname) => ({
+          conname,
+          contype: "c",
+          convalidated: true,
+          table_name: "wallet_approvals",
+          definition: REQUIRED_CONSTRAINT_DEFINITIONS[conname]
+        }))
+      ] }
+    }))).rejects.toThrow("schema_032_constraint_table_mismatch");
     await expect(verifySchema032Structure(schemaDb({
       information_schema_columns: { rows: [{
         table_name: "wallet_approvals",
@@ -162,6 +213,93 @@ describe("verified schema 032 metadata", () => {
         columns: ["allowance_fresh_until", "allowance_check_status"]
       }] }
     }))).rejects.toThrow("schema_032_index_mismatch");
+  });
+
+  it("accepts natural expiry but rejects malformed or premature authoritative allowance states", async () => {
+    const baseRow = {
+      watched_wallet_id: "wallet-1",
+      owner_address: "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD",
+      spender_address: "TFagrFLKwcuRvXobE9TmQxdAM7BEjvnXzK",
+      token_contract: TRON_USDT_CONTRACT_ADDRESS,
+      allowance_confirmed_raw: "1",
+      allowance_check_status: "confirmed_active",
+      allowance_checked_at: new Date("2020-01-01T00:00:00.000Z"),
+      allowance_fresh_until: new Date("2020-01-01T00:15:00.000Z"),
+      allowance_last_attempt_at: new Date("2020-01-01T00:00:00.000Z"),
+      allowance_failure_code: null,
+      last_approval_tx_hash: null
+    };
+    await expect(verifySchema032Structure(schemaDb({
+      allowance_states: { rows: [baseRow] }
+    }))).resolves.toBeUndefined();
+    await expect(verifySchema032Structure(schemaDb({
+      allowance_states: { rows: [{
+        ...baseRow,
+        allowance_check_status: "stale",
+        allowance_checked_at: new Date("2099-01-01T00:00:00.000Z"),
+        allowance_fresh_until: new Date("2099-01-01T00:15:00.000Z"),
+        allowance_last_attempt_at: new Date("2099-01-01T00:00:00.000Z")
+      }] }
+    }))).rejects.toThrow("schema_032_allowance_state_invalid");
+    await expect(verifySchema032Structure(schemaDb({
+      allowance_states: { rows: [{
+        ...baseRow,
+        allowance_checked_at: new Date("2099-01-01T00:00:00.000Z"),
+        allowance_fresh_until: new Date("2099-01-01T00:15:00.000Z"),
+        allowance_last_attempt_at: new Date("2099-01-01T00:00:00.000Z")
+      }] }
+    }))).rejects.toThrow("schema_032_allowance_state_invalid");
+    await expect(verifySchema032Structure(schemaDb({
+      allowance_states: { rows: [{ ...baseRow, token_contract: "not-usdt" }] }
+    }))).rejects.toThrow("schema_032_allowance_state_invalid");
+
+    const pagedDb = schemaDb({
+      allowance_states: {
+        pages: [
+          Array.from({ length: SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE }, () => ({ ...baseRow })),
+          [{ ...baseRow, watched_wallet_id: "wallet-2" }]
+        ]
+      }
+    });
+    await expect(verifySchema032Structure(pagedDb)).resolves.toBeUndefined();
+    expect(SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE).toBe(250);
+    expect((pagedDb as unknown as { __calls: Record<string, number> }).__calls.allowance_states).toBe(2);
+    const queryValues = (pagedDb as unknown as {
+      __values: Record<string, unknown[][]>;
+    }).__values.allowance_states;
+    expect(queryValues.every((values) => values.at(-1) === SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE)).toBe(true);
+  });
+
+  it("rereads and exactly verifies tracked migration receipts", async () => {
+    const exact = schemaDb({
+      schema_migration_receipts: {
+        rows: [{ version: 33, filename: "033_test.sql", checksum_sha256: CHECKSUM }]
+      }
+    });
+    await expect(verifyTrackedMigrationReceipt(exact, {
+      schemaName: "public",
+      version: 33,
+      filename: "033_test.sql",
+      checksumSha256: CHECKSUM
+    })).resolves.toBeUndefined();
+    await expect(verifyTrackedMigrationReceipt(schemaDb({
+      schema_migration_receipts: { rows: [] }
+    }), {
+      schemaName: "public",
+      version: 33,
+      filename: "033_test.sql",
+      checksumSha256: CHECKSUM
+    })).rejects.toThrow("schema_migration_receipt_missing");
+    await expect(verifyTrackedMigrationReceipt(schemaDb({
+      schema_migration_receipts: {
+        rows: [{ version: 33, filename: "033_test.sql", checksum_sha256: "b".repeat(64) }]
+      }
+    }), {
+      schemaName: "public",
+      version: 33,
+      filename: "033_test.sql",
+      checksumSha256: CHECKSUM
+    })).rejects.toThrow("schema_migration_checksum_mismatch");
   });
 
   it("[REQ-38][DATA] pins migration SQL to stable LF bytes", () => {

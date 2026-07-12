@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
@@ -35,6 +36,7 @@ import {
 } from "./monitor/addressPoisoningWorker";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
+import { runStartupSchemaGate } from "./runtime/startupSchemaGate";
 import {
   ADDRESS_POISONING_INTERVAL_MS,
   buildStartupWorkSchedule,
@@ -44,6 +46,11 @@ import {
   type StartupWorkScheduleController
 } from "./runtime/startupSchedule";
 import { closeDb, createDb } from "./storage/db";
+import {
+  REQUIRED_SCHEMA_FILENAME,
+  checksumMigrationBytes,
+  verifyRequiredSchema032
+} from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
   claimDueApprovalContexts,
@@ -139,6 +146,24 @@ const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMa
   config.addressPoisoningSmallTransferMaxUsdt
 );
 const db = createDb(config.databaseUrl);
+try {
+  const schema032MigrationBytes = await readFile(
+    new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
+  );
+  const schema032Checksum = await checksumMigrationBytes(schema032MigrationBytes);
+  await runStartupSchemaGate({
+    verify: () => verifyRequiredSchema032(db, schema032Checksum),
+    onVerified: (verification) => {
+      logger.info("schema_migration_verified", {
+        version: verification.version,
+        shortChecksum: verification.shortChecksum
+      });
+    }
+  });
+} catch (error) {
+  await closeDb(db);
+  throw error;
+}
 const tronscanScheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   globalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
