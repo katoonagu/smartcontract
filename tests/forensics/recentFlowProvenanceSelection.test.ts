@@ -893,4 +893,90 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       limitations: []
     })).not.toThrow();
   });
+
+  it("[REQ-02][REQ-30][AC-11] resolves an unannotated outgoing fee before claiming full funding", async () => {
+    const feeTxHash = "resolved-outgoing-fee";
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item.txHash === feeTxHash
+      ? { ...item, economicProtocol: "tron_gasfree" as const, economicRole: "service_fee" as const }
+      : item);
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "resolved-outgoing-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        edge({ txHash: feeTxHash, from: subject, to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird", amount: "1500000", iso: "2026-05-05T09:59:00.000Z" }),
+        edge({ txHash: "resolved-outgoing-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      maxCandidates: 5,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["resolved-outgoing-funding"]);
+    expect(result.selectedAmountRaw).toBe("2000000000");
+    expect(result.transfers[0]?.amountUsage?.usedAmountRaw).toBe("2000000000");
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      direction: "outgoing",
+      txCount: 1,
+      amountRaw: "1500000",
+      evidenceIds: [feeTxHash]
+    }));
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(3);
+  });
+
+  it("[REQ-02][REQ-30][AC-11] resolves an unannotated incoming fee inside the bounded scope", async () => {
+    const feeTxHash = "resolved-incoming-fee";
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item.txHash === feeTxHash
+      ? { ...item, economicProtocol: "tron_gasfree" as const, economicRole: "service_fee" as const }
+      : item);
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "resolved-incoming-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        edge({ txHash: feeTxHash, from: "TFeePayer", to: subject, amount: "1500000", iso: "2026-05-05T09:59:00.000Z" }),
+        edge({ txHash: "resolved-incoming-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      maxCandidates: 5,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["resolved-incoming-funding"]);
+    expect(result.selectedAmountRaw).toBe("2000000000");
+    expect(result.availableInboundTxCount).toBe(2);
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      direction: "incoming",
+      txCount: 1,
+      amountRaw: "1500000",
+      evidenceIds: [feeTxHash]
+    }));
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(3);
+  });
+
+  it("[REQ-30][AC-10] fails closed when outgoing dependency closure exceeds the hard budget", async () => {
+    const spends = Array.from({ length: 20 }, (_, index) => edge({
+      txHash: `bounded-hidden-spend-${index}`,
+      from: subject,
+      to: `TSpend${index}`,
+      amount: "1000000",
+      iso: new Date(Date.UTC(2026, 4, 5, 9, 59) - index * 1_000).toISOString()
+    }));
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item);
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "bounded-hidden-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        ...spends,
+        edge({ txHash: "bounded-hidden-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      maxCandidates: 5,
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(6);
+    expect(result.transfers).toEqual([]);
+    expect(result.selectedAmountRaw).toBe("0");
+    expect(result.partial).toBe(true);
+    expect(result.notes.join(" ")).toContain("maxCandidates=5");
+  });
 });
