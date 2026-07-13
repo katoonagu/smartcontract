@@ -267,7 +267,14 @@ export async function verifySchema032Structure(
   if (String(legacyBackfill.rows[0]?.false_confirmed_count ?? "-1") !== "0") {
     fail("schema_032_legacy_backfill_invalid");
   }
-  const evaluatedAt = new Date();
+  const evaluationTime = await queryable.query("select statement_timestamp() as evaluated_at");
+  const evaluatedAtValue = evaluationTime.rows[0]?.evaluated_at;
+  const evaluatedAt = evaluatedAtValue instanceof Date
+    ? evaluatedAtValue
+    : new Date(String(evaluatedAtValue ?? ""));
+  if (evaluationTime.rows.length !== 1 || !Number.isFinite(evaluatedAt.getTime())) {
+    fail("schema_032_evaluation_timestamp_invalid");
+  }
   let allowanceCursor: [string, string, string] | null = null;
   // ponytail: startup validation is O(n) in approvals but O(batch) in memory; upgrade to a set-based or precomputed integrity marker if startup latency becomes material.
   while (true) {

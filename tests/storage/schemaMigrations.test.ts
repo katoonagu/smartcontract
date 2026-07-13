@@ -89,6 +89,7 @@ function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
       }]
     },
     legacy_backfill: { rows: [{ false_confirmed_count: "0", stale_not_expired_count: "0" }] },
+    evaluation_time: { rows: [{ evaluated_at: new Date("2026-07-13T00:00:00.000Z") }] },
     allowance_states: { rows: [] },
     ...overrides
   };
@@ -101,6 +102,8 @@ function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
           ? "to_regclass"
         : normalized.includes("pg_constraint")
           ? "pg_constraint"
+          : normalized.includes("statement_timestamp() as evaluated_at")
+            ? "evaluation_time"
           : normalized.includes("join") && normalized.includes("watched_wallets")
             ? "allowance_states"
           : normalized.includes("pg_indexes") || normalized.includes("pg_index")
@@ -233,6 +236,17 @@ describe("verified schema 032 metadata", () => {
       allowance_states: { rows: [baseRow] }
     }))).resolves.toBeUndefined();
     await expect(verifySchema032Structure(schemaDb({
+      evaluation_time: { rows: [{ evaluated_at: new Date("2026-07-13T00:00:00.100Z") }] },
+      allowance_states: { rows: [{
+        ...baseRow,
+        allowance_confirmed_raw: "0",
+        allowance_check_status: "confirmed_zero",
+        allowance_checked_at: new Date("2026-07-13T00:00:00.100Z"),
+        allowance_fresh_until: new Date("2026-07-13T00:15:00.100Z"),
+        allowance_last_attempt_at: new Date("2026-07-13T00:00:00.100Z")
+      }] }
+    }))).resolves.toBeUndefined();
+    await expect(verifySchema032Structure(schemaDb({
       allowance_states: { rows: [{
         ...baseRow,
         allowance_check_status: "stale",
@@ -264,6 +278,7 @@ describe("verified schema 032 metadata", () => {
     await expect(verifySchema032Structure(pagedDb)).resolves.toBeUndefined();
     expect(SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE).toBe(250);
     expect((pagedDb as unknown as { __calls: Record<string, number> }).__calls.allowance_states).toBe(2);
+    expect((pagedDb as unknown as { __calls: Record<string, number> }).__calls.evaluation_time).toBe(1);
     const queryValues = (pagedDb as unknown as {
       __values: Record<string, unknown[][]>;
     }).__values.allowance_states;
