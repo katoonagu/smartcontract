@@ -356,7 +356,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
 
     expect(result.selectionMethod).toBe("recent_outgoing");
     expect(result.anchorTransfer?.txHash).toBe("large-anchor-at-eleven");
-    expect(result.transfers.map((item) => item.txHash)).toEqual(["funding-before-large-anchor"]);
+    expect(result.transfers.map((item) => item.txHash)).not.toContain("funding-before-large-anchor");
     expect(resolveEconomicContext).toHaveBeenCalledTimes(11);
     expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).toContain("large-anchor-at-eleven");
   });
@@ -413,8 +413,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
   );
 
   it.each([
-    { maxCandidates: -1, expectedTransfers: 10, expectedResolverCalls: 10 },
-    { maxCandidates: 12, expectedTransfers: 12, expectedResolverCalls: 12 }
+    { maxCandidates: -1, expectedTransfers: 9, expectedResolverCalls: 10 },
+    { maxCandidates: 12, expectedTransfers: 11, expectedResolverCalls: 12 }
   ])(
     "[REQ-30][AC-10] applies normalized maxCandidates=$maxCandidates to large-outgoing funding candidates",
     async ({ maxCandidates, expectedTransfers, expectedResolverCalls }) => {
@@ -646,5 +646,110 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       exclusions: result.coverageExclusions ?? [],
       limitations: []
     })).not.toThrow();
+  });
+
+  it("[REQ-02][REQ-30][AC-11] bounds large-anchor coverage to inspected edges", async () => {
+    const anchor = edge({
+      txHash: "bounded-large-anchor",
+      from: subject,
+      to: counterparty,
+      amount: "2000000000",
+      iso: "2026-05-05T10:00:00.000Z"
+    });
+    const inspectedNoise = Array.from({ length: 9 }, (_, index) => edge({
+      txHash: `bounded-noise-${index}`,
+      from: `TNoise${index}`,
+      to: subject,
+      amount: "1000000",
+      iso: `2026-05-05T09:${String(59 - index).padStart(2, "0")}:00.000Z`
+    }));
+    const uncheckedIncomingFee = {
+      ...edge({
+        txHash: "unchecked-incoming-fee-row-11",
+        from: "TUncheckedFeePayer",
+        to: subject,
+        amount: "1500000",
+        iso: "2026-05-05T09:49:00.000Z"
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+    const uncheckedTailFunding = edge({
+      txHash: "unchecked-tail-funding",
+      from: "TTailFunder",
+      to: subject,
+      amount: "2000000000",
+      iso: "2026-05-05T09:00:00.000Z"
+    });
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item);
+
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [anchor, ...inspectedNoise, uncheckedIncomingFee, uncheckedTailFunding],
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(10);
+    expect(result.transfers.map((item) => item.txHash)).toEqual(inspectedNoise.map((item) => item.txHash));
+    expect(result.transfers.map((item) => item.txHash)).not.toContain("unchecked-tail-funding");
+    expect(result.availableInboundTxCount).toBe(9);
+    const exclusionEvidenceIds = result.coverageExclusions?.flatMap((item) => item.evidenceIds) ?? [];
+    expect(exclusionEvidenceIds).not.toContain("unchecked-incoming-fee-row-11");
+    expect(exclusionEvidenceIds).not.toContain("unchecked-tail-funding");
+    expect(() => buildForensicCoverageV2({
+      scope: "recent_flow",
+      availableInboundTxCount: result.availableInboundTxCount ?? null,
+      selectedInboundTxCount: result.transfers.length,
+      selectedAmountRaw: result.selectedAmountRaw,
+      tracedAmountRaw: result.selectedAmountRaw,
+      exclusions: result.coverageExclusions ?? [],
+      limitations: []
+    })).not.toThrow();
+  });
+
+  it("[REQ-02][REQ-30][AC-11] rejects an exact GasFree self-edge deterministically", async () => {
+    const selfFee = {
+      ...edge({
+        txHash: "gasfree-self-fee",
+        from: subject,
+        to: subject,
+        amount: "1500000",
+        iso: "2026-05-05T09:00:00.000Z"
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+
+    await expect(selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [selfFee],
+      resolveEconomicContext: async (item) => item
+    })).rejects.toThrow("exact GasFree fee edge must have exactly one subject endpoint");
+  });
+
+  it("[REQ-30][AC-10] deduplicates inspected large-anchor edges by stable event id", async () => {
+    const funding = edge({
+      txHash: "duplicate-inspected-funding",
+      from: "TDuplicateFunder",
+      to: subject,
+      amount: "2000000000",
+      iso: "2026-05-05T09:00:00.000Z"
+    });
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "duplicate-inspected-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        funding,
+        { ...funding }
+      ],
+      maxCandidates: 3,
+      resolveEconomicContext: async (item) => item
+    });
+
+    expect(result.transfers.map((item) => item.evidenceId)).toEqual(["duplicate-inspected-funding"]);
+    expect(result.availableInboundTxCount).toBe(1);
   });
 });

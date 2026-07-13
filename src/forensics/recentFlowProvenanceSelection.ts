@@ -260,8 +260,16 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
   }
   if (largeOutgoingAnchor) {
     for (const edge of sortedEdges.slice(0, maxCandidates)) await resolve(edge);
+    const inspectedIds = new Set(resolvedById.keys());
+    const emittedIds = new Set<string>();
+    const checkedEdges: ForensicRouteEdge[] = [];
+    for (const edge of sortedEdges) {
+      if (!inspectedIds.has(edge.id) || emittedIds.has(edge.id)) continue;
+      emittedIds.add(edge.id);
+      checkedEdges.push(resolvedById.get(edge.id)!);
+    }
     return {
-      checkedEdges: sortedEdges.map((edge) => resolvedById.get(edge.id) ?? edge),
+      checkedEdges,
       principalSlice: [],
       exactFees,
       largeOutgoingAnchor
