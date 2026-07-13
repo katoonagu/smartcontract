@@ -81,18 +81,27 @@ function principalTransfer(subjectAddress: string, edge: ForensicRouteEdge): Rec
 
 function exactFeeExclusion(subjectAddress: string, edges: ForensicRouteEdge[]): CoverageExclusionV1[] {
   if (edges.length === 0) return [];
-  const direction = edges.every((edge) => edge.fromAddress === subjectAddress)
-    ? "outgoing"
-    : edges.every((edge) => edge.toAddress === subjectAddress)
-      ? "incoming"
-      : null;
-  return [{
+  const incoming: ForensicRouteEdge[] = [];
+  const outgoing: ForensicRouteEdge[] = [];
+  for (const edge of edges) {
+    const isIncoming = edge.toAddress === subjectAddress && edge.fromAddress !== subjectAddress;
+    const isOutgoing = edge.fromAddress === subjectAddress && edge.toAddress !== subjectAddress;
+    if (isIncoming) incoming.push(edge);
+    else if (isOutgoing) outgoing.push(edge);
+    else throw new Error("exact GasFree fee edge must have exactly one subject endpoint");
+  }
+  const exclusion = (
+    direction: "incoming" | "outgoing",
+    group: ForensicRouteEdge[]
+  ): CoverageExclusionV1 | null => group.length === 0 ? null : {
     reason: "exact_gasfree_service_fee",
     direction,
-    txCount: edges.length,
-    amountRaw: edges.reduce((sum, edge) => sum + parseRaw(edge.amountRaw), 0n).toString(),
-    evidenceIds: edges.map((edge) => edge.id)
-  }];
+    txCount: group.length,
+    amountRaw: group.reduce((sum, edge) => sum + parseRaw(edge.amountRaw), 0n).toString(),
+    evidenceIds: group.map((edge) => edge.id)
+  };
+  return [exclusion("incoming", incoming), exclusion("outgoing", outgoing)]
+    .filter((item): item is CoverageExclusionV1 => item !== null);
 }
 
 function differentScopeExclusion(edges: ForensicRouteEdge[]): CoverageExclusionV1[] {

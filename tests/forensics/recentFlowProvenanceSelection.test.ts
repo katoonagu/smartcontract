@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ForensicRouteEdge, RecentFlowPrincipalTransferV1 } from "../../src/types";
+import { buildForensicCoverageV2 } from "../../src/forensics/forensicCoverageV2";
 import { selectRecentFlowProvenanceTransfers } from "../../src/forensics/recentFlowProvenanceSelection";
 import {
   contractPrincipalInput,
@@ -516,5 +517,134 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageExclusions).not.toContainEqual(expect.objectContaining({
       reason: "exact_gasfree_service_fee"
     }));
+  });
+
+  it("[REQ-02][REQ-30][AC-11] reconciles incoming and outgoing exact fees separately in recent-five coverage", async () => {
+    const principal = Array.from({ length: 5 }, (_, index) => edge({
+      txHash: `mixed-fee-principal-${index}`,
+      from: `TMixedFunder${index}`,
+      to: subject,
+      amount: "100000000",
+      iso: `2026-05-05T09:${String(59 - index * 2).padStart(2, "0")}:00.000Z`
+    }));
+    const incomingFee = {
+      ...edge({
+        txHash: "mixed-fee-incoming",
+        from: "TGasFreeFeePayer",
+        to: subject,
+        amount: "1000000",
+        iso: "2026-05-05T09:58:00.000Z"
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+    const outgoingFee = {
+      ...edge({
+        txHash: "mixed-fee-outgoing",
+        from: subject,
+        to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
+        amount: "1500000",
+        iso: "2026-05-05T09:56:00.000Z"
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [principal[0], incomingFee, principal[1], outgoingFee, ...principal.slice(2)],
+      resolveEconomicContext: async (item) => item
+    });
+
+    expect(result.recentFlowPrincipalTransfers).toHaveLength(5);
+    expect(result.transfers).toHaveLength(5);
+    expect(result.availableInboundTxCount).toBe(6);
+    expect(result.coverageExclusions).toEqual(expect.arrayContaining([
+      {
+        reason: "exact_gasfree_service_fee",
+        direction: "incoming",
+        txCount: 1,
+        amountRaw: "1000000",
+        evidenceIds: ["mixed-fee-incoming"]
+      },
+      {
+        reason: "exact_gasfree_service_fee",
+        direction: "outgoing",
+        txCount: 1,
+        amountRaw: "1500000",
+        evidenceIds: ["mixed-fee-outgoing"]
+      }
+    ]));
+    expect(() => buildForensicCoverageV2({
+      scope: "recent_flow",
+      availableInboundTxCount: result.availableInboundTxCount ?? null,
+      selectedInboundTxCount: result.transfers.length,
+      selectedAmountRaw: result.selectedAmountRaw,
+      tracedAmountRaw: result.selectedAmountRaw,
+      exclusions: result.coverageExclusions ?? [],
+      limitations: []
+    })).not.toThrow();
+  });
+
+  it("[REQ-02][REQ-30][AC-11] reconciles mixed fee directions on the large-anchor path", async () => {
+    const incomingFee = {
+      ...edge({
+        txHash: "large-mixed-fee-incoming",
+        from: "TGasFreeFeePayer",
+        to: subject,
+        amount: "2000000",
+        iso: "2026-05-05T09:59:00.000Z"
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+    const outgoingFee = {
+      ...edge({
+        txHash: "large-mixed-fee-outgoing",
+        from: subject,
+        to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
+        amount: "1500000",
+        iso: "2026-05-05T09:58:00.000Z"
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "large-mixed-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        incomingFee,
+        outgoingFee,
+        edge({ txHash: "large-mixed-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      resolveEconomicContext: async (item) => item
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["large-mixed-funding"]);
+    expect(result.availableInboundTxCount).toBe(2);
+    expect(result.coverageExclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        direction: "incoming",
+        txCount: 1,
+        amountRaw: "2000000",
+        evidenceIds: ["large-mixed-fee-incoming"]
+      }),
+      expect.objectContaining({
+        direction: "outgoing",
+        txCount: 1,
+        amountRaw: "1500000",
+        evidenceIds: ["large-mixed-fee-outgoing"]
+      })
+    ]));
+    expect(() => buildForensicCoverageV2({
+      scope: "recent_flow",
+      availableInboundTxCount: result.availableInboundTxCount ?? null,
+      selectedInboundTxCount: result.transfers.length,
+      selectedAmountRaw: result.selectedAmountRaw,
+      tracedAmountRaw: result.selectedAmountRaw,
+      exclusions: result.coverageExclusions ?? [],
+      limitations: []
+    })).not.toThrow();
   });
 });
