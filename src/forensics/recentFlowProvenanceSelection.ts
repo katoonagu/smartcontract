@@ -260,10 +260,11 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
   }
   if (largeOutgoingAnchor) {
     const cashflowIds = new Set<string>();
-    let principalFundingCount = 0;
+    const anchorTargetRaw = parseRaw(largeOutgoingAnchor.amountRaw);
+    let usableCoverageRaw = 0n;
     let spendOverhang = 0n;
     for (const edge of sortedEdges) {
-      if (principalFundingCount >= maxCandidates) break;
+      if (usableCoverageRaw >= anchorTargetRaw) break;
       if (edge.id === largeOutgoingAnchor.id) continue;
       if (edge.timestamp.getTime() >= largeOutgoingAnchor.timestamp.getTime()) continue;
       if (cashflowIds.has(edge.id)) continue;
@@ -278,7 +279,10 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
       if (resolved.toAddress !== input.subjectAddress) continue;
       const consumedRaw = spendOverhang > amountRaw ? amountRaw : spendOverhang;
       spendOverhang -= consumedRaw;
-      if (amountRaw > consumedRaw) principalFundingCount += 1;
+      const usableRaw = amountRaw - consumedRaw;
+      if (usableRaw <= 0n) continue;
+      const remainingRaw = anchorTargetRaw - usableCoverageRaw;
+      usableCoverageRaw += usableRaw > remainingRaw ? remainingRaw : usableRaw;
     }
     const inspectedIds = new Set(resolvedById.keys());
     const emittedIds = new Set<string>();

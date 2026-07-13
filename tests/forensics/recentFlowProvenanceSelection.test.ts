@@ -413,11 +413,11 @@ describe("selectRecentFlowProvenanceTransfers", () => {
   );
 
   it.each([
-    { maxCandidates: -1, expectedTransfers: 10, expectedResolverCalls: 11 },
-    { maxCandidates: 12, expectedTransfers: 12, expectedResolverCalls: 13 }
+    { maxCandidates: -1, expectedTransfers: 10, expectedAvailable: 12, expectedResolverCalls: 13 },
+    { maxCandidates: 12, expectedTransfers: 12, expectedAvailable: 12, expectedResolverCalls: 13 }
   ])(
     "[REQ-30][AC-10] applies normalized maxCandidates=$maxCandidates to large-outgoing funding candidates",
-    async ({ maxCandidates, expectedTransfers, expectedResolverCalls }) => {
+    async ({ maxCandidates, expectedTransfers, expectedAvailable, expectedResolverCalls }) => {
       const largeAnchor = edge({
         txHash: "normalized-large-anchor",
         from: subject,
@@ -443,7 +443,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       });
 
       expect(result.transfers).toHaveLength(expectedTransfers);
-      expect(result.availableInboundTxCount).toBe(expectedTransfers);
+      expect(result.availableInboundTxCount).toBe(expectedAvailable);
       expect(resolveEconomicContext).toHaveBeenCalledTimes(expectedResolverCalls);
     }
   );
@@ -482,6 +482,61 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     }));
     expect(resolveEconomicContext).toHaveBeenCalledTimes(5);
     expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).not.toContain("older-uninspected-exact-fee");
+  });
+
+  it("[REQ-30][AC-10] scans past ten dust inbounds to significant large-anchor funding", async () => {
+    const dust = Array.from({ length: 10 }, (_, index) => edge({
+      txHash: `large-scan-dust-${index}`,
+      from: `TDustFunder${index}`,
+      to: subject,
+      amount: "1000000",
+      iso: `2026-05-05T09:${String(59 - index).padStart(2, "0")}:00.000Z`
+    }));
+    const strongFunding = edge({
+      txHash: "large-scan-strong-funding",
+      from: "TStrongFunder",
+      to: subject,
+      amount: "2000000000",
+      iso: "2026-05-05T09:40:00.000Z"
+    });
+    const uncheckedOlderTail = edge({
+      txHash: "large-scan-unchecked-tail",
+      from: "TOlderTail",
+      to: subject,
+      amount: "2000000000",
+      iso: "2026-05-05T09:30:00.000Z"
+    });
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item);
+
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "large-scan-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        ...dust,
+        strongFunding,
+        uncheckedOlderTail
+      ],
+      maxCandidates: 10,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["large-scan-strong-funding"]);
+    expect(result.availableInboundTxCount).toBe(11);
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(12);
+    expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).not.toContain("large-scan-unchecked-tail");
+    const exclusionEvidenceIds = result.coverageExclusions?.flatMap((item) => item.evidenceIds) ?? [];
+    expect(exclusionEvidenceIds).toEqual(expect.arrayContaining(dust.map((item) => item.id)));
+    expect(exclusionEvidenceIds).not.toContain("large-scan-unchecked-tail");
+    expect(() => buildForensicCoverageV2({
+      scope: "recent_flow",
+      availableInboundTxCount: result.availableInboundTxCount ?? null,
+      selectedInboundTxCount: result.transfers.length,
+      selectedAmountRaw: result.selectedAmountRaw,
+      tracedAmountRaw: result.selectedAmountRaw,
+      exclusions: result.coverageExclusions ?? [],
+      limitations: []
+    })).not.toThrow();
   });
 
   it("[REQ-30][AC-10] caps a larger inbound at the outgoing amount", async () => {
