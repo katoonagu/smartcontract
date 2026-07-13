@@ -356,8 +356,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
 
     expect(result.selectionMethod).toBe("recent_outgoing");
     expect(result.anchorTransfer?.txHash).toBe("large-anchor-at-eleven");
-    expect(result.transfers.map((item) => item.txHash)).not.toContain("funding-before-large-anchor");
-    expect(resolveEconomicContext).toHaveBeenCalledTimes(11);
+    expect(result.transfers.map((item) => item.txHash)).toContain("funding-before-large-anchor");
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(2);
     expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).toContain("large-anchor-at-eleven");
   });
 
@@ -365,8 +365,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     const exactFee = {
       ...edge({
         txHash: "large-path-exact-fee",
-        from: subject,
-        to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
+        from: "TGasFreeFeePayer",
+        to: subject,
         amount: "1500000",
         iso: "2026-05-05T08:50:00.000Z"
       }),
@@ -388,7 +388,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageRatio).toBe(1);
     expect(result.coverageExclusions).toContainEqual({
       reason: "exact_gasfree_service_fee",
-      direction: "outgoing",
+      direction: "incoming",
       txCount: 1,
       amountRaw: "1500000",
       evidenceIds: ["large-path-exact-fee"]
@@ -413,8 +413,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
   );
 
   it.each([
-    { maxCandidates: -1, expectedTransfers: 9, expectedResolverCalls: 10 },
-    { maxCandidates: 12, expectedTransfers: 11, expectedResolverCalls: 12 }
+    { maxCandidates: -1, expectedTransfers: 10, expectedResolverCalls: 11 },
+    { maxCandidates: 12, expectedTransfers: 12, expectedResolverCalls: 13 }
   ])(
     "[REQ-30][AC-10] applies normalized maxCandidates=$maxCandidates to large-outgoing funding candidates",
     async ({ maxCandidates, expectedTransfers, expectedResolverCalls }) => {
@@ -443,6 +443,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       });
 
       expect(result.transfers).toHaveLength(expectedTransfers);
+      expect(result.availableInboundTxCount).toBe(expectedTransfers);
       expect(resolveEconomicContext).toHaveBeenCalledTimes(expectedResolverCalls);
     }
   );
@@ -603,8 +604,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
         txHash: "large-mixed-fee-outgoing",
         from: subject,
         to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
-        amount: "1500000",
-        iso: "2026-05-05T09:58:00.000Z"
+        amount: "1500000000",
+        iso: "2026-05-05T10:01:00.000Z"
       }),
       economicProtocol: "tron_gasfree" as const,
       economicRole: "service_fee" as const
@@ -633,7 +634,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       expect.objectContaining({
         direction: "outgoing",
         txCount: 1,
-        amountRaw: "1500000",
+        amountRaw: "1500000000",
         evidenceIds: ["large-mixed-fee-outgoing"]
       })
     ]));
@@ -648,7 +649,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     })).not.toThrow();
   });
 
-  it("[REQ-02][REQ-30][AC-11] bounds large-anchor coverage to inspected edges", async () => {
+  it("[REQ-02][REQ-30][AC-11] scans past an exact incoming fee to bounded tail funding", async () => {
     const anchor = edge({
       txHash: "bounded-large-anchor",
       from: subject,
@@ -663,10 +664,10 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       amount: "1000000",
       iso: `2026-05-05T09:${String(59 - index).padStart(2, "0")}:00.000Z`
     }));
-    const uncheckedIncomingFee = {
+    const tailIncomingFee = {
       ...edge({
-        txHash: "unchecked-incoming-fee-row-11",
-        from: "TUncheckedFeePayer",
+        txHash: "tail-incoming-fee-row-11",
+        from: "TTailFeePayer",
         to: subject,
         amount: "1500000",
         iso: "2026-05-05T09:49:00.000Z"
@@ -674,8 +675,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       economicProtocol: "tron_gasfree" as const,
       economicRole: "service_fee" as const
     };
-    const uncheckedTailFunding = edge({
-      txHash: "unchecked-tail-funding",
+    const tailFunding = edge({
+      txHash: "tail-funding-row-12",
       from: "TTailFunder",
       to: subject,
       amount: "2000000000",
@@ -686,17 +687,20 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
       currentBalanceRaw: "0",
-      edges: [anchor, ...inspectedNoise, uncheckedIncomingFee, uncheckedTailFunding],
+      edges: [anchor, ...inspectedNoise, tailIncomingFee, tailFunding],
       resolveEconomicContext
     });
 
-    expect(resolveEconomicContext).toHaveBeenCalledTimes(10);
-    expect(result.transfers.map((item) => item.txHash)).toEqual(inspectedNoise.map((item) => item.txHash));
-    expect(result.transfers.map((item) => item.txHash)).not.toContain("unchecked-tail-funding");
-    expect(result.availableInboundTxCount).toBe(9);
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(11);
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["tail-funding-row-12"]);
+    expect(result.availableInboundTxCount).toBe(11);
     const exclusionEvidenceIds = result.coverageExclusions?.flatMap((item) => item.evidenceIds) ?? [];
-    expect(exclusionEvidenceIds).not.toContain("unchecked-incoming-fee-row-11");
-    expect(exclusionEvidenceIds).not.toContain("unchecked-tail-funding");
+    expect(exclusionEvidenceIds).toContain("tail-incoming-fee-row-11");
+    expect(exclusionEvidenceIds).toEqual(expect.arrayContaining(inspectedNoise.map((item) => item.id)));
+    expect(exclusionEvidenceIds).not.toContain("tail-funding-row-12");
+    expect(result.coverageExclusions
+      ?.filter((item) => item.direction === "incoming")
+      .reduce((sum, item) => sum + item.txCount, 0)).toBe(10);
     expect(() => buildForensicCoverageV2({
       scope: "recent_flow",
       availableInboundTxCount: result.availableInboundTxCount ?? null,

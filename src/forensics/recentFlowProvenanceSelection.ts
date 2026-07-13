@@ -259,7 +259,27 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
     }
   }
   if (largeOutgoingAnchor) {
-    for (const edge of sortedEdges.slice(0, maxCandidates)) await resolve(edge);
+    const cashflowIds = new Set<string>();
+    let principalFundingCount = 0;
+    let spendOverhang = 0n;
+    for (const edge of sortedEdges) {
+      if (principalFundingCount >= maxCandidates) break;
+      if (edge.id === largeOutgoingAnchor.id) continue;
+      if (edge.timestamp.getTime() >= largeOutgoingAnchor.timestamp.getTime()) continue;
+      if (cashflowIds.has(edge.id)) continue;
+      cashflowIds.add(edge.id);
+      const resolved = await resolve(edge);
+      if (isGasFreeServiceFeeEdge(resolved)) continue;
+      const amountRaw = parseRaw(resolved.amountRaw);
+      if (resolved.fromAddress === input.subjectAddress) {
+        spendOverhang += amountRaw;
+        continue;
+      }
+      if (resolved.toAddress !== input.subjectAddress) continue;
+      const consumedRaw = spendOverhang > amountRaw ? amountRaw : spendOverhang;
+      spendOverhang -= consumedRaw;
+      if (amountRaw > consumedRaw) principalFundingCount += 1;
+    }
     const inspectedIds = new Set(resolvedById.keys());
     const emittedIds = new Set<string>();
     const checkedEdges: ForensicRouteEdge[] = [];
