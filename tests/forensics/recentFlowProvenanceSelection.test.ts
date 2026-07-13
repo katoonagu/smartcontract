@@ -706,7 +706,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     })).not.toThrow();
   });
 
-  it("[REQ-02][REQ-30][AC-11] scans past an exact incoming fee to bounded tail funding", async () => {
+  it("[REQ-02][REQ-30][AC-11] keeps a cached incoming fee free while bounding unresolved context", async () => {
     const anchor = edge({
       txHash: "bounded-large-anchor",
       from: subject,
@@ -748,16 +748,19 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       resolveEconomicContext
     });
 
-    expect(resolveEconomicContext).toHaveBeenCalledTimes(2);
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(11);
     expect(result.transfers.map((item) => item.txHash)).toEqual(["tail-funding-row-12"]);
-    expect(result.availableInboundTxCount).toBe(2);
+    expect(result.availableInboundTxCount).toBe(11);
     const exclusionEvidenceIds = result.coverageExclusions?.flatMap((item) => item.evidenceIds) ?? [];
     expect(exclusionEvidenceIds).toContain("tail-incoming-fee-row-11");
-    expect(exclusionEvidenceIds).toEqual(["tail-incoming-fee-row-11"]);
+    expect(exclusionEvidenceIds).toEqual([
+      "tail-incoming-fee-row-11",
+      ...inspectedNoise.map((item) => item.id)
+    ]);
     expect(exclusionEvidenceIds).not.toContain("tail-funding-row-12");
     expect(result.coverageExclusions
       ?.filter((item) => item.direction === "incoming")
-      .reduce((sum, item) => sum + item.txCount, 0)).toBe(1);
+      .reduce((sum, item) => sum + item.txCount, 0)).toBe(10);
     expect(() => buildForensicCoverageV2({
       scope: "recent_flow",
       availableInboundTxCount: result.availableInboundTxCount ?? null,
@@ -842,7 +845,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.notes.join(" ")).toContain("maxCandidates=10");
   });
 
-  it("[REQ-02][REQ-30][AC-11] lets exact fees consume the bounded inspected scope", async () => {
+  it("[REQ-02][REQ-30][AC-11] keeps cached exact fees outside the provider-call budget", async () => {
     const fee = (index: number) => ({
       ...edge({
         txHash: `bounded-displacement-fee-${index}`,
@@ -876,15 +879,18 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       resolveEconomicContext
     });
 
-    expect(result.transfers).toEqual([]);
-    expect(result.availableInboundTxCount).toBe(2);
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["bounded-displacement-strong"]);
+    expect(result.availableInboundTxCount).toBe(3);
     expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
       direction: "incoming",
       txCount: 2,
       evidenceIds: ["bounded-displacement-fee-0", "bounded-displacement-fee-1"]
     }));
-    expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).not.toContain("bounded-displacement-strong");
-    expect(result.partial).toBe(true);
+    expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).toEqual([
+      "bounded-displacement-anchor",
+      "bounded-displacement-strong"
+    ]);
+    expect(result.partial).toBe(false);
     expect(() => buildForensicCoverageV2({
       scope: "recent_flow",
       availableInboundTxCount: result.availableInboundTxCount ?? null,
@@ -1063,5 +1069,71 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(first.transfers).toEqual([]);
     expect(first.selectedAmountRaw).toBe("0");
     expect(first.partial).toBe(true);
+  });
+
+  it("[REQ-02][REQ-30][AC-11] separates cached fee facts from the provider-call budget", async () => {
+    const anchor = edge({ txHash: "cached-budget-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" });
+    const rawFee = edge({ txHash: "cached-budget-fee", from: subject, to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird", amount: "1500000", iso: "2026-05-05T09:59:00.000Z" });
+    const cachedFee = {
+      ...rawFee,
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    };
+    const funding = edge({ txHash: "cached-budget-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" });
+    const run = async (fee: ForensicRouteEdge) => {
+      const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item.txHash === rawFee.txHash
+        ? { ...item, economicProtocol: "tron_gasfree" as const, economicRole: "service_fee" as const }
+        : item);
+      const result = await selectRecentFlowProvenanceTransfers({
+        subjectAddress: subject,
+        currentBalanceRaw: "0",
+        edges: [anchor, fee, funding],
+        maxCandidates: 1,
+        resolveEconomicContext
+      });
+      return { result, callbackTxHashes: resolveEconomicContext.mock.calls.map(([item]) => item.txHash) };
+    };
+
+    const cached = await run(cachedFee);
+    const unresolved = await run(rawFee);
+
+    expect(cached.callbackTxHashes).toEqual(["cached-budget-anchor", "cached-budget-funding"]);
+    expect(unresolved.callbackTxHashes).toEqual(cached.callbackTxHashes);
+    expect(cached.result.transfers.map((item) => item.txHash)).toEqual(["cached-budget-funding"]);
+    expect(cached.result.coverageExclusions).toContainEqual(expect.objectContaining({
+      evidenceIds: ["cached-budget-fee"]
+    }));
+    expect(unresolved.result.transfers).toEqual([]);
+    expect(unresolved.result.coverageExclusions).not.toContainEqual(expect.objectContaining({
+      reason: "exact_gasfree_service_fee"
+    }));
+    expect(unresolved.result.coverageExclusions).toContainEqual(expect.objectContaining({
+      reason: "different_selected_scope",
+      evidenceIds: ["cached-budget-funding"]
+    }));
+    expect(unresolved.result.partial).toBe(true);
+  });
+
+  it("[REQ-30][AC-10] excludes same-time non-anchor rows from strict-prior funding scope", async () => {
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item);
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "z-strict-prior-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        edge({ txHash: "a-strict-prior-same-time", from: subject, to: "TSameTime", amount: "500000000", iso: "2026-05-05T10:00:00.000Z" }),
+        edge({ txHash: "strict-prior-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      maxCandidates: 1,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["strict-prior-funding"]);
+    expect(result.selectedAmountRaw).toBe("2000000000");
+    expect(result.partial).toBe(false);
+    expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).toEqual([
+      "z-strict-prior-anchor",
+      "strict-prior-funding"
+    ]);
   });
 });

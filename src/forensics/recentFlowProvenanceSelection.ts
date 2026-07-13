@@ -285,33 +285,37 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
   };
 
   let largeOutgoingAnchor: ForensicRouteEdge | null = null;
-  let largeOutgoingAnchorIndex = -1;
-  for (let index = 0; index < sortedEdges.length; index += 1) {
-    const candidate = sortedEdges[index]!;
+  for (const candidate of sortedEdges) {
     if (candidate.fromAddress !== input.subjectAddress || parseRaw(candidate.amountRaw) < BASE_SIGNIFICANT_RAW) continue;
     const resolved = await resolve(candidate);
     if (!isGasFreeServiceFeeEdge(resolved)) {
       largeOutgoingAnchor = resolved;
-      largeOutgoingAnchorIndex = index;
       break;
     }
   }
   if (largeOutgoingAnchor) {
-    const orderedPriorEdges = sortedEdges.slice(largeOutgoingAnchorIndex + 1);
+    const orderedPriorIds = new Set<string>();
+    const orderedPriorEdges = sortedEdges.filter((edge) => {
+      if (edge.timestamp.getTime() >= largeOutgoingAnchor.timestamp.getTime() || orderedPriorIds.has(edge.id)) {
+        return false;
+      }
+      orderedPriorIds.add(edge.id);
+      return true;
+    });
     const prioritized = prioritizedPotentialFundingEdges(input, largeOutgoingAnchor, orderedPriorEdges);
     const processedPotentialIds = new Set<string>();
-    const inspectedKnownFeeIds = new Set<string>();
     const validatedFundingIds = new Set<string>();
-    let inspectedSlots = 0;
+    let providerCalls = 0;
     let budgetExhausted = false;
     const inspect = async (edge: ForensicRouteEdge): Promise<ForensicRouteEdge | null> => {
       const existing = resolvedById.get(edge.id);
       if (existing) return existing;
-      if (inspectedSlots >= maxCandidates) {
+      if (isGasFreeServiceFeeEdge(edge) || !input.resolveEconomicContext) return resolve(edge);
+      if (providerCalls >= maxCandidates) {
         budgetExhausted = true;
         return null;
       }
-      inspectedSlots += 1;
+      providerCalls += 1;
       return resolve(edge);
     };
     const resolvedCheckedEdges = (): ForensicRouteEdge[] => {
@@ -328,19 +332,13 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
       { ...input, edges: resolvedCheckedEdges().filter((edge) => !isGasFreeServiceFeeEdge(edge)) },
       largeOutgoingAnchor
     ).filter((candidate) => validatedFundingIds.has(candidate.edge.id));
-    let lastProcessedIndex = largeOutgoingAnchorIndex;
+    let lastProcessedIndex = -1;
     let processedPotentialCount = 0;
     let fundingFullyCovered = false;
     for (const fundingEdge of prioritized) {
       if (budgetExhausted) break;
-      const fundingIndex = sortedEdges.indexOf(fundingEdge);
-      if (fundingIndex <= largeOutgoingAnchorIndex) continue;
-      for (const possibleFee of sortedEdges.slice(largeOutgoingAnchorIndex + 1, fundingIndex + 1)) {
-        if (!isGasFreeServiceFeeEdge(possibleFee) || inspectedKnownFeeIds.has(possibleFee.id)) continue;
-        inspectedKnownFeeIds.add(possibleFee.id);
-        if (!(await inspect(possibleFee))) break;
-      }
-      if (budgetExhausted) break;
+      const fundingIndex = orderedPriorEdges.indexOf(fundingEdge);
+      if (fundingIndex < 0) continue;
       processedPotentialCount += 1;
       processedPotentialIds.add(fundingEdge.id);
       lastProcessedIndex = Math.max(lastProcessedIndex, fundingIndex);
@@ -350,7 +348,7 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
 
       let closureComplete = true;
       let spendOverhang = 0n;
-      for (const dependency of sortedEdges.slice(largeOutgoingAnchorIndex + 1, fundingIndex)) {
+      for (const dependency of orderedPriorEdges.slice(0, fundingIndex)) {
         if (dependency.fromAddress === input.subjectAddress) {
           const resolved = await inspect(dependency);
           if (!resolved) {
@@ -380,17 +378,20 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
     }
 
     let contextSkipped = false;
-    if (!budgetExhausted && lastProcessedIndex > largeOutgoingAnchorIndex) {
-      const remainingSlots = maxCandidates - inspectedSlots;
-      const incomingContext = sortedEdges
-        .slice(largeOutgoingAnchorIndex + 1, lastProcessedIndex + 1)
+    if (!budgetExhausted && lastProcessedIndex >= 0) {
+      const remainingProviderCalls = maxCandidates - providerCalls;
+      const incomingContext = orderedPriorEdges
+        .slice(0, lastProcessedIndex + 1)
         .filter((edge) =>
         edge.toAddress === input.subjectAddress &&
         edge.fromAddress !== input.subjectAddress &&
         !resolvedById.has(edge.id) &&
         !processedPotentialIds.has(edge.id)
       );
-      if (incomingContext.length <= remainingSlots) {
+      const requiredProviderCalls = input.resolveEconomicContext
+        ? incomingContext.filter((edge) => !isGasFreeServiceFeeEdge(edge)).length
+        : 0;
+      if (requiredProviderCalls <= remainingProviderCalls) {
         for (const edge of incomingContext) await inspect(edge);
       } else {
         contextSkipped = true;
