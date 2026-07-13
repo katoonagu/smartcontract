@@ -640,6 +640,35 @@ describe("TronscanClient", () => {
     expect(url.searchParams.get("hash")).toBe("abc123");
   });
 
+  it.each([
+    { label: "receipt result success", raw: { receipt: { result: "SUCCESS" }, contractRet: "FAILED" }, expected: true },
+    { label: "receipt result failure", raw: { receipt: { result: "REVERT" }, contractRet: "SUCCESS" }, expected: false },
+    { label: "explicit receipt boolean wins", raw: { receipt: { success: false, result: "SUCCESS" } }, expected: false }
+  ])("normalizes $label without using top-level status", async ({ raw, expected }) => {
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse(raw))
+    });
+
+    const result = await client.getTransaction("tx-receipt") as { receipt?: { success?: boolean; result?: string } };
+
+    expect(result.receipt?.success).toBe(expected);
+    expect(result.receipt?.result).toBe(raw.receipt.result);
+  });
+
+  it("does not invent receipt success from top-level transaction status", async () => {
+    const raw = { contractRet: "SUCCESS", finalResult: "SUCCESS" };
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse(raw))
+    });
+
+    const result = await client.getTransaction("tx-top-level") as { receipt?: { success?: boolean } };
+
+    expect(result).toEqual(raw);
+    expect(result.receipt?.success).toBeUndefined();
+  });
+
   it("reads raw transaction signing metadata from the full node endpoint", async () => {
     const fetchFn = vi.fn(async () =>
       jsonResponse({
@@ -1646,6 +1675,42 @@ describe("TronscanClient", () => {
     expect(url.searchParams.get("to_address")).toBe("TSpender11111111111111111111111111111");
     expect(url.searchParams.get("contract_address")).toBe(TRON_USDT_CONTRACT_ADDRESS);
     expect(url.searchParams.get("type")).toBe("approve");
+  });
+
+  it("returns strict approval-change page cardinality before malformed rows are filtered", async () => {
+    const validRow = {
+      date_created: 1778094375000,
+      unlimited: true,
+      owner_address: "TOwner1111111111111111111111111111111",
+      to_address: "TSpender11111111111111111111111111111",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      confirmed: true,
+      contract_ret: "SUCCESS",
+      amount_str: "1000000",
+      hash: "aa4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2"
+    };
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse({ total: 2, data: [validRow, { ...validRow, hash: null }] }))
+    });
+
+    const page = await client.listTrc20ApprovalChangePageStrict({
+      ownerAddress: validRow.owner_address,
+      spenderAddress: validRow.to_address,
+      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+      start: 0,
+      limit: 2
+    });
+
+    expect(page).toMatchObject({ rawCount: 2, malformedCount: 1, total: 2 });
+    expect(page.changes).toHaveLength(1);
+    await expect(client.listTrc20ApprovalChanges({
+      ownerAddress: validRow.owner_address,
+      spenderAddress: validRow.to_address,
+      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+      start: 0,
+      limit: 2
+    })).resolves.toHaveLength(1);
   });
 
   it("does not retry malformed approval list responses", async () => {

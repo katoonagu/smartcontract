@@ -1407,6 +1407,37 @@ export type ApprovalAllowanceStateV2 = {
   observedApprovalTxHash: string | null;
 };
 
+export type KnownServiceSessionV1 = {
+  walletAddress: string;
+  spenderAddress: string;
+  approvalTxHash: string;
+  actionTxHash: string;
+  actionKind: "swap" | "bridge" | "router";
+  walletInitiated: boolean;
+  successful: boolean;
+  delayMs: number;
+  approvedAmountRaw: string | null;
+  movedAmountRaw: string;
+  amountContinuity: "exact" | "broken" | "unknown";
+  authoritativeServiceId: string;
+};
+
+export type ApprovalSafetyAssessmentV2 = {
+  version: "approval-safety-v2";
+  subjectAddress: string;
+  level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | "UNKNOWN";
+  score: number | null;
+  action: "NONE" | "REVOKE_IF_UNUSED" | "REVOKE_NOW" | "CONFIRM_ALLOWANCE";
+  amlScoreImpact: 0;
+  allowance: ApprovalAllowanceStateV2;
+  balanceAtRiskRaw: string | null;
+  exactVerify20: boolean;
+  exactDebit: boolean;
+  debitFoundFromSubject: boolean;
+  campaignEvidenceIds: string[];
+  serviceSession: KnownServiceSessionV1 | null;
+};
+
 export type UsddPsmExposureV1 = {
   mode: "where" | "incoming" | "recent_flow" | "deep_history";
   direction: "inbound_from_psm" | "outbound_to_psm";

@@ -538,7 +538,7 @@ describe("runSafetyRecheck", () => {
       approvalsProcessed: 1,
       riskRowsUpdated: 1
     });
-    expect(queries.some((query) => JSON.stringify(query.params).includes("approval_temporally_linked_to_known_swap"))).toBe(true);
+    expect(queries.some((query) => JSON.stringify(query.params ?? []).includes("approval_temporally_linked_to_known_swap"))).toBe(true);
     expect(allowanceCalls).toBe(1);
   });
 });

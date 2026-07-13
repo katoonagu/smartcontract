@@ -72,6 +72,7 @@ export type GetUsdtBlacklistTimelineOptions = {
 export type TronApprovalClient = {
   listTrc20Approvals(address: string, options?: ListTrc20ApprovalsOptions): Promise<TronscanApprovalListResult>;
   listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
+  listTrc20ApprovalChangePageStrict?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChangePage>;
   getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
   listRelatedTrc20Transfers?(address: string, options?: ListRelatedTrc20TransfersOptions): Promise<RawTronscanTrc20Transfer[]>;
   getTransaction?(txHash: string): Promise<unknown>;
@@ -365,6 +366,13 @@ export type TronscanApprovalChange = {
   timestamp: Date;
   confirmed: boolean;
   contractRet: string | null;
+};
+
+export type TronscanApprovalChangePage = {
+  changes: TronscanApprovalChange[];
+  rawCount: number;
+  malformedCount: number;
+  total: number | null;
 };
 
 export type TronscanAddressMetadata = {
@@ -1074,6 +1082,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   async listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]> {
+    return (await this.listTrc20ApprovalChangePageStrict(input)).changes;
+  }
+
+  async listTrc20ApprovalChangePageStrict(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChangePage> {
     const url = new URL("/api/account/approve/change", this.baseUrl);
     url.searchParams.set("from_address", input.ownerAddress);
     url.searchParams.set("to_address", input.spenderAddress);
@@ -1095,9 +1107,17 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       throw new Error("Tronscan approval change response data must be an array");
     }
 
-    return data
-      .map((item) => this.parseApprovalChange(item))
-      .filter((item): item is TronscanApprovalChange => item !== null);
+    const parsed = data.map((item) => this.parseApprovalChange(item));
+    const changes = parsed.filter((item): item is TronscanApprovalChange => item !== null);
+    const total = typeof json.total === "number" && Number.isSafeInteger(json.total) && json.total >= 0
+      ? json.total
+      : null;
+    return {
+      changes,
+      rawCount: data.length,
+      malformedCount: parsed.length - changes.length,
+      total
+    };
   }
 
   async listContractEvents(input: {
@@ -1138,7 +1158,17 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const url = new URL("/api/transaction-info", this.baseUrl);
     url.searchParams.set("hash", txHash);
 
-    return this.fetchJson(url, "tronscan_transaction_info");
+    const transaction = await this.fetchJson(url, "tronscan_transaction_info");
+    if (!this.isObjectRecord(transaction)) return transaction;
+    const receipt = this.objectField(transaction.receipt);
+    if (!receipt || typeof receipt.success === "boolean" || typeof receipt.result !== "string") return transaction;
+    return {
+      ...transaction,
+      receipt: {
+        ...receipt,
+        success: receipt.result === "SUCCESS"
+      }
+    };
   }
 
   private encodeAddressParameter(address: string): string {
