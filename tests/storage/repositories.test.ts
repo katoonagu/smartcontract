@@ -1233,6 +1233,21 @@ describe("approval guard repositories", () => {
       approvalContextStatus: "resolved",
       approvalContextResult: "collector_drain"
     });
+    expect(JSON.parse(JSON.stringify(relations[0].allowanceStateV2))).toEqual({
+      version: "approval-allowance-v2",
+      ownerAddress: "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe",
+      spenderAddress: "TNKG4Mji5CjwaEZ8QXk5B4PaDDtax5pxQ5",
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      confirmedAllowanceRaw: "123456789",
+      isUnlimited: false,
+      state: "confirmed_active",
+      confirmedAt: updatedAt.toISOString(),
+      freshUntil: new Date(updatedAt.getTime() + 15 * 60 * 1000).toISOString(),
+      lastAttemptAt: updatedAt.toISOString(),
+      failureCode: null,
+      source: "official_usdt_allowance",
+      observedApprovalTxHash: "approval-tx"
+    });
     expect(expiredRelations[0]).toMatchObject({
       isUnlimited: false,
       status: "unknown",

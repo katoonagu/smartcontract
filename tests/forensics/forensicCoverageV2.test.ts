@@ -6,6 +6,7 @@ import {
   buildDeepCoverageV2,
   buildIncomingCoverageV2,
   buildForensicCoverageV2,
+  coverageV2FromWhereReport,
   validateForensicCoverageV2
 } from "../../src/forensics/forensicCoverageV2";
 import type { IncomingDepositInput, IncomingDepositRiskReport } from "../../src/types";
@@ -83,6 +84,56 @@ describe("ForensicCoverageV2", () => {
     expect(result.excludedInboundTxCount).toBeNull();
     expect(result.unresolvedAmountRaw).toBeNull();
     expect(result.unresolvedShare).toBeNull();
+  });
+
+  it("[REQ-31][REQ-38][DATA-COMPAT] preserves unknown legacy coverage through JSON without inventing counts", () => {
+    const parsedLegacyWhere = JSON.parse(JSON.stringify({
+      coverage: {
+        selectedInboundTxCount: 10,
+        selectedInboundVolumeRaw: "1000000000",
+        currentBalanceCoverageRatio: 0.83,
+        coverageRatio: 0.83,
+        maxDepth: 3,
+        fetchedAddressCount: 4,
+        partial: true,
+        notes: []
+      }
+    }));
+    const parsedLegacyIncoming = JSON.parse(JSON.stringify(legacyIncomingReport));
+    const parsedLegacyDeep = JSON.parse(JSON.stringify(legacyDeepReportWithoutCoverageV2));
+
+    const whereCoverage = coverageV2FromWhereReport(parsedLegacyWhere);
+    expect(whereCoverage).toEqual({
+      version: "forensic-coverage-v2",
+      scope: "current_balance",
+      availableInboundTxCount: null,
+      selectedInboundTxCount: 10,
+      excludedInboundTxCount: null,
+      selectedAmountRaw: "1000000000",
+      tracedAmountRaw: null,
+      tracedShare: null,
+      unresolvedAmountRaw: null,
+      unresolvedShare: null,
+      exclusions: [],
+      limitations: [],
+      completeness: "unknown"
+    });
+    expect(adaptLegacyIncomingCoverageV2({ report: parsedLegacyIncoming, seed: null })).toBeNull();
+    expect(adaptLegacyDeepCoverageV2(parsedLegacyDeep)).toBeNull();
+  });
+
+  it("[REQ-31][REQ-38][DATA-COMPAT] round-trips the exact CoverageV2 version and fields in result JSON", () => {
+    const coverage = buildForensicCoverageV2(canonicalInput());
+    const serialized = JSON.stringify({ coverageV2: coverage });
+    const parsed = JSON.parse(serialized) as {
+      coverageV2: typeof coverage;
+    };
+
+    expect(parsed.coverageV2.version).toBe("forensic-coverage-v2");
+    expect(validateForensicCoverageV2(parsed.coverageV2)).toEqual(coverage);
+    expect(Object.keys(parsed.coverageV2).sort()).toEqual(Object.keys(coverage).sort());
+    expect(parsed.coverageV2.exclusions).toEqual(coverage.exclusions);
+    expect(parsed.coverageV2.limitations).toEqual(coverage.limitations);
   });
 
   it("[REQ-03][REQ-10][DATA] stores a local materialization failure only as a limitation", () => {
