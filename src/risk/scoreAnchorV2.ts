@@ -19,6 +19,8 @@ type PolicyRule = Pick<
   decisions: ReadonlyArray<ScoreAnchorV2["decision"]>;
   atomicSignal?: string;
   score?: number;
+  minScore?: number;
+  maxScore?: number;
 };
 
 const policyRules: readonly PolicyRule[] = [
@@ -38,6 +40,20 @@ const policyRules: readonly PolicyRule[] = [
     coverageDependency: "none",
     decisions: ["DECLINE"]
   },
+  ...([
+    { decisions: ["ACCEPTABLE"] as const, minScore: 20, maxScore: 29 },
+    { decisions: ["REVIEW"] as const, minScore: 30, maxScore: 45 }
+  ] as const).map(({ decisions, minScore, maxScore }): PolicyRule => ({
+    matrixRow: "source_policy",
+    evidenceClass: "context",
+    proofLevel: "context",
+    authority: "behavior",
+    coverageDependency: "required",
+    decisions,
+    atomicSignal: "exact_usdd_psm_exposure",
+    minScore,
+    maxScore
+  })),
   ...["source_policy", "incoming_deposit_source_policy"].map((matrixRow): PolicyRule => ({
     matrixRow,
     evidenceClass: "policy",
@@ -141,6 +157,8 @@ function registeredRule(anchor: ScoreAnchorV2, atomicSignal: string): PolicyRule
     rule.coverageDependency === anchor.coverageDependency &&
     (rule.atomicSignal === undefined || rule.atomicSignal === atomicSignal) &&
     (rule.score === undefined || rule.score === anchor.score) &&
+    (rule.minScore === undefined || anchor.score >= rule.minScore) &&
+    (rule.maxScore === undefined || anchor.score <= rule.maxScore) &&
     rule.decisions.includes(anchor.decision)
   ) ?? null;
 }
@@ -182,6 +200,8 @@ function canonicalRule(candidate: ClassifiedMatrixCandidate, decision: ScoreAnch
     rule.coverageDependency === canonical.coverageDependency &&
     (rule.atomicSignal === undefined || rule.atomicSignal === firstAtomicSignal(candidate)) &&
     (rule.score === undefined || rule.score === candidate.score) &&
+    (rule.minScore === undefined || candidate.score >= rule.minScore) &&
+    (rule.maxScore === undefined || candidate.score <= rule.maxScore) &&
     rule.decisions.includes(decision)
   ) ?? null;
 }

@@ -85,6 +85,7 @@ import type {
   ServiceClassification,
   StablecoinRestrictionProfile,
   TimelineBearingStablecoinRestrictionProfile,
+  UsddPsmRouteObservationV1,
   UsdtBlacklistTimelineEvent,
   DeepCheckAllTimeCoverage,
   DeepCheckAllTimeMode,
@@ -616,6 +617,7 @@ export type RunDeepAddressForensicCheckInput = {
   secondLayerMaxActiveWalletsPerJob?: number;
   directHardEvidenceLiveLimit?: number;
   directHardEvidenceConcurrency?: number;
+  usddPsmRouteObservations?: UsddPsmRouteObservationV1[];
   abortSignal?: AbortSignal;
 };
 
@@ -2599,6 +2601,9 @@ export async function runDeepAddressForensicCheck(
     firstHopLabelFacts: directHardEvidence.labelFacts,
     firstHopBlacklistCoverage: directHardEvidence.firstHopBlacklistCoverage,
     directHardEvidenceSnapshots: directHardEvidence.snapshots,
+    ...(input.usddPsmRouteObservations !== undefined
+      ? { usddPsmRouteObservations: input.usddPsmRouteObservations.filter((observation) => observation.mode === "deep_history") }
+      : {}),
     coverageV2,
     coverage,
     coverageDebug

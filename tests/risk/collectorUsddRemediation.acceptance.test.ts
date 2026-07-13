@@ -330,7 +330,7 @@ describe("collector remediation acceptance contract", () => {
           txHash: null
         },
         matrixScore: matrix,
-        coverage: { required: "valid", overall: "complete", caveats: [] },
+        coverage: { required: "valid", overall: "complete", invalidModes: [], caveats: [] },
         observedContextScore: 55
       }),
       matrix
@@ -499,5 +499,215 @@ describe("USDD PSM remediation acceptance contract", () => {
 
     expect(exposure).not.toBeNull();
     expect(exposure?.baseModifier).toBe(expectedBase);
+  });
+
+  it.each([
+    { label: "numeric amountRaw", patch: { amountRaw: 2_000_000 } },
+    { label: "numeric selectedAmountRaw", patch: { selectedAmountRaw: 100_000_000 } },
+    {
+      label: "precision-lost amountRaw number",
+      patch: { amountRaw: 9_007_199_254_740_993, selectedAmountRaw: "10000000000000000" }
+    },
+    { label: "amountRaw object coercion", patch: { amountRaw: { toString: () => "83000000" } } },
+    { label: "unknown mode", patch: { mode: "historical_unknown" } },
+    { label: "wrong observation version", patch: { version: "usdd-psm-route-observation-v0" } },
+    { label: "wrong service identity discriminator", patch: { serviceId: "provider_label_only" } }
+  ])("[REQ-28][USDD-PSM-RUNTIME] rejects $label", async ({ patch }) => {
+    const { buildUsddPsmExposure } = await import("../../src/risk/usddPsmExposure");
+    expect(buildUsddPsmExposure(psmObservation(patch as never))).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "22 outbound Where",
+      observation: psmObservation({
+        direction: "outbound_to_psm",
+        amountRaw: "2000000",
+        selectedAmountRaw: "100000000"
+      }),
+      mode: "where" as const,
+      score: 22,
+      decision: "ACCEPTABLE" as const
+    },
+    {
+      label: "45 inbound Where",
+      observation: psmObservation(),
+      mode: "where" as const,
+      score: 45,
+      decision: "REVIEW" as const
+    },
+    {
+      label: "32 inbound Deep",
+      observation: psmObservation({ mode: "deep_history" }),
+      mode: "deep" as const,
+      score: 32,
+      decision: "REVIEW" as const
+    },
+    {
+      label: "26 outbound Deep",
+      observation: psmObservation({ mode: "deep_history", direction: "outbound_to_psm" }),
+      mode: "deep" as const,
+      score: 26,
+      decision: "ACCEPTABLE" as const
+    }
+  ])("[REQ-28][REQ-29][USDD-PSM-ANCHOR] binds $label through disposition and fresh assembly", async ({
+    observation,
+    mode,
+    score,
+    decision
+  }) => {
+    const [
+      { buildUsddPsmExposure, usddPsmMatrixCandidate },
+      { scoreMatrixCandidates },
+      { resolveFinalDisposition },
+      { assembleFreshScoreResultV2, materializeFreshScoreBindingV2, validateScoreAnchorV2 }
+    ] = await Promise.all([
+      import("../../src/risk/usddPsmExposure"),
+      import("../../src/risk/scoringSignalMatrix"),
+      import("../../src/risk/finalDisposition"),
+      import("../../src/risk/scoreAnchorV2")
+    ]);
+    const exposure = buildUsddPsmExposure(observation);
+    if (!exposure) throw new Error("expected exact USDD PSM exposure");
+    const candidate = usddPsmMatrixCandidate({ exposure, context: matrixContext });
+    const matrix = scoreMatrixCandidates([candidate], matrixContext);
+    const disposition = resolveFinalDisposition({
+      subject: {
+        decisionScope: matrixContext.decisionScope,
+        address: SUBJECT,
+        txHash: null
+      },
+      matrixScore: matrix,
+      coverage: { required: "valid", overall: "complete", invalidModes: [], caveats: [] },
+      observedContextScore: score
+    });
+
+    expect(matrix).toMatchObject({
+      policyScore: score,
+      matrixDecision: decision,
+      winningRow: "source_policy",
+      winningCandidate: {
+        score,
+        evidenceClass: "context",
+        proofLevel: "context",
+        decisionEligibility: "review_only",
+        coverageDependency: "none",
+        atomicSignals: ["exact_usdd_psm_exposure"],
+        evidenceIds: observation.evidenceIds,
+        authority: { kind: "context" }
+      }
+    });
+    expect(disposition).toMatchObject({
+      decision,
+      finalScore: score,
+      scoreValid: true,
+      decisionBasis: "matrix",
+      decisiveCandidate: { atomicSignals: ["exact_usdd_psm_exposure"] }
+    });
+
+    const binding = materializeFreshScoreBindingV2({
+      mode,
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix
+    });
+    expect(binding).toMatchObject({
+      diagnostic: null,
+      anchor: {
+        score,
+        decision,
+        matrixRow: "source_policy",
+        evidenceClass: "context",
+        proofLevel: "context",
+        authority: "behavior",
+        coverageDependency: "required"
+      },
+      evidence: [{
+        matrixRow: "source_policy",
+        evidenceClass: "context",
+        authority: "behavior",
+        sourceEvidenceIds: [...observation.evidenceIds].sort()
+      }],
+      facts: [{ kind: "exact_usdd_psm_exposure", isScoreDriver: true }]
+    });
+    const assembled = assembleFreshScoreResultV2({
+      mode,
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix,
+      evidence: binding.evidence,
+      facts: binding.facts,
+      activeAnchors: binding.anchor ? [binding.anchor] : []
+    });
+    expect(assembled).toMatchObject({
+      decision,
+      finalScore: score,
+      scoreValid: true,
+      scoreAnchorDiagnostic: null,
+      scoreAnchorV2: {
+        score,
+        decision,
+        matrixRow: "source_policy",
+        coverageDependency: "required"
+      }
+    });
+    expect(assembled.decision).not.toBe("DECLINE");
+    const boundAnchor = binding.anchor;
+    if (!boundAnchor) throw new Error("expected canonical USDD PSM anchor");
+    expect(() => validateScoreAnchorV2({
+      anchor: { ...boundAnchor, coverageDependency: "none" },
+      checkedSubjectAddress: SUBJECT,
+      checkedMode: mode,
+      evidence: binding.evidence,
+      facts: binding.facts
+    })).toThrow("score_anchor_fact_binding_failed");
+  });
+
+  it.each([
+    { label: "below score registry", score: 19, atomicSignal: "exact_usdd_psm_exposure", forcedDecision: null },
+    { label: "above score registry", score: 46, atomicSignal: "exact_usdd_psm_exposure", forcedDecision: null },
+    { label: "ACCEPTABLE score forced to REVIEW", score: 22, atomicSignal: "exact_usdd_psm_exposure", forcedDecision: "REVIEW" as const },
+    { label: "REVIEW score forced to ACCEPTABLE", score: 32, atomicSignal: "exact_usdd_psm_exposure", forcedDecision: "ACCEPTABLE" as const },
+    { label: "unregistered source-policy context", score: 32, atomicSignal: "other_source_policy_context", forcedDecision: null }
+  ])("[REQ-29][USDD-PSM-ANCHOR] rejects $label", async ({ score, atomicSignal, forcedDecision }) => {
+    const [
+      { buildUsddPsmExposure, usddPsmMatrixCandidate },
+      { scoreMatrixCandidates },
+      { resolveFinalDisposition },
+      { materializeFreshScoreBindingV2 }
+    ] = await Promise.all([
+      import("../../src/risk/usddPsmExposure"),
+      import("../../src/risk/scoringSignalMatrix"),
+      import("../../src/risk/finalDisposition"),
+      import("../../src/risk/scoreAnchorV2")
+    ]);
+    const exposure = buildUsddPsmExposure(psmObservation({ mode: "deep_history" }));
+    if (!exposure) throw new Error("expected exact USDD PSM exposure");
+    const candidate = {
+      ...usddPsmMatrixCandidate({ exposure, context: matrixContext }),
+      score,
+      atomicSignals: [atomicSignal]
+    };
+    const matrix = scoreMatrixCandidates([candidate], matrixContext);
+    const resolvedDisposition = resolveFinalDisposition({
+      subject: { decisionScope: matrixContext.decisionScope, address: SUBJECT, txHash: null },
+      matrixScore: matrix,
+      coverage: { required: "valid", overall: "complete", invalidModes: [], caveats: [] },
+      observedContextScore: score
+    });
+    const disposition = forcedDecision === null
+      ? resolvedDisposition
+      : { ...resolvedDisposition, decision: forcedDecision };
+    expect(materializeFreshScoreBindingV2({
+      mode: "deep",
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix
+    })).toMatchObject({
+      anchor: null,
+      diagnostic: "score_anchor_fact_binding_failed",
+      evidence: [],
+      facts: []
+    });
   });
 });

@@ -2886,4 +2886,5 @@ export type AddressExposureReport = {
   operationalFlowProfiles?: OperationalFlowProfile[];
   fastCounterpartyTopsProfile?: FastCounterpartyTopsProfile | null;
   walletRoleProfiles?: WalletRoleProfile[];
+  usddPsmRouteObservations?: UsddPsmRouteObservationV1[];
 };

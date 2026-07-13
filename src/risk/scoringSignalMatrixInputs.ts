@@ -18,6 +18,7 @@ import type {
   MatrixEvidenceAuthority
 } from "./scoringSignalMatrix";
 import { exactFastHardEvidence } from "./fastEvidence";
+import { buildUsddPsmExposure, usddPsmMatrixCandidate } from "./usddPsmExposure";
 
 export type WalletMatrixCandidateInput = {
   address: string;
@@ -401,6 +402,13 @@ function deepCandidates(
   const isIncomingLinked = (ids: string[]): boolean =>
     evidenceLinkedToIncoming(whereReport, ids, incomingTxHash);
 
+  for (const observation of arrayOrEmpty(report.usddPsmRouteObservations)) {
+    if (observation.mode !== "deep_history") continue;
+    const exposure = buildUsddPsmExposure(observation);
+    if (!exposure) continue;
+    candidates.push(usddPsmMatrixCandidate({ exposure, context }));
+  }
+
   for (const profile of arrayOrEmpty(report.stablecoinRestrictionProfiles)) {
     if (!profile.isBlacklisted || !sameAddress(profile.subjectAddress, context.subjectAddress)) continue;
     candidates.push(candidate(context, { kind: "exact_hard", proofSource: "stablecoin_restriction" }, {
@@ -776,6 +784,13 @@ function whereCandidates(
   const notApplicable = report.coverage.questionStatus === "not_applicable";
   const admits = (ids: string[]): boolean =>
     !requireIncomingEvidenceLink || evidenceLinkedToIncoming(report, ids, incomingTxHash);
+
+  for (const observation of arrayOrEmpty(report.usddPsmRouteObservations)) {
+    if (observation.mode === "deep_history") continue;
+    const exposure = buildUsddPsmExposure(observation);
+    if (!exposure || !admits(exposure.evidenceIds)) continue;
+    candidates.push(usddPsmMatrixCandidate({ exposure, context }));
+  }
 
   for (const item of report.assessment.hardBadEvidence) {
     if (!deterministicWhereHardKinds.has(item.kind)) continue;
