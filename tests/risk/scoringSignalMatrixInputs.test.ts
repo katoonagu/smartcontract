@@ -1204,7 +1204,7 @@ describe("scoring signal matrix input mappers", () => {
     });
   });
 
-  it("keeps historical operational flow contextual for Incoming and decline-capable for Wallet", () => {
+  it("keeps historical operational flow collector-only for Incoming and Wallet", () => {
     const profile = operationalFlowProfile();
     const deep = deepReport({ operationalFlowProfiles: [profile] });
     const incoming = buildIncomingDepositMatrixCandidates({
@@ -1214,22 +1214,27 @@ describe("scoring signal matrix input mappers", () => {
       fastReport: null,
       deepReport: deep,
       whereReport: whereReport({ subjectAddress: address })
-    }).find((item) => item.atomicSignals.includes("historical_transit_pattern"));
+    }).find((item) => item.atomicSignals.includes("collector_transit_behavior"));
     const wallet = buildWalletMatrixCandidates({
       address,
       fastReport: null,
       deepReport: deep,
       whereReport: whereReport()
-    }).find((item) => item.atomicSignals.includes("historical_transit_pattern"));
+    }).find((item) => item.atomicSignals.includes("collector_transit_behavior"));
 
     expect(incoming).toMatchObject({
       row: "behavior_only_prior",
+      score: 35,
+      caps: ["collector_only_cap_35"],
       authority: { kind: "context" }
     });
     expect(wallet).toMatchObject({
-      row: "service_linked_pattern",
-      authority: { kind: "pattern", decisionEligibility: "can_decline" }
+      row: "behavior_only_prior",
+      score: 35,
+      caps: ["collector_only_cap_35"],
+      authority: { kind: "context" }
     });
+    expect(wallet?.modifiers).not.toContain("service_anchor");
   });
 
   it("matches exact Where proof levels to their evidence kind", () => {

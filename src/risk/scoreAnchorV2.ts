@@ -15,7 +15,11 @@ const BINDING_ERROR = "score_anchor_fact_binding_failed" as const;
 type PolicyRule = Pick<
   ScoreAnchorV2,
   "matrixRow" | "evidenceClass" | "proofLevel" | "authority" | "coverageDependency"
-> & { decisions: ReadonlyArray<ScoreAnchorV2["decision"]> };
+> & {
+  decisions: ReadonlyArray<ScoreAnchorV2["decision"]>;
+  atomicSignal?: string;
+  score?: number;
+};
 
 const policyRules: readonly PolicyRule[] = [
   ...["subject_restriction", "hard_proof"].map((matrixRow): PolicyRule => ({
@@ -62,6 +66,16 @@ const policyRules: readonly PolicyRule[] = [
     authority: "deterministic_pattern",
     coverageDependency: "none",
     decisions: ["DECLINE"]
+  },
+  {
+    matrixRow: "behavior_only_prior",
+    evidenceClass: "pattern",
+    proofLevel: "strong",
+    authority: "deterministic_pattern",
+    coverageDependency: "required",
+    decisions: ["REVIEW"],
+    atomicSignal: "collector_plus_independent_signal",
+    score: 55
   },
   ...["contract_suspicion", "counterparty_context", "behavior_only_prior"].map((matrixRow): PolicyRule => ({
     matrixRow,
@@ -117,7 +131,7 @@ function sameSet(left: string[], right: string[]): boolean {
     [...left].sort().every((value, index) => value === [...right].sort()[index]);
 }
 
-function registeredRule(anchor: ScoreAnchorV2): PolicyRule | null {
+function registeredRule(anchor: ScoreAnchorV2, atomicSignal: string): PolicyRule | null {
   if (anchor.policyVersion !== POLICY_VERSION) return null;
   return policyRules.find((rule) =>
     rule.matrixRow === anchor.matrixRow &&
@@ -125,6 +139,8 @@ function registeredRule(anchor: ScoreAnchorV2): PolicyRule | null {
     rule.proofLevel === anchor.proofLevel &&
     rule.authority === anchor.authority &&
     rule.coverageDependency === anchor.coverageDependency &&
+    (rule.atomicSignal === undefined || rule.atomicSignal === atomicSignal) &&
+    (rule.score === undefined || rule.score === anchor.score) &&
     rule.decisions.includes(anchor.decision)
   ) ?? null;
 }
@@ -164,6 +180,8 @@ function canonicalRule(candidate: ClassifiedMatrixCandidate, decision: ScoreAnch
     rule.proofLevel === canonical.proofLevel &&
     rule.authority === canonical.authority &&
     rule.coverageDependency === canonical.coverageDependency &&
+    (rule.atomicSignal === undefined || rule.atomicSignal === firstAtomicSignal(candidate)) &&
+    (rule.score === undefined || rule.score === candidate.score) &&
     rule.decisions.includes(decision)
   ) ?? null;
 }
@@ -204,8 +222,6 @@ export function validateScoreAnchorV2(input: {
   if (!anchor || Array.isArray(anchor) || typeof anchor !== "object") fail();
   if (anchor.version !== "score-anchor-v2") fail();
   if (!Number.isFinite(anchor.score) || !Number.isInteger(anchor.score) || anchor.score < 0 || anchor.score > 100) fail();
-  const rule = registeredRule(anchor);
-  if (!rule) fail();
   if (!TronWeb.isAddress(anchor.subjectAddress) || anchor.subjectAddress !== input.checkedSubjectAddress) fail();
   if (anchor.mode !== input.checkedMode) fail();
   if (!uniqueNonEmpty(anchor.evidenceIds) || !uniqueNonEmpty(anchor.primaryEvidenceIds)) fail();
@@ -233,6 +249,7 @@ export function validateScoreAnchorV2(input: {
   const preferredMatches = input.facts.filter((fact) => fact.id === anchor.preferredFactId);
   if (preferredMatches.length !== 1) fail();
   const fact = preferredMatches[0];
+  if (!registeredRule(anchor, fact.kind)) fail();
   if (
     fact.subjectAddress !== anchor.subjectAddress ||
     fact.mode !== anchor.mode ||
@@ -397,7 +414,10 @@ export function materializeFreshScoreBindingV2(input: Omit<ScoreAnchorBuildInput
         sourceEvidenceIds: ids
       });
   }
-  const evidence = [primaryEvidence, ...contributingEvidence];
+  const evidence = [
+    primaryEvidence,
+    ...contributingEvidence.sort((left, right) => left.id.localeCompare(right.id))
+  ];
   return {
     anchor: { ...built.anchor, evidenceIds: evidence.map((item) => item.id) },
     diagnostic: null,

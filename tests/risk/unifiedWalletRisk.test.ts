@@ -2797,7 +2797,7 @@ describe("calculateUnifiedWalletRisk", () => {
   });
 
   describe("fixture-based observed address style calibration", () => {
-    it("keeps TLh-like historical transit HIGH/DECLINE through the Deep pattern floor", () => {
+    it("keeps TLh-like historical transit as bounded collector review context", () => {
       const transitProfile = operationalFlowProfile();
       const result = calculateUnifiedWalletRisk({
         address,
@@ -2811,14 +2811,14 @@ describe("calculateUnifiedWalletRisk", () => {
         eligible: true,
         score: 81
       });
-      expect(result.patternFloor).toBe(81);
-      expect(result.finalScore).toBe(81);
-      expect(result.finalLevel).toBe("HIGH");
-      expect(result.finalDecision).toBe("DECLINE");
+      expect(result.patternFloor).toBe(0);
+      expect(result.finalScore).toBe(35);
+      expect(result.finalLevel).toBe("MEDIUM");
+      expect(result.finalDecision).toBe("REVIEW");
       expect(result.scoreBreakdown.activeAnchor).toMatchObject({
-        code: "historical_transit_pattern",
-        score: 81,
-        source: "pattern_floor"
+        code: "collector_transit_behavior",
+        score: 35,
+        source: "deep_research"
       });
     });
 
@@ -2890,7 +2890,7 @@ describe("calculateUnifiedWalletRisk", () => {
     });
   });
 
-  it("raises TLh-like historical transit behavior to HIGH without hard evidence", () => {
+  it("caps TLh-like historical transit behavior at collector review without hard evidence", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(45),
@@ -2898,14 +2898,13 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.hardEvidenceFloor).toBe(0);
-    expect(result.patternFloor).toBeGreaterThanOrEqual(70);
-    expect(result.finalScore).toBeGreaterThanOrEqual(70);
-    expect(result.finalScore).toBeLessThan(85);
-    expect(result.finalLevel).toBe("HIGH");
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.patternFloor).toBe(0);
+    expect(result.finalScore).toBe(35);
+    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.finalDecision).toBe("REVIEW");
   });
 
-  it("uses profile historicalTransitScore for pattern floor and falls back for legacy profiles", () => {
+  it("keeps fresh and legacy historical transit profiles at the collector cap", () => {
     const fresh = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(25),
@@ -2939,12 +2938,13 @@ describe("calculateUnifiedWalletRisk", () => {
       deepReport: deepReport({ operationalFlowProfiles: [legacyProfile] })
     });
 
-    expect(fresh.patternFloor).toBe(82);
+    expect(fresh.patternFloor).toBe(0);
     expect(fresh.scoreBreakdown.activeAnchor).toMatchObject({
-      code: "historical_transit_pattern",
-      score: 82
+      code: "collector_transit_behavior",
+      score: 35
     });
-    expect(legacy.patternFloor).toBe(81);
+    expect(legacy.patternFloor).toBe(0);
+    expect(legacy.finalScore).toBe(35);
   });
 
   it("does not apply stale historical transit storage when raw fields are ineligible", () => {
@@ -3005,7 +3005,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeLessThan(60);
   });
 
-  it("caps stored historical transit score to the recalculated score", () => {
+  it("keeps stored historical transit score as bounded collector context", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(25),
@@ -3028,10 +3028,10 @@ describe("calculateUnifiedWalletRisk", () => {
       })
     });
 
-    expect(result.patternFloor).toBe(81);
+    expect(result.patternFloor).toBe(0);
     expect(result.scoreBreakdown.activeAnchor).toMatchObject({
-      code: "historical_transit_pattern",
-      score: 81
+      code: "collector_transit_behavior",
+      score: 35
     });
   });
 
@@ -3043,7 +3043,7 @@ describe("calculateUnifiedWalletRisk", () => {
       whereReport: whereReport(25)
     });
 
-    expect(result.finalScore).toBe(81);
+    expect(result.finalScore).toBe(35);
     expect(result.scoreBreakdown.contextScore).toBe(result.contextScore);
     expect(result.scoreBreakdown.weightedLayerScore).toBe(result.weightedLayerScore);
     expect(result.scoreBreakdown).toMatchObject({
@@ -3053,13 +3053,13 @@ describe("calculateUnifiedWalletRisk", () => {
         hardEvidence: 0,
         policy: 0,
         assetContinuation: 0,
-        pattern: 81,
+        pattern: 0,
         coverage: 0
       },
       activeAnchor: {
-        code: "historical_transit_pattern",
-        score: 81,
-        source: "pattern_floor"
+        code: "collector_transit_behavior",
+        score: 35,
+        source: "deep_research"
       },
       noHardEvidenceCriticalCap: {
         applied: false,
@@ -3068,7 +3068,7 @@ describe("calculateUnifiedWalletRisk", () => {
     });
   });
 
-  it("caps historical transit pattern floors below CRITICAL without hard evidence", () => {
+  it("keeps high-volume historical transit at collector review without hard evidence", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(0),
@@ -3076,9 +3076,10 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.hardEvidenceFloor).toBe(0);
-    expect(result.patternFloor).toBeLessThan(85);
-    expect(result.finalScore).toBeLessThan(85);
-    expect(result.finalLevel).toBe("HIGH");
+    expect(result.patternFloor).toBe(0);
+    expect(result.finalScore).toBe(35);
+    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.finalDecision).toBe("REVIEW");
   });
 
   it("does not apply historical transit pattern floor without destination-risk mix", () => {

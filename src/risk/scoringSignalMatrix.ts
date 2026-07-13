@@ -52,6 +52,7 @@ export type MatrixEvidenceAuthority =
   | { kind: "pattern"; decisionEligibility: "can_decline" | "review_only"; coverageDependency: MatrixCoverageDependency }
   | { kind: "context" }
   | { kind: "coverage"; coverageDependency: MatrixCoverageDependency }
+  | { kind: "limitation"; coverageDependency: MatrixCoverageDependency }
   | { kind: "clean"; coverageDependency: MatrixCoverageDependency };
 
 export type MatrixCandidateContext = {
@@ -159,7 +160,7 @@ function classifyCandidate(candidate: MatrixCandidate): ClassifiedMatrixCandidat
             decisionEligibility: candidate.authority.decisionEligibility,
             coverageDependency: candidate.authority.coverageDependency
           }
-        : candidate.authority.kind === "coverage"
+      : candidate.authority.kind === "coverage" || candidate.authority.kind === "limitation"
           ? {
               evidenceClass: "coverage" as const,
               proofLevel: "coverage" as const,
@@ -245,8 +246,127 @@ function applyRowCaps(candidate: ClassifiedMatrixCandidate): ClassifiedMatrixCan
 }
 
 function episodeKey(candidate: ClassifiedMatrixCandidate): string {
-  if (candidate.evidenceEpisodeIds.length > 0) return [...candidate.evidenceEpisodeIds].sort().join("|");
+  if ((candidate.evidenceEpisodeIds?.length ?? 0) > 0) return [...candidate.evidenceEpisodeIds].sort().join("|");
   return [...candidate.evidenceIds].sort().join("|");
+}
+
+function normalizedEpisodeIds(candidate: ClassifiedMatrixCandidate): string[] | null {
+  if (!Array.isArray(candidate.evidenceEpisodeIds) || candidate.evidenceEpisodeIds.length === 0) return null;
+  const normalized = candidate.evidenceEpisodeIds.map((id) => id.trim());
+  if (normalized.some((id) => id.length === 0)) return null;
+  return [...new Set(normalized)].sort((left, right) => left.localeCompare(right));
+}
+
+function isCollectorCandidate(candidate: ClassifiedMatrixCandidate): boolean {
+  return candidate.atomicSignals.includes("collector_transit_behavior");
+}
+
+function compareStringArrays(left: string[], right: string[]): number {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const comparison = left[index].localeCompare(right[index]);
+    if (comparison !== 0) return comparison;
+  }
+  return left.length - right.length;
+}
+
+function sortedUnique(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function canonicalCandidateIdentity(candidate: ClassifiedMatrixCandidate): string {
+  const authority = candidate.authority.kind === "exact_hard"
+    ? [candidate.authority.kind, candidate.authority.proofSource]
+    : candidate.authority.kind === "policy" || candidate.authority.kind === "pattern"
+      ? [
+          candidate.authority.kind,
+          candidate.authority.decisionEligibility,
+          candidate.authority.coverageDependency
+        ]
+      : candidate.authority.kind === "coverage" ||
+          candidate.authority.kind === "limitation" ||
+          candidate.authority.kind === "clean"
+        ? [candidate.authority.kind, candidate.authority.coverageDependency]
+        : [candidate.authority.kind];
+  return JSON.stringify([
+    candidate.row,
+    candidate.actionUnit,
+    candidate.score,
+    sortedUnique(candidate.atomicSignals),
+    sortedUnique(candidate.modifiers),
+    sortedUnique(candidate.caps),
+    sortedUnique(candidate.dampeners),
+    sortedUnique(candidate.caveats),
+    authority,
+    candidate.subject.decisionScope,
+    candidate.subject.address,
+    candidate.subject.txHash
+  ]);
+}
+
+function composeCollectorCandidates(
+  candidates: ClassifiedMatrixCandidate[],
+  context: MatrixCandidateContext
+): ClassifiedMatrixCandidate[] {
+  if (context.requiredCoverage === "none") return [];
+  const validPairs: Array<{
+    collector: ClassifiedMatrixCandidate;
+    independent: ClassifiedMatrixCandidate;
+    collectorEpisodes: string[];
+    independentEpisodes: string[];
+    collectorEvidence: string[];
+    independentEvidence: string[];
+  }> = [];
+  for (const collector of candidates.filter(isCollectorCandidate)) {
+    const collectorEpisodes = normalizedEpisodeIds(collector);
+    if (collectorEpisodes === null) continue;
+    const collectorEpisodeSet = new Set(collectorEpisodes);
+    for (const independent of candidates) {
+      if (
+        independent === collector ||
+        isCollectorCandidate(independent) ||
+        independent.evidenceClass === "coverage" ||
+        independent.evidenceClass === "clean"
+      ) continue;
+      const independentEpisodes = normalizedEpisodeIds(independent);
+      if (independentEpisodes === null || independentEpisodes.some((id) => collectorEpisodeSet.has(id))) continue;
+      validPairs.push({
+        collector,
+        independent,
+        collectorEpisodes,
+        independentEpisodes,
+        collectorEvidence: sortedUnique(collector.evidenceIds),
+        independentEvidence: sortedUnique(independent.evidenceIds)
+      });
+    }
+  }
+  const selected = validPairs.sort((left, right) =>
+    compareStringArrays(left.collectorEpisodes, right.collectorEpisodes) ||
+    compareStringArrays(left.independentEpisodes, right.independentEpisodes) ||
+    compareStringArrays(left.collectorEvidence, right.collectorEvidence) ||
+    compareStringArrays(left.independentEvidence, right.independentEvidence) ||
+    canonicalCandidateIdentity(left.collector).localeCompare(canonicalCandidateIdentity(right.collector)) ||
+    canonicalCandidateIdentity(left.independent).localeCompare(canonicalCandidateIdentity(right.independent))
+  )[0];
+  if (!selected) return [];
+  return [classifyCandidate({
+    row: "behavior_only_prior",
+    actionUnit: selected.collector.actionUnit,
+    score: 55,
+    evidenceIds: sortedUnique([...selected.collectorEvidence, ...selected.independentEvidence]),
+    evidenceEpisodeIds: sortedUnique([...selected.collectorEpisodes, ...selected.independentEpisodes]),
+    atomicSignals: ["collector_plus_independent_signal"],
+    modifiers: [],
+    caps: [],
+    dampeners: [],
+    caveats: sortedUnique([...selected.collector.caveats, ...selected.independent.caveats]),
+    subject: selected.collector.subject,
+    authority: {
+      kind: "pattern",
+      decisionEligibility: "review_only",
+      coverageDependency: context.requiredCoverage
+    }
+  })];
 }
 
 function betterCandidate(
@@ -334,7 +454,7 @@ export function scoreMatrixCandidates(
     throw new Error("matrix candidate subject does not match scoring context");
   }
   const capped = classified.map(applyRowCaps);
-  const deduped = dedupeByEpisode(capped);
+  const deduped = dedupeByEpisode([...capped, ...composeCollectorCandidates(capped, context)]);
   const effectiveCandidates = deduped.length > 0
     ? deduped
     : [winningCandidate([], context)];

@@ -603,6 +603,127 @@ describe("ScoreAnchorV2 acceptance contract", () => {
     } as any));
   });
 
+  it.each([
+    {
+      label: "wallet provenance",
+      mode: "unified",
+      decisionScope: "wallet_unified",
+      actionUnit: "wallet",
+      subjectTxHash: null,
+      requiredCoverage: "wallet_provenance"
+    },
+    {
+      label: "deposit provenance",
+      mode: "incoming",
+      decisionScope: "incoming_unified",
+      actionUnit: "incoming_deposit",
+      subjectTxHash: "tx:collector-incoming",
+      requiredCoverage: "deposit_provenance"
+    }
+  ] as const)("[AC-02][REQ-15][ANCHOR-COLLECTOR] publishes composed 55 REVIEW with required coverage for $label", async ({
+    mode,
+    decisionScope,
+    actionUnit,
+    subjectTxHash,
+    requiredCoverage
+  }) => {
+    const [{ scoreMatrixCandidates }, { resolveFinalDisposition }, {
+      assembleFreshScoreResultV2,
+      materializeFreshScoreBindingV2
+    }] = await Promise.all([
+      import("../../src/risk/scoringSignalMatrix"),
+      import("../../src/risk/finalDisposition"),
+      import("../../src/risk/scoreAnchorV2")
+    ]);
+    const subject = { decisionScope, address: SUBJECT, txHash: subjectTxHash };
+    const matrix = scoreMatrixCandidates([
+      matrixCandidate({
+        row: "behavior_only_prior",
+        actionUnit,
+        score: 35,
+        evidenceIds: ["evidence:collector"],
+        evidenceEpisodeIds: ["episode:collector"],
+        atomicSignals: ["collector_transit_behavior"],
+        modifiers: [],
+        caps: ["collector_only_cap_35"],
+        subject,
+        authority: { kind: "context" }
+      }),
+      matrixCandidate({
+        row: "counterparty_context",
+        actionUnit,
+        score: 30,
+        evidenceIds: ["evidence:independent"],
+        evidenceEpisodeIds: ["episode:independent"],
+        atomicSignals: ["deep_counterparty_risk_context"],
+        modifiers: [],
+        caps: [],
+        subject,
+        authority: { kind: "context" }
+      })
+    ] as any, {
+      decisionScope,
+      subjectAddress: SUBJECT,
+      subjectTxHash,
+      requiredCoverage
+    });
+    expect(matrix.winningCandidate).toMatchObject({
+      row: "behavior_only_prior",
+      score: 55,
+      evidenceClass: "pattern",
+      proofLevel: "corroborated_pattern",
+      decisionEligibility: "review_only",
+      coverageDependency: requiredCoverage,
+      atomicSignals: ["collector_plus_independent_signal"],
+      authority: {
+        kind: "pattern",
+        decisionEligibility: "review_only",
+        coverageDependency: requiredCoverage
+      }
+    });
+
+    const disposition = resolveFinalDisposition({
+      subject,
+      matrixScore: matrix,
+      coverage: { required: "valid", overall: "complete", caveats: [] },
+      observedContextScore: 55
+    });
+    const binding = materializeFreshScoreBindingV2({
+      mode,
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix
+    });
+    expect(binding).toMatchObject({
+      diagnostic: null,
+      anchor: {
+        policyVersion: "scoring-signal-matrix-v3",
+        score: 55,
+        decision: "REVIEW",
+        matrixRow: "behavior_only_prior",
+        evidenceClass: "pattern",
+        proofLevel: "strong",
+        authority: "deterministic_pattern",
+        coverageDependency: "required"
+      }
+    });
+    expect(assembleFreshScoreResultV2({
+      mode,
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix,
+      evidence: binding.evidence,
+      facts: binding.facts,
+      activeAnchors: binding.anchor ? [binding.anchor] : []
+    })).toMatchObject({
+      decision: "REVIEW",
+      finalScore: 55,
+      scoreValid: true,
+      scoreAnchorDiagnostic: null,
+      scoreAnchorV2: { coverageDependency: "required" }
+    });
+  });
+
   it("[REQ-04][REQ-15][ANCHOR-AUTHORITY] forbids DECLINE for context coverage or limitation rows", async () => {
     const { validateScoreAnchorV2 } = await import("../../src/risk/scoreAnchorV2");
     const cases = [

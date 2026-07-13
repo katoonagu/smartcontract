@@ -290,6 +290,82 @@ describe("collector remediation acceptance contract", () => {
       })
     ], matrixContext));
   });
+
+  it("[REQ-16][COLLECTOR] selects one permutation-invariant canonical composite", async () => {
+    const [{ scoreMatrixCandidates }, { resolveFinalDisposition }, { materializeFreshScoreBindingV2 }] = await Promise.all([
+      import("../../src/risk/scoringSignalMatrix"),
+      import("../../src/risk/finalDisposition"),
+      import("../../src/risk/scoreAnchorV2")
+    ]);
+    const primaryCollector = collectorCandidate({
+      evidenceIds: ["evidence:collector-z", "evidence:collector-a"],
+      evidenceEpisodeIds: ["episode:A2", "episode:A1"]
+    });
+    const secondaryCollector = collectorCandidate({
+      evidenceIds: ["evidence:collector-secondary"],
+      evidenceEpisodeIds: ["episode:D"]
+    });
+    const primaryIndependent = matrixCandidate({
+      evidenceIds: ["evidence:independent-z", "evidence:independent-a"],
+      evidenceEpisodeIds: ["episode:B"]
+    });
+    const secondaryIndependent = matrixCandidate({
+      evidenceIds: ["evidence:independent-secondary"],
+      evidenceEpisodeIds: ["episode:C"]
+    });
+    const permutations = [
+      [primaryCollector, secondaryCollector, primaryIndependent, secondaryIndependent],
+      [secondaryIndependent, primaryIndependent, secondaryCollector, primaryCollector],
+      [primaryIndependent, primaryCollector, secondaryIndependent, secondaryCollector],
+      [secondaryCollector, secondaryIndependent, primaryCollector, primaryIndependent]
+    ];
+    const results = permutations.map((candidates) => scoreMatrixCandidates(candidates, matrixContext));
+    const anchors = results.map((matrix) => materializeFreshScoreBindingV2({
+      mode: "unified",
+      subjectAddress: SUBJECT,
+      disposition: resolveFinalDisposition({
+        subject: {
+          decisionScope: matrixContext.decisionScope,
+          address: SUBJECT,
+          txHash: null
+        },
+        matrixScore: matrix,
+        coverage: { required: "valid", overall: "complete", caveats: [] },
+        observedContextScore: 55
+      }),
+      matrix
+    }).anchor);
+    const expectedEvidenceIds = [
+      "evidence:collector-a",
+      "evidence:collector-z",
+      "evidence:independent-a",
+      "evidence:independent-z"
+    ];
+    const expectedEpisodeIds = ["episode:A1", "episode:A2", "episode:B"];
+
+    for (const result of results) {
+      expect(result.winningCandidate).toEqual(results[0].winningCandidate);
+      expect(result.winningCandidate).toMatchObject({
+        score: 55,
+        atomicSignals: ["collector_plus_independent_signal"],
+        evidenceIds: expectedEvidenceIds,
+        evidenceEpisodeIds: expectedEpisodeIds
+      });
+      expect(result.riskVector.behavior_only_prior?.filter((candidate) =>
+        candidate.atomicSignals.includes("collector_plus_independent_signal")
+      )).toHaveLength(1);
+    }
+    for (const anchor of anchors) {
+      expect(anchor).toEqual(anchors[0]);
+      expect(anchor).toMatchObject({
+        score: 55,
+        decision: "REVIEW",
+        matrixRow: "behavior_only_prior",
+        evidenceClass: "pattern",
+        coverageDependency: "required"
+      });
+    }
+  });
 });
 
 describe("USDD PSM remediation acceptance contract", () => {

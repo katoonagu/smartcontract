@@ -586,22 +586,15 @@ function deepCandidates(
       : calculatedBreakdown.score;
     const score = Math.min(calculatedBreakdown.score, storedScore, storedBreakdownScore);
     if (!calculatedBreakdown.eligible || score < 60) continue;
-    const walletPattern = incomingTxHash === null;
-    candidates.push(candidate(context, walletPattern
-      ? {
-          kind: "pattern",
-          decisionEligibility: "can_decline",
-          coverageDependency: context.requiredCoverage
-        }
-      : { kind: "context" }, {
-      row: walletPattern ? "service_linked_pattern" : "behavior_only_prior",
+    candidates.push(candidate(context, { kind: "context" }, {
+      row: "behavior_only_prior",
       actionUnit: "wallet",
-      score: walletPattern ? Math.min(84, score) : contextScore(score),
+      score: 35,
       evidenceIds: [`operational_flow:${profile.subjectAddress}`],
       evidenceEpisodeIds: [`operational_flow:${profile.subjectAddress}`],
-      atomicSignals: ["historical_transit_pattern"],
-      modifiers: walletPattern ? ["service_anchor"] : [],
-      caps: [],
+      atomicSignals: ["collector_transit_behavior"],
+      modifiers: [],
+      caps: ["collector_only_cap_35"],
       dampeners: [],
       caveats: profile.features.map((feature) => feature.code)
     }));
