@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-13
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -8,6 +8,8 @@ code_refs:
   - src/monitor/addressPoisoningWorker.ts
   - src/storage/repositories.ts
   - src/tron/tronClient.ts
+  - src/approvals/allowanceState.ts
+  - src/storage/schemaMigrations.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
 ---
@@ -203,3 +205,52 @@ Missing, contradictory, mixed, or non-progressing pagination stays partial.
 Provider risk labels are context, not transaction validity: a confirmed,
 successful, non-reverted official-USDT relationship still counts, with the raw
 flag preserved in evidence.
+
+## 2026-07-13: Legacy Or Event Data Does Not Create Current Authority
+
+Agent mistake:
+
+An old field or approval event was treated as proof of the current on-chain
+allowance.
+
+Correct rule:
+
+Legacy/event data can preserve history, but cannot imply current active, zero,
+or unlimited allowance. Only a fresh, subject-bound direct contract-call result
+can establish current authority. A failed or expired result is non-authoritative.
+
+## 2026-07-13: Database-Written Time Uses The Database Clock
+
+Agent mistake:
+
+Application time was mixed with database time for a causal state transition,
+which could make freshness ordering depend on host clock skew.
+
+Correct rule:
+
+Use the database clock for database-authored transition timestamps. Validate
+causal ordering and freshness from one clock domain.
+
+## 2026-07-13: State The Scope Of Inspected Evidence
+
+Agent mistake:
+
+A bounded selected slice was described as if it represented the wallet's full
+history.
+
+Correct rule:
+
+Persist and name the inspected scope, available denominator when known,
+selected facts, exclusions, and limitations. Unknown legacy denominators stay
+unknown.
+
+## 2026-07-13: Bind Evidence To An Exact Event Identity
+
+Agent mistake:
+
+Similar addresses, amounts, or labels were enough to attach a fact to a route.
+
+Correct rule:
+
+Evidence that drives a route or state must bind to the exact event identity and
+subject. Address labels and amount similarity are context, not causal proof.

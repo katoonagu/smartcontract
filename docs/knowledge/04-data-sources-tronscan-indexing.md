@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-13
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -15,6 +15,10 @@ code_refs:
   - src/forensics/localTronUsdtIndex.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/incomingDepositJob.ts
+  - src/forensics/forensicCoverageV2.ts
+  - src/forensics/recentFlowProvenanceSelection.ts
+  - src/forensics/usddPsmRouteObservation.ts
+  - src/approvals/allowanceState.ts
   - src/storage/repositories.ts
   - src/index.ts
   - src/config.ts
@@ -43,6 +47,40 @@ supersedes:
 # TronScan Data And Indexing
 
 ## Current Behavior
+
+### Plan 1 Candidate: Typed Coverage And Data Foundations
+
+The Plan 1 candidate adds `ForensicCoverageV2` to Where, Incoming, and Deep.
+It keeps the checked scope, available and selected inbound counts, exclusions,
+selected/traced/unresolved raw amounts, derived shares, limitations, and
+completeness together. Counts and amounts reconcile by construction. Shares
+are derived from raw integer amounts to four decimal places. When the available
+denominator is not defensible, it stays `null`; legacy data is not promoted to
+complete coverage.
+
+For a wallet below the low-balance threshold, Where inspects the five newest
+principal USDT transfers. Exact economic-role resolution happens before the
+five-transfer slice: only an exact `tron_gasfree` + `service_fee` edge is
+excluded. The fee remains in gross transfer and debit facts. GasFree principal
+remains eligible. The existing large-outgoing-anchor path is preserved.
+
+The candidate also records exact USDD PSM route observations for one- or
+two-hop routes through the authoritative USDT reserve
+`TSUYvQ5tdd3DijCD1uGunGLpftHuSZ12sQ`. A public label alone is insufficient;
+service identity, direction, selected-event binding, amount continuity, and
+evidence identifiers are saved separately. These observations are data only:
+Plan 1 does not apply a USDD PSM score modifier or produce user-facing copy.
+
+Allowance authority is also data-only in Plan 1. An approval event records
+that an approval was observed, but does not prove the current allowance. Only
+a supplied fresh result of a direct official-USDT `allowance(owner, spender)`
+call may be stored as `confirmed_active` or `confirmed_zero`. Failed and stale
+states are non-authoritative. The candidate validates a 15-minute freshness
+window and causal timestamps, but does not perform the network call or change
+scoring.
+
+All behavior in this section is release-candidate behavior. Production stays on
+the previous runtime/schema until Plan 5.
 
 The project uses TronScan as the primary source for TRON USDT transfer history
 in this phase. There is no manual CSV product workflow.

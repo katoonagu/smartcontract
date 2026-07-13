@@ -1,9 +1,15 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-13
 owner_area: docs
 code_refs:
   - src/index.ts
+  - src/runtime/startupSchemaGate.ts
+  - src/storage/schemaMigrations.ts
+  - src/forensics/forensicCoverageV2.ts
+  - src/forensics/recentFlowProvenanceSelection.ts
+  - src/forensics/usddPsmRouteObservation.ts
+  - src/approvals/allowanceState.ts
   - src/forensics/serviceClassifier.ts
   - src/forensics/gasFreeSettlement.ts
   - src/forensics/directHardEvidence.ts
@@ -50,6 +56,36 @@ of these decisions, update this file in the same work.
 - `Where is money` explains where relevant wallet funds came from.
 - `Incoming deposit` explains one concrete deposit.
 - `DeepCheck` builds a wider forensic profile.
+
+## 2026-07-13 Plan 1 Remediation Candidate
+
+- `ForensicCoverageV2` is the candidate data contract for Where, Incoming, and
+  Deep. Available, selected, and excluded counts must reconcile; amount shares
+  require exact raw selected and traced amounts. Missing legacy denominators
+  stay unknown rather than becoming zero or complete.
+- Low-balance Where inspects the five newest principal USDT transfers. Exact
+  `tron_gasfree` `service_fee` edges are resolved and excluded before the slice;
+  they remain visible in gross/debit facts. GasFree principal remains ordinary
+  traceable principal.
+- USDD PSM support in Plan 1 stores exact one- or two-hop route observations
+  through the authoritative reserve. It does not apply modifiers, change
+  scoring, or generate Telegram copy.
+- Approval events are observations, not current allowance authority. A current
+  authoritative state requires a supplied direct official-USDT allowance
+  result with strict owner/spender/token binding and a 15-minute freshness
+  window. Failed or stale reads cannot imply active, zero, or unlimited state.
+  Plan 1 supplies validation and persistence only; it does not make the network
+  call and does not change risk scoring.
+- Schema migration receipts begin at version 032. Versions 001–031 remain
+  legacy/untracked. Candidate startup refuses to start providers, workers, or
+  Telegram unless receipt 032, its migration-byte SHA-256, schema structure,
+  and persisted allowance shapes verify exactly.
+- This branch is a release candidate only. Production remains on the previous
+  runtime and schema 031 until Plan 5. Plan 1 does not deploy, restart Telegram,
+  or switch the production version label.
+- Plans 2–5 remain open and independent: scoring and contract semantics;
+  runtime and delivery; unified Telegram UX; and cross-plan acceptance/release.
+  Address Poisoning remains a separate completed track and is unchanged here.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 

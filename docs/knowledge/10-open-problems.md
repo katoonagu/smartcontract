@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-13
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -19,6 +19,10 @@ code_refs:
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
   - src/storage/repositories.ts
+  - src/storage/schemaMigrations.ts
+  - src/runtime/startupSchemaGate.ts
+  - src/forensics/forensicCoverageV2.ts
+  - src/approvals/allowanceState.ts
   - src/admin/adminConsole.ts
   - src/admin/forensicsGraph.ts
   - src/admin/adminServer.ts
@@ -44,6 +48,28 @@ supersedes:
 # Open Problems
 
 ## Current Behavior
+
+### Plan 1 Candidate Is Not A Production Release
+
+Plan 1 closes the candidate data foundation for CoverageV2, low-balance
+latest-five selection, exact GasFree fee exclusion, allowance-state storage,
+exact USDD PSM route observations, and verifiable schema 032 receipts. It is not
+deployed. Production must remain on the prior runtime and schema 031 until the
+Plan 5 release gate.
+
+The following work remains open:
+
+- Plan 2: scoring and contract semantics, including any approved USDD PSM
+  modifier and allowance-risk interpretation;
+- Plan 3: runtime and delivery behavior;
+- Plan 4: unified Telegram UX;
+- Plan 5: cross-plan acceptance, migration rehearsal, release, and production
+  version verification.
+
+Plan 1 does not fetch `allowance(owner, spender)` from the network. Until a
+later causal writer supplies a fresh direct-call result, an approval remains an
+event observation and current state remains stale/unknown. Plan 1 also does not
+turn a USDD PSM observation into a score or user-facing explanation.
 
 - Inline targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`.

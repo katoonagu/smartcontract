@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-13
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
@@ -11,6 +11,7 @@ code_refs:
   - src/forensics/flowCounterpartyProfile.ts
   - src/forensics/inboundProvenance.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/forensicCoverageV2.ts
   - src/forensics/deepSecondLayerRelationship.ts
   - src/forensics/deepSecondLayerRefresh.ts
   - src/runtime/deepForensicRuntimeOptions.ts
@@ -45,6 +46,20 @@ It does not replace `Where is money`, because it does not always prove exact
 source of funds for a specific amount.
 
 ## Current Behavior
+
+### Plan 1 Candidate: Deep Coverage Count And Limits
+
+Fresh Deep candidate reports persist `ForensicCoverageV2` with
+`scope=deep_history`. The available inbound count is exact only when provider
+coverage is authoritative, local materialization is exact, and the materialized
+edge count reconciles with the authoritative transfer count. Otherwise the
+available denominator is `null` and the report stores a provider-history or
+local-materialization limitation. Deep does not invent amount shares for this
+count-based coverage.
+
+Legacy Deep reports without a valid saved CoverageV2 object adapt to `null`.
+They are not reclassified as complete from older counters. This is candidate
+behavior only; production remains on the previous runtime until Plan 5.
 
 DeepCheck scores non-boundary contracts as ordinary counterparties. A
 `service` or `unknown_contract` category alone does not zero direct or

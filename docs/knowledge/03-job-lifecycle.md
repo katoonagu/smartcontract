@@ -1,9 +1,11 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-13
 owner_area: forensics
 code_refs:
   - src/index.ts
+  - src/runtime/startupSchemaGate.ts
+  - src/storage/schemaMigrations.ts
   - src/storage/repositories.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
@@ -28,6 +30,23 @@ supersedes:
 # Job Lifecycle
 
 ## Current Behavior
+
+### Plan 1 Candidate: Schema 032 Startup Gate
+
+The Plan 1 candidate does not start providers, Telegram, or background workers
+until schema 032 is verified. Startup fails closed when the receipt is missing,
+the filename or SHA-256 checksum differs from the migration bytes, or the
+required columns, constraints, index, and allowance-state shapes do not match.
+
+Migration receipts are authoritative from version 032 onward. Migrations
+001–031 remain legacy and untracked; the new migrator does not invent receipts
+for them. Schema 032 is applied and verified transactionally under an advisory
+lock. Later tracked migrations must first verify the required 032 receipt and
+structure.
+
+This is candidate behavior only. Production remains on the previous runtime
+and schema 031 until the cross-plan release in Plan 5. Plan 1 must not apply
+schema 032 to production or restart the production bot.
 
 Forensic jobs are stored with these repository statuses:
 

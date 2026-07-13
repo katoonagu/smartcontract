@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-11
+last_verified: 2026-07-13
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -10,6 +10,9 @@ code_refs:
   - src/forensics/moneyOriginTrace.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/incomingDepositJob.ts
+  - src/forensics/forensicCoverageV2.ts
+  - src/forensics/recentFlowProvenanceSelection.ts
+  - src/forensics/usddPsmRouteObservation.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/bot/wherePreliminaryNarrative.ts
@@ -48,6 +51,32 @@ Do not merge these modes. They use similar provenance logic but answer
 different user questions.
 
 ## Current Behavior
+
+### Plan 1 Candidate: Mode-Correct Coverage
+
+Fresh Where candidate reports persist `ForensicCoverageV2` for the selected
+scope. Current-balance, requested-amount, and recent-flow checks therefore keep
+their own denominator instead of reusing a generic transaction count. The
+low-balance recent-flow scope uses the five newest principal transfers after
+exact GasFree service fees have been resolved and excluded. Excluded fees and
+other proven non-selected inbound transfers remain explicit coverage facts.
+
+Fresh Incoming candidate reports use the concrete deposit as the
+`transaction_seed`: one available and one selected inbound transfer. A traced
+amount is published only when saved route and funding evidence binds exactly to
+that deposit. Provider and local-materialization failures stay typed
+limitations. A legacy Incoming report returns no CoverageV2 adapter result when
+the deposit seed or exact denominator is unavailable.
+
+Legacy Where reports remain readable, but their missing available denominator,
+traced amount, shares, and excluded count stay `null` and completeness remains
+`unknown`. This compatibility path does not silently claim that older checks
+covered all available transfers.
+
+Where candidate reports may also persist exact one- or two-hop USDD PSM route
+observations. They identify the route and evidence only; Plan 1 does not change
+the score, decision, or Telegram wording. Production remains on the previous
+runtime until Plan 5.
 
 When a matching DeepCheck job is queued or running, Telegram renders ordinary
 Where as `Откуда деньги — предварительный результат` / `Where Is Money —
