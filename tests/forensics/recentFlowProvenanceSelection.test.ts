@@ -413,7 +413,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
   );
 
   it.each([
-    { maxCandidates: -1, expectedTransfers: 10, expectedAvailable: 12, expectedResolverCalls: 13 },
+    { maxCandidates: -1, expectedTransfers: 10, expectedAvailable: 10, expectedResolverCalls: 11 },
     { maxCandidates: 12, expectedTransfers: 12, expectedAvailable: 12, expectedResolverCalls: 13 }
   ])(
     "[REQ-30][AC-10] applies normalized maxCandidates=$maxCandidates to large-outgoing funding candidates",
@@ -522,11 +522,11 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     });
 
     expect(result.transfers.map((item) => item.txHash)).toEqual(["large-scan-strong-funding"]);
-    expect(result.availableInboundTxCount).toBe(11);
-    expect(resolveEconomicContext).toHaveBeenCalledTimes(12);
+    expect(result.availableInboundTxCount).toBe(1);
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(2);
     expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).not.toContain("large-scan-unchecked-tail");
     const exclusionEvidenceIds = result.coverageExclusions?.flatMap((item) => item.evidenceIds) ?? [];
-    expect(exclusionEvidenceIds).toEqual(expect.arrayContaining(dust.map((item) => item.id)));
+    expect(exclusionEvidenceIds).toEqual([]);
     expect(exclusionEvidenceIds).not.toContain("large-scan-unchecked-tail");
     expect(() => buildForensicCoverageV2({
       scope: "recent_flow",
@@ -746,16 +746,16 @@ describe("selectRecentFlowProvenanceTransfers", () => {
       resolveEconomicContext
     });
 
-    expect(resolveEconomicContext).toHaveBeenCalledTimes(11);
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(2);
     expect(result.transfers.map((item) => item.txHash)).toEqual(["tail-funding-row-12"]);
-    expect(result.availableInboundTxCount).toBe(11);
+    expect(result.availableInboundTxCount).toBe(2);
     const exclusionEvidenceIds = result.coverageExclusions?.flatMap((item) => item.evidenceIds) ?? [];
     expect(exclusionEvidenceIds).toContain("tail-incoming-fee-row-11");
-    expect(exclusionEvidenceIds).toEqual(expect.arrayContaining(inspectedNoise.map((item) => item.id)));
+    expect(exclusionEvidenceIds).toEqual(["tail-incoming-fee-row-11"]);
     expect(exclusionEvidenceIds).not.toContain("tail-funding-row-12");
     expect(result.coverageExclusions
       ?.filter((item) => item.direction === "incoming")
-      .reduce((sum, item) => sum + item.txCount, 0)).toBe(10);
+      .reduce((sum, item) => sum + item.txCount, 0)).toBe(1);
     expect(() => buildForensicCoverageV2({
       scope: "recent_flow",
       availableInboundTxCount: result.availableInboundTxCount ?? null,
@@ -810,5 +810,87 @@ describe("selectRecentFlowProvenanceTransfers", () => {
 
     expect(result.transfers.map((item) => item.evidenceId)).toEqual(["duplicate-inspected-funding"]);
     expect(result.availableInboundTxCount).toBe(1);
+  });
+
+  it("[REQ-30][AC-10] hard-caps provider resolution for thousands of dust candidates", async () => {
+    const dust = Array.from({ length: 5_000 }, (_, index) => edge({
+      txHash: `stress-dust-${index}`,
+      from: `TStress${index}`,
+      to: subject,
+      amount: "1000000",
+      iso: new Date(Date.UTC(2026, 4, 5, 9, 59) - index * 1_000).toISOString()
+    }));
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item);
+
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "stress-anchor", from: subject, to: counterparty, amount: "10000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        ...dust
+      ],
+      maxCandidates: 10,
+      resolveEconomicContext
+    });
+
+    expect(resolveEconomicContext).toHaveBeenCalledTimes(11);
+    expect(result.transfers).toHaveLength(10);
+    expect(result.availableInboundTxCount).toBe(10);
+    expect(result.partial).toBe(true);
+    expect(result.notes.join(" ")).toContain("maxCandidates=10");
+  });
+
+  it("[REQ-02][REQ-30][AC-11] lets exact fees consume the bounded inspected scope", async () => {
+    const fee = (index: number) => ({
+      ...edge({
+        txHash: `bounded-displacement-fee-${index}`,
+        from: `TFeePayer${index}`,
+        to: subject,
+        amount: "1500000",
+        iso: `2026-05-05T09:5${9 - index}:00.000Z`
+      }),
+      economicProtocol: "tron_gasfree" as const,
+      economicRole: "service_fee" as const
+    });
+    const strongFunding = edge({
+      txHash: "bounded-displacement-strong",
+      from: "TStrongFunding",
+      to: subject,
+      amount: "2000000000",
+      iso: "2026-05-05T09:50:00.000Z"
+    });
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item);
+
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "bounded-displacement-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        fee(0),
+        fee(1),
+        strongFunding
+      ],
+      maxCandidates: 2,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers).toEqual([]);
+    expect(result.availableInboundTxCount).toBe(2);
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      direction: "incoming",
+      txCount: 2,
+      evidenceIds: ["bounded-displacement-fee-0", "bounded-displacement-fee-1"]
+    }));
+    expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).not.toContain("bounded-displacement-strong");
+    expect(result.partial).toBe(true);
+    expect(() => buildForensicCoverageV2({
+      scope: "recent_flow",
+      availableInboundTxCount: result.availableInboundTxCount ?? null,
+      selectedInboundTxCount: result.transfers.length,
+      selectedAmountRaw: result.selectedAmountRaw,
+      tracedAmountRaw: result.selectedAmountRaw,
+      exclusions: result.coverageExclusions ?? [],
+      limitations: []
+    })).not.toThrow();
   });
 });

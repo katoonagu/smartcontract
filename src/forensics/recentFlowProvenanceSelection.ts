@@ -14,6 +14,7 @@ export const LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW = (1_000n * USDT_DECIMALS).to
 const BASE_SIGNIFICANT_RAW = 1_000n * USDT_DECIMALS;
 const MAX_DYNAMIC_SIGNIFICANT_RAW = 10_000n * USDT_DECIMALS;
 const DEFAULT_MAX_CANDIDATES = 10;
+type FundingCandidate = ReturnType<typeof selectIncomingDepositFundingCandidates>["candidates"][number];
 
 export type SelectRecentFlowInput = {
   subjectAddress: string;
@@ -174,8 +175,10 @@ function emptySelection(
   };
 }
 
-function selectForOutgoingAnchor(input: SelectRecentFlowInput, anchorEdge: ForensicRouteEdge): BalanceFormingSelection {
-  const maxCandidates = input.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+function prioritizedFundingCandidates(
+  input: SelectRecentFlowInput,
+  anchorEdge: ForensicRouteEdge
+): FundingCandidate[] {
   const targetRaw = parseRaw(anchorEdge.amountRaw);
   const minSignificantRaw = dynamicSignificantThreshold(targetRaw);
   const selection = selectIncomingDepositFundingCandidates({
@@ -188,8 +191,19 @@ function selectForOutgoingAnchor(input: SelectRecentFlowInput, anchorEdge: Foren
   });
   const strongCandidates = selection.candidates.filter((item) => parseRaw(item.edge.amountRaw) >= minSignificantRaw);
   const strongSelectedRaw = strongCandidates.reduce((sum, item) => sum + parseRaw(item.usableAmountRaw), 0n);
-  const baseCandidates = strongSelectedRaw > 0n && ratio(strongSelectedRaw, targetRaw) >= 0.8 ? strongCandidates : selection.candidates;
-  const candidates = baseCandidates.slice(0, maxCandidates);
+  return strongSelectedRaw > 0n && ratio(strongSelectedRaw, targetRaw) >= 0.8
+    ? strongCandidates
+    : selection.candidates;
+}
+
+function selectForOutgoingAnchor(
+  input: SelectRecentFlowInput,
+  anchorEdge: ForensicRouteEdge,
+  inspectedCandidates?: FundingCandidate[]
+): BalanceFormingSelection {
+  const maxCandidates = input.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+  const targetRaw = parseRaw(anchorEdge.amountRaw);
+  const candidates = (inspectedCandidates ?? prioritizedFundingCandidates(input, anchorEdge)).slice(0, maxCandidates);
   const selectedAmountRaw = candidates.reduce((sum, item) => sum + parseRaw(item.usableAmountRaw), 0n);
   const coverageRatio = ratio(selectedAmountRaw, targetRaw);
 
@@ -222,6 +236,8 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
   principalSlice: ForensicRouteEdge[];
   exactFees: ForensicRouteEdge[];
   largeOutgoingAnchor: ForensicRouteEdge | null;
+  largeFundingCandidates: FundingCandidate[] | null;
+  largeFundingScopeTruncated: boolean;
 }> {
   const sortedEdges = input.edges
     .filter((edge) => involvesSubject(input.subjectAddress, edge))
@@ -259,30 +275,36 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
     }
   }
   if (largeOutgoingAnchor) {
-    const cashflowIds = new Set<string>();
-    const anchorTargetRaw = parseRaw(largeOutgoingAnchor.amountRaw);
-    let usableCoverageRaw = 0n;
-    let spendOverhang = 0n;
-    for (const edge of sortedEdges) {
-      if (usableCoverageRaw >= anchorTargetRaw) break;
-      if (edge.id === largeOutgoingAnchor.id) continue;
-      if (edge.timestamp.getTime() >= largeOutgoingAnchor.timestamp.getTime()) continue;
-      if (cashflowIds.has(edge.id)) continue;
-      cashflowIds.add(edge.id);
-      const resolved = await resolve(edge);
-      if (isGasFreeServiceFeeEdge(resolved)) continue;
-      const amountRaw = parseRaw(resolved.amountRaw);
-      if (resolved.fromAddress === input.subjectAddress) {
-        spendOverhang += amountRaw;
-        continue;
+    const prioritized = prioritizedFundingCandidates(input, largeOutgoingAnchor);
+    const oldestPrioritizedAt = prioritized.reduce<number | null>((oldest, item) => {
+      const timestamp = item.edge.timestamp.getTime();
+      return oldest === null || timestamp < oldest ? timestamp : oldest;
+    }, null);
+    const prioritizedIds = new Set(prioritized.map((item) => item.edge.id));
+    const scopedExactFees: ForensicRouteEdge[] = [];
+    if (oldestPrioritizedAt !== null) {
+      for (const edge of sortedEdges) {
+        const timestamp = edge.timestamp.getTime();
+        if (timestamp >= largeOutgoingAnchor.timestamp.getTime()) continue;
+        if (timestamp < oldestPrioritizedAt) break;
+        if (isGasFreeServiceFeeEdge(edge) && !prioritizedIds.has(edge.id)) scopedExactFees.push(edge);
       }
-      if (resolved.toAddress !== input.subjectAddress) continue;
-      const consumedRaw = spendOverhang > amountRaw ? amountRaw : spendOverhang;
-      spendOverhang -= consumedRaw;
-      const usableRaw = amountRaw - consumedRaw;
-      if (usableRaw <= 0n) continue;
-      const remainingRaw = anchorTargetRaw - usableCoverageRaw;
-      usableCoverageRaw += usableRaw > remainingRaw ? remainingRaw : usableRaw;
+    }
+    const candidateScope: Array<{ edge: ForensicRouteEdge; funding: FundingCandidate | null }> = [
+      ...scopedExactFees.map((edge) => ({ edge, funding: null })),
+      ...prioritized.map((funding) => ({ edge: funding.edge, funding }))
+    ];
+    const candidateIds = new Set<string>();
+    const inspectedFunding: FundingCandidate[] = [];
+    let inspectedSlots = 0;
+    for (const candidate of candidateScope) {
+      if (inspectedSlots >= maxCandidates) break;
+      if (candidateIds.has(candidate.edge.id)) continue;
+      candidateIds.add(candidate.edge.id);
+      inspectedSlots += 1;
+      const resolved = await resolve(candidate.edge);
+      if (isGasFreeServiceFeeEdge(resolved) || !candidate.funding) continue;
+      inspectedFunding.push({ ...candidate.funding, edge: resolved });
     }
     const inspectedIds = new Set(resolvedById.keys());
     const emittedIds = new Set<string>();
@@ -296,7 +318,9 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
       checkedEdges,
       principalSlice: [],
       exactFees,
-      largeOutgoingAnchor
+      largeOutgoingAnchor,
+      largeFundingCandidates: inspectedFunding,
+      largeFundingScopeTruncated: new Set(candidateScope.map((candidate) => candidate.edge.id)).size > inspectedSlots
     };
   }
 
@@ -310,7 +334,14 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
     principalSlice.push(resolved);
     if (principalSlice.length === 5) break;
   }
-  return { checkedEdges: resolvedEdges, principalSlice, exactFees, largeOutgoingAnchor: null };
+  return {
+    checkedEdges: resolvedEdges,
+    principalSlice,
+    exactFees,
+    largeOutgoingAnchor: null,
+    largeFundingCandidates: null,
+    largeFundingScopeTruncated: false
+  };
 }
 
 function selectFivePrincipal(
@@ -389,7 +420,8 @@ export async function selectRecentFlowProvenanceTransfers(
         maxCandidates,
         edges: resolved.checkedEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge))
       },
-      resolved.largeOutgoingAnchor
+      resolved.largeOutgoingAnchor,
+      resolved.largeFundingCandidates ?? []
     );
     const selectedEvidenceIds = new Set(selection.transfers.map((transfer) => transfer.evidenceId));
     const unselectedInbound = resolved.checkedEdges.filter((edge) =>
@@ -397,8 +429,16 @@ export async function selectRecentFlowProvenanceTransfers(
       !isGasFreeServiceFeeEdge(edge) &&
       !selectedEvidenceIds.has(edge.id)
     );
+    const coverageTruncated = resolved.largeFundingScopeTruncated && selection.coverageRatio < 1;
     return {
       ...selection,
+      partial: selection.partial || coverageTruncated,
+      dataScopeNote: coverageTruncated
+        ? "Low-balance recent-flow mode inspected a bounded prioritized funding scope; older candidates remain unchecked."
+        : selection.dataScopeNote,
+      notes: coverageTruncated
+        ? [...selection.notes, `Funding resolution reached maxCandidates=${maxCandidates}; unchecked candidates remain outside the known denominator.`]
+        : selection.notes,
       availableInboundTxCount: resolved.checkedEdges.filter((edge) => edge.toAddress === input.subjectAddress).length,
       coverageExclusions: [
         ...exactFeeExclusion(input.subjectAddress, resolved.exactFees),
