@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateApprovalAllowanceStateV2 } from "../../src/approvals/allowanceState";
+import { refreshApprovalAllowance } from "../../src/approvals/allowanceRefresh";
 import type { ApprovalAllowanceStateV2 } from "../../src/types";
 import {
   APPROVAL_TX_HASH,
@@ -21,6 +22,54 @@ describe("ApprovalAllowanceStateV2", () => {
       isUnlimited: true,
       confirmedAt: "2026-07-12T12:00:00.000Z",
       freshUntil: "2026-07-12T12:15:00.000Z"
+    });
+  });
+
+  it.each([
+    ["0", "confirmed_zero", false],
+    ["1", "confirmed_active", false],
+    [(2n ** 256n - 1n).toString(), "confirmed_active", true]
+  ] as const)("[REQ-19][ALLOWANCE-REFRESH] builds one clocked current state for raw %s", async (raw, state, isUnlimited) => {
+    const allowance = await refreshApprovalAllowance({
+      client: { getUsdtAllowance: async () => raw },
+      ownerAddress: TNARA_OWNER,
+      spenderAddress: maxAllowanceState.spenderAddress,
+      observedApprovalTxHash: APPROVAL_TX_HASH,
+      now: NOW,
+      reason: "explicit_safety_recheck"
+    });
+
+    expect(allowance).toMatchObject({
+      state,
+      confirmedAllowanceRaw: raw,
+      isUnlimited,
+      confirmedAt: NOW.toISOString(),
+      lastAttemptAt: NOW.toISOString(),
+      freshUntil: new Date(NOW.getTime() + 15 * 60 * 1000).toISOString()
+    });
+  });
+
+  it.each([
+    ["numeric", 1],
+    ["object coercible to decimal", { toString: () => "1" }],
+    ["overflow decimal", (2n ** 256n).toString()]
+  ])("[REQ-19][ALLOWANCE-REFRESH] rejects a %s provider value as malformed", async (_name, providerValue) => {
+    const allowance = await refreshApprovalAllowance({
+      client: { getUsdtAllowance: async () => providerValue } as any,
+      ownerAddress: TNARA_OWNER,
+      spenderAddress: maxAllowanceState.spenderAddress,
+      observedApprovalTxHash: APPROVAL_TX_HASH,
+      now: NOW,
+      reason: "explicit_safety_recheck"
+    });
+
+    expect(allowance).toMatchObject({
+      state: "failed",
+      confirmedAllowanceRaw: null,
+      isUnlimited: null,
+      confirmedAt: null,
+      freshUntil: null,
+      failureCode: "malformed_response"
     });
   });
 

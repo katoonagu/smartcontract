@@ -4,8 +4,8 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { CustomerAlertRecipient, PendingApprovalContextRow, WalletApprovalPollState } from "../../src/storage/repositories";
 import type { AddressLabel, RawEvidenceInput, RiskSignalObservationInput, WatchedWallet } from "../../src/types";
 
-const ownerAddress = "TOwner1111111111111111111111111111111";
-const spenderAddress = "TSpender11111111111111111111111111111";
+const ownerAddress = "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ";
+const spenderAddress = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV";
 const approvalTxHash = "aa4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
 
 const watchedWallet: WatchedWallet = {
@@ -144,6 +144,13 @@ function pendingContextRow(overrides: Partial<PendingApprovalContextRow> = {}): 
   };
 }
 
+function directAllowanceDeps() {
+  return {
+    getUsdtAllowance: async () => currentApproval().amountRaw,
+    saveWalletApprovalAllowanceStateV2: async () => {}
+  };
+}
+
 function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollingCycle>[0]> = {}) {
   const claimed = new Set<string>();
   const currentApprovals: unknown[] = [];
@@ -170,6 +177,8 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
         return [approvalChange()];
       }
     },
+    getUsdtAllowance: async () => currentApproval().amountRaw,
+    saveWalletApprovalAllowanceStateV2: async () => {},
     pageLimit: 20,
     maxPagesPerWallet: 1,
     now: () => new Date("2026-05-23T00:00:00.000Z"),
@@ -1035,6 +1044,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1122,6 +1132,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1175,6 +1186,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),
@@ -1228,6 +1240,7 @@ describe("runSingleApprovalPollingCycle", () => {
     const sentOwnerMessages: string[] = [];
 
     await runSingleApprovalContextFinalizerCycle({
+      ...directAllowanceDeps(),
       pageLimit: 20,
       maxPagesPerWallet: 1,
       now: () => new Date("2026-05-05T13:53:00.000Z"),

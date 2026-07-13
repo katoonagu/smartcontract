@@ -1522,6 +1522,80 @@ describe("TronscanClient", () => {
     expect(url.searchParams.get("type")).toBe("token");
   });
 
+  it("[REQ-19][ALLOWANCE-REFRESH] reads exact official-USDT allowance with canonical ABI words", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({
+      result: { result: true },
+      constant_result: ["000000000000000000000000000000000000000000000000000000000000007b"]
+    }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fullNodeApiKey: "fullnode-secret",
+      fetchFn
+    });
+
+    await expect(client.getUsdtAllowance({
+      ownerAddress: "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ",
+      spenderAddress: "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"
+    })).resolves.toBe("123");
+
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/wallet/triggerconstantcontract");
+    expect(headerValue(init.headers, "TRON-PRO-API-KEY")).toBe("fullnode-secret");
+    expect(JSON.parse(String(init.body))).toEqual({
+      owner_address: "41dddddddddddddddddddddddddddddddddddddddd",
+      contract_address: "41a614f803b6fd780986a42c78ec9c7f77e6ded13c",
+      function_selector: "allowance(address,address)",
+      parameter:
+        "000000000000000000000000dddddddddddddddddddddddddddddddddddddddd" +
+        "000000000000000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    });
+  });
+
+  it.each([
+    ["missing result", { result: { result: true }, constant_result: [] }],
+    ["non-hex result", { result: { result: true }, constant_result: ["not-hex"] }],
+    ["multiword result", { result: { result: true }, constant_result: ["0".repeat(64), "1".repeat(64)] }],
+    ["overflow result", { result: { result: true }, constant_result: ["1" + "0".repeat(64)] }]
+  ])("[REQ-19][ALLOWANCE-REFRESH] rejects %s as malformed allowance", async (_name, response) => {
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse(response))
+    });
+
+    await expect(client.getUsdtAllowance({
+      ownerAddress: "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ",
+      spenderAddress: "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"
+    })).rejects.toMatchObject({ code: "MALFORMED_RESPONSE" });
+  });
+
+  it("[REQ-19][ALLOWANCE-REFRESH] validates both TRON addresses before the full-node call", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({}));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    await expect(client.getUsdtAllowance({
+      ownerAddress: "wrong-network",
+      spenderAddress: "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"
+    })).rejects.toMatchObject({ code: "INVALID_TRON_ADDRESS" });
+    await expect(client.getUsdtAllowance({
+      ownerAddress: "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ",
+      spenderAddress: "wrong-network"
+    })).rejects.toMatchObject({ code: "INVALID_TRON_ADDRESS" });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("[REQ-19][ALLOWANCE-REFRESH] exposes a reverted allowance call as a typed failure", async () => {
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse({ result: { result: false, message: "REVERT" } }))
+    });
+
+    await expect(client.getUsdtAllowance({
+      ownerAddress: "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ",
+      spenderAddress: "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"
+    })).rejects.toMatchObject({ code: "CONTRACT_REVERTED" });
+  });
+
   it("requests TRC20 approval change history for a spender and token", async () => {
     const fetchFn = vi.fn(async () =>
       jsonResponse({

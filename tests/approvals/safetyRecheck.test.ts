@@ -6,8 +6,8 @@ import type { Db } from "../../src/storage/db";
 import type { AddressMetadata, ContractIntelligenceProfile } from "../../src/storage/repositories";
 import type { ListTrc20ApprovalChangesInput } from "../../src/tron/tronClient";
 
-const walletAddress = "TOwner1111111111111111111111111111111";
-const spenderAddress = "TSpender11111111111111111111111111111";
+const walletAddress = "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ";
+const spenderAddress = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV";
 const approvalTxHash = "aa4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
 const drainTxHash = "cc4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
 
@@ -266,6 +266,7 @@ function safetyInput(allowance: unknown) {
 describe("runSafetyRecheck", () => {
   it("rechecks already claimed approvals without owner alerts and records late drain observations", async () => {
     const { db, queries } = createFakeDb();
+    let allowanceCalls = 0;
 
     const summary = await runSafetyRecheck({
       db,
@@ -335,6 +336,10 @@ describe("runSafetyRecheck", () => {
         },
         async getContractIntelligenceProfile() {
           return profile();
+        },
+        async getUsdtAllowance() {
+          allowanceCalls += 1;
+          return historicalAllowanceRaw;
         }
       },
       logger: { info: () => undefined, warn: () => undefined, error: () => undefined }
@@ -349,12 +354,14 @@ describe("runSafetyRecheck", () => {
     });
     expect(queries.some((query) => query.sql.includes("insert into observed_approval_drain_events"))).toBe(true);
     expect(queries.some((query) => query.sql.includes("owner_alert_status = 'skipped'"))).toBe(true);
+    expect(allowanceCalls).toBe(1);
   });
 
   it("looks beyond the newest approval change when rechecking by approval tx hash", async () => {
     const { db } = createFakeDb();
     const newerTxHash = "bb4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
     const approvalChangeRequests: ListTrc20ApprovalChangesInput[] = [];
+    let allowanceCalls = 0;
 
     const summary = await runSafetyRecheck({
       db,
@@ -413,6 +420,10 @@ describe("runSafetyRecheck", () => {
         },
         async getContractIntelligenceProfile() {
           return profile();
+        },
+        async getUsdtAllowance() {
+          allowanceCalls += 1;
+          return historicalAllowanceRaw;
         }
       },
       logger: { info: () => undefined, warn: () => undefined, error: () => undefined }
@@ -424,12 +435,14 @@ describe("runSafetyRecheck", () => {
       approvalsProcessed: 1,
       riskRowsUpdated: 1
     });
+    expect(allowanceCalls).toBe(1);
   });
 
   it("persists route-linked session context evidence during safety recheck", async () => {
     const { db, queries } = createFakeDb();
     const routeTxHash = "dd4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
     const routeReceiver = "TUrnbc11111111111111111111111111111";
+    let allowanceCalls = 0;
 
     const summary = await runSafetyRecheck({
       db,
@@ -511,6 +524,10 @@ describe("runSafetyRecheck", () => {
         },
         async getContractIntelligenceProfile() {
           return profile();
+        },
+        async getUsdtAllowance() {
+          allowanceCalls += 1;
+          return historicalAllowanceRaw;
         }
       },
       logger: { info: () => undefined, warn: () => undefined, error: () => undefined }
@@ -522,6 +539,7 @@ describe("runSafetyRecheck", () => {
       riskRowsUpdated: 1
     });
     expect(queries.some((query) => JSON.stringify(query.params).includes("approval_temporally_linked_to_known_swap"))).toBe(true);
+    expect(allowanceCalls).toBe(1);
   });
 });
 
@@ -688,7 +706,6 @@ describe("allowance refresh lifecycle", () => {
         now: allowanceNow
       } as any);
       const safety = evaluateApprovalSafetyV2(safetyInput(allowance) as any);
-
       expect(allowance, failureCode).toMatchObject({
         state: "failed",
         confirmedAllowanceRaw: null,

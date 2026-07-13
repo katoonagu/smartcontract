@@ -30,8 +30,13 @@ import type {
   RiskReport,
   RiskSignalObservationInput,
   WatchedWallet,
-  WalletApprovalSpenderType
+  WalletApprovalSpenderType,
+  ApprovalAllowanceStateV2
 } from "../types";
+import {
+  refreshApprovalAllowance,
+  type ApprovalAllowanceRefreshReason
+} from "./allowanceRefresh";
 import { formatApprovalAllowance, parseUsdtRawAmount } from "./amounts";
 import {
   evaluateApprovalRisk,
@@ -85,6 +90,16 @@ type ObservedApprovalInput = {
   approvalAt: Date;
 };
 
+type ApprovalHistoryClient = Omit<TronApprovalClient, "getUsdtAllowance">;
+type AllowanceRefreshDeps = {
+  now?: () => Date;
+  getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
+  saveWalletApprovalAllowanceStateV2(input: {
+    watchedWalletId: string;
+    allowance: ApprovalAllowanceStateV2;
+  }): Promise<void>;
+};
+
 const DEFAULT_METADATA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CONTRACT_PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
 const PENDING_APPROVAL_CONTEXT_SCORE = 70;
@@ -92,7 +107,7 @@ const VERY_LARGE_FINITE_USDT_RAW = 50_000n * 1_000_000n;
 
 export type ApprovalPollingCycleDeps = {
   wallets: WatchedWallet[];
-  tronClient: TronApprovalClient;
+  tronClient: ApprovalHistoryClient;
   pageLimit: number;
   maxPagesPerWallet: number;
   now?: () => Date;
@@ -102,6 +117,12 @@ export type ApprovalPollingCycleDeps = {
   recordApprovalPollFailure(input: { watchedWalletId: string; error: string }): Promise<void>;
   upsertWalletApproval(input: WalletApprovalInput): Promise<void>;
   claimObservedApprovalEvent(input: ObservedApprovalInput): Promise<boolean>;
+  getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
+  saveWalletApprovalAllowanceStateV2(input: {
+    watchedWalletId: string;
+    allowance: ApprovalAllowanceStateV2;
+  }): Promise<void>;
+  allowanceRefreshReason?: ApprovalAllowanceRefreshReason;
   recordApprovalRisk(input: { approvalTxHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
   markApprovalContextPending?(input: {
     approvalTxHash: string;
@@ -154,7 +175,7 @@ export type ApprovalPollingCycleDeps = {
 };
 
 export type ApprovalContextFinalizerDeps = {
-  tronClient: TronApprovalClient;
+  tronClient: ApprovalHistoryClient;
   pageLimit: number;
   maxPagesPerWallet: number;
   now?: () => Date;
@@ -172,6 +193,11 @@ export type ApprovalContextFinalizerDeps = {
   }): Promise<boolean>;
   markApprovalContextFinalAlertSent(input: { approvalTxHash: string; watchedWalletId: string; sentAt: Date }): Promise<boolean>;
   releaseApprovalContextAfterFailure(input: { approvalTxHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
+  getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
+  saveWalletApprovalAllowanceStateV2(input: {
+    watchedWalletId: string;
+    allowance: ApprovalAllowanceStateV2;
+  }): Promise<void>;
   upsertWalletApproval(input: WalletApprovalInput): Promise<void>;
   recordApprovalRisk(input: { approvalTxHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
@@ -192,6 +218,37 @@ export type ApprovalContextFinalizerDeps = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function refreshAllowanceAtTrigger(
+  event: ApprovalGuardEvent,
+  watchedWalletId: string,
+  reason: ApprovalAllowanceRefreshReason,
+  deps: AllowanceRefreshDeps
+): Promise<ApprovalAllowanceStateV2> {
+  const allowance = await refreshApprovalAllowance({
+    client: { getUsdtAllowance: deps.getUsdtAllowance },
+    ownerAddress: event.ownerAddress,
+    spenderAddress: event.spenderAddress,
+    observedApprovalTxHash: event.txHash,
+    now: (deps.now ?? (() => new Date()))(),
+    reason
+  });
+  await deps.saveWalletApprovalAllowanceStateV2({ watchedWalletId, allowance });
+  return allowance;
+}
+
+function currentAllowanceView(allowance: ApprovalAllowanceStateV2): {
+  currentAllowanceRaw?: string;
+  status: "active" | "revoked" | "unknown";
+} {
+  if (allowance.state === "confirmed_active") {
+    return { currentAllowanceRaw: allowance.confirmedAllowanceRaw!, status: "active" };
+  }
+  if (allowance.state === "confirmed_zero") {
+    return { currentAllowanceRaw: "0", status: "revoked" };
+  }
+  return { status: "unknown" };
 }
 
 function isWatchedWalletForeignKeyError(error: unknown): boolean {
@@ -1010,9 +1067,9 @@ async function processApproval(
       spenderAddress: approval.spenderAddress,
       amountRaw: approval.amountRaw,
       isUnlimited: approval.isUnlimited,
-      currentAllowanceRaw: approval.amountRaw,
+      currentAllowanceRaw: undefined,
       spenderType,
-      status: "active",
+      status: "unknown",
       lastApprovalTxHash: null,
       lastApprovalAt: approval.operateTime,
       riskLevel: "LOW",
@@ -1039,6 +1096,13 @@ async function processApproval(
   if (!claimed && !deps.recheckExistingApprovals) return event;
 
   try {
+    const allowance = await refreshAllowanceAtTrigger(
+      event,
+      wallet.id,
+      deps.allowanceRefreshReason ?? "new_approval_event",
+      deps
+    );
+    const currentAllowance = currentAllowanceView(allowance);
     const contractProfile = await resolveContractIntelligenceProfile(approval.spenderAddress, metadata, deps);
     const labels = await deps.getLabelsForAddress(event.spenderAddress);
     const baseEvaluation = evaluateApprovalRisk({
@@ -1072,9 +1136,9 @@ async function processApproval(
         spenderAddress: event.spenderAddress,
         amountRaw: event.amountRaw,
         isUnlimited: event.isUnlimited,
-        currentAllowanceRaw: approval.amountRaw,
+        currentAllowanceRaw: currentAllowance.currentAllowanceRaw,
         spenderType: event.spenderType,
-        status: "active",
+        status: currentAllowance.status,
         lastApprovalTxHash: event.txHash,
         lastApprovalAt: event.timestamp,
         riskLevel: pendingReport.level,
@@ -1114,9 +1178,9 @@ async function processApproval(
       spenderAddress: event.spenderAddress,
       amountRaw: event.amountRaw,
       isUnlimited: event.isUnlimited,
-      currentAllowanceRaw: approval.amountRaw,
+      currentAllowanceRaw: currentAllowance.currentAllowanceRaw,
       spenderType: event.spenderType,
-      status: "active",
+      status: currentAllowance.status,
       lastApprovalTxHash: event.txHash,
       lastApprovalAt: event.timestamp,
       riskLevel: evaluation.report.level,
@@ -1270,6 +1334,13 @@ async function finalizeApprovalContext(row: PendingApprovalContextRow, deps: App
   const labels = await deps.getLabelsForAddress(event.spenderAddress);
   const sessionContext = await resolveApprovalSessionContext(row.wallet, event, lookupDeps, true);
   if (!sessionContext) throw new Error("Approval session context could not be resolved");
+  const allowance = await refreshAllowanceAtTrigger(
+    event,
+    row.wallet.id,
+    "context_finalization",
+    deps
+  );
+  const currentAllowance = currentAllowanceView(allowance);
 
   const evaluation = annotateApprovalEvaluationState(evaluateApprovalRisk({
     event,
@@ -1287,9 +1358,9 @@ async function finalizeApprovalContext(row: PendingApprovalContextRow, deps: App
     spenderAddress: event.spenderAddress,
     amountRaw: event.amountRaw,
     isUnlimited: event.isUnlimited,
-    currentAllowanceRaw: event.amountRaw,
+    currentAllowanceRaw: currentAllowance.currentAllowanceRaw,
     spenderType: event.spenderType,
-    status: "active",
+    status: currentAllowance.status,
     lastApprovalTxHash: event.txHash,
     lastApprovalAt: event.timestamp,
     riskLevel: finalReport.level,

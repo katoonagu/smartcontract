@@ -72,6 +72,7 @@ export type GetUsdtBlacklistTimelineOptions = {
 export type TronApprovalClient = {
   listTrc20Approvals(address: string, options?: ListTrc20ApprovalsOptions): Promise<TronscanApprovalListResult>;
   listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
+  getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
   listRelatedTrc20Transfers?(address: string, options?: ListRelatedTrc20TransfersOptions): Promise<RawTronscanTrc20Transfer[]>;
   getTransaction?(txHash: string): Promise<unknown>;
   getAddressMetadata?(address: string): Promise<TronscanAddressMetadata>;
@@ -1142,6 +1143,61 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
 
   private encodeAddressParameter(address: string): string {
     return TronWeb.address.toHex(address).replace(/^41/i, "").padStart(64, "0");
+  }
+
+  private tronAddressWord(address: string): string {
+    let hex: string;
+    try {
+      if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address) || !TronWeb.isAddress(address)) {
+        throw new Error("invalid_tron_address");
+      }
+      hex = TronWeb.address.toHex(address);
+    } catch {
+      throw Object.assign(new Error("invalid_tron_address"), { code: "INVALID_TRON_ADDRESS" });
+    }
+    if (!/^41[0-9a-fA-F]{40}$/.test(hex)) {
+      throw Object.assign(new Error("invalid_tron_address"), { code: "INVALID_TRON_ADDRESS" });
+    }
+    return hex.slice(2).toLowerCase().padStart(64, "0");
+  }
+
+  async getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string> {
+    if (!this.fullNodeBaseUrl) {
+      throw Object.assign(new Error("provider_unavailable"), { code: "PROVIDER_UNAVAILABLE" });
+    }
+    const ownerWord = this.tronAddressWord(input.ownerAddress);
+    const spenderWord = this.tronAddressWord(input.spenderAddress);
+    const url = new URL("/wallet/triggerconstantcontract", this.fullNodeBaseUrl);
+    const json = await this.fetchJson(
+      url,
+      "stablecoin_contract_state",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          owner_address: TronWeb.address.toHex(input.ownerAddress).toLowerCase(),
+          contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS).toLowerCase(),
+          function_selector: "allowance(address,address)",
+          parameter: `${ownerWord}${spenderWord}`
+        })
+      },
+      this.fullNodeApiKey ?? null
+    );
+    if (!this.isObjectRecord(json)) {
+      throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+    }
+    const result = this.objectField(json.result);
+    if (result?.result !== true) {
+      throw Object.assign(new Error("contract_call_reverted"), {
+        code: "CONTRACT_REVERTED",
+        response: json
+      });
+    }
+    const words = json.constant_result;
+    if (!Array.isArray(words) || words.length !== 1 || typeof words[0] !== "string" || !/^[0-9a-fA-F]{64}$/.test(words[0])) {
+      throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+    }
+    return BigInt(`0x${words[0]}`).toString();
   }
 
   private async triggerUsdtConstant(functionSelector: string, address: string): Promise<string> {

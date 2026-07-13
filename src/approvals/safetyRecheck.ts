@@ -10,6 +10,7 @@ import {
   markApprovalOwnerAlertFailed,
   markApprovalOwnerAlertSkipped,
   recordApprovalRisk,
+  saveWalletApprovalAllowanceStateV2,
   saveRiskEvaluationEvidence,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -89,6 +90,9 @@ export async function runSafetyRecheck(input: {
       if (claimed) summary.approvalEventsClaimed += 1;
       return claimed;
     },
+    getUsdtAllowance: (request) => input.tronClient.getUsdtAllowance(request),
+    saveWalletApprovalAllowanceStateV2: (allowance) => saveWalletApprovalAllowanceStateV2(input.db, allowance),
+    allowanceRefreshReason: "explicit_safety_recheck",
     claimObservedApprovalDrainEvent: async (observation) => {
       const claimed = await claimObservedApprovalDrainEvent(input.db, observation);
       if (claimed) summary.drainObservationsClaimed += 1;
