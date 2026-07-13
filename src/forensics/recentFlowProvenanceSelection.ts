@@ -196,6 +196,25 @@ function prioritizedFundingCandidates(
     : selection.candidates;
 }
 
+function prioritizedPotentialFundingEdges(
+  input: SelectRecentFlowInput,
+  anchorEdge: ForensicRouteEdge,
+  orderedPriorEdges: ForensicRouteEdge[]
+): ForensicRouteEdge[] {
+  const minSignificantRaw = dynamicSignificantThreshold(parseRaw(anchorEdge.amountRaw));
+  const seen = new Set<string>();
+  const incoming = orderedPriorEdges.filter((edge) => {
+    if (edge.toAddress !== input.subjectAddress || edge.fromAddress === input.subjectAddress) return false;
+    if (parseRaw(edge.amountRaw) <= 0n || seen.has(edge.id)) return false;
+    seen.add(edge.id);
+    return true;
+  });
+  return [
+    ...incoming.filter((edge) => parseRaw(edge.amountRaw) >= minSignificantRaw),
+    ...incoming.filter((edge) => parseRaw(edge.amountRaw) < minSignificantRaw)
+  ];
+}
+
 function selectForOutgoingAnchor(
   input: SelectRecentFlowInput,
   anchorEdge: ForensicRouteEdge,
@@ -266,31 +285,22 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
   };
 
   let largeOutgoingAnchor: ForensicRouteEdge | null = null;
-  for (const candidate of sortedEdges) {
+  let largeOutgoingAnchorIndex = -1;
+  for (let index = 0; index < sortedEdges.length; index += 1) {
+    const candidate = sortedEdges[index]!;
     if (candidate.fromAddress !== input.subjectAddress || parseRaw(candidate.amountRaw) < BASE_SIGNIFICANT_RAW) continue;
     const resolved = await resolve(candidate);
     if (!isGasFreeServiceFeeEdge(resolved)) {
       largeOutgoingAnchor = resolved;
+      largeOutgoingAnchorIndex = index;
       break;
     }
   }
   if (largeOutgoingAnchor) {
-    const prioritized = prioritizedFundingCandidates(input, largeOutgoingAnchor);
-    const oldestPrioritizedAt = prioritized.reduce<number | null>((oldest, item) => {
-      const timestamp = item.edge.timestamp.getTime();
-      return oldest === null || timestamp < oldest ? timestamp : oldest;
-    }, null);
-    const prioritizedIds = new Set(prioritized.map((item) => item.edge.id));
-    const scopedExactFees: ForensicRouteEdge[] = [];
-    if (oldestPrioritizedAt !== null) {
-      for (const edge of sortedEdges) {
-        const timestamp = edge.timestamp.getTime();
-        if (timestamp >= largeOutgoingAnchor.timestamp.getTime()) continue;
-        if (timestamp < oldestPrioritizedAt) break;
-        if (isGasFreeServiceFeeEdge(edge) && !prioritizedIds.has(edge.id)) scopedExactFees.push(edge);
-      }
-    }
-    const candidateIds = new Set<string>();
+    const orderedPriorEdges = sortedEdges.slice(largeOutgoingAnchorIndex + 1);
+    const prioritized = prioritizedPotentialFundingEdges(input, largeOutgoingAnchor, orderedPriorEdges);
+    const processedPotentialIds = new Set<string>();
+    const inspectedKnownFeeIds = new Set<string>();
     const validatedFundingIds = new Set<string>();
     let inspectedSlots = 0;
     let budgetExhausted = false;
@@ -304,27 +314,43 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
       inspectedSlots += 1;
       return resolve(edge);
     };
-    for (const edge of scopedExactFees) {
-      if (candidateIds.has(edge.id)) continue;
-      candidateIds.add(edge.id);
-      if (!(await inspect(edge))) break;
-    }
-    for (const funding of prioritized) {
+    const resolvedCheckedEdges = (): ForensicRouteEdge[] => {
+      const emittedIds = new Set<string>();
+      const checked: ForensicRouteEdge[] = [];
+      for (const edge of sortedEdges) {
+        if (!resolvedById.has(edge.id) || emittedIds.has(edge.id)) continue;
+        emittedIds.add(edge.id);
+        checked.push(resolvedById.get(edge.id)!);
+      }
+      return checked;
+    };
+    const recomputeValidatedFunding = (): FundingCandidate[] => prioritizedFundingCandidates(
+      { ...input, edges: resolvedCheckedEdges().filter((edge) => !isGasFreeServiceFeeEdge(edge)) },
+      largeOutgoingAnchor
+    ).filter((candidate) => validatedFundingIds.has(candidate.edge.id));
+    let lastProcessedIndex = largeOutgoingAnchorIndex;
+    let processedPotentialCount = 0;
+    let fundingFullyCovered = false;
+    for (const fundingEdge of prioritized) {
       if (budgetExhausted) break;
-      candidateIds.add(funding.edge.id);
-      const resolvedFunding = await inspect(funding.edge);
+      const fundingIndex = sortedEdges.indexOf(fundingEdge);
+      if (fundingIndex <= largeOutgoingAnchorIndex) continue;
+      for (const possibleFee of sortedEdges.slice(largeOutgoingAnchorIndex + 1, fundingIndex + 1)) {
+        if (!isGasFreeServiceFeeEdge(possibleFee) || inspectedKnownFeeIds.has(possibleFee.id)) continue;
+        inspectedKnownFeeIds.add(possibleFee.id);
+        if (!(await inspect(possibleFee))) break;
+      }
+      if (budgetExhausted) break;
+      processedPotentialCount += 1;
+      processedPotentialIds.add(fundingEdge.id);
+      lastProcessedIndex = Math.max(lastProcessedIndex, fundingIndex);
+      const resolvedFunding = await inspect(fundingEdge);
       if (!resolvedFunding) break;
       if (isGasFreeServiceFeeEdge(resolvedFunding)) continue;
 
       let closureComplete = true;
       let spendOverhang = 0n;
-      const fundingTimestamp = funding.edge.timestamp.getTime();
-      for (const dependency of sortedEdges) {
-        const timestamp = dependency.timestamp.getTime();
-        if (timestamp >= largeOutgoingAnchor.timestamp.getTime()) continue;
-        if (timestamp <= fundingTimestamp) break;
-        if (dependency.id === funding.edge.id) continue;
-
+      for (const dependency of sortedEdges.slice(largeOutgoingAnchorIndex + 1, fundingIndex)) {
         if (dependency.fromAddress === input.subjectAddress) {
           const resolved = await inspect(dependency);
           if (!resolved) {
@@ -344,19 +370,25 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
         const amountRaw = parseRaw(resolved.amountRaw);
         spendOverhang -= spendOverhang > amountRaw ? amountRaw : spendOverhang;
       }
-      if (closureComplete) validatedFundingIds.add(funding.edge.id);
+      if (closureComplete) validatedFundingIds.add(fundingEdge.id);
+      const recomputed = recomputeValidatedFunding();
+      const recomputedRaw = recomputed.reduce((sum, candidate) => sum + parseRaw(candidate.usableAmountRaw), 0n);
+      if (recomputedRaw >= parseRaw(largeOutgoingAnchor.amountRaw)) {
+        fundingFullyCovered = true;
+        break;
+      }
     }
 
     let contextSkipped = false;
-    if (!budgetExhausted && oldestPrioritizedAt !== null) {
+    if (!budgetExhausted && lastProcessedIndex > largeOutgoingAnchorIndex) {
       const remainingSlots = maxCandidates - inspectedSlots;
-      const incomingContext = sortedEdges.filter((edge) =>
+      const incomingContext = sortedEdges
+        .slice(largeOutgoingAnchorIndex + 1, lastProcessedIndex + 1)
+        .filter((edge) =>
         edge.toAddress === input.subjectAddress &&
         edge.fromAddress !== input.subjectAddress &&
-        edge.timestamp.getTime() < largeOutgoingAnchor.timestamp.getTime() &&
-        edge.timestamp.getTime() >= oldestPrioritizedAt &&
         !resolvedById.has(edge.id) &&
-        !prioritizedIds.has(edge.id)
+        !processedPotentialIds.has(edge.id)
       );
       if (incomingContext.length <= remainingSlots) {
         for (const edge of incomingContext) await inspect(edge);
@@ -364,27 +396,16 @@ async function resolveBoundedRecentEdges(input: SelectRecentFlowInput, maxCandid
         contextSkipped = true;
       }
     }
-    const inspectedIds = new Set(resolvedById.keys());
-    const emittedIds = new Set<string>();
-    const checkedEdges: ForensicRouteEdge[] = [];
-    for (const edge of sortedEdges) {
-      if (!inspectedIds.has(edge.id) || emittedIds.has(edge.id)) continue;
-      emittedIds.add(edge.id);
-      checkedEdges.push(resolvedById.get(edge.id)!);
-    }
-    const recomputedFunding = prioritizedFundingCandidates(
-      { ...input, edges: checkedEdges.filter((edge) => !isGasFreeServiceFeeEdge(edge)) },
-      largeOutgoingAnchor
-    ).filter((candidate) => validatedFundingIds.has(candidate.edge.id));
+    const checkedEdges = resolvedCheckedEdges();
+    const recomputedFunding = recomputeValidatedFunding();
+    const unprocessedPotential = processedPotentialCount < prioritized.length;
     return {
       checkedEdges,
       principalSlice: [],
       exactFees,
       largeOutgoingAnchor,
       largeFundingCandidates: recomputedFunding,
-      largeFundingScopeTruncated: budgetExhausted || contextSkipped || prioritized.some((candidate) =>
-        !resolvedById.has(candidate.edge.id)
-      )
+      largeFundingScopeTruncated: budgetExhausted || contextSkipped || (!fundingFullyCovered && unprocessedPotential)
     };
   }
 
@@ -493,16 +514,22 @@ export async function selectRecentFlowProvenanceTransfers(
       !isGasFreeServiceFeeEdge(edge) &&
       !selectedEvidenceIds.has(edge.id)
     );
-    const coverageTruncated = resolved.largeFundingScopeTruncated && selection.coverageRatio < 1;
+    const coverageTruncated = resolved.largeFundingScopeTruncated;
     return {
       ...selection,
       partial: selection.partial || coverageTruncated,
       dataScopeNote: coverageTruncated
-        ? "Low-balance recent-flow mode inspected a bounded prioritized funding scope; older candidates remain unchecked."
+        ? "Low-balance recent-flow mode reached its bounded resolution scope; unresolved context remains outside the known denominator."
         : selection.dataScopeNote,
       notes: coverageTruncated
-        ? [...selection.notes, `Funding resolution reached maxCandidates=${maxCandidates}; unchecked candidates remain outside the known denominator.`]
+        ? [...selection.notes, `Funding/context resolution reached maxCandidates=${maxCandidates}; unchecked edges remain outside the known denominator.`]
         : selection.notes,
+      coverageLimitations: coverageTruncated
+        ? [{
+            reason: "local_materialization_failed",
+            evidenceIds: [`coverage:recent-flow-resolution-budget:${resolved.largeOutgoingAnchor.id}`]
+          }]
+        : [],
       availableInboundTxCount: resolved.checkedEdges.filter((edge) => edge.toAddress === input.subjectAddress).length,
       coverageExclusions: [
         ...exactFeeExclusion(input.subjectAddress, resolved.exactFees),

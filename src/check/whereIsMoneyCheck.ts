@@ -1112,7 +1112,10 @@ function coverageV2ForSelection(input: {
       ...(input.selection.coverageExclusions ?? []),
       ...(input.exclusions ?? [])
     ],
-    limitations: input.limitations ?? []
+    limitations: [
+      ...(input.selection.coverageLimitations ?? []),
+      ...(input.limitations ?? [])
+    ]
   });
 }
 

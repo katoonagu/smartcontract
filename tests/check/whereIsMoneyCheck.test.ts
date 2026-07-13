@@ -1157,6 +1157,43 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["in-b", "in-a"]);
   });
 
+  it("[REQ-30][AC-10] keeps bounded recent-flow context partial in CoverageV2", async () => {
+    const lowBalanceSubject = "TBoundedCoverageSubject111111111111";
+    const dust = Array.from({ length: 10 }, (_, index) =>
+      edge(
+        `bounded-coverage-dust-${index}`,
+        `TBoundedDust${index}`,
+        lowBalanceSubject,
+        "1000000",
+        `2026-05-05T09:${String(59 - index).padStart(2, "0")}:00.000Z`
+      ));
+    const sourceEdges = [
+      edge("bounded-coverage-anchor", lowBalanceSubject, "TReceiver", "2000000000", "2026-05-05T10:00:00.000Z"),
+      ...dust,
+      edge("bounded-coverage-funding", "TStrongFunder", lowBalanceSubject, "2000000000", "2026-05-05T09:40:00.000Z")
+    ];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async (address) => address === lowBalanceSubject ? sourceEdges : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.coverage.partial).toBe(true);
+    expect(report.coverageV2?.completeness).toBe("partial");
+    expect(report.coverageV2?.limitations).toContainEqual({
+      reason: "local_materialization_failed",
+      evidenceIds: ["coverage:recent-flow-resolution-budget:bounded-coverage-anchor"]
+    });
+  });
+
   it("reports drain episode scope for a low-balance bridge/adapter drain", async () => {
     const lowBalanceSubject = "TLhV";
     const bridgeA = "TPwez";

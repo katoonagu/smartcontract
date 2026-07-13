@@ -522,6 +522,8 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     });
 
     expect(result.transfers.map((item) => item.txHash)).toEqual(["large-scan-strong-funding"]);
+    expect(result.partial).toBe(true);
+    expect(result.notes.join(" ")).toContain("maxCandidates=10");
     expect(result.availableInboundTxCount).toBe(1);
     expect(resolveEconomicContext).toHaveBeenCalledTimes(2);
     expect(resolveEconomicContext.mock.calls.map(([item]) => item.txHash)).not.toContain("large-scan-unchecked-tail");
@@ -978,5 +980,88 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.selectedAmountRaw).toBe("0");
     expect(result.partial).toBe(true);
     expect(result.notes.join(" ")).toContain("maxCandidates=5");
+  });
+
+  it("[REQ-02][REQ-30][AC-11] resolves a full-anchor incoming fee before selecting older funding", async () => {
+    const feeTxHash = "resolved-large-incoming-fee";
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item.txHash === feeTxHash
+      ? { ...item, economicProtocol: "tron_gasfree" as const, economicRole: "service_fee" as const }
+      : item);
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "resolved-large-incoming-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        edge({ txHash: feeTxHash, from: "TFeePayer", to: subject, amount: "2000000000", iso: "2026-05-05T09:59:00.000Z" }),
+        edge({ txHash: "resolved-large-incoming-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      maxCandidates: 5,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["resolved-large-incoming-funding"]);
+    expect(result.selectedAmountRaw).toBe("2000000000");
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      direction: "incoming",
+      amountRaw: "2000000000",
+      evidenceIds: [feeTxHash]
+    }));
+  });
+
+  it("[REQ-02][REQ-30][AC-11] resolves a full-anchor outgoing fee before selecting funding", async () => {
+    const feeTxHash = "resolved-large-outgoing-fee";
+    const resolveEconomicContext = vi.fn(async (item: ForensicRouteEdge) => item.txHash === feeTxHash
+      ? { ...item, economicProtocol: "tron_gasfree" as const, economicRole: "service_fee" as const }
+      : item);
+    const result = await selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({ txHash: "resolved-large-outgoing-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" }),
+        edge({ txHash: feeTxHash, from: subject, to: "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird", amount: "2000000000", iso: "2026-05-05T09:59:00.000Z" }),
+        edge({ txHash: "resolved-large-outgoing-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" })
+      ],
+      maxCandidates: 5,
+      resolveEconomicContext
+    });
+
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["resolved-large-outgoing-funding"]);
+    expect(result.selectedAmountRaw).toBe("2000000000");
+    expect(result.coverageExclusions).toContainEqual(expect.objectContaining({
+      direction: "outgoing",
+      amountRaw: "2000000000",
+      evidenceIds: [feeTxHash]
+    }));
+  });
+
+  it("[REQ-30][AC-10] is deterministic for shuffled same-timestamp funding dependencies", async () => {
+    const anchor = edge({ txHash: "same-time-anchor", from: subject, to: counterparty, amount: "2000000000", iso: "2026-05-05T10:00:00.000Z" });
+    const funding = edge({ txHash: "a-same-time-funding", from: "TFunder", to: subject, amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" });
+    const spend = edge({ txHash: "z-same-time-spend", from: subject, to: "TSpend", amount: "2000000000", iso: "2026-05-05T09:00:00.000Z" });
+    const run = (edges: ForensicRouteEdge[]) => selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges,
+      maxCandidates: 5,
+      resolveEconomicContext: async (item) => item
+    });
+
+    const first = await run([anchor, funding, spend]);
+    const second = await run([spend, anchor, funding]);
+
+    expect({
+      txHashes: first.transfers.map((item) => item.txHash),
+      evidenceIds: first.transfers.map((item) => item.evidenceId),
+      selectedAmountRaw: first.selectedAmountRaw,
+      partial: first.partial
+    }).toEqual({
+      txHashes: second.transfers.map((item) => item.txHash),
+      evidenceIds: second.transfers.map((item) => item.evidenceId),
+      selectedAmountRaw: second.selectedAmountRaw,
+      partial: second.partial
+    });
+    expect(first.transfers).toEqual([]);
+    expect(first.selectedAmountRaw).toBe("0");
+    expect(first.partial).toBe(true);
   });
 });

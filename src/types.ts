@@ -1401,6 +1401,7 @@ export type BalanceFormingSelection = {
   recentFlowPrincipalTransfers?: RecentFlowPrincipalTransferV1[];
   principalActivity?: "present" | "none";
   coverageExclusions?: CoverageExclusionV1[];
+  coverageLimitations?: CoverageLimitationV1[];
   availableInboundTxCount?: number | null;
   selectionMethod:
     | "current_balance"
