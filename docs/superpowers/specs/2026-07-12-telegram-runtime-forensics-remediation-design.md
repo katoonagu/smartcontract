@@ -48,7 +48,7 @@ on-chain / provider facts
 - данные и покрытие Where/Incoming/Deep;
 - collector, USDD PSM, blacklist и contract/approval semantics;
 - direct current USDT allowance;
-- deterministic contract authority и subordinate LLM;
+- deterministic contract authority; automatic contract/money-origin LLM disabled;
 - waiting-job reconciliation и Telegram result delivery;
 - cache-first Telegram navigation;
 - единая preliminary/final/no-final/status/failure presentation;
@@ -69,7 +69,8 @@ on-chain / provider facts
 2. Numeric score не создаёт proof authority.
 3. Coverage limitation не является risk evidence.
 4. Первый пользовательский risk fact обязан ссылаться на active score anchor.
-5. LLM не создаёт score, decision, service identity или factual copy.
+5. Fresh checks не вызывают LLM; legacy LLM не создаёт score, decision,
+   service identity, evidence или factual copy.
 6. Current allowance существует только после успешного official-USDT constant
    call.
 7. Service name/tag не заменяет exact session evidence.
@@ -330,22 +331,34 @@ type ContractDecisionV2 = {
     authority: string;
     evidenceIds: string[];
   };
-  llm: ValidatedContractInterpretationV1 | null;
+  llm: null;
   finalSource: "deterministic";
 };
 ```
 
-`ValidatedContractInterpretationV1` существует только после strict validation:
-integer score 0…100, допустимая verdict/recommendation pair, citations только
-из case file, risky verdict с минимум одним valid citation. Invalid, timeout и
-unavailable возвращают `null` и не меняют deterministic result.
+#### LLM-disabled amendment
 
-Deterministic no-call cases:
+Эта поправка является частью канонического target behavior и заменяет только
+прежнюю automatic-ambiguity семантику `REQ-23…26`, `REQ-38` и `AC-34…40`:
 
-- official TRON USDT — `LOW 0`;
-- structurally classified GasFree Account — `LOW 10`;
-- known service with deterministic result;
-- exact Verify20/provider risk/exact debit.
+- Flash и Pro автоматически не вызываются ни для одного fresh Contract, Where,
+  Incoming или Deep пути; automatic money-origin LLM также отсутствует;
+- каждый fresh `ContractDecisionV2` имеет `llm=null` и
+  `finalSource="deterministic"`;
+- unknown/ambiguous contract без exact bad/service proof, но с подтверждённым
+  subject-bound `metadata_context`, получает `MEDIUM 35 REVIEW`; без такого
+  context resolver не создаёт score/decision и не выдумывает evidence;
+- legacy LLM/cache JSON остаётся доступен только через отдельный audit path:
+  JSON payload не изменяется и не перезаписывается, но не читается в scoring,
+  decision, evidence, facts или Telegram presentation;
+- `AC-39` делится по ownership: узкое удаление двух legacy LLM-секций из
+  существующих Bot/Alert formatter принадлежит Plan 2; единый Telegram UX и
+  защита от повторного появления такой секции в общем renderer остаются Plan 4.
+
+Все fresh contract cases являются deterministic no-call cases, включая official
+TRON USDT (`LOW 0`), structural GasFree Account (`LOW 10`), exact known service,
+exact Verify20/provider risk/debit и unknown/ambiguous (`REVIEW 35` при наличии
+subject-bound metadata context).
 
 ### 4.7 `UsddPsmExposureV1`
 
@@ -440,7 +453,8 @@ table не создаётся. Forensic completion CAS происходит до
 1. Producer сохраняет typed facts, routes, coverage и exact evidence ids.
 2. Mode scorer создаёт `ScoreAnchorV2` или честный no-final result.
 3. Approval/contract pipeline сначала завершает deterministic authority.
-4. LLM вызывается только для unresolved contract и не меняет final decision.
+4. Fresh pipelines не вызывают LLM; unresolved contract обрабатывается по
+   deterministic fallback из раздела 4.6.
 5. Job completion сохраняет immutable forensic result и pending delivery.
 6. Delivery worker claims pending/retryable state по fingerprint и attempts.
 7. Telegram renderer получает только typed presentation model.
@@ -456,9 +470,9 @@ table не создаётся. Forensic completion CAS происходит до
 | № | Будущий plan | Primary ownership | Вход | Выход / gate |
 |---:|---|---|---|---|
 | 1 | `remediation-data-and-coverage` | REQ-01…03, 10, 19(data), 28(data), 30, 31, 34, 38(data); AC-10…13 и data foundations AC-03…06, 19…24 | Утверждённая spec | Typed contracts, migration 032, legacy adapters, RED→GREEN data tests |
-| 2 | `remediation-scoring-and-contract-semantics` | REQ-04…05, 08, 15…29, 38(scoring); AC-01…06, 19…40 кроме presentation-only assertions | Plan 1 contracts | Deterministic scoring/safety/LLM policy, no Telegram redesign |
+| 2 | `remediation-scoring-and-contract-semantics` | REQ-04…05, 08, 15…29, 38(scoring); AC-01…06, 19…40, включая узкое удаление legacy LLM Bot/Alert sections по AC-39 | Plan 1 contracts | Deterministic scoring/safety, LLM-disabled policy, no Telegram redesign |
 | 3 | `remediation-runtime-and-delivery` | REQ-35…37 runtime portion; AC-14…18 | Stable result contracts | Reconciler, delivery state, callback/cache lifecycle, runtime tests |
-| 4 | `remediation-unified-telegram-ux` | REQ-06…14, 15 UX, 18 UX, 20 UX, 22 UX, 27 UX, 28 UX, 31…34, 38 UX; AC-07…09, 12…13, 20…21, 27, 39 | Plans 1–3 | One renderer, links, headings, manual Telegram candidate build |
+| 4 | `remediation-unified-telegram-ux` | REQ-06…14, 15 UX, 18 UX, 20 UX, 22 UX, 27 UX, 28 UX, 31…34, 38 UX; AC-07…09, 12…13, 20…21, 27; AC-39 unified-renderer regression only | Plans 1–3 | One renderer, links, headings, manual Telegram candidate build |
 | 5 | `remediation-end-to-end-acceptance-and-release` | AC-41 и повторная проверка AC-01…40 | Plans 1–4 green | Full regression, migration/runtime/version/manual acceptance, release or rollback |
 
 Plan 4 не меняет scoring. Plan 5 не исправляет bugs: найденная ошибка возвращает
@@ -469,9 +483,9 @@ Plan 4 не меняет scoring. Plan 5 не исправляет bugs: най�
 | Plan | Обязательный первый RED batch |
 |---:|---|
 | 1 | `[REQ-19] enforces exhaustive allowance state invariants`; `[REQ-31] persists coverage denominators and reasons`; `[REQ-38] verifies schema 032 receipt checksum and postconditions`; AC-10, AC-11 |
-| 2 | `[REQ-05] rejects invalid ScoreAnchorV2 or preferredFactId binding`; `[REQ-28] uses exact integer USDD PSM tiers and half-up adjustments`; AC-01…AC-06, AC-19, AC-22, AC-25, AC-26, AC-29, AC-30, AC-34…AC-38, AC-40 |
+| 2 | `[REQ-05] rejects invalid ScoreAnchorV2 or preferredFactId binding`; `[REQ-28] uses exact integer USDD PSM tiers and half-up adjustments`; AC-01…AC-06, AC-19, AC-22, AC-25, AC-26, AC-29, AC-30, AC-34…AC-40, включая узкий Bot/Alert AC-39 regression |
 | 3 | AC-14…AC-18 |
-| 4 | AC-07…AC-09, AC-12, AC-13, AC-20, AC-21, AC-24, AC-27, AC-39 |
+| 4 | AC-07…AC-09, AC-12, AC-13, AC-20, AC-21, AC-24, AC-27; AC-39 unified-renderer regression без повторной реализации legacy formatter deletion |
 | 5 | AC-41 manifest test плюс executable release checklist, который сначала падает на незаполненных gate artifacts |
 
 Остальные tests плана также добавляются до production-кода соответствующего
@@ -564,13 +578,13 @@ integration, но не меняет семантику без возврата �
 | AC-31 | 2 | `[AC-31] keeps exact Bridgers approval session LOW instead of decline` |
 | AC-32 | 2 | `[AC-32] keeps known-service unlimited approval without session at REVIEW 45` |
 | AC-33 | 2 | `[AC-33] prevents service or LLM dampening of provider risk Verify20 or debit proof` |
-| AC-34 | 2 | `[AC-34] rejects invalid fractional non-finite out-of-range and missing LLM score` |
-| AC-35 | 2 | `[AC-35] rejects contradictory LLM recommendation pairs` |
-| AC-36 | 2 | `[AC-36] retains only citations present in the current case file` |
-| AC-37 | 2 | `[AC-37] makes uncited risky LLM verdict unavailable` |
-| AC-38 | 2 | `[AC-38] preserves deterministic result on LLM timeout JSON or schema failure` |
-| AC-39 | 4 | `[AC-39] suppresses raw English LLM verdict confidence and reasons in Telegram` |
-| AC-40 | 2 | `[AC-40] bypasses Flash and Pro for every deterministic service case` |
+| AC-34 | 2 | `[AC-34] keeps fresh llm null and ignores every model score payload without a provider call` |
+| AC-35 | 2 | `[AC-35] keeps model verdict and recommendation out of every fresh decision` |
+| AC-36 | 2 | `[AC-36] keeps legacy citations audit-only and outside current evidence and facts` |
+| AC-37 | 2 | `[AC-37] keeps risky or uncited legacy model payload out of fresh decisions` |
+| AC-38 | 2 | `[AC-38] makes zero provider calls for timeout JSON and schema scenarios and preserves deterministic result` |
+| AC-39 | 2 primary; 4 regression | `[AC-39] removes legacy model output from existing Bot and Alert formatting`; Plan 4 proves the unified renderer does not reintroduce it |
+| AC-40 | 2 | `[AC-40] bypasses Flash and Pro for every fresh contract case including unknown and ambiguous` |
 | AC-41 | 5 | `[AC-41] validates the release regression manifest and required suite set` |
 
 AC-41 также требует реального полного test command; meta-test не заменяет
@@ -591,8 +605,8 @@ AC-41 также требует реального полного test command; 
 | CON-09 | Approval UI показывает wallet-safety level/action и не показывает transaction expiry. |
 | CON-10 | Только direct official-USDT allowance call создаёт current state. |
 | CON-11 | Tag — context; dampener требует exact `KnownServiceSessionV1`. |
-| CON-12 | LLM invalid output отвергается; deterministic result остаётся неизменным. |
-| CON-13 | Normal contract Telegram использует deterministic vocabulary; raw model output запрещён. |
+| CON-12 | Automatic Flash/Pro отсутствует; fresh `llm=null`; legacy LLM JSON audit-only и не влияет на active result. |
+| CON-13 | Unknown contract с subject-bound metadata context получает deterministic `35 REVIEW`; normal contract Telegram не содержит model output. |
 | CON-14 | USDD PSM получает отдельный typed exposure и calibrated modifier. |
 | CON-15 | Later-blacklisted material counterparty сохраняет high current-relationship risk; chronology wording остаётся честным. |
 | CON-16 | AC-41 blocked до новых AC tests, полного regression и runtime/manual gates. |
