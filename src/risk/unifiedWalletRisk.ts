@@ -2,6 +2,11 @@ import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import type { SmartContractCheckReport } from "../check/smartContractCheck";
 import { resolveFinalDisposition } from "./finalDisposition";
 import {
+  assembleFreshScoreResultV2,
+  canonicalScorePublicationV2,
+  materializeFreshScoreBindingV2
+} from "./scoreAnchorV2";
+import {
   scoreMatrixCandidates,
   type ClassifiedMatrixCandidate,
   type MatrixScoringResult
@@ -14,6 +19,10 @@ import type {
   RiskLevel,
   RiskReason,
   RiskReport,
+  NarrativeFactV2,
+  ScoreAnchorDiagnostic,
+  ScoreAnchorV2,
+  ScoringEvidenceV2,
   SourceExposureKind,
   UserExchangeDecision,
   WhereIsMoneyReport
@@ -121,6 +130,10 @@ export type UnifiedWalletRiskResult = {
   reasons: UnifiedWalletRiskReason[];
   scoreBreakdown: UnifiedWalletRiskScoreBreakdown;
   matrixScore: MatrixScoringResult;
+  scoreAnchorV2: ScoreAnchorV2 | null;
+  narrativeFactsV2: NarrativeFactV2[];
+  scoringEvidenceV2: ScoringEvidenceV2[];
+  scoreAnchorDiagnostic: ScoreAnchorDiagnostic;
 };
 
 export type UnifiedForensicRiskResult = UnifiedWalletRiskResult;
@@ -604,7 +617,24 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     coverage: decisionCoverage,
     observedContextScore: observedContextFromMatrix(matrixScore, coverageAdjustedContextScore)
   });
-  const decisiveCandidate = disposition.decisiveCandidate;
+  const binding = materializeFreshScoreBindingV2({
+    mode: "unified",
+    subjectAddress: input.address,
+    disposition,
+    matrix: matrixScore
+  });
+  const canonicalDisposition = assembleFreshScoreResultV2({
+    mode: "unified",
+    subjectAddress: input.address,
+    disposition,
+    matrix: matrixScore,
+    evidence: binding.evidence,
+    facts: binding.facts,
+    activeAnchors: binding.anchor ? [binding.anchor] : []
+  });
+  const canonicalPublication = canonicalScorePublicationV2(canonicalDisposition);
+  const publishedDisposition = canonicalPublication;
+  const decisiveCandidate = publishedDisposition.scoreValid ? disposition.decisiveCandidate : null;
   const resolvedFloors = resolvedCandidateFloors(decisiveCandidate);
   const hardEvidenceFloor = resolvedFloors.hardEvidence;
   const policyFloor = resolvedFloors.policy;
@@ -640,13 +670,13 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   } : null;
 
   return {
-    finalScore: disposition.finalScore,
-    finalLevel: disposition.finalScore === null ? null : levelFromScore(disposition.finalScore),
-    finalDecision: disposition.decision,
-    observedContextScore: disposition.observedContextScore,
-    scoreValid: disposition.scoreValid,
-    decisionBasis: disposition.decisionBasis,
-    coverage: disposition.coverage,
+    finalScore: publishedDisposition.finalScore,
+    finalLevel: publishedDisposition.finalScore === null ? null : levelFromScore(publishedDisposition.finalScore),
+    finalDecision: publishedDisposition.finalDecision,
+    observedContextScore: publishedDisposition.observedContextScore,
+    scoreValid: publishedDisposition.scoreValid,
+    decisionBasis: publishedDisposition.decisionBasis,
+    coverage: publishedDisposition.coverage,
     weightedLayerScore,
     contextScore: coverageAdjustedContextScore,
     hardEvidenceFloor,
@@ -658,6 +688,10 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     layerBreakdown,
     reasons,
     matrixScore,
+    scoreAnchorV2: publishedDisposition.scoreAnchorV2,
+    narrativeFactsV2: publishedDisposition.narrativeFactsV2,
+    scoringEvidenceV2: publishedDisposition.scoringEvidenceV2,
+    scoreAnchorDiagnostic: publishedDisposition.scoreAnchorDiagnostic,
     scoreBreakdown: {
       weightedLayerScore,
       contextScore: coverageAdjustedContextScore,

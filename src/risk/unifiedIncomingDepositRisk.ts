@@ -3,8 +3,8 @@ import type {
   DecisionCoverage,
   IncomingFreshBundleExposure,
   IncomingDepositRiskBand,
-  IncomingDepositUnifiedRiskSummary,
   IncomingWalletExposureProfile,
+  FreshIncomingDepositUnifiedRiskSummaryV2,
   RiskLevel,
   RiskReport,
   StablecoinRestrictionProfile,
@@ -17,6 +17,7 @@ import {
   type UnifiedWalletRiskReason
 } from "./unifiedWalletRisk";
 import { resolveFinalDisposition } from "./finalDisposition";
+import { canonicalScorePublicationV2, assembleFreshScoreResultV2, materializeFreshScoreBindingV2 } from "./scoreAnchorV2";
 import {
   scoreMatrixCandidates,
   type ClassifiedMatrixCandidate,
@@ -238,7 +239,24 @@ export function calculateUnifiedIncomingDepositRisk(
     coverage: input.decisionCoverage ?? incomingCoverageFromWhere(input.whereReport),
     observedContextScore
   });
-  const decisiveCandidate = disposition.decisiveCandidate;
+  const binding = materializeFreshScoreBindingV2({
+    mode: "incoming",
+    subjectAddress: input.senderAddress,
+    disposition,
+    matrix: matrixScore
+  });
+  const canonicalDisposition = assembleFreshScoreResultV2({
+    mode: "incoming",
+    subjectAddress: input.senderAddress,
+    disposition,
+    matrix: matrixScore,
+    evidence: binding.evidence,
+    facts: binding.facts,
+    activeAnchors: binding.anchor ? [binding.anchor] : []
+  });
+  const canonicalPublication = canonicalScorePublicationV2(canonicalDisposition);
+  const publishedDisposition = canonicalPublication;
+  const decisiveCandidate = publishedDisposition.scoreValid ? disposition.decisiveCandidate : null;
   const resolvedFloors = incomingResolvedFloors(decisiveCandidate);
   const hardEvidenceFloor = resolvedFloors.hardEvidence;
   const policyFloor = resolvedFloors.policy;
@@ -271,13 +289,13 @@ export function calculateUnifiedIncomingDepositRisk(
   } : null;
 
   return {
-    finalScore: disposition.finalScore,
-    finalLevel: disposition.finalScore === null ? null : levelFromScore(disposition.finalScore),
-    finalDecision: disposition.decision,
-    observedContextScore: disposition.observedContextScore,
-    scoreValid: disposition.scoreValid,
-    decisionBasis: disposition.decisionBasis,
-    coverage: disposition.coverage,
+    finalScore: publishedDisposition.finalScore,
+    finalLevel: publishedDisposition.finalScore === null ? null : levelFromScore(publishedDisposition.finalScore),
+    finalDecision: publishedDisposition.finalDecision,
+    observedContextScore: publishedDisposition.observedContextScore,
+    scoreValid: publishedDisposition.scoreValid,
+    decisionBasis: publishedDisposition.decisionBasis,
+    coverage: publishedDisposition.coverage,
     weightedLayerScore: base.weightedLayerScore,
     contextScore: observedContextScore,
     hardEvidenceFloor,
@@ -289,6 +307,10 @@ export function calculateUnifiedIncomingDepositRisk(
     layerBreakdown: base.layerBreakdown,
     reasons,
     matrixScore,
+    scoreAnchorV2: publishedDisposition.scoreAnchorV2,
+    narrativeFactsV2: publishedDisposition.narrativeFactsV2,
+    scoringEvidenceV2: publishedDisposition.scoringEvidenceV2,
+    scoreAnchorDiagnostic: publishedDisposition.scoreAnchorDiagnostic,
     scoreBreakdown: {
       weightedLayerScore: base.weightedLayerScore,
       contextScore: observedContextScore,
@@ -311,7 +333,7 @@ export function calculateUnifiedIncomingDepositRisk(
 
 export function incomingUnifiedRiskSummary(
   result: UnifiedForensicRiskResult
-): IncomingDepositUnifiedRiskSummary {
+): FreshIncomingDepositUnifiedRiskSummaryV2 {
   const candidates = classifiedIncomingCandidates(result.matrixScore);
   const scoreForSignal = (predicate: (signal: string) => boolean): number => Math.max(0, ...candidates
     .filter((candidate) => candidate.atomicSignals.some(predicate))
@@ -336,6 +358,10 @@ export function incomingUnifiedRiskSummary(
     corridorFloor: scoreForSignal((signal) => signal.includes("_corridor_")),
     backgroundScore: scoreForSignal((signal) => signal === "incoming_wallet_exposure_profile"),
     dampener: result.dampener,
-    activeAnchor: result.scoreBreakdown.activeAnchor
+    activeAnchor: result.scoreBreakdown.activeAnchor,
+    scoreAnchorV2: result.scoreAnchorV2,
+    narrativeFactsV2: result.narrativeFactsV2,
+    scoringEvidenceV2: result.scoringEvidenceV2,
+    scoreAnchorDiagnostic: result.scoreAnchorDiagnostic
   };
 }

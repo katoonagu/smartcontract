@@ -667,6 +667,59 @@ export type DecisionCoverage = {
 
 export type FinalDecisionBasis = "exact_hard_proof" | "independent_policy" | "matrix" | "technical_stop";
 
+export type ScoreAnchorV2 = {
+  version: "score-anchor-v2";
+  policyVersion: "scoring-signal-matrix-v3";
+  subjectAddress: string;
+  mode: "fast" | "deep" | "where" | "incoming" | "unified" | "contract";
+  score: number;
+  decision: "ACCEPTABLE" | "REVIEW" | "DECLINE";
+  matrixRow: string;
+  evidenceClass: string;
+  proofLevel: "exact" | "strong" | "context";
+  authority: "on_chain" | "registry" | "deterministic_pattern" | "behavior";
+  evidenceIds: string[];
+  primaryEvidenceIds: string[];
+  preferredFactId: string;
+  coverageDependency: "none" | "required";
+};
+
+export type AddressRefV1 = {
+  address: string;
+  display: string;
+  url: string | null;
+};
+
+export type NarrativeFactV2 = {
+  id: string;
+  subjectAddress: string;
+  mode: ScoreAnchorV2["mode"];
+  kind: string;
+  role: string | null;
+  section: "score_reason" | "money_origin" | "money_movement" | "coverage" | "technical";
+  evidenceIds: string[];
+  isScoreDriver: boolean;
+  direction: "incoming" | "outgoing" | "self" | null;
+  amountRaw: string | null;
+  share: number | null;
+  txCount: number | null;
+  addresses: AddressRefV1[];
+  txHashes: string[];
+  factTextKey: string;
+  meaningTextKey: string | null;
+};
+
+export type ScoringEvidenceV2 = {
+  id: string;
+  subjectAddress: string;
+  matrixRow: string;
+  evidenceClass: string;
+  authority: ScoreAnchorV2["authority"];
+  sourceEvidenceIds: string[];
+};
+
+export type ScoreAnchorDiagnostic = "score_anchor_fact_binding_failed" | null;
+
 export type LocalIndexMaterializationStatus = "complete" | "local_limit" | "read_failed";
 
 export type ForensicScoreBlockedReason =
@@ -1037,6 +1090,17 @@ export type IncomingDepositUnifiedRiskSummary = {
     row: string;
     evidenceIds: string[];
   } | null;
+  scoreAnchorV2?: ScoreAnchorV2 | null;
+  narrativeFactsV2?: NarrativeFactV2[];
+  scoringEvidenceV2?: ScoringEvidenceV2[];
+  scoreAnchorDiagnostic?: ScoreAnchorDiagnostic;
+};
+
+export type FreshIncomingDepositUnifiedRiskSummaryV2 = IncomingDepositUnifiedRiskSummary & {
+  scoreAnchorV2: ScoreAnchorV2 | null;
+  narrativeFactsV2: NarrativeFactV2[];
+  scoringEvidenceV2: ScoringEvidenceV2[];
+  scoreAnchorDiagnostic: ScoreAnchorDiagnostic;
 };
 
 export type IncomingDepositTargetedCoverageSummary = {
@@ -2110,9 +2174,21 @@ export type WhereIsMoneyReport = ForensicScoreValidity & {
   coverageV2?: ForensicCoverageV2;
   recentFlowPrincipalTransfers?: RecentFlowPrincipalTransferV1[];
   usddPsmRouteObservations?: UsddPsmRouteObservationV1[];
+  scoreAnchorV2?: ScoreAnchorV2 | null;
+  narrativeFactsV2?: NarrativeFactV2[];
+  scoringEvidenceV2?: ScoringEvidenceV2[];
+  scoreAnchorDiagnostic?: ScoreAnchorDiagnostic;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;
   layerSummary?: MoneyOriginLayerSummary;
+};
+
+export type FreshWhereIsMoneyReportV2 = WhereIsMoneyReport & {
+  scoringPolicyVersion: "scoring-signal-matrix-v3";
+  scoreAnchorV2: ScoreAnchorV2 | null;
+  narrativeFactsV2: NarrativeFactV2[];
+  scoringEvidenceV2: ScoringEvidenceV2[];
+  scoreAnchorDiagnostic: ScoreAnchorDiagnostic;
 };
 
 export type AddressFeaturesDaily = {

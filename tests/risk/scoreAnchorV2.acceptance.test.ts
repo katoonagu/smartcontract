@@ -395,10 +395,10 @@ describe("ScoreAnchorV2 acceptance contract", () => {
       scoreAnchorV2: anchor,
       scoreAnchorDiagnostic: null
     });
-    expect(published.finalScore).toBe(published.scoreAnchorV2.score);
-    expect(published.decision).toBe(published.scoreAnchorV2.decision);
-    expect(published.scoreAnchorV2.subjectAddress).toBe(SUBJECT);
-    expect(published.scoreAnchorV2.mode).toBe(MODE);
+    expect(published.finalScore).toBe(published.scoreAnchorV2!.score);
+    expect(published.decision).toBe(published.scoreAnchorV2!.decision);
+    expect(published.scoreAnchorV2!.subjectAddress).toBe(SUBJECT);
+    expect(published.scoreAnchorV2!.mode).toBe(MODE);
 
     for (const activeAnchors of [[], [anchor, anchor]]) {
       expect(assemble(activeAnchors)).toMatchObject({
@@ -656,6 +656,372 @@ describe("ScoreAnchorV2 acceptance contract", () => {
 
     expect(result.anchor).toBeNull();
     expect(result).not.toHaveProperty("fallbackAnchor");
+  });
+
+  it("[REQ-15][ANCHOR-VERSION] maps only explicit internal v2 or canonical v3 inputs into a v3 anchor", async () => {
+    const { buildScoreAnchorV2 } = await import("../../src/risk/scoreAnchorV2");
+    for (const policyVersion of ["scoring-signal-matrix-v2", "scoring-signal-matrix-v3"]) {
+      const result = buildScoreAnchorV2({
+        mode: MODE,
+        subjectAddress: SUBJECT,
+        disposition: validDisposition(),
+        matrix: validMatrix(matrixCandidate(), { policyVersion }),
+        facts: validFacts()
+      } as any);
+      expect(result).toMatchObject({
+        diagnostic: null,
+        anchor: { policyVersion: "scoring-signal-matrix-v3" }
+      });
+    }
+
+    for (const policyVersion of ["scoring-signal-matrix-v1", "future-policy", 7, true]) {
+      const result = buildScoreAnchorV2({
+        mode: MODE,
+        subjectAddress: SUBJECT,
+        disposition: validDisposition(),
+        matrix: validMatrix(matrixCandidate(), { policyVersion }),
+        facts: validFacts()
+      } as any);
+      expect(result).toEqual({ anchor: null, diagnostic: "score_anchor_fact_binding_failed" });
+    }
+  });
+
+  it("[REQ-15][ANCHOR-COLLISION] fails closed instead of collapsing distinct candidates into one evidence envelope", async () => {
+    const { materializeFreshScoreBindingV2 } = await import("../../src/risk/scoreAnchorV2");
+    const winner = matrixCandidate();
+    const collidingContributor = {
+      ...winner,
+      atomicSignals: ["different_atomic_signal_for_same_evidence"]
+    };
+    const matrix = validMatrix(winner, {
+      riskVector: { hard_proof: [winner, collidingContributor] }
+    });
+
+    expect(materializeFreshScoreBindingV2({
+      mode: MODE,
+      subjectAddress: SUBJECT,
+      disposition: validDisposition({ decisiveCandidate: winner }),
+      matrix
+    } as any)).toEqual({
+      anchor: null,
+      diagnostic: "score_anchor_fact_binding_failed",
+      evidence: [],
+      facts: []
+    });
+  });
+
+  it("[REQ-15][ANCHOR-ATOMIC-SIGNAL] fails closed when the decisive candidate has no first atomic signal", async () => {
+    const { materializeFreshScoreBindingV2 } = await import("../../src/risk/scoreAnchorV2");
+    const candidate = matrixCandidate({ atomicSignals: [] });
+
+    expect(materializeFreshScoreBindingV2({
+      mode: MODE,
+      subjectAddress: SUBJECT,
+      disposition: validDisposition({ decisiveCandidate: candidate }),
+      matrix: validMatrix(candidate)
+    } as any)).toEqual({
+      anchor: null,
+      diagnostic: "score_anchor_fact_binding_failed",
+      evidence: [],
+      facts: []
+    });
+  });
+
+  it("[REQ-05][REQ-15][ANCHOR-INCOMING-CONTEXT] binds the registered unknown-contract incoming context row", async () => {
+    const {
+      assembleFreshScoreResultV2,
+      materializeFreshScoreBindingV2,
+      validateScoreAnchorV2
+    } = await import("../../src/risk/scoreAnchorV2");
+    const candidate = matrixCandidate({
+      row: "incoming_deposit_source_policy",
+      actionUnit: "incoming_deposit",
+      score: 45,
+      evidenceIds: ["incoming:unknown-contract:context"],
+      evidenceEpisodeIds: ["incoming:unknown-contract:episode"],
+      atomicSignals: ["incoming_fresh_unknown_contract_source"],
+      modifiers: ["share_87"],
+      caps: ["unknown_contract_cap_59"],
+      subject: { decisionScope: "incoming_unified", address: SUBJECT, txHash: "tx-incoming-context" },
+      authority: { kind: "context" },
+      evidenceClass: "context",
+      proofLevel: "context",
+      decisionEligibility: "review_only",
+      coverageDependency: "none"
+    });
+    const disposition = validDisposition({
+      decision: "REVIEW",
+      finalScore: 45,
+      observedContextScore: 45,
+      decisionBasis: "matrix",
+      hardProofEvidenceIds: [],
+      decisiveCandidate: candidate
+    });
+    const matrix = validMatrix(candidate, {
+      policyScore: 45,
+      matrixDecision: "REVIEW",
+      actionUnit: "incoming_deposit"
+    });
+    const binding = materializeFreshScoreBindingV2({
+      mode: "incoming",
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix
+    } as any);
+
+    expect(binding).toMatchObject({
+      diagnostic: null,
+      anchor: {
+        subjectAddress: SUBJECT,
+        mode: "incoming",
+        score: 45,
+        decision: "REVIEW",
+        matrixRow: "incoming_deposit_source_policy",
+        evidenceClass: "context",
+        proofLevel: "context",
+        authority: "behavior",
+        coverageDependency: "required"
+      }
+    });
+    expectValidationFailure(() => validateScoreAnchorV2({
+      anchor: { ...binding.anchor, coverageDependency: "none" },
+      checkedSubjectAddress: SUBJECT,
+      checkedMode: "incoming",
+      evidence: binding.evidence,
+      facts: binding.facts
+    } as any));
+    expect(assembleFreshScoreResultV2({
+      mode: "incoming",
+      subjectAddress: SUBJECT,
+      disposition,
+      matrix,
+      evidence: binding.evidence,
+      facts: binding.facts,
+      activeAnchors: [binding.anchor]
+    } as any)).toMatchObject({
+      finalScore: 45,
+      decision: "REVIEW",
+      scoreValid: true,
+      scoreAnchorDiagnostic: null
+    });
+  });
+
+  it("[REQ-15][ANCHOR-PUBLICATION] clears Unified and Incoming numeric fields when canonical binding fails", async () => {
+    const {
+      assembleFreshScoreResultV2,
+      canonicalScorePublicationV2
+    } = await import("../../src/risk/scoreAnchorV2");
+    const invalid = assembleFreshScoreResultV2({
+      mode: MODE,
+      subjectAddress: SUBJECT,
+      disposition: validDisposition(),
+      matrix: validMatrix(),
+      evidence: [],
+      facts: [],
+      activeAnchors: []
+    } as any);
+
+    for (const consumer of ["unified", "incoming"]) {
+      expect(canonicalScorePublicationV2(invalid), consumer).toMatchObject({
+        finalScore: null,
+        finalDecision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        decisionBasis: "technical_stop",
+        scoreAnchorV2: null,
+        scoreAnchorDiagnostic: "score_anchor_fact_binding_failed"
+      });
+    }
+  });
+
+  it("[REQ-05][REQ-15][ANCHOR-INVALID-SUBJECT] fails closed in fresh Unified and Incoming assembly", async () => {
+    const { calculateUnifiedWalletRisk } = await import("../../src/risk/unifiedWalletRisk");
+    const { calculateUnifiedIncomingDepositRisk } = await import("../../src/risk/unifiedIncomingDepositRisk");
+    const invalidSubject = "not-a-tron-address";
+    const sourcePolicyEvidence = {
+      kind: "htx_huobi",
+      aggregateShare: 0.5,
+      effectiveShare: 0.5,
+      pathCount: 1,
+      score: 45,
+      riskBand: "MEDIUM",
+      proofLevel: "exchange_policy_context",
+      canBeDampened: false,
+      reasons: ["typed context"],
+      warnings: [],
+      evidenceIds: ["where:invalid-subject-policy"]
+    };
+    const whereReport = {
+      subjectAddress: invalidSubject,
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: "completed",
+      currentUsdtBalanceRaw: "1000000",
+      fastWalletRisk: null,
+      balanceFormingTransfers: [],
+      originPaths: [],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      assessment: {
+        scoreValid: true,
+        riskScore: 45,
+        hardBadEvidence: [],
+        sourcePolicyEvidence: [sourcePolicyEvidence],
+        contractSuspicionEvidence: [],
+        unknownOriginEvidence: [],
+        riskLayers: [],
+        warnings: []
+      },
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      proofLevel: "exchange_policy_context",
+      riskScore: 45,
+      decisionReasons: ["typed context"],
+      coverage: { partial: false, notes: [] }
+    } as any;
+
+    const unified = calculateUnifiedWalletRisk({
+      address: invalidSubject,
+      fastReport: null,
+      deepReport: null,
+      whereReport
+    });
+    const incoming = calculateUnifiedIncomingDepositRisk({
+      senderAddress: invalidSubject,
+      receiverAddress: SUBJECT,
+      txHash: "f".repeat(64),
+      amountRaw: "1000000",
+      timestamp: NOW,
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport
+    });
+
+    for (const result of [unified, incoming]) {
+      expect(result).toMatchObject({
+        finalScore: null,
+        finalDecision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        decisionBasis: "technical_stop",
+        scoreAnchorV2: null,
+        scoreAnchorDiagnostic: "score_anchor_fact_binding_failed"
+      });
+    }
+  });
+
+  it("[REQ-15][INCOMING-BINDING] keeps the complete canonical binding in the saved Incoming summary", async () => {
+    const { incomingUnifiedRiskSummary } = await import("../../src/risk/unifiedIncomingDepositRisk");
+    const canonical = {
+      scoreAnchorV2: validAnchor(),
+      narrativeFactsV2: validFacts(),
+      scoringEvidenceV2: validEvidence(),
+      scoreAnchorDiagnostic: null
+    };
+    const summary = incomingUnifiedRiskSummary({
+      finalScore: 95,
+      finalLevel: "CRITICAL",
+      finalDecision: "DECLINE",
+      observedContextScore: 20,
+      scoreValid: true,
+      decisionBasis: "exact_hard_proof",
+      coverage: { required: "valid", overall: "complete", invalidModes: [], caveats: [] },
+      matrixScore: validMatrix(),
+      hardEvidenceFloor: 95,
+      policyFloor: 0,
+      assetContinuationFloor: 0,
+      patternFloor: 0,
+      dampener: 0,
+      scoreBreakdown: { activeAnchor: null },
+      ...canonical
+    } as any);
+
+    expect(summary).toMatchObject(canonical);
+  });
+
+  it("[REQ-04][REQ-15][WHERE-BINDING] creates a subject-bound Where anchor and fails closed without dominant evidence", async () => {
+    const { bindFreshWhereScoreResultV2 } = await import("../../src/check/whereIsMoneyCheck");
+    const dominantRiskLayer = {
+      evidenceClass: "source_policy",
+      kind: "aggregate_source_policy",
+      score: 45,
+      rawScore: 45,
+      adjustedScore: 45,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: false,
+      reasons: [],
+      warnings: [],
+      evidenceIds: ["where:source-policy"]
+    };
+    const fresh = {
+      subjectAddress: SUBJECT,
+      scoreValid: true,
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 45,
+      assessment: {
+        scoreValid: true,
+        riskScore: 45,
+        dominantRiskLayer
+      },
+      coverage: { partial: false, notes: [] }
+    } as any;
+
+    const bound = bindFreshWhereScoreResultV2(fresh);
+    expect(bound).toMatchObject({
+      scoreValid: true,
+      userDecision: "REVIEW",
+      scoreAnchorV2: {
+        policyVersion: "scoring-signal-matrix-v3",
+        subjectAddress: SUBJECT,
+        mode: "where",
+        score: 45,
+        decision: "REVIEW",
+        matrixRow: "source_policy"
+      },
+      scoreAnchorDiagnostic: null
+    });
+
+    expect(bindFreshWhereScoreResultV2({
+      ...fresh,
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE"
+    })).toMatchObject({
+      scoreValid: true,
+      userDecision: "REVIEW",
+      scoreAnchorV2: { decision: "REVIEW", matrixRow: "source_policy" },
+      scoreAnchorDiagnostic: null
+    });
+
+    expect(bindFreshWhereScoreResultV2({
+      ...fresh,
+      assessment: { ...fresh.assessment, dominantRiskLayer: null }
+    })).toMatchObject({
+      scoreValid: false,
+      userDecision: "NO_FINAL_DECISION",
+      scoreAnchorV2: null,
+      scoreAnchorDiagnostic: "score_anchor_fact_binding_failed"
+    });
+
+    expect(bindFreshWhereScoreResultV2({
+      ...fresh,
+      riskScore: 70,
+      assessment: { ...fresh.assessment, riskScore: 70 }
+    })).toMatchObject({
+      scoreValid: false,
+      userDecision: "NO_FINAL_DECISION",
+      scoreAnchorV2: null,
+      scoreAnchorDiagnostic: "score_anchor_fact_binding_failed"
+    });
+
+    expect(bindFreshWhereScoreResultV2({
+      ...fresh,
+      subjectAddress: "not-a-tron-address"
+    })).toMatchObject({
+      scoreValid: false,
+      userDecision: "NO_FINAL_DECISION",
+      scoreAnchorV2: null,
+      scoreAnchorDiagnostic: "score_anchor_fact_binding_failed"
+    });
   });
 
   it("[REQ-05] keeps contract safety separate from ordinary transfer scoring", async () => {

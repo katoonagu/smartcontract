@@ -42,6 +42,8 @@ import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingC
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ForensicJobProgressPatch } from "../forensics/forensicJobProgress";
 import { exactFastHardEvidence } from "../risk/fastEvidence";
+import { assembleFreshScoreResultV2, materializeFreshScoreBindingV2 } from "../risk/scoreAnchorV2";
+import { scoreMatrixCandidates, type MatrixCandidate } from "../risk/scoringSignalMatrix";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   AddressLabel,
@@ -72,6 +74,7 @@ import type {
   SourceExposureKind,
   ServiceExposureProfile,
   SubjectExposureEvent,
+  FreshWhereIsMoneyReportV2,
   WhereCandidateWindowRequest,
   WhereIsMoneyReport
 } from "../types";
@@ -291,6 +294,129 @@ function whereDecisionFields(input: {
     userDecision: scoreInvalid ? "NO_FINAL_DECISION" : userDecisionFromInternal(input.decision),
     proofLevel: proofLevelFromWhereDecision(input)
   };
+}
+
+function dominantWhereCandidate(report: WhereIsMoneyReport): MatrixCandidate | null {
+  const layer = report.assessment.dominantRiskLayer;
+  if (!layer || layer.evidenceIds.length === 0) return null;
+  const subject = {
+    decisionScope: "wallet_unified" as const,
+    address: report.subjectAddress,
+    txHash: null
+  };
+  const common = {
+    actionUnit: "source_path" as const,
+    score: layer.adjustedScore,
+    evidenceIds: [...layer.evidenceIds],
+    evidenceEpisodeIds: [...layer.evidenceIds],
+    atomicSignals: [layer.kind],
+    modifiers: ["where_dominant_policy_layer"],
+    caps: [],
+    dampeners: [],
+    caveats: [...layer.warnings],
+    subject
+  };
+  if (layer.evidenceClass === "hard_proof") {
+    return { ...common, row: "hard_proof", authority: { kind: "exact_hard", proofSource: "where_exact_hard" } };
+  }
+  if (layer.evidenceClass === "source_policy") {
+    return {
+      ...common,
+      row: "source_policy",
+      authority: {
+        kind: "policy",
+        decisionEligibility: report.internalDecision === "DECLINE" ? "can_decline" : "review_only",
+        coverageDependency: "wallet_provenance"
+      }
+    };
+  }
+  if (layer.evidenceClass === "clean_source") {
+    return {
+      ...common,
+      row: "clean_or_operational",
+      authority: { kind: "clean", coverageDependency: "wallet_provenance" }
+    };
+  }
+  return { ...common, row: layer.evidenceClass === "contract_suspicion" ? "contract_suspicion" : "behavior_only_prior", authority: { kind: "context" } };
+}
+
+export function bindFreshWhereScoreResultV2(report: WhereIsMoneyReport): FreshWhereIsMoneyReportV2 {
+  const candidate = dominantWhereCandidate(report);
+  const matrix = scoreMatrixCandidates(candidate ? [candidate] : [], {
+    decisionScope: "wallet_unified",
+    subjectAddress: report.subjectAddress,
+    subjectTxHash: null,
+    requiredCoverage: "wallet_provenance"
+  });
+  const decision = matrix.matrixDecision === "INSUFFICIENT_EVIDENCE" ? null : matrix.matrixDecision;
+  const bindable = candidate !== null &&
+    report.scoreValid === true &&
+    report.assessment.scoreValid === true &&
+    decision !== null &&
+    report.riskScore === report.assessment.riskScore &&
+    matrix.policyScore === report.assessment.riskScore;
+  const disposition = bindable
+    ? {
+        decision,
+        finalScore: report.riskScore,
+        observedContextScore: report.riskScore,
+        scoreValid: true,
+        decisionBasis: candidate.authority.kind === "exact_hard" ? "exact_hard_proof" as const : "matrix" as const,
+        coverage: {
+          required: candidate.authority.kind === "exact_hard" ? "valid" as const : report.coverage.partial ? "invalid" as const : "valid" as const,
+          overall: report.coverage.partial ? "partial" as const : "complete" as const,
+          invalidModes: report.coverage.partial ? ["where"] : [],
+          caveats: [...report.coverage.notes]
+        },
+        hardProofEvidenceIds: candidate.authority.kind === "exact_hard" ? [...candidate.evidenceIds] : [],
+        decisiveCandidate: matrix.winningCandidate
+      }
+    : {
+        decision: "NO_FINAL_DECISION" as const,
+        finalScore: null,
+        observedContextScore: report.riskScore,
+        scoreValid: false,
+        decisionBasis: "technical_stop" as const,
+        coverage: {
+          required: "invalid" as const,
+          overall: "partial" as const,
+          invalidModes: ["where"],
+          caveats: [...(report.coverage?.notes ?? [])]
+        },
+        hardProofEvidenceIds: [],
+        decisiveCandidate: null
+      };
+  const binding = materializeFreshScoreBindingV2({
+    mode: "where",
+    subjectAddress: report.subjectAddress,
+    disposition,
+    matrix
+  });
+  const canonical = assembleFreshScoreResultV2({
+    mode: "where",
+    subjectAddress: report.subjectAddress,
+    disposition,
+    matrix,
+    evidence: binding.evidence,
+    facts: binding.facts,
+    activeAnchors: binding.anchor ? [binding.anchor] : []
+  });
+  return {
+    ...report,
+    scoringPolicyVersion: "scoring-signal-matrix-v3",
+    scoreValid: canonical.scoreValid,
+    userDecision: canonical.decision,
+    scoreAnchorV2: canonical.scoreAnchorV2,
+    narrativeFactsV2: canonical.narrativeFactsV2,
+    scoringEvidenceV2: canonical.scoringEvidenceV2,
+    scoreAnchorDiagnostic: bindable
+      ? canonical.scoreAnchorDiagnostic
+      : "score_anchor_fact_binding_failed"
+  };
+}
+
+function publishFreshWhereScoreResultV2(report: WhereIsMoneyReport): WhereIsMoneyReport {
+  return bindFreshWhereScoreResultV2(report);
 }
 
 const WALLET_PROFILE_ZERO_BALANCE_REASON =
@@ -1587,7 +1713,7 @@ export async function runWhereIsMoneyCheck(
     const hasMeaningfulRecentFlow = selection.provenanceScope === "recent_flow" && Boolean(selection.anchorTransfer);
     if (input.mode === "wallet_profile" && rawBalanceIsZero(currentBalanceRaw) && !hasMeaningfulRecentFlow) {
       const labels = await deps.getLabelsForAddress(sourceAddress).catch(() => []);
-      return walletProfileZeroBalanceReport({
+      return publishFreshWhereScoreResultV2(walletProfileZeroBalanceReport({
         sourceAddress,
         currentBalanceRaw,
         requestedAmountRaw: input.requestedAmountRaw,
@@ -1601,9 +1727,9 @@ export async function runWhereIsMoneyCheck(
         anchorCoverageRatio: selection.coverageRatio,
         episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null,
         coverageV2
-      });
+      }));
     }
-    return fallbackReviewReport({
+    return publishFreshWhereScoreResultV2(fallbackReviewReport({
       sourceAddress,
       currentBalanceRaw,
       requestedAmountRaw: selection.requestedAmountRaw,
@@ -1628,7 +1754,7 @@ export async function runWhereIsMoneyCheck(
         : null,
       notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."],
       coverageV2
-    });
+    }));
   }
 
   const fetchEdgesForAddress = async (
@@ -2127,7 +2253,7 @@ export async function runWhereIsMoneyCheck(
     paths: originPaths
   });
 
-  return {
+  return publishFreshWhereScoreResultV2({
     subjectAddress: sourceAddress,
     currentUsdtBalanceRaw: currentBalanceRaw,
     fastWalletRisk,
@@ -2161,5 +2287,5 @@ export async function runWhereIsMoneyCheck(
     decisionReasons,
     coverage: finalCoverage,
     layerSummary
-  };
+  });
 }

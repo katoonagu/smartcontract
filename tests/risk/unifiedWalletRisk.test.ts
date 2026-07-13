@@ -36,8 +36,10 @@ import type {
   WhereIsMoneyReport
 } from "../../src/types";
 
-const address = `T${"1".repeat(33)}`;
+const address = "TMVQGm1qAQYVdetCeGRRkTWYYrLXuHK2HC";
 const directPolicyCounterparty = `T${"2".repeat(33)}`;
+const blacklistedSenderAddress = "TKTX96CBxr5kvhjsDHcqoiPWZageGxoTW3";
+const fixtureSenderAddress = "TWYSVbUy6eTu6ZrFWRUimgDy9SinkggVKL";
 const directPolicyTxHash = "a".repeat(64);
 const directPolicyEventTxHash = "b".repeat(64);
 
@@ -693,7 +695,7 @@ function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRo
 
 describe("calculateUnifiedIncomingDepositRisk", () => {
   it("treats sender USDT blacklist as incoming deposit hard evidence", () => {
-    const senderAddress = "TBlacklistedSender111111111111111111";
+    const senderAddress = blacklistedSenderAddress;
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress,
       receiverAddress: "TWatchedWallet1111111111111111111",
@@ -725,7 +727,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
   });
 
   it("keeps exact incoming hard proof decisive through invalid provenance coverage", () => {
-    const senderAddress = "TBlacklistedSender111111111111111111";
+    const senderAddress = blacklistedSenderAddress;
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress,
       receiverAddress: "TWatchedWallet1111111111111111111",
@@ -1124,7 +1126,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("floors incoming deposit risk when HTX/Huobi materially funds the fresh bundle", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-fresh-htx",
       amountRaw: "100000000000",
@@ -1163,7 +1165,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("clears no-hard-evidence cap metadata when fresh HTX source bypasses a capped base score", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-fresh-htx-over-capped-base",
       amountRaw: "100000000000",
@@ -1196,7 +1198,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("keeps no-hard-evidence cap metadata when fresh HTX floor does not lift a capped base score", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-fresh-htx-below-capped-base",
       amountRaw: "100000000000",
@@ -1231,7 +1233,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("caps background-only incoming overlay below CRITICAL without hard evidence", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-background-cap",
       amountRaw: "100000000000",
@@ -1274,7 +1276,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("uses the strongest fresh bundle signal when risky label and HTX/Huobi both appear", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-risky-label-over-htx-context",
       amountRaw: "100000000000",
@@ -1307,7 +1309,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("does not add corridor context when unknown contract already has a fresh source floor", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-fresh-unknown-contract",
       amountRaw: "100000000000",
@@ -1341,7 +1343,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("keeps tiny HTX/Huobi fresh share as corridor context without a fresh source floor", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-tiny-htx-corridor",
       amountRaw: "100000000000",
@@ -1374,7 +1376,7 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
 
   it("keeps historical HTX/Huobi exposure as capped background when fresh HTX share is absent", () => {
     const result = calculateUnifiedIncomingDepositRisk({
-      senderAddress: "TSender1111111111111111111111111111",
+      senderAddress: fixtureSenderAddress,
       receiverAddress: "TReceiver11111111111111111111111111",
       txHash: "tx-historical-htx",
       amountRaw: "100000000000",
@@ -1493,7 +1495,7 @@ describe("calculateUnifiedWalletRisk", () => {
     const result = calculateUnifiedForensicRisk({
       subject: {
         scope: "incoming_deposit",
-        senderAddress: "TSender1111111111111111111111111111",
+        senderAddress: fixtureSenderAddress,
         receiverAddress: "TReceiver11111111111111111111111111",
         txHash: "tx-incoming-insufficient-coverage",
         amountRaw: "65000000",
@@ -2652,9 +2654,11 @@ describe("calculateUnifiedWalletRisk", () => {
     const contributionSum = contributions.reduce((sum, contribution) => sum + contribution, 0);
 
     expect(result.weightedLayerScore).toBe(60);
-    expect(result.finalScore).toBe(1);
-    expect(result.finalDecision).toBe("ACCEPTABLE");
-    expect(result.matrixScore.policyScore).toBe(result.finalScore);
+    expect(result.finalScore).toBeNull();
+    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
+    expect(result.scoreValid).toBe(false);
+    expect(result.scoreAnchorDiagnostic).toBe("score_anchor_fact_binding_failed");
+    expect(result.matrixScore.policyScore).toBe(1);
     expect(contributions.every((contribution) => contribution >= 0)).toBe(true);
     expect(contributionSum).toBe(result.weightedLayerScore);
   });

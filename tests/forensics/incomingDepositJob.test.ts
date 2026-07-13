@@ -40,7 +40,8 @@ import type {
 
 const depositTxHash = "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b";
 const watchedWalletId = "wallet-1";
-const stage2BridgeSender = "TStage2Bridge111111111111111111111";
+const incomingSenderAddress = "TWYSVbUy6eTu6ZrFWRUimgDy9SinkggVKL";
+const stage2BridgeSender = "TCo75zcxTuWn5nnFqZUeK5socdVnG11f2T";
 const stage2EthereumActor = "0x2222222222222222222222222222222222222222";
 const stage2GaryActor = "0x3333333333333333333333333333333333333333";
 const stage2SanctionedActor = "0x5555555555555555555555555555555555555555";
@@ -103,7 +104,7 @@ const validProgressJson = {
   depositTxHash,
   watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
   watchedWalletId,
-  sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+  sender: incomingSenderAddress,
   amountRaw: "384064001319",
   amount: "384064.001319",
   timestamp: "2026-05-29T14:01:00.000Z",
@@ -145,7 +146,7 @@ function job(progressJson: Record<string, unknown>): ForensicCheckJob {
   return {
     id: "job-incoming-1",
     kind: "incoming_deposit_check",
-    subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+    subjectAddress: incomingSenderAddress,
     status: "running",
     windowStart: new Date("2026-05-29T13:00:00.000Z"),
     windowEnd: new Date("2026-05-29T14:02:00.000Z"),
@@ -698,7 +699,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(buildReport).toHaveBeenCalledWith(expect.objectContaining({
       depositTxHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
       watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
-      sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+      sender: incomingSenderAddress,
       amountRaw: "384064001319",
       timestamp: new Date("2026-05-29T14:01:00.000Z")
     }));
@@ -1831,7 +1832,12 @@ describe("buildIncomingDepositReport", () => {
     expect(scenario.queueAddressUsdtHistory).not.toHaveBeenCalled();
     expect(scenario.releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
     expect(scenario.result.originPaths.flatMap((path) => path.pathAddresses)).toContain(scenario.upstreamSource);
-    expect(scenario.result).toMatchObject({ scoreValid: true });
+    expect(scenario.result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      unifiedRiskSummary: { decisionBasis: "technical_stop" }
+    });
     expect(scenario.result.targetedHistoryCoverage).toMatchObject({
       pagesFetched: 2,
       transfersFetched: 201,
@@ -2170,7 +2176,12 @@ describe("buildIncomingDepositReport", () => {
     expect(result.fundingCoverage.cleanSourceCoverageRatio).toBeGreaterThanOrEqual(0.85);
     expect(result.reasons.join(" ")).toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
     expect(result.reasons.join(" ")).not.toContain("Clean CEX origin is not fully proven");
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      unifiedRiskSummary: { decisionBasis: "technical_stop" }
+    });
   });
 
   it("traces an incoming deposit through non-boundary contract accounts to Binance", async () => {
@@ -3092,7 +3103,12 @@ describe("buildIncomingDepositReport", () => {
       maxDepth: 20,
       topExpandedFunders: [topFunder, secondaryFunder]
     }));
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      unifiedRiskSummary: { decisionBasis: "technical_stop" }
+    });
     expect(result.fundingCoverage.depositFundingCoverageRatio).toBe(1);
   });
 
@@ -3719,21 +3735,26 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.decision).toBe("DECLINE");
-    expect(result.depositRiskScore).toBeGreaterThanOrEqual(75);
-    expect(result.riskBand).toBe("CRITICAL");
-    expect(result.unifiedRiskSummary?.policyFloor).toBeGreaterThanOrEqual(70);
-    expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
-    expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
-    expect(result.unifiedRiskSummary?.activeAnchor?.source).toBe("policy_floor");
-    expect(result.unifiedRiskSummary?.activeAnchor).toMatchObject({
-      code: "source_policy_no_name_token_liquidity",
-      row: "source_policy"
+    expect(result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      riskBand: null,
+      unifiedRiskSummary: {
+        finalScore: null,
+        finalDecision: "NO_FINAL_DECISION",
+        decisionBasis: "technical_stop",
+        scoreAnchorV2: null,
+        scoreAnchorDiagnostic: null
+      }
     });
     expect(result.unifiedRiskSummary?.matrixDecision).toBe("DECLINE");
     expect(result.unifiedRiskSummary?.winningRow).toBe("source_policy");
-    expect(result.unifiedRiskSummary?.policyScore).toBe(result.depositRiskScore);
+    expect(result.unifiedRiskSummary?.policyScore).toBe(88);
     expect(result.unifiedRiskSummary?.calibratedRiskProbability).toBeNull();
+    expect(result.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "no_name_token_liquidity", score: 88 })
+    ]));
     expect(result.reasons.join(" ")).toContain("no-name token liquidity");
     expect(result.hardBadEvidence).toEqual([]);
   });
@@ -3901,7 +3922,12 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      unifiedRiskSummary: { decisionBasis: "technical_stop" }
+    });
     expect(result.originPaths[0]).toEqual(expect.objectContaining({
       stoppedReason: "clean_cex_reached",
       txHashes: expect.arrayContaining(["live-binance-funding-1", depositTxHash])
@@ -3942,7 +3968,12 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      unifiedRiskSummary: { decisionBasis: "technical_stop" }
+    });
     expect(result.originPaths[0]).toEqual(expect.objectContaining({
       stoppedReason: "clean_cex_reached",
       txHashes: expect.arrayContaining(["indexed-binance-funding-1", depositTxHash])
@@ -4278,10 +4309,19 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.depositRiskScore).toBeLessThan(60);
-    expect(result.decision).toBe("REVIEW");
-    expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
-    expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
+    expect(result).toMatchObject({
+      decision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      depositRiskScore: null,
+      riskBand: null,
+      unifiedRiskSummary: {
+        finalScore: null,
+        finalDecision: "NO_FINAL_DECISION",
+        decisionBasis: "technical_stop",
+        scoreAnchorV2: null,
+        scoreAnchorDiagnostic: null
+      }
+    });
     expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
       source: "unavailable",
       verdict: "unknown_insufficient_data",
