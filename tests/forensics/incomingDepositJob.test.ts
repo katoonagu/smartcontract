@@ -30,7 +30,6 @@ import type {
 } from "../../src/forensics/evmExplorerClient";
 import type {
   AddressLabel,
-  ContractLlmVerdictSummary,
   IncomingDepositRiskReport,
   IndexedTronUsdtTransfer,
   ServiceClassification,
@@ -1548,7 +1547,7 @@ describe("buildIncomingDepositReport", () => {
     ]));
   });
 
-  it("composes fast sender risk, provenance, contract analysis, and final deposit risk report", async () => {
+  it("composes fast sender risk and deterministic contract analysis without fresh LLM output", async () => {
     const contract = "TFcRN111111111111111111111111FLR5hvh";
     const senderLabel: AddressLabel = {
       address: validProgressJson.sender,
@@ -1572,24 +1571,6 @@ describe("buildIncomingDepositReport", () => {
         balance: "balanceOf(address)"
       }
     };
-    const llmVerdict: ContractLlmVerdictSummary = {
-      source: "llm",
-      cacheMatch: null,
-      reusedFromContractAddress: null,
-      providerLabel: "test-llm",
-      model: "test-model",
-      contractAddress: contract,
-      caseFileHash: "case-hash-1",
-      cacheId: null,
-      verdict: "drainer_like",
-      confidence: 0.91,
-      contractRiskScore: 93,
-      decisionRecommendation: "DECLINE",
-      reasons: ["Contract behavior is drainer-like."],
-      citedEvidenceIds: ["contract-in-1"],
-      falsePositiveNotes: []
-    };
-
     const listIndexed = vi.fn(async (address: string) =>
       address === validProgressJson.sender
         ? [indexedTransfer({
@@ -1606,7 +1587,6 @@ describe("buildIncomingDepositReport", () => {
         ? { category: "unknown_contract", identity: null, confidence: "medium", evidence: ["test contract"], isBoundary: true }
         : null
     );
-    const analyzeLlm = vi.fn(async () => [llmVerdict]);
     const getTransaction = vi.fn(async (txHash: string) => ({ txHash, ret: "SUCCESS" }));
     const enrichContractClassification = vi.fn(async () => ({
       address: contract,
@@ -1627,8 +1607,7 @@ describe("buildIncomingDepositReport", () => {
         enrichContractClassification,
         getTransaction,
         listTrc20ApprovalChanges: async () => [],
-        getUsdtRestrictionStatus: async () => stablecoinState,
-        analyzeContractLlmCaseFiles: analyzeLlm
+        getUsdtRestrictionStatus: async () => stablecoinState
       },
       job: job(validProgressJson),
       depositTxHash,
@@ -1647,7 +1626,7 @@ describe("buildIncomingDepositReport", () => {
       stoppedReason: "unknown_contract_reached",
       txHashes: expect.arrayContaining(["contract-in-1", depositTxHash])
     }));
-    expect(result.contractVerdicts).toEqual([llmVerdict]);
+    expect(result.contractVerdicts).toEqual([]);
     expect(result.hardBadEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "scam_or_blacklist" })
     ]));
@@ -1662,7 +1641,6 @@ describe("buildIncomingDepositReport", () => {
       start: 0,
       limit: expect.any(Number)
     }));
-    expect(analyzeLlm).toHaveBeenCalledTimes(1);
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
     expect(getTransaction).toHaveBeenCalledWith("contract-in-1");
   });
@@ -2783,8 +2761,7 @@ describe("buildIncomingDepositReport", () => {
         getClassificationForAddress: async () => null,
         getContractIntelligenceProfile: async () => null,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: async () => []
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
       depositTxHash,
@@ -2865,8 +2842,7 @@ describe("buildIncomingDepositReport", () => {
         getClassificationForAddress: async () => null,
         getContractIntelligenceProfile: async () => null,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: async () => []
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
       depositTxHash,
@@ -2996,8 +2972,7 @@ describe("buildIncomingDepositReport", () => {
         getClassificationForAddress: async () => null,
         getContractIntelligenceProfile: async () => null,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: async () => []
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
       depositTxHash,
@@ -3084,8 +3059,7 @@ describe("buildIncomingDepositReport", () => {
             : null,
         getContractIntelligenceProfile: async () => null,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: async () => []
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
       depositTxHash,
@@ -3165,8 +3139,7 @@ describe("buildIncomingDepositReport", () => {
             : null,
         getContractIntelligenceProfile: async () => null,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: async () => []
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
       depositTxHash,
@@ -4106,7 +4079,6 @@ describe("buildIncomingDepositReport", () => {
 
   it("uses deterministic service enrichment so final reports do not stay unresolved unknown risk", async () => {
     const contract = "TFcRN111111111111111111111111FLR5hvh";
-    const analyzeLlm = vi.fn(async () => []);
     const enrichContractClassification = vi.fn(async () => ({
       address: contract,
       metadata: { address: contract, name: "GasFree", tag: "GasFree", isContract: true, verified: true },
@@ -4142,8 +4114,7 @@ describe("buildIncomingDepositReport", () => {
         getContractIntelligenceProfile: async () => null,
         enrichContractClassification,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: analyzeLlm
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job(validProgressJson),
       depositTxHash,
@@ -4167,12 +4138,7 @@ describe("buildIncomingDepositReport", () => {
       freshBundleFloor: 0,
       corridorFloor: 0
     });
-    expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
-      source: "deterministic",
-      verdict: "legitimate_service",
-      decisionRecommendation: "ACCEPTABLE"
-    }));
-    expect(analyzeLlm).not.toHaveBeenCalled();
+    expect(result.contractVerdicts).toEqual([]);
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
   });
 
@@ -4215,22 +4181,7 @@ describe("buildIncomingDepositReport", () => {
         },
         getContractIntelligenceProfile: async () => null,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: async (caseFiles) => caseFiles.map((caseFile, index): ContractLlmVerdictSummary => ({
-          source: "llm",
-          providerLabel: "test-llm",
-          model: "test-model",
-          contractAddress: caseFile.contractAddress,
-          caseFileHash: `minor-bridge-case-${index}`,
-          cacheId: null,
-          verdict: "legitimate_service",
-          confidence: 0.9,
-          contractRiskScore: 10,
-          decisionRecommendation: "ACCEPTABLE",
-          reasons: ["Known service context."],
-          citedEvidenceIds: [],
-          falsePositiveNotes: []
-        }))
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
       },
       job: job({
         ...validProgressJson,
@@ -4262,7 +4213,7 @@ describe("buildIncomingDepositReport", () => {
     expect(bridgePath?.balanceShare).toBeCloseTo(0.08826086956521739);
   });
 
-  it("keeps unresolved unknown-contract provenance acceptable below the unified decline threshold", async () => {
+  it("keeps unresolved unknown-contract provenance in deterministic review without an LLM fallback", async () => {
     const contract = "TUnknown1111111111111111111111111111";
     const enrichContractClassification = vi.fn(async () => ({
       address: contract,
@@ -4310,29 +4261,27 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result).toMatchObject({
-      decision: "NO_FINAL_DECISION",
-      scoreValid: false,
-      depositRiskScore: null,
-      riskBand: null,
+      decision: "REVIEW",
+      scoreValid: true,
+      depositRiskScore: 55,
+      riskBand: "MEDIUM",
       unifiedRiskSummary: {
-        finalScore: null,
-        finalDecision: "NO_FINAL_DECISION",
-        decisionBasis: "technical_stop",
-        scoreAnchorV2: null,
+        finalScore: 55,
+        finalDecision: "REVIEW",
+        decisionBasis: "matrix",
+        scoreAnchorV2: expect.objectContaining({
+          score: 55,
+          decision: "REVIEW"
+        }),
         scoreAnchorDiagnostic: null
       }
     });
-    expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
-      source: "unavailable",
-      verdict: "unknown_insufficient_data",
-      error: "llm disabled"
-    }));
-    expect(result.reasons.join(" ")).toContain("LLM unavailable: llm disabled");
+    expect(result.contractVerdicts).toEqual([]);
+    expect(result.reasons.join(" ")).not.toMatch(/LLM|deepseek|llm disabled/i);
   });
 
   it("treats enriched hot_wallet contracts as deterministic service context", async () => {
     const contract = "THotWallet11111111111111111111111111";
-    const analyzeLlm = vi.fn(async () => []);
     const enrichContractClassification = vi.fn(async () => ({
       address: contract,
       metadata: { address: contract, name: "Known Hot Wallet", tag: "Hot Wallet", isContract: true, verified: true },
@@ -4368,8 +4317,7 @@ describe("buildIncomingDepositReport", () => {
         getContractIntelligenceProfile: async () => null,
         enrichContractClassification,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: analyzeLlm
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job(validProgressJson),
       depositTxHash,
@@ -4379,17 +4327,11 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
-      source: "deterministic",
-      verdict: "legitimate_service",
-      decisionRecommendation: "ACCEPTABLE"
-    }));
-    expect(analyzeLlm).not.toHaveBeenCalled();
+    expect(result.contractVerdicts).toEqual([]);
   });
 
   it("uses hard-boundary enrichment in final reports without an LLM call", async () => {
     const contract = "TFcRN111111111111111111111111FLR5hvh";
-    const analyzeLlm = vi.fn(async () => []);
     const enrichContractClassification = vi.fn(async () => ({
       address: contract,
       metadata: { address: contract, name: "HTX", tag: "HTX", isContract: true, verified: true },
@@ -4425,8 +4367,7 @@ describe("buildIncomingDepositReport", () => {
         getContractIntelligenceProfile: async () => null,
         enrichContractClassification,
         getTransaction: async () => ({}),
-        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
-        analyzeContractLlmCaseFiles: analyzeLlm
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
       },
       job: job(validProgressJson),
       depositTxHash,
@@ -4444,7 +4385,7 @@ describe("buildIncomingDepositReport", () => {
     expect(result.hardBadEvidence).toEqual([]);
     expect(result.depositRiskScore).toBeGreaterThanOrEqual(78);
     expect(result.reasons.join(" ")).toContain("source-policy risk");
-    expect(analyzeLlm).not.toHaveBeenCalled();
+    expect(result.contractVerdicts).toEqual([]);
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
   });
 });

@@ -3,6 +3,7 @@ import {
   serviceTagFromContractProfile
 } from "../approvals/contractIntelligence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import { findKnownServiceBySpender } from "../approvals/knownServiceRegistry";
 import type { ContractIntelligenceProfile } from "../approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../storage/repositories";
 import {
@@ -69,8 +70,65 @@ export type CheckSmartContractAddressInput = {
   relatedApprovals: WalletApprovalSpenderRelation[];
   approvalSafetyAssessments?: ApprovalSafetyAssessmentV2[];
   contractDecisionEvidence?: ContractDecisionEvidenceV1[];
-  analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
 };
+
+export type ApprovalSafetyContractDecisionBinding = {
+  assessment: ApprovalSafetyAssessmentV2 & { authoritativeServiceId?: string | null };
+  evidence: ContractDecisionEvidenceV1[];
+};
+
+export function bindApprovalSafetyAuditForContractDecision(input: {
+  subjectAddress: string;
+  approvalEvidenceId: string;
+  sessionEvidenceId: string | null;
+  assessment: ApprovalSafetyAssessmentV2;
+}): ApprovalSafetyContractDecisionBinding | null {
+  const allowance = input.assessment.allowance;
+  if (!input.approvalEvidenceId || allowance.spenderAddress !== input.subjectAddress ||
+    allowance.tokenContract !== TRON_USDT_CONTRACT_ADDRESS ||
+    allowance.ownerAddress !== input.assessment.subjectAddress ||
+    !allowance.observedApprovalTxHash) return null;
+  const allowanceEvidenceId = `allowance:${input.approvalEvidenceId}`;
+  const evidence: ContractDecisionEvidenceV1[] = [
+    {
+      id: allowance.observedApprovalTxHash,
+      kind: "approval_event",
+      subjectAddress: input.subjectAddress,
+      spenderAddress: input.subjectAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    },
+    {
+      id: allowanceEvidenceId,
+      kind: "allowance_read",
+      subjectAddress: input.subjectAddress,
+      spenderAddress: input.subjectAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    }
+  ];
+  const session = input.assessment.serviceSession;
+  const registered = findKnownServiceBySpender(input.subjectAddress);
+  if (session) {
+    if (!input.sessionEvidenceId || !registered ||
+      session.walletAddress !== allowance.ownerAddress || session.spenderAddress !== input.subjectAddress ||
+      session.approvalTxHash !== allowance.observedApprovalTxHash ||
+      session.authoritativeServiceId !== registered.id || !registered.actionKinds.includes(session.actionKind)) return null;
+    evidence.push({
+      id: session.actionTxHash,
+      kind: "service_action",
+      subjectAddress: input.subjectAddress,
+      spenderAddress: input.subjectAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    });
+  }
+  return {
+    assessment: {
+      ...input.assessment,
+      campaignEvidenceIds: [...input.assessment.campaignEvidenceIds, allowanceEvidenceId],
+      authoritativeServiceId: registered?.id ?? null
+    },
+    evidence
+  };
+}
 
 export function mergeContractSafetyContext(
   fastReport: RiskReport,
@@ -351,42 +409,6 @@ function hasTransferFromSurface(
     activeApprovals.some((approval) => approval.contractHasTransferFromSelector === true);
 }
 
-function llmRiskScore(verdict: ContractLlmVerdictSummary): number {
-  if (Number.isFinite(verdict.contractRiskScore) && verdict.contractRiskScore > 0) {
-    return verdict.contractRiskScore;
-  }
-  return verdict.verdict === "drainer_like" ? 70 : verdict.verdict === "unknown_suspicious" ? 50 : 20;
-}
-
-function applyLlmVerdict(input: {
-  score: number;
-  reasons: string[];
-  llmVerdict: ContractLlmVerdictSummary | null;
-  serviceLabel: string | null;
-  activeUnlimitedApprovalCount: number;
-}): number {
-  const verdict = input.llmVerdict;
-  if (!verdict) return input.score;
-
-  if (verdict.verdict === "legitimate_service" && verdict.confidence >= 0.8 && input.serviceLabel) {
-    addReason(input.reasons, "llm_legitimate_service_with_service_evidence");
-    const floor = input.activeUnlimitedApprovalCount > 0 ? 45 : 10;
-    return Math.max(floor, Math.min(input.score, 20));
-  }
-
-  if (verdict.verdict === "unknown_suspicious" && verdict.confidence >= 0.75) {
-    addReason(input.reasons, "llm_unknown_suspicious_high_confidence");
-    return Math.max(input.score, Math.max(45, Math.min(55, llmRiskScore(verdict))));
-  }
-
-  if (verdict.verdict === "drainer_like" && verdict.confidence >= 0.85) {
-    addReason(input.reasons, "llm_drainer_like_high_confidence");
-    return Math.max(input.score, Math.max(65, Math.min(75, llmRiskScore(verdict))));
-  }
-
-  return input.score;
-}
-
 function decisionForScore(input: {
   score: number;
   knownVerifiedService: boolean;
@@ -403,7 +425,6 @@ function decisionForScore(input: {
 export function evaluateSmartContractAddress(input: EvaluateSmartContractAddressInput): SmartContractCheckReport {
   const contractProfile = input.contractProfile ?? null;
   const relatedApprovals = input.relatedApprovals ?? [];
-  const llmVerdict = input.llmVerdict ?? null;
   const reasons: string[] = [];
   const limitations = [EXACT_DRAIN_NOT_PROVEN];
   const verify20ServiceLabel = authoritativeVerify20ServiceLabel(input.metadata, contractProfile);
@@ -465,14 +486,6 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
     riskScore = Math.max(riskScore, 65);
   }
 
-  riskScore = applyLlmVerdict({
-    score: riskScore,
-    reasons,
-    llmVerdict,
-    serviceLabel,
-    activeUnlimitedApprovalCount: activeUnlimited.length
-  });
-
   const finalScore = clampScore(riskScore);
   const hasApprovalSafetyRisk = activeUnlimited.length > 0 || activeRiskyRelated.length > 0;
   return {
@@ -490,7 +503,7 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
     metadata: input.metadata,
     contractProfile,
     relatedApprovals,
-    llmVerdict,
+    llmVerdict: null,
     exactDrainProven: false,
     verify20Fingerprint,
     serviceLabel,
@@ -620,7 +633,7 @@ export function normalizeSmartContractCheckReport(
   if (!sameFingerprint(fingerprint as Verify20FingerprintResult, derived)) return null;
   if (derived.matched && (report.decision !== "DECLINE" || report.riskScore < 85 || report.serviceLabel !== null)) return null;
 
-  return report as unknown as SmartContractCheckReport;
+  return { ...report, llmVerdict: null } as unknown as SmartContractCheckReport;
 }
 
 export async function checkSmartContractAddress(input: CheckSmartContractAddressInput): Promise<SmartContractCheckReport> {

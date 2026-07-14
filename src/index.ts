@@ -6,9 +6,12 @@ import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
-import { checkSmartContractAddress as runSmartContractAddressCheck } from "./check/smartContractCheck";
+import {
+  bindApprovalSafetyAuditForContractDecision,
+  checkSmartContractAddress as runSmartContractAddressCheck
+} from "./check/smartContractCheck";
 import { addressPoisoningSmallTransferMaxRaw as parseAddressPoisoningSmallTransferMaxRaw, loadConfig } from "./config";
-import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
+import { buildContractDecisionEvidenceV1 } from "./forensics/contractDecision";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
 import { runAddressIndexWorkerOnce } from "./forensics/addressIndexWorker";
 import { refreshDeepCheckSecondLayerFromIndex } from "./forensics/deepSecondLayerRefresh";
@@ -25,7 +28,6 @@ import { addStrictBenchmarkCounters, addStrictBenchmarkStageTiming, buildStrictB
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { extractWalletIntelligenceFromJob } from "./forensics/walletIntelligence";
-import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
 import {
@@ -67,8 +69,7 @@ import {
   getTheftReport,
   getStaleAddressMetadata,
   getContractIntelligenceProfile,
-  getContractLlmVerdictCache,
-  getContractLlmVerdictCacheByFingerprint,
+  getLatestApprovalSafetyAuditForSpenderByTelegramUser,
   getCoveringTronAddressUsdtIndexState,
   getTronAddressUsdtIndexState,
   getWalletPollState,
@@ -128,7 +129,6 @@ import {
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
-  upsertContractLlmVerdictCache,
   upsertIndexedTronUsdtTransfers,
   upsertTronAddressUsdtCoverageInterval,
   upsertTronAddressUsdtIndexPage,
@@ -140,7 +140,7 @@ import {
 import type { ForensicCheckJob, ForensicCheckJobKind } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
-import type { TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
+import type { ContractDecisionEvidenceV1, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
 
 const config = loadConfig();
 const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMaxRaw(
@@ -215,32 +215,6 @@ const TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 12000;
 const TARGETED_HISTORY_BACKGROUND_MAX_WINDOW_SPLIT_DEPTH = 24;
 const TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS = 8;
 const TARGETED_HISTORY_BACKGROUND_ESCALATION_FACTOR = 2;
-const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
-  ? createContractLlmVerdictAnalyzer({
-      client: createOpenAiCompatibleJsonClient({
-        apiKey: config.llmApiKey,
-        baseUrl: config.llmBaseUrl,
-        model: config.llmModel,
-        ...(config.llmProviderLabel.toLowerCase() === "deepseek"
-          ? {
-              thinkingEnabled: config.llmThinkingEnabled,
-              reasoningEffort: config.llmReasoningEffort
-            }
-          : {}),
-        providerLabel: config.llmProviderLabel,
-        timeoutMs: config.llmTimeoutMs,
-        maxRetries: config.llmMaxRetries
-      }),
-      providerLabel: config.llmProviderLabel,
-      model: config.llmModel,
-      cacheModelKey: config.llmModelCacheKey,
-      cacheTtlMs: config.llmCacheTtlMs,
-      requireCompleteCaseFile: true,
-      getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
-      getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),
-      upsertVerdict: (input) => upsertContractLlmVerdictCache(db, input)
-    })
-  : undefined;
 const crossChainDiscoveryProvider = config.crossChainStage2Enabled && config.rangeApiKey
   ? createRangeCrossChainDiscoveryProvider({
       apiKey: config.rangeApiKey,
@@ -555,6 +529,39 @@ const bot = createBot(config, db, tronClient, {
         })
       : [];
     const serviceClassification = classifyServiceAddress({ address, metadata, contractProfile });
+    const approvalAudit = telegramUserId
+      ? await getLatestApprovalSafetyAuditForSpenderByTelegramUser(db, {
+          telegramUserId,
+          spenderAddress: address
+        }).catch((error) => {
+          logger.warn("smart_contract_approval_safety_audit_lookup_failed", {
+            address,
+            telegramUserId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return null;
+        })
+      : null;
+    const approvalBinding = approvalAudit
+      ? bindApprovalSafetyAuditForContractDecision({
+          subjectAddress: address,
+          approvalEvidenceId: approvalAudit.approvalEvidenceId,
+          sessionEvidenceId: approvalAudit.sessionEvidenceId,
+          assessment: approvalAudit.assessment
+        })
+      : null;
+    const approvalSafetyAssessments = approvalBinding ? [approvalBinding.assessment] : [];
+    const structuralEvidence = buildContractDecisionEvidenceV1({
+      subjectAddress: address,
+      metadata,
+      contractProfile,
+      serviceClassification,
+      approvalSafetyAssessments
+    });
+    const contractDecisionEvidence: ContractDecisionEvidenceV1[] = [
+      ...structuralEvidence,
+      ...(approvalBinding?.evidence ?? [])
+    ];
     return {
       kind: "report",
       report: await runSmartContractAddressCheck({
@@ -563,7 +570,8 @@ const bot = createBot(config, db, tronClient, {
         contractProfile,
         serviceClassification,
         relatedApprovals,
-        analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
+        approvalSafetyAssessments,
+        contractDecisionEvidence
       })
     };
   }
@@ -645,7 +653,6 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
   upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
   markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
-  analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
   crossChainDiscoveryProvider,
   evmEvidenceProvider,
   crossChainContinuationProviders,
@@ -963,7 +970,6 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       getUsdtRestrictionStatus: tronClient.getUsdtRestrictionStatus.bind(tronClient),
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
-      analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
       crossChainDiscoveryProvider,
       evmEvidenceProvider,
       crossChainContinuationProviders,

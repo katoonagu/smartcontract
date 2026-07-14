@@ -44,7 +44,7 @@ import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -105,7 +105,6 @@ export type DeepForensicJobRunnerDeps = Omit<
     observations: RiskSignalObservationInput[];
   }): Promise<void>;
   upsertAddressLabelAssertion?(input: AddressLabelAssertionInput): Promise<unknown>;
-  analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
   crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
@@ -1580,7 +1579,6 @@ async function runWhereIsMoneyJob(
       listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
       getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
       getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-      analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
       crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
       crossChainContinuationProviders: deps.crossChainContinuationProviders,
       evmEvidenceProvider: deps.evmEvidenceProvider

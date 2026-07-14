@@ -14,7 +14,6 @@ import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { normalizeBotLocale } from "../bot/i18n";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
-import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
@@ -30,8 +29,6 @@ import type {
   AddressLabel,
   BalanceFormingTransfer,
   BotLocale,
-  ContractAnalysisCaseFile,
-  ContractLlmVerdictSummary,
   DecisionCoverage,
   ForensicScoreBlockedReason,
   ForensicTechnicalStatus,
@@ -141,7 +138,6 @@ export type IncomingDepositRuntimeDeps = {
   getTransaction(txHash: string): Promise<unknown>;
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile | null>;
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
-  analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
   crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
@@ -934,21 +930,6 @@ function incomingPathFromWhere(
   };
 }
 
-function deterministicLegitimateServiceAddresses(
-  verdicts: ContractLlmVerdictSummary[] | null | undefined
-): Set<string> {
-  return new Set(
-    (verdicts ?? [])
-      .filter((verdict) =>
-        verdict.source === "deterministic" &&
-        verdict.verdict === "legitimate_service" &&
-        verdict.decisionRecommendation === "ACCEPTABLE" &&
-        Boolean(verdict.contractAddress)
-      )
-      .map((verdict) => verdict.contractAddress as string)
-  );
-}
-
 function incomingPathTouchesAddress(path: IncomingDepositOriginPath, address: string): boolean {
   return path.pathAddresses.includes(address) ||
     path.steps.some((step) => step.fromAddress === address || step.toAddress === address);
@@ -956,21 +937,17 @@ function incomingPathTouchesAddress(path: IncomingDepositOriginPath, address: st
 
 function freshExposurePathsWithLegitimateServices(input: {
   originPaths: IncomingDepositOriginPath[];
-  contractVerdicts: ContractLlmVerdictSummary[] | null | undefined;
+  legitimateServiceAddresses: ReadonlySet<string>;
 }): IncomingDepositOriginPath[] {
-  const legitimateServiceAddresses = deterministicLegitimateServiceAddresses(input.contractVerdicts);
-  if (legitimateServiceAddresses.size === 0) return input.originPaths;
+  if (input.legitimateServiceAddresses.size === 0) return input.originPaths;
 
   return input.originPaths.map((path) => {
     if (path.stoppedReason !== "unknown_contract_reached") return path;
-    const touchesLegitimateService = [...legitimateServiceAddresses]
+    const touchesLegitimateService = [...input.legitimateServiceAddresses]
       .some((address) => incomingPathTouchesAddress(path, address));
-    if (!touchesLegitimateService) return path;
-
-    return {
-      ...path,
-      stoppedReason: "no_previous_transfer"
-    };
+    return touchesLegitimateService
+      ? { ...path, stoppedReason: "no_previous_transfer" }
+      : path;
   });
 }
 
@@ -1263,6 +1240,7 @@ function incomingReportFromWhere(input: {
   targetedHistoryCoverage?: IncomingDepositTargetedCoverageSummary | null;
   targetedCoverageBlock?: IncomingTargetedCoverageBlock | null;
   receiverDeepReport?: DeepAddressForensicReport | null;
+  legitimateServiceAddresses?: ReadonlySet<string>;
 }): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
@@ -1299,7 +1277,7 @@ function incomingReportFromWhere(input: {
   );
   const freshExposureOriginPaths = freshExposurePathsWithLegitimateServices({
     originPaths: provenanceOriginPaths,
-    contractVerdicts: input.whereReport.contractLlmVerdicts
+    legitimateServiceAddresses: input.legitimateServiceAddresses ?? new Set()
   });
   const freshBundleExposure = freshExposureOriginPaths.length > 0
     ? buildIncomingFreshBundleExposure({
@@ -1371,7 +1349,7 @@ function incomingReportFromWhere(input: {
     targetedHistoryCoverage: input.targetedHistoryCoverage ?? undefined,
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
-    contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    contractVerdicts: [],
     contractDrivenReceiverProfile: input.whereReport.contractDrivenReceiverProfile ?? null,
     contractDrivenTransferProfiles: input.whereReport.contractDrivenTransferProfiles ?? [],
     contractDrivenSubjectAddress: input.whereReport.subjectAddress,
@@ -1501,9 +1479,8 @@ export async function buildIncomingDepositReport(
         }
       : routeEdge;
   };
-  const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
-  const deterministicLegitimateServiceClassifications = new Map<string, ServiceClassification>();
   const fetchWarnings: string[] = [];
+  const deterministicLegitimateServiceAddresses = new Set<string>();
   const failedSenderWindowSources = new Set<string>();
   const seedDeposit = depositEdge(input);
   const minTimestamp = input.job.windowStart;
@@ -1852,25 +1829,8 @@ export async function buildIncomingDepositReport(
         enrichedClassification.category === "protocol" ||
         enrichedClassification.category === "hot_wallet"
       )) {
-        deterministicLegitimateServiceClassifications.set(address, enrichedClassification);
-        deterministicContractVerdicts.set(address, {
-          source: "deterministic",
-          cacheMatch: null,
-          reusedFromContractAddress: null,
-          providerLabel: "deterministic",
-          model: "service-classifier",
-          contractAddress: address,
-          caseFileHash: `deterministic-service:${address}`,
-          cacheId: null,
-          verdict: "legitimate_service",
-          confidence: enrichedClassification.confidence === "high" ? 0.95 : 0.8,
-          contractRiskScore: 10,
-          decisionRecommendation: "ACCEPTABLE",
-          reasons: [`${enrichedClassification.identity ?? "Service"} matched deterministic service metadata.`],
-          citedEvidenceIds: [],
-          falsePositiveNotes: []
-        });
-        return base;
+        deterministicLegitimateServiceAddresses.add(address);
+        return enrichedClassification;
       }
       return enriched?.classification ?? base;
     })();
@@ -1997,25 +1957,6 @@ export async function buildIncomingDepositReport(
       crossChainDiscoveryProvider: input.deps.crossChainDiscoveryProvider,
       crossChainContinuationProviders: input.deps.crossChainContinuationProviders,
       evmEvidenceProvider: input.deps.evmEvidenceProvider,
-      analyzeContractLlmCaseFiles: async (caseFiles) => {
-        const deterministic = caseFiles
-          .map((caseFile) => caseFile.contractAddress ? deterministicContractVerdicts.get(caseFile.contractAddress) ?? null : null)
-          .filter((verdict): verdict is ContractLlmVerdictSummary => verdict !== null);
-        const deterministicAddresses = new Set(deterministic.map((verdict) => verdict.contractAddress));
-        const remaining = caseFiles.filter((caseFile) =>
-          !caseFile.contractAddress || !deterministicAddresses.has(caseFile.contractAddress)
-        );
-        const live = remaining.length > 0 && input.deps.analyzeContractLlmCaseFiles
-          ? await input.deps.analyzeContractLlmCaseFiles(remaining)
-          : remaining.map((caseFile) => createUnavailableContractLlmVerdict({
-              contractAddress: caseFile.contractAddress,
-              caseFileHash: hashContractAnalysisCaseFile(caseFile),
-              providerLabel: "disabled",
-              model: "disabled",
-              error: "llm disabled"
-            }));
-        return [...deterministic, ...live];
-      }
     }, {
       mode: "transaction_check",
       subjectAddress: whereSubjectAddress,
@@ -2059,7 +2000,7 @@ export async function buildIncomingDepositReport(
           edges: senderEdges,
           getClassificationForAddress: async (address) => {
             const classification = await getClassificationForAddress(address);
-            return deterministicLegitimateServiceClassifications.get(address) ?? classification;
+            return classification;
           }
         })
       );
@@ -2072,7 +2013,8 @@ export async function buildIncomingDepositReport(
     walletExposureProfile,
     targetedHistoryCoverage: targetedCoverage.summary,
     targetedCoverageBlock: targetedCoverage.block,
-    receiverDeepReport: input.receiverDeepReport
+    receiverDeepReport: input.receiverDeepReport,
+    legitimateServiceAddresses: deterministicLegitimateServiceAddresses
   });
   const fundingCoverage = {
     depositFundingCoverageRatio: fundingSelection.coverageRatio,

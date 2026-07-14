@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  bindApprovalSafetyAuditForContractDecision,
   buildStandaloneContractAnalysisCaseFile,
   checkSmartContractAddress,
   evaluateSmartContractAddress,
   mergeContractSafetyContext,
   normalizeSmartContractCheckReport
 } from "../../src/check/smartContractCheck";
+import { activeAllowance, APPROVAL_TX, BRIDGERS, OWNER, SWAP_TX } from "../fixtures/forensics/remediationScoringCases";
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
 import type { ContractAnalysisCaseFile, ContractLlmVerdictSummary, RiskReport, ServiceClassification } from "../../src/types";
@@ -258,6 +260,53 @@ describe("merge contract safety context", () => {
 });
 
 describe("smart contract check", () => {
+  it("[AC-31][BOOTSTRAP] binds persisted Bridgers allowance and session audit to exact decision evidence", () => {
+    const binding = bindApprovalSafetyAuditForContractDecision({
+      subjectAddress: BRIDGERS,
+      approvalEvidenceId: "approval-raw-id",
+      sessionEvidenceId: "session-raw-id",
+      assessment: {
+        version: "approval-safety-v2",
+        subjectAddress: OWNER,
+        level: "LOW",
+        score: 10,
+        action: "REVOKE_IF_UNUSED",
+        amlScoreImpact: 0,
+        allowance: activeAllowance(undefined, BRIDGERS),
+        balanceAtRiskRaw: null,
+        exactVerify20: false,
+        exactDebit: false,
+        debitFoundFromSubject: false,
+        campaignEvidenceIds: [],
+        serviceSession: {
+          walletAddress: OWNER,
+          spenderAddress: BRIDGERS,
+          approvalTxHash: APPROVAL_TX,
+          actionTxHash: SWAP_TX,
+          actionKind: "swap",
+          walletInitiated: true,
+          successful: true,
+          delayMs: 66_000,
+          approvedAmountRaw: activeAllowance(undefined, BRIDGERS).confirmedAllowanceRaw,
+          movedAmountRaw: "91103009",
+          amountContinuity: "exact",
+          authoritativeServiceId: "bridgers"
+        }
+      }
+    });
+
+    expect(binding?.assessment).toMatchObject({
+      subjectAddress: OWNER,
+      authoritativeServiceId: "bridgers",
+      campaignEvidenceIds: ["allowance:approval-raw-id"]
+    });
+    expect(binding?.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: APPROVAL_TX, kind: "approval_event", subjectAddress: BRIDGERS }),
+      expect.objectContaining({ id: "allowance:approval-raw-id", kind: "allowance_read", subjectAddress: BRIDGERS }),
+      expect.objectContaining({ id: SWAP_TX, kind: "service_action", subjectAddress: BRIDGERS })
+    ]));
+  });
+
   it("declines an exact Verify20 fingerprint without claiming a specific theft", () => {
     const report = evaluateSmartContractAddress({
       subjectAddress,
@@ -711,7 +760,7 @@ describe("smart contract check", () => {
     expect(report.reasons).toContain("active_risky_related_approval_spender");
   });
 
-  it("raises high suspicion for an LLM drainer-like verdict without claiming exact transferFrom proof", () => {
+  it("ignores a legacy LLM drainer-like payload in fresh deterministic evaluation", () => {
     const report = evaluateSmartContractAddress({
       subjectAddress,
       metadata: metadata(),
@@ -726,13 +775,11 @@ describe("smart contract check", () => {
     });
 
     expect(report.decision).toBe("REVIEW");
-    expect(report.riskScore).toBeGreaterThanOrEqual(65);
-    expect(report.riskScore).toBeLessThanOrEqual(75);
-    expect(report.riskLevel).toBe("HIGH");
+    expect(report.riskScore).toBe(35);
+    expect(report.riskLevel).toBe("MEDIUM");
+    expect(report.llmVerdict).toBeNull();
     expect(report.exactDrainProven).toBe(false);
-    expect(report.reasons).toEqual(expect.arrayContaining([
-      "llm_drainer_like_high_confidence"
-    ]));
+    expect(report.reasons).not.toContain("llm_drainer_like_high_confidence");
     expect(report.reasons).not.toContain("exact_drain_not_proven_in_standalone_check");
     expect(report.limitations).toContain("exact_drain_not_proven_in_standalone_check");
   });
@@ -809,28 +856,15 @@ describe("smart contract check", () => {
     expect(serializedCaseFile).toContain("watched_wallet_2");
   });
 
-  it("does not call the LLM analyzer for active unlimited approvals", async () => {
-    const capturedCaseFiles: ContractAnalysisCaseFile[][] = [];
+  it("keeps active unlimited approvals on the deterministic contract path", async () => {
     const report = await checkSmartContractAddress({
       address: subjectAddress,
       metadata: metadata(),
       contractProfile: contractProfile(),
       serviceClassification: service("unknown_contract", null),
-      relatedApprovals: [activeUnlimitedApproval()],
-      analyzeContractLlmCaseFiles: async (caseFiles) => {
-        capturedCaseFiles.push(caseFiles);
-        return [
-          llmVerdict({
-            verdict: "drainer_like",
-            confidence: 0.9,
-            contractRiskScore: 72,
-            reasons: ["pull-capable approval helper shape"]
-          })
-        ];
-      }
+      relatedApprovals: [activeUnlimitedApproval()]
     });
 
-    expect(capturedCaseFiles).toHaveLength(0);
     expect(report.decision).toBe("REVIEW");
     expect(report.riskScore).toBe(35);
     expect(report.llmVerdict).toBeNull();
@@ -842,21 +876,15 @@ describe("smart contract check", () => {
     expect(report.exactDrainProven).toBe(false);
   });
 
-  it("does not call an unavailable standalone LLM analyzer", async () => {
-    let analyzerCalls = 0;
+  it("does not require a standalone LLM analyzer", async () => {
     const report = await checkSmartContractAddress({
       address: subjectAddress,
       metadata: metadata(),
       contractProfile: contractProfile(),
       serviceClassification: service("unknown_contract", null),
-      relatedApprovals: [activeUnlimitedApproval()],
-      analyzeContractLlmCaseFiles: async () => {
-        analyzerCalls += 1;
-        throw new Error("llm unavailable");
-      }
+      relatedApprovals: [activeUnlimitedApproval()]
     });
 
-    expect(analyzerCalls).toBe(0);
     expect(report.llmVerdict).toBeNull();
     expect(report.decision).toBe("REVIEW");
     expect(report.riskScore).toBe(35);
@@ -864,8 +892,7 @@ describe("smart contract check", () => {
     expect(report.contractDecisionV2?.deterministic.authority).toBe("context");
   });
 
-  it("skips LLM analysis for an authoritative verified service tag even with low activity", async () => {
-    let analyzerCalls = 0;
+  it("keeps an authoritative verified service tag deterministic even with low activity", async () => {
     const report = await checkSmartContractAddress({
       address: subjectAddress,
       metadata: metadata({ name: "Bridgers", tag: "Bridgers:Cross-chain Bridge", verified: true }),
@@ -882,14 +909,9 @@ describe("smart contract check", () => {
         totalCallerCount: "45552"
       }),
       serviceClassification: service("bridge", "Bridgers:Cross-chain Bridge"),
-      relatedApprovals: [],
-      analyzeContractLlmCaseFiles: async () => {
-        analyzerCalls += 1;
-        return [];
-      }
+      relatedApprovals: []
     });
 
-    expect(analyzerCalls).toBe(0);
     expect(report.decision).toBe("REVIEW");
     expect(report.riskScore).toBe(35);
     expect(report.llmVerdict).toBeNull();

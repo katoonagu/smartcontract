@@ -108,12 +108,12 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>уверенность</b>: <code>средняя</code>");
     expect(message.text).toContain("<b>Роль отправителя</b>");
     expect(message.text).not.toContain("Data quality");
-    expect(message.text).toContain("<b>AI-оценка контракта</b>");
-    expect(message.text).toContain("подозрительный неизвестный контракт 68/100 для");
+    expect(message.text).not.toContain("<b>AI-оценка контракта</b>");
+    expect(message.text).not.toContain("подозрительный неизвестный контракт 68/100 для");
     expect(message.text).not.toContain("<b>AI contract verdict</b>");
     expect(message.text).not.toContain("<b>Fast sender check</b>");
     expect(message.text).not.toContain("68/100 for");
-    expect(message.text).toContain("Отправитель получил средства от неизвестного смарт-контракта незадолго до депозита.");
+    expect(message.text).not.toContain("Отправитель получил средства от неизвестного смарт-контракта незадолго до депозита.");
     expect(message.text).toContain("Отправитель был пополнен неизвестным смарт-контрактом незадолго до этого депозита.");
     expect(message.text).not.toContain("Low risk: <code>0/100</code>");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
@@ -127,8 +127,8 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
     expect(message.text).toContain("<b>Deposit risk</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
     expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
-    expect(message.text).toContain("<b>AI contract verdict</b>");
-    expect(message.text).toContain("unknown_suspicious 68/100 for");
+    expect(message.text).not.toContain("<b>AI contract verdict</b>");
+    expect(message.text).not.toContain("unknown_suspicious 68/100 for");
     expect(message.text).toContain("<b>Deposit funding coverage</b>: <code>76%</code>");
     expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
     expect(message.text).toContain("<b>origin confidence</b>: <code>medium</code>");
@@ -576,7 +576,7 @@ describe("alert formatters", () => {
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-no-ai");
   });
 
-  it("shows legitimate service incoming deposit contract verdicts with reasons", () => {
+  it("omits legacy deterministic-as-LLM contract verdicts from incoming alerts", () => {
     const message = formatIncomingDepositRiskAlert({
       jobId: "job-service",
       amount: "250",
@@ -625,9 +625,9 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("<b>AI-оценка контракта</b>");
-    expect(message.text).toContain("легитимный сервис 0/100");
-    expect(message.text).toContain("Контракт сервиса совпал с локальным allowlist.");
+    expect(message.text).not.toContain("<b>AI-оценка контракта</b>");
+    expect(message.text).not.toContain("легитимный сервис 0/100");
+    expect(message.text).not.toContain("Контракт сервиса совпал с локальным allowlist.");
   });
 
   it("formats admin alert with Telegram owner identity", () => {

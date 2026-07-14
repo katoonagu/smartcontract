@@ -232,10 +232,6 @@ function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale:
   return bulletList(reasons);
 }
 
-function aiContractVerdictLabel(locale: BotLocale): string {
-  return locale === "en" ? "AI contract verdict" : "AI-оценка контракта";
-}
-
 function fastSenderCheckLabel(locale: BotLocale): string {
   return locale === "en" ? "Fast sender check" : "Быстрая проверка отправителя";
 }
@@ -263,35 +259,6 @@ function incomingOriginConfidenceLabel(report: IncomingDepositRiskReport, locale
     `${bold(locale === "en" ? "clean-source proof" : "Чистый источник")}: ${code(clampedPercent(report.fundingCoverage.cleanSourceCoverageRatio))}`,
     `${bold(locale === "en" ? "origin confidence" : "уверенность")}: ${code(incomingOriginConfidenceText(report, locale))}`
   ].join("; ");
-}
-
-function formatContractAddress(address: string | null): string {
-  if (!address) return "unknown";
-  if (address.length <= 12) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
-function contractVerdictKindText(verdict: IncomingDepositRiskReport["contractVerdicts"][number]["verdict"], locale: BotLocale): string {
-  if (locale === "en") return verdict;
-  switch (verdict) {
-    case "legitimate_service":
-      return "легитимный сервис";
-    case "drainer_like":
-      return "похоже на drainer";
-    case "unknown_suspicious":
-      return "подозрительный неизвестный контракт";
-    case "unknown_insufficient_data":
-      return "недостаточно данных по контракту";
-  }
-}
-
-function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport, locale: BotLocale): string | null {
-  if (report.contractVerdicts.length === 0) return null;
-  const addressConnector = locale === "en" ? "for" : "для";
-  return bulletList(report.contractVerdicts.slice(0, 3).map((verdict) => {
-    const reason = verdict.reasons[0] ? ` - ${normalizeNotificationReason(verdict.reasons[0], locale)}` : "";
-    return `${contractVerdictKindText(verdict.verdict, locale)} ${verdict.contractRiskScore}/100 ${addressConnector} ${formatContractAddress(verdict.contractAddress)}${reason}`;
-  }));
 }
 
 function incomingDepositRiskIcon(band: IncomingDepositRiskReport["riskBand"]): string {
@@ -325,7 +292,6 @@ export function formatIncomingDepositRiskAlert(input: {
   const title = locale === "en"
     ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`
     : `Входящий USDT${eventTime ? ` — ${eventTime}` : ""}`;
-  const aiSection = formatIncomingDepositContractVerdicts(input.report, locale);
   const riskLine = input.report.depositRiskScore === null
     ? `${bold(locale === "en" ? "Deposit risk" : "Риск депозита")}: ${code(locale === "en" ? "no final score" : "нет итоговой оценки")}`
     : `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(input.report.riskBand)} ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand ?? "unknown")})`;
@@ -348,7 +314,6 @@ export function formatIncomingDepositRiskAlert(input: {
       `${bold(locale === "en" ? "Sender" : "Отправитель")}: ${code(input.sender)}`
     ].join("\n"),
     section(locale === "en" ? "Reasons" : "Причины", [formatIncomingDepositReasons(input.report, locale)]),
-    aiSection ? section(aiContractVerdictLabel(locale), [aiSection]) : null,
     section(checksLabel(locale), [
       `${bold(fastSenderCheckLabel(locale))}: ${formatFastSenderRisk(input.report)}`,
       incomingOriginConfidenceLabel(input.report, locale),

@@ -33,7 +33,7 @@ import {
   whereRiskLayerFixture
 } from "../fixtures/forensics/wherePreliminaryNarrativeCases";
 
-const walletAddress = `T${"1".repeat(33)}`;
+const walletAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
 const secondWalletAddress = `T${"2".repeat(33)}`;
 const txHash = "a".repeat(64);
 const adminId = "9001";
@@ -3938,12 +3938,13 @@ describe("bot command and inline UX smoke coverage", () => {
         episodeCoverageRatio: 0.2,
         drainEpisode: {
           anchorTxHash: "anchor-135k",
+          fundingTxHash: "funding-135k",
           startTimestamp: "2026-05-05T13:57:27.000Z",
           endTimestamp: "2026-05-05T15:00:30.000Z",
           episodeOutgoingRaw: "1000000000",
           episodeSelectedRaw: "200000000",
           episodeCoverageRatio: 0.2,
-          outgoingTxHashes: ["out-1", "anchor-135k"],
+          outgoingTxHashes: ["out-1", "out-2"],
           bridgeOutgoingRaw: "1000000000",
           bridgeOutgoingShare: 1
         },
@@ -5778,13 +5779,13 @@ describe("bot command and inline UX smoke coverage", () => {
       showBetaDiagnostics: true
     });
 
-    expect(text).toContain("Anchored by: historical_transit_pattern 81.");
-    expect(text).toContain("Matrix row: service_linked_pattern; matrix decision: DECLINE.");
+    expect(text).toContain("Anchored by: collector_transit_behavior 35.");
+    expect(text).toContain("Matrix row: behavior_only_prior; matrix decision: REVIEW.");
     expect(text).toContain("Run profile: bounded_rerun.");
     expect(text).toContain("Provider budget: calls 20, transfers 10, contracts 0, approvals 0, elapsed 30000 ms, exhausted no.");
     expect(text).toContain("Weighted layer score:");
-    expectCompactScoredNarrative(text, 81);
-    expect(text).toContain("Do not proceed");
+    expectCompactScoredNarrative(text, 35);
+    expect(text).toContain("Pause");
   });
 
   it("shows only the resolved asset-continuation floor in the unified final report", () => {
@@ -5867,7 +5868,7 @@ describe("bot command and inline UX smoke coverage", () => {
       }
     });
 
-    expect(extractWhereIsMoneyReportFromJob(matchingJob, walletAddress)).toBe(whereReport);
+    expect(extractWhereIsMoneyReportFromJob(matchingJob, walletAddress)).toEqual(whereReport);
     expect(extractWhereIsMoneyReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
     expect(extractWhereIsMoneyReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
     expect(extractWhereIsMoneyReportFromJob(missingAssessmentReasonsJob, walletAddress)).toBeNull();
@@ -6823,6 +6824,7 @@ describe("bot command and inline UX smoke coverage", () => {
   it("uses exact Verify20 only from the validated subject-bound Where job", () => {
     const driver = whereRiskLayerFixture("verify20_template", 85, "contract_suspicion", ["verify20:5082dd12"]);
     const report = whereReportFixture({
+      subjectAddress: walletAddress,
       riskScore: 85,
       assessment: whereAssessmentFixture({
         riskScore: 85,

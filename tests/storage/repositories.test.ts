@@ -28,6 +28,7 @@ import {
   listWatchedWallets,
   getWalletPollState,
   getWalletApprovalSummary,
+  getLatestApprovalSafetyAuditForSpenderByTelegramUser,
   listWalletApprovalsBySpenderForTelegramUser,
   listAddressLabelCacheForAddress,
   countIndexedTronUsdtCounterpartiesForAddress,
@@ -3098,6 +3099,133 @@ describe("risk evidence repositories", () => {
     expect(compactSql(safety.queries[0].sql)).toContain("signal_group = 'wallet_safety'");
     expect(aml.queries[0].params).toEqual(["tron", observation.subjectAddress, 7]);
     expect(safety.queries[0].params).toEqual(["tron", observation.subjectAddress, 7]);
+  });
+});
+
+describe("approval safety audit repository", () => {
+  const ownerAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+  const spenderAddress = "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s";
+  const tokenContract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  const approvalTxHash = "fde8e8925a5b0d65050bbfe102c21c79b508087113f955dd51f25514c2f823d1";
+  const actionTxHash = "c16e27c144732bee70de72c88f5e3e501ac2bd5bbcdad66f6edac5b66cd31743";
+  const now = new Date("2026-07-13T10:05:00.000Z");
+  const session = {
+    walletAddress: ownerAddress,
+    spenderAddress,
+    approvalTxHash,
+    actionTxHash,
+    actionKind: "swap",
+    walletInitiated: true,
+    successful: true,
+    delayMs: 66_000,
+    approvedAmountRaw: "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    movedAmountRaw: "91103009",
+    amountContinuity: "exact",
+    authoritativeServiceId: "bridgers"
+  };
+  const assessment = {
+    version: "approval-safety-v2",
+    subjectAddress: ownerAddress,
+    level: "LOW",
+    score: 10,
+    action: "REVOKE_IF_UNUSED",
+    amlScoreImpact: 0,
+    allowance: {
+      version: "approval-allowance-v2",
+      ownerAddress,
+      spenderAddress,
+      tokenContract,
+      confirmedAllowanceRaw: session.approvedAmountRaw,
+      isUnlimited: true,
+      state: "confirmed_active",
+      confirmedAt: "2026-07-13T10:00:00.000Z",
+      freshUntil: "2026-07-13T10:15:00.000Z",
+      lastAttemptAt: "2026-07-13T10:00:00.000Z",
+      failureCode: null,
+      source: "official_usdt_allowance",
+      observedApprovalTxHash: approvalTxHash
+    },
+    balanceAtRiskRaw: null,
+    exactVerify20: false,
+    exactDebit: false,
+    debitFoundFromSubject: false,
+    campaignEvidenceIds: [],
+    serviceSession: session
+  };
+
+  it("loads only the latest owner-bound official-USDT assessment and its exact session audit", async () => {
+    const { db, queries } = createMockDb(1, [{
+      approval_tx_hash: approvalTxHash,
+      owner_address: ownerAddress,
+      spender_address: spenderAddress,
+      token_contract: tokenContract,
+      approval_evidence_id: "approval-raw-id",
+      approval_evidence_json: {
+        ownerAddress,
+        spenderAddress,
+        tokenContract,
+        approvalSafetyAssessmentV2: assessment
+      },
+      session_evidence_id: "session-raw-id",
+      session_evidence_json: {
+        approvalTxHash,
+        ownerAddress,
+        spenderAddress,
+        linkedRouteTxHash: actionTxHash,
+        // JSONB does not preserve the producer's original object-key order.
+        knownServiceSession: Object.fromEntries(Object.entries(session).reverse())
+      }
+    }]);
+
+    const result = await getLatestApprovalSafetyAuditForSpenderByTelegramUser(db, {
+      telegramUserId: "42",
+      spenderAddress,
+      now
+    });
+
+    expect(result).toMatchObject({
+      approvalTxHash,
+      approvalEvidenceId: "approval-raw-id",
+      sessionEvidenceId: "session-raw-id",
+      assessment: {
+        subjectAddress: ownerAddress,
+        allowance: { ownerAddress, spenderAddress, tokenContract },
+        serviceSession: { approvalTxHash, actionTxHash }
+      }
+    });
+    const sql = compactSql(queries[0].sql);
+    expect(sql).toContain("join watched_wallets");
+    expect(sql).toContain("w.telegram_user_id = $1");
+    expect(sql).toContain("approval.token_contract = $3");
+    expect(sql).toContain("approval.spender_address = $2");
+    expect(sql).toContain("guard.address = approval.spender_address");
+    expect(sql).toContain("session.address = approval.spender_address");
+    expect(sql).toContain("order by approval.approval_at desc");
+    expect(queries[0].params).toEqual(["42", spenderAddress, tokenContract]);
+  });
+
+  it("fails closed on malformed or foreign embedded assessment data", async () => {
+    const { db } = createMockDb(1, [{
+      approval_tx_hash: approvalTxHash,
+      owner_address: ownerAddress,
+      spender_address: spenderAddress,
+      token_contract: tokenContract,
+      approval_evidence_id: "approval-raw-id",
+      approval_evidence_json: {
+        ownerAddress,
+        spenderAddress: "TFagrFLKwcuRvXobE9TmQxdAM7BEjvnXzK",
+        tokenContract,
+        approvalSafetyAssessmentV2: assessment
+      },
+      session_evidence_id: null,
+      session_evidence_json: null
+    }]);
+
+    await expect(getLatestApprovalSafetyAuditForSpenderByTelegramUser(db, {
+      telegramUserId: "42",
+      spenderAddress,
+      now
+    })).resolves.toBeNull();
   });
 });
 

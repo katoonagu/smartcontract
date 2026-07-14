@@ -18,11 +18,6 @@ import {
   unresolvedBoundaryFromFindings
 } from "../forensics/sourceBundleExposure";
 import { sourceExposureKindFromPath } from "../forensics/provenanceScoring";
-import {
-  buildContractAnalysisCaseFiles,
-  createUnavailableContractLlmVerdict,
-  hashContractAnalysisCaseFile
-} from "../forensics/contractLlmVerdict";
 import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDrivenEvidence";
 import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
 import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
@@ -109,7 +104,6 @@ export type WhereIsMoneyDeps = {
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
-  analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
   crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
@@ -829,17 +823,11 @@ async function buildApprovalDrainContractProfiles(input: {
   return profiles;
 }
 
-function unavailableVerdictsForCaseFiles(caseFiles: ContractAnalysisCaseFile[]): ContractLlmVerdictSummary[] {
-  return caseFiles.map((caseFile) => createUnavailableContractLlmVerdict({
-    contractAddress: caseFile.contractAddress,
-    caseFileHash: hashContractAnalysisCaseFile(caseFile),
-    providerLabel: "disabled",
-    model: "disabled",
-    error: "llm disabled"
-  }));
+function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInput): ForensicRouteEdge[] {
+  return edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
 }
 
-function contractLlmCandidateAddresses(input: {
+function deterministicContractProfileCandidates(input: {
   originPaths: WhereIsMoneyReport["originPaths"];
   approvalDrainProvenanceProfiles: WhereIsMoneyReport["approvalDrainProvenanceProfiles"];
   approvalDrainReviewFindings: NonNullable<WhereIsMoneyReport["approvalDrainReviewFindings"]>;
@@ -847,21 +835,13 @@ function contractLlmCandidateAddresses(input: {
   const addresses = new Set<string>();
   for (const path of input.originPaths) {
     if (path.rootSourceAddress) addresses.add(path.rootSourceAddress);
-    if (path.rootSourceType === "decline_boundary" || path.stoppedReason === "unlabeled_service_boundary" || path.verdict !== "ACCEPTABLE") {
-      for (const address of path.pathAddresses) addresses.add(address);
-    }
+    for (const address of path.pathAddresses) addresses.add(address);
   }
-  for (const profile of input.approvalDrainProvenanceProfiles) {
-    addresses.add(profile.spenderAddress);
-  }
+  for (const profile of input.approvalDrainProvenanceProfiles) addresses.add(profile.spenderAddress);
   for (const finding of input.approvalDrainReviewFindings) {
     if (finding.spenderAddress) addresses.add(finding.spenderAddress);
   }
   return [...addresses];
-}
-
-function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInput): ForensicRouteEdge[] {
-  return edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
 }
 
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
@@ -1918,53 +1898,19 @@ export async function runWhereIsMoneyCheck(
   const fastDecline = exactFast.length > 0;
   const approvalDrainDecline = approvalDrainScore >= 70;
   const deterministicDecision = fastDecline || approvalDrainDecline ? "DECLINE" : combined.decision;
-  let contractLlmVerdicts: ContractLlmVerdictSummary[] = [];
-  const needsContractLlmForDecision = !fastDecline &&
-    !approvalDrainDecline &&
-    !exactGasFreeFeeOnly &&
-    (deterministicDecision === "REVIEW" || approvalDrainReviewFindings.length > 0);
-  const shouldBuildContractLlmReport = Boolean(deps.analyzeContractLlmCaseFiles || needsContractLlmForDecision);
-  if (shouldBuildContractLlmReport) {
-    throwIfAborted(input.abortSignal);
-    const candidateAddresses = contractLlmCandidateAddresses({
+  const contractLlmVerdicts: ContractLlmVerdictSummary[] = [];
+  if (deps.getContractIntelligenceProfile) {
+    const candidates = deterministicContractProfileCandidates({
       originPaths: provenanceOriginPaths,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings
     });
-    await Promise.all(candidateAddresses.map((address) => getCachedClassification(address)));
-    throwIfAborted(input.abortSignal);
-    const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
-      subjectAddress: sourceAddress,
-      currentUsdtBalanceRaw: currentBalanceRaw,
-      balanceFormingTransfers: provenanceBalanceFormingTransfers,
-      originPaths: provenanceOriginPaths,
-      senderInteractionProfiles,
-      approvalDrainProvenanceProfiles,
-      approvalDrainReviewFindings,
-      classifications
-    });
-    const contractProfiles = await buildContractProfilesForCaseFiles({
-      caseFiles: preliminaryCaseFiles,
-      getContractIntelligenceProfile: deps.getContractIntelligenceProfile
-    });
-    const caseFiles = buildContractAnalysisCaseFiles({
-      subjectAddress: sourceAddress,
-      currentUsdtBalanceRaw: currentBalanceRaw,
-      balanceFormingTransfers: provenanceBalanceFormingTransfers,
-      originPaths: provenanceOriginPaths,
-      senderInteractionProfiles,
-      approvalDrainProvenanceProfiles,
-      approvalDrainReviewFindings,
-      classifications,
-      contractProfiles
-    });
-    if (caseFiles.length > 0) {
-      throwIfAborted(input.abortSignal);
-      contractLlmVerdicts = deps.analyzeContractLlmCaseFiles
-        ? await deps.analyzeContractLlmCaseFiles(caseFiles).catch(() => unavailableVerdictsForCaseFiles(caseFiles))
-        : unavailableVerdictsForCaseFiles(caseFiles);
-      throwIfAborted(input.abortSignal);
-    }
+    await Promise.all(candidates.map(async (address) => {
+      const classification = await getCachedClassification(address);
+      if (classification?.category !== "unknown_contract" && classification?.category !== "service" &&
+        classification?.category !== "protocol" && classification?.category !== "bridge") return;
+      await deps.getContractIntelligenceProfile?.(address).catch(() => null);
+    }));
   }
   const coverage: WhereIsMoneyCoverage = {
     selectedInboundTxCount: balanceFormingTransfers.length,

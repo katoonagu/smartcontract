@@ -13,6 +13,7 @@ import type {
   AddressFeaturesDaily,
   AddressLabelCacheEntry,
   ApprovalAllowanceStateV2,
+  ApprovalSafetyAssessmentV2,
   BotLocale,
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
@@ -49,6 +50,7 @@ import type {
   WalletAlertMode,
   WatchedWallet
 } from "../types";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type {
   ContractActivityLevel,
   ContractCallerStat,
@@ -91,6 +93,13 @@ export type TelegramUserPendingAction =
   | "add_alert_admin_suspicious_only"
   | "remove_alert_admin";
 export type CustomerAlertMode = "all" | "suspicious_only";
+
+export type ApprovalSafetyAuditForContractDecision = {
+  approvalTxHash: string;
+  approvalEvidenceId: string;
+  sessionEvidenceId: string | null;
+  assessment: ApprovalSafetyAssessmentV2;
+};
 
 export type TelegramUserSession = {
   telegramUserId: string;
@@ -4525,6 +4534,171 @@ export async function recordApprovalRisk(
     [input.approvalTxHash, input.watchedWalletId, input.report.level, input.report.score, JSON.stringify(input.report.reasons)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+function strictStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0)) return null;
+  if (new Set(value).size !== value.length) return null;
+  return [...value];
+}
+
+function strictKnownServiceSession(value: unknown): ApprovalSafetyAssessmentV2["serviceSession"] | undefined {
+  if (value === null) return null;
+  const row = mapJsonObject(value);
+  if (
+    typeof row.walletAddress !== "string" ||
+    typeof row.spenderAddress !== "string" ||
+    typeof row.approvalTxHash !== "string" || row.approvalTxHash.length === 0 ||
+    typeof row.actionTxHash !== "string" || row.actionTxHash.length === 0 ||
+    (row.actionKind !== "swap" && row.actionKind !== "bridge" && row.actionKind !== "router") ||
+    row.walletInitiated !== true || row.successful !== true ||
+    !Number.isSafeInteger(row.delayMs) || Number(row.delayMs) < 0 ||
+    (row.approvedAmountRaw !== null && (typeof row.approvedAmountRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.approvedAmountRaw))) ||
+    typeof row.movedAmountRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.movedAmountRaw) ||
+    (row.amountContinuity !== "exact" && row.amountContinuity !== "broken" && row.amountContinuity !== "unknown") ||
+    typeof row.authoritativeServiceId !== "string" || row.authoritativeServiceId.length === 0
+  ) return undefined;
+  return row as ApprovalSafetyAssessmentV2["serviceSession"];
+}
+
+function sameKnownServiceSession(
+  left: NonNullable<ApprovalSafetyAssessmentV2["serviceSession"]>,
+  right: NonNullable<ApprovalSafetyAssessmentV2["serviceSession"]>
+): boolean {
+  return left.walletAddress === right.walletAddress &&
+    left.spenderAddress === right.spenderAddress &&
+    left.approvalTxHash === right.approvalTxHash &&
+    left.actionTxHash === right.actionTxHash &&
+    left.actionKind === right.actionKind &&
+    left.walletInitiated === right.walletInitiated &&
+    left.successful === right.successful &&
+    left.delayMs === right.delayMs &&
+    left.approvedAmountRaw === right.approvedAmountRaw &&
+    left.movedAmountRaw === right.movedAmountRaw &&
+    left.amountContinuity === right.amountContinuity &&
+    left.authoritativeServiceId === right.authoritativeServiceId;
+}
+
+function parseApprovalSafetyAuditRow(
+  row: Record<string, unknown>,
+  input: { spenderAddress: string; now: Date }
+): ApprovalSafetyAuditForContractDecision | null {
+  const approvalTxHash = typeof row.approval_tx_hash === "string" ? row.approval_tx_hash : null;
+  const ownerAddress = typeof row.owner_address === "string" ? row.owner_address : null;
+  const spenderAddress = typeof row.spender_address === "string" ? row.spender_address : null;
+  const tokenContract = typeof row.token_contract === "string" ? row.token_contract : null;
+  const approvalEvidenceId = typeof row.approval_evidence_id === "string" ? row.approval_evidence_id : null;
+  if (!approvalTxHash || !ownerAddress || spenderAddress !== input.spenderAddress ||
+    tokenContract !== TRON_USDT_CONTRACT_ADDRESS || !approvalEvidenceId) return null;
+
+  const approvalEvidence = mapJsonObject(row.approval_evidence_json);
+  if (approvalEvidence.ownerAddress !== ownerAddress || approvalEvidence.spenderAddress !== spenderAddress ||
+    approvalEvidence.tokenContract !== tokenContract) return null;
+  const rawAssessment = mapJsonObject(approvalEvidence.approvalSafetyAssessmentV2);
+  const rawAllowance = mapJsonObject(rawAssessment.allowance);
+  let allowance: ApprovalAllowanceStateV2;
+  try {
+    allowance = validateApprovalAllowanceStateV2(rawAllowance as ApprovalAllowanceStateV2, input.now);
+  } catch {
+    return null;
+  }
+  if (allowance.state !== "confirmed_active" && allowance.state !== "confirmed_zero") return null;
+  if (allowance.ownerAddress !== ownerAddress || allowance.spenderAddress !== spenderAddress ||
+    allowance.tokenContract !== tokenContract || allowance.observedApprovalTxHash !== approvalTxHash) return null;
+  const campaignEvidenceIds = strictStringArray(rawAssessment.campaignEvidenceIds);
+  const serviceSession = strictKnownServiceSession(rawAssessment.serviceSession);
+  if (!campaignEvidenceIds || serviceSession === undefined) return null;
+  if (
+    rawAssessment.version !== "approval-safety-v2" ||
+    rawAssessment.subjectAddress !== ownerAddress ||
+    (rawAssessment.level !== "LOW" && rawAssessment.level !== "MEDIUM" && rawAssessment.level !== "HIGH" &&
+      rawAssessment.level !== "CRITICAL" && rawAssessment.level !== "UNKNOWN") ||
+    (rawAssessment.score !== null && (!Number.isInteger(rawAssessment.score) || Number(rawAssessment.score) < 0 || Number(rawAssessment.score) > 100)) ||
+    (rawAssessment.action !== "NONE" && rawAssessment.action !== "REVOKE_IF_UNUSED" &&
+      rawAssessment.action !== "REVOKE_NOW" && rawAssessment.action !== "CONFIRM_ALLOWANCE") ||
+    rawAssessment.amlScoreImpact !== 0 ||
+    (rawAssessment.balanceAtRiskRaw !== null && (typeof rawAssessment.balanceAtRiskRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(rawAssessment.balanceAtRiskRaw))) ||
+    typeof rawAssessment.exactVerify20 !== "boolean" ||
+    typeof rawAssessment.exactDebit !== "boolean" ||
+    typeof rawAssessment.debitFoundFromSubject !== "boolean"
+  ) return null;
+
+  const sessionEvidenceId = typeof row.session_evidence_id === "string" ? row.session_evidence_id : null;
+  if (serviceSession) {
+    const sessionEvidence = mapJsonObject(row.session_evidence_json);
+    const persistedSession = strictKnownServiceSession(sessionEvidence.knownServiceSession);
+    if (!sessionEvidenceId || !persistedSession ||
+      serviceSession.walletAddress !== ownerAddress ||
+      serviceSession.spenderAddress !== spenderAddress ||
+      serviceSession.approvalTxHash !== approvalTxHash ||
+      sessionEvidence.approvalTxHash !== approvalTxHash ||
+      sessionEvidence.ownerAddress !== ownerAddress ||
+      sessionEvidence.spenderAddress !== spenderAddress ||
+      sessionEvidence.linkedRouteTxHash !== serviceSession.actionTxHash ||
+      !sameKnownServiceSession(persistedSession, serviceSession)) return null;
+  }
+
+  return {
+    approvalTxHash,
+    approvalEvidenceId,
+    sessionEvidenceId,
+    assessment: {
+      version: "approval-safety-v2",
+      subjectAddress: ownerAddress,
+      level: rawAssessment.level,
+      score: rawAssessment.score as number | null,
+      action: rawAssessment.action,
+      amlScoreImpact: 0,
+      allowance,
+      balanceAtRiskRaw: rawAssessment.balanceAtRiskRaw as string | null,
+      exactVerify20: rawAssessment.exactVerify20,
+      exactDebit: rawAssessment.exactDebit,
+      debitFoundFromSubject: rawAssessment.debitFoundFromSubject,
+      campaignEvidenceIds,
+      serviceSession
+    } as ApprovalSafetyAssessmentV2
+  };
+}
+
+export async function getLatestApprovalSafetyAuditForSpenderByTelegramUser(
+  db: Db,
+  input: { telegramUserId: string; spenderAddress: string; now?: Date }
+): Promise<ApprovalSafetyAuditForContractDecision | null> {
+  const result = await db.query(
+    `select approval.approval_tx_hash, approval.owner_address, approval.spender_address,
+       approval.token_contract, guard_raw.id as approval_evidence_id,
+       guard_raw.evidence_json as approval_evidence_json,
+       session_raw.id as session_evidence_id, session_raw.evidence_json as session_evidence_json
+     from observed_approval_events approval
+     join watched_wallets w on w.id = approval.watched_wallet_id
+     join lateral (
+       select guard.id, guard.evidence_json
+       from raw_evidence guard
+       where guard.source = 'approval_guard'
+         and guard.tx_hash = approval.approval_tx_hash
+         and guard.address = approval.spender_address
+       order by guard.created_at desc, guard.id desc
+       limit 1
+     ) guard_raw on true
+     left join lateral (
+       select session.id, session.evidence_json
+       from raw_evidence session
+       where session.source = 'approval_session_context'
+         and session.tx_hash = approval.approval_tx_hash
+         and session.address = approval.spender_address
+       order by session.created_at desc, session.id desc
+       limit 1
+     ) session_raw on true
+     where w.telegram_user_id = $1
+       and approval.spender_address = $2
+       and approval.token_contract = $3
+     order by approval.approval_at desc, approval.approval_tx_hash desc
+     limit 1`,
+    [input.telegramUserId, input.spenderAddress, TRON_USDT_CONTRACT_ADDRESS]
+  );
+  return result.rows[0]
+    ? parseApprovalSafetyAuditRow(result.rows[0], { spenderAddress: input.spenderAddress, now: input.now ?? new Date() })
+    : null;
 }
 
 export async function claimObservedApprovalDrainEvent(

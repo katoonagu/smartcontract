@@ -12,7 +12,7 @@ import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/sto
 import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, ForensicRouteEdge, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
-const subject = "TSubject111111111111111111111111111111";
+const subject = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
 const transit = "TTransit111111111111111111111111111111";
 const seed = "TYFkLfEzv5eYgAxANwdGd26KyQwRZYiqtV";
 const hintOne = "T111111111111111111111111111111111";
@@ -427,7 +427,7 @@ describe("deep forensic job runner", () => {
       })
     }));
     expect(result.completion).toBeDefined();
-    expect(result.completion!.resultJson).toMatchObject({ score_valid: true });
+    expect(result.completion!.resultJson).toMatchObject({ score_valid: false });
     const report = (result.completion!.resultJson as { whereIsMoneyReport: WhereIsMoneyReport }).whereIsMoneyReport;
     expect(report.originPaths.some((path) => path.pathAddresses.includes(seed))).toBe(true);
     expect(report.originPaths.flatMap((path) => path.historyCoverage ?? [])).toEqual(expect.arrayContaining([
@@ -5012,7 +5012,7 @@ describe("deep forensic job runner", () => {
       internalDecision: "REVIEW",
       userDecision: "NO_FINAL_DECISION",
       proofLevel: "insufficient_coverage",
-      scoreValid: true,
+      scoreValid: false,
       riskScore: 0,
       coverage: expect.objectContaining({
         selectedInboundTxCount: 0,

@@ -1519,14 +1519,6 @@ function smartContractApprovalLine(report: SmartContractCheckReport, locale: Bot
   return `${report.relatedApprovals.length} связанных approval; ${activeUnlimitedCount} active unlimited.`;
 }
 
-function smartContractLlmVerdictLine(report: SmartContractCheckReport, locale: BotLocale): string {
-  const verdict = report.llmVerdict;
-  if (!verdict) return locale === "en" ? "not available" : "нет данных";
-  const confidence = `${Math.round(verdict.confidence * 100)}%`;
-  const reason = verdict.reasons[0] ? `; ${verdict.reasons[0]}` : "";
-  return `${verdict.verdict} | ${confidence} | ${verdict.contractRiskScore}/100${reason}`;
-}
-
 export function formatSmartContractCheckReport(
   report: SmartContractCheckReport,
   options: { runtimeLabel?: string; locale?: BotLocale } = {}
@@ -1549,7 +1541,6 @@ export function formatSmartContractCheckReport(
       bulletList(reasonLines)
     ]),
     `${bold(locale === "en" ? "Seen in approvals" : "В approvals")}: ${escapeHtml(smartContractApprovalLine(report, locale))}`,
-    `${bold(locale === "en" ? "AI contract verdict" : "AI contract verdict")}: ${escapeHtml(smartContractLlmVerdictLine(report, locale))}`,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -1810,9 +1801,9 @@ export function extractWhereIsMoneyReportFromJob(job: ForensicCheckJob | null | 
     job.resultJson.scoringPolicyVersion !== SCORING_SIGNAL_MATRIX_POLICY_VERSION
   ) {
     const { scoringPolicyVersion: _ignored, ...legacyReport } = wrappedReport;
-    return legacyReport;
+    return { ...legacyReport, contractLlmVerdicts: [] };
   }
-  return wrappedReport;
+  return { ...wrappedReport, contractLlmVerdicts: [] };
 }
 
 function whereSupportDecisionReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {

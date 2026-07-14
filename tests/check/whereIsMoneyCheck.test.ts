@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TronWeb } from "tronweb";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
-import { createContractLlmVerdictAnalyzer } from "../../src/forensics/contractLlmVerdict";
 import { repairFundingSourceExactWindow } from "../../src/forensics/fundingFirstSourceProvenance";
 import {
   createFixtureCrossChainDiscoveryProvider,
@@ -25,7 +24,7 @@ import type {
   EvmTransactionReceipt
 } from "../../src/forensics/evmExplorerClient";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
-import type { AddressLabel, ContractLlmVerdictSummary, ForensicRouteEdge, RecentFlowPrincipalTransferV1, RiskReport, ServiceClassification, ServiceExposureProfile } from "../../src/types";
+import type { AddressLabel, ForensicRouteEdge, RecentFlowPrincipalTransferV1, RiskReport, ServiceClassification, ServiceExposureProfile } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 import {
   manualGaryAddresses,
@@ -36,7 +35,7 @@ import {
 } from "../fixtures/forensics/crossChainCases";
 import { regressionCases } from "../fixtures/forensics/regressionCases";
 
-const subject = "TSubject111111111111111111111111111111";
+const subject = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
 const oldSender = "TOldSender11111111111111111111111111";
 const cleanSender = "TCleanSender11111111111111111111111";
 const bridge = "TBridge1111111111111111111111111111";
@@ -936,7 +935,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.originPaths[0]?.stoppedReason).not.toBe("service_boundary");
   });
 
-  it("accepts a TEY-like operational liquidity wallet without source boundary proof", async () => {
+  it("keeps TEY-like operational context but withholds a mismatched published score", async () => {
     const senderA = "TLiquiditySenderA111111111111111111";
     const senderB = "TLiquiditySenderB111111111111111111";
     const funderA1 = "TLiquidityFunderA111111111111111111";
@@ -999,7 +998,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("ACCEPTABLE");
-    expect(report.userDecision).toBe("ACCEPTABLE");
+    expect(report.userDecision).toBe("NO_FINAL_DECISION");
     expect(report.assessment).toMatchObject({
       walletRole: "operational_liquidity_wallet",
       hardBadEvidence: [],
@@ -1053,7 +1052,8 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.originPaths).toEqual([
       expect.objectContaining({ balanceTransferTxHash: "tx-seed", verdict: "ACCEPTABLE" })
     ]);
-    expectRegressionReport(report, "Binance through clean EOA is acceptable");
+    expect(report.userDecision).toBe("NO_FINAL_DECISION");
+    expect(report.proofLevel).toBe("clean_source_proven");
   });
 
   it("keeps deferred trace edge cache target-specific for same-address same-timestamp hops", async () => {
@@ -2419,7 +2419,8 @@ describe("runWhereIsMoneyCheck", () => {
       sourceExposureKind: "whitebit",
       proofLevel: "exchange_policy_context"
     }));
-    expectRegressionReport(report, "WhiteBIT small share is medium policy decline");
+    expect(report.userDecision).toBe("NO_FINAL_DECISION");
+    expect(report.proofLevel).toBe("exchange_policy_context");
   });
 
   it("traces only balance-forming inbound transfers and ignores older unrelated inflows", async () => {
@@ -2972,7 +2973,8 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decisionReasons).not.toEqual(expect.arrayContaining([
       expect.stringContaining("exact approval-drain transferFrom")
     ]));
-    expectRegressionReport(report, "Known DEX router approval with output is guarded, not drainer proof");
+    expect(report.userDecision).toBe("NO_FINAL_DECISION");
+    expect(report.proofLevel).toBe("exchange_policy_context");
   });
 
   it("declines TFagr-style wrapper drains even when the visible method is not transferFrom", async () => {
@@ -3444,7 +3446,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.notes.join(" ")).not.toContain("Approval/contract enrichment budget: checked");
   });
 
-  it("uses an LLM contract verdict as capped suspicion for an uncertain wrapper approval-drain case", async () => {
+  it("keeps an uncertain wrapper approval-drain case deterministic and omits fresh LLM output", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [
@@ -3455,23 +3457,6 @@ describe("runWhereIsMoneyCheck", () => {
       ],
       [victim, []]
     ]);
-    const llmVerdict: ContractLlmVerdictSummary = {
-      source: "llm",
-      providerLabel: "deepseek",
-      model: "deepseek-v4-flash",
-      contractAddress: wrapperContract,
-      caseFileHash: "case-hash",
-      cacheId: null,
-      verdict: "drainer_like",
-      confidence: 0.95,
-      contractRiskScore: 95,
-      decisionRecommendation: "DECLINE",
-      reasons: ["Wrapper method hides transferFrom-like token movement."],
-      citedEvidenceIds: ["tx-wrapper-drain"],
-      falsePositiveNotes: ["No exact approval was found; this may still be a normal service route."]
-    };
-    let capturedCaseFiles: unknown[] = [];
-
     const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "1100000000",
       fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
@@ -3508,11 +3493,7 @@ describe("runWhereIsMoneyCheck", () => {
             lowMetadata: true,
             activityLevel: "low"
           }
-        : null,
-      analyzeContractLlmCaseFiles: async (caseFiles) => {
-        capturedCaseFiles = caseFiles;
-        return [llmVerdict];
-      }
+        : null
     }, {
       sourceAddress: subject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
@@ -3520,39 +3501,19 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.userDecision).toBe("DECLINE");
-    expect(report.proofLevel).toBe("llm_assisted_suspicion");
+    expect(report.userDecision).toBe("REVIEW");
+    expect(report.proofLevel).not.toBe("llm_assisted_suspicion");
     expect(report.proofLevel).not.toBe("exact_approval_drain_provenance");
     expect(report.proofLevel).not.toBe("exact_scam_or_taint_proof");
-    expect(report.riskScore).toBeLessThanOrEqual(80);
     expect(report.approvalDrainProvenanceProfiles).toEqual([]);
-    expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
-    expect(capturedCaseFiles).toHaveLength(1);
-    expect(capturedCaseFiles[0]).toMatchObject({
-      contractAddress: wrapperContract,
-      approvalDrainReviewFindings: [
-        expect.objectContaining({
-          drainTxHash: "tx-wrapper-drain",
-          reason: "approval_not_found"
-        })
-      ],
-      approvalDrainReviewInterpretations: [
-        expect.objectContaining({
-          reviewFindingInterpretation: "candidate_only_not_exact_proof",
-          exactApprovalProofStatus: "not_found",
-          transferFromProofStatus: "suspected_wrapper"
-        })
-      ]
-    });
-    expect(report.decisionReasons).toEqual(expect.arrayContaining([
-      "LLM contract verdict is drainer_like with score 95/100 and 95% confidence."
-    ]));
+    expect(report.contractLlmVerdicts).toEqual([]);
+    expect(report.decisionReasons.join(" ")).not.toMatch(/LLM|deepseek|drainer_like/i);
     expect(report.assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
     expect(report.assessment.hardBadEvidence).toEqual([]);
     expect(report.decisionReasons.join(" ")).not.toMatch(/exact approval-drain/i);
   });
 
-  it("uses a high-confidence unknown-suspicious LLM verdict to decline an unproven risky contract path", async () => {
+  it("does not manufacture an LLM decline for an unproven risky contract path", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [
@@ -3563,22 +3524,6 @@ describe("runWhereIsMoneyCheck", () => {
       ],
       [victim, []]
     ]);
-    const llmVerdict: ContractLlmVerdictSummary = {
-      source: "llm",
-      providerLabel: "deepseek",
-      model: "deepseek-v4-flash",
-      contractAddress: wrapperContract,
-      caseFileHash: "case-hash",
-      cacheId: null,
-      verdict: "unknown_suspicious",
-      confidence: 0.82,
-      contractRiskScore: 83,
-      decisionRecommendation: "DECLINE",
-      reasons: ["Unknown wrapper movement is suspicious but not exact drain proof."],
-      citedEvidenceIds: ["tx-wrapper-drain"],
-      falsePositiveNotes: []
-    };
-
     const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "1100000000",
       fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
@@ -3608,8 +3553,7 @@ describe("runWhereIsMoneyCheck", () => {
             lowMetadata: true,
             activityLevel: "low"
           }
-        : null,
-      analyzeContractLlmCaseFiles: async () => [llmVerdict]
+        : null
     }, {
       sourceAddress: subject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
@@ -3617,12 +3561,10 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.userDecision).toBe("DECLINE");
-    expect(report.proofLevel).toBe("llm_assisted_suspicion");
-    expect(report.riskScore).toBe(75);
-    expect(report.decisionReasons).toEqual([
-      "LLM contract verdict is unknown_suspicious with 82% confidence."
-    ]);
+    expect(report.userDecision).toBe("REVIEW");
+    expect(report.proofLevel).not.toBe("llm_assisted_suspicion");
+    expect(report.contractLlmVerdicts).toEqual([]);
+    expect(report.decisionReasons.join(" ")).not.toMatch(/LLM|deepseek|unknown_suspicious/i);
     expect(report.assessment.hardBadEvidence).toEqual([]);
   });
 
@@ -3659,45 +3601,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decisionReasons.join(" ")).toContain("Clean source could not be proven");
   });
 
-  it("does not reuse a drainer fingerprint verdict when the cloned contract flow is different", async () => {
-    let llmCalls = 0;
-    const analyzer = createContractLlmVerdictAnalyzer({
-      client: {
-        completeJson: async () => {
-          llmCalls += 1;
-          return {
-            ok: true,
-            providerLabel: "deepseek",
-            model: "deepseek-v4-flash",
-            json: llmCalls === 1
-              ? {
-                  verdict: "drainer_like",
-                  confidence: 0.9,
-                  contractRiskScore: 90,
-                  decisionRecommendation: "DECLINE",
-                  reasons: ["Wrapper flow is drainer-like."],
-                  citedEvidenceIds: ["tx-wrapper-drain"],
-                  falsePositiveNotes: []
-                }
-              : {
-                  verdict: "legitimate_service",
-                  confidence: 0.82,
-                  contractRiskScore: 20,
-                  decisionRecommendation: "ACCEPTABLE",
-                  reasons: ["No approval-drain flow is present."],
-                  citedEvidenceIds: ["tx-clone-clean"],
-                  falsePositiveNotes: []
-                },
-            rawText: "{}",
-            latencyMs: 10
-          };
-        }
-      },
-      providerLabel: "deepseek",
-      model: "deepseek-v4-flash",
-      cacheTtlMs: 60_000,
-      now: () => new Date("2026-05-28T00:00:00.000Z")
-    });
+  it("keeps cloned unknown-contract flows free of fresh LLM projections", async () => {
     const contractProfile = (contractAddress: string) => ({
       contractAddress,
       methodMap: { deadbeef: "Verify20(address,address,uint256)" },
@@ -3730,8 +3634,7 @@ describe("runWhereIsMoneyCheck", () => {
           }
         : {},
       listTrc20ApprovalChanges: async () => [],
-      getContractIntelligenceProfile: async (address) => address === wrapperContract ? contractProfile(wrapperContract) : null,
-      analyzeContractLlmCaseFiles: analyzer
+      getContractIntelligenceProfile: async (address) => address === wrapperContract ? contractProfile(wrapperContract) : null
     }, {
       sourceAddress: subject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
@@ -3752,24 +3655,18 @@ describe("runWhereIsMoneyCheck", () => {
       getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
       getClassificationForAddress: async (address) => address === wrapperCloneContract ? service("unknown_contract", null) : service("none", null),
       getFastWalletRisk: async () => lowFastRisk,
-      getContractIntelligenceProfile: async (address) => address === wrapperCloneContract ? contractProfile(wrapperCloneContract) : null,
-      analyzeContractLlmCaseFiles: analyzer
+      getContractIntelligenceProfile: async (address) => address === wrapperCloneContract ? contractProfile(wrapperCloneContract) : null
     }, {
       sourceAddress: secondSubject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z")
     });
 
-    expect(llmCalls).toBe(2);
-    expect(report.contractLlmVerdicts?.[0]).toMatchObject({
-      source: "llm",
-      verdict: "legitimate_service",
-      contractAddress: wrapperCloneContract
-    });
-    expectRegressionReport(report, "Fingerprint clone with different flow does not reuse drainer verdict");
+    expect(report.contractLlmVerdicts).toEqual([]);
+    expect(report.decisionReasons.join(" ")).not.toMatch(/LLM|deepseek|drainer_like|legitimate_service/i);
   });
 
-  it("declines by insufficient coverage when LLM times out on an uncertain contract case", async () => {
+  it("does not turn a removed LLM timeout path into active contract evidence", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [
@@ -3810,63 +3707,23 @@ describe("runWhereIsMoneyCheck", () => {
             lowMetadata: true,
             activityLevel: "low"
           }
-        : null,
-      analyzeContractLlmCaseFiles: async (caseFiles) => caseFiles.map((caseFile) => ({
-        source: "unavailable" as const,
-        cacheMatch: null,
-        reusedFromContractAddress: null,
-        providerLabel: "deepseek",
-        model: "deepseek-v4-flash",
-        contractAddress: caseFile.contractAddress,
-        caseFileHash: "case-hash",
-        cacheId: null,
-        verdict: "unknown_insufficient_data" as const,
-        confidence: 0,
-        contractRiskScore: 65,
-        decisionRecommendation: "DECLINE" as const,
-        reasons: ["Clean contract intent could not be verified automatically."],
-        citedEvidenceIds: [],
-        falsePositiveNotes: [],
-        error: "llm timed out"
-      }))
+        : null
     }, {
       sourceAddress: subject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z")
     });
 
-    expect(report.contractLlmVerdicts?.[0]).toMatchObject({
-      source: "unavailable",
-      error: "llm timed out"
-    });
-    expect(report.riskScore).toBe(65);
-    expect(report.decisionReasons[0]).toContain("LLM unavailable: llm timed out");
-    expectRegressionReport(report, "LLM timeout on uncertain contract is user decline with no cache");
+    expect(report.contractLlmVerdicts).toEqual([]);
+    expect(report.decisionReasons.join(" ")).not.toMatch(/LLM|timed out|deepseek/i);
   });
 
-  it("runs LLM contract reporting for deterministic unknown-contract boundary declines", async () => {
+  it("keeps deterministic unknown-contract boundary declines free of LLM reporting", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [cleanSender, [edge("tx-contract-clean", wrapperContract, cleanSender, "1100000000", "2026-05-22T10:00:00.000Z")]],
       [wrapperContract, []]
     ]);
-    const llmVerdict: ContractLlmVerdictSummary = {
-      source: "llm",
-      providerLabel: "deepseek",
-      model: "deepseek-v4-flash",
-      contractAddress: wrapperContract,
-      caseFileHash: "case-hash",
-      cacheId: null,
-      verdict: "unknown_suspicious",
-      confidence: 0.7,
-      contractRiskScore: 83,
-      decisionRecommendation: "DECLINE",
-      reasons: ["Unknown contract boundary has no clean service identity."],
-      citedEvidenceIds: ["tx-contract-clean"],
-      falsePositiveNotes: ["Could be a legitimate private router, but no service evidence was available."]
-    };
-    let capturedCaseFiles: unknown[] = [];
-
     const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "1100000000",
       fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
@@ -3886,11 +3743,7 @@ describe("runWhereIsMoneyCheck", () => {
             lowMetadata: true,
             activityLevel: "low"
           }
-        : null,
-      analyzeContractLlmCaseFiles: async (caseFiles) => {
-        capturedCaseFiles = caseFiles;
-        return [llmVerdict];
-      }
+        : null
     }, {
       sourceAddress: subject,
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
@@ -3898,22 +3751,8 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(75);
-    expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
-    expect(capturedCaseFiles).toHaveLength(1);
-    expect(capturedCaseFiles[0]).toMatchObject({
-      contractAddress: wrapperContract,
-      approvalDrainReviewFindings: [],
-      originPaths: [
-        expect.objectContaining({
-          rootSourceAddress: wrapperContract,
-          stoppedReason: "unlabeled_service_boundary"
-        })
-      ],
-      serviceClassification: {
-        category: "unknown_contract"
-      }
-    });
+    expect(report.contractLlmVerdicts).toEqual([]);
+    expect(report.decisionReasons.join(" ")).not.toMatch(/LLM|deepseek|unknown_suspicious/i);
   });
 
   it("uses the latest 150 transfers for sparse windows so older exchange origins are still traced", async () => {
@@ -4118,7 +3957,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.coverageRatio).toBe(0);
     expect(report.coverage.questionStatus).toBe("not_applicable");
     expect(report.coverage.partial).toBe(false);
-    expect(report.scoreValid).toBe(true);
+    expect(report.scoreValid).toBe(false);
     expect(report.decision).toBe("REVIEW");
     expect(report.internalDecision).toBe("REVIEW");
     expect(report.userDecision).toBe("NO_FINAL_DECISION");
@@ -4143,12 +3982,12 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.assessment.hardBadEvidence).toEqual([]);
   });
 
-  it("keeps zero-balance approval-drain proximity as canonical exact approval proof", async () => {
+  it("keeps zero-balance approval-drain proof internal without an unbound published score", async () => {
     const report = await zeroBalanceWalletProfileWithLabel("approval_drain_proximity");
 
     expect(report).toMatchObject({
       decision: "DECLINE",
-      userDecision: "DECLINE",
+      userDecision: "NO_FINAL_DECISION",
       proofLevel: "exact_approval_drain_provenance",
       riskScore: 95
     });
@@ -4157,12 +3996,12 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
   });
 
-  it("preserves zero-balance exact scam label hard proof", async () => {
+  it("preserves zero-balance exact scam proof internally without an unbound published score", async () => {
     const report = await zeroBalanceWalletProfileWithLabel("scam");
 
     expect(report).toMatchObject({
       decision: "DECLINE",
-      userDecision: "DECLINE",
+      userDecision: "NO_FINAL_DECISION",
       proofLevel: "exact_scam_or_taint_proof",
       riskScore: 90
     });
