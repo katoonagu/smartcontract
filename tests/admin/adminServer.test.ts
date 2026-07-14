@@ -8,7 +8,7 @@ import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSign
 import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
 
 const servers: Array<{ close(): Promise<void> }> = [];
-const subjectAddress = "TSubject111111111111111111111111111111";
+const subjectAddress = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
 
 function exactVerify20Report() {
   const now = new Date("2026-07-11T00:00:00.000Z");
@@ -61,7 +61,7 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
   const value: ForensicCheckJob = {
     id: "job-1",
     kind: "where_is_money_check",
-    subjectAddress: "TSubject111111111111111111111111111111",
+    subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
     status: "completed",
     windowStart: new Date("2026-06-01T00:00:00.000Z"),
     windowEnd: new Date("2026-06-01T01:00:00.000Z"),
@@ -71,7 +71,7 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
     requestedBy: null,
     progressJson: {},
     resultJson: {
-      subjectAddress: "TSubject111111111111111111111111111111",
+      subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
       decision: "ACCEPTABLE",
       riskScore: 20,
       coverage: {},
@@ -294,7 +294,7 @@ function whereReportForAdminTest(overrides: Record<string, unknown> = {}): Recor
     scoreValid: true,
     scoreBlockedReason: null,
     technicalStatus: "completed",
-    subjectAddress: "TSubject111111111111111111111111111111",
+    subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
     currentUsdtBalanceRaw: "1000000000",
     fastWalletRisk: null,
     balanceFormingTransfers: [],
@@ -347,11 +347,11 @@ function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): 
     kind: "address_deep_check",
     resultJson: {
       scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
-      subjectAddress: "TSubject111111111111111111111111111111",
+      subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
       serviceExposureProfiles: [],
       addressBehaviorProfiles: [],
       inboundProvenanceProfiles: [{
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         incomingVolumeRaw: "1000000000",
         matchedInboundVolumeRaw: "700000000",
         score: 70,
@@ -376,7 +376,7 @@ function deepJobForAdminSummaryTest(overrides: Partial<ForensicCheckJob> = {}): 
       assetContinuationProfiles: [],
       stablecoinRestrictionProfiles: [],
       boundaryExposureProfiles: [{
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         contextScore: 12,
         flows: [{ txHash: "tx-service-boundary" }],
         coverage: { stoppedReasons: ["service_boundary"] }
@@ -431,10 +431,10 @@ describe("startAdminServer", () => {
     const report = extractor(job({
       kind: "address_deep_check",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         ...evidence
       }
-    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+    }), "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP") as Record<string, unknown> | null;
 
     expect(report?.firstHopBlacklistFacts).toEqual(evidence.firstHopBlacklistFacts);
     expect(report?.firstHopLabelFacts).toEqual(evidence.firstHopLabelFacts);
@@ -453,14 +453,14 @@ describe("startAdminServer", () => {
     const report = extractor(job({
       kind: "address_deep_check",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         ...evidence,
         firstHopBlacklistCoverage: {
           ...evidence.firstHopBlacklistCoverage,
           confirmedAdverseFactCount: 0
         }
       }
-    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+    }), "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP") as Record<string, unknown> | null;
 
     expect(report).toMatchObject({
       firstHopBlacklistFacts: [],
@@ -481,8 +481,8 @@ describe("startAdminServer", () => {
     if (typeof extractor !== "function") return;
     const report = extractor(job({
       kind: "address_deep_check",
-      resultJson: { subjectAddress: "TSubject111111111111111111111111111111" }
-    }), "TSubject111111111111111111111111111111") as Record<string, unknown> | null;
+      resultJson: { subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP" }
+    }), "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP") as Record<string, unknown> | null;
 
     expect(report).not.toBeNull();
     expect(report).not.toHaveProperty("firstHopBlacklistFacts");
@@ -627,7 +627,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("svg { width: 100%; height: 100%; display: block; cursor: grab; }");
     expect(html).toContain("radial-gradient");
     expect(html).not.toContain("floating-inspector");
-    expect(html).not.toContain("TSubject111111111111111111111111111111");
+    expect(html).not.toContain("TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP");
   });
 
   it("serves wallet intelligence console shell", async () => {
@@ -720,7 +720,7 @@ describe("startAdminServer", () => {
     });
 
     const response = await fetch(
-      `${server.url}/admin/api/wallet-intelligence/addresses?limit=20&offset=5&mode=address_deep_check&tag=repeated_cross_run_address&minUniqueSubjects=2&minUniqueRequesters=2&requester=client_user&subjectAddress=TSubject111111111111111111111111111111&startDate=2026-07-01T00%3A00%3A00.000Z&endDate=2026-07-08T00%3A00%3A00.000Z&minDepth=1&maxDepth=2&minDistinctAmountRaw=1000000&maxDistinctAmountRaw=5000000&serviceCategory=cex&jobStatus=completed`,
+      `${server.url}/admin/api/wallet-intelligence/addresses?limit=20&offset=5&mode=address_deep_check&tag=repeated_cross_run_address&minUniqueSubjects=2&minUniqueRequesters=2&requester=client_user&subjectAddress=TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP&startDate=2026-07-01T00%3A00%3A00.000Z&endDate=2026-07-08T00%3A00%3A00.000Z&minDepth=1&maxDepth=2&minDistinctAmountRaw=1000000&maxDistinctAmountRaw=5000000&serviceCategory=cex&jobStatus=completed`,
       { headers: { authorization: "Bearer secret-token" } }
     );
 
@@ -741,7 +741,7 @@ describe("startAdminServer", () => {
       minUniqueSubjects: 2,
       minUniqueRequesters: 2,
       requesterQuery: "client_user",
-      subjectAddress: "TSubject111111111111111111111111111111",
+      subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
       minDepth: 1,
       maxDepth: 2,
       minDistinctAmountRaw: "1000000",
@@ -859,13 +859,13 @@ describe("startAdminServer", () => {
           labelHints: []
         },
         requesters: [{ requestedBy: "42", telegramUserId: "42", username: "client_user", locale: "ru", chatId: "42", messageId: "77", jobCount: 1 }],
-        jobs: [{ jobId: "job-1", jobKind: "address_deep_check", jobStatus: "completed", subjectAddress: "TSubject111111111111111111111111111111", completedAt: new Date("2026-07-06T10:00:00.000Z") }],
+        jobs: [{ jobId: "job-1", jobKind: "address_deep_check", jobStatus: "completed", subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP", completedAt: new Date("2026-07-06T10:00:00.000Z") }],
         sightings: [{
           id: "sighting-1",
           address,
           jobId: "job-1",
           jobKind: "address_deep_check",
-          subjectAddress: "TSubject111111111111111111111111111111",
+          subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           requestedBy: "42",
           sourceKind: "deep_direct_counterparty",
           role: "direct_counterparty",
@@ -1189,7 +1189,7 @@ describe("startAdminServer", () => {
     });
 
     const response = await fetch(
-      `${server.url}/admin/api/forensic-jobs?limit=10&offset=5&status=completed&kind=where_is_money_check&subjectAddress=TSubject111111111111111111111111111111`,
+      `${server.url}/admin/api/forensic-jobs?limit=10&offset=5&status=completed&kind=where_is_money_check&subjectAddress=TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP`,
       { headers: { authorization: "Bearer secret-token" } }
     );
 
@@ -1198,7 +1198,7 @@ describe("startAdminServer", () => {
       jobs: [{
         id: "job-1",
         kind: "where_is_money_check",
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         status: "completed",
         windowStart: "2026-06-01T00:00:00.000Z",
         windowEnd: "2026-06-01T01:00:00.000Z",
@@ -1218,7 +1218,7 @@ describe("startAdminServer", () => {
       offset: 5,
       status: "completed",
       kind: "where_is_money_check",
-      subjectAddress: "TSubject111111111111111111111111111111"
+      subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP"
     });
   });
 
@@ -1227,7 +1227,7 @@ describe("startAdminServer", () => {
       kind: "address_fast_check",
       status: "partial",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         fastRiskReport: {
           score: 80,
           level: "HIGH"
@@ -1266,7 +1266,7 @@ describe("startAdminServer", () => {
       kind: "address_fast_check",
       status: "partial",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         fastRiskReport: {
           score: 60,
           level: "HIGH"
@@ -1284,7 +1284,7 @@ describe("startAdminServer", () => {
       kind: "address_deep_check",
       status: "completed",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         operationalFlowProfiles: [{
           operationalScore: 55
         }]
@@ -1301,7 +1301,7 @@ describe("startAdminServer", () => {
       kind: "where_is_money_check",
       status: "completed",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: {
           decision: "DECLINE",
           riskScore: 78,
@@ -1662,7 +1662,7 @@ describe("startAdminServer", () => {
     await expect(response.json()).resolves.toMatchObject({
       graph: {
         job: { id: "job-1", status: "completed" },
-        subject: { address: "TSubject111111111111111111111111111111" },
+        subject: { address: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP" },
         summary: { decision: "ACCEPTABLE", riskScore: 20 }
       }
     });
@@ -1670,15 +1670,22 @@ describe("startAdminServer", () => {
 
   it("keeps exact hard decline and partial limitations in the canonical Admin graph", async () => {
     const whereReport = whereReportForAdminTest({
-      scoreValid: false,
-      scoreBlockedReason: "provider_cap_unresolved",
-      technicalStatus: "provider_cap_unresolved",
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: "completed",
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
       proofLevel: "exact_scam_or_taint_proof",
       coverage: { partial: true, notes: ["provider cap"] },
       assessment: {
-        scoreValid: false,
-        scoreBlockedReason: "provider_cap_unresolved",
-        technicalStatus: "provider_cap_unresolved",
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
+        decision: "DECLINE",
+        riskScore: 95,
+        riskBand: "CRITICAL",
         hardBadEvidence: [{
           kind: "scam_or_blacklist",
           score: 95,
@@ -1690,9 +1697,9 @@ describe("startAdminServer", () => {
     const fixture = job({
       id: "job-hard-partial",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReport,
-        score_valid: false
+        score_valid: true
       }
     });
     const server = await start({
@@ -1736,7 +1743,7 @@ describe("startAdminServer", () => {
     const fixture = job({
       id: "job-technical-stop",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReport,
         score_valid: false
       }
@@ -1781,7 +1788,7 @@ describe("startAdminServer", () => {
     const fixture = job({
       id: "job-legacy-read",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReport
       }
     });
@@ -1845,7 +1852,7 @@ describe("startAdminServer", () => {
       id: "job-fast-with-legacy-related",
       kind: "address_fast_check",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         fastRiskReport: {
           decision: "DECLINE",
           score: 80,
@@ -1854,7 +1861,7 @@ describe("startAdminServer", () => {
           reasons: [{ code: "fast-risk", message: "Stored Fast decline.", scoreImpact: 80 }]
         },
         fastCounterpartyTopsProfile: {
-          subjectAddress: "TSubject111111111111111111111111111111",
+          subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           topIncomingCounterparties: [],
           topOutgoingCounterparties: [],
           topServiceCounterparties: []
@@ -1872,7 +1879,7 @@ describe("startAdminServer", () => {
     const legacyWhereJob = job({
       id: "job-related-legacy-where",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: legacyReport
       }
     });
@@ -1896,7 +1903,7 @@ describe("startAdminServer", () => {
       id: "job-fast-with-new-related",
       kind: "address_fast_check",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         fastRiskReport: {
           decision: "DECLINE",
           score: 80,
@@ -1905,7 +1912,7 @@ describe("startAdminServer", () => {
           reasons: [{ code: "fast-risk", message: "Stored Fast decline.", scoreImpact: 80 }]
         },
         fastCounterpartyTopsProfile: {
-          subjectAddress: "TSubject111111111111111111111111111111",
+          subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           topIncomingCounterparties: [],
           topOutgoingCounterparties: [],
           topServiceCounterparties: []
@@ -1918,7 +1925,7 @@ describe("startAdminServer", () => {
       id: "job-related-legacy-first",
       updatedAt: new Date("2026-06-01T00:30:00.000Z"),
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: legacyReport
       }
     });
@@ -1944,7 +1951,7 @@ describe("startAdminServer", () => {
       id: "job-related-explicit-newer",
       updatedAt: new Date("2026-06-01T00:45:00.000Z"),
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: explicitWhereReport
       }
     });
@@ -2069,7 +2076,7 @@ describe("startAdminServer", () => {
     const humanSummary = JSON.stringify(graph.summary.humanSummary);
 
     expect(humanSummary).not.toContain(persistedHardEvidence.firstHopBlacklistFacts[0].counterpartyAddress);
-    expect(humanSummary).not.toMatch(/USDT blacklist|TRC20 USDT blacklist/i);
+    expect(humanSummary).not.toContain(persistedHardEvidence.firstHopLabelFacts[0].labelCode);
     expect(graph.summary.riskScore).not.toBe(90);
   });
 
@@ -2134,7 +2141,7 @@ describe("startAdminServer", () => {
       chatId: "42",
       requestedBy: "42",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReport
       }
     });
@@ -2148,7 +2155,7 @@ describe("startAdminServer", () => {
       id: "job-deep-unrelated",
       requestedBy: "other-user",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         serviceExposureProfiles: [],
         addressBehaviorProfiles: [],
         inboundProvenanceProfiles: [],
@@ -2176,7 +2183,7 @@ describe("startAdminServer", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(receivedInputs).toContainEqual({
-      subjectAddress: "TSubject111111111111111111111111111111",
+      subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
       limit: 20
     });
     expect(body.graph.summary.humanSummary).toMatchObject({
@@ -2209,14 +2216,14 @@ describe("startAdminServer", () => {
     const malformedWhereJob = job({
       id: "job-malformed-summary",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         riskScore: 20,
         decision: "ACCEPTABLE",
         coverage: {},
         assessment: {},
         originPaths: [],
         whereIsMoneyReport: {
-          subjectAddress: "TSubject111111111111111111111111111111",
+          subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           riskScore: "not-a-number"
         }
       }
@@ -2249,7 +2256,7 @@ describe("startAdminServer", () => {
       chatId: null,
       requestedBy: null,
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReportForAdminTest()
       }
     });
@@ -2286,7 +2293,7 @@ describe("startAdminServer", () => {
       chatId: "42",
       requestedBy: "42",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReportForAdminTest()
       }
     });
@@ -2296,11 +2303,11 @@ describe("startAdminServer", () => {
       windowStart: whereJob.windowStart,
       windowEnd: whereJob.windowEnd,
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         serviceExposureProfiles: [],
         addressBehaviorProfiles: [],
         inboundProvenanceProfiles: [{
-          subjectAddress: "TSubject111111111111111111111111111111",
+          subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           score: 70,
           paths: [{ label: "whitebit" }]
         }],
@@ -2345,7 +2352,7 @@ describe("startAdminServer", () => {
       chatId: "42",
       requestedBy: "42",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         whereIsMoneyReport: whereReportForAdminTest()
       }
     });
@@ -2355,7 +2362,7 @@ describe("startAdminServer", () => {
       windowStart: whereJob.windowStart,
       windowEnd: whereJob.windowEnd,
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         serviceExposureProfiles: [],
         addressBehaviorProfiles: [],
         inboundProvenanceProfiles: [],
@@ -2733,7 +2740,7 @@ describe("startAdminServer", () => {
   });
 
   it("enriches neighbor nodes with saved wallet risk without duplicating subject risk", async () => {
-    const subject = "TSubject111111111111111111111111111111";
+    const subject = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
     const neighbor = "TNeighborRisk11111111111111111111111";
     const fixture = job({
       kind: "address_deep_check",
@@ -2806,9 +2813,9 @@ describe("startAdminServer", () => {
   it("enriches old deep-check counterparty tx hashes with indexed transfer rows", async () => {
     const fixture = job({
       kind: "address_deep_check",
-      subjectAddress: "TSubject111111111111111111111111111111",
+      subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
       resultJson: {
-        subjectAddress: "TSubject111111111111111111111111111111",
+        subjectAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
         decision: "REVIEW",
         riskScore: 40,
         coverage: {},
@@ -2832,7 +2839,7 @@ describe("startAdminServer", () => {
           blockNumber: 1,
           blockTimestamp: new Date("2026-06-25T09:49:03.000Z"),
           eventIndex: 0,
-          fromAddress: "TSubject111111111111111111111111111111",
+          fromAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           toAddress: "TCounterparty1111111111111111111111111",
           amountRaw: "5000000",
           method: "transfer",
@@ -2844,7 +2851,7 @@ describe("startAdminServer", () => {
           blockNumber: 2,
           blockTimestamp: new Date("2026-06-25T09:50:03.000Z"),
           eventIndex: 0,
-          fromAddress: "TSubject111111111111111111111111111111",
+          fromAddress: "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP",
           toAddress: "TCounterparty1111111111111111111111111",
           amountRaw: "7000000",
           method: "transfer",

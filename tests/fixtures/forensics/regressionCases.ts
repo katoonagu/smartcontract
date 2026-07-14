@@ -10,7 +10,7 @@ export type OperationalLiquidityWhereIsMoneyCase = {
   balanceRaw: string;
   windowStart: string;
   windowEnd: string;
-  expectedDecision: "ACCEPTABLE";
+  expectedDecision: "NO_FINAL_DECISION";
   expectedRiskBand: "LOW-MEDIUM";
   expectedWalletRole: "operational_liquidity_wallet";
   expectedSelectedInboundTxCount: number;
@@ -68,7 +68,7 @@ export const operationalLiquidityWhereIsMoneyCases = [
     balanceRaw: "200000000",
     windowStart: "2026-05-01T00:00:00.000Z",
     windowEnd: "2026-05-24T00:00:00.000Z",
-    expectedDecision: "ACCEPTABLE",
+    expectedDecision: "NO_FINAL_DECISION",
     expectedRiskBand: "LOW-MEDIUM",
     expectedWalletRole: "operational_liquidity_wallet",
     expectedSelectedInboundTxCount: 2,
@@ -104,7 +104,7 @@ export const operationalLiquidityWhereIsMoneyCases = [
     balanceRaw: "300000000",
     windowStart: "2026-05-01T00:00:00.000Z",
     windowEnd: "2026-05-24T00:00:00.000Z",
-    expectedDecision: "ACCEPTABLE",
+    expectedDecision: "NO_FINAL_DECISION",
     expectedRiskBand: "LOW-MEDIUM",
     expectedWalletRole: "operational_liquidity_wallet",
     expectedSelectedInboundTxCount: 3,
@@ -144,7 +144,7 @@ export const operationalLiquidityWhereIsMoneyCases = [
     balanceRaw: "500000000",
     windowStart: "2026-05-01T00:00:00.000Z",
     windowEnd: "2026-05-24T00:00:00.000Z",
-    expectedDecision: "ACCEPTABLE",
+    expectedDecision: "NO_FINAL_DECISION",
     expectedRiskBand: "LOW-MEDIUM",
     expectedWalletRole: "operational_liquidity_wallet",
     expectedSelectedInboundTxCount: 4,

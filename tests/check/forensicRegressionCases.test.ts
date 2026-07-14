@@ -60,6 +60,8 @@ describe("forensic regression corpus", () => {
       });
 
       expect(report.userDecision ?? report.decision).toBe(caseItem.expectedDecision);
+      expect(report.internalDecision ?? report.assessment.decision).toBe("ACCEPTABLE");
+      expect(report.assessment.decision).toBe("ACCEPTABLE");
       expect(report.assessment.riskBand).toBe(caseItem.expectedRiskBand);
       expect(report.proofLevel).toBe("operational_liquidity_context");
       expect(report.assessment.walletRole).toBe(caseItem.expectedWalletRole);
