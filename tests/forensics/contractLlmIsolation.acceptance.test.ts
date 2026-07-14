@@ -638,6 +638,45 @@ describe("automatic contract LLM isolation acceptance", () => {
     expect.soft(analyzer).not.toHaveBeenCalled();
   });
 
+  it("[REQ-25][WHERE-NOOP-PROFILE] does not fetch an unused contract profile for a traced candidate", async () => {
+    const where = await vi.importActual<Record<string, unknown>>("../../src/check/whereIsMoneyCheck");
+    const runWhere = requiredFunction(where, "runWhereIsMoneyCheck");
+    const edge = contractBearingTransfer();
+    const profileLookup = vi.fn(async () => contractProfile({
+      contractAddress: CONTRACT,
+      address: CONTRACT
+    }));
+
+    const result = await runWhere({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address: string) => address === SUBJECT ? [edge] : [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address: string) =>
+        address === CONTRACT ? contractClassification() : null,
+      getContractIntelligenceProfile: profileLookup
+    }, {
+      sourceAddress: SUBJECT,
+      windowStart: new Date("2026-07-12T10:00:00.000Z"),
+      windowEnd: NOW,
+      maxDepth: 2,
+      maxAddressFetches: 5,
+      recentFallbackMinTransferCount: 0,
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(profileLookup).not.toHaveBeenCalled();
+    expect(result.balanceFormingTransfers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ txHash: edge.txHash, fromAddress: CONTRACT, toAddress: SUBJECT })
+    ]));
+    expect(result.originPaths).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pathAddresses: expect.arrayContaining([CONTRACT]),
+        txHashes: expect.arrayContaining([edge.txHash])
+      })
+    ]));
+    expect(result.contractLlmVerdicts).toEqual([]);
+  });
+
   it("[REQ-25][LLM-NOCALL][ORCHESTRATION] removes automatic analyzer from Smart Where Incoming Deep and bootstrap wiring", async () => {
     const [smart, where, incoming, deep, fixtures] = await Promise.all([
       smartContractModule(),
@@ -798,7 +837,7 @@ describe("automatic contract LLM isolation acceptance", () => {
 
     expectFreshSmart(smartResult);
     expect(whereClassificationLookup).toHaveBeenCalledWith(CONTRACT);
-    expect(whereProfileLookup).toHaveBeenCalledWith(CONTRACT);
+    expect(whereProfileLookup).not.toHaveBeenCalled();
     expect(whereResult.balanceFormingTransfers).toEqual(expect.arrayContaining([
       expect.objectContaining({
         txHash: edge.txHash,
@@ -818,7 +857,7 @@ describe("automatic contract LLM isolation acceptance", () => {
     expect.soft(incomingCompleted).toMatchObject({ status: "completed" });
     expect.soft(incomingCompleted?.resultJson.contractVerdicts).toEqual([]);
     expect(incomingClassificationLookup).toHaveBeenCalledWith(CONTRACT);
-    expect(incomingProfileLookup).toHaveBeenCalledWith(CONTRACT);
+    expect(incomingProfileLookup).not.toHaveBeenCalled();
     expect(incomingCompleted?.resultJson.originPaths).toEqual(expect.arrayContaining([
       expect.objectContaining({
         pathAddresses: expect.arrayContaining([CONTRACT]),

@@ -43,7 +43,6 @@ import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../t
 import type {
   AddressLabel,
   ContractAnalysisCaseFile,
-  ContractLlmVerdictSummary,
   ExchangeDecision,
   ForensicScoreBlockedReason,
   ForensicTechnicalStatus,
@@ -825,23 +824,6 @@ async function buildApprovalDrainContractProfiles(input: {
 
 function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInput): ForensicRouteEdge[] {
   return edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
-}
-
-function deterministicContractProfileCandidates(input: {
-  originPaths: WhereIsMoneyReport["originPaths"];
-  approvalDrainProvenanceProfiles: WhereIsMoneyReport["approvalDrainProvenanceProfiles"];
-  approvalDrainReviewFindings: NonNullable<WhereIsMoneyReport["approvalDrainReviewFindings"]>;
-}): string[] {
-  const addresses = new Set<string>();
-  for (const path of input.originPaths) {
-    if (path.rootSourceAddress) addresses.add(path.rootSourceAddress);
-    for (const address of path.pathAddresses) addresses.add(address);
-  }
-  for (const profile of input.approvalDrainProvenanceProfiles) addresses.add(profile.spenderAddress);
-  for (const finding of input.approvalDrainReviewFindings) {
-    if (finding.spenderAddress) addresses.add(finding.spenderAddress);
-  }
-  return [...addresses];
 }
 
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
@@ -1898,20 +1880,7 @@ export async function runWhereIsMoneyCheck(
   const fastDecline = exactFast.length > 0;
   const approvalDrainDecline = approvalDrainScore >= 70;
   const deterministicDecision = fastDecline || approvalDrainDecline ? "DECLINE" : combined.decision;
-  const contractLlmVerdicts: ContractLlmVerdictSummary[] = [];
-  if (deps.getContractIntelligenceProfile) {
-    const candidates = deterministicContractProfileCandidates({
-      originPaths: provenanceOriginPaths,
-      approvalDrainProvenanceProfiles,
-      approvalDrainReviewFindings
-    });
-    await Promise.all(candidates.map(async (address) => {
-      const classification = await getCachedClassification(address);
-      if (classification?.category !== "unknown_contract" && classification?.category !== "service" &&
-        classification?.category !== "protocol" && classification?.category !== "bridge") return;
-      await deps.getContractIntelligenceProfile?.(address).catch(() => null);
-    }));
-  }
+  const contractLlmVerdicts: WhereIsMoneyReport["contractLlmVerdicts"] = [];
   const coverage: WhereIsMoneyCoverage = {
     selectedInboundTxCount: balanceFormingTransfers.length,
     currentBalanceRaw,
