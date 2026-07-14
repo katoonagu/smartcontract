@@ -74,7 +74,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
   const assessment = Object.keys(reportAssessment).length > 0 ? reportAssessment : resultAssessment;
   const coverage = firstRecord(report["coverage"], result["coverage"], result["coverageDebug"]);
   const unified = record(result["unifiedRiskSummary"]);
-  const hasPersistedMatrixV2Marker = stringField(result, "scoringPolicyVersion") === SCORING_SIGNAL_MATRIX_POLICY_VERSION;
+  const hasCurrentPolicyMarker = stringField(result, "scoringPolicyVersion") === SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   const activeAnchor = record(unified["activeAnchor"]);
   const storedScores = [
     numberField(report, "riskScore"),
@@ -85,7 +85,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     numberField(progress, "riskScore"),
     numberField(progress, "score")
   ];
-  const finalScore = hasPersistedMatrixV2Marker
+  const finalScore = hasCurrentPolicyMarker
     ? firstNumber(numberField(unified, "finalScore"), ...storedScores)
     : firstNumber(...storedScores);
   const productionDecision = normalizeDecision(
@@ -98,7 +98,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     ?? progress["finalDecision"]
   );
   const matrixDecision = normalizeDecision(unified["matrixDecision"]);
-  const unifiedDecision = !hasPersistedMatrixV2Marker
+  const unifiedDecision = !hasCurrentPolicyMarker
     ? "MANUAL_REQUIRED"
     : matrixDecision === "MANUAL_REQUIRED"
     ? normalizeDecision(unified["finalDecision"])
@@ -150,8 +150,8 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     hardEvidenceObserved: clarity.hardEvidenceObserved,
     productionLayerDecision: productionDecision,
     unifiedDecision,
-    policyFloor: hasPersistedMatrixV2Marker ? numberField(unified, "policyFloor") : null,
-    dampener: hasPersistedMatrixV2Marker ? numberField(unified, "dampener") : null
+    policyFloor: hasCurrentPolicyMarker ? numberField(unified, "policyFloor") : null,
+    dampener: hasCurrentPolicyMarker ? numberField(unified, "dampener") : null
   });
 
   return {
@@ -167,10 +167,10 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     confidenceScore: clarity.confidenceScore,
     evidenceClass: clarity.evidenceClass,
     hardEvidenceObserved: clarity.hardEvidenceObserved,
-    activeAnchorCode: hasPersistedMatrixV2Marker ? stringField(activeAnchor, "code") : null,
-    activeAnchorScore: hasPersistedMatrixV2Marker ? numberField(activeAnchor, "score") : null,
-    dampener: hasPersistedMatrixV2Marker ? numberField(unified, "dampener") : null,
-    policyVersion: hasPersistedMatrixV2Marker ? SCORING_SIGNAL_MATRIX_POLICY_VERSION : clarity.policyVersion,
+    activeAnchorCode: hasCurrentPolicyMarker ? stringField(activeAnchor, "code") : null,
+    activeAnchorScore: hasCurrentPolicyMarker ? numberField(activeAnchor, "score") : null,
+    dampener: hasCurrentPolicyMarker ? numberField(unified, "dampener") : null,
+    policyVersion: hasCurrentPolicyMarker ? SCORING_SIGNAL_MATRIX_POLICY_VERSION : clarity.policyVersion,
     missingChecks,
     cohorts: rowCohorts,
     limitations: clarity.limitations,

@@ -112,7 +112,7 @@ describe("scoreMatrixCandidates", () => {
     });
   });
 
-  it("uses matrix v2 and breaks equal-score ties by restriction then direct policy then hard proof", () => {
+  it("uses canonical matrix v3 and breaks equal-score ties by restriction then direct policy then hard proof", () => {
     const result = scoreMatrixCandidates([
       matrixDraft({ kind: "exact_hard", proofSource: "approval_drain_exact" }, {
         row: "hard_proof",
@@ -131,7 +131,8 @@ describe("scoreMatrixCandidates", () => {
       })
     ], matrixContext);
 
-    expect(result.policyVersion).toBe("scoring-signal-matrix-v2");
+    expect(SCORING_SIGNAL_MATRIX_POLICY_VERSION).toBe("scoring-signal-matrix-v3");
+    expect(result.policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
     expect(result.winningRow).toBe("subject_restriction");
     expect(result.riskVector.direct_counterparty_policy).toHaveLength(1);
     expect(result.riskVector.hard_proof).toHaveLength(1);

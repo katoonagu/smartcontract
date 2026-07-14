@@ -779,21 +779,28 @@ describe("ScoreAnchorV2 acceptance contract", () => {
     expect(result).not.toHaveProperty("fallbackAnchor");
   });
 
-  it("[REQ-15][ANCHOR-VERSION] maps only explicit internal v2 or canonical v3 inputs into a v3 anchor", async () => {
+  it("[REQ-04][REQ-15][ANCHOR-VERSION] synthesizes an anchor only from canonical v3 and keeps explicit v2 legacy", async () => {
     const { buildScoreAnchorV2 } = await import("../../src/risk/scoreAnchorV2");
-    for (const policyVersion of ["scoring-signal-matrix-v2", "scoring-signal-matrix-v3"]) {
-      const result = buildScoreAnchorV2({
-        mode: MODE,
-        subjectAddress: SUBJECT,
-        disposition: validDisposition(),
-        matrix: validMatrix(matrixCandidate(), { policyVersion }),
-        facts: validFacts()
-      } as any);
-      expect(result).toMatchObject({
-        diagnostic: null,
-        anchor: { policyVersion: "scoring-signal-matrix-v3" }
-      });
-    }
+    const current = buildScoreAnchorV2({
+      mode: MODE,
+      subjectAddress: SUBJECT,
+      disposition: validDisposition(),
+      matrix: validMatrix(matrixCandidate(), { policyVersion: "scoring-signal-matrix-v3" }),
+      facts: validFacts()
+    } as any);
+    expect(current).toMatchObject({
+      diagnostic: null,
+      anchor: { policyVersion: "scoring-signal-matrix-v3" }
+    });
+
+    const previousRuntime = buildScoreAnchorV2({
+      mode: MODE,
+      subjectAddress: SUBJECT,
+      disposition: validDisposition(),
+      matrix: validMatrix(matrixCandidate(), { policyVersion: "scoring-signal-matrix-v2" }),
+      facts: validFacts()
+    } as any);
+    expect(previousRuntime).toEqual({ anchor: null, diagnostic: null });
 
     for (const policyVersion of ["scoring-signal-matrix-v1", "future-policy", 7, true]) {
       const result = buildScoreAnchorV2({

@@ -38,7 +38,11 @@ import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ForensicJobProgressPatch } from "../forensics/forensicJobProgress";
 import { exactFastHardEvidence } from "../risk/fastEvidence";
 import { assembleFreshScoreResultV2, materializeFreshScoreBindingV2 } from "../risk/scoreAnchorV2";
-import { scoreMatrixCandidates, type MatrixCandidate } from "../risk/scoringSignalMatrix";
+import {
+  SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+  scoreMatrixCandidates,
+  type MatrixCandidate
+} from "../risk/scoringSignalMatrix";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   AddressLabel,
@@ -396,7 +400,7 @@ export function bindFreshWhereScoreResultV2(report: WhereIsMoneyReport): FreshWh
   });
   return {
     ...report,
-    scoringPolicyVersion: "scoring-signal-matrix-v3",
+    scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
     scoreValid: canonical.scoreValid,
     userDecision: canonical.decision,
     scoreAnchorV2: canonical.scoreAnchorV2,

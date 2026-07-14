@@ -3540,7 +3540,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Detailed address report");
   });
 
-  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v2"])(
     "preserves a %s policy stored Where outcome in normal check_status",
     async (scoringPolicyVersion) => {
       const legacyReport = whereIsMoneyReportForTest({
@@ -4714,7 +4714,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Do not proceed");
   });
 
-  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v2"])(
     "renders a %s policy Where result without rescoring it even when score validity is explicit",
     (scoringPolicyVersion) => {
     const legacy = whereIsMoneyReportForTest({

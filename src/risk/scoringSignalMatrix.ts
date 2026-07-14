@@ -101,7 +101,7 @@ export type MatrixUncertaintyState = {
 
 export type MatrixRiskVector = Partial<Record<MatrixEvidenceRow, ClassifiedMatrixCandidate[]>>;
 
-export const SCORING_SIGNAL_MATRIX_POLICY_VERSION = "scoring-signal-matrix-v2" as const;
+export const SCORING_SIGNAL_MATRIX_POLICY_VERSION = "scoring-signal-matrix-v3" as const;
 
 export type MatrixScoringResult = {
   policyVersion: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;

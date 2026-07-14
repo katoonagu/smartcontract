@@ -1563,13 +1563,14 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.matrixScore).toMatchObject({
-      policyVersion: "scoring-signal-matrix-v2",
+      policyVersion: "scoring-signal-matrix-v3",
       policyScore: 70,
       matrixDecision: "DECLINE",
       winningRow: "source_policy",
       queuePriorityScore: null,
       calibratedRiskProbability: null
     });
+    expect(result.scoreAnchorV2).toMatchObject({ policyVersion: "scoring-signal-matrix-v3" });
   });
 
   it("keeps behavior-only matrix score below decline threshold", () => {

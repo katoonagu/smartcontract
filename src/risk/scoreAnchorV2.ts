@@ -6,10 +6,14 @@ import type {
   ScoringEvidenceV2
 } from "../types";
 import type { FinalDisposition } from "./finalDisposition";
-import type { ClassifiedMatrixCandidate, MatrixScoringResult } from "./scoringSignalMatrix";
+import {
+  SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+  type ClassifiedMatrixCandidate,
+  type MatrixScoringResult
+} from "./scoringSignalMatrix";
 
-const POLICY_VERSION = "scoring-signal-matrix-v3" as const;
-const INTERNAL_POLICY_VERSION = "scoring-signal-matrix-v2" as const;
+const POLICY_VERSION = SCORING_SIGNAL_MATRIX_POLICY_VERSION;
+const PREVIOUS_RUNTIME_POLICY_VERSION = "scoring-signal-matrix-v2" as const;
 const BINDING_ERROR = "score_anchor_fact_binding_failed" as const;
 
 type PolicyRule = Pick<
@@ -294,10 +298,10 @@ export function buildScoreAnchorV2(input: ScoreAnchorBuildInput): {
   diagnostic: ScoreAnchorDiagnostic;
 } {
   const sourcePolicyVersion = (input.matrix as { policyVersion?: unknown }).policyVersion;
-  if (sourcePolicyVersion === undefined) {
+  if (sourcePolicyVersion === undefined || sourcePolicyVersion === PREVIOUS_RUNTIME_POLICY_VERSION) {
     return { anchor: null, diagnostic: null };
   }
-  if (sourcePolicyVersion !== INTERNAL_POLICY_VERSION && sourcePolicyVersion !== POLICY_VERSION) {
+  if (sourcePolicyVersion !== POLICY_VERSION) {
     return { anchor: null, diagnostic: BINDING_ERROR };
   }
   if (input.disposition.finalScore === null || !input.disposition.scoreValid) {

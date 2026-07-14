@@ -1776,7 +1776,7 @@ describe("startAdminServer", () => {
     });
   });
 
-  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v2"])(
     "keeps a %s policy Admin result byte-for-byte unchanged while reading its stored semantics",
     async (scoringPolicyVersion) => {
     const whereReport = whereReportForAdminTest();

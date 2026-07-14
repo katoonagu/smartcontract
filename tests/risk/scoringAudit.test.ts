@@ -106,7 +106,7 @@ describe("scoring audit rows", () => {
     expect(row.policyVersion).toBe("incoming-deposit-risk-v1");
   });
 
-  it("attributes matrix v2 only from an exact persisted scoring marker", () => {
+  it("attributes current matrix v3 only from an exact persisted scoring marker", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",
       resultJson: {
@@ -125,8 +125,8 @@ describe("scoring audit rows", () => {
     expect(row.policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
-  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v3"])(
-    "preserves the stored outcome for a %s top-level marker despite nested matrix v2 fields",
+  it.each([undefined, "scoring-signal-matrix-v1", "scoring-signal-matrix-v2"])(
+    "preserves the stored outcome for a %s top-level marker despite nested current-policy fields",
     (scoringPolicyVersion) => {
       const row = buildScoringAuditRow(job({
         kind: "where_is_money_check",
