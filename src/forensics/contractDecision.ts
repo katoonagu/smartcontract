@@ -225,7 +225,8 @@ export function resolveContractDecisionV2(input: ContractDecisionInputV2): Contr
   }
 
   if (registry.length === 1) {
-    const withAllowance = eligible.find(({ rows }) => rows.some((row) => row.kind === "allowance_read"));
+    const withAllowance = eligible.find(({ assessment, rows }) =>
+      assessment.allowance.state === "confirmed_active" && rows.some((row) => row.kind === "allowance_read"));
     const ids = withAllowance ? [registry[0].id, ...withAllowance.evidenceIds] : [registry[0].id];
     const score = withAllowance ? 45 : 10;
     return result(score, score === 45 ? "MEDIUM" : "LOW", score === 45 ? "REVIEW" : "ACCEPTABLE", "official_registry", ids);

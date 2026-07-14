@@ -849,6 +849,48 @@ describe("ContractDecisionV2 acceptance contract", () => {
     expectFresh(result);
   });
 
+  it("[AC-31][AC-32][ALLOWANCE-STATE] keeps a revoked known-service allowance at registry LOW 10", async () => {
+    const input = bridgersInput(false);
+    const revokedAssessment = {
+      ...input.approvalSafetyAssessments[0],
+      allowance: activeAllowance("0", BRIDGERS)
+    };
+    const result = await resolve({
+      ...input,
+      approvalSafetyAssessments: [revokedAssessment]
+    });
+
+    expect(result.deterministic).toEqual({
+      score: 10,
+      level: "LOW",
+      decision: "ACCEPTABLE",
+      authority: "official_registry",
+      evidenceIds: ["registry:bridgers"]
+    });
+    expectFresh(result);
+  });
+
+  it("[AC-31][AC-32][ALLOWANCE-STATE][SMART-BINDING] carries revoked known-service LOW 10 through Smart", async () => {
+    const input = bridgersInput(false);
+    const spies = automaticModelSpies();
+    const report = await runSmartContractOrchestration({
+      ...input,
+      approvalSafetyAssessments: [{
+        ...input.approvalSafetyAssessments[0],
+        allowance: activeAllowance("0", BRIDGERS)
+      }]
+    }, spies.analyzeContractLlmCaseFiles);
+
+    expect(report.contractDecisionV2?.deterministic).toEqual({
+      score: 10,
+      level: "LOW",
+      decision: "ACCEPTABLE",
+      authority: "official_registry",
+      evidenceIds: ["registry:bridgers"]
+    });
+    expect(spies.analyzeContractLlmCaseFiles).not.toHaveBeenCalled();
+  });
+
   it("[AC-33] prevents service-context dampening of provider risk Verify20 or debit proof", async () => {
     const verifyProfile = contractProfile(VERIFY20, {
       methodMap: {
