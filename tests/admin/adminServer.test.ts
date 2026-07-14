@@ -2077,6 +2077,8 @@ describe("startAdminServer", () => {
 
     expect(humanSummary).not.toContain(persistedHardEvidence.firstHopBlacklistFacts[0].counterpartyAddress);
     expect(humanSummary).not.toContain(persistedHardEvidence.firstHopLabelFacts[0].labelCode);
+    expect(humanSummary).not.toContain("Контрагент в чёрном списке USDT");
+    expect(humanSummary).not.toContain("Контрагент имеет точную неблагоприятную метку «фишинг»");
     expect(graph.summary.riskScore).not.toBe(90);
   });
 
