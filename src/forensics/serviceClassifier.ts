@@ -89,6 +89,15 @@ const KNOWN_CEX_IDENTITIES = [
 
 const KNOWN_POOLED_SERVICE_ADDRESSES = new Map([
   [
+    "TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U",
+    {
+      category: "service" as const,
+      identity: "GasFree Endpoint",
+      evidence: "registry:gasfree_controller",
+      roleEvidence: "role:gasfree_endpoint"
+    }
+  ],
+  [
     "TLntW9Z59LYY5KEi9cmwk3PKjQga828ird",
     { category: "service" as const, identity: "TronLink GasFree provider", evidence: "registry:tronlink_gasfree_provider" }
   ]
@@ -176,7 +185,15 @@ function weakContract(input: ClassifyServiceAddressInput): boolean {
 export function classifyServiceAddress(input: ClassifyServiceAddressInput): ServiceClassification {
   const registered = KNOWN_POOLED_SERVICE_ADDRESSES.get(input.address);
   if (registered) {
-    return classification(input, registered.category, registered.identity, "high", [registered.evidence], true);
+    return classification(
+      input,
+      registered.category,
+      registered.identity,
+      "high",
+      [registered.evidence, "roleEvidence" in registered ? registered.roleEvidence : null]
+        .filter((value): value is string => value !== null),
+      true
+    );
   }
 
   const metadataText = lowerText(

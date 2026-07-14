@@ -1438,6 +1438,44 @@ export type ApprovalSafetyAssessmentV2 = {
   serviceSession: KnownServiceSessionV1 | null;
 };
 
+export type ContractDecisionEvidenceKindV1 =
+  | "metadata_context"
+  | "official_registry"
+  | "gasfree_role"
+  | "provider_risk"
+  | "verify20_fingerprint"
+  | "approval_event"
+  | "allowance_read"
+  | "exact_debit"
+  | "service_action";
+
+export type ContractDecisionEvidenceV1 = {
+  id: string;
+  kind: ContractDecisionEvidenceKindV1;
+  subjectAddress: string;
+  spenderAddress: string | null;
+  tokenContract: string | null;
+};
+
+export type ContractDecisionV2 = {
+  deterministic: {
+    score: number;
+    level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+    decision: "ACCEPTABLE" | "REVIEW" | "DECLINE";
+    authority:
+      | "exact_debit"
+      | "provider_risk"
+      | "verify20_fingerprint"
+      | "official_registry"
+      | "gasfree_account"
+      | "known_service_session"
+      | "context";
+    evidenceIds: string[];
+  };
+  finalSource: "deterministic";
+  llm: null;
+};
+
 export type UsddPsmExposureV1 = {
   mode: "where" | "incoming" | "recent_flow" | "deep_history";
   direction: "inbound_from_psm" | "outbound_to_psm";

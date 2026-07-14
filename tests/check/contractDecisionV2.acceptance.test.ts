@@ -374,6 +374,8 @@ async function runSmartContractOrchestration(
     contractProfile: input.contractProfile,
     serviceClassification: input.serviceClassification,
     relatedApprovals: relatedApprovalsFor(input),
+    approvalSafetyAssessments: input.approvalSafetyAssessments,
+    contractDecisionEvidence: input.evidence,
     analyzeContractLlmCaseFiles
   });
 }
@@ -706,6 +708,133 @@ describe("ContractDecisionV2 acceptance contract", () => {
     expectFresh(result);
   });
 
+  it("[AC-31][SMART-BINDING] carries an exact Bridgers session through the Smart entrypoint", async () => {
+    const spies = automaticModelSpies();
+    const report = await runSmartContractOrchestration(bridgersInput(true), spies.analyzeContractLlmCaseFiles);
+
+    expect(report.contractDecisionV2?.deterministic).toMatchObject({
+      score: 10,
+      decision: "ACCEPTABLE",
+      authority: "known_service_session"
+    });
+    expect(spies.analyzeContractLlmCaseFiles).not.toHaveBeenCalled();
+  });
+
+  it("[AC-31][AC-32][SERVICE-REGISTRY] derives Bridgers authority from the exact spender address only", async () => {
+    const bridgersMetadata = metadata(BRIDGERS, {
+      name: "Bridgers",
+      tag: "Bridgers:Cross-chain Bridge",
+      verified: true
+    });
+    const bridgersProfile = contractProfile(BRIDGERS, {
+      isVerified: true,
+      verified: true,
+      lowMetadata: false,
+      serviceTag: "Bridgers:Cross-chain Bridge",
+      providerTags: [{ kind: "blueTag", label: "Bridgers:Cross-chain Bridge", url: null }]
+    });
+    const classification = classifyServiceAddress({
+      address: BRIDGERS,
+      metadata: bridgersMetadata,
+      contractProfile: bridgersProfile
+    });
+    expect(classification.evidence).not.toContain("registry:bridgers");
+
+    for (const withSession of [true, false]) {
+      const approvalSafetyAssessments = bridgersInput(withSession).approvalSafetyAssessments;
+      const structuralEvidence = await buildContractEvidence({
+        subjectAddress: BRIDGERS,
+        metadata: bridgersMetadata,
+        contractProfile: bridgersProfile,
+        serviceClassification: classification,
+        approvalSafetyAssessments
+      });
+      expect(structuralEvidence.filter((row) => row.id === "registry:bridgers")).toEqual([{
+        id: "registry:bridgers",
+        kind: "official_registry",
+        subjectAddress: BRIDGERS,
+        spenderAddress: null,
+        tokenContract: null
+      }]);
+      const contractDecisionEvidence = [
+        ...structuralEvidence,
+        evidence(APPROVAL_TX, "approval_event", BRIDGERS),
+        evidence(`allowance:${BRIDGERS}`, "allowance_read", BRIDGERS),
+        ...(withSession ? [evidence(SWAP_TX, "service_action", BRIDGERS)] : [])
+      ];
+      const spies = automaticModelSpies();
+      const report = await runSmartContractOrchestration({
+        subjectAddress: BRIDGERS,
+        metadata: bridgersMetadata,
+        contractProfile: bridgersProfile,
+        serviceClassification: classification,
+        approvalSafetyAssessments,
+        evidence: contractDecisionEvidence
+      }, spies.analyzeContractLlmCaseFiles);
+      expect(report.contractDecisionV2?.deterministic).toMatchObject(withSession
+        ? { score: 10, decision: "ACCEPTABLE", authority: "known_service_session" }
+        : { score: 45, decision: "REVIEW", authority: "official_registry" });
+      expect(spies.analyzeContractLlmCaseFiles).not.toHaveBeenCalled();
+    }
+
+    const foreignMetadata = metadata(FOREIGN, {
+      name: "Bridgers",
+      tag: "Bridgers:Cross-chain Bridge",
+      verified: true
+    });
+    const foreignProfile = contractProfile(FOREIGN, {
+      isVerified: true,
+      verified: true,
+      lowMetadata: false,
+      serviceTag: "Bridgers:Cross-chain Bridge"
+    });
+    const foreignClassification = classifyServiceAddress({
+      address: FOREIGN,
+      metadata: foreignMetadata,
+      contractProfile: foreignProfile
+    });
+    const foreignEvidence = await buildContractEvidence({
+      subjectAddress: FOREIGN,
+      metadata: foreignMetadata,
+      contractProfile: foreignProfile,
+      serviceClassification: foreignClassification,
+      approvalSafetyAssessments: []
+    });
+    expect(foreignEvidence.some((row) => row.kind === "official_registry")).toBe(false);
+  });
+
+  it("[REQ-08][SMART-BINDING] carries exact debit proof through the Smart entrypoint", async () => {
+    const spies = automaticModelSpies();
+    const report = await runSmartContractOrchestration(
+      exactAssessmentInput(SUBJECT, "exact_debit"),
+      spies.analyzeContractLlmCaseFiles
+    );
+
+    expect(report.contractDecisionV2?.deterministic).toMatchObject({
+      score: 95,
+      decision: "DECLINE",
+      authority: "exact_debit"
+    });
+    expect(spies.analyzeContractLlmCaseFiles).not.toHaveBeenCalled();
+  });
+
+  it("[AC-31][ALLOWANCE-BINDING] rejects a service session without resolved allowance_read evidence", async () => {
+    const input = bridgersInput(true);
+    const result = await resolve({
+      ...input,
+      approvalSafetyAssessments: [{
+        ...input.approvalSafetyAssessments[0],
+        allowance: { ...input.approvalSafetyAssessments[0].allowance, state: "failed" }
+      }],
+      evidence: [
+        ...input.evidence.filter((row) => row.kind !== "allowance_read"),
+        evidence("metadata:subject", "metadata_context", BRIDGERS, null, null)
+      ]
+    });
+
+    expect(result.deterministic).toMatchObject({ score: 35, decision: "REVIEW", authority: "context" });
+  });
+
   it("[AC-32] keeps known-service unlimited approval without session at REVIEW 45", async () => {
     const result = await resolve(bridgersInput(false));
 
@@ -835,6 +964,39 @@ describe("ContractDecisionV2 acceptance contract", () => {
       expect(result.deterministic.score).not.toBe(90);
       expect(result.deterministic.evidenceIds).toEqual(["metadata:subject"]);
     }
+  });
+
+  it("[REQ-08][CONTRACT-EVIDENCE] refuses duplicate or mixed-kind direct proof IDs", async () => {
+    const providerInput = {
+      ...unknownInput(),
+      contractProfile: contractProfile(SUBJECT, { providerRisk: true }),
+      evidence: [
+        evidence("risk:provider", "provider_risk", SUBJECT),
+        evidence("risk:provider", "metadata_context", SUBJECT, null, null),
+        evidence("metadata:subject", "metadata_context", SUBJECT, null, null)
+      ]
+    };
+    const gasFreeInput = gasFreeStructuralInput();
+    const gasFreeEvidence = await buildContractEvidence(gasFreeInput);
+    const gasFreeResult = await resolve({
+      ...gasFreeInput,
+      evidence: [
+        ...gasFreeEvidence,
+        evidence("role:gasfree_account", "metadata_context", SUBJECT, null, null)
+      ]
+    });
+
+    expect((await resolve(providerInput)).deterministic).toMatchObject({ score: 35, authority: "context" });
+    expect(gasFreeResult.deterministic).toMatchObject({ score: 35, authority: "context" });
+  });
+
+  it("[REQ-08][SMART-BINDING] fails closed when the explicit evidence set cannot bind a decision", async () => {
+    const spies = automaticModelSpies();
+    await expect(runSmartContractOrchestration(
+      { ...unknownInput(), evidence: [] },
+      spies.analyzeContractLlmCaseFiles
+    )).rejects.toThrow("contract_decision_binding_failed");
+    expect(spies.analyzeContractLlmCaseFiles).not.toHaveBeenCalled();
   });
 
   it("[REQ-24][CONTRACT-UNKNOWN] requires subject-bound metadata_context for REVIEW 35", async () => {

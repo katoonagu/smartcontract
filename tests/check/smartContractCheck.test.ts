@@ -809,7 +809,7 @@ describe("smart contract check", () => {
     expect(serializedCaseFile).toContain("watched_wallet_2");
   });
 
-  it("calls the LLM analyzer for active unlimited approvals and feeds the first verdict into deterministic evaluation", async () => {
+  it("does not call the LLM analyzer for active unlimited approvals", async () => {
     const capturedCaseFiles: ContractAnalysisCaseFile[][] = [];
     const report = await checkSmartContractAddress({
       address: subjectAddress,
@@ -830,20 +830,20 @@ describe("smart contract check", () => {
       }
     });
 
-    expect(capturedCaseFiles).toHaveLength(1);
-    expect(capturedCaseFiles[0][0]).toMatchObject({
-      policyVersion: "2026-06-01-standalone-contract-check-v1",
-      standaloneContractContext: {
-        relatedApprovals: [expect.objectContaining({ status: "active", isUnlimited: true })]
-      }
+    expect(capturedCaseFiles).toHaveLength(0);
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBe(35);
+    expect(report.llmVerdict).toBeNull();
+    expect(report.contractDecisionV2).toMatchObject({
+      finalSource: "deterministic",
+      llm: null,
+      deterministic: { score: 35, decision: "REVIEW", authority: "context" }
     });
-    expect(report.decision).toBe("DECLINE");
-    expect(report.llmVerdict).toMatchObject({ verdict: "drainer_like" });
     expect(report.exactDrainProven).toBe(false);
-    expect(report.reasons).toContain("llm_drainer_like_high_confidence");
   });
 
-  it("returns deterministic output when standalone LLM analysis fails", async () => {
+  it("does not call an unavailable standalone LLM analyzer", async () => {
+    let analyzerCalls = 0;
     const report = await checkSmartContractAddress({
       address: subjectAddress,
       metadata: metadata(),
@@ -851,14 +851,17 @@ describe("smart contract check", () => {
       serviceClassification: service("unknown_contract", null),
       relatedApprovals: [activeUnlimitedApproval()],
       analyzeContractLlmCaseFiles: async () => {
+        analyzerCalls += 1;
         throw new Error("llm unavailable");
       }
     });
 
+    expect(analyzerCalls).toBe(0);
     expect(report.llmVerdict).toBeNull();
-    expect(report.decision).toBe("DECLINE");
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBe(35);
     expect(report.exactDrainProven).toBe(false);
-    expect(report.reasons).toContain("active_unlimited_usdt_approval_spender");
+    expect(report.contractDecisionV2?.deterministic.authority).toBe("context");
   });
 
   it("skips LLM analysis for an authoritative verified service tag even with low activity", async () => {
@@ -887,7 +890,9 @@ describe("smart contract check", () => {
     });
 
     expect(analyzerCalls).toBe(0);
-    expect(report.decision).toBe("ACCEPTABLE");
+    expect(report.decision).toBe("REVIEW");
+    expect(report.riskScore).toBe(35);
     expect(report.llmVerdict).toBeNull();
+    expect(report.contractDecisionV2?.deterministic.authority).toBe("context");
   });
 });

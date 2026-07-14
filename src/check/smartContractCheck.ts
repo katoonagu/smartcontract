@@ -9,9 +9,16 @@ import {
   detectVerify20Fingerprint,
   type Verify20FingerprintResult
 } from "../forensics/verify20Fingerprint";
+import {
+  buildContractDecisionEvidenceV1,
+  resolveContractDecisionV2
+} from "../forensics/contractDecision";
 import type {
   ContractAnalysisCaseFile,
+  ApprovalSafetyAssessmentV2,
+  ContractDecisionEvidenceV1,
   ContractLlmVerdictSummary,
+  ContractDecisionV2,
   ExchangeDecision,
   RiskLevel,
   RiskReport,
@@ -34,6 +41,7 @@ export type SmartContractCheckReport = {
   activityLabel: "none" | "low" | "normal" | "high" | "unknown";
   reasons: string[];
   limitations: string[];
+  contractDecisionV2?: ContractDecisionV2;
 };
 
 export type EvaluateSmartContractAddressInput = {
@@ -59,6 +67,8 @@ export type CheckSmartContractAddressInput = {
   contractProfile: ContractIntelligenceProfile | null;
   serviceClassification: ContractAnalysisCaseFile["serviceClassification"];
   relatedApprovals: WalletApprovalSpenderRelation[];
+  approvalSafetyAssessments?: ApprovalSafetyAssessmentV2[];
+  contractDecisionEvidence?: ContractDecisionEvidenceV1[];
   analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
 };
 
@@ -613,48 +623,32 @@ export function normalizeSmartContractCheckReport(
   return report as unknown as SmartContractCheckReport;
 }
 
-function shouldAnalyzeStandaloneContract(input: {
-  metadata: AddressMetadata;
-  contractProfile: ContractIntelligenceProfile | null;
-  serviceLabel: string | null;
-  activeUnlimitedApprovalCount: number;
-}): boolean {
-  return input.activeUnlimitedApprovalCount > 0 ||
-    input.serviceLabel === null ||
-    hasWeakUnknownMetadata(input.metadata, input.contractProfile, input.serviceLabel);
-}
-
 export async function checkSmartContractAddress(input: CheckSmartContractAddressInput): Promise<SmartContractCheckReport> {
-  const serviceLabel = authoritativeVerify20ServiceLabel(input.metadata, input.contractProfile) ??
-    verifiedServiceLabel(input.metadata, input.contractProfile);
-  const activeUnlimited = activeUnlimitedApprovals(input.address, input.relatedApprovals);
-  let llmVerdict: ContractLlmVerdictSummary | null = null;
-
-  if (
-    input.analyzeContractLlmCaseFiles &&
-    shouldAnalyzeStandaloneContract({
-      metadata: input.metadata,
-      contractProfile: input.contractProfile,
-      serviceLabel,
-      activeUnlimitedApprovalCount: activeUnlimited.length
-    })
-  ) {
-    const caseFile = buildStandaloneContractAnalysisCaseFile({
-      address: input.address,
-      metadata: input.metadata,
-      contractProfile: input.contractProfile,
-      serviceClassification: input.serviceClassification,
-      relatedApprovals: input.relatedApprovals
-    });
-    const verdicts = await input.analyzeContractLlmCaseFiles([caseFile]).catch(() => []);
-    llmVerdict = verdicts[0] ?? null;
-  }
-
-  return evaluateSmartContractAddress({
+  const decisionInput = {
+    subjectAddress: input.address,
+    metadata: input.metadata,
+    contractProfile: input.contractProfile,
+    serviceClassification: input.serviceClassification,
+    approvalSafetyAssessments: input.approvalSafetyAssessments ?? []
+  };
+  const evidence = input.contractDecisionEvidence ?? buildContractDecisionEvidenceV1(decisionInput);
+  const contractDecisionV2 = resolveContractDecisionV2({ ...decisionInput, evidence });
+  const legacy = evaluateSmartContractAddress({
     subjectAddress: input.address,
     metadata: input.metadata,
     contractProfile: input.contractProfile,
     relatedApprovals: input.relatedApprovals,
-    llmVerdict
+    llmVerdict: null
   });
+  if (!contractDecisionV2) throw new Error("contract_decision_binding_failed");
+  const deterministic = contractDecisionV2.deterministic;
+  return {
+    ...legacy,
+    decision: deterministic.decision,
+    riskScore: deterministic.score,
+    riskLevel: deterministic.level,
+    reasons: [`contract_decision_${deterministic.authority}`],
+    llmVerdict: null,
+    contractDecisionV2
+  };
 }
