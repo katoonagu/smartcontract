@@ -47,7 +47,7 @@ function validServiceSession(input: ApprovalSafetyAssessmentInputV2): KnownServi
 function assessment(input: ApprovalSafetyAssessmentInputV2, outcome: Outcome): ApprovalSafetyAssessmentV2 {
   return Object.freeze({
     version: "approval-safety-v2",
-    subjectAddress: input.subjectAddress,
+    subjectAddress: input.allowance.ownerAddress,
     ...outcome,
     amlScoreImpact: 0,
     allowance: input.allowance,

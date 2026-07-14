@@ -92,6 +92,16 @@ function serviceSafetyInput(serviceSession: unknown, authoritativeServiceId: str
 }
 
 describe("ApprovalSafetyAssessmentV2 acceptance contract", () => {
+  it("[REQ-05][REQ-21][ASSESSMENT-SUBJECT] binds the assessment subject to the allowance owner", async () => {
+    const { evaluateApprovalSafetyV2 } = await import("../../src/approvals/approvalSafetyAssessment");
+
+    const result = evaluateApprovalSafetyV2(serviceSafetyInput(null, "bridgers") as any);
+
+    expect(result.subjectAddress).toBe(BRIDGERS_OWNER);
+    expect(result.allowance.ownerAddress).toBe(BRIDGERS_OWNER);
+    expect(result.allowance.spenderAddress).toBe(BRIDGERS_SPENDER);
+  });
+
   it("[AC-19] scores confirmed unlimited Verify20 approval at CRITICAL 90", async () => {
     const { evaluateApprovalSafetyV2 } = await import("../../src/approvals/approvalSafetyAssessment");
     const result = evaluateApprovalSafetyV2(safetyInput() as any);
