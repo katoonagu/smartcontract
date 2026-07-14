@@ -17,6 +17,7 @@ import type {
   BotLocale,
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
+  ContractDecisionEvidenceV1,
   ForensicCaseInput,
   ForensicCaseStatus,
   ForensicRouteConfidence,
@@ -98,6 +99,7 @@ export type ApprovalSafetyAuditForContractDecision = {
   approvalTxHash: string;
   approvalEvidenceId: string;
   sessionEvidenceId: string | null;
+  campaignEvidence: ContractDecisionEvidenceV1[];
   assessment: ApprovalSafetyAssessmentV2;
 };
 
@@ -4555,7 +4557,7 @@ function strictKnownServiceSession(value: unknown): ApprovalSafetyAssessmentV2["
     !Number.isSafeInteger(row.delayMs) || Number(row.delayMs) < 0 ||
     (row.approvedAmountRaw !== null && (typeof row.approvedAmountRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.approvedAmountRaw))) ||
     typeof row.movedAmountRaw !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.movedAmountRaw) ||
-    (row.amountContinuity !== "exact" && row.amountContinuity !== "broken" && row.amountContinuity !== "unknown") ||
+    row.amountContinuity !== "exact" || Number(row.delayMs) > 600_000 ||
     typeof row.authoritativeServiceId !== "string" || row.authoritativeServiceId.length === 0
   ) return undefined;
   return row as ApprovalSafetyAssessmentV2["serviceSession"];
@@ -4585,10 +4587,11 @@ function parseApprovalSafetyAuditRow(
 ): ApprovalSafetyAuditForContractDecision | null {
   const approvalTxHash = typeof row.approval_tx_hash === "string" ? row.approval_tx_hash : null;
   const ownerAddress = typeof row.owner_address === "string" ? row.owner_address : null;
+  const watchedWalletAddress = typeof row.watched_wallet_address === "string" ? row.watched_wallet_address : null;
   const spenderAddress = typeof row.spender_address === "string" ? row.spender_address : null;
   const tokenContract = typeof row.token_contract === "string" ? row.token_contract : null;
   const approvalEvidenceId = typeof row.approval_evidence_id === "string" ? row.approval_evidence_id : null;
-  if (!approvalTxHash || !ownerAddress || spenderAddress !== input.spenderAddress ||
+  if (!approvalTxHash || !ownerAddress || watchedWalletAddress !== ownerAddress || spenderAddress !== input.spenderAddress ||
     tokenContract !== TRON_USDT_CONTRACT_ADDRESS || !approvalEvidenceId) return null;
 
   const approvalEvidence = mapJsonObject(row.approval_evidence_json);
@@ -4642,6 +4645,7 @@ function parseApprovalSafetyAuditRow(
     approvalTxHash,
     approvalEvidenceId,
     sessionEvidenceId,
+    campaignEvidence: [],
     assessment: {
       version: "approval-safety-v2",
       subjectAddress: ownerAddress,
@@ -4660,17 +4664,106 @@ function parseApprovalSafetyAuditRow(
   };
 }
 
+const VERIFY20_REQUIRED_SELECTORS = new Set(["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"]);
+
+function parseExactCampaignEvidenceRow(
+  row: Record<string, unknown>,
+  input: {
+    evidenceId: string;
+    ownerAddress: string;
+    spenderAddress: string;
+    approvalTxHash: string;
+    exactDebit: boolean;
+    exactVerify20: boolean;
+  }
+): ContractDecisionEvidenceV1 | null {
+  if (row.id !== input.evidenceId || row.address !== input.spenderAddress ||
+    row.source_type !== "detector_output" || row.chain !== "tron") return null;
+  const evidence = mapJsonObject(row.evidence_json);
+  if (row.source === "approval_drain_observation" && input.exactDebit) {
+    if (evidence.approvalTxHash !== input.approvalTxHash || evidence.ownerAddress !== input.ownerAddress ||
+      evidence.spenderAddress !== input.spenderAddress || evidence.tokenContract !== TRON_USDT_CONTRACT_ADDRESS ||
+      evidence.callerAddress !== input.spenderAddress || evidence.method !== "transferFrom" ||
+      typeof evidence.receiverAddress !== "string" || evidence.receiverAddress.length === 0 ||
+      evidence.receiverAddress === input.ownerAddress || evidence.receiverAddress === input.spenderAddress ||
+      typeof evidence.amountRaw !== "string" || !/^[1-9][0-9]*$/.test(evidence.amountRaw) ||
+      typeof row.tx_hash !== "string" || row.tx_hash.length === 0) return null;
+    return {
+      id: input.evidenceId,
+      kind: "exact_debit",
+      subjectAddress: input.spenderAddress,
+      spenderAddress: input.spenderAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    };
+  }
+  if (row.source === "verify20_fingerprint" && input.exactVerify20) {
+    const fingerprint = mapJsonObject(evidence.verify20Fingerprint);
+    const selectors = strictStringArray(fingerprint.selectors);
+    const missing = strictStringArray(fingerprint.missingSelectors);
+    const mismatched = strictStringArray(fingerprint.mismatchedSelectors);
+    if (evidence.contractAddress !== input.spenderAddress || evidence.spenderAddress !== input.spenderAddress ||
+      evidence.tokenContract !== TRON_USDT_CONTRACT_ADDRESS || fingerprint.matched !== true ||
+      fingerprint.blockedByTrustedService !== false || !selectors || !missing || !mismatched ||
+      missing.length !== 0 || mismatched.length !== 0 || selectors.length !== VERIFY20_REQUIRED_SELECTORS.size ||
+      selectors.some((selector) => !VERIFY20_REQUIRED_SELECTORS.has(selector))) return null;
+    return {
+      id: input.evidenceId,
+      kind: "verify20_fingerprint",
+      subjectAddress: input.spenderAddress,
+      spenderAddress: input.spenderAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    };
+  }
+  return null;
+}
+
+async function loadExactCampaignEvidence(
+  db: Db,
+  audit: ApprovalSafetyAuditForContractDecision
+): Promise<ContractDecisionEvidenceV1[] | null> {
+  const ids = audit.assessment.campaignEvidenceIds;
+  if (ids.length === 0) return audit.assessment.exactDebit || audit.assessment.exactVerify20 ? null : [];
+  if (!audit.assessment.exactDebit && !audit.assessment.exactVerify20) return null;
+  const result = await db.query(
+    `select id, source, source_type, chain, address, tx_hash, evidence_json
+     from raw_evidence
+     where id = any($1::text[])
+     order by id`,
+    [ids]
+  );
+  if ((result.rowCount ?? result.rows.length) !== ids.length || result.rows.length !== ids.length) return null;
+  const byId = new Map(result.rows.map((row) => [row.id, row]));
+  if (byId.size !== ids.length) return null;
+  const evidence = ids.map((evidenceId) => {
+    const row = byId.get(evidenceId);
+    return row ? parseExactCampaignEvidenceRow(row, {
+      evidenceId,
+      ownerAddress: audit.assessment.subjectAddress,
+      spenderAddress: audit.assessment.allowance.spenderAddress,
+      approvalTxHash: audit.approvalTxHash,
+      exactDebit: audit.assessment.exactDebit,
+      exactVerify20: audit.assessment.exactVerify20
+    }) : null;
+  });
+  if (evidence.some((row) => row === null)) return null;
+  const resolved = evidence as ContractDecisionEvidenceV1[];
+  if (audit.assessment.exactDebit && !resolved.some((row) => row.kind === "exact_debit")) return null;
+  if (audit.assessment.exactVerify20 && !resolved.some((row) => row.kind === "verify20_fingerprint")) return null;
+  return resolved;
+}
+
 export async function getLatestApprovalSafetyAuditForSpenderByTelegramUser(
   db: Db,
   input: { telegramUserId: string; spenderAddress: string; now?: Date }
 ): Promise<ApprovalSafetyAuditForContractDecision | null> {
   const result = await db.query(
-    `select approval.approval_tx_hash, approval.owner_address, approval.spender_address,
+    `select approval.approval_tx_hash, approval.owner_address, w.address as watched_wallet_address, approval.spender_address,
        approval.token_contract, guard_raw.id as approval_evidence_id,
        guard_raw.evidence_json as approval_evidence_json,
        session_raw.id as session_evidence_id, session_raw.evidence_json as session_evidence_json
      from observed_approval_events approval
      join watched_wallets w on w.id = approval.watched_wallet_id
+       and approval.owner_address = w.address
      join lateral (
        select guard.id, guard.evidence_json
        from raw_evidence guard
@@ -4696,9 +4789,14 @@ export async function getLatestApprovalSafetyAuditForSpenderByTelegramUser(
      limit 1`,
     [input.telegramUserId, input.spenderAddress, TRON_USDT_CONTRACT_ADDRESS]
   );
-  return result.rows[0]
-    ? parseApprovalSafetyAuditRow(result.rows[0], { spenderAddress: input.spenderAddress, now: input.now ?? new Date() })
-    : null;
+  if (!result.rows[0]) return null;
+  const audit = parseApprovalSafetyAuditRow(result.rows[0], {
+    spenderAddress: input.spenderAddress,
+    now: input.now ?? new Date()
+  });
+  if (!audit) return null;
+  const campaignEvidence = await loadExactCampaignEvidence(db, audit);
+  return campaignEvidence ? { ...audit, campaignEvidence } : null;
 }
 
 export async function claimObservedApprovalDrainEvent(

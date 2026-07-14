@@ -81,6 +81,7 @@ export function bindApprovalSafetyAuditForContractDecision(input: {
   subjectAddress: string;
   approvalEvidenceId: string;
   sessionEvidenceId: string | null;
+  campaignEvidence: ContractDecisionEvidenceV1[];
   assessment: ApprovalSafetyAssessmentV2;
 }): ApprovalSafetyContractDecisionBinding | null {
   const allowance = input.assessment.allowance;
@@ -105,13 +106,30 @@ export function bindApprovalSafetyAuditForContractDecision(input: {
       tokenContract: TRON_USDT_CONTRACT_ADDRESS
     }
   ];
+  const campaignIds = input.assessment.campaignEvidenceIds;
+  const campaignById = new Map(input.campaignEvidence.map((row) => [row.id, row]));
+  if (campaignById.size !== input.campaignEvidence.length ||
+    campaignIds.length !== input.campaignEvidence.length ||
+    campaignIds.some((id) => !campaignById.has(id)) ||
+    input.campaignEvidence.some((row) =>
+      (row.kind !== "exact_debit" && row.kind !== "verify20_fingerprint") ||
+      row.subjectAddress !== input.subjectAddress || row.spenderAddress !== input.subjectAddress ||
+      row.tokenContract !== TRON_USDT_CONTRACT_ADDRESS
+    ) ||
+    (input.assessment.exactDebit && !input.campaignEvidence.some((row) => row.kind === "exact_debit")) ||
+    (input.assessment.exactVerify20 && !input.campaignEvidence.some((row) => row.kind === "verify20_fingerprint")) ||
+    (!input.assessment.exactDebit && input.campaignEvidence.some((row) => row.kind === "exact_debit")) ||
+    (!input.assessment.exactVerify20 && input.campaignEvidence.some((row) => row.kind === "verify20_fingerprint"))) return null;
+  evidence.push(...input.campaignEvidence);
   const session = input.assessment.serviceSession;
   const registered = findKnownServiceBySpender(input.subjectAddress);
   if (session) {
     if (!input.sessionEvidenceId || !registered ||
       session.walletAddress !== allowance.ownerAddress || session.spenderAddress !== input.subjectAddress ||
       session.approvalTxHash !== allowance.observedApprovalTxHash ||
-      session.authoritativeServiceId !== registered.id || !registered.actionKinds.includes(session.actionKind)) return null;
+      session.authoritativeServiceId !== registered.id || !registered.actionKinds.includes(session.actionKind) ||
+      session.amountContinuity !== "exact" || !Number.isSafeInteger(session.delayMs) ||
+      session.delayMs < 0 || session.delayMs > 600_000) return null;
     evidence.push({
       id: session.actionTxHash,
       kind: "service_action",
@@ -591,6 +609,38 @@ function sameFingerprint(left: Verify20FingerprintResult, right: Verify20Fingerp
     left.mismatchedSelectors.join(":") === right.mismatchedSelectors.join(":");
 }
 
+const LEGACY_LLM_MARKER = /\b(?:llm|deepseek)\b|ai[- ](?:contract|оценка)|drainer_like|unknown_suspicious|legitimate_service/i;
+
+function validPersistedContractDecision(
+  value: unknown,
+  report: Record<string, unknown>
+): boolean {
+  if (value === undefined) return true;
+  const decision = record(value);
+  const deterministic = record(decision?.deterministic);
+  if (!decision || !deterministic || decision.finalSource !== "deterministic" || decision.llm !== null) return false;
+  if (deterministic.score !== report.riskScore || deterministic.level !== report.riskLevel ||
+    deterministic.decision !== report.decision) return false;
+  if (deterministic.authority !== "exact_debit" && deterministic.authority !== "provider_risk" &&
+    deterministic.authority !== "verify20_fingerprint" && deterministic.authority !== "official_registry" &&
+    deterministic.authority !== "gasfree_account" && deterministic.authority !== "known_service_session" &&
+    deterministic.authority !== "context") return false;
+  const policyTuple = `${deterministic.authority}:${deterministic.score}:${deterministic.level}:${deterministic.decision}`;
+  if (!new Set([
+    "exact_debit:95:CRITICAL:DECLINE",
+    "provider_risk:90:CRITICAL:DECLINE",
+    "verify20_fingerprint:90:CRITICAL:DECLINE",
+    "official_registry:0:LOW:ACCEPTABLE",
+    "official_registry:10:LOW:ACCEPTABLE",
+    "official_registry:45:MEDIUM:REVIEW",
+    "gasfree_account:10:LOW:ACCEPTABLE",
+    "known_service_session:10:LOW:ACCEPTABLE",
+    "context:35:MEDIUM:REVIEW"
+  ]).has(policyTuple)) return false;
+  return stringArray(deterministic.evidenceIds) && deterministic.evidenceIds.length > 0 &&
+    new Set(deterministic.evidenceIds).size === deterministic.evidenceIds.length;
+}
+
 /** Treat persisted contract analysis as untrusted; exact fingerprints are re-derived from the saved profile. */
 export function normalizeSmartContractCheckReport(
   value: unknown,
@@ -608,7 +658,10 @@ export function normalizeSmartContractCheckReport(
   if (report.serviceLabel !== null && typeof report.serviceLabel !== "string") return null;
   if (report.activityLabel !== "none" && report.activityLabel !== "low" && report.activityLabel !== "normal" && report.activityLabel !== "high" && report.activityLabel !== "unknown") return null;
   if (!stringArray(report.reasons) || !stringArray(report.limitations) || !Array.isArray(report.relatedApprovals)) return null;
-  if (report.llmVerdict !== null && !record(report.llmVerdict)) return null;
+  if (report.llmVerdict !== null) return null;
+  if (report.reasons.some((reason) => LEGACY_LLM_MARKER.test(reason)) ||
+    report.limitations.some((reason) => LEGACY_LLM_MARKER.test(reason))) return null;
+  if (!validPersistedContractDecision(report.contractDecisionV2, report)) return null;
 
   const metadata = record(report.metadata);
   if (!metadata || !validPersistedMetadata(metadata, report.subjectAddress)) return null;
@@ -633,7 +686,7 @@ export function normalizeSmartContractCheckReport(
   if (!sameFingerprint(fingerprint as Verify20FingerprintResult, derived)) return null;
   if (derived.matched && (report.decision !== "DECLINE" || report.riskScore < 85 || report.serviceLabel !== null)) return null;
 
-  return { ...report, llmVerdict: null } as unknown as SmartContractCheckReport;
+  return report as unknown as SmartContractCheckReport;
 }
 
 export async function checkSmartContractAddress(input: CheckSmartContractAddressInput): Promise<SmartContractCheckReport> {

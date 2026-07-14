@@ -11,6 +11,7 @@ import { activeAllowance, APPROVAL_TX, BRIDGERS, OWNER, SWAP_TX } from "../fixtu
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
 import type { ContractAnalysisCaseFile, ContractLlmVerdictSummary, RiskReport, ServiceClassification } from "../../src/types";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 
 const subjectAddress = "TContract11111111111111111111111111111";
 
@@ -265,6 +266,7 @@ describe("smart contract check", () => {
       subjectAddress: BRIDGERS,
       approvalEvidenceId: "approval-raw-id",
       sessionEvidenceId: "session-raw-id",
+      campaignEvidence: [],
       assessment: {
         version: "approval-safety-v2",
         subjectAddress: OWNER,
@@ -305,6 +307,92 @@ describe("smart contract check", () => {
       expect.objectContaining({ id: "allowance:approval-raw-id", kind: "allowance_read", subjectAddress: BRIDGERS }),
       expect.objectContaining({ id: SWAP_TX, kind: "service_action", subjectAddress: BRIDGERS })
     ]));
+  });
+
+  it.each([
+    ["broken continuity", { amountContinuity: "broken" }],
+    ["unknown continuity", { amountContinuity: "unknown" }],
+    ["unsafe delay", { delayMs: 600_001 }]
+  ] as const)("rejects persisted service session with %s", (_name, sessionOverride) => {
+    const assessment = {
+      version: "approval-safety-v2" as const,
+      subjectAddress: OWNER,
+      level: "LOW" as const,
+      score: 10,
+      action: "REVOKE_IF_UNUSED" as const,
+      amlScoreImpact: 0 as const,
+      allowance: activeAllowance(undefined, BRIDGERS),
+      balanceAtRiskRaw: null,
+      exactVerify20: false,
+      exactDebit: false,
+      debitFoundFromSubject: false,
+      campaignEvidenceIds: [],
+      serviceSession: {
+        walletAddress: OWNER,
+        spenderAddress: BRIDGERS,
+        approvalTxHash: APPROVAL_TX,
+        actionTxHash: SWAP_TX,
+        actionKind: "swap" as const,
+        walletInitiated: true,
+        successful: true,
+        delayMs: 66_000,
+        approvedAmountRaw: activeAllowance(undefined, BRIDGERS).confirmedAllowanceRaw,
+        movedAmountRaw: "91103009",
+        amountContinuity: "exact" as const,
+        authoritativeServiceId: "bridgers",
+        ...sessionOverride
+      }
+    };
+
+    expect(bindApprovalSafetyAuditForContractDecision({
+      subjectAddress: BRIDGERS,
+      approvalEvidenceId: "approval-raw-id",
+      sessionEvidenceId: "session-raw-id",
+      campaignEvidence: [],
+      assessment
+    })).toBeNull();
+  });
+
+  it.each([
+    ["exact debit", { exactDebit: true, debitFoundFromSubject: true, exactVerify20: false }, "exact_debit"],
+    ["Verify20", { exactDebit: false, debitFoundFromSubject: false, exactVerify20: true }, "verify20_fingerprint"]
+  ] as const)("binds complete subject-bound %s campaign evidence and rejects a missing row", (_name, flags, kind) => {
+    const evidenceId = `campaign:${kind}`;
+    const assessment = {
+      version: "approval-safety-v2" as const,
+      subjectAddress: OWNER,
+      level: "CRITICAL" as const,
+      score: kind === "exact_debit" ? 95 : 90,
+      action: "REVOKE_NOW" as const,
+      amlScoreImpact: 0 as const,
+      allowance: activeAllowance(undefined, subjectAddress),
+      balanceAtRiskRaw: null,
+      ...flags,
+      campaignEvidenceIds: [evidenceId],
+      serviceSession: null
+    };
+    const campaignEvidence = [{
+      id: evidenceId,
+      kind,
+      subjectAddress,
+      spenderAddress: subjectAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS
+    }];
+
+    expect(bindApprovalSafetyAuditForContractDecision({
+      subjectAddress,
+      approvalEvidenceId: "approval-raw-id",
+      sessionEvidenceId: null,
+      campaignEvidence,
+      assessment
+    })?.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ id: evidenceId, kind })]));
+    expect(bindApprovalSafetyAuditForContractDecision({
+      subjectAddress,
+      approvalEvidenceId: "approval-raw-id",
+      sessionEvidenceId: null,
+      campaignEvidence: [],
+      assessment
+    })).toBeNull();
   });
 
   it("declines an exact Verify20 fingerprint without claiming a specific theft", () => {
@@ -564,10 +652,7 @@ describe("smart contract check", () => {
 
     const aiOnly = JSON.parse(JSON.stringify(exact));
     aiOnly.llmVerdict = { verdict: "legitimate_service", reasons: ["Trusted Router"] };
-    expect(normalizeSmartContractCheckReport(aiOnly, subjectAddress)).toMatchObject({
-      serviceLabel: null,
-      verify20Fingerprint: { matched: true }
-    });
+    expect(normalizeSmartContractCheckReport(aiOnly, subjectAddress)).toBeNull();
     const nameOnly = JSON.parse(JSON.stringify(exact));
     nameOnly.metadata.name = "Trusted Router";
     nameOnly.metadata.tag = "Router";
@@ -607,6 +692,57 @@ describe("smart contract check", () => {
     persisted.riskScore = 95;
     persisted.riskLevel = "CRITICAL";
     persisted.decision = "DECLINE";
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
+  });
+
+  it("rejects an explicit legacy LLM-derived reason even after verdict removal and deterministic-looking wrapping", () => {
+    const persisted = JSON.parse(JSON.stringify(evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      relatedApprovals: []
+    })));
+    persisted.llmVerdict = null;
+    persisted.reasons = ["LLM contract verdict is drainer_like with high confidence."];
+    persisted.contractDecisionV2 = {
+      finalSource: "deterministic",
+      llm: null,
+      deterministic: {
+        score: persisted.riskScore,
+        level: persisted.riskLevel,
+        decision: persisted.decision,
+        authority: "context",
+        evidenceIds: ["metadata:subject"]
+      }
+    };
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
+  });
+
+  it("rejects a deterministic-looking wrapper whose authority cannot produce its persisted score", () => {
+    const persisted = JSON.parse(JSON.stringify(evaluateSmartContractAddress({
+      subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      relatedApprovals: []
+    })));
+    persisted.llmVerdict = null;
+    persisted.decision = "DECLINE";
+    persisted.riskScore = 91;
+    persisted.riskLevel = "CRITICAL";
+    persisted.reasons = ["contract_decision_context"];
+    persisted.contractDecisionV2 = {
+      finalSource: "deterministic",
+      llm: null,
+      deterministic: {
+        score: 91,
+        level: "CRITICAL",
+        decision: "DECLINE",
+        authority: "context",
+        evidenceIds: ["metadata:subject"]
+      }
+    };
 
     expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toBeNull();
   });

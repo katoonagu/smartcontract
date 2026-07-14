@@ -547,6 +547,7 @@ const bot = createBot(config, db, tronClient, {
           subjectAddress: address,
           approvalEvidenceId: approvalAudit.approvalEvidenceId,
           sessionEvidenceId: approvalAudit.sessionEvidenceId,
+          campaignEvidence: approvalAudit.campaignEvidence,
           assessment: approvalAudit.assessment
         })
       : null;

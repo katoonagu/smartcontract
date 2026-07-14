@@ -1658,22 +1658,7 @@ function smartContractReportForTest(overrides: Partial<SmartContractCheckReport>
       topMethods: []
     } as unknown as SmartContractCheckReport["contractProfile"],
     relatedApprovals: [],
-    llmVerdict: {
-      contractAddress: walletAddress,
-      providerLabel: "deepseek",
-      model: "deepseek-v4-flash",
-      caseFileHash: "case-hash",
-      cacheId: null,
-      verdict: "unknown_suspicious",
-      confidence: 0.82,
-      contractRiskScore: 65,
-      decisionRecommendation: "DECLINE",
-      reasons: ["spender has approval control"],
-      citedEvidenceIds: [walletAddress],
-      falsePositiveNotes: [],
-      source: "llm",
-      cacheMatch: null
-    },
+    llmVerdict: null,
     exactDrainProven: false,
     verify20Fingerprint: {
       matched: false,

@@ -256,11 +256,38 @@ async function legacySmartReport(reason = LEGACY_REASON): Promise<Record<string,
   });
   return {
     ...baseline,
+    decision: "DECLINE",
+    riskScore: LEGACY_SCORE,
+    riskLevel: "CRITICAL",
+    reasons: [reason],
+    contractDecisionV2: {
+      finalSource: "llm",
+      llm: legacyVerdict({ reasons: [reason] }),
+      deterministic: {
+        score: LEGACY_SCORE,
+        level: "CRITICAL",
+        decision: "DECLINE",
+        authority: "context",
+        evidenceIds: [LEGACY_CITATION]
+      }
+    },
     llmVerdict: legacyVerdict({ reasons: [reason] })
   };
 }
 
 function legacyWhereReport(): Record<string, unknown> {
+  const suspicion = {
+    kind: "contract_llm_suspicion",
+    score: LEGACY_SCORE,
+    rawScore: LEGACY_SCORE,
+    adjustedScore: LEGACY_SCORE,
+    evidenceClass: "contract_suspicion",
+    proofLevel: "llm_assisted_suspicion",
+    canBeDampened: true,
+    reasons: [LEGACY_WHERE_REASON],
+    warnings: [],
+    evidenceIds: [LEGACY_CITATION]
+  };
   return {
     scoreValid: true,
     scoreBlockedReason: null,
@@ -279,8 +306,8 @@ function legacyWhereReport(): Record<string, unknown> {
       scoreBlockedReason: null,
       technicalStatus: "completed",
       decision: "REVIEW",
-      riskScore: 35,
-      riskBand: "MEDIUM",
+      riskScore: LEGACY_SCORE,
+      riskBand: "CRITICAL",
       provenanceConfidence: 100,
       coverageCompleteness: 100,
       walletRole: "unknown_wallet",
@@ -288,19 +315,19 @@ function legacyWhereReport(): Record<string, unknown> {
       ageSignals: null,
       hardBadEvidence: [],
       sourcePolicyEvidence: [],
-      contractSuspicionEvidence: [],
+      contractSuspicionEvidence: [suspicion],
       unknownOriginEvidence: [],
-      riskLayers: [],
-      dominantRiskLayer: null,
-      reasons: [],
+      riskLayers: [suspicion],
+      dominantRiskLayer: suspicion,
+      reasons: [LEGACY_WHERE_REASON],
       warnings: []
     },
-    decision: "REVIEW",
-    userDecision: "REVIEW",
-    internalDecision: "REVIEW",
-    proofLevel: "context_only",
-    riskScore: 35,
-    decisionReasons: [],
+    decision: "DECLINE",
+    userDecision: "DECLINE",
+    internalDecision: "DECLINE",
+    proofLevel: "llm_assisted_suspicion",
+    riskScore: LEGACY_SCORE,
+    decisionReasons: [LEGACY_WHERE_REASON],
     coverage: {
       selectedInboundTxCount: 0,
       selectedInboundVolumeRaw: "0",
@@ -328,10 +355,13 @@ function whereJob(report: Record<string, unknown>): Record<string, unknown> {
 
 function incomingReport(): Record<string, unknown> {
   return {
-    decision: "REVIEW",
-    depositRiskScore: 35,
-    observedContextScore: 35,
-    riskBand: "MEDIUM",
+    decision: "DECLINE",
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
+    depositRiskScore: LEGACY_SCORE,
+    observedContextScore: LEGACY_SCORE,
+    riskBand: "CRITICAL",
     fastSenderRisk: null,
     originPaths: [],
     originCoverage: 1,
@@ -346,8 +376,8 @@ function incomingReport(): Record<string, unknown> {
     senderRole: "unknown_wallet",
     hardBadEvidence: [],
     contractVerdicts: [legacyVerdict({ reasons: [LEGACY_INCOMING_REASON] })],
-    reasons: ["Deterministic review context."],
-    warnings: []
+    reasons: [LEGACY_INCOMING_REASON],
+    warnings: [LEGACY_INCOMING_REASON]
   };
 }
 
@@ -515,8 +545,7 @@ describe("automatic contract LLM isolation acceptance", () => {
     const normalize = requiredFunction(smart, "normalizeSmartContractCheckReport");
     const projectedSmart = normalize(await legacySmartReport(), SUBJECT);
 
-    expect.soft(projectedSmart).not.toBeNull();
-    expect.soft(projectedSmart?.llmVerdict).toBeNull();
+    expect.soft(projectedSmart).toBeNull();
     expectNoModelMaterial(projectedSmart, [String(LEGACY_SCORE), LEGACY_REASON, LEGACY_CITATION, "legacy-cache-id"]);
 
     const module = await contractDecisionModule();
@@ -542,32 +571,27 @@ describe("automatic contract LLM isolation acceptance", () => {
     ]);
     const normalizeSmart = requiredFunction(smart, "normalizeSmartContractCheckReport");
     const extractWhere = requiredFunction(bot, "extractWhereIsMoneyReportFromJob");
-    const formatSmart = requiredFunction(bot, "formatSmartContractCheckReport");
-    const formatWhere = requiredFunction(bot, "formatWhereIsMoneyReport");
     const formatIncoming = requiredFunction(alerts, "formatIncomingDepositRiskAlert");
     const smartProjection = normalizeSmart(await legacySmartReport(), SUBJECT);
     const storedWhere = legacyWhereReport();
+    const storedWhereBefore = structuredClone(storedWhere);
+    const storedIncoming = incomingReport();
+    const storedIncomingBefore = structuredClone(storedIncoming);
     const job = whereJob(storedWhere);
     const whereProjection = extractWhere(job, SUBJECT);
 
-    expect.soft(smartProjection).not.toBeNull();
-    expect.soft(whereProjection).not.toBeNull();
-    expect.soft(smartProjection?.llmVerdict).toBeNull();
-    expect.soft(whereProjection?.contractLlmVerdicts).toEqual([]);
+    expect.soft(smartProjection).toBeNull();
+    expect.soft(whereProjection).toBeNull();
 
-    const rendered = [
-      formatSmart(smartProjection, { locale: "en" }).text,
-      formatWhere(job, whereProjection, "completed", { locale: "en" }).text,
-      formatIncoming({
+    const rendered = formatIncoming({
         jobId: "legacy-incoming-job",
         amount: "35",
         watchedWallet: SUBJECT,
         sender: SUBJECT,
         txHash: "legacy-incoming-tx",
         locale: "en",
-        report: incomingReport()
-      }).text
-    ].join("\n");
+        report: storedIncoming
+      }).text;
 
     for (const forbidden of [
       LEGACY_REASON,
@@ -579,7 +603,11 @@ describe("automatic contract LLM isolation acceptance", () => {
     ]) {
       expect.soft(rendered).not.toContain(forbidden);
     }
+    expect.soft(rendered).toContain("no final score");
+    expect.soft(rendered).toContain("NO_FINAL_DECISION");
     expect.soft(rendered).not.toMatch(/AI contract verdict|AI-оценка контракта/i);
+    expect.soft(storedWhere).toEqual(storedWhereBefore);
+    expect.soft(storedIncoming).toEqual(storedIncomingBefore);
   });
 
   it("[AC-40][LLM-NOCALL] bypasses Flash and Pro for unknown and ambiguous contracts", async () => {

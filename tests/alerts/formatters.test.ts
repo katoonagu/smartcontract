@@ -52,25 +52,7 @@ const incomingDepositBaseInput = {
     dataQuality: "medium" as const,
     senderRole: "fresh_one_shot_wallet",
     hardBadEvidence: [],
-    contractVerdicts: [
-      {
-        source: "llm" as const,
-        cacheMatch: null,
-        reusedFromContractAddress: null,
-        providerLabel: "deepseek",
-        model: "deepseek-v4-pro",
-        contractAddress: "TFcRNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
-        caseFileHash: "case-hash",
-        cacheId: null,
-        verdict: "unknown_suspicious" as const,
-        confidence: 0.78,
-        contractRiskScore: 68,
-        decisionRecommendation: "DECLINE" as const,
-        reasons: ["Unknown contract funded sender shortly before deposit."],
-        citedEvidenceIds: ["48d33"],
-        falsePositiveNotes: []
-      }
-    ],
+    contractVerdicts: [],
     reasons: ["Sender was funded shortly before this deposit by unknown smart contract."],
     warnings: []
   }
