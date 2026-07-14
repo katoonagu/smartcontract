@@ -1,17 +1,21 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-14
 owner_area: scoring
 code_refs:
   - src/risk/fastEvidence.ts
   - src/risk/scoringSignalMatrix.ts
   - src/risk/scoringSignalMatrixInputs.ts
+  - src/risk/scoreAnchorV2.ts
+  - src/risk/usddPsmExposure.ts
   - src/risk/finalDisposition.ts
   - src/risk/unifiedWalletRisk.ts
   - src/risk/unifiedIncomingDepositRisk.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/moneyOriginPolicy.ts
   - src/risk/riskSignalGroups.ts
+  - src/approvals/approvalSafetyAssessment.ts
+  - src/forensics/contractDecision.ts
   - src/monitor/addressPoisoningWorker.ts
   - tests/risk/fastEvidence.test.ts
   - tests/risk/scoringSignalMatrix.test.ts
@@ -78,10 +82,47 @@ only below its branch and aggregate thresholds and without hard evidence. This
 is a score-valid caveat, not a clean verdict; Admin and Telegram keep it
 visible, and scoring excludes it from decisive clean/bad evidence.
 
-### Matrix V2 Direct-Counterparty Policy
+### Plan 2 Matrix V3 And Score Anchors
 
-Fresh reports use `scoring-signal-matrix-v2`. The highest-priority row is the
-checked subject's own restriction; the next row is
+The Plan 2 branch marks fresh candidate results as `scoring-signal-matrix-v3`.
+Every published numeric score has exactly one `ScoreAnchorV2`; a fresh result
+without a valid anchor is `NO_FINAL_DECISION`, has no final score, and records
+`score_anchor_fact_binding_failed`. Legacy v2/unversioned results remain legacy
+and never receive a synthesized anchor.
+
+Anchor validation is strict: score is an integer from 0 through 100 and mirrors
+the publication; policy row, decision, evidence class, proof level, authority,
+and coverage dependency match the registry; subject is a valid matching TRON
+address and mode matches; every evidence ID resolves exactly once to the same
+subject; and one preferred score fact resolves exactly once with the same mode,
+subject, decisive evidence, and score-driver role. Context, coverage, and
+limitation rows cannot publish `DECLINE`. Zero or multiple active anchors fail
+closed.
+
+Collector/transit behavior alone is bounded at `35 REVIEW`. It reaches
+`55 REVIEW` only with a second non-clean, non-coverage AML signal whose non-empty
+episode set is fully disjoint. Partial overlap, blank episode IDs, another
+collector, or repeated collector evidence does not compose.
+
+Exact USDD PSM exposure is bounded context with base `20`, share modifiers
+`3/7/12/18/25` at the `<5%`, `<20%`, `<50%`, `<80%`, and `>=80%` tiers, half-up
+Deep and outbound adjustments, and a standalone cap of `45 REVIEW`. It cannot
+promote its own authority to `DECLINE`.
+
+`ApprovalSafetyAssessmentV2` remains wallet-safety output and never enters AML
+matrix inputs. For an exact Verify20 spender with a fresh official-USDT direct
+allowance, unlimited is `90`, finite allowance at least 100 USDT is `75`, finite
+allowance below 100 USDT is `45`, and confirmed zero is `0`. Failed, malformed,
+reverted, timed-out, stale, or provider-failed reads are `UNKNOWN/null`; a saved
+Approval event amount cannot stand in for current allowance.
+
+These v3 semantics are implemented in the local release candidate only.
+Production remains on the previous runtime until Plan 5.
+
+### Previous-Runtime Matrix V2 Direct-Counterparty Policy
+
+Previous-runtime fresh reports use `scoring-signal-matrix-v2`. The
+highest-priority row is the checked subject's own restriction; the next row is
 `direct_counterparty_policy`. That direct row accepts only a typed material
 first-hop fact with `usdt_blacklist`, `official_contract`, and current
 `statusAtCheck=active`. Service identity, contract/account type, internal label,

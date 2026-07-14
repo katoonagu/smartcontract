@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-12
+last_verified: 2026-07-14
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -329,6 +329,19 @@ but unexplained score is logged best-effort; callback failure is swallowed and
 cannot change or block Telegram delivery. Completed current Deep routing and
 the absent/failed Deep detailed behavior are unchanged. Admin, support, and
 `/check_status ... detailed` keep their existing diagnostic surfaces.
+
+### Plan 2 Candidate: Contract LLM Output Isolation
+
+Fresh contract decisions are deterministic and persist `llm=null`. Fresh Where
+and Incoming compatibility projections are empty, and active loaders sanitize
+legacy LLM projections before Telegram or alert formatting. Stored legacy LLM
+and cache JSON remains available only through its audit path; it is not rendered
+as an active verdict, reason, citation, or recommendation.
+
+Plan 2 removes only the obsolete AI contract-verdict helper/output sections and
+their headings from the bot and alerts. It does not claim the unified Telegram
+layout, wording, delivery, or runtime work owned by Plans 3 and 4. Production
+continues to use the previous runtime until Plan 5.
 
 Normal final Telegram address reports now use one compact deterministic
 narrative in plain Russian or English. A scored header always keeps the risk

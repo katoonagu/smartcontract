@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-13
+last_verified: 2026-07-14
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
@@ -16,6 +16,7 @@ code_refs:
   - src/forensics/deepSecondLayerRefresh.ts
   - src/runtime/deepForensicRuntimeOptions.ts
   - src/risk/unifiedWalletRisk.ts
+  - src/risk/usddPsmExposure.ts
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/counterpartyRisk.test.ts
   - tests/forensics/counterpartyInteraction.test.ts
@@ -60,6 +61,21 @@ count-based coverage.
 Legacy Deep reports without a valid saved CoverageV2 object adapt to `null`.
 They are not reclassified as complete from older counters. This is candidate
 behavior only; production remains on the previous runtime until Plan 5.
+
+### Plan 2 Candidate: Historical USDD PSM Context
+
+Deep contributes USDD PSM context only from an exact saved `deep_history`
+observation: authoritative reserve identity, exact amount continuity, one or two
+hops, non-empty evidence IDs, and a selected amount that bounds the observed
+amount. Labels or inferred service names are insufficient.
+
+Deep applies half-up division by two to the ordinary share modifier and caps
+that intermediate modifier at `12`; outbound-to-PSM then applies half-up
+division by two again. The standalone base remains `20` and the final candidate
+cannot exceed `45 REVIEW` or produce `DECLINE`. Thus 83% inbound historical
+exposure is `32 REVIEW`, while 83% outbound historical exposure is `26`. Without
+the exact observation, Deep adds no PSM modifier. This candidate is not released
+to production until Plan 5.
 
 DeepCheck scores non-boundary contracts as ordinary counterparties. A
 `service` or `unknown_contract` category alone does not zero direct or

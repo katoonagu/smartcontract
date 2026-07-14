@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-13
+last_verified: 2026-07-14
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -13,6 +13,7 @@ code_refs:
   - src/forensics/forensicCoverageV2.ts
   - src/forensics/recentFlowProvenanceSelection.ts
   - src/forensics/usddPsmRouteObservation.ts
+  - src/risk/usddPsmExposure.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/bot/wherePreliminaryNarrative.ts
@@ -77,6 +78,28 @@ Where candidate reports may also persist exact one- or two-hop USDD PSM route
 observations. They identify the route and evidence only; Plan 1 does not change
 the score, decision, or Telegram wording. Production remains on the previous
 runtime until Plan 5.
+
+### Plan 2 Candidate: Exact PSM Scoring And LLM-Free Assessment
+
+The Plan 2 branch converts only scoring-eligible, exact one- or two-hop USDD PSM
+observations through the authoritative reserve into bounded context. Provider
+labels and free text cannot create this exposure. The standalone base is `20`;
+the share modifier is `3` below 5%, `7` from 5% to below 20%, `12` from 20% to
+below 50%, `18` from 50% to below 80%, and `25` from 80% upward. Where,
+Incoming, and recent-flow modes use that modifier directly. Outbound-to-PSM
+routes apply half-up division by two. The result is capped at `45 REVIEW` and
+can never produce `DECLINE` by itself.
+
+Examples: 2% outbound Where is `20 + 2 = 22`; 83% inbound Where or Incoming is
+`20 + 25 = 45 REVIEW`. Integer raw amounts and `BigInt` comparisons define the
+tier boundaries; floating-point display shares do not decide them.
+
+Active money-origin assessment no longer reads contract LLM verdicts for score,
+decision, warnings, dampening, wallet role, or narrative facts. Timeout,
+unavailability, risky, or legitimate legacy LLM payloads therefore produce the
+same assessment as no LLM payload. Stored legacy rows remain audit-only. This
+does not implement broader Telegram presentation changes; those remain Plan 4,
+and production remains on the previous runtime until Plan 5.
 
 When a matching DeepCheck job is queued or running, Telegram renders ordinary
 Where as `Откуда деньги — предварительный результат` / `Where Is Money —

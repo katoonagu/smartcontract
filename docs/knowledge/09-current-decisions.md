@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-13
+last_verified: 2026-07-14
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -18,6 +18,11 @@ code_refs:
   - src/risk/unifiedWalletRisk.ts
   - src/risk/unifiedIncomingDepositRisk.ts
   - src/risk/scoringSignalMatrix.ts
+  - src/risk/scoreAnchorV2.ts
+  - src/risk/usddPsmExposure.ts
+  - src/approvals/allowanceRefresh.ts
+  - src/approvals/approvalSafetyAssessment.ts
+  - src/forensics/contractDecision.ts
   - src/tron/usdtBlacklistTimeline.ts
   - src/check/deepForensicCheck.ts
   - src/bot/createBot.ts
@@ -57,7 +62,7 @@ of these decisions, update this file in the same work.
 - `Incoming deposit` explains one concrete deposit.
 - `DeepCheck` builds a wider forensic profile.
 
-## 2026-07-13 Plan 1 Remediation Candidate
+## 2026-07-13 Plan 1 Remediation Foundation
 
 - `ForensicCoverageV2` is the candidate data contract for Where, Incoming, and
   Deep. Available, selected, and excluded counts must reconcile; amount shares
@@ -83,9 +88,52 @@ of these decisions, update this file in the same work.
 - This branch is a release candidate only. Production remains on the previous
   runtime and schema 031 until Plan 5. Plan 1 does not deploy, restart Telegram,
   or switch the production version label.
-- Plans 2–5 remain open and independent: scoring and contract semantics;
-  runtime and delivery; unified Telegram UX; and cross-plan acceptance/release.
-  Address Poisoning remains a separate completed track and is unchanged here.
+- Plan 2 scoring and contract semantics are implemented in the local release
+  candidate. Plans 3–5 remain independent: runtime and delivery; unified
+  Telegram UX; and cross-plan acceptance/release. Address Poisoning remains a
+  separate completed track and is unchanged here.
+
+## 2026-07-14 Plan 2 Scoring And Contract Semantics Candidate
+
+- Fresh candidate scoring uses `scoring-signal-matrix-v3` and exactly one valid
+  `ScoreAnchorV2` for every numeric publication. Invalid/missing/multiple anchors,
+  unresolved evidence, a mismatched subject/mode/policy row, or an invalid
+  preferred score fact fail closed to `NO_FINAL_DECISION` with no final score.
+  Legacy reports are not upgraded or rescored.
+- Collector/transit behavior alone is `35 REVIEW`. It can compose to `55 REVIEW`
+  only with a different AML signal from a fully disjoint, non-empty episode set;
+  coverage, clean evidence, partial overlap, blank IDs, and repeated collectors
+  do not compose.
+- Exact USDD PSM context has an explicit base of `20`, share modifiers
+  `3/7/12/18/25`, half-up Deep/outbound adjustments, and standalone cap
+  `45 REVIEW`. Only exact authoritative one- or two-hop observations qualify;
+  PSM context alone never produces `DECLINE`.
+- Approval events remain history, not current authority. Direct official-USDT
+  allowance is refreshed after a new event, at finalization, and on explicit
+  safety recheck. Timeout, malformed response, revert, provider failure, stale
+  state, or binding failure yields `UNKNOWN/null`; background stale refresh is
+  still Plan 3 and no per-approval 60-second full-node polling was added.
+- Exact Verify20 allowance safety is amount-aware: unlimited `90`, finite at
+  least 100 USDT `75`, finite below 100 USDT `45`, confirmed zero `0`. Exact
+  debit remains `95`. A valid wallet-initiated successful registered-service
+  session may explain the approval, but foreign caller/spender, failed or
+  unsupported action, time/amount/sequence mismatch, or incomplete evidence
+  cannot dampen exact bad proof.
+- Approval safety is separate from AML and never enters unified AML scoring.
+  Contract decisions also require subject-, spender-, official-token-, and
+  evidence-kind binding. An ordinary GasFree Account can be deterministic
+  `10 LOW`; a GasFree endpoint/controller or pooled boundary cannot enter that
+  branch.
+- Automatic Flash/Pro contract analysis is disabled. Every fresh contract
+  decision is deterministic with `llm=null`; a contract with confirmed
+  subject-bound metadata context but no exact bad/service proof is `35 REVIEW`.
+  Legacy LLM/cache JSON remains audit-only and is not read by fresh contract,
+  Where, Incoming, Deep, or money-origin scoring. Money-origin results are
+  identical whether a legacy LLM payload is absent, invalid, risky, legitimate,
+  or unavailable.
+- The branch is still unreleased. Production database, runtime, version, and
+  Telegram remain unchanged until Plan 5. Apart from deleting the two obsolete
+  AI-verdict output sections, unified Telegram UX remains Plan 4.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 
@@ -250,10 +298,11 @@ of these decisions, update this file in the same work.
   policy materiality. Contract, GasFree-account, and ordinary-account types do
   not exclude real principal transfers from first-, second-, or third-hop
   tracing and scoring.
-- Fresh reports use `scoring-signal-matrix-v2`. The checked subject restriction
-  has first priority, then `direct_counterparty_policy`, then the remaining
-  rows. Stored reports without the exact current marker keep their historical
-  decision and require a fresh run.
+- The previous production runtime uses `scoring-signal-matrix-v2`; Plan 2 fresh
+  candidates use v3. In either version, the checked subject restriction has
+  first priority, then `direct_counterparty_policy`, then the remaining rows.
+  Stored reports without the exact current marker keep their historical decision
+  and require a fresh run.
 
 ### Verify20 And Telegram
 
@@ -485,10 +534,10 @@ of these decisions, update this file in the same work.
 - Canonical USDT transfers stay plain; Verify20 and similar non-USDT wrapper
   calls are campaign context until exact approval/provenance proof is
   established.
-- Similar Verify20 wrapper contracts seen across drainer-like cases should be
-  passed into contract AI/case-file interpretation as strong campaign context
-  and shown in plain language. They still must not become a 95/100 hard floor
-  without exact approve -> transferFrom -> receiver provenance.
+- Similar Verify20 wrapper contracts seen across drainer-like cases remain
+  deterministic campaign context for manual review. Automatic contract AI is
+  disabled, and they still must not become a 95/100 hard floor without exact
+  approve -> transferFrom -> receiver provenance.
 - Reports include enrichment denominators and complete/lower-bound status so
   partial campaign counts are not presented as complete totals.
 
