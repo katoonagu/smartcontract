@@ -77,7 +77,7 @@ describe("scoring audit rows", () => {
     ]));
   });
 
-  it("does not infer matrix v2 from a legacy winning row without a persisted marker", () => {
+  it("does not infer matrix v3 from a legacy winning row without a persisted marker", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",
       resultJson: {
