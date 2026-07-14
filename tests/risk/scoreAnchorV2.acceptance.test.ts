@@ -685,7 +685,7 @@ describe("ScoreAnchorV2 acceptance contract", () => {
     const disposition = resolveFinalDisposition({
       subject,
       matrixScore: matrix,
-      coverage: { required: "valid", overall: "complete", caveats: [] },
+      coverage: { required: "valid", overall: "complete", invalidModes: [], caveats: [] },
       observedContextScore: 55
     });
     const binding = materializeFreshScoreBindingV2({
