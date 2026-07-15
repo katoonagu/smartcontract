@@ -2085,7 +2085,6 @@ function activeIncomingDepositReport(report: IncomingDepositRiskReport): Incomin
   if (!legacyLlmPresent) return report;
 
   return {
-    ...report,
     decision: "NO_FINAL_DECISION",
     scoreValid: false,
     scoreBlockedReason: "insufficient_coverage",
@@ -2093,9 +2092,30 @@ function activeIncomingDepositReport(report: IncomingDepositRiskReport): Incomin
     depositRiskScore: null,
     observedContextScore: 0,
     riskBand: null,
-    sourcePolicyEvidence: report.sourcePolicyEvidence?.filter((evidence) => evidence.proofLevel !== "llm_assisted_suspicion"),
-    hardBadEvidence: report.hardBadEvidence.filter((evidence) => evidence.kind !== "llm_contract_suspicion"),
+    fastSenderRisk: null,
+    originPaths: [],
+    originCoverage: 0,
+    fundingCoverage: {
+      depositFundingCoverageRatio: 0,
+      cleanSourceCoverageRatio: 0,
+      exactContinuityCoverageRatio: 0
+    },
+    corridorSummary: null,
+    provenanceConfidence: 0,
+    dataQuality: "low",
+    senderRole: null,
+    targetedHistoryCoverage: undefined,
+    coverageV2: undefined,
+    sourcePolicyEvidence: [],
+    hardBadEvidence: [],
     contractVerdicts: [],
+    contractDrivenReceiverProfile: undefined,
+    contractDrivenTransferProfiles: undefined,
+    contractDrivenSubjectAddress: undefined,
+    freshBundleExposure: undefined,
+    walletExposureProfile: undefined,
+    sourceBundleExposure: undefined,
+    subjectExposureProfile: undefined,
     unifiedRiskSummary: undefined,
     reasons: [],
     warnings: []

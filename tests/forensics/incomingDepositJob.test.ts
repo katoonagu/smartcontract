@@ -605,6 +605,55 @@ describe("runSingleIncomingDepositJobCycle", () => {
       depositRiskScore: 95,
       observedContextScore: 95,
       riskBand: "CRITICAL",
+      fastSenderRisk: {
+        subjectAddress: incomingSenderAddress,
+        level: "CRITICAL",
+        score: 93,
+        reasons: [{
+          code: "legacy_llm_sender_risk",
+          message: "Legacy LLM sender-risk prose.",
+          scoreImpact: 93,
+          evidenceRef: "legacy-llm-sender-evidence"
+        }]
+      },
+      originPaths: [{
+        verdict: "DECLINE",
+        score: 94,
+        sourcePolicy: "hard_decline",
+        stoppedReason: "unknown_contract_reached",
+        pathAddresses: ["TLegacyOrigin111111111111111111111111"],
+        txHashes: ["legacy-llm-origin-evidence"],
+        steps: [],
+        amountCoverageRatio: 1,
+        amountContinuity: "strong",
+        proximityHops: 1,
+        reasons: ["Legacy LLM origin-path prose."]
+      }],
+      originCoverage: 1,
+      fundingCoverage: {
+        depositFundingCoverageRatio: 1,
+        cleanSourceCoverageRatio: 1,
+        exactContinuityCoverageRatio: 1
+      },
+      provenanceConfidence: 99,
+      dataQuality: "high",
+      senderRole: "legacy_llm_sender_role",
+      walletExposureProfile: {
+        windowStart: "2026-05-01T00:00:00.000Z",
+        windowEnd: "2026-05-29T14:01:00.000Z",
+        transferEventsScanned: 95,
+        incomingVolumeRaw: "95000000",
+        outgoingVolumeRaw: "0",
+        htxHuobiIncomingShare: 0,
+        cleanCexIncomingShare: 0,
+        bridgeRouterDexVolumeShare: 0,
+        unknownContractVolumeShare: 1,
+        unknownSourceShare: 0,
+        inOutVelocityScore: 0,
+        scoreContribution: 95,
+        reasons: ["Legacy LLM wallet-exposure prose."],
+        warnings: ["legacy-llm-wallet-evidence"]
+      },
       hardBadEvidence: [{
         kind: "llm_contract_suspicion",
         score: 95,
@@ -637,13 +686,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
     ) => true);
     const formatIncomingDepositRiskAlert = vi.fn((input: Parameters<RunSingleIncomingDepositJobCycleDeps["formatIncomingDepositRiskAlert"]>[0]) => ({
-      text: JSON.stringify({
-        score: input.report.depositRiskScore,
-        reasons: input.report.reasons,
-        warnings: input.report.warnings,
-        verdicts: input.report.contractVerdicts,
-        hardBadEvidence: input.report.hardBadEvidence
-      }),
+      text: JSON.stringify(input.report),
       parseMode: "HTML" as const
     }));
     const sendUserAlert = vi.fn(async () => undefined);
@@ -667,8 +710,31 @@ describe("runSingleIncomingDepositJobCycle", () => {
         depositRiskScore: null,
         observedContextScore: 0,
         riskBand: null,
+        fastSenderRisk: null,
+        originPaths: [],
+        originCoverage: 0,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 0,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0
+        },
+        corridorSummary: null,
+        provenanceConfidence: 0,
+        dataQuality: "low",
+        senderRole: null,
+        targetedHistoryCoverage: undefined,
+        coverageV2: undefined,
+        sourcePolicyEvidence: [],
         hardBadEvidence: [],
         contractVerdicts: [],
+        contractDrivenReceiverProfile: undefined,
+        contractDrivenTransferProfiles: undefined,
+        contractDrivenSubjectAddress: undefined,
+        freshBundleExposure: undefined,
+        walletExposureProfile: undefined,
+        sourceBundleExposure: undefined,
+        subjectExposureProfile: undefined,
+        unifiedRiskSummary: undefined,
         reasons: [],
         warnings: []
       })
@@ -683,15 +749,35 @@ describe("runSingleIncomingDepositJobCycle", () => {
         depositRiskScore: null,
         observedContextScore: 0,
         riskBand: null,
+        fastSenderRisk: null,
+        originPaths: [],
+        originCoverage: 0,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 0,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0
+        },
+        corridorSummary: null,
+        provenanceConfidence: 0,
+        dataQuality: "low",
+        senderRole: null,
+        sourcePolicyEvidence: [],
         hardBadEvidence: [],
         contractVerdicts: [],
+        walletExposureProfile: undefined,
+        unifiedRiskSummary: undefined,
         reasons: [],
         warnings: []
       })
     }));
     const persistedResult = completeForensicCheckJob.mock.calls[0]?.[0].resultJson;
-    expect(JSON.stringify(persistedResult)).not.toContain("Legacy LLM");
-    expect(JSON.stringify(persistedResult)).not.toContain("legacy-llm-evidence");
+    const formattedResult = formatIncomingDepositRiskAlert.mock.calls[0]?.[0].report;
+    for (const projectedResult of [formattedResult, persistedResult]) {
+      expect(JSON.stringify(projectedResult)).not.toContain("Legacy LLM");
+      expect(JSON.stringify(projectedResult)).not.toContain("legacy-llm-");
+      expect(JSON.stringify(projectedResult)).not.toContain("TLegacyOrigin");
+      expect(JSON.stringify(projectedResult)).not.toContain("legacy_llm_sender_role");
+    }
     expect(legacyReport).toEqual(rawSnapshot);
 
     const legacyPolicyOnlyReport = report({
