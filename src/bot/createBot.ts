@@ -1801,6 +1801,7 @@ function hasLegacyLlmWhereProjection(report: WhereIsMoneyReport): boolean {
   const contractSuspicion = report.assessment.contractSuspicionEvidence ?? [];
   const layers = [
     ...(report.assessment.riskLayers ?? []),
+    ...(report.assessment.sourcePolicyEvidence ?? []),
     ...contractSuspicion,
     ...(report.assessment.dominantRiskLayer ? [report.assessment.dominantRiskLayer] : [])
   ];

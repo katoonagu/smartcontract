@@ -5918,6 +5918,40 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(extractWhereIsMoneyReportFromJob(job, walletAddress)).toEqual(report);
   });
 
+  it("[AC-39][REQ-25][LLM-STRUCTURE][WHERE-SOURCE-POLICY] rejects a legacy LLM marker stored only in source-policy evidence", () => {
+    const report = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 55,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 55 }),
+        sourcePolicyEvidence: [{
+          kind: "htx_huobi",
+          aggregateShare: 0.7,
+          effectiveShare: 0.7,
+          pathCount: 1,
+          score: 55,
+          riskBand: "MEDIUM",
+          proofLevel: "llm_assisted_suspicion",
+          canBeDampened: true,
+          reasons: ["Legacy source-policy projection."],
+          warnings: [],
+          evidenceIds: ["legacy-source-policy"]
+        }]
+      }
+    });
+    const job = whereIsMoneyJobForTest({
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress: report.subjectAddress,
+        whereIsMoneyReport: report
+      }
+    });
+
+    expect(extractWhereIsMoneyReportFromJob(job, walletAddress)).toBeNull();
+  });
+
   it("[AC-39][REQ-25][LLM-STRUCTURE] keeps ordinary legacy contract suspicion without an explicit LLM marker", () => {
     const contractContext = {
       evidenceClass: "contract_suspicion" as const,
