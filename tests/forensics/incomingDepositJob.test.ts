@@ -596,6 +596,137 @@ describe("runSingleIncomingDepositJobCycle", () => {
     }).policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
+  it("[AC-39][REQ-25][LLM-BOUNDARY] projects exact legacy LLM structure before risk recording, send selection, and formatting while preserving raw audit JSON", async () => {
+    const legacyReport = report({
+      decision: "DECLINE",
+      scoreValid: true,
+      scoreBlockedReason: null,
+      technicalStatus: "completed",
+      depositRiskScore: 95,
+      observedContextScore: 95,
+      riskBand: "CRITICAL",
+      hardBadEvidence: [{
+        kind: "llm_contract_suspicion",
+        score: 95,
+        message: "Legacy LLM hard evidence prose.",
+        evidenceIds: ["legacy-llm-evidence"]
+      }],
+      contractVerdicts: [{
+        source: "llm",
+        cacheMatch: null,
+        reusedFromContractAddress: null,
+        providerLabel: "legacy-provider",
+        model: "legacy-model",
+        contractAddress: "TLegacyContract11111111111111111111111",
+        caseFileHash: "legacy-case",
+        cacheId: null,
+        verdict: "unknown_suspicious",
+        confidence: 0.99,
+        contractRiskScore: 95,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Legacy LLM verdict prose."],
+        citedEvidenceIds: ["legacy-llm-evidence"],
+        falsePositiveNotes: []
+      }],
+      reasons: ["Legacy LLM decision prose."],
+      warnings: ["Legacy LLM warning prose."]
+    });
+    const rawSnapshot = structuredClone(legacyReport);
+    const recordObservedTransactionRisk = vi.fn(async () => true);
+    const completeForensicCheckJob = vi.fn(async () => true);
+    const formatIncomingDepositRiskAlert = vi.fn((input: Parameters<RunSingleIncomingDepositJobCycleDeps["formatIncomingDepositRiskAlert"]>[0]) => ({
+      text: JSON.stringify({
+        score: input.report.depositRiskScore,
+        reasons: input.report.reasons,
+        warnings: input.report.warnings,
+        verdicts: input.report.contractVerdicts,
+        hardBadEvidence: input.report.hardBadEvidence
+      }),
+      parseMode: "HTML" as const
+    }));
+    const sendUserAlert = vi.fn(async () => undefined);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk,
+      sendUserAlert,
+      formatIncomingDepositRiskAlert,
+      buildReport: async () => legacyReport
+    });
+
+    expect(recordObservedTransactionRisk).not.toHaveBeenCalled();
+    expect(formatIncomingDepositRiskAlert).toHaveBeenCalledWith(expect.objectContaining({
+      report: expect.objectContaining({
+        decision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        depositRiskScore: null,
+        observedContextScore: 0,
+        riskBand: null,
+        hardBadEvidence: [],
+        contractVerdicts: [],
+        reasons: [],
+        warnings: []
+      })
+    }));
+    expect(sendUserAlert).toHaveBeenCalledWith("42", expect.not.stringContaining("95"), expect.any(Object));
+    expect(sendUserAlert).toHaveBeenCalledWith("42", expect.not.stringContaining("Legacy LLM"), expect.any(Object));
+    expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+      resultJson: expect.objectContaining({
+        decision: "DECLINE",
+        depositRiskScore: 95,
+        hardBadEvidence: rawSnapshot.hardBadEvidence,
+        contractVerdicts: rawSnapshot.contractVerdicts,
+        reasons: rawSnapshot.reasons,
+        warnings: rawSnapshot.warnings
+      })
+    }));
+    expect(legacyReport).toEqual(rawSnapshot);
+
+    const legacyPolicyOnlyReport = report({
+      decision: "DECLINE",
+      scoreValid: true,
+      depositRiskScore: 82,
+      observedContextScore: 82,
+      riskBand: "HIGH",
+      sourcePolicyEvidence: [{
+        kind: "unknown_contract",
+        aggregateShare: 1,
+        effectiveShare: 1,
+        pathCount: 1,
+        score: 82,
+        riskBand: "HIGH",
+        proofLevel: "llm_assisted_suspicion",
+        canBeDampened: false,
+        reasons: ["Legacy LLM source-policy prose."],
+        warnings: [],
+        evidenceIds: ["legacy-policy-evidence"]
+      }]
+    });
+    const legacyPolicyOnlySnapshot = structuredClone(legacyPolicyOnlyReport);
+    formatIncomingDepositRiskAlert.mockClear();
+    const riskOnlySend = vi.fn(async () => undefined);
+    const riskOnlyRecord = vi.fn(async () => true);
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job({ ...validProgressJson, alertMode: "risk_only" }),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: riskOnlyRecord,
+      sendUserAlert: riskOnlySend,
+      formatIncomingDepositRiskAlert,
+      buildReport: async () => legacyPolicyOnlyReport
+    });
+
+    expect(riskOnlyRecord).not.toHaveBeenCalled();
+    expect(formatIncomingDepositRiskAlert).not.toHaveBeenCalled();
+    expect(riskOnlySend).not.toHaveBeenCalled();
+    expect(legacyReport).toEqual(rawSnapshot);
+    expect(legacyPolicyOnlyReport).toEqual(legacyPolicyOnlySnapshot);
+  });
+
   it("does not fail an incoming job when wallet intelligence indexing fails", async () => {
     const completeForensicCheckJob = vi.fn(async () => true);
     const indexWalletIntelligenceJob = vi.fn(async () => {

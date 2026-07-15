@@ -619,23 +619,7 @@ describe("alert formatters", () => {
       locale: "en",
       report: {
         ...incomingDepositBaseInput.report,
-        contractVerdicts: [{
-          source: "llm",
-          cacheMatch: null,
-          reusedFromContractAddress: null,
-          providerLabel: "legacy-provider",
-          model: "legacy-model",
-          contractAddress: "TLegacyContract11111111111111111111111",
-          caseFileHash: "legacy-case",
-          cacheId: null,
-          verdict: "unknown_suspicious",
-          confidence: 0.9,
-          contractRiskScore: 99,
-          decisionRecommendation: "DECLINE",
-          reasons: ["Legacy verdict text must stay in the omitted verdict section."],
-          citedEvidenceIds: ["legacy-citation"],
-          falsePositiveNotes: []
-        }],
+        contractVerdicts: [],
         reasons: [deterministicReason]
       }
     });
@@ -644,7 +628,6 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<code>68/100</code>");
     expect(message.text).toContain(deterministicReason);
     expect(message.text).not.toContain("AI contract verdict");
-    expect(message.text).not.toContain("Legacy verdict text must stay in the omitted verdict section.");
   });
 
   it("formats admin alert with Telegram owner identity", () => {

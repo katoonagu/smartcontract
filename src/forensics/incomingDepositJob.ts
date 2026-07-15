@@ -2078,6 +2078,30 @@ function riskLevelFromIncoming(report: IncomingDepositRiskReport): RiskLevel {
   return "LOW";
 }
 
+function activeIncomingDepositReport(report: IncomingDepositRiskReport): IncomingDepositRiskReport {
+  const legacyLlmPresent = report.contractVerdicts.length > 0 ||
+    report.hardBadEvidence.some((evidence) => evidence.kind === "llm_contract_suspicion") ||
+    report.sourcePolicyEvidence?.some((evidence) => evidence.proofLevel === "llm_assisted_suspicion") === true;
+  if (!legacyLlmPresent) return report;
+
+  return {
+    ...report,
+    decision: "NO_FINAL_DECISION",
+    scoreValid: false,
+    scoreBlockedReason: "insufficient_coverage",
+    technicalStatus: "completed",
+    depositRiskScore: null,
+    observedContextScore: 0,
+    riskBand: null,
+    sourcePolicyEvidence: report.sourcePolicyEvidence?.filter((evidence) => evidence.proofLevel !== "llm_assisted_suspicion"),
+    hardBadEvidence: report.hardBadEvidence.filter((evidence) => evidence.kind !== "llm_contract_suspicion"),
+    contractVerdicts: [],
+    unifiedRiskSummary: undefined,
+    reasons: [],
+    warnings: []
+  };
+}
+
 function riskReportFromIncoming(
   subjectAddress: string,
   report: IncomingDepositRiskReport,
@@ -2280,15 +2304,16 @@ export async function runSingleIncomingDepositJobCycle(
       timing,
       persistProgress
     }));
-    if (report.depositRiskScore !== null) {
-      const riskReport = riskReportFromIncoming(sender, report, report.depositRiskScore);
+    const activeReport = activeIncomingDepositReport(report);
+    if (activeReport.depositRiskScore !== null) {
+      const riskReport = riskReportFromIncoming(sender, activeReport, activeReport.depositRiskScore);
       await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
       await timing.measure("record_risk", () =>
         deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
       );
     }
 
-    if (shouldSend(alertMode, report)) {
+    if (shouldSend(alertMode, activeReport)) {
       let addressPoisoningWarningActive = false;
       try {
         addressPoisoningWarningActive = await deps.hasUndismissedAddressPoisoningCandidateForIncoming({
@@ -2312,7 +2337,7 @@ export async function runSingleIncomingDepositJobCycle(
         timestamp,
         locale,
         addressPoisoningWarningActive,
-        report
+        report: activeReport
       }));
       await persistProgress({ jobPhase: "notification_delivery" }, "persist_phase_notification_delivery");
       await timing.measure("send_alert", () => deps.sendUserAlert(telegramUserId, message.text, {
