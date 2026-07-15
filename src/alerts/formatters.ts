@@ -276,34 +276,6 @@ function incomingDepositRiskIcon(band: IncomingDepositRiskReport["riskBand"]): s
   }
 }
 
-const LEGACY_INCOMING_LLM_MARKER = /\b(?:llm|deepseek)\b|ai[- ](?:contract|оценка)|drainer_like|unknown_suspicious|legitimate_service/i;
-
-function activeIncomingDepositProjection(report: IncomingDepositRiskReport): {
-  report: IncomingDepositRiskReport;
-  legacyLlmRejected: boolean;
-} {
-  const legacyLlmRejected = report.contractVerdicts.length > 0 ||
-    report.hardBadEvidence.some((item) => item.kind === "llm_contract_suspicion") ||
-    [...report.reasons, ...report.warnings].some((text) => LEGACY_INCOMING_LLM_MARKER.test(text));
-  if (!legacyLlmRejected) return { report, legacyLlmRejected: false };
-  return {
-    legacyLlmRejected: true,
-    report: {
-      ...report,
-      decision: "NO_FINAL_DECISION",
-      scoreValid: false,
-      scoreBlockedReason: "insufficient_coverage",
-      technicalStatus: "completed",
-      depositRiskScore: null,
-      riskBand: null,
-      hardBadEvidence: report.hardBadEvidence.filter((item) => item.kind !== "llm_contract_suspicion"),
-      contractVerdicts: [],
-      reasons: [],
-      warnings: []
-    }
-  };
-}
-
 export function formatIncomingDepositRiskAlert(input: {
   jobId: string;
   amount: string;
@@ -316,8 +288,7 @@ export function formatIncomingDepositRiskAlert(input: {
   report: IncomingDepositRiskReport;
 }): IncomingDepositRiskAlertMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  const activeProjection = activeIncomingDepositProjection(input.report);
-  const report = activeProjection.report;
+  const report = input.report;
   const eventTime = formatNotificationMskTime(input.timestamp, locale);
   const title = locale === "en"
     ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`
@@ -326,7 +297,7 @@ export function formatIncomingDepositRiskAlert(input: {
     ? `${bold(locale === "en" ? "Deposit risk" : "Риск депозита")}: ${code(locale === "en" ? "no final score" : "нет итоговой оценки")}`
     : `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(report.riskBand)} ${code(`${report.depositRiskScore}/100`)} (${code(report.riskBand ?? "unknown")})`;
   const contextLine = report.depositRiskScore === null
-    ? `${bold(locale === "en" ? "Observed context" : "Наблюдаемый контекст")}: ${code(activeProjection.legacyLlmRejected ? "unavailable" : String(report.observedContextScore))}`
+    ? `${bold(locale === "en" ? "Observed context" : "Наблюдаемый контекст")}: ${code(String(report.observedContextScore))}`
     : null;
   const message = telegramHtmlMessage([
     bold(title),

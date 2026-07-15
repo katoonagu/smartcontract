@@ -5879,6 +5879,86 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(fallbackText).not.toContain("Behavior risk");
   });
 
+  it("[AC-39][REQ-25][LLM-PROJECTION] keeps a current deterministic Where report when prose names legacy model tokens", () => {
+    const deterministicReason = "Deterministic policy: DeepSeek and legitimate_service labels do not alter the exact evidence.";
+    const contractContext = {
+      evidenceClass: "contract_suspicion" as const,
+      kind: "provider_contract_context",
+      score: 35,
+      rawScore: 35,
+      adjustedScore: 35,
+      proofLevel: "exchange_policy_context" as const,
+      canBeDampened: true,
+      reasons: [deterministicReason],
+      warnings: [],
+      evidenceIds: ["provider:subject"]
+    };
+    const report = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 35,
+      decisionReasons: [deterministicReason],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 35 }),
+        contractSuspicionEvidence: [contractContext],
+        riskLayers: [contractContext],
+        dominantRiskLayer: contractContext,
+        reasons: [deterministicReason]
+      }
+    });
+    const job = whereIsMoneyJobForTest({
+      resultJson: {
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        subjectAddress: report.subjectAddress,
+        whereIsMoneyReport: report
+      }
+    });
+
+    expect(extractWhereIsMoneyReportFromJob(job, walletAddress)).toEqual(report);
+  });
+
+  it("[AC-39][REQ-25][LLM-STRUCTURE] keeps ordinary legacy contract suspicion without an explicit LLM marker", () => {
+    const contractContext = {
+      evidenceClass: "contract_suspicion" as const,
+      kind: "provider_contract_context",
+      score: 35,
+      rawScore: 35,
+      adjustedScore: 35,
+      proofLevel: "exchange_policy_context" as const,
+      canBeDampened: true,
+      reasons: ["Provider metadata requires deterministic review."],
+      warnings: [],
+      evidenceIds: ["provider:subject"]
+    };
+    const report = whereIsMoneyReportForTest({
+      scoringPolicyVersion: "scoring-signal-matrix-v2",
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      riskScore: 35,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 35 }),
+        contractSuspicionEvidence: [contractContext],
+        riskLayers: [contractContext],
+        dominantRiskLayer: contractContext,
+        reasons: contractContext.reasons
+      }
+    });
+    const job = whereIsMoneyJobForTest({
+      resultJson: {
+        scoringPolicyVersion: "scoring-signal-matrix-v2",
+        subjectAddress: report.subjectAddress,
+        whereIsMoneyReport: report
+      }
+    });
+
+    expect(extractWhereIsMoneyReportFromJob(job, walletAddress)).toEqual({
+      ...report,
+      contractLlmVerdicts: []
+    });
+  });
+
   it("formats normal deep delivery as unified final when a matching persisted where report exists", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",

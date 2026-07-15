@@ -612,6 +612,41 @@ describe("alert formatters", () => {
     expect(message.text).not.toContain("Контракт сервиса совпал с локальным allowlist.");
   });
 
+  it("[AC-39][REQ-25][LLM-PROJECTION] preserves the typed incoming result when deterministic prose names legacy model tokens", () => {
+    const deterministicReason = "Deterministic policy: DeepSeek and legitimate_service labels do not change this exact debit result.";
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        contractVerdicts: [{
+          source: "llm",
+          cacheMatch: null,
+          reusedFromContractAddress: null,
+          providerLabel: "legacy-provider",
+          model: "legacy-model",
+          contractAddress: "TLegacyContract11111111111111111111111",
+          caseFileHash: "legacy-case",
+          cacheId: null,
+          verdict: "unknown_suspicious",
+          confidence: 0.9,
+          contractRiskScore: 99,
+          decisionRecommendation: "DECLINE",
+          reasons: ["Legacy verdict text must stay in the omitted verdict section."],
+          citedEvidenceIds: ["legacy-citation"],
+          falsePositiveNotes: []
+        }],
+        reasons: [deterministicReason]
+      }
+    });
+
+    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
+    expect(message.text).toContain("<code>68/100</code>");
+    expect(message.text).toContain(deterministicReason);
+    expect(message.text).not.toContain("AI contract verdict");
+    expect(message.text).not.toContain("Legacy verdict text must stay in the omitted verdict section.");
+  });
+
   it("formats admin alert with Telegram owner identity", () => {
     const text = formatAdminSuspiciousAlert({
       telegramUserId: "123456789",

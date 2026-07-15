@@ -1790,33 +1790,21 @@ function isWhereIsMoneyReport(value: unknown): value is WhereIsMoneyReport {
     && isFiniteNumber(assessment.coverageCompleteness);
 }
 
-const LEGACY_LLM_PROJECTION_MARKER = /\b(?:llm|deepseek)\b|ai[- ](?:contract|оценка)|drainer_like|unknown_suspicious|legitimate_service/i;
-
 function hasLegacyLlmRiskLayer(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (value.proofLevel === "llm_assisted_suspicion" || value.kind === "llm_contract_suspicion") return true;
-  const strings = [value.evidenceIds, value.reasons, value.warnings]
-    .flatMap((items) => Array.isArray(items) ? items.filter((item): item is string => typeof item === "string") : []);
-  return strings.some((text) => LEGACY_LLM_PROJECTION_MARKER.test(text));
+  return value.proofLevel === "llm_assisted_suspicion" || value.kind === "llm_contract_suspicion";
 }
 
-function hasLegacyLlmWhereProjection(report: WhereIsMoneyReport, currentPolicy: boolean): boolean {
+function hasLegacyLlmWhereProjection(report: WhereIsMoneyReport): boolean {
   if ((report.contractLlmVerdicts?.length ?? 0) > 0 || report.proofLevel === "llm_assisted_suspicion") return true;
   if (report.assessment.hardBadEvidence.some((item) => item.kind === "llm_contract_suspicion")) return true;
   const contractSuspicion = report.assessment.contractSuspicionEvidence ?? [];
-  if (!currentPolicy && contractSuspicion.length > 0) return true;
   const layers = [
     ...(report.assessment.riskLayers ?? []),
     ...contractSuspicion,
     ...(report.assessment.dominantRiskLayer ? [report.assessment.dominantRiskLayer] : [])
   ];
-  if (layers.some(hasLegacyLlmRiskLayer)) return true;
-  return [
-    ...report.decisionReasons,
-    ...report.assessment.reasons,
-    ...(report.assessment.warnings ?? []),
-    ...report.coverage.notes
-  ].some((text) => LEGACY_LLM_PROJECTION_MARKER.test(text));
+  return layers.some(hasLegacyLlmRiskLayer);
 }
 
 export function extractWhereIsMoneyReportFromJob(job: ForensicCheckJob | null | undefined, subjectAddress: string): WhereIsMoneyReport | null {
@@ -1827,7 +1815,7 @@ export function extractWhereIsMoneyReportFromJob(job: ForensicCheckJob | null | 
   if (job.resultJson.subjectAddress !== subjectAddress || wrappedReport.subjectAddress !== subjectAddress) return null;
   const currentPolicy = wrappedReport.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION &&
     job.resultJson.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION;
-  if (hasLegacyLlmWhereProjection(wrappedReport, currentPolicy)) return null;
+  if (hasLegacyLlmWhereProjection(wrappedReport)) return null;
   if (wrappedReport.scoringPolicyVersion === SCORING_SIGNAL_MATRIX_POLICY_VERSION && !currentPolicy) {
     const { scoringPolicyVersion: _ignored, ...legacyReport } = wrappedReport;
     return { ...legacyReport, contractLlmVerdicts: [] };

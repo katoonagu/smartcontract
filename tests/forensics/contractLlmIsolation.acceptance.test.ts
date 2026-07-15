@@ -8,6 +8,7 @@ const LEGACY_SCORE = 91;
 const LEGACY_REASON = "LEGACY_MODEL_REASON_MUST_NOT_ESCAPE";
 const LEGACY_WHERE_REASON = "LEGACY_WHERE_REASON_MUST_NOT_ESCAPE";
 const LEGACY_INCOMING_REASON = "LEGACY_INCOMING_REASON_MUST_NOT_ESCAPE";
+const DETERMINISTIC_MODEL_TOKEN_REASON = "Deterministic policy: DeepSeek and legitimate_service labels do not alter exact evidence.";
 const LEGACY_CITATION = "legacy-citation-must-not-escape";
 
 type AnyFunction = (...args: any[]) => any;
@@ -376,8 +377,8 @@ function incomingReport(): Record<string, unknown> {
     senderRole: "unknown_wallet",
     hardBadEvidence: [],
     contractVerdicts: [legacyVerdict({ reasons: [LEGACY_INCOMING_REASON] })],
-    reasons: [LEGACY_INCOMING_REASON],
-    warnings: [LEGACY_INCOMING_REASON]
+    reasons: [DETERMINISTIC_MODEL_TOKEN_REASON],
+    warnings: []
   };
 }
 
@@ -598,13 +599,13 @@ describe("automatic contract LLM isolation acceptance", () => {
       LEGACY_WHERE_REASON,
       LEGACY_INCOMING_REASON,
       LEGACY_CITATION,
-      `${LEGACY_SCORE}/100`,
       "drainer_like"
     ]) {
       expect.soft(rendered).not.toContain(forbidden);
     }
-    expect.soft(rendered).toContain("no final score");
-    expect.soft(rendered).toContain("NO_FINAL_DECISION");
+    expect.soft(rendered).toContain(`${LEGACY_SCORE}/100`);
+    expect.soft(rendered).toContain("DECLINE");
+    expect.soft(rendered).toContain(DETERMINISTIC_MODEL_TOKEN_REASON);
     expect.soft(rendered).not.toMatch(/AI contract verdict|AI-оценка контракта/i);
     expect.soft(storedWhere).toEqual(storedWhereBefore);
     expect.soft(storedIncoming).toEqual(storedIncomingBefore);
