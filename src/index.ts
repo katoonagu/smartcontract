@@ -38,6 +38,10 @@ import {
 } from "./monitor/addressPoisoningWorker";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
+import {
+  createForensicRuntimeOrchestration,
+  type ForensicRuntimeOrchestration
+} from "./runtime/forensicRuntimeOrchestration";
 import { runStartupSchemaGate } from "./runtime/startupSchemaGate";
 import {
   ADDRESS_POISONING_INTERVAL_MS,
@@ -84,6 +88,7 @@ import {
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
   markWaitingForensicJobsReadyAfterTargetedIndex,
+  reconcileWaitingForensicCheckJobs,
   patchWaitingForensicJobsTargetedIndexProgress,
   markStrictProvenanceJobReadyAfterIndex,
   patchStrictBenchmarkProgress,
@@ -147,20 +152,29 @@ const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMa
   config.addressPoisoningSmallTransferMaxUsdt
 );
 const db = createDb(config.databaseUrl);
+let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 try {
   const schema032MigrationBytes = await readFile(
     new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
   );
   const schema032Checksum = await checksumMigrationBytes(schema032MigrationBytes);
-  await runStartupSchemaGate({
-    verify: () => verifyRequiredSchema032(db, schema032Checksum),
-    onVerified: (verification) => {
-      logger.info("schema_migration_verified", {
-        version: verification.version,
-        shortChecksum: verification.shortChecksum
-      });
-    }
+  forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
+    verifyStartupSchema: () => runStartupSchemaGate({
+      verify: () => verifyRequiredSchema032(db, schema032Checksum),
+      onVerified: (verification) => {
+        logger.info("schema_migration_verified", {
+          version: verification.version,
+          shortChecksum: verification.shortChecksum
+        });
+      }
+    }),
+    reconcileWaitingForensicJobs: () => reconcileWaitingForensicCheckJobs(db, {
+      now: new Date(),
+      limit: 100
+    }),
+    logger
   });
+  await forensicRuntimeOrchestration.runVerifiedStartup();
 } catch (error) {
   await closeDb(db);
   throw error;
@@ -1078,7 +1092,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
 
 async function whereForensicOnce(): Promise<void> {
   if (activeWhereForensicPoll) return activeWhereForensicPoll;
-  activeWhereForensicPoll = runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll)
+  activeWhereForensicPoll = forensicRuntimeOrchestration.runBeforeWherePoll()
+    .then(() => runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll))
     .then((handled) => {
       if (handled > 0) logger.info("where_forensic_jobs_processed", { handled });
     })
@@ -1114,6 +1129,10 @@ async function addressIndexOnce(): Promise<void> {
     }),
     failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),
     markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
+    reconcileWaitingForensicJobs: () => forensicRuntimeOrchestration.runAfterTargetedIndexCompletion(),
+    onWaitReconciliationError: () => logger.warn("forensic_wait_reconciliation_failed", {
+      diagnosticCode: "wait_reconciliation_failed"
+    }),
     patchWaitingForensicJobsTargetedIndexProgress: (input) => patchWaitingForensicJobsTargetedIndexProgress(db, input),
     markStrictProvenanceJobReadyAfterIndex: (input) => markStrictProvenanceJobReadyAfterIndex(db, input)
   }, {
@@ -1164,6 +1183,7 @@ async function deepForensicOnce(): Promise<void> {
 async function incomingDepositOnce(): Promise<void> {
   if (activeIncomingDepositPoll) return activeIncomingDepositPoll;
   activeIncomingDepositPoll = (async () => {
+    await forensicRuntimeOrchestration.runBeforeIncomingPoll();
     await recoverStaleForensicJobsOnce();
     return runForensicJobBatch({
       maxJobs: config.forensicIncomingJobsPerPoll,

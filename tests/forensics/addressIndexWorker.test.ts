@@ -265,6 +265,151 @@ describe("runAddressIndexWorkerOnce", () => {
     });
   });
 
+  it("reconciles the full wait set only after the targeted child wait update finishes", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const targetedState = {
+      ...queuedIndexState("THopReconcile1111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: null,
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200
+    };
+    const order: string[] = [];
+    let finishWaitUpdate!: () => void;
+    const waitUpdateFinished = new Promise<void>((resolve) => { finishWaitUpdate = resolve; });
+    const deps = {
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => ({
+        ...targetedState,
+        status: "complete" as const,
+        statusReason: "complete_provider_windowed" as const,
+        lastError: null
+      }),
+      failTronAddressUsdtIndexState: async () => undefined,
+      markWaitingForensicJobsReadyAfterTargetedIndex: async () => {
+        order.push("wait-update-started");
+        await waitUpdateFinished;
+        order.push("wait-update-finished");
+        return 1;
+      },
+      reconcileWaitingForensicJobs: async () => { order.push("reconciled"); }
+    };
+
+    const cycle = runAddressIndexWorkerOnce(deps, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+    await vi.waitFor(() => expect(order).toEqual(["wait-update-started"]));
+    finishWaitUpdate();
+    await cycle;
+
+    expect(order).toEqual(["wait-update-started", "wait-update-finished", "reconciled"]);
+  });
+
+  it("does not rewrite successful index or strict state when post-index reconciliation rejects", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const targetedState = {
+      ...queuedIndexState("THopReconcileFailure111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-reconcile-failure",
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200
+    };
+    const failTronAddressUsdtIndexState = vi.fn(async () => undefined);
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
+    const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => true);
+    const onWaitReconciliationError = vi.fn(() => undefined);
+    const deps = {
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => ({
+        ...targetedState,
+        status: "complete" as const,
+        statusReason: "complete_provider_windowed" as const,
+        lastError: null
+      }),
+      failTronAddressUsdtIndexState,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
+      reconcileWaitingForensicJobs: async () => { throw new Error("reconciliation unavailable"); },
+      onWaitReconciliationError,
+      markStrictProvenanceJobReadyAfterIndex
+    };
+
+    await runAddressIndexWorkerOnce(deps, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(failTronAddressUsdtIndexState).not.toHaveBeenCalled();
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledTimes(1);
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith(expect.objectContaining({
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    }));
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledTimes(1);
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledWith(expect.objectContaining({
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    }));
+    expect(onWaitReconciliationError).toHaveBeenCalledOnce();
+    expect(onWaitReconciliationError).toHaveBeenCalledWith();
+  });
+
+  it("contains a throwing reconciliation diagnostic without corrupting successful index state", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const targetedState = {
+      ...queuedIndexState("THopReconcileDiagnostic11111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-reconcile-diagnostic",
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200
+    };
+    const failTronAddressUsdtIndexState = vi.fn(async () => undefined);
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
+    const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => true);
+    const onWaitReconciliationError = vi.fn(() => { throw new Error("diagnostic sink unavailable"); });
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => ({
+        ...targetedState,
+        status: "complete" as const,
+        statusReason: "complete_provider_windowed" as const,
+        lastError: null
+      }),
+      failTronAddressUsdtIndexState,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
+      reconcileWaitingForensicJobs: async () => { throw new Error("reconciliation unavailable"); },
+      onWaitReconciliationError,
+      markStrictProvenanceJobReadyAfterIndex
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(onWaitReconciliationError).toHaveBeenCalledOnce();
+    expect(failTronAddressUsdtIndexState).not.toHaveBeenCalled();
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledTimes(1);
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith(expect.objectContaining({
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    }));
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledTimes(1);
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledWith(expect.objectContaining({
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    }));
+  });
+
   it("passes candidate-window identity and caps page budget to the indexer", async () => {
     const state = candidateWindowWorkerState("TWorkerWindow111111111111111111111111");
     const calls: unknown[] = [];

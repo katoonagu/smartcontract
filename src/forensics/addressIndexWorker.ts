@@ -97,6 +97,8 @@ export async function runAddressIndexWorkerOnce(
       lastError: string | null;
       state?: TronAddressUsdtIndexState | null;
     }): Promise<number | boolean>;
+    reconcileWaitingForensicJobs?(): Promise<void>;
+    onWaitReconciliationError?(): void;
     patchWaitingForensicJobsTargetedIndexProgress?(input: {
       address: string;
       targetTimestamp: Date | null;
@@ -119,6 +121,17 @@ export async function runAddressIndexWorkerOnce(
   }
 ): Promise<void> {
   const targetedRetry = normalizeTargetedRetryOptions(options.targetedRetry);
+  const reconcileWaitingJobsAfterIndex = async (): Promise<void> => {
+    try {
+      await deps.reconcileWaitingForensicJobs?.();
+    } catch {
+      try {
+        deps.onWaitReconciliationError?.();
+      } catch {
+        // A best-effort diagnostic cannot reclassify completed index work.
+      }
+    }
+  };
   const states = await deps.claimQueuedTronAddressUsdtIndexStates({
     limit: options.claimLimit,
     lockOwner: options.workerId,
@@ -216,19 +229,22 @@ export async function runAddressIndexWorkerOnce(
         return;
       }
       if (state.coverageMode === "targeted") {
-        await deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
-          address: completed.address,
-          targetTimestamp: completed.targetTimestamp,
-          requestKind: completed.requestKind,
-          windowStartTimestamp: completed.windowStartTimestamp,
-          windowEndTimestamp: completed.windowEndTimestamp,
-          relatedHopTxHash: completed.relatedHopTxHash,
-          candidateTxHash: completed.candidateTxHash,
-          indexStatus: completed.status,
-          statusReason: completed.statusReason,
-          lastError: completed.lastError,
-          state: completed
-        });
+        if (deps.markWaitingForensicJobsReadyAfterTargetedIndex) {
+          await deps.markWaitingForensicJobsReadyAfterTargetedIndex({
+            address: completed.address,
+            targetTimestamp: completed.targetTimestamp,
+            requestKind: completed.requestKind,
+            windowStartTimestamp: completed.windowStartTimestamp,
+            windowEndTimestamp: completed.windowEndTimestamp,
+            relatedHopTxHash: completed.relatedHopTxHash,
+            candidateTxHash: completed.candidateTxHash,
+            indexStatus: completed.status,
+            statusReason: completed.statusReason,
+            lastError: completed.lastError,
+            state: completed
+          });
+          await reconcileWaitingJobsAfterIndex();
+        }
       }
       if (state.requestedByJobId && state.coverageMode === "targeted") {
         await deps.markStrictProvenanceJobReadyAfterIndex?.({
@@ -281,19 +297,22 @@ export async function runAddressIndexWorkerOnce(
         });
       }
       if (state.coverageMode === "targeted") {
-        await deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
-          address: state.address,
-          targetTimestamp: state.targetTimestamp,
-          requestKind: state.requestKind,
-          windowStartTimestamp: state.windowStartTimestamp,
-          windowEndTimestamp: state.windowEndTimestamp,
-          relatedHopTxHash: state.relatedHopTxHash,
-          candidateTxHash: state.candidateTxHash,
-          indexStatus,
-          statusReason,
-          lastError: message,
-          state
-        });
+        if (deps.markWaitingForensicJobsReadyAfterTargetedIndex) {
+          await deps.markWaitingForensicJobsReadyAfterTargetedIndex({
+            address: state.address,
+            targetTimestamp: state.targetTimestamp,
+            requestKind: state.requestKind,
+            windowStartTimestamp: state.windowStartTimestamp,
+            windowEndTimestamp: state.windowEndTimestamp,
+            relatedHopTxHash: state.relatedHopTxHash,
+            candidateTxHash: state.candidateTxHash,
+            indexStatus,
+            statusReason,
+            lastError: message,
+            state
+          });
+          if (indexStatus === "failed_terminal") await reconcileWaitingJobsAfterIndex();
+        }
       }
       if (state.requestedByJobId && state.coverageMode === "targeted") {
         await deps.markStrictProvenanceJobReadyAfterIndex?.({
