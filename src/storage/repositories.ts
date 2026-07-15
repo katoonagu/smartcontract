@@ -20,6 +20,9 @@ import type {
   ContractDecisionEvidenceV1,
   ForensicCaseInput,
   ForensicCaseStatus,
+  ForensicTelegramDeliveryV1,
+  RecoveredForensicDeliveryIntentPreparationErrorCode,
+  RecoveredForensicDeliveryIntentV1,
   ForensicRouteConfidence,
   ForensicRouteEdgeType,
   ForensicRoutePath,
@@ -46,6 +49,7 @@ import type {
   RiskLevel,
   RiskReason,
   TronUsdtTransferMethod,
+  TelegramDeliveryErrorCode,
   WalletApprovalSpenderType,
   TronTransferEvent,
   WalletAlertMode,
@@ -73,6 +77,15 @@ import {
 } from "../approvals/allowanceState";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import { buildForensicRuntimeContractProjection } from "../forensics/forensicJobProgress";
+import {
+  isForensicTelegramDeliveryV1,
+  isRecoveredForensicDeliveryIntentDue,
+  isRecoveredForensicDeliveryIntentV1,
+  isTelegramDeliveryDue,
+  settleRecoveredForensicDeliveryIntentPreparation as transitionRecoveredIntentPreparation,
+  transitionTelegramDeliveryToClaimed,
+  transitionTelegramDeliveryToSettled
+} from "../forensics/telegramDelivery";
 import type { Db } from "./db";
 
 export type {
@@ -403,6 +416,15 @@ export type ForensicCheckJob = {
   updatedAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
+};
+
+export type ForensicTelegramDeliveryClaim = {
+  jobId: string;
+  kind: Exclude<ForensicCheckJobKind, "address_fast_check">;
+  payload: ForensicTelegramDeliveryV1["payload"];
+  effect: ForensicTelegramDeliveryV1["effect"];
+  messageFingerprint: string;
+  claim: NonNullable<ForensicTelegramDeliveryV1["claim"]>;
 };
 
 export type ForensicCheckJobInput = {
@@ -3349,9 +3371,27 @@ export async function claimUserAlertsForRetry(
     `with claimed as (
        select tx_hash, watched_wallet_id
        from observed_transactions
-       where user_alert_status in ('pending', 'failed')
-          or (user_alert_status = 'sending' and user_alert_updated_at < $2)
-          or (user_alert_status = 'analyzing' and user_alert_updated_at < $2)
+       where (
+         user_alert_status in ('pending', 'failed')
+         or (user_alert_status = 'sending' and user_alert_updated_at < $2)
+         or (user_alert_status = 'analyzing' and user_alert_updated_at < $2)
+       )
+       and not exists (
+         select 1
+         from forensic_check_jobs job
+         where job.kind = 'incoming_deposit_check'
+           and job.status in ('completed', 'partial', 'failed')
+           and job.progress_json#>>'{telegramDelivery,version}' = 'forensic-telegram-delivery-v1'
+           and job.progress_json#>>'{telegramDelivery,payload,version}' = 'telegram-message-payload-v1'
+           and job.progress_json#>>'{telegramDelivery,state,status}' in ('pending', 'retryable', 'sent', 'failed')
+           and job.progress_json#>>'{telegramDelivery,effect,kind}' = 'incoming_user_alert'
+           and job.progress_json#>>'{telegramDelivery,effect,watchedWalletId}' = observed_transactions.watched_wallet_id
+           and job.progress_json#>>'{telegramDelivery,effect,incomingTxHash}' = observed_transactions.tx_hash
+           and job.progress_json->>'watchedWalletId' = observed_transactions.watched_wallet_id
+           and job.progress_json->>'depositTxHash' = observed_transactions.tx_hash
+           and job.chat_id is not null
+           and job.chat_id = job.progress_json#>>'{telegramDelivery,payload,chatId}'
+       )
        order by coalesce(user_alert_updated_at, created_at) asc
        limit $1
        for update skip locked
@@ -7470,7 +7510,22 @@ export async function recoverStaleForensicCheckJobs(
          'retryCount', decisions.next_retry_count,
          'lastRecoveredAt', $5::text,
          'staleRecoveryReason', decisions.recovery_reason
-       ),
+       ) || case
+         when decisions.next_status = 'failed' and job.chat_id is not null then jsonb_build_object(
+           'telegramDeliveryIntent', jsonb_build_object(
+             'version', 'recovered-forensic-delivery-intent-v1',
+             'kind', 'stale_failure',
+             'createdAt', $5::text,
+             'reasonCode', decisions.recovery_reason,
+             'preparationStatus', 'pending',
+             'preparationAttemptCount', 0,
+             'lastPreparationAttemptAt', null,
+             'nextPreparationAttemptAt', null,
+             'lastPreparationError', null
+           )
+         )
+         else '{}'::jsonb
+       end,
        last_error = case when decisions.next_status = 'failed' then decisions.recovery_reason else null end,
        started_at = case when decisions.next_status = 'queued' then null else job.started_at end,
        completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end,
@@ -7518,6 +7573,14 @@ export async function completeForensicCheckJob(
     lastError: string | null;
   }
 ): Promise<boolean> {
+  const delivery = input.progressJson.telegramDelivery;
+  if (delivery !== undefined && delivery !== null) {
+    if (!isForensicTelegramDeliveryV1(delivery, "incoming_deposit_check")
+      || delivery.state.status !== "pending"
+      || delivery.claim !== null) {
+      throw new TypeError("Invalid pending forensic Telegram delivery");
+    }
+  }
   const result = await db.query(
     `update forensic_check_jobs
      set status = $2,
@@ -7528,7 +7591,26 @@ export async function completeForensicCheckJob(
        last_error = $7,
        completed_at = now(),
        updated_at = now()
-     where id = $1`,
+     where id = $1
+       and status = 'running'
+       and (
+         coalesce($3::jsonb->'telegramDelivery', 'null'::jsonb) = 'null'::jsonb
+         or (
+           kind <> 'address_fast_check'
+           and chat_id is not null
+           and chat_id = ($3::jsonb #>> '{telegramDelivery,payload,chatId}')
+           and (
+             ($3::jsonb #> '{telegramDelivery,effect}') = 'null'::jsonb
+             or (
+               kind = 'incoming_deposit_check'
+               and progress_json->>'watchedWalletId'
+                 = ($3::jsonb #>> '{telegramDelivery,effect,watchedWalletId}')
+               and progress_json->>'depositTxHash'
+                 = ($3::jsonb #>> '{telegramDelivery,effect,incomingTxHash}')
+             )
+           )
+         )
+       )`,
     [
       input.id,
       input.status,
@@ -7540,6 +7622,390 @@ export async function completeForensicCheckJob(
     ]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function claimNextForensicTelegramDelivery(
+  db: Db,
+  input: { now: Date }
+): Promise<ForensicTelegramDeliveryClaim | null> {
+  const nowIso = input.now.toISOString();
+  const cutoffs = [30_000, 120_000, 600_000]
+    .map((delay) => new Date(input.now.getTime() - delay).toISOString());
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const candidates = await client.query(
+      `select id, kind, progress_json->'telegramDelivery' as delivery
+       from forensic_check_jobs
+       where status in ('completed', 'partial', 'failed')
+         and progress_json#>>'{telegramDelivery,version}' = 'forensic-telegram-delivery-v1'
+         and (
+           progress_json#>>'{telegramDelivery,state,status}' = 'pending'
+           or (
+             progress_json#>>'{telegramDelivery,state,status}' = 'retryable'
+             and (
+               (
+                 progress_json#>'{telegramDelivery,claim}' <> 'null'::jsonb
+                 and progress_json#>>'{telegramDelivery,claim,leaseExpiresAt}' <= $1
+               )
+               or (
+                 progress_json#>'{telegramDelivery,claim}' = 'null'::jsonb
+                 and (
+                   (progress_json#>>'{telegramDelivery,state,attemptCount}' = '1'
+                     and progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $2)
+                   or (progress_json#>>'{telegramDelivery,state,attemptCount}' = '2'
+                     and progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $3)
+                   or (progress_json#>>'{telegramDelivery,state,attemptCount}' = '3'
+                     and progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $4)
+                 )
+               )
+             )
+           )
+         )
+       order by created_at asc
+       limit 10
+       for update skip locked`,
+      [nowIso, ...cutoffs]
+    );
+
+    for (const row of candidates.rows) {
+      const kind = row.kind as ForensicCheckJobKind;
+      const delivery = row.delivery as unknown;
+      if (kind === "address_fast_check"
+        || !isForensicTelegramDeliveryV1(delivery, kind)
+        || !isTelegramDeliveryDue(delivery, input.now, kind)) {
+        continue;
+      }
+      const next = transitionTelegramDeliveryToClaimed(
+        delivery,
+        { token: randomBytes(16).toString("base64url"), claimedAt: input.now },
+        kind
+      );
+      const updated = await client.query(
+        `update forensic_check_jobs
+         set progress_json = jsonb_set(progress_json, '{telegramDelivery}', $2::jsonb, false),
+           updated_at = $3::timestamptz
+         where id = $1
+           and status in ('completed', 'partial', 'failed')
+           and progress_json->'telegramDelivery' = $4::jsonb`,
+        [row.id, JSON.stringify(next), nowIso, JSON.stringify(delivery)]
+      );
+      if ((updated.rowCount ?? 0) !== 1) continue;
+
+      if (next.state.status === "failed" && next.effect !== null) {
+        const effect = await client.query(
+          `update observed_transactions
+           set user_alert_status = 'failed',
+             user_alert_last_error = $3,
+             user_alert_updated_at = $4::timestamptz
+           where watched_wallet_id = $1
+             and tx_hash = $2
+             and user_alert_status in ('sending', 'analyzing')`,
+          [
+            next.effect.watchedWalletId,
+            next.effect.incomingTxHash,
+            next.state.lastError,
+            nowIso
+          ]
+        );
+        if ((effect.rowCount ?? 0) !== 1) {
+          throw new Error("forensic_telegram_delivery_effect_cas_failed");
+        }
+      }
+
+      await client.query("commit");
+      if (next.state.status === "failed" || next.claim === null) return null;
+      return {
+        jobId: row.id,
+        kind,
+        payload: next.payload,
+        effect: next.effect,
+        messageFingerprint: next.state.messageFingerprint,
+        claim: next.claim
+      };
+    }
+
+    await client.query("commit");
+    return null;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function settleForensicTelegramDelivery(
+  db: Db,
+  input: {
+    jobId: string;
+    messageFingerprint: string;
+    attempt: number;
+    claimToken: string;
+    settledAt: Date;
+    outcome: "sent" | "retryable" | "failed";
+    errorCode?: TelegramDeliveryErrorCode | null;
+    telegramMessageId?: string | null;
+  }
+): Promise<boolean> {
+  const settledAtIso = input.settledAt.toISOString();
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const selected = await client.query(
+      `select kind, progress_json->'telegramDelivery' as delivery
+       from forensic_check_jobs
+       where id = $1 and status in ('completed', 'partial', 'failed')
+       for update`,
+      [input.jobId]
+    );
+    const row = selected.rows[0];
+    if (!row) {
+      await client.query("commit");
+      return false;
+    }
+    const kind = row.kind as ForensicCheckJobKind;
+    const delivery = row.delivery as unknown;
+    if (kind === "address_fast_check"
+      || !isForensicTelegramDeliveryV1(delivery, kind)
+      || delivery.state.messageFingerprint !== input.messageFingerprint
+      || delivery.claim?.attempt !== input.attempt
+      || delivery.claim.token !== input.claimToken) {
+      await client.query("commit");
+      return false;
+    }
+
+    const next = transitionTelegramDeliveryToSettled(delivery, {
+      token: input.claimToken,
+      attempt: input.attempt,
+      settledAt: input.settledAt,
+      outcome: input.outcome,
+      errorCode: input.errorCode
+    }, kind);
+    const updated = await client.query(
+      `update forensic_check_jobs
+       set progress_json = jsonb_set(progress_json, '{telegramDelivery}', $2::jsonb, false),
+         updated_at = $3::timestamptz
+       where id = $1
+         and status in ('completed', 'partial', 'failed')
+         and progress_json->'telegramDelivery' = $4::jsonb`,
+      [input.jobId, JSON.stringify(next), settledAtIso, JSON.stringify(delivery)]
+    );
+    if ((updated.rowCount ?? 0) !== 1) {
+      await client.query("commit");
+      return false;
+    }
+
+    if ((next.state.status === "sent" || next.state.status === "failed")
+      && next.effect !== null) {
+      const alertStatus = next.state.status === "sent" ? "sent" : "failed";
+      const effect = await client.query(
+        `update observed_transactions
+         set user_alert_status = $3,
+           user_alert_last_error = $4,
+           user_alert_updated_at = $5::timestamptz
+         where watched_wallet_id = $1
+           and tx_hash = $2
+           and user_alert_status in ('sending', 'analyzing')`,
+        [
+          next.effect.watchedWalletId,
+          next.effect.incomingTxHash,
+          alertStatus,
+          next.state.lastError,
+          settledAtIso
+        ]
+      );
+      if ((effect.rowCount ?? 0) !== 1) {
+        throw new Error("forensic_telegram_delivery_effect_cas_failed");
+      }
+    }
+
+    await client.query("commit");
+    return true;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listDueRecoveredForensicDeliveryIntents(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<Array<{ jobId: string; intent: RecoveredForensicDeliveryIntentV1 }>> {
+  const requestedLimit = Number.isFinite(input.limit) ? Math.floor(input.limit) : 10;
+  const limit = Math.min(Math.max(requestedLimit, 1), 10);
+  const nowIso = input.now.toISOString();
+  const result = await db.query(
+    `select id, progress_json->'telegramDeliveryIntent' as intent
+     from forensic_check_jobs
+     where status = 'failed'
+       and not (progress_json ? 'telegramDelivery')
+       and progress_json#>>'{telegramDeliveryIntent,version}' = 'recovered-forensic-delivery-intent-v1'
+       and (
+         (progress_json#>>'{telegramDeliveryIntent,preparationStatus}' = 'pending'
+           and progress_json#>>'{telegramDeliveryIntent,createdAt}' <= $1)
+         or (progress_json#>>'{telegramDeliveryIntent,preparationStatus}' = 'retryable'
+           and progress_json#>>'{telegramDeliveryIntent,nextPreparationAttemptAt}' <= $1)
+       )
+     order by updated_at asc
+     limit $2`,
+    [nowIso, limit]
+  );
+  return result.rows.flatMap((row) => {
+    const intent = row.intent as unknown;
+    return isRecoveredForensicDeliveryIntentV1(intent)
+      && isRecoveredForensicDeliveryIntentDue(intent, input.now)
+      ? [{ jobId: row.id as string, intent }]
+      : [];
+  });
+}
+
+export async function attachRecoveredForensicTelegramDelivery(
+  db: Db,
+  input: {
+    jobId: string;
+    intentCreatedAt: string;
+    expectedPreparationAttemptCount: number;
+    delivery: ForensicTelegramDeliveryV1;
+  }
+): Promise<boolean> {
+  if (!Number.isInteger(input.expectedPreparationAttemptCount)) return false;
+  if (!isForensicTelegramDeliveryV1(input.delivery, "incoming_deposit_check")
+    || input.delivery.state.status !== "pending"
+    || input.delivery.claim !== null) {
+    return false;
+  }
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const selected = await client.query(
+      `select kind, chat_id, progress_json,
+         progress_json->'telegramDeliveryIntent' as intent
+       from forensic_check_jobs
+       where id = $1 and status = 'failed'
+       for update`,
+      [input.jobId]
+    );
+    const row = selected.rows[0];
+    const kind = row?.kind as ForensicCheckJobKind | undefined;
+    const chatId = row?.chat_id as unknown;
+    const progressJson = row?.progress_json as unknown;
+    const intent = row?.intent as unknown;
+    const effect = input.delivery.effect;
+    if (!row
+      || kind === undefined
+      || kind === "address_fast_check"
+      || typeof chatId !== "string"
+      || chatId !== input.delivery.payload.chatId
+      || !isRecoveredForensicDeliveryIntentV1(intent)
+      || intent.createdAt !== input.intentCreatedAt
+      || intent.preparationAttemptCount !== input.expectedPreparationAttemptCount
+      || intent.preparationStatus === "failed"
+      || !isForensicTelegramDeliveryV1(input.delivery, kind)
+      || input.delivery.state.status !== "pending"
+      || input.delivery.claim !== null
+      || (effect !== null && (
+        kind !== "incoming_deposit_check"
+        || progressJson === null
+        || typeof progressJson !== "object"
+        || Array.isArray(progressJson)
+        || (progressJson as Record<string, unknown>).watchedWalletId !== effect.watchedWalletId
+        || (progressJson as Record<string, unknown>).depositTxHash !== effect.incomingTxHash
+      ))) {
+      await client.query("rollback");
+      return false;
+    }
+
+    const result = await client.query(
+      `update forensic_check_jobs
+       set progress_json = (progress_json - 'telegramDeliveryIntent')
+         || jsonb_build_object('telegramDelivery', $3::jsonb),
+         updated_at = now()
+       where id = $1
+         and status = 'failed'
+         and not (progress_json ? 'telegramDelivery')
+         and progress_json->'telegramDeliveryIntent' = $2::jsonb
+         and kind = $4
+         and chat_id = $5
+         and (
+           ($3::jsonb->'effect') = 'null'::jsonb
+           or (
+             kind = 'incoming_deposit_check'
+             and progress_json->>'watchedWalletId' = ($3::jsonb #>> '{effect,watchedWalletId}')
+             and progress_json->>'depositTxHash' = ($3::jsonb #>> '{effect,incomingTxHash}')
+           )
+         )`,
+      [
+        input.jobId,
+        JSON.stringify(intent),
+        JSON.stringify(input.delivery),
+        kind,
+        chatId
+      ]
+    );
+    if ((result.rowCount ?? 0) !== 1) {
+      await client.query("rollback");
+      return false;
+    }
+    await client.query("commit");
+    return true;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function settleRecoveredForensicDeliveryIntentPreparation(
+  db: Db,
+  input: {
+    jobId: string;
+    intentCreatedAt: string;
+    expectedPreparationAttemptCount: number;
+    attemptedAt: Date;
+    errorCode: Exclude<
+      RecoveredForensicDeliveryIntentPreparationErrorCode,
+      "stale_intent_preparation_attempts_exhausted"
+    >;
+  }
+): Promise<boolean> {
+  if (!Number.isInteger(input.expectedPreparationAttemptCount)) return false;
+  const selected = await db.query(
+    `select progress_json->'telegramDeliveryIntent' as intent
+     from forensic_check_jobs
+     where id = $1 and status = 'failed'`,
+    [input.jobId]
+  );
+  const intent = selected.rows[0]?.intent as unknown;
+  if (!isRecoveredForensicDeliveryIntentV1(intent)
+    || intent.createdAt !== input.intentCreatedAt
+    || intent.preparationAttemptCount !== input.expectedPreparationAttemptCount
+    || !isRecoveredForensicDeliveryIntentDue(intent, input.attemptedAt)) {
+    return false;
+  }
+  const next = transitionRecoveredIntentPreparation(intent, {
+    attemptedAt: input.attemptedAt,
+    errorCode: input.errorCode
+  });
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = jsonb_set(progress_json, '{telegramDeliveryIntent}', $3::jsonb, false),
+       updated_at = $4::timestamptz
+     where id = $1
+       and status = 'failed'
+       and not (progress_json ? 'telegramDelivery')
+       and progress_json->'telegramDeliveryIntent' = $2::jsonb`,
+    [
+      input.jobId,
+      JSON.stringify(intent),
+      JSON.stringify(next),
+      input.attemptedAt.toISOString()
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
 }
 
 export async function updateCompletedDeepCheckResultPatch(

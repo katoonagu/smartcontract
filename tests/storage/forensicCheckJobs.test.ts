@@ -3,6 +3,7 @@ import pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   claimNextForensicCheckJob,
+  claimUserAlertsForRetry,
   completeForensicCheckJob,
   createOrReuseForensicCheckJob,
   getForensicCheckJob,
@@ -26,12 +27,73 @@ import {
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 import { buildForensicRuntimeContractProjection } from "../../src/forensics/forensicJobProgress";
-import type { WaitReconciliationResultV1 } from "../../src/types";
+import { createPendingForensicTelegramDelivery } from "../../src/forensics/telegramDelivery";
+import type {
+  ForensicTelegramDeliveryV1,
+  RecoveredForensicDeliveryIntentPreparationErrorCode,
+  RecoveredForensicDeliveryIntentV1,
+  TelegramDeliveryErrorCode,
+  WaitReconciliationResultV1
+} from "../../src/types";
 
 type WaitReconciler = (
   db: Db,
   input: { now: Date; limit: number }
 ) => Promise<WaitReconciliationResultV1[]>;
+
+type DeliveryClaim = {
+  jobId: string;
+  kind: "where_is_money_check" | "address_deep_check" | "incoming_deposit_check";
+  payload: ForensicTelegramDeliveryV1["payload"];
+  effect: ForensicTelegramDeliveryV1["effect"];
+  messageFingerprint: string;
+  claim: NonNullable<ForensicTelegramDeliveryV1["claim"]>;
+};
+
+type DeliveryRepository = {
+  claimNextForensicTelegramDelivery: (
+    db: Db,
+    input: { now: Date }
+  ) => Promise<DeliveryClaim | null>;
+  settleForensicTelegramDelivery: (
+    db: Db,
+    input: {
+      jobId: string;
+      messageFingerprint: string;
+      attempt: number;
+      claimToken: string;
+      settledAt: Date;
+      outcome: "sent" | "retryable" | "failed";
+      errorCode?: TelegramDeliveryErrorCode | null;
+    }
+  ) => Promise<boolean>;
+  listDueRecoveredForensicDeliveryIntents: (
+    db: Db,
+    input: { now: Date; limit: number }
+  ) => Promise<Array<{ jobId: string; intent: RecoveredForensicDeliveryIntentV1 }>>;
+  attachRecoveredForensicTelegramDelivery: (
+    db: Db,
+    input: {
+      jobId: string;
+      intentCreatedAt: string;
+      expectedPreparationAttemptCount: number;
+      delivery: ForensicTelegramDeliveryV1;
+    }
+  ) => Promise<boolean>;
+  settleRecoveredForensicDeliveryIntentPreparation: (
+    db: Db,
+    input: {
+      jobId: string;
+      intentCreatedAt: string;
+      expectedPreparationAttemptCount: number;
+      attemptedAt: Date;
+      errorCode: Exclude<
+        RecoveredForensicDeliveryIntentPreparationErrorCode,
+        "stale_intent_preparation_attempts_exhausted"
+      >;
+    }
+  ) => Promise<boolean>;
+};
 
 async function loadWaitReconciler(): Promise<WaitReconciler> {
   const repositories = await import("../../src/storage/repositories") as Record<string, unknown>;
@@ -39,6 +101,23 @@ async function loadWaitReconciler(): Promise<WaitReconciler> {
     throw new Error("Plan 3 feature missing: reconcileWaitingForensicCheckJobs");
   }
   return repositories.reconcileWaitingForensicCheckJobs as WaitReconciler;
+}
+
+async function loadDeliveryRepository(): Promise<DeliveryRepository> {
+  const repositories = await import("../../src/storage/repositories") as Record<string, unknown>;
+  const required = [
+    "claimNextForensicTelegramDelivery",
+    "settleForensicTelegramDelivery",
+    "listDueRecoveredForensicDeliveryIntents",
+    "attachRecoveredForensicTelegramDelivery",
+    "settleRecoveredForensicDeliveryIntentPreparation"
+  ] as const;
+  for (const name of required) {
+    if (typeof repositories[name] !== "function") {
+      throw new Error(`Plan 3 feature missing: ${name}`);
+    }
+  }
+  return repositories as unknown as DeliveryRepository;
 }
 
 function forensicJobRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
@@ -1754,7 +1833,7 @@ async function installRepositoryWaitSchema(db: pg.Pool): Promise<void> {
   await db.query(`
     create table forensic_check_jobs (
       id text primary key,
-      kind text not null check (kind in ('where_is_money_check', 'incoming_deposit_check')),
+      kind text not null check (kind in ('address_deep_check', 'where_is_money_check', 'incoming_deposit_check')),
       subject_address text not null,
       status text not null check (status in ('queued', 'running', 'partial', 'completed', 'failed', 'cancelled')),
       window_start timestamptz not null,
@@ -1801,6 +1880,39 @@ async function installRepositoryWaitSchema(db: pg.Pool): Promise<void> {
         request_kind, window_start_timestamp_ms, candidate_tx_hash)
     );
     create index forensic_job_waits_job_idx on forensic_job_waits(job_id, status);
+
+    create table telegram_users (
+      telegram_user_id text primary key,
+      username text,
+      locale text not null default 'ru',
+      created_at timestamptz not null default now()
+    );
+    create table watched_wallets (
+      id text primary key,
+      telegram_user_id text not null references telegram_users(telegram_user_id) on delete cascade,
+      address text not null,
+      alert_mode text not null default 'realtime'
+        check (alert_mode in ('realtime', 'risk_only', 'digest', 'paused')),
+      digest_interval_minutes integer not null default 10,
+      created_at timestamptz not null default now(),
+      unique (telegram_user_id, address)
+    );
+    create table observed_transactions (
+      tx_hash text not null,
+      watched_wallet_id text not null references watched_wallets(id) on delete cascade,
+      sender text not null,
+      receiver text not null,
+      token text not null check (token = 'USDT'),
+      amount text not null,
+      timestamp timestamptz not null,
+      user_alert_status text not null default 'pending'
+        check (user_alert_status in ('pending', 'sending', 'analyzing', 'sent', 'failed', 'skipped')),
+      user_alert_attempts integer not null default 0,
+      user_alert_last_error text,
+      user_alert_updated_at timestamptz,
+      created_at timestamptz not null default now(),
+      primary key (tx_hash, watched_wallet_id)
+    );
   `);
 }
 
@@ -1872,6 +1984,168 @@ async function repositoryWaitParentRow(db: pg.Pool, id: string): Promise<Record<
     [id]
   );
   return result.rows[0];
+}
+
+function repositoryPendingDelivery(
+  jobId: string,
+  kind: "where_is_money_check" | "address_deep_check" | "incoming_deposit_check",
+  effect: ForensicTelegramDeliveryV1["effect"] = null
+): ForensicTelegramDeliveryV1 {
+  return createPendingForensicTelegramDelivery({
+    jobId,
+    kind,
+    payload: {
+      version: "telegram-message-payload-v1",
+      chatId: `chat-${jobId}`,
+      text: `<b>${kind}</b> ${jobId}`,
+      parseMode: "HTML",
+      replyMarkup: { inline_keyboard: [[{ text: "Open", callback_data: `job:${jobId}` }]] }
+    },
+    effect
+  });
+}
+
+const REPOSITORY_RECOVERED_INTENT = {
+  version: "recovered-forensic-delivery-intent-v1",
+  kind: "stale_failure",
+  createdAt: PLAN3_RECONCILIATION_NOW.toISOString(),
+  reasonCode: "stale_running_retry_exhausted",
+  preparationStatus: "pending",
+  preparationAttemptCount: 0,
+  lastPreparationAttemptAt: null,
+  nextPreparationAttemptAt: null,
+  lastPreparationError: null
+} as const satisfies RecoveredForensicDeliveryIntentV1;
+
+function repositoryRecoveredAttachment(
+  jobId: string,
+  kind: "where_is_money_check" | "address_deep_check" | "incoming_deposit_check",
+  effect: ForensicTelegramDeliveryV1["effect"] = null
+) {
+  return {
+    jobId,
+    intentCreatedAt: REPOSITORY_RECOVERED_INTENT.createdAt,
+    expectedPreparationAttemptCount: 0,
+    delivery: repositoryPendingDelivery(jobId, kind, effect)
+  };
+}
+
+async function insertRepositoryDeliveryJob(
+  db: pg.Pool,
+  input: {
+    id: string;
+    kind?: "where_is_money_check" | "address_deep_check" | "incoming_deposit_check";
+    status?: "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
+    progressJson?: Record<string, unknown>;
+    resultJson?: Record<string, unknown>;
+    chatId?: string | null;
+  }
+): Promise<void> {
+  const status = input.status ?? "running";
+  await db.query(
+    `insert into forensic_check_jobs (
+       id, kind, subject_address, status, window_start, window_end, chat_id,
+       progress_json, result_json, raw_evidence_ids, observation_ids,
+       started_at, completed_at, created_at, updated_at
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb,
+       $10::jsonb, $11::jsonb, $12, $13, $14, $14)`,
+    [
+      input.id,
+      input.kind ?? "where_is_money_check",
+      `subject-${input.id}`,
+      status,
+      new Date("2026-07-01T00:00:00.000Z"),
+      PLAN3_RECONCILIATION_NOW,
+      input.chatId === undefined ? `chat-${input.id}` : input.chatId,
+      JSON.stringify(input.progressJson ?? {}),
+      JSON.stringify(input.resultJson ?? {}),
+      JSON.stringify([]),
+      JSON.stringify([]),
+      status === "running" ? PLAN3_RECONCILIATION_NOW : null,
+      ["partial", "completed", "failed"].includes(status) ? PLAN3_RECONCILIATION_NOW : null,
+      new Date("2026-07-15T11:00:00.000Z")
+    ]
+  );
+}
+
+function repositoryCompletionInput(
+  id: string,
+  kind: "where_is_money_check" | "address_deep_check" | "incoming_deposit_check" = "where_is_money_check",
+  effect: ForensicTelegramDeliveryV1["effect"] = null
+) {
+  return {
+    id,
+    status: "completed" as const,
+    progressJson: {
+      jobPhase: "completed",
+      preserved: { parsed: true },
+      telegramDelivery: repositoryPendingDelivery(id, kind, effect)
+    },
+    resultJson: {
+      version: "forensic-result-v3",
+      score: 61,
+      coverage: { selected: 1, traced: 1 },
+      evidence: [{ id: `evidence-${id}` }]
+    },
+    rawEvidenceIds: [`raw-${id}`],
+    observationIds: [`observation-${id}`],
+    lastError: null
+  };
+}
+
+function repositorySettlement(
+  claim: DeliveryClaim,
+  settledAt: Date,
+  outcome: "sent" | "retryable" | "failed",
+  errorCode: TelegramDeliveryErrorCode | null = null
+) {
+  return {
+    jobId: claim.jobId,
+    messageFingerprint: claim.messageFingerprint,
+    attempt: claim.claim.attempt,
+    claimToken: claim.claim.token,
+    settledAt,
+    outcome,
+    errorCode
+  };
+}
+
+async function repositoryDeliveryRow(db: pg.Pool, id: string): Promise<Record<string, unknown>> {
+  const result = await db.query(
+    `select status, progress_json, result_json, raw_evidence_ids, observation_ids
+     from forensic_check_jobs where id = $1`,
+    [id]
+  );
+  return result.rows[0];
+}
+
+async function insertRepositoryObservedAlert(
+  db: pg.Pool,
+  input: { walletId: string; txHash: string; status?: "sending" | "analyzing" | "failed" }
+): Promise<void> {
+  await db.query(
+    "insert into telegram_users (telegram_user_id, username) values ($1, $2)",
+    [`user-${input.walletId}`, `user_${input.walletId}`]
+  );
+  await db.query(
+    `insert into watched_wallets (id, telegram_user_id, address)
+     values ($1, $2, $3)`,
+    [input.walletId, `user-${input.walletId}`, `wallet-${input.walletId}`]
+  );
+  await db.query(
+    `insert into observed_transactions (
+       tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+       user_alert_status, user_alert_updated_at
+     ) values ($1, $2, $3, $4, 'USDT', '1000000', $5, $6, $5)`,
+    [
+      input.txHash,
+      input.walletId,
+      `sender-${input.txHash}`,
+      `receiver-${input.txHash}`,
+      PLAN3_RECONCILIATION_NOW,
+      input.status ?? "sending"
+    ]
+  );
 }
 
 async function waitForBlockedWaitUpsert(db: pg.Pool): Promise<void> {
@@ -2274,6 +2548,825 @@ plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
         const id = `where-parent-${status}`;
         expect(await repositoryWaitParentRow(db, id)).toEqual(before.get(id));
       }
+    });
+  });
+});
+
+plan3PostgresDescribe("forensic Telegram delivery PostgreSQL repository", () => {
+  it("fences completion and claims one bounded lease through attempt-four exhaustion", async () => {
+    await withRepositoryWaitSchema("delivery_claim", async (db) => {
+      const repository = await loadDeliveryRepository();
+      await insertRepositoryDeliveryJob(db, { id: "lost-cas", status: "queued" });
+      const lostBefore = await repositoryDeliveryRow(db, "lost-cas");
+      await expect(completeForensicCheckJob(db, repositoryCompletionInput("lost-cas")))
+        .resolves.toBe(false);
+      expect(await repositoryDeliveryRow(db, "lost-cas")).toEqual(lostBefore);
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      })).resolves.toBeNull();
+
+      await insertRepositoryDeliveryJob(db, { id: "invalid-envelope" });
+      const invalid = repositoryCompletionInput("invalid-envelope");
+      const invalidDelivery = invalid.progressJson.telegramDelivery;
+      invalidDelivery.state.messageFingerprint = "0".repeat(64);
+      await expect(completeForensicCheckJob(db, invalid)).rejects.toThrow(/delivery/i);
+      expect(await repositoryDeliveryRow(db, "invalid-envelope")).toMatchObject({ status: "running" });
+
+      await insertRepositoryDeliveryJob(db, { id: "no-chat", chatId: null });
+      await expect(completeForensicCheckJob(db, {
+        ...repositoryCompletionInput("no-chat"),
+        progressJson: { jobPhase: "completed" }
+      })).resolves.toBe(true);
+
+      const id = "lease-owner";
+      await insertRepositoryDeliveryJob(db, { id });
+      const completion = repositoryCompletionInput(id);
+      await expect(completeForensicCheckJob(db, completion)).resolves.toBe(true);
+      const baseline = await repositoryDeliveryRow(db, id);
+      const concurrent = await Promise.all([
+        repository.claimNextForensicTelegramDelivery(db, { now: PLAN3_RECONCILIATION_NOW }),
+        repository.claimNextForensicTelegramDelivery(db, { now: PLAN3_RECONCILIATION_NOW })
+      ]);
+      const first = concurrent.filter((claim): claim is DeliveryClaim => claim !== null);
+      expect(first).toHaveLength(1);
+      expect(first[0].claim).toMatchObject({
+        attempt: 1,
+        claimedAt: PLAN3_RECONCILIATION_NOW.toISOString(),
+        leaseExpiresAt: "2026-07-15T12:00:40.000Z"
+      });
+      expect(first[0].claim.token).toMatch(/^[A-Za-z0-9_-]{22,}$/);
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: new Date("2026-07-15T12:00:39.999Z")
+      })).resolves.toBeNull();
+
+      for (let attempt = 2; attempt <= 4; attempt += 1) {
+        await expect(repository.claimNextForensicTelegramDelivery(db, {
+          now: new Date(PLAN3_RECONCILIATION_NOW.getTime() + (attempt - 1) * 40_000)
+        })).resolves.toMatchObject({ jobId: id, claim: { attempt } });
+      }
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: new Date(PLAN3_RECONCILIATION_NOW.getTime() + 160_000)
+      })).resolves.toBeNull();
+      const exhausted = await repositoryDeliveryRow(db, id);
+      expect((exhausted.progress_json as Record<string, unknown>).telegramDelivery).toMatchObject({
+        state: {
+          status: "failed",
+          attemptCount: 4,
+          lastError: "telegram_attempts_exhausted"
+        },
+        claim: null
+      });
+      expect(exhausted).toMatchObject({
+        status: "completed",
+        result_json: baseline.result_json,
+        raw_evidence_ids: baseline.raw_evidence_ids,
+        observation_ids: baseline.observation_ids
+      });
+    });
+  });
+
+  it("rejects an Incoming effect owned by another job without mutating either record", async () => {
+    await withRepositoryWaitSchema("completion_effect_binding", async (db) => {
+      const repository = await loadDeliveryRepository();
+      await insertRepositoryObservedAlert(db, { walletId: "wallet-b", txHash: "tx-b" });
+      await insertRepositoryDeliveryJob(db, {
+        id: "job-a",
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: "wallet-a", depositTxHash: "tx-a" }
+      });
+
+      await expect(completeForensicCheckJob(
+        db,
+        repositoryCompletionInput("job-a", "incoming_deposit_check", {
+          kind: "incoming_user_alert",
+          watchedWalletId: "wallet-b",
+          incomingTxHash: "tx-b"
+        })
+      )).resolves.toBe(false);
+
+      expect(await repositoryDeliveryRow(db, "job-a")).toMatchObject({
+        status: "running",
+        progress_json: { watchedWalletId: "wallet-a", depositTxHash: "tx-a" }
+      });
+      expect((await repositoryDeliveryRow(db, "job-a")).progress_json).not.toHaveProperty(
+        "telegramDelivery"
+      );
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      })).resolves.toBeNull();
+      await expect(db.query(
+        `select user_alert_status, user_alert_last_error from observed_transactions
+         where watched_wallet_id = $1 and tx_hash = $2`,
+        ["wallet-b", "tx-b"]
+      )).resolves.toMatchObject({
+        rows: [{ user_alert_status: "sending", user_alert_last_error: null }]
+      });
+    });
+  });
+
+  it("rejects a delivery addressed to a chat other than the job owner", async () => {
+    await withRepositoryWaitSchema("completion_chat_binding", async (db) => {
+      await insertRepositoryDeliveryJob(db, { id: "wrong-chat", chatId: "owned-chat" });
+
+      await expect(completeForensicCheckJob(
+        db,
+        repositoryCompletionInput("wrong-chat")
+      )).resolves.toBe(false);
+
+      expect(await repositoryDeliveryRow(db, "wrong-chat")).toMatchObject({
+        status: "running",
+        progress_json: {}
+      });
+    });
+  });
+
+  it("rejects a delivery payload when the owning job has no chat", async () => {
+    await withRepositoryWaitSchema("completion_null_chat_binding", async (db) => {
+      await insertRepositoryDeliveryJob(db, { id: "null-chat", chatId: null });
+
+      await expect(completeForensicCheckJob(
+        db,
+        repositoryCompletionInput("null-chat")
+      )).resolves.toBe(false);
+
+      expect(await repositoryDeliveryRow(db, "null-chat")).toMatchObject({
+        status: "running",
+        progress_json: {}
+      });
+    });
+  });
+
+  it("accepts an Incoming delivery whose chat and effect match its persisted owner", async () => {
+    await withRepositoryWaitSchema("completion_owner_binding", async (db) => {
+      await insertRepositoryDeliveryJob(db, {
+        id: "bound-owner",
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: "bound-wallet", depositTxHash: "bound-tx" }
+      });
+
+      await expect(completeForensicCheckJob(
+        db,
+        repositoryCompletionInput("bound-owner", "incoming_deposit_check", {
+          kind: "incoming_user_alert",
+          watchedWalletId: "bound-wallet",
+          incomingTxHash: "bound-tx"
+        })
+      )).resolves.toBe(true);
+
+      expect(await repositoryDeliveryRow(db, "bound-owner")).toMatchObject({
+        status: "completed",
+        progress_json: {
+          telegramDelivery: {
+            payload: { chatId: "chat-bound-owner" },
+            effect: {
+              kind: "incoming_user_alert",
+              watchedWalletId: "bound-wallet",
+              incomingTxHash: "bound-tx"
+            }
+          }
+        }
+      });
+    });
+  });
+
+  it("fences superseded and sent settlements while preserving parsed result JSON", async () => {
+    await withRepositoryWaitSchema("delivery_settle", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "settlement-owner";
+      await insertRepositoryDeliveryJob(db, { id });
+      await completeForensicCheckJob(db, repositoryCompletionInput(id));
+      const baseline = await repositoryDeliveryRow(db, id);
+      const first = (await repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      }))!;
+      const reclaimedAt = new Date(PLAN3_RECONCILIATION_NOW.getTime() + 40_000);
+      const second = (await repository.claimNextForensicTelegramDelivery(db, { now: reclaimedAt }))!;
+
+      await expect(repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(first, reclaimedAt, "sent")
+      )).resolves.toBe(false);
+      await expect(repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(second, reclaimedAt, "sent")
+      )).resolves.toBe(true);
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: new Date("2026-07-16T12:00:00.000Z")
+      })).resolves.toBeNull();
+
+      const settled = await repositoryDeliveryRow(db, id);
+      expect((settled.progress_json as Record<string, unknown>).telegramDelivery).toMatchObject({
+        state: {
+          status: "sent",
+          attemptCount: 2,
+          sentAt: reclaimedAt.toISOString(),
+          messageFingerprint: second.messageFingerprint
+        },
+        claim: null
+      });
+      expect(settled).toMatchObject({
+        status: baseline.status,
+        result_json: baseline.result_json,
+        raw_evidence_ids: baseline.raw_evidence_ids,
+        observation_ids: baseline.observation_ids
+      });
+    });
+  });
+
+  it("atomically settles Incoming effects and removes the rollback trigger in finally", async () => {
+    await withRepositoryWaitSchema("incoming_effect", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const walletId = "effect-wallet";
+      const txHash = "effect-tx";
+      const id = "effect-job";
+      await insertRepositoryObservedAlert(db, { walletId, txHash });
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: walletId, depositTxHash: txHash }
+      });
+      await completeForensicCheckJob(db, repositoryCompletionInput(id, "incoming_deposit_check", {
+        kind: "incoming_user_alert",
+        watchedWalletId: walletId,
+        incomingTxHash: txHash
+      }));
+      const claim = (await repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      }))!;
+      const before = await repositoryDeliveryRow(db, id);
+      const trigger = "fail_incoming_effect_update";
+      const triggerFunction = "raise_incoming_effect_update";
+      await db.query(`
+        create function ${triggerFunction}() returns trigger language plpgsql as $$
+        begin
+          raise exception 'synthetic_incoming_effect_failure';
+        end;
+        $$;
+        create trigger ${trigger}
+          before update on observed_transactions
+          for each row execute function ${triggerFunction}();
+      `);
+      try {
+        await expect(repository.settleForensicTelegramDelivery(
+          db,
+          repositorySettlement(claim, PLAN3_RECONCILIATION_NOW, "sent")
+        )).rejects.toThrow(/synthetic_incoming_effect_failure/);
+        expect(await repositoryDeliveryRow(db, id)).toEqual(before);
+        await expect(db.query(
+          "select user_alert_status from observed_transactions where watched_wallet_id = $1 and tx_hash = $2",
+          [walletId, txHash]
+        )).resolves.toMatchObject({ rows: [{ user_alert_status: "sending" }] });
+      } finally {
+        await db.query(`drop trigger if exists ${trigger} on observed_transactions`);
+        await db.query(`drop function if exists ${triggerFunction}()`);
+      }
+      await expect(db.query(
+        "select count(*)::integer as count from pg_trigger where tgname = $1 and not tgisinternal",
+        [trigger]
+      )).resolves.toMatchObject({ rows: [{ count: 0 }] });
+
+      await expect(repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(claim, PLAN3_RECONCILIATION_NOW, "sent")
+      )).resolves.toBe(true);
+      await expect(db.query(
+        "select user_alert_status from observed_transactions where watched_wallet_id = $1 and tx_hash = $2",
+        [walletId, txHash]
+      )).resolves.toMatchObject({ rows: [{ user_alert_status: "sent" }] });
+
+      const retryWallet = "retry-wallet";
+      const retryTx = "retry-tx";
+      const retryId = "retry-effect-job";
+      await insertRepositoryObservedAlert(db, { walletId: retryWallet, txHash: retryTx, status: "analyzing" });
+      await insertRepositoryDeliveryJob(db, {
+        id: retryId,
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: retryWallet, depositTxHash: retryTx }
+      });
+      await completeForensicCheckJob(db, repositoryCompletionInput(retryId, "incoming_deposit_check", {
+        kind: "incoming_user_alert",
+        watchedWalletId: retryWallet,
+        incomingTxHash: retryTx
+      }));
+      const retryClaim = (await repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      }))!;
+      await expect(repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(retryClaim, PLAN3_RECONCILIATION_NOW, "retryable", "telegram_network_error")
+      )).resolves.toBe(true);
+      await expect(db.query(
+        "select user_alert_status from observed_transactions where watched_wallet_id = $1 and tx_hash = $2",
+        [retryWallet, retryTx]
+      )).resolves.toMatchObject({ rows: [{ user_alert_status: "analyzing" }] });
+      const retryFinalAt = new Date(PLAN3_RECONCILIATION_NOW.getTime() + 30_000);
+      const retryFinalClaim = (await repository.claimNextForensicTelegramDelivery(db, {
+        now: retryFinalAt
+      }))!;
+      await repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(retryFinalClaim, retryFinalAt, "sent")
+      );
+
+      const failedWallet = "failed-wallet";
+      const failedTx = "failed-tx";
+      const failedId = "failed-effect-job";
+      await insertRepositoryObservedAlert(db, { walletId: failedWallet, txHash: failedTx, status: "analyzing" });
+      await insertRepositoryDeliveryJob(db, {
+        id: failedId,
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: failedWallet, depositTxHash: failedTx }
+      });
+      await completeForensicCheckJob(db, repositoryCompletionInput(failedId, "incoming_deposit_check", {
+        kind: "incoming_user_alert",
+        watchedWalletId: failedWallet,
+        incomingTxHash: failedTx
+      }));
+      const failedClaim = (await repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      }))!;
+      await expect(repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(failedClaim, PLAN3_RECONCILIATION_NOW, "failed", "telegram_chat_forbidden")
+      )).resolves.toBe(true);
+      await expect(db.query(
+        `select user_alert_status, user_alert_last_error from observed_transactions
+         where watched_wallet_id = $1 and tx_hash = $2`,
+        [failedWallet, failedTx]
+      )).resolves.toMatchObject({
+        rows: [{ user_alert_status: "failed", user_alert_last_error: "telegram_chat_forbidden" }]
+      });
+    });
+  });
+
+  it("rolls back a missing Incoming effect and atomically exhausts attempt four", async () => {
+    await withRepositoryWaitSchema("incoming_effect_missing", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const missingId = "missing-effect-job";
+      await insertRepositoryDeliveryJob(db, {
+        id: missingId,
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: "missing-wallet", depositTxHash: "missing-tx" }
+      });
+      await completeForensicCheckJob(db, repositoryCompletionInput(missingId, "incoming_deposit_check", {
+        kind: "incoming_user_alert",
+        watchedWalletId: "missing-wallet",
+        incomingTxHash: "missing-tx"
+      }));
+      const claim = (await repository.claimNextForensicTelegramDelivery(db, {
+        now: PLAN3_RECONCILIATION_NOW
+      }))!;
+      const before = await repositoryDeliveryRow(db, missingId);
+      await expect(repository.settleForensicTelegramDelivery(
+        db,
+        repositorySettlement(claim, PLAN3_RECONCILIATION_NOW, "sent")
+      )).rejects.toThrow("forensic_telegram_delivery_effect_cas_failed");
+      expect(await repositoryDeliveryRow(db, missingId)).toEqual(before);
+    });
+
+    await withRepositoryWaitSchema("incoming_effect_exhaustion", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const walletId = "exhausted-wallet";
+      const txHash = "exhausted-tx";
+      const id = "exhausted-effect-job";
+      await insertRepositoryObservedAlert(db, { walletId, txHash });
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        kind: "incoming_deposit_check",
+        progressJson: { watchedWalletId: walletId, depositTxHash: txHash }
+      });
+      await completeForensicCheckJob(db, repositoryCompletionInput(id, "incoming_deposit_check", {
+        kind: "incoming_user_alert",
+        watchedWalletId: walletId,
+        incomingTxHash: txHash
+      }));
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        await expect(repository.claimNextForensicTelegramDelivery(db, {
+          now: new Date(PLAN3_RECONCILIATION_NOW.getTime() + (attempt - 1) * 40_000)
+        })).resolves.toMatchObject({ jobId: id, claim: { attempt } });
+      }
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: new Date(PLAN3_RECONCILIATION_NOW.getTime() + 160_000)
+      })).resolves.toBeNull();
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toMatchObject({
+        telegramDelivery: {
+          state: { status: "failed", lastError: "telegram_attempts_exhausted", attemptCount: 4 },
+          claim: null
+        }
+      });
+      await expect(db.query(
+        `select user_alert_status, user_alert_last_error from observed_transactions
+         where watched_wallet_id = $1 and tx_hash = $2`,
+        [walletId, txHash]
+      )).resolves.toMatchObject({
+        rows: [{ user_alert_status: "failed", user_alert_last_error: "telegram_attempts_exhausted" }]
+      });
+    });
+  });
+
+  it("keeps terminal versioned Incoming effects out of legacy alert retry", async () => {
+    await withRepositoryWaitSchema("legacy_alert_fence", async (db) => {
+      for (const owned of [true, false]) {
+        const walletId = owned ? "owned-wallet" : "legacy-wallet";
+        const txHash = owned ? "owned-tx" : "legacy-tx";
+        await insertRepositoryObservedAlert(db, { walletId, txHash, status: "failed" });
+        if (owned) {
+          const id = "owned-terminal-job";
+          await insertRepositoryDeliveryJob(db, {
+            id,
+            kind: "incoming_deposit_check",
+            status: "completed",
+            progressJson: {
+              watchedWalletId: walletId,
+              depositTxHash: txHash,
+              telegramDelivery: repositoryPendingDelivery(id, "incoming_deposit_check", {
+                kind: "incoming_user_alert",
+                watchedWalletId: walletId,
+                incomingTxHash: txHash
+              })
+            }
+          });
+        }
+      }
+
+      await expect(claimUserAlertsForRetry(db, {
+        limit: 10,
+        staleSendingBefore: new Date("2026-07-15T11:00:00.000Z")
+      })).resolves.toEqual([
+        expect.objectContaining({ watchedWalletId: "legacy-wallet", txHash: "legacy-tx" })
+      ]);
+    });
+  });
+
+  it("does not let an unbound terminal effect suppress an unrelated legacy alert", async () => {
+    await withRepositoryWaitSchema("legacy_alert_false_positive", async (db) => {
+      await insertRepositoryObservedAlert(db, {
+        walletId: "unrelated-wallet",
+        txHash: "unrelated-tx",
+        status: "failed"
+      });
+      await insertRepositoryDeliveryJob(db, {
+        id: "malformed-terminal-job",
+        kind: "incoming_deposit_check",
+        status: "completed",
+        progressJson: {
+          watchedWalletId: "owner-wallet",
+          depositTxHash: "owner-tx",
+          telegramDelivery: repositoryPendingDelivery(
+            "malformed-terminal-job",
+            "incoming_deposit_check",
+            {
+              kind: "incoming_user_alert",
+              watchedWalletId: "unrelated-wallet",
+              incomingTxHash: "unrelated-tx"
+            }
+          )
+        }
+      });
+
+      await expect(claimUserAlertsForRetry(db, {
+        limit: 10,
+        staleSendingBefore: new Date("2026-07-15T11:00:00.000Z")
+      })).resolves.toEqual([
+        expect.objectContaining({ watchedWalletId: "unrelated-wallet", txHash: "unrelated-tx" })
+      ]);
+    });
+  });
+
+  it("does not let a wrong-chat terminal delivery suppress its legitimate legacy alert", async () => {
+    await withRepositoryWaitSchema("legacy_alert_wrong_chat", async (db) => {
+      const walletId = "wrong-chat-wallet";
+      const txHash = "wrong-chat-tx";
+      const id = "wrong-chat-terminal-job";
+      await insertRepositoryObservedAlert(db, { walletId, txHash, status: "failed" });
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        kind: "incoming_deposit_check",
+        status: "completed",
+        chatId: "persisted-owner-chat",
+        progressJson: {
+          watchedWalletId: walletId,
+          depositTxHash: txHash,
+          telegramDelivery: repositoryPendingDelivery(id, "incoming_deposit_check", {
+            kind: "incoming_user_alert",
+            watchedWalletId: walletId,
+            incomingTxHash: txHash
+          })
+        }
+      });
+
+      await expect(claimUserAlertsForRetry(db, {
+        limit: 10,
+        staleSendingBefore: new Date("2026-07-15T11:00:00.000Z")
+      })).resolves.toEqual([
+        expect.objectContaining({ watchedWalletId: walletId, txHash })
+      ]);
+    });
+  });
+
+  it("rejects recovered delivery addressed to a chat other than the failed job owner", async () => {
+    await withRepositoryWaitSchema("recovered_wrong_chat", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-wrong-chat";
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        status: "failed",
+        chatId: "owned-chat",
+        progressJson: { telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(
+        db,
+        repositoryRecoveredAttachment(id, "where_is_money_check")
+      )).resolves.toBe(false);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toEqual({
+        telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT
+      });
+    });
+  });
+
+  it("rejects recovered delivery payload when the failed job owner has no chat", async () => {
+    await withRepositoryWaitSchema("recovered_null_chat", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-null-chat";
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        status: "failed",
+        chatId: null,
+        progressJson: { telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(
+        db,
+        repositoryRecoveredAttachment(id, "where_is_money_check")
+      )).resolves.toBe(false);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toEqual({
+        telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT
+      });
+    });
+  });
+
+  it("rejects recovered Incoming effect owned by a different failed job", async () => {
+    await withRepositoryWaitSchema("recovered_cross_effect", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-cross-effect";
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        kind: "incoming_deposit_check",
+        status: "failed",
+        progressJson: {
+          watchedWalletId: "owner-wallet",
+          depositTxHash: "owner-tx",
+          telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT
+        }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(
+        db,
+        repositoryRecoveredAttachment(id, "incoming_deposit_check", {
+          kind: "incoming_user_alert",
+          watchedWalletId: "different-wallet",
+          incomingTxHash: "different-tx"
+        })
+      )).resolves.toBe(false);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toEqual({
+        watchedWalletId: "owner-wallet",
+        depositTxHash: "owner-tx",
+        telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT
+      });
+    });
+  });
+
+  it("attaches recovered Incoming delivery only when chat and effect match its failed owner", async () => {
+    await withRepositoryWaitSchema("recovered_owner_binding", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-bound-owner";
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        kind: "incoming_deposit_check",
+        status: "failed",
+        progressJson: {
+          watchedWalletId: "bound-wallet",
+          depositTxHash: "bound-tx",
+          telegramDeliveryIntent: REPOSITORY_RECOVERED_INTENT
+        }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(
+        db,
+        repositoryRecoveredAttachment(id, "incoming_deposit_check", {
+          kind: "incoming_user_alert",
+          watchedWalletId: "bound-wallet",
+          incomingTxHash: "bound-tx"
+        })
+      )).resolves.toBe(true);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toMatchObject({
+        watchedWalletId: "bound-wallet",
+        depositTxHash: "bound-tx",
+        telegramDelivery: {
+          payload: { chatId: "chat-recovered-bound-owner" },
+          effect: {
+            kind: "incoming_user_alert",
+            watchedWalletId: "bound-wallet",
+            incomingTxHash: "bound-tx"
+          }
+        }
+      });
+      expect((await repositoryDeliveryRow(db, id)).progress_json)
+        .not.toHaveProperty("telegramDeliveryIntent");
+    });
+  });
+
+  it("rejects recovered intent with a non-canonical createdAt timestamp", async () => {
+    await withRepositoryWaitSchema("recovered_noncanonical_time", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-noncanonical-time";
+      const intent = {
+        ...REPOSITORY_RECOVERED_INTENT,
+        createdAt: "2026-07-15T12:00:00Z"
+      };
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        status: "failed",
+        progressJson: { telegramDeliveryIntent: intent }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(db, {
+        jobId: id,
+        intentCreatedAt: intent.createdAt,
+        expectedPreparationAttemptCount: 0,
+        delivery: repositoryPendingDelivery(id, "where_is_money_check")
+      })).resolves.toBe(false);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toEqual({
+        telegramDeliveryIntent: intent
+      });
+    });
+  });
+
+  it("rejects recovered retry intent with an arbitrary backoff", async () => {
+    await withRepositoryWaitSchema("recovered_wrong_backoff", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-wrong-backoff";
+      const intent = {
+        ...REPOSITORY_RECOVERED_INTENT,
+        preparationStatus: "retryable",
+        preparationAttemptCount: 1,
+        lastPreparationAttemptAt: "2026-07-15T12:00:01.000Z",
+        nextPreparationAttemptAt: "2026-07-15T12:00:46.000Z",
+        lastPreparationError: "stale_intent_context_unavailable"
+      };
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        status: "failed",
+        progressJson: { telegramDeliveryIntent: intent }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(db, {
+        jobId: id,
+        intentCreatedAt: intent.createdAt,
+        expectedPreparationAttemptCount: 1,
+        delivery: repositoryPendingDelivery(id, "where_is_money_check")
+      })).resolves.toBe(false);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toEqual({
+        telegramDeliveryIntent: intent
+      });
+    });
+  });
+
+  it("rejects recovered retry intent whose attempt predates its creation", async () => {
+    await withRepositoryWaitSchema("recovered_wrong_time_order", async (db) => {
+      const repository = await loadDeliveryRepository();
+      const id = "recovered-wrong-time-order";
+      const intent = {
+        ...REPOSITORY_RECOVERED_INTENT,
+        preparationStatus: "retryable",
+        preparationAttemptCount: 1,
+        lastPreparationAttemptAt: "2026-07-15T11:59:59.000Z",
+        nextPreparationAttemptAt: "2026-07-15T12:00:29.000Z",
+        lastPreparationError: "stale_intent_context_unavailable"
+      };
+      await insertRepositoryDeliveryJob(db, {
+        id,
+        status: "failed",
+        progressJson: { telegramDeliveryIntent: intent }
+      });
+
+      await expect(repository.attachRecoveredForensicTelegramDelivery(db, {
+        jobId: id,
+        intentCreatedAt: intent.createdAt,
+        expectedPreparationAttemptCount: 1,
+        delivery: repositoryPendingDelivery(id, "where_is_money_check")
+      })).resolves.toBe(false);
+      expect((await repositoryDeliveryRow(db, id)).progress_json).toEqual({
+        telegramDeliveryIntent: intent
+      });
+    });
+  });
+
+  it("persists only explicit stale intents and bounds preparation at four attempts", async () => {
+    await withRepositoryWaitSchema("stale_intent", async (db) => {
+      const repository = await loadDeliveryRepository();
+      for (const [id, chatId] of [["stale-with-chat", "chat-stale-with-chat"], ["stale-no-chat", null]] as const) {
+        await insertRepositoryDeliveryJob(db, {
+          id,
+          chatId,
+          progressJson: {
+            jobPhase: "notification_delivery",
+            jobHeartbeatAt: "2026-07-15T10:00:00.000Z",
+            retryCount: 4
+          }
+        });
+      }
+      await recoverStaleForensicCheckJobs(db, {
+        staleRunningBefore: new Date("2026-07-15T11:00:00.000Z"),
+        maxRetries: 0,
+        recoveredAt: PLAN3_RECONCILIATION_NOW
+      });
+      const withChat = await repositoryDeliveryRow(db, "stale-with-chat");
+      const intent = (withChat.progress_json as Record<string, unknown>)
+        .telegramDeliveryIntent as RecoveredForensicDeliveryIntentV1;
+      expect(intent).toEqual({
+        version: "recovered-forensic-delivery-intent-v1",
+        kind: "stale_failure",
+        createdAt: PLAN3_RECONCILIATION_NOW.toISOString(),
+        reasonCode: "stale_running_retry_exhausted",
+        preparationStatus: "pending",
+        preparationAttemptCount: 0,
+        lastPreparationAttemptAt: null,
+        nextPreparationAttemptAt: null,
+        lastPreparationError: null
+      });
+      expect((await repositoryDeliveryRow(db, "stale-no-chat")).progress_json)
+        .not.toHaveProperty("telegramDeliveryIntent");
+      await expect(repository.listDueRecoveredForensicDeliveryIntents(db, {
+        now: PLAN3_RECONCILIATION_NOW,
+        limit: 50
+      })).resolves.toEqual([{ jobId: "stale-with-chat", intent }]);
+
+      const prepared = repositoryPendingDelivery("stale-with-chat", "where_is_money_check");
+      const attachment = {
+        jobId: "stale-with-chat",
+        intentCreatedAt: intent.createdAt,
+        expectedPreparationAttemptCount: 0,
+        delivery: prepared
+      };
+      await expect(repository.attachRecoveredForensicTelegramDelivery(db, attachment)).resolves.toBe(true);
+      await expect(repository.attachRecoveredForensicTelegramDelivery(db, attachment)).resolves.toBe(false);
+
+      const failedId = "stale-preparation-failure";
+      await insertRepositoryDeliveryJob(db, {
+        id: failedId,
+        status: "failed",
+        progressJson: { telegramDeliveryIntent: intent },
+        resultJson: { preserved: true }
+      });
+      const delays = [30_000, 120_000, 600_000];
+      let attemptedAt = PLAN3_RECONCILIATION_NOW;
+      for (let expected = 0; expected < 4; expected += 1) {
+        await expect(repository.settleRecoveredForensicDeliveryIntentPreparation(db, {
+          jobId: failedId,
+          intentCreatedAt: intent.createdAt,
+          expectedPreparationAttemptCount: expected,
+          attemptedAt,
+          errorCode: "stale_intent_context_unavailable"
+        })).resolves.toBe(true);
+        if (expected === 0) {
+          await expect(repository.settleRecoveredForensicDeliveryIntentPreparation(db, {
+            jobId: failedId,
+            intentCreatedAt: intent.createdAt,
+            expectedPreparationAttemptCount: 0,
+            attemptedAt: new Date(attemptedAt.getTime() + 1),
+            errorCode: "stale_intent_payload_build_failed"
+          })).resolves.toBe(false);
+        }
+        const row = await repositoryDeliveryRow(db, failedId);
+        const current = (row.progress_json as Record<string, unknown>)
+          .telegramDeliveryIntent as RecoveredForensicDeliveryIntentV1;
+        expect(current.preparationAttemptCount).toBe(expected + 1);
+        if (expected < 3) {
+          attemptedAt = new Date(attemptedAt.getTime() + delays[expected]);
+          expect(current).toMatchObject({
+            preparationStatus: "retryable",
+            nextPreparationAttemptAt: attemptedAt.toISOString(),
+            lastPreparationError: "stale_intent_context_unavailable"
+          });
+        } else {
+          expect(current).toMatchObject({
+            preparationStatus: "failed",
+            nextPreparationAttemptAt: null,
+            lastPreparationError: "stale_intent_preparation_attempts_exhausted"
+          });
+        }
+      }
+      await expect(repository.listDueRecoveredForensicDeliveryIntents(db, {
+        now: new Date("2026-07-16T12:00:00.000Z"),
+        limit: 10
+      })).resolves.toEqual([]);
+      await expect(repository.claimNextForensicTelegramDelivery(db, {
+        now: new Date("2026-07-16T12:00:00.000Z")
+      })).resolves.toMatchObject({ jobId: "stale-with-chat" });
+      expect((await repositoryDeliveryRow(db, failedId)).progress_json)
+        .not.toHaveProperty("telegramDelivery");
     });
   });
 });
