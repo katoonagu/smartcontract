@@ -596,7 +596,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     }).policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
   });
 
-  it("[AC-39][REQ-25][LLM-BOUNDARY] projects exact legacy LLM structure before risk recording, send selection, and formatting while preserving raw audit JSON", async () => {
+  it("[AC-39][REQ-25][LLM-BOUNDARY] persists the sanitized active projection without mutating the raw input report", async () => {
     const legacyReport = report({
       decision: "DECLINE",
       scoreValid: true,
@@ -633,7 +633,9 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
     const rawSnapshot = structuredClone(legacyReport);
     const recordObservedTransactionRisk = vi.fn(async () => true);
-    const completeForensicCheckJob = vi.fn(async () => true);
+    const completeForensicCheckJob = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => true);
     const formatIncomingDepositRiskAlert = vi.fn((input: Parameters<RunSingleIncomingDepositJobCycleDeps["formatIncomingDepositRiskAlert"]>[0]) => ({
       text: JSON.stringify({
         score: input.report.depositRiskScore,
@@ -675,14 +677,21 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(sendUserAlert).toHaveBeenCalledWith("42", expect.not.stringContaining("Legacy LLM"), expect.any(Object));
     expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
       resultJson: expect.objectContaining({
-        decision: "DECLINE",
-        depositRiskScore: 95,
-        hardBadEvidence: rawSnapshot.hardBadEvidence,
-        contractVerdicts: rawSnapshot.contractVerdicts,
-        reasons: rawSnapshot.reasons,
-        warnings: rawSnapshot.warnings
+        scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
+        decision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        depositRiskScore: null,
+        observedContextScore: 0,
+        riskBand: null,
+        hardBadEvidence: [],
+        contractVerdicts: [],
+        reasons: [],
+        warnings: []
       })
     }));
+    const persistedResult = completeForensicCheckJob.mock.calls[0]?.[0].resultJson;
+    expect(JSON.stringify(persistedResult)).not.toContain("Legacy LLM");
+    expect(JSON.stringify(persistedResult)).not.toContain("legacy-llm-evidence");
     expect(legacyReport).toEqual(rawSnapshot);
 
     const legacyPolicyOnlyReport = report({

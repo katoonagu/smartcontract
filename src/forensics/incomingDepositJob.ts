@@ -2353,7 +2353,7 @@ export async function runSingleIncomingDepositJobCycle(
       status: "completed",
       progressJson: currentProgress,
       resultJson: {
-        ...(report as unknown as Record<string, unknown>),
+        ...(activeReport as unknown as Record<string, unknown>),
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
       },
       rawEvidenceIds: [],
