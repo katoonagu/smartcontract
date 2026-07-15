@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import pg from "pg";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   claimNextForensicCheckJob,
   completeForensicCheckJob,
@@ -23,6 +25,21 @@ import {
   updateCompletedDeepCheckResultPatch
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
+import { buildForensicRuntimeContractProjection } from "../../src/forensics/forensicJobProgress";
+import type { WaitReconciliationResultV1 } from "../../src/types";
+
+type WaitReconciler = (
+  db: Db,
+  input: { now: Date; limit: number }
+) => Promise<WaitReconciliationResultV1[]>;
+
+async function loadWaitReconciler(): Promise<WaitReconciler> {
+  const repositories = await import("../../src/storage/repositories") as Record<string, unknown>;
+  if (typeof repositories.reconcileWaitingForensicCheckJobs !== "function") {
+    throw new Error("Plan 3 feature missing: reconcileWaitingForensicCheckJobs");
+  }
+  return repositories.reconcileWaitingForensicCheckJobs as WaitReconciler;
+}
 
 function forensicJobRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
@@ -594,6 +611,11 @@ describe("forensic check job repositories", () => {
     expect(compactSql(queries[0].sql)).toContain(
       "on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set"
     );
+    expect(queries[0].sql).toContain("with locked_parent as materialized");
+    expect(queries[0].sql).toContain("job.status = 'running'");
+    expect(queries[0].sql).toContain("job.status = 'queued'");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
+    expect(queries[0].sql).toContain("for update of job");
     expect(queries[0].params[0]).toBe("job-1");
     expect(queries[0].params[2]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
     expect(queries[0].params[4]).toBe("where_hop");
@@ -630,7 +652,7 @@ describe("forensic check job repositories", () => {
     expect(queries[0].params[7]).toBeNull();
   });
 
-  it("marks generic waiting jobs ready after targeted index completion", async () => {
+  it("marks durable waits ready without changing the parent job", async () => {
     const queries: Array<{ sql: string; params: unknown[] }> = [];
     const db = {
       query: async (sql: string, params: unknown[]) => {
@@ -649,16 +671,92 @@ describe("forensic check job repositories", () => {
 
     expect(updated).toBe(2);
     expect(queries[0].sql).toContain("update forensic_job_waits");
-    expect(queries[0].sql).toContain("returning job_id");
     expect(queries[0].sql).toContain("wait.target_timestamp_ms <= $2");
     expect(queries[0].sql).toContain("wait.request_kind = 'broad_targeted'");
-    expect(queries[0].sql).toContain("update forensic_check_jobs job");
-    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
-    expect(queries[0].sql).toContain("'targetedIndex'");
+    expect(queries[0].sql).not.toContain("forensic_check_jobs");
+    expect(queries[0].sql).not.toContain("jobPhase");
+    expect(queries[0].sql).not.toContain("targetedIndex");
     expect(queries[0].params[0]).toBe("THop111111111111111111111111111111111");
     expect(queries[0].params[1]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
-    expect(queries[0].params[2]).toBe("reading_local_index");
-    expect(queries[0].params[4]).toBe("ready");
+    expect(queries[0].params).toContain("ready");
+  });
+
+  it("reconciles a bounded locked batch with an exact Task 2 progress snapshot", async () => {
+    const snapshot: WaitReconciliationResultV1 = {
+      parentJobId: "where-job-reconcile-1",
+      readyCount: 2,
+      terminalCount: 0,
+      cancelledCount: 0,
+      waitingCount: 0,
+      outcome: "resume_ready",
+      diagnosticCode: null
+    };
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    let released = false;
+    const client = {
+      async query(sql: string, params: unknown[] = []) {
+        queries.push({ sql, params });
+        if (sql === "begin" || sql === "commit") return { rows: [], rowCount: 0 };
+        if (sql.includes("select job.id")) {
+          return { rows: [{ id: snapshot.parentJobId }], rowCount: 1 };
+        }
+        return {
+          rows: [{
+            progress_json: {
+              preservedLegacyField: { keep: true },
+              waitReconciliation: snapshot
+            }
+          }],
+          rowCount: 1
+        };
+      },
+      release() {
+        released = true;
+      }
+    };
+    const db = {
+      async connect() {
+        return client;
+      },
+      async query() {
+        throw new Error("reconciliation must use a locked transaction client");
+      }
+    } as unknown as Db;
+    const reconcile = await loadWaitReconciler();
+    const now = new Date("2026-07-15T12:00:00.000Z");
+
+    await expect(reconcile(db, { now, limit: 10 })).resolves.toEqual([snapshot]);
+
+    expect(queries.map((query) => query.sql)).toEqual(expect.arrayContaining(["begin", "commit"]));
+    const selectionSql = compactSql(queries[1].sql);
+    expect(selectionSql).toContain("order by job.updated_at asc");
+    expect(selectionSql).toContain("limit $1");
+    expect(selectionSql).toContain("for update of job skip locked");
+    expect(queries[1].params).toEqual([10]);
+    const reconciliationSql = compactSql(queries[2].sql);
+    expect(reconciliationSql).toContain("left join forensic_job_waits wait on wait.job_id = parent.id");
+    expect(reconciliationSql).toContain("count(wait.id) filter (where wait.status = 'ready')");
+    expect(reconciliationSql).toContain("count(wait.id) filter (where wait.status = 'terminal')");
+    expect(reconciliationSql).toContain("count(wait.id) filter (where wait.status = 'cancelled')");
+    expect(reconciliationSql).toContain("count(wait.id) filter (where wait.status = 'waiting')");
+    expect(reconciliationSql).toContain("job.status = 'queued'");
+    expect(reconciliationSql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
+    expect(reconciliationSql).toContain("'waitReconciliation', jsonb_build_object(");
+    expect(reconciliationSql).toContain("updated_at = $1::timestamptz");
+    expect(queries[2].params).toEqual([now, [snapshot.parentJobId]]);
+    expect(released).toBe(true);
+    expect(buildForensicRuntimeContractProjection({ waitReconciliation: snapshot }).waitReconciliation)
+      .toEqual(snapshot);
+  });
+
+  it("rejects unbounded reconciliation limits before querying PostgreSQL", async () => {
+    const { db, queries } = createMockDb();
+    const reconcile = await loadWaitReconciler();
+    const now = new Date("2026-07-15T12:00:00.000Z");
+
+    await expect(reconcile(db, { now, limit: 0 })).rejects.toThrow(/limit/i);
+    await expect(reconcile(db, { now, limit: 101 })).rejects.toThrow(/limit/i);
+    expect(queries).toEqual([]);
   });
 
   it("stores separate candidate-window waits for the same job address and target", async () => {
@@ -748,7 +846,7 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("coalesce(wait.candidate_tx_hash, '') = $");
   });
 
-  it("only resumes candidate-window jobs after sibling windows are no longer waiting", async () => {
+  it("leaves candidate-window parent reconciliation to the reconciler", async () => {
     const { db, queries } = createMockDb();
     const end = new Date("2026-07-04T12:00:00.000Z");
     const start = new Date("2026-07-04T11:55:00.000Z");
@@ -764,15 +862,11 @@ describe("forensic check job repositories", () => {
       candidateTxHash: "candidate-tx-1"
     } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
 
-    expect(queries[0].sql).toContain("ready_jobs as");
-    expect(queries[0].sql).toContain("$24::text <> 'candidate_window'");
-    expect(queries[0].sql).toContain("not exists");
-    expect(queries[0].sql).toContain("blocker.request_kind = 'candidate_window'");
-    expect(queries[0].sql).toContain("blocker.status = 'waiting'");
-    expect(queries[0].sql).toContain("job.id in (select job_id from ready_jobs)");
+    expect(queries[0].sql).not.toContain("forensic_check_jobs");
+    expect(queries[0].sql).not.toContain("ready_jobs as");
   });
 
-  it("wakes candidate-window jobs when the exact wait is already ready", async () => {
+  it("only transitions candidate-window wait rows that are still waiting", async () => {
     const { db, queries } = createMockDb();
     const end = new Date("2026-07-04T12:00:00.000Z");
     const start = new Date("2026-07-04T11:55:00.000Z");
@@ -788,14 +882,11 @@ describe("forensic check job repositories", () => {
       candidateTxHash: "candidate-tx-1"
     } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
 
-    expect(queries[0].sql).toContain("candidate_matching_waits as");
-    expect(queries[0].sql).toContain("wait.status in ('ready', 'terminal')");
-    expect(queries[0].sql).toContain("wakeup_waits as");
-    expect(queries[0].sql).toContain("select job_id from affected_waits");
-    expect(queries[0].sql).toContain("select job_id from candidate_matching_waits");
+    expect(queries[0].sql).toContain("wait.status = 'waiting'");
+    expect(queries[0].sql).not.toContain("wait.status in ('ready', 'terminal')");
   });
 
-  it("does not count the current candidate window as a sibling blocker", async () => {
+  it("does not inspect sibling waits while recording candidate-window completion", async () => {
     const { db, queries } = createMockDb();
     const end = new Date("2026-07-04T12:00:00.000Z");
     const start = new Date("2026-07-04T11:55:00.000Z");
@@ -811,14 +902,11 @@ describe("forensic check job repositories", () => {
       candidateTxHash: "candidate-tx-1"
     } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
 
-    expect(queries[0].sql).toContain("and not (");
-    expect(queries[0].sql).toContain("blocker.address = $1");
-    expect(queries[0].sql).toContain("blocker.target_timestamp_ms = $2");
-    expect(queries[0].sql).toContain("blocker.window_start_timestamp_ms = $25");
-    expect(queries[0].sql).toContain("coalesce(blocker.candidate_tx_hash, '') = $26");
+    expect(queries[0].sql).not.toContain("blocker.");
+    expect(queries[0].sql).not.toContain("not exists");
   });
 
-  it("resumes terminal candidate-window jobs to local read for broad fallback decision", async () => {
+  it("marks terminal candidate-window waits for separate reconciliation", async () => {
     const { db, queries } = createMockDb();
     const end = new Date("2026-07-04T12:00:00.000Z");
     const start = new Date("2026-07-04T11:55:00.000Z");
@@ -834,8 +922,8 @@ describe("forensic check job repositories", () => {
       candidateTxHash: "candidate-tx-1"
     } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
 
-    expect(queries[0].params[2]).toBe("reading_local_index");
-    expect(queries[0].params[4]).toBe("terminal");
+    expect(queries[0].params).toContain("terminal");
+    expect(queries[0].sql).not.toContain("reading_local_index");
   });
 
   it("matches candidate-window waits exactly when patching waiting progress", async () => {
@@ -1649,4 +1737,562 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("~ '^[0-9]{4}-");
     expect(queries[0].sql).not.toContain("jobHeartbeatAt')::timestamptz");
   });
+});
+
+const PLAN3_REPOSITORY_DATABASE_URL = "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3";
+const requirePlan3Postgres = process.env.REQUIRE_PLAN3_POSTGRES === "1";
+const plan3RepositoryDatabaseUrl = process.env.TEST_DATABASE_URL ?? PLAN3_REPOSITORY_DATABASE_URL;
+if (requirePlan3Postgres && plan3RepositoryDatabaseUrl !== PLAN3_REPOSITORY_DATABASE_URL) {
+  throw new Error(
+    `Plan 3 repository tests require TEST_DATABASE_URL=${PLAN3_REPOSITORY_DATABASE_URL}`
+  );
+}
+const plan3PostgresDescribe = requirePlan3Postgres ? describe : describe.skip;
+const PLAN3_RECONCILIATION_NOW = new Date("2026-07-15T12:00:00.000Z");
+
+async function installRepositoryWaitSchema(db: pg.Pool): Promise<void> {
+  await db.query(`
+    create table forensic_check_jobs (
+      id text primary key,
+      kind text not null check (kind in ('where_is_money_check', 'incoming_deposit_check')),
+      subject_address text not null,
+      status text not null check (status in ('queued', 'running', 'partial', 'completed', 'failed', 'cancelled')),
+      window_start timestamptz not null,
+      window_end timestamptz not null,
+      priority integer not null default 100,
+      chat_id text,
+      message_id text,
+      requested_by text,
+      progress_json jsonb not null default '{}'::jsonb,
+      result_json jsonb not null default '{}'::jsonb,
+      raw_evidence_ids jsonb not null default '[]'::jsonb,
+      observation_ids jsonb not null default '[]'::jsonb,
+      last_error text,
+      started_at timestamptz,
+      completed_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create index forensic_check_jobs_claim_idx
+      on forensic_check_jobs(status, priority desc, created_at asc) where status = 'queued';
+    create table forensic_job_waits (
+      id text primary key default md5(random()::text || clock_timestamp()::text),
+      job_id text not null,
+      wait_type text not null check (wait_type = 'targeted_usdt_history'),
+      address text not null,
+      coverage_mode text not null check (coverage_mode = 'targeted'),
+      target_timestamp_ms bigint not null,
+      target_timestamp timestamptz not null,
+      required_for text not null check (required_for in ('where_hop', 'incoming_hop')),
+      status text not null check (status in ('waiting', 'ready', 'terminal', 'cancelled')),
+      status_reason text,
+      last_error text,
+      attempt_count integer not null default 0,
+      request_kind text not null check (request_kind in ('broad_targeted', 'candidate_window')),
+      window_start_timestamp_ms bigint not null,
+      window_start_timestamp timestamptz,
+      window_end_timestamp_ms bigint not null,
+      window_end_timestamp timestamptz,
+      related_hop_tx_hash text,
+      candidate_tx_hash text not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (job_id, wait_type, address, coverage_mode, target_timestamp_ms,
+        request_kind, window_start_timestamp_ms, candidate_tx_hash)
+    );
+    create index forensic_job_waits_job_idx on forensic_job_waits(job_id, status);
+  `);
+}
+
+async function insertRepositoryWaitParent(
+  db: pg.Pool,
+  input: {
+    id: string;
+    status?: "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
+    kind?: "where_is_money_check" | "incoming_deposit_check";
+  }
+): Promise<void> {
+  await db.query(
+    `insert into forensic_check_jobs (
+       id, kind, subject_address, status, window_start, window_end,
+       progress_json, result_json, created_at, updated_at
+     ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $9)`,
+    [
+      input.id,
+      input.kind ?? "where_is_money_check",
+      `TSubject-${input.id}`,
+      input.status ?? "queued",
+      new Date("2026-07-01T00:00:00.000Z"),
+      PLAN3_RECONCILIATION_NOW,
+      JSON.stringify({
+        jobPhase: "waiting_for_targeted_index",
+        preservedLegacyField: { keep: true }
+      }),
+      JSON.stringify({ fixtureId: input.id }),
+      new Date(`2026-07-15T11:${String(10 + input.id.length).padStart(2, "0")}:00.000Z`)
+    ]
+  );
+}
+
+async function insertRepositoryWaitStatuses(
+  db: pg.Pool,
+  jobId: string,
+  statuses: Array<"waiting" | "ready" | "terminal" | "cancelled">,
+  requiredFor: "where_hop" | "incoming_hop" = "where_hop"
+): Promise<void> {
+  for (const [index, status] of statuses.entries()) {
+    const targetTimestamp = new Date(PLAN3_RECONCILIATION_NOW.getTime() - index * 1_000);
+    await db.query(
+      `insert into forensic_job_waits (
+         id, job_id, wait_type, address, coverage_mode,
+         target_timestamp_ms, target_timestamp, required_for, status,
+         request_kind, window_start_timestamp_ms, window_end_timestamp_ms,
+         window_end_timestamp, candidate_tx_hash
+       ) values (
+         $1, $2, 'targeted_usdt_history', $3, 'targeted',
+         $4, $5, $6, $7, 'broad_targeted', 0, $4, $5, ''
+       )`,
+      [
+        `${jobId}-wait-${index}`,
+        jobId,
+        `THop-${jobId}-${index}`,
+        targetTimestamp.getTime(),
+        targetTimestamp,
+        requiredFor,
+        status
+      ]
+    );
+  }
+}
+
+async function repositoryWaitParentRow(db: pg.Pool, id: string): Promise<Record<string, unknown>> {
+  const result = await db.query(
+    `select id, status, progress_json, result_json, last_error, started_at, completed_at, updated_at
+     from forensic_check_jobs where id = $1`,
+    [id]
+  );
+  return result.rows[0];
+}
+
+async function waitForBlockedWaitUpsert(db: pg.Pool): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await db.query(
+      `select count(*)::integer as count
+       from pg_stat_activity
+       where pid <> pg_backend_pid()
+         and datname = current_database()
+         and state = 'active'
+         and wait_event_type = 'Lock'
+         and query ilike '%forensic_job_waits%'`
+    );
+    if ((result.rows[0]?.count ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for blocked forensic wait upsert");
+}
+
+async function withRepositoryWaitSchema(
+  label: string,
+  run: (db: pg.Pool) => Promise<void>
+): Promise<void> {
+  const schema = `plan3_repo_wait_${label}_${randomUUID().replaceAll("-", "")}`;
+  const admin = new pg.Pool({
+    connectionString: plan3RepositoryDatabaseUrl,
+    application_name: `${schema}_admin`.slice(0, 63)
+  });
+  let db: pg.Pool | null = null;
+  let primaryError: unknown;
+  try {
+    const database = await admin.query("select current_database() as name");
+    if (database.rows[0]?.name !== "tron_watch_plan3") {
+      throw new Error(`Refusing Plan 3 repository database ${String(database.rows[0]?.name)}`);
+    }
+    await admin.query(`create schema "${schema}"`);
+    db = new pg.Pool({
+      connectionString: plan3RepositoryDatabaseUrl,
+      application_name: `${schema}_client`.slice(0, 63),
+      options: `-c search_path=${schema}`
+    });
+    await installRepositoryWaitSchema(db);
+    await run(db);
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const cleanupErrors: unknown[] = [];
+  if (db) {
+    try {
+      await db.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  try {
+    await admin.query(`drop schema if exists "${schema}" cascade`);
+    const cleanup = await admin.query("select to_regnamespace($1) as schema_name", [schema]);
+    if (cleanup.rows[0]?.schema_name !== null) {
+      throw new Error(`Plan 3 repository schema cleanup failed: ${schema}`);
+    }
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await admin.end();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  if (primaryError && cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [primaryError, ...cleanupErrors],
+      `Plan 3 repository scenario and cleanup failed: ${schema}`
+    );
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, `Plan 3 repository cleanup failed: ${schema}`);
+  }
+}
+
+plan3PostgresDescribe("forensic wait reconciliation PostgreSQL races", () => {
+  it("reconciles all-ready waits once and permits exactly one subsequent claim", async () => {
+    await withRepositoryWaitSchema("all_ready", async (db) => {
+      const id = "where-all-ready";
+      await insertRepositoryWaitParent(db, { id });
+      await insertRepositoryWaitStatuses(db, id, ["ready", "ready", "ready"]);
+      const reconcile = await loadWaitReconciler();
+
+      const reconciliations = (await Promise.all([
+        reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 }),
+        reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 })
+      ])).flat();
+      expect(reconciliations).toEqual([{
+        parentJobId: id,
+        readyCount: 3,
+        terminalCount: 0,
+        cancelledCount: 0,
+        waitingCount: 0,
+        outcome: "resume_ready",
+        diagnosticCode: null
+      }]);
+      await expect(reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 }))
+        .resolves.toEqual([]);
+
+      const row = await repositoryWaitParentRow(db, id);
+      expect(row).toMatchObject({
+        status: "queued",
+        result_json: { fixtureId: id },
+        progress_json: {
+          jobPhase: "reading_local_index",
+          preservedLegacyField: { keep: true },
+          waitReconciliation: {
+            parentJobId: id,
+            readyCount: 3,
+            terminalCount: 0,
+            cancelledCount: 0,
+            waitingCount: 0,
+            outcome: "resume_ready",
+            diagnosticCode: null
+          }
+        }
+      });
+      expect(buildForensicRuntimeContractProjection(row.progress_json).waitReconciliation)
+        .toEqual(reconciliations[0]);
+
+      const claims = await Promise.all([
+        claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }),
+        claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] })
+      ]);
+      expect(claims.filter((claim) => claim !== null)).toHaveLength(1);
+      expect(claims.find((claim) => claim !== null)).toMatchObject({ id, status: "running" });
+    });
+  });
+
+  it.each(["insert", "reset"] as const)(
+    "serializes reconciliation with concurrent child %s",
+    async (mode) => {
+      await withRepositoryWaitSchema(`child_${mode}`, async (db) => {
+        const id = `where-child-${mode}`;
+        await insertRepositoryWaitParent(db, { id });
+        await insertRepositoryWaitStatuses(
+          db,
+          id,
+          mode === "reset" ? ["ready", "ready"] : ["ready"]
+        );
+        const targetTimestamp = new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000);
+        const gateKey = 8_301_003;
+        await db.query(`
+          create function hold_forensic_wait_upsert() returns trigger
+          language plpgsql as $$
+          begin
+            perform pg_advisory_xact_lock(${gateKey});
+            return new;
+          end
+          $$;
+          create trigger hold_forensic_wait_upsert_trigger
+          after insert or update on forensic_job_waits
+          for each row execute function hold_forensic_wait_upsert();
+        `);
+        const gate = await db.connect();
+        await gate.query("select pg_advisory_lock($1)", [gateKey]);
+        let upsertError: unknown;
+        const upsertPromise = upsertForensicJobWait(db, {
+          jobId: id,
+          address: `THop-${id}-1`,
+          targetTimestamp,
+          requiredFor: "where_hop"
+        }).catch((error) => {
+          upsertError = error;
+        });
+
+        try {
+          await waitForBlockedWaitUpsert(db);
+          const reconcile = await loadWaitReconciler();
+          await expect(reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 }))
+            .resolves.toEqual([]);
+        } finally {
+          await gate.query("select pg_advisory_unlock($1)", [gateKey]);
+          gate.release();
+          await upsertPromise;
+        }
+        expect(upsertError).toBeUndefined();
+
+        const reconcile = await loadWaitReconciler();
+        const afterChild = await reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 });
+        expect(afterChild).toEqual([expect.objectContaining({
+          parentJobId: id,
+          outcome: "unchanged",
+          waitingCount: 1
+        })]);
+        expect(await repositoryWaitParentRow(db, id)).toMatchObject({
+          status: "queued",
+          progress_json: { jobPhase: "waiting_for_targeted_index" }
+        });
+      });
+    }
+  );
+
+  it("rejects child registration after the parent leaves its waiting phase", async () => {
+    await withRepositoryWaitSchema("late_child", async (db) => {
+      const id = "where-late-child";
+      await insertRepositoryWaitParent(db, { id });
+      await insertRepositoryWaitStatuses(db, id, ["ready"]);
+      const reconcile = await loadWaitReconciler();
+      await expect(reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 }))
+        .resolves.toEqual([expect.objectContaining({ parentJobId: id, outcome: "resume_ready" })]);
+
+      await expect(upsertForensicJobWait(db, {
+        jobId: id,
+        address: `THop-${id}-late`,
+        targetTimestamp: new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000),
+        requiredFor: "where_hop"
+      })).rejects.toThrow("forensic_job_wait_parent_not_waitable");
+      const waits = await db.query(
+        `select status, count(*)::integer as count
+         from forensic_job_waits where job_id = $1 group by status order by status`,
+        [id]
+      );
+      expect(waits.rows).toEqual([{ status: "ready", count: 1 }]);
+    });
+  });
+
+  it("allows first wait registration while running and never reopens final parents", async () => {
+    await withRepositoryWaitSchema("wait_parent_fence", async (db) => {
+      const runningId = "where-running-registration";
+      await insertRepositoryWaitParent(db, { id: runningId, status: "running" });
+      await expect(upsertForensicJobWait(db, {
+        jobId: runningId,
+        address: `THop-${runningId}`,
+        targetTimestamp: new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000),
+        requiredFor: "where_hop"
+      })).resolves.toBeUndefined();
+      const runningWaits = await db.query(
+        "select status from forensic_job_waits where job_id = $1",
+        [runningId]
+      );
+      expect(runningWaits.rows).toEqual([{ status: "waiting" }]);
+
+      for (const status of ["partial", "completed", "failed", "cancelled"] as const) {
+        const id = `where-final-registration-${status}`;
+        await insertRepositoryWaitParent(db, { id, status });
+        await expect(upsertForensicJobWait(db, {
+          jobId: id,
+          address: `THop-${id}`,
+          targetTimestamp: new Date(PLAN3_RECONCILIATION_NOW.getTime() - 1_000),
+          requiredFor: "where_hop"
+        })).rejects.toThrow("forensic_job_wait_parent_not_waitable");
+      }
+      const finalWaits = await db.query(
+        "select count(*)::integer as count from forensic_job_waits where job_id like 'where-final-registration-%'"
+      );
+      expect(finalWaits.rows[0]?.count).toBe(0);
+    });
+  });
+
+  it("rotates unchanged parents so an actionable parent beyond the limit is reached", async () => {
+    await withRepositoryWaitSchema("bounded_fairness", async (db) => {
+      const blockerIds = ["where-a-blocker", "where-b-blocker"];
+      const actionableId = "where-z-actionable";
+      for (const [index, id] of [...blockerIds, actionableId].entries()) {
+        await insertRepositoryWaitParent(db, { id });
+        await insertRepositoryWaitStatuses(db, id, [index < blockerIds.length ? "waiting" : "ready"]);
+        const createdAt = new Date(`2026-07-15T10:0${index}:00.000Z`);
+        await db.query(
+          "update forensic_check_jobs set created_at = $2, updated_at = $2 where id = $1",
+          [id, createdAt]
+        );
+      }
+      const reconcile = await loadWaitReconciler();
+
+      const first = await reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 2 });
+      expect(first).toHaveLength(2);
+      expect(first.every((item) => item.outcome === "unchanged")).toBe(true);
+
+      const second = await reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 2 });
+      expect(second).toContainEqual(expect.objectContaining({
+        parentJobId: actionableId,
+        outcome: "resume_ready"
+      }));
+      expect(await repositoryWaitParentRow(db, actionableId)).toMatchObject({
+        progress_json: { jobPhase: "reading_local_index" }
+      });
+    });
+  });
+
+  it("reconciles mixed ready-terminal waits through provider-limited phase", async () => {
+    await withRepositoryWaitSchema("mixed_terminal", async (db) => {
+      const id = "incoming-mixed-terminal";
+      await insertRepositoryWaitParent(db, { id, kind: "incoming_deposit_check" });
+      await insertRepositoryWaitStatuses(db, id, ["ready", "terminal", "ready"], "incoming_hop");
+      const reconcile = await loadWaitReconciler();
+
+      await expect(reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 })).resolves.toEqual([{
+        parentJobId: id,
+        readyCount: 2,
+        terminalCount: 1,
+        cancelledCount: 0,
+        waitingCount: 0,
+        outcome: "resume_terminal",
+        diagnosticCode: null
+      }]);
+      expect(await repositoryWaitParentRow(db, id)).toMatchObject({
+        status: "queued",
+        progress_json: {
+          jobPhase: "provider_limited",
+          waitReconciliation: { outcome: "resume_terminal", terminalCount: 1 }
+        }
+      });
+    });
+  });
+
+  it("keeps a parent waiting when any child wait is waiting", async () => {
+    await withRepositoryWaitSchema("still_waiting", async (db) => {
+      const id = "where-still-waiting";
+      await insertRepositoryWaitParent(db, { id });
+      await insertRepositoryWaitStatuses(db, id, ["ready", "terminal", "waiting"]);
+      const reconcile = await loadWaitReconciler();
+
+      await expect(reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 })).resolves.toEqual([{
+        parentJobId: id,
+        readyCount: 1,
+        terminalCount: 1,
+        cancelledCount: 0,
+        waitingCount: 1,
+        outcome: "unchanged",
+        diagnosticCode: null
+      }]);
+      expect(await repositoryWaitParentRow(db, id)).toMatchObject({
+        status: "queued",
+        progress_json: {
+          jobPhase: "waiting_for_targeted_index",
+          waitReconciliation: { outcome: "unchanged", waitingCount: 1 }
+        }
+      });
+      await expect(claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }))
+        .resolves.toBeNull();
+    });
+  });
+
+  it("diagnoses cancelled and missing wait sets without resuming either parent", async () => {
+    await withRepositoryWaitSchema("contradictory", async (db) => {
+      const cancelledId = "where-cancelled-wait";
+      const missingId = "where-missing-waits";
+      await insertRepositoryWaitParent(db, { id: cancelledId });
+      await insertRepositoryWaitStatuses(db, cancelledId, ["ready", "cancelled", "ready"]);
+      await insertRepositoryWaitParent(db, { id: missingId });
+      const reconcile = await loadWaitReconciler();
+
+      const reconciliations = await reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 });
+      expect(reconciliations).toHaveLength(2);
+      expect(reconciliations).toEqual(expect.arrayContaining([
+        {
+          parentJobId: cancelledId,
+          readyCount: 2,
+          terminalCount: 0,
+          cancelledCount: 1,
+          waitingCount: 0,
+          outcome: "contradictory",
+          diagnosticCode: "cancelled_wait_present"
+        },
+        {
+          parentJobId: missingId,
+          readyCount: 0,
+          terminalCount: 0,
+          cancelledCount: 0,
+          waitingCount: 0,
+          outcome: "contradictory",
+          diagnosticCode: "missing_wait_rows"
+        }
+      ]));
+      for (const id of [cancelledId, missingId]) {
+        expect(await repositoryWaitParentRow(db, id)).toMatchObject({
+          status: "queued",
+          progress_json: { jobPhase: "waiting_for_targeted_index" }
+        });
+      }
+      await expect(claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] }))
+        .resolves.toBeNull();
+    });
+  });
+
+  it("does not rewrite running or final parent rows", async () => {
+    await withRepositoryWaitSchema("parent_guards", async (db) => {
+      const statuses = ["running", "partial", "completed", "failed", "cancelled"] as const;
+      const before = new Map<string, Record<string, unknown>>();
+      for (const status of statuses) {
+        const id = `where-parent-${status}`;
+        await insertRepositoryWaitParent(db, { id, status });
+        await insertRepositoryWaitStatuses(db, id, ["ready", "ready"]);
+        before.set(id, await repositoryWaitParentRow(db, id));
+      }
+      const reconcile = await loadWaitReconciler();
+
+      await expect(reconcile(db, { now: PLAN3_RECONCILIATION_NOW, limit: 10 }))
+        .resolves.toEqual([]);
+      for (const status of statuses) {
+        const id = `where-parent-${status}`;
+        expect(await repositoryWaitParentRow(db, id)).toEqual(before.get(id));
+      }
+    });
+  });
+});
+
+afterAll(async () => {
+  if (!requirePlan3Postgres) return;
+  const admin = new pg.Pool({ connectionString: plan3RepositoryDatabaseUrl });
+  try {
+    const database = await admin.query("select current_database() as name");
+    if (database.rows[0]?.name !== "tron_watch_plan3") {
+      throw new Error(`Refusing Plan 3 repository cleanup database ${String(database.rows[0]?.name)}`);
+    }
+    const schemas = await admin.query(
+      "select schema_name from information_schema.schemata where schema_name like 'plan3_repo_wait_%'"
+    );
+    if (schemas.rows.length > 0) {
+      throw new Error(`Plan 3 repository cleanup audit failed: schemas=${schemas.rows.length}`);
+    }
+  } finally {
+    await admin.end();
+  }
 });

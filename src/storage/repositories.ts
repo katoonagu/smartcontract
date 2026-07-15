@@ -49,7 +49,8 @@ import type {
   WalletApprovalSpenderType,
   TronTransferEvent,
   WalletAlertMode,
-  WatchedWallet
+  WatchedWallet,
+  WaitReconciliationResultV1
 } from "../types";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type {
@@ -71,6 +72,7 @@ import {
   validateApprovalAllowanceStateV2
 } from "../approvals/allowanceState";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
+import { buildForensicRuntimeContractProjection } from "../forensics/forensicJobProgress";
 import type { Db } from "./db";
 
 export type {
@@ -6724,17 +6726,30 @@ export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput)
     ? input.windowEndTimestamp ?? input.targetTimestamp
     : input.targetTimestamp;
   const candidateTxHash = candidateTxHashForIndex(input);
-  await db.query(
-    `insert into forensic_job_waits (
+  const result = await db.query(
+    `with locked_parent as materialized (
+       select job.id
+       from forensic_check_jobs job
+       where job.id = $1
+         and (
+           job.status = 'running'
+           or (
+             job.status = 'queued'
+             and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+           )
+         )
+       for update of job
+     )
+     insert into forensic_job_waits (
        job_id, wait_type, address, coverage_mode, target_timestamp_ms, target_timestamp,
        required_for, status, status_reason, last_error,
        request_kind, window_start_timestamp_ms, window_start_timestamp,
        window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
      )
-     values (
-       $1, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7,
+     select
+       locked_parent.id, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7,
        $8, $9, $10, $11, $12, $13, $14
-     )
+     from locked_parent
      on conflict (
        job_id, wait_type, address, coverage_mode, target_timestamp_ms,
        request_kind, window_start_timestamp_ms, candidate_tx_hash
@@ -6768,6 +6783,9 @@ export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput)
       candidateTxHash
     ]
   );
+  if ((result.rowCount ?? 0) === 0) {
+    throw new Error("forensic_job_wait_parent_not_waitable");
+  }
 }
 
 export async function markForensicJobWaitCancelledForJob(db: Db, input: { jobId: string }): Promise<number> {
@@ -6801,138 +6819,164 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
   const requestKind = requestKindForIndex(input);
   const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
   const candidateTxHash = candidateTxHashForIndex(input);
-  const phase = requestKind === "candidate_window" || input.indexStatus === "complete"
-    ? "reading_local_index"
-    : "provider_limited";
   const waitStatus: ForensicJobWaitStatus = input.indexStatus === "complete" ? "ready" : "terminal";
-  const nowIso = new Date().toISOString();
   const result = await db.query(
-    `with affected_waits as (
-       update forensic_job_waits wait
-       set status = $5,
-         status_reason = $6,
-         last_error = $7,
-         updated_at = now()
-       where wait.wait_type = 'targeted_usdt_history'
-         and wait.address = $1
-         and wait.coverage_mode = 'targeted'
-         and (
-           ($24::text = 'candidate_window'
-             and wait.request_kind = $24
-             and wait.target_timestamp_ms = $2
-             and wait.window_start_timestamp_ms = $25
-             and coalesce(wait.candidate_tx_hash, '') = $26)
-           or ($24::text <> 'candidate_window'
-             and wait.request_kind = 'broad_targeted'
-             and wait.target_timestamp_ms <= $2)
-         )
-         and wait.status = 'waiting'
-       returning job_id
-     ),
-     candidate_matching_waits as (
-       select wait.job_id
-       from forensic_job_waits wait
-       where $24::text = 'candidate_window'
-         and wait.wait_type = 'targeted_usdt_history'
-         and wait.address = $1
-         and wait.coverage_mode = 'targeted'
-         and wait.request_kind = $24
-         and wait.target_timestamp_ms = $2
-         and wait.window_start_timestamp_ms = $25
-         and coalesce(wait.candidate_tx_hash, '') = $26
-         and wait.status in ('ready', 'terminal')
-     ),
-     wakeup_waits as (
-       select job_id from affected_waits
-       union
-       select job_id from candidate_matching_waits
-     ),
-     ready_jobs as (
-       select distinct wakeup.job_id
-       from wakeup_waits wakeup
-       where $24::text <> 'candidate_window'
-         or not exists (
-           select 1
-           from forensic_job_waits blocker
-           where blocker.job_id = wakeup.job_id
-             and blocker.wait_type = 'targeted_usdt_history'
-             and blocker.request_kind = 'candidate_window'
-             and blocker.status = 'waiting'
-             and not (
-               blocker.address = $1
-               and blocker.target_timestamp_ms = $2
-               and blocker.window_start_timestamp_ms = $25
-               and coalesce(blocker.candidate_tx_hash, '') = $26
-             )
-         )
-     )
-     update forensic_check_jobs job
-     set progress_json = progress_json
-       || jsonb_build_object(
-         'jobPhase', $3::text,
-         'jobHeartbeatAt', $4::text,
-         'targetedIndex', coalesce(progress_json->'targetedIndex', '{}'::jsonb)
-           || jsonb_build_object(
-             'phase', $3::text,
-             'waitingFor', null,
-             'lastIndexedAddress', $1::text,
-             'lastIndexedTargetTimestamp', $8::text,
-             'lastIndexStatus', $9::text,
-             'statusReason', $6::text,
-             'lastError', $7::text,
-             'pagesFetched', $10::integer,
-             'transfersFetched', $11::integer,
-             'oldestFetchedTransferAt', $12::text,
-             'newestFetchedTransferAt', $13::text,
-             'targetTimestamp', $8::text,
-             'budgetPages', $14::integer,
-             'attemptCount', $15::integer,
-             'maxAttempts', $16::integer,
-             'retryCount', $17::integer,
-             'providerCapHit', $18::boolean,
-             'budgetExhausted', $19::boolean,
-             'providerInconsistent', $20::boolean,
-             'requestCount', $10::integer,
-             'rateLimitedCount', $21::integer,
-             'forbiddenCount', $22::integer,
-             'serverErrorCount', $23::integer
-           )
-     ),
-       last_error = $7,
+    `update forensic_job_waits wait
+     set status = $3,
+       status_reason = $4,
+       last_error = $5,
        updated_at = now()
-     where job.id in (select job_id from ready_jobs)
-       and job.status = 'queued'
-       and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'`,
+     where wait.wait_type = 'targeted_usdt_history'
+       and wait.address = $1
+       and wait.coverage_mode = 'targeted'
+       and (
+         ($6::text = 'candidate_window'
+           and wait.request_kind = $6
+           and wait.target_timestamp_ms = $2
+           and wait.window_start_timestamp_ms = $7
+           and coalesce(wait.candidate_tx_hash, '') = $8)
+         or ($6::text <> 'candidate_window'
+           and wait.request_kind = 'broad_targeted'
+           and wait.target_timestamp_ms <= $2)
+       )
+       and wait.status = 'waiting'`,
     [
       input.address,
       input.targetTimestamp.getTime(),
-      phase,
-      nowIso,
       waitStatus,
       input.statusReason,
       input.lastError,
-      input.targetTimestamp.toISOString(),
-      input.indexStatus,
-      input.state?.fetchedPageCount ?? null,
-      input.state?.fetchedTransferCount ?? null,
-      input.state?.oldestTransferAt?.toISOString() ?? null,
-      input.state?.newestTransferAt?.toISOString() ?? null,
-      input.state?.budgetPages ?? null,
-      input.state?.attemptCount ?? null,
-      input.state?.maxAttempts ?? null,
-      input.state?.retryCount ?? null,
-      input.state?.providerCapHit ?? null,
-      input.state?.budgetExhausted ?? null,
-      input.state?.providerInconsistent ?? null,
-      targetedRateLimitedCount(input.statusReason, input.lastError),
-      targetedForbiddenCount(input.lastError),
-      targetedServerErrorCount(input.lastError),
       requestKind,
       windowStartTimestampMs,
       candidateTxHash
     ]
   );
   return result.rowCount ?? 0;
+}
+
+const MAX_WAIT_RECONCILIATION_BATCH = 100;
+
+export async function reconcileWaitingForensicCheckJobs(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<WaitReconciliationResultV1[]> {
+  if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
+    throw new RangeError("now must be a valid Date");
+  }
+  if (!Number.isSafeInteger(input.limit)
+    || input.limit < 1
+    || input.limit > MAX_WAIT_RECONCILIATION_BATCH) {
+    throw new RangeError(`limit must be an integer from 1 to ${MAX_WAIT_RECONCILIATION_BATCH}`);
+  }
+
+  const client = await db.connect();
+  let transactionStarted = false;
+  try {
+    await client.query("begin");
+    transactionStarted = true;
+    const locked = await client.query(
+      `select job.id
+       from forensic_check_jobs job
+       where job.status = 'queued'
+         and job.kind in ('where_is_money_check', 'incoming_deposit_check')
+         and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       order by job.updated_at asc, job.priority desc, job.created_at asc, job.id asc
+       limit $1
+       for update of job skip locked`,
+      [input.limit]
+    );
+    const parentJobIds = locked.rows.map((row) => String(row.id));
+    if (parentJobIds.length === 0) {
+      await client.query("commit");
+      transactionStarted = false;
+      return [];
+    }
+
+    const result = await client.query(
+      `with candidate_parents as (
+         select locked.id, locked.position
+         from unnest($2::text[]) with ordinality as locked(id, position)
+       ),
+       wait_counts as (
+         select parent.id as parent_job_id,
+           min(parent.position) as position,
+           (count(wait.id) filter (where wait.status = 'ready'))::integer as ready_count,
+           (count(wait.id) filter (where wait.status = 'terminal'))::integer as terminal_count,
+           (count(wait.id) filter (where wait.status = 'cancelled'))::integer as cancelled_count,
+           (count(wait.id) filter (where wait.status = 'waiting'))::integer as waiting_count
+         from candidate_parents parent
+         left join forensic_job_waits wait on wait.job_id = parent.id
+         group by parent.id
+       ),
+       decisions as (
+         select counts.*,
+           case
+             when counts.waiting_count > 0 then 'unchanged'
+             when counts.ready_count + counts.terminal_count
+               + counts.cancelled_count + counts.waiting_count = 0 then 'contradictory'
+             when counts.cancelled_count > 0 then 'contradictory'
+             when counts.terminal_count > 0 then 'resume_terminal'
+             else 'resume_ready'
+           end as outcome,
+           case
+             when counts.ready_count + counts.terminal_count
+               + counts.cancelled_count + counts.waiting_count = 0 then 'missing_wait_rows'
+             when counts.waiting_count = 0 and counts.cancelled_count > 0 then 'cancelled_wait_present'
+             else null
+           end as diagnostic_code
+         from wait_counts counts
+       ),
+       updated_jobs as (
+         update forensic_check_jobs job
+         set progress_json = job.progress_json || jsonb_build_object(
+             'jobPhase', case decisions.outcome
+               when 'resume_ready' then 'reading_local_index'
+               when 'resume_terminal' then 'provider_limited'
+               else 'waiting_for_targeted_index'
+             end,
+             'waitReconciliation', jsonb_build_object(
+               'parentJobId', decisions.parent_job_id,
+               'readyCount', decisions.ready_count,
+               'terminalCount', decisions.terminal_count,
+               'cancelledCount', decisions.cancelled_count,
+               'waitingCount', decisions.waiting_count,
+               'outcome', decisions.outcome,
+               'diagnosticCode', decisions.diagnostic_code
+             )
+           ),
+           updated_at = $1::timestamptz
+         from decisions
+         where job.id = decisions.parent_job_id
+           and job.status = 'queued'
+           and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+         returning job.id, job.progress_json
+       )
+       select updated.progress_json
+       from updated_jobs updated
+       join decisions on decisions.parent_job_id = updated.id
+       order by decisions.position`,
+      [input.now, parentJobIds]
+    );
+    const snapshots = result.rows.map((row) => {
+      const snapshot = buildForensicRuntimeContractProjection(row.progress_json).waitReconciliation;
+      if (!snapshot) throw new Error("Invalid wait reconciliation progress snapshot");
+      return snapshot;
+    });
+    await client.query("commit");
+    transactionStarted = false;
+    return snapshots;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("rollback");
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Wait reconciliation rollback failed");
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function patchWaitingForensicJobsTargetedIndexProgress(
