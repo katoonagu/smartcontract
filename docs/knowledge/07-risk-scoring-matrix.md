@@ -251,9 +251,9 @@ Where score and `REVIEW` decision. Dense-hop materiality is not a clean verdict:
 the unresolved branch stays visible in Admin and Telegram and is excluded from
 decisive clean or bad evidence.
 
-Stored jobs without the exact v2 marker keep their saved score and decision.
-Bot and Admin do not silently recalculate them under current policy; a fresh
-run is required.
+Stored jobs without the current exact v3 marker, including previous-runtime v2
+and unversioned jobs, remain legacy. Their saved score and decision are not
+recalculated, and no `ScoreAnchorV2` is synthesized; a fresh run is required.
 
 ## Current Direction
 

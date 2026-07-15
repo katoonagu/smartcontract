@@ -237,6 +237,7 @@ describe("Plan 2 remediation scoring compatibility", () => {
       finalDecision: "DECLINE",
       scoreValid: true,
       matrixScore: {
+        policyVersion: "scoring-signal-matrix-v2",
         policyScore: 78,
         matrixDecision: "DECLINE",
         winningRow: "source_policy"
@@ -260,6 +261,7 @@ describe("Plan 2 remediation scoring compatibility", () => {
       facts: []
     } as any);
 
+    expect(legacy.matrixScore.policyVersion).toBe("scoring-signal-matrix-v2");
     expect(result).toEqual({ anchor: null, diagnostic: null });
     expect(legacy).not.toHaveProperty("scoreAnchorV2");
   });
