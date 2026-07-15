@@ -509,6 +509,100 @@ export type DeepSecondLayerRelationshipProfile = {
   counters: DeepSecondLayerRelationshipCounters;
 };
 
+export type TelegramDeliveryRetryableErrorCode =
+  | "telegram_timeout"
+  | "telegram_rate_limited"
+  | "telegram_server_error"
+  | "telegram_network_error"
+  | "telegram_unknown_retryable";
+
+export type TelegramDeliveryPermanentErrorCode =
+  | "telegram_chat_forbidden"
+  | "telegram_bad_request"
+  | "telegram_attempts_exhausted";
+
+export type TelegramDeliveryErrorCode =
+  | TelegramDeliveryRetryableErrorCode
+  | TelegramDeliveryPermanentErrorCode;
+
+export type TelegramDeliveryStateV1 = {
+  status: "pending" | "sent" | "retryable" | "failed";
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  sentAt: string | null;
+  lastError: TelegramDeliveryErrorCode | null;
+  messageFingerprint: string;
+};
+
+export type WaitReconciliationResultV1 = {
+  parentJobId: string;
+  readyCount: number;
+  terminalCount: number;
+  cancelledCount: number;
+  waitingCount: number;
+  outcome: "resume_ready" | "resume_terminal" | "unchanged" | "contradictory";
+  diagnosticCode: "missing_wait_rows" | "cancelled_wait_present" | null;
+};
+
+export type TelegramMessagePayloadV1 = {
+  version: "telegram-message-payload-v1";
+  chatId: string;
+  text: string;
+  parseMode: "HTML" | null;
+  replyMarkup: Record<string, unknown> | null;
+};
+
+export type TelegramDeliveryEffectV1 = null | {
+  kind: "incoming_user_alert";
+  watchedWalletId: string;
+  incomingTxHash: string;
+};
+
+export type TelegramDeliveryClaimV1 = {
+  token: string;
+  attempt: number;
+  claimedAt: string;
+  leaseExpiresAt: string;
+};
+
+export type ForensicTelegramDeliveryV1 = {
+  version: "forensic-telegram-delivery-v1";
+  payload: TelegramMessagePayloadV1;
+  effect: TelegramDeliveryEffectV1;
+  state: TelegramDeliveryStateV1;
+  claim: TelegramDeliveryClaimV1 | null;
+};
+
+export type DeepSecondLayerContextV1 = {
+  version: "deep-second-layer-context-v1";
+  baseResultFingerprint: string;
+  refreshedAt: string;
+  profile: DeepSecondLayerRelationshipProfile;
+};
+
+export type RecoveredForensicDeliveryIntentReasonCode =
+  | "stale_running_retry_exhausted"
+  | "stale_running_incoming_retry_exhausted"
+  | "stale_running_delivery_sensitive_phase";
+
+export type RecoveredForensicDeliveryIntentPreparationErrorCode =
+  | "stale_intent_context_unavailable"
+  | "stale_intent_payload_build_failed"
+  | "stale_intent_unknown_retryable"
+  | "stale_intent_preparation_attempts_exhausted";
+
+export type RecoveredForensicDeliveryIntentV1 = {
+  version: "recovered-forensic-delivery-intent-v1";
+  kind: "stale_failure";
+  createdAt: string;
+  reasonCode: RecoveredForensicDeliveryIntentReasonCode;
+  preparationStatus: "pending" | "retryable" | "failed";
+  preparationAttemptCount: number;
+  lastPreparationAttemptAt: string | null;
+  nextPreparationAttemptAt: string | null;
+  lastPreparationError: RecoveredForensicDeliveryIntentPreparationErrorCode | null;
+};
+
 export type TronAddressUsdtIndexState = {
   address: string;
   tokenContract: string;
