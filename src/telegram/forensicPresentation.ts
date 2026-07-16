@@ -132,6 +132,7 @@ export const TELEGRAM_FACT_TEXT_KEYS_V1 = [
   "bridge_shared_liquidity_inbound",
   "collector_context_only",
   "collector_disjoint_independent_signal",
+  "contract_exact_debit_confirmed",
   "fast_behavior_context",
   "gasfree_account_structural",
   "htx_historical_policy_context",

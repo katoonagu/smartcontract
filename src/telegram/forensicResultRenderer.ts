@@ -226,6 +226,11 @@ function preliminaryFactLines(fact: NarrativeFactV2, locale: "ru" | "en"): strin
       ? "Кроме коллекторского поведения найден отдельный независимый риск-сигнал."
       : "A separate independent risk signal was found in addition to the collector behavior."];
   }
+  if (fact.factTextKey === "contract_exact_debit_confirmed") {
+    return [ru
+      ? "Подтверждено списание USDT через проверяемый контракт. Сохранённые данные не указывают сумму, кошелёк-источник или получателя."
+      : "A USDT debit through the checked contract was confirmed. The saved evidence does not identify an amount, source wallet, or receiver."];
+  }
   if (fact.factTextKey === "low_balance_latest_five_principal" && fact.amountRaw !== null && fact.txCount !== null) {
     return [ru
       ? `Проверены последние ${fact.txCount} движений основной суммы; общий объём — ${formatRaw(fact.amountRaw, locale)} USDT.`
@@ -486,7 +491,7 @@ function renderContract(result: TelegramForensicResultV1): string {
       : authority === "verify20_fingerprint"
         ? "У контракта найден точный Verify20-шаблон массовых списаний с множества кошельков."
         : authority === "exact_debit"
-          ? "Найдена точная цепочка списания USDT через этот контракт и поступления средств первому получателю."
+          ? "Подтверждено списание USDT через проверяемый контракт. Сохранённые данные не указывают сумму, кошелёк-источник или получателя."
           : authority === "provider_risk"
             ? "Провайдер пометил контракт как рискованный; эта метка подтверждена сохранёнными данными."
             : knownServiceAction

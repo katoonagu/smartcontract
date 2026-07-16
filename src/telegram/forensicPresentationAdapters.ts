@@ -106,6 +106,7 @@ const FACT_REQUIREMENTS: Readonly<Record<string, FactRequirements>> = {
   where_preliminary_bridge_shared_liquidity: { amount: true, share: true, addresses: 2 },
   collector_context_only: { amount: true, share: true, txCount: true },
   collector_disjoint_independent_signal: {},
+  contract_exact_debit_confirmed: {},
   htx_historical_policy_context: { amount: true, share: true, txCount: true, addresses: 2 },
   low_balance_latest_five_principal: { amount: true, txCount: true },
   approval_drain_roles_distinct: { amount: true, txCount: true, addresses: 3 },
@@ -375,7 +376,10 @@ type ContractFactSemantic = {
 
 function expectedContractSemantics(value: ContractDecisionV2["deterministic"]): readonly ContractFactSemantic[] {
   if (value.authority === "exact_debit") {
-    return [{ factKind: "approval_drain_roles", factTextKey: "approval_drain_roles_distinct", evidenceKind: "exact_debit" }];
+    return [
+      { factKind: "contract_exact_debit", factTextKey: "contract_exact_debit_confirmed", evidenceKind: "exact_debit" },
+      { factKind: "approval_drain_roles", factTextKey: "approval_drain_roles_distinct", evidenceKind: "exact_debit" }
+    ];
   }
   if (value.authority === "verify20_fingerprint") {
     return [{
