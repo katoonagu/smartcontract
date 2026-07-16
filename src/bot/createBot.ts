@@ -44,6 +44,7 @@ import {
 } from "./walletNarrativeSummary";
 import {
   buildWherePreliminaryNarrative,
+  renderWherePreliminaryNarrative,
   type WherePreliminaryDiagnosticCode
 } from "./wherePreliminaryNarrative";
 import type { Db } from "../storage/db";
@@ -2214,6 +2215,13 @@ type WhereIsMoneyUserDeliveryOptions = {
   onPreliminaryDiagnostic?: (diagnostic: WherePreliminaryDiagnostic) => void;
 };
 
+function hasWherePreliminaryPresentationV2(report: WhereIsMoneyReport): boolean {
+  return Object.hasOwn(report, "scoreAnchorV2") ||
+    Object.hasOwn(report, "narrativeFactsV2") ||
+    Object.hasOwn(report, "scoringEvidenceV2") ||
+    Object.hasOwn(report, "coverageV2");
+}
+
 function formatWhereIsMoneyPreliminaryReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
@@ -2244,24 +2252,29 @@ function formatWhereIsMoneyPreliminaryReport(
       // Delivery diagnostics are best-effort and must not block the user message.
     }
   }
-
-  return telegramHtmlMessage([
-    bold(locale === "en" ? "Where Is Money — preliminary result" : "Откуда деньги — предварительный результат"),
-    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
-    narrative.score === null
-      ? bold(locale === "en" ? "Preliminary risk was not calculated" : "Предварительный риск не рассчитан")
-      : `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(levelFromScore(narrative.score))} ${code(`${narrative.score}/100`)}`,
-    narrative.sections.findings.length > 0
-      ? section(locale === "en" ? "Finding" : "Что нашли", [bulletList(narrative.sections.findings.slice(0, 2))])
-      : null,
-    narrative.sections.conclusion
-      ? section(locale === "en" ? "Conclusion" : "Вывод", [escapeHtml(narrative.sections.conclusion)])
-      : null,
-    narrative.sections.coverage
-      ? section(locale === "en" ? "Coverage limits" : "Границы проверки", [escapeHtml(narrative.sections.coverage)])
-      : null,
-    runtimeMarkerLine(options.runtimeLabel)
-  ].filter((line): line is string => Boolean(line)));
+  if (!hasWherePreliminaryPresentationV2(report)) {
+    return telegramHtmlMessage([
+      bold(locale === "en" ? "Where Is Money — preliminary result" : "Откуда деньги — предварительный результат"),
+      `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+      narrative.score === null
+        ? bold(locale === "en" ? "Preliminary risk was not calculated" : "Предварительный риск не рассчитан")
+        : `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(levelFromScore(narrative.score))} ${code(`${narrative.score}/100`)}`,
+      narrative.sections.findings.length > 0
+        ? section(locale === "en" ? "Finding" : "Что нашли", [bulletList(narrative.sections.findings.slice(0, 2))])
+        : null,
+      narrative.sections.conclusion
+        ? section(locale === "en" ? "Conclusion" : "Вывод", [escapeHtml(narrative.sections.conclusion)])
+        : null,
+      narrative.sections.coverage
+        ? section(locale === "en" ? "Coverage limits" : "Границы проверки", [escapeHtml(narrative.sections.coverage)])
+        : null,
+      runtimeMarkerLine(options.runtimeLabel)
+    ].filter((line): line is string => Boolean(line)));
+  }
+  return telegramHtmlMessage([renderWherePreliminaryNarrative(report, {
+    locale,
+    evaluatedAt: job.updatedAt.toISOString()
+  })]);
 }
 
 export function formatWhereIsMoneyUserDeliveryReport(

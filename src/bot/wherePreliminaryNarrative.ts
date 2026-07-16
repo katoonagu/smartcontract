@@ -1,10 +1,14 @@
 import type {
+  NarrativeFactV2,
   RiskLayerScore,
   SourcePolicyEvidence,
   WhereIsMoneyAgeSignal,
   WhereIsMoneyHardBadEvidence,
   WhereIsMoneyReport
 } from "../types";
+import { adaptTelegramForensicResult } from "../telegram/forensicPresentationAdapters";
+import { renderTelegramForensicResult } from "../telegram/forensicResultRenderer";
+import type { TelegramForensicResultV1 } from "../telegram/forensicPresentation";
 import {
   approvalDrainRoleFact,
   buildPreliminaryNarrativeSections,
@@ -31,6 +35,91 @@ export type WherePreliminaryNarrative = {
   preferredFactId: string | null;
   diagnosticCode: WherePreliminaryDiagnosticCode | null;
 };
+
+type WherePreliminaryTelegramOptions = {
+  locale: WalletNarrativeLocale;
+  evaluatedAt: string;
+};
+
+function preliminaryLevel(score: number): "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" {
+  if (score >= 85) return "CRITICAL";
+  if (score >= 60) return "HIGH";
+  if (score >= 30) return "MEDIUM";
+  return "LOW";
+}
+
+function preliminaryRoutes(report: WhereIsMoneyReport) {
+  return (report.narrativeFactsV2 ?? []).flatMap((fact: NarrativeFactV2) => {
+    if (
+      fact.direction !== "incoming" && fact.direction !== "outgoing" ||
+      fact.amountRaw === null || fact.addresses.length !== 2
+    ) return [];
+    const [from, to] = fact.addresses;
+    if (!from || !to) return [];
+    return [{
+      routeId: `where-${fact.id}`,
+      direction: fact.direction === "incoming" ? "inbound" as const : "outbound" as const,
+      fromAddress: from.address,
+      toAddress: to.address,
+      amountRaw: fact.amountRaw,
+      asset: "USDT" as const,
+      share: fact.share,
+      transferCount: fact.txCount,
+      evidenceIds: [...fact.evidenceIds]
+    }];
+  });
+}
+
+function adaptWherePreliminaryNarrative(
+  report: WhereIsMoneyReport,
+  options: WherePreliminaryTelegramOptions
+): TelegramForensicResultV1 {
+  const validity = [report.scoreValid, report.assessment.scoreValid];
+  const anchor = !validity.includes(false) && validity.includes(true)
+    ? report.scoreAnchorV2 ?? null
+    : null;
+  const blocked = report.scoreBlockedReason ?? report.assessment.scoreBlockedReason ??
+    report.technicalStatus ?? report.assessment.technicalStatus ?? null;
+  const providerHistoryUnavailable = blocked !== null && [
+    "provider_error",
+    "rate_limited_after_retries",
+    "provider_inconsistent",
+    "provider_cap_unresolved",
+    "provider_limited",
+    "incoming_history_not_fetched"
+  ].includes(blocked);
+  return adaptTelegramForensicResult({
+    kind: "where_preliminary",
+    locale: options.locale,
+    evaluatedAt: options.evaluatedAt,
+    checkedWalletAddress: report.subjectAddress,
+    resultState: "preliminary",
+    scoreAnchorV2: anchor,
+    narrativeFactsV2: report.narrativeFactsV2 ?? [],
+    scoringEvidenceV2: report.scoringEvidenceV2 ?? [],
+    amlPresentation: anchor
+      ? { level: preliminaryLevel(anchor.score), actionTextKey: null }
+      : null,
+    routes: preliminaryRoutes(report),
+    coverageV2: report.coverageV2 ?? null,
+    legacyCoverage: report.coverageV2
+      ? null
+      : {
+          selectedCount: report.coverage.selectedInboundTxCount ?? null,
+          warningTextKey: "legacy_available_denominator_unsaved"
+        },
+    approvalInput: null,
+    contractDecision: null,
+    technicalLimitTextKey: providerHistoryUnavailable ? "provider_history_unavailable" : null
+  });
+}
+
+export function renderWherePreliminaryNarrative(
+  report: WhereIsMoneyReport,
+  options: WherePreliminaryTelegramOptions
+): string {
+  return renderTelegramForensicResult(adaptWherePreliminaryNarrative(report, options));
+}
 
 type WhereNarrativeDriver = {
   kind: string;
