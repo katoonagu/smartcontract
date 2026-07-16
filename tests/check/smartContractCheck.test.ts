@@ -10,7 +10,7 @@ import {
 import { activeAllowance, APPROVAL_TX, BRIDGERS, OWNER, SWAP_TX } from "../fixtures/forensics/remediationScoringCases";
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
-import type { ContractAnalysisCaseFile, ContractLlmVerdictSummary, RiskReport, ServiceClassification } from "../../src/types";
+import type { ContractAnalysisCaseFile, ContractDecisionEvidenceV1, ContractLlmVerdictSummary, RiskReport, ServiceClassification } from "../../src/types";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 
 const subjectAddress = "TContract11111111111111111111111111111";
@@ -1026,6 +1026,92 @@ describe("smart contract check", () => {
     expect(report.riskScore).toBe(35);
     expect(report.exactDrainProven).toBe(false);
     expect(report.contractDecisionV2?.deterministic.authority).toBe("context");
+  });
+
+  it("[Task5] saves the exact resolver evidence as a defensive copy", async () => {
+    const resolverEvidence: ContractDecisionEvidenceV1[] = [
+      {
+        id: "metadata:subject",
+        kind: "metadata_context",
+        subjectAddress,
+        spenderAddress: null,
+        tokenContract: null
+      },
+      {
+        id: "risk:provider",
+        kind: "provider_risk",
+        subjectAddress,
+        spenderAddress: null,
+        tokenContract: null
+      }
+    ];
+    const report = await checkSmartContractAddress({
+      address: subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile({ providerRisk: true }),
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: [],
+      contractDecisionEvidence: resolverEvidence
+    });
+
+    expect(report.contractDecisionV2?.deterministic).toMatchObject({
+      authority: "provider_risk",
+      evidenceIds: ["risk:provider"]
+    });
+    expect(report.contractDecisionEvidenceV1).toEqual(resolverEvidence);
+    expect(report.contractDecisionEvidenceV1).not.toBe(resolverEvidence);
+    expect(report.contractDecisionEvidenceV1?.[0]).not.toBe(resolverEvidence[0]);
+
+    resolverEvidence[1]!.id = "mutated-after-check";
+    expect(report.contractDecisionEvidenceV1?.[1]?.id).toBe("risk:provider");
+  });
+
+  it("[Task5] accepts only complete subject-bound evidence for a present fresh decision", async () => {
+    const report = await checkSmartContractAddress({
+      address: subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: []
+    });
+    const persisted = JSON.parse(JSON.stringify(report));
+    const mutate = (change: (candidate: any) => void): unknown => {
+      const candidate = structuredClone(persisted);
+      change(candidate);
+      return candidate;
+    };
+
+    expect(normalizeSmartContractCheckReport(persisted, subjectAddress)).toMatchObject({
+      subjectAddress,
+      contractDecisionV2: { deterministic: { authority: "context" } },
+      contractDecisionEvidenceV1: [expect.objectContaining({
+        id: "metadata:subject",
+        kind: "metadata_context",
+        subjectAddress
+      })]
+    });
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      delete candidate.contractDecisionEvidenceV1;
+    }), subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      candidate.contractDecisionEvidenceV1.push(structuredClone(candidate.contractDecisionEvidenceV1[0]));
+    }), subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      candidate.contractDecisionV2.deterministic.evidenceIds = ["missing:evidence"];
+    }), subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      candidate.contractDecisionEvidenceV1[0].subjectAddress = "TForeign1111111111111111111111111111";
+    }), subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      candidate.contractDecisionEvidenceV1[0].kind = "invented_evidence";
+    }), subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      candidate.contractDecisionEvidenceV1[0].spenderAddress = subjectAddress;
+      candidate.contractDecisionEvidenceV1[0].tokenContract = TRON_USDT_CONTRACT_ADDRESS;
+    }), subjectAddress)).toBeNull();
+    expect(normalizeSmartContractCheckReport(mutate((candidate) => {
+      candidate.contractDecisionEvidenceV1[0].kind = "provider_risk";
+    }), subjectAddress)).toBeNull();
   });
 
   it("keeps an authoritative verified service tag deterministic even with low activity", async () => {

@@ -12,7 +12,7 @@ import type { CoverageDebugReport } from "../../src/forensics/coverageDebugRepor
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import type { Db } from "../../src/storage/db";
-import type { AddressPoisoningCandidate, AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AddressPoisoningCandidate, AssetContinuationProfile, BotLocale, BoundaryExposureProfile, ContractDecisionEvidenceV1, ContractDecisionV2, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 import {
@@ -1730,6 +1730,48 @@ function exactVerify20ContractReportForTest(): SmartContractCheckReport {
       mismatchedSelectors: []
     },
     reasons: ["address_is_smart_contract", "exact_verify20_contract_pattern"]
+  });
+}
+
+function freshContractDecisionReportForTest(input: {
+  authority: ContractDecisionV2["deterministic"]["authority"];
+  evidenceKind: ContractDecisionEvidenceV1["kind"];
+  evidenceId?: string;
+}): SmartContractCheckReport {
+  const outcomes: Record<ContractDecisionV2["deterministic"]["authority"], {
+    score: number;
+    level: ContractDecisionV2["deterministic"]["level"];
+    decision: ContractDecisionV2["deterministic"]["decision"];
+  }> = {
+    exact_debit: { score: 95, level: "CRITICAL", decision: "DECLINE" },
+    provider_risk: { score: 90, level: "CRITICAL", decision: "DECLINE" },
+    verify20_fingerprint: { score: 90, level: "CRITICAL", decision: "DECLINE" },
+    official_registry: { score: 10, level: "LOW", decision: "ACCEPTABLE" },
+    gasfree_account: { score: 10, level: "LOW", decision: "ACCEPTABLE" },
+    known_service_session: { score: 10, level: "LOW", decision: "ACCEPTABLE" },
+    context: { score: 35, level: "MEDIUM", decision: "REVIEW" }
+  };
+  const outcome = outcomes[input.authority];
+  const evidenceId = input.evidenceId ?? `evidence:${input.authority}`;
+  const transactionBound = ["approval_event", "allowance_read", "exact_debit", "service_action"].includes(input.evidenceKind);
+  return smartContractReportForTest({
+    decision: outcome.decision,
+    decisionScope: "contract_safety",
+    riskScore: outcome.score,
+    riskLevel: outcome.level,
+    reasons: [`contract_decision_${input.authority}`],
+    contractDecisionV2: {
+      deterministic: { ...outcome, authority: input.authority, evidenceIds: [evidenceId] },
+      finalSource: "deterministic",
+      llm: null
+    },
+    contractDecisionEvidenceV1: [{
+      id: evidenceId,
+      kind: input.evidenceKind,
+      subjectAddress: walletAddress,
+      spenderAddress: transactionBound ? walletAddress : null,
+      tokenContract: transactionBound ? TRON_USDT_CONTRACT_ADDRESS : null
+    }]
   });
 }
 
@@ -6326,6 +6368,68 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(en).toContain("full Verify20 pattern often used by drainers");
     expect(`${ru}\n${en}`).toMatch(/не доказывает конкретную кражу|does not prove a specific theft/);
     expect(`${ru}\n${en}`).not.toMatch(/украл \d|stole \d|victim address/i);
+  });
+
+  it.each([
+    ["exact debit", "exact_debit", "exact_debit", "95/100"],
+    ["Verify20", "verify20_fingerprint", "verify20_fingerprint", "90/100"],
+    ["provider risk", "provider_risk", "provider_risk", "90/100"],
+    ["known-service session", "known_service_session", "service_action", "10/100"],
+    ["metadata context", "context", "metadata_context", "35/100"]
+  ] as const)("[Task5] passes saved %s evidence through the shared contract adapter", (
+    _name,
+    authority,
+    evidenceKind,
+    expectedScore
+  ) => {
+    const report = freshContractDecisionReportForTest({ authority, evidenceKind });
+    const sentinelAmount = "987654.321987 USDT";
+    const sentinelSource = "TSourceMustNotLeak11111111111111111111";
+    const sentinelReceiver = "TReceiverMustNotLeak111111111111111111";
+    report.reasons = [`legacy exact debit ${sentinelAmount} from ${sentinelSource} to ${sentinelReceiver}`];
+    Object.assign(report, {
+      legacyExactDebitAmount: sentinelAmount,
+      legacyExactDebitSourceAddress: sentinelSource,
+      legacyExactDebitReceiverAddress: sentinelReceiver
+    });
+    const text = plainTelegramText(formatSmartContractCheckReport(report, { locale: "en" }).text);
+
+    expect(text).toContain(expectedScore);
+    expect(text).not.toContain("Final score was not calculated");
+    expect(text).not.toContain("not enough validated data");
+    if (authority === "exact_debit") {
+      const ru = plainTelegramText(formatSmartContractCheckReport(report, { locale: "ru" }).text);
+      expect(ru).toContain("Подтверждено списание USDT через проверяемый контракт.");
+      expect(ru).toContain("Сохранённые данные не указывают сумму, кошелёк-источник или получателя.");
+      expect(text).toContain("A USDT debit through the checked contract was confirmed.");
+      expect(text).toContain("The saved evidence does not identify an amount, source wallet, or receiver.");
+      for (const sentinel of [sentinelAmount, sentinelSource, sentinelReceiver]) {
+        expect(ru).not.toContain(sentinel);
+        expect(text).not.toContain(sentinel);
+      }
+    }
+  });
+
+  it.each([
+    ["foreign subject", (report: SmartContractCheckReport) => {
+      report.contractDecisionEvidenceV1![0]!.subjectAddress = secondWalletAddress;
+    }],
+    ["contradictory evidence kind", (report: SmartContractCheckReport) => {
+      report.contractDecisionEvidenceV1![0]!.kind = "metadata_context";
+      report.contractDecisionEvidenceV1![0]!.spenderAddress = null;
+      report.contractDecisionEvidenceV1![0]!.tokenContract = null;
+    }]
+  ] as const)("[Task5] fails closed for %s in saved contract evidence", (_name, mutate) => {
+    const report = freshContractDecisionReportForTest({
+      authority: "exact_debit",
+      evidenceKind: "exact_debit"
+    });
+    mutate(report);
+
+    const text = plainTelegramText(formatSmartContractCheckReport(report, { locale: "en" }).text);
+
+    expect(text).toContain("Final score was not calculated");
+    expect(text).not.toContain("95/100");
   });
 
   it("normalizes the same persisted Verify20 report for Where-first and Deep-first final delivery", () => {

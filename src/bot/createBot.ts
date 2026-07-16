@@ -1550,7 +1550,7 @@ function contractDecisionPresentationFact(value: unknown, subjectAddress: string
     !deterministic.evidenceIds.every((id) => typeof id === "string" && id.length > 0)
   ) return null;
   const semantics = {
-    exact_debit: ["approval_drain_roles", "approval_drain_roles_distinct"],
+    exact_debit: ["contract_exact_debit", "contract_exact_debit_confirmed"],
     provider_risk: ["provider_risk", "fast_behavior_context"],
     verify20_fingerprint: ["exact_verify20_contract_pattern", "score.contract_suspicion.exact_verify20_contract_pattern"],
     official_registry: ["official_usdt", "official_usdt_registry_contract"],
@@ -1604,6 +1604,7 @@ function formatContractDecisionBoundary(
     legacyCoverage: null,
     approvalInput: null,
     contractDecision: presentation?.decision ?? null,
+    contractEvidenceV1: report.contractDecisionEvidenceV1,
     technicalLimitTextKey: presentation ? null : "insufficient_validated_data"
   }))]);
 }

@@ -43,6 +43,7 @@ export type SmartContractCheckReport = {
   reasons: string[];
   limitations: string[];
   contractDecisionV2?: ContractDecisionV2;
+  contractDecisionEvidenceV1?: ContractDecisionEvidenceV1[];
 };
 
 export type EvaluateSmartContractAddressInput = {
@@ -641,6 +642,69 @@ function validPersistedContractDecision(
     new Set(deterministic.evidenceIds).size === deterministic.evidenceIds.length;
 }
 
+const CONTRACT_DECISION_EVIDENCE_KINDS = new Set<ContractDecisionEvidenceV1["kind"]>([
+  "metadata_context",
+  "official_registry",
+  "gasfree_role",
+  "provider_risk",
+  "verify20_fingerprint",
+  "approval_event",
+  "allowance_read",
+  "exact_debit",
+  "service_action"
+]);
+
+function validPersistedContractDecisionEvidence(
+  value: unknown,
+  decisionValue: unknown,
+  subjectAddress: string
+): value is ContractDecisionEvidenceV1[] {
+  if (decisionValue === undefined) return value === undefined;
+  if (!Array.isArray(value) || value.length === 0) return false;
+  const evidence = value.map(record);
+  if (evidence.some((row) => row === null)) return false;
+  const rows = evidence as Record<string, unknown>[];
+  const ids = rows.map((row) => row.id);
+  if (ids.some((id) => typeof id !== "string" || id.length === 0) || new Set(ids).size !== ids.length) return false;
+
+  const transactionKinds = new Set<ContractDecisionEvidenceV1["kind"]>([
+    "approval_event",
+    "allowance_read",
+    "exact_debit",
+    "service_action"
+  ]);
+  for (const row of rows) {
+    if (typeof row.kind !== "string" || !CONTRACT_DECISION_EVIDENCE_KINDS.has(row.kind as ContractDecisionEvidenceV1["kind"]) ||
+      row.subjectAddress !== subjectAddress ||
+      (row.spenderAddress !== null && typeof row.spenderAddress !== "string") ||
+      (row.tokenContract !== null && typeof row.tokenContract !== "string")) return false;
+    const kind = row.kind as ContractDecisionEvidenceV1["kind"];
+    const directBinding = row.spenderAddress === null && row.tokenContract === null;
+    const approvalBinding = row.spenderAddress === subjectAddress && row.tokenContract === TRON_USDT_CONTRACT_ADDRESS;
+    if (transactionKinds.has(kind) ? !approvalBinding
+      : kind === "provider_risk" || kind === "verify20_fingerprint" ? !directBinding && !approvalBinding
+        : !directBinding) return false;
+  }
+
+  const decision = record(decisionValue);
+  const deterministic = record(decision?.deterministic);
+  if (!deterministic || !stringArray(deterministic.evidenceIds)) return false;
+  const byId = new Map(rows.map((row) => [row.id as string, row]));
+  const resolved = deterministic.evidenceIds.map((id) => byId.get(id));
+  if (resolved.some((row) => row === undefined)) return false;
+  const expectedKind: Record<ContractDecisionV2["deterministic"]["authority"], ContractDecisionEvidenceV1["kind"]> = {
+    exact_debit: "exact_debit",
+    provider_risk: "provider_risk",
+    verify20_fingerprint: "verify20_fingerprint",
+    official_registry: "official_registry",
+    gasfree_account: "gasfree_role",
+    known_service_session: "service_action",
+    context: "metadata_context"
+  };
+  const authority = deterministic.authority as ContractDecisionV2["deterministic"]["authority"];
+  return resolved.some((row) => row?.kind === expectedKind[authority]);
+}
+
 /** Treat persisted contract analysis as untrusted; exact fingerprints are re-derived from the saved profile. */
 export function normalizeSmartContractCheckReport(
   value: unknown,
@@ -661,7 +725,12 @@ export function normalizeSmartContractCheckReport(
   if (report.llmVerdict !== null) return null;
   if (report.reasons.some((reason) => LEGACY_LLM_MARKER.test(reason)) ||
     report.limitations.some((reason) => LEGACY_LLM_MARKER.test(reason))) return null;
-  if (!validPersistedContractDecision(report.contractDecisionV2, report)) return null;
+  if (!validPersistedContractDecision(report.contractDecisionV2, report) ||
+    !validPersistedContractDecisionEvidence(
+      report.contractDecisionEvidenceV1,
+      report.contractDecisionV2,
+      report.subjectAddress
+    )) return null;
 
   const metadata = record(report.metadata);
   if (!metadata || !validPersistedMetadata(metadata, report.subjectAddress)) return null;
@@ -715,6 +784,7 @@ export async function checkSmartContractAddress(input: CheckSmartContractAddress
     riskLevel: deterministic.level,
     reasons: [`contract_decision_${deterministic.authority}`],
     llmVerdict: null,
-    contractDecisionV2
+    contractDecisionV2,
+    contractDecisionEvidenceV1: evidence.map((row) => ({ ...row }))
   };
 }
