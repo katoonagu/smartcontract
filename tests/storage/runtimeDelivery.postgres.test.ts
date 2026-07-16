@@ -482,6 +482,7 @@ async function insertJob(
     status?: "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
     progressJson?: JsonObject;
     resultJson?: JsonObject;
+    subjectAddress?: string;
     chatId?: string | null;
     startedAt?: Date | null;
     completedAt?: Date | null;
@@ -498,7 +499,7 @@ async function insertJob(
     [
       input.id,
       input.kind ?? "where_is_money_check",
-      `sanitized-subject-${input.id}`,
+      input.subjectAddress ?? `sanitized-subject-${input.id}`,
       input.status ?? "queued",
       new Date("2026-07-01T00:00:00.000Z"),
       NOW,
@@ -1343,7 +1344,13 @@ postgresDescribe("Plan 3 runtime delivery PostgreSQL acceptance", () => {
     await withScenario("deep_context", async (db) => {
       const jobId = "deep-context";
       const baseResult = resultFixture(jobId);
-      await insertJob(db, { id: jobId, kind: "address_deep_check", status: "running", startedAt: NOW });
+      await insertJob(db, {
+        id: jobId,
+        kind: "address_deep_check",
+        status: "running",
+        subjectAddress: CANONICAL_DEEP_SECOND_LAYER_PROFILE.subjectAddress,
+        startedAt: NOW
+      });
       const repository = await loadPlan3Repository(
         "claimNextForensicTelegramDelivery",
         "saveCompletedDeepSecondLayerContext"
