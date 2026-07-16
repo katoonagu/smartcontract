@@ -94,11 +94,13 @@ import type {
   ApprovalDrainProvenanceProfile,
   BalanceFormingTransfer,
   BoundaryExposureProfile,
+  ContractDecisionV2,
   CounterpartyRiskProfile,
   CrossChainContinuationReasoningStep,
   DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   InboundProvenanceProfile,
+  NarrativeFactV2,
   OperationalFlowProfile,
   RiskLabel,
   RiskLevel,
@@ -111,6 +113,9 @@ import type {
   WalletRoleProfile,
   WatchedWallet
 } from "../types";
+import { adaptTelegramForensicResult } from "../telegram/forensicPresentationAdapters";
+import { telegramAddressRef } from "../telegram/forensicPresentation";
+import { renderTelegramForensicResult } from "../telegram/forensicResultRenderer";
 import { addressPoisoningAlertKeyboard } from "../alerts/addressPoisoningAlert";
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
@@ -1531,11 +1536,86 @@ function smartContractApprovalLine(report: SmartContractCheckReport, locale: Bot
   return `${report.relatedApprovals.length} связанных approval; ${activeUnlimitedCount} active unlimited.`;
 }
 
+function contractDecisionPresentationFact(value: unknown, subjectAddress: string): {
+  decision: ContractDecisionV2;
+  fact: NarrativeFactV2;
+} | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ContractDecisionV2>;
+  const deterministic = candidate.deterministic;
+  if (
+    candidate.finalSource !== "deterministic" || candidate.llm !== null ||
+    !deterministic || typeof deterministic !== "object" ||
+    !Array.isArray(deterministic.evidenceIds) ||
+    !deterministic.evidenceIds.every((id) => typeof id === "string" && id.length > 0)
+  ) return null;
+  const semantics = {
+    exact_debit: ["approval_drain_roles", "approval_drain_roles_distinct"],
+    provider_risk: ["provider_risk", "fast_behavior_context"],
+    verify20_fingerprint: ["exact_verify20_contract_pattern", "score.contract_suspicion.exact_verify20_contract_pattern"],
+    official_registry: ["official_usdt", "official_usdt_registry_contract"],
+    gasfree_account: ["gasfree_account", "gasfree_account_structural"],
+    known_service_session: ["known_service_session", "fast_behavior_context"],
+    context: ["contract_metadata_context", "fast_behavior_context"]
+  } as const;
+  const semantic = semantics[deterministic.authority as keyof typeof semantics];
+  if (!semantic) return null;
+  const [kind, factTextKey] = semantic;
+  return {
+    decision: candidate as ContractDecisionV2,
+    fact: {
+      id: `contract:${deterministic.authority}`,
+      subjectAddress,
+      mode: "contract",
+      kind,
+      role: null,
+      section: "score_reason",
+      evidenceIds: [...deterministic.evidenceIds],
+      isScoreDriver: true,
+      direction: null,
+      amountRaw: null,
+      share: null,
+      txCount: null,
+      addresses: [],
+      txHashes: [],
+      factTextKey,
+      meaningTextKey: null
+    }
+  };
+}
+
+function formatContractDecisionBoundary(
+  report: SmartContractCheckReport,
+  locale: BotLocale
+): TelegramHtmlMessage {
+  const presentation = contractDecisionPresentationFact(report.contractDecisionV2, report.subjectAddress);
+  return telegramHtmlMessage([renderTelegramForensicResult(adaptTelegramForensicResult({
+    kind: "contract_safety",
+    locale,
+    evaluatedAt: report.metadata.fetchedAt.toISOString(),
+    checkedWalletAddress: report.subjectAddress,
+    resultState: presentation ? "final" : "no_final",
+    scoreAnchorV2: null,
+    narrativeFactsV2: presentation ? [presentation.fact] : [],
+    scoringEvidenceV2: [],
+    amlPresentation: null,
+    routes: [],
+    coverageV2: null,
+    legacyCoverage: null,
+    approvalInput: null,
+    contractDecision: presentation?.decision ?? null,
+    technicalLimitTextKey: presentation ? null : "insufficient_validated_data"
+  }))]);
+}
+
 export function formatSmartContractCheckReport(
   report: SmartContractCheckReport,
   options: { runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  if (Object.prototype.hasOwnProperty.call(report, "contractDecisionV2")) {
+    return formatContractDecisionBoundary(report, locale);
+  }
   const name = report.metadata.name ?? report.contractProfile?.name ?? report.metadata.tag ?? "unknown";
   const reasonLines = [...report.reasons, ...report.limitations]
     .filter((reason, index, all) => all.indexOf(reason) === index)
@@ -1943,6 +2023,12 @@ export function formatDeepForensicUserDeliveryReport(
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
   const currentDeepReport = currentScoringPolicyDeepReport(report);
+  if (whereReport?.scoreAnchorV2) {
+    return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt);
+  }
+  if (currentDeepReport?.coverageV2) {
+    return formatSavedDeepContext(currentDeepReport, status, locale, job.updatedAt);
+  }
   return whereReport && hasCurrentScoringPolicy(whereReport)
     ? formatUnifiedAddressFinalReport({
         address: report.subjectAddress,
@@ -2287,6 +2373,9 @@ export function formatWhereIsMoneyUserDeliveryReport(
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, report.subjectAddress));
   if (deepReport) {
+    if (report.scoreAnchorV2) {
+      return formatSavedForensicResult(report, "wallet_final", locale, job.updatedAt);
+    }
     return formatUnifiedAddressFinalReport({
       address: report.subjectAddress,
       whereReport: report,
@@ -4018,6 +4107,128 @@ function whereResultTitle(status: "completed" | "partial", locale: BotLocale): s
   return `Откуда деньги — результат: ${status === "partial" ? "частично" : "готово"}`;
 }
 
+function savedForensicRoutes(
+  checkedWalletAddress: string,
+  facts: NarrativeFactV2[]
+) {
+  return facts.flatMap((fact) => {
+    const [from, to] = fact.addresses;
+    if (
+      fact.amountRaw === null || (fact.direction !== "incoming" && fact.direction !== "outgoing") ||
+      !from || !to || fact.evidenceIds.length === 0 ||
+      (fact.direction === "outgoing" && from.address !== checkedWalletAddress) ||
+      (fact.direction === "incoming" && to.address !== checkedWalletAddress)
+    ) return [];
+    return [{
+      routeId: `fact-${fact.id}`,
+      direction: fact.direction === "outgoing" ? "outbound" as const : "inbound" as const,
+      fromAddress: from.address,
+      toAddress: to.address,
+      amountRaw: fact.amountRaw,
+      asset: "USDT" as const,
+      share: fact.share,
+      transferCount: fact.txCount,
+      evidenceIds: [...fact.evidenceIds]
+    }];
+  });
+}
+
+function savedDeepContextFacts(report: DeepAddressForensicReport): NarrativeFactV2[] {
+  const profile = report.directCounterpartyInteractionProfiles?.find((candidate) =>
+    candidate.subjectAddress === report.subjectAddress &&
+    (candidate.direction === "inbound" || candidate.direction === "outbound") &&
+    candidate.txCount > 0 && candidate.txHashes.length > 0
+  );
+  if (!profile) return [];
+  const incoming = profile.direction === "inbound";
+  return [{
+    id: `deep-principal:${profile.txHashes[0]}`,
+    subjectAddress: report.subjectAddress,
+    mode: "deep",
+    kind: "principal_transfer",
+    role: null,
+    section: "money_movement",
+    evidenceIds: [...profile.txHashes],
+    isScoreDriver: false,
+    direction: incoming ? "incoming" : "outgoing",
+    amountRaw: profile.volumeRaw,
+    share: Number.isFinite(profile.volumeRatio) && profile.volumeRatio >= 0 && profile.volumeRatio <= 1
+      ? profile.volumeRatio
+      : null,
+    txCount: profile.txCount,
+    addresses: incoming
+      ? [telegramAddressRef(profile.counterpartyAddress), telegramAddressRef(report.subjectAddress)]
+      : [telegramAddressRef(report.subjectAddress), telegramAddressRef(profile.counterpartyAddress)],
+    txHashes: [...profile.txHashes],
+    factTextKey: "principal_transfer_context",
+    meaningTextKey: null
+  }];
+}
+
+function formatSavedDeepContext(
+  report: DeepAddressForensicReport,
+  status: "completed" | "partial",
+  locale: BotLocale,
+  evaluatedAt: Date
+): TelegramHtmlMessage {
+  const facts = savedDeepContextFacts(report);
+  return telegramHtmlMessage([renderTelegramForensicResult(adaptTelegramForensicResult({
+    kind: "deep_context",
+    locale,
+    evaluatedAt: evaluatedAt.toISOString(),
+    checkedWalletAddress: report.subjectAddress,
+    resultState: status === "partial" ? "technical_limit" : "no_final",
+    scoreAnchorV2: null,
+    narrativeFactsV2: facts,
+    scoringEvidenceV2: [],
+    amlPresentation: null,
+    routes: savedForensicRoutes(report.subjectAddress, facts),
+    coverageV2: report.coverageV2 ?? null,
+    legacyCoverage: null,
+    approvalInput: null,
+    contractDecision: null,
+    technicalLimitTextKey: status === "partial" ? "provider_history_unavailable" : null
+  }))]);
+}
+
+function formatSavedForensicResult(
+  report: WhereIsMoneyReport,
+  kind: "wallet_final" | "deep_context",
+  locale: BotLocale,
+  evaluatedAt: Date
+): TelegramHtmlMessage {
+  const anchor = report.scoreAnchorV2 ?? null;
+  const facts = report.narrativeFactsV2 ?? [];
+  const result = adaptTelegramForensicResult({
+    kind,
+    locale,
+    evaluatedAt: evaluatedAt.toISOString(),
+    checkedWalletAddress: report.subjectAddress,
+    resultState: anchor ? "final" : "no_final",
+    scoreAnchorV2: anchor,
+    narrativeFactsV2: facts,
+    scoringEvidenceV2: report.scoringEvidenceV2 ?? [],
+    amlPresentation: anchor ? {
+      level: levelFromScore(anchor.score),
+      actionTextKey: anchor.decision === "DECLINE"
+        ? "do_not_operate"
+        : anchor.decision === "REVIEW"
+          ? "manual_review"
+          : null
+    } : null,
+    routes: savedForensicRoutes(report.subjectAddress, facts),
+    coverageV2: report.coverageV2 ?? null,
+    legacyCoverage: report.coverageV2 ? null : {
+      selectedCount: report.coverage.selectedInboundTxCount,
+      warningTextKey: "legacy_available_denominator_unsaved"
+    },
+    approvalInput: null,
+    contractDecision: null,
+    technicalLimitTextKey: anchor ? null : "insufficient_validated_data"
+  });
+  return telegramHtmlMessage([renderTelegramForensicResult(result)]);
+}
+
 
 export function formatWhereIsMoneyReport(
   job: ForensicCheckJob,
@@ -4035,14 +4246,16 @@ export function formatWhereIsMoneyReport(
     }
   };
   void status;
-  return formatUnifiedAddressFinalReport({
-    address: report.subjectAddress,
-    whereReport: report,
-    smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress),
-    locale,
-    runtimeLabel: options.runtimeLabel,
-    showBetaDiagnostics: options.showBetaDiagnostics
-  });
+  return report.scoreAnchorV2
+    ? formatSavedForensicResult(report, "wallet_final", locale, job.updatedAt)
+    : formatUnifiedAddressFinalReport({
+        address: report.subjectAddress,
+        whereReport: report,
+        smartContractReport: extractSmartContractCheckReportFromJob(job, report.subjectAddress),
+        locale,
+        runtimeLabel: options.runtimeLabel,
+        showBetaDiagnostics: options.showBetaDiagnostics
+      });
 }
 
 function formatRuntimeStatus(config: AppConfig, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
