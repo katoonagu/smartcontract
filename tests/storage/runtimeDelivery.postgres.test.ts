@@ -1267,7 +1267,12 @@ postgresDescribe("Plan 3 runtime delivery PostgreSQL acceptance", () => {
           id: jobId,
           kind: "incoming_deposit_check",
           status: "completed",
-          progressJson: { jobPhase: "completed", telegramDelivery: envelope },
+          progressJson: {
+            jobPhase: "completed",
+            watchedWalletId: walletId,
+            depositTxHash: txHash,
+            telegramDelivery: envelope
+          },
           resultJson: resultFixture(jobId),
           completedAt: NOW
         });
