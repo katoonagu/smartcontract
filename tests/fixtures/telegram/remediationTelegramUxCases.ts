@@ -676,7 +676,7 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
         addresses: [address(USDD_PSM), address(TGYT)]
       })],
       scoringEvidenceV2: scoringEvidence(psmAnchor),
-      amlPresentation: { level: "MEDIUM", actionTextKey: null },
+      amlPresentation: { level: "MEDIUM", actionTextKey: "manual_review" },
       routes: [route({
         routeId: "psm-inbound",
         direction: "inbound",
