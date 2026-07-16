@@ -4,7 +4,7 @@ import type { SmartContractCheckReport } from "../../src/check/smartContractChec
 import {
   formatDeepForensicUserDeliveryReport,
   formatSmartContractCheckReport,
-  formatWhereIsMoneyReport
+  formatWhereIsMoneyUserDeliveryReport
 } from "../../src/bot/createBot";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 import type { WhereIsMoneyReport } from "../../src/types";
@@ -66,7 +66,18 @@ function formatActualWhereCallSite(id: "GOLDEN_WHERE_PRELIMINARY" | "GOLDEN_FINA
     }
   };
   const status = id === "GOLDEN_WHERE_PRELIMINARY" ? "partial" : "completed";
-  return formatWhereIsMoneyReport(whereJob(status), report, status, { locale: "ru" }).text;
+  const job = whereJob(status);
+  const pendingDeep = id === "GOLDEN_WHERE_PRELIMINARY"
+    ? { ...whereJob("partial"), kind: "address_deep_check" as const, status: "queued" as const }
+    : null;
+  const actual = formatWhereIsMoneyUserDeliveryReport(job, report, status, pendingDeep, { locale: "ru" }).text;
+  if (pendingDeep) {
+    const noPendingDeep = formatWhereIsMoneyUserDeliveryReport(job, report, status, null, { locale: "ru" }).text;
+    if (noPendingDeep.includes("Откуда деньги — предварительный результат")) {
+      throw new Error("where_preliminary_requires_pending_deep");
+    }
+  }
+  return actual;
 }
 
 function deepReport(): DeepAddressForensicReport {
