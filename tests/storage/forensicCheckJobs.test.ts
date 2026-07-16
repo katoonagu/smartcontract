@@ -21,13 +21,20 @@ import {
   patchWaitingForensicJobsTargetedIndexProgress,
   recoverStaleForensicCheckJobs,
   releaseForensicCheckJobToWaiting,
+  saveCompletedDeepSecondLayerContext,
   saveAddressFastCheckJob,
-  upsertForensicJobWait,
-  updateCompletedDeepCheckResultPatch
+  upsertForensicJobWait
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 import { buildForensicRuntimeContractProjection } from "../../src/forensics/forensicJobProgress";
-import { createPendingForensicTelegramDelivery } from "../../src/forensics/telegramDelivery";
+import {
+  createPendingForensicTelegramDelivery,
+  fingerprintCanonicalJson
+} from "../../src/forensics/telegramDelivery";
+import {
+  CANONICAL_DEEP_SECOND_LAYER_PROFILE,
+  CANONICAL_PENDING_DEEP_SECOND_LAYER_PROFILE
+} from "../fixtures/runtime/remediationRuntimeCases";
 import type {
   ForensicTelegramDeliveryV1,
   RecoveredForensicDeliveryIntentPreparationErrorCode,
@@ -460,6 +467,26 @@ function createMockDb(
         return { rows: [], rowCount: 1 };
       }
     } as unknown as Db,
+    queries
+  };
+}
+
+function createDeepContextSaveDb(
+  row: Record<string, unknown>,
+  updateRowCount = 1
+): { db: Db; queries: { sql: string; params: unknown[] }[] } {
+  const queries: { sql: string; params: unknown[] }[] = [];
+  const client = {
+    async query(sql: string, params: unknown[] = []) {
+      queries.push({ sql, params });
+      if (sql.includes("select subject_address")) return { rows: [row], rowCount: 1 };
+      if (sql.includes("update forensic_check_jobs")) return { rows: [], rowCount: updateRowCount };
+      return { rows: [], rowCount: 0 };
+    },
+    release() {}
+  };
+  return {
+    db: { connect: async () => client } as unknown as Db,
     queries
   };
 }
@@ -1241,41 +1268,6 @@ describe("forensic check job repositories", () => {
     ]);
   });
 
-  it("patches completed deep check result and progress without completing the job again", async () => {
-    const { db, queries } = createMockDb([{ rows: [], rowCount: 1 }]);
-    const resultJson = { secondLayerRelationshipProfiles: { counters: { queued: 0, notIndexed: 0 } } };
-    const progressJson = { secondLayerRefreshStatus: "completed" };
-
-    const updated = await updateCompletedDeepCheckResultPatch(db, {
-      id: "job-1",
-      resultJson,
-      progressJson
-    });
-
-    expect(updated).toBe(true);
-    expect(queries[0].sql).toContain("update forensic_check_jobs");
-    expect(queries[0].sql).toContain("kind = 'address_deep_check'");
-    expect(queries[0].sql).toContain("status = 'completed'");
-    expect(queries[0].sql).toContain("progress_json = progress_json || $3");
-    expect(queries[0].sql).not.toContain("completed_at = now()");
-    expect(queries[0].sql).not.toContain("raw_evidence_ids");
-    expect(queries[0].sql).not.toContain("observation_ids");
-    expect(queries[0].sql).not.toContain("last_error");
-    expect(queries[0].params).toEqual(["job-1", resultJson, progressJson]);
-  });
-
-  it("returns false when completed deep check patch finds no row", async () => {
-    const { db } = createMockDb([{ rows: [], rowCount: 0 }]);
-
-    const updated = await updateCompletedDeepCheckResultPatch(db, {
-      id: "job-1",
-      resultJson: {},
-      progressJson: {}
-    });
-
-    expect(updated).toBe(false);
-  });
-
   it("lists completed deep check jobs with pending second-layer relationship profiles", async () => {
     const { db, queries } = createMockDb([
       {
@@ -1300,12 +1292,113 @@ describe("forensic check job repositories", () => {
     expect(jobs[0]?.status).toBe("completed");
     expect(queries[0].sql).toContain("kind = 'address_deep_check'");
     expect(queries[0].sql).toContain("status = 'completed'");
+    expect(queries[0].sql).toContain("progress_json #>> '{deepSecondLayerContext,profile,counters,queued}'");
+    expect(queries[0].sql).toContain("progress_json #>> '{deepSecondLayerContext,profile,counters,notIndexed}'");
     expect(queries[0].sql).toContain("result_json #>> '{secondLayerRelationshipProfiles,counters,queued}'");
     expect(queries[0].sql).toContain("result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}'");
     expect(queries[0].sql).toContain("case when (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}') ~ '^[0-9]{1,9}$'");
     expect(queries[0].sql).toContain("case when (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}') ~ '^[0-9]{1,9}$'");
     expect(queries[0].sql).toContain("order by updated_at asc");
-    expect(queries[0].params).toEqual([10]);
+    expect(queries[0].params).toEqual([]);
+  });
+
+  it("rejects a first Deep second-layer context whose subject differs from the persisted job", async () => {
+    const baseResult = { version: "deep-result-v1" };
+    const { db, queries } = createDeepContextSaveDb({
+      subject_address: "TJobSubject111111111111111111111111111",
+      progress_json: {},
+      result_json: baseResult
+    });
+
+    const saved = await saveCompletedDeepSecondLayerContext(db, {
+      id: "job-subject-mismatch",
+      context: {
+        version: "deep-second-layer-context-v1",
+        baseResultFingerprint: fingerprintCanonicalJson(baseResult),
+        refreshedAt: CANONICAL_DEEP_SECOND_LAYER_PROFILE.generatedAt,
+        profile: CANONICAL_DEEP_SECOND_LAYER_PROFILE
+      }
+    });
+
+    expect(saved).toBe(false);
+    expect(queries.some(({ sql }) => sql.includes("update forensic_check_jobs"))).toBe(false);
+  });
+
+  it("rejects Deep context when immutable result subject differs from the persisted job", async () => {
+    const baseResult = {
+      version: "deep-result-v1",
+      subjectAddress: CANONICAL_DEEP_SECOND_LAYER_PROFILE.subjectAddress
+    };
+    const { db, queries } = createDeepContextSaveDb({
+      subject_address: "TJobSubject111111111111111111111111111",
+      progress_json: {},
+      result_json: baseResult
+    });
+
+    const saved = await saveCompletedDeepSecondLayerContext(db, {
+      id: "job-result-subject-mismatch",
+      context: {
+        version: "deep-second-layer-context-v1",
+        baseResultFingerprint: fingerprintCanonicalJson(baseResult),
+        refreshedAt: CANONICAL_DEEP_SECOND_LAYER_PROFILE.generatedAt,
+        profile: CANONICAL_DEEP_SECOND_LAYER_PROFILE
+      }
+    });
+
+    expect(saved).toBe(false);
+    expect(queries.some(({ sql }) => sql.includes("update forensic_check_jobs"))).toBe(false);
+  });
+
+  it("accepts Deep context only when job, immutable result, and profile share the exact subject", async () => {
+    const subjectAddress = CANONICAL_DEEP_SECOND_LAYER_PROFILE.subjectAddress;
+    const baseResult = { version: "deep-result-v1", subjectAddress };
+    const { db } = createDeepContextSaveDb({
+      subject_address: subjectAddress,
+      progress_json: {},
+      result_json: baseResult
+    });
+
+    await expect(saveCompletedDeepSecondLayerContext(db, {
+      id: "job-exact-subject",
+      context: {
+        version: "deep-second-layer-context-v1",
+        baseResultFingerprint: fingerprintCanonicalJson(baseResult),
+        refreshedAt: CANONICAL_DEEP_SECOND_LAYER_PROFILE.generatedAt,
+        profile: CANONICAL_DEEP_SECOND_LAYER_PROFILE
+      }
+    })).resolves.toBe(true);
+  });
+
+  it("ignores pending Deep context whose subject differs from the persisted job", async () => {
+    const baseResult = { version: "deep-result-v1" };
+    const pendingProfile = structuredClone(CANONICAL_PENDING_DEEP_SECOND_LAYER_PROFILE);
+    pendingProfile.queueRequests = [{
+      address: pendingProfile.directWalletStatuses[0]!.address,
+      coverageMode: "all_time",
+      queuedReason: "deep_second_layer"
+    }];
+    const invalidContext = {
+      version: "deep-second-layer-context-v1",
+      baseResultFingerprint: fingerprintCanonicalJson(baseResult),
+      refreshedAt: "2026-07-15T12:10:00.000Z",
+      profile: pendingProfile
+    };
+    expect(buildForensicRuntimeContractProjection({ deepSecondLayerContext: invalidContext }, {
+      jobKind: "address_deep_check",
+      expectedSubjectAddress: pendingProfile.subjectAddress,
+      baseResult
+    }).deepSecondLayerContext).not.toBeNull();
+    const { db } = createMockDb([{
+      rows: [forensicJobRow({
+        id: "job-invalid-pending-context",
+        status: "completed",
+        subject_address: "TJobSubject111111111111111111111111111",
+        progress_json: { deepSecondLayerContext: invalidContext },
+        result_json: baseResult
+      })]
+    }]);
+
+    await expect(listCompletedDeepCheckJobsWithPendingSecondLayer(db, { limit: 10 })).resolves.toEqual([]);
   });
 
   it("stores an initial fast risk snapshot in job progress json", async () => {

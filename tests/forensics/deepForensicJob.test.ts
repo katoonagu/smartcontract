@@ -1553,7 +1553,13 @@ describe("deep forensic job runner", () => {
         progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
       };
       const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
-      const sendWhereIsMoneyJobResult = vi.fn(async () => undefined);
+      const buildWhereIsMoneyJobResultPayload = vi.fn(async () => ({
+        version: "telegram-message-payload-v1" as const,
+        chatId: "42",
+        text: "where-result",
+        parseMode: "HTML" as const,
+        replyMarkup: null
+      }));
 
       const handled = await runCycleWithMock({
         claimNextForensicCheckJob: async () => sourceJob,
@@ -1564,7 +1570,7 @@ describe("deep forensic job runner", () => {
         },
         getLabelsForAddress: async () => [],
         getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
-        sendWhereIsMoneyJobResult
+        buildWhereIsMoneyJobResultPayload
       });
 
       expect(handled).toBe(true);
@@ -1587,10 +1593,15 @@ describe("deep forensic job runner", () => {
           contractDrivenTransferProfiles: []
         })
       }));
-      expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, expect.objectContaining({
+      expect(buildWhereIsMoneyJobResultPayload).toHaveBeenCalledWith(sourceJob, expect.objectContaining({
         ...whereReport,
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
       }), "completed");
+      expect(completeForensicCheckJob.mock.calls[0]?.[0].progressJson.telegramDelivery).toMatchObject({
+        payload: { chatId: "42", text: "where-result" },
+        state: { status: "pending", attemptCount: 0 },
+        claim: null
+      });
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
@@ -1638,7 +1649,13 @@ describe("deep forensic job runner", () => {
       ]
     ]);
     const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
-    const sendWhereIsMoneyJobResult = vi.fn(async () => undefined);
+    const buildWhereIsMoneyJobResultPayload = vi.fn(async () => ({
+      version: "telegram-message-payload-v1" as const,
+      chatId: "42",
+      text: "where-result",
+      parseMode: "HTML" as const,
+      replyMarkup: null
+    }));
     const recordRiskEvaluation = vi.fn(async () => undefined);
 
     const handled = await runSingleDeepForensicJobCycle({
@@ -1650,7 +1667,7 @@ describe("deep forensic job runner", () => {
       },
       getLabelsForAddress: async (address) => address === seed ? [darknetExchangeLabel(address)] : [],
       getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000000" : null }),
-      sendWhereIsMoneyJobResult
+      buildWhereIsMoneyJobResultPayload
     }, {
       recentFallbackMinTransferCount: 60,
       maxEdgesPerAddress: 60,
@@ -1676,7 +1693,7 @@ describe("deep forensic job runner", () => {
         })
       }
     });
-    expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(
+    expect(buildWhereIsMoneyJobResultPayload).toHaveBeenCalledWith(
       sourceJob,
       expect.objectContaining({ decision: "DECLINE" }),
       "completed"
@@ -5763,8 +5780,15 @@ describe("deep forensic job runner", () => {
     const recordRiskEvaluation = vi.fn(async (input: { rawEvidence: unknown[]; observations: unknown[] }) => {
       recordedEvaluations.push(input);
     });
-    const sendJobResult = vi.fn(async (_job: ForensicCheckJob, report: DeepAddressForensicReport) => {
+    const buildJobResultPayload = vi.fn(async (_job: ForensicCheckJob, report: DeepAddressForensicReport) => {
       sentReports.push(report);
+      return {
+        version: "telegram-message-payload-v1" as const,
+        chatId: "42",
+        text: "deep-result",
+        parseMode: "HTML" as const,
+        replyMarkup: null
+      };
     });
 
     const handled = await runSingleDeepForensicJobCycle({
@@ -5782,7 +5806,7 @@ describe("deep forensic job runner", () => {
         balanceRaw: "2642746070000",
         blacklistEventTxHash: "tx-blacklist"
       }),
-      sendJobResult
+      buildJobResultPayload
     }, {
       pageLimit: 10,
       maxPagesPerAddress: 1,
@@ -5832,10 +5856,18 @@ describe("deep forensic job runner", () => {
       }
     };
     const completeForensicCheckJob = vi.fn(async () => true);
+    const buildWhereIsMoneyJobFailurePayload = vi.fn(async () => ({
+      version: "telegram-message-payload-v1" as const,
+      chatId: "42",
+      text: "where-failed",
+      parseMode: "HTML" as const,
+      replyMarkup: null
+    }));
 
     const handled = await runSingleDeepForensicJobCycle({
       claimNextForensicCheckJob: async () => sourceJob,
       completeForensicCheckJob,
+      buildWhereIsMoneyJobFailurePayload,
       recordRiskEvaluation: vi.fn(async () => undefined),
       tronClient: { listRelatedTrc20Transfers: async () => [] },
       getLabelsForAddress: async () => [],
@@ -5849,8 +5881,16 @@ describe("deep forensic job runner", () => {
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: subject,
         score_valid: false
+      }),
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "where-failed" }),
+          state: expect.objectContaining({ status: "pending", attemptCount: 0 }),
+          claim: null
+        })
       })
     }));
+    expect(buildWhereIsMoneyJobFailurePayload).toHaveBeenCalledTimes(1);
   });
 
   it("persists JSON-safe first-hop timeline facts and coverage in deep result and progress", async () => {
@@ -5958,7 +5998,7 @@ describe("deep forensic job runner", () => {
     expect(restored.firstHopBlacklistCoverage?.incompleteReason).not.toBe("persisted_first_hop_evidence_invalid");
   });
 
-  it("keeps a completed deep job completed when Telegram result delivery fails", async () => {
+  it("stores pending Deep delivery before completion without calling a direct sender", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [
         subject,
@@ -5974,10 +6014,13 @@ describe("deep forensic job runner", () => {
       ]
     ]);
     const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
-    const sendJobResult = vi.fn(async () => {
-      throw new Error("Network request for 'sendMessage' failed!");
-    });
-    const sendJobFailure = vi.fn(async () => undefined);
+    const buildJobResultPayload = vi.fn(async () => ({
+      version: "telegram-message-payload-v1" as const,
+      chatId: "42",
+      text: "deep-result",
+      parseMode: "HTML" as const,
+      replyMarkup: null
+    }));
     const logger = {
       info: vi.fn(),
       warn: vi.fn(),
@@ -5994,8 +6037,7 @@ describe("deep forensic job runner", () => {
       },
       getLabelsForAddress: async () => [],
       getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
-      sendJobResult,
-      sendJobFailure,
+      buildJobResultPayload,
       logger
     }, {
       pageLimit: 10,
@@ -6007,20 +6049,21 @@ describe("deep forensic job runner", () => {
     });
 
     expect(handled).toBe(true);
-    expect(sendJobResult).toHaveBeenCalledTimes(1);
-    expect(sendJobFailure).not.toHaveBeenCalled();
+    expect(buildJobResultPayload).toHaveBeenCalledTimes(1);
     expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
     expect(completeForensicCheckJob.mock.calls[0][0]).toMatchObject({
       id: "job-1",
-      lastError: null
+      lastError: null,
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "deep-result" }),
+          state: expect.objectContaining({ status: "pending", attemptCount: 0 }),
+          claim: null
+        })
+      })
     });
     expect(completeForensicCheckJob.mock.calls[0][0].status).not.toBe("failed");
-    expect(logger.error).toHaveBeenCalledWith("deep_forensic_job_result_delivery_failed", expect.objectContaining({
-      job_id: "job-1",
-      subject_address: subject,
-      chat_id: "42",
-      error: "Network request for 'sendMessage' failed!"
-    }));
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("does not fail a completed deep job when wallet intelligence indexing fails", async () => {

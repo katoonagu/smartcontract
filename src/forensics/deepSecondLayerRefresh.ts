@@ -1,6 +1,11 @@
 import { buildSecondLayerRelationshipProfiles } from "./deepSecondLayerRelationship";
+import {
+  buildForensicRuntimeContractProjection
+} from "./forensicJobProgress";
+import { fingerprintCanonicalJson } from "./telegramDelivery";
 import type { ForensicCheckJob } from "../storage/repositories";
 import type {
+  DeepSecondLayerContextV1,
   DeepSecondLayerDirectWalletStatusRecord,
   DeepSecondLayerRelationshipCounters,
   DeepSecondLayerRelationshipGroup,
@@ -16,7 +21,10 @@ import type {
 export type RefreshDeepCheckSecondLayerDeps = {
   jobId: string;
   getJob(id: string): Promise<ForensicCheckJob | null>;
-  patchCompletedJob(input: { id: string; resultJson: Record<string, unknown>; progressJson: Record<string, unknown> }): Promise<boolean>;
+  saveCompletedDeepSecondLayerContext(input: {
+    id: string;
+    context: DeepSecondLayerContextV1;
+  }): Promise<boolean>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
   getIndexState(address: string): Promise<TronAddressUsdtIndexState | null>;
   listIndexedEdges(address: string): Promise<ForensicRouteEdge[]>;
@@ -152,7 +160,12 @@ export async function refreshDeepCheckSecondLayerFromIndex(
   }
   if (!isObject(job.resultJson)) return { status: "skipped", reason: "missing_result_json" };
 
-  const current = job.resultJson.secondLayerRelationshipProfiles;
+  const savedContext = buildForensicRuntimeContractProjection(job.progressJson, {
+    jobKind: "address_deep_check",
+    expectedSubjectAddress: job.subjectAddress,
+    baseResult: job.resultJson
+  }).deepSecondLayerContext;
+  const current = savedContext?.profile ?? job.resultJson.secondLayerRelationshipProfiles;
   if (!isObject(current)) return { status: "skipped", reason: "missing_second_layer_profile" };
 
   const profile = current as DeepSecondLayerRelationshipProfile;
@@ -177,19 +190,16 @@ export async function refreshDeepCheckSecondLayerFromIndex(
   });
   const merged = mergeProfile({ current: profile, rebuilt, pendingAddresses });
 
-  const patched = await deps.patchCompletedJob({
+  const saved = await deps.saveCompletedDeepSecondLayerContext({
     id: job.id,
-    resultJson: {
-      ...job.resultJson,
-      secondLayerRelationshipProfiles: merged
-    },
-    progressJson: {
-      secondLayerQueued: merged.counters.queued + merged.counters.notIndexed,
-      secondLayerComplete: merged.counters.complete,
-      secondLayerRefreshedAt: new Date().toISOString()
+    context: {
+      version: "deep-second-layer-context-v1",
+      baseResultFingerprint: fingerprintCanonicalJson(job.resultJson),
+      refreshedAt: new Date().toISOString(),
+      profile: merged
     }
   });
-  if (!patched) return { status: "skipped", reason: "patch_not_applied" };
+  if (!saved) return { status: "skipped", reason: "patch_not_applied" };
 
   return {
     status: "refreshed",

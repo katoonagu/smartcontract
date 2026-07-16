@@ -21,6 +21,7 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
 import {
   ensureCandidateWindowsOrWait,
   ensureTargetedHistoriesOrWait,
@@ -44,7 +45,7 @@ import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, ForensicTelegramDeliveryV1, InboundProvenancePath, IndexedTronUsdtTransfer, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TelegramMessagePayloadV1, TimelineBearingStablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -108,9 +109,10 @@ export type DeepForensicJobRunnerDeps = Omit<
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
   crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
-  sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
-  sendWhereIsMoneyJobResult?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): Promise<void>;
-  sendJobFailure?(job: ForensicCheckJob, error: string): Promise<void>;
+  buildJobResultPayload?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): TelegramMessagePayloadV1 | null | Promise<TelegramMessagePayloadV1 | null>;
+  buildWhereIsMoneyJobResultPayload?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): TelegramMessagePayloadV1 | null | Promise<TelegramMessagePayloadV1 | null>;
+  buildJobFailurePayload?(job: ForensicCheckJob, error: string): TelegramMessagePayloadV1 | null | Promise<TelegramMessagePayloadV1 | null>;
+  buildWhereIsMoneyJobFailurePayload?(job: ForensicCheckJob, error: string): TelegramMessagePayloadV1 | null | Promise<TelegramMessagePayloadV1 | null>;
   getAddressUsdtIndexState?(input: {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
@@ -278,44 +280,40 @@ function shouldRunCrossChainStage2ForJob(
   return seedTransfersField(job.progressJson.seedTransfers) !== undefined;
 }
 
-async function sendDeepForensicJobResultBestEffort(
+function pendingDelivery(
+  job: ForensicCheckJob,
+  payload: TelegramMessagePayloadV1 | null
+): ForensicTelegramDeliveryV1 | null {
+  if (payload === null) return null;
+  if (!job.chatId || payload.chatId !== job.chatId) {
+    throw new TypeError("Forensic Telegram payload chat does not match the job owner");
+  }
+  return createPendingForensicTelegramDelivery({
+    jobId: job.id,
+    kind: job.kind === "where_is_money_check" ? "where_is_money_check" : "address_deep_check",
+    payload,
+    effect: null
+  });
+}
+
+async function buildDeepForensicJobResultDelivery(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
   report: DeepAddressForensicReport,
   status: "completed" | "partial"
-): Promise<void> {
-  if (!deps.sendJobResult) return;
-  try {
-    await deps.sendJobResult(job, report, status);
-  } catch (error) {
-    (deps.logger ?? defaultLogger).error("deep_forensic_job_result_delivery_failed", {
-      job_id: job.id,
-      subject_address: job.subjectAddress,
-      chat_id: job.chatId,
-      status,
-      error: errorMessage(error)
-    });
-  }
+): Promise<ForensicTelegramDeliveryV1 | null> {
+  if (!job.chatId || !deps.buildJobResultPayload) return null;
+  return pendingDelivery(job, await deps.buildJobResultPayload(job, report, status));
 }
 
-async function sendWhereIsMoneyJobResultBestEffort(
+async function buildWhereIsMoneyJobResultDelivery(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
   status: "completed" | "partial"
-): Promise<void> {
-  if (!deps.sendWhereIsMoneyJobResult) return;
-  try {
-    await deps.sendWhereIsMoneyJobResult(job, report, status);
-  } catch (error) {
-    (deps.logger ?? defaultLogger).error("where_is_money_job_result_delivery_failed", {
-      job_id: job.id,
-      subject_address: job.subjectAddress,
-      chat_id: job.chatId,
-      status,
-      error: errorMessage(error)
-    });
-  }
+): Promise<ForensicTelegramDeliveryV1 | null> {
+  if (!job.chatId || !deps.buildWhereIsMoneyJobResultPayload) return null;
+  return pendingDelivery(job, await deps.buildWhereIsMoneyJobResultPayload(job, report, status));
 }
 
 async function indexWalletIntelligenceBestEffort(
@@ -336,23 +334,24 @@ async function indexWalletIntelligenceBestEffort(
   }
 }
 
-async function sendDeepForensicJobFailureBestEffort(
+async function buildForensicJobFailureDelivery(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
   message: string
-): Promise<void> {
-  if (!deps.sendJobFailure) return;
-  try {
-    await deps.sendJobFailure(job, message);
-  } catch (error) {
-    (deps.logger ?? defaultLogger).error("deep_forensic_job_failure_delivery_failed", {
-      job_id: job.id,
-      subject_address: job.subjectAddress,
-      chat_id: job.chatId,
-      original_error: message,
-      error: errorMessage(error)
-    });
-  }
+): Promise<ForensicTelegramDeliveryV1 | null> {
+  if (!job.chatId) return null;
+  const builder = job.kind === "where_is_money_check"
+    ? deps.buildWhereIsMoneyJobFailurePayload
+    : deps.buildJobFailurePayload;
+  if (!builder) return null;
+  return pendingDelivery(job, await builder(job, message));
+}
+
+function progressWithDelivery(
+  progressJson: Record<string, unknown>,
+  delivery: ForensicTelegramDeliveryV1 | null
+): Record<string, unknown> {
+  return delivery ? { ...progressJson, telegramDelivery: delivery } : progressJson;
 }
 
 function topDarknetExchangePath(report: DeepAddressForensicReport): InboundProvenancePath | null {
@@ -1620,15 +1619,16 @@ async function runWhereIsMoneyJob(
   if (strictBenchmark && strictPartial) {
     // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
     const reason: StrictScoreBlockedReason = "provider_error";
+    const delivery = await buildForensicJobFailureDelivery(deps, job, reason);
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: {
+      progressJson: progressWithDelivery({
         ...strictProviderLimitedProgressJson(currentProgress, reason),
         whereIsMoneyCoverage: report.coverage,
         decision: report.decision,
         riskScore: report.riskScore
-      },
+      }, delivery),
       resultJson: {
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: report.subjectAddress,
@@ -1658,13 +1658,13 @@ async function runWhereIsMoneyJob(
   const completion = {
     id: job.id,
     status,
-    progressJson: {
+    progressJson: progressWithDelivery({
       ...currentProgress,
       ...strictProgressPatch,
       whereIsMoneyCoverage: report.coverage,
       decision: report.decision,
       riskScore: report.riskScore
-    },
+    }, await buildWhereIsMoneyJobResultDelivery(deps, job, report, status)),
     resultJson: {
       scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
       subjectAddress: report.subjectAddress,
@@ -1685,7 +1685,6 @@ async function runWhereIsMoneyJob(
       status
     });
   }
-  await sendWhereIsMoneyJobResultBestEffort(deps, job, report, status);
   return true;
 }
 
@@ -1703,10 +1702,11 @@ export async function runSingleDeepForensicJobCycle(
           ? job.progressJson.strictProvenance
           : {};
         const reason = strictScoreBlockedReasonField(strictProvenance.scoreBlockedReason);
+        const delivery = await buildForensicJobFailureDelivery(deps, job, reason);
         await deps.completeForensicCheckJob({
           id: job.id,
           status: "failed",
-          progressJson: job.progressJson,
+          progressJson: progressWithDelivery(job.progressJson, delivery),
           resultJson: {
             scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             subjectAddress: job.subjectAddress,
@@ -1730,10 +1730,11 @@ export async function runSingleDeepForensicJobCycle(
           statusReason,
           nullableStringField(targetedIndex.lastError)
         );
+        const delivery = await buildForensicJobFailureDelivery(deps, job, mapped.scoreBlockedReason);
         await deps.completeForensicCheckJob({
           id: job.id,
           status: "failed",
-          progressJson: job.progressJson,
+          progressJson: progressWithDelivery(job.progressJson, delivery),
           resultJson: {
             scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
             subjectAddress: job.subjectAddress,
@@ -1870,7 +1871,7 @@ export async function runSingleDeepForensicJobCycle(
     const completion = {
       id: job.id,
       status,
-      progressJson: {
+      progressJson: progressWithDelivery({
         ...job.progressJson,
         ...progressCoverage,
         ...(allTimeCoverage === undefined ? {} : { allTimeCoverage }),
@@ -1879,7 +1880,7 @@ export async function runSingleDeepForensicJobCycle(
         firstHopBlacklistCoverage: report.firstHopBlacklistCoverage ?? null,
         directHardEvidenceSnapshots: report.directHardEvidenceSnapshots ?? [],
         derivedLabel
-      },
+      }, await buildDeepForensicJobResultDelivery(deps, job, report, status)),
       resultJson: {
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
         subjectAddress: report.subjectAddress,
@@ -1925,17 +1926,20 @@ export async function runSingleDeepForensicJobCycle(
         status
       });
     }
-    await sendDeepForensicJobResultBestEffort(deps, job, report, status);
     return true;
   } catch (error) {
     const message = errorMessage(error);
     if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {
       const reason = strictScoreBlockedReasonFromError(error);
       const strictMessage = strictErrorMessageFromTargetedHistoryError(error);
+      const delivery = await buildForensicJobFailureDelivery(deps, job, strictMessage);
       await deps.completeForensicCheckJob({
         id: job.id,
         status: "failed",
-        progressJson: strictProviderLimitedProgressJson(job.progressJson, reason),
+        progressJson: progressWithDelivery(
+          strictProviderLimitedProgressJson(job.progressJson, reason),
+          delivery
+        ),
         resultJson: {
           scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: job.subjectAddress,
@@ -1945,7 +1949,6 @@ export async function runSingleDeepForensicJobCycle(
         observationIds: [],
         lastError: strictMessage
       });
-      await sendDeepForensicJobFailureBestEffort(deps, job, strictMessage);
       return true;
     }
     if (job.kind === "where_is_money_check" && error instanceof TargetedHistoryTerminalError) {
@@ -1956,10 +1959,11 @@ export async function runSingleDeepForensicJobCycle(
         statusReason: null,
         lastError: message
       }));
+      const delivery = await buildForensicJobFailureDelivery(deps, job, message);
       await deps.completeForensicCheckJob({
         id: job.id,
         status: "failed",
-        progressJson,
+        progressJson: progressWithDelivery(progressJson, delivery),
         resultJson: {
           scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
           subjectAddress: job.subjectAddress,
@@ -1971,19 +1975,18 @@ export async function runSingleDeepForensicJobCycle(
         observationIds: [],
         lastError: message
       });
-      await sendDeepForensicJobFailureBestEffort(deps, job, message);
       return true;
     }
+    const delivery = await buildForensicJobFailureDelivery(deps, job, message);
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: job.progressJson,
+      progressJson: progressWithDelivery(job.progressJson, delivery),
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: message
     });
-    await sendDeepForensicJobFailureBestEffort(deps, job, message);
     return true;
   }
 }

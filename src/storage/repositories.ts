@@ -18,6 +18,7 @@ import type {
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
   ContractDecisionEvidenceV1,
+  DeepSecondLayerContextV1,
   ForensicCaseInput,
   ForensicCaseStatus,
   ForensicTelegramDeliveryV1,
@@ -76,7 +77,10 @@ import {
   validateApprovalAllowanceStateV2
 } from "../approvals/allowanceState";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
-import { buildForensicRuntimeContractProjection } from "../forensics/forensicJobProgress";
+import {
+  buildForensicRuntimeContractProjection,
+  isDeepSecondLayerContextV1
+} from "../forensics/forensicJobProgress";
 import {
   isForensicTelegramDeliveryV1,
   isRecoveredForensicDeliveryIntentDue,
@@ -8008,27 +8012,89 @@ export async function settleRecoveredForensicDeliveryIntentPreparation(
   return (result.rowCount ?? 0) === 1;
 }
 
-export async function updateCompletedDeepCheckResultPatch(
+export async function saveCompletedDeepSecondLayerContext(
   db: Db,
-  input: { id: string; resultJson: Record<string, unknown>; progressJson: Record<string, unknown> }
+  input: { id: string; context: DeepSecondLayerContextV1 }
 ): Promise<boolean> {
-  const result = await db.query(
-    `update forensic_check_jobs
-     set result_json = $2,
-       progress_json = progress_json || $3,
-       updated_at = now()
-     where id = $1
-       and kind = 'address_deep_check'
-       and status = 'completed'`,
-    [input.id, input.resultJson, input.progressJson]
-  );
-  return (result.rowCount ?? 0) > 0;
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const selected = await client.query(
+      `select subject_address, progress_json, result_json
+       from forensic_check_jobs
+       where id = $1
+         and kind = 'address_deep_check'
+         and status = 'completed'
+       for update`,
+      [input.id]
+    );
+    const row = selected.rows[0] as Record<string, unknown> | undefined;
+    const subjectAddress = row?.subject_address;
+    const resultJson = row?.result_json;
+    const progressJson = row?.progress_json;
+    const hasResultSubjectAddress = resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
+      && Object.prototype.hasOwnProperty.call(resultJson, "subjectAddress");
+    const resultSubjectAddress = resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
+      ? (resultJson as Record<string, unknown>).subjectAddress
+      : null;
+    if (typeof subjectAddress !== "string"
+      || !resultJson
+      || typeof resultJson !== "object"
+      || Array.isArray(resultJson)
+      || !progressJson
+      || typeof progressJson !== "object"
+      || Array.isArray(progressJson)
+      || (hasResultSubjectAddress && resultSubjectAddress !== subjectAddress)
+      || !isDeepSecondLayerContextV1(input.context, {
+        expectedSubjectAddress: subjectAddress,
+        baseResult: resultJson
+      })) {
+      await client.query("rollback");
+      return false;
+    }
+
+    const currentContext = buildForensicRuntimeContractProjection(progressJson, {
+      jobKind: "address_deep_check",
+      expectedSubjectAddress: subjectAddress,
+      baseResult: resultJson
+    }).deepSecondLayerContext;
+    if (currentContext && currentContext.refreshedAt >= input.context.refreshedAt) {
+      await client.query("rollback");
+      return false;
+    }
+
+    const result = await client.query(
+      `update forensic_check_jobs
+       set progress_json = jsonb_set(progress_json, '{deepSecondLayerContext}', $2::jsonb, true),
+         updated_at = now()
+       where id = $1
+         and kind = 'address_deep_check'
+         and status = 'completed'
+         and result_json = $3::jsonb
+         and coalesce(progress_json->'deepSecondLayerContext', 'null'::jsonb) = $4::jsonb`,
+      [
+        input.id,
+        JSON.stringify(input.context),
+        JSON.stringify(resultJson),
+        JSON.stringify((progressJson as Record<string, unknown>).deepSecondLayerContext ?? null)
+      ]
+    );
+    await client.query("commit");
+    return (result.rowCount ?? 0) === 1;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function listCompletedDeepCheckJobsWithPendingSecondLayer(
   db: Db,
   input: { limit: number }
 ): Promise<ForensicCheckJob[]> {
+  const requestedLimit = Number.isFinite(input.limit) ? Math.floor(input.limit) : 5;
+  const limit = Math.min(Math.max(requestedLimit, 1), 100);
   const result = await db.query(
     `select id, kind, subject_address, status, window_start, window_end,
        priority, chat_id, message_id, requested_by, progress_json, result_json,
@@ -8038,6 +8104,15 @@ export async function listCompletedDeepCheckJobsWithPendingSecondLayer(
      where kind = 'address_deep_check'
        and status = 'completed'
        and (
+         case when (progress_json #>> '{deepSecondLayerContext,profile,counters,queued}') ~ '^[0-9]{1,9}$'
+           then (progress_json #>> '{deepSecondLayerContext,profile,counters,queued}')::int
+           else 0
+         end > 0
+         or case when (progress_json #>> '{deepSecondLayerContext,profile,counters,notIndexed}') ~ '^[0-9]{1,9}$'
+           then (progress_json #>> '{deepSecondLayerContext,profile,counters,notIndexed}')::int
+           else 0
+         end > 0
+         or
          case when (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}') ~ '^[0-9]{1,9}$'
            then (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}')::int
            else 0
@@ -8047,11 +8122,30 @@ export async function listCompletedDeepCheckJobsWithPendingSecondLayer(
            else 0
          end > 0
        )
-     order by updated_at asc
-     limit $1`,
-    [input.limit]
+     order by updated_at asc, id asc`
   );
-  return result.rows.map(mapForensicCheckJobRow);
+  // ponytail: context fingerprints require the TypeScript canonicalizer; if this candidate
+  // scan grows large, persist a validated pending counter in a future schema migration.
+  return result.rows
+    .map(mapForensicCheckJobRow)
+    .filter((job) => {
+      const resultSubjectAddress = job.resultJson.subjectAddress;
+      if (Object.prototype.hasOwnProperty.call(job.resultJson, "subjectAddress")
+        && resultSubjectAddress !== job.subjectAddress) return false;
+      const context = buildForensicRuntimeContractProjection(job.progressJson, {
+        jobKind: "address_deep_check",
+        expectedSubjectAddress: job.subjectAddress,
+        baseResult: job.resultJson
+      }).deepSecondLayerContext;
+      const profile = context?.profile ?? job.resultJson.secondLayerRelationshipProfiles;
+      if (!profile || typeof profile !== "object" || Array.isArray(profile)) return false;
+      const counters = (profile as Record<string, unknown>).counters;
+      if (!counters || typeof counters !== "object" || Array.isArray(counters)) return false;
+      const record = counters as Record<string, unknown>;
+      return (Number.isSafeInteger(record.queued) && (record.queued as number) > 0)
+        || (Number.isSafeInteger(record.notIndexed) && (record.notIndexed as number) > 0);
+    })
+    .slice(0, limit);
 }
 
 export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicCheckJob | null> {

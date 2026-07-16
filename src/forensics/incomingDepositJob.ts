@@ -19,6 +19,7 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import { createPendingForensicTelegramDelivery } from "./telegramDelivery";
 import {
   createIncomingDepositTiming,
   type IncomingDepositTimingClock,
@@ -30,6 +31,7 @@ import type {
   BalanceFormingTransfer,
   BotLocale,
   DecisionCoverage,
+  ForensicTelegramDeliveryV1,
   ForensicScoreBlockedReason,
   ForensicTechnicalStatus,
   ForensicRouteEdge,
@@ -51,6 +53,7 @@ import type {
   SourcePolicyEvidence,
   StablecoinRestrictionProfile,
   SubjectExposureProfile,
+  TelegramMessagePayloadV1,
   TronAddressUsdtCoverageStatusReason,
   TronAddressUsdtIndexState,
   WalletAlertMode,
@@ -194,7 +197,12 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     watchedWalletId: string;
     incomingTxHash: string;
   }): Promise<boolean>;
-  sendUserAlert(
+  buildJobFailurePayload?(
+    job: ForensicCheckJob,
+    error: string
+  ): TelegramMessagePayloadV1 | null | Promise<TelegramMessagePayloadV1 | null>;
+  /** @deprecated Task 6 compatibility input; job runners never send Telegram directly. */
+  sendUserAlert?(
     telegramUserId: string,
     message: string,
     options?: { parse_mode?: "HTML"; reply_markup?: unknown }
@@ -2185,6 +2193,33 @@ function safeLoggerWarn(logger: Logger, event: string, fields: Record<string, un
   }
 }
 
+function replyMarkup(value: unknown): Record<string, unknown> | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Incoming Telegram reply markup must be an object");
+  }
+  return value as Record<string, unknown>;
+}
+
+async function buildIncomingFailureDelivery(
+  deps: RunSingleIncomingDepositJobCycleDeps,
+  job: ForensicCheckJob,
+  error: string
+): Promise<ForensicTelegramDeliveryV1 | null> {
+  if (!job.chatId || !deps.buildJobFailurePayload) return null;
+  const payload = await deps.buildJobFailurePayload(job, error);
+  if (payload === null) return null;
+  if (payload.chatId !== job.chatId) {
+    throw new TypeError("Incoming failure payload chat does not match the job owner");
+  }
+  return createPendingForensicTelegramDelivery({
+    jobId: job.id,
+    kind: "incoming_deposit_check",
+    payload,
+    effect: null
+  });
+}
+
 async function indexWalletIntelligenceBestEffort(
   deps: RunSingleIncomingDepositJobCycleDeps,
   job: ForensicCheckJob,
@@ -2295,18 +2330,35 @@ export async function runSingleIncomingDepositJobCycle(
     });
   };
 
-  if (!depositTxHash || !watchedWallet || !watchedWalletId || !sender || !amountRaw || !timestampText || !telegramUserId) {
+  if (!depositTxHash || !watchedWallet || !watchedWalletId || !sender || !amountRaw
+    || sender !== job.subjectAddress || !timestampText || !telegramUserId
+    || !job.chatId || telegramUserId !== job.chatId) {
     const error = "incoming_deposit_check job is missing required progress_json fields";
+    const failureDelivery = await buildIncomingFailureDelivery(deps, job, error);
     await persistPerformanceTiming();
-    await timing.measure("fail_job", () => deps.completeForensicCheckJob({
+    const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: currentProgress,
+      progressJson: failureDelivery
+        ? { ...currentProgress, telegramDelivery: failureDelivery }
+        : currentProgress,
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: error
     }));
+    if (completed && depositTxHash && watchedWalletId) {
+      try {
+        await timing.measure("mark_alert_failed", () =>
+          deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error })
+        );
+      } catch (markError) {
+        safeLoggerWarn(logger, "incoming_deposit_mark_alert_failed", {
+          job_id: job.id,
+          error: formatErrorMessage(markError)
+        });
+      }
+    }
     logTiming("failed");
     return true;
   }
@@ -2333,6 +2385,7 @@ export async function runSingleIncomingDepositJobCycle(
       );
     }
 
+    let telegramDelivery: ForensicTelegramDeliveryV1 | null = null;
     if (shouldSend(alertMode, activeReport)) {
       let addressPoisoningWarningActive = false;
       try {
@@ -2359,19 +2412,31 @@ export async function runSingleIncomingDepositJobCycle(
         addressPoisoningWarningActive,
         report: activeReport
       }));
-      await persistProgress({ jobPhase: "notification_delivery" }, "persist_phase_notification_delivery");
-      await timing.measure("send_alert", () => deps.sendUserAlert(telegramUserId, message.text, {
-        parse_mode: message.parseMode,
-        reply_markup: message.replyMarkup
-      }));
+      telegramDelivery = createPendingForensicTelegramDelivery({
+        jobId: job.id,
+        kind: "incoming_deposit_check",
+        payload: {
+          version: "telegram-message-payload-v1",
+          chatId: job.chatId,
+          text: message.text,
+          parseMode: message.parseMode,
+          replyMarkup: replyMarkup(message.replyMarkup)
+        },
+        effect: {
+          kind: "incoming_user_alert",
+          watchedWalletId,
+          incomingTxHash: depositTxHash
+        }
+      });
     }
-    await timing.measure("mark_alert_sent", () => deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId }));
     await persistProgress({ jobPhase: "completing" }, "persist_phase_completing");
     await persistPerformanceTiming();
     const completion = {
       id: job.id,
       status: "completed",
-      progressJson: currentProgress,
+      progressJson: telegramDelivery
+        ? { ...currentProgress, telegramDelivery }
+        : currentProgress,
       resultJson: {
         ...(activeReport as unknown as Record<string, unknown>),
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION
@@ -2382,6 +2447,18 @@ export async function runSingleIncomingDepositJobCycle(
     } satisfies CompleteJobInput;
     const completed = await timing.measure("complete_job", () => deps.completeForensicCheckJob(completion));
     if (completed) {
+      if (!telegramDelivery) {
+        try {
+          await timing.measure("mark_alert_sent", () =>
+            deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId })
+          );
+        } catch (markError) {
+          safeLoggerWarn(logger, "incoming_deposit_mark_alert_sent_failed", {
+            job_id: job.id,
+            error: formatErrorMessage(markError)
+          });
+        }
+      }
       await indexWalletIntelligenceBestEffort(deps, job, {
         progressJson: completion.progressJson,
         resultJson: completion.resultJson,
@@ -2395,19 +2472,31 @@ export async function runSingleIncomingDepositJobCycle(
       return true;
     }
     const message = error instanceof Error ? error.message : String(error);
-    await timing.measure("mark_alert_failed", () =>
-      deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
-    );
+    const failureDelivery = await buildIncomingFailureDelivery(deps, job, message);
     await persistPerformanceTiming();
-    await timing.measure("fail_job", () => deps.completeForensicCheckJob({
+    const completed = await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: currentProgress,
+      progressJson: failureDelivery
+        ? { ...currentProgress, telegramDelivery: failureDelivery }
+        : currentProgress,
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: message
     }));
+    if (completed) {
+      try {
+        await timing.measure("mark_alert_failed", () =>
+          deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
+        );
+      } catch (markError) {
+        safeLoggerWarn(logger, "incoming_deposit_mark_alert_failed", {
+          job_id: job.id,
+          error: formatErrorMessage(markError)
+        });
+      }
+    }
     logTiming("failed");
     return true;
   }

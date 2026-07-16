@@ -141,6 +141,16 @@ function report(overrides: Partial<IncomingDepositRiskReport> = {}): IncomingDep
   };
 }
 
+function failurePayload(text = "incoming-failed") {
+  return {
+    version: "telegram-message-payload-v1" as const,
+    chatId: "42",
+    text,
+    parseMode: "HTML" as const,
+    replyMarkup: null
+  };
+}
+
 function job(progressJson: Record<string, unknown>): ForensicCheckJob {
   return {
     id: "job-incoming-1",
@@ -382,7 +392,7 @@ function incomingMaterializationRows(input: {
 }
 
 describe("runSingleIncomingDepositJobCycle", () => {
-  it("completes an incoming deposit job and sends one final alert", async () => {
+  it("completes an incoming deposit job with one pending final alert", async () => {
     const events: string[] = [];
     const complete = vi.fn(async (input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]) => {
       events.push(`complete:${input.status}`);
@@ -423,16 +433,29 @@ describe("runSingleIncomingDepositJobCycle", () => {
       resultJson: completion.resultJson,
       completedAt: new Date("2026-05-29T14:03:00.000Z")
     }).policyVersion).toBe(SCORING_SIGNAL_MATRIX_POLICY_VERSION);
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(markSent).toHaveBeenCalledWith({
-      txHash: depositTxHash,
-      watchedWalletId
+    expect(send).not.toHaveBeenCalled();
+    expect(markSent).not.toHaveBeenCalled();
+    expect(completion.progressJson.telegramDelivery).toMatchObject({
+      payload: {
+        version: "telegram-message-payload-v1",
+        chatId: "42",
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML",
+        replyMarkup: null
+      },
+      effect: {
+        kind: "incoming_user_alert",
+        watchedWalletId,
+        incomingTxHash: depositTxHash
+      },
+      state: { status: "pending", attemptCount: 0 },
+      claim: null
     });
     expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({
       timestamp: new Date("2026-05-29T14:01:00.000Z"),
       locale: "en"
     }));
-    expect(events).toEqual(["send", "markSent", "complete:completed"]);
+    expect(events).toEqual(["complete:completed"]);
   });
 
   it("looks up the exact incoming poisoning candidate immediately before formatting and preserves AML output", async () => {
@@ -484,7 +507,11 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(lookup).toHaveBeenCalledTimes(1);
     expect(lookup).toHaveBeenCalledWith({ watchedWalletId, incomingTxHash: depositTxHash });
     expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({ addressPoisoningWarningActive: true }));
-    expect(events).toEqual(["build", "record", "lookup", "format", "send", "complete"]);
+    expect(send).not.toHaveBeenCalled();
+    expect(complete.mock.calls[0]?.[0].progressJson.telegramDelivery).toMatchObject({
+      payload: { text: "warning-active" }
+    });
+    expect(events).toEqual(["build", "record", "lookup", "format", "complete"]);
   });
 
   it("does not wait or retry when no active poisoning candidate exists", async () => {
@@ -509,10 +536,10 @@ describe("runSingleIncomingDepositJobCycle", () => {
 
     expect(lookup).toHaveBeenCalledTimes(1);
     expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({ addressPoisoningWarningActive: false }));
-    expect(send).toHaveBeenCalledWith("42", "ordinary", expect.any(Object));
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it("logs a poisoning lookup failure and still sends the unchanged Incoming result", async () => {
+  it("logs a poisoning lookup failure and still persists the unchanged Incoming payload", async () => {
     const lookup = vi.fn(async () => {
       throw new Error("poisoning store unavailable");
     });
@@ -545,7 +572,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       error: "poisoning store unavailable"
     });
     expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({ addressPoisoningWarningActive: false }));
-    expect(send).toHaveBeenCalledWith("42", "ordinary", expect.any(Object));
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("does not persist a generic observed risk for a completed no-final incoming result", async () => {
@@ -577,7 +604,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
 
     expect(handled).toBe(true);
     expect(recordObservedTransactionRisk).not.toHaveBeenCalled();
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       status: "completed",
       resultJson: expect.objectContaining({
@@ -739,8 +766,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
         warnings: []
       })
     }));
-    expect(sendUserAlert).toHaveBeenCalledWith("42", expect.not.stringContaining("95"), expect.any(Object));
-    expect(sendUserAlert).toHaveBeenCalledWith("42", expect.not.stringContaining("Legacy LLM"), expect.any(Object));
+    expect(sendUserAlert).not.toHaveBeenCalled();
     expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
       resultJson: expect.objectContaining({
         scoringPolicyVersion: SCORING_SIGNAL_MATRIX_POLICY_VERSION,
@@ -852,17 +878,21 @@ describe("runSingleIncomingDepositJobCycle", () => {
   });
 
   it("does not index wallet intelligence when incoming job completion is not applied", async () => {
-    const completeForensicCheckJob = vi.fn(async () => false);
+    const completeForensicCheckJob = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => false);
     const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+    const sendUserAlert = vi.fn(async () => undefined);
+    const markUserAlertSent = vi.fn(async () => true);
 
     const handled = await runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job(validProgressJson),
       completeForensicCheckJob,
       updateForensicCheckJobProgress: vi.fn(async () => true),
-      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertSent,
       markUserAlertFailed: vi.fn(async () => true),
       recordObservedTransactionRisk: vi.fn(async () => true),
-      sendUserAlert: vi.fn(async () => undefined),
+      sendUserAlert,
       formatIncomingDepositRiskAlert: () => ({ text: "ok", parseMode: "HTML" }),
       buildReport: async () => report(),
       indexWalletIntelligenceJob
@@ -870,7 +900,16 @@ describe("runSingleIncomingDepositJobCycle", () => {
 
     expect(handled).toBe(true);
     expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(completeForensicCheckJob.mock.calls[0]?.[0].progressJson).toEqual(expect.objectContaining({
+      telegramDelivery: expect.objectContaining({
+        payload: expect.objectContaining({ chatId: "42", text: "ok" }),
+        state: expect.objectContaining({ status: "pending", attemptCount: 0 }),
+        claim: null
+      })
+    }));
     expect(indexWalletIntelligenceJob).not.toHaveBeenCalled();
+    expect(sendUserAlert).not.toHaveBeenCalled();
+    expect(markUserAlertSent).not.toHaveBeenCalled();
   });
 
   it("leaves incoming deposit job waiting when targeted indexing is queued", async () => {
@@ -1213,7 +1252,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(warnCallCount).toBeGreaterThan(0);
   });
 
-  it("persists incoming deposit phases before trace, risk recording, notification, and completion", async () => {
+  it("persists incoming deposit phases before trace, risk recording, and completion", async () => {
     const progressUpdates: Record<string, unknown>[] = [];
     const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, unknown> }) => {
       progressUpdates.push(input.progressJson);
@@ -1239,7 +1278,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(progressUpdates.slice(0, 4).map((progress) => progress.jobPhase)).toEqual([
       "incoming_deposit_trace",
       "risk_recording",
-      "notification_delivery",
+      "completing",
       "completing"
     ]);
     for (const progress of progressUpdates) {
@@ -1284,11 +1323,28 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(markSent).toHaveBeenCalledWith({ txHash: depositTxHash, watchedWalletId });
   });
 
+  it("does not mark a suppressed alert sent when completion CAS is lost", async () => {
+    const markSent = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job({ ...validProgressJson, alertMode: "risk_only" }),
+      completeForensicCheckJob: async () => false,
+      markUserAlertSent: markSent,
+      markUserAlertFailed: vi.fn(async () => true),
+      recordObservedTransactionRisk: vi.fn(async () => true),
+      formatIncomingDepositRiskAlert: vi.fn(() => ({ text: "must-not-format", parseMode: "HTML" as const })),
+      buildReport: async () => report({ decision: "ACCEPTABLE" })
+    });
+
+    expect(markSent).not.toHaveBeenCalled();
+  });
+
   it("fails jobs missing required progress_json fields without building or sending", async () => {
     const complete = vi.fn(async () => true);
     const buildReport = vi.fn(async () => report());
     const send = vi.fn(async () => undefined);
     const markSent = vi.fn(async () => true);
+    const buildJobFailurePayload = vi.fn(async () => failurePayload("missing-fields"));
 
     const handled = await runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job({
@@ -1300,6 +1356,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       markUserAlertFailed: async () => true,
       recordObservedTransactionRisk: async () => true,
       sendUserAlert: send,
+      buildJobFailurePayload,
       formatIncomingDepositRiskAlert: () => ({
         text: "<b>Incoming USDT</b>",
         parseMode: "HTML"
@@ -1310,16 +1367,120 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(handled).toBe(true);
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       status: "failed",
-      lastError: expect.stringContaining("missing required progress_json fields")
+      lastError: expect.stringContaining("missing required progress_json fields"),
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "missing-fields" }),
+          effect: null,
+          state: expect.objectContaining({ status: "pending", attemptCount: 0 })
+        })
+      })
     }));
+    expect(buildJobFailurePayload).toHaveBeenCalledTimes(1);
     expect(buildReport).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(markSent).not.toHaveBeenCalled();
   });
 
+  it("rejects incoming jobs whose Telegram identity does not match the durable job chat", async () => {
+    const complete = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => true);
+    const buildReport = vi.fn(async () => report());
+    const formatAlert = vi.fn(() => ({ text: "must-not-format", parseMode: "HTML" as const }));
+    const buildJobFailurePayload = vi.fn(async () => failurePayload("identity-mismatch"));
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job({ ...validProgressJson, telegramUserId: "different-chat" }),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertFailed: vi.fn(async () => true),
+      recordObservedTransactionRisk: vi.fn(async () => true),
+      buildJobFailurePayload,
+      formatIncomingDepositRiskAlert: formatAlert,
+      buildReport
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      lastError: expect.stringContaining("missing required progress_json fields"),
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "identity-mismatch" }),
+          effect: null,
+          state: expect.objectContaining({ status: "pending", attemptCount: 0 })
+        })
+      })
+    }));
+    expect(buildJobFailurePayload).toHaveBeenCalledTimes(1);
+    expect(buildReport).not.toHaveBeenCalled();
+    expect(formatAlert).not.toHaveBeenCalled();
+  });
+
+  it("rejects progress sender mismatch before analyzing or formatting another address", async () => {
+    const senderB = "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM";
+    const events: string[] = [];
+    const complete = vi.fn(async (
+      _input: Parameters<RunSingleIncomingDepositJobCycleDeps["completeForensicCheckJob"]>[0]
+    ) => {
+      events.push("complete");
+      return true;
+    });
+    const markFailed = vi.fn(async () => {
+      events.push("markFailed");
+      return true;
+    });
+    const buildReport = vi.fn(async () => report());
+    const formatAlert = vi.fn(() => ({ text: `must-not-format-${senderB}`, parseMode: "HTML" as const }));
+    const recordRisk = vi.fn(async () => true);
+    const send = vi.fn(async () => undefined);
+    const buildJobFailurePayload = vi.fn(async () => failurePayload("sender-mismatch"));
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job({ ...validProgressJson, sender: senderB }),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertFailed: markFailed,
+      recordObservedTransactionRisk: recordRisk,
+      sendUserAlert: send,
+      buildJobFailurePayload,
+      formatIncomingDepositRiskAlert: formatAlert,
+      buildReport
+    });
+
+    expect(buildJobFailurePayload).toHaveBeenCalledWith(
+      expect.objectContaining({ subjectAddress: incomingSenderAddress }),
+      expect.stringContaining("missing required progress_json fields")
+    );
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "sender-mismatch" }),
+          effect: null,
+          state: expect.objectContaining({ status: "pending", attemptCount: 0 })
+        })
+      })
+    }));
+    expect(JSON.stringify(complete.mock.calls[0]?.[0].progressJson.telegramDelivery)).not.toContain(senderB);
+    expect(buildReport).not.toHaveBeenCalled();
+    expect(formatAlert).not.toHaveBeenCalled();
+    expect(recordRisk).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(events).toEqual(["complete", "markFailed"]);
+  });
+
   it("marks the observed alert failed and fails the job when report building throws", async () => {
-    const complete = vi.fn(async () => true);
-    const markFailed = vi.fn(async () => true);
+    const events: string[] = [];
+    const complete = vi.fn(async () => {
+      events.push("complete");
+      return true;
+    });
+    const markFailed = vi.fn(async () => {
+      events.push("markFailed");
+      return true;
+    });
 
     const handled = await runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job(validProgressJson),
@@ -1328,6 +1489,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       markUserAlertFailed: markFailed,
       recordObservedTransactionRisk: async () => true,
       sendUserAlert: async () => undefined,
+      buildJobFailurePayload: async () => failurePayload("report-failed"),
       formatIncomingDepositRiskAlert: () => ({
         text: "<b>Incoming USDT</b>",
         parseMode: "HTML"
@@ -1345,11 +1507,77 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       status: "failed",
-      lastError: "risk builder unavailable"
+      lastError: "risk builder unavailable",
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "report-failed" }),
+          effect: null
+        })
+      })
     }));
+    expect(events).toEqual(["complete", "markFailed"]);
   });
 
-  it("records only a failed job state when Telegram delivery throws", async () => {
+  it("persists a pending failure envelope when incoming alert formatting throws", async () => {
+    const complete = vi.fn(async () => true);
+    const markFailed = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertFailed: markFailed,
+      recordObservedTransactionRisk: vi.fn(async () => true),
+      buildJobFailurePayload: async () => failurePayload("formatter-failed"),
+      formatIncomingDepositRiskAlert: () => {
+        throw new Error("incoming formatter unavailable");
+      },
+      buildReport: async () => report()
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      lastError: "incoming formatter unavailable",
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          payload: expect.objectContaining({ chatId: "42", text: "formatter-failed" }),
+          effect: null
+        })
+      })
+    }));
+    expect(markFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the observed alert untouched when failure completion CAS is lost", async () => {
+    const complete = vi.fn(async () => false);
+    const markFailed = vi.fn(async () => true);
+    const send = vi.fn(async () => undefined);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertFailed: markFailed,
+      recordObservedTransactionRisk: vi.fn(async () => true),
+      sendUserAlert: send,
+      buildJobFailurePayload: async () => failurePayload("cas-lost"),
+      formatIncomingDepositRiskAlert: () => ({ text: "unused", parseMode: "HTML" as const }),
+      buildReport: async () => {
+        throw new Error("risk builder unavailable");
+      }
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({ payload: expect.objectContaining({ text: "cas-lost" }) })
+      })
+    }));
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not let a legacy Telegram sender failure change the completed job or risk", async () => {
     const complete = vi.fn(async () => true);
     const markFailed = vi.fn(async () => true);
 
@@ -1370,15 +1598,17 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
 
     expect(handled).toBe(true);
-    expect(markFailed).toHaveBeenCalledWith({
-      txHash: depositTxHash,
-      watchedWalletId,
-      error: "telegram unavailable"
-    });
+    expect(markFailed).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledTimes(1);
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
-      status: "failed",
-      lastError: "telegram unavailable"
+      status: "completed",
+      lastError: null,
+      resultJson: expect.objectContaining({ depositRiskScore: 32 }),
+      progressJson: expect.objectContaining({
+        telegramDelivery: expect.objectContaining({
+          state: expect.objectContaining({ status: "pending", attemptCount: 0 })
+        })
+      })
     }));
   });
 
@@ -1422,8 +1652,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
           depositAgeAtStartMs: 65000,
           totalRunMs: expect.any(Number),
           stages: expect.arrayContaining([
-            { name: "build_report", durationMs: 20 },
-            { name: "send_alert", durationMs: 5 }
+            { name: "build_report", durationMs: 20 }
           ])
         })
       })
@@ -1559,8 +1788,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
           queueWaitMs: 1000,
           depositAgeAtStartMs: 65000,
           stages: expect.arrayContaining([
-            { name: "build_report", durationMs: 11 },
-            { name: "mark_alert_failed", durationMs: 7 }
+            { name: "build_report", durationMs: 11 }
           ])
         })
       })
@@ -1589,7 +1817,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       claimNextForensicCheckJob: async () => job(validProgressJson),
       updateForensicCheckJobProgress: async () => {
         updateCallCount += 1;
-        return updateCallCount < 5;
+        return updateCallCount < 4;
       },
       completeForensicCheckJob: complete,
       markUserAlertSent: async () => true,

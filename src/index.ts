@@ -128,9 +128,9 @@ import {
   indexWalletIntelligenceJobPayload,
   listWalletIntelligenceAddressSummaries,
   queueTronAddressUsdtIndexState,
+  saveCompletedDeepSecondLayerContext,
   updateForensicCheckJobProgress,
   updateTheftReportAdminState,
-  updateCompletedDeepCheckResultPatch,
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -143,6 +143,7 @@ import {
   watchedWalletExists
 } from "./storage/repositories";
 import type { ForensicCheckJob, ForensicCheckJobKind } from "./storage/repositories";
+import type { TelegramMessagePayloadV1 } from "./types";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
 import type { ContractDecisionEvidenceV1, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
@@ -687,24 +688,29 @@ async function sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }
   });
 }
 
-async function findMatchingWhereIsMoneyJob(job: ForensicCheckJob): Promise<ForensicCheckJob | null> {
-  if (job.kind !== "address_deep_check" || !job.chatId) return null;
-  return getLatestWhereIsMoneyCheckJobForAddress(db, {
-    subjectAddress: job.subjectAddress,
+function forensicTelegramPayload(
+  job: ForensicCheckJob,
+  message: { text: string; parseMode: "HTML" }
+): TelegramMessagePayloadV1 | null {
+  if (!job.chatId) return null;
+  return {
+    version: "telegram-message-payload-v1",
     chatId: job.chatId,
-    requestedBy: job.requestedBy,
-    windowStart: job.windowStart,
-    windowEnd: job.windowEnd
-  });
+    text: message.text,
+    parseMode: message.parseMode,
+    replyMarkup: null
+  };
 }
 
-async function sendForensicJobFailure(job: ForensicCheckJob, error: string, whereJob?: ForensicCheckJob | null): Promise<void> {
-  if (!job.chatId) return;
-  const message = formatDeepForensicFailureUserDeliveryReport(job, error, whereJob, {
+function buildForensicJobFailurePayload(
+  job: ForensicCheckJob,
+  error: string
+): TelegramMessagePayloadV1 | null {
+  const message = formatDeepForensicFailureUserDeliveryReport(job, error, null, {
     runtimeLabel: config.runtimeInstanceLabel,
     locale: normalizeBotLocale(job.progressJson.locale)
   });
-  await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
+  return forensicTelegramPayload(job, message);
 }
 
 async function pollOnce(): Promise<void> {
@@ -868,22 +874,6 @@ async function recoverStaleForensicJobsOnce(): Promise<void> {
       retry_count: job.progressJson.retryCount,
       reason: job.progressJson.staleRecoveryReason
     });
-    if (!job.chatId) continue;
-    const reason = typeof job.progressJson.staleRecoveryReason === "string"
-      ? job.progressJson.staleRecoveryReason
-      : job.lastError ?? "stale forensic job exceeded retry limit";
-    try {
-      await sendForensicJobFailure(job, reason, await findMatchingWhereIsMoneyJob(job));
-    } catch (error) {
-      logger.error("forensic_job_stale_failure_delivery_failed", {
-        job_id: job.id,
-        kind: job.kind,
-        subject_address: job.subjectAddress,
-        chat_id: job.chatId,
-        reason,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
   }
 }
 
@@ -891,7 +881,7 @@ async function refreshDeepCheckSecondLayerJob(jobId: string) {
   return refreshDeepCheckSecondLayerFromIndex({
     jobId,
     getJob: (id) => getForensicCheckJob(db, id),
-    patchCompletedJob: (input) => updateCompletedDeepCheckResultPatch(db, input),
+    saveCompletedDeepSecondLayerContext: (input) => saveCompletedDeepSecondLayerContext(db, input),
     getClassificationForAddress: async (address) => {
       const metadata = await getCachedOrLiveAddressMetadata(address);
       const contractProfile = metadata?.isContract === true
@@ -1043,8 +1033,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
           allowRunningRequeue: requestInput.allowRunningRequeue === true
         });
       },
-      sendJobResult: async (job, report, status) => {
-        if (!job.chatId) return;
+      buildJobResultPayload: async (job, report, status) => {
+        if (!job.chatId) return null;
         const locale = normalizeBotLocale(job.progressJson.locale);
         const whereJob = await getLatestWhereIsMoneyCheckJobForAddress(db, {
           subjectAddress: job.subjectAddress,
@@ -1058,10 +1048,10 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
           locale,
           showBetaDiagnostics: config.botBetaRiskDiagnosticsEnabled
         });
-        await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
+        return forensicTelegramPayload(job, message);
       },
-      sendWhereIsMoneyJobResult: async (job, report, status) => {
-        if (!job.chatId) return;
+      buildWhereIsMoneyJobResultPayload: async (job, report, status) => {
+        if (!job.chatId) return null;
         const deepJob = await getLatestDeepForensicCheckJobForAddressAnyStatus(db, {
           subjectAddress: job.subjectAddress,
           chatId: job.chatId,
@@ -1077,11 +1067,10 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
             logger.warn("where_preliminary_score_without_structured_fact", diagnostic);
           }
         });
-        await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
+        return forensicTelegramPayload(job, message);
       },
-      sendJobFailure: async (job, error) => {
-        await sendForensicJobFailure(job, error, await findMatchingWhereIsMoneyJob(job));
-      }
+      buildJobFailurePayload: buildForensicJobFailurePayload,
+      buildWhereIsMoneyJobFailurePayload: buildForensicJobFailurePayload
     }, {
       ...deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured),
       targetedHistoryMaxBudgetPages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP
@@ -1200,10 +1189,8 @@ async function incomingDepositOnce(): Promise<void> {
             watchedWalletId: input.watchedWalletId,
             txHash: input.incomingTxHash
           }),
+        buildJobFailurePayload: buildForensicJobFailurePayload,
         formatIncomingDepositRiskAlert,
-        sendUserAlert: async (telegramUserId, message, options) => {
-          await bot.api.sendMessage(telegramUserId, message, options as Parameters<typeof bot.api.sendMessage>[2]);
-        },
         buildReport: (input) => buildIncomingDepositReport({
           ...input,
           deps: incomingDepositRuntimeDeps

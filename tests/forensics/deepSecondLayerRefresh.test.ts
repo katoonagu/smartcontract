@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { refreshDeepCheckSecondLayerFromIndex } from "../../src/forensics/deepSecondLayerRefresh";
+import { fingerprintCanonicalJson } from "../../src/forensics/telegramDelivery";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 import type {
   DeepSecondLayerRelationshipGroup,
   DeepSecondLayerRelationshipPath,
   DeepSecondLayerRelationshipProfile,
+  DeepSecondLayerContextV1,
   DirectCounterpartyInteractionProfile,
   ForensicRouteEdge,
   ServiceClassification,
@@ -17,7 +19,7 @@ const walletB = "TWalletB111111111111111111111111111";
 const walletC = "TWalletC111111111111111111111111111";
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
-  return {
+  const value: ForensicCheckJob = {
     id: "job-1",
     kind: "address_deep_check",
     subjectAddress: subject,
@@ -41,6 +43,10 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
     startedAt: new Date("2026-01-01T00:00:01.000Z"),
     completedAt: new Date("2026-01-01T00:00:02.000Z"),
     ...overrides
+  };
+  return {
+    ...value,
+    resultJson: JSON.parse(JSON.stringify(value.resultJson)) as Record<string, unknown>
   };
 }
 
@@ -217,12 +223,17 @@ function staleGroup(): DeepSecondLayerRelationshipGroup {
 function deps(sourceJob: ForensicCheckJob, overrides: {
   getIndexState?: (address: string) => Promise<TronAddressUsdtIndexState | null>;
   listIndexedEdges?: (address: string) => Promise<ForensicRouteEdge[]>;
-  patchCompletedJob?: (input: { id: string; resultJson: Record<string, unknown>; progressJson: Record<string, unknown> }) => Promise<boolean>;
+  saveCompletedDeepSecondLayerContext?: (input: { id: string; context: DeepSecondLayerContextV1 }) => Promise<boolean>;
 } = {}) {
   return {
     jobId: sourceJob.id,
     getJob: vi.fn(async () => sourceJob),
-    patchCompletedJob: vi.fn(overrides.patchCompletedJob ?? (async () => true)),
+    patchCompletedJob: vi.fn(async () => {
+      throw new Error("completed result_json must stay immutable");
+    }),
+    saveCompletedDeepSecondLayerContext: vi.fn(
+      overrides.saveCompletedDeepSecondLayerContext ?? (async () => true)
+    ),
     getClassificationForAddress: vi.fn(async (): Promise<ServiceClassification | null> => null),
     getIndexState: vi.fn(overrides.getIndexState ?? (async (address) => completeState(address))),
     listIndexedEdges: vi.fn(overrides.listIndexedEdges ?? (async () => [edge()]))
@@ -230,23 +241,28 @@ function deps(sourceJob: ForensicCheckJob, overrides: {
 }
 
 describe("deep second-layer refresh", () => {
-  it("patches completed DeepCheck job when queued wallet index is complete and adds path subject -> A -> B", async () => {
-    const runtime = deps(job());
+  it("saves versioned context when queued wallet index is complete and adds path subject -> A -> B", async () => {
+    const sourceJob = job();
+    const runtime = deps(sourceJob);
 
     const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
 
     expect(result).toEqual({ status: "refreshed", expanded: 1, queued: 0, notIndexed: 0 });
-    expect(runtime.patchCompletedJob).toHaveBeenCalledTimes(1);
-    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
-    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    expect(runtime.patchCompletedJob).not.toHaveBeenCalled();
+    expect(runtime.saveCompletedDeepSecondLayerContext).toHaveBeenCalledTimes(1);
+    const write = runtime.saveCompletedDeepSecondLayerContext.mock.calls[0]?.[0];
+    expect(write?.context).toMatchObject({
+      version: "deep-second-layer-context-v1",
+      baseResultFingerprint: fingerprintCanonicalJson(sourceJob.resultJson),
+      refreshedAt: expect.any(String)
+    });
+    const nextProfile = write?.context.profile as DeepSecondLayerRelationshipProfile;
     expect(nextProfile).toMatchObject({
       version: 1,
       source: "deepcheck_relationship_expansion_v1"
     });
     expect(nextProfile.paths[0]?.pathAddresses).toEqual([subject, walletA, walletB]);
     expect(nextProfile.directWalletStatuses[0]).toMatchObject({ address: walletA, status: "expanded", savedPathCount: 1 });
-    expect(patch?.progressJson).toMatchObject({ secondLayerQueued: 0, secondLayerComplete: 1 });
-    expect(patch?.progressJson.secondLayerRefreshedAt).toEqual(expect.any(String));
   });
 
   it("does not patch non-completed jobs", async () => {
@@ -255,7 +271,7 @@ describe("deep second-layer refresh", () => {
     const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
 
     expect(result).toEqual({ status: "skipped", reason: "job_not_completed_deepcheck" });
-    expect(runtime.patchCompletedJob).not.toHaveBeenCalled();
+    expect(runtime.saveCompletedDeepSecondLayerContext).not.toHaveBeenCalled();
   });
 
   it("skips when no pending queued/not_indexed statuses", async () => {
@@ -281,7 +297,7 @@ describe("deep second-layer refresh", () => {
     const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
 
     expect(result).toEqual({ status: "skipped", reason: "no_pending_second_layer_wallets" });
-    expect(runtime.patchCompletedJob).not.toHaveBeenCalled();
+    expect(runtime.saveCompletedDeepSecondLayerContext).not.toHaveBeenCalled();
   });
 
   it("replaces stale pending paths and groups instead of duplicating them", async () => {
@@ -290,8 +306,8 @@ describe("deep second-layer refresh", () => {
 
     await refreshDeepCheckSecondLayerFromIndex(runtime);
 
-    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
-    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    const write = runtime.saveCompletedDeepSecondLayerContext.mock.calls[0]?.[0];
+    const nextProfile = write?.context.profile as DeepSecondLayerRelationshipProfile;
     expect(nextProfile.paths).toHaveLength(1);
     expect(nextProfile.paths[0]?.secondHopAddress).toBe(walletB);
     expect(nextProfile.groups).toHaveLength(0);
@@ -305,8 +321,8 @@ describe("deep second-layer refresh", () => {
     const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
 
     expect(result).toEqual({ status: "refreshed", expanded: 0, queued: 0, notIndexed: 1 });
-    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
-    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    const write = runtime.saveCompletedDeepSecondLayerContext.mock.calls[0]?.[0];
+    const nextProfile = write?.context.profile as DeepSecondLayerRelationshipProfile;
     expect(nextProfile.directWalletStatuses[0]).toMatchObject({
       address: walletA,
       status: "not_indexed",
@@ -314,7 +330,6 @@ describe("deep second-layer refresh", () => {
       queued: false
     });
     expect(nextProfile.counters).toMatchObject({ notIndexed: 1, queued: 0, complete: 0 });
-    expect(patch?.progressJson).toMatchObject({ secondLayerQueued: 1, secondLayerComplete: 0 });
   });
 
   it("ignores malformed nested entries and refreshes valid pending wallet", async () => {
@@ -371,20 +386,20 @@ describe("deep second-layer refresh", () => {
     const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
 
     expect(result).toEqual({ status: "refreshed", expanded: 2, queued: 0, notIndexed: 0 });
-    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
-    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    const write = runtime.saveCompletedDeepSecondLayerContext.mock.calls[0]?.[0];
+    const nextProfile = write?.context.profile as DeepSecondLayerRelationshipProfile;
     expect(nextProfile.directWalletStatuses.map((status) => status.address)).toEqual([walletC, walletA]);
     expect(nextProfile.paths.map((path) => path.directWalletAddress)).toEqual([walletC, walletA]);
     expect(nextProfile.groups.map((group) => group.directWalletAddress)).toEqual([walletC]);
   });
 
   it("returns skipped when completed job patch is not applied", async () => {
-    const runtime = deps(job(), { patchCompletedJob: async () => false });
+    const runtime = deps(job(), { saveCompletedDeepSecondLayerContext: async () => false });
 
     const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
 
     expect(result).toEqual({ status: "skipped", reason: "patch_not_applied" });
-    expect(runtime.patchCompletedJob).toHaveBeenCalledTimes(1);
+    expect(runtime.saveCompletedDeepSecondLayerContext).toHaveBeenCalledTimes(1);
   });
 
   it("rebuilds only pending direct counterparty profiles without duplicating non-pending wallets", async () => {
@@ -451,8 +466,8 @@ describe("deep second-layer refresh", () => {
 
     await refreshDeepCheckSecondLayerFromIndex(runtime);
 
-    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
-    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    const write = runtime.saveCompletedDeepSecondLayerContext.mock.calls[0]?.[0];
+    const nextProfile = write?.context.profile as DeepSecondLayerRelationshipProfile;
     expect(nextProfile.directWalletStatuses.filter((status) => status.address === walletC)).toHaveLength(1);
     expect(nextProfile.directWalletStatuses.filter((status) => status.address === walletA)).toHaveLength(1);
     expect(nextProfile.paths.filter((path) => path.directWalletAddress === walletC)).toHaveLength(1);
