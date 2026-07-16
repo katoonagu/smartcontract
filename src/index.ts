@@ -27,6 +27,10 @@ import { classifyServiceAddress } from "./forensics/serviceClassifier";
 import { addStrictBenchmarkCounters, addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress, type CounterPatch } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
+import {
+  runSingleForensicTelegramDeliveryCycle,
+  type ForensicTelegramDeliveryRepository
+} from "./forensics/telegramDeliveryWorker";
 import { extractWalletIntelligenceFromJob } from "./forensics/walletIntelligence";
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
@@ -62,6 +66,7 @@ import {
   claimDueApprovalContexts,
   claimQueuedTronAddressUsdtIndexStates,
   claimNextForensicCheckJob,
+  claimNextForensicTelegramDelivery,
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
   claimDigestTransactions,
@@ -79,6 +84,7 @@ import {
   getWalletPollState,
   hasUndismissedAddressPoisoningCandidateForIncoming,
   completeForensicCheckJob,
+  attachRecoveredForensicTelegramDelivery,
   failTronAddressUsdtIndexState,
   markApprovalContextExpired,
   markApprovalContextFinalAlertSent,
@@ -100,6 +106,7 @@ import {
   listIndexedTronUsdtTransfersForAddress,
   listIndexedTronUsdtTransfersByHashes,
   listCompletedDeepCheckJobsWithPendingSecondLayer,
+  listDueRecoveredForensicDeliveryIntents,
   findLatestSavedWalletRiskByAddresses,
   getWalletIntelligenceAddressDetail,
   listAddressLabels,
@@ -129,6 +136,8 @@ import {
   listWalletIntelligenceAddressSummaries,
   queueTronAddressUsdtIndexState,
   saveCompletedDeepSecondLayerContext,
+  settleForensicTelegramDelivery,
+  settleRecoveredForensicDeliveryIntentPreparation,
   updateForensicCheckJobProgress,
   updateTheftReportAdminState,
   upsertAddressLabelAssertion,
@@ -713,6 +722,111 @@ function buildForensicJobFailurePayload(
   return forensicTelegramPayload(job, message);
 }
 
+function recoveredDeliveryPreparationError(
+  code: "stale_intent_context_unavailable" | "stale_intent_payload_build_failed"
+): Error & { code: typeof code } {
+  return Object.assign(new Error(code), { code });
+}
+
+async function buildRecoveredForensicTelegramDelivery(input: {
+  jobId: string;
+  intent: { reasonCode: string };
+}) {
+  let job: ForensicCheckJob | null;
+  try {
+    job = await getForensicCheckJob(db, input.jobId);
+  } catch {
+    throw recoveredDeliveryPreparationError("stale_intent_context_unavailable");
+  }
+  if (!job || !job.chatId || job.kind === "address_fast_check") {
+    throw recoveredDeliveryPreparationError("stale_intent_context_unavailable");
+  }
+
+  let whereJob: ForensicCheckJob | null = null;
+  if (job.kind === "address_deep_check") {
+    try {
+      whereJob = await getLatestWhereIsMoneyCheckJobForAddress(db, {
+        subjectAddress: job.subjectAddress,
+        chatId: job.chatId,
+        requestedBy: job.requestedBy,
+        windowStart: job.windowStart,
+        windowEnd: job.windowEnd
+      });
+    } catch {
+      throw recoveredDeliveryPreparationError("stale_intent_context_unavailable");
+    }
+  }
+
+  let payload: TelegramMessagePayloadV1 | null;
+  try {
+    const message = formatDeepForensicFailureUserDeliveryReport(
+      job,
+      input.intent.reasonCode,
+      whereJob,
+      {
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale: normalizeBotLocale(job.progressJson.locale)
+      }
+    );
+    payload = forensicTelegramPayload(job, message);
+  } catch {
+    throw recoveredDeliveryPreparationError("stale_intent_payload_build_failed");
+  }
+  if (!payload) {
+    throw recoveredDeliveryPreparationError("stale_intent_context_unavailable");
+  }
+
+  let effect = null;
+  if (job.kind === "incoming_deposit_check") {
+    const watchedWalletId = job.progressJson.watchedWalletId;
+    const incomingTxHash = job.progressJson.depositTxHash;
+    if (typeof watchedWalletId !== "string" || typeof incomingTxHash !== "string") {
+      throw recoveredDeliveryPreparationError("stale_intent_context_unavailable");
+    }
+    effect = {
+      kind: "incoming_user_alert" as const,
+      watchedWalletId,
+      incomingTxHash
+    };
+  }
+
+  return { kind: job.kind, payload, effect };
+}
+
+const forensicTelegramDeliveryRepository: ForensicTelegramDeliveryRepository<typeof db> = {
+  listDueRecoveredForensicDeliveryIntents,
+  settleRecoveredForensicDeliveryIntentPreparation,
+  attachRecoveredForensicTelegramDelivery,
+  claimNextForensicTelegramDelivery,
+  settleForensicTelegramDelivery
+};
+
+const forensicTelegramDeliveryWork = createNonOverlappingStartupWork(
+  () => runSingleForensicTelegramDeliveryCycle({
+    db,
+    now: () => new Date(),
+    repository: forensicTelegramDeliveryRepository,
+    recoveryLimit: 10,
+    deliveryLimit: 10,
+    buildRecoveredTelegramDelivery: buildRecoveredForensicTelegramDelivery,
+    sendTelegram: async (payload, signal) => {
+      const options = {
+        ...(payload.parseMode ? { parse_mode: payload.parseMode } : {}),
+        ...(payload.replyMarkup ? { reply_markup: payload.replyMarkup } : {})
+      } as Parameters<typeof bot.api.sendMessage>[2];
+      const message = await bot.api.sendMessage(
+        payload.chatId,
+        payload.text,
+        options,
+        signal as Parameters<typeof bot.api.sendMessage>[3]
+      );
+      return { telegramMessageId: String(message.message_id) };
+    },
+    logger
+  }).then(() => undefined),
+  () => shuttingDown
+);
+
 async function pollOnce(): Promise<void> {
   if (activePoll) return activePoll;
 
@@ -1080,6 +1194,12 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
 }
 
 async function whereForensicOnce(): Promise<void> {
+  const deliveryCycle = forensicTelegramDeliveryWork.run();
+  void deliveryCycle.catch(() => {
+    logger.error("forensic_telegram_delivery_cycle_failed", {
+      diagnosticCode: "forensic_telegram_delivery_cycle_failed"
+    });
+  });
   if (activeWhereForensicPoll) return activeWhereForensicPoll;
   activeWhereForensicPoll = forensicRuntimeOrchestration.runBeforeWherePoll()
     .then(() => runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll))
@@ -1330,6 +1450,17 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       await activeAddressIndexPoll;
     } catch (error) {
       logger.error("active_address_index_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  const activeForensicTelegramDelivery = forensicTelegramDeliveryWork.active();
+  if (activeForensicTelegramDelivery) {
+    try {
+      await activeForensicTelegramDelivery;
+    } catch {
+      logger.error("active_forensic_telegram_delivery_shutdown_wait_failed", {
+        diagnosticCode: "forensic_telegram_delivery_shutdown_wait_failed"
+      });
     }
   }
 
