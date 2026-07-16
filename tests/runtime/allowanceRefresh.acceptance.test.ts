@@ -434,6 +434,8 @@ describe("Plan 3 allowance refresh acceptance", () => {
     const saved = new Map<string, AllowanceState>();
     const events: string[] = [];
     let providerIndex = 0;
+    let active = 0;
+    let maximumActive = 0;
     let firstSignal: AbortSignal | undefined;
     let cycle: Promise<unknown> | undefined;
     try {
@@ -442,9 +444,22 @@ describe("Plan 3 allowance refresh acceptance", () => {
         now: () => NOW,
         getUsdtAllowance: async ({ signal }) => {
           const row = rows[providerIndex++]!;
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
           events.push(`provider:${row.watchedWalletId}`);
-          if (providerIndex === 1) firstSignal = signal;
-          return providerIndex === 1 ? firstProvider.promise : "2000000";
+          try {
+            if (providerIndex === 1) {
+              firstSignal = signal;
+              signal.addEventListener("abort", () => {
+                setTimeout(() => firstProvider.reject(signal.reason), 1);
+              }, { once: true });
+              return await firstProvider.promise;
+            }
+            return "2000000";
+          } finally {
+            active -= 1;
+            events.push(`provider-settled:${row.watchedWalletId}`);
+          }
         },
         saveWalletApprovalAllowanceStateV2: async ({ watchedWalletId, allowance }) => {
           saved.set(watchedWalletId, allowance);
@@ -468,19 +483,35 @@ describe("Plan 3 allowance refresh acceptance", () => {
 
       await vi.advanceTimersByTimeAsync(1);
       expect(firstSignal?.aborted).toBe(true);
+      expect(saved.has(rows[0]!.watchedWalletId)).toBe(false);
+      expect(events).toEqual([`provider:${rows[0]!.watchedWalletId}`]);
+
+      await vi.advanceTimersByTimeAsync(1);
       expect(saved.get(rows[0]!.watchedWalletId)).toMatchObject({
         state: "failed",
         confirmedAllowanceRaw: null,
         isUnlimited: null,
         failureCode: "provider_timeout"
       });
-      expect(events.slice(0, 4)).toEqual([
+      expect(events.slice(0, 5)).toEqual([
         `provider:${rows[0]!.watchedWalletId}`,
+        `provider-settled:${rows[0]!.watchedWalletId}`,
         `save:${rows[0]!.watchedWalletId}`,
         `unlock:${rows[0]!.watchedWalletId}`,
         `provider:${rows[1]!.watchedWalletId}`
       ]);
       await cycle;
+      expect(maximumActive).toBe(1);
+      expect(events).toEqual([
+        `provider:${rows[0]!.watchedWalletId}`,
+        `provider-settled:${rows[0]!.watchedWalletId}`,
+        `save:${rows[0]!.watchedWalletId}`,
+        `unlock:${rows[0]!.watchedWalletId}`,
+        `provider:${rows[1]!.watchedWalletId}`,
+        `provider-settled:${rows[1]!.watchedWalletId}`,
+        `save:${rows[1]!.watchedWalletId}`,
+        `unlock:${rows[1]!.watchedWalletId}`
+      ]);
       expect(saved.get(rows[1]!.watchedWalletId)).toMatchObject({
         state: "confirmed_active",
         confirmedAllowanceRaw: "2000000",
