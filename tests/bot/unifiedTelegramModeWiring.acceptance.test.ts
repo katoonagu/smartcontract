@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatWhereIsMoneyReport } from "../../src/bot/createBot";
+import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
+import {
+  formatDeepForensicUserDeliveryReport,
+  formatSmartContractCheckReport,
+  formatWhereIsMoneyReport
+} from "../../src/bot/createBot";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 import type { WhereIsMoneyReport } from "../../src/types";
 import { adaptTelegramForensicResult } from "../../src/telegram/forensicPresentationAdapters";
@@ -63,6 +69,146 @@ function formatActualWhereCallSite(id: "GOLDEN_WHERE_PRELIMINARY" | "GOLDEN_FINA
   return formatWhereIsMoneyReport(whereJob(status), report, status, { locale: "ru" }).text;
 }
 
+function deepReport(): DeepAddressForensicReport {
+  const at = new Date("2026-07-16T12:00:00.000Z");
+  return {
+    scoringPolicyVersion: "scoring-signal-matrix-v3",
+    subjectAddress: PERSISTED_COVERAGE_WHERE_REPORT.subjectAddress,
+    windowStart: at,
+    windowEnd: at,
+    runProfile: "production_full",
+    providerBudget: {
+      providerCallBudget: null,
+      transferCallBudget: null,
+      contractCallBudget: null,
+      approvalCallBudget: null,
+      elapsedTimeBudgetMs: null,
+      exhausted: false
+    },
+    rawEvidence: [],
+    observations: [],
+    missingChecks: [],
+    serviceExposureProfiles: [],
+    addressBehaviorProfiles: [],
+    inboundProvenanceProfiles: [],
+    counterpartyRiskProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    boundaryExposureProfiles: [],
+    walletRoleProfiles: [],
+    firstHopBlacklistFacts: [],
+    firstHopLabelFacts: [],
+    firstHopBlacklistCoverage: {
+      requiredForDecision: true,
+      scope: "all_time",
+      windowStart: null,
+      windowEnd: null,
+      directPrincipalTransferCoverage: "complete",
+      materialCounterpartyCount: 0,
+      checkedMaterialCounterpartyCount: 0,
+      failedMaterialCounterpartyCount: 0,
+      uncheckedMaterialCounterpartyCount: 0,
+      blacklistCheckCoverage: "complete",
+      incompleteReason: null,
+      confirmedAdverseFactCount: 0,
+      completeTimelineFactCount: 0,
+      partialTimelineFactCount: 0
+    },
+    coverage: {
+      sourceTransferPages: 0,
+      inboundSendersExpanded: 0,
+      transferEdges: 0
+    },
+    coverageDebug: {
+      jobId: null,
+      subjectAddress: PERSISTED_COVERAGE_WHERE_REPORT.subjectAddress,
+      status: "completed",
+      windowStart: at.toISOString(),
+      windowEnd: at.toISOString(),
+      summary: {
+        sourceTransferPages: 0,
+        transferEdges: 0,
+        inboundSendersExpanded: 0,
+        extendedIndexedEdges: 0,
+        extendedFetchedAddresses: 0,
+        apiKeyConfigured: null,
+        thirtyDayTransferCount: null,
+        historicalFallbackTransferCount: null,
+        historicalFallbackRequestedLimit: null,
+        directCounterpartyCount: 0,
+        analyzedCounterpartyCount: 0,
+        expandedCounterpartyCount: 0,
+        metadataEnrichedCounterpartyCount: 0,
+        skippedCounterpartyCount: 0,
+        legacyPartial: false
+      },
+      rows: [],
+      missingChecks: [],
+      notes: []
+    }
+  };
+}
+
+function formatActualDeepCallSite(): string {
+  const deepJob = { ...whereJob("completed"), kind: "address_deep_check" as const };
+  const whereResultJob: ForensicCheckJob = {
+    ...whereJob("completed"),
+    resultJson: {
+      subjectAddress: PERSISTED_COVERAGE_WHERE_REPORT.subjectAddress,
+      whereIsMoneyReport: PERSISTED_COVERAGE_WHERE_REPORT
+    }
+  };
+  return formatDeepForensicUserDeliveryReport(
+    deepJob,
+    deepReport(),
+    "completed",
+    whereResultJob,
+    { locale: "ru" }
+  ).text;
+}
+
+function formatActualContractCallSite(): string {
+  const source = remediationTelegramUxCase("GOLDEN_GASFREE_ACCOUNT").source;
+  const decision = source.contractDecision;
+  if (!decision) throw new Error("GasFree contract fixture requires a deterministic decision");
+  const at = new Date("2026-07-16T12:00:00.000Z");
+  const report: SmartContractCheckReport = {
+    subjectAddress: source.checkedWalletAddress,
+    decision: decision.deterministic.decision,
+    decisionScope: "contract_safety",
+    riskScore: decision.deterministic.score,
+    riskLevel: decision.deterministic.level,
+    metadata: {
+      address: source.checkedWalletAddress,
+      source: "tronscan",
+      name: "GasFree Account",
+      tag: "GasFree Account",
+      isContract: true,
+      verified: true,
+      accountType: 2,
+      rawJson: {},
+      fetchedAt: at,
+      expiresAt: at
+    },
+    contractProfile: null,
+    relatedApprovals: [],
+    llmVerdict: null,
+    exactDrainProven: false,
+    verify20Fingerprint: {
+      matched: false,
+      selectors: [],
+      blockedByTrustedService: true,
+      missingSelectors: ["5082dd12", "fc61dd23", "ea4418d9", "f2fde38b"],
+      mismatchedSelectors: []
+    },
+    serviceLabel: "GasFree Account",
+    activityLabel: "normal",
+    reasons: ["gasfree_account_service"],
+    limitations: [],
+    contractDecisionV2: decision
+  };
+  return formatSmartContractCheckReport(report, { locale: "ru" }).text;
+}
+
 describe("bot mode wiring uses the unified Telegram presentation boundary", () => {
   it("[REQ-02][REQ-12][BOT-WIRING] routes the real preliminary Where formatter through the common renderer", () => {
     expect(formatActualWhereCallSite("GOLDEN_WHERE_PRELIMINARY")).toBe(
@@ -74,6 +220,14 @@ describe("bot mode wiring uses the unified Telegram presentation boundary", () =
     expect(formatActualWhereCallSite("GOLDEN_FINAL_AML")).toBe(
       REMEDIATION_TELEGRAM_GOLDEN_MESSAGES.GOLDEN_FINAL_AML
     );
+  });
+
+  it("[REQ-02][REQ-15][DEEP-CALL-SITE] routes the real DeepCheck user formatter through the common renderer", () => {
+    expect(formatActualDeepCallSite()).toBe(REMEDIATION_TELEGRAM_GOLDEN_MESSAGES.GOLDEN_FINAL_AML);
+  });
+
+  it("[REQ-27][CONTRACT-CALL-SITE] routes the real smart-contract formatter through the common renderer", () => {
+    expect(formatActualContractCallSite()).toBe(REMEDIATION_TELEGRAM_GOLDEN_MESSAGES.GOLDEN_GASFREE_ACCOUNT);
   });
 
   it("[AC-07] renders the active non-Fast score anchor first", () => {
