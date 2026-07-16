@@ -1114,7 +1114,13 @@ postgresDescribe("Plan 3 runtime delivery PostgreSQL acceptance", () => {
         const jobId = `incoming-job-${variant}`;
         await insertWallet(db, walletId);
         await insertObservedAlert(db, { watchedWalletId: walletId, txHash, status: "sending" });
-        await insertJob(db, { id: jobId, kind: "incoming_deposit_check", status: "running", startedAt: NOW });
+        await insertJob(db, {
+          id: jobId,
+          kind: "incoming_deposit_check",
+          status: "running",
+          startedAt: NOW,
+          progressJson: { watchedWalletId: walletId, depositTxHash: txHash }
+        });
         const effect: DeliveryEffect = { kind: "incoming_user_alert", watchedWalletId: walletId, incomingTxHash: txHash };
         await repository.completeForensicCheckJob(
           db,
@@ -1164,7 +1170,13 @@ postgresDescribe("Plan 3 runtime delivery PostgreSQL acceptance", () => {
       const jobId = "rollback-job";
       await insertWallet(db, walletId);
       await insertObservedAlert(db, { watchedWalletId: walletId, txHash, status: "sending" });
-      await insertJob(db, { id: jobId, kind: "incoming_deposit_check", status: "running", startedAt: NOW });
+      await insertJob(db, {
+        id: jobId,
+        kind: "incoming_deposit_check",
+        status: "running",
+        startedAt: NOW,
+        progressJson: { watchedWalletId: walletId, depositTxHash: txHash }
+      });
       const repository = await loadPlan3Repository(
         "claimNextForensicTelegramDelivery",
         "settleForensicTelegramDelivery"
