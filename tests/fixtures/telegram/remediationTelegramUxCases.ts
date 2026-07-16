@@ -78,6 +78,7 @@ export type RemediationTelegramUxSourceV1 = {
   version: "telegram-forensic-source-v1";
   kind: TelegramFixtureResultKindV1;
   locale: "ru" | "en";
+  evaluatedAt: string;
   checkedWalletAddress: string;
   resultState: "final" | "preliminary" | "no_final" | "technical_limit";
   scoreAnchorV2: ScoreAnchorV2 | null;
@@ -209,6 +210,7 @@ function source(input: Pick<
   return {
     version: "telegram-forensic-source-v1",
     locale: "ru",
+    evaluatedAt: FIXED_NOW,
     scoreAnchorV2: null,
     narrativeFactsV2: [],
     scoringEvidenceV2: [],
@@ -249,7 +251,7 @@ function allowance(input: {
     state: input.state,
     confirmedAt: confirmed ? FIXED_NOW : null,
     freshUntil: confirmed ? "2026-07-16T12:15:00.000Z" : null,
-    lastAttemptAt: FIXED_NOW,
+    lastAttemptAt: input.state === "stale" && input.confirmedAllowanceRaw === null ? null : FIXED_NOW,
     failureCode: input.failureCode ?? null,
     source: "official_usdt_allowance",
     observedApprovalTxHash: APPROVAL_TX
@@ -577,7 +579,7 @@ const bridgersFailed = approvalAssessment({
   level: "UNKNOWN",
   score: null,
   action: "CONFIRM_ALLOWANCE",
-  failureCode: "provider_error",
+  failureCode: "unknown_provider_error",
   serviceSessionValue: serviceSession(TGYT)
 });
 
@@ -917,7 +919,6 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
       level: "UNKNOWN",
       score: null,
       action: "CONFIRM_ALLOWANCE",
-      failureCode: "stale_allowance",
       serviceSessionValue: serviceSession(TGYT)
     }),
     audienceContext: "external_address_check"
