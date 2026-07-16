@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as createBotModule from "../../src/bot/createBot";
 import type { AppConfig } from "../../src/config";
 import { createBot, extractDeepForensicReportFromJob, extractSmartContractCheckReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
@@ -954,6 +954,20 @@ function messageUpdate(text: string, fromId: string | number) {
   };
 }
 
+function routedMessageUpdate(text: string, fromId: string | number) {
+  const update = messageUpdate(text, fromId);
+  return {
+    ...update,
+    message: {
+      ...update.message,
+      is_topic_message: true,
+      message_thread_id: 701,
+      direct_messages_topic: { topic_id: 702 },
+      business_connection_id: "business-703"
+    }
+  } as any;
+}
+
 function callbackQueryUpdate(data: string, fromId: string | number) {
   return {
     update_id: Math.floor(Math.random() * 1_000_000),
@@ -1759,6 +1773,24 @@ function createDeferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function grammyErrorWithSecret(errorCode: number, secret: string): Record<string, unknown> {
+  return {
+    name: "GrammyError",
+    message: `Telegram request failed: ${secret}`,
+    method: "sendMessage",
+    payload: {
+      chat_id: `chat-${secret}`,
+      text: secret,
+      reply_markup: { token: secret }
+    },
+    error: {
+      error_code: errorCode,
+      description: `Bad Request: ${secret}`,
+      parameters: { secret }
+    }
+  };
 }
 
 async function settlesThisTurn(promises: Promise<unknown>[]): Promise<boolean> {
@@ -9762,6 +9794,93 @@ describe("bot command and inline UX smoke coverage", () => {
     await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`)));
   });
 
+  it("returns /check before slow work and handles a later callback exactly once", async () => {
+    const signals = createDeferred<any>();
+    const { bot, calls } = await createSmokeBot({ addressRiskSignals: () => signals.promise });
+
+    const checkUpdate = bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(await settlesThisTurn([checkUpdate])).toBe(true);
+    expect(messageCalls(calls).filter((call) => plainTelegramText(String(call.payload.text)).includes("Address check started"))).toHaveLength(1);
+
+    const callbackUpdate = bot.handleUpdate(callbackQueryUpdate("home", userId));
+    expect(await settlesThisTurn([callbackUpdate])).toBe(true);
+    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
+
+    signals.resolve({ graphSignals: [], behaviorSignals: [], amlSignals: [] });
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`)));
+    expect(messageCalls(calls).filter((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`))).toHaveLength(1);
+  });
+
+  it("keeps topic, direct-message, and business routing on a detached check result", async () => {
+    const signals = createDeferred<any>();
+    const { bot, calls } = await createSmokeBot({ addressRiskSignals: () => signals.promise });
+
+    await bot.handleUpdate(routedMessageUpdate(`/check ${walletAddress}`, userId));
+    signals.resolve({ graphSignals: [], behaviorSignals: [], amlSignals: [] });
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`)));
+
+    const results = messageCalls(calls).filter((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`));
+    expect(results).toHaveLength(1);
+    expect(results[0]?.payload).toMatchObject({
+      message_thread_id: 701,
+      direct_messages_topic_id: 702,
+      business_connection_id: "business-703"
+    });
+  });
+
+  it("keeps topic, direct-message, and business routing on a detached check failure", async () => {
+    const signals = createDeferred<any>();
+    const { bot, calls } = await createSmokeBot({ addressRiskSignals: () => signals.promise });
+
+    await bot.handleUpdate(routedMessageUpdate(`/check ${walletAddress}`, userId));
+    signals.reject(new Error("provider unavailable"));
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes("Check did not finish")));
+
+    const failures = messageCalls(calls).filter((call) => plainTelegramText(String(call.payload.text)).includes("Check did not finish"));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.payload).toMatchObject({
+      message_thread_id: 701,
+      direct_messages_topic_id: 702,
+      business_connection_id: "business-703"
+    });
+  });
+
+  it("logs only stable diagnostics when detached check work and failure delivery reject", async () => {
+    const workSecret = "work-secret-chat-text-markup-token";
+    const deliverySecret = "delivery-secret-chat-text-markup-token";
+    const workError = grammyErrorWithSecret(429, workSecret);
+    const deliveryError = grammyErrorWithSecret(403, deliverySecret);
+    const signals = createDeferred<any>();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const { bot } = await createSmokeBot({
+        addressRiskSignals: () => signals.promise,
+        beforeApiResult: async (method, payload) => {
+          if (method === "sendMessage" && String(payload.text).includes("Check did not finish")) {
+            throw deliveryError;
+          }
+        }
+      });
+
+      await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+      signals.reject(workError);
+      await waitForCondition(() => consoleError.mock.calls.length === 2);
+
+      expect(consoleError.mock.calls).toEqual([
+        ["Pending manual check failed", "telegram_error_429"],
+        ["Pending manual check failure delivery failed", "telegram_error_403"]
+      ]);
+      expect(consoleError.mock.calls.flat()).not.toContain(workError);
+      expect(consoleError.mock.calls.flat()).not.toContain(deliveryError);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(workSecret);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(deliverySecret);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("clears a stale pending action when the user navigates through /wallets", async () => {
     const { bot, calls } = await createSmokeBot();
 
@@ -9870,6 +9989,116 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(messageCalls(calls)).toHaveLength(messageCountAfterNavigation);
     expect(lastText(calls)).toBe(newerText);
+  });
+
+  it("logs only a stable diagnostic when wallet background refresh rejects", async () => {
+    const secret = "wallet-refresh-secret-chat-text-markup-token";
+    const refreshError = grammyErrorWithSecret(502, secret);
+    const baseDb = createFakeDb();
+    let rejectRefresh = false;
+    const db = {
+      connect: () => baseDb.connect(),
+      query: (sql: string, params?: unknown[]) => {
+        if (rejectRefresh && sql.includes("from wallet_dashboard_snapshots")) return Promise.reject(refreshError);
+        return baseDb.query(sql, params);
+      }
+    } as Db;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const { bot, calls } = await createSmokeBot({ db });
+      await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
+      const refreshCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+      await new Promise((resolve) => setImmediate(resolve));
+      rejectRefresh = true;
+
+      await bot.handleUpdate(callbackQueryUpdate(refreshCallback, userId));
+      await waitForCondition(() => consoleError.mock.calls.length === 1);
+
+      expect(consoleError.mock.calls).toEqual([
+        ["Wallet dashboard background refresh failed", "telegram_error_502"]
+      ]);
+      expect(consoleError.mock.calls.flat()).not.toContain(refreshError);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("logs only a stable diagnostic when wallet background render rejects", async () => {
+    const secret = "wallet-render-secret-chat-text-markup-token";
+    const renderError = grammyErrorWithSecret(400, secret);
+    let rejectDashboardRender = false;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const { bot, calls } = await createSmokeBot({
+        beforeApiResult: async (method, payload) => {
+          if (rejectDashboardRender && method === "editMessageText" && String(payload.text).includes("Wallet dashboard")) {
+            throw renderError;
+          }
+        }
+      });
+      await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
+      const refreshCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+      rejectDashboardRender = true;
+
+      await bot.handleUpdate(callbackQueryUpdate(refreshCallback, userId));
+      await waitForCondition(() => consoleError.mock.calls.length === 1);
+
+      expect(consoleError.mock.calls).toEqual([
+        ["Wallet dashboard background refresh failed", "telegram_error_400"]
+      ]);
+      expect(consoleError.mock.calls.flat()).not.toContain(renderError);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("does not enter the wallet render barrier for Address Poisoning callbacks", async () => {
+    const baseClient = createTronClient();
+    const refresh = createDeferred<Awaited<ReturnType<TronDashboardClient["getAccount"]>>>();
+    const oldEditStarted = createDeferred<void>();
+    const releaseOldEdit = createDeferred<void>();
+    let refreshMode = false;
+    let holdOldDashboardEdit = false;
+    let resolverCalls = 0;
+    const tronClient: TronDashboardClient = {
+      ...baseClient,
+      getAccount: (address) => refreshMode ? refresh.promise : baseClient.getAccount(address)
+    };
+    const { bot, calls } = await createSmokeBot({
+      tronClient,
+      resolveAddressPoisoningCandidate: async () => {
+        resolverCalls += 1;
+        return { outcome: "updated", candidate: poisoningCandidate({ status: "confirmed" }) };
+      },
+      beforeApiResult: async (method, payload) => {
+        if (holdOldDashboardEdit && method === "editMessageText" && String(payload.text).includes("Wallet dashboard")) {
+          holdOldDashboardEdit = false;
+          oldEditStarted.resolve();
+          await releaseOldEdit.promise;
+        }
+      }
+    });
+
+    try {
+      await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
+      const refreshCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+      refreshMode = true;
+      await bot.handleUpdate(callbackQueryUpdate(refreshCallback, userId));
+
+      holdOldDashboardEdit = true;
+      refresh.resolve(await baseClient.getAccount(walletAddress));
+      await oldEditStarted.promise;
+
+      const poisoningUpdate = bot.handleUpdate(callbackQueryUpdate(`poison:confirm:${poisoningCallbackToken}`, userId));
+      expect(await settlesThisTurn([poisoningUpdate])).toBe(true);
+      expect(resolverCalls).toBe(1);
+    } finally {
+      releaseOldEdit.resolve();
+    }
   });
 
   it("settles an already-dispatched old wallet edit before sending a newer callback edit", async () => {

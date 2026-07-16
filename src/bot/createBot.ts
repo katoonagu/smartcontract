@@ -525,6 +525,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function backgroundErrorDiagnostic(error: unknown): string {
+  const record = isRecord(error) ? error : null;
+  const telegramError = record && isRecord(record.error) ? record.error : null;
+  const errorCode = telegramError?.error_code ?? record?.error_code;
+  if (typeof errorCode === "number" && Number.isInteger(errorCode) && errorCode >= 100 && errorCode <= 599) {
+    return `telegram_error_${errorCode}`;
+  }
+  if (record?.name === "AbortError" || record?.code === "ABORT_ERR") return "abort";
+  return "background_error";
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -4440,7 +4451,6 @@ function pendingCheckFailedMessage(locale: BotLocale): string {
 
 async function startPendingCheckInBackground(
   input: string,
-  kind: "address" | "tx",
   ctx: Context,
   tronClient: TronClient,
   db: Db,
@@ -4456,19 +4466,43 @@ async function startPendingCheckInBackground(
   }
 ): Promise<void> {
   const locale = options.locale;
-  await ctx.reply(pendingCheckStartedMessage(kind, locale));
+  const parsedInput = parseManualCheckInput(input);
+  const classified = classifyInput(parsedInput.target);
+  if ((classified.kind === "tron_address" || classified.kind === "tron_tx") && parsedInput.amountError) {
+    await ctx.reply(invalidCheckAmountMessage(locale));
+    return;
+  }
+  if (classified.kind !== "tron_address" && classified.kind !== "tron_tx") {
+    await ctx.reply(checkUsageMessage(locale));
+    return;
+  }
 
+  const kind = classified.kind === "tron_address" ? "address" : "tx";
+  const api = ctx.api;
+  const chatId = ctx.chatId;
+  const businessConnectionId = ctx.businessConnectionId;
+  const messageThreadId = ctx.msg?.is_topic_message ? ctx.msg.message_thread_id : undefined;
+  const directMessagesTopicId = ctx.msg?.direct_messages_topic?.topic_id;
   const replyTarget = {
-    chat: ctx.chat,
-    reply: (text: string, sendOptions?: BotSendOptions) => ctx.reply(text, sendOptions)
+    chat: chatId === undefined ? undefined : { id: chatId },
+    reply: (text: string, sendOptions?: BotSendOptions) => {
+      if (chatId === undefined) return Promise.reject(new Error("Telegram reply target is missing"));
+      return api.sendMessage(chatId, text, {
+        business_connection_id: businessConnectionId,
+        ...(messageThreadId === undefined ? {} : { message_thread_id: messageThreadId }),
+        direct_messages_topic_id: directMessagesTopicId,
+        ...sendOptions
+      });
+    }
   };
+  await replyTarget.reply(pendingCheckStartedMessage(kind, locale));
 
   void replyWithCheck(input, replyTarget, tronClient, db, getAddressRiskSignalsForAddress, options).catch(async (error) => {
-    console.error("Pending manual check failed", error);
+    console.error("Pending manual check failed", backgroundErrorDiagnostic(error));
     try {
-      await ctx.reply(pendingCheckFailedMessage(locale), { reply_markup: mainMenuKeyboard(locale) });
+      await replyTarget.reply(pendingCheckFailedMessage(locale), { reply_markup: mainMenuKeyboard(locale) });
     } catch (deliveryError) {
-      console.error("Pending manual check failure delivery failed", deliveryError);
+      console.error("Pending manual check failure delivery failed", backgroundErrorDiagnostic(deliveryError));
     }
   });
 }
@@ -4601,7 +4635,7 @@ async function showWalletDashboardView(input: {
   void input.startRefresh(input.wallet).then((dashboard) => {
     return renderGuard.startRender(() => input.render(dashboard)) ?? undefined;
   }).catch((error) => {
-    console.error("Wallet dashboard background refresh failed", error);
+    console.error("Wallet dashboard background refresh failed", backgroundErrorDiagnostic(error));
   }).finally(renderGuard.cleanup);
 }
 
@@ -5062,7 +5096,7 @@ export function createBot(
   bot.command("check", async (ctx) => {
     const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await replyWithCheck(commandText(ctx.match), ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+    await startPendingCheckInBackground(commandText(ctx.match), ctx, tronClient, db, getAddressRiskSignalsForAddress, {
       telegramUserId: id,
       checkSmartContractAddress,
       queueWhereIsMoneyJob,
@@ -5241,10 +5275,8 @@ export function createBot(
   });
 
   bot.on("callback_query:data", async (ctx) => {
-    const previousWalletDashboardRender = invalidateWalletDashboardRender(ctx);
     const callback = parseCallbackData(ctx.callbackQuery.data);
     if (callback?.kind === "address_poisoning_confirm" || callback?.kind === "address_poisoning_dismiss") {
-      await previousWalletDashboardRender;
       const action = callback.kind === "address_poisoning_confirm" ? "confirm" : "dismiss";
       const resolution = action === "confirm" ? "confirmed" : "dismissed";
       const callerId = ctx.from?.id ? String(ctx.from.id) : null;
@@ -5295,6 +5327,7 @@ export function createBot(
       return;
     }
 
+    const previousWalletDashboardRender = invalidateWalletDashboardRender(ctx);
     const id = telegramId(ctx);
     await answerCallbackQuerySafely(ctx);
     await previousWalletDashboardRender;
@@ -5465,7 +5498,7 @@ export function createBot(
 
     if (callback.kind === "check_address_value") {
       await clearTelegramUserPendingAction(db, id);
-      await replyWithCheck(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+      await startPendingCheckInBackground(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
         checkSmartContractAddress,
         queueWhereIsMoneyJob,
@@ -5687,7 +5720,7 @@ export function createBot(
           return;
         }
         await clearTelegramUserPendingAction(db, id);
-        await startPendingCheckInBackground(input.value, "address", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+        await startPendingCheckInBackground(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
           checkSmartContractAddress,
           queueWhereIsMoneyJob,
@@ -5705,7 +5738,7 @@ export function createBot(
           return;
         }
         await clearTelegramUserPendingAction(db, id);
-        await startPendingCheckInBackground(input.value, "tx", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+        await startPendingCheckInBackground(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
           checkSmartContractAddress,
           queueWhereIsMoneyJob,
@@ -5782,7 +5815,7 @@ export function createBot(
     }
 
     if (input.kind === "tron_tx") {
-      await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+      await startPendingCheckInBackground(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
         checkSmartContractAddress,
         queueWhereIsMoneyJob,
