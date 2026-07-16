@@ -1,10 +1,11 @@
 ---
 status: current
-last_verified: 2026-07-14
+last_verified: 2026-07-16
 owner_area: docs
 code_refs:
   - src/index.ts
   - src/runtime/startupSchemaGate.ts
+  - src/runtime/forensicRuntimeOrchestration.ts
   - src/storage/schemaMigrations.ts
   - src/forensics/forensicCoverageV2.ts
   - src/forensics/recentFlowProvenanceSelection.ts
@@ -21,11 +22,14 @@ code_refs:
   - src/risk/scoreAnchorV2.ts
   - src/risk/usddPsmExposure.ts
   - src/approvals/allowanceRefresh.ts
+  - src/approvals/allowanceRefreshWorker.ts
   - src/approvals/approvalSafetyAssessment.ts
   - src/forensics/contractDecision.ts
   - src/tron/usdtBlacklistTimeline.ts
   - src/check/deepForensicCheck.ts
   - src/bot/createBot.ts
+  - src/wallet/dashboard.ts
+  - src/forensics/telegramDeliveryWorker.ts
   - src/bot/wherePreliminaryNarrative.ts
   - src/monitor/addressPoisoning.ts
   - src/monitor/addressPoisoningWorker.ts
@@ -88,9 +92,9 @@ of these decisions, update this file in the same work.
 - This branch is a release candidate only. Production remains on the previous
   runtime and schema 031 until Plan 5. Plan 1 does not deploy, restart Telegram,
   or switch the production version label.
-- Plan 2 scoring and contract semantics are implemented in the local release
-  candidate. Plans 3–5 remain independent: runtime and delivery; unified
-  Telegram UX; and cross-plan acceptance/release. Address Poisoning remains a
+- Plan 2 scoring/contract semantics and Plan 3 runtime/delivery are implemented
+  in the local release candidate. Plans 4–5 remain independent: unified
+  Telegram UX and cross-plan acceptance/release. Address Poisoning remains a
   separate completed track and is unchanged here.
 
 ## 2026-07-14 Plan 2 Scoring And Contract Semantics Candidate
@@ -111,8 +115,8 @@ of these decisions, update this file in the same work.
 - Approval events remain history, not current authority. Direct official-USDT
   allowance is refreshed after a new event, at finalization, and on explicit
   safety recheck. Timeout, malformed response, revert, provider failure, stale
-  state, or binding failure yields `UNKNOWN/null`; background stale refresh is
-  still Plan 3 and no per-approval 60-second full-node polling was added.
+  state, or binding failure yields `UNKNOWN/null`; the later Plan 3 candidate
+  adds only bounded stale refresh and no per-approval 60-second full-node poll.
 - Exact Verify20 allowance safety is amount-aware: unlimited `90`, finite at
   least 100 USDT `75`, finite below 100 USDT `45`, confirmed zero `0`. Exact
   debit remains `95`. A valid wallet-initiated successful registered-service
@@ -134,6 +138,43 @@ of these decisions, update this file in the same work.
 - The branch is still unreleased. Production database, runtime, version, and
   Telegram remain unchanged until Plan 5. Apart from deleting the two obsolete
   AI-verdict output sections, unified Telegram UX remains Plan 4.
+
+## 2026-07-16 Plan 3 Runtime And Delivery Candidate
+
+- Where and Incoming parent wake-up is owned by a bounded PostgreSQL reconciler
+  over the complete durable wait set. Any waiting sibling blocks resume;
+  missing or cancelled waits remain waiting with a diagnostic; terminal without
+  waiting resumes through `provider_limited`; all-ready resumes through
+  `reading_local_index`. Reconciliation runs only after verified schema 032.
+- Forensic completion is result-first and compare-and-set from `running`.
+  Where, Deep, and Incoming persist immutable results and mode-bound versioned
+  Telegram envelopes atomically. A lost completion CAS cannot send.
+- Delivery is a separate bounded lifecycle: batch 10, 25-second abortable send,
+  40-second lease, attempts 1–4, retry delays 30/120/600 seconds, stale-token
+  rejection, sent fingerprint fence, and bounded stale-recovery intent
+  preparation. It is honestly at-least-once across Telegram acceptance and the
+  PostgreSQL acknowledgement.
+- Incoming success/permanent failure settles delivery and its alert effect in
+  one transaction. Retryable settlement changes only delivery. All delivery
+  outcomes preserve forensic status, result, score, coverage, and evidence.
+- Completed Deep `result_json` is immutable. Later second-layer refresh writes
+  only a versioned, subject- and base-result-fingerprint-bound context in
+  `progress_json`; it cannot rescore or trigger another delivery.
+- Background allowance refresh selects at most five due official-USDT rows for
+  active wallets, requires no attempt in the previous 15 minutes, rechecks
+  eligibility under a per-target advisory lock, processes sequentially, and
+  uses a 15-second provider timeout. Failures remain `UNKNOWN/null` and Plan 2
+  causal write ordering stays authoritative.
+- Normal wallet overview/analytics/risk/safety navigation is cache-only even
+  when stale. First cache miss and explicit refresh show loading and start one
+  deduplicated background live refresh per wallet. Slow check handlers send the
+  started response and return before unresolved provider/database work.
+- Plan 3 does not change scoring, final Telegram result copy/layout, Admin UX,
+  schema 032, migrations, or Address Poisoning. It also does not lift
+  `hard_safety_limit_exceeded`, page caps, or other bounded provider/local
+  limits; heavy addresses may still have an honest no-final result.
+- The candidate is not deployed. Production DB/runtime/Telegram and the version
+  label remain unchanged until Plan 5; unified Telegram UX remains Plan 4.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 

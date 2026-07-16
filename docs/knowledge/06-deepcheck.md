@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-14
+last_verified: 2026-07-16
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
@@ -14,6 +14,7 @@ code_refs:
   - src/forensics/forensicCoverageV2.ts
   - src/forensics/deepSecondLayerRelationship.ts
   - src/forensics/deepSecondLayerRefresh.ts
+  - src/forensics/telegramDeliveryWorker.ts
   - src/runtime/deepForensicRuntimeOptions.ts
   - src/risk/unifiedWalletRisk.ts
   - src/risk/usddPsmExposure.ts
@@ -140,6 +141,27 @@ is within transaction-info enrichment budget, DeepCheck reports denominator
 counters such as total incoming tx, enriched incoming tx, plain USDT transfer
 tx, wrapper-driven tx, Verify20 tx, exact approval-drain profile count, and
 campaign clusters. Partial enrichment is marked as lower-bound context.
+
+### Plan 3 Candidate: Immutable Completion And Second-Layer Context
+
+A completed Deep result is immutable. The runner builds a Deep-specific
+Telegram payload with the existing formatter and stores its pending delivery
+envelope in the same running-to-terminal completion CAS as the result. Delivery
+claim, retry, success, and failure update only the versioned envelope in
+`progress_json`; they cannot change the Deep result or trigger a different
+mode's payload.
+
+Later second-layer refresh no longer patches completed `result_json`. It writes
+`progress_json.deepSecondLayerContext` as
+`deep-second-layer-context-v1`, bound to the lowercase SHA-256 canonical-JSON
+fingerprint of the immutable base result and the exact Deep subject. A newer
+valid context may replace the earlier context, while pending selection reads
+the context first and falls back to the base result for legacy jobs. Refresh
+does not rescore, rebuild the Telegram payload, change its fingerprint, or
+enqueue another delivery.
+
+This is unreleased candidate behavior until Plan 5. Presenting the separate
+context differently is not part of Plan 3.
 
 ## Planned Behavior
 

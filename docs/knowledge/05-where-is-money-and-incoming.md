@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-14
+last_verified: 2026-07-16
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -15,6 +15,8 @@ code_refs:
   - src/forensics/usddPsmRouteObservation.ts
   - src/risk/usddPsmExposure.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/telegramDeliveryWorker.ts
+  - src/forensics/waitReconciliation.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/bot/wherePreliminaryNarrative.ts
   - src/bot/walletNarrativeSummary.ts
@@ -332,6 +334,32 @@ inside the global cap.
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It now uses the shared resumable targeted indexing flow, including
 candidate-window-first checks, before it publishes a technical coverage block.
+
+### Plan 3 Candidate: Mode-Bound Result Delivery
+
+Where and Incoming wait/resume now depend on reconciliation of their complete
+durable wait sets, not on a single targeted-index completion callback. A
+waiting sibling blocks resume; missing/cancelled wait sets remain waiting with
+a diagnostic; all-ready resumes local reading; and a ready/terminal mix resumes
+through the technical provider-limited path.
+
+Where and Incoming runners build Telegram payloads with their existing mode
+formatters and persist them only with the terminal forensic completion CAS.
+Where payloads cannot be reused as Deep or Incoming payloads. Incoming payloads
+with a user-alert effect are additionally bound to the exact watched wallet and
+deposit transaction. Delivery then retries independently; it cannot change the
+saved Where/Incoming report, CoverageV2, score, decision, or evidence.
+
+Incoming delivery success or permanent failure updates its alert status in the
+same PostgreSQL transaction as delivery settlement. Retryable delivery leaves
+the alert in its current analysis/sending state, and legacy alert retry no
+longer requeues a row owned by the versioned delivery lifecycle. The external
+Telegram/database acknowledgement gap remains at-least-once.
+
+This is an unreleased Plan 3 candidate until Plan 5. It does not change
+provenance/scoring semantics or final Telegram copy. Configured page ceilings,
+provider limits, and `hard_safety_limit_exceeded` remain valid technical stops;
+Plan 3 does not promise unbounded history coverage.
 
 The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
 4`, but ordinary Where no longer treats that local seed limit as a finished

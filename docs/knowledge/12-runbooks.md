@@ -1,10 +1,11 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-16
 owner_area: docs
 code_refs:
   - package.json
   - src/index.ts
+  - src/runtime/forensicRuntimeOrchestration.ts
   - src/config.ts
   - src/admin/adminConsole.ts
   - src/admin/adminServer.ts
@@ -90,6 +91,63 @@ For focused Admin tests:
 ```powershell
 npm test -- tests/admin/adminConsole.test.ts tests/admin/adminServer.test.ts
 ```
+
+## Verify The Unreleased Plan 3 Candidate
+
+Use only the disposable database named exactly `tron_watch_plan3`. Do not point
+these commands at production, start Telegram polling, or run a production
+migration:
+
+```powershell
+$env:REQUIRE_PLAN3_POSTGRES='1'
+$env:TEST_DATABASE_URL='postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3'
+npx vitest run --configLoader bundle `
+  tests/runtime/waitReconciliation.acceptance.test.ts `
+  tests/runtime/strandedParentRecovery.acceptance.test.ts `
+  tests/runtime/telegramDelivery.acceptance.test.ts `
+  tests/runtime/walletNavigation.acceptance.test.ts `
+  tests/runtime/checkCallbacks.acceptance.test.ts `
+  tests/runtime/allowanceRefresh.acceptance.test.ts `
+  tests/runtime/runtimeSchemaGateIntegration.acceptance.test.ts `
+  tests/storage/runtimeDelivery.postgres.test.ts `
+  tests/storage/forensicCheckJobs.test.ts `
+  tests/forensics/forensicJobProgress.test.ts `
+  tests/forensics/addressIndexWorker.test.ts `
+  tests/forensics/deepForensicJob.test.ts `
+  tests/forensics/deepSecondLayerRefresh.test.ts `
+  tests/forensics/incomingDepositJob.test.ts `
+  tests/approvals/allowanceState.test.ts `
+  tests/approvals/approvalWorker.test.ts `
+  tests/wallet/dashboard.test.ts `
+  tests/bot/createBot.test.ts
+```
+
+The PostgreSQL acceptance files must execute rather than skip. Then run:
+
+```powershell
+npm run typecheck
+npm test
+```
+
+After the focused suite, the disposable database must contain no leftover
+`plan3_%` schemas. If `psql` is unavailable, inspect it through the installed
+`pg` package:
+
+```powershell
+@'
+import pg from "pg";
+const client = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL });
+await client.connect();
+const { rows } = await client.query(
+  "select schema_name from information_schema.schemata where schema_name like 'plan3_%' order by 1"
+);
+console.log(rows);
+await client.end();
+'@ | node --input-type=module
+```
+
+Expected cleanup output is `[]`. This verifies only the local unreleased
+candidate; production remains unchanged until Plan 5.
 
 ## Check Recent Jobs
 

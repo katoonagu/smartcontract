@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-14
+last_verified: 2026-07-16
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -8,6 +8,8 @@ code_refs:
   - src/admin/adminServer.ts
   - src/storage/repositories.ts
   - src/bot/createBot.ts
+  - src/wallet/dashboard.ts
+  - src/forensics/telegramDeliveryWorker.ts
   - src/bot/wherePreliminaryNarrative.ts
   - src/bot/walletNarrativeSummary.ts
   - src/bot/riskExplanationSummary.ts
@@ -384,6 +386,38 @@ Telegram shows canonical `NO_FINAL_DECISION`, blocked reason, technical status,
 and observed context for new invalid-score final reports without inventing a
 numeric final risk. It does not yet have a complete live progress UX for
 ordinary long Where/Incoming indexing.
+
+### Plan 3 Candidate: Cache-First Interaction And Durable Delivery
+
+Normal wallet overview, analytics, risk, and safety navigation reads a fresh or
+stale saved dashboard snapshot and makes no TronScan call. A first cache miss
+shows a short localized loading state and starts a background refresh. Explicit
+refresh does the same while bypassing an existing cache. Concurrent refreshes
+for the same wallet share one in-memory promise and the entry is removed in
+`finally`; different wallets remain independent. Ordinary stale navigation
+does not silently start live work, and a refresh failure preserves stale cache
+or the existing honest no-cache error state.
+
+`/check`, the direct check-address callback, pending address/transaction input,
+and direct transaction text now validate input, send the existing started
+response, capture only a stable reply target, and detach the slow check work.
+The update handler returns while provider/database work continues; a rejected
+background check is caught and uses the existing bounded failure response.
+Non-poison callback acknowledgement remains before database/provider work.
+
+Where, Deep, and Incoming result/failure messages are built with their existing
+mode-specific formatters and saved as versioned delivery envelopes only when
+forensic completion wins its CAS. A separate bounded worker sends/retries them
+with a 25-second abortable call, 40-second claim lease, four-attempt ceiling,
+and fingerprint/token sent fence. Incoming delivery effects settle the alert
+and delivery atomically. The Telegram/database crash gap is still
+at-least-once, so duplicate delivery remains possible after an unknown network
+outcome.
+
+Plan 3 changes transient loading/started behavior and transport lifecycle only;
+it does not redesign final result layout or wording. This candidate remains
+unreleased until Plan 5. Unified final Telegram UX and no-final copy acceptance
+remain Plans 4 and 5.
 
 ### Address-Poisoning Warning
 

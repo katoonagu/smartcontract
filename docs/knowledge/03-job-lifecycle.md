@@ -1,12 +1,16 @@
 ---
 status: current
-last_verified: 2026-07-13
+last_verified: 2026-07-16
 owner_area: forensics
 code_refs:
   - src/index.ts
   - src/runtime/startupSchemaGate.ts
+  - src/runtime/forensicRuntimeOrchestration.ts
   - src/storage/schemaMigrations.ts
   - src/storage/repositories.ts
+  - src/forensics/waitReconciliation.ts
+  - src/forensics/telegramDelivery.ts
+  - src/forensics/telegramDeliveryWorker.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
@@ -131,6 +135,57 @@ indexed transfers so `moneyOriginOperationalAssessment` can apply materiality
 rules. Non-provider-cap terminal reasons still use the technical terminal path,
 and provider-cap with no usable cached evidence can still finish as an invalid
 technical stop.
+
+### Plan 3 Candidate: Durable Wait Reconciliation And Result Delivery
+
+Queued Where and Incoming parents in `waiting_for_targeted_index` are now
+reconciled from the complete durable `forensic_job_waits` set. The targeted
+index completion path updates wait rows; it no longer owns parent wake-up by
+itself. A bounded PostgreSQL reconciler runs only after the schema 032 gate, at
+startup, before Where and Incoming polls, and after targeted-index completion.
+
+The reconciler keeps the parent waiting while any sibling wait is still
+`waiting`. Missing wait rows and any `cancelled` wait produce a versioned
+diagnostic and also keep the parent waiting. With no waiting/cancelled rows, any
+`terminal` wait resumes the parent through `provider_limited`; an all-ready set
+resumes through `reading_local_index`. Parent phase and reconciliation counts
+are written by one queued/waiting compare-and-set, so concurrent cycles cannot
+make the normal forensic queue claim the same transition twice.
+
+Where, Deep, and Incoming completion is result-first. A completion compare-and-
+set succeeds only from `running` and atomically stores the immutable forensic
+result plus an optional versioned pending Telegram envelope in
+`progress_json.telegramDelivery`. A lost completion CAS creates no claimable
+delivery and no direct send. Payloads are bound to the exact job kind, job id,
+chat, and, for Incoming, the exact watched-wallet/transaction effect.
+
+The separate delivery worker claims at most 10 envelopes per cycle. Each claim
+has a random token, monotonically increasing attempt, and 40-second lease; the
+Telegram call has a 25-second abortable timeout. Settled retries back off for
+30, 120, and 600 seconds. Crashed attempts 1–3 can be reclaimed only after lease
+expiry; an expired fourth attempt becomes terminal without a fifth send.
+Fingerprint, attempt, and token fences reject stale settlement, and a `sent`
+fingerprint is never claimed again.
+
+For an Incoming delivery effect, success or permanent failure updates the
+forensic delivery and `observed_transactions.user_alert_status` in one
+PostgreSQL transaction. Retryable settlement changes only delivery state, and
+the legacy Incoming retry queue excludes rows owned by any terminal job with a
+valid versioned delivery effect. Terminal stale-job recovery stores a bounded
+versioned intent instead of sending directly; intent preparation processes at
+most 10 rows and stops after four failed attempts.
+
+Delivery remains intentionally at-least-once: Telegram acceptance cannot be
+atomic with the database acknowledgement, so a crash in that gap can duplicate
+a message. Delivery retry/failure never changes forensic status, result, score,
+coverage, or evidence. The delivery cycle has its own non-overlap guard and is
+started before the Where promise on the existing Where cadence, so a long Where
+run does not block delivery.
+
+This is unreleased candidate behavior. Production remains on the previous
+verified runtime until Plan 5. Plan 3 does not remove
+`hard_safety_limit_exceeded`, provider/local page caps, or other bounded stops;
+a heavy address can still finish honestly without a final score.
 
 ### Address-Poisoning Safety Lifecycle
 

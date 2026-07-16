@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-13
+last_verified: 2026-07-16
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -21,6 +21,10 @@ code_refs:
   - src/storage/repositories.ts
   - src/storage/schemaMigrations.ts
   - src/runtime/startupSchemaGate.ts
+  - src/runtime/forensicRuntimeOrchestration.ts
+  - src/forensics/telegramDeliveryWorker.ts
+  - src/approvals/allowanceRefreshWorker.ts
+  - src/wallet/dashboard.ts
   - src/forensics/forensicCoverageV2.ts
   - src/approvals/allowanceState.ts
   - src/admin/adminConsole.ts
@@ -49,27 +53,34 @@ supersedes:
 
 ## Current Behavior
 
-### Plan 1 Candidate Is Not A Production Release
+### Plans 1–3 Candidates Are Not A Production Release
 
 Plan 1 closes the candidate data foundation for CoverageV2, low-balance
 latest-five selection, exact GasFree fee exclusion, allowance-state storage,
-exact USDD PSM route observations, and verifiable schema 032 receipts. It is not
-deployed. Production must remain on the prior runtime and schema 031 until the
-Plan 5 release gate.
+exact USDD PSM route observations, and verifiable schema 032 receipts. Plan 2
+adds candidate scoring/contract semantics. Plan 3 closes its owned runtime and
+delivery gaps: durable full-wait-set reconciliation, result-first versioned
+Telegram delivery, immutable Deep completion, bounded stale allowance refresh,
+cache-only navigation, and nonblocking check handlers. None of these candidates
+is deployed. Production must remain on the prior runtime and schema 031 until
+the Plan 5 release gate.
 
 The following work remains open:
 
-- Plan 2: scoring and contract semantics, including any approved USDD PSM
-  modifier and allowance-risk interpretation;
-- Plan 3: runtime and delivery behavior;
 - Plan 4: unified Telegram UX;
 - Plan 5: cross-plan acceptance, migration rehearsal, release, and production
-  version verification.
+  version verification;
+- Address Poisoning closeout remains a separate track: its existing regressions
+  stay read-only during the cross-plan release, and recipient precheck before
+  signing remains a future product phase;
+- configured `hard_safety_limit_exceeded`, provider/local page caps, and other
+  bounded ceilings remain open until a separately approved owner changes them.
 
-Plan 1 does not fetch `allowance(owner, spender)` from the network. Until a
-later causal writer supplies a fresh direct-call result, an approval remains an
-event observation and current state remains stale/unknown. Plan 1 also does not
-turn a USDD PSM observation into a score or user-facing explanation.
+Plan 3's background allowance refresh does not change authority semantics: an
+approval event remains history, and only a fresh bound direct-call result can
+establish current allowance. The worker is limited to five sequential due
+targets, requires a 15-minute attempt floor, and leaves failed reads
+`UNKNOWN/null`.
 
 - Inline targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`.
