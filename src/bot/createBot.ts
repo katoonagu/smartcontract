@@ -113,7 +113,7 @@ import type {
 import { addressPoisoningAlertKeyboard } from "../alerts/addressPoisoningAlert";
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
-import { getWalletDashboard } from "../wallet/dashboard";
+import { getWalletDashboard, refreshWalletDashboard, type WalletDashboard } from "../wallet/dashboard";
 import {
   bold,
   bulletList,
@@ -4528,11 +4528,27 @@ async function createOrUpdateTheftReportFromTx(
 async function buildWalletDashboard(
   config: AppConfig,
   db: Db,
-  tronClient: TronDashboardClient,
-  wallet: WatchedWallet,
-  forceRefresh = false
+  wallet: WatchedWallet
 ) {
   return getWalletDashboard(
+    {
+      config,
+      getSnapshot: (watchedWalletId) => getWalletDashboardSnapshot(db, watchedWalletId),
+      getLabelsForAddress: (address) => listAddressLabels(db, address),
+      getPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
+      getApprovalSummary: (watchedWalletId) => getWalletApprovalSummary(db, watchedWalletId)
+    },
+    { wallet }
+  );
+}
+
+async function buildRefreshedWalletDashboard(
+  config: AppConfig,
+  db: Db,
+  tronClient: TronDashboardClient,
+  wallet: WatchedWallet
+) {
+  return refreshWalletDashboard(
     {
       tronClient,
       config,
@@ -4542,21 +4558,74 @@ async function buildWalletDashboard(
       getPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
       getApprovalSummary: (watchedWalletId) => getWalletApprovalSummary(db, watchedWalletId)
     },
-    { wallet, forceRefresh }
+    { wallet }
   );
+}
+
+type StartWalletDashboardRefresh = (wallet: WatchedWallet) => Promise<WalletDashboard>;
+type WalletDashboardRenderGuard = {
+  startRender(render: () => Promise<void>): Promise<void> | null;
+  cleanup(): void;
+};
+type StartWalletDashboardRenderGuard = (ctx: Context) => WalletDashboardRenderGuard;
+
+async function showWalletDashboardView(input: {
+  ctx: Context;
+  config: AppConfig;
+  db: Db;
+  wallet: WatchedWallet;
+  locale: BotLocale;
+  explicitRefresh?: boolean;
+  startRefresh: StartWalletDashboardRefresh;
+  startRenderGuard: StartWalletDashboardRenderGuard;
+  render(dashboard: WalletDashboard): Promise<void>;
+}): Promise<void> {
+  const cached = input.explicitRefresh ? null : await buildWalletDashboard(input.config, input.db, input.wallet);
+  if (cached) {
+    await input.render(cached);
+    return;
+  }
+
+  const renderGuard = input.startRenderGuard(input.ctx);
+  try {
+    await replyOrEdit(
+      input.ctx,
+      input.locale === "en"
+        ? input.explicitRefresh ? "Refreshing wallet data…" : "Loading wallet data…"
+        : input.explicitRefresh ? "Обновляем данные кошелька…" : "Загружаем данные кошелька…"
+    );
+  } catch (error) {
+    renderGuard.cleanup();
+    throw error;
+  }
+  void input.startRefresh(input.wallet).then((dashboard) => {
+    return renderGuard.startRender(() => input.render(dashboard)) ?? undefined;
+  }).catch((error) => {
+    console.error("Wallet dashboard background refresh failed", error);
+  }).finally(renderGuard.cleanup);
 }
 
 async function showWalletDashboard(
   ctx: Context,
   config: AppConfig,
   db: Db,
-  tronClient: TronDashboardClient,
   wallet: WatchedWallet,
+  startRefresh: StartWalletDashboardRefresh,
+  startRenderGuard: StartWalletDashboardRenderGuard,
   locale: BotLocale = DEFAULT_BOT_LOCALE,
-  forceRefresh = false
+  explicitRefresh = false
 ): Promise<void> {
-  const dashboard = await buildWalletDashboard(config, db, tronClient, wallet, forceRefresh);
-  await replyOrEdit(ctx, dashboardMessage(dashboard, new Date(), locale), walletDashboardKeyboard(wallet.id, locale));
+  await showWalletDashboardView({
+    ctx,
+    config,
+    db,
+    wallet,
+    locale,
+    explicitRefresh,
+    startRefresh,
+    startRenderGuard,
+    render: (dashboard) => replyOrEdit(ctx, dashboardMessage(dashboard, new Date(), locale), walletDashboardKeyboard(wallet.id, locale))
+  });
 }
 
 async function showWalletList(ctx: Context, db: Db, telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): Promise<void> {
@@ -4674,14 +4743,15 @@ async function addWalletAndShowDashboard(
   ctx: Context,
   config: AppConfig,
   db: Db,
-  tronClient: TronDashboardClient,
   telegramUserId: string,
   address: string,
+  startRefresh: StartWalletDashboardRefresh,
+  startRenderGuard: StartWalletDashboardRenderGuard,
   locale: BotLocale = DEFAULT_BOT_LOCALE
 ): Promise<void> {
   const wallet = await addWatchedWallet(db, { telegramUserId, address });
   await clearTelegramUserPendingAction(db, telegramUserId);
-  await showWalletDashboard(ctx, config, db, tronClient, wallet, locale);
+  await showWalletDashboard(ctx, config, db, wallet, startRefresh, startRenderGuard, locale);
 }
 
 export function createBot(
@@ -4691,6 +4761,61 @@ export function createBot(
   options: CreateBotOptions = {}
 ): Bot {
   const bot = new Bot(config.botToken);
+  const walletDashboardRefreshes = new Map<string, Promise<WalletDashboard>>();
+  type WalletDashboardRenderState = {
+    token: symbol;
+    inFlightRender: Promise<void> | null;
+  };
+  const walletDashboardRenderTokens = new Map<string, WalletDashboardRenderState>();
+  const callbackMessageIdentity = (ctx: Context): string | null => {
+    const message = ctx.callbackQuery?.message;
+    if (message) return `${message.chat.id}:${message.message_id}`;
+    const inlineMessageId = ctx.callbackQuery?.inline_message_id;
+    return inlineMessageId ? `inline:${inlineMessageId}` : null;
+  };
+  const invalidateWalletDashboardRender = (ctx: Context): Promise<void> => {
+    const identity = callbackMessageIdentity(ctx);
+    if (!identity) return Promise.resolve();
+
+    const previous = walletDashboardRenderTokens.get(identity);
+    walletDashboardRenderTokens.delete(identity);
+    return previous?.inFlightRender?.catch(() => undefined) ?? Promise.resolve();
+  };
+  const startWalletDashboardRenderGuard: StartWalletDashboardRenderGuard = (ctx) => {
+    const identity = callbackMessageIdentity(ctx);
+    if (!identity) {
+      return {
+        startRender: (render) => Promise.resolve().then(render),
+        cleanup: () => undefined
+      };
+    }
+
+    const token = Symbol(identity);
+    const state: WalletDashboardRenderState = { token, inFlightRender: null };
+    walletDashboardRenderTokens.set(identity, state);
+    return {
+      startRender: (render) => {
+        if (walletDashboardRenderTokens.get(identity)?.token !== token) return null;
+        const inFlightRender = Promise.resolve().then(render);
+        state.inFlightRender = inFlightRender;
+        return inFlightRender;
+      },
+      cleanup: () => {
+        if (walletDashboardRenderTokens.get(identity)?.token === token) walletDashboardRenderTokens.delete(identity);
+      }
+    };
+  };
+  const refreshWalletDashboardOnce: StartWalletDashboardRefresh = (wallet) => {
+    const existing = walletDashboardRefreshes.get(wallet.id);
+    if (existing) return existing;
+
+    let refresh!: Promise<WalletDashboard>;
+    refresh = buildRefreshedWalletDashboard(config, db, tronClient, wallet).finally(() => {
+      if (walletDashboardRefreshes.get(wallet.id) === refresh) walletDashboardRefreshes.delete(wallet.id);
+    });
+    walletDashboardRefreshes.set(wallet.id, refresh);
+    return refresh;
+  };
   const getAddressRiskSignalsForAddress = options.getAddressRiskSignalsForAddress ?? createAddressExposureRiskSignalProvider({
     tronClient,
     getAddressMetadata: (address, now) => getAddressMetadata(db, address, now),
@@ -4908,7 +5033,7 @@ export function createBot(
       return;
     }
 
-    await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
+    await addWalletAndShowDashboard(ctx, config, db, id, input.value, refreshWalletDashboardOnce, startWalletDashboardRenderGuard, locale);
   });
 
   bot.command("wallets", async (ctx) => {
@@ -5116,8 +5241,10 @@ export function createBot(
   });
 
   bot.on("callback_query:data", async (ctx) => {
+    const previousWalletDashboardRender = invalidateWalletDashboardRender(ctx);
     const callback = parseCallbackData(ctx.callbackQuery.data);
     if (callback?.kind === "address_poisoning_confirm" || callback?.kind === "address_poisoning_dismiss") {
+      await previousWalletDashboardRender;
       const action = callback.kind === "address_poisoning_confirm" ? "confirm" : "dismiss";
       const resolution = action === "confirm" ? "confirmed" : "dismissed";
       const callerId = ctx.from?.id ? String(ctx.from.id) : null;
@@ -5170,6 +5297,7 @@ export function createBot(
 
     const id = telegramId(ctx);
     await answerCallbackQuerySafely(ctx);
+    await previousWalletDashboardRender;
     await upsertTelegramUser(db, {
       telegramUserId: id,
       username: ctx.from?.username ?? null
@@ -5444,34 +5572,58 @@ export function createBot(
 
     if (callback.kind === "wallet_view") {
       await clearTelegramUserPendingAction(db, id);
-      await showWalletDashboard(ctx, config, db, tronClient, wallet, locale);
+      await showWalletDashboard(ctx, config, db, wallet, refreshWalletDashboardOnce, startWalletDashboardRenderGuard, locale);
       return;
     }
 
     if (callback.kind === "wallet_refresh") {
       await clearTelegramUserPendingAction(db, id);
-      await showWalletDashboard(ctx, config, db, tronClient, wallet, locale, true);
+      await showWalletDashboard(ctx, config, db, wallet, refreshWalletDashboardOnce, startWalletDashboardRenderGuard, locale, true);
       return;
     }
 
     if (callback.kind === "wallet_analytics") {
       await clearTelegramUserPendingAction(db, id);
-      const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, analyticsMessage(dashboard, new Date(), locale), backToWalletKeyboard(wallet.id, locale));
+      await showWalletDashboardView({
+        ctx,
+        config,
+        db,
+        wallet,
+        locale,
+        startRefresh: refreshWalletDashboardOnce,
+        startRenderGuard: startWalletDashboardRenderGuard,
+        render: (dashboard) => replyOrEdit(ctx, analyticsMessage(dashboard, new Date(), locale), backToWalletKeyboard(wallet.id, locale))
+      });
       return;
     }
 
     if (callback.kind === "wallet_risk") {
       await clearTelegramUserPendingAction(db, id);
-      const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, securityMessage(dashboard, locale), backToWalletKeyboard(wallet.id, locale));
+      await showWalletDashboardView({
+        ctx,
+        config,
+        db,
+        wallet,
+        locale,
+        startRefresh: refreshWalletDashboardOnce,
+        startRenderGuard: startWalletDashboardRenderGuard,
+        render: (dashboard) => replyOrEdit(ctx, securityMessage(dashboard, locale), backToWalletKeyboard(wallet.id, locale))
+      });
       return;
     }
 
     if (callback.kind === "wallet_safety") {
       await clearTelegramUserPendingAction(db, id);
-      const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, safetyMessage(dashboard, locale), walletSafetyKeyboard(wallet, locale));
+      await showWalletDashboardView({
+        ctx,
+        config,
+        db,
+        wallet,
+        locale,
+        startRefresh: refreshWalletDashboardOnce,
+        startRenderGuard: startWalletDashboardRenderGuard,
+        render: (dashboard) => replyOrEdit(ctx, safetyMessage(dashboard, locale), walletSafetyKeyboard(wallet, locale))
+      });
       return;
     }
 
@@ -5491,11 +5643,11 @@ export function createBot(
         alertMode: callback.alertMode,
         digestIntervalMinutes
       });
-      await showWalletDashboard(ctx, config, db, tronClient, {
+      await showWalletDashboard(ctx, config, db, {
         ...wallet,
         alertMode: callback.alertMode,
         digestIntervalMinutes
-      }, locale);
+      }, refreshWalletDashboardOnce, startWalletDashboardRenderGuard, locale);
       return;
     }
 
@@ -5525,7 +5677,7 @@ export function createBot(
           await ctx.reply(locale === "en" ? "Send a valid TRON wallet address." : "Отправьте корректный TRON-адрес кошелька.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
-        await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
+        await addWalletAndShowDashboard(ctx, config, db, id, input.value, refreshWalletDashboardOnce, startWalletDashboardRenderGuard, locale);
         return;
       }
 
@@ -5625,7 +5777,7 @@ export function createBot(
 
     const input = classifyInput(text);
     if (input.kind === "tron_address") {
-      await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
+      await addWalletAndShowDashboard(ctx, config, db, id, input.value, refreshWalletDashboardOnce, startWalletDashboardRenderGuard, locale);
       return;
     }
 

@@ -1751,6 +1751,23 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Pro
   }
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function settlesThisTurn(promises: Promise<unknown>[]): Promise<boolean> {
+  return Promise.race([
+    Promise.all(promises).then(() => true),
+    new Promise<false>((resolve) => setImmediate(() => resolve(false)))
+  ]);
+}
+
 function createQueuedForensicJobCaptureDb(defaultLocale: BotLocale = "en"): {
   db: Db;
   progressByKind: Map<ForensicCheckJob["kind"], Record<string, unknown>>;
@@ -1821,6 +1838,7 @@ async function createSmokeBot(options: {
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
   db?: Db;
+  beforeApiResult?: (method: string, payload: Record<string, unknown>) => Promise<void>;
 } = {}) {
   const config = {
     ...createConfig(),
@@ -1877,6 +1895,7 @@ async function createSmokeBot(options: {
     if (method === "editMessageReplyMarkup" && options.failEditMessageReplyMarkup) {
       throw new Error("Call to 'editMessageReplyMarkup' failed");
     }
+    await options.beforeApiResult?.(method, payload as Record<string, unknown>);
     return { ok: true, result: true };
   });
   await bot.init();
@@ -2292,9 +2311,12 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
-    const texts = messageCalls(calls).map((call) => String(call.payload.text));
-    const plainDashboard = plainTelegramText(texts[0]);
-    expect(texts[0]).toContain("📍 Wallet dashboard");
+    const messages = messageCalls(calls);
+    const dashboardCall = messages.find((call) => String(call.payload.text).includes("📍 Wallet dashboard"));
+    expect(plainTelegramText(String(messages[0].payload.text))).toMatch(/loading wallet data/i);
+    expect(dashboardCall).toBeDefined();
+    const dashboardText = String(dashboardCall!.payload.text);
+    const plainDashboard = plainTelegramText(dashboardText);
     expect(plainDashboard).toContain(walletAddress);
     expect(plainDashboard).toContain("Monitoring: active");
     expect(plainDashboard).toContain("Alerts: realtime");
@@ -2302,14 +2324,14 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(plainDashboard).toContain("Risk: 🟢 0/100 (LOW, beta)");
     expect(plainDashboard).toContain("USDT: 7.00");
     expect(plainDashboard).toContain("Gas/fees: 6.00 TRX");
-    expect(texts[0]).not.toContain("tx total");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🔄 Refresh");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("📊 Analytics");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🛡 Safety");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🔎 Address");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🧾 Tx");
-    expect(buttonTexts(messageCalls(calls)[0].payload).some((text) => text.includes("Alert mode"))).toBe(true);
-    expect(plainTelegramText(texts[1])).toContain("Watched wallets: 1");
+    expect(dashboardText).not.toContain("tx total");
+    expect(buttonTexts(dashboardCall!.payload)).toContain("🔄 Refresh");
+    expect(buttonTexts(dashboardCall!.payload)).toContain("📊 Analytics");
+    expect(buttonTexts(dashboardCall!.payload)).toContain("🛡 Safety");
+    expect(buttonTexts(dashboardCall!.payload)).toContain("🔎 Address");
+    expect(buttonTexts(dashboardCall!.payload)).toContain("🧾 Tx");
+    expect(buttonTexts(dashboardCall!.payload).some((text) => text.includes("Alert mode"))).toBe(true);
+    expect(lastPlainText(calls)).toContain("Watched wallets: 1");
   });
 
   it("changes wallet alert mode through dashboard buttons", async () => {
@@ -9774,9 +9796,121 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate(analyticsCallback, userId));
 
     expect(messageCalls(calls)[0].payload.text).toContain("TRON wallet address");
-    expect(plainTelegramText(String(messageCalls(calls)[1].payload.text))).toContain("Monitoring: active");
+    expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes("Monitoring: active"))).toBe(true);
     expect(lastText(calls)).toContain("Wallet analytics");
     expect(lastPlainText(calls)).toContain("Transfers: 2");
+  });
+
+  it("shows loading while sharing same-wallet refresh work and isolating other wallets", async () => {
+    const baseClient = createTronClient();
+    const firstRefresh = createDeferred<Awaited<ReturnType<TronDashboardClient["getAccount"]>>>();
+    const secondRefresh = createDeferred<Awaited<ReturnType<TronDashboardClient["getAccount"]>>>();
+    const providerCalls: string[] = [];
+    let refreshMode = false;
+    const tronClient: TronDashboardClient = {
+      ...baseClient,
+      async getAccount(address) {
+        providerCalls.push(address);
+        if (!refreshMode) return baseClient.getAccount(address);
+        return address === walletAddress ? firstRefresh.promise : secondRefresh.promise;
+      }
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
+    const firstCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+    await bot.handleUpdate(messageUpdate(`/add_wallet ${secondWalletAddress}`, userId));
+    const secondCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+    refreshMode = true;
+
+    const sameWalletUpdates = [
+      bot.handleUpdate(callbackQueryUpdate(firstCallback, userId)),
+      bot.handleUpdate(callbackQueryUpdate(firstCallback, userId))
+    ];
+    expect(await settlesThisTurn(sameWalletUpdates)).toBe(true);
+    expect(providerCalls.filter((address) => address === walletAddress)).toHaveLength(2);
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toMatch(/refreshing/i);
+
+    const otherWalletUpdate = bot.handleUpdate(callbackQueryUpdate(secondCallback, userId));
+    expect(await settlesThisTurn([otherWalletUpdate])).toBe(true);
+    expect(providerCalls.filter((address) => address === secondWalletAddress)).toHaveLength(2);
+
+    firstRefresh.resolve(await baseClient.getAccount(walletAddress));
+    secondRefresh.resolve(await baseClient.getAccount(secondWalletAddress));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    refreshMode = false;
+    expect(await settlesThisTurn([bot.handleUpdate(callbackQueryUpdate(firstCallback, userId))])).toBe(true);
+    expect(providerCalls.filter((address) => address === walletAddress)).toHaveLength(3);
+  });
+
+  it("does not let a delayed wallet refresh overwrite a newer callback on the same message", async () => {
+    const baseClient = createTronClient();
+    const refresh = createDeferred<Awaited<ReturnType<TronDashboardClient["getAccount"]>>>();
+    let refreshMode = false;
+    const tronClient: TronDashboardClient = {
+      ...baseClient,
+      getAccount: (address) => refreshMode ? refresh.promise : baseClient.getAccount(address)
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
+    const refreshCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+    refreshMode = true;
+    expect(await settlesThisTurn([bot.handleUpdate(callbackQueryUpdate(refreshCallback, userId))])).toBe(true);
+    expect(lastPlainText(calls)).toMatch(/refreshing wallet data/i);
+
+    await bot.handleUpdate(callbackQueryUpdate("home", userId));
+    const newerText = lastText(calls);
+    const messageCountAfterNavigation = messageCalls(calls).length;
+    expect(plainTelegramText(newerText)).toContain("Watched wallets: 1");
+
+    refresh.resolve(await baseClient.getAccount(walletAddress));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(messageCalls(calls)).toHaveLength(messageCountAfterNavigation);
+    expect(lastText(calls)).toBe(newerText);
+  });
+
+  it("settles an already-dispatched old wallet edit before sending a newer callback edit", async () => {
+    const baseClient = createTronClient();
+    const refresh = createDeferred<Awaited<ReturnType<TronDashboardClient["getAccount"]>>>();
+    const oldEditStarted = createDeferred<void>();
+    const releaseOldEdit = createDeferred<void>();
+    let refreshMode = false;
+    let holdOldDashboardEdit = false;
+    const tronClient: TronDashboardClient = {
+      ...baseClient,
+      getAccount: (address) => refreshMode ? refresh.promise : baseClient.getAccount(address)
+    };
+    const { bot, calls } = await createSmokeBot({
+      tronClient,
+      beforeApiResult: async (method, payload) => {
+        if (holdOldDashboardEdit && method === "editMessageText" && String(payload.text).includes("📍 Wallet dashboard")) {
+          holdOldDashboardEdit = false;
+          oldEditStarted.resolve();
+          await releaseOldEdit.promise;
+        }
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
+    const refreshCallback = findCallbackData(lastMessagePayload(calls), "wl:refresh:");
+    refreshMode = true;
+    expect(await settlesThisTurn([bot.handleUpdate(callbackQueryUpdate(refreshCallback, userId))])).toBe(true);
+
+    holdOldDashboardEdit = true;
+    refresh.resolve(await baseClient.getAccount(walletAddress));
+    await oldEditStarted.promise;
+
+    const homeUpdate = bot.handleUpdate(callbackQueryUpdate("home", userId));
+    expect(await settlesThisTurn([homeUpdate])).toBe(false);
+    expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes("Watched wallets: 1"))).toBe(false);
+
+    releaseOldEdit.resolve();
+    await homeUpdate;
+
+    expect(lastPlainText(calls)).toContain("Watched wallets: 1");
   });
 
   it("shows risk intelligence details and removes a wallet only after confirmation", async () => {

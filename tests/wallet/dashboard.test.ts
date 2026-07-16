@@ -3,7 +3,7 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { WalletDashboardSnapshot, WalletPollState } from "../../src/storage/repositories";
 import type { WatchedWallet } from "../../src/types";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
-import { getWalletDashboard } from "../../src/wallet/dashboard";
+import { getWalletDashboard, refreshWalletDashboard } from "../../src/wallet/dashboard";
 
 const wallet: WatchedWallet = {
   id: "wallet-1",
@@ -125,6 +125,7 @@ describe("getWalletDashboard", () => {
     const { deps, client } = createDeps({ cached: snapshot() });
 
     const dashboard = await getWalletDashboard(deps, { wallet });
+    if (!dashboard) throw new Error("Expected a fresh cached dashboard");
 
     expect(dashboard.source).toBe("cache");
     expect(dashboard.snapshot.usdtBalanceMicro).toBe("2000000");
@@ -132,31 +133,47 @@ describe("getWalletDashboard", () => {
     expect(client.getAccount).not.toHaveBeenCalled();
   });
 
-  it("bypasses a fresh cache when force refresh is requested", async () => {
+  it("bypasses a fresh cache only through the explicit refresh function", async () => {
     const { deps, client } = createDeps({ cached: snapshot(), forceRefreshCooldownMs: 0 });
 
-    const dashboard = await getWalletDashboard(deps, { wallet, forceRefresh: true });
+    const dashboard = await refreshWalletDashboard(deps, { wallet });
 
     expect(dashboard.source).toBe("fresh");
     expect(client.getAccount).toHaveBeenCalledWith(wallet.address);
   });
 
-  it("serves cached dashboard during force-refresh cooldown", async () => {
+  it("returns stale cache without calling TronScan", async () => {
+    const tronClient = createClient({
+      getAccount: vi.fn(async () => {
+        throw new Error("normal navigation must not call TronScan");
+      })
+    });
     const { deps, client } = createDeps({
-      cached: snapshot({ refreshedAt: new Date("2026-05-21T00:04:30.000Z") }),
-      forceRefreshCooldownMs: 60_000
+      client: tronClient,
+      cached: snapshot({ refreshedAt: new Date("2026-05-20T00:00:00.000Z") })
     });
 
-    const dashboard = await getWalletDashboard(deps, { wallet, forceRefresh: true });
+    const dashboard = await getWalletDashboard(deps, { wallet });
 
-    expect(dashboard.source).toBe("cache");
+    expect(dashboard?.source).toBe("stale");
+    expect(dashboard?.lastError).toBeNull();
     expect(client.getAccount).not.toHaveBeenCalled();
+  });
+
+  it("returns a cache miss without calling TronScan or writing an error snapshot", async () => {
+    const { deps, client, upsertSnapshot } = createDeps({ cached: null });
+
+    const dashboard = await getWalletDashboard(deps, { wallet });
+
+    expect(dashboard).toBeNull();
+    expect(client.getAccount).not.toHaveBeenCalled();
+    expect(upsertSnapshot).not.toHaveBeenCalled();
   });
 
   it("refreshes account, transfer flow, fees, and writes the snapshot", async () => {
     const { deps, upsertSnapshot } = createDeps({ cached: null });
 
-    const dashboard = await getWalletDashboard(deps, { wallet });
+    const dashboard = await refreshWalletDashboard(deps, { wallet });
 
     expect(dashboard.source).toBe("fresh");
     expect(dashboard.snapshot.usdtBalanceMicro).toBe("7000000");
@@ -181,7 +198,7 @@ describe("getWalletDashboard", () => {
     });
     const { deps } = createDeps({ client, maxPages: 1 });
 
-    const dashboard = await getWalletDashboard(deps, { wallet, forceRefresh: true });
+    const dashboard = await refreshWalletDashboard(deps, { wallet });
 
     expect(dashboard.snapshot.analyticsPartial).toBe(true);
   });
@@ -192,20 +209,22 @@ describe("getWalletDashboard", () => {
         throw new Error("TronScan unavailable");
       })
     });
-    const { deps } = createDeps({
+    const { deps, upsertSnapshot } = createDeps({
       client,
       cached: snapshot({ refreshedAt: new Date("2026-05-20T00:00:00.000Z") }),
       forceRefreshCooldownMs: 0
     });
 
-    const dashboard = await getWalletDashboard(deps, { wallet, forceRefresh: true });
+    const dashboard = await refreshWalletDashboard(deps, { wallet });
 
     expect(dashboard.source).toBe("stale");
     expect(dashboard.snapshot.analyticsPartial).toBe(true);
     expect(dashboard.lastError).toContain("TronScan unavailable");
+    expect(upsertSnapshot).not.toHaveBeenCalled();
+    expect((await getWalletDashboard(deps, { wallet }))?.lastError).toBeNull();
   });
 
-  it("does not treat an error snapshot as fresh cache on the next read", async () => {
+  it("serves a persisted error snapshot as an honest error on normal reads", async () => {
     const client = createClient();
     const { deps } = createDeps({
       client,
@@ -218,7 +237,29 @@ describe("getWalletDashboard", () => {
 
     const dashboard = await getWalletDashboard(deps, { wallet });
 
-    expect(dashboard.source).toBe("fresh");
-    expect(client.getAccount).toHaveBeenCalledWith(wallet.address);
+    expect(dashboard?.source).toBe("error");
+    expect(dashboard?.lastError).toBe("previous error");
+    expect(client.getAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing honest error dashboard when a first refresh fails", async () => {
+    const client = createClient({
+      getAccount: vi.fn(async () => {
+        throw new Error("TronScan unavailable");
+      })
+    });
+    const { deps, upsertSnapshot } = createDeps({ client, cached: null });
+    let storedSnapshot: WalletDashboardSnapshot | null = null;
+    deps.getSnapshot.mockImplementation(async () => storedSnapshot);
+    upsertSnapshot.mockImplementation(async (nextSnapshot) => {
+      storedSnapshot = nextSnapshot;
+    });
+
+    const dashboard = await refreshWalletDashboard(deps, { wallet });
+
+    expect(dashboard.source).toBe("error");
+    expect(dashboard.lastError).toContain("TronScan unavailable");
+    expect(upsertSnapshot).not.toHaveBeenCalled();
+    expect(await getWalletDashboard(deps, { wallet })).toBeNull();
   });
 });
