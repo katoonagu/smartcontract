@@ -102,6 +102,7 @@ import {
   upsertWalletPollState
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { AddressPoisoningClearReason, RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent } from "../../src/types";
 import {
   expiredAllowanceState,
@@ -992,6 +993,95 @@ describe("approval guard repositories", () => {
       is_unlimited: false,
       status: "unknown"
     });
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] includes exact expiry and 15-minute attempt boundaries in the bounded due query", async () => {
+    const { listDueApprovalAllowanceRefreshTargets } = await import("../../src/storage/repositories");
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const { db, queries } = createMockDb(1, [{
+      watched_wallet_id: "wallet-1",
+      owner_address: maxAllowanceState.ownerAddress,
+      token_contract: TRON_USDT_CONTRACT_ADDRESS,
+      spender_address: maxAllowanceState.spenderAddress
+    }]);
+
+    const targets = await listDueApprovalAllowanceRefreshTargets(db, { now, limit: 99 });
+
+    expect(targets).toEqual([{
+      watchedWalletId: "wallet-1",
+      ownerAddress: maxAllowanceState.ownerAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      spenderAddress: maxAllowanceState.spenderAddress
+    }]);
+    expect(compactSql(queries[0].sql)).toContain("ww.alert_mode <> 'paused'");
+    expect(compactSql(queries[0].sql)).toContain("wa.allowance_check_status in ('stale', 'failed')");
+    expect(compactSql(queries[0].sql)).toContain("wa.allowance_fresh_until <= $2");
+    expect(compactSql(queries[0].sql)).toContain("wa.allowance_last_attempt_at <= $2 - interval '15 minutes'");
+    expect(queries[0].params).toEqual([TRON_USDT_CONTRACT_ADDRESS, now, 5]);
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] uses exact wallet-scoped advisory keys and equality in the locked reread", async () => {
+    const { tryAcquireApprovalAllowanceRefreshLock } = await import("../../src/storage/repositories");
+    const clients: Array<{
+      queries: Array<{ sql: string; params: unknown[] }>;
+      releaseCount: number;
+    }> = [];
+    const db = {
+      connect: async () => {
+        const state = { queries: [] as Array<{ sql: string; params: unknown[] }>, releaseCount: 0 };
+        clients.push(state);
+        return {
+          query: async (sql: string, params: unknown[] = []) => {
+            state.queries.push({ sql, params });
+            if (sql.includes("pg_try_advisory_lock")) return { rows: [{ acquired: true }] };
+            if (sql.includes("pg_advisory_unlock")) return { rows: [{ released: true }] };
+            if (compactSql(sql).startsWith("select 1 from wallet_approvals")) return { rows: [{ eligible: 1 }] };
+            return { rows: [{ owner_address: maxAllowanceState.ownerAddress }] };
+          },
+          release: () => { state.releaseCount += 1; }
+        };
+      }
+    } as unknown as Db;
+    const base = {
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      spenderAddress: maxAllowanceState.spenderAddress,
+      now: new Date("2026-07-15T12:00:00.000Z")
+    };
+
+    const first = await tryAcquireApprovalAllowanceRefreshLock(db, {
+      ...base,
+      watchedWalletId: "wallet-a"
+    });
+    const second = await tryAcquireApprovalAllowanceRefreshLock(db, {
+      ...base,
+      watchedWalletId: "wallet-b"
+    });
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    await first!.release();
+    await second!.release();
+
+    const expectedKeys = ["wallet-a", "wallet-b"].map((walletId) =>
+      `allowance-refresh:${walletId}:${TRON_USDT_CONTRACT_ADDRESS}:${maxAllowanceState.spenderAddress}`
+    );
+    expect(clients.map(({ queries }) => queries.find(({ sql }) => sql.includes("pg_try_advisory_lock")))).toEqual([
+      expect.objectContaining({
+        sql: expect.stringContaining("pg_try_advisory_lock(hashtextextended($1, 0))"),
+        params: [expectedKeys[0]]
+      }),
+      expect.objectContaining({
+        sql: expect.stringContaining("pg_try_advisory_lock(hashtextextended($1, 0))"),
+        params: [expectedKeys[1]]
+      })
+    ]);
+    for (const [index, { queries, releaseCount }] of clients.entries()) {
+      const reread = queries.find(({ sql }) => compactSql(sql).startsWith("select 1 from wallet_approvals"));
+      expect(compactSql(reread!.sql)).toContain("wa.allowance_fresh_until <= $5");
+      expect(compactSql(reread!.sql)).toContain("wa.allowance_last_attempt_at <= $5 - interval '15 minutes'");
+      const unlock = queries.find(({ sql }) => sql.includes("pg_advisory_unlock"));
+      expect(unlock?.params).toEqual([expectedKeys[index]]);
+      expect(releaseCount).toBe(1);
+    }
   });
 
   it("[REQ-19][DATA] atomically saves every authoritative allowance state", async () => {

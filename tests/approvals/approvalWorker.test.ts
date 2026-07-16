@@ -3,7 +3,13 @@ import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle }
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { CustomerAlertRecipient, PendingApprovalContextRow, WalletApprovalPollState } from "../../src/storage/repositories";
 import { TronscanClient } from "../../src/tron/tronClient";
-import type { AddressLabel, RawEvidenceInput, RiskSignalObservationInput, WatchedWallet } from "../../src/types";
+import type {
+  AddressLabel,
+  ApprovalAllowanceStateV2,
+  RawEvidenceInput,
+  RiskSignalObservationInput,
+  WatchedWallet
+} from "../../src/types";
 
 const ownerAddress = "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ";
 const spenderAddress = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV";
@@ -1570,5 +1576,200 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(sentOwnerMessages[0]).not.toContain("Linked route tx");
     expect(sentOwnerMessages[0]).not.toContain("Контекст approval не найден");
     expect(sentOwnerMessages[0]).toContain("approval monitoring state: transfer_from_observed");
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] persists provider failure as UNKNOWN/null before releasing the target", async () => {
+    const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+    const events: string[] = [];
+    const saved: ApprovalAllowanceStateV2[] = [];
+
+    await runSingleApprovalAllowanceRefreshCycle({
+      db: {},
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+      getUsdtAllowance: async () => {
+        events.push("provider");
+        throw new Error("provider disconnected");
+      },
+      saveWalletApprovalAllowanceStateV2: async ({ allowance }) => {
+        events.push("save");
+        saved.push(allowance);
+      },
+      repository: {
+        listDueApprovalAllowanceRefreshTargets: async () => [{
+          watchedWalletId: watchedWallet.id,
+          ownerAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          spenderAddress
+        }],
+        tryAcquireApprovalAllowanceRefreshLock: async () => ({
+          release: async () => { events.push("unlock"); }
+        })
+      }
+    });
+
+    expect(events).toEqual(["provider", "save", "unlock"]);
+    expect(saved[0]).toMatchObject({
+      state: "failed",
+      confirmedAllowanceRaw: null,
+      isUnlimited: null,
+      failureCode: "provider_unavailable",
+      observedApprovalTxHash: null
+    });
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] releases a causal-save rejection and continues with the next target", async () => {
+    const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+    const targets = [
+      { watchedWalletId: "wallet-1", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress },
+      { watchedWalletId: "wallet-2", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress: bridgersAddress }
+    ];
+    const events: string[] = [];
+    const savedWallets: string[] = [];
+
+    await expect(runSingleApprovalAllowanceRefreshCycle({
+      db: {},
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+      getUsdtAllowance: async ({ spenderAddress: currentSpender }) => {
+        events.push(`provider:${currentSpender}`);
+        return currentSpender === spenderAddress ? "1" : "2";
+      },
+      saveWalletApprovalAllowanceStateV2: async ({ watchedWalletId }) => {
+        events.push(`save:${watchedWalletId}`);
+        if (watchedWalletId === "wallet-1") throw new Error("allowance_state_stale_write");
+        savedWallets.push(watchedWalletId);
+      },
+      repository: {
+        listDueApprovalAllowanceRefreshTargets: async () => targets,
+        tryAcquireApprovalAllowanceRefreshLock: async (_db, target) => ({
+          release: async () => { events.push(`unlock:${target.watchedWalletId}`); }
+        })
+      }
+    })).resolves.toBeUndefined();
+
+    expect(events).toEqual([
+      `provider:${spenderAddress}`,
+      "save:wallet-1",
+      "unlock:wallet-1",
+      `provider:${bridgersAddress}`,
+      "save:wallet-2",
+      "unlock:wallet-2"
+    ]);
+    expect(savedWallets).toEqual(["wallet-2"]);
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] timestamps each sequential target at attempt and successful completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+      const cycleAt = new Date("2026-07-15T12:00:00.000Z");
+      let currentMs = cycleAt.getTime();
+      const firstAttemptAt = new Date(currentMs + 1_000);
+      const firstCompletedAt = new Date(currentMs + 6_000);
+      const secondAttemptAt = new Date(currentMs + 8_000);
+      const targets = [
+        { watchedWalletId: "wallet-1", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress },
+        { watchedWalletId: "wallet-2", ownerAddress, tokenContract: TRON_USDT_CONTRACT_ADDRESS, spenderAddress: bridgersAddress }
+      ];
+      const lockAttempts: Date[] = [];
+      const saved = new Map<string, ApprovalAllowanceStateV2>();
+      const events: string[] = [];
+
+      const cycle = runSingleApprovalAllowanceRefreshCycle({
+        db: {},
+        now: () => new Date(currentMs),
+        getUsdtAllowance: async ({ spenderAddress: currentSpender, signal }) => {
+          events.push(`provider:${currentSpender}`);
+          if (currentSpender === spenderAddress) {
+            currentMs += 5_000;
+            return "1";
+          }
+          return await new Promise<string>((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              currentMs += 15_000;
+              reject(signal.reason);
+            }, { once: true });
+          });
+        },
+        saveWalletApprovalAllowanceStateV2: async ({ watchedWalletId, allowance }) => {
+          events.push(`save:${watchedWalletId}`);
+          saved.set(watchedWalletId, allowance);
+        },
+        repository: {
+          listDueApprovalAllowanceRefreshTargets: async (_db, input) => {
+            expect(input.now).toEqual(cycleAt);
+            currentMs += 1_000;
+            return targets;
+          },
+          tryAcquireApprovalAllowanceRefreshLock: async (_db, target) => {
+            events.push(`lock:${target.watchedWalletId}`);
+            lockAttempts.push(target.now);
+            return {
+              release: async () => {
+                events.push(`unlock:${target.watchedWalletId}`);
+                if (target.watchedWalletId === "wallet-1") currentMs += 2_000;
+              }
+            };
+          }
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events.at(-1)).toBe(`provider:${bridgersAddress}`);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await cycle;
+
+      expect(events).toEqual([
+        "lock:wallet-1",
+        `provider:${spenderAddress}`,
+        "save:wallet-1",
+        "unlock:wallet-1",
+        "lock:wallet-2",
+        `provider:${bridgersAddress}`,
+        "save:wallet-2",
+        "unlock:wallet-2"
+      ]);
+      expect(lockAttempts).toEqual([firstAttemptAt, secondAttemptAt]);
+      expect(saved.get("wallet-1")).toMatchObject({
+        state: "confirmed_active",
+        confirmedAt: firstCompletedAt.toISOString(),
+        lastAttemptAt: firstCompletedAt.toISOString(),
+        freshUntil: new Date(firstCompletedAt.getTime() + 15 * 60_000).toISOString()
+      });
+      expect(saved.get("wallet-2")).toMatchObject({
+        state: "failed",
+        lastAttemptAt: secondAttemptAt.toISOString(),
+        failureCode: "provider_timeout"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] releases the lock but propagates an unexpected save failure", async () => {
+    const { runSingleApprovalAllowanceRefreshCycle } = await import("../../src/approvals/allowanceRefreshWorker");
+    const events: string[] = [];
+
+    await expect(runSingleApprovalAllowanceRefreshCycle({
+      db: {},
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+      getUsdtAllowance: async () => "1",
+      saveWalletApprovalAllowanceStateV2: async () => {
+        events.push("save");
+        throw new TypeError("invalid worker configuration");
+      },
+      repository: {
+        listDueApprovalAllowanceRefreshTargets: async () => [{
+          watchedWalletId: watchedWallet.id,
+          ownerAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          spenderAddress
+        }],
+        tryAcquireApprovalAllowanceRefreshLock: async () => ({
+          release: async () => { events.push("unlock"); }
+        })
+      }
+    })).rejects.toThrow("invalid worker configuration");
+
+    expect(events).toEqual(["save", "unlock"]);
   });
 });

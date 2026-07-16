@@ -4365,6 +4365,134 @@ export async function upsertWalletApproval(
   );
 }
 
+export type ApprovalAllowanceRefreshTarget = {
+  watchedWalletId: string;
+  ownerAddress: string;
+  tokenContract: string;
+  spenderAddress: string;
+};
+
+export async function listDueApprovalAllowanceRefreshTargets(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<ApprovalAllowanceRefreshTarget[]> {
+  const limit = Number.isFinite(input.limit)
+    ? Math.min(Math.max(Math.floor(input.limit), 0), 5)
+    : 5;
+  if (limit === 0) return [];
+  const result = await db.query(
+    `select wa.watched_wallet_id, ww.address as owner_address,
+       wa.token_contract, wa.spender_address
+     from wallet_approvals wa
+     join watched_wallets ww on ww.id = wa.watched_wallet_id
+     where wa.token_contract = $1
+       and ww.alert_mode <> 'paused'
+       and (
+         wa.allowance_check_status in ('stale', 'failed')
+         or wa.allowance_fresh_until <= $2
+       )
+       and (
+         wa.allowance_last_attempt_at is null
+         or wa.allowance_last_attempt_at <= $2 - interval '15 minutes'
+       )
+     order by wa.allowance_last_attempt_at asc nulls first,
+       wa.watched_wallet_id asc, wa.spender_address asc
+     limit $3`,
+    [TRON_USDT_CONTRACT_ADDRESS, input.now, limit]
+  );
+  return result.rows.map((row) => ({
+    watchedWalletId: String(row.watched_wallet_id),
+    ownerAddress: String(row.owner_address),
+    tokenContract: String(row.token_contract),
+    spenderAddress: String(row.spender_address)
+  }));
+}
+
+export async function tryAcquireApprovalAllowanceRefreshLock(
+  db: Db,
+  input: {
+    watchedWalletId: string;
+    tokenContract: string;
+    spenderAddress: string;
+    now: Date;
+  }
+): Promise<null | { release(): Promise<void> }> {
+  const client = await db.connect();
+  let acquired = false;
+  let released = false;
+  let lockKey: string | null = null;
+
+  const release = async (): Promise<void> => {
+    if (released) return;
+    released = true;
+    try {
+      if (acquired && lockKey !== null) {
+        const result = await client.query(
+          "select pg_advisory_unlock(hashtextextended($1, 0)) as released",
+          [lockKey]
+        );
+        if (result.rows[0]?.released !== true) {
+          throw new Error("approval_allowance_refresh_unlock_failed");
+        }
+      }
+    } finally {
+      client.release();
+    }
+  };
+
+  try {
+    lockKey = `allowance-refresh:${input.watchedWalletId}:${input.tokenContract}:${input.spenderAddress}`;
+    const lock = await client.query(
+      "select pg_try_advisory_lock(hashtextextended($1, 0)) as acquired",
+      [lockKey]
+    );
+    if (lock.rows[0]?.acquired !== true) {
+      await release();
+      return null;
+    }
+    acquired = true;
+
+    const eligible = await client.query(
+      `select 1
+       from wallet_approvals wa
+       join watched_wallets ww on ww.id = wa.watched_wallet_id
+       where wa.watched_wallet_id = $1
+         and wa.token_contract = $2
+         and wa.spender_address = $3
+         and wa.token_contract = $4
+         and ww.alert_mode <> 'paused'
+         and (
+           wa.allowance_check_status in ('stale', 'failed')
+           or wa.allowance_fresh_until <= $5
+         )
+         and (
+           wa.allowance_last_attempt_at is null
+           or wa.allowance_last_attempt_at <= $5 - interval '15 minutes'
+         )`,
+      [
+        input.watchedWalletId,
+        input.tokenContract,
+        input.spenderAddress,
+        TRON_USDT_CONTRACT_ADDRESS,
+        input.now
+      ]
+    );
+    if (eligible.rows.length === 0) {
+      await release();
+      return null;
+    }
+
+    return { release };
+  } catch (error) {
+    try {
+      await release();
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], "approval allowance refresh lock cleanup failed");
+    }
+    throw error;
+  }
+}
+
 export async function saveWalletApprovalAllowanceStateV2(
   db: Db,
   input: { watchedWalletId: string; allowance: ApprovalAllowanceStateV2 }

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { validateApprovalAllowanceStateV2 } from "../../src/approvals/allowanceState";
-import { refreshApprovalAllowance } from "../../src/approvals/allowanceRefresh";
+import {
+  refreshApprovalAllowance,
+  type ApprovalAllowanceRefreshReason
+} from "../../src/approvals/allowanceRefresh";
 import type { ApprovalAllowanceStateV2 } from "../../src/types";
 import {
   APPROVAL_TX_HASH,
@@ -46,6 +49,24 @@ describe("ApprovalAllowanceStateV2", () => {
       confirmedAt: NOW.toISOString(),
       lastAttemptAt: NOW.toISOString(),
       freshUntil: new Date(NOW.getTime() + 15 * 60 * 1000).toISOString()
+    });
+  });
+
+  it("[REQ-19][RUNTIME-REFRESH] accepts the bounded background causal reason", async () => {
+    const reason: ApprovalAllowanceRefreshReason = "background_stale_refresh";
+    const allowance = await refreshApprovalAllowance({
+      client: { getUsdtAllowance: async () => "0" },
+      ownerAddress: TNARA_OWNER,
+      spenderAddress: maxAllowanceState.spenderAddress,
+      observedApprovalTxHash: null,
+      now: NOW,
+      reason
+    });
+
+    expect(allowance).toMatchObject({
+      state: "confirmed_zero",
+      confirmedAllowanceRaw: "0",
+      observedApprovalTxHash: null
     });
   });
 

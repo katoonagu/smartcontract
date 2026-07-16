@@ -9,7 +9,8 @@ import {
 export type ApprovalAllowanceRefreshReason =
   | "new_approval_event"
   | "context_finalization"
-  | "explicit_safety_recheck";
+  | "explicit_safety_recheck"
+  | "background_stale_refresh";
 
 export type UsdtAllowanceReader = {
   getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
@@ -54,12 +55,13 @@ function allowanceFailureCode(error: unknown): string {
   return "provider_unavailable";
 }
 
-export async function refreshApprovalAllowance(input: {
+export async function buildApprovalAllowanceRefreshState(input: {
   client: UsdtAllowanceReader;
   ownerAddress: string;
   spenderAddress: string;
   observedApprovalTxHash: string | null;
   now: Date;
+  completionNow?: () => Date;
   reason: ApprovalAllowanceRefreshReason;
 }): Promise<ApprovalAllowanceStateV2> {
   const attemptedAt = input.now.toISOString();
@@ -69,7 +71,8 @@ export async function refreshApprovalAllowance(input: {
       spenderAddress: input.spenderAddress
     }));
     const isZero = raw === "0";
-    return validateApprovalAllowanceStateV2({
+    const confirmedAt = input.completionNow?.() ?? input.now;
+    return {
       version: "approval-allowance-v2",
       ownerAddress: input.ownerAddress,
       spenderAddress: input.spenderAddress,
@@ -77,15 +80,15 @@ export async function refreshApprovalAllowance(input: {
       confirmedAllowanceRaw: raw,
       isUnlimited: raw === UINT256_MAX_RAW,
       state: isZero ? "confirmed_zero" : "confirmed_active",
-      confirmedAt: attemptedAt,
-      freshUntil: new Date(input.now.getTime() + ALLOWANCE_FRESHNESS_MS).toISOString(),
-      lastAttemptAt: attemptedAt,
+      confirmedAt: confirmedAt.toISOString(),
+      freshUntil: new Date(confirmedAt.getTime() + ALLOWANCE_FRESHNESS_MS).toISOString(),
+      lastAttemptAt: confirmedAt.toISOString(),
       failureCode: null,
       source: "official_usdt_allowance",
       observedApprovalTxHash: input.observedApprovalTxHash
-    }, input.now);
+    };
   } catch (error) {
-    return validateApprovalAllowanceStateV2({
+    return {
       version: "approval-allowance-v2",
       ownerAddress: input.ownerAddress,
       spenderAddress: input.spenderAddress,
@@ -99,6 +102,15 @@ export async function refreshApprovalAllowance(input: {
       failureCode: allowanceFailureCode(error),
       source: "official_usdt_allowance",
       observedApprovalTxHash: input.observedApprovalTxHash
-    }, input.now);
+    };
   }
+}
+
+export async function refreshApprovalAllowance(
+  input: Parameters<typeof buildApprovalAllowanceRefreshState>[0]
+): Promise<ApprovalAllowanceStateV2> {
+  return validateApprovalAllowanceStateV2(
+    await buildApprovalAllowanceRefreshState(input),
+    input.now
+  );
 }

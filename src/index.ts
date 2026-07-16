@@ -4,6 +4,7 @@ import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
 import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
+import { runSingleApprovalAllowanceRefreshCycle } from "./approvals/allowanceRefreshWorker";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
 import {
@@ -107,6 +108,7 @@ import {
   listIndexedTronUsdtTransfersByHashes,
   listCompletedDeepCheckJobsWithPendingSecondLayer,
   listDueRecoveredForensicDeliveryIntents,
+  listDueApprovalAllowanceRefreshTargets,
   findLatestSavedWalletRiskByAddresses,
   getWalletIntelligenceAddressDetail,
   listAddressLabels,
@@ -138,6 +140,7 @@ import {
   saveCompletedDeepSecondLayerContext,
   settleForensicTelegramDelivery,
   settleRecoveredForensicDeliveryIntentPreparation,
+  tryAcquireApprovalAllowanceRefreshLock,
   updateForensicCheckJobProgress,
   updateTheftReportAdminState,
   upsertAddressLabelAssertion,
@@ -218,6 +221,29 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
 });
+
+function getBackgroundUsdtAllowance(input: {
+  ownerAddress: string;
+  spenderAddress: string;
+  signal: AbortSignal;
+}): Promise<string> {
+  // ponytail: one-shot client buys a cancellable no-retry call; reuse it once TronApprovalClient accepts AbortSignal.
+  const client = new TronscanClient({
+    baseUrl: config.tronscanBaseUrl,
+    fullNodeBaseUrl: config.tronFullNodeBaseUrl,
+    fullNodeApiKey: config.tronFullNodeApiKey,
+    timeoutMs: 15_000,
+    retryAttempts: 0,
+    fetchFn: (resource, init = {}) => fetch(resource, {
+      ...init,
+      signal: AbortSignal.any([
+        input.signal,
+        ...(init.signal ? [init.signal] : [])
+      ])
+    })
+  });
+  return client.getUsdtAllowance(input);
+}
 const addressPoisoningTronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
   fullNodeBaseUrl: config.tronFullNodeBaseUrl,
@@ -827,7 +853,26 @@ const forensicTelegramDeliveryWork = createNonOverlappingStartupWork(
   () => shuttingDown
 );
 
+const approvalAllowanceRefreshWork = createNonOverlappingStartupWork(
+  () => runSingleApprovalAllowanceRefreshCycle({
+    db,
+    now: () => new Date(),
+    getUsdtAllowance: getBackgroundUsdtAllowance,
+    saveWalletApprovalAllowanceStateV2: (input) => saveWalletApprovalAllowanceStateV2(db, input),
+    repository: {
+      listDueApprovalAllowanceRefreshTargets,
+      tryAcquireApprovalAllowanceRefreshLock
+    }
+  }),
+  () => shuttingDown
+);
+
 async function pollOnce(): Promise<void> {
+  void approvalAllowanceRefreshWork.run().catch((error) => {
+    logger.error("approval_allowance_refresh_cycle_failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
   if (activePoll) return activePoll;
 
   activePoll = (async () => {
@@ -1460,6 +1505,17 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     } catch {
       logger.error("active_forensic_telegram_delivery_shutdown_wait_failed", {
         diagnosticCode: "forensic_telegram_delivery_shutdown_wait_failed"
+      });
+    }
+  }
+
+  const activeApprovalAllowanceRefresh = approvalAllowanceRefreshWork.active();
+  if (activeApprovalAllowanceRefresh) {
+    try {
+      await activeApprovalAllowanceRefresh;
+    } catch (error) {
+      logger.error("active_approval_allowance_refresh_shutdown_wait_failed", {
+        error: error instanceof Error ? error.message : String(error)
       });
     }
   }
