@@ -728,18 +728,21 @@ describe("automatic contract LLM isolation acceptance", () => {
       deps: Record<string, unknown>;
     };
     const incomingDepositTxHash = "incoming-contract-deposit";
-    const incomingJob = concreteJob("incoming_deposit_check", CONTRACT, {
-      depositTxHash: incomingDepositTxHash,
-      watchedWallet: SUBJECT,
-      watchedWalletId: "incoming-wallet-id",
-      sender: CONTRACT,
-      amount: "1",
-      amountRaw: "1000000",
-      timestamp: edge.timestamp.toISOString(),
-      telegramUserId: "incoming-user",
-      alertMode: "digest",
-      locale: "en"
-    });
+    const incomingJob = {
+      ...concreteJob("incoming_deposit_check", CONTRACT, {
+        depositTxHash: incomingDepositTxHash,
+        watchedWallet: SUBJECT,
+        watchedWalletId: "incoming-wallet-id",
+        sender: CONTRACT,
+        amount: "1",
+        amountRaw: "1000000",
+        timestamp: edge.timestamp.toISOString(),
+        telegramUserId: "incoming-user",
+        alertMode: "digest",
+        locale: "en"
+      }),
+      chatId: "incoming-user"
+    };
     const incomingClassificationLookup = vi.fn(async (address: string) =>
       address === CONTRACT ? contractClassification() : null
     );
