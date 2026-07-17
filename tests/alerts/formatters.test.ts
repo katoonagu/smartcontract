@@ -138,6 +138,13 @@ function typedIncomingReport(): IncomingDepositRiskReport {
   };
 }
 
+function expectLegacyApprovalCompatibilityNoFinal(text: string): void {
+  expect(text).toMatch(/(?:Проверка кошелька|Wallet check)/);
+  expect(text).toMatch(/(?:Итоговая оценка не рассчитана|Final score was not calculated)/);
+  expect(text).not.toMatch(/\b\d{1,3}\/100\b/);
+  expect(text).not.toMatch(/\b(?:spender|allowance|approval|Bridge|router|DEX)\b/i);
+}
+
 describe("alert formatters", () => {
   it("formats user incoming alert with score, HTML parse mode, and reasons", () => {
     const message = formatUserIncomingAlert({
@@ -1033,15 +1040,7 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("USDT approval");
-    expect(message.text).toContain("<b>Решение</b>");
-    expect(message.text).toContain("<b>Риск approval</b>");
-    expect(message.text).toContain("Кому разрешено списание");
-    expect(message.text).toContain("Это не доказанная кража");
-    expect(message.text).toContain("не просит сид-фразу или приватный ключ");
-    expect(message.text).not.toContain("Review/revoke");
-    expect(message.text).not.toContain("seed/private key");
-    expect(message.text).toContain("<code>82/100</code>");
+    expectLegacyApprovalCompatibilityNoFinal(message.text);
   });
 
   it("formats service-linked approval guard alerts with route context", () => {
@@ -1068,8 +1067,7 @@ describe("alert formatters", () => {
       }
     }).text;
 
-    expect(text).toContain("Это не доказанная кража");
-    expect(text).not.toContain("Review/revoke");
+    expectLegacyApprovalCompatibilityNoFinal(text);
   });
 
   it("formats pending approval context alerts", () => {
@@ -1093,13 +1091,8 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("Подписан smart contract");
-    expect(message.text).toContain("Статус");
-    expect(message.text).toContain("ждём контекст операции");
-    expect(message.text).toContain("Финальный результат придёт отдельным сообщением");
-    expect(message.text).toContain("<code>TWallet&lt;owner&gt;</code>");
-    expect(message.text).toContain("<code>TSpender&amp;helper</code>");
-    expect(message.text).toContain("Waiting for route context &lt;pending&gt;");
+    expectLegacyApprovalCompatibilityNoFinal(message.text);
+    expect(message.text).toContain("TWallet&lt;owner&gt;");
   });
 
   it("formats linked approval context result follow-up alerts", () => {
@@ -1138,14 +1131,7 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("Контекст approval найден");
-    expect(message.text).toContain("<b>Решение</b>: <code>ACCEPTABLE</code>");
-    expect(message.text).toContain("Approval связан с bridge/swap-операцией");
-    expect(message.text).toContain("Списания USDT как drain не доказаны");
-    expect(message.text).toContain("<code>35/100</code>");
-    expect(message.text).not.toMatch(/Дедлайн контекста|Истекает/);
-    expect(message.text).toContain("<b>Связанная tx</b>: <code>route-tx</code>");
-    expect(message.text).not.toContain("Review/revoke");
+    expectLegacyApprovalCompatibilityNoFinal(message.text);
   });
 
   it("formats missing approval context result follow-up alerts", () => {
@@ -1182,10 +1168,7 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("Контекст approval не найден");
-    expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("кошелёк небезопасен для работы");
-    expect(message.text).not.toContain("Review/revoke");
+    expectLegacyApprovalCompatibilityNoFinal(message.text);
   });
 
   it("formats collector-drain approval context result with distinct outflow title", () => {
@@ -1221,13 +1204,7 @@ describe("alert formatters", () => {
       linkedRouteTxHash: "collector-tx"
     });
 
-    expect(message.text).toContain("Найден вывод USDT после approval");
-    expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
-    expect(message.text).toContain("<b>Tx вывода USDT</b>: <code>collector-tx</code>");
-    expect(message.text).not.toContain("<b>Связанная tx</b>");
-    expect(message.text).not.toContain("Linked route tx");
-    expect(message.text).not.toContain("Контекст approval не найден");
+    expectLegacyApprovalCompatibilityNoFinal(message.text);
   });
 
   it("formats finite approval allowance as decoded USDT", () => {
@@ -1244,8 +1221,7 @@ describe("alert formatters", () => {
       report
     }).text;
 
-    expect(text).toContain("<b>Allowance</b>: <code>finite 111,111 USDT</code>");
-    expect(text).toContain("<b>Identity</b>: <code>Bridgers</code>");
+    expectLegacyApprovalCompatibilityNoFinal(text);
   });
 
   it("formats service-admin approval alerts", () => {

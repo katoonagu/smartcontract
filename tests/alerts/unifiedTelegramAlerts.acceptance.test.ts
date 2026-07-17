@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   formatIncomingDepositRiskAlert,
-  formatUserApprovalAlert
+  formatUserApprovalAlert,
+  formatUserApprovalContextResultAlert,
+  formatUserApprovalPendingAlert
 } from "../../src/alerts/formatters";
 import { adaptTelegramForensicResult } from "../../src/telegram/forensicPresentationAdapters";
 import { renderTelegramForensicResult } from "../../src/telegram/forensicResultRenderer";
-import type { IncomingDepositRiskReport } from "../../src/types";
+import type { ContractLlmVerdictSummary, IncomingDepositRiskReport } from "../../src/types";
 import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
 import { REMEDIATION_TELEGRAM_GOLDEN_MESSAGES } from "../fixtures/telegram/remediationTelegramGoldenMessages";
 
@@ -13,7 +15,30 @@ function renderAlert(id: string): string {
   return renderTelegramForensicResult(adaptTelegramForensicResult(remediationTelegramUxCase(id).source));
 }
 
-function formatActualIncomingCallSite(): string {
+function legacyLlmVerdict(source: "llm" | "cache", sentinel: string): ContractLlmVerdictSummary {
+  return {
+    source,
+    cacheMatch: source === "cache" ? "address" : null,
+    reusedFromContractAddress: null,
+    providerLabel: `${sentinel}_PROVIDER`,
+    model: `${sentinel}_MODEL`,
+    contractAddress: remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source.checkedWalletAddress,
+    caseFileHash: `${sentinel}_CASE`,
+    cacheId: source === "cache" ? `${sentinel}_CACHE` : null,
+    verdict: "drainer_like",
+    confidence: 99,
+    contractRiskScore: 99,
+    decisionRecommendation: "DECLINE",
+    reasons: [`${sentinel}_REASON`],
+    citedEvidenceIds: [`${sentinel}_CITATION`],
+    falsePositiveNotes: [`${sentinel}_NOTE`]
+  };
+}
+
+function formatActualIncomingCallSite(options: {
+  contractVerdicts?: ContractLlmVerdictSummary[];
+  technicalReason?: "provider_error" | "hard_safety_limit_exceeded";
+} = {}): string {
   const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
   const watchedReceiver = remediationTelegramUxCase("GOLDEN_GASFREE_ACCOUNT").source.checkedWalletAddress;
   const anchor = source.scoreAnchorV2;
@@ -46,7 +71,7 @@ function formatActualIncomingCallSite(): string {
       message: "sanitized exact approval-drain evidence",
       evidenceIds: [...anchor.evidenceIds]
     }],
-    contractVerdicts: [],
+    contractVerdicts: options.contractVerdicts ?? [],
     unifiedRiskSummary: {
       finalScore: anchor.score,
       finalLevel: "CRITICAL",
@@ -76,6 +101,13 @@ function formatActualIncomingCallSite(): string {
     reasons: [],
     warnings: []
   };
+  if (options.technicalReason) {
+    report.scoreValid = false;
+    report.scoreBlockedReason = options.technicalReason;
+    report.technicalStatus = options.technicalReason;
+    report.decision = "NO_FINAL_DECISION";
+    report.depositRiskScore = null;
+  }
 
   return formatIncomingDepositRiskAlert({
     jobId: "sanitized-incoming-job",
@@ -127,6 +159,30 @@ describe("unified Telegram alert acceptance", () => {
     expect(html).toMatch(/кошел[её]к.*выдал доступ/i);
     expect(html).toMatch(/контракт.*получил доступ/i);
     expect(html).not.toMatch(/Быстрая проверка|fast sender/i);
+  });
+
+  it("[AC-39][LEGACY-LLM-INCOMING] excludes live-like and cached model fields from the real Incoming formatter", () => {
+    const liveSentinel = "INCOMING_LIVE_LLM_SENTINEL";
+    const cachedSentinel = "INCOMING_CACHED_LLM_SENTINEL";
+    const html = formatActualIncomingCallSite({
+      contractVerdicts: [
+        legacyLlmVerdict("llm", liveSentinel),
+        legacyLlmVerdict("cache", cachedSentinel)
+      ]
+    });
+
+    expect(html).not.toMatch(new RegExp(`${liveSentinel}|${cachedSentinel}|LLM|confidence|цитат`, "i"));
+  });
+
+  it("[REQ-07][REQ-34][INCOMING-TECHNICAL] keeps provider failure and hard safety limit isolated in the real Incoming formatter", () => {
+    const provider = formatActualIncomingCallSite({ technicalReason: "provider_error" });
+    const hardSafety = formatActualIncomingCallSite({ technicalReason: "hard_safety_limit_exceeded" });
+
+    expect(provider).toContain("Источник данных завершил проверку с ошибкой");
+    expect(provider).not.toContain("предельном объёме данных");
+    expect(hardSafety).toContain("предельном объёме данных");
+    expect(hardSafety).not.toContain("завершил проверку с ошибкой");
+    for (const html of [provider, hardSafety]) expect(html).not.toMatch(/\b\d{1,3}\/100\b/);
   });
 
   it("[REQ-02][REQ-18][APPROVAL-WIRING] routes the real Approval formatter through the common presentation", () => {
@@ -323,6 +379,46 @@ describe("unified Telegram alert acceptance", () => {
     ]) {
       const html = renderAlert(id);
       expect(html, id).not.toMatch(/expiration|deadline|истека|2036-07-16|бот (?:сам )?отзов|мы отзов[её]м|callback_data/i);
+    }
+  });
+
+  it("[REQ-22][REQ-32][APPROVAL-COMPATIBILITY] makes pending and context fallbacks read-only without expiration callbacks or raw role terms", () => {
+    const approval = remediationTelegramUxCase("GOLDEN_VERIFY20_ACTIVE_NO_DEBIT").source.approvalInput!;
+    const base = {
+      locale: "ru" as const,
+      watchedWallet: approval.assessment.subjectAddress,
+      token: "USDT",
+      spender: approval.assessment.allowance.spenderAddress,
+      spenderType: "contract",
+      allowanceType: "unlimited",
+      allowanceAmount: approval.assessment.allowance.confirmedAllowanceRaw ?? undefined,
+      approvalAt: new Date("2026-07-16T12:00:00.000Z"),
+      expirationAt: new Date("2036-07-16T12:00:00.000Z"),
+      approvalTxHash: approval.assessment.allowance.observedApprovalTxHash ?? "a".repeat(64),
+      report: {
+        subjectAddress: approval.assessment.subjectAddress,
+        level: "HIGH" as const,
+        score: 90,
+        reasons: []
+      }
+    };
+    const pending = formatUserApprovalPendingAlert({
+      ...base,
+      contextDeadlineAt: new Date("2036-07-16T12:00:00.000Z")
+    });
+    const context = formatUserApprovalContextResultAlert({
+      ...base,
+      initialReport: base.report,
+      finalReport: base.report,
+      result: "linked_swap_route",
+      linkedRouteTxHash: "c".repeat(64),
+      routeServiceTags: ["Bridge", "DEX"]
+    });
+
+    for (const message of [pending, context]) {
+      expect(message.text).not.toMatch(/2036|expiration|deadline|истека|callback_data|revoke|бот (?:сам )?отзов|мы отзов[её]м/i);
+      expect(message.text).not.toMatch(/\b(?:owner|spender|allowance|approval|Bridge|router|DEX)\b/i);
+      expect(message).not.toHaveProperty("replyMarkup");
     }
   });
 });

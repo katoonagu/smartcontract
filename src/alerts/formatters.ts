@@ -9,12 +9,9 @@ import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import {
   checksLabel,
   decisionLabel,
-  displayDecisionFromRiskScore,
   normalizeNotificationReason,
   riskObjectLabel,
-  senderRoleText,
-  statusLabel,
-  whyLabel
+  senderRoleText
 } from "./notificationText";
 import {
   TELEGRAM_MESSAGE_LIMIT,
@@ -46,25 +43,8 @@ function reasonMessages(report: RiskReport): string[] {
   return formatted;
 }
 
-function localizedReasonMessages(report: RiskReport, locale: BotLocale): string[] {
-  const visibleReasons = report.reasons.slice(0, MAX_REASON_COUNT);
-  const formatted = visibleReasons.map((reason) => normalizeNotificationReason(reason.message, locale));
-  const hiddenCount = report.reasons.length - visibleReasons.length;
-  if (hiddenCount > 0) {
-    formatted.push(locale === "en" ? `...and ${hiddenCount} more` : `...и ещё ${hiddenCount}`);
-  }
-  return formatted;
-}
-
 function formatReasons(report: RiskReport): string {
   return bulletList(reasonMessages(report));
-}
-
-function formatLocalizedReasons(report: RiskReport, locale: BotLocale): string {
-  return bulletList(
-    localizedReasonMessages(report, locale),
-    locale === "en" ? "no obvious risk signals found" : "критичные риск-сигналы не найдены"
-  );
 }
 
 function formatSpenderType(value: string, locale: BotLocale = "en"): string {
@@ -78,49 +58,6 @@ function formatSpenderType(value: string, locale: BotLocale = "en"): string {
   }
 }
 
-function formatApprovalAllowanceText(input: { allowanceType: string; allowanceAmount?: string }): string {
-  return input.allowanceAmount && input.allowanceAmount !== input.allowanceType
-    ? `${input.allowanceType} ${input.allowanceAmount}`
-    : input.allowanceType;
-}
-
-function formatApprovalDetails(input: {
-  watchedWallet: string;
-  token: string;
-  spender: string;
-  spenderType: string;
-  spenderIdentity?: string | null;
-  allowanceType: string;
-  allowanceAmount?: string;
-}, locale: BotLocale): string {
-  return [
-    `${bold(locale === "en" ? "Wallet" : "Кошелёк")}: ${code(input.watchedWallet)}`,
-    `${bold(locale === "en" ? "Token" : "Токен")}: ${code(input.token)}`,
-    `${bold(locale === "en" ? "Allowed spender" : "Кому разрешено списание")}: ${code(input.spender)}`,
-    `${bold(locale === "en" ? "Identity" : "Метка")}: ${code(input.spenderIdentity ?? (locale === "en" ? "unknown" : "неизвестно"))}`,
-    `${bold(locale === "en" ? "Type" : "Тип")}: ${escapeHtml(formatSpenderType(input.spenderType, locale))}`,
-    `${bold(locale === "en" ? "Allowance" : "Лимит")}: ${code(formatApprovalAllowanceText(input))}`
-  ].join("\n");
-}
-
-function formatApprovalTimeLine(label: string, value: Date | null | undefined, locale: BotLocale): string | null {
-  const formatted = formatNotificationMskTime(value, locale);
-  return formatted ? `${bold(label)}: ${code(formatted)}` : null;
-}
-
-function formatApprovalTimeSection(input: {
-  approvalAt?: Date | null;
-  signedAt?: Date | null;
-  expirationAt?: Date | null;
-  contextDeadlineAt?: Date | null;
-}, locale: BotLocale): string | null {
-  const lines = [
-    formatApprovalTimeLine(locale === "en" ? "Approval" : "Approval", input.approvalAt, locale),
-    formatApprovalTimeLine(locale === "en" ? "Signed" : "Подписано", input.signedAt, locale)
-  ];
-  const body = lines.filter((line): line is string => line !== null);
-  return body.length > 0 ? section(locale === "en" ? "Time" : "Время", body) : null;
-}
 
 function formatTypedApprovalAlert(input: {
   locale: BotLocale;
@@ -152,6 +89,29 @@ function formatTypedApprovalAlert(input: {
   }))]);
 }
 
+function formatLegacyApprovalCompatibilityAlert(
+  watchedWallet: string,
+  locale: BotLocale
+): TelegramAlertMessage {
+  return telegramHtmlMessage([renderTelegramForensicResult(adaptTelegramForensicResult({
+    kind: "technical_result",
+    locale,
+    evaluatedAt: new Date(0).toISOString(),
+    checkedWalletAddress: watchedWallet,
+    resultState: "no_final",
+    scoreAnchorV2: null,
+    narrativeFactsV2: [],
+    scoringEvidenceV2: [],
+    amlPresentation: null,
+    routes: [],
+    coverageV2: null,
+    legacyCoverage: null,
+    approvalInput: null,
+    contractDecision: null,
+    technicalLimitTextKey: "insufficient_validated_data"
+  }))]);
+}
+
 export function formatApprovalSafetyPresentationAlert(input: {
   locale?: BotLocale;
   watchedWallet: string;
@@ -164,24 +124,6 @@ export function formatApprovalSafetyPresentationAlert(input: {
     approvalPresentationEvaluatedAt: input.evaluatedAt,
     approvalPresentationInput: input.approvalPresentationInput
   }) ?? telegramHtmlMessage([input.locale === "en" ? "Approval safety result is unavailable." : "Результат проверки доступа к USDT недоступен."]);
-}
-
-function formatApprovalRiskLine(report: RiskReport, locale: BotLocale): string {
-  return `${formatRiskIcon(report.level)} ${bold(riskObjectLabel("approval", locale))}: ${code(`${report.score}/100`)} (${code(report.level)})`;
-}
-
-function readOnlyNotice(locale: BotLocale): string {
-  return locale === "en"
-    ? "Read-only: bot never signs transactions, never asks for seed/private key, and never controls funds."
-    : "Только чтение: бот не подписывает транзакции, не просит сид-фразу или приватный ключ и не управляет средствами.";
-}
-
-function approvalContextTxLabel(
-  result: "linked_swap_route" | "no_route_found" | "collector_drain",
-  locale: BotLocale
-): string {
-  if (result === "collector_drain") return locale === "en" ? "USDT outflow tx" : "Tx вывода USDT";
-  return locale === "en" ? "Linked route tx" : "Связанная tx";
 }
 
 function hasLowAcceptableDepositRisk(report: IncomingDepositRiskReport): boolean {
@@ -642,24 +584,7 @@ export function formatUserApprovalAlert(input: {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const typed = formatTypedApprovalAlert({ ...input, locale });
   if (typed) return typed;
-  const eventTime = formatNotificationMskTime(input.approvalAt ?? input.signedAt ?? null, locale);
-  const title = `USDT approval${eventTime ? ` — ${eventTime}` : ""}`;
-  return telegramHtmlMessage([
-    bold(title),
-    `${bold(decisionLabel(locale))}: ${code(displayDecisionFromRiskScore(input.report.score))}`,
-    formatApprovalRiskLine(input.report, locale),
-    formatApprovalDetails(input, locale),
-    section(locale === "en" ? "Meaning" : "Что это значит", [
-      locale === "en" ? "This is not proven theft." : "Это не доказанная кража.",
-      locale === "en"
-        ? "But the wallet may be unsafe to work with while this approval is active."
-        : "Но кошелёк может быть небезопасен для работы, пока approval активен."
-    ]),
-    section(whyLabel(locale), [formatLocalizedReasons(input.report, locale)]),
-    formatApprovalTimeSection(input, locale),
-    `${bold(locale === "en" ? "Approval tx" : "Approval tx")}: ${code(input.approvalTxHash)}`,
-    readOnlyNotice(locale)
-  ]);
+  return formatLegacyApprovalCompatibilityAlert(input.watchedWallet, locale);
 }
 
 export function formatUserApprovalPendingAlert(input: {
@@ -683,21 +608,7 @@ export function formatUserApprovalPendingAlert(input: {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const typed = formatTypedApprovalAlert({ ...input, locale });
   if (typed) return typed;
-  const title = locale === "en" ? "Smart-contract signature" : "Подписан smart contract";
-  return telegramHtmlMessage([
-    bold(title),
-    `${bold(statusLabel(locale))}: ${escapeHtml(locale === "en" ? "waiting for operation context" : "ждём контекст операции")}`,
-    formatApprovalRiskLine(input.report, locale),
-    locale === "en"
-      ? "Final result will arrive in a separate message."
-      : "Финальный результат придёт отдельным сообщением.",
-    locale === "en" ? "This is not proven theft yet." : "Это ещё не доказанная кража.",
-    formatApprovalDetails(input, locale),
-    formatApprovalTimeSection(input, locale),
-    section(whyLabel(locale), [formatLocalizedReasons(input.report, locale)]),
-    `${bold(locale === "en" ? "Approval tx" : "Approval tx")}: ${code(input.approvalTxHash)}`,
-    readOnlyNotice(locale)
-  ]);
+  return formatLegacyApprovalCompatibilityAlert(input.watchedWallet, locale);
 }
 
 export function formatUserApprovalContextResultAlert(input: {
@@ -725,52 +636,7 @@ export function formatUserApprovalContextResultAlert(input: {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const typed = formatTypedApprovalAlert({ ...input, locale });
   if (typed) return typed;
-  const title = input.result === "linked_swap_route"
-    ? (locale === "en" ? "Approval context found" : "Контекст approval найден")
-    : input.result === "collector_drain"
-      ? (locale === "en" ? "USDT outflow after approval found" : "Найден вывод USDT после approval")
-      : (locale === "en" ? "Approval context not found" : "Контекст approval не найден");
-  const routeText = input.routeServiceTags && input.routeServiceTags.length > 0
-    ? input.routeServiceTags.join(" / ")
-    : "bridge/swap";
-  const routeSuffix = routeText ? `: ${escapeHtml(routeText)}` : "";
-  const meaningLines = input.result === "linked_swap_route"
-    ? [
-        locale === "en"
-          ? `Approval is linked to a bridge/swap operation${routeSuffix}.`
-          : `Approval связан с bridge/swap-операцией${routeSuffix}.`,
-        locale === "en" ? "USDT drain spend is not proven." : "Списания USDT как drain не доказаны."
-      ]
-    : input.result === "collector_drain"
-      ? [
-          locale === "en"
-            ? "USDT outflow after approval was observed. Exact drain proof depends on spender and transferFrom match."
-            : "После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.",
-          locale === "en"
-            ? "Treat this wallet as unsafe to work with while this approval is active."
-            : "Пока approval активен, кошелёк небезопасен для работы."
-        ]
-      : [
-          locale === "en"
-            ? "No related bridge/swap operation was found in the context window."
-            : "Связанная bridge/swap-операция не найдена в окне проверки.",
-          locale === "en"
-            ? "Treat this wallet as unsafe to work with while this approval is active."
-            : "Пока approval активен, кошелёк небезопасен для работы."
-        ];
-  return telegramHtmlMessage([
-    bold(title),
-    `${bold(decisionLabel(locale))}: ${code(displayDecisionFromRiskScore(input.finalReport.score))}`,
-    formatApprovalRiskLine(input.finalReport, locale),
-    `${bold(locale === "en" ? "Initial status" : "Первичный статус")}: ${escapeHtml(`${input.initialReport.level}, ${input.initialReport.score}/100`)}`,
-    section(locale === "en" ? "Meaning" : "Что это значит", meaningLines),
-    formatApprovalDetails(input, locale),
-    formatApprovalTimeSection(input, locale),
-    input.linkedRouteTxHash ? `${bold(approvalContextTxLabel(input.result, locale))}: ${code(input.linkedRouteTxHash)}` : null,
-    section(locale === "en" ? "Final reasons" : "Финальные причины", [formatLocalizedReasons(input.finalReport, locale)]),
-    `${bold(locale === "en" ? "Approval tx" : "Approval tx")}: ${code(input.approvalTxHash)}`,
-    readOnlyNotice(locale)
-  ]);
+  return formatLegacyApprovalCompatibilityAlert(input.watchedWallet, locale);
 }
 
 export function formatDigestAlert(input: {

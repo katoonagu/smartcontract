@@ -23,6 +23,14 @@ function renderCase(id: string): string {
   return renderTelegramForensicResult(adaptTelegramForensicResult(remediationTelegramUxCase(id).source));
 }
 
+function clonedSource(id: string): ReturnType<typeof remediationTelegramUxCase>["source"] {
+  return structuredClone(remediationTelegramUxCase(id).source);
+}
+
+function renderSource(source: ReturnType<typeof remediationTelegramUxCase>["source"]): string {
+  return renderTelegramForensicResult(adaptTelegramForensicResult(source));
+}
+
 function canonicalAddressLink(address: string): string {
   return `<a href="https://tronscan.org/#/address/${address}">${address.slice(0, 4)}…${address.slice(-4)}</a>`;
 }
@@ -145,6 +153,55 @@ describe("unified forensic Telegram renderer acceptance", () => {
     expect(invalid).not.toMatch(/\b90\/100\b|Операцию не проводить/);
   });
 
+  it("[REQ-06][REQ-15][SCORE-ANCHOR-NEGATIVES] fails closed for missing anchors and invalid preferred fact bindings", () => {
+    const mutations = [
+      (source: ReturnType<typeof clonedSource>) => { source.scoreAnchorV2 = null; },
+      (source: ReturnType<typeof clonedSource>) => { source.scoreAnchorV2!.preferredFactId = ""; },
+      (source: ReturnType<typeof clonedSource>) => { source.scoreAnchorV2!.preferredFactId = "missing-preferred-fact"; }
+    ];
+
+    for (const [index, mutate] of mutations.entries()) {
+      const source = clonedSource("GOLDEN_FINAL_AML");
+      mutate(source);
+      const html = renderSource(source);
+      expect(html, String(index)).toMatch(/оценк.*не рассчитан/i);
+      expect(html, String(index)).not.toMatch(/\b90\/100\b|Операцию не проводить/);
+    }
+  });
+
+  it("[REQ-06][REQ-15][SCORE-ANCHOR-BINDING] fails closed for wrong mode and unresolved or foreign evidence", () => {
+    const wrongMode = clonedSource("GOLDEN_FINAL_AML");
+    wrongMode.scoreAnchorV2!.mode = "incoming";
+
+    const unresolvedEvidence = clonedSource("GOLDEN_FINAL_AML");
+    unresolvedEvidence.scoringEvidenceV2 = [];
+
+    const foreignEvidence = clonedSource("GOLDEN_FINAL_AML");
+    foreignEvidence.scoringEvidenceV2[0]!.subjectAddress = TWGC;
+
+    for (const [id, source] of [["wrong-mode", wrongMode], ["unresolved", unresolvedEvidence], ["foreign", foreignEvidence]] as const) {
+      const html = renderSource(source);
+      expect(html, id).toMatch(/оценк.*не рассчитан/i);
+      expect(html, id).not.toMatch(/\b90\/100\b|Операцию не проводить/);
+    }
+  });
+
+  it("[REQ-06][REQ-38][FACT-CATALOG-NEGATIVES] fails closed for an unsupported preferred fact and omits an unsupported secondary fact", () => {
+    const unsupportedPrimary = clonedSource("GOLDEN_FINAL_AML");
+    unsupportedPrimary.narrativeFactsV2.find((fact) => fact.id === unsupportedPrimary.scoreAnchorV2!.preferredFactId)!.factTextKey =
+      "UNSUPPORTED_PREFERRED_FACT_SENTINEL";
+    const primaryHtml = renderSource(unsupportedPrimary);
+    expect(primaryHtml).toMatch(/оценк.*не рассчитан/i);
+    expect(primaryHtml).not.toMatch(/\b90\/100\b|UNSUPPORTED_PREFERRED_FACT_SENTINEL/);
+
+    const unsupportedSecondary = clonedSource("GOLDEN_FINAL_AML");
+    const secondary = unsupportedSecondary.narrativeFactsV2.find((fact) => !fact.isScoreDriver)!;
+    secondary.factTextKey = "UNSUPPORTED_SECONDARY_FACT_SENTINEL";
+    const secondaryHtml = renderSource(unsupportedSecondary);
+    expect(secondaryHtml).toContain("90/100");
+    expect(secondaryHtml).not.toContain("UNSUPPORTED_SECONDARY_FACT_SENTINEL");
+  });
+
   it("[REQ-07][REQ-38] renders no-final without numeric score or risk action", () => {
     for (const id of ["GOLDEN_NO_FINAL_TECHNICAL", "INVALID_ADDRESS_AND_ANCHOR"]) {
       const html = renderCase(id);
@@ -152,6 +209,21 @@ describe("unified forensic Telegram renderer acceptance", () => {
       expect(html, id).not.toMatch(/\b\d{1,3}\/100\b/);
       expect(html, id).not.toMatch(/Операцию не проводить|не принимайте|отзовите/i);
     }
+  });
+
+  it("[REQ-07][REQ-34][TECHNICAL-REASONS] keeps provider failure and hard safety limit as separate no-final reasons", () => {
+    const provider = clonedSource("GOLDEN_NO_FINAL_TECHNICAL");
+    provider.technicalLimitTextKey = "provider_error";
+    const hardSafety = clonedSource("GOLDEN_NO_FINAL_TECHNICAL");
+    hardSafety.technicalLimitTextKey = "hard_safety_limit_exceeded";
+
+    const providerHtml = renderSource(provider);
+    const hardSafetyHtml = renderSource(hardSafety);
+    expect(providerHtml).toContain("Источник данных завершил проверку с ошибкой");
+    expect(providerHtml).not.toContain("предельном объёме данных");
+    expect(hardSafetyHtml).toContain("предельном объёме данных");
+    expect(hardSafetyHtml).not.toContain("завершил проверку с ошибкой");
+    for (const html of [providerHtml, hardSafetyHtml]) expect(html).not.toMatch(/\b\d{1,3}\/100\b/);
   });
 
   it("[REQ-08] keeps victim spender receiver and route roles distinct", () => {

@@ -703,6 +703,22 @@ describe("runSingleIncomingDepositJobCycle", () => {
         reasons: ["Legacy LLM verdict prose."],
         citedEvidenceIds: ["legacy-llm-evidence"],
         falsePositiveNotes: []
+      }, {
+        source: "cache",
+        cacheMatch: "address",
+        reusedFromContractAddress: null,
+        providerLabel: "legacy-cached-provider",
+        model: "legacy-cached-model",
+        contractAddress: "TLegacyCachedContract111111111111111111",
+        caseFileHash: "legacy-cached-case",
+        cacheId: "legacy-cached-verdict",
+        verdict: "drainer_like",
+        confidence: 0.98,
+        contractRiskScore: 94,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Legacy cached LLM verdict prose."],
+        citedEvidenceIds: ["legacy-cached-llm-evidence"],
+        falsePositiveNotes: []
       }],
       reasons: ["Legacy LLM decision prose."],
       warnings: ["Legacy LLM warning prose."]

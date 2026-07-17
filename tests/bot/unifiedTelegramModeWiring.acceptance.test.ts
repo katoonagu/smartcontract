@@ -7,7 +7,7 @@ import {
   formatWhereIsMoneyUserDeliveryReport
 } from "../../src/bot/createBot";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
-import type { WhereIsMoneyReport } from "../../src/types";
+import type { ContractLlmVerdictSummary, WhereIsMoneyReport } from "../../src/types";
 import { adaptTelegramForensicResult } from "../../src/telegram/forensicPresentationAdapters";
 import { renderTelegramForensicResult } from "../../src/telegram/forensicResultRenderer";
 import {
@@ -45,11 +45,31 @@ function whereJob(status: "partial" | "completed"): ForensicCheckJob {
   };
 }
 
-function formatActualWhereCallSite(id: "GOLDEN_WHERE_PRELIMINARY" | "GOLDEN_FINAL_AML"): string {
+function legacyLlmVerdict(source: "llm" | "cache", sentinel: string): ContractLlmVerdictSummary {
+  return {
+    source,
+    cacheMatch: source === "cache" ? "address" : null,
+    reusedFromContractAddress: null,
+    providerLabel: `${sentinel}_PROVIDER`,
+    model: `${sentinel}_MODEL`,
+    contractAddress: PERSISTED_COVERAGE_WHERE_REPORT.subjectAddress,
+    caseFileHash: `${sentinel}_CASE`,
+    cacheId: source === "cache" ? `${sentinel}_CACHE` : null,
+    verdict: "drainer_like",
+    confidence: 99,
+    contractRiskScore: 99,
+    decisionRecommendation: "DECLINE",
+    reasons: [`${sentinel}_REASON`],
+    citedEvidenceIds: [`${sentinel}_CITATION`],
+    falsePositiveNotes: [`${sentinel}_NOTE`]
+  };
+}
+
+function whereReport(id: "GOLDEN_WHERE_PRELIMINARY" | "GOLDEN_FINAL_AML"): WhereIsMoneyReport {
   const source = remediationTelegramUxCase(id).source;
   const anchor = source.scoreAnchorV2;
   if (!anchor) throw new Error("Where fixture requires a score anchor");
-  const report: WhereIsMoneyReport = {
+  return {
     ...PERSISTED_COVERAGE_WHERE_REPORT,
     riskScore: anchor.score,
     decision: anchor.decision,
@@ -65,12 +85,22 @@ function formatActualWhereCallSite(id: "GOLDEN_WHERE_PRELIMINARY" | "GOLDEN_FINA
       decision: anchor.decision
     }
   };
+}
+
+function formatActualWhereCallSite(
+  id: "GOLDEN_WHERE_PRELIMINARY" | "GOLDEN_FINAL_AML",
+  options: { report?: WhereIsMoneyReport; runtimeLabel?: string } = {}
+): string {
+  const report = options.report ?? whereReport(id);
   const status = id === "GOLDEN_WHERE_PRELIMINARY" ? "partial" : "completed";
   const job = whereJob(status);
   const pendingDeep = id === "GOLDEN_WHERE_PRELIMINARY"
     ? { ...whereJob("partial"), kind: "address_deep_check" as const, status: "queued" as const }
     : null;
-  const actual = formatWhereIsMoneyUserDeliveryReport(job, report, status, pendingDeep, { locale: "ru" }).text;
+  const actual = formatWhereIsMoneyUserDeliveryReport(job, report, status, pendingDeep, {
+    locale: "ru",
+    runtimeLabel: options.runtimeLabel
+  }).text;
   if (pendingDeep) {
     const noPendingDeep = formatWhereIsMoneyUserDeliveryReport(job, report, status, null, { locale: "ru" }).text;
     if (noPendingDeep.includes("Откуда деньги — предварительный результат")) {
@@ -159,25 +189,34 @@ function deepReport(): DeepAddressForensicReport {
   };
 }
 
-function formatActualDeepCallSite(): string {
+function formatActualDeepCallSite(options: {
+  whereReport?: WhereIsMoneyReport;
+  deepReport?: DeepAddressForensicReport;
+  runtimeLabel?: string;
+  withoutWhereJob?: boolean;
+} = {}): string {
   const deepJob = { ...whereJob("completed"), kind: "address_deep_check" as const };
   const whereResultJob: ForensicCheckJob = {
     ...whereJob("completed"),
     resultJson: {
       subjectAddress: PERSISTED_COVERAGE_WHERE_REPORT.subjectAddress,
-      whereIsMoneyReport: PERSISTED_COVERAGE_WHERE_REPORT
+      whereIsMoneyReport: options.whereReport ?? PERSISTED_COVERAGE_WHERE_REPORT
     }
   };
   return formatDeepForensicUserDeliveryReport(
     deepJob,
-    deepReport(),
+    options.deepReport ?? deepReport(),
     "completed",
-    whereResultJob,
-    { locale: "ru" }
+    options.withoutWhereJob ? null : whereResultJob,
+    { locale: "ru", runtimeLabel: options.runtimeLabel }
   ).text;
 }
 
-function formatActualContractCallSite(): string {
+function formatActualContractCallSite(options: {
+  llmVerdict?: ContractLlmVerdictSummary | null;
+  runtimeLabel?: string;
+  omitContractDecision?: boolean;
+} = {}): string {
   const source = remediationTelegramUxCase("GOLDEN_GASFREE_ACCOUNT").source;
   const decision = source.contractDecision;
   if (!decision) throw new Error("GasFree contract fixture requires a deterministic decision");
@@ -202,7 +241,7 @@ function formatActualContractCallSite(): string {
     },
     contractProfile: null,
     relatedApprovals: [],
-    llmVerdict: null,
+    llmVerdict: options.llmVerdict ?? null,
     exactDrainProven: false,
     verify20Fingerprint: {
       matched: false,
@@ -217,7 +256,8 @@ function formatActualContractCallSite(): string {
     limitations: [],
     contractDecisionV2: decision
   };
-  return formatSmartContractCheckReport(report, { locale: "ru" }).text;
+  if (options.omitContractDecision) delete report.contractDecisionV2;
+  return formatSmartContractCheckReport(report, { locale: "ru", runtimeLabel: options.runtimeLabel }).text;
 }
 
 describe("bot mode wiring uses the unified Telegram presentation boundary", () => {
@@ -268,6 +308,28 @@ describe("bot mode wiring uses the unified Telegram presentation boundary", () =
     expect(html).not.toMatch(/LEGACY_|LLM|AI[- ]?вердикт|confidence|цитат/i);
   });
 
+  it("[AC-39][LEGACY-LLM-REAL-PATHS] excludes live-like and cached model fields from real Where Deep and contract formatters", () => {
+    const liveSentinel = "LIVE_LLM_SENTINEL";
+    const cachedSentinel = "CACHED_LLM_SENTINEL";
+    const liveWhere = whereReport("GOLDEN_FINAL_AML");
+    liveWhere.contractLlmVerdicts = [legacyLlmVerdict("llm", liveSentinel)];
+    const cachedWhere = whereReport("GOLDEN_FINAL_AML");
+    cachedWhere.contractLlmVerdicts = [legacyLlmVerdict("cache", cachedSentinel)];
+    const messages = [
+      formatActualWhereCallSite("GOLDEN_FINAL_AML", { report: liveWhere }),
+      formatActualDeepCallSite({ whereReport: cachedWhere }),
+      formatActualContractCallSite({ llmVerdict: legacyLlmVerdict("cache", cachedSentinel) }),
+      formatActualContractCallSite({
+        llmVerdict: legacyLlmVerdict("llm", liveSentinel),
+        omitContractDecision: true
+      })
+    ];
+    for (const html of messages) {
+      expect(html).not.toMatch(new RegExp(`${liveSentinel}|${cachedSentinel}|LLM|confidence|цитат`, "i"));
+    }
+    expect(messages.at(-1)).not.toMatch(/\b\d{1,3}\/100\b|Операцию не проводить/);
+  });
+
   it("[REQ-06][REQ-15] renders only the subject-bound deterministic score fact", () => {
     expect(renderMode("GOLDEN_FINAL_AML")).toBe(REMEDIATION_TELEGRAM_GOLDEN_MESSAGES.GOLDEN_FINAL_AML);
     expect(renderMode("INVALID_ADDRESS_AND_ANCHOR")).not.toMatch(/\b90\/100\b|Операцию не проводить/);
@@ -295,6 +357,36 @@ describe("bot mode wiring uses the unified Telegram presentation boundary", () =
   it("[REQ-32][RUNTIME-HIDDEN] omits runtime branch and SHA from ordinary Telegram results", () => {
     for (const id of ["GOLDEN_WHERE_PRELIMINARY", "GOLDEN_FINAL_AML", "THJ_COLLECTOR_ONLY", "GOLDEN_GASFREE_ACCOUNT"]) {
       expect(renderMode(id), id).not.toMatch(/Runtime:|codex\/|d18067f6|\bSHA\b/i);
+    }
+  });
+
+  it("[REQ-32][RUNTIME-HIDDEN][REAL-PATHS] omits a real runtime label from ordinary Where Deep and contract messages", () => {
+    const runtimeLabel = "codex/task8-runtime-deadbeef";
+    const noFinal = whereReport("GOLDEN_FINAL_AML");
+    noFinal.scoreAnchorV2 = null;
+    noFinal.narrativeFactsV2 = [];
+    noFinal.scoringEvidenceV2 = [];
+    noFinal.scoreValid = false;
+    noFinal.scoreBlockedReason = "provider_error";
+    noFinal.technicalStatus = "provider_error";
+    noFinal.assessment = {
+      ...noFinal.assessment,
+      scoreValid: false,
+      scoreBlockedReason: "provider_error",
+      technicalStatus: "provider_error"
+    };
+    const legacyFinal = structuredClone(noFinal);
+    legacyFinal.scoringPolicyVersion = "scoring-signal-matrix-v2";
+
+    for (const html of [
+      formatActualWhereCallSite("GOLDEN_FINAL_AML", { report: noFinal, runtimeLabel }),
+      formatActualWhereCallSite("GOLDEN_FINAL_AML", { report: legacyFinal, runtimeLabel }),
+      formatActualWhereCallSite("GOLDEN_WHERE_PRELIMINARY", { report: legacyFinal, runtimeLabel }),
+      formatActualDeepCallSite({ runtimeLabel }),
+      formatActualDeepCallSite({ runtimeLabel, withoutWhereJob: true }),
+      formatActualContractCallSite({ runtimeLabel })
+    ]) {
+      expect(html).not.toMatch(/Runtime:|codex\/task8-runtime-deadbeef|deadbeef|\bSHA\b/i);
     }
   });
 

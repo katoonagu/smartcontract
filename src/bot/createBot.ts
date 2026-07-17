@@ -1371,8 +1371,7 @@ function formatManualReport(
       section(locale === "en" ? "Limits" : "Ограничения", [
         bulletList(userFacingLines(locale, limitLines(result, { deepQueued })), locale === "en" ? "No major coverage limits reported." : "Серьезных ограничений покрытия не найдено.")
       ]),
-      section(locale === "en" ? "Checks" : "Проверки", checksLines),
-      runtimeMarkerLine(options.runtimeLabel)
+      section(locale === "en" ? "Checks" : "Проверки", checksLines)
     ].filter((line): line is string => Boolean(line)));
   }
   const addressTitle = locale === "en"
@@ -1399,8 +1398,7 @@ function formatManualReport(
     deepQueued ? section(locale === "en" ? "Next" : "Дальше", [
       options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code(whereIsMoneyStatus)} (${code(options.whereIsMoneyJob.id)})` : null,
       options.deepJob ? `${deepLabel}: ${code(deepStatus)} (${code(options.deepJob.id)})` : null
-    ].filter((line): line is string => Boolean(line))) : null,
-    runtimeMarkerLine(options.runtimeLabel)
+    ].filter((line): line is string => Boolean(line))) : null
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -1439,8 +1437,7 @@ export function formatAddressCheckStarted(
     locale === "en"
       ? "Final risk appears after provenance analysis."
       : "Итоговый риск появится после анализа происхождения средств.",
-    contractSafetyLine,
-    runtimeMarkerLine(options.runtimeLabel)
+    contractSafetyLine
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -1455,87 +1452,8 @@ function formatCrossBridgeQueued(
     `${bold("Job")}: ${code(job.id)}`,
     locale === "en"
       ? "This job will continue across bridge boundaries for this address."
-      : "Этот job продолжит анализ через bridge-boundary для этого адреса.",
-    runtimeMarkerLine(options.runtimeLabel)
+      : "Этот job продолжит анализ через bridge-boundary для этого адреса."
   ].filter((line): line is string => Boolean(line)));
-}
-
-function smartContractReasonText(reason: string, locale: BotLocale): string {
-  const reasons: Record<string, { en: string; ru: string }> = {
-    address_is_smart_contract: {
-      en: "This is a smart contract, not a regular wallet.",
-      ru: "Это смарт-контракт, не обычный кошелёк."
-    },
-    exact_verify20_contract_pattern: {
-      en: "The contract contains the full Verify20 pattern often used by drainers; this does not prove a specific theft, amount, or victim.",
-      ru: "В контракте найден полный шаблон Verify20, который часто используют дрейнеры; это не доказывает конкретную кражу, сумму или жертву."
-    },
-    exact_drain_not_proven_in_standalone_check: {
-      en: "Exact theft is not proven in this standalone check.",
-      ru: "Точная кража в этой отдельной проверке не доказана."
-    },
-    active_unlimited_usdt_approval_spender: {
-      en: "Your wallets have an active unlimited USDT approval to this contract.",
-      ru: "В ваших кошельках есть активный unlimited USDT approval на этот контракт."
-    },
-    known_verified_service_contract: {
-      en: "The contract matches a verified service label.",
-      ru: "Контракт похож на проверенный сервис."
-    },
-    provider_risk_contract: {
-      en: "Provider metadata marks this contract as risky.",
-      ru: "Провайдерские данные помечают контракт как рискованный."
-    },
-    verified_contract_without_service_evidence: {
-      en: "Source is verified, but service evidence is limited.",
-      ru: "Исходный код проверен, но сервисные признаки ограничены."
-    },
-    unknown_weak_contract_metadata: {
-      en: "Contract metadata is weak or incomplete.",
-      ru: "Метаданные контракта слабые или неполные."
-    },
-    active_risky_related_approval_spender: {
-      en: "Active related approvals carry elevated risk.",
-      ru: "Активные связанные approvals имеют повышенный риск."
-    },
-    transferfrom_surface_with_active_unlimited_approval: {
-      en: "The contract can use transferFrom while an unlimited approval is active.",
-      ru: "Контракт может использовать transferFrom при активном unlimited approval."
-    },
-    llm_legitimate_service_with_service_evidence: {
-      en: "AI verdict supports legitimate service context.",
-      ru: "AI-вердикт поддерживает контекст легитимного сервиса."
-    },
-    llm_unknown_suspicious_high_confidence: {
-      en: "AI verdict marks the contract as suspicious with high confidence.",
-      ru: "AI-вердикт с высокой уверенностью помечает контракт как подозрительный."
-    },
-    llm_drainer_like_high_confidence: {
-      en: "AI verdict marks the contract as drainer-like with high confidence.",
-      ru: "AI-вердикт с высокой уверенностью помечает контракт как похожий на drainer."
-    }
-  };
-  return reasons[reason]?.[locale] ?? reason;
-}
-
-function smartContractVerifiedSource(report: SmartContractCheckReport): string {
-  const parts = [
-    report.metadata.verified === true ? "metadata verified" : report.metadata.verified === false ? "metadata not verified" : "metadata unknown",
-    report.contractProfile?.isVerified === true || report.contractProfile?.verified === true ? "source verified" : null,
-    report.contractProfile?.sourceStatus ? `source ${report.contractProfile.sourceStatus}` : null,
-    report.metadata.source ? `via ${report.metadata.source}` : null
-  ].filter((part): part is string => Boolean(part));
-  return parts.join("; ");
-}
-
-function smartContractApprovalLine(report: SmartContractCheckReport, locale: BotLocale): string {
-  const activeUnlimitedCount = report.relatedApprovals.filter((approval) =>
-    approval.status === "active" && approval.isUnlimited
-  ).length;
-  if (locale === "en") {
-    return `${report.relatedApprovals.length} related approval(s); ${activeUnlimitedCount} active unlimited.`;
-  }
-  return `${report.relatedApprovals.length} связанных approval; ${activeUnlimitedCount} active unlimited.`;
 }
 
 function contractDecisionPresentationFact(value: unknown, subjectAddress: string): {
@@ -1616,28 +1534,7 @@ export function formatSmartContractCheckReport(
   options: { runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  if (Object.prototype.hasOwnProperty.call(report, "contractDecisionV2")) {
-    return formatContractDecisionBoundary(report, locale);
-  }
-  const name = report.metadata.name ?? report.contractProfile?.name ?? report.metadata.tag ?? "unknown";
-  const reasonLines = [...report.reasons, ...report.limitations]
-    .filter((reason, index, all) => all.indexOf(reason) === index)
-    .map((reason) => smartContractReasonText(reason, locale));
-  return telegramHtmlMessage([
-    bold(locale === "en" ? "Smart contract check" : "Проверка смарт-контракта"),
-    `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(report.decision)}`,
-    `${bold(locale === "en" ? "Contract risk" : "Риск контракта")}: ${formatRiskIcon(report.riskLevel)} ${code(`${report.riskScore}/100`)} (${escapeHtml(locale === "en" ? report.riskLevel : `${riskLevelText(locale, report.riskLevel)} / ${report.riskLevel}`)})`,
-    `${bold(locale === "en" ? "Contract address" : "Адрес контракта")}: ${code(report.subjectAddress)}`,
-    `${bold(locale === "en" ? "Name" : "Название")}: ${escapeHtml(name)}`,
-    `${bold(locale === "en" ? "Verified source" : "Проверенный source")}: ${escapeHtml(smartContractVerifiedSource(report))}`,
-    `${bold(locale === "en" ? "Service label" : "Service label")}: ${escapeHtml(report.serviceLabel ?? "none")}`,
-    `${bold(locale === "en" ? "Activity" : "Активность")}: ${code(report.activityLabel)}`,
-    section(locale === "en" ? "Meaning" : "Вывод", [
-      bulletList(reasonLines)
-    ]),
-    `${bold(locale === "en" ? "Seen in approvals" : "В approvals")}: ${escapeHtml(smartContractApprovalLine(report, locale))}`,
-    runtimeMarkerLine(options.runtimeLabel)
-  ].filter((line): line is string => Boolean(line)));
+  return formatContractDecisionBoundary(report, locale);
 }
 
 function normalizeSmartContractCheckOutcome(result: SmartContractCheckReturn): SmartContractCheckOutcome {
@@ -1648,15 +1545,14 @@ function normalizeSmartContractCheckOutcome(result: SmartContractCheckReturn): S
 
 function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string; locale?: BotLocale } = {}): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  if (!job) return telegramHtmlMessage([locale === "en" ? "Deep forensic job not found." : "Deep forensic job не найден.", runtimeMarkerLine(options.runtimeLabel)].filter((line): line is string => Boolean(line)));
+  if (!job) return telegramHtmlMessage([locale === "en" ? "Deep forensic job not found." : "Deep forensic job не найден."]);
   return telegramHtmlMessage([
     bold(locale === "en" ? "Deep forensic status" : "Статус глубокого анализа"),
     `${bold("Job")}: ${code(job.id)}`,
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(job.subjectAddress)}`,
     `${bold(locale === "en" ? "Status" : "Статус")}: ${code(job.status)}`,
     `${bold(locale === "en" ? "Window" : "Окно")}: ${code(`${job.windowStart.toISOString()} -> ${job.windowEnd.toISOString()}`)}`,
-    job.lastError ? `${bold(locale === "en" ? "Last error" : "Последняя ошибка")}: ${escapeHtml(job.lastError)}` : null,
-    runtimeMarkerLine(options.runtimeLabel)
+    job.lastError ? `${bold(locale === "en" ? "Last error" : "Последняя ошибка")}: ${escapeHtml(job.lastError)}` : null
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -1774,8 +1670,7 @@ function formatCompactDeepForensicReport(
     ]),
     section(locale === "en" ? "For support" : "Для поддержки", [
       bulletList(supportLines)
-    ]),
-    runtimeMarkerLine(runtimeLabel)
+    ])
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -1849,8 +1744,7 @@ export function formatDeepForensicContextReadyReport(
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
     locale === "en"
       ? "Final risk will be shown after provenance analysis."
-      : "Итоговый риск покажем после анализа происхождения средств.",
-    runtimeMarkerLine(options.runtimeLabel)
+      : "Итоговый риск покажем после анализа происхождения средств."
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -2029,6 +1923,9 @@ export function formatDeepForensicUserDeliveryReport(
   if (whereReport?.scoreAnchorV2) {
     return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt);
   }
+  if (whereReport && hasLegacyLlmWhereProjection(whereReport)) {
+    return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt);
+  }
   if (currentDeepReport?.coverageV2) {
     return formatSavedDeepContext(currentDeepReport, status, locale, job.updatedAt);
   }
@@ -2080,8 +1977,7 @@ export function formatDeepForensicFailureUserDeliveryReport(
     bold(label),
     `${bold("Job")}: ${code(job.id)}`,
     `${bold("Address")}: ${code(job.subjectAddress)}`,
-    `${bold("Reason")}: ${code(error)}`,
-    runtimeMarkerLine(options.runtimeLabel)
+    `${bold("Reason")}: ${code(error)}`
   ]);
 }
 
@@ -2317,6 +2213,18 @@ function formatWhereIsMoneyPreliminaryReport(
   options: WhereIsMoneyUserDeliveryOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  if (hasLegacyLlmWhereProjection(report) && !report.scoreAnchorV2) {
+    return telegramHtmlMessage([renderWherePreliminaryNarrative({
+      ...report,
+      scoreValid: false,
+      scoreAnchorV2: null,
+      narrativeFactsV2: [],
+      scoringEvidenceV2: []
+    }, {
+      locale,
+      evaluatedAt: job.updatedAt.toISOString()
+    })]);
+  }
   const contractReport = extractSmartContractCheckReportFromJob(job, report.subjectAddress);
   const narrative = buildWherePreliminaryNarrative(report, {
     locale,
@@ -2356,8 +2264,7 @@ function formatWhereIsMoneyPreliminaryReport(
         : null,
       narrative.sections.coverage
         ? section(locale === "en" ? "Coverage limits" : "Границы проверки", [escapeHtml(narrative.sections.coverage)])
-        : null,
-      runtimeMarkerLine(options.runtimeLabel)
+        : null
     ].filter((line): line is string => Boolean(line)));
   }
   return telegramHtmlMessage([renderWherePreliminaryNarrative(report, {
@@ -2374,6 +2281,9 @@ export function formatWhereIsMoneyUserDeliveryReport(
   options: WhereIsMoneyUserDeliveryOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  if (hasLegacyLlmWhereProjection(report) && !report.scoreAnchorV2) {
+    return formatSavedForensicResult(report, "wallet_final", locale, job.updatedAt);
+  }
   const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, report.subjectAddress));
   if (deepReport) {
     if (report.scoreAnchorV2) {
@@ -3538,9 +3448,28 @@ function compactWalletNarrativeMessage(
     ]) : null,
     showDiagnostics ? section("Beta/internal", [
       bulletList(compactUnifiedRiskBreakdownLines(unifiedRisk, locale, input.deepReport))
-    ]) : null,
-    runtimeMarkerLine(input.runtimeLabel)
+    ]) : null
   ]);
+}
+
+function wherePresentationTechnicalReason(report: WhereIsMoneyReport): string {
+  const candidate = whereScoreBlockedReason(report) ?? whereTechnicalStatus(report);
+  const supported = new Set([
+    "insufficient_coverage",
+    "partial_budget_exhausted",
+    "local_budget_limited",
+    "local_index_read_failed",
+    "provider_error",
+    "rate_limited_after_retries",
+    "provider_inconsistent",
+    "provider_cap_unresolved",
+    "hard_safety_limit_exceeded",
+    "budget_limited",
+    "local_data_error",
+    "provider_limited",
+    "provider_history_unavailable"
+  ]);
+  return candidate && supported.has(candidate) ? candidate : "insufficient_validated_data";
 }
 
 function compactNoFinalWalletNarrative(
@@ -3748,8 +3677,7 @@ function formatLegacyUnifiedAddressFinalReport(input: UnifiedAddressFinalReportI
       : `Риск: ${score}/100 — ${riskLevelText(locale, level)} / ${level}`,
     locale === "en"
       ? "Legacy result — run a fresh check to apply the current scoring policy."
-      : "Устаревший результат — запустите свежую проверку, чтобы применить текущую политику оценки.",
-    runtimeMarkerLine(input.runtimeLabel)
+      : "Устаревший результат — запустите свежую проверку, чтобы применить текущую политику оценки."
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -3818,8 +3746,7 @@ function formatInvalidWhereScoreFinalReport(
     ]) : null,
     showTechnicalDiagnostics ? section("Beta/internal", [
       bulletList([...betaInternalLines, ...diagnosticLines])
-    ]) : null,
-    runtimeMarkerLine(input.runtimeLabel)
+    ]) : null
   ].filter((line): line is string => Boolean(line)));
 }
 
@@ -4202,12 +4129,13 @@ function formatSavedForensicResult(
 ): TelegramHtmlMessage {
   const anchor = report.scoreAnchorV2 ?? null;
   const facts = report.narrativeFactsV2 ?? [];
+  const technicalReason = anchor ? null : wherePresentationTechnicalReason(report);
   const result = adaptTelegramForensicResult({
     kind,
     locale,
     evaluatedAt: evaluatedAt.toISOString(),
     checkedWalletAddress: report.subjectAddress,
-    resultState: anchor ? "final" : "no_final",
+    resultState: anchor ? "final" : "technical_limit",
     scoreAnchorV2: anchor,
     narrativeFactsV2: facts,
     scoringEvidenceV2: report.scoringEvidenceV2 ?? [],
@@ -4227,7 +4155,7 @@ function formatSavedForensicResult(
     },
     approvalInput: null,
     contractDecision: null,
-    technicalLimitTextKey: anchor ? null : "insufficient_validated_data"
+    technicalLimitTextKey: technicalReason
   });
   return telegramHtmlMessage([renderTelegramForensicResult(result)]);
 }
@@ -4249,7 +4177,8 @@ export function formatWhereIsMoneyReport(
     }
   };
   void status;
-  return report.scoreAnchorV2
+  return report.scoreAnchorV2 || hasWherePreliminaryPresentationV2(report) ||
+    hasCurrentScoringPolicy(report) || hasLegacyLlmWhereProjection(report)
     ? formatSavedForensicResult(report, "wallet_final", locale, job.updatedAt)
     : formatUnifiedAddressFinalReport({
         address: report.subjectAddress,

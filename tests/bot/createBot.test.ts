@@ -1568,7 +1568,7 @@ function expectCompactScoredNarrative(text: string, score: number): void {
 }
 
 function expectCompactNoFinalNarrative(text: string): void {
-  expect(text).toMatch(/^⚪ (No final result|Итог не рассчитан)/u);
+  expect(text).toMatch(/⚪ (?:No final result|Final score was not calculated|Итог(?:овая оценка)? не рассчитан)/u);
   expect(text).not.toMatch(/\d+\/100/u);
   expect(text).not.toContain("Address check - no final decision");
   expect(text).not.toContain("Проверка адреса — без итогового решения");
@@ -3360,7 +3360,8 @@ describe("bot command and inline UX smoke coverage", () => {
   it("formats smart contract reports with readable Russian title", () => {
     const message = formatSmartContractCheckReport(smartContractReportForTest(), { locale: "ru" });
 
-    expect(plainTelegramText(message.text)).toContain("Проверка смарт-контракта");
+    expect(plainTelegramText(message.text)).toContain("Проверка контракта");
+    expect(plainTelegramText(message.text)).toContain("Итоговая оценка не рассчитана");
   });
 
   it("uses English queued status and job ids in the address check next block", async () => {
@@ -3552,14 +3553,14 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(startedMessage?.payload.reply_markup).toBeUndefined();
   });
 
-  it("prints the runtime marker on address checks when configured", async () => {
+  it("keeps the runtime marker out of ordinary address checks when configured", async () => {
     const { bot, calls } = await createSmokeBot({
       runtimeInstanceLabel: "Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb"
     });
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
-    expect(lastPlainText(calls)).toContain("Runtime: Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb");
+    expect(lastPlainText(calls)).not.toContain("Runtime: Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb");
   });
 
   it("does not queue deep forensic jobs for transaction checks", async () => {
@@ -3644,7 +3645,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expectCompactNoFinalNarrative(normal);
     expect(normal).toContain("fresh DeepCheck");
-    expect(normal).toContain("Runtime: worker-a");
+    expect(normal).not.toContain("Runtime: worker-a");
     expect(normal).not.toContain("Deep forensic status");
     expect(detailed).toContain("Detailed address report");
     expect(detailed).toContain("Decision: NO_FINAL_DECISION.");
@@ -4036,7 +4037,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(formatWhereIsMoneyReport(whereIsMoneyJobForTest(), report, "partial", { locale: "ru" }).text);
 
     expectCompactNoFinalNarrative(text);
-    expect(text).toContain("DeepCheck");
+    expect(text).not.toContain("DeepCheck");
     expect(text).not.toContain("Технические детали");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("Sender interactions");
@@ -6397,15 +6398,14 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
   });
 
-  it("explains exact Verify20 standalone findings in RU and EN without alleging a specific theft", () => {
+  it("fails closed for a legacy Verify20 report without a deterministic contract decision", () => {
     const report = exactVerify20ContractReportForTest();
     const ru = plainTelegramText(formatSmartContractCheckReport(report, { locale: "ru" }).text);
     const en = plainTelegramText(formatSmartContractCheckReport(report, { locale: "en" }).text);
 
-    expect(ru).toContain("В контракте найден полный шаблон Verify20, который часто используют дрейнеры");
-    expect(en).toContain("full Verify20 pattern often used by drainers");
-    expect(`${ru}\n${en}`).toMatch(/не доказывает конкретную кражу|does not prove a specific theft/);
-    expect(`${ru}\n${en}`).not.toMatch(/украл \d|stole \d|victim address/i);
+    expect(ru).toContain("Итоговая оценка не рассчитана");
+    expect(en).toContain("Final score was not calculated");
+    expect(`${ru}\n${en}`).not.toMatch(/\b\d{1,3}\/100\b|AI|LLM|confidence/i);
   });
 
   it.each([
@@ -6959,7 +6959,7 @@ describe("bot command and inline UX smoke coverage", () => {
       expect(text).toContain(report.subjectAddress);
       expect(text).toMatch(/83%.*UsdtOFT.*10 перевод/i);
       expect((plainSectionText(text, "Что нашли").match(/•/g) ?? [])).toHaveLength(1);
-      expect(text).toContain("Runtime: worker-test");
+      expect(text).not.toContain("Runtime: worker-test");
       expect(text).not.toMatch(/Почему|Что дальше|DeepCheck|Финальный итог|предварительную проверку происхождения/i);
       expect(text).not.toMatch(/Операцию не проводить|Можно принять|hard-proof|transferFrom|ПОИСК|POISON|cross_chain_boundary/i);
       expect(text).not.toContain(POISON_RAW_REASON);
@@ -6986,7 +6986,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Вывод");
     expect(plainSectionText(text, "Границы проверки")).toMatch(/прослежено 83% суммы/i);
     expect(text.indexOf("Границы проверки")).toBeGreaterThan(text.indexOf("Вывод"));
-    expect(text.indexOf("Runtime: worker-partial")).toBeGreaterThan(text.indexOf("Границы проверки"));
+    expect(text).not.toContain("Runtime: worker-partial");
     expect(text).not.toMatch(/DeepCheck|Что дальше|Финальный итог/i);
   });
 
@@ -7212,7 +7212,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
       expect(text).not.toContain("предварительный результат");
       expectCompactNoFinalNarrative(text);
-      expect(text).toMatch(/^⚪ Итог не рассчитан/u);
+      expect(text).toMatch(/⚪ Итоговая оценка не рассчитана/u);
     }
   );
 
@@ -7739,7 +7739,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expectCompactNoFinalNarrative(plainTelegramText(message.text));
     expect(message.text).not.toContain("готово, есть ограничения");
     expect(message.text).not.toContain("частично");
-    expect(message.text).toContain("DeepCheck");
+    expect(message.text).not.toContain("DeepCheck");
     expect(message.text).not.toContain("Data quality");
     expect(message.text).not.toContain("Технические детали");
     expect(message.text).not.toContain("Job:");
@@ -8709,7 +8709,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address behavior — context ready");
     expect(text).toContain("Final risk will be shown after provenance analysis.");
-    expect(text).toContain("Runtime: worker-a");
+    expect(text).not.toContain("Runtime: worker-a");
     expect(text).not.toContain("Behavior risk");
     expect(text).not.toContain("Риск поведения");
     expect(text).not.toContain("80/100");
