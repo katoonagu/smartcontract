@@ -2,6 +2,9 @@ import type { BotLocale, IncomingDepositRiskReport, RiskReport, SourceBundleExpo
 import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
 import { formatNotificationMskTime } from "./notificationTime";
+import { adaptTelegramForensicResult } from "../telegram/forensicPresentationAdapters";
+import { renderTelegramForensicResult } from "../telegram/forensicResultRenderer";
+import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import {
   checksLabel,
   decisionLabel,
@@ -276,6 +279,183 @@ function incomingDepositRiskIcon(band: IncomingDepositRiskReport["riskBand"]): s
   }
 }
 
+type IncomingPresentationRoute = {
+  routeId: string;
+  direction: "inbound" | "outbound";
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  asset: "USDT";
+  share: number | null;
+  transferCount: number;
+  evidenceIds: string[];
+};
+
+function incomingPresentationRoutes(input: {
+  sender: string;
+  watchedWallet: string;
+  txHash: string;
+  amount: string;
+  report: IncomingDepositRiskReport;
+}): IncomingPresentationRoute[] {
+  const amountRaw = parseUsdtDecimalToRaw(input.amount);
+  const depositTxHash = /^[0-9a-f]{64}$/i.test(input.txHash) ? input.txHash.toLowerCase() : null;
+  if (!amountRaw || !depositTxHash) return [];
+  const routes = new Map<string, IncomingPresentationRoute>();
+  const conflicts = new Set<string>();
+  const add = (route: IncomingPresentationRoute): void => {
+    if (conflicts.has(route.routeId)) return;
+    const existing = routes.get(route.routeId);
+    if (!existing) {
+      routes.set(route.routeId, route);
+      return;
+    }
+    if (
+      existing.direction !== route.direction || existing.fromAddress !== route.fromAddress ||
+      existing.toAddress !== route.toAddress || existing.amountRaw !== route.amountRaw || existing.share !== route.share
+    ) {
+      routes.delete(route.routeId);
+      conflicts.add(route.routeId);
+    }
+  };
+  const route = (value: Omit<IncomingPresentationRoute, "routeId" | "asset" | "transferCount" | "evidenceIds"> & { txHash: string }): IncomingPresentationRoute => ({
+    routeId: `route-${value.txHash}`,
+    direction: value.direction,
+    fromAddress: value.fromAddress,
+    toAddress: value.toAddress,
+    amountRaw: value.amountRaw,
+    asset: "USDT",
+    share: value.share,
+    transferCount: 1,
+    evidenceIds: [`route:${value.txHash}`]
+  });
+
+  add(route({
+    txHash: depositTxHash,
+    direction: "outbound",
+    fromAddress: input.sender,
+    toAddress: input.watchedWallet,
+    amountRaw,
+    share: 1
+  }));
+  for (const path of input.report.originPaths) {
+    const exactDeposit = path.steps.some((step) =>
+      /^[0-9a-f]{64}$/i.test(step.txHash) && step.txHash.toLowerCase() === depositTxHash &&
+      step.fromAddress === input.sender && step.toAddress === input.watchedWallet &&
+      step.amountRaw === amountRaw
+    );
+    if (!exactDeposit) continue;
+    const share = Number.isFinite(path.amountCoverageRatio) && path.amountCoverageRatio >= 0 && path.amountCoverageRatio <= 1
+      ? path.amountCoverageRatio
+      : null;
+    for (const step of path.steps) {
+      const stepTxHash = /^[0-9a-f]{64}$/i.test(step.txHash) ? step.txHash.toLowerCase() : null;
+      if (!stepTxHash || stepTxHash === depositTxHash || !/^[1-9][0-9]*$/.test(step.amountRaw)) continue;
+      if (step.toAddress === input.sender) {
+        add(route({
+          txHash: stepTxHash,
+          direction: "inbound",
+          fromAddress: step.fromAddress,
+          toAddress: step.toAddress,
+          amountRaw: step.amountRaw,
+          share
+        }));
+      } else if (step.fromAddress === input.sender) {
+        add(route({
+          txHash: stepTxHash,
+          direction: "outbound",
+          fromAddress: step.fromAddress,
+          toAddress: step.toAddress,
+          amountRaw: step.amountRaw,
+          share
+        }));
+      }
+    }
+  }
+  return [...routes.values()];
+}
+
+function incomingTechnicalReason(report: IncomingDepositRiskReport): string | null {
+  const pair = `${report.scoreBlockedReason ?? "null"}:${report.technicalStatus ?? "null"}`;
+  const canonical: Record<string, string> = {
+    "insufficient_coverage:completed": "insufficient_coverage",
+    "insufficient_coverage:provider_cap_unresolved": "provider_cap_unresolved",
+    "partial_budget_exhausted:budget_limited": "partial_budget_exhausted",
+    "partial_budget_exhausted:hard_safety_limit_exceeded": "hard_safety_limit_exceeded",
+    "local_budget_limited:local_budget_limited": "local_budget_limited",
+    "local_index_read_failed:local_data_error": "local_index_read_failed",
+    "provider_error:provider_error": "provider_error",
+    "rate_limited_after_retries:provider_limited": "rate_limited_after_retries",
+    "provider_inconsistent:provider_error": "provider_inconsistent",
+    "provider_cap_unresolved:provider_cap_unresolved": "provider_cap_unresolved",
+    "hard_safety_limit_exceeded:hard_safety_limit_exceeded": "hard_safety_limit_exceeded"
+  };
+  return canonical[pair] ?? null;
+}
+
+function formatTypedIncomingDepositRiskAlert(input: {
+  watchedWallet: string;
+  sender: string;
+  txHash: string;
+  amount: string;
+  timestamp?: Date | null;
+  locale: BotLocale;
+  addressPoisoningWarningActive?: boolean;
+  report: IncomingDepositRiskReport;
+}): TelegramAlertMessage | null {
+  const summary = input.report.unifiedRiskSummary;
+  if (
+    !summary || !("scoreAnchorV2" in summary) ||
+    !Array.isArray(summary.narrativeFactsV2) || !Array.isArray(summary.scoringEvidenceV2)
+  ) return null;
+
+  const anchor = summary.scoreAnchorV2 ?? null;
+  const technical = input.report.decision === "NO_FINAL_DECISION" || input.report.scoreValid === false ||
+    input.report.scoreBlockedReason !== null || input.report.technicalStatus !== "completed";
+  const checkedWalletAddress = input.sender;
+  const savedLevel = summary.finalLevel;
+  const validSavedLevel = savedLevel === "LOW" || savedLevel === "MEDIUM" || savedLevel === "HIGH" || savedLevel === "CRITICAL"
+    ? savedLevel
+    : null;
+  const savedOutcomeConsistent = Boolean(
+    anchor && anchor.subjectAddress === input.sender && validSavedLevel && summary.scoreValid === true && summary.finalScore === anchor.score &&
+    summary.finalDecision === anchor.decision && input.report.scoreValid === true &&
+    input.report.depositRiskScore === summary.finalScore && input.report.decision === summary.finalDecision &&
+    input.report.scoreBlockedReason === null && input.report.technicalStatus === "completed"
+  );
+  const technicalReason = technical ? incomingTechnicalReason(input.report) : null;
+  const rendered = renderTelegramForensicResult(adaptTelegramForensicResult({
+    kind: "incoming_deposit",
+    locale: input.locale,
+    evaluatedAt: (input.timestamp ?? new Date(0)).toISOString(),
+    checkedWalletAddress,
+    resultState: technical
+      ? technicalReason ? "technical_limit" : "no_final"
+      : "final",
+    scoreAnchorV2: anchor,
+    narrativeFactsV2: summary.narrativeFactsV2,
+    scoringEvidenceV2: summary.scoringEvidenceV2,
+    amlPresentation: savedOutcomeConsistent
+      ? {
+          level: validSavedLevel!,
+          actionTextKey: anchor!.decision === "DECLINE" ? "do_not_operate" : anchor!.decision === "REVIEW" ? "manual_review" : null
+        }
+      : null,
+    routes: incomingPresentationRoutes(input),
+    coverageV2: input.report.coverageV2 ?? null,
+    legacyCoverage: null,
+    approvalInput: null,
+    contractDecision: null,
+    technicalLimitTextKey: technicalReason
+  }));
+  const poisoningWarning = input.addressPoisoningWarningActive
+    ? input.locale === "en"
+      ? "⚠️ Address substitution warning remains active."
+      : "⚠️ Предупреждение о возможной подмене адреса остаётся активным."
+    : null;
+  return telegramHtmlMessage([rendered, poisoningWarning]);
+}
+
 export function formatIncomingDepositRiskAlert(input: {
   jobId: string;
   amount: string;
@@ -289,6 +469,26 @@ export function formatIncomingDepositRiskAlert(input: {
 }): IncomingDepositRiskAlertMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const report = input.report;
+  const typedMessage = formatTypedIncomingDepositRiskAlert({
+    watchedWallet: input.watchedWallet,
+    sender: input.sender,
+    txHash: input.txHash,
+    amount: input.amount,
+    timestamp: input.timestamp,
+    locale,
+    addressPoisoningWarningActive: input.addressPoisoningWarningActive,
+    report
+  });
+  if (typedMessage) {
+    return {
+      ...typedMessage,
+      replyMarkup: userIncomingDepositRiskKeyboard({
+        jobId: input.jobId,
+        sender: input.sender,
+        txHash: input.txHash
+      })
+    };
+  }
   const eventTime = formatNotificationMskTime(input.timestamp, locale);
   const title = locale === "en"
     ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`

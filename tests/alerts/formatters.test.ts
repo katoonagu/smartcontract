@@ -11,6 +11,8 @@ import {
   formatUserIncomingAlert
 } from "../../src/alerts/formatters";
 import { escapeHtml, formatRiskLine } from "../../src/alerts/telegramHtml";
+import type { IncomingDepositRiskReport } from "../../src/types";
+import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
 
 const report = {
   subjectAddress: "TSender111111111111111111111111111111",
@@ -58,6 +60,42 @@ const incomingDepositBaseInput = {
   }
 };
 
+function typedIncomingReport(): IncomingDepositRiskReport {
+  const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+  const anchor = source.scoreAnchorV2;
+  if (!anchor) throw new Error("incoming fixture requires a score anchor");
+  return {
+    ...incomingDepositBaseInput.report,
+    scoringPolicyVersion: anchor.policyVersion,
+    scoreValid: true,
+    scoreBlockedReason: null,
+    technicalStatus: "completed",
+    decision: anchor.decision,
+    depositRiskScore: anchor.score,
+    observedContextScore: anchor.score,
+    riskBand: "CRITICAL",
+    unifiedRiskSummary: {
+      finalScore: anchor.score,
+      finalLevel: "CRITICAL",
+      finalDecision: anchor.decision,
+      observedContextScore: anchor.score,
+      scoreValid: true,
+      decisionBasis: "exact_hard_proof",
+      coverage: { required: "valid", overall: "complete", invalidModes: [], caveats: [] },
+      hardEvidenceFloor: anchor.score,
+      policyFloor: 0,
+      assetContinuationFloor: 0,
+      patternFloor: 0,
+      dampener: 0,
+      activeAnchor: null,
+      scoreAnchorV2: anchor,
+      narrativeFactsV2: source.narrativeFactsV2,
+      scoringEvidenceV2: source.scoringEvidenceV2,
+      scoreAnchorDiagnostic: null
+    }
+  };
+}
+
 describe("alert formatters", () => {
   it("formats user incoming alert with score, HTML parse mode, and reasons", () => {
     const message = formatUserIncomingAlert({
@@ -99,6 +137,283 @@ describe("alert formatters", () => {
     expect(message.text).toContain("Отправитель был пополнен неизвестным смарт-контрактом незадолго до этого депозита.");
     expect(message.text).not.toContain("Low risk: <code>0/100</code>");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
+  });
+
+  it("[REQ-08][INCOMING-SUBJECT-BINDING] links the scored Incoming subject when the watched receiver differs", () => {
+    const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      sender: source.checkedWalletAddress,
+      report: typedIncomingReport()
+    });
+
+    expect(source.checkedWalletAddress).not.toBe(incomingDepositBaseInput.watchedWallet);
+    expect(message.text).toContain(`https://tronscan.org/#/address/${source.checkedWalletAddress}`);
+    expect(message.text).toContain("95/100");
+    expect(message.text).not.toContain("Итоговая оценка не рассчитана");
+  });
+
+  it("[REQ-08][INCOMING-SUBJECT-FAIL-CLOSED] rejects a foreign anchor and keeps a no-anchor result unscored", () => {
+    const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+    const foreignSender = remediationTelegramUxCase("GOLDEN_GASFREE_ACCOUNT").source.checkedWalletAddress;
+    const foreign = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      sender: foreignSender,
+      report: typedIncomingReport()
+    });
+    const noAnchorReport = typedIncomingReport();
+    noAnchorReport.scoreValid = false;
+    noAnchorReport.decision = "NO_FINAL_DECISION";
+    noAnchorReport.depositRiskScore = null;
+    noAnchorReport.riskBand = null;
+    noAnchorReport.unifiedRiskSummary = {
+      ...noAnchorReport.unifiedRiskSummary!,
+      finalScore: null,
+      finalLevel: null,
+      finalDecision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      scoreAnchorV2: null,
+      narrativeFactsV2: [],
+      scoringEvidenceV2: []
+    };
+    const noAnchor = formatIncomingDepositRiskAlert({ ...incomingDepositBaseInput, sender: foreignSender, report: noAnchorReport });
+
+    for (const message of [foreign, noAnchor]) {
+      expect(message.text).toContain(`https://tronscan.org/#/address/${foreignSender}`);
+      expect(message.text).toContain("Итоговая оценка не рассчитана");
+      expect(message.text).not.toContain("95/100");
+    }
+    expect(source.checkedWalletAddress).not.toBe(foreignSender);
+  });
+
+  it("[REQ-15][INCOMING-CANONICAL-LEVEL] fails closed when the saved final level is missing or disagrees with the anchor", () => {
+    const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+    for (const finalLevel of [null, "HIGH" as const]) {
+      const report = typedIncomingReport();
+      report.unifiedRiskSummary = { ...report.unifiedRiskSummary!, finalLevel };
+      const message = formatIncomingDepositRiskAlert({
+        ...incomingDepositBaseInput,
+        sender: source.checkedWalletAddress,
+        report
+      });
+
+      expect(message.text, String(finalLevel)).toContain("Итоговая оценка не рассчитана");
+      expect(message.text, String(finalLevel)).not.toContain("95/100");
+    }
+  });
+
+  it("[REQ-15][INCOMING-TECHNICAL-FINAL-CONFLICT] rejects a final-looking score with a blocker or non-completed technical state", () => {
+    const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+    const cases = [
+      {
+        scoreBlockedReason: "hard_safety_limit_exceeded" as const,
+        technicalStatus: "hard_safety_limit_exceeded" as const
+      },
+      {
+        scoreBlockedReason: null,
+        technicalStatus: "provider_error" as const
+      }
+    ];
+
+    for (const item of cases) {
+      const report = typedIncomingReport();
+      report.scoreBlockedReason = item.scoreBlockedReason;
+      report.technicalStatus = item.technicalStatus;
+      const message = formatIncomingDepositRiskAlert({
+        ...incomingDepositBaseInput,
+        sender: source.checkedWalletAddress,
+        report
+      });
+
+      expect(message.text, JSON.stringify(item)).toContain("Итоговая оценка не рассчитана");
+      expect(message.text, JSON.stringify(item)).not.toContain("95/100");
+      expect(message.text, JSON.stringify(item)).not.toContain(String(item.scoreBlockedReason));
+      expect(message.text, JSON.stringify(item)).not.toContain(item.technicalStatus);
+    }
+  });
+
+  it("[REQ-08][REQ-11][INCOMING-ROUTES] keeps typed inbound provenance separate from the outgoing transfer", () => {
+    const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+    const subject = source.checkedWalletAddress;
+    const inboundFrom = source.routes[0]!.fromAddress;
+    const outboundTo = incomingDepositBaseInput.watchedWallet;
+    const fundingTxHash = "c".repeat(64);
+    const depositTxHash = "b".repeat(64);
+    const steps = [
+      {
+        txHash: fundingTxHash,
+        fromAddress: inboundFrom,
+        toAddress: subject,
+        amountRaw: "500000000",
+        timestamp: "2026-07-16T11:59:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer" as const
+      },
+      {
+        txHash: depositTxHash,
+        fromAddress: subject,
+        toAddress: outboundTo,
+        amountRaw: "13302000000",
+        timestamp: "2026-07-16T12:00:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer" as const
+      }
+    ];
+    const path = {
+      verdict: "DECLINE" as const,
+      score: 95,
+      sourcePolicy: "hard_decline" as const,
+      stoppedReason: "risky_label_reached" as const,
+      pathAddresses: [inboundFrom, subject, outboundTo],
+      txHashes: [fundingTxHash, depositTxHash],
+      steps,
+      amountCoverageRatio: 0.4,
+      amountContinuity: "strong" as const,
+      proximityHops: 1,
+      reasons: []
+    };
+    const report = typedIncomingReport();
+    report.originPaths = [path, { ...path, steps: [...steps] }];
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      sender: subject,
+      txHash: depositTxHash,
+      amount: "13302",
+      report
+    });
+
+    expect(message.text).toContain(`https://tronscan.org/#/address/${inboundFrom}`);
+    expect(message.text).toMatch(new RegExp(`${inboundFrom}\">[^<]+</a> → <a href=\"https://tronscan.org/#/address/${subject}`));
+    expect(message.text).toMatch(new RegExp(`${subject}\">[^<]+</a> → <a href=\"https://tronscan.org/#/address/${outboundTo}`));
+    expect(message.text.split("→")).toHaveLength(3);
+    expect(message.text.split("500 USDT")).toHaveLength(2);
+    expect(message.text.split("13 302 USDT")).toHaveLength(2);
+  });
+
+  it("[REQ-11][INCOMING-TXHASH-CANONICAL] deduplicates case variants and drops conflicting routes for one transaction", () => {
+    const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+    const subject = source.checkedWalletAddress;
+    const inboundFrom = source.routes[0]!.fromAddress;
+    const outboundTo = incomingDepositBaseInput.watchedWallet;
+    const fundingTxHash = "c".repeat(64);
+    const conflictingTxHash = "d".repeat(64);
+    const depositTxHash = "b".repeat(64);
+    const exactDeposit = {
+      txHash: depositTxHash.toUpperCase(),
+      fromAddress: subject,
+      toAddress: outboundTo,
+      amountRaw: "13302000000",
+      timestamp: "2026-07-16T12:00:00.000Z",
+      method: "transfer",
+      edgeType: "normal_transfer" as const
+    };
+    const path = (steps: IncomingDepositRiskReport["originPaths"][number]["steps"]): IncomingDepositRiskReport["originPaths"][number] => ({
+      verdict: "DECLINE",
+      score: 95,
+      sourcePolicy: "hard_decline",
+      stoppedReason: "risky_label_reached",
+      pathAddresses: [inboundFrom, subject, outboundTo],
+      txHashes: steps.map((step) => step.txHash),
+      steps,
+      amountCoverageRatio: 0.4,
+      amountContinuity: "strong",
+      proximityHops: 1,
+      reasons: []
+    });
+    const inbound = (txHash: string, amountRaw: string) => ({
+      txHash,
+      fromAddress: inboundFrom,
+      toAddress: subject,
+      amountRaw,
+      timestamp: "2026-07-16T11:59:00.000Z",
+      method: "transfer",
+      edgeType: "normal_transfer" as const
+    });
+    const report = typedIncomingReport();
+    report.originPaths = [
+      path([inbound(fundingTxHash.toUpperCase(), "500000000"), exactDeposit]),
+      path([inbound(fundingTxHash, "500000000"), { ...exactDeposit, txHash: depositTxHash }]),
+      path([inbound(conflictingTxHash.toUpperCase(), "100000000"), exactDeposit]),
+      path([inbound(conflictingTxHash, "200000000"), { ...exactDeposit, txHash: depositTxHash }])
+    ];
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      sender: subject,
+      txHash: depositTxHash,
+      amount: "13302",
+      report
+    });
+
+    expect(message.text.split("→")).toHaveLength(3);
+    expect(message.text.split("500 USDT")).toHaveLength(2);
+    expect(message.text).not.toContain("100 USDT");
+    expect(message.text).not.toContain("200 USDT");
+  });
+
+  it("[AC-13][INCOMING-TECHNICAL-REASON] preserves distinct hard safety and local index limitations", () => {
+    const cases = [
+      {
+        scoreBlockedReason: "partial_budget_exhausted" as const,
+        technicalStatus: "hard_safety_limit_exceeded" as const,
+        expected: "Проверка остановлена на предельном объёме данных, установленном для безопасности системы."
+      },
+      {
+        scoreBlockedReason: "hard_safety_limit_exceeded" as const,
+        technicalStatus: "hard_safety_limit_exceeded" as const,
+        expected: "Проверка остановлена на предельном объёме данных, установленном для безопасности системы."
+      },
+      {
+        scoreBlockedReason: "local_index_read_failed" as const,
+        technicalStatus: "local_data_error" as const,
+        expected: "Локальный индекс переводов не удалось прочитать."
+      }
+    ];
+    for (const item of cases) {
+      const report = typedIncomingReport();
+      report.scoreValid = false;
+      report.decision = "NO_FINAL_DECISION";
+      report.depositRiskScore = null;
+      report.riskBand = null;
+      report.scoreBlockedReason = item.scoreBlockedReason;
+      report.technicalStatus = item.technicalStatus;
+      report.unifiedRiskSummary = {
+        ...report.unifiedRiskSummary!,
+        finalScore: null,
+        finalLevel: null,
+        finalDecision: "NO_FINAL_DECISION",
+        scoreValid: false,
+        scoreAnchorV2: null,
+        narrativeFactsV2: [],
+        scoringEvidenceV2: []
+      };
+      const message = formatIncomingDepositRiskAlert({ ...incomingDepositBaseInput, report });
+
+      expect(message.text, item.scoreBlockedReason).toContain(item.expected);
+      expect(message.text, item.scoreBlockedReason).not.toContain("Источник данных не отдал старые переводы");
+    }
+
+    const conflicting = typedIncomingReport();
+    conflicting.scoreValid = false;
+    conflicting.decision = "NO_FINAL_DECISION";
+    conflicting.depositRiskScore = null;
+    conflicting.riskBand = null;
+    conflicting.scoreBlockedReason = "hard_safety_limit_exceeded";
+    conflicting.technicalStatus = "local_data_error";
+    conflicting.unifiedRiskSummary = {
+      ...conflicting.unifiedRiskSummary!,
+      finalScore: null,
+      finalLevel: null,
+      finalDecision: "NO_FINAL_DECISION",
+      scoreValid: false,
+      scoreAnchorV2: null,
+      narrativeFactsV2: [],
+      scoringEvidenceV2: []
+    };
+    const conflictMessage = formatIncomingDepositRiskAlert({ ...incomingDepositBaseInput, report: conflicting });
+
+    expect(conflictMessage.text).toContain("Данных недостаточно для итоговой оценки.");
+    expect(conflictMessage.text).not.toContain("hard_safety_limit_exceeded");
+    expect(conflictMessage.text).not.toContain("local_data_error");
   });
 
   it("formats final incoming deposit risk in English when requested", () => {

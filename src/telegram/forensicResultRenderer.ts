@@ -329,6 +329,42 @@ function technicalContextLines(result: TelegramForensicResultV1): string[] {
   return [];
 }
 
+function technicalReasonText(key: string | null, locale: "ru" | "en"): string {
+  const ru: Record<string, string> = {
+    insufficient_coverage: "Недостаточно подтверждённого покрытия, чтобы рассчитать итоговую оценку.",
+    partial_budget_exhausted: "Проверка достигла лимита обработки до завершения необходимой истории.",
+    local_budget_limited: "Локальный лимит обработки не позволил проверить необходимую историю переводов.",
+    local_index_read_failed: "Локальный индекс переводов не удалось прочитать.",
+    provider_error: "Источник данных завершил проверку с ошибкой.",
+    rate_limited_after_retries: "Источник данных ограничил запросы даже после повторных попыток.",
+    provider_inconsistent: "Источник данных вернул противоречивую историю переводов.",
+    provider_cap_unresolved: "Источник данных не отдал всю необходимую историю в доступном диапазоне.",
+    hard_safety_limit_exceeded: "Проверка остановлена на предельном объёме данных, установленном для безопасности системы.",
+    budget_limited: "Проверка достигла общего лимита обработки до завершения необходимой истории.",
+    local_data_error: "Локальные данные проверки недоступны или повреждены.",
+    provider_limited: "Источник данных не отдал всю необходимую историю переводов.",
+    provider_history_unavailable: "Источник данных не отдал старые переводы, необходимые для расчёта."
+  };
+  const en: Record<string, string> = {
+    insufficient_coverage: "There is not enough confirmed coverage to calculate a final score.",
+    partial_budget_exhausted: "The check reached its processing budget before the required history was complete.",
+    local_budget_limited: "A local processing limit prevented the required transfer history from being checked.",
+    local_index_read_failed: "The local transfer index could not be read.",
+    provider_error: "The data source ended the check with an error.",
+    rate_limited_after_retries: "The data source still limited requests after retries.",
+    provider_inconsistent: "The data source returned an inconsistent transfer history.",
+    provider_cap_unresolved: "The data source did not return all required history within its available range.",
+    hard_safety_limit_exceeded: "The check stopped at the maximum data volume allowed by the system safety limit.",
+    budget_limited: "The check reached its overall processing limit before the required history was complete.",
+    local_data_error: "Local check data is unavailable or corrupted.",
+    provider_limited: "The data source did not return all required transfer history.",
+    provider_history_unavailable: "The data source did not return older transfers required for the calculation."
+  };
+  return (locale === "ru" ? ru : en)[key ?? ""] ?? (locale === "ru"
+    ? "Данных недостаточно для итоговой оценки."
+    : "There is not enough validated data for a final score.");
+}
+
 function renderTechnical(result: TelegramForensicResultV1): string {
   const context = technicalContextLines(result);
   const routes = routeLines(result);
@@ -340,9 +376,7 @@ function renderTechnical(result: TelegramForensicResultV1): string {
     "⚪ <b>Итоговая оценка не рассчитана</b>",
     "",
     "🔎 <b>Что произошло</b>",
-    result.technicalLimitTextKey === "provider_history_unavailable"
-      ? "Источник данных не отдал старые переводы, необходимые для расчёта."
-      : "Данных недостаточно для итоговой оценки.",
+    technicalReasonText(result.technicalLimitTextKey, "ru"),
     ...(context.length ? ["", "<b>Что нашли</b>", ...context] : []),
     ...(routes.length ? ["", "💸 <b>Движение денег</b>", ...routes] : []),
     ...(savedCoverage.length ? ["", ...savedCoverage] : []),
@@ -720,9 +754,7 @@ function renderEnglishTechnical(result: TelegramForensicResultV1): string {
     "⚪ <b>Final score was not calculated</b>",
     "",
     "🔎 <b>What happened</b>",
-    result.technicalLimitTextKey === "provider_history_unavailable"
-      ? "The data source did not return older transfers required for the calculation."
-      : "There is not enough validated data for a final score.",
+    technicalReasonText(result.technicalLimitTextKey, "en"),
     ...(factCopy ? ["", "<b>Validated context</b>", factCopy] : []),
     ...(result.routes.length ? ["", "💸 <b>Money movement</b>", ...routeLines(result)] : []),
     ...(englishCoverage(result).length ? ["", ...englishCoverage(result)] : [])
