@@ -9,6 +9,11 @@
 > **Status:** утверждён. Этот документ коммитится отдельно до начала Task 0;
 > код и production на момент утверждения не изменены.
 >
+> **Approved narrow amendment:** Task 0 разделён на локальный baseline gate и
+> operational/release preflight. Локальная реализация Tasks 1–8 не зависит от
+> доступности production preflight; Task 9 и `ready_for_release` без полного
+> operational/release preflight недостижимы.
+>
 > **Draft baseline:** локальный `master`
 > `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`, содержащий реализованные Plans
 > 1–4. После утверждения и отдельного commit только этого документа исполнитель
@@ -565,9 +570,11 @@ external disposable DB state.
 
 ## 5. Sequential tasks
 
-### Task 0 — Dynamic baseline, worktree and production discovery
+### Task 0 — Split local baseline and operational/release preflight
 
 **Code changes:** none. **Commit:** none.
+
+#### Task 0A — Local baseline gate (before Tasks 1–8)
 
 1. Verify local master contains Plan 4 final SHA and approved Plan 5 doc commit.
 2. Set dynamically:
@@ -581,11 +588,13 @@ external disposable DB state.
 3. Create clean branch/worktree `codex/remediation-end-to-end-release`.
 4. Store base SHA in branch config and assert it on every task.
 5. Capture the main worktree 13-file/stash manifest without modifying it.
-6. Read-only discover current DB name/version, runtime process/service, command,
-   label, Admin URL, Telegram mode and previous production SHA. Do not
-   stop/start anything.
-7. Resolve and record owner-plan base/test/implementation commits for all 41 AC
-   traces. Every commit must exist locally and be an ancestor of candidate.
+6. Resolve and record owner-plan-level base/test/implementation ancestry for
+   `AC-01…AC-40`. Every recorded commit must exist locally and be an ancestor
+   of candidate. Task 0A does not claim exact per-AC execution evidence.
+7. Exact per-AC RED/GREEN traces for `AC-01…AC-40` are formed and verified by
+   Tasks 1–6. `AC-41` belongs entirely to Plan 5 and first appears after its
+   frozen RED batch and implementation in Tasks 1–6; its absence in Task 0A is
+   expected and does not block Tasks 1–8.
 8. Prove migration 032 bytes still hash to the approved full checksum.
 9. Verify no `033_*.sql` and no unapproved migration exists.
 10. Predeclare exact disposable identities:
@@ -598,13 +607,46 @@ external disposable DB state.
 
     `clone` is offline-only. `runtime_sanitized` contains only synthetic
     wallets/jobs and uses `recording_disabled` Telegram transport.
-11. Discover `pg_dump`/`pg_restore` versions, protected external artifact root,
-    actual previous-runtime start/stop commands and an isolated port. Missing
-    reproducible rollback inputs block the plan.
+11. Record the current read-only operational snapshot without treating it as a
+    release preflight. At amendment time the accepted baseline is:
 
-**Expected:** clean feature worktree; production still unchanged. Missing
-reproducible previous-runtime command is a hard blocker, not an invitation to
-guess one.
+    ```text
+    previous runtime SHA: 0172978845ec74373bd245098ee8c075e0c39acf
+    runtime label: master-01729788
+    database: tron_watch on 127.0.0.1:55999
+    schema state: legacy 031; schema-032 receipt absent
+    Admin: HTTP 200 on 127.0.0.1:8787
+    Telegram runtime mode: long polling
+    ```
+
+    Regenerated Task 0A evidence binds this snapshot to its observation time
+    and sources. It does not authorize migration, rollout or Telegram sends.
+
+**Task 0A expected:** clean feature worktree, exact local baseline and
+plan-level ancestry evidence; production remains unchanged. Missing operational
+release inputs do not block Tasks 1–8.
+
+#### Task 0B — Operational/release preflight (mandatory immediately before Task 9)
+
+Regenerate evidence from the then-current runtime and require all of:
+
+1. exact previous runtime SHA and runtime label;
+2. allowlisted start/stop command IDs and SHA-256 hashes of their redacted
+   command templates; raw commands, credentials and secret environment values
+   are forbidden in artifacts;
+3. authoritative production DB identity and verified current schema state,
+   including the schema-032 receipt pre-state;
+4. exact previous-SHA rollback worktree plus the allowlisted rollback command;
+5. reproducible `pg_dump`/`pg_restore` tool identities/versions and a protected
+   external artifact root;
+6. isolated candidate port and proof that discovery did not stop/start runtime,
+   migrate DB or send Telegram messages.
+
+Every value is bound to observation time, source and candidate SHA. Missing,
+stale, guessed or unverified input blocks Task 9 and keeps
+`ReleaseManifestV1.overall = "not_ready"`. Task 0B cannot be deferred into a
+later Task 9 step and cannot be satisfied from the earlier Task 0A snapshot
+alone.
 
 **Reviews:** independent spec-review; independent safety/code-quality review.
 
@@ -1023,6 +1065,15 @@ Do not rewrite user-owned audit additions in `10` or `13`.
 
 **Code/docs changes:** none after freeze. **Commit:** none.
 
+Before freezing the candidate, rerun and pass Task 0B operational/release
+preflight for the then-current runtime. The verifier requires evidence for the
+exact previous runtime SHA/label, allowlisted start/stop command IDs and
+redacted-template hashes, production DB/schema state, rollback
+worktree/command, `pg_dump`/`pg_restore`, protected artifact root and isolated
+port. If any field is absent, stale or unverified, Task 9 stops before setting
+`RELEASE_SHA`; no pre-manual gate may run and `ready_for_release` remains
+impossible.
+
 Set:
 
 ```powershell
@@ -1430,7 +1481,8 @@ never used as a test database.
 
 | Task | Commit | Gate before next task |
 |---:|---|---|
-| 0 | none | baseline spec-review + safety review |
+| 0A | none | local SHA/worktree/user-state/migration and AC-01…40 plan-level ancestry evidence; baseline spec-review + safety review |
+| 0B | none | immediately before Task 9: exact runtime/DB/rollback/tooling/artifact-root preflight; any missing field blocks Task 9 |
 | 1 | `test: complete canonical remediation acceptance identity` | owner-base RED replay + candidate GREEN, clean worktree, spec + test-quality review |
 | 2 | `test: define remediation release acceptance` | Plan 5 RED evidence, clean worktree, spec + test-quality review |
 | 3 | `feat: validate remediation release evidence` | focused GREEN, typed trace/secret tests, typecheck, spec + security review |
@@ -1509,6 +1561,12 @@ hashes, not secrets or full raw logs.
 ## 12. Self-review checklist
 
 - [x] Plan 5 owns AC-41 and integrates, but does not redefine, AC-01…40.
+- [x] Task 0A requires only plan-level ancestry for AC-01…40; exact per-AC
+  RED/GREEN traces are produced in Tasks 1–6, and AC-41 is created by Plan 5
+  only after its own RED batch and implementation.
+- [x] Missing release-operation inputs do not block local Tasks 1–8, while the
+  separate Task 0B makes every runtime/DB/rollback/tooling input mandatory
+  immediately before Task 9 and fail-closes `ready_for_release`.
 - [x] Every REQ and AC maps to a release gate and concrete verification.
 - [x] `ready_for_release` requires only `G00…G11`; `released` requires
   `G00…G15`; APC-01 is a separate post-release artifact.
