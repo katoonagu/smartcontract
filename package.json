@@ -9,6 +9,7 @@
     "test:watch": "vitest --configLoader bundle",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
+    "schema:verify": "node --import tsx scripts/verifySchema032.ts",
     "safety:recheck": "tsx scripts/safetyRecheck.ts",
     "forensic:route": "node --import tsx scripts/forensicRouteSearch.ts",
     "forensic:index": "node --import tsx scripts/indexTronUsdtEvents.ts",
