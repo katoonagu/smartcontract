@@ -22,6 +22,7 @@ import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskClarity";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
+import { formatRuntimeVersion, type RuntimeVersionV1 } from "../runtime/runtimeVersion";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import {
   buildRiskExplanationSummary,
@@ -264,6 +265,7 @@ type CreateBotOptions = {
     windowEnd: Date | null;
   }) => Promise<ForensicCheckJob | null>;
   runSafetyRecheck?: typeof runSafetyRecheck;
+  runtimeVersion?: RuntimeVersionV1;
   resolveAddressPoisoningCandidate?: (input: {
     callbackToken: string;
     telegramUserId: string;
@@ -4196,15 +4198,8 @@ export function formatWhereIsMoneyReport(
       });
 }
 
-function formatRuntimeStatus(config: AppConfig, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
-  return telegramHtmlMessage([
-    bold(locale === "en" ? "Runtime status" : "Статус runtime"),
-    `${bold(locale === "en" ? "Instance" : "Инстанс")}: ${code(config.runtimeInstanceLabel ?? "unlabeled")}`,
-    `${bold(locale === "en" ? "Mode" : "Режим")}: ${code(config.runtimeInstanceLabel ? "marked" : "default")}`,
-    locale === "en"
-      ? "Use this line to confirm which runtime answered this Telegram chat."
-      : "По этой строке можно понять, какая версия runtime ответила в Telegram."
-  ]);
+function runtimeVersionLocale(languageCode: unknown): BotLocale {
+  return typeof languageCode === "string" && languageCode.toLowerCase().startsWith("en") ? "en" : "ru";
 }
 
 function commandText(value: string | undefined): string {
@@ -5272,9 +5267,11 @@ export function createBot(
   });
 
   bot.command("version", async (ctx) => {
-    const { id, locale } = await ensureTelegramUserContext(ctx, db);
-    await clearTelegramUserPendingAction(db, id);
-    await sendMessage(ctx, formatRuntimeStatus(config, locale));
+    if (!options.runtimeVersion) throw new Error("runtime_version_unavailable");
+    await sendMessage(ctx, formatRuntimeVersion(
+      options.runtimeVersion,
+      runtimeVersionLocale(ctx.from?.language_code)
+    ));
   });
 
   bot.command("check_status", async (ctx) => {

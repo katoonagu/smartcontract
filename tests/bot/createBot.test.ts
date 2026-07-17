@@ -40,6 +40,43 @@ const txHash = "a".repeat(64);
 const adminId = "9001";
 const userId = "42";
 const poisoningCallbackToken = "poisoningToken_1234";
+const runtimeGitSha = "c".repeat(40);
+const runtimeInstanceLabel = `plan5-${runtimeGitSha.slice(0, 8)}`;
+
+type RuntimeVersionFixture = {
+  version: "runtime-version-v1";
+  gitCommitSha: string;
+  runtimeInstanceLabel: string;
+  scoringPolicyVersion: "scoring-signal-matrix-v3";
+  resultSchemaVersion: "score-anchor-v2+forensic-coverage-v2";
+  narrativeVersion: "telegram-forensic-result-v1";
+  migration: {
+    verified: true;
+    version: 32;
+    filename: "032_telegram_runtime_forensics_data_contracts.sql";
+    checksumSha256: string;
+    shortChecksum: string;
+  };
+};
+
+function runtimeVersionFixture(): RuntimeVersionFixture {
+  const checksumSha256 = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
+  return Object.freeze({
+    version: "runtime-version-v1",
+    gitCommitSha: runtimeGitSha,
+    runtimeInstanceLabel,
+    scoringPolicyVersion: "scoring-signal-matrix-v3",
+    resultSchemaVersion: "score-anchor-v2+forensic-coverage-v2",
+    narrativeVersion: "telegram-forensic-result-v1",
+    migration: Object.freeze({
+      verified: true,
+      version: 32,
+      filename: "032_telegram_runtime_forensics_data_contracts.sql",
+      checksumSha256,
+      shortChecksum: checksumSha256.slice(0, 12)
+    })
+  });
+}
 
 function poisoningCandidate(overrides: Partial<AddressPoisoningCandidate> = {}): AddressPoisoningCandidate {
   return {
@@ -434,6 +471,7 @@ function createConfig(): AppConfig {
     adminDashboardHost: "127.0.0.1",
     adminDashboardPort: 8787,
     adminDashboardToken: null,
+    runtimeGitSha: undefined,
     runtimeInstanceLabel: undefined,
     theftReportDepositAddress: TRON_USDT_CONTRACT_ADDRESS,
     theftReportDepositAmountUsdt: "1000",
@@ -939,14 +977,20 @@ function createTronClient(): TronDashboardClient {
   };
 }
 
-function messageUpdate(text: string, fromId: string | number) {
+function messageUpdate(text: string, fromId: string | number, languageCode?: string) {
   return {
     update_id: Math.floor(Math.random() * 1_000_000),
     message: {
       message_id: 1,
       date: 1_778_880_000,
       chat: { id: Number(fromId), type: "private" as const, first_name: "Tester", username: `user_${fromId}` },
-      from: { id: Number(fromId), is_bot: false, first_name: "Tester", username: `user_${fromId}` },
+      from: {
+        id: Number(fromId),
+        is_bot: false,
+        first_name: "Tester",
+        username: `user_${fromId}`,
+        ...(languageCode ? { language_code: languageCode } : {})
+      },
       text,
       entities: text.startsWith("/")
         ? [{ type: "bot_command" as const, offset: 0, length: text.split(/\s+/, 1)[0].length }]
@@ -1911,6 +1955,7 @@ async function createSmokeBot(options: {
   }>;
   tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
+  runtimeVersion?: RuntimeVersionFixture;
   defaultLocale?: BotLocale;
   db?: Db;
   beforeApiResult?: (method: string, payload: Record<string, unknown>) => Promise<void>;
@@ -1920,7 +1965,7 @@ async function createSmokeBot(options: {
     ...createConfig(),
     runtimeInstanceLabel: options.runtimeInstanceLabel
   };
-  const bot = createBot(config, options.db ?? createFakeDb(options.defaultLocale ?? "en"), options.tronClient ?? createTronClient(), {
+  const botOptions = {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     checkSmartContractAddress: options.checkSmartContractAddress,
     queueDeepForensicJob: options.queueDeepForensicJob,
@@ -1950,8 +1995,15 @@ async function createSmokeBot(options: {
     getLatestWhereIsMoneyCheckJobForAddress: options.getLatestWhereIsMoneyCheckJobForAddress,
     getLatestDeepForensicCheckJobForAddressAnyStatus: options.getLatestDeepForensicCheckJobForAddressAnyStatus,
     resolveAddressPoisoningCandidate: options.resolveAddressPoisoningCandidate,
-    runSafetyRecheck: options.runSafetyRecheck
-  });
+    runSafetyRecheck: options.runSafetyRecheck,
+    runtimeVersion: options.runtimeVersion
+  } as BotOptions & { runtimeVersion?: RuntimeVersionFixture };
+  const bot = createBot(
+    config,
+    options.db ?? createFakeDb(options.defaultLocale ?? "en"),
+    options.tronClient ?? createTronClient(),
+    botOptions
+  );
   const calls: ReplyCall[] = [];
   bot.api.config.use(async (_prev, method, payload): Promise<any> => {
     if (method === "getMe") {
@@ -1980,6 +2032,57 @@ async function createSmokeBot(options: {
 }
 
 describe("bot command and inline UX smoke coverage", () => {
+  it("[REQ-32][RUNTIME-VERSION] returns exact pure RU and EN output without DB or provider calls", async () => {
+    const runtimeVersion = runtimeVersionFixture();
+    const db = createFakeDb();
+    const originalQuery = db.query.bind(db);
+    let dbCalls = 0;
+    (db as any).query = async (...args: unknown[]) => {
+      dbCalls += 1;
+      return originalQuery(...args as Parameters<typeof originalQuery>);
+    };
+    let providerCalls = 0;
+    const tronClient = new Proxy(createTronClient(), {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          providerCalls += 1;
+          return value.apply(target, args);
+        };
+      }
+    });
+    const { bot, calls } = await createSmokeBot({ db, tronClient, runtimeVersion });
+
+    await bot.handleUpdate(messageUpdate("/version", userId, "en"));
+    await bot.handleUpdate(messageUpdate("/version", userId, "ru"));
+
+    expect(messageCalls(calls).map((call) => call.payload.text)).toEqual([
+      [
+        "Runtime version",
+        `Git SHA: ${runtimeGitSha}`,
+        `Instance: ${runtimeInstanceLabel}`,
+        "Scoring policy: scoring-signal-matrix-v3",
+        "Result schema: score-anchor-v2+forensic-coverage-v2",
+        "Narrative: telegram-forensic-result-v1",
+        "Database schema: schema 032 verified · 41217f64c33c"
+      ].join("\n"),
+      [
+        "Версия runtime",
+        `Git SHA: ${runtimeGitSha}`,
+        `Инстанс: ${runtimeInstanceLabel}`,
+        "Политика скоринга: scoring-signal-matrix-v3",
+        "Схема результата: score-anchor-v2+forensic-coverage-v2",
+        "Версия объяснения: telegram-forensic-result-v1",
+        "Схема БД: schema 032 verified · 41217f64c33c"
+      ].join("\n")
+    ]);
+    expect(dbCalls).toBe(0);
+    expect(providerCalls).toBe(0);
+    expect(Object.isFrozen(runtimeVersion)).toBe(true);
+    expect(Object.isFrozen(runtimeVersion.migration)).toBe(true);
+  });
+
   it("[REQ-18][AC-20][TASK7-RECHECK-AUDIENCE] renders manual safety recheck as an external-address check", async () => {
     const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_ACTIVE_NO_DEBIT");
     const approvalInput = fixture.source.approvalInput;

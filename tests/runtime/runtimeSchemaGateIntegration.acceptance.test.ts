@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 type RuntimeOrchestration = {
@@ -59,5 +60,26 @@ describe("Plan 3 runtime schema gate integration acceptance", () => {
       gate.reject(new Error("schema gate test cleanup"));
       if (startup) await Promise.allSettled([startup]);
     }
+  });
+
+  it("[REQ-38][RUNTIME-VERSION-STARTUP] builds identity after schema 032 and fails closed before providers workers or bot", async () => {
+    const source = await readFile(new URL("../../src/index.ts", import.meta.url), "utf8");
+    const startupTry = source.indexOf("try {");
+    const schemaGate = source.indexOf("await forensicRuntimeOrchestration.runVerifiedStartup()");
+    const runtimeVersion = source.indexOf("buildRuntimeVersion({");
+    const startupCatch = source.indexOf("} catch (error) {", schemaGate);
+    const closeDatabase = source.indexOf("await closeDb(db);", startupCatch);
+    const provider = source.indexOf("const tronscanScheduler = createTronscanScheduler(");
+    const bot = source.indexOf("const bot = createBot(");
+    const workers = source.lastIndexOf("startBackgroundWorkSchedule();");
+
+    expect(startupTry).toBeGreaterThanOrEqual(0);
+    expect(schemaGate).toBeGreaterThan(startupTry);
+    expect(runtimeVersion).toBeGreaterThan(schemaGate);
+    expect(startupCatch).toBeGreaterThan(runtimeVersion);
+    expect(closeDatabase).toBeGreaterThan(startupCatch);
+    expect(provider).toBeGreaterThan(closeDatabase);
+    expect(bot).toBeGreaterThan(provider);
+    expect(workers).toBeGreaterThan(bot);
   });
 });

@@ -88,6 +88,7 @@ export type AppConfig = {
   forensicIncomingStartDelayMs: number;
   forensicDeepStartDelayMs: number;
   serviceAdminTelegramIds: Set<string>;
+  runtimeGitSha: string | undefined;
   runtimeInstanceLabel: string | undefined;
   theftReportDepositAddress: string | null;
   theftReportDepositAmountUsdt: "1000";
@@ -551,6 +552,7 @@ export function loadConfig(): AppConfig {
     adminDashboardPort: parseIntegerInRange("ADMIN_DASHBOARD_PORT", process.env.ADMIN_DASHBOARD_PORT ?? "8787", 1, 65535),
     adminDashboardToken: process.env.ADMIN_DASHBOARD_TOKEN?.trim() || null,
     serviceAdminTelegramIds: new Set(adminIds),
+    runtimeGitSha: process.env.RUNTIME_GIT_SHA?.trim() || undefined,
     runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined,
     theftReportDepositAddress: parseOptionalTronAddress("THEFT_REPORT_DEPOSIT_ADDRESS", process.env.THEFT_REPORT_DEPOSIT_ADDRESS),
     theftReportDepositAmountUsdt: "1000",

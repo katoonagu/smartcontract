@@ -591,9 +591,20 @@ describe("loadConfig", () => {
   });
 
   it("loads an optional runtime instance label", () => {
-    setRequiredEnv({ RUNTIME_INSTANCE_LABEL: "Hermes test" });
+    setRequiredEnv({
+      RUNTIME_GIT_SHA: `  ${"a".repeat(40)}  `,
+      RUNTIME_INSTANCE_LABEL: "Hermes test"
+    });
 
+    expect(loadConfig().runtimeGitSha).toBe("a".repeat(40));
     expect(loadConfig().runtimeInstanceLabel).toBe("Hermes test");
+  });
+
+  it("keeps runtime identity optional until verified candidate startup", () => {
+    setRequiredEnv({ RUNTIME_GIT_SHA: "  ", RUNTIME_INSTANCE_LABEL: "  " });
+
+    expect(loadConfig().runtimeGitSha).toBeUndefined();
+    expect(loadConfig().runtimeInstanceLabel).toBeUndefined();
   });
 
   it("rejects page limits outside the TronScan-safe range", () => {

@@ -47,6 +47,7 @@ import {
   createForensicRuntimeOrchestration,
   type ForensicRuntimeOrchestration
 } from "./runtime/forensicRuntimeOrchestration";
+import { buildRuntimeVersion, type RuntimeVersionV1 } from "./runtime/runtimeVersion";
 import { runStartupSchemaGate } from "./runtime/startupSchemaGate";
 import {
   ADDRESS_POISONING_INTERVAL_MS,
@@ -60,7 +61,8 @@ import { closeDb, createDb } from "./storage/db";
 import {
   REQUIRED_SCHEMA_FILENAME,
   checksumMigrationBytes,
-  verifyRequiredSchema032
+  verifyRequiredSchema032,
+  type Schema032Verification
 } from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
@@ -166,7 +168,9 @@ const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMa
 );
 const db = createDb(config.databaseUrl);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
+let runtimeVersion: RuntimeVersionV1;
 try {
+  let schema032Verification: Schema032Verification | null = null;
   const schema032MigrationBytes = await readFile(
     new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
   );
@@ -175,6 +179,7 @@ try {
     verifyStartupSchema: () => runStartupSchemaGate({
       verify: () => verifyRequiredSchema032(db, schema032Checksum),
       onVerified: (verification) => {
+        schema032Verification = verification;
         logger.info("schema_migration_verified", {
           version: verification.version,
           shortChecksum: verification.shortChecksum
@@ -188,6 +193,12 @@ try {
     logger
   });
   await forensicRuntimeOrchestration.runVerifiedStartup();
+  if (!schema032Verification) throw new Error("runtime_version_schema_verification_missing");
+  runtimeVersion = buildRuntimeVersion({
+    gitCommitSha: config.runtimeGitSha,
+    runtimeInstanceLabel: config.runtimeInstanceLabel,
+    migration: schema032Verification
+  });
 } catch (error) {
   await closeDb(db);
   throw error;
@@ -555,6 +566,7 @@ function shouldWakeTargetedWaiterAfterEnsure(state: TronAddressUsdtIndexState): 
 }
 
 const bot = createBot(config, db, tronClient, {
+  runtimeVersion,
   checkSmartContractAddress: async ({ address, telegramUserId }) => {
     const metadata = await getCachedOrLiveAddressMetadata(address).catch((error) => {
       logger.warn("smart_contract_metadata_lookup_failed", {
