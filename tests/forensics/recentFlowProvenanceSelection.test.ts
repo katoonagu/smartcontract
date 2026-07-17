@@ -248,7 +248,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.dataScopeNote).toContain("five-transfer principal slice");
   });
 
-  it("[REQ-30][AC-10] selects the synthetic TKg latest-five principal slice including the 305 pair", async () => {
+  it("[AC-10][REQ-30] selects the synthetic TKg latest-five principal slice including the 305 pair", async () => {
     const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: SYNTHETIC_TKG_SUBJECT,
       currentBalanceRaw: "23791",
@@ -269,7 +269,7 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     ]);
   });
 
-  it("[REQ-02][REQ-30][AC-11] excludes exact GasFree fee before taking five principal rows", async () => {
+  it("[AC-11][REQ-02][REQ-30] excludes exact GasFree fee before taking five principal rows", async () => {
     const resolveEconomicContext = vi.fn(resolveSyntheticEconomicContext);
     const result = await selectRecentFlowProvenanceTransfers({
       subjectAddress: SYNTHETIC_TKG_SUBJECT,

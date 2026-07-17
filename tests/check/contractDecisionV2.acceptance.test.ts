@@ -963,6 +963,124 @@ describe("ContractDecisionV2 acceptance contract", () => {
     }
   });
 
+  it("[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof", async () => {
+    const verifiedServiceMetadata = (address: string) => metadata(address, {
+      name: "Verified Router",
+      tag: "Router service",
+      verified: true
+    });
+    const verifiedServiceProfile = (address: string, overrides: Partial<ContractIntelligenceProfile> = {}) =>
+      contractProfile(address, {
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        serviceTag: "Router service",
+        activityLevel: "normal",
+        ...overrides
+      });
+    const verify20Input = exactAssessmentInput(VERIFY20, "verify20_fingerprint");
+    const exactDebitInput = exactAssessmentInput(SUBJECT, "exact_debit");
+    const cases = [
+      {
+        label: "provider risk",
+        input: {
+          ...unknownInput(SUBJECT),
+          contractProfile: contractProfile(SUBJECT, { providerRisk: true }),
+          evidence: [evidence("risk:provider", "provider_risk", SUBJECT)]
+        }
+      },
+      {
+        label: "Verify20",
+        input: {
+          ...verify20Input,
+          metadata: verifiedServiceMetadata(VERIFY20),
+          contractProfile: verifiedServiceProfile(VERIFY20, {
+            methodMap: {
+              "5082dd12": "Verify20(address,address,address,uint256)",
+              "fc61dd23": "Verify10(address,uint256)",
+              "ea4418d9": "withdrawAllTrxTo(address)",
+              "f2fde38b": "transferOwnership(address)"
+            }
+          })
+        }
+      },
+      {
+        label: "exact debit",
+        input: {
+          ...exactDebitInput,
+          metadata: verifiedServiceMetadata(SUBJECT),
+          contractProfile: verifiedServiceProfile(SUBJECT)
+        }
+      }
+    ];
+    const legacyContexts = [
+      { label: "absent", value: undefined },
+      {
+        label: "legitimate",
+        value: {
+          verdict: "legitimate_service",
+          confidence: 0.99,
+          contractRiskScore: 0,
+          decisionRecommendation: "ACCEPTABLE"
+        }
+      },
+      {
+        label: "risky",
+        value: {
+          verdict: "drainer_like",
+          confidence: 0.99,
+          contractRiskScore: 99,
+          decisionRecommendation: "DECLINE"
+        }
+      },
+      {
+        label: "malformed",
+        value: {
+          verdict: 7,
+          confidence: "high",
+          contractRiskScore: "not-a-score",
+          decisionRecommendation: false
+        }
+      }
+    ];
+    const providers: ReturnType<typeof vi.fn>[] = [];
+
+    for (const item of cases) {
+      const baselineProvider = vi.fn(async () => []);
+      providers.push(baselineProvider);
+      const baseline = await runSmartContractOrchestration(item.input, baselineProvider);
+
+      for (const legacyContext of legacyContexts) {
+        const provider = vi.fn(async () => legacyContext.value === undefined ? [] : [legacyContext.value]);
+        providers.push(provider);
+        const result = await runSmartContractOrchestration(item.input, provider);
+        const label = `${item.label}/${legacyContext.label}`;
+
+        expect.soft({ riskScore: (result as any).riskScore, decision: (result as any).decision }, label).toEqual({
+          riskScore: (baseline as any).riskScore,
+          decision: (baseline as any).decision
+        });
+        expect.soft(result.contractDecisionV2?.deterministic, label)
+          .toEqual(baseline.contractDecisionV2?.deterministic);
+        expect.soft(result.llmVerdict, label).toBeNull();
+      }
+
+      expect(baseline.contractDecisionV2?.deterministic, item.label).toMatchObject({
+        score: item.label === "exact debit" ? 95 : 90,
+        decision: "DECLINE",
+        authority: item.label === "provider risk"
+          ? "provider_risk"
+          : item.label === "Verify20"
+            ? "verify20_fingerprint"
+            : "exact_debit"
+      });
+      expect(baseline.contractDecisionV2?.deterministic?.evidenceIds.length, item.label).toBeGreaterThan(0);
+    }
+
+    expect(providers.reduce((sum, provider) => sum + provider.mock.calls.length, 0)).toBe(0);
+  });
+
   it("[REQ-24][CONTRACT-UNKNOWN] resolves unknown metadata without exact bad or service proof at REVIEW 35", async () => {
     const result = await resolve(unknownInput());
 
