@@ -15,6 +15,7 @@ function renderAlert(id: string): string {
 
 function formatActualIncomingCallSite(): string {
   const source = remediationTelegramUxCase("INCOMING_APPROVAL_ROUTE_ROLES").source;
+  const watchedReceiver = remediationTelegramUxCase("GOLDEN_GASFREE_ACCOUNT").source.checkedWalletAddress;
   const anchor = source.scoreAnchorV2;
   if (!anchor) throw new Error("incoming fixture requires a score anchor");
   const report: IncomingDepositRiskReport = {
@@ -79,8 +80,8 @@ function formatActualIncomingCallSite(): string {
   return formatIncomingDepositRiskAlert({
     jobId: "sanitized-incoming-job",
     amount: "13302",
-    watchedWallet: source.checkedWalletAddress,
-    sender: source.routes[0]?.fromAddress ?? source.checkedWalletAddress,
+    watchedWallet: watchedReceiver,
+    sender: source.checkedWalletAddress,
     txHash: "b".repeat(64),
     timestamp: new Date("2026-07-16T12:00:00.000Z"),
     locale: "ru",
