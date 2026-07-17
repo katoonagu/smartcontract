@@ -19,6 +19,8 @@ import {
 import type { TronApprovalClient } from "../tron/tronClient";
 import type { ApprovalGuardEvent } from "./approvalRisk";
 import { runSingleApprovalPollingCycle } from "./approvalWorker";
+import type { ApprovalDrainProvenanceProfile, ApprovalSafetyAssessmentV2 } from "../types";
+import type { ApprovalCampaignPresentationContextV1 } from "../telegram/forensicPresentation";
 
 export type SafetyRecheckTarget =
   | { kind: "wallet" }
@@ -33,6 +35,13 @@ export type SafetyRecheckSummary = {
   approvalEventsClaimed: number;
   riskRowsUpdated: number;
   drainObservationsClaimed: number;
+  approvalPresentations: Array<{
+    assessment: ApprovalSafetyAssessmentV2;
+    exactDebitProfile: ApprovalDrainProvenanceProfile | null;
+    metadataContext: { subjectAddress: string; evidenceIds: string[] } | null;
+    campaignContext: ApprovalCampaignPresentationContextV1 | null;
+    evaluatedAt: string;
+  }>;
 };
 
 const txHashPattern = /^[0-9a-fA-F]{64}$/;
@@ -63,7 +72,8 @@ export async function runSafetyRecheck(input: {
     approvalsProcessed: 0,
     approvalEventsClaimed: 0,
     riskRowsUpdated: 0,
-    drainObservationsClaimed: 0
+    drainObservationsClaimed: 0,
+    approvalPresentations: []
   };
   if (!wallet) return summary;
 
@@ -91,6 +101,13 @@ export async function runSafetyRecheck(input: {
       return claimed;
     },
     getUsdtAllowance: (request) => input.tronClient.getUsdtAllowance(request),
+    getApprovalPresentationBalance: input.tronClient.getUsdtBalance
+      ? ({ ownerAddress, signal }) => input.tronClient.getUsdtBalance!(ownerAddress, {
+          signal,
+          timeoutMs: 2_000,
+          retryAttempts: 0
+        })
+      : undefined,
     saveWalletApprovalAllowanceStateV2: (allowance) => saveWalletApprovalAllowanceStateV2(input.db, allowance),
     allowanceRefreshReason: "explicit_safety_recheck",
     claimObservedApprovalDrainEvent: async (observation) => {
@@ -120,6 +137,18 @@ export async function runSafetyRecheck(input: {
     targetApprovalTxHash: target.kind === "approval_tx" ? target.txHash : undefined,
     approvalFilter: (approval) => target.kind !== "spender" || approval.spenderAddress === target.address,
     approvalEventFilter: (event: ApprovalGuardEvent) => target.kind !== "approval_tx" || event.txHash === target.txHash,
+    onApprovalPresentation: (presentation) => {
+      summary.approvalPresentations.push({
+        ...presentation,
+        metadataContext: presentation.metadataContext
+          ? { ...presentation.metadataContext, evidenceIds: [...presentation.metadataContext.evidenceIds] }
+          : null,
+        campaignContext: presentation.campaignContext
+          ? { ...presentation.campaignContext, evidenceIds: [...presentation.campaignContext.evidenceIds] }
+          : null,
+        evaluatedAt: presentation.evaluatedAt.toISOString()
+      });
+    },
     logger: input.logger ?? defaultLogger
   });
 

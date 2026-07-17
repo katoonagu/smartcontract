@@ -5,13 +5,14 @@ import {
   formatAdminSuspiciousAlert,
   formatDigestAlert,
   formatIncomingDepositRiskAlert,
+  formatApprovalSafetyPresentationAlert,
   formatUserApprovalAlert,
   formatUserApprovalContextResultAlert,
   formatUserApprovalPendingAlert,
   formatUserIncomingAlert
 } from "../../src/alerts/formatters";
 import { escapeHtml, formatRiskLine } from "../../src/alerts/telegramHtml";
-import type { IncomingDepositRiskReport } from "../../src/types";
+import type { ApprovalAllowanceStateV2, ApprovalSafetyAssessmentV2, IncomingDepositRiskReport } from "../../src/types";
 import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
 
 const report = {
@@ -23,6 +24,47 @@ const report = {
     { code: "risky_1_hop", message: "1-hop connection to risky address", scoreImpact: 35 }
   ]
 };
+
+const approvalOwner = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+const approvalSpender = "TFagrFLKwcuRvXobE9TmQxdAM7BEjvnXzK";
+const approvalTxHash = "a".repeat(64);
+const unlimitedApprovalRaw = (2n ** 256n - 1n).toString();
+
+function approvalAllowance(): ApprovalAllowanceStateV2 {
+  return {
+    version: "approval-allowance-v2",
+    ownerAddress: approvalOwner,
+    spenderAddress: approvalSpender,
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    confirmedAllowanceRaw: unlimitedApprovalRaw,
+    isUnlimited: true,
+    state: "confirmed_active",
+    confirmedAt: "2026-07-16T12:00:00.000Z",
+    freshUntil: "2026-07-16T12:15:00.000Z",
+    lastAttemptAt: "2026-07-16T12:00:00.000Z",
+    failureCode: null,
+    source: "official_usdt_allowance",
+    observedApprovalTxHash: approvalTxHash
+  };
+}
+
+function unknownContractApprovalAssessment(): ApprovalSafetyAssessmentV2 {
+  return {
+    version: "approval-safety-v2",
+    subjectAddress: approvalOwner,
+    level: "MEDIUM",
+    score: 35,
+    action: "REVOKE_IF_UNUSED",
+    amlScoreImpact: 0,
+    allowance: approvalAllowance(),
+    balanceAtRiskRaw: null,
+    exactVerify20: false,
+    exactDebit: false,
+    debitFoundFromSubject: false,
+    campaignEvidenceIds: [],
+    serviceSession: null
+  };
+}
 
 const incomingDepositBaseInput = {
   jobId: "job-123",
@@ -1101,7 +1143,7 @@ describe("alert formatters", () => {
     expect(message.text).toContain("Approval связан с bridge/swap-операцией");
     expect(message.text).toContain("Списания USDT как drain не доказаны");
     expect(message.text).toContain("<code>35/100</code>");
-    expect(message.text).toContain("<b>Дедлайн контекста</b>: <code>05.05.2026 16:52 MSK</code>");
+    expect(message.text).not.toMatch(/Дедлайн контекста|Истекает/);
     expect(message.text).toContain("<b>Связанная tx</b>: <code>route-tx</code>");
     expect(message.text).not.toContain("Review/revoke");
   });
@@ -1222,6 +1264,277 @@ describe("alert formatters", () => {
     expect(text).toContain("<b>User</b>: @client_user - tg_id: <code>123456789</code>");
     expect(text).toContain("Spender type");
     expect(text).toContain("<b>Approval tx</b>: <code>approval-tx</code>");
+  });
+
+  it("[REQ-18][TASK7-UNKNOWN-CONTEXT] presents unknown 35 only with subject-bound metadata evidence", () => {
+    const assessment = unknownContractApprovalAssessment();
+    const format = (metadataContext: { subjectAddress: string; evidenceIds: string[] } | null) => formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: approvalOwner,
+      evaluatedAt: new Date("2026-07-16T12:05:00.000Z"),
+      approvalPresentationInput: {
+        assessment,
+        audienceContext: "external_address_check",
+        exactDebitProfile: null,
+        metadataContext
+      }
+    }).text;
+
+    const valid = format({ subjectAddress: approvalSpender, evidenceIds: ["metadata:verify-account"] });
+    expect(valid).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(valid).toContain("Если вы проверяете чужой кошелёк");
+
+    for (const invalid of [
+      format(null),
+      format({ subjectAddress: approvalOwner, evidenceIds: ["metadata:verify-account"] }),
+      format({ subjectAddress: approvalSpender, evidenceIds: [] })
+    ]) {
+      expect(invalid).toContain("Текущий риск для кошелька не рассчитан");
+      expect(invalid).not.toContain("35/100");
+      expect(invalid).toContain("Текущее разрешение подтверждено");
+      expect(invalid).not.toContain("завершился ошибкой");
+    }
+  });
+
+  it("[REQ-20][AC-24][TASK7-EVALUATED-AT] treats an expired direct allowance as stale", () => {
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: approvalOwner,
+      evaluatedAt: new Date("2026-07-16T12:15:00.001Z"),
+      approvalPresentationInput: {
+        assessment: unknownContractApprovalAssessment(),
+        audienceContext: "external_address_check",
+        exactDebitProfile: null,
+        metadataContext: { subjectAddress: approvalSpender, evidenceIds: ["metadata:verify-account"] }
+      }
+    }).text;
+
+    expect(message).toContain("Последнее подтверждение разрешения устарело");
+    expect(message).toContain("Текущий риск для кошелька не рассчитан");
+    expect(message).not.toContain("35/100");
+    expect(message).not.toContain("завершился ошибкой");
+    expect(message).not.toMatch(/сейчас: активное|сейчас: 0 USDT/);
+  });
+
+  it("[REQ-18][BRIDGERS-ACTIVE-EXTERNAL] uses an external-address action for an explained active Bridgers session", () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_BRIDGERS_ACTIVE").source;
+    if (!fixture.approvalInput) throw new Error("Bridgers fixture requires approval input");
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: {
+        ...fixture.approvalInput,
+        audienceContext: "external_address_check"
+      }
+    }).text;
+
+    expect(message).toContain("Swap объяснён, риск низкий. Владелец может отозвать неиспользуемое разрешение как цифровую гигиену.");
+    expect(message).not.toContain("Если это ваш кошелёк");
+  });
+
+  it("[REQ-18][BRIDGERS-ZERO-EXTERNAL] describes confirmed zero without an owner action", () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_BRIDGERS_ZERO").source;
+    if (!fixture.approvalInput) throw new Error("Bridgers fixture requires approval input");
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: {
+        ...fixture.approvalInput,
+        audienceContext: "external_address_check"
+      }
+    }).text;
+
+    expect(message).toContain("Разрешение больше не активно. Само это разрешение не требует действий.");
+    expect(message).not.toMatch(/Если это ваш кошелёк|отзовите/);
+  });
+
+  it.each([
+    ["GOLDEN_VERIFY20_ACTIVE_NO_DEBIT", [
+      "The contract has the exact Verify20 mass-transfer pattern.",
+      "The contract can access the current balance: 4,084.665 USDT.",
+      "Campaign links and the BTTOLD sequence are context, not proof of theft.",
+      "No transfer through this contract was found.",
+      "do not send funds until the owner explains and removes dangerous USDT access"
+    ]],
+    ["GOLDEN_VERIFY20_EXACT_DEBIT", [
+      "An exact Verify20 chain and a 13,302 USDT transfer through this contract were confirmed.",
+      "The contract can access the current balance: 4,084.665 USDT.",
+      "This confirms movement of funds but does not by itself prove theft.",
+      "remove USDT access before adding funds"
+    ]],
+    ["GOLDEN_BRIDGERS_ACTIVE", [
+      "91.103009 USDT in a confirmed swap",
+      "66 seconds after granting access",
+      "The swap is explained and risk is low.",
+      "unused access can be removed as optional security hygiene"
+    ]],
+    ["GOLDEN_BRIDGERS_ZERO", [
+      "91.103009 USDT in an earlier confirmed swap",
+      "Current USDT access: 0 USDT",
+      "USDT access is no longer active. No action is required."
+    ]],
+    ["GOLDEN_BRIDGERS_ALLOWANCE_UNKNOWN", [
+      "could not be confirmed and must not be described as active or revoked",
+      "The current transfer through this contract could not be confirmed.",
+      "ask the owner to confirm the current USDT access"
+    ]]
+  ])("[REQ-18][REQ-20][TASK7-ENGLISH-APPROVAL] renders approved semantics for %s", (id, expected) => {
+    const fixture = remediationTelegramUxCase(id).source;
+    if (!fixture.approvalInput) throw new Error(`${id} requires approval input`);
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "en",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: fixture.approvalInput
+    }).text;
+
+    for (const text of expected) expect(message).toContain(text);
+    expect(message).not.toMatch(/transaction expiration|expires/i);
+  });
+
+  it("[REQ-18][AC-24][TASK7-ENGLISH-STALE] describes stale USDT access as unknown", () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_ACTIVE_NO_DEBIT").source;
+    if (!fixture.approvalInput) throw new Error("Verify20 fixture requires approval input");
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "en",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date("2026-07-16T12:15:00.001Z"),
+      approvalPresentationInput: fixture.approvalInput
+    }).text;
+
+    expect(message).toContain("could not be confirmed and must not be described as active or revoked");
+    expect(message).toContain("The last direct confirmation is stale");
+    expect(message).not.toMatch(/active and unlimited|USDT access is no longer active/);
+  });
+
+  it("[REQ-18][TASK7-ENGLISH-CONFIRMED-INSUFFICIENT] does not call confirmed access a provider failure", () => {
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "en",
+      watchedWallet: approvalOwner,
+      evaluatedAt: new Date("2026-07-16T12:05:00.000Z"),
+      approvalPresentationInput: {
+        assessment: unknownContractApprovalAssessment(),
+        audienceContext: "external_address_check",
+        exactDebitProfile: null,
+        metadataContext: null
+      }
+    }).text;
+
+    expect(message).toContain("Current USDT access is confirmed, but there is not enough validated data");
+    expect(message).not.toContain("direct request to the official USDT contract failed");
+  });
+
+  it.each([
+    ["ru", "confirmed_zero", /равно нулю\. Отзывать его не нужно/, /активное разрешение|отзовите/],
+    ["ru", "failed", /Текущее разрешение.*подтвердить не удалось|проверьте текущее разрешение/, /активное разрешение|отзовите/],
+    ["en", "confirmed_zero", /current USDT access is zero\. Nothing needs to be removed/, /active permission|remove USDT access/],
+    ["en", "failed", /current USDT access|confirm the current USDT access/, /active permission|remove USDT access/]
+  ] as const)("[REQ-18][AC-24][TASK7-ALLOWANCE-STATE-ACTION] uses %s %s state before exact-debit actions", (locale, allowanceState, expected, forbidden) => {
+    const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_EXACT_DEBIT").source;
+    if (!fixture.approvalInput) throw new Error("Verify20 debit fixture requires approval input");
+    const original = fixture.approvalInput.assessment.allowance;
+    const allowance = allowanceState === "confirmed_zero"
+      ? {
+          ...original,
+          state: "confirmed_zero" as const,
+          confirmedAllowanceRaw: "0",
+          isUnlimited: false
+        }
+      : {
+          ...original,
+          state: "failed" as const,
+          isUnlimited: null,
+          failureCode: "provider_unavailable"
+        };
+    const message = formatApprovalSafetyPresentationAlert({
+      locale,
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: {
+        ...fixture.approvalInput,
+        assessment: { ...fixture.approvalInput.assessment, allowance }
+      }
+    }).text;
+
+    expect(message).toMatch(expected);
+    expect(message).not.toMatch(forbidden);
+    expect(message).toMatch(locale === "ru" ? /списание.*истории|Фактическое списание/ : /transfer.*history|transfer through this contract/i);
+  });
+
+  it("[AC-21][TASK7-CAMPAIGN-BINDING] does not claim a BTTOLD sequence from campaign-only evidence", () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_ACTIVE_NO_DEBIT").source;
+    if (!fixture.approvalInput) throw new Error("Verify20 fixture requires approval input");
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: {
+        ...fixture.approvalInput,
+        assessment: {
+          ...fixture.approvalInput.assessment,
+          campaignEvidenceIds: ["campaign:calls:73"]
+        },
+        campaignContext: {
+          ownerAddress: fixture.approvalInput.assessment.allowance.ownerAddress,
+          spenderAddress: fixture.approvalInput.assessment.allowance.spenderAddress,
+          tokenContract: fixture.approvalInput.assessment.allowance.tokenContract,
+          approvalTxHash: fixture.approvalInput.assessment.allowance.observedApprovalTxHash!,
+          evidenceIds: ["campaign:calls:73"],
+          verify20CallCount: 73,
+          sourceWalletCount: null,
+          recipientCount: null,
+          bttoldEvidenceId: null
+        }
+      }
+    }).text;
+
+    expect(message).toContain("Связи кампании — контекст, а не доказательство кражи.");
+    expect(message).toContain("Контекст кампании: 73 Verify20-вызовов.");
+    expect(message).not.toContain("BTTOLD");
+  });
+
+  it("[AC-21][TASK7-CAMPAIGN-SUBJECT-BINDING] rejects foreign typed campaign context", () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_ACTIVE_NO_DEBIT").source;
+    if (!fixture.approvalInput?.campaignContext) throw new Error("Verify20 fixture requires campaign context");
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: {
+        ...fixture.approvalInput,
+        campaignContext: {
+          ...fixture.approvalInput.campaignContext,
+          ownerAddress: approvalSpender
+        }
+      }
+    }).text;
+
+    expect(message).toContain("Текущий риск для кошелька не рассчитан");
+    expect(message).not.toMatch(/BTTOLD|Контекст кампании/);
+  });
+
+  it("[AC-21][TASK7-CAMPAIGN-EXACT-DEBIT] keeps typed Verify20 call counts visible with a historical debit", () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_EXACT_DEBIT").source;
+    if (!fixture.approvalInput?.campaignContext) throw new Error("Verify20 debit fixture requires campaign context");
+    const message = formatApprovalSafetyPresentationAlert({
+      locale: "ru",
+      watchedWallet: fixture.checkedWalletAddress,
+      evaluatedAt: new Date(fixture.evaluatedAt),
+      approvalPresentationInput: {
+        ...fixture.approvalInput,
+        campaignContext: {
+          ...fixture.approvalInput.campaignContext,
+          verify20CallCount: 309,
+          bttoldEvidenceId: null
+        }
+      }
+    }).text;
+
+    expect(message).toContain("Контекст кампании: 309 Verify20-вызовов.");
+    expect(message).toContain("Фактическое списание через этот контракт: подтверждено");
+    expect(message).not.toContain("BTTOLD");
   });
 
   it("formats empty reasons with a safe fallback", () => {

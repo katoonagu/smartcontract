@@ -15,6 +15,7 @@ import type { Db } from "../../src/storage/db";
 import type { AddressPoisoningCandidate, AssetContinuationProfile, BotLocale, BoundaryExposureProfile, ContractDecisionEvidenceV1, ContractDecisionV2, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
+import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
 import {
   TGYT_DIRECT_BLACKLIST_CASE,
   tgytBridgePath,
@@ -1913,6 +1914,7 @@ async function createSmokeBot(options: {
   defaultLocale?: BotLocale;
   db?: Db;
   beforeApiResult?: (method: string, payload: Record<string, unknown>) => Promise<void>;
+  runSafetyRecheck?: BotOptions["runSafetyRecheck"];
 } = {}) {
   const config = {
     ...createConfig(),
@@ -1947,7 +1949,8 @@ async function createSmokeBot(options: {
     getForensicCheckJob: options.getForensicCheckJob,
     getLatestWhereIsMoneyCheckJobForAddress: options.getLatestWhereIsMoneyCheckJobForAddress,
     getLatestDeepForensicCheckJobForAddressAnyStatus: options.getLatestDeepForensicCheckJobForAddressAnyStatus,
-    resolveAddressPoisoningCandidate: options.resolveAddressPoisoningCandidate
+    resolveAddressPoisoningCandidate: options.resolveAddressPoisoningCandidate,
+    runSafetyRecheck: options.runSafetyRecheck
   });
   const calls: ReplyCall[] = [];
   bot.api.config.use(async (_prev, method, payload): Promise<any> => {
@@ -1977,6 +1980,41 @@ async function createSmokeBot(options: {
 }
 
 describe("bot command and inline UX smoke coverage", () => {
+  it("[REQ-18][AC-20][TASK7-RECHECK-AUDIENCE] renders manual safety recheck as an external-address check", async () => {
+    const fixture = remediationTelegramUxCase("GOLDEN_VERIFY20_ACTIVE_NO_DEBIT");
+    const approvalInput = fixture.source.approvalInput;
+    if (!approvalInput) throw new Error("missing approval fixture");
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      runSafetyRecheck: async (input) => ({
+        walletAddress: input.walletAddress,
+        walletFound: true,
+        target: input.target ?? { kind: "wallet" },
+        approvalsProcessed: 1,
+        approvalEventsClaimed: 0,
+        riskRowsUpdated: 1,
+        drainObservationsClaimed: 0,
+        approvalPresentations: [{
+          assessment: approvalInput.assessment,
+          exactDebitProfile: approvalInput.exactDebitProfile,
+          metadataContext: null,
+          campaignContext: approvalInput.campaignContext ?? null,
+          evaluatedAt: fixture.source.evaluatedAt
+        }]
+      })
+    });
+
+    await bot.handleUpdate(messageUpdate(`/recheck_safety ${fixture.source.checkedWalletAddress}`, adminId));
+
+    const messages = messageCalls(calls).map((call) => String(call.payload.text ?? ""));
+    expect(messages[0]).toContain("Проверяемый кошелёк — кошелёк, который выдал доступ к USDT");
+    expect(messages[0]).toContain("Контракт, получивший доступ к USDT");
+    expect(messages[0]).toContain("BTTOLD-последовательность");
+    expect(messages[0]).toContain("Если вы проверяете чужой кошелёк");
+    expect(messages[0]).not.toContain("На отслеживаемом кошельке");
+    expect(messages.at(-1)).toContain("Safety recheck complete.");
+  });
+
   it("strictly parses address-poisoning decisions", () => {
     expect(parseCallbackData(`poison:confirm:${poisoningCallbackToken}`)).toEqual({
       kind: "address_poisoning_confirm",

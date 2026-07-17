@@ -408,16 +408,82 @@ function approvalAllowanceLine(approval: ApprovalPresentationV1): string {
   return "Разрешение на управление USDT сейчас: подтвердить не удалось; нельзя считать его активным или отозванным.";
 }
 
+function approvalCampaignCountText(approval: ApprovalPresentationV1, locale: "ru" | "en"): string | null {
+  const campaign = approval.campaignContext;
+  if (!campaign) return null;
+  const values = locale === "ru"
+    ? [
+        campaign.verify20CallCount === null ? null : `${campaign.verify20CallCount} Verify20-вызовов`,
+        campaign.sourceWalletCount === null ? null : `${campaign.sourceWalletCount} кошельков-источников`,
+        campaign.recipientCount === null ? null : `${campaign.recipientCount} получателей`
+      ]
+    : [
+        campaign.verify20CallCount === null ? null : `${campaign.verify20CallCount} Verify20 calls`,
+        campaign.sourceWalletCount === null ? null : `${campaign.sourceWalletCount} source wallets`,
+        campaign.recipientCount === null ? null : `${campaign.recipientCount} recipients`
+      ];
+  const counts = values.filter((value): value is string => value !== null);
+  if (counts.length === 0) return null;
+  return `${locale === "ru" ? "Контекст кампании" : "Campaign context"}: ${counts.join(", ")}.`;
+}
+
+function russianApprovalAction(approval: ApprovalPresentationV1, debitConfirmed: boolean): string {
+  if (approval.allowanceState === "confirmed_zero") {
+    return debitConfirmed
+      ? "Списание найдено в истории, но разрешение на управление USDT сейчас равно нулю. Отзывать его не нужно."
+      : "Разрешение на управление USDT больше не активно. Действий не требуется.";
+  }
+  if (approval.allowanceState === "failed" || approval.allowanceState === "stale") {
+    const prefix = debitConfirmed ? "Списание найдено в истории. " : "";
+    return approval.audienceContext === "external_address_check"
+      ? `${prefix}Если вы проверяете чужой кошелёк — не переводите на него деньги, пока владелец не подтвердит текущее разрешение на управление USDT.`
+      : `${prefix}Если это ваш кошелёк — проверьте текущее разрешение напрямую в официальном контракте USDT и до этого не пополняйте кошелёк.`;
+  }
+  if (debitConfirmed) {
+    return approval.audienceContext === "external_address_check"
+      ? "Если вы проверяете чужой кошелёк — не переводите на него деньги, пока владелец не объяснит списание и не отзовёт опасное разрешение."
+      : "На отслеживаемом кошельке найдено активное разрешение. Если это ваш кошелёк — отзовите разрешение на управление USDT и до этого не пополняйте его.";
+  }
+  return approval.audienceContext === "external_address_check"
+    ? "Если вы проверяете чужой кошелёк — не переводите на него деньги, пока владелец не объяснит и не отзовёт опасное разрешение."
+    : "На отслеживаемом кошельке найдено активное разрешение. Если это ваш кошелёк — отзовите разрешение на управление USDT и до этого не пополняйте его.";
+}
+
+function englishApprovalAction(approval: ApprovalPresentationV1, debitConfirmed: boolean): string {
+  if (approval.allowanceState === "confirmed_zero") {
+    return debitConfirmed
+      ? "A transfer was found in the history, but current USDT access is zero. Nothing needs to be removed."
+      : "USDT access is no longer active. No action is required.";
+  }
+  if (approval.allowanceState === "failed" || approval.allowanceState === "stale") {
+    const prefix = debitConfirmed ? "A transfer was found in the history. " : "";
+    return approval.audienceContext === "external_address_check"
+      ? `${prefix}If you are checking someone else's wallet, do not send funds until the owner confirms the current USDT access.`
+      : `${prefix}If this is your wallet, confirm the current USDT access through the official USDT contract before adding funds.`;
+  }
+  if (debitConfirmed) {
+    return approval.audienceContext === "external_address_check"
+      ? "If you are checking someone else's wallet, do not send funds until the owner explains the transfer and removes dangerous USDT access."
+      : "An active permission was found on the monitored wallet. If this is your wallet, remove USDT access before adding funds.";
+  }
+  return approval.audienceContext === "external_address_check"
+    ? "If you are checking someone else's wallet, do not send funds until the owner explains and removes dangerous USDT access."
+    : "An active permission was found on the monitored wallet. If this is your wallet, remove USDT access before adding funds.";
+}
+
 function renderApproval(result: TelegramForensicResultV1): string {
   const approval = result.approval!;
   const assessment = result.assessment?.kind === "wallet_safety" ? result.assessment : null;
   const session = approval.serviceSession;
   const bridgers = session?.authoritativeServiceId === "bridgers";
+  const campaignCounts = approvalCampaignCountText(approval, "ru");
   const debit = approval.debitState === "confirmed" && approval.debitAmountRaw !== null
     ? `Фактическое списание через этот контракт: подтверждено, ${formatRaw(approval.debitAmountRaw, "ru")} USDT.`
     : approval.debitState === "not_found"
       ? "Фактическое списание через этот контракт: не найдено."
-      : "Ранее кошелёк выдавал этому контракту доступ к USDT. Текущее списание через него не подтверждено.";
+      : approval.allowanceState === "failed" || approval.allowanceState === "stale"
+        ? "Ранее кошелёк выдавал этому контракту доступ к USDT. Текущее списание через него не подтверждено."
+        : "Ранее кошелёк выдавал этому контракту доступ к USDT. Сведения о текущем списании через него отсутствуют.";
   const bridgersDebit = session && (approval.allowanceState === "confirmed_active" || approval.allowanceState === "confirmed_zero")
     ? `Списание через этот контракт: ${formatRaw(session.movedAmountRaw, "ru")} USDT в ${approval.allowanceState === "confirmed_zero" ? "ранее подтверждённом обмене" : "подтверждённом swap"}.`
     : debit;
@@ -435,7 +501,11 @@ function renderApproval(result: TelegramForensicResultV1): string {
     "⚪ <b>Текущий риск для кошелька не рассчитан</b>",
     "",
     "🔎 <b>Почему</b>",
-    "Прямой запрос разрешения к официальному контракту USDT завершился ошибкой.",
+    approval.allowanceState === "stale"
+      ? "Последнее подтверждение разрешения устарело. Текущее состояние нужно проверить повторно."
+      : approval.allowanceState === "failed"
+        ? "Прямой запрос разрешения к официальному контракту USDT завершился ошибкой."
+        : "Текущее разрешение подтверждено, но данных для итоговой оценки контракта недостаточно.",
     "",
     "🧭 <b>Что делать</b>",
     approval.audienceContext === "external_address_check"
@@ -448,10 +518,12 @@ function renderApproval(result: TelegramForensicResultV1): string {
     riskHeading(assessment),
     "",
     "🔎 <b>Вывод</b>",
-    "Обмен через Bridgers объяснён. Разрешение на управление USDT равно нулю, действий не требуется."
+    approval.audienceContext === "external_address_check"
+      ? "Обмен через Bridgers объяснён. Разрешение больше не активно. Само это разрешение не требует действий."
+      : "Обмен через Bridgers объяснён. Разрешение на управление USDT равно нулю, действий не требуется."
   ].join("\n");
 
-  if (bridgers && session) return [
+  if (bridgers && session && approval.allowanceState === "confirmed_active") return [
     ...common,
     riskHeading(assessment),
     "",
@@ -459,55 +531,75 @@ function renderApproval(result: TelegramForensicResultV1): string {
     `Кошелёк сам запустил успешный обмен через Bridgers через ${Math.round(session.delayMs / 1_000)} секунд после выдачи доступа; сумма совпала.`,
     "",
     "🧭 <b>Что делать</b>",
-    "Swap объяснён. Если это ваш кошелёк, неиспользуемое разрешение можно отозвать как цифровую гигиену."
+    approval.audienceContext === "external_address_check"
+      ? "Swap объяснён, риск низкий. Владелец может отозвать неиспользуемое разрешение как цифровую гигиену."
+      : "Swap объяснён. Если это ваш кошелёк, неиспользуемое разрешение можно отозвать как цифровую гигиену."
   ].join("\n");
 
-  if (!approval.exactVerify20) {
-    const action = approval.audienceContext === "watched_wallet"
-      ? "Если это ваш кошелёк — отзовите неиспользуемое разрешение на управление USDT."
-      : "Если вы проверяете чужой кошелёк — попросите владельца объяснить и отозвать неиспользуемое разрешение.";
+  if (approval.debitState === "confirmed") {
     return [
       ...common,
       riskHeading(assessment),
       "",
       "🔎 <b>Почему такая оценка</b>",
-      "Контракт относится к известному сервису, но точную связанную операцию подтвердить не удалось.",
-      "Активное разрешение на управление USDT остаётся техническим риском для кошелька.",
+      approval.exactVerify20
+        ? "Найдена точная Verify20-цепочка и списание USDT через этот контракт."
+        : "Найдено подтверждённое списание USDT через контракт, которому кошелёк выдал доступ.",
+      ...(approval.balanceAtRiskRaw && approval.allowanceState === "confirmed_active"
+        ? [`Контракту доступен текущий баланс: ${formatRaw(approval.balanceAtRiskRaw, "ru")} USDT.`]
+        : []),
+      ...(campaignCounts ? [campaignCounts] : []),
+      "Это подтверждает движение средств, но само по себе не доказывает кражу и не показывает, кто управлял операцией.",
       "",
       "🧭 <b>Что делать</b>",
-      action
+      russianApprovalAction(approval, true)
     ].join("\n");
   }
 
-  const verifyReason = approval.debitState === "confirmed"
-    ? "Найдена точная Verify20-цепочка и списание USDT через этот контракт."
-    : "Контракт имеет точный Verify20-шаблон массовых списаний с множества кошельков.";
-  const context = approval.debitState === "confirmed"
-    ? "Это подтверждает движение средств, но само по себе не доказывает кражу и не показывает, кто управлял операцией."
-    : approval.campaignEvidenceIds.length > 0
-      ? "Связи кампании и BTTOLD-последовательность — контекст, а не доказательство кражи."
+  if (!approval.exactVerify20) {
+    const active = approval.allowanceState === "confirmed_active";
+    return [
+      ...common,
+      riskHeading(assessment),
+      "",
+      "🔎 <b>Почему такая оценка</b>",
+      "Точную связанную операцию через этот контракт подтвердить не удалось.",
+      active
+        ? "Активное разрешение на управление USDT остаётся техническим риском для кошелька."
+        : approval.allowanceState === "confirmed_zero"
+          ? "Разрешение на управление USDT больше не активно."
+          : "Текущее состояние разрешения на управление USDT подтвердить не удалось.",
+      "",
+      "🧭 <b>Что делать</b>",
+      active
+        ? approval.audienceContext === "watched_wallet"
+          ? "Если это ваш кошелёк — отзовите неиспользуемое разрешение на управление USDT."
+          : "Если вы проверяете чужой кошелёк — попросите владельца объяснить и отозвать неиспользуемое разрешение."
+        : russianApprovalAction(approval, false)
+    ].join("\n");
+  }
+
+  const verifyReason = "Контракт имеет точный Verify20-шаблон массовых списаний с множества кошельков.";
+  const campaign = approval.campaignContext;
+  const context = campaign
+      ? campaign.bttoldEvidenceId !== null
+        ? "Связи кампании и BTTOLD-последовательность — контекст, а не доказательство кражи."
+        : "Связи кампании — контекст, а не доказательство кражи."
       : "Фактическое списание с проверяемого кошелька не найдено.";
-  const permissionUnknown = approval.allowanceState === "failed" || approval.allowanceState === "stale";
-  const action = permissionUnknown
-    ? approval.audienceContext === "watched_wallet"
-      ? "Списание подтверждено. Если это ваш кошелёк — проверьте текущее разрешение напрямую в официальном контракте USDT и до этого не пополняйте кошелёк."
-      : "Списание подтверждено. Если вы проверяете чужой кошелёк — не переводите на него деньги, пока владелец не подтвердит текущее разрешение."
-    : approval.audienceContext === "watched_wallet"
-      ? "На отслеживаемом кошельке найдено активное разрешение. Если это ваш кошелёк — отзовите разрешение на управление USDT и до этого не пополняйте его."
-      : "Если вы проверяете чужой кошелёк — не переводите на него деньги, пока владелец не объяснит и не отзовёт опасное разрешение.";
   return [
     ...common,
     riskHeading(assessment),
     "",
     "🔎 <b>Почему такая оценка</b>",
     verifyReason,
+    ...(campaignCounts ? [campaignCounts] : []),
     ...(approval.balanceAtRiskRaw && approval.allowanceState === "confirmed_active"
       ? [`Контракту доступен текущий баланс: ${formatRaw(approval.balanceAtRiskRaw, "ru")} USDT.`]
       : []),
     context,
     "",
     "🧭 <b>Что делать</b>",
-    action
+    russianApprovalAction(approval, false)
   ].join("\n");
 }
 
@@ -713,35 +805,127 @@ function renderEnglishApproval(result: TelegramForensicResultV1): string {
   const approval = result.approval;
   const assessment = result.assessment?.kind === "wallet_safety" ? result.assessment : null;
   if (!approval) return renderEnglishTechnical(result);
+  const session = approval.serviceSession;
+  const campaignCounts = approvalCampaignCountText(approval, "en");
   const state = approval.allowanceState === "confirmed_zero" ? "0 USDT, confirmed directly through the official USDT contract"
     : approval.allowanceState === "confirmed_active" && approval.confirmedAllowanceRaw !== null ? `${approval.isUnlimited ? "active and unlimited" : `active for ${formatRaw(approval.confirmedAllowanceRaw, "en")} USDT`}, confirmed directly through the official USDT contract`
       : "could not be confirmed and must not be described as active or revoked";
-  const debit = approval.debitState === "confirmed" && approval.debitAmountRaw !== null
+  const debit = session && (approval.allowanceState === "confirmed_active" || approval.allowanceState === "confirmed_zero")
+    ? `Transfer through this contract: ${formatRaw(session.movedAmountRaw, "en")} USDT in ${approval.allowanceState === "confirmed_zero" ? "an earlier confirmed swap" : "a confirmed swap"}.`
+    : approval.debitState === "confirmed" && approval.debitAmountRaw !== null
     ? `A transfer through this contract was confirmed: ${formatRaw(approval.debitAmountRaw, "en")} USDT.`
-    : approval.debitState === "not_found" ? "No transfer through this contract was found." : "A current transfer through this contract could not be confirmed.";
-  const action = !assessment || assessment.score === null
-    ? "Confirm the current USDT access directly through the official USDT contract."
-    : approval.allowanceState === "confirmed_zero"
-      ? "No action is required because current USDT access is zero."
-      : approval.audienceContext === "watched_wallet"
-        ? "If this is your wallet, remove unused USDT access before adding funds."
-        : "If you are checking someone else's wallet, do not send funds until the owner explains and removes dangerous USDT access.";
-  const lines = [
+    : approval.debitState === "not_found" ? "No transfer through this contract was found." : "The current transfer through this contract could not be confirmed.";
+  const common = [
     englishTitle(result),
     `Checked wallet — wallet that granted USDT access: ${linked(approval.owner)}`,
     `Contract that received USDT access: ${linked(approval.spender)}`,
     `Current USDT access: ${state}.`,
-    debit,
+    debit
+  ];
+
+  if (!assessment || assessment.score === null) return [
+    ...common,
     "",
-    assessment ? englishRiskHeading(assessment) : "⚪ <b>Current wallet risk was not calculated</b>",
+    "⚪ <b>Current wallet risk was not calculated</b>",
     "",
-    "🔎 <b>What was found</b>",
-    approval.exactVerify20 ? "The contract has the exact Verify20 mass-transfer pattern." : approval.serviceSession ? "A successful wallet-initiated service action explains the access." : "The current state requires confirmation.",
+    "🔎 <b>Why</b>",
+    approval.allowanceState === "stale"
+      ? "The last direct confirmation is stale, so the current state must be checked again."
+      : approval.allowanceState === "failed"
+        ? "The direct request to the official USDT contract failed."
+        : "Current USDT access is confirmed, but there is not enough validated data for a final contract assessment.",
     "",
     "🧭 <b>What to do</b>",
-    action
-  ];
-  return lines.join("\n");
+    approval.audienceContext === "external_address_check"
+      ? "If you are checking someone else's wallet, ask the owner to confirm the current USDT access."
+      : "If this is your wallet, confirm the current USDT access directly through the official USDT contract."
+  ].join("\n");
+
+  if (session && approval.allowanceState === "confirmed_zero") return [
+    ...common,
+    "",
+    englishRiskHeading(assessment),
+    "",
+    "🔎 <b>Conclusion</b>",
+    approval.audienceContext === "external_address_check"
+      ? "The exchange is explained. USDT access is no longer active. This permission requires no action."
+      : "The exchange is explained. USDT access is no longer active. No action is required."
+  ].join("\n");
+
+  if (session && approval.allowanceState === "confirmed_active") return [
+    ...common,
+    "",
+    englishRiskHeading(assessment),
+    "",
+    "🔎 <b>Why this score</b>",
+    `The wallet initiated a successful Bridgers exchange ${Math.round(session.delayMs / 1_000)} seconds after granting access; the amount matched.`,
+    "",
+    "🧭 <b>What to do</b>",
+    approval.audienceContext === "external_address_check"
+      ? "The swap is explained and risk is low. The owner can remove unused access as optional security hygiene."
+      : "The swap is explained and risk is low. If this is your wallet, unused access can be removed as optional security hygiene."
+  ].join("\n");
+
+  if (approval.debitState === "confirmed" && approval.debitAmountRaw !== null) return [
+    ...common,
+    "",
+    englishRiskHeading(assessment),
+    "",
+    "🔎 <b>Why this score</b>",
+    approval.exactVerify20
+      ? `An exact Verify20 chain and a ${formatRaw(approval.debitAmountRaw, "en")} USDT transfer through this contract were confirmed.`
+      : "A transfer through the contract that received USDT access was confirmed.",
+    ...(approval.balanceAtRiskRaw && approval.allowanceState === "confirmed_active"
+      ? [`The contract can access the current balance: ${formatRaw(approval.balanceAtRiskRaw, "en")} USDT.`]
+      : []),
+    ...(campaignCounts ? [campaignCounts] : []),
+    "This confirms movement of funds but does not by itself prove theft.",
+    "",
+    "🧭 <b>What to do</b>",
+    englishApprovalAction(approval, true)
+  ].join("\n");
+
+  if (approval.exactVerify20) return [
+    ...common,
+    "",
+    englishRiskHeading(assessment),
+    "",
+    "🔎 <b>Why this score</b>",
+    "The contract has the exact Verify20 mass-transfer pattern.",
+    ...(campaignCounts ? [campaignCounts] : []),
+    ...(approval.balanceAtRiskRaw && approval.allowanceState === "confirmed_active"
+      ? [`The contract can access the current balance: ${formatRaw(approval.balanceAtRiskRaw, "en")} USDT.`]
+      : []),
+    approval.campaignContext
+      ? approval.campaignContext.bttoldEvidenceId !== null
+        ? "Campaign links and the BTTOLD sequence are context, not proof of theft."
+        : "Campaign links are context, not proof of theft."
+      : "No transfer from the checked wallet through this contract was found.",
+    "",
+    "🧭 <b>What to do</b>",
+    englishApprovalAction(approval, false)
+  ].join("\n");
+
+  return [
+    ...common,
+    "",
+    englishRiskHeading(assessment),
+    "",
+    "🔎 <b>Why this score</b>",
+    "No exact linked action through this contract could be confirmed.",
+    approval.allowanceState === "confirmed_active"
+      ? "Active USDT access remains a technical wallet risk."
+      : approval.allowanceState === "confirmed_zero"
+        ? "USDT access is no longer active."
+        : "The current USDT access state could not be confirmed.",
+    "",
+    "🧭 <b>What to do</b>",
+    approval.allowanceState === "confirmed_active"
+      ? approval.audienceContext === "external_address_check"
+        ? "If you are checking someone else's wallet, ask the owner to explain and remove unused USDT access."
+        : "If this is your wallet, remove unused USDT access."
+      : englishApprovalAction(approval, false)
+  ].join("\n");
 }
 
 function renderEnglishTechnical(result: TelegramForensicResultV1): string {

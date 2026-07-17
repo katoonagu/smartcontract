@@ -74,11 +74,26 @@ export type TronApprovalClient = {
   listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   listTrc20ApprovalChangePageStrict?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChangePage>;
   getUsdtAllowance(input: { ownerAddress: string; spenderAddress: string }): Promise<string>;
+  getUsdtBalance?(address: string, options?: OfficialUsdtBalanceReadOptions): Promise<OfficialUsdtBalanceRead>;
   listRelatedTrc20Transfers?(address: string, options?: ListRelatedTrc20TransfersOptions): Promise<RawTronscanTrc20Transfer[]>;
   getTransaction?(txHash: string): Promise<unknown>;
   getAddressMetadata?(address: string): Promise<TronscanAddressMetadata>;
   getContractIntelligenceProfile?(address: string, options?: GetContractIntelligenceProfileOptions): Promise<ContractIntelligenceProfile>;
   getTransactionSigningMetadata?(txHash: string): Promise<TronTransactionSigningMetadata | null>;
+};
+
+export type OfficialUsdtBalanceRead = {
+  subjectAddress: string;
+  tokenContract: typeof TRON_USDT_CONTRACT_ADDRESS;
+  balanceRaw: string;
+  checkedAt: Date;
+  source: "official_usdt_balanceOf";
+};
+
+export type OfficialUsdtBalanceReadOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  retryAttempts?: number;
 };
 
 export type TronContractProfileClient = {
@@ -103,6 +118,8 @@ type TronGridTransferDirection = "incoming" | "related";
 type FetchJsonOptions = {
   logFinalError?: (error: unknown) => boolean;
   shouldRetry?: (error: unknown) => boolean;
+  timeoutMs?: number;
+  retryAttempts?: number;
 };
 
 const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
@@ -518,6 +535,20 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       throw new Error("Tronscan account response must be an object");
     }
     return json as TronscanAccount;
+  }
+
+  async getUsdtBalance(
+    address: string,
+    options: OfficialUsdtBalanceReadOptions = {}
+  ): Promise<OfficialUsdtBalanceRead> {
+    const balanceRaw = await this.callUsdtUint("balanceOf(address)", address, options);
+    return {
+      subjectAddress: address,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      balanceRaw,
+      checkedAt: new Date(),
+      source: "official_usdt_balanceOf"
+    };
   }
 
   async getUsdtRestrictionStatus(
@@ -1230,7 +1261,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return BigInt(`0x${words[0]}`).toString();
   }
 
-  private async triggerUsdtConstant(functionSelector: string, address: string): Promise<string> {
+  private async triggerUsdtConstant(
+    functionSelector: string,
+    address: string,
+    options: { canonicalUint?: boolean; request?: OfficialUsdtBalanceReadOptions } = {}
+  ): Promise<string> {
     if (!this.fullNodeBaseUrl) {
       throw new Error("TRON full node base URL is not configured");
     }
@@ -1241,6 +1276,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       {
         method: "POST",
         headers: { "content-type": "application/json" },
+        signal: options.request?.signal,
         body: JSON.stringify({
           owner_address: TronWeb.address.toHex(address),
           contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
@@ -1248,12 +1284,32 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
           parameter: this.encodeAddressParameter(address)
         })
       },
-      this.fullNodeApiKey ?? null
+      this.fullNodeApiKey ?? null,
+      {
+        ...(options.request?.timeoutMs === undefined ? {} : { timeoutMs: options.request.timeoutMs }),
+        ...(options.request?.retryAttempts === undefined ? {} : { retryAttempts: options.request.retryAttempts })
+      }
     );
     if (!this.isObjectRecord(json)) {
+      if (options.canonicalUint) {
+        throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+      }
       throw new Error("TRON full node contract response must be an object");
     }
     const result = this.objectField(json.result);
+    if (options.canonicalUint) {
+      if (result?.result !== true) {
+        throw Object.assign(new Error("contract_call_reverted"), {
+          code: "CONTRACT_REVERTED",
+          response: json
+        });
+      }
+      const words = json.constant_result;
+      if (!Array.isArray(words) || words.length !== 1 || typeof words[0] !== "string" || !/^[0-9a-fA-F]{64}$/.test(words[0])) {
+        throw Object.assign(new Error("malformed_response"), { code: "MALFORMED_RESPONSE" });
+      }
+      return words[0];
+    }
     if (result && result.result !== true) {
       throw new Error(`TRON full node contract call failed: ${functionSelector}`);
     }
@@ -1270,8 +1326,12 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return BigInt(`0x${raw}`) !== 0n;
   }
 
-  private async callUsdtUint(functionSelector: "balanceOf(address)", address: string): Promise<string> {
-    const raw = await this.triggerUsdtConstant(functionSelector, address);
+  private async callUsdtUint(
+    functionSelector: "balanceOf(address)",
+    address: string,
+    request: OfficialUsdtBalanceReadOptions = {}
+  ): Promise<string> {
+    const raw = await this.triggerUsdtConstant(functionSelector, address, { canonicalUint: true, request });
     return BigInt(`0x${raw}`).toString();
   }
 
@@ -1713,9 +1773,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     options: FetchJsonOptions = {}
   ): Promise<unknown> {
     const logPath = this.safeRequestLogPath(requestName, url);
-    for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
+    const retryAttempts = options.retryAttempts ?? this.retryAttempts;
+    for (let attempt = 0; attempt <= retryAttempts; attempt++) {
       try {
-        const json = await this.fetchJsonOnce(url, requestName, init, apiKey, attempt);
+        const json = await this.fetchJsonOnce(url, requestName, init, apiKey, attempt, options.timeoutMs);
         this.logger.info("tronscan_request_success", {
           request_name: requestName,
           attempt,
@@ -1724,7 +1785,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         return json;
       } catch (error) {
         const shouldRetry = options.shouldRetry?.(error) ?? this.isTransientError(error);
-        if (attempt >= this.retryAttempts || !shouldRetry) {
+        if (attempt >= retryAttempts || !shouldRetry) {
           if (options.logFinalError?.(error) ?? true) {
             this.logger.error("tronscan_request_failed", {
               request_name: requestName,
@@ -1754,14 +1815,19 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     requestName: string,
     init: RequestInit = {},
     apiKey?: string | null,
-    attempt = 0
+    attempt = 0,
+    timeoutMs = this.timeoutMs
   ): Promise<unknown> {
     const endpointBucket = this.endpointBucketForRequest(requestName);
     const logPath = this.safeRequestLogPath(requestName, url);
     const work = async (context: { apiKey: string | null; apiKeyIndex: number | null }) => {
       const actualApiKeyIndex = apiKey === undefined ? context.apiKeyIndex : null;
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      const externalSignal = init.signal;
+      const abortFromExternal = () => controller.abort(externalSignal?.reason);
+      if (externalSignal?.aborted) abortFromExternal();
+      else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
         this.logger.info("tronscan_request_attempt", {
@@ -1789,6 +1855,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         return response.json();
       } finally {
         clearTimeout(timeout);
+        externalSignal?.removeEventListener("abort", abortFromExternal);
       }
     };
 

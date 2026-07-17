@@ -1581,6 +1581,105 @@ describe("TronscanClient", () => {
     });
   });
 
+  it("[REQ-20][AC-20][TASK7-USDT-BALANCE] reads an exact official-USDT balance with canonical subject binding", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    try {
+      const fetchFn = vi.fn(async () => jsonResponse({
+        result: { result: true },
+        constant_result: ["0000000000000000000000000000000000000000000000000000000003e4f980"]
+      }));
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fullNodeBaseUrl: "https://api.trongrid.io",
+        fullNodeApiKey: "fullnode-secret",
+        fetchFn
+      });
+
+      await expect(client.getUsdtBalance("TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ")).resolves.toEqual({
+        subjectAddress: "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ",
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "65337728",
+        checkedAt: new Date("2026-07-17T12:00:00.000Z"),
+        source: "official_usdt_balanceOf"
+      });
+
+      const [url, init] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+      expect(url.pathname).toBe("/wallet/triggerconstantcontract");
+      expect(headerValue(init.headers, "TRON-PRO-API-KEY")).toBe("fullnode-secret");
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        owner_address: "41dddddddddddddddddddddddddddddddddddddddd",
+        contract_address: "41a614f803b6fd780986a42c78ec9c7f77e6ded13c",
+        function_selector: "balanceOf(address)",
+        parameter: "000000000000000000000000dddddddddddddddddddddddddddddddddddddddd"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["missing result", { result: { result: true }, constant_result: [] }],
+    ["non-hex result", { result: { result: true }, constant_result: ["not-hex"] }],
+    ["multiword result", { result: { result: true }, constant_result: ["0".repeat(64), "1".repeat(64)] }],
+    ["overflow result", { result: { result: true }, constant_result: ["1" + "0".repeat(64)] }]
+  ])("[REQ-20][AC-20][TASK7-USDT-BALANCE-FAIL-CLOSED] rejects %s as a malformed official-USDT balance", async (_name, response) => {
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse(response))
+    });
+
+    await expect(client.getUsdtBalance("TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ"))
+      .rejects.toMatchObject({ code: "MALFORMED_RESPONSE" });
+  });
+
+  it("[REQ-20][AC-20][TASK7-USDT-BALANCE-FAIL-CLOSED] exposes a reverted official-USDT balance call as a typed failure", async () => {
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => jsonResponse({ result: { result: false, message: "REVERT" } }))
+    });
+
+    await expect(client.getUsdtBalance("TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ"))
+      .rejects.toMatchObject({ code: "CONTRACT_REVERTED" });
+  });
+
+  it("[REQ-20][AC-20][TASK7-USDT-BALANCE-FAIL-CLOSED] propagates official-USDT balance provider failures", async () => {
+    const providerError = Object.assign(new Error("full node unavailable"), { code: "PROVIDER_UNAVAILABLE" });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn: vi.fn(async () => { throw providerError; })
+    });
+
+    await expect(client.getUsdtBalance("TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ")).rejects.toBe(providerError);
+  });
+
+  it("[REQ-20][AC-20][TASK7-USDT-BALANCE-BOUNDED] aborts a presentation balance request once without provider retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchFn = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+      }));
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn,
+        retryAttempts: 3,
+        timeoutMs: 10_000
+      });
+
+      const balance = client.getUsdtBalance("TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ", {
+        timeoutMs: 25,
+        retryAttempts: 0
+      });
+      const rejection = expect(balance).rejects.toMatchObject({ name: "AbortError" });
+      await vi.advanceTimersByTimeAsync(25);
+
+      await rejection;
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["missing result", { result: { result: true }, constant_result: [] }],
     ["non-hex result", { result: { result: true }, constant_result: ["not-hex"] }],

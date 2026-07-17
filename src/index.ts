@@ -950,6 +950,11 @@ async function pollOnce(): Promise<void> {
       upsertWalletApproval: (input) => upsertWalletApproval(db, input),
       claimObservedApprovalEvent: (input) => claimObservedApprovalEvent(db, input),
       getUsdtAllowance: (input) => tronClient.getUsdtAllowance(input),
+      getApprovalPresentationBalance: ({ ownerAddress, signal }) => tronClient.getUsdtBalance(ownerAddress, {
+        signal,
+        timeoutMs: 2_000,
+        retryAttempts: 0
+      }),
       saveWalletApprovalAllowanceStateV2: (input) => saveWalletApprovalAllowanceStateV2(db, input),
       claimObservedApprovalDrainEvent: (input) => claimObservedApprovalDrainEvent(db, input),
       recordApprovalRisk: (input) => recordApprovalRisk(db, input),
@@ -983,6 +988,11 @@ async function pollOnce(): Promise<void> {
       markApprovalContextFinalAlertSent: (input) => markApprovalContextFinalAlertSent(db, input),
       releaseApprovalContextAfterFailure: (input) => releaseApprovalContextAfterFailure(db, input),
       getUsdtAllowance: (input) => tronClient.getUsdtAllowance(input),
+      getApprovalPresentationBalance: ({ ownerAddress, signal }) => tronClient.getUsdtBalance(ownerAddress, {
+        signal,
+        timeoutMs: 2_000,
+        retryAttempts: 0
+      }),
       saveWalletApprovalAllowanceStateV2: (input) => saveWalletApprovalAllowanceStateV2(db, input),
       upsertWalletApproval: (input) => upsertWalletApproval(db, input),
       recordApprovalRisk: (input) => recordApprovalRisk(db, input),

@@ -46,10 +46,24 @@ export type TelegramForensicResultKindV1 =
 
 export type ApprovalAudienceContextV1 = "watched_wallet" | "external_address_check";
 
+export type ApprovalCampaignPresentationContextV1 = {
+  ownerAddress: string;
+  spenderAddress: string;
+  tokenContract: string;
+  approvalTxHash: string;
+  evidenceIds: string[];
+  verify20CallCount: number | null;
+  sourceWalletCount: number | null;
+  recipientCount: number | null;
+  bttoldEvidenceId: string | null;
+};
+
 export type ApprovalPresentationInputV1 = {
   assessment: ApprovalSafetyAssessmentV2;
   audienceContext: ApprovalAudienceContextV1;
   exactDebitProfile: ApprovalDrainProvenanceProfile | null;
+  metadataContext?: { subjectAddress: string; evidenceIds: string[] } | null;
+  campaignContext?: ApprovalCampaignPresentationContextV1 | null;
 };
 
 export type ApprovalPresentationV1 = {
@@ -65,6 +79,7 @@ export type ApprovalPresentationV1 = {
   debitAmountRaw: string | null;
   exactVerify20: boolean;
   campaignEvidenceIds: string[];
+  campaignContext: ApprovalCampaignPresentationContextV1 | null;
   serviceSession: KnownServiceSessionV1 | null;
 };
 

@@ -110,6 +110,24 @@ function profile(): ContractIntelligenceProfile {
   };
 }
 
+function verify20Profile(): ContractIntelligenceProfile {
+  return {
+    ...profile(),
+    methodMap: {
+      "5082dd12": "Verify20(address,address,address,uint256)",
+      fc61dd23: "Verify10(address,uint256)",
+      ea4418d9: "withdrawAllTrxTo(address)",
+      f2fde38b: "transferOwnership(address)"
+    },
+    topMethods: [{
+      methodId: "5082dd12",
+      signature: "Verify20(address,address,address,uint256)",
+      count: 309,
+      ratio: 1
+    }]
+  };
+}
+
 const allowanceOwnerAddress = "TWCL826n2tBuoR7mp6oj5FzgitmfWSwCGZ";
 const allowanceSpenderAddress = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV";
 const historicalAllowanceRaw = (2n ** 256n - 1n).toString();
@@ -267,12 +285,15 @@ describe("runSafetyRecheck", () => {
   it("rechecks already claimed approvals without owner alerts and records late drain observations", async () => {
     const { db, queries } = createFakeDb();
     let allowanceCalls = 0;
+    const errors: string[] = [];
+    const now = new Date();
 
     const summary = await runSafetyRecheck({
       db,
       pageLimit: 20,
       maxPagesPerWallet: 1,
       walletAddress,
+      now: () => now,
       tronClient: {
         async listTrc20Approvals() {
           return {
@@ -312,7 +333,7 @@ describe("runSafetyRecheck", () => {
             {
               transaction_id: drainTxHash,
               from_address: walletAddress,
-              to_address: "TReceiver1111111111111111111111111111",
+              to_address: "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD",
               contract_address: TRON_USDT_CONTRACT_ADDRESS,
               quant: "320000000000",
               confirmed: true,
@@ -342,9 +363,10 @@ describe("runSafetyRecheck", () => {
           return historicalAllowanceRaw;
         }
       },
-      logger: { info: () => undefined, warn: () => undefined, error: () => undefined }
+      logger: { info: () => undefined, warn: () => undefined, error: (message, fields) => errors.push(`${message}:${String(fields?.error ?? "")}`) }
     });
 
+    expect(errors).toEqual([]);
     expect(summary).toMatchObject({
       walletFound: true,
       approvalsProcessed: 1,
@@ -355,6 +377,102 @@ describe("runSafetyRecheck", () => {
     expect(queries.some((query) => query.sql.includes("insert into observed_approval_drain_events"))).toBe(true);
     expect(queries.some((query) => query.sql.includes("owner_alert_status = 'skipped'"))).toBe(true);
     expect(allowanceCalls).toBe(1);
+    expect(summary.approvalPresentations).toEqual([
+      expect.objectContaining({
+        assessment: expect.objectContaining({
+          subjectAddress: walletAddress,
+          exactDebit: true,
+          debitFoundFromSubject: true,
+          score: 95,
+          amlScoreImpact: 0
+        }),
+        exactDebitProfile: expect.objectContaining({
+          subjectAddress: walletAddress,
+          spenderAddress,
+          firstReceiverAddress: "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD",
+          drainTxHash
+        }),
+        evaluatedAt: now.toISOString()
+      })
+    ]);
+  });
+
+  it("[REQ-20][AC-21][TASK7-RECHECK-CAMPAIGN] produces a bound Verify20 call count through the real safety recheck pipeline", async () => {
+    const { db } = createFakeDb();
+    const now = new Date(Date.now() + 60_000);
+    const errors: string[] = [];
+    const summary = await runSafetyRecheck({
+      db,
+      pageLimit: 20,
+      maxPagesPerWallet: 1,
+      walletAddress,
+      now: () => now,
+      tronClient: {
+        async listTrc20Approvals() {
+          return {
+            approvals: [{
+              ownerAddress: walletAddress,
+              spenderAddress,
+              tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+              amountRaw: historicalAllowanceRaw,
+              isUnlimited: true,
+              operateTime: new Date("2026-05-06T19:06:15.000Z"),
+              spenderIsContract: true,
+              tokenSymbol: "USDT",
+              tokenDecimals: 6
+            }],
+            total: 1
+          };
+        },
+        async listTrc20ApprovalChanges() {
+          return [{
+            txHash: approvalTxHash,
+            ownerAddress: walletAddress,
+            spenderAddress,
+            tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+            amountRaw: historicalAllowanceRaw,
+            isUnlimited: true,
+            timestamp: new Date("2026-05-06T19:06:15.000Z"),
+            confirmed: true,
+            contractRet: "SUCCESS"
+          }];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        },
+        async getAddressMetadata() {
+          return { ...metadata(), isContract: true, accountType: 2 };
+        },
+        async getContractIntelligenceProfile() {
+          return verify20Profile();
+        },
+        async getUsdtAllowance() {
+          return historicalAllowanceRaw;
+        }
+      },
+      logger: { info: () => undefined, warn: () => undefined, error: (message, fields) => errors.push(`${message}:${String(fields?.error ?? "")}`) }
+    });
+
+    expect(errors).toEqual([]);
+    expect(summary.approvalPresentations).toEqual([
+      expect.objectContaining({
+        assessment: expect.objectContaining({ exactVerify20: true, exactDebit: false, score: 90 }),
+        campaignContext: expect.objectContaining({
+          ownerAddress: walletAddress,
+          spenderAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          approvalTxHash,
+          verify20CallCount: 309,
+          sourceWalletCount: null,
+          recipientCount: null,
+          bttoldEvidenceId: null
+        }),
+        evaluatedAt: now.toISOString()
+      })
+    ]);
   });
 
   it("looks beyond the newest approval change when rechecking by approval tx hash", async () => {

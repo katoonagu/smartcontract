@@ -116,6 +116,18 @@ function suspiciousContractProfile() {
   };
 }
 
+function verify20ContractProfile() {
+  return {
+    ...suspiciousContractProfile(),
+    methodMap: {
+      "5082dd12": "Verify20(address,address,address,uint256)",
+      "fc61dd23": "Verify10(address,uint256)",
+      "ea4418d9": "withdrawAllTrxTo(address)",
+      "f2fde38b": "transferOwnership(address)"
+    }
+  };
+}
+
 function pendingContextRow(overrides: Partial<PendingApprovalContextRow> = {}): PendingApprovalContextRow {
   return {
     approvalTxHash,
@@ -400,6 +412,11 @@ describe("runSingleApprovalPollingCycle", () => {
       amlScoreImpact: 0,
       serviceSession: expectedScore === 10 ? expect.objectContaining({ actionTxHash, amountContinuity: "exact" }) : null
     });
+    expect(ctx.sentOwnerMessages.at(-1)).toMatch(/Проверяемый кошел[её]к — кошел[её]к, который выдал доступ к USDT/);
+    expect(ctx.sentOwnerMessages.at(-1)).toContain("Контракт, получивший доступ к USDT");
+    expect(ctx.sentOwnerMessages.at(-1)).toMatch(/Разрешение на управление USDT сейчас: активное, безлимитное/);
+    expect(ctx.sentOwnerMessages.at(-1)).not.toMatch(/Истекает|Дедлайн контекста|expiration/i);
+    expect(JSON.stringify(ctx.sentOwnerOptions.at(-1)?.reply_markup)).not.toMatch(/callback_data|revoke|отозв/i);
     if (metadataAvailable === false) {
       const sessionEvidence = ctx.evidence.at(-1)?.rawEvidence.find((item) => item.source === "approval_session_context");
       expect(sessionEvidence?.evidenceJson).toMatchObject({
@@ -408,6 +425,368 @@ describe("runSingleApprovalPollingCycle", () => {
         routeServiceTags: expectedScore === 10 ? ["bridgers"] : []
       });
     }
+  });
+
+  it("[REQ-18][AC-24][TASK7-WORKER-PRESENTATION] keeps a failed direct allowance check unconfirmed", async () => {
+    const approval = currentApproval({ spenderAddress: bridgersAddress, spenderIsContract: true });
+    const ctx = createDeps({
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [approval], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange({ spenderAddress: bridgersAddress })];
+        }
+      },
+      getUsdtAllowance: async () => {
+        throw new Error("provider unavailable");
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.sentOwnerMessages).toHaveLength(1);
+    expect(ctx.sentOwnerMessages[0]).toMatch(/подтвердить не удалось|нельзя считать его активным или отозванным/i);
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/сейчас: активное|сейчас: 0 USDT|разрешение больше не активно/i);
+    expect(JSON.stringify(ctx.sentOwnerOptions[0]?.reply_markup)).not.toMatch(/callback_data|revoke|отозв/i);
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-NO-DEBIT] presents exact Verify20 without claiming a debit", async () => {
+    const presentations: unknown[] = [];
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => verify20ContractProfile(),
+      onApprovalPresentation: async (presentation) => {
+        presentations.push(presentation);
+      },
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>90/100 — критический риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("точный Verify20-шаблон массовых списаний");
+    expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/деньги уже украдены|кража подтверждена/i);
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/баланс.*USDT|BTTOLD|кампан/i);
+    expect(presentations).toEqual([
+      expect.objectContaining({
+        assessment: expect.objectContaining({ exactVerify20: true, exactDebit: false, score: 90 }),
+        exactDebitProfile: null,
+        evaluatedAt: new Date("2026-05-23T00:00:00.000Z")
+      })
+    ]);
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE] shows a subject-bound official-USDT balance without changing stored risk", async () => {
+    const balanceRequests: Array<{ watchedWalletId: string; ownerAddress: string; signal: AbortSignal }> = [];
+    const presentations: Array<Parameters<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["onApprovalPresentation"]>>[0]> = [];
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => ({
+        ...verify20ContractProfile(),
+        totalCallCount: "999",
+        totalCallerCount: "241",
+        uniqueCallerCount: "241",
+        topMethods: [{
+          methodId: "5082dd12",
+          signature: "Verify20(address,address,address,uint256)",
+          count: 309,
+          ratio: 0.31
+        }]
+      }),
+      getApprovalPresentationBalance: async (request) => {
+        balanceRequests.push(request);
+        return {
+          subjectAddress: request.ownerAddress,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          balanceRaw: "4084665000",
+          checkedAt: new Date("2026-05-23T00:00:00.000Z"),
+          source: "official_usdt_balanceOf"
+        };
+      },
+      onApprovalPresentation: async (presentation) => {
+        presentations.push(presentation);
+      },
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(balanceRequests).toEqual([
+      expect.objectContaining({ watchedWalletId: watchedWallet.id, ownerAddress, signal: expect.any(AbortSignal) })
+    ]);
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.sentOwnerMessages[0]).toContain("Контракту доступен текущий баланс: 4 084,665 USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("Контекст кампании: 309 Verify20-вызовов.");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("241 кошельков-источников");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("BTTOLD");
+    expect(presentations[0]?.campaignContext).toMatchObject({
+      ownerAddress,
+      spenderAddress,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      approvalTxHash,
+      verify20CallCount: 309,
+      sourceWalletCount: null,
+      bttoldEvidenceId: null
+    });
+    expect(JSON.stringify(ctx.evidence)).not.toContain("4084665000");
+    expect(JSON.stringify(ctx.evidence)).not.toContain("official_usdt_balanceOf");
+    expect(JSON.stringify(ctx.evidence)).not.toContain("campaignContext");
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE-TIMEOUT] aborts one slow balance read without retrying or blocking the alert", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const ctx = createDeps({
+        getAddressMetadata: async () => contractMetadata(),
+        getContractIntelligenceProfile: async () => verify20ContractProfile(),
+        getApprovalPresentationBalance: ({ signal }) => new Promise((_resolve, reject) => {
+          calls += 1;
+          signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+        }),
+        tronClient: {
+          async listTrc20Approvals() {
+            return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+          },
+          async listTrc20ApprovalChanges() {
+            return [approvalChange()];
+          },
+          async listRelatedTrc20Transfers() {
+            return [];
+          },
+          async getTransaction() {
+            return {};
+          }
+        }
+      });
+
+      const cycle = runSingleApprovalPollingCycle(ctx.deps);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await cycle;
+
+      expect(calls).toBe(1);
+      expect(ctx.sentOwnerMessages).toHaveLength(1);
+      expect(ctx.sentOwnerMessages[0]).not.toContain("доступен текущий баланс");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE-BINDING] omits foreign or unavailable balance evidence", async () => {
+    const providers: Array<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["getApprovalPresentationBalance"]>> = [
+      async () => ({
+        subjectAddress: "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD",
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "4084665000",
+        checkedAt: new Date("2026-05-23T00:00:00.000Z"),
+        source: "official_usdt_balanceOf" as const
+      }),
+      async () => ({
+        subjectAddress: ownerAddress,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "4084665000",
+        checkedAt: new Date("2026-05-22T23:58:59.999Z"),
+        source: "official_usdt_balanceOf" as const
+      }),
+      async () => ({
+        subjectAddress: ownerAddress,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        balanceRaw: "not-a-uint",
+        checkedAt: new Date("2026-05-23T00:00:00.000Z"),
+        source: "official_usdt_balanceOf" as const
+      }),
+      async () => {
+        throw new Error("balance provider unavailable");
+      }
+    ];
+
+    for (const getApprovalPresentationBalance of providers) {
+      const ctx = createDeps({
+        getAddressMetadata: async () => contractMetadata(),
+        getContractIntelligenceProfile: async () => verify20ContractProfile(),
+        getApprovalPresentationBalance,
+        tronClient: {
+          async listTrc20Approvals() {
+            return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+          },
+          async listTrc20ApprovalChanges() {
+            return [approvalChange()];
+          },
+          async listRelatedTrc20Transfers() {
+            return [];
+          },
+          async getTransaction() {
+            return {};
+          }
+        }
+      });
+
+      await runSingleApprovalPollingCycle(ctx.deps);
+
+      expect(ctx.sentOwnerMessages[0]).not.toMatch(/доступен текущий баланс/i);
+      expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
+    }
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-CAMPAIGN-BINDING] omits call counts from a foreign contract profile", async () => {
+    const foreignContract = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => ({
+        ...verify20ContractProfile(),
+        contractAddress: foreignContract,
+        address: foreignContract,
+        topMethods: [{
+          methodId: "5082dd12",
+          signature: "Verify20(address,address,address,uint256)",
+          count: 309,
+          ratio: 1
+        }]
+      }),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Контекст кампании|BTTOLD/);
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-CAMPAIGN-SELECTOR] rejects a Verify20 label on the wrong selector", async () => {
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => ({
+        ...verify20ContractProfile(),
+        topMethods: [{
+          methodId: "deadbeef",
+          signature: "Verify20(address,address,address,uint256)",
+          count: 309,
+          ratio: 1
+        }]
+      }),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.sentOwnerMessages[0]).toContain("точный Verify20-шаблон");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Контекст кампании|BTTOLD/);
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE-SCOPE] does not request a balance for a non-Verify20 approval", async () => {
+    const getApprovalPresentationBalance = vi.fn();
+    const ctx = createDeps({ getApprovalPresentationBalance });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(getApprovalPresentationBalance).not.toHaveBeenCalled();
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-EXACT-DEBIT] presents a subject-bound exact debit without changing stored risk", async () => {
+    const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+    const drainTxHash = "b".repeat(64);
+    let relatedCalls = 0;
+    const ctx = createDeps({
+      getAddressMetadata: async (address) => address === spenderAddress
+        ? contractMetadata()
+        : { ...contractMetadata(address), name: null, tag: null, isContract: false, verified: null, accountType: 0 },
+      getContractIntelligenceProfile: async () => verify20ContractProfile(),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          relatedCalls += 1;
+          if (relatedCalls === 1) return [];
+          return [{
+            transaction_id: drainTxHash,
+            from_address: ownerAddress,
+            to_address: receiverAddress,
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            quant: "13302000000",
+            confirmed: true,
+            contractRet: "SUCCESS",
+            finalResult: "SUCCESS",
+            status: 0,
+            tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+            block_ts: Date.parse("2026-05-09T10:13:12.000Z")
+          }];
+        },
+        async getTransaction() {
+          return {
+            ownerAddress: spenderAddress,
+            trigger_info: { methodName: "transferFrom", methodId: "23b872dd" },
+            contractData: { owner_address: spenderAddress }
+          };
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.drainObservations[0]).toMatchObject({ transferTxHash: drainTxHash, receiverAddress, amountRaw: "13302000000" });
+    expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>95/100 — критический риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: подтверждено, 13 302 USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("точная Verify20-цепочка и списание USDT");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/деньги уже украдены|кража подтверждена/i);
   });
 
   it("skips stale watched wallets that were removed after the cycle loaded", async () => {
@@ -458,10 +837,10 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.evidence[0].rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("approval_only");
     expect(ctx.evidence[0].observations[0]?.message).toContain("approval monitoring state: approval_only");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("USDT approval");
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>80/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>HIGH</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("завершился ошибкой");
     expect(ctx.sentOwnerOptions[0]?.parse_mode).toBe("HTML");
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.pollSuccesses.at(-1)).toMatchObject({
@@ -472,7 +851,7 @@ describe("runSingleApprovalPollingCycle", () => {
   });
 
   it("stores shadow approval-drain observations when spender called USDT transferFrom", async () => {
-    const receiverAddress = "TReceiver1111111111111111111111111111";
+    const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
     const drainTxHash = "a944c454b019c6fdbb686f29609b08fbc378f1dee20ecd772a8417b1f7f6452b";
     const ctx = createDeps({
       tronClient: {
@@ -616,9 +995,8 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("service_route_guarded");
     expect(ctx.evidence.at(-1)?.observations[0]?.message).toContain("approval monitoring state: service_route_guarded");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>MEDIUM</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -668,9 +1046,7 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 10
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>MEDIUM</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -719,9 +1095,7 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 35
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>MEDIUM</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -774,7 +1148,7 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.sentCustomerMessages).toEqual([
       expect.objectContaining({
         telegramUserId: "777",
-        message: expect.stringContaining("<code>35/100</code>")
+        message: expect.stringContaining("35/100 — средний риск для кошелька")
       })
     ]);
   });
@@ -892,9 +1266,7 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.evidence.flatMap((entry) => entry.observations.map((observation) => observation.code))).toContain(
       "approval_temporally_linked_to_known_swap"
     );
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>70/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>HIGH</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
   });
 
   it("sends initial pending context alert for a fresh unknown helper contract without resolving session immediately", async () => {
@@ -941,9 +1313,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskLevel: "HIGH",
       riskScore: 70
     });
-    expect(ctx.sentOwnerMessages[0]).toContain("Подписан smart contract");
-    expect(ctx.sentOwnerMessages[0]).toContain("ждём контекст операции");
-    expect(ctx.sentOwnerMessages[0]).toContain("Финальный результат придёт отдельным сообщением");
+    expect(ctx.sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Истекает|Дедлайн контекста|expiration/i);
   });
 
   it("does not pend direct service-tagged approvals", async () => {
@@ -974,7 +1346,7 @@ describe("runSingleApprovalPollingCycle", () => {
     await runSingleApprovalPollingCycle(ctx.deps);
 
     expect(pendingContexts).toEqual([]);
-    expect(ctx.sentOwnerMessages[0]).toContain("USDT approval");
+    expect(ctx.sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
     expect(ctx.sentOwnerMessages[0]).not.toContain("ждём контекст операции");
   });
 
@@ -1006,10 +1378,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskLevel: "CRITICAL",
       riskScore: 90
     });
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>90/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>CRITICAL</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("Approval transaction was signed long before it appeared on-chain");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Истекает|expiration|signed long before/i);
   });
 
   it("does not duplicate alerts when the approval event is already claimed", async () => {
@@ -1147,8 +1518,8 @@ describe("runSingleApprovalPollingCycle", () => {
       "approval_spender_unknown_eoa"
     ]);
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<code>40/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Лимит</b>: <code>finite 10,000 USDT</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -1176,7 +1547,8 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 80
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Лимит</b>: <code>finite 111,111 USDT</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("Текущий риск для кошелька не рассчитан");
+    expect(ctx.sentOwnerMessages[0]).toContain("Разрешение на управление USDT сейчас: активное, безлимитное");
     expect(ctx.sentServiceAdminMessages).toHaveLength(1);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
   });
@@ -1257,12 +1629,10 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(sentOwnerMessages).toHaveLength(1);
-    expect(sentOwnerMessages[0]).toContain("Контекст approval найден");
-    expect(sentOwnerMessages[0]).toContain("<b>Решение</b>: <code>DECLINE</code>");
-    expect(sentOwnerMessages[0]).toContain("Первичный статус");
-    expect(sentOwnerMessages[0]).toContain("Approval связан с bridge/swap-операцией: SunSwap Router");
-    expect(sentOwnerMessages[0]).toContain("Списания USDT как drain не доказаны");
-    expect(sentOwnerMessages[0]).toContain("<b>Дедлайн контекста</b>: <code>05.05.2026 16:52 MSK</code>");
+    expect(sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
+    expect(sentOwnerMessages[0]).not.toMatch(/Дедлайн контекста|Истекает/);
     expect(resolved[0]).toMatchObject({
       finalReport: {
         reasons: expect.arrayContaining([
@@ -1431,9 +1801,9 @@ describe("runSingleApprovalPollingCycle", () => {
         level: "HIGH"
       }
     });
-    expect(sentOwnerMessages[0]).toContain("Связанная bridge/swap-операция не найдена в окне проверки");
-    expect(sentOwnerMessages[0]).toContain("<b>Решение</b>: <code>DECLINE</code>");
-    expect(sentOwnerMessages[0]).toContain("кошелёк небезопасен для работы");
+    expect(sentOwnerMessages[0]).toContain("Проверка доступа к USDT");
+    expect(sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(sentOwnerMessages[0]).toContain("Точную связанную операцию через этот контракт подтвердить не удалось");
   });
 
   it("releases pending context after TronScan failure without sending final alert", async () => {
@@ -1490,7 +1860,7 @@ describe("runSingleApprovalPollingCycle", () => {
   });
 
   it("stores collector-drain pending context as CRITICAL", async () => {
-    const receiverAddress = "TReceiver1111111111111111111111111111";
+    const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
     const resolved: unknown[] = [];
     const sentOwnerMessages: string[] = [];
 
@@ -1569,13 +1939,10 @@ describe("runSingleApprovalPollingCycle", () => {
         ])
       }
     });
-    expect(sentOwnerMessages[0]).toContain("Найден вывод USDT после approval");
-    expect(sentOwnerMessages[0]).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
-    expect(sentOwnerMessages[0]).toContain("<b>Tx вывода USDT</b>: <code>collector-tx</code>");
-    expect(sentOwnerMessages[0]).not.toContain("<b>Связанная tx</b>");
-    expect(sentOwnerMessages[0]).not.toContain("Linked route tx");
-    expect(sentOwnerMessages[0]).not.toContain("Контекст approval не найден");
-    expect(sentOwnerMessages[0]).toContain("approval monitoring state: transfer_from_observed");
+    expect(sentOwnerMessages[0]).toContain("🔴 <b>95/100 — критический риск для кошелька</b>");
+    expect(sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: подтверждено, 320 000 USDT");
+    expect(sentOwnerMessages[0]).toContain("подтверждённое списание USDT через контракт");
+    expect(sentOwnerMessages[0]).not.toMatch(/approval|spender|allowance|transferFrom/i);
   });
 
   it("[REQ-19][RUNTIME-REFRESH] persists provider failure as UNKNOWN/null before releasing the target", async () => {

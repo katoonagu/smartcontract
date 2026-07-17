@@ -16,6 +16,7 @@ import {
   whereAssessmentFixture,
   whereReportFixture
 } from "../forensics/wherePreliminaryNarrativeCases";
+import type { ApprovalCampaignPresentationContextV1 } from "../../../src/telegram/forensicPresentation";
 
 export const TGYT = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
 export const TWGC = "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm";
@@ -95,6 +96,7 @@ export type RemediationTelegramUxSourceV1 = {
     assessment: ApprovalSafetyAssessmentV2;
     audienceContext: ApprovalAudienceContextFixtureV1;
     exactDebitProfile: ApprovalDrainProvenanceProfile | null;
+    campaignContext: ApprovalCampaignPresentationContextV1 | null;
     transactionExpirationAt: string | null;
     contextDeadlineAt: string | null;
   } | null;
@@ -346,6 +348,7 @@ function approvalSource(input: {
   assessment: ApprovalSafetyAssessmentV2;
   audienceContext: ApprovalAudienceContextFixtureV1;
   exactDebitProfile?: ApprovalDrainProvenanceProfile | null;
+  campaignContext?: ApprovalCampaignPresentationContextV1 | null;
 }): RemediationTelegramUxSourceV1 {
   return source({
     kind: "approval_safety",
@@ -355,6 +358,7 @@ function approvalSource(input: {
       assessment: input.assessment,
       audienceContext: input.audienceContext,
       exactDebitProfile: input.exactDebitProfile ?? null,
+      campaignContext: input.campaignContext ?? null,
       transactionExpirationAt: "2036-07-16T12:00:00.000Z",
       contextDeadlineAt: "2036-07-16T12:05:00.000Z"
     }
@@ -546,6 +550,18 @@ const verify20Debit = approvalAssessment({
   campaignEvidenceIds: ["campaign:wallets:20", "campaign:calls:73", "campaign:bttold-sequence"]
 });
 
+const verify20CampaignContext: ApprovalCampaignPresentationContextV1 = {
+  ownerAddress: TGYT,
+  spenderAddress: VERIFY20,
+  tokenContract: OFFICIAL_USDT,
+  approvalTxHash: APPROVAL_TX,
+  evidenceIds: ["campaign:wallets:20", "campaign:calls:73", "campaign:bttold-sequence"],
+  verify20CallCount: null,
+  sourceWalletCount: null,
+  recipientCount: null,
+  bttoldEvidenceId: "campaign:bttold-sequence"
+};
+
 const bridgersActive = approvalAssessment({
   subjectAddress: TGYT,
   spenderAddress: BRIDGERS,
@@ -637,12 +653,14 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
   },
   { id: "GOLDEN_VERIFY20_ACTIVE_NO_DEBIT", source: approvalSource({
     assessment: verify20Active,
-    audienceContext: "external_address_check"
+    audienceContext: "external_address_check",
+    campaignContext: verify20CampaignContext
   }) },
   { id: "GOLDEN_VERIFY20_EXACT_DEBIT", source: approvalSource({
     assessment: verify20Debit,
     audienceContext: "watched_wallet",
-    exactDebitProfile: exactDebitProfile(TGYT)
+    exactDebitProfile: exactDebitProfile(TGYT),
+    campaignContext: verify20CampaignContext
   }) },
   { id: "GOLDEN_BRIDGERS_ACTIVE", source: approvalSource({
     assessment: bridgersActive,

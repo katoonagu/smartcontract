@@ -3,6 +3,7 @@ import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
 import { formatNotificationMskTime } from "./notificationTime";
 import { adaptTelegramForensicResult } from "../telegram/forensicPresentationAdapters";
+import type { ApprovalPresentationInputV1 } from "../telegram/forensicPresentation";
 import { renderTelegramForensicResult } from "../telegram/forensicResultRenderer";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
 import {
@@ -115,12 +116,54 @@ function formatApprovalTimeSection(input: {
 }, locale: BotLocale): string | null {
   const lines = [
     formatApprovalTimeLine(locale === "en" ? "Approval" : "Approval", input.approvalAt, locale),
-    formatApprovalTimeLine(locale === "en" ? "Signed" : "Подписано", input.signedAt, locale),
-    formatApprovalTimeLine(locale === "en" ? "Expires" : "Истекает", input.expirationAt, locale),
-    formatApprovalTimeLine(locale === "en" ? "Context deadline" : "Дедлайн контекста", input.contextDeadlineAt, locale)
+    formatApprovalTimeLine(locale === "en" ? "Signed" : "Подписано", input.signedAt, locale)
   ];
   const body = lines.filter((line): line is string => line !== null);
   return body.length > 0 ? section(locale === "en" ? "Time" : "Время", body) : null;
+}
+
+function formatTypedApprovalAlert(input: {
+  locale: BotLocale;
+  watchedWallet: string;
+  approvalAt?: Date | null;
+  approvalPresentationInput?: ApprovalPresentationInputV1;
+  approvalPresentationEvaluatedAt?: Date | null;
+}): TelegramAlertMessage | null {
+  if (!input.approvalPresentationInput) return null;
+  const evaluatedAt = input.approvalPresentationEvaluatedAt ?? input.approvalAt;
+  if (!evaluatedAt || !Number.isFinite(evaluatedAt.getTime())) return null;
+  const assessment = input.approvalPresentationInput.assessment;
+  return telegramHtmlMessage([renderTelegramForensicResult(adaptTelegramForensicResult({
+    kind: "approval_safety",
+    locale: input.locale,
+    evaluatedAt: evaluatedAt.toISOString(),
+    checkedWalletAddress: input.watchedWallet,
+    resultState: assessment.score === null ? "no_final" : "final",
+    scoreAnchorV2: null,
+    narrativeFactsV2: [],
+    scoringEvidenceV2: [],
+    amlPresentation: null,
+    routes: [],
+    coverageV2: null,
+    legacyCoverage: null,
+    approvalInput: input.approvalPresentationInput,
+    contractDecision: null,
+    technicalLimitTextKey: null
+  }))]);
+}
+
+export function formatApprovalSafetyPresentationAlert(input: {
+  locale?: BotLocale;
+  watchedWallet: string;
+  evaluatedAt: Date;
+  approvalPresentationInput: ApprovalPresentationInputV1;
+}): TelegramAlertMessage {
+  return formatTypedApprovalAlert({
+    locale: input.locale ?? DEFAULT_BOT_LOCALE,
+    watchedWallet: input.watchedWallet,
+    approvalPresentationEvaluatedAt: input.evaluatedAt,
+    approvalPresentationInput: input.approvalPresentationInput
+  }) ?? telegramHtmlMessage([input.locale === "en" ? "Approval safety result is unavailable." : "Результат проверки доступа к USDT недоступен."]);
 }
 
 function formatApprovalRiskLine(report: RiskReport, locale: BotLocale): string {
@@ -593,8 +636,12 @@ export function formatUserApprovalAlert(input: {
   expirationAt?: Date | null;
   approvalTxHash: string;
   report: RiskReport;
+  approvalPresentationInput?: ApprovalPresentationInputV1;
+  approvalPresentationEvaluatedAt?: Date | null;
 }): TelegramAlertMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const typed = formatTypedApprovalAlert({ ...input, locale });
+  if (typed) return typed;
   const eventTime = formatNotificationMskTime(input.approvalAt ?? input.signedAt ?? null, locale);
   const title = `USDT approval${eventTime ? ` — ${eventTime}` : ""}`;
   return telegramHtmlMessage([
@@ -630,8 +677,12 @@ export function formatUserApprovalPendingAlert(input: {
   contextDeadlineAt: Date;
   approvalTxHash: string;
   report: RiskReport;
+  approvalPresentationInput?: ApprovalPresentationInputV1;
+  approvalPresentationEvaluatedAt?: Date | null;
 }): TelegramAlertMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const typed = formatTypedApprovalAlert({ ...input, locale });
+  if (typed) return typed;
   const title = locale === "en" ? "Smart-contract signature" : "Подписан smart contract";
   return telegramHtmlMessage([
     bold(title),
@@ -668,8 +719,12 @@ export function formatUserApprovalContextResultAlert(input: {
   result: "linked_swap_route" | "no_route_found" | "collector_drain";
   linkedRouteTxHash?: string | null;
   routeServiceTags?: string[];
+  approvalPresentationInput?: ApprovalPresentationInputV1;
+  approvalPresentationEvaluatedAt?: Date | null;
 }): TelegramAlertMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const typed = formatTypedApprovalAlert({ ...input, locale });
+  if (typed) return typed;
   const title = input.result === "linked_swap_route"
     ? (locale === "en" ? "Approval context found" : "Контекст approval найден")
     : input.result === "collector_drain"

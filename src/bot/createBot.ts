@@ -49,6 +49,7 @@ import {
 } from "./wherePreliminaryNarrative";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
+import { formatApprovalSafetyPresentationAlert } from "../alerts/formatters";
 import {
   addCustomerAlertRecipient,
   addWatchedWallet,
@@ -258,6 +259,7 @@ type CreateBotOptions = {
     windowStart: Date | null;
     windowEnd: Date | null;
   }) => Promise<ForensicCheckJob | null>;
+  runSafetyRecheck?: typeof runSafetyRecheck;
   resolveAddressPoisoningCandidate?: (input: {
     callbackToken: string;
     telegramUserId: string;
@@ -5476,7 +5478,7 @@ export function createBot(
   });
 
   bot.command("recheck_safety", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     if (!isServiceAdmin(config, id)) {
       await ctx.reply("This command is restricted to service admins.");
@@ -5490,7 +5492,7 @@ export function createBot(
       return;
     }
 
-    const summary = await runSafetyRecheck({
+    const summary = await (options.runSafetyRecheck ?? runSafetyRecheck)({
       db,
       tronClient: tronClient as TronApprovalClient,
       walletAddress: walletInput.value,
@@ -5498,6 +5500,22 @@ export function createBot(
       pageLimit: config.tronscanPageLimit,
       maxPagesPerWallet: config.tronscanMaxPagesPerWallet
     });
+    for (const presentation of summary.approvalPresentations) {
+      const evaluatedAt = new Date(presentation.evaluatedAt);
+      const message = formatApprovalSafetyPresentationAlert({
+        locale,
+        watchedWallet: presentation.assessment.subjectAddress,
+        evaluatedAt,
+        approvalPresentationInput: {
+          assessment: presentation.assessment,
+          audienceContext: "external_address_check",
+          exactDebitProfile: presentation.exactDebitProfile,
+          metadataContext: presentation.metadataContext,
+          campaignContext: presentation.campaignContext
+        }
+      });
+      await ctx.reply(message.text, { parse_mode: message.parseMode });
+    }
     await ctx.reply(formatSafetyRecheckSummary(summary));
   });
 

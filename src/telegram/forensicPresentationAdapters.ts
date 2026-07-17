@@ -20,6 +20,7 @@ import {
   telegramAddressRef,
   validateTelegramAddressRef,
   type ApprovalAudienceContextV1,
+  type ApprovalCampaignPresentationContextV1,
   type ApprovalPresentationV1,
   type TelegramAssessmentPresentationV1,
   type TelegramForensicResultKindV1,
@@ -61,6 +62,8 @@ type TelegramForensicSource = {
     assessment: ApprovalSafetyAssessmentV2;
     audienceContext: ApprovalAudienceContextV1;
     exactDebitProfile: ApprovalDrainProvenanceProfile | null;
+    metadataContext?: { subjectAddress: string; evidenceIds: string[] } | null;
+    campaignContext?: ApprovalCampaignPresentationContextV1 | null;
   } | null;
   contractDecision: ContractDecisionV2 | null;
   contractEvidenceV1?: ContractDecisionEvidenceV1[];
@@ -91,6 +94,31 @@ function validOptionalEvidenceIds(value: unknown): value is string[] {
   return Array.isArray(value) &&
     value.every((item) => typeof item === "string" && item.length > 0) &&
     new Set(value).size === value.length;
+}
+
+function validCampaignCount(value: unknown): value is number | null {
+  return value === null || typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validApprovalCampaignContext(
+  context: ApprovalCampaignPresentationContextV1 | null,
+  assessment: ApprovalSafetyAssessmentV2,
+  allowance: ApprovalAllowanceStateV2
+): ApprovalCampaignPresentationContextV1 | null {
+  if (context === null) return null;
+  if (!assessment.exactVerify20 || context.ownerAddress !== allowance.ownerAddress ||
+    context.spenderAddress !== allowance.spenderAddress || context.tokenContract !== OFFICIAL_USDT ||
+    context.approvalTxHash !== allowance.observedApprovalTxHash || !validEvidenceIds(context.evidenceIds) ||
+    !context.evidenceIds.every((id) => assessment.campaignEvidenceIds.includes(id)) ||
+    !validCampaignCount(context.verify20CallCount) || !validCampaignCount(context.sourceWalletCount) ||
+    !validCampaignCount(context.recipientCount) ||
+    context.bttoldEvidenceId !== null && !context.evidenceIds.includes(context.bttoldEvidenceId) ||
+    context.verify20CallCount === null && context.sourceWalletCount === null &&
+      context.recipientCount === null && context.bttoldEvidenceId === null) return null;
+  return {
+    ...context,
+    evidenceIds: [...context.evidenceIds]
+  };
 }
 
 type FactRequirements = {
@@ -228,7 +256,8 @@ function exactDebit(
 function validApprovalOutcome(
   value: ApprovalSafetyAssessmentV2,
   debitState: ApprovalPresentationV1["debitState"],
-  session: ApprovalSafetyAssessmentV2["serviceSession"]
+  session: ApprovalSafetyAssessmentV2["serviceSession"],
+  metadataContext: { subjectAddress: string; evidenceIds: string[] } | null
 ): boolean {
   const allowance = value.allowance;
   if (debitState === "confirmed") {
@@ -252,7 +281,8 @@ function validApprovalOutcome(
   if (findKnownServiceBySpender(allowance.spenderAddress)) {
     return value.score === 45 && value.level === "MEDIUM" && value.action === "REVOKE_IF_UNUSED";
   }
-  return false;
+  return value.score === 35 && value.level === "MEDIUM" && value.action === "REVOKE_IF_UNUSED" &&
+    metadataContext?.subjectAddress === allowance.spenderAddress && validEvidenceIds(metadataContext.evidenceIds);
 }
 
 function validDate(value: string | null): number | null {
@@ -317,8 +347,15 @@ function approvalPresentation(
   const bindingFailed = (value.exactDebit || value.debitFoundFromSubject) && debit.state !== "confirmed";
   const session = validServiceSession(normalizedValue);
   const sessionBindingFailed = value.serviceSession !== null && session === null;
-  const outcomeBindingFailed = !bindingFailed && !sessionBindingFailed && !validApprovalOutcome(normalizedValue, debit.state, session);
-  const presentationBindingFailed = bindingFailed || sessionBindingFailed || outcomeBindingFailed;
+  const metadataContext = input.metadataContext ?? null;
+  const metadataBindingFailed = metadataContext !== null &&
+    (metadataContext.subjectAddress !== allowance.spenderAddress || !validEvidenceIds(metadataContext.evidenceIds));
+  const rawCampaignContext = input.campaignContext ?? null;
+  const campaignContext = validApprovalCampaignContext(rawCampaignContext, normalizedValue, allowance);
+  const campaignBindingFailed = rawCampaignContext !== null && campaignContext === null;
+  const outcomeBindingFailed = !bindingFailed && !sessionBindingFailed && !metadataBindingFailed && !campaignBindingFailed &&
+    !validApprovalOutcome(normalizedValue, debit.state, session, metadataContext);
+  const presentationBindingFailed = bindingFailed || sessionBindingFailed || metadataBindingFailed || campaignBindingFailed || outcomeBindingFailed;
   return {
     approval: {
       owner,
@@ -333,6 +370,7 @@ function approvalPresentation(
       debitAmountRaw: debit.amountRaw,
       exactVerify20: value.exactVerify20,
       campaignEvidenceIds: [...value.campaignEvidenceIds],
+      campaignContext,
       serviceSession: session
     },
     assessment: {
