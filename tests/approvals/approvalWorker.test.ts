@@ -187,6 +187,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
   const pollSuccesses: WalletApprovalPollState[] = [];
   const pollFailures: Array<{ watchedWalletId: string; error: string }> = [];
   const evidence: Array<{ rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }> = [];
+  const approvalRisks: unknown[] = [];
   const deps: Parameters<typeof runSingleApprovalPollingCycle>[0] = {
     wallets: [watchedWallet],
     tronClient: {
@@ -224,7 +225,10 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
       claimed.add(event.approvalTxHash);
       return true;
     },
-    recordApprovalRisk: async () => true,
+    recordApprovalRisk: async (input) => {
+      approvalRisks.push(input);
+      return true;
+    },
     claimObservedApprovalDrainEvent: async (observation) => {
       drainObservations.push(observation);
       return true;
@@ -279,7 +283,8 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
     drainObservations,
     pollSuccesses,
     pollFailures,
-    evidence
+    evidence,
+    approvalRisks
   };
 }
 
@@ -477,7 +482,23 @@ describe("runSingleApprovalPollingCycle", () => {
 
     await runSingleApprovalPollingCycle(ctx.deps);
 
-    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalSafetyAssessmentV2).toMatchObject({
+      version: "approval-safety-v2",
+      exactVerify20: true,
+      exactDebit: false,
+      level: "CRITICAL",
+      score: 90,
+      amlScoreImpact: 0
+    });
+    expect(ctx.approvalRisks[0]).toMatchObject({
+      report: {
+        subjectAddress: ownerAddress,
+        level: "CRITICAL",
+        score: 90,
+        reasons: [expect.objectContaining({ source: "approval_wallet_safety", scoreImpact: 90 })]
+      }
+    });
     expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>90/100 — критический риск для кошелька</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("точный Verify20-шаблон массовых списаний");
     expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: не найдено");
@@ -492,7 +513,81 @@ describe("runSingleApprovalPollingCycle", () => {
     ]);
   });
 
-  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE] shows a subject-bound official-USDT balance without changing stored risk", async () => {
+  it("[REQ-20][AC-21][TASK7-VERIFY20-AUTHORITATIVE-FRESH] keeps one authoritative 90 assessment for a fresh exact Verify20 approval", async () => {
+    const pendingContexts: unknown[] = [];
+    const ctx = createDeps({
+      now: () => new Date("2026-05-05T13:43:00.000Z"),
+      markApprovalContextPending: async (input) => {
+        pendingContexts.push(input);
+        return true;
+      },
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => verify20ContractProfile(),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange({ timestamp: new Date("2026-05-05T13:42:21.000Z") })];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(pendingContexts).toEqual([]);
+    expect(ctx.currentApprovals).toHaveLength(1);
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
+    expect(ctx.evidence).toHaveLength(1);
+    expect(ctx.evidence[0]?.rawEvidence[0]?.evidenceJson.approvalSafetyAssessmentV2).toMatchObject({
+      exactVerify20: true,
+      exactDebit: false,
+      level: "CRITICAL",
+      score: 90,
+      amlScoreImpact: 0
+    });
+    expect(ctx.approvalRisks).toHaveLength(1);
+    expect(ctx.approvalRisks[0]).toMatchObject({
+      report: { subjectAddress: ownerAddress, level: "CRITICAL", score: 90 }
+    });
+    expect(ctx.sentOwnerMessages).toHaveLength(1);
+    expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>90/100 — критический риск для кошелька</b>");
+  });
+
+  it("[REQ-20][AC-21][TASK7-VERIFY20-AUTHORITATIVE-NONMATCH] leaves a non-Verify20 approval on its existing path", async () => {
+    const ctx = createDeps({
+      getAddressMetadata: async () => contractMetadata(),
+      getContractIntelligenceProfile: async () => suspiciousContractProfile(),
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: true })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.sentOwnerMessages[0]).toContain("🟡 <b>35/100 — средний риск для кошелька</b>");
+    expect(ctx.sentOwnerMessages[0]).not.toMatch(/Verify20/);
+  });
+
+  it("[REQ-20][AC-20][TASK7-VERIFY20-BALANCE] shows a subject-bound official-USDT balance with the authoritative Verify20 risk", async () => {
     const balanceRequests: Array<{ watchedWalletId: string; ownerAddress: string; signal: AbortSignal }> = [];
     const presentations: Array<Parameters<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["onApprovalPresentation"]>>[0]> = [];
     const ctx = createDeps({
@@ -543,7 +638,7 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(balanceRequests).toEqual([
       expect.objectContaining({ watchedWalletId: watchedWallet.id, ownerAddress, signal: expect.any(AbortSignal) })
     ]);
-    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
     expect(ctx.sentOwnerMessages[0]).toContain("Контракту доступен текущий баланс: 4 084,665 USDT");
     expect(ctx.sentOwnerMessages[0]).toContain("Контекст кампании: 309 Verify20-вызовов.");
     expect(ctx.sentOwnerMessages[0]).not.toContain("241 кошельков-источников");
@@ -659,8 +754,14 @@ describe("runSingleApprovalPollingCycle", () => {
 
   it("[REQ-20][AC-21][TASK7-VERIFY20-CAMPAIGN-BINDING] omits call counts from a foreign contract profile", async () => {
     const foreignContract = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
+    const getApprovalPresentationBalance = vi.fn();
+    const presentations: Array<Parameters<NonNullable<Parameters<typeof runSingleApprovalPollingCycle>[0]["onApprovalPresentation"]>>[0]> = [];
     const ctx = createDeps({
       getAddressMetadata: async () => contractMetadata(),
+      getApprovalPresentationBalance,
+      onApprovalPresentation: async (presentation) => {
+        presentations.push(presentation);
+      },
       getContractIntelligenceProfile: async () => ({
         ...verify20ContractProfile(),
         contractAddress: foreignContract,
@@ -690,6 +791,12 @@ describe("runSingleApprovalPollingCycle", () => {
 
     await runSingleApprovalPollingCycle(ctx.deps);
 
+    expect(getApprovalPresentationBalance).not.toHaveBeenCalled();
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.approvalRisks[0]).toMatchObject({ report: { level: "HIGH", score: 70 } });
+    expect(presentations[0]?.assessment).toMatchObject({ exactVerify20: false, score: 35 });
+    expect(JSON.stringify(ctx.evidence)).not.toContain('"exactVerify20":true');
+    expect(ctx.sentOwnerMessages[0]).not.toContain("90/100");
     expect(ctx.sentOwnerMessages[0]).not.toMatch(/Контекст кампании|BTTOLD/);
   });
 
@@ -736,7 +843,7 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(getApprovalPresentationBalance).not.toHaveBeenCalled();
   });
 
-  it("[REQ-20][AC-21][TASK7-VERIFY20-EXACT-DEBIT] presents a subject-bound exact debit without changing stored risk", async () => {
+  it("[REQ-20][AC-21][TASK7-VERIFY20-EXACT-DEBIT] presents a subject-bound exact debit above the authoritative Verify20 risk", async () => {
     const receiverAddress = "TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD";
     const drainTxHash = "b".repeat(64);
     let relatedCalls = 0;
@@ -781,7 +888,7 @@ describe("runSingleApprovalPollingCycle", () => {
 
     await runSingleApprovalPollingCycle(ctx.deps);
 
-    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "HIGH", riskScore: 70 });
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "CRITICAL", riskScore: 90 });
     expect(ctx.drainObservations[0]).toMatchObject({ transferTxHash: drainTxHash, receiverAddress, amountRaw: "13302000000" });
     expect(ctx.sentOwnerMessages[0]).toContain("🔴 <b>95/100 — критический риск для кошелька</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("Фактическое списание через этот контракт: подтверждено, 13 302 USDT");

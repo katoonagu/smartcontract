@@ -288,7 +288,7 @@ function currentAllowanceView(allowance: ApprovalAllowanceStateV2): {
 
 type ApprovalSafetyEvaluationBundle = {
   evaluation: ApprovalRiskEvaluation;
-  presentationAssessment: ApprovalSafetyAssessmentV2;
+  assessment: ApprovalSafetyAssessmentV2;
   metadataContext: { subjectAddress: string; evidenceIds: string[] } | null;
 };
 
@@ -301,7 +301,6 @@ function applyApprovalSafetyLegacyAdapter(input: {
   contractProfile: ContractIntelligenceProfile | null;
 }): ApprovalSafetyEvaluationBundle {
   const knownService = findKnownServiceBySpender(input.event.spenderAddress);
-  const preserveLegacyReport = !knownService && input.allowance.state === "confirmed_active";
   const providerMetadata = metadataToProviderMetadata(input.metadata);
   const safetyInput = {
     subjectAddress: input.event.spenderAddress,
@@ -320,25 +319,27 @@ function applyApprovalSafetyLegacyAdapter(input: {
     },
     transactionExpirationAt: input.event.expirationAt?.toISOString() ?? null
   };
-  const persistedSafety = evaluateApprovalSafetyV2({ ...safetyInput, exactVerify20: false });
   const verify20 = detectVerify20Fingerprint({
     methodMap: input.contractProfile?.methodMap,
     topMethods: input.contractProfile?.topMethods,
     serviceLabel: knownService?.id ?? null
   });
-  const presentationAssessment = evaluateApprovalSafetyV2({ ...safetyInput, exactVerify20: verify20.matched });
+  const exactVerify20 = input.contractProfile?.contractAddress === input.event.spenderAddress &&
+    input.contractProfile.address === input.event.spenderAddress && verify20.matched;
+  const assessment = evaluateApprovalSafetyV2({ ...safetyInput, exactVerify20 });
+  const preserveLegacyReport = !knownService && input.allowance.state === "confirmed_active" && !exactVerify20;
   const evaluation = preserveLegacyReport
     ? input.evaluation
     : {
         ...input.evaluation,
-        report: approvalSafetyAssessmentToRiskReport(persistedSafety),
+        report: approvalSafetyAssessmentToRiskReport(assessment),
         rawEvidence: input.evaluation.rawEvidence.map((item, index) => index === 0
-          ? { ...item, evidenceJson: { ...item.evidenceJson, approvalSafetyAssessmentV2: persistedSafety } }
+          ? { ...item, evidenceJson: { ...item.evidenceJson, approvalSafetyAssessmentV2: assessment } }
           : item)
       };
   return {
     evaluation,
-    presentationAssessment,
+    assessment,
     metadataContext: input.metadata !== null || input.contractProfile !== null
       ? {
           subjectAddress: input.event.spenderAddress,
@@ -592,11 +593,13 @@ function shouldPendApprovalContext(input: {
   labels: AddressLabel[];
   metadata: AddressMetadata | null;
   contractProfile: ContractIntelligenceProfile | null;
+  exactVerify20: boolean;
   now: Date;
   suppressApprovalAlerts?: boolean;
   canPersistPending: boolean;
 }): boolean {
   if (input.suppressApprovalAlerts || !input.canPersistPending) return false;
+  if (input.exactVerify20) return false;
   if (input.event.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) return false;
   if (input.event.spenderType !== "contract") return false;
   if (!hasUnlimitedOrVeryLargeAllowance(input.event)) return false;
@@ -1479,7 +1482,7 @@ async function processApproval(
     const baseEvaluation = baseBundle.evaluation;
     const baseCampaignContext = approvalCampaignContext(
       event,
-      baseBundle.presentationAssessment,
+      baseBundle.assessment,
       contractProfile,
       baseEvaluation
     );
@@ -1487,7 +1490,7 @@ async function processApproval(
     const presentationBalanceRaw = await resolveApprovalPresentationBalance(
       event,
       wallet.id,
-      baseBundle.presentationAssessment,
+      baseBundle.assessment,
       deps
     );
     const shouldPendContext = shouldPendApprovalContext({
@@ -1495,6 +1498,7 @@ async function processApproval(
       labels,
       metadata,
       contractProfile,
+      exactVerify20: baseBundle.assessment.exactVerify20,
       now,
       suppressApprovalAlerts: deps.suppressApprovalAlerts,
       canPersistPending: Boolean(deps.markApprovalContextPending)
@@ -1538,7 +1542,7 @@ async function processApproval(
       if (markedPending) {
         await deliverPendingApprovalAlert(event, wallet, pendingReport, {
           assessment: presentationAssessmentWithContext(
-            baseBundle.presentationAssessment,
+            baseBundle.assessment,
             presentationBalanceRaw,
             baseCampaignContext
           ),
@@ -1618,8 +1622,8 @@ async function processApproval(
       ? exactDebitProfileFromObservation(exactDebitObservation)
       : sessionResolution?.exactDebitProfile ?? null;
     const presentationAssessment = exactDebitProfile
-      ? exactDebitPresentationAssessment(evaluationBundle.presentationAssessment, exactDebitProfile)
-      : evaluationBundle.presentationAssessment;
+      ? exactDebitPresentationAssessment(evaluationBundle.assessment, exactDebitProfile)
+      : evaluationBundle.assessment;
     const campaignContext = approvalCampaignContext(
       event,
       presentationAssessment,
@@ -1796,7 +1800,7 @@ async function finalizeApprovalContext(row: PendingApprovalContextRow, deps: App
   const presentationBalanceRaw = await resolveApprovalPresentationBalance(
     event,
     row.wallet.id,
-    evaluationBundle.presentationAssessment,
+    evaluationBundle.assessment,
     deps
   );
   const evaluation = annotateApprovalEvaluationState(evaluationBundle.evaluation, approvalMonitoringStateForSession(sessionContext));
@@ -1846,8 +1850,8 @@ async function finalizeApprovalContext(row: PendingApprovalContextRow, deps: App
 
   const exactDebitProfile = sessionResolution?.exactDebitProfile ?? null;
   const presentationAssessment = exactDebitProfile
-    ? exactDebitPresentationAssessment(evaluationBundle.presentationAssessment, exactDebitProfile)
-    : evaluationBundle.presentationAssessment;
+    ? exactDebitPresentationAssessment(evaluationBundle.assessment, exactDebitProfile)
+    : evaluationBundle.assessment;
   const campaignContext = approvalCampaignContext(
     event,
     presentationAssessment,
