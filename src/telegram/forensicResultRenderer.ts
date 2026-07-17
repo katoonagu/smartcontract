@@ -329,6 +329,17 @@ function technicalContextLines(result: TelegramForensicResultV1): string[] {
   return [];
 }
 
+const SECONDARY_SERVICE_FACT_KEYS = new Set([
+  "bridge_shared_liquidity_inbound",
+  "usdd_psm_inbound_shared_liquidity",
+  "usdd_psm_outbound_shared_liquidity"
+]);
+
+function secondaryServiceFactLines(result: TelegramForensicResultV1): string[] {
+  const fact = result.secondaryFacts.find((candidate) => SECONDARY_SERVICE_FACT_KEYS.has(candidate.factTextKey));
+  return fact ? preliminaryFactLines(fact, result.locale) ?? [] : [];
+}
+
 function technicalReasonText(key: string | null, locale: "ru" | "en"): string {
   const ru: Record<string, string> = {
     insufficient_coverage: "Недостаточно подтверждённого покрытия, чтобы рассчитать итоговую оценку.",
@@ -658,6 +669,7 @@ function renderWherePreliminary(result: TelegramForensicResultV1): string {
   const fact = result.primaryFact;
   const reasons = fact ? preliminaryFactLines(fact, "ru") : null;
   if (!assessment || assessment.kind !== "aml_risk" || !fact || !reasons) return renderTechnical(result);
+  const serviceContext = fact.factTextKey.startsWith("score.") ? secondaryServiceFactLines(result) : [];
   const lines = [
     title(result),
     walletLine(result),
@@ -665,7 +677,8 @@ function renderWherePreliminary(result: TelegramForensicResultV1): string {
     `${assessment.indicator} <b>Предварительный риск: ${assessment.score}/100</b>`,
     "",
     "🔎 <b>Почему такая оценка</b>",
-    ...reasons
+    ...reasons,
+    ...serviceContext
   ];
   if (result.routes.length > 0) lines.push("", "💸 <b>Движение денег</b>", ...routeLines(result));
   const coverage = standardCoverage(result);
@@ -677,7 +690,6 @@ function renderFinalAml(result: TelegramForensicResultV1): string {
   const assessment = result.assessment;
   const primary = result.primaryFact;
   if (!assessment || assessment.kind !== "aml_risk" || !primary) return renderTechnical(result);
-  const secondary = result.secondaryFacts[0] ?? null;
   const lines = [title(result), walletLine(result), "", riskHeading(assessment)];
   if (assessment.kind === "aml_risk" && assessment.decision === "DECLINE") lines.push("Операцию не проводить.");
   else if (
@@ -734,11 +746,19 @@ function renderFinalAml(result: TelegramForensicResultV1): string {
     return renderTechnical(result);
   }
 
+  const serviceContext = primary.factTextKey.startsWith("score.") ? secondaryServiceFactLines(result) : [];
+  lines.push(...serviceContext);
+
   if (result.routes.length > 0) {
     lines.push("", "💸 <b>Движение денег</b>", ...routeLines(result));
   }
-  if (secondary?.factTextKey === "bridge_shared_liquidity_inbound") {
-    if (secondary.share !== null) lines.push(`${percent(secondary.share, result.locale)}% проверяемой суммы поступило через мост или обменный сервис; до общего пула источник не разделяется по клиентам.`);
+  const bridgeContext = result.secondaryFacts.find((fact) => fact.factTextKey === "bridge_shared_liquidity_inbound") ?? null;
+  const collectorContext = result.secondaryFacts.find((fact) => fact.factTextKey === "collector_context_only") ?? null;
+  if (serviceContext.length === 0 && bridgeContext && bridgeContext.share !== null) {
+    lines.push(`${percent(bridgeContext.share, result.locale)}% проверяемой суммы поступило через мост или обменный сервис; до общего пула источник не разделяется по клиентам.`);
+  }
+  if (collectorContext && collectorContext.txCount !== null) {
+    lines.push(`Кошелёк работает как коллектор: собирает переводы и перемещает их дальше (${russianTransfers(collectorContext.txCount)}).`);
   }
   const coverage = standardCoverage(result).filter((line) =>
     primary.factTextKey !== "usdd_psm_inbound_shared_liquidity" || !line.startsWith("Оставшиеся ")
@@ -954,6 +974,7 @@ function renderEnglish(result: TelegramForensicResultV1): string {
   const preliminaryReasons = result.kind === "where_preliminary" && primary
     ? preliminaryFactLines(primary, "en")
     : null;
+  const serviceContext = primary?.factTextKey.startsWith("score.") ? secondaryServiceFactLines(result) : [];
   if (result.kind === "where_preliminary" && !preliminaryReasons) return renderEnglishTechnical(result);
   const factCopy = primary ? englishFact(primary) : facts[0] ? englishFact(facts[0]) : null;
   if (primary && !factCopy) return renderEnglishTechnical(result);
@@ -977,6 +998,7 @@ function renderEnglish(result: TelegramForensicResultV1): string {
     "",
     "🔎 <b>Why</b>",
     ...(preliminaryReasons ?? [factCopy ?? "Only validated deterministic context is shown."]),
+    ...serviceContext,
     ...(result.routes.length ? ["", "💸 <b>Money movement</b>", ...routeLines(result)] : []),
     ...(englishCoverage(result).length ? ["", ...englishCoverage(result)] : []),
     ...action

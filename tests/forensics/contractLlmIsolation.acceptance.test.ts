@@ -564,7 +564,7 @@ describe("automatic contract LLM isolation acceptance", () => {
     expectNoModelMaterial(result, [String(LEGACY_SCORE), LEGACY_REASON, LEGACY_CITATION, "legacy-cache-id"]);
   });
 
-  it("[AC-39][REQ-25][LLM-LEGACY][TELEGRAM] removes model output from Bot and Alert formatting", async () => {
+  it("[AC-39][REQ-25][LLM-LEGACY][TELEGRAM] fails closed for untyped legacy Alert payloads", async () => {
     const [smart, bot, alerts] = await Promise.all([
       smartContractModule(),
       vi.importActual<Record<string, unknown>>("../../src/bot/createBot"),
@@ -603,9 +603,11 @@ describe("automatic contract LLM isolation acceptance", () => {
     ]) {
       expect.soft(rendered).not.toContain(forbidden);
     }
-    expect.soft(rendered).toContain(`${LEGACY_SCORE}/100`);
-    expect.soft(rendered).toContain("DECLINE");
-    expect.soft(rendered).toContain(DETERMINISTIC_MODEL_TOKEN_REASON);
+    expect.soft(rendered).toContain(`https://tronscan.org/#/address/${SUBJECT}`);
+    expect.soft(rendered).toContain("Final score was not calculated");
+    expect.soft(rendered).not.toContain(`${LEGACY_SCORE}/100`);
+    expect.soft(rendered).not.toContain("DECLINE");
+    expect.soft(rendered).not.toContain(DETERMINISTIC_MODEL_TOKEN_REASON);
     expect.soft(rendered).not.toMatch(/AI contract verdict|AI-оценка контракта/i);
     expect.soft(storedWhere).toEqual(storedWhereBefore);
     expect.soft(storedIncoming).toEqual(storedIncomingBefore);

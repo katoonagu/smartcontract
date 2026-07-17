@@ -6273,8 +6273,10 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Deep forensic job failed");
-    expect(text).toContain("<provider timeout>");
+    expect(text).toContain("Final score was not calculated");
+    expect(text).toContain("The data source ended the check with an error.");
+    expect(text).not.toContain("Deep forensic job failed");
+    expect(text).not.toContain("<provider timeout>");
   });
 
   it("extracts persisted deep result JSON only when the report shape and subject match", () => {

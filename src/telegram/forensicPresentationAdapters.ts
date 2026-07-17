@@ -528,6 +528,10 @@ function allowedAnchorModes(kind: TelegramForensicResultKindV1): readonly ScoreA
   return [];
 }
 
+function allowedFactModes(kind: TelegramForensicResultKindV1): readonly ScoreAnchorV2["mode"][] {
+  return kind === "wallet_final" ? ["where", "unified", "deep"] : allowedAnchorModes(kind);
+}
+
 function validAmlAction(source: TelegramForensicSource, anchor: ScoreAnchorV2): boolean {
   const action = source.amlPresentation?.actionTextKey ?? null;
   if (source.kind === "where_preliminary") return source.resultState === "preliminary" && action === null;
@@ -576,7 +580,7 @@ export function adaptTelegramForensicResult(
       const primaryEvidence = new Set(primaryFact.evidenceIds);
       secondaryFacts = source.narrativeFactsV2
         .filter((fact) => fact.id !== primaryFact!.id && !fact.isScoreDriver)
-        .map((fact) => canonicalFact(fact, source.checkedWalletAddress, allowedModes))
+        .map((fact) => canonicalFact(fact, source.checkedWalletAddress, allowedFactModes(source.kind)))
         .filter((fact): fact is NarrativeFactV2 => Boolean(fact))
         .filter((fact) => !fact.evidenceIds.some((id) => primaryEvidence.has(id)));
       if (!validAmlAction(source, anchor)) throw new Error("telegram_action_mismatch");
@@ -602,7 +606,7 @@ export function adaptTelegramForensicResult(
       assessment = null;
     }
   } else if (!approvalBranch && !contractBranch) {
-    const allowedModes = allowedAnchorModes(source.kind);
+    const allowedModes = allowedFactModes(source.kind);
     secondaryFacts = source.narrativeFactsV2
       .map((fact) => canonicalFact(fact, source.checkedWalletAddress, allowedModes))
       .filter((fact): fact is NarrativeFactV2 => Boolean(fact));
@@ -640,7 +644,7 @@ export function adaptTelegramForensicResult(
     resultState = "no_final";
   }
 
-  const routeModes = allowedAnchorModes(source.kind);
+  const routeModes = allowedFactModes(source.kind);
   const routeEvidenceIds = new Set<string>();
   if (!approvalBranch && !contractBranch) {
     for (const fact of source.narrativeFactsV2) {

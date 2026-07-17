@@ -145,6 +145,14 @@ function expectLegacyApprovalCompatibilityNoFinal(text: string): void {
   expect(text).not.toMatch(/\b(?:spender|allowance|approval|Bridge|router|DEX)\b/i);
 }
 
+function expectLegacyIncomingCompatibilityNoFinal(text: string, locale: "ru" | "en" = "ru"): void {
+  expect(text).toContain(incomingDepositBaseInput.sender);
+  expect(text).not.toContain(`https://tronscan.org/#/address/${incomingDepositBaseInput.sender}`);
+  expect(text).toContain(locale === "en" ? "Final score was not calculated" : "Итоговая оценка не рассчитана");
+  expect(text).not.toMatch(/\b\d{1,3}\/100\b/);
+  expect(text).not.toMatch(/\b(?:DECLINE|REVIEW|ACCEPTABLE)\b/);
+}
+
 describe("alert formatters", () => {
   it("formats user incoming alert with score, HTML parse mode, and reasons", () => {
     const message = formatUserIncomingAlert({
@@ -167,24 +175,8 @@ describe("alert formatters", () => {
     const message = formatIncomingDepositRiskAlert(incomingDepositBaseInput);
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("<b>Входящий USDT");
-    expect(message.text).toContain("31.05.2026 14:02 MSK");
-    expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("<b>Риск депозита</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
-    expect(message.text).toContain("<b>Быстрая проверка отправителя</b>: <code>0/100</code> (<code>LOW</code>)");
-    expect(message.text).toContain("<b>Покрытие депозита</b>: <code>76%</code>");
-    expect(message.text).toContain("<b>Чистый источник</b>: <code>0%</code>");
-    expect(message.text).toContain("<b>уверенность</b>: <code>средняя</code>");
-    expect(message.text).toContain("<b>Роль отправителя</b>");
-    expect(message.text).not.toContain("Data quality");
-    expect(message.text).not.toContain("<b>AI-оценка контракта</b>");
-    expect(message.text).not.toContain("подозрительный неизвестный контракт 68/100 для");
-    expect(message.text).not.toContain("<b>AI contract verdict</b>");
-    expect(message.text).not.toContain("<b>Fast sender check</b>");
-    expect(message.text).not.toContain("68/100 for");
-    expect(message.text).not.toContain("Отправитель получил средства от неизвестного смарт-контракта незадолго до депозита.");
-    expect(message.text).toContain("Отправитель был пополнен неизвестным смарт-контрактом незадолго до этого депозита.");
-    expect(message.text).not.toContain("Low risk: <code>0/100</code>");
+    expectLegacyIncomingCompatibilityNoFinal(message.text);
+    expect(message.text).not.toContain("Отправитель был пополнен неизвестным смарт-контрактом");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
   });
 
@@ -468,17 +460,8 @@ describe("alert formatters", () => {
   it("formats final incoming deposit risk in English when requested", () => {
     const message = formatIncomingDepositRiskAlert({ ...incomingDepositBaseInput, locale: "en" });
 
-    expect(message.text).toContain("<b>Incoming USDT");
-    expect(message.text).toContain("May 31, 2026 14:02 MSK");
-    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("<b>Deposit risk</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
-    expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
-    expect(message.text).not.toContain("<b>AI contract verdict</b>");
-    expect(message.text).not.toContain("unknown_suspicious 68/100 for");
-    expect(message.text).toContain("<b>Deposit funding coverage</b>: <code>76%</code>");
-    expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
-    expect(message.text).toContain("<b>origin confidence</b>: <code>medium</code>");
-    expect(message.text).not.toContain("Data quality");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toContain("unknown_suspicious");
   });
 
   it("keeps the Russian address-substitution warning prominent without changing the AML result", () => {
@@ -495,9 +478,7 @@ describe("alert formatters", () => {
 
     expect(explicitlyInactive).toEqual(baseline);
     expect(active.text.split(warning)).toHaveLength(2);
-    expect(active.text.indexOf(warning)).toBeGreaterThan(active.text.indexOf("<b>Риск депозита</b>"));
-    expect(active.text.indexOf(warning)).toBeLessThan(active.text.indexOf("<b>Сумма</b>"));
-    expect(active.text.replace(`\n\n${warning}`, "")).toBe(baseline.text);
+    expect(active.text).toBe(`${baseline.text}\n\n${warning}`);
   });
 
   it("keeps the English address-substitution warning prominent without changing the AML result", () => {
@@ -510,9 +491,7 @@ describe("alert formatters", () => {
     const warning = "⚠️ Address substitution warning remains active.";
 
     expect(active.text.split(warning)).toHaveLength(2);
-    expect(active.text.indexOf(warning)).toBeGreaterThan(active.text.indexOf("<b>Deposit risk</b>"));
-    expect(active.text.indexOf(warning)).toBeLessThan(active.text.indexOf("<b>Amount</b>"));
-    expect(active.text.replace(`\n\n${warning}`, "")).toBe(baseline.text);
+    expect(active.text).toBe(`${baseline.text}\n\n${warning}`);
   });
 
   it("renders an Incoming technical stop without inventing a numeric final risk", () => {
@@ -528,11 +507,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("NO_FINAL_DECISION");
-    expect(message.text).toContain("no final score");
-    expect(message.text).toContain("Observed context");
-    expect(message.text).toContain("59");
-    expect(message.text).not.toContain("null/100");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/NO_FINAL_DECISION|Observed context|59/);
   });
 
   it("renders the canonical Incoming REVIEW decision", () => {
@@ -548,8 +524,7 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("<b>Decision</b>: <code>REVIEW</code>");
-    expect(message.text).toContain("<code>45/100</code>");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
   });
 
   it("shows historical HTX/Huobi context without source-proof wording in incoming deposit alerts", () => {
@@ -564,9 +539,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("Historical HTX/Huobi sender inflow");
-    expect(message.text).toContain("background context only, not fresh deposit proof");
-    expect(message.text).not.toContain("100% of selected provenance target");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toContain("Historical HTX/Huobi sender inflow");
   });
 
   it("adds shared incoming exposure context without mixing source proof and history", () => {
@@ -627,12 +601,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("HTX/Huobi funds 70% of the selected amount.");
-    expect(message.text).toContain("Historical HTX/Huobi exposure is context, not selected-amount source proof.");
-    expect(message.text).toContain("The graph stopped before resolving a material bridge/router/DEX boundary.");
-    expect(message.text).not.toContain("fresh-source-proof-tx");
-    expect(message.text).not.toContain("boundary-proof-tx");
-    expect(message.text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/HTX\/Huobi funds|fresh-source-proof-tx|boundary-proof-tx|bridge\/router\/DEX/);
   });
 
   it("labels non-bridge unresolved source boundaries in incoming deposit alerts", () => {
@@ -676,8 +646,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("The graph stopped before resolving a material unknown-contract source boundary.");
-    expect(message.text).not.toContain("bridge/router/DEX boundary");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/unknown-contract source boundary|bridge\/router\/DEX boundary/);
   });
 
   it("formats incoming deposit LOW-MEDIUM risk with a yellow icon", () => {
@@ -691,7 +661,7 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("<b>Риск депозита</b>: 🟡 <code>40/100</code> (<code>LOW-MEDIUM</code>)");
+    expectLegacyIncomingCompatibilityNoFinal(message.text);
   });
 
   it("shows funding coverage instead of checked-origin amount for low-confidence incoming deposits", () => {
@@ -711,11 +681,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).not.toContain("Checked origin");
-    expect(message.text).not.toContain("15% of amount");
-    expect(message.text).toContain("<b>Deposit funding coverage</b>: <code>100%</code>");
-    expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
-    expect(message.text).toContain("<b>origin confidence</b>: <code>low</code>");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/Checked origin|15% of amount|Deposit funding coverage|clean-source proof|origin confidence/);
   });
 
   it("shows localized funding coverage instead of checked-origin amount for low-confidence incoming deposits", () => {
@@ -734,11 +701,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).not.toContain("Проверено происхождение");
-    expect(message.text).not.toContain("15% суммы");
-    expect(message.text).toContain("<b>Покрытие депозита</b>: <code>100%</code>");
-    expect(message.text).toContain("<b>Чистый источник</b>: <code>0%</code>");
-    expect(message.text).toContain("<b>уверенность</b>: <code>низкая</code>");
+    expectLegacyIncomingCompatibilityNoFinal(message.text);
+    expect(message.text).not.toMatch(/Проверено происхождение|15% суммы|Покрытие депозита|Чистый источник|уверенность/);
   });
 
   it("shows large-transfer funding bundle context without dumping paths or claiming clean origin", () => {
@@ -796,11 +760,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("A large intermediate transfer is covered by inbound liquidity, but the clean source further upstream is not proven.");
-    expect(message.text).not.toContain("TLargeLiquidityHub111111111111111111 -&gt; TCorridorLiquidity111111111111111111");
-    expect(message.text).not.toContain("bundle-funding-1");
-    expect(message.text).not.toContain("<b>clean-source proof</b>: <code>100%</code>");
-    expect(message.text).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/large intermediate transfer|TLargeLiquidityHub|bundle-funding-1|clean-source proof/);
   });
 
   it("shows compressed liquidity corridor context without dumping paths or tx hashes", () => {
@@ -850,10 +811,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("Large liquidity corridor: the money flow is explained, but clean CEX was not reached further upstream.");
-    expect(message.text).not.toContain("-&gt;");
-    expect(message.text).not.toContain("corridor-hop-tx-1");
-    expect(message.text).not.toContain("TLongCorridorMiddle111111111111111");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/Large liquidity corridor|-&gt;|corridor-hop-tx-1|TLongCorridorMiddle/);
   });
 
   it("uses neutral missing-reason copy for high-risk incoming deposits", () => {
@@ -865,8 +824,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("Детальные причины не переданы.");
-    expect(message.text).not.toContain("Критичных риск-сигналов по депозиту не найдено.");
+    expectLegacyIncomingCompatibilityNoFinal(message.text);
+    expect(message.text).not.toMatch(/Детальные причины|Критичных риск-сигналов/);
   });
 
   it("uses positive missing-reason copy only for acceptable low incoming deposits", () => {
@@ -882,8 +841,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("No critical deposit-risk signals were found.");
-    expect(message.text).not.toContain("No detailed reasons were provided.");
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toMatch(/critical deposit-risk signals|detailed reasons/);
   });
 
   it("omits incoming deposit AI contract verdict section when there are no verdicts", () => {
@@ -988,9 +947,8 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("<code>68/100</code>");
-    expect(message.text).toContain(deterministicReason);
+    expectLegacyIncomingCompatibilityNoFinal(message.text, "en");
+    expect(message.text).not.toContain(deterministicReason);
     expect(message.text).not.toContain("AI contract verdict");
   });
 

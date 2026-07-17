@@ -1,18 +1,11 @@
-import type { BotLocale, IncomingDepositRiskReport, RiskReport, SourceBundleExposureSourceKind } from "../types";
+import type { BotLocale, IncomingDepositRiskReport, RiskReport } from "../types";
 import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
-import { formatNotificationMskTime } from "./notificationTime";
 import { adaptTelegramForensicResult } from "../telegram/forensicPresentationAdapters";
 import type { ApprovalPresentationInputV1 } from "../telegram/forensicPresentation";
 import { renderTelegramForensicResult } from "../telegram/forensicResultRenderer";
+import { renderTelegramTechnicalResult } from "../telegram/technicalResult";
 import { parseUsdtDecimalToRaw } from "../forensics/usdtAmount";
-import {
-  checksLabel,
-  decisionLabel,
-  normalizeNotificationReason,
-  riskObjectLabel,
-  senderRoleText
-} from "./notificationText";
 import {
   TELEGRAM_MESSAGE_LIMIT,
   bold,
@@ -124,144 +117,6 @@ export function formatApprovalSafetyPresentationAlert(input: {
     approvalPresentationEvaluatedAt: input.evaluatedAt,
     approvalPresentationInput: input.approvalPresentationInput
   }) ?? telegramHtmlMessage([input.locale === "en" ? "Approval safety result is unavailable." : "Результат проверки доступа к USDT недоступен."]);
-}
-
-function hasLowAcceptableDepositRisk(report: IncomingDepositRiskReport): boolean {
-  return report.decision === "ACCEPTABLE" && report.riskBand === "LOW";
-}
-
-function missingIncomingDepositReasonText(report: IncomingDepositRiskReport, locale: BotLocale): string {
-  if (hasLowAcceptableDepositRisk(report)) {
-    return locale === "en"
-      ? "No critical deposit-risk signals were found."
-      : "Критичных риск-сигналов по депозиту не найдено.";
-  }
-
-  return locale === "en"
-    ? "No detailed reasons were provided."
-    : "Детальные причины не переданы.";
-}
-
-function hasIncomingDepositFundingBundles(report: IncomingDepositRiskReport): boolean {
-  return report.originPaths.some((path) => (path.fundingBundles?.length ?? 0) > 0);
-}
-
-function incomingDepositFundingBundleContextText(locale: BotLocale): string {
-  return locale === "en"
-    ? "A large intermediate transfer is covered by inbound liquidity, but the clean source further upstream is not proven."
-    : "Крупный промежуточный перевод покрыт входящими потоками, но чистый источник выше по цепочке не доказан.";
-}
-
-function hasIncomingDepositCorridorSummary(report: IncomingDepositRiskReport): boolean {
-  return report.corridorSummary?.kind === "large_liquidity_corridor";
-}
-
-function incomingDepositCorridorContextText(locale: BotLocale): string {
-  return locale === "en"
-    ? "Large liquidity corridor: the money flow is explained, but clean CEX was not reached further upstream."
-    : "Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.";
-}
-
-function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind, locale: BotLocale): string {
-  switch (kind) {
-    case "bridge_router_dex":
-      return locale === "ru" ? "граница bridge/router/DEX" : "bridge/router/DEX boundary";
-    case "htx_huobi":
-      return locale === "ru" ? "граница источника HTX/Huobi" : "HTX/Huobi source boundary";
-    case "risky_label":
-      return locale === "ru" ? "граница источника с риск-лейблом" : "risky-label source boundary";
-    case "unknown_contract":
-      return locale === "ru" ? "граница неизвестного смарт-контракта" : "unknown-contract source boundary";
-    case "unknown":
-      return locale === "ru" ? "неизвестная граница источника" : "unknown source boundary";
-    case "clean_cex":
-    default:
-      return locale === "ru" ? "граница источника" : "source boundary";
-  }
-}
-
-function sharedIncomingExposureContextLines(report: IncomingDepositRiskReport, locale: BotLocale): string[] {
-  const lines: string[] = [];
-  const sourceExposure = report.sourceBundleExposure;
-  if (sourceExposure && Number.isFinite(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
-    lines.push(locale === "en"
-      ? `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
-      : `HTX/Huobi покрывает ${clampedPercent(sourceExposure.htxHuobiShare)} выбранной суммы.`);
-  }
-  if (report.subjectExposureProfile && Number.isFinite(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
-    lines.push(locale === "en"
-      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
-      : "Историческая связь с HTX/Huobi — это контекст по отправителю, а не доказательство источника выбранной суммы.");
-  }
-  if (sourceExposure?.unresolvedBoundary) {
-    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind, locale);
-    lines.push(locale === "en"
-      ? `The graph stopped before resolving a material ${boundaryLabel}.`
-      : `Граф остановился до разрешения существенной границы: ${boundaryLabel}.`);
-  }
-  return lines;
-}
-
-function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale: BotLocale): string {
-  const reasons = report.reasons.length > 0
-    ? report.reasons.slice(0, MAX_REASON_COUNT).map((reason) => normalizeNotificationReason(reason, locale))
-    : [missingIncomingDepositReasonText(report, locale)];
-  for (const contextReason of sharedIncomingExposureContextLines(report, locale)) {
-    if (!reasons.includes(contextReason)) reasons.push(contextReason);
-  }
-  if (hasIncomingDepositFundingBundles(report)) {
-    const contextReason = incomingDepositFundingBundleContextText(locale);
-    if (!reasons.includes(contextReason)) reasons.push(contextReason);
-  }
-  if (hasIncomingDepositCorridorSummary(report)) {
-    const contextReason = incomingDepositCorridorContextText(locale);
-    if (!reasons.includes(contextReason)) reasons.push(contextReason);
-  }
-  return bulletList(reasons);
-}
-
-function fastSenderCheckLabel(locale: BotLocale): string {
-  return locale === "en" ? "Fast sender check" : "Быстрая проверка отправителя";
-}
-
-function formatFastSenderRisk(report: IncomingDepositRiskReport): string {
-  if (!report.fastSenderRisk) return code("unknown");
-  return `${code(`${report.fastSenderRisk.score}/100`)} (${code(report.fastSenderRisk.level)})`;
-}
-
-function clampedPercent(value: number): string {
-  const finiteValue = Number.isFinite(value) ? value : 0;
-  return `${Math.round(Math.max(0, Math.min(1, finiteValue)) * 100)}%`;
-}
-
-function incomingOriginConfidenceText(report: IncomingDepositRiskReport, locale: BotLocale): string {
-  const confidence = Number.isFinite(report.provenanceConfidence) ? report.provenanceConfidence : 0;
-  if (confidence >= 70) return locale === "en" ? "high" : "высокая";
-  if (confidence >= 40) return locale === "en" ? "medium" : "средняя";
-  return locale === "en" ? "low" : "низкая";
-}
-
-function incomingOriginConfidenceLabel(report: IncomingDepositRiskReport, locale: BotLocale): string {
-  return [
-    `${bold(locale === "en" ? "Deposit funding coverage" : "Покрытие депозита")}: ${code(clampedPercent(report.fundingCoverage.depositFundingCoverageRatio))}`,
-    `${bold(locale === "en" ? "clean-source proof" : "Чистый источник")}: ${code(clampedPercent(report.fundingCoverage.cleanSourceCoverageRatio))}`,
-    `${bold(locale === "en" ? "origin confidence" : "уверенность")}: ${code(incomingOriginConfidenceText(report, locale))}`
-  ].join("; ");
-}
-
-function incomingDepositRiskIcon(band: IncomingDepositRiskReport["riskBand"]): string {
-  if (band === null) return "⚪️";
-  switch (band) {
-    case "LOW":
-      return "🟢";
-    case "LOW-MEDIUM":
-    case "MEDIUM":
-      return "🟡";
-    case "HIGH":
-      return "🟠";
-    case "CRITICAL":
-      return "🔴";
-  }
 }
 
 type IncomingPresentationRoute = {
@@ -474,42 +329,21 @@ export function formatIncomingDepositRiskAlert(input: {
       })
     };
   }
-  const eventTime = formatNotificationMskTime(input.timestamp, locale);
-  const title = locale === "en"
-    ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`
-    : `Входящий USDT${eventTime ? ` — ${eventTime}` : ""}`;
-  const riskLine = report.depositRiskScore === null
-    ? `${bold(locale === "en" ? "Deposit risk" : "Риск депозита")}: ${code(locale === "en" ? "no final score" : "нет итоговой оценки")}`
-    : `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(report.riskBand)} ${code(`${report.depositRiskScore}/100`)} (${code(report.riskBand ?? "unknown")})`;
-  const contextLine = report.depositRiskScore === null
-    ? `${bold(locale === "en" ? "Observed context" : "Наблюдаемый контекст")}: ${code(String(report.observedContextScore))}`
-    : null;
-  const message = telegramHtmlMessage([
-    bold(title),
-    `${bold(decisionLabel(locale))}: ${code(report.decision)}`,
-    riskLine,
-    contextLine,
+  const technicalMessage = telegramHtmlMessage([
+    renderTelegramTechnicalResult({
+      checkedWalletAddress: input.sender,
+      locale,
+      evaluatedAt: input.timestamp ?? new Date(0),
+      reason: "insufficient_validated_data"
+    }),
     input.addressPoisoningWarningActive
       ? locale === "en"
         ? "⚠️ Address substitution warning remains active."
         : "⚠️ Предупреждение о возможной подмене адреса остаётся активным."
-      : null,
-    [
-      `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(`${input.amount} USDT`)}`,
-      `${bold(locale === "en" ? "Watched wallet" : "Кошелек")}: ${code(input.watchedWallet)}`,
-      `${bold(locale === "en" ? "Sender" : "Отправитель")}: ${code(input.sender)}`
-    ].join("\n"),
-    section(locale === "en" ? "Reasons" : "Причины", [formatIncomingDepositReasons(report, locale)]),
-    section(checksLabel(locale), [
-      `${bold(fastSenderCheckLabel(locale))}: ${formatFastSenderRisk(report)}`,
-      incomingOriginConfidenceLabel(report, locale),
-      `${bold(locale === "en" ? "Sender role" : "Роль отправителя")}: ${code(senderRoleText(report.senderRole, locale))}`
-    ]),
-    `${bold(locale === "en" ? "Tx" : "Транзакция")}: ${code(input.txHash)}`
+      : null
   ]);
-
   return {
-    ...message,
+    ...technicalMessage,
     replyMarkup: userIncomingDepositRiskKeyboard({
       jobId: input.jobId,
       sender: input.sender,

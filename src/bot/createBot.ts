@@ -95,6 +95,7 @@ import type {
   ApprovalDrainProvenanceProfile,
   BalanceFormingTransfer,
   BoundaryExposureProfile,
+  ContractDecisionEvidenceV1,
   ContractDecisionV2,
   CounterpartyRiskProfile,
   CrossChainContinuationReasoningStep,
@@ -117,6 +118,9 @@ import type {
 import { adaptTelegramForensicResult } from "../telegram/forensicPresentationAdapters";
 import { telegramAddressRef } from "../telegram/forensicPresentation";
 import { renderTelegramForensicResult } from "../telegram/forensicResultRenderer";
+import { buildWhereTelegramPresentation } from "../telegram/whereForensicPresentation";
+import { renderTelegramTechnicalResult } from "../telegram/technicalResult";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { addressPoisoningAlertKeyboard } from "../alerts/addressPoisoningAlert";
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
@@ -1456,7 +1460,11 @@ function formatCrossBridgeQueued(
   ].filter((line): line is string => Boolean(line)));
 }
 
-function contractDecisionPresentationFact(value: unknown, subjectAddress: string): {
+function contractDecisionPresentationFact(
+  value: unknown,
+  subjectAddress: string,
+  evidence: readonly ContractDecisionEvidenceV1[] = []
+): {
   decision: ContractDecisionV2;
   fact: NarrativeFactV2;
 } | null {
@@ -1469,11 +1477,18 @@ function contractDecisionPresentationFact(value: unknown, subjectAddress: string
     !Array.isArray(deterministic.evidenceIds) ||
     !deterministic.evidenceIds.every((id) => typeof id === "string" && id.length > 0)
   ) return null;
+  const officialUsdt = candidate.deterministic?.authority === "official_registry" &&
+    subjectAddress === TRON_USDT_CONTRACT_ADDRESS &&
+    deterministic.evidenceIds.includes("registry:official-tron-usdt") &&
+    evidence.some((row) => row.id === "registry:official-tron-usdt" && row.kind === "official_registry" &&
+      row.subjectAddress === subjectAddress && row.spenderAddress === null && row.tokenContract === null);
   const semantics = {
     exact_debit: ["contract_exact_debit", "contract_exact_debit_confirmed"],
     provider_risk: ["provider_risk", "fast_behavior_context"],
     verify20_fingerprint: ["exact_verify20_contract_pattern", "score.contract_suspicion.exact_verify20_contract_pattern"],
-    official_registry: ["official_usdt", "official_usdt_registry_contract"],
+    official_registry: officialUsdt
+      ? ["official_usdt", "official_usdt_registry_contract"]
+      : ["registered_service_context", "fast_behavior_context"],
     gasfree_account: ["gasfree_account", "gasfree_account_structural"],
     known_service_session: ["known_service_session", "fast_behavior_context"],
     context: ["contract_metadata_context", "fast_behavior_context"]
@@ -1508,7 +1523,11 @@ function formatContractDecisionBoundary(
   report: SmartContractCheckReport,
   locale: BotLocale
 ): TelegramHtmlMessage {
-  const presentation = contractDecisionPresentationFact(report.contractDecisionV2, report.subjectAddress);
+  const presentation = contractDecisionPresentationFact(
+    report.contractDecisionV2,
+    report.subjectAddress,
+    report.contractDecisionEvidenceV1
+  );
   return telegramHtmlMessage([renderTelegramForensicResult(adaptTelegramForensicResult({
     kind: "contract_safety",
     locale,
@@ -1921,10 +1940,10 @@ export function formatDeepForensicUserDeliveryReport(
   const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
   const currentDeepReport = currentScoringPolicyDeepReport(report);
   if (whereReport?.scoreAnchorV2) {
-    return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt);
+    return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt, currentDeepReport);
   }
   if (whereReport && hasLegacyLlmWhereProjection(whereReport)) {
-    return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt);
+    return formatSavedForensicResult(whereReport, "wallet_final", locale, job.updatedAt, currentDeepReport);
   }
   if (currentDeepReport?.coverageV2) {
     return formatSavedDeepContext(currentDeepReport, status, locale, job.updatedAt);
@@ -1946,12 +1965,6 @@ export function formatDeepForensicUserDeliveryReport(
       });
 }
 
-function forensicFailureLabel(job: ForensicCheckJob): string {
-  if (job.kind === "where_is_money_check") return "Where is money job";
-  if (job.kind === "address_deep_check") return "Deep forensic job";
-  return "Forensic job";
-}
-
 export function formatDeepForensicFailureUserDeliveryReport(
   job: ForensicCheckJob,
   error: string,
@@ -1959,26 +1972,14 @@ export function formatDeepForensicFailureUserDeliveryReport(
   options: { runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
-  if (job.kind === "address_deep_check") {
-    const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
-    if (whereReport && whereJob) {
-      return formatWhereIsMoneyUserDeliveryReport(
-        whereJob,
-        whereReport,
-        whereJob.status as "completed" | "partial",
-        null,
-        { runtimeLabel: options.runtimeLabel, locale }
-      );
-    }
-  }
-
-  const label = `${forensicFailureLabel(job)} failed`;
-  return telegramHtmlMessage([
-    bold(label),
-    `${bold("Job")}: ${code(job.id)}`,
-    `${bold("Address")}: ${code(job.subjectAddress)}`,
-    `${bold("Reason")}: ${code(error)}`
-  ]);
+  void whereJob;
+  void error;
+  return telegramHtmlMessage([renderTelegramTechnicalResult({
+    checkedWalletAddress: job.subjectAddress,
+    locale,
+    evaluatedAt: job.updatedAt,
+    reason: "provider_error"
+  })]);
 }
 
 function arrayField<T = unknown>(record: Record<string, unknown>, key: string): T[] | null {
@@ -2267,10 +2268,7 @@ function formatWhereIsMoneyPreliminaryReport(
         : null
     ].filter((line): line is string => Boolean(line)));
   }
-  return telegramHtmlMessage([renderWherePreliminaryNarrative(report, {
-    locale,
-    evaluatedAt: job.updatedAt.toISOString()
-  })]);
+  return formatSavedForensicResult(report, "where_preliminary", locale, job.updatedAt);
 }
 
 export function formatWhereIsMoneyUserDeliveryReport(
@@ -2287,7 +2285,7 @@ export function formatWhereIsMoneyUserDeliveryReport(
   const deepReport = currentScoringPolicyDeepReport(extractDeepForensicReportFromJob(deepJob, report.subjectAddress));
   if (deepReport) {
     if (report.scoreAnchorV2) {
-      return formatSavedForensicResult(report, "wallet_final", locale, job.updatedAt);
+      return formatSavedForensicResult(report, "wallet_final", locale, job.updatedAt, deepReport);
     }
     return formatUnifiedAddressFinalReport({
       address: report.subjectAddress,
@@ -4123,31 +4121,39 @@ function formatSavedDeepContext(
 
 function formatSavedForensicResult(
   report: WhereIsMoneyReport,
-  kind: "wallet_final" | "deep_context",
+  kind: "wallet_final" | "deep_context" | "where_preliminary",
   locale: BotLocale,
-  evaluatedAt: Date
+  evaluatedAt: Date,
+  deepReport?: DeepAddressForensicReport | null
 ): TelegramHtmlMessage {
   const anchor = report.scoreAnchorV2 ?? null;
-  const facts = report.narrativeFactsV2 ?? [];
-  const technicalReason = anchor ? null : wherePresentationTechnicalReason(report);
+  const presentation = buildWhereTelegramPresentation(report, deepReport);
+  const facts = presentation.facts;
+  const technicalReason = anchor || presentation.trueNoActivity ? null : wherePresentationTechnicalReason(report);
   const result = adaptTelegramForensicResult({
     kind,
     locale,
     evaluatedAt: evaluatedAt.toISOString(),
     checkedWalletAddress: report.subjectAddress,
-    resultState: anchor ? "final" : "technical_limit",
+    resultState: anchor
+      ? kind === "where_preliminary" ? "preliminary" : "final"
+      : presentation.trueNoActivity ? "no_final" : "technical_limit",
     scoreAnchorV2: anchor,
     narrativeFactsV2: facts,
     scoringEvidenceV2: report.scoringEvidenceV2 ?? [],
     amlPresentation: anchor ? {
       level: levelFromScore(anchor.score),
-      actionTextKey: anchor.decision === "DECLINE"
-        ? "do_not_operate"
-        : anchor.decision === "REVIEW"
-          ? "manual_review"
-          : null
+      actionTextKey: kind === "where_preliminary"
+        ? null
+        : anchor.decision === "DECLINE"
+          ? "do_not_operate"
+          : anchor.decision === "REVIEW"
+            ? "manual_review"
+            : null
     } : null,
-    routes: savedForensicRoutes(report.subjectAddress, facts),
+    routes: presentation.routes.length > 0
+      ? presentation.routes
+      : savedForensicRoutes(report.subjectAddress, facts),
     coverageV2: report.coverageV2 ?? null,
     legacyCoverage: report.coverageV2 ? null : {
       selectedCount: report.coverage.selectedInboundTxCount,
