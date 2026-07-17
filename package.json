@@ -18,7 +18,9 @@
     "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts",
     "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts",
     "admin:snapshot": "node --import tsx scripts/exportAdminSnapshot.ts",
-    "wallet-intelligence:backfill": "node --import tsx scripts/backfillWalletIntelligence.ts"
+    "wallet-intelligence:backfill": "node --import tsx scripts/backfillWalletIntelligence.ts",
+    "release:verify": "node --import tsx scripts/verifyRemediationRelease.ts",
+    "release:trace:capture": "node --import tsx scripts/captureRemediationTestEvidence.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",
