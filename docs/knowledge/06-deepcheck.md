@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-16
+last_verified: 2026-07-17
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
@@ -18,6 +18,9 @@ code_refs:
   - src/runtime/deepForensicRuntimeOptions.ts
   - src/risk/unifiedWalletRisk.ts
   - src/risk/usddPsmExposure.ts
+  - src/telegram/forensicPresentation.ts
+  - src/telegram/forensicPresentationAdapters.ts
+  - src/telegram/forensicResultRenderer.ts
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/counterpartyRisk.test.ts
   - tests/forensics/counterpartyInteraction.test.ts
@@ -25,6 +28,8 @@ code_refs:
   - tests/forensics/inboundProvenance.test.ts
   - tests/forensics/directHardEvidence.test.ts
   - tests/forensics/deepForensicJob.test.ts
+  - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
+  - tests/telegram/unifiedForensicRenderer.acceptance.test.ts
 supersedes:
   - docs/project-walkthrough/06-check-modes-fast-deep-where-is-money.md
   - docs/superpowers/specs/2026-06-24-admin-deep-check-multihop-branch-map-design.md
@@ -162,6 +167,25 @@ enqueue another delivery.
 
 This is unreleased candidate behavior until Plan 5. Presenting the separate
 context differently is not part of Plan 3.
+
+### Plan 4 Candidate: Deterministic Deep Telegram Presentation
+
+Fresh current-policy Deep results now use the same presentation contract and
+renderer as Where and Incoming. The message always links the checked wallet,
+shows the valid subject-bound `ScoreAnchorV2` and its preferred fact first,
+keeps concrete routes and `ForensicCoverageV2` separate, and does not expose
+raw codes, selectors, provider prose, or legacy LLM output.
+
+Deep does not manufacture a score from coverage, legacy counters, or contextual
+facts. Missing or invalid anchor/preferred-fact binding produces an honest
+no-final result with the saved technical limitation. A valid current CoverageV2
+object is rendered as available/selected/excluded or traced/unresolved facts;
+legacy coverage keeps its denominator unknown. The compatibility path does not
+silently upgrade or rescore old Deep results.
+
+This Plan 4 behavior is an unreleased local candidate. Automated rendering is
+green; manual screenshots and review in a non-production Telegram test chat
+remain pending until the Plan 5 release gate.
 
 ## Planned Behavior
 

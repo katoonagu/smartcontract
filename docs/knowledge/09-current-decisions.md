@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-16
+last_verified: 2026-07-17
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -34,6 +34,10 @@ code_refs:
   - src/monitor/addressPoisoning.ts
   - src/monitor/addressPoisoningWorker.ts
   - src/alerts/addressPoisoningAlert.ts
+  - src/telegram/forensicPresentation.ts
+  - src/telegram/forensicPresentationAdapters.ts
+  - src/telegram/forensicResultRenderer.ts
+  - scripts/renderTelegramUxAcceptance.ts
   - src/bot/walletNarrativeSummary.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/incomingDepositJob.ts
@@ -47,6 +51,10 @@ code_refs:
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/bot/wherePreliminaryNarrative.test.ts
   - tests/bot/createBot.test.ts
+  - tests/telegram/unifiedForensicRenderer.acceptance.test.ts
+  - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
+  - tests/alerts/unifiedTelegramAlerts.acceptance.test.ts
+  - tests/telegram/manualTelegramAcceptanceManifest.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
@@ -92,10 +100,10 @@ of these decisions, update this file in the same work.
 - This branch is a release candidate only. Production remains on the previous
   runtime and schema 031 until Plan 5. Plan 1 does not deploy, restart Telegram,
   or switch the production version label.
-- Plan 2 scoring/contract semantics and Plan 3 runtime/delivery are implemented
-  in the local release candidate. Plans 4–5 remain independent: unified
-  Telegram UX and cross-plan acceptance/release. Address Poisoning remains a
-  separate completed track and is unchanged here.
+- Plan 2 scoring/contract semantics, Plan 3 runtime/delivery, and Plan 4 unified
+  Telegram UX are implemented in the local release candidate. Plan 5 remains
+  the independent cross-plan acceptance/release gate. Address Poisoning remains
+  a separate completed track and is unchanged here.
 
 ## 2026-07-14 Plan 2 Scoring And Contract Semantics Candidate
 
@@ -136,8 +144,8 @@ of these decisions, update this file in the same work.
   identical whether a legacy LLM payload is absent, invalid, risky, legitimate,
   or unavailable.
 - The branch is still unreleased. Production database, runtime, version, and
-  Telegram remain unchanged until Plan 5. Apart from deleting the two obsolete
-  AI-verdict output sections, unified Telegram UX remains Plan 4.
+  Telegram remain unchanged until Plan 5. Plan 4 now integrates this
+  deterministic, LLM-free contract output into the shared user presentation.
 
 ## 2026-07-16 Plan 3 Runtime And Delivery Candidate
 
@@ -174,7 +182,43 @@ of these decisions, update this file in the same work.
   `hard_safety_limit_exceeded`, page caps, or other bounded provider/local
   limits; heavy addresses may still have an honest no-final result.
 - The candidate is not deployed. Production DB/runtime/Telegram and the version
-  label remain unchanged until Plan 5; unified Telegram UX remains Plan 4.
+  label remain unchanged until Plan 5. The Plan 4 UX candidate is implemented
+  locally but is not released by Plan 3.
+
+## 2026-07-17 Plan 4 Unified Telegram UX Candidate
+
+- Fresh current-policy Where, Deep, Incoming, Contract, and Approval results
+  use one typed deterministic presentation contract and renderer. Modes keep
+  separate meanings; Approval stays `wallet_safety` with AML impact zero.
+- Every result identifies and canonically links the checked wallet. Valid TRON
+  addresses use their exact first and last four characters; invalid input is
+  escaped plain text without a link. Ordinary messages omit runtime branch and
+  SHA, which remain available through `/version`, Admin, and diagnostics.
+- A valid score requires the subject-bound active anchor and its single
+  preferred fact. That score driver is shown first, followed by at most two
+  concrete routes and separate typed coverage. Missing authority, partial or
+  technical no-final state, and legacy coverage never manufacture a score,
+  action, or denominator.
+- Where is preliminary only when a matching DeepCheck job is pending. Coverage
+  is not the mode selector. Incoming binds the scored sender and every shown
+  route to the exact deposit; an Address Poisoning warning stays a separate
+  safety line.
+- Automatic LLM text remains disabled. The user message contains no legacy
+  model verdict, reason, confidence, citation, recommendation, selector, raw
+  provider code, or technical service label in place of a plain explanation.
+- Approval messages show the checked wallet, the contract with USDT access,
+  fresh official-USDT allowance state, and exact-debit state as separate roles.
+  Verify20 active/no-debit is distinct from exact debit. Bridgers has separate
+  active, zero, and failed/stale branches. Actions are audience-aware, no
+  transaction expiration is shown, and the bot never implies it revokes access
+  on chain.
+- Normal messages target about 10–15 non-empty lines, at most four restrained
+  emoji headings, and no more than two concrete routes before aggregation.
+  Eleven exact golden messages and the guarded Task 9 dry-run are green: 15
+  records, 19 rendered messages, 11 golden comparisons.
+- This is still an unreleased candidate. Manual screenshots and review in an
+  authorized non-production Telegram test chat are pending. Production DB,
+  runtime, version, and Telegram remain unchanged until Plan 5.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 

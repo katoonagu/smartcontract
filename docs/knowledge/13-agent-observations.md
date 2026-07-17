@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-13
+last_verified: 2026-07-17
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -10,6 +10,10 @@ code_refs:
   - src/tron/tronClient.ts
   - src/approvals/allowanceState.ts
   - src/storage/schemaMigrations.ts
+  - src/bot/createBot.ts
+  - src/telegram/forensicPresentation.ts
+  - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
+  - tests/telegram/forensicPresentationContract.acceptance.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
 ---
@@ -254,3 +258,11 @@ Correct rule:
 
 Evidence that drives a route or state must bind to the exact event identity and
 subject. Address labels and amount similarity are context, not causal proof.
+
+## 2026-07-17: Test The Real Mode Boundary With An Independent Oracle
+
+Repeated mistake: a presentation fixture selected preliminary Where from
+coverage and reused a production helper to compute its own expected escaping.
+Correct rule: pending Deep alone selects preliminary versus final, so keep the
+other input identical; boundary tests use literal independent expectations, not
+the implementation under test as their oracle.

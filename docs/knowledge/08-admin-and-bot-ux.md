@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-16
+last_verified: 2026-07-17
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -16,6 +16,10 @@ code_refs:
   - src/alerts/formatters.ts
   - src/alerts/addressPoisoningAlert.ts
   - src/monitor/addressPoisoningWorker.ts
+  - src/telegram/forensicPresentation.ts
+  - src/telegram/forensicPresentationAdapters.ts
+  - src/telegram/forensicResultRenderer.ts
+  - scripts/renderTelegramUxAcceptance.ts
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminConsole.test.ts
   - tests/admin/adminServer.test.ts
@@ -23,6 +27,11 @@ code_refs:
   - tests/bot/wherePreliminaryNarrative.test.ts
   - tests/bot/walletNarrativeSummary.test.ts
   - tests/alerts/formatters.test.ts
+  - tests/telegram/forensicPresentationContract.acceptance.test.ts
+  - tests/telegram/unifiedForensicRenderer.acceptance.test.ts
+  - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
+  - tests/alerts/unifiedTelegramAlerts.acceptance.test.ts
+  - tests/telegram/manualTelegramAcceptanceManifest.test.ts
 supersedes:
   - docs/project-walkthrough/08-admin-forensics-console-plain-language.md
   - docs/project-walkthrough/14-telegram-bot-plain-language.md
@@ -314,23 +323,16 @@ as `Откуда деньги — предварительный результ�
 the initial FastCheck preliminary message.
 
 When a matching DeepCheck job is queued or running, the preliminary Where
-message has this fixed order: title, address, preliminary-risk line, optional
-`Что нашли` / `Finding`, optional `Вывод` / `Conclusion`, optional
-`Границы проверки` / `Coverage limits`, and the existing runtime marker. The
-title is exactly `Откуда деньги — предварительный результат` in Russian and
-`Where Is Money — preliminary result` in English. A scored line keeps the
-existing band emoji and `/100`. A no-score line is exactly `Предварительный
-риск не рассчитан` / `Preliminary risk was not calculated` and has no emoji or
-`/100`.
+message has this fixed order: linked title and checked wallet, preliminary-risk
+line, `Почему такая оценка` with the preferred fact, up to two concrete routes, and
+separate coverage. Coverage by itself does not choose this branch: the same
+Where result is final when no matching DeepCheck is pending. Ordinary user
+messages contain no runtime branch, label, or SHA. A scored line keeps the
+restrained band emoji and `/100`; a no-score line has no risk emoji or `/100`.
 
-This preliminary surface shows at most two typed findings, one primary meaning,
-and a separate coverage limit. It has no `Почему`, `Что дальше`, decision,
-canonical action, recommendation, DeepCheck state or name, raw code, raw
-reason, LLM copy, or contract method name. A diagnostic for an explicitly valid
-but unexplained score is logged best-effort; callback failure is swallowed and
-cannot change or block Telegram delivery. Completed current Deep routing and
-the absent/failed Deep detailed behavior are unchanged. Admin, support, and
-`/check_status ... detailed` keep their existing diagnostic surfaces.
+This preliminary surface has no final decision/action, recommendation,
+DeepCheck state or name, raw code, raw reason, LLM copy, or contract method
+name. Admin, support, and detailed diagnostic surfaces remain separate.
 
 ### Plan 2 Candidate: Contract LLM Output Isolation
 
@@ -345,47 +347,69 @@ their headings from the bot and alerts. It does not claim the unified Telegram
 layout, wording, delivery, or runtime work owned by Plans 3 and 4. Production
 continues to use the previous runtime until Plan 5.
 
-Normal final Telegram address reports now use one compact deterministic
-narrative in plain Russian or English. A scored header always keeps the risk
-emoji, score band, and canonical action; `NO_FINAL_DECISION` has a neutral
-header and no score. The body selects the strongest winning evidence first,
-then at most one additional risk or context fact. A coverage limitation has
-higher display priority than optional technical detail. One exact GasFree fee
-may appear as a third technical part only when no coverage part is present and
-the 500-character body budget still fits.
+### Plan 4 Candidate: Unified Deterministic Telegram UX
 
-The compact formatter reads typed, subject-bound Fast, Where, Deep, contract,
-first-hop, role, and coverage fields. It never lets an LLM or raw free-text
-reason write the final message. The effective Fast fallback is accepted only
-for the checked address and only through an allowlisted structured reason. A
-counterparty blacklist is not described as the subject's blacklist; Verify20
-interaction alone does not assign a drainer role; exact approval-drain victim,
-spender, receiver, and route roles keep their distinct meanings.
+Fresh current-policy Where, Deep, Incoming, Contract, and Approval results now
+adapt to one typed presentation model and one deterministic HTML renderer.
+Where, Deep, and Incoming keep their different meanings; Approval remains a
+separate `wallet_safety` result and never enters AML, Where, or provenance.
+Legacy LLM/cache JSON, raw provider text, selectors, model verdicts,
+recommendations, confidence, and citations have no user-message path.
 
-The normal body has at most three parts, each at most 280 characters, and a
-target body length of at most 500 characters. It does not restore the old
-`Почему` / `Что это может значить` / `Что важно учесть` dump, scoring internals,
-or raw codes. Detailed `/check_status <job-id> detailed` / `подробно`, support,
-and Admin diagnostics retain their full evidence sections.
+The normal order is linked title and checked wallet, restrained risk indicator
+and action when a valid score exists, `🔎 Почему такая оценка` with the active
+preferred score fact first, up to two concrete money routes, and separate
+coverage. Further routes are aggregated rather than dumped. Current
+`ForensicCoverageV2` shows available, selected, excluded, traced, and unresolved
+facts only when typed values exist. Legacy coverage keeps an unknown
+denominator, while partial, technical-limit, and no-final results never invent
+a numeric score or action.
 
-Normal and detailed current-policy `/check_status` use the same fresh DeepCheck
-prerequisite: the Deep report must match the checked subject and contain saved
-required first-hop coverage. If it is absent or mismatched, both surfaces show
-`NO_FINAL_DECISION` and no final score. The detailed surface still keeps its
-diagnostic mode sections and adds the prerequisite failure to its limitations.
+Every valid TRON address is shortened to its exact first and last four
+characters and links to the full canonical Tronscan address URL. Invalid input
+is escaped plain text without a link. The recommended medium format is about
+10–15 non-empty lines, at most four restrained emoji headings, and at most two
+concrete routes. Short no-final and true-no-activity messages are not padded.
+Ordinary user messages never contain `Runtime:`, a Git branch, or SHA; version
+details remain in `/version`, Admin, and diagnostics.
 
-Admin graph summaries expose a human-readable `humanSummary` for the right rail
-so analysts do not need to read raw graph JSON first. This is a presentation
-layer over existing evidence and unified risk, not a scoring-math change.
+Approval messages use the plain user roles `Проверяемый кошелёк — кошелёк,
+который выдал доступ к USDT` and `Контракт, получивший доступ к USDT`. They
+separately show the current direct official-USDT allowance state and whether an
+exact debit was found. A watched wallet means only that monitoring is enabled,
+not that the user owns its private key. Actions therefore depend on audience:
+they are conditional for a watched wallet and tell an external checker not to
+transfer until the owner explains and removes dangerous access.
 
-Admin can show more diagnostic detail than Telegram. It still can show raw
-codes such as `History not fully fetched`, which is useful for debugging but
-not enough as product copy.
+Verify20 may be called active or unlimited/finite only after a fresh direct
+official-USDT allowance read. Typed balance at risk, an exact debit, and
+campaign/Verify20 context remain separate facts; without exact debit the text
+does not claim that funds were already taken. For Bridgers, `confirmed_active`
+shows the explained swap and low risk with optional hygiene,
+`confirmed_zero` says the access is inactive and needs no action, and
+`failed/stale` says the current state could not be confirmed. No approval
+message shows transaction expiration or implies that the bot performs an
+on-chain revoke.
 
-Telegram shows canonical `NO_FINAL_DECISION`, blocked reason, technical status,
-and observed context for new invalid-score final reports without inventing a
-numeric final risk. It does not yet have a complete live progress UX for
-ordinary long Where/Incoming indexing.
+Eleven exact golden messages cover final AML, preliminary Where, technical
+no-final, true no-activity, Verify20 active/no-debit and exact-debit, Bridgers
+active/zero/unknown, USDD PSM, and GasFree Account. The guarded Task 9 dry-run
+is green for 15 records, 19 rendered messages, and all 11 golden comparisons.
+Screenshots and review in an authorized non-production Telegram test chat are
+still pending; this candidate is not a production release until Plan 5.
+
+Current-policy normal and detailed `/check_status` still require a Deep report
+bound to the checked subject with saved required first-hop coverage. Missing or
+mismatched evidence remains no-final instead of falling back to a numeric risk.
+Detailed, support, and Admin surfaces retain their larger diagnostic evidence
+views; the common medium Telegram renderer does not replace them.
+
+Admin graph summaries continue to expose the presentation-only `humanSummary`
+in the analyst rail. This does not change scoring or forensic evidence.
+
+Admin can show more diagnostic detail than Telegram. It can retain raw codes
+such as `History not fully fetched` for analysis, while the Telegram renderer
+uses plain no-final or technical-limit wording.
 
 ### Plan 3 Candidate: Cache-First Interaction And Durable Delivery
 
@@ -416,8 +440,8 @@ outcome.
 
 Plan 3 changes transient loading/started behavior and transport lifecycle only;
 it does not redesign final result layout or wording. This candidate remains
-unreleased until Plan 5. Unified final Telegram UX and no-final copy acceptance
-remain Plans 4 and 5.
+unreleased until Plan 5. Plan 4 now supplies the local unified Telegram UX
+candidate; its manual test-chat acceptance and the release gate remain pending.
 
 ### Address-Poisoning Warning
 

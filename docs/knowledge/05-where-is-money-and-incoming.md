@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-16
+last_verified: 2026-07-17
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -18,6 +18,9 @@ code_refs:
   - src/forensics/telegramDeliveryWorker.ts
   - src/forensics/waitReconciliation.ts
   - src/forensics/targetedHistoryCoordinator.ts
+  - src/telegram/forensicPresentation.ts
+  - src/telegram/forensicPresentationAdapters.ts
+  - src/telegram/forensicResultRenderer.ts
   - src/bot/wherePreliminaryNarrative.ts
   - src/bot/walletNarrativeSummary.ts
   - src/bot/createBot.ts
@@ -34,6 +37,9 @@ code_refs:
   - tests/bot/wherePreliminaryNarrative.test.ts
   - tests/bot/walletNarrativeSummary.test.ts
   - tests/bot/createBot.test.ts
+  - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
+  - tests/alerts/unifiedTelegramAlerts.acceptance.test.ts
+  - tests/telegram/unifiedForensicRenderer.acceptance.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -99,25 +105,21 @@ tier boundaries; floating-point display shares do not decide them.
 Active money-origin assessment no longer reads contract LLM verdicts for score,
 decision, warnings, dampening, wallet role, or narrative facts. Timeout,
 unavailability, risky, or legitimate legacy LLM payloads therefore produce the
-same assessment as no LLM payload. Stored legacy rows remain audit-only. This
-does not implement broader Telegram presentation changes; those remain Plan 4,
-and production remains on the previous runtime until Plan 5.
+same assessment as no LLM payload. Stored legacy rows remain audit-only. The
+unified Telegram presentation is now implemented in the unreleased Plan 4
+candidate described below. Production remains on the previous runtime until
+Plan 5.
 
 When a matching DeepCheck job is queued or running, Telegram renders ordinary
 Where as `Откуда деньги — предварительный результат` / `Where Is Money —
-preliminary result`. A numeric preliminary risk is published only when at
-least one validity mirror is explicitly `true`, neither mirror is `false`, and
-a subject-bound typed fact explains the dominant saved score driver. Explicit
-`false` wins over a conflicting `true`; false, undefined-only, and valid but
-unexplained results show no emoji or `/100` value.
+preliminary result`. Without that pending Deep job, the same saved Where result
+uses the final branch; coverage does not choose the mode. A numeric preliminary
+risk requires the valid subject-bound anchor and its preferred typed fact.
 
-The preliminary narrative has at most two findings. The first is the primary
-fact, its short meaning is a separate conclusion, and material coverage limits
-are a separate section rather than risk evidence. It reads saved typed Where
-facts and subject-bound Fast or Verify20 facts only. It does not read raw
-reasons or LLM text, does not use Deep-only counterparty, relationship,
-collector, or first-hop evidence, and does not show a decision, action,
-DeepCheck state, or method name.
+The common renderer shows the linked wallet, preliminary risk, the preferred
+fact under `Почему такая оценка`, up to two concrete routes, and separate coverage.
+It does not show a final decision/action or DeepCheck state and does not read
+raw reasons, method names, or LLM text.
 
 Historical HTX remains visible `REVIEW` compliance context before the official
 designation date and must not be called sanctioned at the transfer timestamp.
@@ -360,6 +362,35 @@ This is an unreleased Plan 3 candidate until Plan 5. It does not change
 provenance/scoring semantics or final Telegram copy. Configured page ceilings,
 provider limits, and `hard_safety_limit_exceeded` remain valid technical stops;
 Plan 3 does not promise unbounded history coverage.
+
+### Plan 4 Candidate: Unified Where And Incoming Telegram Results
+
+Fresh current-policy Where and Incoming results now use the common
+deterministic Telegram presentation contract. Every message names and links the
+checked wallet, shows the active subject-bound score fact first, keeps money
+routes and coverage separate, and uses an honest no-final branch when the
+anchor, preferred fact, coverage, or technical result cannot support a score.
+Legacy coverage remains readable without inventing the unavailable denominator.
+Raw provider text, technical codes, and legacy LLM output are not presentation
+facts.
+
+Where is preliminary only while a matching DeepCheck job is pending. Coverage
+alone does not choose preliminary versus final: the same Where result is final
+when no matching Deep job is queued or running. A preliminary message has no
+final decision or action. A valid saved `ScoreAnchorV2` and its single
+`preferredFactId` still control whether a numeric preliminary score can be
+shown.
+
+Incoming uses the scored sender as the checked subject and accepts only routes
+bound to the exact deposit transaction. It shows at most two concrete routes
+and aggregates any remainder. An active Address Poisoning warning remains a
+separate safety line; it does not change the Incoming AML score or become a
+provenance fact.
+
+This Plan 4 behavior is a local release candidate. The automated dry-run is
+green, but screenshots and review in an authorized non-production Telegram
+test chat are still pending. Production runtime and Telegram remain unchanged
+until Plan 5.
 
 The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
 4`, but ordinary Where no longer treats that local seed limit as a finished

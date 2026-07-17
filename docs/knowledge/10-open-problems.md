@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-16
+last_verified: 2026-07-17
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -35,6 +35,10 @@ code_refs:
   - src/bot/riskExplanationSummary.ts
   - src/monitor/addressPoisoningWorker.ts
   - src/alerts/addressPoisoningAlert.ts
+  - src/telegram/forensicPresentation.ts
+  - src/telegram/forensicPresentationAdapters.ts
+  - src/telegram/forensicResultRenderer.ts
+  - scripts/renderTelegramUxAcceptance.ts
   - src/forensics/strictProvenanceBenchmark.ts
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/deepForensicJob.test.ts
@@ -44,6 +48,7 @@ code_refs:
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
   - tests/storage/repositories.test.ts
+  - tests/telegram/manualTelegramAcceptanceManifest.test.ts
 supersedes:
   - docs/superpowers/plans/2026-07-02-admin-strict-provenance-benchmark.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -53,7 +58,7 @@ supersedes:
 
 ## Current Behavior
 
-### Plans 1–3 Candidates Are Not A Production Release
+### Plans 1–4 Candidates Are Not A Production Release
 
 Plan 1 closes the candidate data foundation for CoverageV2, low-balance
 latest-five selection, exact GasFree fee exclusion, allowance-state storage,
@@ -61,15 +66,20 @@ exact USDD PSM route observations, and verifiable schema 032 receipts. Plan 2
 adds candidate scoring/contract semantics. Plan 3 closes its owned runtime and
 delivery gaps: durable full-wait-set reconciliation, result-first versioned
 Telegram delivery, immutable Deep completion, bounded stale allowance refresh,
-cache-only navigation, and nonblocking check handlers. None of these candidates
-is deployed. Production must remain on the prior runtime and schema 031 until
-the Plan 5 release gate.
+cache-only navigation, and nonblocking check handlers. Plan 4 adds the common
+deterministic Telegram renderer, exact address links, typed coverage/no-final
+copy, mode-bound Where/Deep/Incoming presentation, and isolated Approval
+wallet-safety UX. None of these candidates is deployed. Production must remain
+on the prior runtime and schema 031 until the Plan 5 release gate.
 
 The following work remains open:
 
-- Plan 4: unified Telegram UX;
+- Manual Plan 4 Telegram acceptance is still pending: the automated harness is
+  green for 15 records, 19 messages, and 11 exact golden comparisons, but the
+  required screenshots and review in an authorized non-production test chat
+  have not been completed;
 - Plan 5: cross-plan acceptance, migration rehearsal, release, and production
-  version verification;
+  version verification after that manual Telegram evidence is accepted;
 - Address Poisoning closeout remains a separate track: its existing regressions
   stay read-only during the cross-plan release, and recipient precheck before
   signing remains a future product phase;
