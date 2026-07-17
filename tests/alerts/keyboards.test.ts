@@ -50,15 +50,15 @@ describe("alert keyboards", () => {
     });
 
     expect(keyboard.inline_keyboard[0][0]).toMatchObject({
-      text: "Open approvals / revoke",
+      text: "Open USDT permissions",
       url: tronscanApprovalsUrl("TWallet111111111111111111111111111111")
     });
     expect(keyboard.inline_keyboard[1][0]).toMatchObject({
-      text: "Approval tx",
+      text: "Permission transaction",
       url: tronscanTransactionUrl("a".repeat(64))
     });
     expect(keyboard.inline_keyboard[2][0]).toMatchObject({
-      text: "Open spender",
+      text: "Open contract",
       url: tronscanAddressUrl("TSpender11111111111111111111111111111")
     });
     expect(keyboard.inline_keyboard[2][1]).toMatchObject({
@@ -76,7 +76,7 @@ describe("alert keyboards", () => {
     });
 
     expect(keyboard.inline_keyboard[0][0]).toMatchObject({
-      text: "Открыть approvals / revoke",
+      text: "Открыть разрешения USDT",
       url: tronscanApprovalsUrl("TWallet111111111111111111111111111111")
     });
     expect(keyboard.inline_keyboard[2][1]).toMatchObject({
