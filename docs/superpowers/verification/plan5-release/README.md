@@ -242,7 +242,18 @@ order is producer-first, strict-verifier-last.
    `recording_disabled`, and `progress_json.telegramDelivery` is forbidden for
    these jobs.
 
-8. Only in guarded Task 9, after separate user authorization, send the frozen
+8. Build the manifest from the automated producer evidence, then run only the
+   `pre-manual` verifier while `G05_TELEGRAM` is still pending:
+
+   ```powershell
+   npm run release:verify -- pre-manual <artifact-root>
+   ```
+
+   `pre-manual` requires all automated `G00`-`G11` gates passed except
+   `G05_TELEGRAM=pending`; `overall` remains `not_ready`. It does not send or
+   finalize Telegram evidence.
+
+9. Only in guarded Task 9, after separate user authorization, send the frozen
    payloads once through a dedicated test bot to a non-production test chat:
 
    ```powershell
@@ -257,40 +268,45 @@ order is producer-first, strict-verifier-last.
    token/chat inequality. They are never copied into evidence. There are no
    retries or polling. A partial journal is terminal and blocks a blind rerun.
 
-9. Add the reviewed screenshots and finalize explicitly:
+10. Add the reviewed screenshots and finalize explicitly:
 
    ```powershell
    $env:PLAN5_TELEGRAM_MANUAL_ACTION = 'finalize'
    npm run release:telegram:manual -- <artifact-root>
    ```
 
-   Finalization accepts exactly 15 scenarios, 19 messages, and 11 golden
-   comparisons. Every message is bound to fixture ID, checked wallet,
+   Finalization accepts exactly 15 scenario summaries, 19 message records, and
+   11 golden comparisons. Every message is bound to fixture ID, checked wallet,
    synthetic terminal job, payload hash, Telegram message ID, and screenshot
    hash. Screenshots are bounded regular non-symlink PNG files within the
    protected root. `G05_TELEGRAM` stays `pending` until all 15/19/11 evidence is
    present and finalized. No real Telegram send occurs before guarded Task 9.
 
-10. Build the manifest from the producer evidence and only then run the strict
-    phase verifier:
+11. Update the manifest from the finalized manual evidence, then run the strict
+    `readiness` verifier:
 
     ```powershell
-    npm run release:verify -- pre-manual <artifact-root>
     npm run release:verify -- readiness <artifact-root>
     ```
 
-    `pre-manual` requires all automated `G00`-`G11` gates passed except
-    `G05_TELEGRAM=pending`; `overall` remains `not_ready`. `readiness` is valid
-    only after every `G00`-`G11` gate passes and production gates remain
-    pending; only then may the manifest say `ready_for_release`.
+    `readiness` is valid only after every `G00`-`G11` gate passes and production
+    gates remain pending; only then may the manifest say `ready_for_release`.
 
-After merging to `master`, discard stale candidate-bound readiness evidence,
-set `RELEASE_SHA` to the exact merge SHA, rerun this producer order, and rerun
-the strict verifier. A green branch manifest does not authorize production.
+After merging to `master`, compare the merge SHA to the finalized candidate
+SHA. A fast-forward that preserves the exact SHA also preserves the finalized
+15 scenario summaries, 19 message records, and 11 golden comparisons. Rerun
+only the automated producers/gates and strict verifier for that same SHA; never
+resend the terminal 19-message journal. If the merge changes the SHA, the
+candidate freeze and SHA-bound manual evidence are invalid. A new manual cycle
+then requires an explicit plan amendment and user decision; do not resend by
+default. A green branch manifest does not authorize production.
 
 ## Explicit GO, protected backup, migration, rollout, and canary
 
-These steps are future Task 9 production operations. They are listed so the
+These are future Tasks 10-12 operations: Task 10 merges to `master`, performs
+the exact-SHA rerun, and obtains explicit release GO; Task 11 owns
+`G12_PRODUCTION_BACKUP` and `G13_PRODUCTION_MIGRATION`; Task 12 owns
+`G14_PRODUCTION_ROLLOUT` and `G15_PRODUCTION_CANARY`. They are listed so the
 rollback and evidence boundaries are fixed; none has been executed now.
 
 1. Obtain explicit user release GO and fresh, narrowly scoped, protected
