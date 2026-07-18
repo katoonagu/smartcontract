@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,7 +9,10 @@ import { queryControlledRuntimeStateFromClient } from "../../scripts/rehearseRem
 import {
   CANDIDATE_SHA,
   POSTCONDITIONS_SHA256,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+  buildReleaseManifest,
   buildSchema032ReleaseEvidence,
+  buildTask0BReleaseFreezeEvidence,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
 
@@ -36,6 +39,15 @@ async function loadApi(): Promise<SchemaApi> {
   }
 }
 
+async function loadProducer(): Promise<any> {
+  const modulePath: string = "../../scripts/runSchema032ReleaseSequence";
+  try {
+    return await import(/* @vite-ignore */ modulePath);
+  } catch (error) {
+    throw new Error("Plan 5 feature missing: controlled schema 032 release producer", { cause: error });
+  }
+}
+
 function databaseName(databaseUrl: string): string {
   return decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
 }
@@ -45,6 +57,9 @@ function safeChildEnv(databaseUrl: string, envName: string): NodeJS.ProcessEnv {
   return Object.fromEntries([
     ...inherited.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!]]),
     [envName, databaseUrl],
+    ...(process.env.npm_execpath === undefined ? [] : [["npm_execpath", process.env.npm_execpath]]),
+    ["NODE_ENV", "test"],
+    ["SCHEMA_032_TEST_ALLOW_DIRTY", "1"],
     ["DOTENV_CONFIG_PATH", resolve("tests/fixtures/release/plan5-no-dotenv")]
   ]);
 }
@@ -346,6 +361,82 @@ async function rehearseLegacy31ToSchema032(options: {
   }
 }
 
+async function rehearseLegacy31ThroughProducer(options: {
+  client: pg.Client;
+  databaseUrl: string;
+  databaseRole: "clean" | "production_clone";
+  fixturePrefix: string;
+  expectedEndpoint: string;
+  expectedSystemIdentifier: string;
+}): Promise<void> {
+  const { client, databaseUrl, databaseRole, fixturePrefix, expectedEndpoint, expectedSystemIdentifier } = options;
+  for (const filename of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()) {
+    if (Number.parseInt(filename.slice(0, 3), 10) >= 32) continue;
+    await client.query(readFileSync(resolve("migrations", filename), "utf8"));
+  }
+  await client.query("insert into telegram_users (telegram_user_id) values ($1)", [`${fixturePrefix}-user`]);
+  await client.query(`insert into watched_wallets (id, telegram_user_id, address)
+    values ($1, $2, 'TGytcHDm9k4r6QPvine8c6A3WWaqTBZAZD')`, [
+    `${fixturePrefix}-wallet`, `${fixturePrefix}-user`
+  ]);
+  await client.query(`insert into wallet_approvals (
+    watched_wallet_id, token_contract, spender_address, amount_raw, is_unlimited,
+    current_allowance_raw, status, last_approval_tx_hash, last_approval_at
+  ) values (
+    $1, 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+    'TFagrFLKwcuRvXobE9TmQxdAM7BEjvnXzK', '99', true, '99', 'active',
+    $2, '2026-07-12T11:55:00.000Z'
+  )`, [`${fixturePrefix}-wallet`, `${fixturePrefix}-approval`]);
+
+  const artifactRoot = mkdtempSync(join(tmpdir(), `schema032-producer-${databaseRole}-`));
+  const envName = databaseRole === "clean"
+    ? "PLAN5_SCHEMA_CLEAN_DATABASE_URL"
+    : "PLAN5_SCHEMA_CLONE_DATABASE_URL";
+  const run = () => runNode([
+    "--import", "tsx", "scripts/runSchema032ReleaseSequence.ts",
+    "--database-url-env", envName,
+    "--expected-endpoint", expectedEndpoint,
+    "--expected-system-identifier", expectedSystemIdentifier,
+    "--artifact-root", artifactRoot,
+    "--offline"
+  ], safeChildEnv(databaseUrl, envName));
+  try {
+    const first = run();
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stdout).not.toContain(databaseUrl);
+    expect(first.stdout).not.toContain(expectedSystemIdentifier);
+    const evidence = JSON.parse(first.stdout.trim());
+    expect(evidence).toMatchObject({
+      candidateSha: CURRENT_CANDIDATE_SHA,
+      databaseRole,
+      candidateBytesChecksumSha256: APPROVED_CHECKSUM,
+      receiptChecksumSha256: APPROVED_CHECKSUM,
+      firstApply: "applied",
+      secondApply: "already_verified"
+    });
+    const artifactNames = readdirSync(artifactRoot).sort();
+    expect(artifactNames).toEqual([
+      "schema032-first-migration-outcome.json",
+      "schema032-first-verification-evidence.json",
+      "schema032-release-evidence.json",
+      "schema032-second-migration-outcome.json"
+    ]);
+    const before = Object.fromEntries(artifactNames.map((name) => [
+      name,
+      sha256(readFileSync(join(artifactRoot, name), "utf8"))
+    ]));
+    const second = run();
+    expect(second.status, second.stderr).toBe(0);
+    expect(JSON.parse(second.stdout.trim())).toEqual(evidence);
+    expect(Object.fromEntries(artifactNames.map((name) => [
+      name,
+      sha256(readFileSync(join(artifactRoot, name), "utf8"))
+    ]))).toEqual(before);
+  } finally {
+    rmSync(artifactRoot, { recursive: true, force: true });
+  }
+}
+
 it("[REQ-38][SCHEMA-032-RELEASE] rejects filename full candidate checksum receipt checksum or postcondition mismatch", async () => {
   const api = await loadApi();
   const expected = { candidateSha: CANDIDATE_SHA, postconditionsSha256: POSTCONDITIONS_SHA256 };
@@ -604,6 +695,273 @@ it("requires the explicit normalized endpoint and closes a bounded client after 
   })).rejects.toThrow("schema_032_database_endpoint_mismatch");
 });
 
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] allows only an explicit bound target and the fixed migration command", async () => {
+  const producer = await loadProducer();
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  expect(packageJson.scripts["schema:release:sequence"]).toBe(
+    "node --import tsx scripts/runSchema032ReleaseSequence.ts"
+  );
+  expect(() => producer.parseSchema032ReleaseSequenceArgs([
+    "--database-url-env", "PLAN5_SCHEMA_CLEAN_DATABASE_URL",
+    "--expected-endpoint", "127.0.0.1:55435",
+    "--expected-system-identifier", "1234567890123456789",
+    "--artifact-root", resolve("artifacts/schema032"),
+    "--offline",
+    "--command", "node attacker.js"
+  ], {})).toThrow("schema_032_sequence_cli_argument_invalid");
+  expect(() => producer.validateSchema032ReleaseSequenceTarget({
+    databaseUrlEnvName: "PLAN5_SCHEMA_CLEAN_DATABASE_URL",
+    databaseUrl: "postgresql://db:secret@db.example/tron_watch_plan5_clean",
+    expectedEndpoint: "db.example:5432",
+    expectedSystemIdentifier: "1234567890123456789",
+    artifactRoot: resolve("artifacts/schema032"),
+    offline: true,
+    candidateSha: "c".repeat(40)
+  })).toThrow("schema_032_sequence_loopback_required");
+  expect(() => producer.validateSchema032ReleaseSequenceTarget({
+    databaseUrlEnvName: "PLAN5_SCHEMA_CLONE_DATABASE_URL",
+    databaseUrl: "postgresql://db:secret@127.0.0.1:55435/tron_watch_plan5_clean",
+    expectedEndpoint: "127.0.0.1:55435",
+    expectedSystemIdentifier: "1234567890123456789",
+    artifactRoot: resolve("artifacts/schema032"),
+    offline: true,
+    candidateSha: "c".repeat(40)
+  })).toThrow("schema_032_sequence_database_env_role_mismatch");
+});
+
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and a completed rerun is a verified no-op", async () => {
+  const producer = await loadProducer();
+  const artifactRoot = mkdtempSync(join(tmpdir(), "schema032-producer-resume-"));
+  const target = migrationTarget({ candidateSha: "c".repeat(40) });
+  let migrationCalls = 0;
+  let verificationCalls = 0;
+  const runMigration = async (sequence: "first" | "second") => {
+    migrationCalls += 1;
+    return {
+      status: 0,
+      stdout: migrationOutput(sequence === "first" ? "applied" : "already_verified"),
+      stderr: "",
+      signal: null
+    };
+  };
+  const evidence = (phase: "first" | "final") => phase === "first" ? {
+    version: "schema-032-first-phase-evidence-v1",
+    phase: "first",
+    candidateSha: target.candidateSha,
+    databaseRole: target.databaseRole,
+    databaseFingerprintSha256: target.databaseFingerprintSha256,
+    migrationFilename: "032_telegram_runtime_forensics_data_contracts.sql",
+    candidateBytesChecksumSha256: APPROVED_CHECKSUM,
+    receiptChecksumSha256: APPROVED_CHECKSUM,
+    shortChecksum: APPROVED_CHECKSUM.slice(0, 12),
+    postconditionsSha256: "e".repeat(64),
+    firstApply: "applied"
+  } : {
+    candidateSha: target.candidateSha,
+    databaseRole: target.databaseRole,
+    databaseFingerprintSha256: target.databaseFingerprintSha256,
+    migrationFilename: "032_telegram_runtime_forensics_data_contracts.sql",
+    candidateBytesChecksumSha256: APPROVED_CHECKSUM,
+    receiptChecksumSha256: APPROVED_CHECKSUM,
+    shortChecksum: APPROVED_CHECKSUM.slice(0, 12),
+    postconditionsSha256: "e".repeat(64),
+    firstApply: "applied",
+    secondApply: "already_verified"
+  };
+  try {
+    await expect(producer.executeSchema032ReleaseSequence({
+      artifactRoot,
+      target,
+      runMigration,
+      verifyPhase: async () => {
+        verificationCalls += 1;
+        throw new Error("simulated_crash_after_first_migration");
+      }
+    })).rejects.toThrow("simulated_crash_after_first_migration");
+    expect(readdirSync(artifactRoot)).toEqual(["schema032-first-migration-outcome.json"]);
+    expect(migrationCalls).toBe(1);
+
+    const completed = await producer.executeSchema032ReleaseSequence({
+      artifactRoot,
+      target,
+      runMigration,
+      verifyPhase: async (phase: "first" | "final") => {
+        verificationCalls += 1;
+        return evidence(phase);
+      }
+    });
+    expect(completed.secondApply).toBe("already_verified");
+    expect(migrationCalls).toBe(2);
+    expect(readdirSync(artifactRoot).sort()).toEqual([
+      "schema032-first-migration-outcome.json",
+      "schema032-first-verification-evidence.json",
+      "schema032-release-evidence.json",
+      "schema032-second-migration-outcome.json"
+    ]);
+
+    const migrationCallsBeforeNoop = migrationCalls;
+    const noOp = await producer.executeSchema032ReleaseSequence({
+      artifactRoot,
+      target,
+      runMigration,
+      verifyPhase: async (phase: "first" | "final") => {
+        verificationCalls += 1;
+        return evidence(phase);
+      }
+    });
+    expect(noOp).toEqual(completed);
+    expect(migrationCalls).toBe(migrationCallsBeforeNoop);
+    expect(verificationCalls).toBeGreaterThan(1);
+  } finally {
+    rmSync(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects unsafe output secrets and impossible partial states without forging evidence", async () => {
+  const producer = await loadProducer();
+  const target = migrationTarget({ candidateSha: "c".repeat(40) });
+  const unsafeRoot = mkdtempSync(join(tmpdir(), "schema032-producer-unsafe-"));
+  const partialRoot = mkdtempSync(join(tmpdir(), "schema032-producer-partial-"));
+  try {
+    await expect(producer.executeSchema032ReleaseSequence({
+      artifactRoot: unsafeRoot,
+      target,
+      runMigration: async () => ({
+        status: 0,
+        stdout: "DATABASE_URL=postgresql://admin:secret@127.0.0.1/tron_watch\n",
+        stderr: "",
+        signal: null
+      }),
+      verifyPhase: async () => { throw new Error("verification_must_not_run"); }
+    })).rejects.toThrow("schema_032_migration_outcome_output");
+    expect(readdirSync(unsafeRoot)).toEqual([]);
+
+    writeFileSync(join(partialRoot, "schema032-second-migration-outcome.json"), "{}", { flag: "wx" });
+    await expect(producer.executeSchema032ReleaseSequence({
+      artifactRoot: partialRoot,
+      target,
+      runMigration: async () => { throw new Error("migration_must_not_run"); },
+      verifyPhase: async () => { throw new Error("verification_must_not_run"); }
+    })).rejects.toThrow("schema_032_sequence_partial_state_invalid");
+    expect(existsSync(join(partialRoot, "schema032-release-evidence.json"))).toBe(false);
+  } finally {
+    rmSync(unsafeRoot, { recursive: true, force: true });
+    rmSync(partialRoot, { recursive: true, force: true });
+  }
+});
+
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects dirty or mismatched candidate state and any unexpected migration output", async () => {
+  const producer = await loadProducer();
+  const files = readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort();
+  expect(() => producer.validateSchema032CandidateRepositoryState({
+    candidateSha: "c".repeat(40),
+    headSha: "c".repeat(40),
+    status: "",
+    migrationFiles: files
+  })).not.toThrow();
+  for (const invalid of [
+    { headSha: "d".repeat(40) },
+    { status: " M scripts/migrate.ts" },
+    { migrationFiles: [...files, "033_future.sql"] }
+  ]) {
+    expect(() => producer.validateSchema032CandidateRepositoryState({
+      candidateSha: "c".repeat(40), headSha: "c".repeat(40), status: "", migrationFiles: files, ...invalid
+    })).toThrow("schema_032_sequence_candidate_repository_unverified");
+  }
+  const exactLines = files.map((name) => name.startsWith("032_")
+    ? `Migration applied and verified: migrations/${name} (schema 32 ${APPROVED_CHECKSUM.slice(0, 12)})`
+    : `Migration applied: migrations/${name}`);
+  expect(() => producer.validateControlledMigrationOutput(`${exactLines.join("\n")}\n`, files, "first"))
+    .not.toThrow();
+  const invalidOutputs = [
+    `${exactLines.join("\n")}\nMigration applied: migrations/033_future.sql\n`,
+    `${exactLines.join("\n")}\n${exactLines.at(-1)}\n`,
+    `\u001b[31m${exactLines.join("\n")}\u001b[0m\n`,
+    `${exactLines.slice(1).join("\n")}\n`,
+    `${exactLines.join("\n")}\0`
+  ];
+  for (const output of invalidOutputs) {
+    expect(() => producer.validateControlledMigrationOutput(output, files, "first"))
+      .toThrow("schema_032_sequence_migration_output_invalid");
+  }
+  expect(() => producer.validateControlledMigrationOutput(`${exactLines.join("\n")}\n`, files, "second"))
+    .toThrow("schema_032_sequence_migration_output_invalid");
+});
+
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO plus ready gates Task0B and backup evidence", async () => {
+  const producer = await loadProducer();
+  const evaluatedAt = "2026-07-18T09:05:00.000Z";
+  const task0b = buildTask0BReleaseFreezeEvidence({ candidateSha: CANDIDATE_SHA });
+  const manifest = buildReleaseManifest("ready_for_release");
+  const backup = {
+    version: "production-backup-evidence-v1",
+    candidateSha: CANDIDATE_SHA,
+    gateId: "G12_PRODUCTION_BACKUP",
+    commandId: "production_backup",
+    redactedTemplateSha256: producer.SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256,
+    databaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+    backupSha256: "b".repeat(64),
+    backupPathFingerprintSha256: "c".repeat(64),
+    state: "passed"
+  };
+  const task0bBytes = Buffer.from(JSON.stringify(task0b));
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  const backupBytes = Buffer.from(JSON.stringify(backup));
+  const authority = {
+    version: "schema-032-production-authority-v1",
+    scope: "schema_032_production_migration",
+    source: "operator_protected_one_shot_production_go",
+    generationId: "schema-migration-generation-0001",
+    commandId: "production_migration",
+    commandTemplateSha256: producer.SCHEMA_032_PRODUCTION_MIGRATION_TEMPLATE_SHA256,
+    issuedAt: "2026-07-18T09:04:00.000Z",
+    expiresAt: "2026-07-18T09:10:00.000Z",
+    candidateSha: CANDIDATE_SHA,
+    databaseRole: "production",
+    databaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+    task0bEvidenceSha256: sha256(task0bBytes.toString("utf8")),
+    readyManifestPath: "release-manifest.json",
+    readyManifestSha256: sha256(manifestBytes.toString("utf8")),
+    readyManifestOverall: "ready_for_release",
+    backupEvidencePath: "production-backup-evidence.json",
+    backupEvidenceSha256: sha256(backupBytes.toString("utf8")),
+    explicitGo: true
+  };
+  expect(() => producer.validateSchema032ProductionAuthorization({
+    authority,
+    task0bBytes,
+    manifestBytes,
+    backupBytes,
+    candidateSha: CANDIDATE_SHA,
+    observedDatabaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+    evaluatedAt
+  })).not.toThrow();
+  const invalidInputs = [
+    { authority: { ...authority, expiresAt: "2026-07-18T09:04:59.000Z" } },
+    { authority: { ...authority, candidateSha: "f".repeat(40) } },
+    { authority: { ...authority, backupEvidenceSha256: "f".repeat(64) } },
+    { backupBytes: Buffer.from(JSON.stringify({ ...backup, state: "failed" })) },
+    { observedDatabaseIdentityFingerprintSha256: "f".repeat(64) },
+    { manifestBytes: Buffer.from(JSON.stringify({
+      ...manifest,
+      overall: "not_ready",
+      gates: manifest.gates.map((gate) => gate.id === "G00_BASE_AUDIT" ? { ...gate, state: "failed", exitCode: 1 } : gate)
+    })) }
+  ];
+  for (const invalid of invalidInputs) {
+    expect(() => producer.validateSchema032ProductionAuthorization({
+      authority,
+      task0bBytes,
+      manifestBytes,
+      backupBytes,
+      candidateSha: CANDIDATE_SHA,
+      observedDatabaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+      evaluatedAt,
+      ...invalid
+    })).toThrow(/schema_032_sequence_production|release phase/u);
+  }
+});
+
 const postgresDescribe = cleanUrl && cloneUrl && sanitizedUrl && expectedEndpoint && expectedSystemIdentifier
   ? describe
   : describe.skip;
@@ -686,7 +1044,145 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
     });
   }, 120_000);
 
-  it("does not migrate the synthetic runtime-sanitized database when verification fails", async () => {
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] executes and resumes the controlled sequence on the clean database", async () => {
+    await resetPublicSchema({
+      client: cleanClient,
+      databaseUrl: cleanUrl!,
+      expectedDatabase: CLEAN_DATABASE,
+      expectedEndpoint: expectedEndpoint!,
+      expectedSystemIdentifier: expectedSystemIdentifier!
+    });
+    await rehearseLegacy31ThroughProducer({
+      client: cleanClient,
+      databaseUrl: cleanUrl!,
+      databaseRole: "clean",
+      fixturePrefix: "synthetic-plan5-producer-clean",
+      expectedEndpoint: expectedEndpoint!,
+      expectedSystemIdentifier: expectedSystemIdentifier!
+    });
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] executes and resumes the controlled sequence on the offline clone", async () => {
+    await resetPublicSchema({
+      client: cloneClient,
+      databaseUrl: cloneUrl!,
+      expectedDatabase: CLONE_DATABASE,
+      expectedEndpoint: expectedEndpoint!,
+      expectedSystemIdentifier: expectedSystemIdentifier!
+    });
+    await rehearseLegacy31ThroughProducer({
+      client: cloneClient,
+      databaseUrl: cloneUrl!,
+      databaseRole: "production_clone",
+      fixturePrefix: "synthetic-plan5-producer-clone",
+      expectedEndpoint: expectedEndpoint!,
+      expectedSystemIdentifier: expectedSystemIdentifier!
+    });
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects a second writer while the dedicated advisory lock is held", async () => {
+    const producer = await loadProducer();
+    const artifactRoot = mkdtempSync(join(tmpdir(), "schema032-producer-lock-"));
+    await cleanClient.query("select pg_advisory_lock($1)", [producer.SCHEMA_032_PRODUCER_ADVISORY_LOCK]);
+    try {
+      const attempt = runNode([
+        "--import", "tsx", "scripts/runSchema032ReleaseSequence.ts",
+        "--database-url-env", "PLAN5_SCHEMA_CLEAN_DATABASE_URL",
+        "--expected-endpoint", expectedEndpoint!,
+        "--expected-system-identifier", expectedSystemIdentifier!,
+        "--artifact-root", artifactRoot,
+        "--offline"
+      ], safeChildEnv(cleanUrl!, "PLAN5_SCHEMA_CLEAN_DATABASE_URL"));
+      expect(attempt.status).not.toBe(0);
+      expect(attempt.stderr).toContain("schema_032_sequence_already_running");
+      expect(readdirSync(artifactRoot)).toEqual([]);
+    } finally {
+      await cleanClient.query("select pg_advisory_unlock($1)", [producer.SCHEMA_032_PRODUCER_ADVISORY_LOCK]);
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] kills and awaits a timed-out migration child tree before releasing the lock", async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "schema032-producer-timeout-"));
+    const fakeNpmRoot = mkdtempSync(join(tmpdir(), "schema032-fake-npm-"));
+    const fakeNpmCli = join(fakeNpmRoot, "npm-cli.js");
+    const descendantPidPath = join(fakeNpmRoot, "descendant.pid");
+    writeFileSync(fakeNpmCli, `const { spawn } = require("node:child_process");\n`
+      + `const { writeFileSync } = require("node:fs");\n`
+      + `const { join } = require("node:path");\n`
+      + `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });\n`
+      + `writeFileSync(join(__dirname, "descendant.pid"), String(child.pid));\n`
+      + `setInterval(() => {}, 1000);\n`, "utf8");
+    try {
+      const attempt = runNode([
+        "--import", "tsx", "scripts/runSchema032ReleaseSequence.ts",
+        "--database-url-env", "PLAN5_SCHEMA_CLONE_DATABASE_URL",
+        "--expected-endpoint", expectedEndpoint!,
+        "--expected-system-identifier", expectedSystemIdentifier!,
+        "--artifact-root", artifactRoot,
+        "--offline"
+      ], {
+        ...safeChildEnv(cloneUrl!, "PLAN5_SCHEMA_CLONE_DATABASE_URL"),
+        SCHEMA_032_TEST_NPM_CLI: fakeNpmCli,
+        SCHEMA_032_TEST_ALLOW_FAKE_NPM_CLI: "1",
+        SCHEMA_032_TEST_MIGRATION_TIMEOUT_MS: "250"
+      });
+      expect(attempt.status).not.toBe(0);
+      expect(attempt.stderr).toContain("schema_032_migration_command_failed");
+      expect(readdirSync(artifactRoot)).toEqual([]);
+      expect(existsSync(descendantPidPath)).toBe(true);
+      const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+      let alive = true;
+      for (let index = 0; index < 20 && alive; index += 1) {
+        try { process.kill(descendantPid, 0); } catch { alive = false; }
+        if (alive) await new Promise((resolveDone) => setTimeout(resolveDone, 50));
+      }
+      expect(alive).toBe(false);
+      const lockCheck = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
+        (await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK
+      ]);
+      expect(lockCheck.rows).toEqual([{ acquired: true }]);
+      await cloneClient.query("select pg_advisory_unlock($1)", [(await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK]);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+      rmSync(fakeNpmRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] ignores an arbitrary npm_execpath outside the explicit offline test seam", async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "schema032-producer-npm-attest-"));
+    const fakeNpmRoot = mkdtempSync(join(tmpdir(), "schema032-untrusted-npm-"));
+    const fakeNpmCli = join(fakeNpmRoot, "npm-cli.js");
+    const marker = join(fakeNpmRoot, "untrusted-executed");
+    writeFileSync(fakeNpmCli, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "yes");\n`, "utf8");
+    try {
+      const attempt = runNode([
+        "--import", "tsx", "scripts/runSchema032ReleaseSequence.ts",
+        "--database-url-env", "PLAN5_SCHEMA_CLONE_DATABASE_URL",
+        "--expected-endpoint", expectedEndpoint!,
+        "--expected-system-identifier", expectedSystemIdentifier!,
+        "--artifact-root", artifactRoot,
+        "--offline"
+      ], {
+        ...safeChildEnv(cloneUrl!, "PLAN5_SCHEMA_CLONE_DATABASE_URL"),
+        npm_execpath: fakeNpmCli,
+        SCHEMA_032_TEST_MIGRATION_TIMEOUT_MS: "10000"
+      });
+      expect(attempt.status, attempt.stderr).toBe(0);
+      expect(existsSync(marker)).toBe(false);
+      expect(readdirSync(artifactRoot).sort()).toEqual([
+        "schema032-first-migration-outcome.json",
+        "schema032-first-verification-evidence.json",
+        "schema032-release-evidence.json",
+        "schema032-second-migration-outcome.json"
+      ]);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+      rmSync(fakeNpmRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-PRODUCER-VERIFIER-ONLY] does not migrate the synthetic runtime-sanitized database when verification fails", async () => {
     const artifactDir = mkdtempSync(join(tmpdir(), "schema032-release-empty-"));
     const firstArtifactPath = join(artifactDir, "first-migration-outcome.json");
     const secondArtifactPath = join(artifactDir, "second-migration-outcome.json");

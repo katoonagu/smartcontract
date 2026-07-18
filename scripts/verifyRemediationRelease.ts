@@ -75,6 +75,7 @@ export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
   "scripts/finalizeTelegramAcceptance.ts",
   "scripts/rehearseRemediationRuntime.ts",
   "scripts/rehearseRemediationRuntimePreload.ts",
+  "scripts/runSchema032ReleaseSequence.ts",
   "scripts/snapshotTerminalLegacyPopulation.ts",
   "scripts/verifyRemediationRelease.ts",
   "scripts/verifySchema032.ts",
