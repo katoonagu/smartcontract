@@ -8,6 +8,7 @@ import {
   validateProductionFailureEvidenceV2
 } from "../../src/release/remediationReleaseManifestV2";
 import { runProductionOperationCliV2 } from "../../scripts/productionOperationCliV2";
+import { resumeTakenOverProductionOperationV2 } from "../../scripts/takeoverProductionOperationLease";
 import {
   executeProtectedProductionOperationV2,
   type ProtectedProductionOperationAdaptersV2,
@@ -78,6 +79,19 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
 }
 
 describe("protected production orchestrator", () => {
+  it("continues a normal takeover in the same owner process instead of stranding its lease", async () => {
+    const root = mkdtempSync(join(tmpdir(), "plan5-protected-takeover-resume-"));
+    const execute = vi.fn(async () => ({ operationId: "operation", leaseEpoch: 2,
+      receiptSha256: SHA, completedSteps: [] as string[] }));
+    const takeover = { operationKind: "rollout", operationId: `production-rollout-${"e".repeat(64)}` } as any;
+
+    const adapters = {} as ProtectedProductionOperationAdaptersV2;
+    await expect(resumeTakenOverProductionOperationV2(root, takeover, execute as any, () => adapters))
+      .resolves.toMatchObject({ receiptSha256: SHA });
+    expect(execute).toHaveBeenCalledWith({ artifactRoot: root, operationKind: "rollout" },
+      { adapters });
+  });
+
   it("accepts only the protected root at the CLI and never reads an operator-authored input bundle", async () => {
     const root = mkdtempSync(join(tmpdir(), "plan5-protected-cli-"));
     writeFileSync(join(root, "production-rollout-input-v2.json"), "{not-json", "utf8");

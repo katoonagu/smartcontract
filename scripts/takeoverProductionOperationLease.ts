@@ -3,12 +3,25 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { takeoverProductionOperationLeaseV2 } from "../src/release/productionOperationStore";
+import { createProtectedProductionOperationAdaptersV2 } from "../src/release/productionOperationAdaptersV2";
+import { executeProtectedProductionOperationV2 } from "../src/release/productionReleaseOrchestratorV2";
 import { validateReleaseFreezeIdentityV2 } from "../src/release/remediationReleaseManifestV2";
 import {
   assertArtifactRootOutsideRepository,
   assertTrustedArtifactRootPathV2,
   safeArtifactPath
 } from "../src/release/releaseRootWriterStore";
+
+export async function resumeTakenOverProductionOperationV2(
+  artifactRoot: string,
+  takeover: Awaited<ReturnType<typeof takeoverProductionOperationLeaseV2>>,
+  execute = executeProtectedProductionOperationV2,
+  createAdapters = createProtectedProductionOperationAdaptersV2
+) {
+  return execute({ artifactRoot, operationKind: takeover.operationKind }, {
+    adapters: createAdapters(artifactRoot)
+  });
+}
 
 export async function runTakeoverProductionOperationLease(
   args: string[],
@@ -36,8 +49,10 @@ export async function runTakeoverProductionOperationLease(
     expectedOldLeaseSha256,
     evaluatedAt: now()
   });
+  const resumed = await resumeTakenOverProductionOperationV2(root, result);
   console.log(JSON.stringify({ status: "passed", operationId: result.operationId,
-    newLeaseEpoch: result.newLeaseEpoch, newLeaseSha256: result.newLeaseSha256 }));
+    newLeaseEpoch: result.newLeaseEpoch, newLeaseSha256: result.newLeaseSha256,
+    resumedReceiptSha256: resumed.receiptSha256 }));
   return result;
 }
 
