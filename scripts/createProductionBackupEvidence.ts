@@ -932,7 +932,13 @@ async function stableFile(path: string, maxBytes: number, capture = false): Prom
   } finally { await handle.close(); }
 }
 
-async function writeExclusive(root: string, filename: string, bytes: Buffer, temporaryFilename?: string): Promise<void> {
+export async function writeExclusive(
+  root: string,
+  filename: string,
+  bytes: Buffer,
+  temporaryFilename?: string,
+  beforeLink?: () => Promise<void>
+): Promise<void> {
   if (temporaryFilename && (temporaryFilename.includes("/") || temporaryFilename.includes("\\"))) {
     throw new Error("production_backup_temporary_filename_invalid");
   }
@@ -941,6 +947,7 @@ async function writeExclusive(root: string, filename: string, bytes: Buffer, tem
   const handle = await open(temporary, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
     try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    await beforeLink?.();
     await link(temporary, target);
   } finally { await unlink(temporary).catch(() => undefined); }
 }
@@ -1299,6 +1306,20 @@ export async function runProductionBackupCommand(
       if (activeLease) assertOperationWithinTimeout(activeLease, now());
       return { ...expectedConsumption, claimSha256: hash(bytes) };
     };
+    const validateActiveOperation = async (): Promise<void> => {
+      if (!activeLease) throw new Error("production_backup_operation_lease_missing");
+      const binding = await readProgressBinding();
+      const leaseBytes = await readProtectedRegularFile(
+        artifactRoot, leaseFilename(binding.generationId), MAX_ARTIFACT_BYTES
+      );
+      const lease = validateOperationLease(JSON.parse(leaseBytes.toString("utf8")), binding, now());
+      if (lease.operationId !== activeLease.operationId || lease.ownerProcessId !== activeLease.ownerProcessId
+          || lease.acquiredAt !== activeLease.acquiredAt || lease.dumpContainerName !== activeLease.dumpContainerName
+          || lease.restoreContainerName !== activeLease.restoreContainerName) {
+        throw new Error("production_backup_operation_lease_changed");
+      }
+      assertOperationWithinTimeout(lease, now());
+    };
     const stateDependencies = {
       now,
       readCompletedEvidence: async () => {
@@ -1370,20 +1391,7 @@ export async function runProductionBackupCommand(
         const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);
         await attestSchema032ProductionBackupFiles(artifactRoot, evidence, validated.task0b.postgresTools);
       },
-      validateOperation: async () => {
-        if (!activeLease) throw new Error("production_backup_operation_lease_missing");
-        const binding = await readProgressBinding();
-        const leaseBytes = await readProtectedRegularFile(
-          artifactRoot, leaseFilename(binding.generationId), MAX_ARTIFACT_BYTES
-        );
-        const lease = validateOperationLease(JSON.parse(leaseBytes.toString("utf8")), binding, now());
-        if (lease.operationId !== activeLease.operationId || lease.ownerProcessId !== activeLease.ownerProcessId
-            || lease.acquiredAt !== activeLease.acquiredAt || lease.dumpContainerName !== activeLease.dumpContainerName
-            || lease.restoreContainerName !== activeLease.restoreContainerName) {
-          throw new Error("production_backup_operation_lease_changed");
-        }
-        assertOperationWithinTimeout(lease, now());
-      },
+      validateOperation: validateActiveOperation,
       buildEvidence: async () => {
         const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);
         return Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8");
@@ -1391,7 +1399,11 @@ export async function runProductionBackupCommand(
       writeEvidence: (bytes: Buffer) => {
         if (!activeLease) throw new Error("production_backup_operation_lease_missing");
         return writeExclusive(
-          artifactRoot, EVIDENCE_FILENAME, bytes, `.production-backup-${activeLease.operationId}.evidence.tmp`
+          artifactRoot,
+          EVIDENCE_FILENAME,
+          bytes,
+          `.production-backup-${activeLease.operationId}.evidence.tmp`,
+          validateActiveOperation
         );
       }
     };

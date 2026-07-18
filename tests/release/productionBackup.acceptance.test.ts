@@ -650,6 +650,30 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 10_000);
 
+  it("does not link evidence when the lease changes after the temp file is durable", async () => {
+    const api = await loadProducer();
+    const root = mkdtempSync(join(tmpdir(), "plan5-g12-before-link-"));
+    const temporaryName = ".production-backup-evidence.before-link.tmp";
+    const leasePath = join(root, "production-backup-operation-generation.json");
+    const expectedLease = Buffer.from("exact-lease\n");
+    try {
+      writeFileSync(leasePath, expectedLease, { flag: "wx" });
+      await expect(api.writeExclusive(
+        root,
+        "production-backup-evidence.json",
+        Buffer.from("evidence\n"),
+        temporaryName,
+        async () => {
+          expect(existsSync(join(root, temporaryName))).toBe(true);
+          writeFileSync(leasePath, Buffer.from("replacement-lease\n"));
+          if (!readFileSync(leasePath).equals(expectedLease)) throw new Error("production_backup_operation_lease_changed");
+        }
+      )).rejects.toThrow(/operation_lease_changed/);
+      expect(existsSync(join(root, "production-backup-evidence.json"))).toBe(false);
+      expect(existsSync(join(root, temporaryName))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("command preflight leaves an expired or foreign generation and the release manifest byte-identical with zero side effects", async () => {
     const api = await loadProducer();
     const root = await makeProtectedTempDir("plan5-g12-command-fail-closed-");
