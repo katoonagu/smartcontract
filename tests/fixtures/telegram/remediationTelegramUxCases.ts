@@ -401,6 +401,36 @@ const WHERE_PRELIMINARY_COVERAGE = buildForensicCoverageV2({
   limitations: []
 });
 
+const THJ_COMPLETE_COVERAGE = buildForensicCoverageV2({
+  scope: "recent_flow",
+  availableInboundTxCount: 18,
+  selectedInboundTxCount: 18,
+  selectedAmountRaw: "421930000000",
+  tracedAmountRaw: "421930000000",
+  exclusions: [],
+  limitations: []
+});
+
+const TKG_LATEST_FIVE_COVERAGE = buildForensicCoverageV2({
+  scope: "recent_flow",
+  availableInboundTxCount: 5,
+  selectedInboundTxCount: 5,
+  selectedAmountRaw: "305000000",
+  tracedAmountRaw: "305000000",
+  exclusions: [],
+  limitations: []
+});
+
+const PSM_TWO_PERCENT_COVERAGE = buildForensicCoverageV2({
+  scope: "current_balance",
+  availableInboundTxCount: 1,
+  selectedInboundTxCount: 1,
+  selectedAmountRaw: "1000000000",
+  tracedAmountRaw: "1000000000",
+  exclusions: [],
+  limitations: []
+});
+
 const finalAnchor = anchor({
   subjectAddress: TGYT,
   mode: "unified",
@@ -762,7 +792,8 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
           txCount: 12
         })],
         scoringEvidenceV2: scoringEvidence(collectorAnchor),
-        amlPresentation: { level: "MEDIUM", actionTextKey: "manual_review" }
+        amlPresentation: { level: "MEDIUM", actionTextKey: "manual_review" },
+        coverageV2: THJ_COMPLETE_COVERAGE
       });
     })()
   },
@@ -810,7 +841,8 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
           })
         ],
         scoringEvidenceV2: scoringEvidence(collectorAnchor),
-        amlPresentation: { level: "MEDIUM", actionTextKey: "manual_review" }
+        amlPresentation: { level: "MEDIUM", actionTextKey: "manual_review" },
+        coverageV2: THJ_COMPLETE_COVERAGE
       });
     })()
   },
@@ -848,6 +880,7 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
         })],
         scoringEvidenceV2: scoringEvidence(tkgAnchor),
         amlPresentation: { level: "LOW", actionTextKey: "manual_review" },
+        coverageV2: TKG_LATEST_FIVE_COVERAGE,
         routes: [
           route({
             routeId: "tkg-305-in",
@@ -1042,6 +1075,7 @@ export const REMEDIATION_TELEGRAM_UX_CASES: readonly RemediationTelegramUxCase[]
         })],
         scoringEvidenceV2: scoringEvidence(outboundAnchor),
         amlPresentation: { level: "LOW", actionTextKey: "manual_review" },
+        coverageV2: PSM_TWO_PERCENT_COVERAGE,
         routes: [route({
           routeId: "psm-outbound",
           direction: "outbound",
