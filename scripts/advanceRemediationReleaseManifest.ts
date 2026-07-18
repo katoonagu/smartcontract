@@ -17,18 +17,23 @@ import {
   validateRemediationReleaseManifestV2,
   validateReleaseFreezeIdentityV2,
   type OperationalAttestationV2,
-  type ManifestTransitionIdV2
+  type ManifestTransitionIdV2,
+  type ReleaseGateV2,
+  type ManifestTransitionEvidenceRefV2
 } from "../src/release/remediationReleaseManifestV2";
 import {
   assertArtifactRootOutsideRepository,
   assertSafeArtifactRootPath,
   canonicalBytesV2,
-  safeArtifactPath
+  safeArtifactPath,
+  safeArtifactRelativePath
 } from "../src/release/releaseRootWriterStore";
 import {
   advanceReleaseManifestV2,
   initializeReleaseManifestV2
 } from "../src/release/releaseManifestStoreV2";
+import { validateGateEvidenceBytesV2 } from "../src/release/releaseGateEvidencePolicy";
+import { RELEASE_TRANSITION_EVIDENCE_POLICY_V2 } from "../src/release/releaseTransitionEvidencePolicy";
 
 const execFileAsync = promisify(execFile);
 const SHA40 = /^[0-9a-f]{40}$/u;
@@ -46,8 +51,8 @@ type VerifiedManifestAdvanceInputV2 = {
   sourceManifestRevision: number | null;
   evaluatedAt: string;
   operationalAttestation: OperationalAttestationV2 | null;
-  verifiedGateOutputs: unknown[];
-  verifiedTransitionEvidence: { refs: unknown[]; actualRollbackOutcome: unknown | null };
+  verifiedGateOutputs: ReleaseGateV2[];
+  verifiedTransitionEvidence: { refs: ManifestTransitionEvidenceRefV2[]; actualRollbackOutcome: unknown | null };
 };
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
@@ -206,6 +211,25 @@ export async function runAdvanceRemediationReleaseManifest(
   }
   if (verifiedInput.operationalAttestation !== null) {
     validateOperationalAttestationV2(verifiedInput.operationalAttestation, freeze);
+  }
+  for (const gate of verifiedInput.verifiedGateOutputs) {
+    if (gate.state !== "passed" && gate.state !== "failed") continue;
+    const evidenceBytes = new Map<string, Buffer>();
+    for (const ref of gate.evidence) evidenceBytes.set(ref.relativePath,
+      readStableFile(safeArtifactRelativePath(root, ref.relativePath)));
+    validateGateEvidenceBytesV2(gate, evidenceBytes);
+  }
+  for (const ref of verifiedInput.verifiedTransitionEvidence.refs) {
+    const policy = ref.kind === "production_failure_evidence"
+      ? RELEASE_TRANSITION_EVIDENCE_POLICY_V2.production_failed
+      : RELEASE_TRANSITION_EVIDENCE_POLICY_V2.rollback_rolled_back;
+    if (ref.relativePath !== policy.relativePath || ref.schemaVersion !== policy.schemaVersion) {
+      throw new Error("transition_evidence_policy_binding_invalid");
+    }
+    const bytes = readStableFile(safeArtifactRelativePath(root, ref.relativePath));
+    if (releaseSha256V2(bytes) !== ref.sha256) throw new Error("transition_evidence_bytes_invalid");
+    const value = JSON.parse(bytes.toString("utf8"));
+    if (!canonicalBytesV2(value).equals(bytes)) throw new Error("transition_evidence_noncanonical");
   }
   if (transitionId === "pre_manual") {
     createInitialRemediationReleaseManifestV2({

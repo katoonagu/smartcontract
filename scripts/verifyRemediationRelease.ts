@@ -37,6 +37,11 @@ import {
   validateTerminalLegacyPopulation
 } from "../src/release/terminalLegacyPopulation";
 import { MANUAL_TELEGRAM_ACCEPTANCE_CASES } from "./renderTelegramUxAcceptance";
+import {
+  verifyRemediationReleaseArtifactsV2,
+  validateRemediationReleaseManifestV2,
+  type RemediationReleaseManifestV2
+} from "../src/release/remediationReleaseManifestV2";
 
 export type RemediationSuiteGroupId = keyof typeof REMEDIATION_REQUIRED_SUITE_GROUPS;
 
@@ -959,11 +964,28 @@ export async function verifyRemediationReleaseArtifacts(
   phase: RemediationReleaseVerificationPhase = "manifest"
 ): Promise<SanitizedVerificationResult> {
   const root = await resolveExternalArtifactRoot(artifactRoot);
-  const [manifestBytes, traceBytes] = await Promise.all([
-    readSafeArtifactFile(root, REMEDIATION_RELEASE_MANIFEST_FILE),
-    readSafeArtifactFile(root, REMEDIATION_ACCEPTANCE_TRACE_FILE)
-  ]);
-  const manifest = validateRemediationReleaseManifest(parseJson(manifestBytes));
+  const manifestBytes = await readSafeArtifactFile(root, REMEDIATION_RELEASE_MANIFEST_FILE);
+  const parsedManifest = parseJson(manifestBytes);
+  if ((parsedManifest as { version?: unknown }).version === "remediation-release-manifest-v2") {
+    const manifestV2 = validateRemediationReleaseManifestV2(parsedManifest);
+    const artifacts = new Map<string, Buffer>([[REMEDIATION_RELEASE_MANIFEST_FILE, manifestBytes]]);
+    for (const gate of manifestV2.gates) {
+      if (gate.state !== "passed" && gate.state !== "failed") continue;
+      for (const ref of gate.evidence) artifacts.set(ref.relativePath,
+        await readSafeArtifactFile(root, ref.relativePath));
+    }
+    for (const ref of manifestV2.transitionEvidence) artifacts.set(ref.relativePath,
+      await readSafeArtifactFile(root, ref.relativePath));
+    const verified = await verifyRemediationReleaseArtifactsV2(artifacts);
+    const result: SanitizedVerificationResult = {
+      overall: verified.overall,
+      gates: verified.gates.map(({ id, state }) => ({ id, state }))
+    } as SanitizedVerificationResult;
+    assertPhase(result, phase);
+    return result;
+  }
+  const traceBytes = await readSafeArtifactFile(root, REMEDIATION_ACCEPTANCE_TRACE_FILE);
+  const manifest = validateRemediationReleaseManifest(parsedManifest);
   const trace = validateAcceptanceTraceSet(parseJson(traceBytes), { isAncestor: isVerifiedGitAncestor });
   if (manifest.candidateSha !== trace.candidateSha) throw new Error("release manifest and trace candidate SHAs differ");
   if (phase !== "manifest") {

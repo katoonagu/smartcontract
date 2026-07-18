@@ -2602,7 +2602,7 @@ export function validateManifestGateEvidenceV2(
 export async function verifyRemediationReleaseArtifactsV2(
   artifacts: ReadonlyMap<string, Buffer>
 ): Promise<RemediationReleaseManifestV2> {
-  const manifestBytes = artifacts.get("release-manifest-v2.json");
+  const manifestBytes = artifacts.get("release-manifest.json");
   if (!manifestBytes) throw new Error("release_manifest_v2_missing");
   let value: unknown;
   try { value = JSON.parse(manifestBytes.toString("utf8")); }
