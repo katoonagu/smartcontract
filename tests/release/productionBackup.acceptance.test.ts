@@ -280,6 +280,106 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("lets an exact lease acquired fresh finish after GO expiry within the child timeout", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-cross-expiry-");
+    const value = fixture(root);
+    const authorityBytes = Buffer.from(`${JSON.stringify(value.authority)}\n`);
+    const expected = {
+      generationId: value.authority.generationId,
+      authoritySha256: sha256(authorityBytes),
+      candidateSha: value.authority.candidateSha,
+      databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+      artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+      expiresAt: value.authority.expiresAt
+    };
+    let now = "2026-07-18T09:09:59.000Z";
+    const calls: string[] = [];
+    try {
+      await api.claimProductionBackupAuthority(root, expected, now);
+      const claim = readFileSync(join(root, `production-backup-authority-consumed-${expected.generationId}.json`));
+      const binding = { ...expected, claimSha256: sha256(claim) };
+      await api.executeProductionBackupStateMachine(value.authority, {
+        now: () => now,
+        readCompletedEvidence: async () => null,
+        hasClaim: async () => true,
+        claim: async () => { calls.push("claim"); },
+        acquireOperation: async () => api.acquireProductionBackupOperationLease(root, binding, now, {
+          removeContainer: async () => undefined
+        }),
+        inspectPartial: () => api.inspectProductionBackupPartialState(root),
+        validatePartialProgress: () => api.validateProductionBackupProgress(root, binding, now),
+        dump: async () => {
+          calls.push("dump");
+          writeFileSync(join(root, "production-backup.dump"), Buffer.from("PGDMP slow-cross-expiry"), { flag: "wx" });
+          now = "2026-07-18T09:10:01.000Z";
+        },
+        recordDumpProgress: (operationId: string) => api.recordProductionBackupDumpProgress(root, binding, operationId, now),
+        list: async () => {
+          calls.push("list");
+          writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("1; TABLE public slow_probe\n"), { flag: "wx" });
+        },
+        recordListProgress: (operationId: string) => api.recordProductionBackupListProgress(root, binding, operationId, now),
+        attest: async () => { await api.validateProductionBackupProgress(root, binding, now); },
+        buildEvidence: async () => Buffer.from("evidence"),
+        writeEvidence: async () => { calls.push("evidence"); }
+      });
+      expect(calls).toEqual(["dump", "list", "evidence"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("resumes an expired exact dump receipt without invoking pg_dump again", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-expired-resume-");
+    const value = fixture(root);
+    const authorityBytes = Buffer.from(`${JSON.stringify(value.authority)}\n`);
+    const expected = {
+      generationId: value.authority.generationId,
+      authoritySha256: sha256(authorityBytes),
+      candidateSha: value.authority.candidateSha,
+      databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+      artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+      expiresAt: value.authority.expiresAt
+    };
+    const freshAt = "2026-07-18T09:05:00.000Z";
+    const expiredAt = "2026-07-18T09:10:01.000Z";
+    let dumpCalls = 0;
+    try {
+      await api.claimProductionBackupAuthority(root, expected, freshAt);
+      const claim = readFileSync(join(root, `production-backup-authority-consumed-${expected.generationId}.json`));
+      const binding = { ...expected, claimSha256: sha256(claim) };
+      const original = await api.acquireProductionBackupOperationLease(root, binding, freshAt, {
+        removeContainer: async () => undefined
+      });
+      writeFileSync(join(root, "production-backup.dump"), Buffer.from("PGDMP owned-before-expiry"), { flag: "wx" });
+      await api.recordProductionBackupDumpProgress(root, binding, original.operationId, freshAt);
+      await original.release();
+
+      await api.executeProductionBackupStateMachine(value.authority, {
+        now: () => expiredAt,
+        readCompletedEvidence: async () => null,
+        hasClaim: async () => true,
+        claim: async () => undefined,
+        acquireOperation: async () => api.acquireProductionBackupOperationLease(root, binding, expiredAt, {
+          allowExpiredResume: true,
+          removeContainer: async () => undefined
+        }),
+        inspectPartial: () => api.inspectProductionBackupPartialState(root),
+        validatePartialProgress: () => api.validateProductionBackupProgress(root, binding, expiredAt),
+        dump: async () => { dumpCalls += 1; },
+        recordDumpProgress: async () => undefined,
+        list: async () => {
+          writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("1; TABLE public resumed_probe\n"), { flag: "wx" });
+        },
+        recordListProgress: (operationId: string) => api.recordProductionBackupListProgress(root, binding, operationId, expiredAt),
+        attest: async () => { await api.validateProductionBackupProgress(root, binding, expiredAt); },
+        buildEvidence: async () => Buffer.from("evidence"),
+        writeEvidence: async () => undefined
+      });
+      expect(dumpCalls).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("rejects a valid claim followed by foreign custom dump and restore-list bytes without generation progress receipts", async () => {
     const api = await loadProducer();
     const root = await makeProtectedTempDir("plan5-g12-foreign-progress-");
@@ -317,7 +417,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => { calls.push("evidence"); }
       })).rejects.toThrow(/progress|ownership|receipt/i);
-      expect(calls).toEqual(["release"]);
+      expect(calls).toEqual([]);
       expect(existsSync(join(root, "production-backup-evidence.json"))).toBe(false);
       for (const [name, bytes] of before) expect(readFileSync(join(root, name))).toEqual(bytes);
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -387,6 +487,52 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     expect(calls).toEqual(["identity-recheck", "release"]);
   });
 
+  it("revalidates exact authority inputs immediately before claim and before the first dump", async () => {
+    const api = await loadProducer();
+    const value = fixture("C:/protected/plan5-g12-revalidation");
+    const beforeClaim: string[] = [];
+    await expect(api.executeProductionBackupStateMachine(value.authority, {
+      now: () => evaluatedAt,
+      readCompletedEvidence: async () => null,
+      hasClaim: async () => false,
+      inspectPartial: async () => ({ dump: false, list: false }),
+      revalidateBeforeClaim: async () => { beforeClaim.push("revalidate"); throw new Error("production_backup_binding_changed"); },
+      claim: async () => { beforeClaim.push("claim"); },
+      acquireOperation: async () => ({ operationId: "e".repeat(32), release: async () => { beforeClaim.push("release"); } }),
+      validatePartialProgress: async () => undefined,
+      revalidateBeforeDump: async () => { beforeClaim.push("revalidate-dump"); },
+      dump: async () => { beforeClaim.push("dump"); },
+      recordDumpProgress: async () => undefined,
+      list: async () => undefined,
+      recordListProgress: async () => undefined,
+      attest: async () => undefined,
+      buildEvidence: async () => Buffer.from("evidence"),
+      writeEvidence: async () => undefined
+    })).rejects.toThrow(/binding_changed/);
+    expect(beforeClaim).toEqual(["revalidate"]);
+
+    const beforeDump: string[] = [];
+    await expect(api.executeProductionBackupStateMachine(value.authority, {
+      now: () => evaluatedAt,
+      readCompletedEvidence: async () => null,
+      hasClaim: async () => true,
+      inspectPartial: async () => ({ dump: false, list: false }),
+      revalidateBeforeClaim: async () => { beforeDump.push("revalidate-claim"); },
+      claim: async () => { beforeDump.push("claim"); },
+      acquireOperation: async () => ({ operationId: "f".repeat(32), release: async () => { beforeDump.push("release"); } }),
+      validatePartialProgress: async () => undefined,
+      revalidateBeforeDump: async () => { beforeDump.push("revalidate-dump"); throw new Error("production_backup_binding_changed"); },
+      dump: async () => { beforeDump.push("dump"); },
+      recordDumpProgress: async () => undefined,
+      list: async () => undefined,
+      recordListProgress: async () => undefined,
+      attest: async () => undefined,
+      buildEvidence: async () => Buffer.from("evidence"),
+      writeEvidence: async () => undefined
+    })).rejects.toThrow(/binding_changed/);
+    expect(beforeDump).toEqual(["revalidate-dump", "release"]);
+  });
+
   it("validates exact evidence bytes and rejects restore-list encoding, size, and artifact tamper", async () => {
     const api = await loadProducer();
     const root = mkdtempSync(join(tmpdir(), "plan5-g12-evidence-"));
@@ -434,6 +580,24 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       expect(readdirSync(root)).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 20_000);
+
+  it("terminates pg_dump immediately when the archive write chain rejects", async () => {
+    const api = await loadProducer();
+    const root = mkdtempSync(join(tmpdir(), "plan5-g12-write-failure-"));
+    const startedAt = Date.now();
+    try {
+      await expect(api.writeProductionDump(root, {
+        executable: process.execPath,
+        args: ["-e", "process.stdout.write('PGDMP');setInterval(()=>{},1000)"],
+        env: { ...process.env },
+        stdin: Buffer.alloc(0)
+      }, "", 2_000, undefined, {
+        writeChunk: async () => { throw new Error("injected archive write failure"); }
+      })).rejects.toThrow(/pg_dump_failed/);
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+      expect(readdirSync(root)).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 10_000);
 
   it("command preflight leaves an expired or foreign generation and the release manifest byte-identical with zero side effects", async () => {
     const api = await loadProducer();
@@ -489,15 +653,130 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  postgresIt("creates a real custom-format backup and pinned pg_restore list from disposable tron_watch", async () => {
+  it("command rereads exact bindings immediately before exclusive claim and first dump", async () => {
     const api = await loadProducer();
-    const root = mkdtempSync(join(tmpdir(), "plan5-g12-real-"));
+    for (const stage of ["claim", "dump"] as const) {
+      const root = await makeProtectedTempDir(`plan5-g12-${stage}-revalidation-`);
+      const value = commandFixture(root);
+      const authorityName = `production-backup-authority-${value.authority.generationId}.json`;
+      const authorityBytes = Buffer.from(`${JSON.stringify(value.authority)}\n`);
+      const expected = {
+        generationId: value.authority.generationId,
+        authoritySha256: sha256(authorityBytes),
+        candidateSha: value.authority.candidateSha,
+        databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+        artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+        expiresAt: value.authority.expiresAt
+      };
+      let mutated = false;
+      try {
+        writeFileSync(join(root, "task0b-release-freeze.json"), value.task0bBytes, { flag: "wx" });
+        writeFileSync(join(root, "release-manifest.json"), value.manifestBytes, { flag: "wx" });
+        writeFileSync(join(root, authorityName), authorityBytes, { flag: "wx" });
+        if (stage === "dump") await api.claimProductionBackupAuthority(root, expected, evaluatedAt);
+        const observation = () => ({
+          identityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+          snapshotId: "00000003-0000001B-1",
+          client: { query: async () => undefined, end: async () => undefined }
+        });
+        await expect(api.runProductionBackupCommand([root, authorityName], {
+          TASK0B_PRODUCTION_DATABASE_URL: "postgresql://release:not-used@127.0.0.1:55998/tron_watch"
+        }, {
+          now: () => evaluatedAt,
+          currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+          observeProductionDatabase: async () => observation() as any,
+          attestProductionPostgresTools: async () => {
+            if (mutated) return;
+            mutated = true;
+            const name = stage === "claim" ? authorityName : "release-manifest.json";
+            writeFileSync(join(root, name), Buffer.concat([readFileSync(join(root, name)), Buffer.from(" ")]));
+          },
+          stdout: () => undefined
+        })).rejects.toThrow(/binding_changed/);
+        expect(existsSync(join(root, "production-backup.dump"))).toBe(false);
+        expect(existsSync(join(root, `production-backup-operation-${value.authority.generationId}.json`))).toBe(false);
+        expect(existsSync(join(root, `production-backup-authority-consumed-${value.authority.generationId}.json`)))
+          .toBe(stage === "dump");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  });
+
+  it("blocks a live completed-evidence lease and settles an exact dead crash lease without deleting receipted finals", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-completed-lease-");
+    const value = fixture(root);
+    const authorityBytes = Buffer.from(`${JSON.stringify(value.authority)}\n`);
+    const expected = {
+      generationId: value.authority.generationId,
+      authoritySha256: sha256(authorityBytes),
+      candidateSha: value.authority.candidateSha,
+      databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+      artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+      expiresAt: value.authority.expiresAt
+    };
+    try {
+      await api.claimProductionBackupAuthority(root, expected, evaluatedAt);
+      const claim = readFileSync(join(root, `production-backup-authority-consumed-${expected.generationId}.json`));
+      const binding = { ...expected, claimSha256: sha256(claim) };
+      const abandoned = await api.acquireProductionBackupOperationLease(root, binding, evaluatedAt, {
+        ownerProcessId: 2_000_000_003,
+        removeContainer: async () => undefined
+      });
+      writeFileSync(join(root, "production-backup.dump"), Buffer.from("PGDMP completed-before-crash"), { flag: "wx" });
+      await api.recordProductionBackupDumpProgress(root, binding, abandoned.operationId, evaluatedAt);
+      writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("1; TABLE public completed_probe\n"), { flag: "wx" });
+      await api.recordProductionBackupListProgress(root, binding, abandoned.operationId, evaluatedAt);
+      writeFileSync(join(root, "production-backup-evidence.json"), Buffer.from("completed-evidence\n"), { flag: "wx" });
+      const evidenceTemp = `.production-backup-${abandoned.operationId}.evidence.tmp`;
+      writeFileSync(join(root, evidenceTemp), Buffer.from("orphan-evidence-temp"), { flag: "wx" });
+      const preserved = new Map([
+        "production-backup.dump",
+        "production-backup-restore-list.txt",
+        `production-backup-dump-progress-${expected.generationId}.json`,
+        `production-backup-list-progress-${expected.generationId}.json`,
+        "production-backup-evidence.json"
+      ].map((name) => [name, readFileSync(join(root, name))]));
+      const removedContainers: string[] = [];
+
+      await expect(api.settleCompletedProductionBackupOperation(root, binding, evaluatedAt, {
+        isProcessAlive: async () => true,
+        removeContainer: async (name: string) => { removedContainers.push(name); }
+      })).rejects.toThrow(/operation_concurrent/);
+      expect(removedContainers).toEqual([]);
+      await api.settleCompletedProductionBackupOperation(root, binding, evaluatedAt, {
+        isProcessAlive: async () => false,
+        removeContainer: async (name: string) => { removedContainers.push(name); }
+      });
+      expect(removedContainers.sort()).toEqual([
+        abandoned.lease.dumpContainerName, abandoned.lease.restoreContainerName
+      ].sort());
+      expect(existsSync(join(root, `production-backup-operation-${expected.generationId}.json`))).toBe(false);
+      expect(existsSync(join(root, evidenceTemp))).toBe(false);
+      for (const [name, bytes] of preserved) expect(readFileSync(join(root, name))).toEqual(bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  postgresIt("removes the exact named Docker container immediately on stderr overflow", async () => {
+    const api = await loadProducer();
+    const containerName = `plan5-g12-stderr-${process.pid}-${Date.now()}`.toLowerCase();
+    try {
+      await expect(api.runProductionDockerBuffer([
+        "run", "--name", containerName, "--rm", "--network", "none", "--pull", "never",
+        "--entrypoint", "/bin/sh", "postgres:16-alpine", "-c", "head -c 1100000 /dev/zero >&2; sleep 60"
+      ], 64, 60_000, containerName)).rejects.toThrow(/docker_command_failed/);
+      const remaining = (await execFileAsync("docker", ["ps", "-a", "--format", "{{.Names}}",
+        "--filter", `name=^/${containerName}$`])).stdout.trim();
+      expect(remaining).toBe("");
+    } finally { await execFileAsync("docker", ["rm", "--force", containerName]).catch(() => undefined); }
+  }, 30_000);
+
+  postgresIt("runs the production command end to end and retries completed evidence without a second dump", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-real-");
     const suffix = `${process.pid}-${Date.now()}`;
     const serverName = `plan5-g12-source-${suffix}`;
-    const dumpName = `plan5-g12-production-backup-real-${suffix}`.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 63);
     const password = "plan5-test-$()-'%";
     let client: Client | undefined;
-    let snapshot: any;
     try {
       await execFileAsync("docker", ["run", "--detach", "--rm", "--name", serverName,
         "-e", `POSTGRES_PASSWORD=${password}`, "-e", "POSTGRES_DB=tron_watch",
@@ -533,23 +812,64 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         ...tools, pgRestore: { ...tools.pgRestore, version: `${tools.pgRestore.version}-tampered` }
       })).rejects.toThrow(/tool_changed/);
 
-      snapshot = await api.observeProductionDatabase(url, true);
-      const identityFingerprintSha256 = snapshot.identityFingerprintSha256;
-      await api.writeProductionDump(root, api.buildProductionPgDumpInvocation({
-        imageId: image, containerName: dumpName, databaseUrl: url, snapshotId: snapshot.snapshotId
-      }), dumpName, 60_000);
-      await snapshot.client.query("rollback"); await snapshot.client.end(); snapshot = undefined;
-      await api.writeProductionRestoreList(root, tools);
-      const after = await api.observeProductionDatabase(url);
-      expect(after.identityFingerprintSha256).toBe(identityFingerprintSha256);
-      await after.client.query("rollback"); await after.client.end();
+      const observed = await api.observeProductionDatabase(url);
+      const identityFingerprintSha256 = observed.identityFingerprintSha256;
+      await observed.client.query("rollback"); await observed.client.end();
+      const value = commandFixture(root);
+      value.task0b.productionDatabase.approvedIdentityFingerprintSha256 = identityFingerprintSha256;
+      value.task0b.postgresTools = tools;
+      value.task0bBytes = Buffer.from(`${JSON.stringify(value.task0b)}\n`, "utf8");
+      value.authority = {
+        ...value.authority,
+        databaseIdentityFingerprintSha256: identityFingerprintSha256,
+        task0bEvidenceSha256: sha256(value.task0bBytes)
+      };
+      const authorityName = `production-backup-authority-${value.authority.generationId}.json`;
+      writeFileSync(join(root, "task0b-release-freeze.json"), value.task0bBytes, { flag: "wx" });
+      writeFileSync(join(root, "release-manifest.json"), value.manifestBytes, { flag: "wx" });
+      writeFileSync(join(root, authorityName), Buffer.from(`${JSON.stringify(value.authority)}\n`), { flag: "wx" });
+      const output: string[] = [];
+      const commandDependencies = {
+        now: () => evaluatedAt,
+        currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+        stdout: (line: string) => { output.push(line); }
+      };
+      await api.runProductionBackupCommand([root, authorityName], {
+        TASK0B_PRODUCTION_DATABASE_URL: url
+      }, commandDependencies);
       expect(readFileSync(join(root, "production-backup.dump")).subarray(0, 5).toString("ascii")).toBe("PGDMP");
       expect(readFileSync(join(root, "production-backup-restore-list.txt"), "utf8")).toContain("plan5_backup_probe");
-      const authority = { ...fixture(root).authority, databaseIdentityFingerprintSha256: identityFingerprintSha256 };
-      const evidence = await api.buildProductionBackupEvidence(root, authority);
+      const evidence = JSON.parse(readFileSync(join(root, "production-backup-evidence.json"), "utf8"));
       expect(evidence.backupBytes).toBe(readFileSync(join(root, "production-backup.dump")).length);
       expect(evidence.restoreListBytes).toBe(readFileSync(join(root, "production-backup-restore-list.txt")).length);
       await api.attestProductionBackupFiles(root, evidence, tools);
+      const dumpBeforeRetry = readFileSync(join(root, "production-backup.dump"));
+      const authorityBytes = readFileSync(join(root, authorityName));
+      const claimName = `production-backup-authority-consumed-${value.authority.generationId}.json`;
+      const binding = {
+        generationId: value.authority.generationId,
+        authoritySha256: sha256(authorityBytes),
+        candidateSha: value.authority.candidateSha,
+        databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+        artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+        expiresAt: value.authority.expiresAt,
+        claimSha256: sha256(readFileSync(join(root, claimName)))
+      };
+      const abandoned = await api.acquireProductionBackupOperationLease(root, binding, evaluatedAt, {
+        ownerProcessId: 2_000_000_004
+      });
+      const evidenceTemp = `.production-backup-${abandoned.operationId}.evidence.tmp`;
+      writeFileSync(join(root, evidenceTemp), Buffer.from("crash-after-evidence"), { flag: "wx" });
+      await api.runProductionBackupCommand([root, authorityName], {
+        TASK0B_PRODUCTION_DATABASE_URL: url
+      }, commandDependencies);
+      expect(readFileSync(join(root, "production-backup.dump"))).toEqual(dumpBeforeRetry);
+      expect(output.map((line) => JSON.parse(line).status)).toEqual(["passed", "already_completed"]);
+      expect(existsSync(join(root, `production-backup-authority-consumed-${value.authority.generationId}.json`))).toBe(true);
+      expect(existsSync(join(root, `production-backup-dump-progress-${value.authority.generationId}.json`))).toBe(true);
+      expect(existsSync(join(root, `production-backup-list-progress-${value.authority.generationId}.json`))).toBe(true);
+      expect(existsSync(join(root, `production-backup-operation-${value.authority.generationId}.json`))).toBe(false);
+      expect(existsSync(join(root, evidenceTemp))).toBe(false);
       const listBytes = readFileSync(join(root, "production-backup-restore-list.txt"));
       writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.concat([listBytes, Buffer.from("; tampered\n")]));
       await expect(api.attestProductionBackupFiles(root, evidence, tools)).rejects.toThrow(/backup_file_unverified/);
@@ -561,9 +881,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       writeFileSync(join(root, "production-backup.dump"), dumpBytes);
       expect(readdirSync(root).some((name) => name.endsWith(".tmp"))).toBe(false);
     } finally {
-      if (snapshot) { await snapshot.client.query("rollback").catch(() => undefined); await snapshot.client.end().catch(() => undefined); }
       if (client) await client.end().catch(() => undefined);
-      await execFileAsync("docker", ["rm", "--force", dumpName]).catch(() => undefined);
       await execFileAsync("docker", ["rm", "--force", serverName]).catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
