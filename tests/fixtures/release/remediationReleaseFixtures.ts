@@ -68,13 +68,23 @@ export const RELEASE_V2_FREEZE_IDENTITY = Object.freeze({
   createdAt: RELEASE_V2_NOW
 });
 
+function canonicalFixtureJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalFixtureJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalFixtureJson(object[key])}`).join(",")}}`;
+}
+
+export const RELEASE_V2_FREEZE_SHA256 = createHash("sha256")
+  .update(canonicalFixtureJson(RELEASE_V2_FREEZE_IDENTITY), "utf8").digest("hex");
+
 export function buildOperationalAttestationV2Fixture(overrides: Record<string, unknown> = {}) {
   return {
     version: "operational-attestation-v2",
     action: "pre_manual",
     generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
     candidateSha: CANDIDATE_SHA,
-    releaseFreezeIdentitySha256: "7".repeat(64),
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
     sourceManifestSha256: "8".repeat(64),
     artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
     commandId: "base_audit",
@@ -113,17 +123,42 @@ export function buildReleaseManifestV2Fixture(overrides: Record<string, unknown>
   return {
     version: "remediation-release-manifest-v2",
     revision: 1,
-    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
     candidateSha: CANDIDATE_SHA,
     planBaseSha: PLAN_BASE_SHA,
-    releaseFreezeIdentitySha256: "7".repeat(64),
-    sourceManifestSha256: null,
+    previousManifestSha256: null,
+    artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    latestCommittedReceiptSha256: null,
+    requiredRequirementIds: Array.from({ length: 38 }, (_, index) => `REQ-${String(index + 1).padStart(2, "0")}`),
+    requiredAcceptanceIds: Array.from({ length: 41 }, (_, index) => `AC-${String(index + 1).padStart(2, "0")}`),
     transitionId: "pre_manual",
     overall: "not_ready",
     gates,
     transitionEvidence: [],
+    actualRollback: null,
     updatedAt: RELEASE_V2_NOW,
     ...overrides
+  };
+}
+
+export function buildExecutedReleaseGateV2Fixture(id: typeof REQUIRED_GATE_IDS[number], state: "passed" | "failed" = "passed") {
+  return {
+    id,
+    candidateSha: CANDIDATE_SHA,
+    state,
+    commandId: GATE_COMMAND_IDS[id],
+    redactedTemplateSha256: COMMAND_TEMPLATE_SHA256[GATE_COMMAND_IDS[id]],
+    startedAt: "2026-07-18T09:58:00.000Z",
+    finishedAt: "2026-07-18T09:59:00.000Z",
+    exitCode: state === "passed" ? 0 : 1,
+    outputSha256: "9".repeat(64),
+    evidence: [{
+      kind: id === "G00_BASE" ? "task0_baseline" : "suite_evidence",
+      relativePath: `gates/${id.toLowerCase()}.json`,
+      sha256: "a".repeat(64),
+      schemaVersion: "gate-evidence-v2",
+      candidateSha: CANDIDATE_SHA
+    }]
   };
 }
 

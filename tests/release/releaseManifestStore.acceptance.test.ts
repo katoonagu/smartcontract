@@ -1,9 +1,11 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import {
   RELEASE_V2_FREEZE_IDENTITY,
+  buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
   buildReleaseManifestV2Fixture
 } from "../fixtures/release/remediationReleaseFixtures";
@@ -13,6 +15,17 @@ async function root(): Promise<string> {
   const value = await mkdtemp(join(tmpdir(), "plan5-manifest-v2-"));
   roots.push(value);
   return value;
+}
+
+function readinessAdvance(artifactRoot: string, overrides: Record<string, unknown> = {}) {
+  return {
+    artifactRoot,
+    sourceManifest: buildReleaseManifestV2Fixture(),
+    transition: { transitionId: "readiness" },
+    verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G05_TELEGRAM")],
+    verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null },
+    ...overrides
+  };
 }
 afterEach(async () => { await Promise.all(roots.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
 
@@ -56,14 +69,21 @@ it("[REQ-38][RELEASE-FREEZE-MATERIALIZER] only release freeze materializer conve
 it("[REQ-38][BOOTSTRAP-ROOT-WRITER-CRASH] discriminates bootstrap from frozen lease takeover and terminal bytes resumes exact prepared freeze after dead-owner takeover and seals the root for new-root retry when owner dies before prepare including crash after lease acquisition and after prepare before freeze receipt", async () => {
   const api = await loadStoreApi();
   const unpreparedRoot = await root();
-  await expect(api.materializeReleaseFreezeV2({ ...materializeInput(unpreparedRoot), faultAt: "after_lease" })).rejects.toThrow();
-  await expect(api.materializeReleaseFreezeV2({ ...materializeInput(unpreparedRoot), owner: { ownerId: "owner-b", pid: 2147483647, processStartedAt: "2026-07-18T10:01:00.000Z" }, recoverDeadOwner: true })).rejects.toThrow(/new_root|sealed|abandoned/);
+  const deadOwner = { ownerId: "dead-owner", pid: 2147483647, processStartedAt: "2026-07-18T09:59:00.000Z" };
+  await expect(api.materializeReleaseFreezeV2({ ...materializeInput(unpreparedRoot), owner: deadOwner, faultAt: "after_lease" })).rejects.toThrow();
+  const unpreparedHash = createHash("sha256").update(await readFile(join(unpreparedRoot, "manifest-transition-root.lease.json"))).digest("hex");
+  const abandoned = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: unpreparedRoot, expectedOldLeaseSha256: unpreparedHash, evaluatedAt: "2026-07-18T10:02:00.000Z" });
+  expect(abandoned.sealed).toBe(true);
+  await expect(api.materializeReleaseFreezeV2(materializeInput(unpreparedRoot))).rejects.toThrow(/new_root|sealed|abandoned/);
   expect(await readdir(unpreparedRoot)).toContain("bootstrap-root-terminal-abandoned-v2.json");
   expect(await readdir(unpreparedRoot)).not.toContain("release-freeze-identity-v2.json");
   for (const faultAt of ["after_prepare", "after_identity"]) {
     const r = await root();
-    await expect(api.materializeReleaseFreezeV2({ ...materializeInput(r), faultAt })).rejects.toThrow();
-    const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), owner: { ownerId: "owner-b", pid: 2147483647, processStartedAt: "2026-07-18T10:01:00.000Z" }, recoverDeadOwner: true });
+    await expect(api.materializeReleaseFreezeV2({ ...materializeInput(r), owner: deadOwner, faultAt })).rejects.toThrow();
+    const oldHash = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
+    const takeover = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: r, expectedOldLeaseSha256: oldHash, evaluatedAt: "2026-07-18T10:02:00.000Z" });
+    expect(takeover.sealed).toBe(false);
+    const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), evaluatedAt: "2026-07-18T10:02:00.000Z" });
     expect(recovered.freezeIdentity).toEqual(RELEASE_V2_FREEZE_IDENTITY);
   }
 });
@@ -116,7 +136,10 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalizat
   const terminal = await api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:02:00.000Z", observedArtifacts: [] });
   expect(terminal.reason).toBe("expired_unclaimed");
   for (const artifact of ["preclaim", "claim", "consumption", "action_lease", "g13_session", "advisory_lock", "operation", "effect"]) {
-    await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:02:00.000Z", observedArtifacts: [artifact] })).rejects.toThrow();
+    const conflictPath = join(r, `production-${artifact}-conflict.json`);
+    await writeFile(conflictPath, "{}\n", { flag: "wx" });
+    await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:02:00.000Z" })).rejects.toThrow();
+    await rm(conflictPath, { force: true });
   }
 });
 
@@ -131,7 +154,7 @@ it("[REQ-38][ROOT-WRITER-SERIALIZATION] one fixed root-writer lease and CAS seri
   const api = await loadStoreApi(); const r = await root();
   const outcomes = await Promise.allSettled([
     api.materializeReleaseFreezeV2(materializeInput(r)),
-    api.advanceReleaseManifestV2({ artifactRoot: r, sourceManifest: buildReleaseManifestV2Fixture(), transition: { transitionId: "readiness" } }),
+    api.advanceReleaseManifestV2(readinessAdvance(r)),
     api.issueOperationalAttestationV2({ artifactRoot: r, attestation: buildOperationalAttestationV2Fixture() })
   ]);
   expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
@@ -139,37 +162,40 @@ it("[REQ-38][ROOT-WRITER-SERIALIZATION] one fixed root-writer lease and CAS seri
 
 it("[REQ-38][MANIFEST-V2-CAS] rejects stale and concurrent writers without overwriting the winner", async () => {
   const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
-  const source = buildReleaseManifestV2Fixture();
-  const outcomes = await Promise.allSettled([1, 2].map(() => api.advanceReleaseManifestV2({ artifactRoot: r, sourceManifest: source, transition: { transitionId: "readiness" } })));
+  const outcomes = await Promise.allSettled([1, 2].map(() => api.advanceReleaseManifestV2(readinessAdvance(r))));
   expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
 });
 
 it("[REQ-38][MANIFEST-V2-CRASH] recovers exactly before and after the atomic manifest replace", async () => {
   const api = await loadStoreApi();
   for (const faultAt of ["before_manifest_replace", "after_manifest_replace"]) {
-    const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = { artifactRoot: r, sourceManifest: buildReleaseManifestV2Fixture(), transition: { transitionId: "readiness" }, faultAt };
+    const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = readinessAdvance(r, { faultAt });
     await expect(api.advanceReleaseManifestV2(input)).rejects.toThrow();
     const recovered = await api.advanceReleaseManifestV2({ ...input, faultAt: undefined }); expect(recovered.manifest.revision).toBe(2);
   }
 });
 
 it("[REQ-38][MANIFEST-V2-CRASH-RECEIPT] restores exact prepared canonical receipt bytes and hash after replace-before-receipt without rerunning time reducer or serializer", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = { artifactRoot: r, sourceManifest: buildReleaseManifestV2Fixture(), transition: { transitionId: "readiness" }, evaluatedAt: "2026-07-18T10:03:00.000Z", faultAt: "after_manifest_replace" };
+  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = readinessAdvance(r, { evaluatedAt: "2026-07-18T10:03:00.000Z", faultAt: "after_manifest_replace" });
   await expect(api.advanceReleaseManifestV2(input)).rejects.toThrow();
-  const before = await readFile(join(r, "prepared-manifest-transition-v2.json"));
+  const preparedName = (await readdir(r)).find((name) => name.startsWith("manifest-transition-prepared-"))!;
+  const before = await readFile(join(r, preparedName));
   await api.advanceReleaseManifestV2({ ...input, faultAt: undefined, evaluatedAt: "2099-01-01T00:00:00.000Z" });
-  expect(await readFile(join(r, "prepared-manifest-transition-v2.json"))).toEqual(before);
+  expect(await readFile(join(r, preparedName))).toEqual(before);
 });
 
 it("[REQ-38][MANIFEST-V2-REPLAY] exact replay is byte-identical and conflicting replay fails closed", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = { artifactRoot: r, sourceManifest: buildReleaseManifestV2Fixture(), transition: { transitionId: "readiness" } };
+  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = readinessAdvance(r);
   const first = await api.advanceReleaseManifestV2(input); const second = await api.advanceReleaseManifestV2(input); expect(second).toEqual(first);
-  await expect(api.advanceReleaseManifestV2({ ...input, transition: { transitionId: "g12_backup_passed" } })).rejects.toThrow();
+  await expect(api.advanceReleaseManifestV2({ ...input, transition: { transitionId: "g12_backup_passed" }, verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G12_PRODUCTION_BACKUP")] })).rejects.toThrow();
 });
 
 it("[REQ-38][MANIFEST-V2-ROOT-LEASE] one fixed root-wide lease serializes competing different transition keys before the loser creates a claim", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const source = buildReleaseManifestV2Fixture();
-  const outcomes = await Promise.allSettled(["readiness", "g12_backup_passed"].map((transitionId) => api.advanceReleaseManifestV2({ artifactRoot: r, sourceManifest: source, transition: { transitionId } })));
+  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
+  const outcomes = await Promise.allSettled([
+    readinessAdvance(r),
+    readinessAdvance(r, { transition: { transitionId: "g12_backup_passed" }, verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G12_PRODUCTION_BACKUP")] })
+  ].map((input) => api.advanceReleaseManifestV2(input)));
   expect(outcomes.filter((item) => item.status === "fulfilled").length).toBeLessThanOrEqual(1);
   expect((await readdir(r)).filter((name) => name.includes("claim"))).toHaveLength(1);
 });
@@ -215,5 +241,5 @@ it("[REQ-38][MANIFEST-V2-AUTHORITY-SELECTION] accepts only the freeze generation
 });
 
 it("[REQ-38][MANIFEST-V2-SEALED-ROOT] rejects every transition on terminal-abandoned root and never auto-copies state to a new root", async () => {
-  const api = await loadStoreApi(); const r = await root(); await expect(api.advanceReleaseManifestV2({ artifactRoot: r, rootState: "terminal_abandoned", sourceManifest: buildReleaseManifestV2Fixture(), transition: { transitionId: "readiness" } })).rejects.toThrow(); expect(await readdir(r)).toEqual([]);
+  const api = await loadStoreApi(); const r = await root(); await expect(api.advanceReleaseManifestV2(readinessAdvance(r, { rootState: "terminal_abandoned" }))).rejects.toThrow(); expect(await readdir(r)).toEqual([]);
 });

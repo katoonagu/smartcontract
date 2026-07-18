@@ -1,11 +1,24 @@
 import { expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import {
   CANDIDATE_SHA,
   RELEASE_V2_FREEZE_IDENTITY,
+  buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
   buildReleaseManifestV2Fixture,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+}
+
+function manifestSha(value: unknown): string {
+  return createHash("sha256").update(`${canonical(value)}\n`, "utf8").digest("hex");
+}
 
 async function loadLifecycleApi(): Promise<any> {
   const modulePath: string = "../../src/release/remediationReleaseManifestV2";
@@ -20,7 +33,8 @@ it("[REQ-38][MANIFEST-V2-INIT] creates pre-manual revision one only from absent 
   const api = await loadLifecycleApi();
   const manifest = api.createInitialRemediationReleaseManifestV2({
     freezeIdentity: RELEASE_V2_FREEZE_IDENTITY,
-    evaluatedAt: "2026-07-18T10:00:00.000Z"
+    evaluatedAt: "2026-07-18T10:00:00.000Z",
+    verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate: any) => gate.state === "passed")
   });
   expect(manifest).toMatchObject({ version: "remediation-release-manifest-v2", revision: 1, transitionId: "pre_manual" });
   expect(manifest.gates.filter((gate: any) => gate.state === "pending").map((gate: any) => gate.id)).toEqual([
@@ -36,15 +50,30 @@ it("[REQ-38][MANIFEST-V2-INIT] creates pre-manual revision one only from absent 
 it("[REQ-38][MANIFEST-V2-TRANSITIONS] accepts only absent to pre-manual to readiness to G12 to G13 to G14 to G15", async () => {
   const api = await loadLifecycleApi();
   const ordered = ["readiness", "g12_backup_passed", "g13_migration_passed", "g14_rollout_passed", "g15_canary_released"];
+  const transitionGate: Record<string, string> = { readiness: "G05_TELEGRAM", g12_backup_passed: "G12_PRODUCTION_BACKUP", g13_migration_passed: "G13_PRODUCTION_MIGRATION", g14_rollout_passed: "G14_PRODUCTION_ROLLOUT", g15_canary_released: "G15_PRODUCTION_CANARY" };
+  const transitionCommand: Record<string, string> = { g12_backup_passed: "production_backup", g13_migration_passed: "production_migration", g14_rollout_passed: "production_rollout", g15_canary_released: "production_canary" };
   let manifest = buildReleaseManifestV2Fixture();
   for (const transitionId of ordered) {
     manifest = api.reduceRemediationReleaseManifestV2(manifest, {
-      transitionId, evidence: [], evaluatedAt: "2026-07-18T10:01:00.000Z"
+      transitionId, evaluatedAt: "2026-07-18T10:01:00.000Z",
+      latestCommittedReceiptSha256: createHash("sha256").update(`receipt:${transitionId}`).digest("hex"),
+      operationalAttestation: transitionId === "readiness" ? null : buildOperationalAttestationV2Fixture({
+        action: transitionId,
+        commandId: transitionCommand[transitionId],
+        sourceManifestSha256: manifestSha(manifest),
+        issuedAt: "2026-07-18T10:00:30.000Z",
+        expiresAt: "2026-07-18T10:15:00.000Z"
+      })
+    }, [buildExecutedReleaseGateV2Fixture(transitionGate[transitionId] as any)], {
+      refs: [], actualRollbackOutcome: null
     });
   }
   expect(manifest.transitionId).toBe("g15_canary_released");
   expect(() => api.reduceRemediationReleaseManifestV2(buildReleaseManifestV2Fixture(), {
-    transitionId: "g13_migration_passed", evidence: [], evaluatedAt: "2026-07-18T10:01:00.000Z"
+    transitionId: "g13_migration_passed", evaluatedAt: "2026-07-18T10:01:00.000Z",
+    latestCommittedReceiptSha256: "d".repeat(64), operationalAttestation: null
+  }, [buildExecutedReleaseGateV2Fixture("G13_PRODUCTION_MIGRATION")], {
+    refs: [], actualRollbackOutcome: null
   })).toThrow();
 });
 

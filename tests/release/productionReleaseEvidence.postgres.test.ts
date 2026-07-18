@@ -1,6 +1,11 @@
 import pg from "pg";
 import { expect, it } from "vitest";
-import { buildReleaseManifestV2Fixture } from "../fixtures/release/remediationReleaseFixtures";
+import { createHash } from "node:crypto";
+import {
+  RELEASE_V2_FREEZE_IDENTITY,
+  buildExecutedReleaseGateV2Fixture,
+  buildReleaseManifestV2Fixture
+} from "../fixtures/release/remediationReleaseFixtures";
 
 const required = process.env.REQUIRE_PLAN5_POSTGRES === "1";
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -25,20 +30,46 @@ postgresIt("[REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an ex
       "select current_database()::text as database_name"
     );
     expect(identity.rows).toEqual([{ database_name: "tron_watch_plan5_task8b_red" }]);
-    await client.query("begin");
     const api = await loadStoreApi();
     const source = buildReleaseManifestV2Fixture();
-    const result = await api.persistPostgresManifestTransitionV2(client, {
-      releaseGenerationId: source.releaseGenerationId,
-      sourceRevision: source.revision,
-      sourceManifestSha256: "8".repeat(64),
-      targetManifest: { ...source, revision: 2, transitionId: "readiness" },
-      evaluatedAt: "2026-07-18T10:05:00.000Z"
+    const sourceBytes = Buffer.from(`${JSON.stringify(source)}\n`, "utf8");
+    const sourceManifestSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+    const initialized = await api.initializePostgresManifestStateV2(client, {
+      releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+      sourceManifestBytes: sourceBytes,
+      evaluatedAt: "2026-07-18T10:04:00.000Z"
     });
-    expect(result.revision).toBe(2);
-    await client.query("rollback");
+    expect(initialized.sourceSha256).toBe(sourceManifestSha256);
+    const transition = {
+      releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+      sourceRevision: source.revision,
+      sourceManifestSha256,
+      targetManifest: {
+        ...source,
+        revision: 2,
+        previousManifestSha256: sourceManifestSha256,
+        latestCommittedReceiptSha256: "e".repeat(64),
+        updatedAt: "2026-07-18T10:05:00.000Z",
+        transitionId: "readiness",
+        overall: "ready_for_release",
+        gates: source.gates.map((gate) => gate.id === "G05_TELEGRAM"
+          ? buildExecutedReleaseGateV2Fixture("G05_TELEGRAM") : gate)
+      },
+      evaluatedAt: "2026-07-18T10:05:00.000Z"
+    };
+    const concurrent = new pg.Client({ connectionString: databaseUrl });
+    await concurrent.connect();
+    try {
+      const outcomes = await Promise.allSettled([
+        api.persistPostgresManifestTransitionV2(client, transition),
+        api.persistPostgresManifestTransitionV2(concurrent, transition)
+      ]);
+      expect(outcomes.filter((value) => value.status === "fulfilled")).toHaveLength(1);
+      expect((outcomes.find((value) => value.status === "fulfilled") as PromiseFulfilledResult<any>).value.revision).toBe(2);
+      await expect(api.persistPostgresManifestTransitionV2(client, transition)).rejects.toThrow(/cas/i);
+    } finally { await concurrent.end(); }
   } finally {
-    await client.query("rollback").catch(() => undefined);
+    await client.query("drop table if exists plan5_release_manifest_v2_cas").catch(() => undefined);
     await client.end();
   }
 });
