@@ -19,6 +19,14 @@ const SHA = "a".repeat(64);
 const CANDIDATE = "a".repeat(40);
 const STARTED = "2026-07-19T00:00:00.000Z";
 
+const TERMINAL_CHECKS = Object.freeze({
+  immediate_runtime_checks: ["schema", "version", "admin", "singleton", "workers", "logs", "delivery", "legacy"],
+  bounded_runtime_checks: ["schema", "version", "admin", "singleton", "reconciliation", "delivery", "navigation",
+    "allowance", "legacy", "secrets", "queues", "honest_limits"],
+  rollback_runtime_checks: ["schema032_retained", "previous_version", "admin", "singleton", "allowance", "legacy",
+    "sent", "no_duplicate_send"]
+} as const);
+
 function begun(kind: "rollout" | "canary" | "rollback" | "recovery") {
   return {
     selectedAuthority: {
@@ -69,7 +77,8 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
     now: vi.fn(() => STARTED),
     async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
     async validateStep(input) { events.push(`validate:${input.stepId}`); return { inputSha256: input.inputSha256,
-      outputSha256: "b".repeat(64), observedStateSha256: "c".repeat(64) }; },
+      outputSha256: "b".repeat(64), observedStateSha256: "c".repeat(64),
+      verifiedChecks: TERMINAL_CHECKS[input.stepId as keyof typeof TERMINAL_CHECKS] }; },
     async prepareEffect(input) { events.push(`prepare:${input.stepId}`); return "f".repeat(64); },
     async executeEffect(input) { events.push(`effect:${input.stepId}`); return { inputSha256: input.inputSha256,
       outputSha256: "d".repeat(64), observedStateSha256: "e".repeat(64) }; },
@@ -232,6 +241,48 @@ describe("protected production orchestrator", () => {
       attemptedExternalEffect: true,
       failureCode: "delivery_invariant_failed"
     });
+    expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
+  });
+
+  it("fails closed when the exact terminal live-proof check set is missing or has extras", async () => {
+    for (const verifiedChecks of [undefined, [...TERMINAL_CHECKS.immediate_runtime_checks, "invented"]]) {
+      const { events, store, adapters } = harness("rollout");
+      const invalidProofAdapters: ProtectedProductionOperationAdaptersV2 = {
+        ...adapters,
+        async validateStep(input) {
+          const result = await adapters.validateStep(input);
+          return input.stepId === "immediate_runtime_checks" ? { ...result, verifiedChecks } : result;
+        }
+      };
+      const root = mkdtempSync(join(tmpdir(), "plan5-protected-live-proof-invalid-"));
+
+      await expect(executeProtectedProductionOperationV2(
+        { artifactRoot: root, operationKind: "rollout" },
+        { store, adapters: invalidProofAdapters }
+      )).rejects.toThrow(/verified.*checks|live.*proof/i);
+
+      expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
+    }
+  });
+
+  it("settles exactly once when pass-evidence preparation fails after every step receipt", async () => {
+    const { events, store, adapters } = harness("rollout");
+    const failingStore: ProtectedProductionOperationStoreV2 = {
+      ...store,
+      persistExclusive(kind, path, value) {
+        if (kind === "rollout_orchestration") throw new Error("delivery invariant failed after receipts");
+        return store.persistExclusive(kind, path, value);
+      }
+    };
+    const root = mkdtempSync(join(tmpdir(), "plan5-protected-post-step-failure-"));
+
+    await expect(executeProtectedProductionOperationV2(
+      { artifactRoot: root, operationKind: "rollout" },
+      { store: failingStore, adapters }
+    )).rejects.toThrow("delivery invariant failed after receipts");
+
+    expect(events.filter((event) => event === "settlement")).toHaveLength(1);
+    expect(events.filter((event) => event === "terminal")).toHaveLength(1);
     expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
   });
 });

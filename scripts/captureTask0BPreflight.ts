@@ -935,7 +935,9 @@ async function observeRuntimeManagerRegistry(
   return manager;
 }
 
-async function observeProductionDatabase(config: Task0BPreflightConfigV1): Promise<Task0BReleaseFreezeEvidenceV1["productionDatabase"]> {
+export async function observeTask0BProductionDatabase(
+  config: Task0BPreflightConfigV1
+): Promise<Task0BReleaseFreezeEvidenceV1["productionDatabase"]> {
   const expected = assertExpectedProductionDatabase(config.productionDatabaseExpected);
   const databaseUrl = process.env[config.databaseConnectionEnvName];
   if (!databaseUrl) throw new Error("task0b_production_database_binding_missing");
@@ -1228,7 +1230,7 @@ export function createTask0BDirectDependencies(
       return binding;
     },
     readRuntimeManager: () => observeRuntimeManagerRegistry(config),
-    readProductionDatabase: () => observeProductionDatabase(config),
+    readProductionDatabase: () => observeTask0BProductionDatabase(config),
     readRollbackWorktree: () => observeRollbackWorktree(config),
     readPostgresTools: () => observePostgresTools(config),
     inspectArtifactRoot: () => observeArtifactRoot(config),

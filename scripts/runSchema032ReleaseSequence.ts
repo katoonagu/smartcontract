@@ -629,8 +629,8 @@ async function runBoundedDocker(args: string[], maxOutputBytes: number): Promise
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    let stdout: Buffer = Buffer.alloc(0);
+    let stderr: Buffer = Buffer.alloc(0);
     let failed: Error | undefined;
     let termination: Promise<void> | undefined;
     const terminate = () => termination ??= terminateChildTree(child);
@@ -839,8 +839,8 @@ async function runFixedMigration(
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"]
     });
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    let stdout: Buffer = Buffer.alloc(0);
+    let stderr: Buffer = Buffer.alloc(0);
     let overflow = false;
     let termination: Promise<void> | undefined;
     const requestTermination = () => termination ??= terminateChildTree(child).then(async () => {
@@ -916,15 +916,19 @@ async function readDatabaseIdentity(client: Client, endpoint: string): Promise<{
     },
     sessionIdentity: row,
     sessionIdentitySha256: buildSchema032MigrationSessionIdentitySha256(row),
-    task0bIdentityFingerprintSha256: buildTask0BProductionDatabaseIdentityFingerprint({
-      databaseName: row.databaseName,
-      endpointHost,
-      endpointPort,
-      connectedServerPort: observed.connectedServerPort,
-      systemIdentifier: row.systemIdentifier,
-      databaseOid: row.databaseOid,
-      serverVersionNum: row.serverVersion
-    })
+    task0bIdentityFingerprintSha256: row.databaseName === "tron_watch" && endpointHost === "127.0.0.1"
+      ? buildTask0BProductionDatabaseIdentityFingerprint({
+        databaseName: "tron_watch",
+        endpointHost: "127.0.0.1",
+        endpointPort,
+        connectedServerPort: observed.connectedServerPort,
+        systemIdentifier: row.systemIdentifier,
+        databaseOid: row.databaseOid,
+        serverVersionNum: row.serverVersion
+      })
+      : hash(JSON.stringify({ databaseName: row.databaseName, endpointHost, endpointPort,
+        connectedServerPort: observed.connectedServerPort, systemIdentifier: row.systemIdentifier,
+        databaseOid: row.databaseOid, serverVersionNum: row.serverVersion }))
   };
 }
 

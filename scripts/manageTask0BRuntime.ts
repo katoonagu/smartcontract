@@ -33,7 +33,7 @@ const execFileAsync = promisify(execFile);
 const SHA40 = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
-const START_EVIDENCE = /^runtime-start-evidence-([a-z0-9][a-z0-9-]{15,63})\.json$/u;
+const START_EVIDENCE = /^runtime-start-evidence-(?:[a-z0-9][a-z0-9-]{15,63}|[a-z0-9][a-z0-9-]{15,63}-runtime_manager_(?:start_candidate|rollback_previous)-[0-9a-f]{64})\.json$/u;
 const MAX_ARTIFACT_BYTES = 256 * 1024;
 const MANAGER_PATH = fileURLToPath(import.meta.url);
 
@@ -212,14 +212,50 @@ export function validateTask0BSanitizedRehearsalAuthority(value: unknown): {
   return authority as ReturnType<typeof validateTask0BSanitizedRehearsalAuthority>;
 }
 
-export function runtimeGenerationEvidencePath(kind: "start" | "stop", generationId: string): string {
+export function runtimeGenerationEvidencePath(
+  kind: "start" | "stop",
+  generationId: string,
+  commandId: RuntimeCommandId,
+  authoritySha256: string
+): string {
   if (!GENERATION.test(generationId)) throw new Error("task0b_runtime_generation_invalid");
-  return `runtime-${kind}-evidence-${generationId}.json`;
+  const kindMatches = kind === "start"
+    ? commandId === "runtime_manager_start_candidate" || commandId === "runtime_manager_rollback_previous"
+    : commandId === "runtime_manager_stop_candidate" || commandId === "runtime_manager_stop_previous";
+  if (!kindMatches || !SHA256.test(authoritySha256)) throw new Error("task0b_runtime_effect_identity_invalid");
+  return `runtime-${kind}-evidence-${generationId}-${commandId}-${authoritySha256}.json`;
 }
 
-export function runtimeGenerationConsumptionPath(generationId: string): string {
+export function runtimeGenerationConsumptionPath(
+  generationId: string,
+  commandId: RuntimeCommandId,
+  authoritySha256: string
+): string {
   if (!GENERATION.test(generationId)) throw new Error("task0b_runtime_generation_invalid");
-  return `runtime-authority-consumed-${generationId}.json`;
+  if (!RUNTIME_ACTION_PHASES[commandId] || !SHA256.test(authoritySha256)) {
+    throw new Error("task0b_runtime_effect_identity_invalid");
+  }
+  return `runtime-authority-consumed-${generationId}-${commandId}-${authoritySha256}.json`;
+}
+
+export function runtimeGenerationDiagnosticPaths(
+  generationId: string,
+  commandId: "runtime_manager_start_candidate" | "runtime_manager_rollback_previous",
+  authoritySha256: string
+): Readonly<{
+  stdout: string;
+  stderr: string;
+  binding: string;
+}> {
+  if (!GENERATION.test(generationId)) throw new Error("task0b_runtime_generation_invalid");
+  if (!new Set(["runtime_manager_start_candidate", "runtime_manager_rollback_previous"]).has(commandId)
+      || !SHA256.test(authoritySha256)) throw new Error("task0b_runtime_diagnostic_identity_invalid");
+  const suffix = `${generationId}-${commandId}-${authoritySha256}`;
+  return {
+    stdout: `runtime-stdout-${suffix}.jsonl`,
+    stderr: `runtime-stderr-${suffix}.jsonl`,
+    binding: `runtime-log-binding-${suffix}.json`
+  };
 }
 
 const OPTIONAL_PRODUCTION_ENV = [
@@ -425,12 +461,15 @@ export function validateTask0BProductionGoEvidence(
 
 export async function completeTask0BManagedRuntimeStart(input: {
   generationId: string;
+  commandId: "runtime_manager_start_candidate" | "runtime_manager_rollback_previous";
+  authoritySha256: string;
   processId: number;
   evidence: unknown;
   writeEvidence(path: string, evidence: unknown): Promise<void>;
   terminateAndVerify(processId: number): Promise<void>;
 }): Promise<{ processId: number; evidencePath: string }> {
-  const evidencePath = runtimeGenerationEvidencePath("start", input.generationId);
+  const evidencePath = runtimeGenerationEvidencePath("start", input.generationId, input.commandId,
+    input.authoritySha256);
   try {
     await input.writeEvidence(evidencePath, input.evidence);
   } catch (error) {
@@ -616,21 +655,48 @@ async function recheckStartRuntime(): Promise<void> {
 async function startRuntime(
   artifactRoot: string,
   authority: Task0BProductionRuntimeAuthorityV1,
-  prepared: PreparedStartRuntime
+  prepared: PreparedStartRuntime,
+  authoritySha256: string
 ): Promise<unknown> {
-  const child = spawn(process.execPath, [
-    "--import", "tsx", prepared.physicalEntrypoint,
-    "--task0b-manager-producer=task0b_repo_runtime_manager_v1",
-    `--task0b-runtime-sha=${authority.targetRuntimeSha}`,
-    `--task0b-runtime-label=${authority.targetRuntimeLabel}`
-  ], {
-    cwd: prepared.worktree,
-    env: buildTask0BProductionRuntimeEnvironment(process.env, authority, join(artifactRoot, "plan5-no-dotenv")),
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-    shell: false
-  });
+  if (authority.commandId !== "runtime_manager_start_candidate"
+      && authority.commandId !== "runtime_manager_rollback_previous") {
+    throw new Error("task0b_runtime_diagnostic_identity_invalid");
+  }
+  const diagnosticPaths = runtimeGenerationDiagnosticPaths(authority.generationId, authority.commandId, authoritySha256);
+  const openFlags = fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0);
+  const stdoutHandle = await open(join(artifactRoot, diagnosticPaths.stdout), openFlags, 0o600);
+  let stderrHandle: Awaited<ReturnType<typeof open>> | undefined;
+  let child: ReturnType<typeof spawn>;
+  try {
+    stderrHandle = await open(join(artifactRoot, diagnosticPaths.stderr), openFlags, 0o600);
+    await Promise.all([stdoutHandle.sync(), stderrHandle.sync()]);
+    await writeProtectedExclusive(artifactRoot, diagnosticPaths.binding, {
+      version: "runtime-manager-log-binding-v1",
+      generationId: authority.generationId,
+      commandId: authority.commandId,
+      authoritySha256,
+      targetRuntimeSha: authority.targetRuntimeSha,
+      stdoutPath: diagnosticPaths.stdout,
+      stderrPath: diagnosticPaths.stderr,
+      createdAt: new Date().toISOString()
+    });
+    child = spawn(process.execPath, [
+      "--import", "tsx", prepared.physicalEntrypoint,
+      "--task0b-manager-producer=task0b_repo_runtime_manager_v1",
+      `--task0b-runtime-sha=${authority.targetRuntimeSha}`,
+      `--task0b-runtime-label=${authority.targetRuntimeLabel}`
+    ], {
+      cwd: prepared.worktree,
+      env: buildTask0BProductionRuntimeEnvironment(process.env, authority, join(artifactRoot, "plan5-no-dotenv")),
+      detached: true,
+      stdio: ["ignore", stdoutHandle.fd, stderrHandle.fd],
+      windowsHide: true,
+      shell: false
+    });
+  } finally {
+    await stdoutHandle.close();
+    if (stderrHandle) await stderrHandle.close();
+  }
   if (!child.pid) throw new Error("task0b_runtime_manager_start_failed");
   let observation: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>> | undefined;
   for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -652,13 +718,15 @@ async function startRuntime(
   });
   const completed = await completeTask0BManagedRuntimeStart({
     generationId: authority.generationId,
+    commandId: authority.commandId,
+    authoritySha256,
     processId: child.pid,
     evidence,
     writeEvidence: (filename, value) => writeProtectedExclusive(artifactRoot, filename, value).then(() => undefined),
     terminateAndVerify: () => terminateExactAndVerify(observation!, "graceful_then_force")
   });
   child.unref();
-  return { status: "started", ...completed };
+  return { status: "started", diagnosticPaths, ...completed };
 }
 
 async function prepareStopRuntime(
@@ -701,7 +769,8 @@ async function recheckStopRuntime(
 async function stopRuntime(
   artifactRoot: string,
   authority: Task0BProductionRuntimeAuthorityV1,
-  prepared: PreparedStopRuntime
+  prepared: PreparedStopRuntime,
+  authoritySha256: string
 ): Promise<unknown> {
   await terminateExactAndVerify(prepared.observation, authority.forcePolicy);
   const stopEvidence = {
@@ -714,7 +783,11 @@ async function stopRuntime(
     runtimeCandidatesAfter: 0,
     verified: true
   };
-  const filename = runtimeGenerationEvidencePath("stop", authority.generationId);
+  if (authority.commandId !== "runtime_manager_stop_candidate"
+      && authority.commandId !== "runtime_manager_stop_previous") {
+    throw new Error("task0b_runtime_effect_identity_invalid");
+  }
+  const filename = runtimeGenerationEvidencePath("stop", authority.generationId, authority.commandId, authoritySha256);
   await writeProtectedExclusive(artifactRoot, filename, stopEvidence);
   return { status: "stopped", processId: prepared.processId, evidencePath: filename };
 }
@@ -738,7 +811,7 @@ async function main(): Promise<void> {
   if (!SHA256.test(expectedTemplate)) throw new Error("task0b_runtime_manager_template_unverified");
   const consumeAuthority = () => writeProtectedExclusive(
     artifactRoot,
-    runtimeGenerationConsumptionPath(authority.generationId),
+    runtimeGenerationConsumptionPath(authority.generationId, authority.commandId, hash(authorityBytes)),
     {
       version: "runtime-manager-authority-consumption-v1",
       generationId: authority.generationId,
@@ -756,7 +829,7 @@ async function main(): Promise<void> {
       revalidateBeforeConsumption,
       consumeAuthority,
       recheckLive: recheckStartRuntime,
-      mutateRuntime: (prepared) => startRuntime(artifactRoot, authority, prepared)
+      mutateRuntime: (prepared) => startRuntime(artifactRoot, authority, prepared, hash(authorityBytes))
     })
     : await executeTask0BAuthorizedAction({
       async prepare() {
@@ -766,7 +839,7 @@ async function main(): Promise<void> {
       revalidateBeforeConsumption,
       consumeAuthority,
       recheckLive: (prepared) => recheckStopRuntime(authority, prepared),
-      mutateRuntime: (prepared) => stopRuntime(artifactRoot, authority, prepared)
+      mutateRuntime: (prepared) => stopRuntime(artifactRoot, authority, prepared, hash(authorityBytes))
     });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

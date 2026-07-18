@@ -43,6 +43,13 @@ const EFFECT_STEPS = new Set(["stop_previous", "start_candidate", "restart_previ
   "stop_candidate", "start_previous"]);
 const OBSERVATION_STEPS = new Set(["observe_cycle_1", "observe_cycle_2", "bounded_runtime_checks",
   "prove_previous_stopped", "prove_candidate_started", "immediate_runtime_checks"]);
+const VERIFIED_TERMINAL_CHECKS = Object.freeze({
+  rollout: ["schema", "version", "admin", "singleton", "workers", "logs", "delivery", "legacy"],
+  canary: ["schema", "version", "admin", "singleton", "reconciliation", "delivery", "navigation",
+    "allowance", "legacy", "secrets", "queues", "honest_limits"],
+  rollback: ["schema032_retained", "previous_version", "admin", "singleton", "allowance", "legacy", "sent",
+    "no_duplicate_send"]
+} as const);
 
 const PROTECTED_STEPS = Object.freeze({
   rollout: ROLLOUT_STEPS,
@@ -66,6 +73,7 @@ export type ProtectedProductionLeafResultV2 = Readonly<{
   inputSha256: string;
   outputSha256: string;
   observedStateSha256: string;
+  verifiedChecks?: readonly string[];
 }>;
 
 export type ProtectedProductionLeafInputV2 = Readonly<{
@@ -222,6 +230,29 @@ function exactLeafResult(result: ProtectedProductionLeafResultV2, inputSha256: s
   }
 }
 
+function exactTerminalVerifiedChecks(
+  operationKind: ProductionOperationKindV2,
+  stepId: string,
+  terminalStepId: string,
+  checks: readonly string[] | undefined
+): void {
+  const expected = operationKind === "recovery" ? undefined : VERIFIED_TERMINAL_CHECKS[operationKind];
+  if (stepId !== terminalStepId) {
+    if (checks !== undefined) throw new Error("production_verified_checks_nonterminal_forbidden");
+    return;
+  }
+  if (expected === undefined || checks === undefined
+      || checks.length !== expected.length
+      || checks.some((check, index) => check !== expected[index])) {
+    throw new Error("production_terminal_verified_checks_invalid");
+  }
+}
+
+function verifiedCheckRecord(checks: readonly string[] | undefined): Record<string, true> {
+  if (!checks) throw new Error("production_terminal_verified_checks_missing");
+  return Object.fromEntries(checks.map((check) => [check, true])) as Record<string, true>;
+}
+
 function productionFailureCode(
   operationKind: "rollout" | "canary",
   stepId: string,
@@ -272,7 +303,7 @@ function settleProtectedFailure(input: {
   releaseFreezeIdentitySha256: string;
   completedStepReceipts: ReadonlyArray<{ relativePath: string; sha256: string }>;
   captures: ReadonlyArray<{ stepId: string; sequence: number; executionKind: string;
-    outputSha256: string; observedStateSha256: string }>;
+    outputSha256: string; observedStateSha256: string; verifiedChecks?: readonly string[] }>;
   attemptedExternalEffect: boolean;
 }): void {
   const observedAt = input.adapters.now();
@@ -387,13 +418,15 @@ export async function executeProtectedProductionOperationV2(
     : PROTECTED_STEPS[input.operationKind];
   const commandId = PROTECTED_COMMAND[input.operationKind];
   const captures: Array<{ stepId: string; sequence: number; executionKind: string;
-    outputSha256: string; observedStateSha256: string }> = [];
+    outputSha256: string; observedStateSha256: string; verifiedChecks?: readonly string[] }> = [];
   const completedStepReceipts: Array<{ relativePath: string; sha256: string;
     receipt: ProductionOrchestrationStepReceiptV2 }> = [];
   let attemptedExternalEffect = false;
   let activeStepId = "";
+  let successSettlementPersisted = false;
 
-  try { for (const [offset, stepId] of stepIds.entries()) {
+  try {
+  for (const [offset, stepId] of stepIds.entries()) {
     activeStepId = stepId;
     const sequence = offset + 1;
     const startedAt = adapters.now();
@@ -454,6 +487,7 @@ export async function executeProtectedProductionOperationV2(
         run: () => adapters.validateStep(leafInput) });
     }
     exactLeafResult(leaf, inputSha256);
+    exactTerminalVerifiedChecks(input.operationKind, stepId, stepIds[stepIds.length - 1]!, leaf.verifiedChecks);
     const finishedAt = adapters.now();
     owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, finishedAt);
     const receipt = validateProductionOrchestrationStepReceiptV2({
@@ -485,18 +519,8 @@ export async function executeProtectedProductionOperationV2(
     if (persisted.sha256 !== protectedHash(receipt)) throw new Error("production_step_receipt_hash_invalid");
     completedStepReceipts.push({ relativePath: persisted.relativePath, sha256: persisted.sha256, receipt });
     captures.push({ stepId, sequence, executionKind, outputSha256: leaf.outputSha256,
-      observedStateSha256: leaf.observedStateSha256 });
-  } } catch (error) {
-    if (input.operationKind === "rollout" || input.operationKind === "canary") {
-      try {
-        settleProtectedFailure({ operationKind: input.operationKind, stepId: activeStepId, error,
-          store, adapters, begun, releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
-          completedStepReceipts, captures, attemptedExternalEffect });
-      } catch (settlementError) {
-        throw new AggregateError([error, settlementError], "production_operation_failure_settlement_failed");
-      }
-    }
-    throw error;
+      observedStateSha256: leaf.observedStateSha256, ...(leaf.verifiedChecks === undefined
+        ? {} : { verifiedChecks: [...leaf.verifiedChecks] }) });
   }
 
   const completedAt = adapters.now();
@@ -554,8 +578,7 @@ export async function executeProtectedProductionOperationV2(
       candidateStartEvidenceSha256: captures.find((item) => item.stepId === "start_candidate")!.outputSha256,
       managerCapturesSha256: manager.sha256, queryCapturesSha256: capturesRecord.sha256,
       orchestrationReceiptSha256: orchestrationRecord.sha256,
-      checks: { schema: true, version: true, admin: true, singleton: true, workers: true,
-        logs: true, delivery: true, legacy: true }, result: "passed"
+      checks: verifiedCheckRecord(captures.at(-1)?.verifiedChecks), result: "passed"
     });
     terminalEvidence = store.persistExclusive("production_rollout_evidence",
       "production-rollout-evidence-v2.json", evidence);
@@ -571,9 +594,7 @@ export async function executeProtectedProductionOperationV2(
       observationStartedAt: beganAt, observationFinishedAt: completedAt, completedPollingCycles: 2,
       queryCapturesSha256: capturesRecord.sha256, logCapturesSha256: logs.sha256,
       orchestrationReceiptSha256: orchestrationRecord.sha256,
-      checks: { schema: true, version: true, admin: true, singleton: true, reconciliation: true,
-        delivery: true, navigation: true, allowance: true, legacy: true, secrets: true,
-        queues: true, honest_limits: true }, result: "passed"
+      checks: verifiedCheckRecord(captures.at(-1)?.verifiedChecks), result: "passed"
     });
     terminalEvidence = store.persistExclusive("production_canary_evidence",
       "production-canary-evidence-v2.json", evidence);
@@ -595,8 +616,7 @@ export async function executeProtectedProductionOperationV2(
       orchestrationReceiptSha256: orchestrationRecord.sha256,
       outcome: materializeRollbackOutcome(rollbackContext!.window, captures),
       queryCapturesSha256: capturesRecord.sha256,
-      checks: { schema032_retained: true, previous_version: true, admin: true, singleton: true,
-        allowance: true, legacy: true, sent: true, no_duplicate_send: true }
+      checks: verifiedCheckRecord(captures.at(-1)?.verifiedChecks)
     });
     void manager;
     terminalEvidence = store.persistExclusive("production_rollback_evidence",
@@ -659,10 +679,23 @@ export async function executeProtectedProductionOperationV2(
     attemptedExternalEffect: attemptedExternalEffect || input.operationKind === "canary"
   });
   const settlementRecord = store.persistSettlement(settlement);
+  successSettlementPersisted = true;
   store.completeTerminal({ operationId: begun.lease.operationId, terminalStateKind: "settlement",
     terminalStateSha256: settlementRecord.sha256, evaluatedAt: settlementTime });
   return { operationId: begun.lease.operationId, leaseEpoch: settlementOwned.lease.leaseEpoch,
     receiptSha256: orchestrationRecord.sha256, completedSteps: [...stepIds] };
+  } catch (error) {
+    if ((input.operationKind === "rollout" || input.operationKind === "canary") && !successSettlementPersisted) {
+      try {
+        settleProtectedFailure({ operationKind: input.operationKind, stepId: activeStepId, error,
+          store, adapters, begun, releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
+          completedStepReceipts, captures, attemptedExternalEffect });
+      } catch (settlementError) {
+        throw new AggregateError([error, settlementError], "production_operation_failure_settlement_failed");
+      }
+    }
+    throw error;
+  }
 }
 
 function ensureOwnedAndFresh(bundle: any, now: string): void {

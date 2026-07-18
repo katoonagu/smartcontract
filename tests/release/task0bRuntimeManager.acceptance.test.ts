@@ -285,14 +285,29 @@ it("[REQ-38][TASK0B-MANAGER-AUTHORITY] keeps exact target manager DB Telegram an
       "9".repeat(64)
     )).toThrow(/binding|previous|rollback|worktree/i);
   }
-  expect(api.runtimeGenerationEvidencePath("start", GENERATION)).toBe(
-    `runtime-start-evidence-${GENERATION}.json`
+  const candidateAuthoritySha = "a".repeat(64);
+  const rollbackAuthoritySha = "b".repeat(64);
+  expect(api.runtimeGenerationEvidencePath("start", GENERATION,
+    "runtime_manager_start_candidate", candidateAuthoritySha)).toBe(
+    `runtime-start-evidence-${GENERATION}-runtime_manager_start_candidate-${candidateAuthoritySha}.json`
   );
-  expect(api.runtimeGenerationEvidencePath("stop", GENERATION)).toBe(
-    `runtime-stop-evidence-${GENERATION}.json`
+  expect(api.runtimeGenerationEvidencePath("stop", GENERATION,
+    "runtime_manager_stop_candidate", rollbackAuthoritySha)).toBe(
+    `runtime-stop-evidence-${GENERATION}-runtime_manager_stop_candidate-${rollbackAuthoritySha}.json`
   );
-  expect(api.runtimeGenerationConsumptionPath(GENERATION)).toBe(
-    `runtime-authority-consumed-${GENERATION}.json`
+  expect(api.runtimeGenerationEvidencePath("start", GENERATION,
+    "runtime_manager_rollback_previous", rollbackAuthoritySha)).not.toBe(
+    api.runtimeGenerationEvidencePath("start", GENERATION,
+      "runtime_manager_start_candidate", candidateAuthoritySha)
+  );
+  expect(api.runtimeGenerationConsumptionPath(GENERATION,
+    "runtime_manager_stop_previous", candidateAuthoritySha)).toBe(
+    `runtime-authority-consumed-${GENERATION}-runtime_manager_stop_previous-${candidateAuthoritySha}.json`
+  );
+  expect(api.runtimeGenerationConsumptionPath(GENERATION,
+    "runtime_manager_stop_previous", candidateAuthoritySha)).not.toBe(
+    api.runtimeGenerationConsumptionPath(GENERATION,
+      "runtime_manager_start_candidate", rollbackAuthoritySha)
   );
 
   for (const invalid of [
@@ -459,15 +474,63 @@ it("[REQ-38][TASK0B-MANAGER-START] writes append-only generation evidence before
   const calls: string[] = [];
   await expect(api.completeTask0BManagedRuntimeStart({
     generationId: GENERATION,
+    commandId: "runtime_manager_start_candidate",
+    authoritySha256: "a".repeat(64),
     processId: 77,
     evidence: { processId: 77 },
     async writeEvidence(path: string) { calls.push(`write:${path}`); throw new Error("evidence collision"); },
     async terminateAndVerify(processId: number) { calls.push(`cleanup:${processId}`); }
   })).rejects.toThrow(/collision/);
   expect(calls).toEqual([
-    `write:runtime-start-evidence-${GENERATION}.json`,
+    `write:runtime-start-evidence-${GENERATION}-runtime_manager_start_candidate-${"a".repeat(64)}.json`,
     "cleanup:77"
   ]);
+});
+
+it("[REQ-38][TASK0B-MANAGER-LOGS] assigns fixed generation-bound stdout stderr and binding paths", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const candidateAuthority = "a".repeat(64);
+  const rollbackAuthority = "b".repeat(64);
+  expect(api.runtimeGenerationDiagnosticPaths(GENERATION, "runtime_manager_start_candidate", candidateAuthority)).toEqual({
+    stdout: `runtime-stdout-${GENERATION}-runtime_manager_start_candidate-${candidateAuthority}.jsonl`,
+    stderr: `runtime-stderr-${GENERATION}-runtime_manager_start_candidate-${candidateAuthority}.jsonl`,
+    binding: `runtime-log-binding-${GENERATION}-runtime_manager_start_candidate-${candidateAuthority}.json`
+  });
+  expect(api.runtimeGenerationDiagnosticPaths(GENERATION,
+    "runtime_manager_rollback_previous", rollbackAuthority)).not.toEqual(
+    api.runtimeGenerationDiagnosticPaths(GENERATION, "runtime_manager_start_candidate", candidateAuthority));
+  expect(() => api.runtimeGenerationDiagnosticPaths("../escape",
+    "runtime_manager_start_candidate", candidateAuthority)).toThrow(/generation/i);
+});
+
+it("[REQ-38][TASK0B-MANAGER-EFFECT-IDENTITY] isolates rollout and rollback authority consumption and rejects replay", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const consumed = new Set<string>();
+  const effects: string[] = [];
+  const run = async (commandId: "runtime_manager_stop_previous" | "runtime_manager_start_candidate"
+    | "runtime_manager_stop_candidate" | "runtime_manager_rollback_previous", authoritySha256: string) => {
+    await api.executeTask0BAuthorizedAction({
+      async prepare() { return {}; },
+      revalidateBeforeConsumption() {},
+      async consumeAuthority() {
+        const path = api.runtimeGenerationConsumptionPath(GENERATION, commandId, authoritySha256);
+        if (consumed.has(path)) throw new Error("authority consumption collision");
+        consumed.add(path);
+      },
+      async recheckLive() {},
+      async mutateRuntime() { effects.push(commandId); }
+    });
+  };
+  const identities = [
+    ["runtime_manager_stop_previous", "a".repeat(64)],
+    ["runtime_manager_start_candidate", "b".repeat(64)],
+    ["runtime_manager_stop_candidate", "c".repeat(64)],
+    ["runtime_manager_rollback_previous", "d".repeat(64)]
+  ] as const;
+  for (const [commandId, authoritySha256] of identities) await run(commandId, authoritySha256);
+  expect(effects).toEqual(identities.map(([commandId]) => commandId));
+  await expect(run("runtime_manager_start_candidate", "b".repeat(64))).rejects.toThrow(/consumption|collision/i);
+  expect(effects).toHaveLength(4);
 });
 
 it("[REQ-38][TASK0B-MANAGER-UNMARKED] blocks before authority consumption spawn or evidence", async () => {
