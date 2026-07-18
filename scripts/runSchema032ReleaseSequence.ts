@@ -108,9 +108,9 @@ type ProductionMigrationAuthorityV1 = {
   databaseRole: "production";
   databaseIdentityFingerprintSha256: string;
   task0bEvidenceSha256: string;
-  readyManifestPath: "release-manifest.json";
-  readyManifestSha256: string;
-  readyManifestOverall: "ready_for_release";
+  releaseManifestPath: "release-manifest.json";
+  releaseManifestSha256: string;
+  releaseManifestOverall: "not_ready";
   backupEvidencePath: "production-backup-evidence.json";
   backupEvidenceSha256: string;
   explicitGo: true;
@@ -528,7 +528,7 @@ function safeChildEnvironment(
 }
 
 async function terminateChildTree(child: ChildProcess): Promise<void> {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid) return;
   if (process.platform === "win32") {
     await new Promise<void>((resolveDone) => {
       const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
@@ -658,7 +658,15 @@ async function readStableFile(input: {
   path: string;
   maxBytes: number;
   capture: boolean;
-}): Promise<{ bytes: number; sha256: string; content?: Buffer; dev: bigint | number; ino: bigint | number }> {
+}): Promise<{
+  bytes: number;
+  sha256: string;
+  content?: Buffer;
+  dev: bigint | number;
+  ino: bigint | number;
+  mtimeMs: number;
+  ctimeMs: number;
+}> {
   const before = await lstat(input.path).catch(() => fail("schema_032_sequence_production_backup_file_unverified"));
   if (!before.isFile() || before.isSymbolicLink() || before.size <= 0 || before.size > input.maxBytes) {
     fail("schema_032_sequence_production_backup_file_unverified");
@@ -691,7 +699,9 @@ async function readStableFile(input: {
       sha256: digest.digest("hex"),
       content: input.capture ? Buffer.concat(chunks) : undefined,
       dev: opened.dev,
-      ino: opened.ino
+      ino: opened.ino,
+      mtimeMs: opened.mtimeMs,
+      ctimeMs: opened.ctimeMs
     };
   } finally { await handle.close(); }
 }
@@ -744,7 +754,8 @@ export async function attestSchema032ProductionBackupFiles(
     try {
       await link(dumpPath, linkPath);
       const linked = await lstat(linkPath);
-      if (!linked.isFile() || linked.isSymbolicLink() || linked.dev !== dump.dev || linked.ino !== dump.ino) {
+      if (!linked.isFile() || linked.isSymbolicLink() || linked.dev !== dump.dev || linked.ino !== dump.ino
+          || linked.size !== dump.bytes || linked.mtimeMs !== dump.mtimeMs) {
         fail("schema_032_sequence_production_backup_file_unverified");
       }
       const generated = normalizePgRestoreList(await runBoundedDocker([
@@ -756,12 +767,19 @@ export async function attestSchema032ProductionBackupFiles(
       if (!generated.bytes.equals(storedList.bytes) || generated.entryCount !== storedList.entryCount) {
         fail("schema_032_sequence_production_backup_file_unverified");
       }
+      const testHoldMs = process.env.NODE_ENV === "test"
+        ? Number(process.env.SCHEMA_032_TEST_BACKUP_ATTEST_HOLD_MS ?? 0)
+        : 0;
+      if (Number.isSafeInteger(testHoldMs) && testHoldMs > 0 && testHoldMs <= 5_000) {
+        await new Promise((resolveDone) => setTimeout(resolveDone, testHoldMs));
+      }
+      const unchanged = await readStableFile({ path: dumpPath, maxBytes: MAX_BACKUP_BYTES, capture: false });
+      if (unchanged.dev !== linked.dev || unchanged.ino !== linked.ino
+          || unchanged.bytes !== dump.bytes || unchanged.sha256 !== dump.sha256
+          || unchanged.mtimeMs !== linked.mtimeMs || unchanged.ctimeMs !== linked.ctimeMs) {
+        fail("schema_032_sequence_production_backup_file_unverified");
+      }
     } finally { await unlink(linkPath).catch(() => undefined); }
-    const unchanged = await readStableFile({ path: dumpPath, maxBytes: MAX_BACKUP_BYTES, capture: false });
-    if (unchanged.dev !== dump.dev || unchanged.ino !== dump.ino
-        || unchanged.bytes !== dump.bytes || unchanged.sha256 !== dump.sha256) {
-      fail("schema_032_sequence_production_backup_file_unverified");
-    }
     return evidence;
   } catch {
     fail("schema_032_sequence_production_backup_file_unverified");
@@ -825,7 +843,6 @@ async function runFixedMigration(
     }, timeoutMs);
     child.once("close", async (code, signal) => {
       clearTimeout(timer);
-      await termination;
       let decodedStdout = "";
       let decodedStderr = "";
       try {
@@ -836,6 +853,11 @@ async function runFixedMigration(
         }
       } catch (error) {
         spawnError = error instanceof Error ? error : new Error("schema_032_sequence_migration_output_invalid");
+      }
+      if (overflow || timedOut || code !== 0 || signal || spawnError || decodedStderr !== "") {
+        await requestTermination();
+      } else {
+        await termination;
       }
       resolveResult({
         status: overflow || timedOut ? null : code,
@@ -888,8 +910,8 @@ function validateProductionAuthority(value: unknown, evaluatedAt: string): Produ
   const authority = record(value, "schema_032_sequence_production_authority_invalid");
   exactKeys(authority, [
     "version", "scope", "source", "generationId", "commandId", "commandTemplateSha256", "issuedAt", "expiresAt",
-    "candidateSha", "databaseRole", "databaseIdentityFingerprintSha256", "task0bEvidenceSha256", "readyManifestPath",
-    "readyManifestSha256", "readyManifestOverall", "backupEvidencePath", "backupEvidenceSha256", "explicitGo"
+    "candidateSha", "databaseRole", "databaseIdentityFingerprintSha256", "task0bEvidenceSha256", "releaseManifestPath",
+    "releaseManifestSha256", "releaseManifestOverall", "backupEvidencePath", "backupEvidenceSha256", "explicitGo"
   ], "schema_032_sequence_production_authority_invalid");
   const now = parseIso(evaluatedAt, "schema_032_sequence_production_authority_time_invalid");
   const issuedAt = parseIso(authority.issuedAt, "schema_032_sequence_production_authority_time_invalid");
@@ -903,8 +925,8 @@ function validateProductionAuthority(value: unknown, evaluatedAt: string): Produ
       || !SHA40.test(String(authority.candidateSha)) || authority.databaseRole !== "production"
       || !SHA256.test(String(authority.databaseIdentityFingerprintSha256))
       || !SHA256.test(String(authority.task0bEvidenceSha256))
-      || authority.readyManifestPath !== "release-manifest.json" || !SHA256.test(String(authority.readyManifestSha256))
-      || authority.readyManifestOverall !== "ready_for_release"
+      || authority.releaseManifestPath !== "release-manifest.json" || !SHA256.test(String(authority.releaseManifestSha256))
+      || authority.releaseManifestOverall !== "not_ready"
       || authority.backupEvidencePath !== "production-backup-evidence.json"
       || !SHA256.test(String(authority.backupEvidenceSha256)) || authority.explicitGo !== true) {
     fail("schema_032_sequence_production_authority_unverified");
@@ -971,9 +993,10 @@ export function validateSchema032ProductionAuthorization(input: {
     .filter(([id]) => /^G(?:0\d|1[01])_/u.test(id))
     .every(([, state]) => state === "passed");
   if (authority.candidateSha !== input.candidateSha || authority.task0bEvidenceSha256 !== hash(input.task0bBytes)
-      || authority.readyManifestSha256 !== hash(input.manifestBytes) || authority.backupEvidenceSha256 !== hash(input.backupBytes)
-      || manifest.candidateSha !== input.candidateSha || manifest.overall !== "ready_for_release" || !preReleasePassed
-      || gates.get("G12_PRODUCTION_BACKUP") !== "pending" || gates.get("G13_PRODUCTION_MIGRATION") !== "pending"
+      || authority.releaseManifestSha256 !== hash(input.manifestBytes) || authority.backupEvidenceSha256 !== hash(input.backupBytes)
+      || manifest.candidateSha !== input.candidateSha || manifest.overall !== "not_ready" || !preReleasePassed
+      || gates.get("G12_PRODUCTION_BACKUP") !== "passed" || gates.get("G13_PRODUCTION_MIGRATION") !== "pending"
+      || gates.get("G14_PRODUCTION_ROLLOUT") !== "pending" || gates.get("G15_PRODUCTION_CANARY") !== "pending"
       || task0b.productionDatabase.approvedIdentityFingerprintSha256 !== input.observedDatabaseIdentityFingerprintSha256
       || authority.databaseIdentityFingerprintSha256 !== input.observedDatabaseIdentityFingerprintSha256) {
     fail("schema_032_sequence_production_binding_unverified");

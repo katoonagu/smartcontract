@@ -893,7 +893,11 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
   const producer = await loadProducer();
   const evaluatedAt = "2026-07-18T09:05:00.000Z";
   const task0b = buildTask0BReleaseFreezeEvidence({ candidateSha: CANDIDATE_SHA });
-  const manifest = buildReleaseManifest("ready_for_release");
+  const currentManifest = cloneFixture(buildReleaseManifest("ready_for_release"));
+  currentManifest.overall = "not_ready";
+  const backupGate = currentManifest.gates.find((gate) => gate.id === "G12_PRODUCTION_BACKUP");
+  if (!backupGate) throw new Error("missing G12 fixture");
+  backupGate.state = "passed";
   const backup = {
     version: "production-backup-evidence-v1",
     candidateSha: CANDIDATE_SHA,
@@ -912,7 +916,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
     state: "passed"
   };
   const task0bBytes = Buffer.from(JSON.stringify(task0b));
-  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  const manifestBytes = Buffer.from(JSON.stringify(currentManifest));
   const backupBytes = Buffer.from(JSON.stringify(backup));
   const authority = {
     version: "schema-032-production-authority-v1",
@@ -927,9 +931,9 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
     databaseRole: "production",
     databaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
     task0bEvidenceSha256: sha256(task0bBytes.toString("utf8")),
-    readyManifestPath: "release-manifest.json",
-    readyManifestSha256: sha256(manifestBytes.toString("utf8")),
-    readyManifestOverall: "ready_for_release",
+    releaseManifestPath: "release-manifest.json",
+    releaseManifestSha256: sha256(manifestBytes.toString("utf8")),
+    releaseManifestOverall: "not_ready",
     backupEvidencePath: "production-backup-evidence.json",
     backupEvidenceSha256: sha256(backupBytes.toString("utf8")),
     explicitGo: true
@@ -950,9 +954,8 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
     { backupBytes: Buffer.from(JSON.stringify({ ...backup, state: "failed" })) },
     { observedDatabaseIdentityFingerprintSha256: "f".repeat(64) },
     { manifestBytes: Buffer.from(JSON.stringify({
-      ...manifest,
-      overall: "not_ready",
-      gates: manifest.gates.map((gate) => gate.id === "G00_BASE_AUDIT" ? { ...gate, state: "failed", exitCode: 1 } : gate)
+      ...currentManifest,
+      gates: currentManifest.gates.map((gate) => gate.id === "G00_BASE" ? { ...gate, state: "failed", exitCode: 1 } : gate)
     })) }
   ];
   for (const invalid of invalidInputs) {
@@ -1196,6 +1199,20 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
         }
       };
       await expect(producer.attestSchema032ProductionBackupFiles(root, evidence, tools)).resolves.toEqual(evidence);
+      process.env.SCHEMA_032_TEST_BACKUP_ATTEST_HOLD_MS = "1000";
+      try {
+        const mutationAttempt = producer.attestSchema032ProductionBackupFiles(root, evidence, tools);
+        for (let index = 0; index < 200
+          && !readdirSync(root).some((name) => name.startsWith(".schema032-backup-attested-")); index += 1) {
+          await new Promise((resolveDone) => setTimeout(resolveDone, 25));
+        }
+        expect(readdirSync(root).some((name) => name.startsWith(".schema032-backup-attested-"))).toBe(true);
+        const transient = Buffer.from(dump);
+        transient[Math.min(10, transient.length - 1)] ^= 0xff;
+        writeFileSync(dumpPath, transient);
+        writeFileSync(dumpPath, dump);
+        await expect(mutationAttempt).rejects.toThrow("schema_032_sequence_production_backup_file_unverified");
+      } finally { delete process.env.SCHEMA_032_TEST_BACKUP_ATTEST_HOLD_MS; }
       writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("; forged\n1; fake\n"));
       await expect(producer.attestSchema032ProductionBackupFiles(root, evidence, tools)).rejects.toThrow(
         "schema_032_sequence_production_backup_file_unverified"
@@ -1329,6 +1346,73 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
       expect(exitCode).not.toBe(0);
       expect(stderr).toContain("schema_032_migration_command_failed");
       expect(readdirSync(artifactRoot)).toEqual([]);
+      const lockAfterCleanup = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
+        (await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK
+      ]);
+      expect(lockAfterCleanup.rows).toEqual([{ acquired: true }]);
+      await cloneClient.query("select pg_advisory_unlock($1)", [(await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK]);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+      rmSync(fakeNpmRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] kills an orphan descendant after the migration parent exits before releasing the lock", async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "schema032-producer-exited-parent-"));
+    const fakeNpmRoot = mkdtempSync(join(tmpdir(), "schema032-exited-parent-npm-"));
+    const fakeNpmCli = join(fakeNpmRoot, "npm-cli.js");
+    const descendantPidPath = join(fakeNpmRoot, "descendant.pid");
+    writeFileSync(fakeNpmCli, `const { spawn } = require("node:child_process");\n`
+      + `const { writeFileSync } = require("node:fs");\n`
+      + `const { join } = require("node:path");\n`
+      + `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });\n`
+      + `writeFileSync(join(__dirname, "descendant.pid"), String(child.pid));\n`
+      + `process.stdout.write("invalid migration output\\n");\n`
+      + `setTimeout(() => process.exit(0), 25);\n`, "utf8");
+    try {
+      const attempt = spawn(process.execPath, [
+        "--import", "tsx", "scripts/runSchema032ReleaseSequence.ts",
+        "--database-url-env", "PLAN5_SCHEMA_CLONE_DATABASE_URL",
+        "--expected-endpoint", expectedEndpoint!,
+        "--expected-system-identifier", expectedSystemIdentifier!,
+        "--artifact-root", artifactRoot,
+        "--offline"
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...safeChildEnv(cloneUrl!, "PLAN5_SCHEMA_CLONE_DATABASE_URL"),
+          SCHEMA_032_TEST_NPM_CLI: fakeNpmCli,
+          SCHEMA_032_TEST_ALLOW_FAKE_NPM_CLI: "1",
+          SCHEMA_032_TEST_MIGRATION_TIMEOUT_MS: "10000",
+          SCHEMA_032_TEST_CLEANUP_HOLD_MS: "1000"
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      });
+      let stderr = "";
+      attempt.stderr.setEncoding("utf8");
+      attempt.stderr.on("data", (chunk: string) => { stderr += chunk; });
+      const closed = new Promise<number | null>((resolveClosed) => {
+        attempt.once("close", (code) => resolveClosed(code));
+      });
+      for (let index = 0; index < 100 && !existsSync(descendantPidPath); index += 1) {
+        await new Promise((resolveDone) => setTimeout(resolveDone, 25));
+      }
+      expect(existsSync(descendantPidPath)).toBe(true);
+      const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+      let alive = true;
+      for (let index = 0; index < 100 && alive; index += 1) {
+        try { process.kill(descendantPid, 0); } catch { alive = false; }
+        if (alive) await new Promise((resolveDone) => setTimeout(resolveDone, 25));
+      }
+      expect(alive).toBe(false);
+      expect(attempt.exitCode).toBeNull();
+      const lockDuringCleanup = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
+        (await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK
+      ]);
+      expect(lockDuringCleanup.rows).toEqual([{ acquired: false }]);
+      expect(await closed).not.toBe(0);
+      expect(stderr).toContain("schema_032_migration_command_failed");
       const lockAfterCleanup = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
         (await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK
       ]);
