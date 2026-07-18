@@ -605,6 +605,7 @@ type ProductionAuthorityPreclaimValidationV2 = {
 type ProductionPreclaimLeaseLineageV2 = {
   version: "production-preclaim-lease-lineage-v2";
   operationId: string;
+  relativePath: string; // exact production-preclaim-lease-lineages/<operationId>/<currentTipLeaseSha256>.json
   preclaimValidationSha256: string;
   originalLeaseSha256: string;
   originalLeaseEpoch: number;
@@ -628,6 +629,7 @@ type OperationalAttestationConsumptionV2 = {
   operationalAttestationIssuerReceiptSha256: string;
   recoveryFromAbandonedOperationSha256: string | null;
   preclaimValidationSha256: string;
+  preclaimLeaseLineageRelativePath: string;
   preclaimLeaseLineageSha256: string;
   preclaimLeaseLineageCurrentTipSha256: string;
   commandId: ProductionOperationCommandIdV2;
@@ -652,6 +654,7 @@ type ProductionOperationClaimV2 = {
   recoveryFromAbandonedOperationSha256: string | null;
   authorityConsumption: OperationalAttestationConsumptionV2;
   authorityConsumptionSha256: string;
+  preclaimLeaseLineageRelativePath: string;
   preclaimLeaseLineageSha256: string;
   preclaimLeaseLineageCurrentTipSha256: string;
   capability: "effect_capable" | "recovery_only";
@@ -1234,12 +1237,20 @@ Strict V2 invariants:
   and operation id; takeover never rewrites or replaces it. The exclusive claim
   under either that original lease or the exact current tip of its linear
   committed takeover chain is the atomic consumption point. Consumption and
-  claim both bind the actual `ProductionPreclaimLeaseLineageV2` hash and current-
-  tip lease hash. The validator resolves the original lease plus every actual
+  claim both bind the actual `ProductionPreclaimLeaseLineageV2` relative path,
+  bytes hash and current-tip lease hash. Before claim, the owner chooses
+  `resolvedAt` once, canonicalizes the complete lineage, then creates and fsyncs
+  it with `O_EXCL` at exact
+  `production-preclaim-lease-lineages/<operationId>/<currentTipLeaseSha256>.json`.
+  Crash after lineage publication but before claim reopens those exact bytes and
+  never rereads the clock or regenerates `resolvedAt`. The validator proves
+  trusted-root containment and exact path grammar, hashes actual bytes, checks
+  the immutable original preclaim and resolves the original lease plus every actual
   committed takeover receipt byte-for-byte, requires each old lease to equal
   the previous tip and each new lease to become the next tip, and rejects a
   branch, gap, swapped/foreign receipt or current lease not equal to the final
-  tip. The claim durably binds attestation bytes to operation id, root,
+  tip. A foreign path, swapped bytes/hash/preclaim/tip or conflicting existing
+  lineage fails closed. The claim durably binds attestation bytes to operation id, root,
   generation, candidate, source manifest, command/template and resolved lease
   lineage. No preclaim may exist outside original production-lease ownership,
   it is never rebound after takeover, and no path may describe authority as
@@ -1322,6 +1333,7 @@ manifest-transition-receipt-<receiptSha256>.json
 release-root-terminal-abandoned.json
 release-manifest.json
 production-authority-preclaim-<operationId>.json
+production-preclaim-lease-lineages/<operationId>/<currentTipLeaseSha256>.json
 production-operation-claim-<operationalAttestationSha256>.json
 production-operation-root.lease.json
 production-operation-root.lease-takeover-prepared-<oldLeaseSha256>.json
@@ -1801,11 +1813,16 @@ because every leaf additionally requires both strict
    create the attestation-hash-addressed
    `ProductionOperationClaimV2`; that one exclusive create is consumption.
    If a crash caused takeover after preclaim but before claim, the preclaim
-   remains byte-identical and the claimant first persists/resolves
-   `ProductionPreclaimLeaseLineageV2` from original lease through every linear
-   committed takeover receipt to the actual current lease tip. The embedded
-   canonical `OperationalAttestationConsumptionV2` and outer claim both bind
-   the lineage hash and current-tip lease hash. There is no replacement
+   remains byte-identical and the claimant first canonicalizes, `O_EXCL`
+   creates and fsyncs `ProductionPreclaimLeaseLineageV2` at the exact current-
+   tip-addressed path after resolving original lease through every linear
+   committed takeover receipt. Its `resolvedAt` is chosen once before
+   publication. Crash after lineage write but before claim reuses the exact
+   file bytes/path/hash without a new clock read. The embedded canonical
+   `OperationalAttestationConsumptionV2` and outer claim both bind the lineage
+   relative path, bytes hash and current-tip lease hash. Trusted-root/path,
+   original-preclaim, actual-byte/hash, chain and tip mismatch fails closed.
+   There is no replacement
    preclaim after takeover, no preclaim outside its original owned lease state
    and no consumed state before this claim. Crash after lease acquisition or
    preclaim creation resumes only through that same live lease or its exact
@@ -1918,8 +1935,11 @@ before preclaim creates it only under that same original lease. A crash after
 preclaim resumes through that lease or a byte-validated linear chain of
 committed takeovers from the original lease to the actual current tip; it never
 rewrites the preclaim to the takeover lease. Consumption and claim bind the
-resolved lineage hash/current tip. Branch/gap/swapped/foreign takeover bytes or
-a foreign/orphan preclaim fail closed.
+resolved lineage relative path/hash/current tip. The lineage is durably
+published with one fixed `resolvedAt` before claim; crash after that publication
+replays the exact file and never regenerates time. Path-containment/grammar,
+actual bytes/hash, original preclaim, branch/gap/swapped/foreign takeover bytes
+or a foreign/orphan preclaim fail closed.
 Otherwise it writes no claim/effect and records terminal abandonment before
 removing only its owned lease. A dead
 owner at or after either time bound must use only the cleanup-only takeover;
@@ -2134,7 +2154,8 @@ type ProductionCanaryEvidenceV2 = {
 
 type UncertainProductionStepMarkerV2 = {
   sequence: number;
-  stepId: string;
+  stepId: ProductionExternalEffectStepIdV2;
+  attempt: 1;
   stepIntentRelativePath: string;
   stepIntentSha256: string;
   externalEffectMayHaveStarted: true;
@@ -3206,7 +3227,8 @@ Add these exact test identities:
 [REQ-35][REQ-38][G14-RUNTIME-ORDER] stops the exact previous runtime after G13 and before candidate start
 [REQ-35][REQ-38][PRODUCTION-AUTHORITY-TWO-PHASE] validates exact fresh compatible unconsumed authority acquires the original production lease then persists immutable original-lease-hash-epoch-owner-operation-bound preclaim and atomically consumes authority only in the claim under that lease or the exact current tip of its committed linear takeover chain
 [REQ-35][REQ-38][PRODUCTION-PRECLAIM-CRASH] resumes crash after immutable preclaim through exact original-lease to current-tip committed takeover lineage without replacing preclaim binds lineage hash and current tip in consumption and claim and rejects branch gap swapped foreign or orphan lineage
-[REQ-35][REQ-38][PRODUCTION-PRECLAIM-LINEAGE-SWAP] rejects a takeover receipt from another operation generation root owner epoch or noncontiguous old-to-new lease chain before claim or consumption
+[REQ-35][REQ-38][PRODUCTION-PRECLAIM-LINEAGE-PUBLICATION] O_EXCL creates and fsyncs canonical current-tip-addressed lineage before claim binds its relative path and actual bytes hash in consumption and claim and byte-exactly resumes crash after lineage publication with fixed resolvedAt and no new clock read
+[REQ-35][REQ-38][PRODUCTION-PRECLAIM-LINEAGE-SWAP] rejects traversal foreign path swapped bytes hash original preclaim current tip takeover receipt from another operation generation root owner epoch or noncontiguous old-to-new lease chain before claim or consumption
 [REQ-35][REQ-38][PRODUCTION-AUTHORITY-EFFECT-GUARD] rejects swapped operation ownership lease epoch consumption and now equal to or beyond consumed authority expiry or immutable operation deadline before every effect query reconciliation and settlement
 [REQ-35][REQ-38][PRODUCTION-AUTHORITY-EXPIRY] rejects now equal to or beyond selected preclaim or consumed postclaim authority expiry including normal effect-capable takeover preserves terminal partial evidence and permits only cleanup-only terminalization or a separately issued selected and claimed fresh-authority recovery-only operation bound to exact abandonment cleanup completed-prefix and uncertain-marker evidence without observing reconciling or repeating uncertain effects
 [REQ-35][REQ-38][PRODUCTION-OPERATION-DEADLINE] rejects now equal to and after immutable operation deadline for effect query reconciliation settlement and normal effect-capable takeover never extends the deadline across either takeover and persists operation_deadline_reached abandonment while authority remains valid
@@ -3847,8 +3869,11 @@ Claim is legal only if the original attestation remains fresh/unconsumed,
 `now < immutable operationDeadlineAt`, and an exact
 `ProductionPreclaimLeaseLineageV2` resolves every committed old→new takeover
 receipt without branch/gap/foreign binding from that original lease to the
-actual current lease tip. Consumption and claim bind the lineage hash and
-current tip; an orphan/foreign preclaim or swapped lineage fails closed;
+actual current lease tip. Before claim it O_EXCL-creates and fsyncs the exact
+current-tip-addressed canonical lineage bytes with one fixed `resolvedAt`;
+crash resumes that file byte-for-byte. Consumption and claim bind its relative
+path, actual hash and current tip. Traversal/foreign path, swapped bytes/hash/
+preclaim/tip or invalid chain fails closed;
 normal effect-capable takeover at or beyond either strict boundary is rejected.
 
 The separate cleanup-only CLI is legal only after authority expiry or immutable
@@ -4863,10 +4888,10 @@ never used as a test database.
 | REQ-32 | G05, G08, G14 | unified structure, exact links/terminology/golden, ordinary runtime hidden, production `/version` exact |
 | REQ-33 | G05 | linked direction, two routes plus aggregation |
 | REQ-34 | G02, G05 | true no-activity only after principal selection; no false percentages |
-| REQ-35 | G04, G08, G10, G14, G15 | wait-set reconciliation, sanitized runtime, previous-SHA rollback, production singleton/canary; fresh authority selection→original lease→immutable preclaim→verified committed takeover lineage/current tip→atomic claim/consumption, durable intent before each external effect, fixed operation lease with effect-capable/recovery-only/cleanup-only capabilities, strict dual-bound/epoch guard, typed G14 pre-effect rollback and typed abandoned-operation recovery receipt/failure ordering without replay |
+| REQ-35 | G04, G08, G10, G14, G15 | wait-set reconciliation, sanitized runtime, previous-SHA rollback, production singleton/canary; fresh authority selection→original lease→immutable preclaim→O_EXCL/fsynced current-tip lineage with byte-exact crash replay→atomic claim/consumption bound to path/hash/tip, durable effect intents, capability/time guards and typed rollback/recovery ordering without replay |
 | REQ-36 | G04, G08, G10, G14, G15 | delivery CAS/lease/retry/atomic effect/immutability, zero-send rollback rehearsal and production queue canary |
 | REQ-37 | G04, G08, G14, G15 | cache-only navigation, explicit refresh, early callback in sanitized candidate and production runtime |
-| REQ-38 | G00–G15 | typed AC execution/RED trace; discriminated bootstrap/frozen root-writer lifecycles, prepared-freeze resume or no-prepare sealed-root route and fixed-lease absence after every successful materialization; append-only authority/terminalizer/selector; distinct production lease, immutable original-lease preclaim, exact linear committed takeover lineage bound into consumption/claim, branch/gap/foreign rejection, durable canonical pre-effect intents and actual-intent-only uncertain markers; discriminated effect/recovery step and overall receipts, receipt-before-failure acyclic recovery, separate prior/recovery effect flags, capability-separated takeover/fencing and strict time guards; exact completed-prefix recovery with zero replay, terminal settlement/abandonment→prepare→exact removal→byte-exact receipt→cleanup; sole orchestrators, exact refs and fail-closed validation |
+| REQ-38 | G00–G15 | typed AC execution/RED trace; discriminated bootstrap/frozen lifecycle and successful lease cleanup; append-only authority; distinct production lease and immutable preclaim; trusted-root contained current-tip-addressed canonical lineage O_EXCL/fsync before claim, fixed `resolvedAt`, byte-exact replay and path/hash/preclaim/linear-chain/tip validation bound into consumption/claim; durable effect intents with marker step restricted to external effect/attempt 1; discriminated effect/recovery receipts, acyclic recovery and separate effect flags; capability/time guards, zero replay, exact terminal cleanup; sole orchestrators and fail-closed validation |
 
 ---
 
@@ -4914,7 +4939,7 @@ never used as a test database.
 | AC-38 | G01, G03 | timeout/JSON/schema scenarios make zero provider calls |
 | AC-39 | G01, G03, G05 | Bot/Alert + unified renderer exclude all legacy model text |
 | AC-40 | G01, G03 | every fresh deterministic contract case bypasses Flash/Pro |
-| AC-41 | G00–G15 | typed 41-AC RED/GREEN trace; mandatory disposable PostgreSQL/full/offline/sanitized suites; frozen V2 acceptance for sole freeze materializer, both bootstrap crash routes and fixed-lease absence after normal/takeover success, fixed frozen root writer, issuer/selector/strict `expired_unclaimed`; immutable original-lease preclaim→committed takeover lineage→current-tip claim and swapped-chain rejection; canonical intent-before-effect plus crash windows/no-intent negative; capability-separated effect/recovery/cleanup boundaries; recovery-only local step/overall receipt→referencing failure evidence with no hash cycle, separate prior/recovery effect flags, actual-intent-backed uncertain marker and zero replay; G14 pre-effect failure→fresh rollback, exact backup/migration and typed rollback orchestration; AP regression |
+| AC-41 | G00–G15 | typed 41-AC RED/GREEN trace; mandatory disposable PostgreSQL/full/offline/sanitized suites; frozen V2 acceptance for freeze/bootstrap/root-writer/authority; immutable preclaim→O_EXCL/fsynced exact current-tip lineage→path/hash/tip-bound claim, lineage-written-before-claim byte-exact replay with fixed `resolvedAt`, and traversal/foreign/swapped/chain rejection; canonical intent-before-effect, external-effect-step/attempt-1 marker and no-intent negative; capability-separated recovery receipts/failure without hash cycle or replay; rollback, migration and AP regression |
 
 ---
 
@@ -4938,11 +4963,11 @@ never used as a test database.
 | 8B.3 | `feat(release): advance manifest atomically` | byte-exact receipt crash replay, discriminated bootstrap/frozen root leases, bootstrap lease-before-prepare terminal abandonment/new-root and prepared-freeze exact resume, frozen prepared/tombstone/new-lease takeover, epoch fencing, achievable portable path trust and sealed-root GREEN; filesystem spec + security review |
 | 8B.4a/b | `feat(release): materialize freeze and issue authority`; `feat(release): bind pre-release gate evidence` | fixed root-writer serialization; normal and prepared-takeover-resumed materializer both prove fixed lease absent; prepared append-only issuer with byte-exact attestation/receipt/committed-marker crash replay; prepared/committed expired-unclaimed terminalizer with early/claimed/G13-lock negatives; selector/operation recovery/trusted-principal plus G00–G11 semantic/read-only GREEN; producer/policy spec + security review after each |
 | 8B.5 | `feat(release): bind backup and migration transitions` | G12 settlement plus G13 four-stage success/all four honest failure-window and exact-path RED→GREEN; production-order spec + security review |
-| 8B.6a | `feat(release): orchestrate production rollout` | shared production store with immutable original-lease preclaim, committed takeover-lineage/current-tip claim binding and swapped-chain rejection; canonical fsynced intent before each external effect; normal effect-capable/post-bound cleanup-only takeover, settlement/removal/cleanup and G14 routes; crash-safe GREEN; spec + quality review |
+| 8B.6a | `feat(release): orchestrate production rollout` | shared production store with immutable preclaim, trusted-root current-tip lineage O_EXCL/fsync before claim, fixed-resolvedAt byte replay and path/hash/tip claim binding plus swapped-chain rejection; canonical effect intents; capability takeover/settlement/cleanup and G14 routes; crash-safe GREEN; spec + quality review |
 | 8B.6b | `feat(release): orchestrate production canary` | same ownership protocol, sufficiently long-lived authority, fixed bounded steps, crash/expiry recovery and duration/checks GREEN; spec + quality review |
 | 8B.6c | `feat(release): recover abandoned production operation` | recovery-only fresh lease/preclaim/lineage-bound claim; typed local step receipts then overall receipt before referencing failure evidence; exact abandonment/cleanup/completed prefix and actual unmatched intent marker; separate prior/recovery effect flags, no hash cycle, no normal gate evidence/effect/replay; spec + quality review |
 | 8B.6d | `feat(release): orchestrate production rollback` | all rollback windows including fresh-authority retained runtime after G14 pre-effect failure and separately fresh rollback after abandoned-operation recovery; fixed branch lease/receipts/crash resume, typed transition binding and G10-negative GREEN; spec + quality review |
-| 8B.7 | `fix(release): require verified manifest transitions for production` | every mutator rejects structural-only manifest, non-tip/branched authority, rewritten preclaim, invalid takeover lineage/current tip, absent/fabricated step intent and wrong receipt/capability/order; G12/G13 scopes remain separate; recovery-only can translate exact receipt/cleanup lineage to `production_failed` but cannot emit effects/gate evidence, while cleanup-only cannot derive evidence; spec + security review |
+| 8B.7 | `fix(release): require verified manifest transitions for production` | every mutator rejects structural-only manifest, rewritten preclaim, missing/non-durable/traversal/foreign lineage path, mismatched actual bytes/hash/preclaim/chain/current tip, fabricated intent and wrong receipt/capability/order; G12/G13 remain separate; recovery/cleanup capability guards exact; spec + security review |
 | 8B.8 | `docs: document manifest v2 release lifecycle` | discriminated bootstrap/frozen lifecycle and lease cleanup, immutable preclaim/takeover lineage, durable effect intent, typed recovery receipt-before-failure no-replay route and focused/PG/typecheck/full/AP/scope GREEN; whole-plan reviews |
 | 9 | none | frozen candidate; automated pre-manual gates with G05 pending; exact 15/19/11 manual finalization; strict `G00…G11` readiness verification |
 | 10 | none | explicit merge approval, full rerun, explicit production GO |
@@ -5155,7 +5180,11 @@ hashes, not secrets or full raw logs.
   lease, persists one immutable preclaim bound to its hash/epoch/owner/operation
   and only then atomically claims/consumes it. A takeover never replaces that
   preclaim: the claim/consumption bind an exact linear committed takeover-
-  receipt lineage from original lease to current tip. Branch/gap/swapped/
+  receipt lineage from original lease to current tip. Before claim, canonical
+  lineage bytes with one fixed `resolvedAt` are O_EXCL-created/fsynced at the
+  exact current-tip-addressed contained path; crash reuses that file without a
+  new clock read. Claim/consumption bind its relative path, actual hash and tip.
+  Traversal, foreign path, bytes/hash/preclaim/tip mismatch, branch/gap/swapped/
   foreign lineage and orphan preclaims reject.
   Current-epoch plus strict authority-expiry/immutable-deadline
   per-leaf guards, closed ordered steps, settlement, canonical owned-lease
@@ -5190,7 +5219,8 @@ hashes, not secrets or full raw logs.
   lease+epoch/authority/command/template/inputs; the effect receipt references
   its actual allowlisted path/hash. Crash before intent cannot claim an
   uncertain effect; crash after intent and before receipt preserves the sole
-  typed uncertain marker.
+  typed uncertain marker whose step is a `ProductionExternalEffectStepIdV2`
+  and whose attempt is exactly `1`.
 - [x] Orchestration has no hash cycle: intents precede external effects and
   effect receipts; operational step receipts are complete first, the
   discriminated orchestration receipt binds them second, and gate/rollback/
