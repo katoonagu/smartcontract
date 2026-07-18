@@ -121,6 +121,31 @@ describe("protected production orchestrator", () => {
     expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
   });
 
+  it("renews the operation lease at most every ten seconds during a long validation leaf", async () => {
+    vi.useFakeTimers();
+    const { events, store, adapters } = harness("rollout");
+    let delayed = false;
+    const slowAdapters: ProtectedProductionOperationAdaptersV2 = {
+      ...adapters,
+      async validateStep(input) {
+        if (!delayed) {
+          delayed = true;
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 11_000));
+        }
+        return adapters.validateStep(input);
+      }
+    };
+    const root = mkdtempSync(join(tmpdir(), "plan5-protected-heartbeat-"));
+    const execution = executeProtectedProductionOperationV2(
+      { artifactRoot: root, operationKind: "rollout" }, { store, adapters: slowAdapters });
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    await execution;
+
+    expect(events.filter((value) => value === "heartbeat")).toHaveLength(2);
+    vi.useRealTimers();
+  });
+
   it("never repeats an effect after a durable intent and requires read-only reconciliation", async () => {
     const { events, store, adapters } = harness("rollout");
     const replayStore: ProtectedProductionOperationStoreV2 = { ...store, persistStepIntent: (value: any) => {
