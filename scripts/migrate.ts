@@ -5,6 +5,10 @@ import {
   REQUIRED_SCHEMA_VERSION,
   applyVerifiedTrackedMigration
 } from "../src/storage/schemaMigrations";
+import {
+  buildSchema032MigrationSessionIdentitySha256,
+  observeSchema032MigrationSessionIdentity
+} from "../src/release/schema032MigrationIdentity";
 
 const databaseUrl = process.env.DATABASE_URL;
 const migrationsDir = new URL("../migrations/", import.meta.url);
@@ -33,9 +37,27 @@ if (!databaseUrl) {
 
 const client = new Client({ connectionString: databaseUrl });
 
+const expectedSessionIdentitySha256 = process.env.SCHEMA_032_RELEASE_EXPECTED_SESSION_IDENTITY_SHA256;
+const expectedSessionEndpoint = process.env.SCHEMA_032_RELEASE_EXPECTED_ENDPOINT;
+if ((expectedSessionIdentitySha256 === undefined) !== (expectedSessionEndpoint === undefined)) {
+  throw new Error("schema_032_sequence_migration_child_identity_invalid");
+}
+
+async function assertReleaseSessionIdentity(): Promise<void> {
+  if (expectedSessionIdentitySha256 === undefined || expectedSessionEndpoint === undefined) return;
+  if (!/^[0-9a-f]{64}$/u.test(expectedSessionIdentitySha256)) {
+    throw new Error("schema_032_sequence_migration_child_identity_invalid");
+  }
+  const observed = await observeSchema032MigrationSessionIdentity(client, expectedSessionEndpoint);
+  if (buildSchema032MigrationSessionIdentitySha256(observed.identity) !== expectedSessionIdentitySha256) {
+    throw new Error("schema_032_sequence_migration_child_identity_mismatch");
+  }
+}
+
 await client.connect();
 
 try {
+  await assertReleaseSessionIdentity();
   let requiredSchema032Checksum: string | undefined;
   for (const migrationFile of migrationFiles) {
     const migrationPath = new URL(`../migrations/${migrationFile}`, import.meta.url);
@@ -60,6 +82,7 @@ try {
       `Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`
     );
   }
+  await assertReleaseSessionIdentity();
 } finally {
   await client.end();
 }

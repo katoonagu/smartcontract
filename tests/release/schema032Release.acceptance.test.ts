@@ -1,6 +1,6 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -26,6 +26,7 @@ const cloneUrl = process.env.PLAN5_SCHEMA_CLONE_DATABASE_URL;
 const sanitizedUrl = process.env.PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL;
 const expectedEndpoint = process.env.PLAN5_SCHEMA_EXPECTED_ENDPOINT;
 const expectedSystemIdentifier = process.env.PLAN5_SCHEMA_EXPECTED_SYSTEM_IDENTIFIER;
+const postgresContainer = process.env.PLAN5_SCHEMA_POSTGRES_CONTAINER;
 const CURRENT_CANDIDATE_SHA = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 
 type SchemaApi = typeof import("../../scripts/verifySchema032");
@@ -900,8 +901,14 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
     commandId: "production_backup",
     redactedTemplateSha256: producer.SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256,
     databaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+    backupFilename: "production-backup.dump",
+    backupBytes: 12,
     backupSha256: "b".repeat(64),
     backupPathFingerprintSha256: "c".repeat(64),
+    restoreListFilename: "production-backup-restore-list.txt",
+    restoreListBytes: 34,
+    restoreListSha256: "d".repeat(64),
+    restoreListEntryCount: 1,
     state: "passed"
   };
   const task0bBytes = Buffer.from(JSON.stringify(task0b));
@@ -962,11 +969,105 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
   }
 });
 
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] verifies the protected backup bytes restore list and no-follow paths before production authorization", async () => {
+  const producer = await loadProducer();
+  const root = mkdtempSync(join(tmpdir(), "schema032-backup-proof-"));
+  const dumpPath = join(root, "production-backup.dump");
+  const listPath = join(root, "production-backup-restore-list.txt");
+  const dump = Buffer.from("PGDMP\0fixture", "utf8");
+  const restoreList = Buffer.from("; archive\n1; 0 0 TABLE public x tron\n", "utf8");
+  const evidence = {
+    backupFilename: "production-backup.dump",
+    backupBytes: dump.length,
+    backupSha256: createHash("sha256").update(dump).digest("hex"),
+    backupPathFingerprintSha256: producer.schema032BackupPathFingerprint(root, "production-backup.dump"),
+    restoreListFilename: "production-backup-restore-list.txt",
+    restoreListBytes: restoreList.length,
+    restoreListSha256: createHash("sha256").update(restoreList).digest("hex"),
+    restoreListEntryCount: 1
+  };
+  try {
+    await expect(producer.attestSchema032ProductionBackupFiles(root, evidence)).rejects.toThrow(
+      "schema_032_sequence_production_backup_file_unverified"
+    );
+    writeFileSync(dumpPath, dump, { flag: "wx" });
+    writeFileSync(listPath, restoreList, { flag: "wx" });
+    await expect(producer.attestSchema032ProductionBackupFiles(root, evidence)).rejects.toThrow(
+      "schema_032_sequence_production_backup_file_unverified"
+    );
+    writeFileSync(dumpPath, Buffer.from("tampered"));
+    await expect(producer.attestSchema032ProductionBackupFiles(root, evidence)).rejects.toThrow(
+      "schema_032_sequence_production_backup_file_unverified"
+    );
+    rmSync(dumpPath);
+    writeFileSync(dumpPath, Buffer.alloc(0), { flag: "wx" });
+    await expect(producer.attestSchema032ProductionBackupFiles(root, evidence)).rejects.toThrow(
+      "schema_032_sequence_production_backup_file_unverified"
+    );
+    rmSync(dumpPath);
+    const outside = join(tmpdir(), `schema032-outside-${Date.now()}.dump`);
+    writeFileSync(outside, dump, { flag: "wx" });
+    try {
+      symlinkSync(outside, dumpPath, "file");
+      await expect(producer.attestSchema032ProductionBackupFiles(root, evidence)).rejects.toThrow(
+        "schema_032_sequence_production_backup_file_unverified"
+      );
+    } finally { rmSync(outside, { force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes the exact bounded production claim even before the first outcome exists", async () => {
+  const producer = await loadProducer();
+  const expected = {
+    generationId: "schema-migration-generation-0001",
+    authoritySha256: "a".repeat(64),
+    candidateSha: "c".repeat(40),
+    databaseIdentityFingerprintSha256: "d".repeat(64),
+    resumeExpiresAt: "2026-07-18T09:10:00.000Z"
+  };
+  const existing = {
+    version: "schema-032-production-authority-consumption-v1",
+    generationId: expected.generationId,
+    authoritySha256: expected.authoritySha256,
+    candidateSha: expected.candidateSha,
+    databaseIdentityFingerprintSha256: expected.databaseIdentityFingerprintSha256,
+    claimedAt: "2026-07-18T09:05:00.000Z",
+    resumeExpiresAt: expected.resumeExpiresAt
+  };
+  expect(() => producer.validateSchema032ProductionConsumptionState(
+    existing, expected, "2026-07-18T09:06:00.000Z"
+  )).not.toThrow();
+  expect(() => producer.validateSchema032ProductionConsumptionState(
+    existing, { ...expected, candidateSha: "f".repeat(40) }, "2026-07-18T09:06:00.000Z"
+  )).toThrow("schema_032_sequence_production_consumption_mismatch");
+  expect(() => producer.validateSchema032ProductionConsumptionState(
+    existing, expected, "2026-07-18T09:10:00.001Z"
+  )).toThrow("schema_032_sequence_production_consumption_expired");
+});
+
+it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] binds database user session role and owner into the migration child identity", async () => {
+  const producer = await loadProducer();
+  const identity = {
+    databaseEndpoint: "127.0.0.1:5432",
+    databaseName: "tron_watch_plan5_clean",
+    databaseOid: "16384",
+    serverVersion: "160014",
+    systemIdentifier: "1234567890123456789",
+    currentUser: "tron",
+    sessionUser: "tron",
+    currentRole: "tron",
+    databaseOwner: "tron"
+  };
+  expect(producer.buildSchema032MigrationSessionIdentitySha256(identity)).toMatch(/^[0-9a-f]{64}$/u);
+  expect(() => producer.buildSchema032MigrationSessionIdentitySha256({ ...identity, currentRole: "foreign" }))
+    .toThrow("schema_032_sequence_database_role_unverified");
+});
+
 const postgresDescribe = cleanUrl && cloneUrl && sanitizedUrl && expectedEndpoint && expectedSystemIdentifier
   ? describe
   : describe.skip;
-if (required && (!cleanUrl || !cloneUrl || !sanitizedUrl || !expectedEndpoint || !expectedSystemIdentifier)) {
-  throw new Error("Plan 5 PostgreSQL acceptance requires three database URLs, endpoint and cluster identifier");
+if (required && (!cleanUrl || !cloneUrl || !sanitizedUrl || !expectedEndpoint || !expectedSystemIdentifier || !postgresContainer)) {
+  throw new Error("Plan 5 PostgreSQL acceptance requires three database URLs, endpoint, cluster identifier and container");
 }
 if (required && (
   databaseName(cleanUrl!) !== CLEAN_DATABASE ||
@@ -1044,6 +1145,75 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
     });
   }, 120_000);
 
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] proves the exact custom archive with the attested pg_restore tool", async () => {
+    const producer = await loadProducer();
+    const root = mkdtempSync(join(tmpdir(), "schema032-real-backup-proof-"));
+    const docker = process.platform === "win32"
+      ? "C:/Program Files/Docker/Docker/resources/bin/docker.exe"
+      : "/usr/bin/docker";
+    try {
+      const imageId = execFileSync(docker, ["image", "inspect", "postgres:16-alpine", "--format", "{{.Id}}"], {
+        encoding: "utf8"
+      }).trim();
+      const dump = execFileSync(docker, [
+        "exec", postgresContainer!, "pg_dump", "-U", "postgres", "-Fc", "--no-owner", "--no-acl", "-d", CLEAN_DATABASE
+      ], { encoding: "buffer", maxBuffer: 100 * 1024 * 1024 });
+      const dumpPath = join(root, "production-backup.dump");
+      writeFileSync(dumpPath, dump, { flag: "wx" });
+      const executableIdentitySha256 = execFileSync(docker, [
+        "run", "--rm", "--network", "none", "--pull", "never", "--entrypoint", "/usr/bin/sha256sum",
+        imageId, "/usr/local/bin/pg_restore"
+      ], { encoding: "utf8" }).trim().split(/\s+/u)[0]!;
+      const rawList = execFileSync(docker, [
+        "run", "--rm", "--network", "none", "--pull", "never",
+        "--mount", `type=bind,source=${root},target=/artifacts,readonly`,
+        "--entrypoint", "/usr/local/bin/pg_restore", imageId,
+        "--list", "/artifacts/production-backup.dump"
+      ], { encoding: "buffer", maxBuffer: 100 * 1024 * 1024 });
+      const restoreList = Buffer.from(`${rawList.toString("utf8").replace(/\r\n/gu, "\n").trimEnd()}\n`, "utf8");
+      writeFileSync(join(root, "production-backup-restore-list.txt"), restoreList, { flag: "wx" });
+      const evidence = {
+        backupFilename: "production-backup.dump" as const,
+        backupBytes: dump.length,
+        backupSha256: createHash("sha256").update(dump).digest("hex"),
+        backupPathFingerprintSha256: producer.schema032BackupPathFingerprint(root, "production-backup.dump"),
+        restoreListFilename: "production-backup-restore-list.txt" as const,
+        restoreListBytes: restoreList.length,
+        restoreListSha256: createHash("sha256").update(restoreList).digest("hex"),
+        restoreListEntryCount: restoreList.toString("utf8").split("\n")
+          .filter((line) => line.trim() !== "" && !line.startsWith(";")).length
+      };
+      const tools = {
+        provider: {
+          kind: "docker_pinned_image" as const,
+          immutableImageId: imageId,
+          networkMode: "none" as const,
+          pullAllowed: false as const
+        },
+        pgRestore: {
+          executableIdentitySha256,
+          commandId: "postgres_tool_pg_restore_attest" as const
+        }
+      };
+      await expect(producer.attestSchema032ProductionBackupFiles(root, evidence, tools)).resolves.toEqual(evidence);
+      writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("; forged\n1; fake\n"));
+      await expect(producer.attestSchema032ProductionBackupFiles(root, evidence, tools)).rejects.toThrow(
+        "schema_032_sequence_production_backup_file_unverified"
+      );
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 120_000);
+
+  it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects a migration child whose database session identity is not bound", () => {
+    const attempt = runNpmScript("db:migrate", {
+      ...safeChildEnv(cleanUrl!, "DATABASE_URL"),
+      SCHEMA_032_RELEASE_EXPECTED_SESSION_IDENTITY_SHA256: "f".repeat(64),
+      SCHEMA_032_RELEASE_EXPECTED_ENDPOINT: expectedEndpoint!
+    });
+    expect(attempt.status).not.toBe(0);
+    expect(attempt.stdout).toBe("");
+    expect(attempt.stderr).toContain("schema_032_sequence_migration_child_identity_mismatch");
+  }, 120_000);
+
   it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] executes and resumes the controlled sequence on the clean database", async () => {
     await resetPublicSchema({
       client: cleanClient,
@@ -1114,7 +1284,7 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
       + `writeFileSync(join(__dirname, "descendant.pid"), String(child.pid));\n`
       + `setInterval(() => {}, 1000);\n`, "utf8");
     try {
-      const attempt = runNode([
+      const attempt = spawn(process.execPath, [
         "--import", "tsx", "scripts/runSchema032ReleaseSequence.ts",
         "--database-url-env", "PLAN5_SCHEMA_CLONE_DATABASE_URL",
         "--expected-endpoint", expectedEndpoint!,
@@ -1122,26 +1292,47 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
         "--artifact-root", artifactRoot,
         "--offline"
       ], {
-        ...safeChildEnv(cloneUrl!, "PLAN5_SCHEMA_CLONE_DATABASE_URL"),
-        SCHEMA_032_TEST_NPM_CLI: fakeNpmCli,
-        SCHEMA_032_TEST_ALLOW_FAKE_NPM_CLI: "1",
-        SCHEMA_032_TEST_MIGRATION_TIMEOUT_MS: "250"
+        cwd: process.cwd(),
+        env: {
+          ...safeChildEnv(cloneUrl!, "PLAN5_SCHEMA_CLONE_DATABASE_URL"),
+          SCHEMA_032_TEST_NPM_CLI: fakeNpmCli,
+          SCHEMA_032_TEST_ALLOW_FAKE_NPM_CLI: "1",
+          SCHEMA_032_TEST_MIGRATION_TIMEOUT_MS: "250",
+          SCHEMA_032_TEST_CLEANUP_HOLD_MS: "1000"
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
       });
-      expect(attempt.status).not.toBe(0);
-      expect(attempt.stderr).toContain("schema_032_migration_command_failed");
-      expect(readdirSync(artifactRoot)).toEqual([]);
+      let stderr = "";
+      attempt.stderr.setEncoding("utf8");
+      attempt.stderr.on("data", (chunk: string) => { stderr += chunk; });
+      const closed = new Promise<number | null>((resolveClosed) => {
+        attempt.once("close", (code) => resolveClosed(code));
+      });
+      for (let index = 0; index < 100 && !existsSync(descendantPidPath); index += 1) {
+        await new Promise((resolveDone) => setTimeout(resolveDone, 25));
+      }
       expect(existsSync(descendantPidPath)).toBe(true);
       const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
       let alive = true;
-      for (let index = 0; index < 20 && alive; index += 1) {
+      for (let index = 0; index < 100 && alive; index += 1) {
         try { process.kill(descendantPid, 0); } catch { alive = false; }
-        if (alive) await new Promise((resolveDone) => setTimeout(resolveDone, 50));
+        if (alive) await new Promise((resolveDone) => setTimeout(resolveDone, 25));
       }
       expect(alive).toBe(false);
-      const lockCheck = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
+      expect(attempt.exitCode).toBeNull();
+      const lockDuringCleanup = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
         (await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK
       ]);
-      expect(lockCheck.rows).toEqual([{ acquired: true }]);
+      expect(lockDuringCleanup.rows).toEqual([{ acquired: false }]);
+      const exitCode = await closed;
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("schema_032_migration_command_failed");
+      expect(readdirSync(artifactRoot)).toEqual([]);
+      const lockAfterCleanup = await cloneClient.query("select pg_try_advisory_lock($1) as acquired", [
+        (await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK
+      ]);
+      expect(lockAfterCleanup.rows).toEqual([{ acquired: true }]);
       await cloneClient.query("select pg_advisory_unlock($1)", [(await loadProducer()).SCHEMA_032_PRODUCER_ADVISORY_LOCK]);
     } finally {
       rmSync(artifactRoot, { recursive: true, force: true });

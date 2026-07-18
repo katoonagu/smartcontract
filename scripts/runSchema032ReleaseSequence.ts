@@ -32,6 +32,13 @@ import {
   type Schema032ReleaseEvidenceV1
 } from "./verifySchema032";
 import { REQUIRED_SCHEMA_FILENAME, checksumMigrationBytes } from "../src/storage/schemaMigrations";
+import {
+  buildSchema032MigrationSessionIdentitySha256,
+  observeSchema032MigrationSessionIdentity,
+  type Schema032MigrationSessionIdentity
+} from "../src/release/schema032MigrationIdentity";
+
+export { buildSchema032MigrationSessionIdentitySha256 } from "../src/release/schema032MigrationIdentity";
 
 const SHA40 = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -40,6 +47,8 @@ const SAFE_ENV_NAME = /^[A-Z][A-Z0-9_]*$/u;
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
+const MAX_BACKUP_BYTES = 1024 ** 4;
+const MAX_RESTORE_LIST_BYTES = 100 * 1024 * 1024;
 const MIGRATION_TIMEOUT_MS = 120_000;
 export const SCHEMA_032_PRODUCER_ADVISORY_LOCK = 320_032_500;
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -107,8 +116,38 @@ type ProductionMigrationAuthorityV1 = {
   explicitGo: true;
 };
 
+type ProductionBackupEvidenceV1 = {
+  version: "production-backup-evidence-v1";
+  candidateSha: string;
+  gateId: "G12_PRODUCTION_BACKUP";
+  commandId: "production_backup";
+  redactedTemplateSha256: string;
+  databaseIdentityFingerprintSha256: string;
+  backupFilename: "production-backup.dump";
+  backupBytes: number;
+  backupSha256: string;
+  backupPathFingerprintSha256: string;
+  restoreListFilename: "production-backup-restore-list.txt";
+  restoreListBytes: number;
+  restoreListSha256: string;
+  restoreListEntryCount: number;
+  state: "passed";
+};
+
+type ProductionAuthorityConsumptionV1 = {
+  version: "schema-032-production-authority-consumption-v1";
+  generationId: string;
+  authoritySha256: string;
+  candidateSha: string;
+  databaseIdentityFingerprintSha256: string;
+  claimedAt: string;
+  resumeExpiresAt: string;
+};
+
 export const SCHEMA_032_PRODUCTION_MIGRATION_TEMPLATE_SHA256 = REMEDIATION_COMMAND_TEMPLATE_SHA256.production_migration;
 export const SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256 = REMEDIATION_COMMAND_TEMPLATE_SHA256.production_backup;
+const PRODUCTION_BACKUP_FILENAME = "production-backup.dump";
+const PRODUCTION_RESTORE_LIST_FILENAME = "production-backup-restore-list.txt";
 
 function fail(code: string): never {
   throw new Error(code);
@@ -116,6 +155,18 @@ function fail(code: string): never {
 
 function hash(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalPathKey(path: string): string {
+  const normalized = resolve(path).replace(/\\/gu, "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function schema032BackupPathFingerprint(root: string, filename: string): string {
+  if (!isAbsolute(root) || ![PRODUCTION_BACKUP_FILENAME, PRODUCTION_RESTORE_LIST_FILENAME].includes(filename)) {
+    fail("schema_032_sequence_production_backup_file_unverified");
+  }
+  return hash(canonicalPathKey(join(root, filename)));
 }
 
 function record(value: unknown, code: string): Record<string, unknown> {
@@ -456,12 +507,19 @@ export async function executeSchema032ReleaseSequence(input: {
   return finalEvidence;
 }
 
-function safeChildEnvironment(databaseUrl: string, npmExecPath: string): NodeJS.ProcessEnv {
+function safeChildEnvironment(
+  databaseUrl: string,
+  npmExecPath: string,
+  expectedSessionIdentitySha256: string,
+  expectedEndpoint: string
+): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {
     DATABASE_URL: databaseUrl,
     DOTENV_CONFIG_PATH: resolve("tests/fixtures/release/plan5-no-dotenv"),
     npm_execpath: npmExecPath,
-    NO_COLOR: "1"
+    NO_COLOR: "1",
+    SCHEMA_032_RELEASE_EXPECTED_SESSION_IDENTITY_SHA256: expectedSessionIdentitySha256,
+    SCHEMA_032_RELEASE_EXPECTED_ENDPOINT: expectedEndpoint
   };
   for (const key of ["PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "ComSpec", "COMSPEC"] as const) {
     if (process.env[key] !== undefined) result[key] = process.env[key];
@@ -510,11 +568,213 @@ async function resolveNpmCli(allowTestOverride: boolean): Promise<string> {
   fail("schema_032_sequence_npm_cli_unverified");
 }
 
+type Schema032PostgresRestoreTool = {
+  provider: {
+    kind: "docker_pinned_image";
+    immutableImageId: string;
+    networkMode: "none";
+    pullAllowed: false;
+  };
+  pgRestore: {
+    executableIdentitySha256: string;
+    commandId: "postgres_tool_pg_restore_attest";
+  };
+};
+
+async function resolveFixedDockerCli(): Promise<string> {
+  const candidates = process.platform === "win32"
+    ? ["C:/Program Files/Docker/Docker/resources/bin/docker.exe"]
+    : ["/usr/bin/docker", "/usr/local/bin/docker"];
+  for (const candidate of candidates) {
+    try {
+      const physical = resolve(await realpath(candidate));
+      const metadata = await lstat(physical);
+      if (metadata.isFile() && !metadata.isSymbolicLink()) return physical;
+    } catch { /* only fixed platform locations are eligible */ }
+  }
+  fail("schema_032_sequence_production_backup_tool_unverified");
+}
+
+async function runBoundedDocker(args: string[], maxOutputBytes: number): Promise<Buffer> {
+  const docker = await resolveFixedDockerCli();
+  return new Promise((resolveOutput, rejectOutput) => {
+    const child = spawn(docker, args, {
+      cwd: resolve(fileURLToPath(new URL("..", import.meta.url))),
+      env: Object.fromEntries(
+        ["PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "ComSpec", "COMSPEC"]
+          .flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]!]])
+      ),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let failed: Error | undefined;
+    let termination: Promise<void> | undefined;
+    const terminate = () => termination ??= terminateChildTree(child);
+    const collect = (current: Buffer, chunk: Buffer) => {
+      if (current.length + chunk.length > maxOutputBytes) {
+        failed = new Error("schema_032_sequence_production_backup_tool_output_too_large");
+        void terminate();
+        return current;
+      }
+      return Buffer.concat([current, chunk]);
+    };
+    child.stdout?.on("data", (chunk: Buffer) => { stdout = collect(stdout, chunk); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr = collect(stderr, chunk); });
+    child.once("error", () => { failed = new Error("schema_032_sequence_production_backup_tool_failed"); });
+    const timer = setTimeout(() => {
+      failed = new Error("schema_032_sequence_production_backup_tool_timeout");
+      void terminate();
+    }, MIGRATION_TIMEOUT_MS);
+    child.once("close", async (status, signal) => {
+      clearTimeout(timer);
+      await termination;
+      if (failed || status !== 0 || signal || stderr.length !== 0) {
+        rejectOutput(failed ?? new Error("schema_032_sequence_production_backup_tool_failed"));
+        return;
+      }
+      resolveOutput(stdout);
+    });
+  });
+}
+
+function normalizePgRestoreList(bytes: Buffer): { bytes: Buffer; entryCount: number } {
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {
+    fail("schema_032_sequence_production_backup_file_unverified");
+  }
+  if (text.includes("\0") || /\r(?!\n)/u.test(text)) {
+    fail("schema_032_sequence_production_backup_file_unverified");
+  }
+  const normalized = `${text.replace(/\r\n/gu, "\n").trimEnd()}\n`;
+  const entryCount = normalized.split("\n")
+    .filter((line) => line.trim() !== "" && !line.startsWith(";")).length;
+  if (entryCount < 1) fail("schema_032_sequence_production_backup_file_unverified");
+  return { bytes: Buffer.from(normalized, "utf8"), entryCount };
+}
+
+async function readStableFile(input: {
+  path: string;
+  maxBytes: number;
+  capture: boolean;
+}): Promise<{ bytes: number; sha256: string; content?: Buffer; dev: bigint | number; ino: bigint | number }> {
+  const before = await lstat(input.path).catch(() => fail("schema_032_sequence_production_backup_file_unverified"));
+  if (!before.isFile() || before.isSymbolicLink() || before.size <= 0 || before.size > input.maxBytes) {
+    fail("schema_032_sequence_production_backup_file_unverified");
+  }
+  const handle = await open(input.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      fail("schema_032_sequence_production_backup_file_unverified");
+    }
+    const digest = createHash("sha256");
+    const chunks: Buffer[] = [];
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    while (position < opened.size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, opened.size - position), position);
+      if (bytesRead <= 0) fail("schema_032_sequence_production_backup_file_unverified");
+      const chunk = Buffer.from(buffer.subarray(0, bytesRead));
+      digest.update(chunk);
+      if (input.capture) chunks.push(chunk);
+      position += bytesRead;
+    }
+    const after = await handle.stat();
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
+        || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
+      fail("schema_032_sequence_production_backup_file_unverified");
+    }
+    return {
+      bytes: opened.size,
+      sha256: digest.digest("hex"),
+      content: input.capture ? Buffer.concat(chunks) : undefined,
+      dev: opened.dev,
+      ino: opened.ino
+    };
+  } finally { await handle.close(); }
+}
+
+export async function attestSchema032ProductionBackupFiles(
+  root: string,
+  evidence: Pick<ProductionBackupEvidenceV1,
+    "backupFilename" | "backupBytes" | "backupSha256" | "backupPathFingerprintSha256"
+    | "restoreListFilename" | "restoreListBytes" | "restoreListSha256" | "restoreListEntryCount">,
+  tools?: Schema032PostgresRestoreTool
+): Promise<typeof evidence> {
+  try {
+    if (evidence.backupFilename !== PRODUCTION_BACKUP_FILENAME
+        || evidence.restoreListFilename !== PRODUCTION_RESTORE_LIST_FILENAME
+        || !Number.isSafeInteger(evidence.backupBytes) || evidence.backupBytes <= 0
+        || !Number.isSafeInteger(evidence.restoreListBytes) || evidence.restoreListBytes <= 0
+        || !Number.isSafeInteger(evidence.restoreListEntryCount) || evidence.restoreListEntryCount <= 0
+        || !SHA256.test(evidence.backupSha256) || !SHA256.test(evidence.restoreListSha256)
+        || evidence.backupPathFingerprintSha256 !== schema032BackupPathFingerprint(root, evidence.backupFilename)) {
+      fail("schema_032_sequence_production_backup_file_unverified");
+    }
+    const dumpPath = join(root, evidence.backupFilename);
+    const listPath = join(root, evidence.restoreListFilename);
+    const dump = await readStableFile({ path: dumpPath, maxBytes: MAX_BACKUP_BYTES, capture: false });
+    const list = await readStableFile({ path: listPath, maxBytes: MAX_RESTORE_LIST_BYTES, capture: true });
+    if (dump.bytes !== evidence.backupBytes || dump.sha256 !== evidence.backupSha256
+        || list.bytes !== evidence.restoreListBytes || list.sha256 !== evidence.restoreListSha256 || !list.content) {
+      fail("schema_032_sequence_production_backup_file_unverified");
+    }
+    const storedList = normalizePgRestoreList(list.content);
+    if (!storedList.bytes.equals(list.content) || storedList.entryCount !== evidence.restoreListEntryCount) {
+      fail("schema_032_sequence_production_backup_file_unverified");
+    }
+    if (!tools || tools.provider.kind !== "docker_pinned_image"
+        || !/^sha256:[0-9a-f]{64}$/u.test(tools.provider.immutableImageId)
+        || tools.provider.networkMode !== "none" || tools.provider.pullAllowed !== false
+        || tools.pgRestore.commandId !== "postgres_tool_pg_restore_attest"
+        || !SHA256.test(tools.pgRestore.executableIdentitySha256)) {
+      fail("schema_032_sequence_production_backup_tool_unverified");
+    }
+    const binaryDigest = await runBoundedDocker([
+      "run", "--rm", "--network", "none", "--pull", "never", "--entrypoint", "/usr/bin/sha256sum",
+      tools.provider.immutableImageId, "/usr/local/bin/pg_restore"
+    ], 1024);
+    if (binaryDigest.toString("utf8").trim().split(/\s+/u)[0] !== tools.pgRestore.executableIdentitySha256) {
+      fail("schema_032_sequence_production_backup_tool_unverified");
+    }
+    const linkName = `.schema032-backup-attested-${randomBytes(12).toString("hex")}.dump`;
+    const linkPath = join(root, linkName);
+    try {
+      await link(dumpPath, linkPath);
+      const linked = await lstat(linkPath);
+      if (!linked.isFile() || linked.isSymbolicLink() || linked.dev !== dump.dev || linked.ino !== dump.ino) {
+        fail("schema_032_sequence_production_backup_file_unverified");
+      }
+      const generated = normalizePgRestoreList(await runBoundedDocker([
+        "run", "--rm", "--network", "none", "--pull", "never",
+        "--mount", `type=bind,source=${root},target=/artifacts,readonly`,
+        "--entrypoint", "/usr/local/bin/pg_restore", tools.provider.immutableImageId,
+        "--list", `/artifacts/${linkName}`
+      ], MAX_RESTORE_LIST_BYTES));
+      if (!generated.bytes.equals(storedList.bytes) || generated.entryCount !== storedList.entryCount) {
+        fail("schema_032_sequence_production_backup_file_unverified");
+      }
+    } finally { await unlink(linkPath).catch(() => undefined); }
+    const unchanged = await readStableFile({ path: dumpPath, maxBytes: MAX_BACKUP_BYTES, capture: false });
+    if (unchanged.dev !== dump.dev || unchanged.ino !== dump.ino
+        || unchanged.bytes !== dump.bytes || unchanged.sha256 !== dump.sha256) {
+      fail("schema_032_sequence_production_backup_file_unverified");
+    }
+    return evidence;
+  } catch {
+    fail("schema_032_sequence_production_backup_file_unverified");
+  }
+}
+
 async function runFixedMigration(
   databaseUrl: string,
   migrationFiles: string[],
   sequence: "first" | "second",
-  allowTestNpmCliOverride: boolean
+  allowTestNpmCliOverride: boolean,
+  expectedSessionIdentitySha256: string,
+  expectedEndpoint: string
 ): Promise<MigrationSpawnResult> {
   const npmCli = await resolveNpmCli(allowTestNpmCliOverride);
   const configuredTestTimeout = process.env.NODE_ENV === "test"
@@ -523,10 +783,18 @@ async function runFixedMigration(
   const timeoutMs = Number.isSafeInteger(configuredTestTimeout) && configuredTestTimeout >= 100
     ? configuredTestTimeout
     : MIGRATION_TIMEOUT_MS;
+  const configuredCleanupHold = allowTestNpmCliOverride && process.env.NODE_ENV === "test"
+      && process.env.SCHEMA_032_TEST_ALLOW_FAKE_NPM_CLI === "1"
+    ? Number(process.env.SCHEMA_032_TEST_CLEANUP_HOLD_MS ?? 0)
+    : 0;
+  const cleanupHoldMs = Number.isSafeInteger(configuredCleanupHold) && configuredCleanupHold >= 0
+      && configuredCleanupHold <= 5_000
+    ? configuredCleanupHold
+    : 0;
   return new Promise((resolveResult) => {
     const child = spawn(process.execPath, [npmCli, "run", "--silent", "db:migrate"], {
       cwd: resolve(fileURLToPath(new URL("..", import.meta.url))),
-      env: safeChildEnvironment(databaseUrl, npmCli),
+      env: safeChildEnvironment(databaseUrl, npmCli, expectedSessionIdentitySha256, expectedEndpoint),
       windowsHide: true,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"]
@@ -534,10 +802,14 @@ async function runFixedMigration(
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
     let overflow = false;
+    let termination: Promise<void> | undefined;
+    const requestTermination = () => termination ??= terminateChildTree(child).then(async () => {
+      if (cleanupHoldMs > 0) await new Promise((resolveDone) => setTimeout(resolveDone, cleanupHoldMs));
+    });
     const collect = (current: Buffer, chunk: Buffer): Buffer => {
       if (current.length + chunk.length > MAX_CHILD_OUTPUT_BYTES) {
         overflow = true;
-        void terminateChildTree(child);
+        void requestTermination();
         return current;
       }
       return Buffer.concat([current, chunk]);
@@ -549,10 +821,11 @@ async function runFixedMigration(
     child.once("error", (error) => { spawnError = error; });
     const timer = setTimeout(() => {
       timedOut = true;
-      void terminateChildTree(child);
+      void requestTermination();
     }, timeoutMs);
-    child.once("close", (code, signal) => {
+    child.once("close", async (code, signal) => {
       clearTimeout(timer);
+      await termination;
       let decodedStdout = "";
       let decodedStderr = "";
       try {
@@ -581,36 +854,32 @@ async function runFixedMigration(
 
 async function readDatabaseIdentity(client: Client, endpoint: string): Promise<{
   targetIdentity: { databaseName: string; databaseOid: string; serverVersion: string; systemIdentifier: string };
+  sessionIdentity: Schema032MigrationSessionIdentity;
+  sessionIdentitySha256: string;
   task0bIdentityFingerprintSha256: string;
 }> {
-  const identity = await client.query(`select current_database() as database_name,
-    current_setting('server_version_num') as server_version_num,
-    (select oid::text from pg_database where datname = current_database()) as database_oid,
-    (pg_control_system()).system_identifier::text as system_identifier,
-    inet_server_port() as server_port`);
-  if (identity.rows.length !== 1) fail("schema_032_sequence_database_identity_invalid");
-  const row = identity.rows[0];
+  const observed = await observeSchema032MigrationSessionIdentity(client, endpoint);
+  const row = observed.identity;
   const endpointParts = endpoint.split(":");
   const endpointPort = Number(endpointParts.at(-1));
   const endpointHost = endpointParts.slice(0, -1).join(":");
-  const databaseName = String(row.database_name ?? "");
-  const databaseOid = String(row.database_oid ?? "");
-  const serverVersion = String(row.server_version_num ?? "");
-  const systemIdentifier = String(row.system_identifier ?? "");
-  if (!databaseName || !/^\d+$/u.test(databaseOid) || !/^\d{5,6}$/u.test(serverVersion)
-      || !SYSTEM_IDENTIFIER.test(systemIdentifier) || !Number.isSafeInteger(row.server_port)) {
-    fail("schema_032_sequence_database_identity_invalid");
-  }
   return {
-    targetIdentity: { databaseName, databaseOid, serverVersion, systemIdentifier },
+    targetIdentity: {
+      databaseName: row.databaseName,
+      databaseOid: row.databaseOid,
+      serverVersion: row.serverVersion,
+      systemIdentifier: row.systemIdentifier
+    },
+    sessionIdentity: row,
+    sessionIdentitySha256: buildSchema032MigrationSessionIdentitySha256(row),
     task0bIdentityFingerprintSha256: buildTask0BProductionDatabaseIdentityFingerprint({
-      databaseName,
+      databaseName: row.databaseName,
       endpointHost,
       endpointPort,
-      connectedServerPort: Number(row.server_port),
-      systemIdentifier,
-      databaseOid,
-      serverVersionNum: serverVersion
+      connectedServerPort: observed.connectedServerPort,
+      systemIdentifier: row.systemIdentifier,
+      databaseOid: row.databaseOid,
+      serverVersionNum: row.serverVersion
     })
   };
 }
@@ -643,6 +912,35 @@ function validateProductionAuthority(value: unknown, evaluatedAt: string): Produ
   return authority as ProductionMigrationAuthorityV1;
 }
 
+function parseProductionBackupEvidence(value: unknown, input: {
+  candidateSha: string;
+  observedDatabaseIdentityFingerprintSha256: string;
+}): ProductionBackupEvidenceV1 {
+  const backup = record(value, "schema_032_sequence_production_backup_invalid");
+  assertNoSecretLikeArtifactValues(backup);
+  exactKeys(backup, [
+    "version", "candidateSha", "gateId", "commandId", "redactedTemplateSha256",
+    "databaseIdentityFingerprintSha256", "backupFilename", "backupBytes", "backupSha256",
+    "backupPathFingerprintSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256",
+    "restoreListEntryCount", "state"
+  ], "schema_032_sequence_production_backup_invalid");
+  if (backup.version !== "production-backup-evidence-v1" || backup.candidateSha !== input.candidateSha
+      || backup.gateId !== "G12_PRODUCTION_BACKUP" || backup.commandId !== "production_backup"
+      || backup.redactedTemplateSha256 !== SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256
+      || backup.databaseIdentityFingerprintSha256 !== input.observedDatabaseIdentityFingerprintSha256
+      || backup.backupFilename !== PRODUCTION_BACKUP_FILENAME
+      || !Number.isSafeInteger(backup.backupBytes) || Number(backup.backupBytes) <= 0
+      || !SHA256.test(String(backup.backupSha256)) || !SHA256.test(String(backup.backupPathFingerprintSha256))
+      || backup.restoreListFilename !== PRODUCTION_RESTORE_LIST_FILENAME
+      || !Number.isSafeInteger(backup.restoreListBytes) || Number(backup.restoreListBytes) <= 0
+      || !SHA256.test(String(backup.restoreListSha256))
+      || !Number.isSafeInteger(backup.restoreListEntryCount) || Number(backup.restoreListEntryCount) <= 0
+      || backup.state !== "passed") {
+    fail("schema_032_sequence_production_backup_unverified");
+  }
+  return backup as ProductionBackupEvidenceV1;
+}
+
 export function validateSchema032ProductionAuthorization(input: {
   authority: unknown;
   task0bBytes: Buffer;
@@ -661,23 +959,13 @@ export function validateSchema032ProductionAuthorization(input: {
   const manifest = validateRemediationReleaseManifest(
     parseJson(input.manifestBytes.toString("utf8"), "schema_032_sequence_manifest_invalid")
   );
-  const backup = record(
+  parseProductionBackupEvidence(
     parseJson(input.backupBytes.toString("utf8"), "schema_032_sequence_production_backup_invalid"),
-    "schema_032_sequence_production_backup_invalid"
+    {
+      candidateSha: input.candidateSha,
+      observedDatabaseIdentityFingerprintSha256: input.observedDatabaseIdentityFingerprintSha256
+    }
   );
-  assertNoSecretLikeArtifactValues(backup);
-  exactKeys(backup, [
-    "version", "candidateSha", "gateId", "commandId", "redactedTemplateSha256",
-    "databaseIdentityFingerprintSha256", "backupSha256", "backupPathFingerprintSha256", "state"
-  ], "schema_032_sequence_production_backup_invalid");
-  if (backup.version !== "production-backup-evidence-v1" || backup.candidateSha !== input.candidateSha
-      || backup.gateId !== "G12_PRODUCTION_BACKUP" || backup.commandId !== "production_backup"
-      || backup.redactedTemplateSha256 !== SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256
-      || backup.databaseIdentityFingerprintSha256 !== input.observedDatabaseIdentityFingerprintSha256
-      || !SHA256.test(String(backup.backupSha256)) || !SHA256.test(String(backup.backupPathFingerprintSha256))
-      || backup.state !== "passed") {
-    fail("schema_032_sequence_production_backup_unverified");
-  }
   const gates = new Map(manifest.gates.map((gate) => [gate.id, gate.state]));
   const preReleasePassed = [...gates.entries()]
     .filter(([id]) => /^G(?:0\d|1[01])_/u.test(id))
@@ -691,6 +979,36 @@ export function validateSchema032ProductionAuthorization(input: {
     fail("schema_032_sequence_production_binding_unverified");
   }
   return authority;
+}
+
+export function validateSchema032ProductionConsumptionState(
+  value: unknown,
+  expected: Pick<ProductionAuthorityConsumptionV1,
+    "generationId" | "authoritySha256" | "candidateSha" | "databaseIdentityFingerprintSha256" | "resumeExpiresAt">,
+  evaluatedAt: string
+): ProductionAuthorityConsumptionV1 {
+  const consumption = record(value, "schema_032_sequence_production_consumption_invalid");
+  exactKeys(consumption, [
+    "version", "generationId", "authoritySha256", "candidateSha", "databaseIdentityFingerprintSha256",
+    "claimedAt", "resumeExpiresAt"
+  ], "schema_032_sequence_production_consumption_invalid");
+  const now = parseIso(evaluatedAt, "schema_032_sequence_production_consumption_invalid");
+  const claimedAt = parseIso(consumption.claimedAt, "schema_032_sequence_production_consumption_invalid");
+  const resumeExpiresAt = parseIso(consumption.resumeExpiresAt, "schema_032_sequence_production_consumption_invalid");
+  if (consumption.version !== "schema-032-production-authority-consumption-v1"
+      || typeof consumption.generationId !== "string" || !GENERATION.test(consumption.generationId)
+      || !SHA256.test(String(consumption.authoritySha256)) || !SHA40.test(String(consumption.candidateSha))
+      || !SHA256.test(String(consumption.databaseIdentityFingerprintSha256))
+      || consumption.generationId !== expected.generationId
+      || consumption.authoritySha256 !== expected.authoritySha256
+      || consumption.candidateSha !== expected.candidateSha
+      || consumption.databaseIdentityFingerprintSha256 !== expected.databaseIdentityFingerprintSha256
+      || consumption.resumeExpiresAt !== expected.resumeExpiresAt
+      || claimedAt > now || claimedAt >= resumeExpiresAt) {
+    fail("schema_032_sequence_production_consumption_mismatch");
+  }
+  if (now > resumeExpiresAt) fail("schema_032_sequence_production_consumption_expired");
+  return consumption as ProductionAuthorityConsumptionV1;
 }
 
 async function authorizeProductionMutation(input: {
@@ -719,22 +1037,49 @@ async function authorizeProductionMutation(input: {
     observedDatabaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256,
     evaluatedAt
   });
+  const task0b = validateTask0BReleaseFreezeEvidence(
+    parseJson(task0bBytes.toString("utf8"), "schema_032_sequence_task0b_invalid"),
+    input.candidateSha,
+    evaluatedAt
+  );
+  const backup = parseProductionBackupEvidence(
+    parseJson(backupBytes.toString("utf8"), "schema_032_sequence_production_backup_invalid"),
+    {
+      candidateSha: input.candidateSha,
+      observedDatabaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256
+    }
+  );
+  await attestSchema032ProductionBackupFiles(input.artifactRoot, backup, task0b.postgresTools);
+  if (input.authorityFilename !== `schema032-production-authority-${authority.generationId}.json`) {
+    fail("schema_032_sequence_production_authority_filename_invalid");
+  }
   const consumptionName = `schema032-production-authority-consumed-${authority.generationId}.json`;
   const existing = await readOptionalArtifact(input.artifactRoot, consumptionName);
-  const consumption = {
-    version: "schema-032-production-authority-consumption-v1",
+  const expectedConsumption = {
     generationId: authority.generationId,
     authoritySha256: hash(authorityBytes),
     candidateSha: input.candidateSha,
-    databaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256
+    databaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256,
+    resumeExpiresAt: authority.expiresAt
+  };
+  const consumption: ProductionAuthorityConsumptionV1 = {
+    version: "schema-032-production-authority-consumption-v1",
+    generationId: expectedConsumption.generationId,
+    authoritySha256: expectedConsumption.authoritySha256,
+    candidateSha: expectedConsumption.candidateSha,
+    databaseIdentityFingerprintSha256: expectedConsumption.databaseIdentityFingerprintSha256,
+    claimedAt: evaluatedAt,
+    resumeExpiresAt: expectedConsumption.resumeExpiresAt
   };
   if (existing === null) {
     if (input.hasSequenceArtifacts) fail("schema_032_sequence_unconsumed_partial_production_state");
     await writeArtifactExclusive(input.artifactRoot, consumptionName, consumption);
   } else {
-    if (!input.hasSequenceArtifacts) fail("schema_032_sequence_production_authority_already_consumed");
-    assertSameEvidence(parseJson(existing, "schema_032_sequence_production_consumption_invalid"), consumption,
-      "schema_032_sequence_production_consumption_mismatch");
+    validateSchema032ProductionConsumptionState(
+      parseJson(existing, "schema_032_sequence_production_consumption_invalid"),
+      expectedConsumption,
+      evaluatedAt
+    );
   }
 }
 
@@ -840,7 +1185,9 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
           validated.databaseUrl,
           repository.migrationFiles,
           sequence,
-          validated.offline
+          validated.offline,
+          before.sessionIdentitySha256,
+          validated.expectedEndpoint
         );
         const immediatelyAfter = await readDatabaseIdentity(client, validated.expectedEndpoint);
         if (JSON.stringify(immediatelyAfter) !== JSON.stringify(before)) {
