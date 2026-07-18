@@ -1,18 +1,24 @@
-import { readFileSync } from "node:fs";
-import { safeArtifactPath } from "../src/release/releaseRootWriterStore";
-import { executeProductionOperationV2 } from "../src/release/productionReleaseOrchestratorV2";
+import { assertTrustedArtifactRootPathV2 } from "../src/release/releaseRootWriterStore";
+import { createProtectedProductionOperationAdaptersV2 } from "../src/release/productionOperationAdaptersV2";
+import { executeProtectedProductionOperationV2 } from "../src/release/productionReleaseOrchestratorV2";
+import type { ProductionOperationKindV2 } from "../src/release/remediationReleaseManifestV2";
 
-export type ProductionCliDependenciesV2 = Parameters<typeof executeProductionOperationV2>[1];
+export type ProductionCliDependenciesV2 = Readonly<{
+  executeProtected?(input: { artifactRoot: string; operationKind: ProductionOperationKindV2 }):
+    ReturnType<typeof executeProtectedProductionOperationV2>;
+}>;
 
 export async function runProductionOperationCliV2(
   args: string[],
-  expectedKind: "rollout" | "canary" | "rollback" | "recovery",
-  dependencies?: ProductionCliDependenciesV2
+  expectedKind: ProductionOperationKindV2,
+  dependencies: ProductionCliDependenciesV2 = {}
 ) {
   if (args.length !== 1) throw new Error(`usage: release:production:${expectedKind}:execute <protected-artifact-root>`);
-  if (dependencies === undefined) throw new Error("production_operation_adapters_unconfigured");
-  const bytes = readFileSync(safeArtifactPath(args[0], `production-${expectedKind}-input-v2.json`));
-  const input = JSON.parse(bytes.toString("utf8"));
-  if (input.operation?.kind !== expectedKind) throw new Error("production_operation_kind_mismatch");
-  return executeProductionOperationV2(input, dependencies);
+  if (dependencies.executeProtected) {
+    return dependencies.executeProtected({ artifactRoot: args[0]!, operationKind: expectedKind });
+  }
+  const artifactRoot = assertTrustedArtifactRootPathV2(args[0]!);
+  return executeProtectedProductionOperationV2({ artifactRoot, operationKind: expectedKind }, {
+    adapters: createProtectedProductionOperationAdaptersV2(artifactRoot)
+  });
 }
