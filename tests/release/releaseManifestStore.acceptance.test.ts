@@ -87,7 +87,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-SELECTION] selects exactly one active compati
 it("[REQ-38][OPERATIONAL-AUTHORITY-RECOVERY] issues fresh recovery authority only after exact prior terminal lineage and preserves prior bytes", async () => {
   const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
   const original = Buffer.from(JSON.stringify(buildOperationalAttestationV2Fixture()));
-  const recovery = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: buildOperationalAttestationV2Fixture({ generationId: "recovery-1", priorTerminalLineageSha256: "a".repeat(64) }), priorTerminalReceipt: { sha256: "a".repeat(64) } });
+  const recovery = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: buildOperationalAttestationV2Fixture({ generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, priorTerminalLineageSha256: "a".repeat(64) }), priorTerminalReceipt: { sha256: "a".repeat(64) } });
   expect(recovery.priorTerminalLineageSha256).toBe("a".repeat(64)); expect(original).toEqual(Buffer.from(JSON.stringify(buildOperationalAttestationV2Fixture())));
 });
 
