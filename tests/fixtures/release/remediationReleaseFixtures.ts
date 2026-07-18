@@ -54,19 +54,6 @@ export const REQUIRED_GATE_IDS = [...PRE_RELEASE_GATE_IDS, ...PRODUCTION_GATE_ID
 // Immutable Plan 5 Manifest V2 acceptance fixtures. They intentionally remain
 // plain JSON so the frozen RED batch does not depend on the future validators.
 export const RELEASE_V2_NOW = "2026-07-18T10:00:00.000Z";
-export const RELEASE_V2_FREEZE_IDENTITY = Object.freeze({
-  version: "release-freeze-identity-v2" as const,
-  releaseGenerationId: "release-generation-0001",
-  candidateSha: CANDIDATE_SHA,
-  planBaseSha: PLAN_BASE_SHA,
-  artifactRootFingerprintSha256: "1".repeat(64),
-  artifactRootTrustBoundaryEvidenceSha256: "2".repeat(64),
-  productionDatabaseIdentityFingerprintSha256: "3".repeat(64),
-  postgresToolIdentitySha256: "4".repeat(64),
-  previousRuntimeDiscoverySha256: "5".repeat(64),
-  rollbackWorktreeIdentitySha256: "6".repeat(64),
-  createdAt: RELEASE_V2_NOW
-});
 
 function canonicalFixtureJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -74,9 +61,6 @@ function canonicalFixtureJson(value: unknown): string {
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalFixtureJson(object[key])}`).join(",")}}`;
 }
-
-export const RELEASE_V2_FREEZE_SHA256 = createHash("sha256")
-  .update(`${canonicalFixtureJson(RELEASE_V2_FREEZE_IDENTITY)}\n`, "utf8").digest("hex");
 
 export function buildOperationalAttestationV2Fixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -451,7 +435,7 @@ export function buildTask0BReleaseFreezeEvidence(input: {
       }
     },
     artifactRoot: {
-      rootFingerprintSha256: "6".repeat(64),
+      rootFingerprintSha256: "1".repeat(64),
       outsideRepository: true,
       noSymlink: true,
       ownerIdentityFingerprintSha256: "e".repeat(64),
@@ -494,6 +478,38 @@ export function buildTask0BReleaseFreezeEvidence(input: {
     }
   };
 }
+
+const RELEASE_V2_TASK0B_EVIDENCE = buildTask0BReleaseFreezeEvidence({ observedAt: RELEASE_V2_NOW });
+const RELEASE_V2_TASK0B_SHA256 = createHash("sha256")
+  .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE)}\n`, "utf8").digest("hex");
+const RELEASE_V2_GENERATION_SHA256 = createHash("sha256").update(canonicalFixtureJson([
+  "release-freeze-generation-v2",
+  RELEASE_V2_TASK0B_EVIDENCE.candidateSha,
+  RELEASE_V2_TASK0B_EVIDENCE.artifactRoot.rootFingerprintSha256,
+  RELEASE_V2_TASK0B_SHA256
+])).digest("hex");
+
+export const RELEASE_V2_FREEZE_IDENTITY = Object.freeze({
+  version: "release-freeze-identity-v2" as const,
+  releaseGenerationId: `release-generation-${RELEASE_V2_GENERATION_SHA256.slice(0, 32)}`,
+  candidateSha: RELEASE_V2_TASK0B_EVIDENCE.candidateSha,
+  planBaseSha: PLAN_BASE_SHA,
+  artifactRootFingerprintSha256: RELEASE_V2_TASK0B_EVIDENCE.artifactRoot.rootFingerprintSha256,
+  artifactRootTrustBoundaryEvidenceSha256: createHash("sha256")
+    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.artifactRoot)}\n`, "utf8").digest("hex"),
+  productionDatabaseIdentityFingerprintSha256:
+    RELEASE_V2_TASK0B_EVIDENCE.productionDatabase.approvedIdentityFingerprintSha256,
+  postgresToolIdentitySha256: createHash("sha256")
+    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.postgresTools)}\n`, "utf8").digest("hex"),
+  previousRuntimeDiscoverySha256: createHash("sha256")
+    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.previousRuntimeIdentity)}\n`, "utf8").digest("hex"),
+  rollbackWorktreeIdentitySha256: createHash("sha256")
+    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.rollbackWorktree)}\n`, "utf8").digest("hex"),
+  createdAt: RELEASE_V2_TASK0B_EVIDENCE.freezeCutoff
+});
+
+export const RELEASE_V2_FREEZE_SHA256 = createHash("sha256")
+  .update(`${canonicalFixtureJson(RELEASE_V2_FREEZE_IDENTITY)}\n`, "utf8").digest("hex");
 
 export const REQUIRED_SUITE_GROUPS = {
   plan1: [

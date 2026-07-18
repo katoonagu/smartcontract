@@ -19,7 +19,12 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import { canonicalReleaseJsonV2, releaseSha256V2 } from "./remediationReleaseManifestV2";
+import {
+  canonicalReleaseJsonV2,
+  releaseSha256V2,
+  validateReleaseRootWriterLeaseV2,
+  type ReleaseRootWriterLeaseV2
+} from "./remediationReleaseManifestV2";
 
 export const ROOT_WRITER_LEASE_FILE = "manifest-transition-root.lease.json";
 
@@ -43,6 +48,28 @@ export type ArtifactRootSafetyOptionsV2 = {
     inspector?: WindowsAclInspectorV2;
   };
 };
+
+let cachedWindowsWriterPrincipalsV2: readonly string[] | undefined;
+
+function defaultWindowsWriterPrincipalsV2(): readonly string[] {
+  if (cachedWindowsWriterPrincipalsV2) return cachedWindowsWriterPrincipalsV2;
+  const result = spawnSync("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
+  ], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+  const currentSid = result.stdout?.trim();
+  if (result.error || result.status !== 0 || !currentSid || !/^S-1-[0-9-]+$/u.test(currentSid)) {
+    throw new Error("artifact_root_current_principal_unverifiable");
+  }
+  cachedWindowsWriterPrincipalsV2 = Object.freeze([
+    currentSid,
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "SY",
+    "BA"
+  ]);
+  return cachedWindowsWriterPrincipalsV2;
+}
 
 function sameIdentity(left: FileIdentityV2, right: FileIdentityV2): boolean {
   return left.dev === right.dev && left.ino === right.ino;
@@ -154,13 +181,22 @@ function assertSafeArtifactRootPathWithoutAcl(root: string): string {
 export function assertSafeArtifactRootPath(root: string, options: ArtifactRootSafetyOptionsV2 = {}): string {
   const canonical = assertSafeArtifactRootPathWithoutAcl(root);
   if (process.platform === "win32" && options.windowsAcl) {
+    const windowsAcl = options.windowsAcl;
     assertWindowsArtifactRootAclV2(
       canonical,
-      options.windowsAcl.allowlistedPrincipals,
-      options.windowsAcl.inspector ?? inspectWindowsArtifactRootAclV2
+      windowsAcl.allowlistedPrincipals,
+      windowsAcl.inspector ?? inspectWindowsArtifactRootAclV2
     );
   }
   return canonical;
+}
+
+export function assertTrustedArtifactRootPathV2(root: string): string {
+  return process.platform === "win32"
+    ? assertSafeArtifactRootPath(root, {
+      windowsAcl: { allowlistedPrincipals: defaultWindowsWriterPrincipalsV2() }
+    })
+    : assertSafeArtifactRootPath(root);
 }
 
 export function assertArtifactRootOutsideRepository(root: string, repositoryRoot: string): void {
@@ -201,6 +237,7 @@ export function safeArtifactRelativePath(
 ): string {
   const canonicalRoot = assertSafeArtifactRootPath(root);
   const rootIdentity = assertStableDirectory(canonicalRoot);
+  if (process.platform === "win32") assertTrustedWindowsArtifactPathAclV2(canonicalRoot);
   const segments = relativeSegments(relativePath);
   const allowedDirectories = new Set((options.allowedDirectories ?? []).map((value) => relativeSegments(value).join("/")));
   let current = canonicalRoot;
@@ -223,12 +260,16 @@ export function safeArtifactRelativePath(
     }
     assertExistingPathComponentsNotReparse(next);
     assertStableDirectory(next, canonicalRoot);
+    if (process.platform === "win32") assertTrustedWindowsArtifactPathAclV2(next);
     current = next;
   }
 
   const target = join(current, segments.at(-1)!);
   if (!isContained(canonicalRoot, resolve(target))) throw new Error("artifact_path_escape");
-  if (existsNoThrow(target)) assertStableRegularFile(target, canonicalRoot);
+  if (existsNoThrow(target)) {
+    assertStableRegularFile(target, canonicalRoot);
+    if (process.platform === "win32") assertTrustedWindowsArtifactPathAclV2(target);
+  }
   if (!sameIdentity(rootIdentity, assertStableDirectory(canonicalRoot))) throw new Error("artifact_root_identity_changed");
   return target;
 }
@@ -296,11 +337,19 @@ export function assertWindowsArtifactRootAclV2(
   inspector: WindowsAclInspectorV2 = inspectWindowsArtifactRootAclV2
 ): void {
   const canonical = assertSafeArtifactRootPathWithoutAcl(root);
+  assertWindowsArtifactPathAclV2(canonical, allowlistedPrincipals, inspector);
+}
+
+function assertWindowsArtifactPathAclV2(
+  canonicalPath: string,
+  allowlistedPrincipals: readonly string[],
+  inspector: WindowsAclInspectorV2
+): void {
   const allowlist = new Set(allowlistedPrincipals.map(normalizePrincipal).filter(Boolean));
   if (allowlist.size === 0) throw new Error("artifact_root_acl_allowlist_empty");
   let entries: readonly WindowsAclEntryV2[];
   try {
-    entries = inspector(canonical);
+    entries = inspector(canonicalPath);
   } catch (error) {
     throw new Error("artifact_root_acl_unverifiable", { cause: error });
   }
@@ -313,6 +362,14 @@ export function assertWindowsArtifactRootAclV2(
     trustedWriterFound = true;
   }
   if (!trustedWriterFound) throw new Error("artifact_root_acl_no_trusted_writer");
+}
+
+function assertTrustedWindowsArtifactPathAclV2(path: string): void {
+  assertWindowsArtifactPathAclV2(
+    resolve(path),
+    defaultWindowsWriterPrincipalsV2(),
+    inspectWindowsArtifactRootAclV2
+  );
 }
 
 function syncParentDirectory(path: string): void {
@@ -328,15 +385,63 @@ function syncParentDirectory(path: string): void {
   } finally { closeSync(directory); }
 }
 
-export function writeExclusiveDurable(path: string, bytes: Buffer): void {
+function assertTrustedPublishedRegularFileV2(path: string, expectedIdentity: FileIdentityV2): void {
+  const beforeAcl = assertStableRegularFile(path, dirname(path));
+  if (!sameIdentity(beforeAcl, expectedIdentity)) throw new Error("artifact_published_file_identity_changed");
+  if (process.platform === "win32") assertTrustedWindowsArtifactPathAclV2(path);
+  const afterAcl = assertStableRegularFile(path, dirname(path));
+  if (!sameIdentity(afterAcl, expectedIdentity)) throw new Error("artifact_published_file_identity_changed");
+}
+
+function removeExactNewFileV2(path: string, expectedIdentity: FileIdentityV2): void {
+  const current = assertStableRegularFile(path, dirname(path));
+  if (!sameIdentity(current, expectedIdentity)) throw new Error("artifact_new_file_cleanup_identity_changed");
+  unlinkSync(path);
+  syncParentDirectory(path);
+}
+
+export type ExclusiveDurablePublicationOpsV2 = {
+  assertTrustedPublishedFile(path: string, expectedIdentity: FileIdentityV2): void;
+};
+
+const DEFAULT_EXCLUSIVE_PUBLICATION_OPS: ExclusiveDurablePublicationOpsV2 = {
+  assertTrustedPublishedFile: assertTrustedPublishedRegularFileV2
+};
+
+export function writeExclusiveDurableWithOpsV2(
+  path: string,
+  bytes: Buffer,
+  operations: ExclusiveDurablePublicationOpsV2
+): void {
+  const parent = dirname(path);
+  assertStableDirectory(parent);
+  if (process.platform === "win32") assertTrustedWindowsArtifactPathAclV2(parent);
   const descriptor = openSync(path, "wx", 0o600);
+  const createdIdentity = identityOf(fstatSync(descriptor));
+  let writeFailure: unknown;
   try {
     writeFileSync(descriptor, bytes);
     fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
+  } catch (error) {
+    writeFailure = error;
   }
-  syncParentDirectory(path);
+  try { closeSync(descriptor); }
+  catch (error) { writeFailure ??= error; }
+  if (writeFailure !== undefined) {
+    removeExactNewFileV2(path, createdIdentity);
+    throw writeFailure;
+  }
+  try {
+    operations.assertTrustedPublishedFile(path, createdIdentity);
+    syncParentDirectory(path);
+  } catch (error) {
+    removeExactNewFileV2(path, createdIdentity);
+    throw error;
+  }
+}
+
+export function writeExclusiveDurable(path: string, bytes: Buffer): void {
+  writeExclusiveDurableWithOpsV2(path, bytes, DEFAULT_EXCLUSIVE_PUBLICATION_OPS);
 }
 
 export function replaceDurable(path: string, bytes: Buffer): void {
@@ -348,7 +453,8 @@ export function replaceDurable(path: string, bytes: Buffer): void {
     writeExclusiveDurable(temporary, bytes);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    assertStableRegularFile(temporary, dirname(path));
+    const staleTempIdentity = assertStableRegularFile(temporary, dirname(path));
+    assertTrustedPublishedRegularFileV2(temporary, staleTempIdentity);
     if (!readStableRegularFile(temporary, dirname(path)).equals(bytes)) throw new Error("durable_replace_stale_temp_conflict");
     const descriptor = openSync(temporary, "r+");
     try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
@@ -358,10 +464,17 @@ export function replaceDurable(path: string, bytes: Buffer): void {
     syncParentDirectory(temporary);
     return;
   }
+  const temporaryIdentity = assertStableRegularFile(temporary, dirname(path));
+  assertTrustedPublishedRegularFileV2(temporary, temporaryIdentity);
   renameSync(temporary, path);
   syncParentDirectory(path);
-  assertStableRegularFile(path, dirname(path));
-  if (!readStableRegularFile(path, dirname(path)).equals(bytes)) throw new Error("durable_replace_verification_failed");
+  try {
+    assertTrustedPublishedRegularFileV2(path, temporaryIdentity);
+    if (!readStableRegularFile(path, dirname(path)).equals(bytes)) throw new Error("durable_replace_verification_failed");
+  } catch (error) {
+    removeExactNewFileV2(path, temporaryIdentity);
+    throw error;
+  }
 }
 
 export type MoveNoOverwriteDurableOpsV2 = {
@@ -370,6 +483,7 @@ export type MoveNoOverwriteDurableOpsV2 = {
   link(source: string, destination: string): void;
   statIdentity(path: string): FileIdentityV2;
   syncParentDirectory(path: string): void;
+  assertTrustedPublishedFile(path: string, expectedIdentity: FileIdentityV2): void;
   unlink(path: string): void;
 };
 
@@ -379,6 +493,7 @@ const DEFAULT_MOVE_OPS: MoveNoOverwriteDurableOpsV2 = {
   link: linkSync,
   statIdentity(path) { return identityOf(statSync(path)); },
   syncParentDirectory,
+  assertTrustedPublishedFile: assertTrustedPublishedRegularFileV2,
   unlink: unlinkSync
 };
 
@@ -400,6 +515,15 @@ export function moveNoOverwriteDurableWithOpsV2(
   const sourceBeforeUnlink = operations.statIdentity(source);
   if (!sameIdentity(linkedAfterSync, original) || !sameIdentity(sourceBeforeUnlink, original)) {
     throw new Error("durable_move_identity_changed");
+  }
+  try {
+    operations.assertTrustedPublishedFile(destination, original);
+  } catch (error) {
+    const destinationBeforeCleanup = operations.statIdentity(destination);
+    if (!sameIdentity(destinationBeforeCleanup, original)) throw new Error("durable_move_cleanup_identity_changed", { cause: error });
+    operations.unlink(destination);
+    operations.syncParentDirectory(destination);
+    throw error;
   }
   operations.unlink(source);
   operations.syncParentDirectory(source);
@@ -445,26 +569,26 @@ export function acquireRootWriterLeaseV2(root: string, payload: Record<string, u
 
 export function resumeRootWriterLeaseV2(
   root: string,
-  expected: {
-    writerOperationKind: string;
-    writerOperationKeySha256: string;
-    ownerPid: number;
-    ownerProcessStartFingerprintSha256: string;
-  }
+  expected: ReleaseRootWriterLeaseV2
 ): RootWriterLeaseHandleV2 {
   const path = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
-  const bytes = readFileSync(path);
-  const payload = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-  if (payload.writerOperationKind !== expected.writerOperationKind
-      || payload.writerOperationKeySha256 !== expected.writerOperationKeySha256
-      || payload.ownerPid !== expected.ownerPid
-      || payload.ownerProcessStartFingerprintSha256 !== expected.ownerProcessStartFingerprintSha256) {
+  const bytes = readStableRegularFile(path, realpathSync(root));
+  let payload: ReleaseRootWriterLeaseV2;
+  let exactExpected: ReleaseRootWriterLeaseV2;
+  try {
+    payload = validateReleaseRootWriterLeaseV2(JSON.parse(bytes.toString("utf8")));
+    exactExpected = validateReleaseRootWriterLeaseV2(expected);
+  } catch (error) {
+    throw new Error("root_writer_lease_schema_invalid", { cause: error });
+  }
+  if (!bytes.equals(canonicalBytesV2(payload))) throw new Error("root_writer_lease_bytes_noncanonical");
+  if (!canonicalBytesV2(exactExpected).equals(bytes)) {
     throw new Error("root_writer_lease_not_owned");
   }
   const sha256 = releaseSha256V2(bytes);
   let released = false;
   return {
-    path, bytes, sha256, payload,
+    path, bytes, sha256, payload: payload as unknown as Record<string, unknown>,
     assertOwned() {
       if (released || releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
     },

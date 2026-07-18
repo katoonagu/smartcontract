@@ -1,5 +1,6 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +9,12 @@ const roots: string[] = [];
 
 function root(): string {
   const value = mkdtempSync(join(tmpdir(), "release-root-writer-unit-"));
+  if (process.platform === "win32") {
+    const sid = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf8" }).trim();
+    execFileSync("icacls.exe", [value, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`,
+      "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]);
+  }
   roots.push(value);
   return value;
 }
@@ -87,6 +94,122 @@ describe("release root trust boundary", () => {
     expect(() => api.assertWindowsArtifactRootAclV2(artifactRoot, ["SY", "BA", "S-1-5-80-123"], trustedWriters))
       .not.toThrow();
   });
+
+  it.runIf(process.platform === "win32")(
+    "rejects a foreign writer on an existing protected subtree or target file",
+    async () => {
+      const api = await loadApi();
+      const artifactRoot = root();
+      const protectedDirectory = join(artifactRoot, "operational-attestations");
+      const target = join(protectedDirectory, "evidence.json");
+      mkdirSync(protectedDirectory);
+      writeFileSync(target, "{}\n", "utf8");
+
+      execFileSync("icacls.exe", [protectedDirectory, "/grant", "*S-1-1-0:(M)"]);
+      expect(() => api.safeArtifactRelativePath(artifactRoot, "operational-attestations/new.json"))
+        .toThrow(/acl|principal|write/i);
+
+      execFileSync("icacls.exe", [protectedDirectory, "/remove", "*S-1-1-0"]);
+      execFileSync("icacls.exe", [target, "/grant", "*S-1-1-0:(M)"]);
+      expect(() => api.safeArtifactRelativePath(artifactRoot, "operational-attestations/evidence.json"))
+        .toThrow(/acl|principal|write/i);
+    }
+  );
+});
+
+describe("release root writer lease resume", () => {
+  const frozenLease = () => ({
+    version: "frozen-root-writer-lease-v2" as const,
+    scope: "artifact_root" as const,
+    relativePath: "manifest-transition-root.lease.json" as const,
+    writerOperationKind: "manifest_transition" as const,
+    writerOperationKeySha256: "1".repeat(64),
+    transitionKeySha256: "2".repeat(64),
+    protectedRootFingerprintSha256: "3".repeat(64),
+    candidateSha: "4".repeat(40),
+    releaseGenerationId: "generation-1",
+    releaseFreezeIdentitySha256: "5".repeat(64),
+    leaseEpoch: 1,
+    ownerPid: 1234,
+    ownerProcessStartFingerprintSha256: "6".repeat(64),
+    acquiredAt: "2026-07-18T10:00:00.000Z",
+    heartbeatAt: "2026-07-18T10:00:00.000Z",
+    expiresAt: "2026-07-18T10:01:00.000Z"
+  });
+
+  const bootstrapLease = () => ({
+    version: "bootstrap-root-writer-lease-v2" as const,
+    scope: "artifact_root" as const,
+    relativePath: "manifest-transition-root.lease.json" as const,
+    writerOperationKind: "release_freeze_materialization" as const,
+    writerOperationKeySha256: "1".repeat(64),
+    protectedRootFingerprintSha256: "3".repeat(64),
+    task0BPreflightEvidenceSha256: "7".repeat(64),
+    candidateSha: "4".repeat(40),
+    runtimeIdentitySha256: "8".repeat(64),
+    releaseGenerationId: null,
+    releaseFreezeIdentitySha256: null,
+    leaseEpoch: 1,
+    ownerPid: 1234,
+    ownerProcessStartFingerprintSha256: "6".repeat(64),
+    acquiredAt: "2026-07-18T10:00:00.000Z",
+    heartbeatAt: "2026-07-18T10:00:00.000Z",
+    expiresAt: "2026-07-18T10:01:00.000Z"
+  });
+
+  it("rejects non-canonical or non-exact bootstrap and frozen lease bytes", async () => {
+    const api = await loadApi();
+    for (const lease of [bootstrapLease(), frozenLease()]) {
+      const artifactRoot = root();
+      writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), JSON.stringify(lease, null, 2), "utf8");
+      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, lease))
+        .toThrow(/canonical|schema|lease/i);
+    }
+
+    const artifactRoot = root();
+    const lease = { ...frozenLease(), unexpected: true };
+    writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), api.canonicalBytesV2(lease));
+    expect(() => api.resumeRootWriterLeaseV2(artifactRoot, lease))
+      .toThrow(/schema|key|lease/i);
+  });
+
+  it("binds resume to the full operation root freeze generation epoch deadline and transition", async () => {
+    const api = await loadApi();
+    const changes = [
+      { writerOperationKeySha256: "9".repeat(64) },
+      { protectedRootFingerprintSha256: "a".repeat(64) },
+      { candidateSha: "b".repeat(40) },
+      { releaseGenerationId: "generation-2" },
+      { releaseFreezeIdentitySha256: "c".repeat(64) },
+      { leaseEpoch: 2 },
+      { acquiredAt: "2026-07-18T09:59:00.000Z" },
+      { heartbeatAt: "2026-07-18T10:00:30.000Z" },
+      { expiresAt: "2026-07-18T10:02:00.000Z" },
+      { transitionKeySha256: "d".repeat(64) }
+    ];
+    for (const change of changes) {
+      const artifactRoot = root();
+      const lease = frozenLease();
+      writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), api.canonicalBytesV2(lease));
+      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, { ...lease, ...change }))
+        .toThrow(/not_owned|binding|lease/i);
+    }
+
+    for (const change of [
+      { task0BPreflightEvidenceSha256: "a".repeat(64) },
+      { runtimeIdentitySha256: "b".repeat(64) },
+      { protectedRootFingerprintSha256: "c".repeat(64) },
+      { candidateSha: "d".repeat(40) },
+      { leaseEpoch: 2 },
+      { expiresAt: "2026-07-18T10:02:00.000Z" }
+    ]) {
+      const artifactRoot = root();
+      const lease = bootstrapLease();
+      writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), api.canonicalBytesV2(lease));
+      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, { ...lease, ...change }))
+        .toThrow(/not_owned|binding|lease/i);
+    }
+  });
 });
 
 describe("release root durable file operations", () => {
@@ -101,15 +224,56 @@ describe("release root durable file operations", () => {
       link: () => { events.push("link"); },
       statIdentity: () => identity,
       syncParentDirectory: (path: string) => { events.push(`sync:${path}`); },
+      assertTrustedPublishedFile: (path: string) => { events.push(`trust:${path}`); },
       unlink: (path: string) => { events.push(`unlink:${path}`); }
     });
 
     expect(events).toEqual([
       "link",
       "sync:destination",
+      "trust:destination",
       "unlink:source",
       "sync:source"
     ]);
+  });
+
+  it("keeps the source and removes only the exact linked destination when final trust validation fails", async () => {
+    const api = await loadApi();
+    const identity = { dev: 1, ino: 2 };
+    let sourcePresent = true;
+    let destinationPresent = false;
+
+    expect(() => api.moveNoOverwriteDurableWithOpsV2("source", "destination", {
+      destinationExists: () => destinationPresent,
+      assertStableRegularFile: () => identity,
+      link: () => { destinationPresent = true; },
+      statIdentity: () => identity,
+      syncParentDirectory: () => undefined,
+      assertTrustedPublishedFile: () => { throw new Error("artifact_root_acl_untrusted_write_principal"); },
+      unlink: (path: string) => {
+        if (path === "source") sourcePresent = false;
+        if (path === "destination") destinationPresent = false;
+      }
+    })).toThrow(/acl|principal|write/i);
+    expect(sourcePresent).toBe(true);
+    expect(destinationPresent).toBe(false);
+  });
+
+  it("removes root-level and nested exclusive targets when their post-create DACL check fails", async () => {
+    const api = await loadApi();
+    for (const nested of [false, true]) {
+      const artifactRoot = root();
+      const parent = nested ? join(artifactRoot, "protected") : artifactRoot;
+      if (nested) mkdirSync(parent);
+      const target = join(parent, "new-evidence.json");
+
+      expect(() => api.writeExclusiveDurableWithOpsV2(target, Buffer.from("{}\n", "utf8"), {
+        assertTrustedPublishedFile: () => {
+          throw new Error("artifact_root_acl_untrusted_write_principal");
+        }
+      })).toThrow(/acl|principal|writer|trust/i);
+      expect(existsSync(target)).toBe(false);
+    }
   });
 
   it("reuses an identical deterministic stale replace temp but rejects conflicting bytes", async () => {

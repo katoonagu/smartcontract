@@ -72,6 +72,24 @@ export const OPERATIONAL_ATTESTATION_POLICY_V2 = Object.freeze({
   }
 } as const);
 
+export const MANIFEST_LEASE_TAKEOVER_TEMPLATE_SHA256_V2 = createHash("sha256")
+  .update("release:manifest:takeover <expected-old-lease-sha256> <protected-artifact-root>", "utf8")
+  .digest("hex");
+
+export function rootWriterOwnerProcessIdentitySha256V2(
+  ownerPid: number,
+  ownerProcessStartFingerprintSha256: string
+): string {
+  if (!Number.isSafeInteger(ownerPid) || ownerPid < 1
+      || !/^[0-9a-f]{64}$/u.test(ownerProcessStartFingerprintSha256)) {
+    throw new Error("root_writer_owner_process_identity_invalid");
+  }
+  return createHash("sha256").update(canonicalReleaseJsonV2({
+    ownerPid,
+    ownerProcessStartFingerprintSha256
+  }), "utf8").digest("hex");
+}
+
 export function operationalAttestationTemplateSha256V2(
   transitionId: keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2
 ): string {
@@ -419,6 +437,82 @@ export type FrozenRootWriterLeaseV2 = {
 };
 
 export type ReleaseRootWriterLeaseV2 = BootstrapRootWriterLeaseV2 | FrozenRootWriterLeaseV2;
+
+export type PreparedFrozenRootWriterLeaseTakeoverV2 = {
+  version: "prepared-frozen-root-writer-lease-takeover-v2";
+  commandId: "manifest_lease_takeover";
+  redactedTemplateSha256: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  releaseFreezeIdentitySha256: string;
+  artifactRootFingerprintSha256: string;
+  writerOperationKind: ReleaseRootWriterOperationKindV2;
+  writerOperationKeySha256: string;
+  transitionKeySha256: string | null;
+  oldLeaseSha256: string;
+  oldLeaseEpoch: number;
+  oldOwnerProcessIdentitySha256: string;
+  canonicalNewLease: FrozenRootWriterLeaseV2;
+  canonicalNewLeaseUtf8Base64: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  preparedAt: string;
+};
+
+export type PreparedBootstrapRootWriterLeaseTakeoverV2 = {
+  version: "prepared-bootstrap-root-writer-lease-takeover-v2";
+  commandId: "manifest_lease_takeover";
+  redactedTemplateSha256: string;
+  protectedRootFingerprintSha256: string;
+  task0BPreflightEvidenceSha256: string;
+  candidateSha: string;
+  runtimeIdentitySha256: string;
+  preparedFreezeMaterializationSha256: string | null;
+  oldLeaseSha256: string;
+  oldLeaseEpoch: number;
+  oldOwnerProcessIdentitySha256: string;
+  canonicalNewLease: BootstrapRootWriterLeaseV2;
+  canonicalNewLeaseUtf8Base64: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  preparedAt: string;
+};
+
+export type FrozenRootWriterLeaseTakeoverReceiptV2 = {
+  version: "frozen-root-writer-lease-takeover-receipt-v2";
+  commandId: "manifest_lease_takeover";
+  redactedTemplateSha256: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  releaseFreezeIdentitySha256: string;
+  artifactRootFingerprintSha256: string;
+  writerOperationKind: ReleaseRootWriterOperationKindV2;
+  writerOperationKeySha256: string;
+  transitionKeySha256: string | null;
+  preparedTakeoverSha256: string;
+  oldLeaseSha256: string;
+  tombstoneRelativePath: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  committedAt: string;
+};
+
+export type BootstrapRootWriterLeaseTakeoverReceiptV2 = {
+  version: "bootstrap-root-writer-lease-takeover-receipt-v2";
+  commandId: "manifest_lease_takeover";
+  redactedTemplateSha256: string;
+  protectedRootFingerprintSha256: string;
+  task0BPreflightEvidenceSha256: string;
+  candidateSha: string;
+  runtimeIdentitySha256: string;
+  preparedFreezeMaterializationSha256: string | null;
+  preparedTakeoverSha256: string;
+  oldLeaseSha256: string;
+  tombstoneRelativePath: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  committedAt: string;
+};
 
 export type ReleaseRootTerminalAbandonedV2 = {
   version: "release-root-terminal-abandoned-v2";
@@ -1203,6 +1297,224 @@ export function validateReleaseRootWriterLeaseV2(value: unknown): ReleaseRootWri
     throw new Error("bootstrap_root_writer_lease_absolute_ttl_invalid");
   }
   return lease as ReleaseRootWriterLeaseV2;
+}
+
+function validateTakeoverLeaseTimesV2(
+  lease: ReleaseRootWriterLeaseV2,
+  preparedAtValue: unknown,
+  label: string
+): string {
+  const preparedAt = iso(preparedAtValue, `${label}_prepared_at`);
+  if (lease.acquiredAt !== preparedAt || lease.heartbeatAt !== preparedAt
+      || Date.parse(lease.expiresAt) - Date.parse(preparedAt) !== 60_000) {
+    throw new Error(`${label}_lease_time_binding_invalid`);
+  }
+  return preparedAt;
+}
+
+function validateManifestLeaseTakeoverPolicyV2(value: Record<string, unknown>, label: string): void {
+  if (value.commandId !== "manifest_lease_takeover"
+      || value.redactedTemplateSha256 !== MANIFEST_LEASE_TAKEOVER_TEMPLATE_SHA256_V2) {
+    throw new Error(`${label}_command_or_template_invalid`);
+  }
+}
+
+export function validatePreparedFrozenRootWriterLeaseTakeoverV2(
+  value: unknown
+): PreparedFrozenRootWriterLeaseTakeoverV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "prepared_frozen_root_writer_lease_takeover");
+  exactKeys(prepared, [
+    "version", "commandId", "redactedTemplateSha256", "candidateSha",
+    "releaseGenerationId", "releaseFreezeIdentitySha256", "artifactRootFingerprintSha256",
+    "writerOperationKind", "writerOperationKeySha256", "transitionKeySha256",
+    "oldLeaseSha256", "oldLeaseEpoch", "oldOwnerProcessIdentitySha256",
+    "canonicalNewLease",
+    "canonicalNewLeaseUtf8Base64", "newLeaseSha256", "newLeaseEpoch", "preparedAt"
+  ], "prepared_frozen_root_writer_lease_takeover");
+  if (prepared.version !== "prepared-frozen-root-writer-lease-takeover-v2"
+      || typeof prepared.releaseGenerationId !== "string" || !prepared.releaseGenerationId) {
+    throw new Error("prepared_frozen_root_writer_lease_takeover_invalid");
+  }
+  validateManifestLeaseTakeoverPolicyV2(prepared, "prepared_frozen_root_writer_lease_takeover");
+  oneOf(prepared.writerOperationKind, [
+    "manifest_transition", "operational_authority_issue", "operational_authority_terminalize"
+  ] as const, "prepared_frozen_takeover_operation_kind");
+  for (const key of [
+    "oldLeaseSha256", "oldOwnerProcessIdentitySha256", "writerOperationKeySha256",
+    "artifactRootFingerprintSha256", "releaseFreezeIdentitySha256", "newLeaseSha256"
+  ]) sha(prepared[key], SHA256, key);
+  if (prepared.transitionKeySha256 !== null) sha(prepared.transitionKeySha256, SHA256, "transition_key_sha");
+  sha(prepared.candidateSha, SHA40, "prepared_frozen_takeover_candidate_sha");
+  positiveInteger(prepared.oldLeaseEpoch, "prepared_frozen_takeover_old_epoch");
+  positiveInteger(prepared.newLeaseEpoch, "prepared_frozen_takeover_new_epoch");
+  const lease = validateReleaseRootWriterLeaseV2(prepared.canonicalNewLease);
+  if (lease.version !== "frozen-root-writer-lease-v2") {
+    throw new Error("prepared_frozen_takeover_new_lease_invalid");
+  }
+  canonicalEmbeddedBytesV2(lease, prepared.canonicalNewLeaseUtf8Base64,
+    prepared.newLeaseSha256, "prepared_frozen_takeover_new_lease");
+  validateTakeoverLeaseTimesV2(lease, prepared.preparedAt, "prepared_frozen_takeover");
+  if (prepared.newLeaseEpoch !== Number(prepared.oldLeaseEpoch) + 1
+      || lease.leaseEpoch !== prepared.newLeaseEpoch
+      || lease.writerOperationKind !== prepared.writerOperationKind
+      || lease.writerOperationKeySha256 !== prepared.writerOperationKeySha256
+      || lease.transitionKeySha256 !== prepared.transitionKeySha256
+      || lease.protectedRootFingerprintSha256 !== prepared.artifactRootFingerprintSha256
+      || lease.candidateSha !== prepared.candidateSha
+      || lease.releaseGenerationId !== prepared.releaseGenerationId
+      || lease.releaseFreezeIdentitySha256 !== prepared.releaseFreezeIdentitySha256
+      || (prepared.writerOperationKind === "manifest_transition")
+        !== (prepared.transitionKeySha256 !== null)) {
+    throw new Error("prepared_frozen_root_writer_lease_takeover_binding_invalid");
+  }
+  return { ...prepared, canonicalNewLease: lease } as PreparedFrozenRootWriterLeaseTakeoverV2;
+}
+
+export function validatePreparedBootstrapRootWriterLeaseTakeoverV2(
+  value: unknown
+): PreparedBootstrapRootWriterLeaseTakeoverV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "prepared_bootstrap_root_writer_lease_takeover");
+  exactKeys(prepared, [
+    "version", "commandId", "redactedTemplateSha256", "protectedRootFingerprintSha256",
+    "task0BPreflightEvidenceSha256", "candidateSha", "runtimeIdentitySha256",
+    "preparedFreezeMaterializationSha256", "oldLeaseSha256", "oldLeaseEpoch",
+    "oldOwnerProcessIdentitySha256", "canonicalNewLease",
+    "canonicalNewLeaseUtf8Base64", "newLeaseSha256", "newLeaseEpoch", "preparedAt"
+  ], "prepared_bootstrap_root_writer_lease_takeover");
+  if (prepared.version !== "prepared-bootstrap-root-writer-lease-takeover-v2") {
+    throw new Error("prepared_bootstrap_root_writer_lease_takeover_invalid");
+  }
+  validateManifestLeaseTakeoverPolicyV2(prepared, "prepared_bootstrap_root_writer_lease_takeover");
+  for (const key of [
+    "oldLeaseSha256", "oldOwnerProcessIdentitySha256",
+    "protectedRootFingerprintSha256", "task0BPreflightEvidenceSha256",
+    "runtimeIdentitySha256", "newLeaseSha256"
+  ]) sha(prepared[key], SHA256, key);
+  if (prepared.preparedFreezeMaterializationSha256 !== null) {
+    sha(prepared.preparedFreezeMaterializationSha256, SHA256, "prepared_freeze_materialization_sha");
+  }
+  sha(prepared.candidateSha, SHA40, "prepared_bootstrap_takeover_candidate_sha");
+  positiveInteger(prepared.oldLeaseEpoch, "prepared_bootstrap_takeover_old_epoch");
+  positiveInteger(prepared.newLeaseEpoch, "prepared_bootstrap_takeover_new_epoch");
+  const lease = validateReleaseRootWriterLeaseV2(prepared.canonicalNewLease);
+  if (lease.version !== "bootstrap-root-writer-lease-v2") {
+    throw new Error("prepared_bootstrap_takeover_new_lease_invalid");
+  }
+  canonicalEmbeddedBytesV2(lease, prepared.canonicalNewLeaseUtf8Base64,
+    prepared.newLeaseSha256, "prepared_bootstrap_takeover_new_lease");
+  validateTakeoverLeaseTimesV2(lease, prepared.preparedAt, "prepared_bootstrap_takeover");
+  if (prepared.newLeaseEpoch !== Number(prepared.oldLeaseEpoch) + 1
+      || lease.leaseEpoch !== prepared.newLeaseEpoch
+      || lease.protectedRootFingerprintSha256 !== prepared.protectedRootFingerprintSha256
+      || lease.task0BPreflightEvidenceSha256 !== prepared.task0BPreflightEvidenceSha256
+      || lease.candidateSha !== prepared.candidateSha
+      || lease.runtimeIdentitySha256 !== prepared.runtimeIdentitySha256) {
+    throw new Error("prepared_bootstrap_root_writer_lease_takeover_binding_invalid");
+  }
+  return { ...prepared, canonicalNewLease: lease } as PreparedBootstrapRootWriterLeaseTakeoverV2;
+}
+
+export function validateFrozenRootWriterLeaseTakeoverReceiptV2(
+  value: unknown,
+  preparedInput?: PreparedFrozenRootWriterLeaseTakeoverV2
+): FrozenRootWriterLeaseTakeoverReceiptV2 {
+  assertNoSecrets(value);
+  const receipt = record(value, "frozen_root_writer_lease_takeover_receipt");
+  exactKeys(receipt, [
+    "version", "commandId", "redactedTemplateSha256", "candidateSha",
+    "releaseGenerationId", "releaseFreezeIdentitySha256", "artifactRootFingerprintSha256",
+    "writerOperationKind", "writerOperationKeySha256", "transitionKeySha256",
+    "preparedTakeoverSha256", "oldLeaseSha256", "tombstoneRelativePath",
+    "newLeaseSha256", "newLeaseEpoch", "committedAt"
+  ], "frozen_root_writer_lease_takeover_receipt");
+  if (receipt.version !== "frozen-root-writer-lease-takeover-receipt-v2"
+      || typeof receipt.releaseGenerationId !== "string" || !receipt.releaseGenerationId) {
+    throw new Error("frozen_root_writer_lease_takeover_receipt_invalid");
+  }
+  validateManifestLeaseTakeoverPolicyV2(receipt, "frozen_root_writer_lease_takeover_receipt");
+  oneOf(receipt.writerOperationKind, [
+    "manifest_transition", "operational_authority_issue", "operational_authority_terminalize"
+  ] as const, "frozen_takeover_receipt_operation_kind");
+  for (const key of [
+    "oldLeaseSha256", "writerOperationKeySha256", "artifactRootFingerprintSha256",
+    "releaseFreezeIdentitySha256", "preparedTakeoverSha256", "newLeaseSha256"
+  ]) sha(receipt[key], SHA256, key);
+  if (receipt.transitionKeySha256 !== null) sha(receipt.transitionKeySha256, SHA256, "transition_key_sha");
+  sha(receipt.candidateSha, SHA40, "frozen_takeover_receipt_candidate_sha");
+  positiveInteger(receipt.newLeaseEpoch, "frozen_takeover_receipt_new_epoch");
+  const expectedTombstone = `manifest-transition-root.lease-tombstone-${receipt.oldLeaseSha256}.json`;
+  if (receipt.tombstoneRelativePath !== expectedTombstone
+      || (receipt.writerOperationKind === "manifest_transition")
+        !== (receipt.transitionKeySha256 !== null)) {
+    throw new Error("frozen_root_writer_lease_takeover_receipt_binding_invalid");
+  }
+  iso(receipt.committedAt, "frozen_takeover_receipt_committed_at");
+  if (preparedInput) {
+    const prepared = validatePreparedFrozenRootWriterLeaseTakeoverV2(preparedInput);
+    const expected = [
+      "commandId", "redactedTemplateSha256", "candidateSha", "releaseGenerationId",
+      "releaseFreezeIdentitySha256", "artifactRootFingerprintSha256", "writerOperationKind",
+      "writerOperationKeySha256", "transitionKeySha256", "oldLeaseSha256",
+      "newLeaseSha256", "newLeaseEpoch"
+    ] as const;
+    if (expected.some((key) => receipt[key] !== prepared[key])
+        || receipt.committedAt !== prepared.preparedAt
+        || receipt.preparedTakeoverSha256 !== releaseSha256V2(
+          Buffer.from(`${canonicalReleaseJsonV2(prepared)}\n`, "utf8"))) {
+      throw new Error("frozen_root_writer_lease_takeover_receipt_prepared_binding_invalid");
+    }
+  }
+  return receipt as FrozenRootWriterLeaseTakeoverReceiptV2;
+}
+
+export function validateBootstrapRootWriterLeaseTakeoverReceiptV2(
+  value: unknown,
+  preparedInput?: PreparedBootstrapRootWriterLeaseTakeoverV2
+): BootstrapRootWriterLeaseTakeoverReceiptV2 {
+  assertNoSecrets(value);
+  const receipt = record(value, "bootstrap_root_writer_lease_takeover_receipt");
+  exactKeys(receipt, [
+    "version", "commandId", "redactedTemplateSha256", "protectedRootFingerprintSha256",
+    "task0BPreflightEvidenceSha256", "candidateSha", "runtimeIdentitySha256",
+    "preparedFreezeMaterializationSha256", "preparedTakeoverSha256",
+    "oldLeaseSha256", "tombstoneRelativePath", "newLeaseSha256", "newLeaseEpoch", "committedAt"
+  ], "bootstrap_root_writer_lease_takeover_receipt");
+  if (receipt.version !== "bootstrap-root-writer-lease-takeover-receipt-v2") {
+    throw new Error("bootstrap_root_writer_lease_takeover_receipt_invalid");
+  }
+  validateManifestLeaseTakeoverPolicyV2(receipt, "bootstrap_root_writer_lease_takeover_receipt");
+  for (const key of [
+    "oldLeaseSha256",
+    "protectedRootFingerprintSha256", "task0BPreflightEvidenceSha256",
+    "runtimeIdentitySha256", "preparedTakeoverSha256", "newLeaseSha256"
+  ]) sha(receipt[key], SHA256, key);
+  if (receipt.preparedFreezeMaterializationSha256 !== null) {
+    sha(receipt.preparedFreezeMaterializationSha256, SHA256, "receipt_prepared_freeze_materialization_sha");
+  }
+  sha(receipt.candidateSha, SHA40, "bootstrap_takeover_receipt_candidate_sha");
+  positiveInteger(receipt.newLeaseEpoch, "bootstrap_takeover_receipt_new_epoch");
+  const expectedTombstone = `manifest-transition-root.lease-tombstone-${receipt.oldLeaseSha256}.json`;
+  if (receipt.tombstoneRelativePath !== expectedTombstone) {
+    throw new Error("bootstrap_root_writer_lease_takeover_receipt_binding_invalid");
+  }
+  iso(receipt.committedAt, "bootstrap_takeover_receipt_committed_at");
+  if (preparedInput) {
+    const prepared = validatePreparedBootstrapRootWriterLeaseTakeoverV2(preparedInput);
+    const expected = [
+      "commandId", "redactedTemplateSha256", "protectedRootFingerprintSha256",
+      "task0BPreflightEvidenceSha256", "candidateSha", "runtimeIdentitySha256",
+      "preparedFreezeMaterializationSha256", "oldLeaseSha256", "newLeaseSha256", "newLeaseEpoch"
+    ] as const;
+    if (expected.some((key) => receipt[key] !== prepared[key])
+        || receipt.committedAt !== prepared.preparedAt
+        || receipt.preparedTakeoverSha256 !== releaseSha256V2(
+          Buffer.from(`${canonicalReleaseJsonV2(prepared)}\n`, "utf8"))) {
+      throw new Error("bootstrap_root_writer_lease_takeover_receipt_prepared_binding_invalid");
+    }
+  }
+  return receipt as BootstrapRootWriterLeaseTakeoverReceiptV2;
 }
 
 export function validateManifestTransitionClaimV2(value: unknown): ManifestTransitionClaimV2 {

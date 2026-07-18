@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAdvanceRemediationReleaseManifest } from "../../scripts/advanceRemediationReleaseManifest";
+import {
+  deriveReleaseFreezeIdentityV2,
+  materializeReleaseFreezeV2
+} from "../../src/release/releaseManifestStoreV2";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
+import type { Task0BReleaseFreezeEvidenceV1 } from "../../src/release/remediationReleaseManifest";
 import {
   releaseFreezeIdentitySha256V2,
   validateRemediationReleaseManifestV2
@@ -12,8 +17,8 @@ import {
 import {
   COMMAND_TEMPLATE_SHA256,
   GATE_COMMAND_IDS,
-  PLAN_BASE_SHA,
-  PRE_RELEASE_GATE_IDS
+  PRE_RELEASE_GATE_IDS,
+  buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
 
 const CREATED: string[] = [];
@@ -30,26 +35,41 @@ function makeRepositoryAndRoot() {
   const artifactRoot = join(sandbox, "artifacts");
   mkdirSync(repository, { mode: 0o700 });
   mkdirSync(artifactRoot, { mode: 0o700 });
+  if (process.platform === "win32") {
+    const sid = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf8" }).trim();
+    execFileSync("icacls.exe", [artifactRoot, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`,
+      "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]);
+  }
   git(repository, "init", "--quiet");
   writeFileSync(join(repository, "tracked.txt"), "candidate\n", "utf8");
   git(repository, "add", "tracked.txt");
   git(repository, "-c", "user.name=Plan 5 Test", "-c", "user.email=plan5@example.invalid", "commit", "--quiet", "-m", "candidate");
   const candidateSha = git(repository, "rev-parse", "HEAD").toLowerCase();
-  const freeze = {
-    version: "release-freeze-identity-v2",
-    releaseGenerationId: "release-generation-cli-test",
+  const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
     candidateSha,
-    planBaseSha: PLAN_BASE_SHA,
-    artifactRootFingerprintSha256: "1".repeat(64),
-    artifactRootTrustBoundaryEvidenceSha256: "2".repeat(64),
-    productionDatabaseIdentityFingerprintSha256: "3".repeat(64),
-    postgresToolIdentitySha256: "4".repeat(64),
-    previousRuntimeDiscoverySha256: "5".repeat(64),
-    rollbackWorktreeIdentitySha256: "6".repeat(64),
-    createdAt: EVALUATED_AT
-  };
-  writeFileSync(join(artifactRoot, "release-freeze-identity-v2.json"), canonicalBytesV2(freeze));
-  return { repository, artifactRoot, candidateSha, freeze };
+    observedAt: EVALUATED_AT
+  }) as Task0BReleaseFreezeEvidenceV1;
+  const freeze = deriveReleaseFreezeIdentityV2(task0BPreflightEvidence);
+  return { repository, artifactRoot, candidateSha, freeze, task0BPreflightEvidence };
+}
+
+async function materializeVerifiedFreeze(
+  input: ReturnType<typeof makeRepositoryAndRoot>
+): Promise<void> {
+  writeFileSync(
+    join(input.artifactRoot, "task0b-release-freeze.json"),
+    canonicalBytesV2(input.task0BPreflightEvidence),
+    { flag: "wx" }
+  );
+  await materializeReleaseFreezeV2({
+    artifactRoot: input.artifactRoot,
+    freezeIdentity: input.freeze,
+    task0BPreflightEvidence: input.task0BPreflightEvidence,
+    evaluatedAt: EVALUATED_AT,
+    owner: { pid: process.pid },
+    producerId: "release_freeze_materialize"
+  });
 }
 
 function initialGateOutputs(candidateSha: string) {
@@ -111,6 +131,7 @@ describe("release manifest advance CLI verified input", () => {
 
   it("rejects a fixed prepared input bound to a different candidate before manifest mutation", async () => {
     const setup = makeRepositoryAndRoot();
+    await materializeVerifiedFreeze(setup);
     writeVerifiedInput(setup.artifactRoot, "pre_manual", initialVerifiedInput(setup, "f".repeat(40)));
 
     await expect(runAdvanceRemediationReleaseManifest(
@@ -122,6 +143,7 @@ describe("release manifest advance CLI verified input", () => {
 
   it("loads the exact allowlisted prepared input and initializes the real manifest store", async () => {
     const setup = makeRepositoryAndRoot();
+    await materializeVerifiedFreeze(setup);
     writeVerifiedInput(setup.artifactRoot, "pre_manual", initialVerifiedInput(setup));
 
     const result = await runAdvanceRemediationReleaseManifest(
