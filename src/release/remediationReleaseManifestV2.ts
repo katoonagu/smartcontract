@@ -3388,8 +3388,13 @@ export function validateProductionCanaryEvidenceV2(value: unknown): ProductionCa
     "queryCapturesSha256", "logCapturesSha256", "orchestrationReceiptSha256"]) sha(input[key], SHA256, key);
   const started = iso(input.observationStartedAt, "canary_observation_started");
   const finished = iso(input.observationFinishedAt, "canary_observation_finished");
-  if (Date.parse(finished) <= Date.parse(started)) throw new Error("canary_observation_time_invalid");
-  positiveInteger(input.completedPollingCycles, "canary_polling_cycles");
+  const durationMs = Date.parse(finished) - Date.parse(started);
+  if (durationMs < 15 * 60_000 || durationMs > 30 * 60_000) {
+    throw new Error("canary_observation_time_invalid");
+  }
+  if (positiveInteger(input.completedPollingCycles, "canary_polling_cycles") < 2) {
+    throw new Error("canary_polling_cycles_invalid");
+  }
   validateTrueChecks(input.checks, ["schema", "version", "admin", "singleton", "reconciliation", "delivery",
     "navigation", "allowance", "legacy", "secrets", "queues", "honest_limits"], "canary_checks");
   return input as ProductionCanaryEvidenceV2;
