@@ -11,6 +11,11 @@ handoff. The controlled schema producer corrections in
 behavior. The release SHA is always the clean checked-out `HEAD` used to
 produce the evidence; do not substitute one of those ancestor SHAs.
 
+At candidate HEAD `359e83ca1534dc06481ba9bc724ee803744f55f9`, the package
+also exposes the controlled `release:production:backup` producer and its local
+acceptance tests pass. That is implementation evidence only: the producer has
+not been run against production and `G12_PRODUCTION_BACKUP` is still pending.
+
 ## Current production observation and external block
 
 Task 0A observed the previous runtime without changing it:
@@ -313,18 +318,44 @@ rollback and evidence boundaries are fixed; none has been executed now.
    one-shot authorities. Revalidate Task 0B, exact merge SHA, runtime label,
    production database fingerprint, Telegram identity, and the ready manifest
    immediately before each controlled mutation.
-2. Produce the custom-format (`pg_dump -Fc`) `production-backup.dump` in the
-   protected external root with the Task 0B-attested `pg_dump` provider. The
-   file must be regular, non-symlink, stable, and nonzero, with its actual byte
-   count and SHA-256. Produce
-   `production-backup-restore-list.txt` using the exact Task 0B-attested pinned
-   Docker `pg_restore --list` (`--network none`, `--pull never`); require a
-   nonzero list and entry count. Record the database identity and path
-   fingerprint in `production-backup-evidence.json`.
-3. Mark only `G12_PRODUCTION_BACKUP=passed`. At that point the manifest must
-   deliberately return to `overall=not_ready`: `G00`-`G12` passed and
-   `G13`-`G15` pending. This is the required mutation interlock, not a failure
-   or an invented pending-reason enum.
+2. Supply the production database URL only through the protected process
+   environment as `TASK0B_PRODUCTION_DATABASE_URL`; never put it in argv, the
+   authority, logs, or artifacts. Then run the controlled producer with the
+   protected root and authority filename only:
+
+   ```powershell
+   npm run release:production:backup -- <protected-artifact-root> <production-backup-authority-...json>
+   ```
+
+   The fresh authority is a single-use explicit GO valid for at most ten
+   minutes. It is bound byte-for-byte to Task 0B, the `ready_for_release`
+   manifest, exact clean candidate SHA, protected-root fingerprint, production
+   database identity, command ID, and template hash. The producer uses only the
+   Task 0B-attested immutable Docker image: pinned `pg_dump --format=custom`
+   receives the password through stdin, and pinned `pg_restore --list` runs
+   with `--network none`, `--pull never`, and a read-only artifact mount.
+
+   Before the exclusive claim, before the first dump, and immediately before
+   atomically linking final evidence, the producer revalidates the exact
+   authority, Task 0B, manifest, candidate, root, database identity, and active
+   operation ownership. A generation-bound consumption claim, exclusive
+   operation lease, dump progress receipt, and restore-list progress receipt
+   serialize retries and prove ownership. A new operation must claim and start
+   while the authority is fresh. A lease acquired while fresh may finish after
+   GO expiry only within its bounded one-hour child timeout. After expiry,
+   resume is allowed only from the exact owned dump progress receipt and never
+   invokes a second dump; a claim without that receipt fails closed.
+
+   Successful output consists of the stable custom-format
+   `production-backup.dump`, `production-backup-restore-list.txt`, and
+   `production-backup-evidence.json`, with actual sizes, hashes, restore-list
+   entry count, database identity, and path fingerprint. The producer does not
+   mutate `release-manifest.json`.
+3. Run the verifier/aggregator over the completed evidence; only it may mark
+   `G12_PRODUCTION_BACKUP=passed`. At that point the manifest must deliberately
+   return to `overall=not_ready`: `G00`-`G12` passed and `G13`-`G15` pending.
+   This is the required mutation interlock, not a failure or an invented
+   pending-reason enum.
 4. Issue a fresh production migration authority named
    `schema032-production-authority-<generation>.json`, valid for at most ten
    minutes and bound to that protected Task 0B, current `not_ready` manifest,

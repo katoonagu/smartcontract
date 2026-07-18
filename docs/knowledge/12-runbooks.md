@@ -13,6 +13,7 @@ code_refs:
   - tests/admin/adminServer.test.ts
   - scripts/verifyRemediationRelease.ts
   - scripts/captureTask0BPreflight.ts
+  - scripts/createProductionBackupEvidence.ts
   - scripts/manageTask0BRuntime.ts
   - scripts/runSchema032ReleaseSequence.ts
 supersedes:
@@ -135,6 +136,22 @@ manager, so operational preflight is externally blocked before Task 9. Do not
 adopt, stop, restart, migrate, or send Telegram from this command index. A
 separate user-approved adoption/restart or plan amendment plus fresh Task 0B is
 required before any guarded production step.
+
+The future guarded G12 producer exists at candidate HEAD
+`359e83ca1534dc06481ba9bc724ee803744f55f9` and its local acceptance tests
+pass, but it has not been run against production:
+
+```powershell
+npm run release:production:backup -- <protected-artifact-root> <production-backup-authority-...json>
+```
+
+`TASK0B_PRODUCTION_DATABASE_URL` is supplied only as a protected process
+environment secret outside argv and artifacts. The one-shot explicit-GO
+authority binds Task 0B, the ready manifest, candidate, protected root, and
+production database; the producer uses pinned Docker `pg_dump`/`pg_restore`
+and writes the dump, restore list, evidence, claim, lease, and progress
+receipts. It never edits the manifest. The verifier/aggregator marks `G12`.
+See the Plan 5 release README for TTL, resume, and revalidation rules.
 
 ## Verify The Unreleased Plan 3 Candidate
 
