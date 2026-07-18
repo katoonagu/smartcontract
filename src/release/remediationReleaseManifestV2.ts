@@ -355,7 +355,7 @@ export function reduceRemediationReleaseManifestV2(
   const target: RemediationReleaseManifestV2 = {
     ...current,
     revision: current.revision + 1,
-    sourceManifestSha256: releaseSha256V2(canonicalReleaseJsonV2(current)),
+    sourceManifestSha256: releaseSha256V2(Buffer.from(`${canonicalReleaseJsonV2(current)}\n`, "utf8")),
     transitionId: transition.transitionId,
     overall: transition.transitionId === "g15_canary_released"
       ? "released"
