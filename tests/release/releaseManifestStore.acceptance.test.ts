@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import {
   RELEASE_V2_FREEZE_IDENTITY,
+  RELEASE_V2_FREEZE_SHA256,
   buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
   buildReleaseManifestV2Fixture
@@ -48,10 +49,20 @@ function materializeInput(rootPath: string) {
 async function writeExpiredRootWriterLease(rootPath: string) {
   const lease = {
     version: "frozen-root-writer-lease-v2",
-    generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
-    ownerId: "dead",
-    pid: 2147483647,
-    epoch: 1,
+    scope: "artifact_root",
+    relativePath: "manifest-transition-root.lease.json",
+    writerOperationKind: "manifest_transition",
+    writerOperationKeySha256: "a".repeat(64),
+    transitionKeySha256: "b".repeat(64),
+    protectedRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    candidateSha: RELEASE_V2_FREEZE_IDENTITY.candidateSha,
+    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    leaseEpoch: 1,
+    ownerPid: 2147483647,
+    ownerProcessStartFingerprintSha256: "c".repeat(64),
+    acquiredAt: "2026-07-18T09:58:00.000Z",
+    heartbeatAt: "2026-07-18T09:59:00.000Z",
     expiresAt: "2026-07-18T10:00:00.000Z"
   };
   await writeFile(join(rootPath, "manifest-transition-root.lease.json"), `${JSON.stringify(lease)}\n`, { flag: "wx" });
@@ -224,12 +235,22 @@ it("[REQ-38][MANIFEST-V2-RECOVERY] validates claim root-lease prepared canonical
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER] takes over only one exact expired dead-owner lease in the same generation through prepared tombstone new lease and receipt", async () => {
-  const api = await loadStoreApi(); const r = await root(); const oldLease = await writeExpiredRootWriterLease(r); const result = await api.takeoverRootWriterLeaseV2({ artifactRoot: r, generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, oldLease, newOwner: { ownerId: "owner-b", pid: process.pid }, evaluatedAt: "2026-07-18T10:01:00.000Z" }); expect(result.newLease.epoch).toBe(2);
+  const api = await loadStoreApi(); const r = await root(); await writeExpiredRootWriterLease(r);
+  const expectedOldLeaseSha256 = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
+  const result = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: r, expectedOldLeaseSha256, evaluatedAt: "2026-07-18T10:01:00.000Z" });
+  expect(result.newLease.leaseEpoch).toBe(2);
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER-CRASH] replays exactly before and after tombstone new-lease and receipt boundaries without deleting or duplicating authority", async () => {
   const api = await loadStoreApi();
-  for (const faultAt of ["after_prepare", "after_tombstone", "after_new_lease", "after_receipt"]) { const r = await root(); const oldLease = await writeExpiredRootWriterLease(r); const input = { artifactRoot: r, generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, oldLease, newOwner: { ownerId: "owner-b", pid: process.pid }, evaluatedAt: "2026-07-18T10:01:00.000Z", faultAt }; await expect(api.takeoverRootWriterLeaseV2(input)).rejects.toThrow(); const result = await api.takeoverRootWriterLeaseV2({ ...input, faultAt: undefined }); expect(result.newLease.epoch).toBe(2); }
+  for (const faultAt of ["after_prepare", "after_tombstone", "after_new_lease", "after_receipt"]) {
+    const r = await root(); await writeExpiredRootWriterLease(r);
+    const expectedOldLeaseSha256 = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
+    const input = { artifactRoot: r, expectedOldLeaseSha256, evaluatedAt: "2026-07-18T10:01:00.000Z", faultAt };
+    await expect(api.takeoverRootWriterLeaseByHashV2(input)).rejects.toThrow();
+    const result = await api.takeoverRootWriterLeaseByHashV2({ ...input, faultAt: undefined });
+    expect(result.newLease.leaseEpoch).toBe(2);
+  }
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-FENCE] prevents the old owner from any effect or manifest replace after lease hash or epoch changes", async () => {
