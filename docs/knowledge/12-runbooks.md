@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-16
+last_verified: 2026-07-18
 owner_area: docs
 code_refs:
   - package.json
@@ -11,6 +11,10 @@ code_refs:
   - src/admin/adminServer.ts
   - tests/admin/adminConsole.test.ts
   - tests/admin/adminServer.test.ts
+  - scripts/verifyRemediationRelease.ts
+  - scripts/captureTask0BPreflight.ts
+  - scripts/manageTask0BRuntime.ts
+  - scripts/runSchema032ReleaseSequence.ts
 supersedes:
   - docs/project-walkthrough/16-qa-and-release-checks.md
 ---
@@ -91,6 +95,46 @@ For focused Admin tests:
 ```powershell
 npm test -- tests/admin/adminConsole.test.ts tests/admin/adminServer.test.ts
 ```
+
+## Plan 5 Candidate Release Commands
+
+Current human status is `release candidate ready/pending approval`; the machine
+manifest remains `not_ready`. The complete protected-artifact, database guard,
+manual Telegram, backup/migration, rollout, canary, and rollback procedure is in
+`docs/superpowers/verification/plan5-release/README.md`.
+
+`release:verify` is verifier-only: it does not execute the gate producers.
+Run focused suite groups, non-Vitest checks, trace capture, controlled schema
+producer, sanitized runtime/rollback rehearsal, terminal legacy snapshot, and
+manual evidence first. Then run the strict verifier:
+
+```powershell
+$env:RELEASE_SHA = (git rev-parse HEAD).Trim()
+node --import tsx scripts/verifyRemediationRelease.ts --suite-group plan1 <protected-artifact-root>
+npm run release:verify:non-vitest -- <protected-artifact-root>
+npm run release:trace:capture -- <protected-artifact-root>
+npm run schema:release:sequence -- --offline `
+  --database-url-env PLAN5_SCHEMA_CLONE_DATABASE_URL `
+  --expected-endpoint <loopback-host:port> `
+  --expected-system-identifier <system-identifier> `
+  --artifact-root <protected-clone-sequence-root>
+npm run release:runtime:rehearse -- <protected-artifact-root>
+npm run release:legacy:snapshot -- <exact-guarded-arguments-from-plan5-runbook>
+npm run release:telegram:manual -- <protected-artifact-root>
+npm run release:verify -- pre-manual <protected-artifact-root>
+```
+
+The focused-suite line is repeated for `plan2`, `plan3`, `plan4`, `plan5`, and
+`addressPoisoningRegression`. The schema producer also runs in separate
+protected sequence roots for exact databases `tron_watch_plan5_clean` and
+`tron_watch_plan5_runtime_sanitized`; all disposable targets are loopback and
+offline. `schema:verify` is read-only and cannot replace the producer.
+
+The currently observed production runtime is unmarked by the new runtime
+manager, so operational preflight is externally blocked before Task 9. Do not
+adopt, stop, restart, migrate, or send Telegram from this command index. A
+separate user-approved adoption/restart or plan amendment plus fresh Task 0B is
+required before any guarded production step.
 
 ## Verify The Unreleased Plan 3 Candidate
 

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-17
+last_verified: 2026-07-18
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -55,6 +55,9 @@ code_refs:
   - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
   - tests/alerts/unifiedTelegramAlerts.acceptance.test.ts
   - tests/telegram/manualTelegramAcceptanceManifest.test.ts
+  - scripts/verifyRemediationRelease.ts
+  - scripts/captureTask0BPreflight.ts
+  - scripts/runSchema032ReleaseSequence.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
@@ -214,11 +217,46 @@ of these decisions, update this file in the same work.
   on chain.
 - Normal messages target about 10–15 non-empty lines, at most four restrained
   emoji headings, and no more than two concrete routes before aggregation.
-  Eleven exact golden messages and the guarded Task 9 dry-run are green: 15
-  records, 19 rendered messages, 11 golden comparisons.
+  The automated fixture contract is green: 15 scenario summaries, 19 message
+  records, and 11 golden comparisons. Manual Task 9 evidence and screenshots
+  remain pending.
 - This is still an unreleased candidate. Manual screenshots and review in an
   authorized non-production Telegram test chat are pending. Production DB,
   runtime, version, and Telegram remain unchanged until Plan 5.
+
+## 2026-07-18 Plan 5 Candidate Handoff
+
+- Human handoff status is `release candidate ready/pending approval`; the
+  machine manifest remains `not_ready`, not `ready_for_release`. Tasks 0A and
+  1-8 are complete, but fresh Task 0B operational preflight, guarded Task 9,
+  and the exact 15 scenarios / 19 messages / 11 golden comparisons for manual
+  Telegram acceptance are pending.
+- The candidate includes controlled schema producer corrections from
+  `4d674590`, `87218388`, `9c13bfbf`, and `16af807a`. `release:verify` only
+  verifies/aggregates existing gate artifacts; suite, non-Vitest, trace,
+  schema, sanitized runtime, terminal legacy, rollback, and manual Telegram
+  producers run first.
+- Task 0A observed previous runtime
+  `0172978845ec74373bd245098ee8c075e0c39acf`, label `master-01729788`, Admin
+  HTTP 200 and Telegram long polling against loopback `tron_watch:55999` at
+  legacy schema 031 with no receipt 032. That live process is unmarked by the
+  new runtime manager, so Task 9 is externally blocked pending a separate
+  user-approved controlled adoption/restart or plan amendment and a fresh
+  Task 0B. It must not be adopted, stopped, restarted, or replaced implicitly.
+- Production remains unchanged until Task 9, complete `G00`-`G11`, merge to
+  `master`, producer/verifier rerun for the merge SHA, and explicit release GO.
+  `schema:verify` remains read-only; only `schema:release:sequence` owns
+  controlled migration. After protected `G12` backup, the manifest returns to
+  `not_ready` with `G00`-`G12` passed and `G13`-`G15` pending before the fresh
+  one-shot migration authority can be consumed.
+- Sanitized runtime and rollback rehearsal use only
+  `tron_watch_plan5_runtime_sanitized` with recording-only Telegram transport.
+  The real manual sender is restricted to guarded Task 9, a dedicated test bot,
+  and a non-production test chat. The runtime/version command is `/version`.
+- Configured `hard_safety_limit_exceeded`, provider/page/local ceilings and
+  bounded retries remain honest technical no-final outcomes; Plan 5 does not
+  promise unlimited history. Address Poisoning is forbidden release scope.
+  Separate `APC-01` closeout starts only after `released` or `rolled_back`.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 
