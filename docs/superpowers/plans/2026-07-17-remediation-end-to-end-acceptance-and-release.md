@@ -4090,7 +4090,10 @@ Final Task 8B.6 GREEN:
 
 ```powershell
 $env:REQUIRE_PLAN5_POSTGRES='1'
-$env:TEST_DATABASE_URL=$env:PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL
+$redPort = [int]$env:PLAN5_TASK8B_RED_PGPORT
+$redDb = 'tron_watch_plan5_task8b_red'
+$env:TEST_DATABASE_URL =
+  "postgresql://$env:PLAN5_TASK8B_RED_PGUSER@$($env:PLAN5_TASK8B_RED_PGHOST):$redPort/$redDb"
 npx vitest run --configLoader bundle `
   tests/release/productionReleaseEvidence.acceptance.test.ts `
   tests/release/productionReleaseEvidence.postgres.test.ts
