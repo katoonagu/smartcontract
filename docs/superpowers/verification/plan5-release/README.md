@@ -11,10 +11,12 @@ handoff. The controlled schema producer corrections in
 behavior. The release SHA is always the clean checked-out `HEAD` used to
 produce the evidence; do not substitute one of those ancestor SHAs.
 
-At candidate HEAD `359e83ca1534dc06481ba9bc724ee803744f55f9`, the package
-also exposes the controlled `release:production:backup` producer and its local
-acceptance tests pass. That is implementation evidence only: the producer has
-not been run against production and `G12_PRODUCTION_BACKUP` is still pending.
+Backup implementation commit `359e83ca1534dc06481ba9bc724ee803744f55f9`
+added the controlled `release:production:backup` producer, and its local
+acceptance tests pass. The release candidate SHA remains the dynamically
+observed current clean `HEAD`; the implementation commit is not a frozen
+candidate identity. The producer has not been run against production and
+`G12_PRODUCTION_BACKUP` is still pending.
 
 ## Current production observation and external block
 

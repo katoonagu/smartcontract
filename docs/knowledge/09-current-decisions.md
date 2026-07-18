@@ -250,13 +250,16 @@ of these decisions, update this file in the same work.
   controlled migration. After protected `G12` backup, the manifest returns to
   `not_ready` with `G00`-`G12` passed and `G13`-`G15` pending before the fresh
   one-shot migration authority can be consumed.
-- At candidate HEAD `359e83ca1534dc06481ba9bc724ee803744f55f9`, the guarded
-  `release:production:backup` producer exists and its local acceptance tests
-  pass, but no production backup was run. It requires one-shot explicit GO and
-  exact Task 0B, ready-manifest, candidate, protected-root, and production-DB
-  bindings; uses pinned Docker `pg_dump`/`pg_restore`; and writes claim, lease,
-  progress, dump, restore-list, and evidence artifacts without mutating the
-  manifest. The verifier/aggregator, not the producer, marks `G12`.
+- Backup implementation commit
+  `359e83ca1534dc06481ba9bc724ee803744f55f9` added the guarded
+  `release:production:backup` producer and its local acceptance tests pass, but
+  no production backup was run. The release candidate SHA remains the
+  dynamically observed current clean `HEAD`. The producer requires one-shot
+  explicit GO and exact Task 0B, ready-manifest, candidate, protected-root, and
+  production-DB bindings; uses pinned Docker `pg_dump`/`pg_restore`; and writes
+  claim, lease, progress, dump, restore-list, and evidence artifacts without
+  mutating the manifest. The verifier/aggregator, not the producer, marks
+  `G12`.
 - Sanitized runtime and rollback rehearsal use only
   `tron_watch_plan5_runtime_sanitized` with recording-only Telegram transport.
   The real manual sender is restricted to guarded Task 9, a dedicated test bot,

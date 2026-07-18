@@ -137,9 +137,10 @@ adopt, stop, restart, migrate, or send Telegram from this command index. A
 separate user-approved adoption/restart or plan amendment plus fresh Task 0B is
 required before any guarded production step.
 
-The future guarded G12 producer exists at candidate HEAD
-`359e83ca1534dc06481ba9bc724ee803744f55f9` and its local acceptance tests
-pass, but it has not been run against production:
+Backup implementation commit `359e83ca1534dc06481ba9bc724ee803744f55f9`
+added the future guarded G12 producer and its local acceptance tests pass. The
+release candidate SHA remains the dynamically observed current clean `HEAD`;
+no production backup has run:
 
 ```powershell
 npm run release:production:backup -- <protected-artifact-root> <production-backup-authority-...json>

@@ -14,6 +14,15 @@
 > доступности production preflight; Task 9 и `ready_for_release` без полного
 > operational/release preflight недостижимы.
 >
+> **Approved narrow amendment (Task 11):** backup implementation commit
+> `359e83ca1534dc06481ba9bc724ee803744f55f9` добавил controlled G12 producer.
+> Release candidate SHA по-прежнему определяется динамически как текущий clean
+> `HEAD`. G12 evidence создаётся producer-ом, а gate отмечается только
+> verifier/aggregator-ом. Затем G13 выполняется только через fresh schema
+> authority и `schema:release:sequence`. Production не запускался; Task 9,
+> Task 10 GO и
+> исходные operational gates сохраняются.
+>
 > **Draft baseline:** локальный `master`
 > `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`, содержащий реализованные Plans
 > 1–4. После утверждения и отдельного commit только этого документа исполнитель
@@ -1225,37 +1234,55 @@ No push is implied by merge or release GO.
 
 **No source changes.** All commands operate on the approved `RELEASE_SHA`.
 
-Preflight:
+G12 controlled backup:
 
-1. Verify production DB identity and connectivity read-only.
-2. Record receipt-032 pre-state (normally missing on schema 031).
-3. Create `pg_dump --format=custom` backup in an external protected path;
-   verify restore-list readability, non-zero size and SHA-256. Missing or
-   invalid `pg_dump` blocks release and leaves manifest `ready_for_release`.
-4. Reconfirm the already-passed pre-GO rollback rehearsal evidence for the
-   exact previous SHA; do not defer first proof until production.
-5. At one cutoff record the complete terminal legacy population count,
-   sorted-ID-set hash, immutable-result aggregate and sent fingerprints.
-6. Persist `G12_PRODUCTION_BACKUP` with allowlisted command ids/template hashes.
-7. Stop only the verified old bot/runtime process using its actual manager.
+1. Revalidate the exact clean `RELEASE_SHA`, explicit production GO, fresh Task
+   0B, `ready_for_release` manifest, production DB/root fingerprints, rollback
+   rehearsal, receipt-032 pre-state and terminal legacy snapshot. The previous
+   runtime remains unchanged; backup does not stop it.
+2. Supply the production secret only through the protected process environment
+   as `TASK0B_PRODUCTION_DATABASE_URL`. It is never written to argv, the
+   authority, logs or artifacts.
+3. Place the fresh one-shot explicit-GO authority in the protected root and run:
 
-Migration:
+   ```powershell
+   npm run release:production:backup -- <protected-root> <production-backup-authority-...json>
+   ```
 
-```powershell
-$env:DATABASE_URL = <production secret supplied outside artifacts>
-npm run db:migrate
-npm run schema:verify
-npm run db:migrate
-npm run schema:verify
-```
+4. The producer owns pinned Docker `pg_dump --format=custom` and
+   `pg_restore --list`, claim/lease/progress receipts, bounded resume and exact
+   binding revalidation. It produces `production-backup.dump`,
+   `production-backup-restore-list.txt` and
+   `production-backup-evidence.json`; it does not mutate the release manifest.
+5. Run the verifier/aggregator over the completed evidence. Only it marks
+   `G12_PRODUCTION_BACKUP=passed`, returning the manifest to `not_ready` with
+   `G00…G12` passed and `G13…G15` pending.
 
-The second apply is verified no-op. `schema:verify` persists
-`Schema032ReleaseEvidenceV1` with the full candidate-bytes checksum, full
-receipt checksum and postcondition hash. Both full checksums must equal the
-approved value. Only then mark `G13_PRODUCTION_MIGRATION` passed. Candidate has
-not started yet.
+G13 controlled migration:
 
-Any failure starts the Task 12 rollback decision; do not hotfix production.
+1. Issue a fresh `schema032-production-authority-<generation>.json` bound to
+   Task 0B, the current `not_ready` manifest, exact candidate/DB identity and
+   verified G12 backup hash.
+2. Run the controlled sequence without `--offline`:
+
+   ```powershell
+   npm run schema:release:sequence -- `
+     --database-url-env TASK0B_PRODUCTION_DATABASE_URL `
+     --expected-endpoint <loopback-host:port> `
+     --expected-system-identifier <system-identifier> `
+     --artifact-root <protected-root> `
+     --production-authority-file <schema032-production-authority-...json>
+   ```
+
+3. The sequence owns the first migration, full checksum/receipt and
+   postcondition verification, the second `already_verified` no-op, and final
+   verification. The verifier/aggregator marks `G13_PRODUCTION_MIGRATION`
+   passed only from that evidence. Candidate startup and previous-runtime stop
+   remain Task 12/G14 operations.
+
+Any failure stops forward progress. If G13 has mutated production, start the
+Task 12 rollback decision; otherwise leave the previous runtime unchanged. Do
+not hotfix production.
 
 ### Task 12 — Production rollout, canary and rollback (`G14`, `G15`)
 
@@ -1518,8 +1545,8 @@ reviews. No autosquash/rewrite after `RELEASE_SHA` freeze.
 | Production clone contains runnable external delivery | destroy/recreate rehearsal DB; block readiness; investigate safety breach |
 | Sanitized runtime records an external send | block readiness; invalidate manual/runtime evidence; no production GO |
 | Previous-SHA rollback rehearsal fails | block readiness; do not substitute an untested command/runtime |
-| Backup unavailable/invalid after GO | keep old runtime stopped only for the minimum verified interval or restart it; keep manifest `ready_for_release`; do not migrate |
-| Migration transaction fails before receipt | verify rollback/no receipt; start exact previous runtime using rehearsed command |
+| Backup unavailable/invalid after GO | leave the verified old runtime unchanged; keep manifest `ready_for_release`; do not migrate |
+| Migration transaction fails before receipt | verify rollback/no receipt; leave the exact previous runtime unchanged; do not start candidate |
 | Schema 032 verifies but candidate startup fails | keep additive 032; start exact previous runtime; verify conservative mirrors/results/sent fingerprints |
 | `/version` mismatch | stop candidate; start previous runtime; no DB down-migration |
 | Worker/delivery/Telegram/Admin canary fails | application rollback; preserve sent/result state |
