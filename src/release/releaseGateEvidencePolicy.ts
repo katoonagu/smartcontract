@@ -70,7 +70,7 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
 
 export const PRODUCTION_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G12_PRODUCTION_BACKUP: policy("G12_PRODUCTION_BACKUP", [
-    "production-backup-evidence.json", "production-backup.dump", "production-backup.restore-list.txt"
+    "production-backup-evidence.json", "production-backup.dump", "production-backup-restore-list.txt"
   ], ["operational_attestation", "production_backup_consumption", "production_backup_dump_progress",
     "production_backup_list_progress", "production_backup_dump", "production_backup_restore_list",
     "production_backup_evidence"], true),
@@ -115,6 +115,34 @@ function parseCanonicalEvidenceJson(bytes: Buffer, ref: GateEvidenceRefV2): Reco
   return object;
 }
 
+export type GateEvidenceBindingContextV2 = Readonly<{
+  releaseGenerationId?: string;
+  artifactRootFingerprintSha256?: string;
+  releaseFreezeIdentitySha256?: string;
+  sourceManifestSha256?: string;
+}>;
+
+function validateEvidenceBindings(
+  value: Record<string, unknown>,
+  ref: GateEvidenceRefV2,
+  expected: GateEvidenceBindingContextV2
+): void {
+  const bindings: Array<[keyof GateEvidenceBindingContextV2, string | undefined]> = [
+    ["releaseGenerationId", expected.releaseGenerationId],
+    ["artifactRootFingerprintSha256", expected.artifactRootFingerprintSha256],
+    ["releaseFreezeIdentitySha256", expected.releaseFreezeIdentitySha256],
+    ["sourceManifestSha256", expected.sourceManifestSha256]
+  ];
+  for (const [key, wanted] of bindings) {
+    if (value[key] !== undefined && (typeof value[key] !== "string" || (wanted !== undefined && value[key] !== wanted))) {
+      throw new Error(`gate_evidence_${key}_binding_invalid`);
+    }
+  }
+  if (value.candidateSha !== undefined && value.candidateSha !== ref.candidateSha) {
+    throw new Error("gate_evidence_candidate_payload_mismatch");
+  }
+}
+
 function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): void {
   if (ref.kind === "production_backup_dump" || ref.kind === "production_backup_restore_list") {
     if (bytes.length === 0) throw new Error("gate_evidence_empty");
@@ -138,7 +166,8 @@ function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): void {
 
 export function validateGateEvidenceBytesV2(
   gate: ExecutedReleaseGateV2,
-  bytesByRelativePath: ReadonlyMap<string, Buffer>
+  bytesByRelativePath: ReadonlyMap<string, Buffer>,
+  expected: GateEvidenceBindingContextV2 = {}
 ): readonly GateEvidenceRefV2[] {
   const gatePolicy = RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id];
   if (gate.candidateSha.length !== 40 || gate.evidence.length === 0) throw new Error("gate_evidence_missing");
@@ -158,6 +187,9 @@ export function validateGateEvidenceBytesV2(
       throw new Error("gate_evidence_bytes_invalid");
     }
     validateTypedEvidence(ref, bytes);
+    if (ref.kind !== "production_backup_dump" && ref.kind !== "production_backup_restore_list") {
+      validateEvidenceBindings(parseCanonicalEvidenceJson(bytes, ref), ref, expected);
+    }
   }
   for (const required of gatePolicy.primaryPaths) {
     if (!seen.has(required)) throw new Error(`gate_evidence_primary_missing:${required}`);

@@ -12,6 +12,8 @@ import {
   validateActualRollbackTransitionEvidenceRefV2,
   validateOperationalAttestationV2,
   validateProductionFailureTransitionEvidenceRefV2,
+  validateProductionFailureEvidenceV2,
+  validateProductionRollbackEvidenceV2,
   validateProductionRollbackOutcomeV2,
   validateReleaseGateV2,
   validateRemediationReleaseManifestV2,
@@ -217,7 +219,20 @@ export async function runAdvanceRemediationReleaseManifest(
     const evidenceBytes = new Map<string, Buffer>();
     for (const ref of gate.evidence) evidenceBytes.set(ref.relativePath,
       readStableFile(safeArtifactRelativePath(root, ref.relativePath)));
-    validateGateEvidenceBytesV2(gate, evidenceBytes);
+    validateGateEvidenceBytesV2(gate, evidenceBytes, {
+      releaseGenerationId: freeze.releaseGenerationId,
+      artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+      releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+      sourceManifestSha256: expectedInputSource ?? undefined
+    });
+    if (gate.id === "G12_PRODUCTION_BACKUP"
+        && existsSync(safeArtifactPath(root, `production-backup-operation-${freeze.releaseGenerationId}.json`))) {
+      throw new Error("production_backup_operation_lease_active");
+    }
+    if ((gate.id === "G14_PRODUCTION_ROLLOUT" || gate.id === "G15_PRODUCTION_CANARY")
+        && existsSync(safeArtifactPath(root, "production-operation-root.lease.json"))) {
+      throw new Error("production_operation_lease_active");
+    }
   }
   for (const ref of verifiedInput.verifiedTransitionEvidence.refs) {
     const policy = ref.kind === "production_failure_evidence"
@@ -230,6 +245,8 @@ export async function runAdvanceRemediationReleaseManifest(
     if (releaseSha256V2(bytes) !== ref.sha256) throw new Error("transition_evidence_bytes_invalid");
     const value = JSON.parse(bytes.toString("utf8"));
     if (!canonicalBytesV2(value).equals(bytes)) throw new Error("transition_evidence_noncanonical");
+    if (ref.kind === "production_failure_evidence") validateProductionFailureEvidenceV2(value);
+    else validateProductionRollbackEvidenceV2(value);
   }
   if (transitionId === "pre_manual") {
     createInitialRemediationReleaseManifestV2({
