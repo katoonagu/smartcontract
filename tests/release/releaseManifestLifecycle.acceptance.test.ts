@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { operationalAttestationTemplateSha256V2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   CANDIDATE_SHA,
   RELEASE_V2_FREEZE_IDENTITY,
@@ -34,6 +35,7 @@ it("[REQ-38][MANIFEST-V2-INIT] creates pre-manual revision one only from absent 
   const manifest = api.createInitialRemediationReleaseManifestV2({
     freezeIdentity: RELEASE_V2_FREEZE_IDENTITY,
     evaluatedAt: "2026-07-18T10:00:00.000Z",
+    latestCommittedReceiptSha256: buildReleaseManifestV2Fixture().latestCommittedReceiptSha256,
     verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate: any) => gate.state === "passed")
   });
   expect(manifest).toMatchObject({ version: "remediation-release-manifest-v2", revision: 1, transitionId: "pre_manual" });
@@ -43,7 +45,8 @@ it("[REQ-38][MANIFEST-V2-INIT] creates pre-manual revision one only from absent 
   expect(() => api.createInitialRemediationReleaseManifestV2({
     freezeIdentity: RELEASE_V2_FREEZE_IDENTITY,
     sourceManifest: buildReleaseManifestV2Fixture(),
-    evaluatedAt: "2026-07-18T10:00:00.000Z"
+    evaluatedAt: "2026-07-18T10:00:00.000Z",
+    latestCommittedReceiptSha256: buildReleaseManifestV2Fixture().latestCommittedReceiptSha256
   })).toThrow();
 });
 
@@ -60,6 +63,9 @@ it("[REQ-38][MANIFEST-V2-TRANSITIONS] accepts only absent to pre-manual to readi
       operationalAttestation: transitionId === "readiness" ? null : buildOperationalAttestationV2Fixture({
         action: transitionId,
         commandId: transitionCommand[transitionId],
+        redactedTemplateSha256: operationalAttestationTemplateSha256V2(
+          transitionId as Parameters<typeof operationalAttestationTemplateSha256V2>[0]
+        ),
         sourceManifestSha256: manifestSha(manifest),
         issuedAt: "2026-07-18T10:00:30.000Z",
         expiresAt: "2026-07-18T10:15:00.000Z"

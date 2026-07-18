@@ -1,14 +1,18 @@
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
+import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   RELEASE_V2_FREEZE_IDENTITY,
   RELEASE_V2_FREEZE_SHA256,
+  COMMAND_TEMPLATE_SHA256,
   buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
-  buildReleaseManifestV2Fixture
+  buildReleaseManifestV2Fixture,
+  buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
 
 const roots: string[] = [];
@@ -37,6 +41,24 @@ async function initializeManifestRoot(api: any, artifactRoot: string) {
     verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
   });
 }
+
+async function productionAuthorityForRoot(
+  artifactRoot: string,
+  overrides: Record<string, unknown> = {}
+) {
+  const sourceBytes = await readFile(join(artifactRoot, "release-manifest.json"));
+  return buildOperationalAttestationV2Fixture({
+    action: "g12_backup_passed",
+    commandId: "production_backup",
+    redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.production_backup,
+    sourceManifestSha256: createHash("sha256").update(sourceBytes).digest("hex"),
+    ...overrides
+  });
+}
+
+async function recursiveRelativeFiles(artifactRoot: string): Promise<string[]> {
+  return (await readdir(artifactRoot, { recursive: true })).map((value) => String(value).replace(/\\/gu, "/"));
+}
 afterEach(async () => { await Promise.all(roots.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
 
 async function loadStoreApi(): Promise<any> {
@@ -46,10 +68,19 @@ async function loadStoreApi(): Promise<any> {
 }
 
 function materializeInput(rootPath: string) {
+  const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
+    observedAt: "2026-07-18T10:00:00.000Z"
+  });
+  task0BPreflightEvidence.artifactRoot.rootFingerprintSha256 =
+    RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256;
+  const task0BPath = join(rootPath, "task0b-release-freeze.json");
+  if (!existsSync(task0BPath)) writeFileSync(task0BPath,
+    `${canonicalReleaseJsonV2(task0BPreflightEvidence)}\n`, { flag: "wx" });
   return {
     artifactRoot: rootPath,
     freezeIdentity: RELEASE_V2_FREEZE_IDENTITY,
-    task0BPreflightEvidence: { version: "task0b-release-freeze-evidence-v1", verified: true },
+    task0BPreflightEvidence,
+    producerId: "release_freeze_materialize" as const,
     evaluatedAt: "2026-07-18T10:00:00.000Z",
     owner: { ownerId: "owner-a", pid: process.pid, processStartedAt: "2026-07-18T09:59:00.000Z" }
   };
@@ -116,9 +147,25 @@ it("[REQ-38][BOOTSTRAP-ROOT-WRITER-LEASE-CLEANUP] leaves manifest-transition-roo
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-ISSUER] appends content-addressed attestation and previous-hash issuer receipt without overwriting consumed or expired authority", async () => {
   const api = await loadStoreApi(); const r = await root();
-  await api.materializeReleaseFreezeV2(materializeInput(r));
-  const first = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: buildOperationalAttestationV2Fixture() });
-  const second = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: buildOperationalAttestationV2Fixture({ action: "readiness", previousAttestationSha256: first.attestationSha256 }) });
+  await initializeManifestRoot(api, r);
+  const firstAuthority = await productionAuthorityForRoot(r, { expiresAt: "2026-07-18T10:01:00.000Z" });
+  const first = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: firstAuthority });
+  const terminal = await api.terminalizeExpiredOperationalAttestationV2({
+    artifactRoot: r, authority: firstAuthority, evaluatedAt: "2026-07-18T10:02:00.000Z"
+  });
+  const terminalRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
+    name.startsWith(`authority-terminal-receipts/g12_backup_passed/${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}/`))!;
+  const terminalSha256 = createHash("sha256").update(await readFile(join(r, terminalRelativePath))).digest("hex");
+  const second = await api.issueOperationalAttestationV2({
+    artifactRoot: r,
+    attestation: await productionAuthorityForRoot(r, {
+      previousAttestationSha256: first.attestationSha256,
+      priorTerminalLineageSha256: terminalSha256,
+      issuedAt: "2026-07-18T10:03:00.000Z",
+      expiresAt: "2026-07-18T10:18:00.000Z"
+    }),
+    priorTerminalReceipt: { sha256: terminalSha256 }
+  });
   expect(second.previousAttestationSha256).toBe(first.attestationSha256);
   expect(second.attestationSha256).not.toBe(first.attestationSha256);
 });
@@ -126,8 +173,8 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-ISSUER] appends content-addressed attestation
 it("[REQ-38][OPERATIONAL-AUTHORITY-ISSUER-CRASH] replays exact prepared bytes before attestation between attestation and receipt and after receipt before committed marker without a second clock read or branch and rejects a competing issuer or conflicting prepare under the fixed root-writer lease", async () => {
   const api = await loadStoreApi();
   for (const faultAt of ["after_prepare", "after_attestation", "after_receipt"]) {
-    const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
-    const input = { artifactRoot: r, attestation: buildOperationalAttestationV2Fixture(), faultAt };
+    const r = await root(); await initializeManifestRoot(api, r);
+    const input = { artifactRoot: r, attestation: await productionAuthorityForRoot(r), faultAt };
     await expect(api.issueOperationalAttestationV2(input)).rejects.toThrow();
     const result = await api.issueOperationalAttestationV2({ ...input, faultAt: undefined });
     const replay = await api.issueOperationalAttestationV2({ ...input, faultAt: undefined });
@@ -143,48 +190,57 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-SELECTION] selects exactly one active compati
 });
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-RECOVERY] issues fresh recovery authority only after exact prior terminal lineage and preserves prior bytes", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
-  const expired = buildOperationalAttestationV2Fixture({ expiresAt: "2026-07-18T10:01:00.000Z" });
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
+  const expired = await productionAuthorityForRoot(r, { expiresAt: "2026-07-18T10:01:00.000Z" });
   const issued = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: expired });
-  const original = await readFile(join(r, `operational-attestation-${issued.attestationSha256}.json`));
+  const authorityRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
+    name === `operational-attestations/g12_backup_passed/${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}/${issued.attestationSha256}.json`)!;
+  const original = await readFile(join(r, authorityRelativePath));
   await api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority: expired, evaluatedAt: "2026-07-18T10:02:00.000Z" });
-  const terminalReceiptPath = join(r, `authority-terminal-receipt-${issued.attestationSha256}.json`);
+  const terminalReceiptRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
+    name.startsWith(`authority-terminal-receipts/g12_backup_passed/${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}/`))!;
+  const terminalReceiptPath = join(r, terminalReceiptRelativePath);
   const terminalReceiptSha256 = createHash("sha256").update(await readFile(terminalReceiptPath)).digest("hex");
   await expect(api.issueOperationalAttestationV2({
     artifactRoot: r,
-    attestation: buildOperationalAttestationV2Fixture({
-      action: "readiness",
+    attestation: await productionAuthorityForRoot(r, {
       previousAttestationSha256: issued.attestationSha256,
-      priorTerminalLineageSha256: "f".repeat(64)
+      priorTerminalLineageSha256: "f".repeat(64),
+      issuedAt: "2026-07-18T10:03:00.000Z", expiresAt: "2026-07-18T10:18:00.000Z"
     }),
     priorTerminalReceipt: { sha256: "f".repeat(64) }
   })).rejects.toThrow();
   const recovery = await api.issueOperationalAttestationV2({
     artifactRoot: r,
-    attestation: buildOperationalAttestationV2Fixture({
-      action: "readiness",
+    attestation: await productionAuthorityForRoot(r, {
       previousAttestationSha256: issued.attestationSha256,
-      priorTerminalLineageSha256: terminalReceiptSha256
+      priorTerminalLineageSha256: terminalReceiptSha256,
+      issuedAt: "2026-07-18T10:03:00.000Z", expiresAt: "2026-07-18T10:18:00.000Z"
     }),
     priorTerminalReceipt: { sha256: terminalReceiptSha256 }
   });
   expect(recovery.priorTerminalLineageSha256).toBe(terminalReceiptSha256);
-  expect(await readFile(join(r, `operational-attestation-${issued.attestationSha256}.json`))).toEqual(original);
+  expect(await readFile(join(r, authorityRelativePath))).toEqual(original);
 });
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalization terminalizes an expired never-claimed zero-effect authority through prepared and committed bytes permits bound replacement and rejects it when any preclaim claim consumption action lease G13 bound session advisory lock operation or effect artifact exists", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
-  const authority = buildOperationalAttestationV2Fixture({ expiresAt: "2026-07-18T10:01:00.000Z" });
-  const unissuedRoot = await root(); await api.materializeReleaseFreezeV2(materializeInput(unissuedRoot));
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
+  const authority = await productionAuthorityForRoot(r, { expiresAt: "2026-07-18T10:01:00.000Z" });
+  const unissuedRoot = await root(); await initializeManifestRoot(api, unissuedRoot);
   await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: unissuedRoot, authority, evaluatedAt: "2026-07-18T10:02:00.000Z" })).rejects.toThrow();
   await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: authority });
   await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:00:30.000Z" })).rejects.toThrow();
   const terminal = await api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:02:00.000Z", observedArtifacts: [] });
   expect(terminal.reason).toBe("expired_unclaimed");
   for (const artifact of ["preclaim", "claim", "consumption", "action_lease", "g13_session", "advisory_lock", "operation", "effect"]) {
-    const conflictPath = join(r, `production-${artifact}-conflict.json`);
+    const conflictRoot = await root(); await initializeManifestRoot(api, conflictRoot);
+    const conflictAuthority = await productionAuthorityForRoot(conflictRoot, { expiresAt: "2026-07-18T10:01:00.000Z" });
+    await api.issueOperationalAttestationV2({ artifactRoot: conflictRoot, attestation: conflictAuthority });
+    const conflictPath = join(conflictRoot, `production-${artifact}-conflict.json`);
     await writeFile(conflictPath, "{}\n", { flag: "wx" });
-    await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:02:00.000Z" })).rejects.toThrow();
+    await expect(api.terminalizeExpiredOperationalAttestationV2({
+      artifactRoot: conflictRoot, authority: conflictAuthority, evaluatedAt: "2026-07-18T10:02:00.000Z"
+    })).rejects.toThrow();
     await rm(conflictPath, { force: true });
   }
 });
@@ -210,6 +266,23 @@ it("[REQ-38][MANIFEST-V2-CAS] rejects stale and concurrent writers without overw
   const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
   const outcomes = await Promise.allSettled([1, 2].map(() => api.advanceReleaseManifestV2(readinessAdvance(r))));
   expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
+});
+
+it("[REQ-38][MANIFEST-V2-INITIAL-CRASH] resumes revision-one prepare manifest-replace and receipt boundaries byte-exactly", async () => {
+  const api = await loadStoreApi();
+  for (const faultAt of ["after_prepare", "after_manifest_replace", "after_receipt"]) {
+    const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
+    const input = {
+      artifactRoot: r,
+      evaluatedAt: "2026-07-18T10:00:00.000Z",
+      verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed"),
+      faultAt
+    };
+    await expect(api.initializeReleaseManifestV2(input)).rejects.toThrow();
+    const recovered = await api.initializeReleaseManifestV2({ ...input, faultAt: undefined });
+    expect(recovered.manifest.revision).toBe(1);
+    expect(await readdir(r)).not.toContain("manifest-transition-root.lease.json");
+  }
 });
 
 it("[REQ-38][MANIFEST-V2-CRASH] recovers exactly before and after the atomic manifest replace", async () => {
@@ -253,8 +326,16 @@ it("[REQ-38][MANIFEST-V2-ROOT-LEASE] one fixed root-wide lease serializes compet
 
 it("[REQ-38][MANIFEST-V2-PATH-SAFETY] requires allowlisted trusted principal policy and rejects pre-existing or detectable POSIX symlink Windows junction reparse and identity substitutions without claiming undetectable same-principal race defense", async () => {
   const api = await loadStoreApi(); const r = await root();
-  await expect(api.verifyArtifactRootTrustV2({ artifactRoot: r, principalPolicyId: "foreign", pathKind: "symlink" })).rejects.toThrow();
-  await expect(api.verifyArtifactRootTrustV2({ artifactRoot: r, principalPolicyId: process.platform === "win32" ? "windows-configured-canonical-set-v1" : "posix-owner-only-v1", pathKind: "regular" })).resolves.toBeDefined();
+  const trustedPrincipals = process.platform === "win32"
+    ? (await import("../../src/release/releaseRootWriterStore"))
+      .inspectWindowsArtifactRootAclV2(r).map((entry) => entry.principal)
+    : undefined;
+  await expect(api.verifyArtifactRootTrustV2({ artifactRoot: r, principalPolicyId: "foreign" })).rejects.toThrow();
+  await expect(api.verifyArtifactRootTrustV2({
+    artifactRoot: r,
+    principalPolicyId: process.platform === "win32" ? "windows-configured-canonical-set-v1" : "posix-owner-only-v1",
+    trustedPrincipals
+  })).resolves.toBeDefined();
 });
 
 it("[REQ-38][ARTIFACT-ROOT-TRUSTED-PRINCIPALS] accepts normalized writable service account LocalSystem and BUILTIN Administrators or exact configured canonical set without persisting raw ACL or principal values", async () => {

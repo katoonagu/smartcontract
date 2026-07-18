@@ -1,6 +1,7 @@
 import pg from "pg";
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   RELEASE_V2_FREEZE_IDENTITY,
   buildExecutedReleaseGateV2Fixture,
@@ -32,7 +33,7 @@ postgresIt("[REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an ex
     expect(identity.rows).toEqual([{ database_name: "tron_watch_plan5_task8b_red" }]);
     const api = await loadStoreApi();
     const source = buildReleaseManifestV2Fixture();
-    const sourceBytes = Buffer.from(`${JSON.stringify(source)}\n`, "utf8");
+    const sourceBytes = Buffer.from(`${canonicalReleaseJsonV2(source)}\n`, "utf8");
     const sourceManifestSha256 = createHash("sha256").update(sourceBytes).digest("hex");
     const initialized = await api.initializePostgresManifestStateV2(client, {
       releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
@@ -44,17 +45,14 @@ postgresIt("[REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an ex
       releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
       sourceRevision: source.revision,
       sourceManifestSha256,
-      targetManifest: {
-        ...source,
-        revision: 2,
-        previousManifestSha256: sourceManifestSha256,
-        latestCommittedReceiptSha256: "e".repeat(64),
-        updatedAt: "2026-07-18T10:05:00.000Z",
+      transition: {
         transitionId: "readiness",
-        overall: "ready_for_release",
-        gates: source.gates.map((gate) => gate.id === "G05_TELEGRAM"
-          ? buildExecutedReleaseGateV2Fixture("G05_TELEGRAM") : gate)
+        evaluatedAt: "2026-07-18T10:05:00.000Z",
+        latestCommittedReceiptSha256: "e".repeat(64),
+        operationalAttestation: null
       },
+      verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G05_TELEGRAM")],
+      verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null },
       evaluatedAt: "2026-07-18T10:05:00.000Z"
     };
     const concurrent = new pg.Client({ connectionString: databaseUrl });

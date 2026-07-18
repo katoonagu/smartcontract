@@ -76,7 +76,7 @@ function canonicalFixtureJson(value: unknown): string {
 }
 
 export const RELEASE_V2_FREEZE_SHA256 = createHash("sha256")
-  .update(canonicalFixtureJson(RELEASE_V2_FREEZE_IDENTITY), "utf8").digest("hex");
+  .update(`${canonicalFixtureJson(RELEASE_V2_FREEZE_IDENTITY)}\n`, "utf8").digest("hex");
 
 export function buildOperationalAttestationV2Fixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -120,7 +120,7 @@ export function buildReleaseManifestV2Fixture(overrides: Record<string, unknown>
       }]
     })
   }));
-  return {
+  const provisional = {
     version: "remediation-release-manifest-v2",
     revision: 1,
     candidateSha: CANDIDATE_SHA,
@@ -128,7 +128,7 @@ export function buildReleaseManifestV2Fixture(overrides: Record<string, unknown>
     previousManifestSha256: null,
     artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
     releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
-    latestCommittedReceiptSha256: null,
+    latestCommittedReceiptSha256: "0".repeat(64),
     requiredRequirementIds: Array.from({ length: 38 }, (_, index) => `REQ-${String(index + 1).padStart(2, "0")}`),
     requiredAcceptanceIds: Array.from({ length: 41 }, (_, index) => `AC-${String(index + 1).padStart(2, "0")}`),
     transitionId: "pre_manual",
@@ -136,9 +136,36 @@ export function buildReleaseManifestV2Fixture(overrides: Record<string, unknown>
     gates,
     transitionEvidence: [],
     actualRollback: null,
-    updatedAt: RELEASE_V2_NOW,
-    ...overrides
+    updatedAt: RELEASE_V2_NOW
   };
+  const transitionKeySha256 = createHash("sha256").update(canonicalFixtureJson([
+    CANDIDATE_SHA,
+    null,
+    "pre_manual",
+    RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256
+  ])).digest("hex");
+  const { latestCommittedReceiptSha256: _omitted, ...projection } = provisional;
+  const receipt = {
+    version: "committed-manifest-transition-receipt-v2",
+    transitionId: "pre_manual",
+    transitionKeySha256,
+    candidateSha: CANDIDATE_SHA,
+    artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    sourceManifestSha256: null,
+    previousReceiptSha256: null,
+    targetManifestProjectionSha256: createHash("sha256").update(canonicalFixtureJson(projection)).digest("hex"),
+    sourceRevision: null,
+    targetRevision: 1,
+    gateOutputSha256s: gates.filter((gate) => gate.state === "passed")
+      .map((gate) => createHash("sha256").update(`${canonicalFixtureJson(gate)}\n`).digest("hex")),
+    transitionEvidence: [],
+    committedAt: RELEASE_V2_NOW
+  };
+  const latestCommittedReceiptSha256 = createHash("sha256")
+    .update(`${canonicalFixtureJson(receipt)}\n`).digest("hex");
+  return { ...provisional, latestCommittedReceiptSha256, ...overrides };
 }
 
 export function buildExecutedReleaseGateV2Fixture(id: typeof REQUIRED_GATE_IDS[number], state: "passed" | "failed" = "passed") {
