@@ -1,27 +1,39 @@
 # End-to-End Acceptance And Release Implementation Plan (Plan 5)
 
 > **For agentic workers:** REQUIRED SUB-SKILLS: use
-> `subagent-driven-development` for Tasks 1–8, `test-driven-development` for
+> `subagent-driven-development` for Tasks 1–8B, `test-driven-development` for
 > every code change, and `verification-before-completion` before the release
 > checkpoint. Tasks 9–13 are release/closeout operations and require the explicit
 > approval gates defined below.
 
 > **Status:** утверждён. Этот документ коммитится отдельно до начала Task 0;
 > код и production на момент утверждения не изменены.
+> Task 8 остаётся незавершённым до полного GREEN Task 8B; Task 9 заблокирован
+> одновременно manifest-lifecycle gap и отдельным unmarked-runtime preflight.
 >
 > **Approved narrow amendment:** Task 0 разделён на локальный baseline gate и
-> operational/release preflight. Локальная реализация Tasks 1–8 не зависит от
+> operational/release preflight. Локальная реализация Tasks 1–8B не зависит от
 > доступности production preflight; Task 9 и `ready_for_release` без полного
 > operational/release preflight недостижимы.
 >
 > **Approved narrow amendment (Task 11):** backup implementation commit
 > `359e83ca1534dc06481ba9bc724ee803744f55f9` добавил controlled G12 producer.
 > Release candidate SHA по-прежнему определяется динамически как текущий clean
-> `HEAD`. G12 evidence создаётся producer-ом, а gate отмечается только
-> verifier/aggregator-ом. Затем G13 выполняется только через fresh schema
+> `HEAD`. G12 evidence создаётся producer-ом, а gate отмечается только V2
+> `release:manifest:advance`; read-only verifier ничего не пишет. Затем G13
+> выполняется только через fresh schema
 > authority и `schema:release:sequence`. Production не запускался; Task 9,
 > Task 10 GO и
 > исходные operational gates сохраняются.
+>
+> **Approved amendment (2026-07-18, Task 8B):** `release:verify` остаётся
+> строго read-only verifier. До Task 9 Plan 5 обязан реализовать единственного
+> writer-а `RemediationReleaseManifestV2`, typed evidence policies для
+> `G00…G15`, атомарный CAS lifecycle, production rollout/canary/rollback
+> evidence producers и обязательную full-verification binding для всех
+> production mutators. Ручное создание или редактирование manifest/gate output
+> запрещено. Tasks 8B.0–8B.8 ниже являются частью утверждённого Plan 5 и не
+> разрешают production mutation.
 >
 > **Draft baseline:** локальный `master`
 > `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`, содержащий реализованные Plans
@@ -36,7 +48,8 @@
 Poisoning closeout.
 
 **Architecture:** Plan 5 не меняет forensic или scoring semantics. Он добавляет
-исполняемый release manifest, строгую runtime-version проекцию, schema-032 CLI
+typed `RemediationReleaseManifestV2`, единственный атомарный lifecycle writer,
+read-only verifier, строгую runtime-version проекцию, schema-032 CLI
 verification и проверяемые manual/release artifacts. Plans 1–4 остаются
 владельцами поведения. Любая найденная функциональная ошибка возвращается в
 владеющий план; release начинается заново с нового candidate SHA.
@@ -89,7 +102,7 @@ Plan 5 фиксирует новый candidate SHA и повторяет все 
 
 ### 0.3 Production authority
 
-Сам факт утверждения или выполнения Tasks 0–8 не разрешает production mutation.
+Сам факт утверждения или выполнения Tasks 0–8B не разрешает production mutation.
 Нужен отдельный `GO` пользователя после показа:
 
 - immutable `RELEASE_SHA`;
@@ -180,7 +193,19 @@ runtime/DB health и отдельный closeout document после прове�
     identities и outbound Telegram transport `recording_disabled`; никакой
     реальный Telegram send из runtime rehearsal невозможен.
 14. Release остается blocked при любом P0. Copy/visual P1, нарушающий
-   `AC-07…09`, `AC-12…13`, `AC-20…21`, `AC-27` или `AC-39`, также блокирует.
+    `AC-07…09`, `AC-12…13`, `AC-20…21`, `AC-27` или `AC-39`, также блокирует.
+15. `release:verify` read-only и не создаёт, не обновляет и не «чинит» manifest
+    или gate output. Результат verifier byte-identical относительно artifact
+    root.
+16. `release:manifest:advance` — единственный writer manifest/gate lifecycle.
+    Ручное создание/редактирование `release-manifest.json`, `gates/*` и
+    transition receipts запрещено и не принимается production mutators.
+17. Каждый production action требует current V2 manifest, exact current
+    manifest SHA, hash-chained transition receipt, artifact-root/Task0B binding
+    и полную semantic verification всех gates текущей фазы.
+18. Task 9 начинается только после GREEN Tasks 8B.1–8B.8 и отдельного fresh
+    Task 0B. Текущий unmarked production runtime остаётся вторым независимым
+    блокером; Task 8B не разрешает его adopt/restart/stop.
 
 ---
 
@@ -220,87 +245,162 @@ Strict invariants:
 - `/version` показывает full SHA, label, policy/result/narrative versions и
   `schema 032 verified · <short checksum>`; он не делает DB/provider call.
 
-### 2.2 `RemediationReleaseManifestV1`
+### 2.2 `RemediationReleaseManifestV2`
+
+V1 validation remains only for already-created local Task 1–8 test artifacts.
+It has no authority to open Task 9 or any production action. Every fresh Plan 5
+release lifecycle uses V2 and the sole writer described in Task 8B.
 
 ```ts
-type ReleaseGateState = "pending" | "passed" | "failed" | "blocked";
+type ReleaseGateId =
+  | "G00_BASE" | "G01_TRACE" | "G02_DATA" | "G03_SCORING"
+  | "G04_RUNTIME" | "G05_TELEGRAM" | "G06_FULL"
+  | "G07_SCHEMA_OFFLINE" | "G08_VERSION_SANITIZED"
+  | "G09_LEGACY_TERMINAL" | "G10_ROLLBACK_REHEARSAL"
+  | "G11_POISONING_REGRESSION" | "G12_PRODUCTION_BACKUP"
+  | "G13_PRODUCTION_MIGRATION" | "G14_PRODUCTION_ROLLOUT"
+  | "G15_PRODUCTION_CANARY";
 
 type ReleaseCommandId =
-  | "base_audit"
-  | "acceptance_trace"
-  | "plan1_focused"
-  | "plan2_focused"
-  | "plan3_focused"
-  | "plan4_focused"
-  | "full_regression"
-  | "schema_clean_rehearsal"
-  | "schema_production_clone_rehearsal"
-  | "runtime_sanitized_rehearsal"
-  | "manual_telegram_acceptance"
-  | "legacy_terminal_population"
-  | "rollback_rehearsal"
-  | "address_poisoning_regression"
-  | "production_backup"
-  | "production_migration"
-  | "production_rollout"
-  | "production_canary";
+  | "base_audit" | "acceptance_trace" | "plan1_focused"
+  | "plan2_focused" | "plan3_focused" | "plan4_focused"
+  | "full_regression" | "schema_production_clone_rehearsal"
+  | "runtime_sanitized_rehearsal" | "manual_telegram_acceptance"
+  | "legacy_terminal_population" | "rollback_rehearsal"
+  | "address_poisoning_regression" | "production_backup"
+  | "production_migration" | "production_rollout" | "production_canary";
 
-type ReleaseArtifactV1 = {
-  id: string;
+type ManifestTransitionId =
+  | "pre_manual"
+  | "readiness"
+  | "g12_backup_passed"
+  | "g13_migration_passed"
+  | "g14_rollout_passed"
+  | "g15_canary_released"
+  | "production_failed"
+  | "rollback_rolled_back";
+
+type GateEvidenceKind =
+  | "task0_baseline" | "acceptance_trace" | "suite_report"
+  | "suite_evidence" | "full_regression" | "schema_clean"
+  | "schema_production_clone" | "schema_runtime_sanitized"
+  | "runtime_rehearsal" | "terminal_legacy_population"
+  | "rollback_rehearsal" | "manual_telegram_acceptance"
+  | "production_backup_authority" | "production_backup_consumption"
+  | "production_backup_claim" | "production_backup_progress"
+  | "production_backup_dump" | "production_backup_restore_list"
+  | "production_backup_evidence" | "production_migration_authority"
+  | "production_migration_consumption" | "production_migration_sequence"
+  | "production_rollout_manager" | "production_rollout_queries"
+  | "production_rollout_evidence" | "production_canary_queries"
+  | "production_canary_evidence" | "production_failure_evidence"
+  | "production_rollback_manager"
+  | "production_rollback_queries" | "production_rollback_evidence";
+
+type GateEvidenceRefV2 = {
+  kind: GateEvidenceKind;
+  relativePath: string; // exact allowlisted path from GateEvidencePolicy
+  sha256: string;
+  schemaVersion: string;
   candidateSha: string;
+};
+
+type PendingReleaseGateV2 = {
+  id: ReleaseGateId;
+  candidateSha: string;
+  state: "pending";
+};
+
+type TerminalReleaseGateV2 = {
+  id: ReleaseGateId;
+  candidateSha: string;
+  state: "passed" | "failed" | "blocked";
   commandId: ReleaseCommandId;
   redactedTemplateSha256: string;
   startedAt: string;
   finishedAt: string;
   exitCode: number;
   outputSha256: string;
-  state: ReleaseGateState;
+  evidence: GateEvidenceRefV2[];
 };
 
-type RemediationReleaseManifestV1 = {
-  version: "remediation-release-manifest-v1";
+type ReleaseGateV2 = PendingReleaseGateV2 | TerminalReleaseGateV2;
+
+type RemediationReleaseManifestV2 = {
+  version: "remediation-release-manifest-v2";
   candidateSha: string;
   planBaseSha: string;
+  revision: number;
+  previousManifestSha256: string | null;
+  transitionId: ManifestTransitionId;
+  updatedAt: string;
+  artifactRootFingerprintSha256: string;
+  task0bEvidenceSha256: string;
   requiredRequirementIds: string[];
   requiredAcceptanceIds: string[];
-  gates: ReleaseArtifactV1[];
-  manualTelegramEvidenceSha256: string | null;
-  migrationEvidenceSha256: string | null;
-  rollbackEvidenceSha256: string | null;
+  gates: ReleaseGateV2[];
   overall: "not_ready" | "ready_for_release" | "released" | "rolled_back";
+};
+
+type ManifestTransitionReceiptV2 = {
+  version: "manifest-transition-receipt-v2";
+  transitionId: ManifestTransitionId;
+  transitionKeySha256: string;
+  candidateSha: string;
+  artifactRootFingerprintSha256: string;
+  task0bEvidenceSha256: string;
+  sourceManifestSha256: string | null;
+  targetManifestSha256: string;
+  sourceRevision: number | null;
+  targetRevision: number;
+  gateOutputSha256s: string[];
+  createdAt: string;
 };
 ```
 
-Validator requires exactly `REQ-01…REQ-38`, `AC-01…AC-41`, no duplicates,
-the exact phase-aware gate allowlists below and `candidateSha` equality in every
-artifact. It recursively rejects secret-like values in every parsed artifact
-field, including URL credentials, bot/API tokens, raw chat/user ids and secret
-env values. Only the allowlisted `commandId` and hash of an approved redacted
-template are persisted.
+Strict V2 invariants:
 
-State derivation is exact:
+- `candidateSha` всегда вычисляется как current clean `HEAD`; CLI не принимает
+  SHA, gate id или evidence path от оператора;
+- первый переход принимает только source token `absent`; каждый следующий —
+  exact lowercase SHA-256 текущих manifest bytes;
+- `revision` начинается с `1` и увеличивается ровно на один;
+  `previousManifestSha256` равен source bytes hash;
+- root fingerprint и Task 0B hash неизменны на всей цепочке и проверяются по
+  actual protected artifacts перед каждым переходом;
+- pending gate не содержит фиктивных command/timestamp/exit/output полей;
+- terminal gate содержит только exact allowlisted command/template и typed
+  evidence refs из своей `GateEvidencePolicy`;
+- `outputSha256` считается по actual immutable gate-output bytes; каждый
+  evidence hash повторно считается по actual regular non-symlink file;
+- singleton `migrationEvidenceSha256`/`rollbackEvidenceSha256` из V1 не
+  используются: G07 offline, G13 production migration, G10 rehearsal и actual
+  production rollback имеют разные typed refs;
+- recursive secret scan применяется к manifest, receipts, gate outputs и всем
+  parsed evidence; raw secrets/actor ids не сохраняются;
+- `release:verify` не меняет ни одного байта; единственный writer —
+  `release:manifest:advance`.
+
+State derivation and sole legal order:
 
 ```text
-G00…G11 passed
-  -> ready_for_release
-
-ready_for_release + explicit production GO
-  -> G12 backup -> G13 migration -> G14 rollout -> G15 canary
-  -> released
-
-any production rollback
-  -> rolled_back
-
-Address Poisoning closeout
-  -> separate APC-01 artifact/document after released|rolled_back
-  -> does not change release manifest overall
+absent
+  -> pre_manual      : G00-04,G06-11 passed; G05,G12-15 pending; not_ready
+  -> readiness       : G00-11 passed; G12-15 pending; ready_for_release
+  -> g12_backup_passed    : G00-12 passed; G13-15 pending; not_ready
+  -> g13_migration_passed : G00-13 passed; G14-15 pending; not_ready
+  -> g14_rollout_passed   : G00-14 passed; G15 pending; not_ready
+  -> g15_canary_released  : G00-15 passed; released
 ```
 
-`ready_for_release` ignores the still-pending production gates `G12…G15`, but
-is impossible while any pre-release gate `G00…G11` is absent, pending, failed,
-blocked, exitCode non-zero, hash invalid or foreign-SHA. `released` requires
-all `G00…G15` passed. Address Poisoning implementation/closeout is never part
-of either exact allowlist; only unchanged regression is `G11`.
+From a production-phase source, `production_failed` marks the exact failed
+gate and all later gates `blocked`; only then may `rollback_rolled_back` bind
+actual `ProductionRollbackEvidenceV2` and set `rolled_back`. G10 rehearsal can
+never satisfy the production rollback policy. A failed pre-release gate stays
+`not_ready`, does not skip forward, and requires a new candidate/evidence root.
+
+Address Poisoning closeout remains separate `APC-01` after
+`released|rolled_back` and never changes V2 manifest.
 
 ### 2.3 `AcceptanceTraceV1`
 
@@ -488,33 +588,44 @@ is blocked.
 
 ## 3. Release gate catalog and state machine
 
-| Gate | Required evidence | Failure action |
-|---|---|---|
-| `G00_BASE` | clean isolated worktree, dynamic base, Plans 1–4 ancestry, preserved user files/stash | block |
-| `G01_TRACE` | exact REQ/AC manifest; AC-41 test GREEN | return Plan 5 Task 2 |
-| `G02_DATA` | Plan 1 focused + migration/allowance PostgreSQL GREEN | return Plan 1 |
-| `G03_SCORING` | Plan 2 focused + PostgreSQL GREEN | return Plan 2 |
-| `G04_RUNTIME` | Plan 3 focused + PostgreSQL GREEN | return Plan 3 |
-| `G05_TELEGRAM` | Plan 4 focused, 11 exact golden, 19 message / 15 scenario manual evidence PASS | return Plan 4 |
-| `G06_FULL` | typecheck, full suite, diff check, dependency/scope audit | return owning plan |
-| `G07_SCHEMA_OFFLINE` | clean DB + offline production-clone rehearsals; full checksum/receipt/postconditions/no-op | block migration/release |
-| `G08_VERSION_SANITIZED` | candidate runtime on sanitized DB, recording-only Telegram, `/version` exact | block startup/release |
-| `G09_LEGACY_TERMINAL` | whole terminal legacy population count/ID-set/result aggregate unchanged | return owner/block |
-| `G10_ROLLBACK_REHEARSAL` | exact previous SHA starts safely on migrated sanitized DB; zero external sends | block release |
-| `G11_POISONING_REGRESSION` | unchanged Address Poisoning regression only | return separate owner/block |
-| `G12_PRODUCTION_BACKUP` | explicit GO, verified DB identity, protected backup + SHA-256 | block production mutation |
-| `G13_PRODUCTION_MIGRATION` | exact migration bytes, full receipt checksum, postconditions and no-op | rollback decision/block startup |
-| `G14_PRODUCTION_ROLLOUT` | exact release SHA, one runtime, `/version`, Admin 200, workers alive | rollback on failure |
-| `G15_PRODUCTION_CANARY` | lifecycle/delivery/legacy/log/queue canary complete | rollback on failure |
+| Gate | Exact `GateEvidencePolicy` roots | Transition | Failure action |
+|---|---|---|---|
+| `G00_BASE` | `task0-baseline.json`, exact Task 0B/root binding | `pre_manual` | block |
+| `G01_TRACE` | `acceptance-trace.json` and exact AC-41 execution trace | `pre_manual` | return Plan 5 Task 2 |
+| `G02_DATA` | `suite-plan1.vitest.json`, `suite-plan1.evidence.json` | `pre_manual` | return Plan 1 |
+| `G03_SCORING` | `suite-plan2.vitest.json`, `suite-plan2.evidence.json` | `pre_manual` | return Plan 2 |
+| `G04_RUNTIME` | `suite-plan3.vitest.json`, `suite-plan3.evidence.json` | `pre_manual` | return Plan 3 |
+| `G05_TELEGRAM` | Plan 4 suite at pre-manual; finalized `manual-telegram-acceptance.json` with exact 15/19/11 at readiness | `readiness` | return Plan 4 |
+| `G06_FULL` | Plan 5 suite plus `full-regression-evidence.json` | `pre_manual` | return owning plan |
+| `G07_SCHEMA_OFFLINE` | distinct clean and production-clone `schema032-release-evidence.json` snapshots | `pre_manual` | block migration/release |
+| `G08_VERSION_SANITIZED` | sanitized schema, manager/subprocess/query captures and `runtime-rehearsal.json` | `pre_manual` | block startup/release |
+| `G09_LEGACY_TERMINAL` | `terminal-legacy-population.json` and exact Task 0B cutoff | `pre_manual` | return owner/block |
+| `G10_ROLLBACK_REHEARSAL` | `rollback-rehearsal.json`; explicitly pre-GO only | `pre_manual` | block release |
+| `G11_POISONING_REGRESSION` | Address Poisoning suite report/evidence only | `pre_manual` | return separate owner/block |
+| `G12_PRODUCTION_BACKUP` | fresh authority, consumption, claim, lease/progress, evidence, actual dump/list bytes | `g12_backup_passed` | block production mutation |
+| `G13_PRODUCTION_MIGRATION` | fresh consumed schema authority, source G12 receipt/backup and all first/verify/no-op/final production sequence bytes | `g13_migration_passed` | rollback decision/block startup |
+| `G14_PRODUCTION_ROLLOUT` | fixed manager and direct-query captures plus derived rollout evidence | `g14_rollout_passed` | rollback on failure |
+| `G15_PRODUCTION_CANARY` | fixed query/scheduler/log captures plus derived bounded canary evidence | `g15_canary_released` | rollback on failure |
 
 Phase rules:
 
-| Manifest state | Required passed gates | Gates allowed pending |
+| V2 transition/state | Required passed gates | Gates allowed pending/terminal |
 |---|---|---|
-| `not_ready` | any incomplete subset | any |
-| `ready_for_release` | exactly `G00…G11` | `G12…G15` |
-| `released` | exactly `G00…G15` | none |
-| `rolled_back` | `G00…G11` plus recorded attempted production gates and rollback evidence | remaining production gates may be blocked |
+| `pre_manual / not_ready` | `G00…G04`, `G06…G11` | `G05`, `G12…G15` pending |
+| `readiness / ready_for_release` | exactly `G00…G11` | `G12…G15` pending |
+| `g12_backup_passed / not_ready` | exactly `G00…G12` | `G13…G15` pending |
+| `g13_migration_passed / not_ready` | exactly `G00…G13` | `G14…G15` pending |
+| `g14_rollout_passed / not_ready` | exactly `G00…G14` | `G15` pending |
+| `g15_canary_released / released` | exactly `G00…G15` | none |
+| `production_failed / not_ready` | passed prefix through the last successful production gate | one exact failed production gate; every later gate blocked |
+| `rollback_rolled_back / rolled_back` | same attempted prefix | failed/blocked suffix plus actual production rollback evidence |
+
+The writer discovers only the fixed policy roots above. Generation-bound
+authority/claim/progress filenames are followed exclusively from already
+validated primary evidence and strict filename grammar; the CLI never accepts
+an individual evidence filename. An exact replay returns the existing target
+manifest and receipt byte-for-byte. A conflicting replay or out-of-order state
+fails closed.
 
 `APC-01` is not a release gate. It is a separate post-release closeout artifact
 created only after `released` or `rolled_back` and never changes the manifest.
@@ -535,6 +646,19 @@ created only after `released` or `rolled_back` and never changes the manifest.
 - `scripts/snapshotTerminalLegacyPopulation.ts`
 - `scripts/rehearseRemediationRuntime.ts`
 - `scripts/finalizeTelegramAcceptance.ts`
+- `src/release/remediationReleaseManifestV2.ts` — V2 types, strict parser and
+  pure transition reducer.
+- `src/release/releaseGateEvidencePolicy.ts` — exact G00–G15 typed evidence
+  policy and semantic validators.
+- `src/release/releaseManifestStore.ts` — root lease/claim, CAS, durable
+  content-addressed snapshots and recovery.
+- `scripts/advanceRemediationReleaseManifest.ts` — sole manifest/gate writer.
+- `scripts/captureProductionRolloutEvidence.ts` — G14 derivation from fixed
+  manager/query captures.
+- `scripts/captureProductionCanaryEvidence.ts` — G15 derivation from fixed
+  bounded canary captures.
+- `scripts/captureProductionRollbackEvidence.ts` — actual rollback derivation;
+  never accepts G10 rehearsal.
 - `tests/release/remediationReleaseManifest.acceptance.test.ts`
 - `tests/release/acceptanceTrace.acceptance.test.ts`
 - `tests/release/runtimeVersion.acceptance.test.ts`
@@ -542,6 +666,10 @@ created only after `released` or `rolled_back` and never changes the manifest.
 - `tests/release/manualTelegramEvidence.acceptance.test.ts`
 - `tests/release/terminalLegacyPopulation.acceptance.test.ts`
 - `tests/release/rollbackRehearsal.acceptance.test.ts`
+- `tests/release/releaseManifestLifecycle.acceptance.test.ts`
+- `tests/release/releaseManifestStore.acceptance.test.ts`
+- `tests/release/productionReleaseEvidence.acceptance.test.ts`
+- `tests/release/productionReleaseEvidence.postgres.test.ts`
 - `tests/fixtures/release/remediationReleaseFixtures.ts`
 - `docs/superpowers/verification/plan5-release/README.md`
 
@@ -552,8 +680,18 @@ Created only after deployment/closeout:
 
 ### Modify
 
-- `package.json` — only `release:verify`, `schema:verify`, trace capture,
-  runtime rehearsal and manual-evidence scripts; no dependency changes.
+- `package.json` — existing release commands plus exact
+  `release:manifest:advance`, `release:production:rollout:evidence`,
+  `release:production:canary:evidence` and
+  `release:production:rollback:evidence`; no dependency changes.
+- `src/release/remediationReleaseManifest.ts` — V1 compatibility parser only;
+  no Task 9 or production authority.
+- `scripts/verifyRemediationRelease.ts` — V2 semantic read-only verifier;
+  byte-identical artifact-root invariant.
+- `scripts/createProductionBackupEvidence.ts`,
+  `scripts/runSchema032ReleaseSequence.ts`, `scripts/manageTask0BRuntime.ts` —
+  require a fully verified V2 transition receipt/current manifest/root binding,
+  never structural manifest-only validation.
 - `src/config.ts` — optional parsed `RUNTIME_GIT_SHA`; candidate startup makes
   it mandatory through `RuntimeVersionV1` validation.
 - `src/index.ts` — retain startup `Schema032Verification`, build one runtime
@@ -583,7 +721,7 @@ external disposable DB state.
 
 **Code changes:** none. **Commit:** none.
 
-#### Task 0A — Local baseline gate (before Tasks 1–8)
+#### Task 0A — Local baseline gate (before Tasks 1–8B)
 
 1. Verify local master contains Plan 4 final SHA and approved Plan 5 doc commit.
 2. Set dynamically:
@@ -603,7 +741,7 @@ external disposable DB state.
 7. Exact per-AC RED/GREEN traces for `AC-01…AC-40` are formed and verified by
    Tasks 1–6. `AC-41` belongs entirely to Plan 5 and first appears after its
    frozen RED batch and implementation in Tasks 1–6; its absence in Task 0A is
-   expected and does not block Tasks 1–8.
+   expected and does not block Tasks 1–8B.
 8. Prove migration 032 bytes still hash to the approved full checksum.
 9. Verify no `033_*.sql` and no unapproved migration exists.
 10. Predeclare exact disposable identities:
@@ -633,7 +771,7 @@ external disposable DB state.
 
 **Task 0A expected:** clean feature worktree, exact local baseline and
 plan-level ancestry evidence; production remains unchanged. Missing operational
-release inputs do not block Tasks 1–8.
+release inputs do not block Tasks 1–8B.
 
 #### Task 0B — Operational/release preflight (mandatory immediately before Task 9)
 
@@ -652,8 +790,8 @@ Regenerate evidence from the then-current runtime and require all of:
    migrate DB or send Telegram messages.
 
 Every value is bound to observation time, source and candidate SHA. Missing,
-stale, guessed or unverified input blocks Task 9 and keeps
-`ReleaseManifestV1.overall = "not_ready"`. Task 0B cannot be deferred into a
+stale, guessed or unverified input blocks Task 9 and prevents a valid
+`RemediationReleaseManifestV2` pre-manual/readiness chain. Task 0B cannot be deferred into a
 later Task 9 step and cannot be satisfied from the earlier Task 0A snapshot
 alone.
 
@@ -1070,6 +1208,485 @@ Do not rewrite user-owned audit additions in `10` or `13`.
 
 **Reviews:** whole-plan spec-review and code-quality/operational-safety review.
 
+### Task 8B — Manifest V2 lifecycle remediation (mandatory before Task 9)
+
+Task 8B исправляет обнаруженный read-only audit gap. Он выполняется только в
+текущем isolated feature worktree, через subagent-driven development и TDD.
+Ни один шаг не читает и не меняет production DB `tron_watch:55999`, не
+останавливает/запускает runtime и не отправляет Telegram. После каждого
+подзадания: один ограниченный commit, clean worktree, отдельный spec-review,
+отдельный code-quality/security review и forbidden-scope audit.
+
+#### Task 8B.0 — Approve amendment and freeze corrective baseline
+
+**Files:**
+
+- Modify only:
+  `docs/superpowers/plans/2026-07-17-remediation-end-to-end-acceptance-and-release.md`.
+
+Steps:
+
+1. Record current feature `HEAD`, clean-worktree state, main-worktree 13 dirty
+   paths and four stash object SHAs. Do not modify main or any stash.
+2. Confirm current code has no manifest writer, no G14/G15/production-rollback
+   evidence producer and no semantic G12–G15 binding. This observation is the
+   expected baseline, not permission to run production.
+3. Run:
+
+   ```powershell
+   git diff --check
+   git diff --name-only
+   $forbidden = @('T'+'BD','T'+'ODO','implement '+'later','fill '+'in details')
+   Select-String -Pattern $forbidden `
+     -Path docs/superpowers/plans/2026-07-17-remediation-end-to-end-acceptance-and-release.md
+   ```
+
+   **Expected:** diff check PASS; only this Plan 5 document changed; placeholder
+   scan has no unresolved Task 8B instruction.
+4. Commit only this document:
+
+   ```powershell
+   git add -- docs/superpowers/plans/2026-07-17-remediation-end-to-end-acceptance-and-release.md
+   git diff --cached --check
+   git diff --cached --name-only
+   git commit -m "docs: approve plan 5 manifest lifecycle amendment"
+   ```
+
+5. Perform separate spec-review and documentation/code-quality review. Verify
+   `git status --porcelain` is empty.
+
+Task 8 remains incomplete after this docs commit. Task 9 remains blocked.
+
+#### Task 8B.1 — Freeze manifest-lifecycle RED acceptance
+
+**Files:**
+
+- Create: `tests/release/releaseManifestLifecycle.acceptance.test.ts`.
+- Create: `tests/release/releaseManifestStore.acceptance.test.ts`.
+- Create: `tests/release/productionReleaseEvidence.acceptance.test.ts`.
+- Modify: `tests/fixtures/release/remediationReleaseFixtures.ts` only to add
+  immutable V2/evidence fixtures; V1 assertions are not weakened.
+
+Add these exact test identities:
+
+```text
+[REQ-38][MANIFEST-V2-INIT] creates pre-manual revision one only from absent and exact G00-G11 evidence
+[REQ-38][MANIFEST-V2-TRANSITIONS] accepts only absent to pre-manual to readiness to G12 to G13 to G14 to G15
+[REQ-38][MANIFEST-V2-PENDING] pending gates contain no invented execution fields
+[REQ-38][MANIFEST-V2-EVIDENCE] semantically binds every G00-G15 policy to actual bytes
+[REQ-38][MANIFEST-V2-FORGED] rejects a structurally valid hand-written manifest and gate output
+[REQ-38][MANIFEST-V2-CAS] rejects stale and concurrent writers without overwriting the winner
+[REQ-38][MANIFEST-V2-CRASH] recovers exactly before and after the atomic manifest replace
+[REQ-38][MANIFEST-V2-REPLAY] exact replay is byte-identical and conflicting replay fails closed
+[REQ-38][MANIFEST-V2-VERIFY-READONLY] verifier leaves every artifact byte-identical
+[REQ-38][G12-V2-BINDING] binds authority consumption claim lease progress evidence dump and restore list
+[REQ-38][G13-V2-BINDING] binds consumed schema authority source G12 receipt and complete production sequence
+[REQ-35][REQ-38][G14-V2-EVIDENCE] derives rollout only from exact manager and query captures
+[REQ-03][REQ-35][REQ-36][G15-V2-EVIDENCE] derives canary only after two cycles and fifteen minutes with all checks
+[REQ-35][REQ-38][PRODUCTION-ROLLBACK-V2] requires actual production rollback evidence and rejects G10 rehearsal
+[REQ-38][PRODUCTION-MUTATOR-V2] rejects V1 structural or V2 manifest without current transition receipt and root binding
+```
+
+RED command:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestLifecycle.acceptance.test.ts `
+  tests/release/releaseManifestStore.acceptance.test.ts `
+  tests/release/productionReleaseEvidence.acceptance.test.ts
+```
+
+**Expected RED:** guarded dynamic imports convert each missing V2 capability to
+the named behavioral assertion `Plan 5 feature missing`; the suite itself still
+loads normally. Syntax, unhandled import-resolution, fixture, type or
+environment errors are not acceptable RED. Record the Vitest JSON report hash
+as Task 8B RED provenance.
+
+**Commit:** `test: define release manifest v2 lifecycle acceptance`
+
+Then clean worktree, spec-review proving every audit finding has an exact
+test, code-quality review proving no assertion manufactures a final manifest,
+and forbidden-scope audit.
+
+#### Task 8B.2 — Implement V2 types and pure reducer
+
+**Files:**
+
+- Create: `src/release/remediationReleaseManifestV2.ts`.
+- Modify: `tests/release/releaseManifestLifecycle.acceptance.test.ts` only for
+  non-semantic fixture wiring if needed.
+
+Implement:
+
+- strict parsing of the §2.2 V2 contracts and exact key sets;
+- `reduceManifestTransition(current, transition, verifiedGateOutputs)` as a
+  pure function with the sole state order specified above;
+- revision, previous hash, transition id, root/Task0B/candidate invariants;
+- pending/terminal discriminated records;
+- typed production failure prefix and rollback preconditions;
+- recursive secret rejection and exact REQ/AC/gate sets.
+
+The reducer receives already-verified typed outputs. It performs no filesystem,
+Git, process, DB, network or time calls. `updatedAt` is an injected exact ISO
+value. It never accepts free evidence or gate ids.
+
+RED/GREEN:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestLifecycle.acceptance.test.ts `
+  -t "MANIFEST-V2-INIT|MANIFEST-V2-TRANSITIONS|MANIFEST-V2-PENDING"
+npm run typecheck
+```
+
+**Expected GREEN:** init/order/pending cases pass; later filesystem and
+production-policy tests remain RED until their owning tasks.
+
+**Commit:** `feat(release): define manifest v2 lifecycle`
+
+Then clean worktree, separate state-machine spec-review and type/security
+quality review.
+
+#### Task 8B.3 — Implement sole CAS writer and crash-safe store
+
+**Files:**
+
+- Create: `src/release/releaseManifestStore.ts`.
+- Create: `scripts/advanceRemediationReleaseManifest.ts`.
+- Modify: `package.json` — add only:
+
+  ```json
+  "release:manifest:advance": "node --import tsx scripts/advanceRemediationReleaseManifest.ts"
+  ```
+
+- Modify: `tests/release/releaseManifestStore.acceptance.test.ts` only for
+  injected filesystem/time/process dependencies without weakening assertions.
+
+The CLI accepts exactly three positionals:
+
+```text
+release:manifest:advance <allowlisted-transition> <expected-source-sha256|absent> <protected-artifact-root>
+```
+
+No optional candidate, gate, evidence, command or individual artifact path is
+accepted. Candidate is exact clean Git `HEAD`; dirty worktree fails before
+claim. Root is absolute/outside repository/non-symlink/restrictive and its
+fingerprint must equal Task 0B.
+
+Store protocol:
+
+1. acquire root-wide O_EXCL bounded lease and generation-bound claim;
+2. read current bytes with `O_NOFOLLOW`; require exact expected source SHA or
+   exact absence;
+3. derive a deterministic `transitionKeySha256` from candidate, source hash,
+   transition, root and Task 0B hashes;
+4. resolve fixed evidence policy, verify actual bytes, and run pure reducer;
+5. write/fsync immutable content-addressed gate outputs, target manifest
+   snapshot and hash-chained receipt first;
+6. while still owning the lease, re-read source bytes and repeat CAS;
+7. write/fsync a same-directory temporary current manifest and atomically
+   replace `release-manifest.json`; this replace is the only commit point;
+8. persist bounded completion state and release lease.
+
+A crash before replace leaves the previous manifest authoritative; exact replay
+uses the claim/snapshot/receipt and completes once. A crash after replace returns
+the existing exact receipt and never rewrites. Stale lease takeover is allowed
+only after bounded expiry and exact process/claim revalidation. A foreign,
+symlinked, malformed, mismatched or conflicting partial file blocks recovery;
+the writer never deletes it blindly.
+
+RED/GREEN:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestStore.acceptance.test.ts
+npm run typecheck
+```
+
+**Expected GREEN:** CAS/concurrency/crash/replay tests pass on injected temp
+roots; no production or repository root is mutated.
+
+**Commit:** `feat(release): advance manifest atomically`
+
+Then clean worktree, spec-review of commit point/recovery and separate
+filesystem/security quality review.
+
+#### Task 8B.4 — Bind exact G00–G11 evidence policies
+
+**Files:**
+
+- Create: `src/release/releaseGateEvidencePolicy.ts`.
+- Modify: `src/release/remediationReleaseManifestV2.ts`.
+- Modify: `scripts/advanceRemediationReleaseManifest.ts`.
+- Modify: `scripts/verifyRemediationRelease.ts`.
+- Modify: `tests/release/releaseManifestLifecycle.acceptance.test.ts` only for
+  exact policy fixtures.
+
+Implement the G00–G11 rows in §3 as an exhaustive
+`Record<ReleaseGateId, GateEvidencePolicyV2>`. Each policy has exact primary
+filenames, derived supporting filename grammar, schema validators, candidate/
+root/Task0B bindings, required evidence kinds and canonical ordering. G07 keeps
+clean and production-clone refs distinct. G10 is tagged
+`scope: "pre_go_rehearsal"` and cannot satisfy actual rollback.
+
+`pre_manual` validates all automated evidence, creates passed G00–04/G06–11,
+and creates only pending G05/G12–15. `readiness` accepts the same source bytes
+plus finalized exact 15/19/11 manual evidence and passes G05. No other evidence
+is reinterpreted or rewritten.
+
+`release:verify` gains V2 semantic validation but remains byte-for-byte
+read-only. The acceptance test hashes the complete artifact tree before and
+after verification and requires equality.
+
+RED/GREEN:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestLifecycle.acceptance.test.ts `
+  tests/release/remediationReleaseManifest.acceptance.test.ts `
+  tests/release/manualTelegramEvidence.acceptance.test.ts
+npm run typecheck
+```
+
+**Expected GREEN:** G00–G11 policy/forged/read-only cases pass; G12–G15 cases
+remain owned by later tasks.
+
+**Commit:** `feat(release): bind pre-release gate evidence`
+
+Then clean worktree, exact-policy spec-review and separate secret/path/
+read-only quality review.
+
+#### Task 8B.5 — Bind G12 backup and G13 migration transitions
+
+**Files:**
+
+- Modify: `src/release/releaseGateEvidencePolicy.ts`.
+- Modify: `src/release/remediationReleaseManifestV2.ts`.
+- Modify: `scripts/advanceRemediationReleaseManifest.ts`.
+- Modify: `tests/release/releaseManifestLifecycle.acceptance.test.ts`.
+- Modify: `tests/release/productionBackup.acceptance.test.ts` only to expose
+  existing actual-byte fixtures; producer semantics stay unchanged here.
+- Modify: `tests/release/schema032Release.acceptance.test.ts` only to expose
+  existing complete sequence fixtures.
+
+G12 policy starts only from exact `readiness` V2 bytes and binds:
+
+- fresh backup authority and consumed claim;
+- operation claim/lease plus dump/list progress owned by the same generation;
+- `production-backup-evidence.json`;
+- actual `production-backup.dump` and restore-list bytes, size/hash/count;
+- candidate, root, Task 0B, production DB identity and source manifest hash.
+
+G13 policy starts only from exact G12 target bytes and binds:
+
+- fresh consumed schema authority;
+- exact G12 transition receipt and backup bytes;
+- first migration outcome, first verification, second already-verified outcome
+  and final verification;
+- exact migration filename/full bytes checksum/full receipt checksum,
+  postconditions, production DB identity and advisory-lock ownership.
+
+No singleton V1 migration hash is read. `g12_backup_passed` and
+`g13_migration_passed` both produce `overall=not_ready`.
+
+RED/GREEN:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestLifecycle.acceptance.test.ts `
+  tests/release/productionBackup.acceptance.test.ts `
+  tests/release/schema032Release.acceptance.test.ts `
+  -t "G12|G13|MANIFEST-V2-EVIDENCE"
+npm run typecheck
+```
+
+**Expected GREEN:** every actual-byte binding passes; missing/swapped/stale/
+foreign sequence member fails closed.
+
+**Commit:** `feat(release): bind backup and migration transitions`
+
+Then clean worktree, production-order spec-review and separate backup/schema
+security quality review. No producer is run against production.
+
+#### Task 8B.6 — Implement G14, G15 and actual rollback evidence producers
+
+**Files:**
+
+- Create: `scripts/captureProductionRolloutEvidence.ts`.
+- Create: `scripts/captureProductionCanaryEvidence.ts`.
+- Create: `scripts/captureProductionRollbackEvidence.ts`.
+- Create: `tests/release/productionReleaseEvidence.postgres.test.ts`.
+- Modify: `tests/release/productionReleaseEvidence.acceptance.test.ts`.
+- Modify: `src/release/releaseGateEvidencePolicy.ts`.
+- Modify: `src/release/remediationReleaseManifestV2.ts`.
+- Modify: `package.json` with only the three exact evidence-producer commands.
+
+All three scripts accept only the protected artifact root. They discover fixed
+capture names from their policies and derive sanitized typed evidence; no free
+PID, URL, DB, SHA, command, evidence path or pass/fail string is accepted.
+Dependencies for process/query/log/time observation are injected in unit tests.
+The PostgreSQL branch uses only exact
+`tron_watch_plan5_runtime_sanitized`, requires `REQUIRE_PLAN5_POSTGRES=1`,
+recording-disabled Telegram and deterministic synthetic rows.
+
+G14 requires all existing Task 12 rollout checks:
+
+- exact G13 manifest/receipt and schema 032 verification;
+- manager-owned previous-runtime stop and candidate start receipts;
+- exact candidate SHA/label `/version`, Admin 200, one candidate process and
+  one poller/worker schedule;
+- Where, Incoming, Deep/index, reconciler, delivery and allowance cycles alive;
+- no raw secrets/actor ids, no duplicate delivery and unchanged terminal
+  legacy population.
+
+G15 requires an observation window of at least two complete polling cycles and
+15 minutes, whichever is longer, and every Task 12 canary check: schema/version/
+Admin/singleton stability, one reconciliation, bounded delivery/fingerprint,
+cache-only navigation plus explicit refresh, conservative stale allowance,
+unchanged terminal population, no secret/log leakage, no unexpected queue/
+terminal-intent growth and honest no-final safety ceilings.
+
+G13 sequence, G14 rollout and G15 canary producers persist a fixed-path typed
+failure evidence when an external effect was attempted but the gate did not
+pass. `production_failed` derives the failed gate from that validated evidence;
+the operator cannot supply a gate id or free-form reason. A G12 backup failure
+before production mutation leaves the readiness manifest unchanged and does
+not enter rollback.
+
+Actual production rollback requires a preceding `production_failed` V2 state,
+manager-owned candidate stop plus previous-runtime start receipts, additive
+schema 032 still verified, expected previous `/version`, Admin 200, singleton
+workers, conservative allowance, unchanged result/legacy/sent hashes and no
+duplicate Telegram delivery. It rejects `rollback-rehearsal.json` by evidence
+kind, schema version and scope.
+
+Use three small commits in this order:
+
+1. `feat(release): capture production rollout evidence`;
+2. `feat(release): capture production canary evidence`;
+3. `feat(release): capture production rollback evidence`.
+
+After each commit run its exact `-t "G14"`, `-t "G15"` or
+`-t "PRODUCTION-ROLLBACK"` focused tests, staged-name/diff checks, clean
+worktree, separate spec-review and separate quality/security review.
+
+Final Task 8B.6 GREEN:
+
+```powershell
+$env:REQUIRE_PLAN5_POSTGRES='1'
+$env:TEST_DATABASE_URL=$env:PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL
+npx vitest run --configLoader bundle `
+  tests/release/productionReleaseEvidence.acceptance.test.ts `
+  tests/release/productionReleaseEvidence.postgres.test.ts
+npm run typecheck
+```
+
+**Expected:** all G14/G15/rollback tests GREEN without external send; exact
+disposable PostgreSQL cleanup PASS.
+
+#### Task 8B.7 — Require V2 verification in every production mutator
+
+**Files:**
+
+- Modify: `scripts/createProductionBackupEvidence.ts`.
+- Modify: `scripts/runSchema032ReleaseSequence.ts`.
+- Modify: `scripts/manageTask0BRuntime.ts`.
+- Modify: `scripts/verifyRemediationRelease.ts`.
+- Modify: `tests/release/productionBackup.acceptance.test.ts`.
+- Modify: `tests/release/schema032Release.acceptance.test.ts`.
+- Modify: `tests/release/task0bRuntimeManager.acceptance.test.ts`.
+- Modify: `tests/release/releaseManifestLifecycle.acceptance.test.ts`.
+
+Before authority claim/consumption and immediately before every external
+mutation, each mutator must verify:
+
+- current actual `release-manifest.json` is strict V2 and its bytes equal the
+  authority/expected source hash;
+- exact latest hash-chained transition receipt and immutable source snapshot;
+- current root/Task0B/candidate binding;
+- full semantic evidence for the required phase, not only gate state;
+- action-specific phase: readiness for backup, G12 for migration,
+  G13 for candidate rollout, failed production state for rollback.
+
+V1, fixture-like hand-written V2, missing gate output, arbitrary evidence hash,
+stale receipt, changed root/Task0B, out-of-order transition and verifier-only
+status object all fail before claim and before mutation. Existing authority
+TTL, lease, exact DB/runtime binding and secret handling remain stricter and
+are not weakened.
+
+`release:verify` supports only read-only phase checks. It never invokes the
+writer and never changes manifest `overall`. Its exact phase allowlist is
+`manifest | pre-manual | readiness | g12 | g13 | g14 | released | rolled-back`.
+
+RED/GREEN:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestLifecycle.acceptance.test.ts `
+  tests/release/productionBackup.acceptance.test.ts `
+  tests/release/schema032Release.acceptance.test.ts `
+  tests/release/task0bRuntimeManager.acceptance.test.ts `
+  -t "PRODUCTION-MUTATOR-V2|forged|manifest|authority|phase"
+npm run typecheck
+```
+
+**Expected GREEN:** all mutators reject structural-only authority and accept
+only the exact fully verified V2 phase under injected non-production tests.
+
+**Commit:** `fix(release): require verified manifest transitions for production`
+
+Then clean worktree, production-authority spec-review and independent
+security/code-quality review.
+
+#### Task 8B.8 — Runbook, full verification and Task 8 completion
+
+**Files:**
+
+- Modify: `docs/superpowers/verification/plan5-release/README.md`.
+- Modify: `docs/knowledge/09-current-decisions.md`.
+- Modify: `docs/knowledge/12-runbooks.md`.
+- Modify `docs/knowledge/10-open-problems.md` or
+  `docs/knowledge/13-agent-observations.md` only if a genuinely new unresolved
+  or repeated issue remains; do not overwrite user-owned lines.
+
+Replace every instruction to “build/update manifest” manually with exact
+`release:manifest:advance` calls and the expected source SHA chain. State that
+`release:verify` is byte-identical/read-only. Document exact G14/G15/rollback
+producer order and that no production command was executed. Keep the unmarked
+runtime blocker explicit.
+
+Focused and full GREEN:
+
+```powershell
+npx vitest run --configLoader bundle `
+  tests/release/releaseManifestLifecycle.acceptance.test.ts `
+  tests/release/releaseManifestStore.acceptance.test.ts `
+  tests/release/productionReleaseEvidence.acceptance.test.ts `
+  tests/release/productionReleaseEvidence.postgres.test.ts `
+  tests/release/remediationReleaseManifest.acceptance.test.ts `
+  tests/release/productionBackup.acceptance.test.ts `
+  tests/release/schema032Release.acceptance.test.ts `
+  tests/release/task0bRuntimeManager.acceptance.test.ts
+npm run typecheck
+npm test
+npx vitest run --configLoader bundle `
+  tests/monitor/addressPoisoning.test.ts `
+  tests/monitor/addressPoisoningWorker.test.ts `
+  tests/alerts/addressPoisoningAlert.test.ts
+git diff --check
+```
+
+Also require exact disposable PostgreSQL cleanup, Plan 5 scope audit, no
+Address Poisoning diff, no migration 032 byte change/no migration 033, feature
+worktree clean, and main 13 dirty paths/four stash hashes unchanged.
+
+**Commit:** `docs: document manifest v2 release lifecycle`
+
+After the commit run whole-plan spec-review and independent operational/
+security code-quality review. Task 8 becomes complete only when both reviews
+PASS and every Task 8B focused/full check is GREEN. Task 9 still requires a
+fresh Task 0B and separate resolution of the unmarked-runtime blocker.
+
 ### Task 9 — Freeze candidate and execute all pre-release gates
 
 **Code/docs changes:** none after freeze. **Commit:** none.
@@ -1091,14 +1708,17 @@ $env:RUNTIME_GIT_SHA = $env:RELEASE_SHA
 $env:RUNTIME_INSTANCE_LABEL = "remediation-$($env:RELEASE_SHA.Substring(0,8))"
 ```
 
-Provision exact disposable DB URLs for Plans 1–5 and run the automated
-pre-manual phase:
+Provision exact disposable DB URLs for Plans 1–5 and run all automated
+producers first. Then create V2 revision 1 through the sole writer and verify it
+read-only:
 
 ```powershell
+$env:PLAN5_ARTIFACT_ROOT = '<outside-repo-path>'
+npm run release:manifest:advance -- pre_manual absent $env:PLAN5_ARTIFACT_ROOT
 npm run release:verify -- --phase pre-manual --artifact-root <outside-repo-path>
 ```
 
-The executable phase performs the automated portions of `G00…G11`, including:
+The producer phase supplies the automated evidence for `G00…G11`, including:
 
 1. exact per-AC Vitest JSON/JUnit RED/GREEN trace;
 2. all required PostgreSQL files, typecheck and literal full suite;
@@ -1111,12 +1731,11 @@ The executable phase performs the automated portions of `G00…G11`, including:
 7. Address Poisoning regression only;
 8. cleanup and forbidden-scope audit.
 
-At this point `G05_TELEGRAM` must remain exactly
-`pending:manual_evidence_pending`. All other gates in `G00…G11` must be
-`passed`; any other pending, skipped, blocked or failed state stops Task 9.
-The command may report the phase result `pre_manual_ready`, but
-`ReleaseManifestV1.overall` remains `not_ready`. This phase cannot produce
-`ready_for_release`.
+At this point `G05_TELEGRAM` is a V2 pending record without execution fields.
+All other gates in `G00…G11` must be `passed`; any other pending, skipped,
+blocked or failed state stops Task 9. The `pre_manual` transition produces
+`RemediationReleaseManifestV2.overall = "not_ready"`. Read-only verifier cannot
+produce `ready_for_release`.
 
 No runtime ever points to `tron_watch_plan5_clone`. Start the candidate only
 against `tron_watch_plan5_runtime_sanitized` with provider fixtures and
@@ -1151,8 +1770,9 @@ Persist `RollbackRehearsalEvidenceV1`; any failed check blocks
    payloads once to one allowlisted non-production chat.
 3. Capture 19 message records/screenshots and review 15 scenario summaries plus
    11 exact golden messages.
-4. Finalize the manual evidence; only this operation may change
-   `G05_TELEGRAM` from `pending:manual_evidence_pending` to `passed`.
+4. Finalize the manual evidence. The finalizer writes evidence only; it cannot
+   change G05 or manifest. Only the subsequent `readiness` V2 transition may
+   pass G05.
 
 The reviewer checks exactly the 15 `artifactId` entries already defined by
 `MANUAL_TELEGRAM_ACCEPTANCE_CASES`. One summary is persisted per row; rows with
@@ -1193,15 +1813,20 @@ message records or golden comparisons:
 | Navigation | `G08`, `G15` | sanitized and post-GO checks prove normal tab cache-only, explicit refresh and unblocked callback |
 | `/version` | `G08`, `G14` | candidate and post-GO production runtime report the exact SHA/label/policy/result/narrative/schema checksum |
 
-After manual finalization, rerun the strict readiness phase:
+After manual finalization, compute the exact current manifest bytes hash,
+advance once, then rerun the strict read-only readiness verifier:
 
 ```powershell
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path $env:PLAN5_ARTIFACT_ROOT 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- readiness $source $env:PLAN5_ARTIFACT_ROOT
 npm run release:verify -- --phase readiness --artifact-root <outside-repo-path>
 ```
 
 This phase requires every exact gate `G00…G11` to be `passed`, including the
 finalized `G05_TELEGRAM`; it rejects pending/skipped/blocked/failed gates and
-only then writes `ReleaseManifestV1.overall = "ready_for_release"`.
+proves the writer produced `RemediationReleaseManifestV2.overall =
+"ready_for_release"`. Verifier writes nothing.
 
 The TGyt/TWGC fixture proves deterministic behavior under fixture inputs. It is
 not exported as an authoritative live-chain observation. Any live case fact
@@ -1225,7 +1850,10 @@ is still unchanged.
    fast-forward / apply / content-hash procedure used for Plans 1–4.
 4. Rerun the complete automated gate on merged `master`. Fast-forward must keep
    `master == RELEASE_SHA`; otherwise freeze is invalid.
-5. Re-derive `ready_for_release`; `G12…G15` must still be pending.
+5. Preserve the exact V2 hash chain and rerun read-only readiness verification;
+   `G12…G15` must still be pending. Do not rebuild or hand-edit manifest. If
+   merge changes SHA or any immutable evidence bytes, invalidate the freeze and
+   start a new artifact root/manual cycle.
 6. Obtain a second explicit `GO` for production mutation.
 
 No push is implied by merge or release GO.
@@ -1254,9 +1882,17 @@ G12 controlled backup:
    binding revalidation. It produces `production-backup.dump`,
    `production-backup-restore-list.txt` and
    `production-backup-evidence.json`; it does not mutate the release manifest.
-5. Run the verifier/aggregator over the completed evidence. Only it marks
-   `G12_PRODUCTION_BACKUP=passed`, returning the manifest to `not_ready` with
-   `G00…G12` passed and `G13…G15` pending.
+5. Advance through the sole writer, then verify read-only:
+
+   ```powershell
+   $source = (Get-FileHash -Algorithm SHA256 `
+     (Join-Path $env:PLAN5_ARTIFACT_ROOT 'release-manifest.json')).Hash.ToLowerInvariant()
+   npm run release:manifest:advance -- g12_backup_passed $source $env:PLAN5_ARTIFACT_ROOT
+   npm run release:verify -- --phase g12 --artifact-root $env:PLAN5_ARTIFACT_ROOT
+   ```
+
+   Only this transition marks `G12_PRODUCTION_BACKUP=passed`, returning the
+   manifest to `not_ready` with `G00…G12` passed and `G13…G15` pending.
 
 G13 controlled migration:
 
@@ -1276,9 +1912,17 @@ G13 controlled migration:
 
 3. The sequence owns the first migration, full checksum/receipt and
    postcondition verification, the second `already_verified` no-op, and final
-   verification. The verifier/aggregator marks `G13_PRODUCTION_MIGRATION`
-   passed only from that evidence. Candidate startup and previous-runtime stop
-   remain Task 12/G14 operations.
+   verification. Advance `g13_migration_passed` with the exact current source
+   manifest SHA and then run read-only `--phase g13` verification. Only the
+   writer marks `G13_PRODUCTION_MIGRATION` passed from the complete evidence.
+   Candidate startup and previous-runtime stop remain Task 12/G14 operations.
+
+   ```powershell
+   $source = (Get-FileHash -Algorithm SHA256 `
+     (Join-Path $env:PLAN5_ARTIFACT_ROOT 'release-manifest.json')).Hash.ToLowerInvariant()
+   npm run release:manifest:advance -- g13_migration_passed $source $env:PLAN5_ARTIFACT_ROOT
+   npm run release:verify -- --phase g13 --artifact-root $env:PLAN5_ARTIFACT_ROOT
+   ```
 
 Any failure stops forward progress. If G13 has mutated production, start the
 Task 12 rollback decision; otherwise leave the previous runtime unchanged. Do
@@ -1299,6 +1943,17 @@ Immediate `G14` gates:
 - no duplicate send caused by rollout;
 - complete terminal legacy population aggregate unchanged.
 
+After the direct observations, run only the fixed rollout evidence producer,
+advance with the current manifest SHA, and verify:
+
+```powershell
+npm run release:production:rollout:evidence -- $env:PLAN5_ARTIFACT_ROOT
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path $env:PLAN5_ARTIFACT_ROOT 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g14_rollout_passed $source $env:PLAN5_ARTIFACT_ROOT
+npm run release:verify -- --phase g14 --artifact-root $env:PLAN5_ARTIFACT_ROOT
+```
+
 Any failure triggers rollback; no production hotfix.
 
 Observe at least two complete polling cycles and 15 minutes, whichever is
@@ -1318,6 +1973,16 @@ longer. Verify:
 11. configured `hard_safety_limit_exceeded` and provider/local ceilings remain
     honest no-final states, not claimed fixed.
 
+Then run the fixed canary evidence producer and sole writer:
+
+```powershell
+npm run release:production:canary:evidence -- $env:PLAN5_ARTIFACT_ROOT
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path $env:PLAN5_ARTIFACT_ROOT 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g15_canary_released $source $env:PLAN5_ARTIFACT_ROOT
+npm run release:verify -- --phase released --artifact-root $env:PLAN5_ARTIFACT_ROOT
+```
+
 #### Rollback triggers
 
 Rollback on schema/startup mismatch, wrong `/version`, process duplication,
@@ -1326,18 +1991,24 @@ Telegram presentation P0/P1, Address Poisoning regression or secret leakage.
 
 #### Application rollback procedure
 
-1. Stop candidate process.
-2. Do **not** delete receipt 032, columns, constraints or delivery rows.
-3. Start the exact previous verified runtime/worktree with its recorded label.
-4. Verify Admin, singleton, `/version`, queues and conservative allowance view.
-5. Confirm `sent` delivery remains sent and completed results unchanged.
-6. Mark release manifest `rolled_back` with sanitized reason/evidence.
+1. Require the failed schema/rollout/canary producer to persist typed fixed-path
+   failure evidence. Advance `production_failed`; the writer derives the exact
+   failed gate and blocked suffix without a free gate argument.
+2. Stop candidate process through the exact manager authority.
+3. Do **not** delete receipt 032, columns, constraints or delivery rows.
+4. Start the exact previous verified runtime/worktree with its recorded label.
+5. Verify Admin, singleton, `/version`, queues and conservative allowance view.
+6. Confirm `sent` delivery remains sent and completed results unchanged.
+7. Run `release:production:rollback:evidence`, advance
+   `rollback_rolled_back` with the exact current manifest SHA, then run
+   read-only `--phase rolled-back`. G10 rehearsal is rejected.
 
 The DB backup is not automatically restored. Restore requires a separate
 explicit operator decision after proving additive schema corruption; ordinary
 application rollback leaves migration 032 in place.
 
-If `G14` and `G15` pass, mark manifest `released` and hand off to separate
+If `G14` and `G15` pass, the `g15_canary_released` writer transition marks the
+manifest `released` and hands off to separate
 Address Poisoning closeout. The release manifest is now complete and is not
 reopened by closeout.
 
@@ -1452,7 +2123,7 @@ never used as a test database.
 | REQ-35 | G04, G08, G10, G14, G15 | wait-set reconciliation, sanitized runtime, previous-SHA rollback, production singleton/canary |
 | REQ-36 | G04, G08, G10, G14, G15 | delivery CAS/lease/retry/atomic effect/immutability, zero-send rollback rehearsal and production queue canary |
 | REQ-37 | G04, G08, G14, G15 | cache-only navigation, explicit refresh, early callback in sanitized candidate and production runtime |
-| REQ-38 | G01–G11, G13–G15 | typed AC execution/RED trace, phase/secret/schema/version/manifest fail-closed validation and no invented legacy fields |
+| REQ-38 | G00–G15 | typed AC execution/RED trace; V2 init/order/CAS/crash/replay; exact G00–G15 semantic evidence; forged-manifest/mutator rejection; phase/secret/schema/version fail-closed validation and no invented legacy fields |
 
 ---
 
@@ -1500,7 +2171,7 @@ never used as a test database.
 | AC-38 | G01, G03 | timeout/JSON/schema scenarios make zero provider calls |
 | AC-39 | G01, G03, G05 | Bot/Alert + unified renderer exclude all legacy model text |
 | AC-40 | G01, G03 | every fresh deterministic contract case bypasses Flash/Pro |
-| AC-41 | G01, G06, G07, G08, G09, G10, G11, G13, G14, G15 | typed 41-AC RED/GREEN trace from Vitest reports; full suite; offline schema; sanitized runtime; rollback; AP regression; production release gates |
+| AC-41 | G00–G15 | typed 41-AC RED/GREEN trace from Vitest reports; full suite; offline schema; sanitized runtime; V2 manifest init/order/CAS/crash/replay; exact backup/migration/rollout/canary/actual-rollback bindings; AP regression |
 
 ---
 
@@ -1518,6 +2189,17 @@ never used as a test database.
 | 6 | `test: make remediation release gates executable` | AC-41 executable trace GREEN, suite audit, spec + quality review |
 | 7 | `test: verify manual telegram release evidence` | 19/15 focused GREEN, nested secret audit, spec + security review |
 | 8 | `docs: prepare remediation release runbook` | full branch spec + operational review |
+| 8B.0 | `docs: approve plan 5 manifest lifecycle amendment` | only Plan 5 doc; corrective baseline; spec + doc-quality review |
+| 8B.1 | `test: define release manifest v2 lifecycle acceptance` | expected behavioral RED; frozen tests; spec + test-quality review |
+| 8B.2 | `feat(release): define manifest v2 lifecycle` | pure reducer GREEN; typecheck; state-machine spec + quality review |
+| 8B.3 | `feat(release): advance manifest atomically` | CAS/concurrency/crash/replay GREEN; filesystem spec + security review |
+| 8B.4 | `feat(release): bind pre-release gate evidence` | G00–G11 semantic/read-only GREEN; policy spec + security review |
+| 8B.5 | `feat(release): bind backup and migration transitions` | G12/G13 actual-byte GREEN; production-order spec + security review |
+| 8B.6a | `feat(release): capture production rollout evidence` | G14 injected/sanitized GREEN; spec + quality review |
+| 8B.6b | `feat(release): capture production canary evidence` | G15 duration/checks GREEN; spec + quality review |
+| 8B.6c | `feat(release): capture production rollback evidence` | actual rollback/G10-negative GREEN; spec + quality review |
+| 8B.7 | `fix(release): require verified manifest transitions for production` | every mutator rejects structural-only manifests; spec + security review |
+| 8B.8 | `docs: document manifest v2 release lifecycle` | focused/PG/typecheck/full/AP/scope GREEN; whole-plan reviews |
 | 9 | none | frozen candidate; automated pre-manual gates with G05 pending; exact 15/19/11 manual finalization; strict `G00…G11` readiness verification |
 | 10 | none | explicit merge approval, full rerun, explicit production GO |
 | 11 | none | `G12` protected backup + `G13` exact migration/full receipt verification |
@@ -1542,14 +2224,20 @@ reviews. No autosquash/rewrite after `RELEASE_SHA` freeze.
 | Failure point | Required response |
 |---|---|
 | Any `G00…G11` failure | remain `not_ready`; no production action; fix owner plan and restart all candidate evidence |
+| Missing/forged/hand-edited V2 manifest, gate output or transition receipt | reject artifact root; no production action; regenerate through sole writer from a new exact evidence root |
+| Stale/concurrent manifest writer | CAS loser exits without overwrite; retain winning bytes/receipt; investigate conflicting operator process |
+| Crash before atomic manifest replace | previous manifest remains authoritative; exact replay recovers from owned immutable snapshot/receipt |
+| Crash after atomic manifest replace | exact replay returns byte-identical target; never repeats gate producer or external mutation |
 | Production clone contains runnable external delivery | destroy/recreate rehearsal DB; block readiness; investigate safety breach |
 | Sanitized runtime records an external send | block readiness; invalidate manual/runtime evidence; no production GO |
 | Previous-SHA rollback rehearsal fails | block readiness; do not substitute an untested command/runtime |
-| Backup unavailable/invalid after GO | leave the verified old runtime unchanged; keep manifest `ready_for_release`; do not migrate |
+| Backup unavailable/invalid after GO | leave the verified old runtime unchanged; keep V2 manifest `ready_for_release`; do not advance G12 or migrate |
 | Migration transaction fails before receipt | verify rollback/no receipt; leave the exact previous runtime unchanged; do not start candidate |
 | Schema 032 verifies but candidate startup fails | keep additive 032; start exact previous runtime; verify conservative mirrors/results/sent fingerprints |
 | `/version` mismatch | stop candidate; start previous runtime; no DB down-migration |
 | Worker/delivery/Telegram/Admin canary fails | application rollback; preserve sent/result state |
+| Production failure without typed failure evidence | stop forward progress; do not hand-edit failed/blocked gates and do not invoke rollback manager until `production_failed` transition is valid |
+| Actual rollback evidence replaced by G10 rehearsal | reject `rolled_back`; require manager/query-bound production rollback evidence |
 | Terminal legacy count/ID/result aggregate mismatch | immediate rollback and P0 incident evidence; do not accept a sample-only explanation |
 | Address Poisoning regression before GO | block readiness; separate owner fix, no inline detector change |
 | Address Poisoning safety regression after rollout | immediate rollback; separate APC-01 follow-up, no inline detector fix |
@@ -1591,7 +2279,7 @@ hashes, not secrets or full raw logs.
 - [x] Task 0A requires only plan-level ancestry for AC-01…40; exact per-AC
   RED/GREEN traces are produced in Tasks 1–6, and AC-41 is created by Plan 5
   only after its own RED batch and implementation.
-- [x] Missing release-operation inputs do not block local Tasks 1–8, while the
+- [x] Missing release-operation inputs do not block local Tasks 1–8B, while the
   separate Task 0B makes every runtime/DB/rollback/tooling input mandatory
   immediately before Task 9 and fail-closes `ready_for_release`.
 - [x] Every REQ and AC maps to a release gate and concrete verification.
@@ -1621,8 +2309,23 @@ hashes, not secrets or full raw logs.
 - [x] TYD reconciliation, delivery retry, navigation and `/version` are outside
   those 15 cases and remain separate `G08/G14/G15` runtime/canary checks.
 - [x] Task 9 is acyclic: automated gates leave only G05 manual evidence
-  pending; manual finalization passes G05; the subsequent strict verifier alone
-  may derive `ready_for_release` from passed `G00…G11`.
+  pending; manual finalization writes evidence only; `readiness` writer passes
+  G05; the subsequent strict verifier only proves `ready_for_release`.
+- [x] Task 8B freezes RED tests for init/order/every transition, semantic
+  G00–G15 evidence, forged-manifest rejection, CAS/concurrency, crash/replay,
+  byte-identical verifier, mutator guards, G14/G15 and actual rollback.
+- [x] V2 has revision, previous-manifest hash, transition id, updated-at,
+  artifact-root/Task0B binding, typed per-gate refs and honest pending records.
+- [x] `release:manifest:advance` is the sole writer; candidate is clean HEAD;
+  CLI accepts no candidate/gate/evidence path and performs durable CAS.
+- [x] G07 offline evidence is distinct from G13 production migration; G10
+  rehearsal cannot satisfy production rollback.
+- [x] G12 binds actual authority/claim/lease/progress/evidence/dump/list bytes;
+  G13 binds consumed authority, source G12 and the complete sequence.
+- [x] G14/G15/rollback producers are implemented and tested with injected or
+  sanitized inputs before Task 9, but never run against production in Task 8B.
+- [x] Production mutators require fully verified V2 state/receipt/root binding,
+  not a structural fixture-like manifest.
 - [x] USDD PSM 2% outbound is recorded as base 20 + modifier 2 = 22, while tier
   3 remains the share tier rather than the base.
 - [x] No live on-chain transfer, approval or harmful action is used in manual
@@ -1649,10 +2352,11 @@ hashes, not secrets or full raw logs.
 План утверждён со следующей границей исполнения:
 
 - сначала отдельным commit зафиксировать только этот документ;
-- Tasks 0–8 выполнять последовательно в отдельном worktree через
+- Tasks 0–8B выполнять последовательно в отдельном worktree через
   subagent-driven development;
-- Task 9 не начинать до завершения Tasks 0–8 и отдельного подтверждения
-  release-candidate evidence;
+- Task 9 не начинать до завершения Tasks 0–8B, fresh Task 0B, отдельного
+  подтверждения release-candidate evidence и разрешения unmarked-runtime
+  blocker;
 - production DB/runtime/Telegram не менять до полного `G00…G11`, merge в
   `master`, повторной строгой проверки и отдельного явного production GO;
 - Plan 1–4 semantics и Address Poisoning implementation не трогать;
