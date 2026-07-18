@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+
 export const REMEDIATION_REQUIRED_REQUIREMENT_IDS = numberedIds("REQ", 38);
 export const REMEDIATION_REQUIRED_ACCEPTANCE_IDS = numberedIds("AC", 41);
+export const PLAN5_APPROVED_BASE_SHA = "4761e1453ea03a96845b68039e6d6f4812aae540";
 
 export const REMEDIATION_PRE_RELEASE_GATE_IDS = [
   "G00_BASE",
@@ -139,7 +142,25 @@ export const REMEDIATION_REQUIRED_SUITE_GROUPS = {
 } as const;
 
 export type ReleaseGateId = typeof REMEDIATION_REQUIRED_GATE_IDS[number];
-export type ReleaseCommandId = typeof REMEDIATION_GATE_COMMAND_IDS[ReleaseGateId];
+export type ReleaseCommandId =
+  | "base_audit"
+  | "acceptance_trace"
+  | "plan1_focused"
+  | "plan2_focused"
+  | "plan3_focused"
+  | "plan4_focused"
+  | "full_regression"
+  | "schema_clean_rehearsal"
+  | "schema_production_clone_rehearsal"
+  | "runtime_sanitized_rehearsal"
+  | "manual_telegram_acceptance"
+  | "legacy_terminal_population"
+  | "rollback_rehearsal"
+  | "address_poisoning_regression"
+  | "production_backup"
+  | "production_migration"
+  | "production_rollout"
+  | "production_canary";
 export type ReleaseGateState = "pending" | "passed" | "failed" | "blocked";
 export type ReleaseOverall = "not_ready" | "ready_for_release" | "released" | "rolled_back";
 
@@ -168,6 +189,48 @@ export type RemediationReleaseManifestV1 = {
   overall: ReleaseOverall;
 };
 
+export type Task0BaselineEvidenceV1 = {
+  schemaVersion: "plan5-task0-local-baseline-v2";
+  generatedAt: string;
+  candidate: Record<string, unknown>;
+  userState: Record<string, unknown>;
+  migration: Record<string, unknown>;
+  disposableDatabases: string[];
+  runtimeSnapshot: Record<string, unknown>;
+  postgresToolsSnapshot: Record<string, unknown>;
+  ownerPlans: Array<Record<string, unknown>>;
+  traceCoverage: Record<string, unknown>;
+  operationalPreflight: Record<string, unknown>;
+  secretHandling: Record<string, unknown>;
+};
+
+export type Task0BaselineAncestry = {
+  isAncestor(ancestorSha: string, candidateSha: string): boolean;
+};
+
+export type Task0BReleaseFreezeEvidenceV1 = {
+  version: "task0b-release-freeze-evidence-v1";
+  candidateSha: string;
+  observedAt: string;
+  freezeCutoff: string;
+  expiresAt: string;
+  previousRuntimeSha: string;
+  previousRuntimeLabel: string;
+  databaseRole: "runtime_sanitized";
+  databaseName: "tron_watch_plan5_runtime_sanitized";
+  databaseFingerprintSha256: string;
+  operationalConfigPath: "runtime-operational-config.json";
+  operationalConfigSha256: string;
+  candidateStartCommandId: "runtime_sanitized_rehearsal";
+  candidateStartTemplateSha256: string;
+  candidateStopCommandId: "runtime_sanitized_stop";
+  candidateStopTemplateSha256: string;
+  previousStartCommandId: "rollback_rehearsal";
+  previousStartTemplateSha256: string;
+  previousStopCommandId: "rollback_stop";
+  previousStopTemplateSha256: string;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -180,6 +243,39 @@ const URL_CREDENTIALS = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i;
 const TELEGRAM_TOKEN = /\b\d{6,}:[A-Za-z0-9_-]{20,}\b/;
 const COMMON_TOKEN = /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/;
 
+const REDACTED_COMMAND_TEMPLATES: Record<ReleaseCommandId, string> = {
+  base_audit: "release:base-audit <candidate-sha> <plan-base-sha>",
+  acceptance_trace: "release:trace:verify <artifact-root>",
+  plan1_focused: "release:suite plan1 <artifact-root>",
+  plan2_focused: "release:suite plan2 <artifact-root>",
+  plan3_focused: "release:suite plan3 <artifact-root>",
+  plan4_focused: "release:suite plan4 <artifact-root>",
+  full_regression: "npm test && npm run typecheck && git diff --check && release:scope-audit && release:postgres-cleanup",
+  schema_clean_rehearsal: "release:schema clean <database-fingerprint>",
+  schema_production_clone_rehearsal: "release:schema production_clone <database-fingerprint>",
+  runtime_sanitized_rehearsal: "release:runtime runtime_sanitized recording_disabled",
+  manual_telegram_acceptance: "release:telegram:manual <artifact-root>",
+  legacy_terminal_population: "release:legacy:snapshot <cutoff> <database-fingerprint>",
+  rollback_rehearsal: "rollback:start-previous-runtime --db <runtime_sanitized> --telegram recording_disabled",
+  address_poisoning_regression: "release:suite addressPoisoningRegression <artifact-root>",
+  production_backup: "release:production:backup <database-fingerprint> <protected-artifact-root>",
+  production_migration: "release:production:migrate schema-032 <database-fingerprint>",
+  production_rollout: "release:production:rollout <candidate-sha> <runtime-label>",
+  production_canary: "release:production:canary <candidate-sha> <runtime-label>"
+};
+
+export const REMEDIATION_COMMAND_TEMPLATE_SHA256 = Object.freeze(Object.fromEntries(
+  Object.entries(REDACTED_COMMAND_TEMPLATES).map(([commandId, template]) => [
+    commandId,
+    createHash("sha256").update(template, "utf8").digest("hex")
+  ])
+)) as Readonly<Record<ReleaseCommandId, string>>;
+
+export const REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256 = Object.freeze({
+  runtime_sanitized_stop: createHash("sha256").update("release:runtime:stop <candidate-sha> <runtime-label>", "utf8").digest("hex"),
+  rollback_stop: createHash("sha256").update("rollback:stop-previous-runtime <previous-sha> <runtime-label>", "utf8").digest("hex")
+});
+
 function numberedIds(prefix: "REQ" | "AC", count: number): string[] {
   return Array.from({ length: count }, (_, index) => `${prefix}-${String(index + 1).padStart(2, "0")}`);
 }
@@ -190,6 +286,10 @@ function normalizedKey(value: string): string {
 
 function isSecretKey(value: string): boolean {
   const key = normalizedKey(value);
+  if (new Set([
+    "secret_handling", "secret_values_recorded", "credentials_recorded", "tokens_recorded",
+    "api_keys_recorded", "database_url_env"
+  ]).has(key)) return false;
   return /(?:^|_)(?:bot_token|telegram_token|api_token|api_key|tronscan_api_key|secret|password|passwd|credential|database_url|chat_id|user_id)(?:_|$)/.test(key);
 }
 
@@ -268,6 +368,195 @@ function expectIsoTime(value: unknown, label: string): string {
   return timestamp;
 }
 
+function expectRuntimeLabel(value: unknown, sha: string, label: string): string {
+  const runtimeLabel = expectString(value, label);
+  if (!runtimeLabel.includes(sha.slice(0, 8)) || /[\u0000-\u001f\u007f]/.test(runtimeLabel)) {
+    throw new Error(`${label} does not bind its runtime SHA`);
+  }
+  return runtimeLabel;
+}
+
+export function validateTask0BaselineEvidence(
+  value: unknown,
+  candidateSha: string,
+  ancestry: Task0BaselineAncestry
+): Task0BaselineEvidenceV1 {
+  assertNoSecretLikeArtifactValues(value);
+  const evidence = expectRecord(value, "Task0 baseline evidence");
+  expectExactKeys(evidence, [
+    "schemaVersion", "generatedAt", "candidate", "userState", "migration", "disposableDatabases",
+    "runtimeSnapshot", "postgresToolsSnapshot", "ownerPlans", "traceCoverage", "operationalPreflight",
+    "secretHandling"
+  ], "Task0 baseline evidence");
+  if (evidence.schemaVersion !== "plan5-task0-local-baseline-v2") throw new Error("Task0 baseline schema is invalid");
+  const generatedAt = expectString(evidence.generatedAt, "Task0 generatedAt");
+  if (!Number.isFinite(Date.parse(generatedAt))) throw new Error("Task0 generatedAt is invalid");
+  const candidate = expectRecord(evidence.candidate, "Task0 candidate");
+  expectExactKeys(candidate, [
+    "branch", "plan5BaseSha", "branchConfigVerified", "plan4FinalSha", "plan4FinalAncestor",
+    "approvedPlan5Commit", "approvedAmendmentCommit", "approvedAmendmentAtHead"
+  ], "Task0 candidate");
+  const approvedBase = "4761e1453ea03a96845b68039e6d6f4812aae540";
+  if (candidate.branch !== "codex/remediation-end-to-end-release"
+      || expectSha40(candidate.plan5BaseSha, "Task0 Plan5 base SHA") !== approvedBase
+      || candidate.branchConfigVerified !== true
+      || expectSha40(candidate.plan4FinalSha, "Task0 Plan4 final SHA") !== "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17"
+      || candidate.plan4FinalAncestor !== true
+      || expectSha40(candidate.approvedPlan5Commit, "Task0 approved Plan5 commit") !== "37274b0b5fa1b77c8d87a22856ca903895f9af8c"
+      || expectSha40(candidate.approvedAmendmentCommit, "Task0 approved amendment") !== approvedBase
+      || candidate.approvedAmendmentAtHead !== true) throw new Error("Task0 candidate binding is invalid");
+  expectSha40(candidateSha, "Task0 final candidate SHA");
+  if (!ancestry.isAncestor(approvedBase, candidateSha)) throw new Error("Task0 baseline is not an ancestor of candidate");
+
+  const userState = expectRecord(evidence.userState, "Task0 user state");
+  expectExactKeys(userState, [
+    "canonicalization", "mainStatusCount", "mainManifestSha256", "stashCount", "stashManifestSha256",
+    "stashShas", "modified"
+  ], "Task0 user state");
+  if (userState.canonicalization !== "git-status-short-lines-lf-and-stash-object-shas-lf"
+      || userState.mainStatusCount !== 13 || userState.stashCount !== 4 || userState.modified !== false
+      || !Array.isArray(userState.stashShas) || userState.stashShas.length !== 4) {
+    throw new Error("Task0 user state is invalid");
+  }
+  expectSha256(userState.mainManifestSha256, "Task0 main manifest");
+  expectSha256(userState.stashManifestSha256, "Task0 stash manifest");
+  userState.stashShas.forEach((sha, index) => expectSha40(sha, `Task0 stash SHA ${index}`));
+
+  const migration = expectRecord(evidence.migration, "Task0 migration");
+  expectExactKeys(migration, ["file", "sha256", "approvedMatch", "migration033OrLater", "uncommittedMigrationChanges"], "Task0 migration");
+  if (migration.file !== "032_telegram_runtime_forensics_data_contracts.sql"
+      || migration.sha256 !== "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d"
+      || migration.approvedMatch !== true || !Array.isArray(migration.migration033OrLater)
+      || migration.migration033OrLater.length !== 0 || !Array.isArray(migration.uncommittedMigrationChanges)
+      || migration.uncommittedMigrationChanges.length !== 0) throw new Error("Task0 migration is invalid");
+  if (JSON.stringify(evidence.disposableDatabases) !== JSON.stringify([
+    "tron_watch_plan5_clean", "tron_watch_plan5_clone", "tron_watch_plan5_runtime_sanitized"
+  ])) throw new Error("Task0 disposable databases are invalid");
+
+  const runtime = expectRecord(evidence.runtimeSnapshot, "Task0 runtime snapshot");
+  expectExactKeys(runtime, [
+    "purpose", "previousRuntimeSha", "previousRuntimeShaExistsLocally", "previousRuntimeShaIsCandidateAncestor",
+    "runtimeLabel", "databaseName", "databaseHostClass", "databasePort", "databaseListenerObserved",
+    "databaseSchemaState", "schema032ReceiptState", "databaseStateSource", "adminUrl", "adminHttpStatus",
+    "runtimeProcessObserved", "runtimeCommandShape", "telegramMode", "telegramModeSource",
+    "runtimeStoppedOrStartedByTask0", "databaseMutatedByTask0", "telegramMessageSentByTask0",
+    "requiresTask0BReverification"
+  ], "Task0 runtime snapshot");
+  if (runtime.purpose !== "task0a_observation_not_release_preflight"
+      || expectSha40(runtime.previousRuntimeSha, "Task0 previous runtime SHA") !== "0172978845ec74373bd245098ee8c075e0c39acf"
+      || runtime.runtimeLabel !== "master-01729788" || runtime.databaseName !== "tron_watch"
+      || runtime.databaseHostClass !== "loopback" || runtime.databasePort !== 55999
+      || runtime.databaseSchemaState !== "legacy_031" || runtime.schema032ReceiptState !== "absent"
+      || runtime.adminHttpStatus !== 200 || runtime.telegramMode !== "long_polling"
+      || runtime.runtimeStoppedOrStartedByTask0 !== false || runtime.databaseMutatedByTask0 !== false
+      || runtime.telegramMessageSentByTask0 !== false || runtime.requiresTask0BReverification !== true) {
+    throw new Error("Task0 runtime snapshot is invalid");
+  }
+  const postgresTools = expectRecord(evidence.postgresToolsSnapshot, "Task0 PostgreSQL tools");
+  expectExactKeys(postgresTools, [
+    "hostPgDump", "hostPgRestore", "dockerAvailable", "dockerImageId", "pgDumpVersion", "pgRestoreVersion",
+    "releaseCommandIdsVerified", "releaseCommandVerificationDeferredTo"
+  ], "Task0 PostgreSQL tools");
+  if (postgresTools.hostPgDump !== null || postgresTools.hostPgRestore !== null
+      || postgresTools.dockerAvailable !== true || typeof postgresTools.dockerImageId !== "string"
+      || !/^sha256:[0-9a-f]{64}$/.test(postgresTools.dockerImageId)
+      || typeof postgresTools.pgDumpVersion !== "string" || typeof postgresTools.pgRestoreVersion !== "string"
+      || postgresTools.releaseCommandIdsVerified !== false
+      || postgresTools.releaseCommandVerificationDeferredTo !== "task0b_before_task9") {
+    throw new Error("Task0 PostgreSQL tools are invalid");
+  }
+  if (!Array.isArray(evidence.ownerPlans) || evidence.ownerPlans.length !== 4
+      || evidence.ownerPlans.some((plan, index) => plan.plan !== index + 1 || plan.verifiedAncestor !== true)) {
+    throw new Error("Task0 owner plans are invalid");
+  }
+  for (const plan of evidence.ownerPlans) {
+    expectExactKeys(plan, ["plan", "base", "test", "implementation", "acceptance", "verifiedAncestor"], "Task0 owner plan");
+    for (const key of ["base", "test", "implementation"] as const) expectSha40(plan[key], `Task0 owner plan ${key}`);
+    if (typeof plan.acceptance !== "string" || !plan.acceptance) throw new Error("Task0 owner plan acceptance is invalid");
+    if (new Set([plan.base, plan.test, plan.implementation, candidateSha]).size !== 4) {
+      throw new Error(`Task0 owner plan ${plan.plan} commit order is invalid`);
+    }
+    if (!ancestry.isAncestor(plan.base, plan.test)
+        || !ancestry.isAncestor(plan.test, plan.implementation)
+        || !ancestry.isAncestor(plan.implementation, candidateSha)) {
+      throw new Error(`Task0 owner plan ${plan.plan} ancestor chain is invalid`);
+    }
+  }
+  const trace = expectRecord(evidence.traceCoverage, "Task0 trace coverage");
+  expectExactKeys(trace, [
+    "priorAcceptanceIds", "priorPlanCommitTriplesResolvedAtPlanLevel", "exactPerAcRedGreenTrace",
+    "ac41Ownership", "ac41RedGreenTrace", "task0aPass"
+  ], "Task0 trace coverage");
+  if (trace.priorAcceptanceIds !== 40 || trace.priorPlanCommitTriplesResolvedAtPlanLevel !== 40
+      || trace.exactPerAcRedGreenTrace !== "pending_tasks_1_through_6" || trace.ac41Ownership !== "plan5"
+      || trace.ac41RedGreenTrace !== "pending_tasks_1_through_6" || trace.task0aPass !== true) {
+    throw new Error("Task0 trace coverage is invalid");
+  }
+  const preflight = expectRecord(evidence.operationalPreflight, "Task0 operational preflight");
+  expectExactKeys(preflight, [
+    "requiredImmediatelyBefore", "status", "requiredFields", "missingAnyFieldBlocksTask9",
+    "missingAnyFieldBlocksReadyForRelease"
+  ], "Task0 operational preflight");
+  if (preflight.requiredImmediatelyBefore !== "task9" || preflight.status !== "pending_not_blocking_tasks_1_through_8"
+      || !Array.isArray(preflight.requiredFields) || preflight.requiredFields.length === 0
+      || preflight.requiredFields.some((field) => typeof field !== "string" || !field)
+      || preflight.missingAnyFieldBlocksTask9 !== true || preflight.missingAnyFieldBlocksReadyForRelease !== true) {
+    throw new Error("Task0 operational preflight is invalid");
+  }
+  const secretHandling = expectRecord(evidence.secretHandling, "Task0 secret handling");
+  expectExactKeys(secretHandling, [
+    "secretValuesRecorded", "credentialsRecorded", "tokensRecorded", "apiKeysRecorded"
+  ], "Task0 secret handling");
+  if (Object.values(secretHandling).some((item) => item !== false)) throw new Error("Task0 secret handling is invalid");
+  return evidence as Task0BaselineEvidenceV1;
+}
+
+export function validateTask0BReleaseFreezeEvidence(
+  value: unknown,
+  candidateSha?: string,
+  evaluatedAt?: string
+): Task0BReleaseFreezeEvidenceV1 {
+  assertNoSecretLikeArtifactValues(value);
+  const evidence = expectRecord(value, "Task0B release freeze evidence");
+  expectExactKeys(evidence, [
+    "version", "candidateSha", "observedAt", "freezeCutoff", "expiresAt", "previousRuntimeSha", "previousRuntimeLabel",
+    "databaseRole", "databaseName", "databaseFingerprintSha256", "operationalConfigPath", "operationalConfigSha256", "candidateStartCommandId",
+    "candidateStartTemplateSha256", "candidateStopCommandId", "candidateStopTemplateSha256",
+    "previousStartCommandId", "previousStartTemplateSha256", "previousStopCommandId", "previousStopTemplateSha256"
+  ], "Task0B release freeze evidence");
+  const observedCandidateSha = expectSha40(evidence.candidateSha, "Task0B candidate SHA");
+  if (candidateSha !== undefined && observedCandidateSha !== candidateSha) throw new Error("Task0B candidate SHA mismatch");
+  const previousSha = expectSha40(evidence.previousRuntimeSha, "Task0B previous runtime SHA");
+  expectRuntimeLabel(evidence.previousRuntimeLabel, previousSha, "Task0B previous runtime label");
+  expectIsoTime(evidence.observedAt, "Task0B observedAt");
+  const cutoff = expectIsoTime(evidence.freezeCutoff, "Task0B freezeCutoff");
+  const expiresAt = expectIsoTime(evidence.expiresAt, "Task0B expiresAt");
+  const observedAtMs = Date.parse(evidence.observedAt as string);
+  if (Date.parse(cutoff) < observedAtMs || Date.parse(expiresAt) < Date.parse(cutoff)
+      || Date.parse(expiresAt) - observedAtMs > 24 * 60 * 60_000) throw new Error("Task0B validity window is invalid");
+  if (evaluatedAt !== undefined) {
+    const evaluatedAtMs = Date.parse(expectIsoTime(evaluatedAt, "Task0B evaluatedAt"));
+    if (evaluatedAtMs < observedAtMs || evaluatedAtMs > Date.parse(expiresAt)) throw new Error("Task0B release freeze is stale");
+  }
+  if (evidence.version !== "task0b-release-freeze-evidence-v1"
+      || evidence.databaseRole !== "runtime_sanitized"
+      || evidence.databaseName !== "tron_watch_plan5_runtime_sanitized"
+      || evidence.operationalConfigPath !== "runtime-operational-config.json"
+      || evidence.candidateStartCommandId !== "runtime_sanitized_rehearsal"
+      || evidence.candidateStartTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256.runtime_sanitized_rehearsal
+      || evidence.candidateStopCommandId !== "runtime_sanitized_stop"
+      || evidence.candidateStopTemplateSha256 !== REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.runtime_sanitized_stop
+      || evidence.previousStartCommandId !== "rollback_rehearsal"
+      || evidence.previousStartTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256.rollback_rehearsal
+      || evidence.previousStopCommandId !== "rollback_stop"
+      || evidence.previousStopTemplateSha256 !== REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.rollback_stop) {
+    throw new Error("Task0B command or database binding is invalid");
+  }
+  expectSha256(evidence.databaseFingerprintSha256, "Task0B database fingerprint");
+  expectSha256(evidence.operationalConfigSha256, "Task0B operational config hash");
+  return evidence as Task0BReleaseFreezeEvidenceV1;
+}
+
 export function assertExactIdSet(value: unknown, expected: readonly string[], label: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${label} must be a string array`);
@@ -306,6 +595,9 @@ function parseGate(value: unknown, manifestCandidateSha: string, index: number):
   const commandId = expectString(gate.commandId, `gates[${index}].commandId`) as ReleaseCommandId;
   if (commandId !== REMEDIATION_GATE_COMMAND_IDS[id]) throw new Error(`${id} command is not allowlisted`);
   const redactedTemplateSha256 = expectSha256(gate.redactedTemplateSha256, `gates[${index}].redactedTemplateSha256`);
+  if (redactedTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256[commandId]) {
+    throw new Error(`${id} redacted command template hash is not allowlisted`);
+  }
   const startedAt = expectIsoTime(gate.startedAt, `gates[${index}].startedAt`);
   const finishedAt = expectIsoTime(gate.finishedAt, `gates[${index}].finishedAt`);
   if (Date.parse(finishedAt) < Date.parse(startedAt)) throw new Error(`${id} finishes before it starts`);
@@ -338,6 +630,7 @@ function assertManifestPhase(manifest: RemediationReleaseManifestV1): void {
   const production = REMEDIATION_PRODUCTION_GATE_IDS.map((id) => byId.get(id)!);
   const preReleasePassed = preRelease.every((gate) => gate.state === "passed" && gate.exitCode === 0);
   const productionPassed = production.every((gate) => gate.state === "passed" && gate.exitCode === 0);
+  const productionPending = production.every((gate) => gate.state === "pending");
   const productionFailed = production.some((gate) => gate.state === "failed" || gate.state === "blocked");
 
   if (manifest.overall === "rolled_back") {
@@ -357,7 +650,9 @@ function assertManifestPhase(manifest: RemediationReleaseManifestV1): void {
     ? "not_ready"
     : productionPassed
       ? "released"
-      : "ready_for_release";
+      : productionPending
+        ? "ready_for_release"
+        : "not_ready";
   if (manifest.overall !== derived) {
     throw new Error(`release phase does not match gate state; expected ${derived}`);
   }
@@ -382,6 +677,7 @@ export function validateRemediationReleaseManifest(value: unknown): RemediationR
 
   const candidateSha = expectSha40(manifest.candidateSha, "candidateSha");
   const planBaseSha = expectSha40(manifest.planBaseSha, "planBaseSha");
+  if (planBaseSha !== PLAN5_APPROVED_BASE_SHA) throw new Error("planBaseSha is not the approved Plan 5 base");
   if (candidateSha === planBaseSha) throw new Error("candidateSha must differ from planBaseSha");
   const requiredRequirementIds = assertExactIdSet(
     manifest.requiredRequirementIds,

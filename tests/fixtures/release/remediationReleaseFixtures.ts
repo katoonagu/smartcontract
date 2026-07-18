@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
+
 export const CANDIDATE_SHA = "c".repeat(40);
-export const PLAN_BASE_SHA = "b".repeat(40);
+export const PLAN_BASE_SHA = "4761e1453ea03a96845b68039e6d6f4812aae540";
 export const PREVIOUS_RUNTIME_SHA = "a".repeat(40);
 export const RUNTIME_LABEL = `plan5-${CANDIDATE_SHA.slice(0, 8)}`;
 export const PREVIOUS_RUNTIME_LABEL = `previous-${PREVIOUS_RUNTIME_SHA.slice(0, 8)}`;
@@ -7,6 +9,11 @@ export const SCHEMA_032_FILENAME = "032_telegram_runtime_forensics_data_contract
 export const SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
 export const POSTCONDITIONS_SHA256 = "d".repeat(64);
 export const SANITIZED_DATABASE_FINGERPRINT = "e".repeat(64);
+export const PRODUCTION_CLONE_DATABASE_FINGERPRINT = "f".repeat(64);
+export const ROLLBACK_COMMAND_TEMPLATE_SHA256 = "9d98c145698d181dca0e35b3694a501994c7668ba61291687287775cea880f29";
+export const RUNTIME_SCHEMA_EVIDENCE_SHA256 = "1".repeat(64);
+export const CANDIDATE_START_EVIDENCE_SHA256 = "2".repeat(64);
+export const PREVIOUS_START_EVIDENCE_SHA256 = "3".repeat(64);
 
 function numberedIds(prefix: "REQ" | "AC", count: number): string[] {
   return Array.from({ length: count }, (_, index) => `${prefix}-${String(index + 1).padStart(2, "0")}`);
@@ -57,6 +64,31 @@ export const GATE_COMMAND_IDS = {
   G14_PRODUCTION_ROLLOUT: "production_rollout",
   G15_PRODUCTION_CANARY: "production_canary"
 } as const;
+
+const REDACTED_COMMAND_TEMPLATES = {
+  base_audit: "release:base-audit <candidate-sha> <plan-base-sha>",
+  acceptance_trace: "release:trace:verify <artifact-root>",
+  plan1_focused: "release:suite plan1 <artifact-root>",
+  plan2_focused: "release:suite plan2 <artifact-root>",
+  plan3_focused: "release:suite plan3 <artifact-root>",
+  plan4_focused: "release:suite plan4 <artifact-root>",
+  full_regression: "npm test && npm run typecheck && git diff --check && release:scope-audit && release:postgres-cleanup",
+  schema_clean_rehearsal: "release:schema clean <database-fingerprint>",
+  schema_production_clone_rehearsal: "release:schema production_clone <database-fingerprint>",
+  runtime_sanitized_rehearsal: "release:runtime runtime_sanitized recording_disabled",
+  manual_telegram_acceptance: "release:telegram:manual <artifact-root>",
+  legacy_terminal_population: "release:legacy:snapshot <cutoff> <database-fingerprint>",
+  rollback_rehearsal: "rollback:start-previous-runtime --db <runtime_sanitized> --telegram recording_disabled",
+  address_poisoning_regression: "release:suite addressPoisoningRegression <artifact-root>",
+  production_backup: "release:production:backup <database-fingerprint> <protected-artifact-root>",
+  production_migration: "release:production:migrate schema-032 <database-fingerprint>",
+  production_rollout: "release:production:rollout <candidate-sha> <runtime-label>",
+  production_canary: "release:production:canary <candidate-sha> <runtime-label>"
+} as const;
+
+export const COMMAND_TEMPLATE_SHA256 = Object.fromEntries(Object.entries(REDACTED_COMMAND_TEMPLATES).map(
+  ([commandId, template]) => [commandId, createHash("sha256").update(template, "utf8").digest("hex")]
+)) as Record<keyof typeof REDACTED_COMMAND_TEMPLATES, string>;
 
 export const REQUIRED_SUITE_GROUPS = {
   plan1: [
@@ -189,7 +221,7 @@ export function buildReleaseManifest(overall: ReleaseOverall = "ready_for_releas
       id,
       candidateSha: CANDIDATE_SHA,
       commandId: GATE_COMMAND_IDS[id],
-      redactedTemplateSha256: (index + 1).toString(16).padStart(64, "0"),
+      redactedTemplateSha256: COMMAND_TEMPLATE_SHA256[GATE_COMMAND_IDS[id]],
       startedAt: `2026-07-17T10:${String(index).padStart(2, "0")}:00.000Z`,
       finishedAt: `2026-07-17T10:${String(index).padStart(2, "0")}:30.000Z`,
       exitCode: 0,
@@ -514,6 +546,11 @@ export function buildManualTelegramAcceptance(): ManualTelegramAcceptanceV1 {
 export type TerminalLegacyPopulationV1 = {
   candidateSha: string;
   cutoff: string;
+  cutoffSource: "task0b_release_freeze";
+  task0bEvidenceSha256: string;
+  databaseRole: "runtime_sanitized";
+  databaseName: "tron_watch_plan5_runtime_sanitized";
+  databaseFingerprintSha256: string;
   terminalStatuses: ["completed", "failed", "cancelled"];
   populationCount: number;
   sortedJobIdSetSha256: string;
@@ -525,13 +562,18 @@ export type TerminalLegacyPopulationV1 = {
 export function buildTerminalLegacyPopulation(): TerminalLegacyPopulationV1 {
   return {
     candidateSha: CANDIDATE_SHA,
-    cutoff: "2026-07-17T09:00:00.000Z",
+    cutoff: "2026-07-18T00:00:00.000Z",
+    cutoffSource: "task0b_release_freeze",
+    task0bEvidenceSha256: "a".repeat(64),
+    databaseRole: "runtime_sanitized",
+    databaseName: "tron_watch_plan5_runtime_sanitized",
+    databaseFingerprintSha256: SANITIZED_DATABASE_FINGERPRINT,
     terminalStatuses: ["completed", "failed", "cancelled"],
     populationCount: 37,
     sortedJobIdSetSha256: "4".repeat(64),
     aggregateImmutableResultSha256: "5".repeat(64),
     sentFingerprintSetSha256: "6".repeat(64),
-    queryTemplateSha256: "7".repeat(64)
+    queryTemplateSha256: "93d1a73f335b1b80f805f16fb9619fc4740e523cd76f4140d6480bc254bcfab3"
   };
 }
 
@@ -540,6 +582,9 @@ export type RollbackRehearsalEvidenceV1 = {
   previousRuntimeSha: string;
   previousRuntimeLabel: string;
   startCommandId: "rollback_rehearsal";
+  startCommandTemplateSha256: string;
+  schemaEvidenceSha256: string;
+  previousStartEvidenceSha256: string;
   migratedSanitizedDatabaseFingerprintSha256: string;
   schemaVerification: RuntimeVersionV1["migration"];
   telegramTransport: "recording_disabled";
@@ -568,6 +613,9 @@ export function buildRollbackRehearsalEvidence(): RollbackRehearsalEvidenceV1 {
     previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
     previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
     startCommandId: "rollback_rehearsal",
+    startCommandTemplateSha256: ROLLBACK_COMMAND_TEMPLATE_SHA256,
+    schemaEvidenceSha256: RUNTIME_SCHEMA_EVIDENCE_SHA256,
+    previousStartEvidenceSha256: PREVIOUS_START_EVIDENCE_SHA256,
     migratedSanitizedDatabaseFingerprintSha256: SANITIZED_DATABASE_FINGERPRINT,
     schemaVerification: buildRuntimeVersion().migration,
     telegramTransport: "recording_disabled",
@@ -587,6 +635,76 @@ export function buildRollbackRehearsalEvidence(): RollbackRehearsalEvidenceV1 {
     sentFingerprintSetSha256After: "9".repeat(64),
     remainingProcessCount: 0,
     remainingAdvisoryLockCount: 0
+  };
+}
+
+export type RuntimeRehearsalEvidenceV1 = {
+  version: "runtime-rehearsal-evidence-v1";
+  candidateSha: string;
+  previousRuntimeSha: string;
+  databaseRole: "runtime_sanitized";
+  sanitizedDatabaseFingerprintSha256: string;
+  productionCloneDatabaseFingerprintSha256: string;
+  schemaEvidenceSha256: string;
+  candidateStartEvidenceSha256: string;
+  previousStartEvidenceSha256: string;
+  telegramTransport: "recording_disabled";
+  outboundSendCount: 0;
+  candidate: {
+    observedSha: string;
+    observedLabel: string;
+    startCommandId: "runtime_sanitized_rehearsal";
+    startCommandTemplateSha256: string;
+    startEvidenceSha256: string;
+    adminHealthStatus: 200;
+    runtimeInstanceCount: 1;
+    workerScheduleCount: 1;
+  };
+  previous: {
+    observedSha: string;
+    observedLabel: string;
+    startCommandId: "rollback_rehearsal";
+    startCommandTemplateSha256: string;
+    startEvidenceSha256: string;
+    adminHealthStatus: 200;
+    runtimeInstanceCount: 1;
+    workerScheduleCount: 1;
+  };
+};
+
+export function buildRuntimeRehearsalEvidence(): RuntimeRehearsalEvidenceV1 {
+  return {
+    version: "runtime-rehearsal-evidence-v1",
+    candidateSha: CANDIDATE_SHA,
+    previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
+    databaseRole: "runtime_sanitized",
+    sanitizedDatabaseFingerprintSha256: SANITIZED_DATABASE_FINGERPRINT,
+    productionCloneDatabaseFingerprintSha256: PRODUCTION_CLONE_DATABASE_FINGERPRINT,
+    schemaEvidenceSha256: RUNTIME_SCHEMA_EVIDENCE_SHA256,
+    candidateStartEvidenceSha256: CANDIDATE_START_EVIDENCE_SHA256,
+    previousStartEvidenceSha256: PREVIOUS_START_EVIDENCE_SHA256,
+    telegramTransport: "recording_disabled",
+    outboundSendCount: 0,
+    candidate: {
+      observedSha: CANDIDATE_SHA,
+      observedLabel: RUNTIME_LABEL,
+      startCommandId: "runtime_sanitized_rehearsal",
+      startCommandTemplateSha256: COMMAND_TEMPLATE_SHA256.runtime_sanitized_rehearsal,
+      startEvidenceSha256: CANDIDATE_START_EVIDENCE_SHA256,
+      adminHealthStatus: 200,
+      runtimeInstanceCount: 1,
+      workerScheduleCount: 1
+    },
+    previous: {
+      observedSha: PREVIOUS_RUNTIME_SHA,
+      observedLabel: PREVIOUS_RUNTIME_LABEL,
+      startCommandId: "rollback_rehearsal",
+      startCommandTemplateSha256: COMMAND_TEMPLATE_SHA256.rollback_rehearsal,
+      startEvidenceSha256: PREVIOUS_START_EVIDENCE_SHA256,
+      adminHealthStatus: 200,
+      runtimeInstanceCount: 1,
+      workerScheduleCount: 1
+    }
   };
 }
 

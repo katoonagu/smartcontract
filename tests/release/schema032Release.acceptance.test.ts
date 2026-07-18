@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
+import { queryControlledRuntimeStateFromClient } from "../../scripts/rehearseRemediationRuntime";
 import {
   CANDIDATE_SHA,
   POSTCONDITIONS_SHA256,
@@ -126,7 +127,7 @@ async function resetPublicSchema(options: {
 async function rehearseLegacy31ToSchema032(options: {
   client: pg.Client;
   databaseUrl: string;
-  databaseRole: "clean" | "production_clone";
+  databaseRole: "clean" | "production_clone" | "runtime_sanitized";
   fixturePrefix: string;
   expectedEndpoint: string;
   expectedSystemIdentifier: string;
@@ -746,4 +747,56 @@ postgresDescribe("schema 032 release PostgreSQL acceptance", () => {
     const receiptTable = await sanitizedClient.query("select to_regclass('public.schema_migration_receipts') as receipt_table");
     expect(receiptTable.rows).toEqual([{ receipt_table: null }]);
   });
+
+  it("fails the controlled runtime mirror proof when an authoritative allowance and its legacy mirror disagree", async () => {
+    await rehearseLegacy31ToSchema032({
+      client: sanitizedClient,
+      databaseUrl: sanitizedUrl!,
+      databaseRole: "runtime_sanitized",
+      fixturePrefix: "synthetic-plan5-sanitized",
+      expectedEndpoint: expectedEndpoint!,
+      expectedSystemIdentifier: expectedSystemIdentifier!
+    });
+    const binding = {
+      candidateSha: CURRENT_CANDIDATE_SHA,
+      cutoff: "2026-07-18T00:00:00.000Z",
+      cutoffSource: "task0b_release_freeze" as const,
+      task0bEvidenceSha256: "a".repeat(64),
+      databaseRole: "runtime_sanitized" as const,
+      databaseName: SANITIZED_DATABASE as "tron_watch_plan5_runtime_sanitized",
+      databaseFingerprintSha256: "b".repeat(64)
+    };
+    const emptyMismatchSha256 = sha256("[]");
+    const valid = await queryControlledRuntimeStateFromClient(sanitizedClient, binding);
+    expect(valid.allowanceMirrorMismatchCount).toBe(0);
+    expect(valid.allowanceMirrorMismatchSha256).toBe(emptyMismatchSha256);
+
+    await sanitizedClient.query("begin");
+    try {
+      await sanitizedClient.query(
+        "alter table wallet_approvals drop constraint wallet_approvals_allowance_shape_v2_check"
+      );
+      const changed = await sanitizedClient.query(`update wallet_approvals
+        set current_allowance_raw = case when current_allowance_raw = '0' then '1' else '0' end,
+          is_unlimited = not is_unlimited,
+          status = case when status = 'active' then 'unknown' else 'active' end
+        where (watched_wallet_id, token_contract, spender_address) = (
+          select watched_wallet_id, token_contract, spender_address
+          from wallet_approvals
+          order by watched_wallet_id, token_contract, spender_address
+          limit 1
+        )`);
+      expect(changed.rowCount).toBe(1);
+      const invalid = await queryControlledRuntimeStateFromClient(sanitizedClient, binding);
+      expect(invalid.allowanceMirrorMismatchCount).toBe(1);
+      expect(invalid.allowanceMirrorMismatchSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(invalid.allowanceMirrorMismatchSha256).not.toBe(emptyMismatchSha256);
+    } finally {
+      await sanitizedClient.query("rollback");
+    }
+
+    const restored = await queryControlledRuntimeStateFromClient(sanitizedClient, binding);
+    expect(restored.allowanceMirrorMismatchCount).toBe(0);
+    expect(restored.allowanceMirrorMismatchSha256).toBe(emptyMismatchSha256);
+  }, 120_000);
 });

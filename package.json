@@ -21,7 +21,10 @@
     "admin:snapshot": "node --import tsx scripts/exportAdminSnapshot.ts",
     "wallet-intelligence:backfill": "node --import tsx scripts/backfillWalletIntelligence.ts",
     "release:verify": "node --import tsx scripts/verifyRemediationRelease.ts",
-    "release:trace:capture": "node --import tsx scripts/captureRemediationTestEvidence.ts"
+    "release:verify:non-vitest": "node --import tsx scripts/verifyRemediationRelease.ts --non-vitest",
+    "release:trace:capture": "node --import tsx scripts/captureRemediationTestEvidence.ts",
+    "release:legacy:snapshot": "node --import tsx scripts/snapshotTerminalLegacyPopulation.ts",
+    "release:runtime:rehearse": "node --import tsx scripts/rehearseRemediationRuntime.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",
