@@ -2607,7 +2607,35 @@ export async function verifyRemediationReleaseArtifactsV2(
   let value: unknown;
   try { value = JSON.parse(manifestBytes.toString("utf8")); }
   catch { throw new Error("release_manifest_v2_json_invalid"); }
-  return validateManifestGateEvidenceV2(value, artifacts);
+  const manifest = validateManifestGateEvidenceV2(value, artifacts);
+  let failure: ProductionFailureEvidenceV2 | null = null;
+  for (const ref of manifest.transitionEvidence) {
+    const bytes = artifacts.get(ref.relativePath);
+    if (!bytes || releaseSha256V2(bytes) !== ref.sha256) {
+      throw new Error("release_transition_evidence_bytes_invalid");
+    }
+    let evidence: unknown;
+    try { evidence = JSON.parse(bytes.toString("utf8")); }
+    catch { throw new Error("release_transition_evidence_json_invalid"); }
+    if (!bytes.equals(Buffer.from(`${canonicalReleaseJsonV2(evidence)}\n`, "utf8"))) {
+      throw new Error("release_transition_evidence_noncanonical");
+    }
+    if (ref.kind === "production_failure_evidence") {
+      failure = validateProductionFailureEvidenceV2(evidence);
+      if (failure.candidateSha !== manifest.candidateSha) {
+        throw new Error("release_transition_failure_candidate_mismatch");
+      }
+    } else {
+      const rollback = validateProductionRollbackEvidenceV2(evidence);
+      if (rollback.candidateSha !== manifest.candidateSha || failure === null
+          || rollback.failureEvidenceSha256 !== manifest.transitionEvidence[0]?.sha256
+          || manifest.actualRollback === null
+          || canonicalReleaseJsonV2(rollback.outcome) !== canonicalReleaseJsonV2(manifest.actualRollback.outcome)) {
+        throw new Error("release_transition_rollback_binding_invalid");
+      }
+    }
+  }
+  return manifest;
 }
 
 export function assertProductionMutatorAuthorityV2(): never {
