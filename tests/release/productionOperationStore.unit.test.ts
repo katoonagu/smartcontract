@@ -26,6 +26,7 @@ const T0 = "2026-07-18T10:00:00.000Z";
 const OWNER = { pid: 424_242, processStartFingerprintSha256: "1".repeat(64) };
 const TAKEOVER_OWNER = { pid: 424_243, processStartFingerprintSha256: "2".repeat(64) };
 const CLEANUP_OWNER = { pid: 424_244, processStartFingerprintSha256: "3".repeat(64) };
+const CLEANUP_REPLAY_OWNER = { pid: 424_245, processStartFingerprintSha256: "4".repeat(64) };
 
 function canonicalBytes(value: unknown): Buffer {
   return Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8");
@@ -114,8 +115,11 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
   const replay = await runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => OWNER,
     isOwnerAlive: () => true
-  }, () => (store as any).beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  }, () => store.beginOperation({
+    operationKind: "rollout", evaluatedAt: "2026-07-18T10:00:30.000Z"
+  }));
   expect(replay.claimSha256).toBe(begun.claimSha256);
+  expect(replay.lease.operationDeadlineAt).toBe(begun.lease.operationDeadlineAt);
   expect(readFileSync(join(root,
     `production-authority-preclaim-${begun.lease.operationId}.json`))).toEqual(preclaimBefore);
 
@@ -132,12 +136,20 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     expectedOldLeaseSha256: begun.leaseSha256,
     evaluatedAt: takeoverAt
   }))).rejects.toThrow("production_operation_owner_still_alive");
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => TAKEOVER_OWNER,
+    isOwnerAlive: () => false
+  }, () => store.takeoverEffectCapable({
+    expectedOldLeaseSha256: begun.leaseSha256,
+    evaluatedAt: takeoverAt,
+    faultAt: "after_prepare"
+  }))).rejects.toThrow("injected_fault_after_prepare");
   const takeover = await runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => TAKEOVER_OWNER,
     isOwnerAlive: () => false
   }, () => store.takeoverEffectCapable({
     expectedOldLeaseSha256: begun.leaseSha256,
-    evaluatedAt: takeoverAt
+    evaluatedAt: "2026-07-18T10:10:00.000Z"
   }));
   const takeoverLease = JSON.parse(readFileSync(join(root,
     "production-operation-root.lease.json"), "utf8"));
@@ -149,12 +161,20 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
   expect(takeoverLease).toMatchObject({ leaseEpoch: 2, ownerPid: TAKEOVER_OWNER.pid });
 
   const cleanupAt = "2026-07-18T10:10:00.000Z";
-  const terminal = await runWithRootWriterProcessRuntimeForTestsV2({
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => CLEANUP_OWNER,
     isOwnerAlive: () => false
   }, () => store.takeoverCleanupOnly({
     expectedOldLeaseSha256: takeover.newLeaseSha256,
-    evaluatedAt: cleanupAt
+    evaluatedAt: cleanupAt,
+    faultAt: "after_committed"
+  }))).rejects.toThrow("injected_fault_after_committed");
+  const terminal = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => CLEANUP_REPLAY_OWNER,
+    isOwnerAlive: () => false
+  }, () => store.takeoverCleanupOnly({
+    expectedOldLeaseSha256: takeover.newLeaseSha256,
+    evaluatedAt: "2026-07-18T10:11:00.000Z"
   }));
   expect(terminal.takeover).toMatchObject({
     terminalReason: "operation_deadline_reached",
@@ -171,4 +191,4 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     capability: "cleanup_only"
   });
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 30_000);
+}, 45_000);

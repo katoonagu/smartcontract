@@ -8,6 +8,7 @@ import {
   rootWriterOwnerProcessIdentitySha256V2,
   validateCleanupOnlyProductionOperationTakeoverV2,
   validateCommittedProductionOperationLeaseTakeoverV2,
+  validateOperationalAttestationV2,
   validateOperationalAttestationConsumptionV2,
   validatePreparedCleanupOnlyProductionOperationTakeoverV2,
   validatePreparedProductionOperationLeaseRemovalV2,
@@ -415,17 +416,36 @@ export class ProductionOperationStoreV2 {
     const identity = this.#readFreezeAndManifest();
     const action = OPERATION_ACTION[operationKind];
     const deadlineMs = OPERATION_DEADLINE_MS[operationKind];
+    const existingLease = existsSync(this.#path(PRODUCTION_OPERATION_LEASE_FILE_V2))
+      ? this.#readLease() : null;
+    if (existingLease !== null
+        && (existingLease.value.operationKind !== operationKind
+          || existingLease.value.candidateSha !== identity.candidateSha
+          || existingLease.value.releaseGenerationId !== identity.releaseGenerationId
+          || existingLease.value.sourceManifestSha256 !== identity.sourceManifestSha256
+          || existingLease.value.artifactRootFingerprintSha256 !== identity.artifactRootFingerprintSha256
+          || existingLease.value.recoveryFromAbandonedOperationSha256 !== recoveryFrom
+          || existingLease.value.capability !== OPERATION_CAPABILITY[operationKind])) {
+      throw new Error("production_operation_existing_lease_conflict");
+    }
+    const operationDeadlineAt = existingLease?.value.operationDeadlineAt
+      ?? new Date(evaluatedAtMs + deadlineMs).toISOString();
+    const remainingOperationMs = Date.parse(operationDeadlineAt) - evaluatedAtMs;
+    if (remainingOperationMs <= 0) throw new Error("production_operation_deadline_reached");
     const selected = selectOperationalAttestationFromStoreV2({
       artifactRoot: this.#root,
       action,
       expectedSourceManifestSha256: identity.sourceManifestSha256,
       evaluatedAt: input.evaluatedAt,
-      minimumRemainingValidityMs: deadlineMs
+      minimumRemainingValidityMs: existingLease === null ? deadlineMs : remainingOperationMs
     });
     const authority = selected.authority;
-    const operationDeadlineAt = new Date(evaluatedAtMs + deadlineMs).toISOString();
     if (Date.parse(authority.expiresAt) < Date.parse(operationDeadlineAt)) {
       throw new Error("production_authority_insufficient_validity");
+    }
+    if (existingLease !== null
+        && existingLease.value.operationalAttestationSha256 !== selected.attestationSha256) {
+      throw new Error("production_operation_existing_authority_conflict");
     }
     const operationId = deriveProductionOperationIdV2({
       operationKind,
@@ -444,10 +464,19 @@ export class ProductionOperationStoreV2 {
       operationalAttestationSha256: selected.attestationSha256,
       recoveryFromAbandonedOperationSha256: recoveryFrom
     };
+    const preclaimPath = `production-authority-preclaim-${operationId}.json`;
+    const claimPath = `production-operation-claim-${selected.attestationSha256}.json`;
+    if (existingLease === null
+        && (existsSync(this.#path(preclaimPath)) || existsSync(this.#path(claimPath))
+          || existsSync(this.#path(`production-operation-settlement-${operationId}.json`))
+          || existsSync(this.#path(`production-operation-terminal-abandoned-${operationId}.json`))
+          || existsSync(this.#path(`production-operation-terminal-cleanup-${operationId}.json`)))) {
+      throw new Error("production_operation_orphaned_or_terminal_state");
+    }
     const owner = currentRootWriterOwnerIdentityV2();
     let lease: { value: ProductionOperationLeaseV2; bytes: Buffer; sha256: string };
-    if (existsSync(this.#path(PRODUCTION_OPERATION_LEASE_FILE_V2))) {
-      lease = this.#readLease();
+    if (existingLease !== null) {
+      lease = existingLease;
       this.#assertLeaseBinding(lease.value, binding);
       if (lease.value.ownerPid !== owner.pid
           || lease.value.ownerProcessStartFingerprintSha256 !== owner.processStartFingerprintSha256) {
@@ -481,7 +510,6 @@ export class ProductionOperationStoreV2 {
     }
     this.#assertManifestWriterAbsent();
 
-    const preclaimPath = `production-authority-preclaim-${operationId}.json`;
     if (!existsSync(this.#path(preclaimPath))) {
       const originalLease = lease.value.leaseEpoch === 1
         ? { sha256: lease.sha256, ownerSha256: operationOwnerSha(lease.value) }
@@ -505,7 +533,7 @@ export class ProductionOperationStoreV2 {
         checkedAt: input.evaluatedAt,
         expiresAt: authority.expiresAt,
         operationDeadlineAt,
-        minimumRequiredValidityMs: deadlineMs,
+        minimumRequiredValidityMs: remainingOperationMs,
         status: "fresh_compatible_unconsumed"
       });
       this.persistExclusive("production_authority_preclaim", preclaimPath, preclaimValue);
@@ -519,14 +547,16 @@ export class ProductionOperationStoreV2 {
         || storedPreclaim.value.operationDeadlineAt !== operationDeadlineAt) {
       throw new Error("production_authority_preclaim_binding_invalid");
     }
-    const claimPath = `production-operation-claim-${selected.attestationSha256}.json`;
     if (existsSync(this.#path(claimPath))) {
       const claim = readCanonical(this.#path(claimPath), validateProductionOperationClaimV2,
         "production_operation_claim");
       if (claim.value.operationId !== operationId
-          || claim.value.authorityConsumption.preclaimValidationSha256 !== storedPreclaim.sha256) {
+          || claim.value.authorityConsumption.preclaimValidationSha256 !== storedPreclaim.sha256
+          || evaluatedAtMs >= Date.parse(claim.value.authorityConsumption.expiresAt)
+          || evaluatedAtMs >= Date.parse(claim.value.operationDeadlineAt)) {
         throw new Error("production_operation_claim_conflict");
       }
+      this.#verifyNormalTakeoverChain(claim.value, lease);
       const lineage = readCanonical(this.#path(claim.value.preclaimLeaseLineageRelativePath),
         validateProductionPreclaimLeaseLineageV2, "production_preclaim_lease_lineage");
       return {
@@ -548,7 +578,7 @@ export class ProductionOperationStoreV2 {
       action,
       expectedSourceManifestSha256: identity.sourceManifestSha256,
       evaluatedAt: input.evaluatedAt,
-      minimumRemainingValidityMs: deadlineMs
+      minimumRemainingValidityMs: remainingOperationMs
     });
     if (selectedAgain.attestationSha256 !== selected.attestationSha256
         || selectedAgain.issuerReceiptSha256 !== selected.issuerReceiptSha256) {
@@ -722,6 +752,10 @@ export class ProductionOperationStoreV2 {
         || lease.value.ownerProcessStartFingerprintSha256 !== owner.processStartFingerprintSha256) {
       throw new Error("production_operation_owner_fence_invalid");
     }
+    if (existsSync(this.#path(`production-operation-settlement-${operationId}.json`))
+        || existsSync(this.#path(`production-operation-terminal-abandoned-${operationId}.json`))) {
+      throw new Error("production_operation_already_terminal");
+    }
     // ponytail: lease expiry is the dead-owner takeover grace, not a live-owner execution
     // bound; immutable authority/deadline bounds fence effects. Add renewal only for cross-host liveness.
     if (lease.value.capability === "cleanup_only") throw new Error("cleanup_only_operation_forbidden");
@@ -853,14 +887,34 @@ export class ProductionOperationStoreV2 {
       this.#assertManifestWriterAbsent();
       const lease = this.#readLease();
       const owner = currentRootWriterOwnerIdentityV2();
+      const ownerMatches = lease.value.ownerPid === owner.pid
+        && lease.value.ownerProcessStartFingerprintSha256 === owner.processStartFingerprintSha256;
+      const resumableDeadCleanup = input.terminalStateKind === "terminal_abandoned"
+        && lease.value.capability === "cleanup_only"
+        && !isLeaseOwnerProcessAliveV2(lease.value.ownerPid,
+          lease.value.ownerProcessStartFingerprintSha256);
       if (lease.value.operationId !== input.operationId
-          || lease.value.ownerPid !== owner.pid
-          || lease.value.ownerProcessStartFingerprintSha256 !== owner.processStartFingerprintSha256
+          || (!ownerMatches && !resumableDeadCleanup)
           || terminalState.operationKind !== lease.value.operationKind
           || terminalState.capability !== lease.value.capability
           || terminalState.finalLeaseSha256 !== lease.sha256
           || terminalState.finalLeaseEpoch !== lease.value.leaseEpoch) {
         throw new Error("production_terminal_lease_binding_invalid");
+      }
+      if (resumableDeadCleanup) {
+        const abandoned = terminalState as ProductionOperationTerminalAbandonedV2;
+        if (abandoned.cleanupOnlyTakeoverSha256 === null) {
+          throw new Error("cleanup_only_takeover_terminal_binding_invalid");
+        }
+        const committed = readCanonical(this.#path(
+          `production-operation-root.lease-cleanup-only-committed-${abandoned.cleanupOnlyTakeoverSha256}.json`),
+        validateCleanupOnlyProductionOperationTakeoverV2, "cleanup_only_production_operation_takeover");
+        if (committed.sha256 !== abandoned.cleanupOnlyTakeoverSha256
+            || committed.value.operationId !== lease.value.operationId
+            || committed.value.newLeaseSha256 !== lease.sha256
+            || committed.value.newLeaseEpoch !== lease.value.leaseEpoch) {
+          throw new Error("cleanup_only_takeover_terminal_binding_invalid");
+        }
       }
       const receipt = validateProductionOperationLeaseRemovalReceiptV2({
         version: "production-operation-lease-removal-receipt-v2",
@@ -950,8 +1004,27 @@ export class ProductionOperationStoreV2 {
     authorityConsumptionSha256: string | null;
     authorityExpiresAt: string;
   } {
-    const preclaim = this.#preclaimForLease(oldLease);
     const claim = this.#claimForLease(oldLease);
+    const preclaimPath = this.#path(`production-authority-preclaim-${oldLease.operationId}.json`);
+    if (!existsSync(preclaimPath)) {
+      if (claim !== null) throw new Error("production_operation_claim_without_preclaim");
+      const action = OPERATION_ACTION[oldLease.operationKind];
+      const authorityPath = safeArtifactRelativePath(this.#root,
+        `operational-attestations/${action}/${oldLease.releaseGenerationId}/${oldLease.operationalAttestationSha256}.json`);
+      const authority = readCanonical(authorityPath, (value) => validateOperationalAttestationV2(value),
+        "operational_attestation");
+      if (authority.sha256 !== oldLease.operationalAttestationSha256
+          || authority.value.action !== action
+          || authority.value.candidateSha !== oldLease.candidateSha
+          || authority.value.generationId !== oldLease.releaseGenerationId
+          || authority.value.sourceManifestSha256 !== oldLease.sourceManifestSha256
+          || authority.value.artifactRootFingerprintSha256 !== oldLease.artifactRootFingerprintSha256) {
+        throw new Error("production_operation_lease_authority_binding_invalid");
+      }
+      return { claim: null, authorityConsumptionSha256: null,
+        authorityExpiresAt: authority.value.expiresAt };
+    }
+    const preclaim = this.#preclaimForLease(oldLease);
     if (claim !== null) {
       if (claim.value.authorityConsumption.preclaimValidationSha256 !== preclaim.sha256
           || claim.value.authorityConsumption.expiresAt !== preclaim.value.expiresAt
@@ -1006,6 +1079,9 @@ export class ProductionOperationStoreV2 {
       "prepared_production_operation_takeover"
     );
     validateCommittedProductionOperationLeaseTakeoverV2(matches[0]!.value, prepared.value);
+    const tombstone = readCanonical(this.#path(matches[0]!.value.tombstoneRelativePath),
+      validateProductionOperationLeaseV2, "production_operation_tombstone");
+    if (tombstone.sha256 !== oldLeaseSha256) throw new Error("production_operation_tombstone_conflict");
     return matches[0]!.value;
   }
 
@@ -1034,6 +1110,9 @@ export class ProductionOperationStoreV2 {
       "prepared_cleanup_only_production_operation_takeover"
     );
     validateCleanupOnlyProductionOperationTakeoverV2(matches[0]!.value, prepared.value);
+    const tombstone = readCanonical(this.#path(matches[0]!.value.tombstoneRelativePath),
+      validateProductionOperationLeaseV2, "production_operation_tombstone");
+    if (tombstone.sha256 !== oldLeaseSha256) throw new Error("production_operation_tombstone_conflict");
     return matches[0]!;
   }
 
@@ -1047,22 +1126,24 @@ export class ProductionOperationStoreV2 {
     this.#assertManifestWriterAbsent();
     const oldLease = this.#oldLeaseForTakeover(expectedOldLeaseSha256);
     if (oldLease.value.capability === "cleanup_only") throw new Error("effect_capable_takeover_cleanup_lease_forbidden");
-    const context = this.#assertTakeoverEligible(oldLease, input.evaluatedAt);
+    const preparedPath = this.#path(
+      `production-operation-root.lease-takeover-prepared-${expectedOldLeaseSha256}.json`);
+    const existingPrepared = existsSync(preparedPath)
+      ? readCanonical(preparedPath, validatePreparedProductionOperationLeaseTakeoverV2,
+        "prepared_production_operation_takeover") : null;
+    const protocolAt = existingPrepared?.value.preparedAt ?? input.evaluatedAt;
+    const context = this.#assertTakeoverEligible(oldLease, protocolAt);
     if (context.evaluatedAtMs >= Date.parse(context.authorityExpiresAt)) {
       throw new Error("production_operation_authority_bound_reached");
     }
     if (context.evaluatedAtMs >= Date.parse(oldLease.value.operationDeadlineAt)) {
       throw new Error("production_operation_deadline_reached");
     }
-    const preparedPath = this.#path(
-      `production-operation-root.lease-takeover-prepared-${expectedOldLeaseSha256}.json`);
     let prepared: PreparedProductionOperationLeaseTakeoverV2;
     let preparedSha256: string;
-    if (existsSync(preparedPath)) {
-      const stored = readCanonical(preparedPath, validatePreparedProductionOperationLeaseTakeoverV2,
-        "prepared_production_operation_takeover");
-      prepared = stored.value;
-      preparedSha256 = stored.sha256;
+    if (existingPrepared !== null) {
+      prepared = existingPrepared.value;
+      preparedSha256 = existingPrepared.sha256;
       if (prepared.oldLeaseSha256 !== expectedOldLeaseSha256
           || prepared.oldLeaseEpoch !== oldLease.value.leaseEpoch
           || prepared.oldOwnerProcessIdentitySha256 !== operationOwnerSha(oldLease.value)
@@ -1080,8 +1161,8 @@ export class ProductionOperationStoreV2 {
         leaseEpoch: oldLease.value.leaseEpoch + 1,
         ownerPid: owner.pid,
         ownerProcessStartFingerprintSha256: owner.processStartFingerprintSha256,
-        acquiredAt: input.evaluatedAt,
-        heartbeatAt: input.evaluatedAt,
+        acquiredAt: protocolAt,
+        heartbeatAt: protocolAt,
         expiresAt: new Date(Math.min(context.evaluatedAtMs + 60_000,
           Date.parse(context.authorityExpiresAt), Date.parse(oldLease.value.operationDeadlineAt))).toISOString()
       }) as ProductionOperationLeaseV2 & { capability: "effect_capable" | "recovery_only" };
@@ -1106,7 +1187,7 @@ export class ProductionOperationStoreV2 {
         newLeaseSha256: releaseSha256V2(newLeaseBytes),
         newLeaseEpoch: newLease.leaseEpoch,
         operationDeadlineAt: oldLease.value.operationDeadlineAt,
-        preparedAt: input.evaluatedAt
+        preparedAt: protocolAt
       });
       const preparedBytes = canonicalBytesV2(prepared);
       writeExclusiveDurable(preparedPath, preparedBytes);
@@ -1214,22 +1295,24 @@ export class ProductionOperationStoreV2 {
       "production_operation_expected_old_lease_sha");
     this.#assertManifestWriterAbsent();
     const oldLease = this.#oldLeaseForTakeover(expectedOldLeaseSha256);
-    const context = this.#assertTakeoverEligible(oldLease, input.evaluatedAt);
+    const preparedPath = this.#path(
+      `production-operation-root.lease-cleanup-only-prepared-${expectedOldLeaseSha256}.json`);
+    const existingPrepared = existsSync(preparedPath)
+      ? readCanonical(preparedPath, validatePreparedCleanupOnlyProductionOperationTakeoverV2,
+        "prepared_cleanup_only_production_operation_takeover") : null;
+    const protocolAt = existingPrepared?.value.preparedAt ?? input.evaluatedAt;
+    const context = this.#assertTakeoverEligible(oldLease, protocolAt);
     const authorityExpired = context.evaluatedAtMs >= Date.parse(context.authorityExpiresAt);
     const deadlineReached = context.evaluatedAtMs >= Date.parse(oldLease.value.operationDeadlineAt);
     if (!authorityExpired && !deadlineReached) throw new Error("cleanup_only_takeover_bound_not_reached");
     const terminalReason = deadlineReached ? "operation_deadline_reached"
       : context.claim === null ? "authority_expired_before_claim" : "authority_expired_after_claim";
-    const preparedPath = this.#path(
-      `production-operation-root.lease-cleanup-only-prepared-${expectedOldLeaseSha256}.json`);
     let prepared: PreparedCleanupOnlyProductionOperationTakeoverV2;
     let preparedSha256: string;
     const replay = this.#committedCleanupTakeoverForOld(expectedOldLeaseSha256);
-    if (existsSync(preparedPath)) {
-      const stored = readCanonical(preparedPath, validatePreparedCleanupOnlyProductionOperationTakeoverV2,
-        "prepared_cleanup_only_production_operation_takeover");
-      prepared = stored.value;
-      preparedSha256 = stored.sha256;
+    if (existingPrepared !== null) {
+      prepared = existingPrepared.value;
+      preparedSha256 = existingPrepared.sha256;
       if (prepared.oldLeaseSha256 !== expectedOldLeaseSha256
           || prepared.oldLeaseEpoch !== oldLease.value.leaseEpoch
           || prepared.oldOwnerProcessIdentitySha256 !== operationOwnerSha(oldLease.value)
@@ -1249,8 +1332,8 @@ export class ProductionOperationStoreV2 {
         leaseEpoch: oldLease.value.leaseEpoch + 1,
         ownerPid: owner.pid,
         ownerProcessStartFingerprintSha256: owner.processStartFingerprintSha256,
-        acquiredAt: input.evaluatedAt,
-        heartbeatAt: input.evaluatedAt,
+        acquiredAt: protocolAt,
+        heartbeatAt: protocolAt,
         expiresAt: new Date(context.evaluatedAtMs + 60_000).toISOString()
       }) as ProductionOperationLeaseV2 & { capability: "cleanup_only" };
       const newLeaseBytes = canonicalBytesV2(newLease);
@@ -1275,7 +1358,7 @@ export class ProductionOperationStoreV2 {
         newLeaseSha256: releaseSha256V2(newLeaseBytes),
         newLeaseEpoch: newLease.leaseEpoch,
         operationDeadlineAt: oldLease.value.operationDeadlineAt,
-        preparedAt: input.evaluatedAt
+        preparedAt: protocolAt
       });
       const preparedBytes = canonicalBytesV2(prepared);
       writeExclusiveDurable(preparedPath, preparedBytes);
@@ -1372,6 +1455,15 @@ export class ProductionOperationStoreV2 {
         "production_authority_preclaim").value;
       return { sha256: preclaim.originalLeaseSha256,
         ownerSha256: preclaim.originalLeaseOwnerProcessIdentitySha256 };
+    }
+    const candidates = readdirSync(this.#root)
+      .filter((name) => name.startsWith("production-operation-root.lease-tombstone-")
+        && name.endsWith(".json"))
+      .map((name) => readCanonical(this.#path(name), validateProductionOperationLeaseV2,
+        "production_operation_tombstone"))
+      .filter(({ value }) => value.operationId === operationId && value.leaseEpoch === 1);
+    if (candidates.length === 1) {
+      return { sha256: candidates[0]!.sha256, ownerSha256: operationOwnerSha(candidates[0]!.value) };
     }
     throw new Error("production_operation_original_lease_unverified");
   }
