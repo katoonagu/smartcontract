@@ -261,6 +261,11 @@ type ReleaseGateId =
   | "G13_PRODUCTION_MIGRATION" | "G14_PRODUCTION_ROLLOUT"
   | "G15_PRODUCTION_CANARY";
 
+type PreReleaseGateId = Exclude<ReleaseGateId,
+  "G12_PRODUCTION_BACKUP" | "G13_PRODUCTION_MIGRATION" |
+  "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY">;
+type ProductionGateId = Exclude<ReleaseGateId, PreReleaseGateId>;
+
 type ReleaseCommandId =
   | "base_audit" | "acceptance_trace" | "plan1_focused"
   | "plan2_focused" | "plan3_focused" | "plan4_focused"
@@ -286,8 +291,8 @@ type GateEvidenceKind =
   | "schema_production_clone" | "schema_runtime_sanitized"
   | "runtime_rehearsal" | "terminal_legacy_population"
   | "rollback_rehearsal" | "manual_telegram_acceptance"
-  | "production_backup_authority" | "production_backup_consumption"
-  | "production_backup_claim" | "production_backup_progress"
+  | "operational_attestation" | "production_backup_consumption"
+  | "production_backup_dump_progress" | "production_backup_list_progress"
   | "production_backup_dump" | "production_backup_restore_list"
   | "production_backup_evidence" | "production_migration_authority"
   | "production_migration_consumption" | "production_migration_sequence"
@@ -311,10 +316,10 @@ type PendingReleaseGateV2 = {
   state: "pending";
 };
 
-type TerminalReleaseGateV2 = {
+type ExecutedReleaseGateV2 = {
   id: ReleaseGateId;
   candidateSha: string;
-  state: "passed" | "failed" | "blocked";
+  state: "passed" | "failed";
   commandId: ReleaseCommandId;
   redactedTemplateSha256: string;
   startedAt: string;
@@ -324,7 +329,46 @@ type TerminalReleaseGateV2 = {
   evidence: GateEvidenceRefV2[];
 };
 
-type ReleaseGateV2 = PendingReleaseGateV2 | TerminalReleaseGateV2;
+type BlockedReleaseGateV2 = {
+  id: ProductionGateId;
+  candidateSha: string;
+  state: "blocked";
+  blockedByGateId: ProductionGateId;
+  productionFailureEvidence: GateEvidenceRefV2 & {
+    kind: "production_failure_evidence";
+  };
+};
+
+type ReleaseGateV2 =
+  | PendingReleaseGateV2
+  | ExecutedReleaseGateV2
+  | BlockedReleaseGateV2;
+
+type ReleaseFreezeIdentityV2 = {
+  version: "release-freeze-identity-v2";
+  candidateSha: string;
+  planBaseSha: string;
+  artifactRootFingerprintSha256: string;
+  productionDatabaseIdentityFingerprintSha256: string;
+  postgresToolIdentitySha256: string;
+  previousRuntimeDiscoverySha256: string;
+  rollbackWorktreeIdentitySha256: string;
+  createdAt: string;
+};
+
+type OperationalAttestationV2 = {
+  version: "operational-attestation-v2";
+  action: ManifestTransitionId;
+  generationId: string;
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  commandId: ReleaseCommandId;
+  redactedTemplateSha256: string;
+  issuedAt: string;
+  expiresAt: string;
+};
 
 type RemediationReleaseManifestV2 = {
   version: "remediation-release-manifest-v2";
@@ -335,26 +379,66 @@ type RemediationReleaseManifestV2 = {
   transitionId: ManifestTransitionId;
   updatedAt: string;
   artifactRootFingerprintSha256: string;
-  task0bEvidenceSha256: string;
+  releaseFreezeIdentitySha256: string;
+  latestCommittedReceiptSha256: string;
   requiredRequirementIds: string[];
   requiredAcceptanceIds: string[];
   gates: ReleaseGateV2[];
   overall: "not_ready" | "ready_for_release" | "released" | "rolled_back";
 };
 
-type ManifestTransitionReceiptV2 = {
-  version: "manifest-transition-receipt-v2";
+type ManifestTransitionClaimV2 = {
+  version: "manifest-transition-claim-v2";
+  transitionId: ManifestTransitionId;
+  transitionKeySha256: string;
+  generationId: string;
+  sourceManifestSha256: string | null;
+  claimedAt: string;
+  expiresAt: string; // at most two minutes
+  claimantPid: number;
+  claimantProcessStartFingerprintSha256: string;
+};
+
+type ManifestTransitionLeaseV2 = {
+  version: "manifest-transition-lease-v2";
+  transitionKeySha256: string;
+  generationId: string;
+  ownerPid: number;
+  ownerProcessStartFingerprintSha256: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: string; // rolling 60 seconds, absolute maximum five minutes
+};
+
+type PreparedManifestTransitionV2 = {
+  version: "prepared-manifest-transition-v2";
+  transitionId: ManifestTransitionId;
+  transitionKeySha256: string;
+  generationId: string;
+  sourceManifestSha256: string | null;
+  previousReceiptSha256: string | null;
+  targetRevision: number;
+  gateOutputSha256s: string[];
+  targetSnapshotRelativePath: string;
+  targetSnapshotSha256: string;
+  committedReceiptSha256: string;
+  preparedAt: string;
+};
+
+type CommittedManifestTransitionReceiptV2 = {
+  version: "committed-manifest-transition-receipt-v2";
   transitionId: ManifestTransitionId;
   transitionKeySha256: string;
   candidateSha: string;
   artifactRootFingerprintSha256: string;
-  task0bEvidenceSha256: string;
+  releaseFreezeIdentitySha256: string;
   sourceManifestSha256: string | null;
-  targetManifestSha256: string;
+  previousReceiptSha256: string | null;
+  targetManifestProjectionSha256: string;
   sourceRevision: number | null;
   targetRevision: number;
   gateOutputSha256s: string[];
-  createdAt: string;
+  committedAt: string;
 };
 ```
 
@@ -366,11 +450,21 @@ Strict V2 invariants:
   exact lowercase SHA-256 текущих manifest bytes;
 - `revision` начинается с `1` и увеличивается ровно на один;
   `previousManifestSha256` равен source bytes hash;
-- root fingerprint и Task 0B hash неизменны на всей цепочке и проверяются по
-  actual protected artifacts перед каждым переходом;
+- manifest chain binds immutable `release-freeze-identity-v2.json`; candidate,
+  root, production DB, pinned tools, previous-runtime discovery or rollback
+  worktree mismatch invalidates the chain and requires a new root;
+- each external G12-G15 action also binds a fresh generation-specific
+  `operational-attestation-<transition>-<generation>.json`. It must be consumed
+  while `issuedAt <= consumedAt < expiresAt` and is never required to remain
+  fresh at later aggregation. Pre-manual/readiness transitions bind only the
+  chain-stable freeze identity and their immutable gate evidence;
+- a consumed attestation may authorize only its bounded operation. G15 canary
+  may continue after attestation expiry because consumption is durable, but its
+  observation must finish within the separately bounded 30-minute operation;
 - pending gate не содержит фиктивных command/timestamp/exit/output полей;
-- terminal gate содержит только exact allowlisted command/template и typed
-  evidence refs из своей `GateEvidencePolicy`;
+- passed/failed gate contains execution fields; blocked gate contains no
+  invented execution fields and binds only `blockedByGateId` plus the exact
+  typed production-failure evidence;
 - `outputSha256` считается по actual immutable gate-output bytes; каждый
   evidence hash повторно считается по actual regular non-symlink file;
 - singleton `migrationEvidenceSha256`/`rollbackEvidenceSha256` из V1 не
@@ -380,6 +474,25 @@ Strict V2 invariants:
   parsed evidence; raw secrets/actor ids не сохраняются;
 - `release:verify` не меняет ни одного байта; единственный writer —
   `release:manifest:advance`.
+
+Exact lifecycle filenames:
+
+```text
+release-freeze-identity-v2.json
+manifest-transition-claim-<transitionKeySha256>.json
+manifest-transition-lease-<transitionKeySha256>.json
+manifest-transition-prepared-<transitionKeySha256>.json
+manifest-snapshots/release-manifest-r<revision>-<sha256>.json
+manifest-transition-receipt-<receiptSha256>.json
+release-manifest.json
+```
+
+The committed receipt is written only after the atomic manifest replace. To
+avoid a circular hash, it binds `targetManifestProjectionSha256`, calculated
+from canonical target V2 with `latestCommittedReceiptSha256` omitted. Exact
+committed-receipt bytes are hashed first and that hash is placed in final
+manifest; prepared state stores both target snapshot and receipt hashes. The
+verifier recomputes the projection, receipt hash and full manifest hash.
 
 State derivation and sole legal order:
 
@@ -394,9 +507,22 @@ absent
 ```
 
 From a production-phase source, `production_failed` marks the exact failed
-gate and all later gates `blocked`; only then may `rollback_rolled_back` bind
-actual `ProductionRollbackEvidenceV2` and set `rolled_back`. G10 rehearsal can
-never satisfy the production rollback policy. A failed pre-release gate stays
+gate and all later gates `blocked`; blocked records name that gate and share its
+exact failure ref. `rollback_rolled_back` then binds one discriminated outcome:
+
+```ts
+type ProductionRollbackOutcomeV2 =
+  | { kind: "previous_runtime_retained"; failedGateId: "G13_PRODUCTION_MIGRATION";
+      previousRuntimeStopObserved: false; candidateStartObserved: false }
+  | { kind: "candidate_replaced_with_previous";
+      failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+      candidateStopEvidenceSha256: string; previousStartEvidenceSha256: string };
+```
+
+G13 failure before previous-runtime stop uses `previous_runtime_retained` and
+must not invent candidate-stop/previous-start actions. Once candidate start was
+attempted, rollback uses `candidate_replaced_with_previous`. G10 rehearsal can
+never satisfy either production outcome. A failed pre-release gate stays
 `not_ready`, does not skip forward, and requires a new candidate/evidence root.
 
 Address Poisoning closeout remains separate `APC-01` after
@@ -532,6 +658,40 @@ Both full checksums are mandatory and equal to each other and to
 `/version` may show the short checksum, but release evidence always persists
 the full candidate-bytes and receipt values plus postcondition hash.
 
+Production G13 additionally requires exact fixed file
+`schema032-production-execution-receipt-v2.json`:
+
+```ts
+type Schema032ProductionExecutionReceiptV2 = {
+  version: "schema-032-production-execution-receipt-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  operationalAttestationSha256: string;
+  authorityConsumptionSha256: string;
+  sourceManifestSha256: string;
+  g12TransitionReceiptSha256: string;
+  productionBackupEvidenceSha256: string;
+  advisoryLockKey: 320032500;
+  databaseSessionIdentitySha256: string;
+  lockAcquiredAt: string;
+  lockReleasedAt: string;
+  firstMigrationOutcomeSha256: string;
+  firstVerificationSha256: string;
+  secondMigrationOutcomeSha256: string;
+  finalVerificationSha256: string;
+  migrationBytesChecksumSha256: string;
+  receiptChecksumSha256: string;
+  postconditionsSha256: string;
+  result: "applied_and_verified" | "failed_after_attempt";
+};
+```
+
+The schema producer writes/fsyncs this receipt after advisory-lock release. A
+missing session identity, invalid lock interval, unreleased lock, partial
+sequence hash or checksum mismatch cannot pass G13. If migration was attempted
+and failed, the receipt supplies the fixed execution input for typed
+`ProductionFailureEvidenceV2`.
+
 ### 2.6 `TerminalLegacyPopulationV1`
 
 ```ts
@@ -553,7 +713,7 @@ policy/result marker is legacy. The ordered aggregate hashes canonical
 fields except the separate already-sent fingerprint set. New jobs after cutoff
 cannot mask a changed count, ID set or result aggregate.
 
-### 2.7 `RollbackRehearsalEvidenceV1` and `ProductionRollbackEvidenceV1`
+### 2.7 Rollout, canary, failure and rollback evidence
 
 Pre-GO `RollbackRehearsalEvidenceV1` records:
 
@@ -567,17 +727,84 @@ Pre-GO `RollbackRehearsalEvidenceV1` records:
 - terminal legacy aggregate, completed results and sent fingerprints unchanged;
 - stop/start cleanup leaves no process or advisory lock behind.
 
-Before production canary `ProductionRollbackEvidenceV1` records:
+Fresh production evidence uses these exact primary filenames and schemas:
 
-Before canary the external evidence records:
+```text
+production-rollout-manager-captures-v2.json
+production-rollout-query-captures-v2.json
+production-rollout-evidence-v2.json            ProductionRolloutEvidenceV2
+production-canary-query-captures-v2.json
+production-canary-log-captures-v2.json
+production-canary-evidence-v2.json             ProductionCanaryEvidenceV2
+production-failure-evidence-v2.json            ProductionFailureEvidenceV2
+production-rollback-manager-captures-v2.json
+production-rollback-query-captures-v2.json
+production-rollback-evidence-v2.json           ProductionRollbackEvidenceV2
+```
 
-- previous runtime SHA, label, PID/service identity and verified start command;
-- candidate SHA and label;
-- exact allowlisted stop/start/rollback command ids and redacted-template
-  hashes; literal commands/secrets are not persisted;
-- production DB name/fingerprint, backup path and backup SHA-256;
-- schema-032 pre-state;
-- operator and approval timestamp.
+```ts
+type ProductionRolloutEvidenceV2 = {
+  version: "production-rollout-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  operationalAttestationConsumptionSha256: string;
+  sourceManifestSha256: string;
+  previousStopEvidenceSha256: string;
+  candidateStartEvidenceSha256: string;
+  managerCapturesSha256: string;
+  queryCapturesSha256: string;
+  checks: Record<"schema" | "version" | "admin" | "singleton" | "workers" |
+    "logs" | "delivery" | "legacy", true>;
+  result: "passed";
+};
+
+type ProductionCanaryEvidenceV2 = {
+  version: "production-canary-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  operationalAttestationConsumptionSha256: string;
+  sourceManifestSha256: string;
+  observationStartedAt: string;
+  observationFinishedAt: string;
+  completedPollingCycles: number;
+  queryCapturesSha256: string;
+  logCapturesSha256: string;
+  checks: Record<"schema" | "version" | "admin" | "singleton" |
+    "reconciliation" | "delivery" | "navigation" | "allowance" | "legacy" |
+    "secrets" | "queues" | "honest_limits", true>;
+  result: "passed";
+};
+
+type ProductionFailureEvidenceV2 = {
+  version: "production-failure-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  failedGateId: "G13_PRODUCTION_MIGRATION" | "G14_PRODUCTION_ROLLOUT" |
+    "G15_PRODUCTION_CANARY";
+  sourceManifestSha256: string;
+  failedExecutionEvidenceSha256: string;
+  observedAt: string;
+  sanitizedFailureCode: string;
+};
+
+type ProductionRollbackEvidenceV2 = {
+  version: "production-rollback-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  sourceManifestSha256: string;
+  failureEvidenceSha256: string;
+  outcome: ProductionRollbackOutcomeV2;
+  managerCapturesSha256: string | null;
+  queryCapturesSha256: string;
+  checks: Record<"schema032_retained" | "previous_version" | "admin" |
+    "singleton" | "allowance" | "legacy" | "sent" | "no_duplicate_send", true>;
+};
+```
+
+Canary must cover at least 15 minutes and two completed polling cycles, and
+must finish no later than 30 minutes after its consumed operational attestation
+started the bounded observation. A shorter, longer, interrupted or clock-
+inconsistent observation fails closed.
 
 Plan 5 does not invent a service manager. Task 0 discovers the actual current
 launch mechanism. If it is `Start-Process`, the approved command uses
@@ -590,7 +817,7 @@ is blocked.
 
 | Gate | Exact `GateEvidencePolicy` roots | Transition | Failure action |
 |---|---|---|---|
-| `G00_BASE` | `task0-baseline.json`, exact Task 0B/root binding | `pre_manual` | block |
+| `G00_BASE` | `task0-baseline.json`, `release-freeze-identity-v2.json` | `pre_manual` | block |
 | `G01_TRACE` | `acceptance-trace.json` and exact AC-41 execution trace | `pre_manual` | return Plan 5 Task 2 |
 | `G02_DATA` | `suite-plan1.vitest.json`, `suite-plan1.evidence.json` | `pre_manual` | return Plan 1 |
 | `G03_SCORING` | `suite-plan2.vitest.json`, `suite-plan2.evidence.json` | `pre_manual` | return Plan 2 |
@@ -602,8 +829,8 @@ is blocked.
 | `G09_LEGACY_TERMINAL` | `terminal-legacy-population.json` and exact Task 0B cutoff | `pre_manual` | return owner/block |
 | `G10_ROLLBACK_REHEARSAL` | `rollback-rehearsal.json`; explicitly pre-GO only | `pre_manual` | block release |
 | `G11_POISONING_REGRESSION` | Address Poisoning suite report/evidence only | `pre_manual` | return separate owner/block |
-| `G12_PRODUCTION_BACKUP` | fresh authority, consumption, claim, lease/progress, evidence, actual dump/list bytes | `g12_backup_passed` | block production mutation |
-| `G13_PRODUCTION_MIGRATION` | fresh consumed schema authority, source G12 receipt/backup and all first/verify/no-op/final production sequence bytes | `g13_migration_passed` | rollback decision/block startup |
+| `G12_PRODUCTION_BACKUP` | fresh operational attestation, one consumption claim, dump/list progress, final evidence and actual dump/list; no active lease remains | `g12_backup_passed` | block production mutation |
+| `G13_PRODUCTION_MIGRATION` | fresh consumed attestation, `Schema032ProductionExecutionReceiptV2`, source G12 receipt/backup and all first/verify/no-op/final production sequence bytes | `g13_migration_passed` | retain previous runtime or rollback decision |
 | `G14_PRODUCTION_ROLLOUT` | fixed manager and direct-query captures plus derived rollout evidence | `g14_rollout_passed` | rollback on failure |
 | `G15_PRODUCTION_CANARY` | fixed query/scheduler/log captures plus derived bounded canary evidence | `g15_canary_released` | rollback on failure |
 
@@ -794,6 +1021,17 @@ stale, guessed or unverified input blocks Task 9 and prevents a valid
 `RemediationReleaseManifestV2` pre-manual/readiness chain. Task 0B cannot be deferred into a
 later Task 9 step and cannot be satisfied from the earlier Task 0A snapshot
 alone.
+
+Task 0B writes `release-freeze-identity-v2.json` once for the candidate/root/
+production-DB/tool/previous-runtime/rollback-worktree tuple. This chain-stable
+identity has no `expiresAt`; any change to one of those facts invalidates the
+manifest chain and requires a new protected root. Immediately before each
+external G12, G13, G14 and G15 action, the operator issues a separate bounded
+`OperationalAttestationV2` for that action. It must match the exact freeze,
+source manifest and candidate, and it must be consumed before expiry. Refreshing
+an attestation neither rewrites the freeze nor changes a manifest by itself.
+The G15 consumption starts the bounded observation; the already-consumed
+authority may expire during the required 15-to-30-minute canary.
 
 **Reviews:** independent spec-review; independent safety/code-quality review.
 
@@ -1273,17 +1511,22 @@ Add these exact test identities:
 [REQ-38][MANIFEST-V2-INIT] creates pre-manual revision one only from absent and exact G00-G11 evidence
 [REQ-38][MANIFEST-V2-TRANSITIONS] accepts only absent to pre-manual to readiness to G12 to G13 to G14 to G15
 [REQ-38][MANIFEST-V2-PENDING] pending gates contain no invented execution fields
+[REQ-38][MANIFEST-V2-BLOCKED] blocked gates contain only blocker and exact failure evidence without execution fields
+[REQ-38][MANIFEST-V2-FREEZE] separates chain-stable freeze identity from fresh action attestations
 [REQ-38][MANIFEST-V2-EVIDENCE] semantically binds every G00-G15 policy to actual bytes
 [REQ-38][MANIFEST-V2-FORGED] rejects a structurally valid hand-written manifest and gate output
 [REQ-38][MANIFEST-V2-CAS] rejects stale and concurrent writers without overwriting the winner
 [REQ-38][MANIFEST-V2-CRASH] recovers exactly before and after the atomic manifest replace
 [REQ-38][MANIFEST-V2-REPLAY] exact replay is byte-identical and conflicting replay fails closed
+[REQ-38][MANIFEST-V2-RECOVERY] validates claim lease prepared committed filenames TTL liveness takeover and receipt chain
+[REQ-38][MANIFEST-V2-AUTHORITY-SELECTION] rejects zero multiple unconsumed foreign or incompatible generations
 [REQ-38][MANIFEST-V2-VERIFY-READONLY] verifier leaves every artifact byte-identical
-[REQ-38][G12-V2-BINDING] binds authority consumption claim lease progress evidence dump and restore list
-[REQ-38][G13-V2-BINDING] binds consumed schema authority source G12 receipt and complete production sequence
+[REQ-38][G12-V2-BINDING] binds one fresh-at-consumption claim progress final evidence actual bytes and no active lease
+[REQ-38][G13-V2-BINDING] binds schema execution receipt consumed authority lock session source G12 and complete sequence
 [REQ-35][REQ-38][G14-V2-EVIDENCE] derives rollout only from exact manager and query captures
-[REQ-03][REQ-35][REQ-36][G15-V2-EVIDENCE] derives canary only after two cycles and fifteen minutes with all checks
-[REQ-35][REQ-38][PRODUCTION-ROLLBACK-V2] requires actual production rollback evidence and rejects G10 rehearsal
+[REQ-35][REQ-38][G14-RUNTIME-ORDER] stops the exact previous runtime after G13 and before candidate start
+[REQ-03][REQ-35][REQ-36][G15-V2-EVIDENCE] requires two cycles and a 15-to-30-minute bounded canary with all checks
+[REQ-35][REQ-38][PRODUCTION-ROLLBACK-V2] distinguishes retained previous runtime from candidate replacement and rejects G10 rehearsal
 [REQ-38][PRODUCTION-MUTATOR-V2] rejects V1 structural or V2 manifest without current transition receipt and root binding
 ```
 
@@ -1321,8 +1564,9 @@ Implement:
 - strict parsing of the §2.2 V2 contracts and exact key sets;
 - `reduceManifestTransition(current, transition, verifiedGateOutputs)` as a
   pure function with the sole state order specified above;
-- revision, previous hash, transition id, root/Task0B/candidate invariants;
-- pending/terminal discriminated records;
+- revision, previous hash, latest receipt, transition id, stable-freeze/root/
+  candidate invariants and fresh operational-attestation compatibility;
+- pending, passed/failed execution and non-executed blocked records;
 - typed production failure prefix and rollback preconditions;
 - recursive secret rejection and exact REQ/AC/gate sets.
 
@@ -1371,29 +1615,51 @@ release:manifest:advance <allowlisted-transition> <expected-source-sha256|absent
 No optional candidate, gate, evidence, command or individual artifact path is
 accepted. Candidate is exact clean Git `HEAD`; dirty worktree fails before
 claim. Root is absolute/outside repository/non-symlink/restrictive and its
-fingerprint must equal Task 0B.
+fingerprint must equal `ReleaseFreezeIdentityV2`.
+
+For transitions requiring operational authority, the writer starts from the
+exact fixed policy filename or the generation recorded by the single consumed
+attestation. Discovery is deterministic: exactly one compatible consumed
+generation may match transition/source/candidate/freeze/root. Zero, multiple,
+unconsumed, foreign or incompatible generations fail closed. Directory order
+or newest timestamp never selects an authority.
 
 Store protocol:
 
-1. acquire root-wide O_EXCL bounded lease and generation-bound claim;
+1. acquire generation-bound O_EXCL claim, then root-wide O_EXCL bounded lease;
 2. read current bytes with `O_NOFOLLOW`; require exact expected source SHA or
    exact absence;
 3. derive a deterministic `transitionKeySha256` from candidate, source hash,
-   transition, root and Task 0B hashes;
+   transition, root, release-freeze hash and, for G12-G15, the single relevant
+   consumed operational-attestation hash;
 4. resolve fixed evidence policy, verify actual bytes, and run pure reducer;
 5. write/fsync immutable content-addressed gate outputs, target manifest
-   snapshot and hash-chained receipt first;
+   snapshot and `PreparedManifestTransitionV2` first;
 6. while still owning the lease, re-read source bytes and repeat CAS;
 7. write/fsync a same-directory temporary current manifest and atomically
    replace `release-manifest.json`; this replace is the only commit point;
-8. persist bounded completion state and release lease.
+8. after replace, write/fsync `CommittedManifestTransitionReceiptV2`, verify its
+   hash equals manifest `latestCommittedReceiptSha256`, then remove owned lease.
 
 A crash before replace leaves the previous manifest authoritative; exact replay
-uses the claim/snapshot/receipt and completes once. A crash after replace returns
-the existing exact receipt and never rewrites. Stale lease takeover is allowed
-only after bounded expiry and exact process/claim revalidation. A foreign,
-symlinked, malformed, mismatched or conflicting partial file blocks recovery;
-the writer never deletes it blindly.
+uses claim/prepared/snapshot and completes once. A crash after replace but
+before committed receipt uses the manifest pointer plus prepared bytes to write
+that one exact receipt. A completed replay returns the existing exact receipt
+and never rewrites.
+
+| Existing state | Liveness/TTL rule | Recovery |
+|---|---|---|
+| claim only | claim ≤2 minutes and exact PID/start alive blocks; dead/expired exact owner may be taken over | new generation adopts only after source CAS |
+| claim + lease | heartbeat ≤10 seconds, rolling lease ≤60 seconds, absolute operation ≤5 minutes | live lease blocks; dead/expired exact owner may resume prepared work |
+| prepared, source current | exact claim/lease ownership and source CAS required | atomic replace then committed receipt |
+| manifest replaced, receipt missing | target full hash/projection and prepared receipt hash must match | write the one exact committed receipt; no reducer rerun |
+| committed receipt present | receipt hash, previousReceipt hash and manifest latest hash must agree | return byte-identical result |
+| foreign/symlink/conflicting partial | never eligible | fail closed; no blind delete/takeover |
+
+Every receipt after revision 1 requires `previousReceiptSha256` equal to source
+manifest `latestCommittedReceiptSha256`; revision 1 uses null. Claim/lease/
+prepared artifacts use the exact filenames in §2.2 and are schema-validated
+before any liveness decision.
 
 RED/GREEN:
 
@@ -1423,9 +1689,11 @@ filesystem/security quality review.
   exact policy fixtures.
 
 Implement the G00–G11 rows in §3 as an exhaustive
-`Record<ReleaseGateId, GateEvidencePolicyV2>`. Each policy has exact primary
+`Record<PreReleaseGateId, GateEvidencePolicyV2>`. No G12–G15 placeholder,
+cast or default policy exists. Each policy has exact primary
 filenames, derived supporting filename grammar, schema validators, candidate/
-root/Task0B bindings, required evidence kinds and canonical ordering. G07 keeps
+root/release-freeze bindings, required evidence kinds and canonical ordering.
+No expiring operational attestation is required for G00-G11. G07 keeps
 clean and production-clone refs distinct. G10 is tagged
 `scope: "pre_go_rehearsal"` and cannot satisfy actual rollback.
 
@@ -1468,26 +1736,47 @@ read-only quality review.
   existing actual-byte fixtures; producer semantics stay unchanged here.
 - Modify: `tests/release/schema032Release.acceptance.test.ts` only to expose
   existing complete sequence fixtures.
+- Modify: `scripts/runSchema032ReleaseSequence.ts` to persist the durable G13
+  execution receipt and typed failure execution input.
+
+Task 8B.5 extends the pre-release policy map only as
+`Record<PreReleaseGateId | "G12_PRODUCTION_BACKUP" |
+"G13_PRODUCTION_MIGRATION", GateEvidencePolicyV2>`. It does not claim a full
+`ReleaseGateId` record until Task 8B.6 supplies G14/G15.
 
 G12 policy starts only from exact `readiness` V2 bytes and binds:
 
-- fresh backup authority and consumed claim;
-- operation claim/lease plus dump/list progress owned by the same generation;
+- chain-stable release freeze plus a fresh backup attestation whose freshness
+  is proven at the single consumption claim timestamp, not aggregation time;
+- exactly one consumption claim plus dump and list progress for its generation;
+- successful final evidence requires the operation lease to be absent because
+  the producer deletes its owned lease after completion;
 - `production-backup-evidence.json`;
 - actual `production-backup.dump` and restore-list bytes, size/hash/count;
-- candidate, root, Task 0B, production DB identity and source manifest hash.
+- candidate, root, release-freeze identity, production DB identity and source
+  manifest hash.
+
+The policy has no duplicate “claim” kind: the authority consumption is the one
+claim. Multiple compatible generations fail closed under Task 8B.3 selection.
 
 G13 policy starts only from exact G12 target bytes and binds:
 
-- fresh consumed schema authority;
+- fresh consumed schema operational attestation;
 - exact G12 transition receipt and backup bytes;
 - first migration outcome, first verification, second already-verified outcome
   and final verification;
 - exact migration filename/full bytes checksum/full receipt checksum,
-  postconditions, production DB identity and advisory-lock ownership.
+  postconditions, production DB identity and
+  `schema032-production-execution-receipt-v2.json`, including lock key/session,
+  acquired/released times and all sequence hashes.
 
 No singleton V1 migration hash is read. `g12_backup_passed` and
 `g13_migration_passed` both produce `overall=not_ready`.
+The G13 RED/GREEN batch also proves that the schema producer always closes the
+advisory-lock interval and writes the durable execution receipt after an
+attempt, including `failed_after_attempt` for a partial/failed sequence. A
+missing producer receipt, session hash, lock release or one of the four exact
+sequence members blocks both G13 and typed production-failure derivation.
 
 RED/GREEN:
 
@@ -1521,10 +1810,17 @@ security quality review. No producer is run against production.
 - Modify: `src/release/remediationReleaseManifestV2.ts`.
 - Modify: `package.json` with only the three exact evidence-producer commands.
 
-All three scripts accept only the protected artifact root. They discover fixed
-capture names from their policies and derive sanitized typed evidence; no free
-PID, URL, DB, SHA, command, evidence path or pass/fail string is accepted.
-Dependencies for process/query/log/time observation are injected in unit tests.
+Task 8B.6 adds G14/G15 and only now exports the exhaustive
+`Record<ReleaseGateId, GateEvidencePolicyV2>`; compile-time exact keys reject
+missing, placeholder or extra policies.
+
+All three scripts accept only the protected artifact root. Their production
+default observers create the exact exclusive manager/query/log capture files
+listed in §2.7 directly from the repo runtime manager, protected PostgreSQL
+queries, bounded scheduler observations and sanitized log scanner. They do not
+trust operator-authored capture JSON. Tests inject observers that emit the same
+typed schemas against sanitized fixtures. No free PID, URL, DB, SHA, command,
+evidence path or pass/fail string is accepted.
 The PostgreSQL branch uses only exact
 `tron_watch_plan5_runtime_sanitized`, requires `REQUIRE_PLAN5_POSTGRES=1`,
 recording-disabled Telegram and deterministic synthetic rows.
@@ -1532,15 +1828,19 @@ recording-disabled Telegram and deterministic synthetic rows.
 G14 requires all existing Task 12 rollout checks:
 
 - exact G13 manifest/receipt and schema 032 verification;
-- manager-owned previous-runtime stop and candidate start receipts;
+- a fresh G14 attestation consumed before action;
+- manager-owned `stop_previous` is allowed only from exact G13-passed state;
+  direct liveness proves the previous runtime stopped before any
+  `start_candidate` call; exact stop→start ordering is persisted and tested;
 - exact candidate SHA/label `/version`, Admin 200, one candidate process and
   one poller/worker schedule;
 - Where, Incoming, Deep/index, reconciler, delivery and allowance cycles alive;
 - no raw secrets/actor ids, no duplicate delivery and unchanged terminal
   legacy population.
 
-G15 requires an observation window of at least two complete polling cycles and
-15 minutes, whichever is longer, and every Task 12 canary check: schema/version/
+G15 consumes its own fresh attestation at observation start. It requires at
+least two complete polling cycles and at least 15 minutes, but no more than 30
+minutes, and every Task 12 canary check: schema/version/
 Admin/singleton stability, one reconciliation, bounded delivery/fingerprint,
 cache-only navigation plus explicit refresh, conservative stale allowance,
 unchanged terminal population, no secret/log leakage, no unexpected queue/
@@ -1553,12 +1853,14 @@ the operator cannot supply a gate id or free-form reason. A G12 backup failure
 before production mutation leaves the readiness manifest unchanged and does
 not enter rollback.
 
-Actual production rollback requires a preceding `production_failed` V2 state,
-manager-owned candidate stop plus previous-runtime start receipts, additive
-schema 032 still verified, expected previous `/version`, Admin 200, singleton
-workers, conservative allowance, unchanged result/legacy/sent hashes and no
-duplicate Telegram delivery. It rejects `rollback-rehearsal.json` by evidence
-kind, schema version and scope.
+Actual production rollback requires a preceding `production_failed` V2 state.
+For G13 failure before previous-runtime stop it emits
+`previous_runtime_retained` and proves the previous runtime stayed healthy;
+candidate stop/start evidence must be absent. For G14/G15 failure after
+candidate start it emits `candidate_replaced_with_previous`, requiring exact
+candidate stop followed by previous-runtime start. Both retain additive schema
+032, expected version/Admin/singleton/conservative allowance/legacy/sent/no-
+duplicate checks and reject `rollback-rehearsal.json` by kind/schema/scope.
 
 Use three small commits in this order:
 
@@ -1603,13 +1905,15 @@ mutation, each mutator must verify:
 - current actual `release-manifest.json` is strict V2 and its bytes equal the
   authority/expected source hash;
 - exact latest hash-chained transition receipt and immutable source snapshot;
-- current root/Task0B/candidate binding;
+- current release-freeze/root/candidate binding and, for the requested external
+  action, one fresh compatible operational attestation consumed before expiry;
 - full semantic evidence for the required phase, not only gate state;
 - action-specific phase: readiness for backup, G12 for migration,
   G13 for candidate rollout, failed production state for rollback.
 
 V1, fixture-like hand-written V2, missing gate output, arbitrary evidence hash,
-stale receipt, changed root/Task0B, out-of-order transition and verifier-only
+stale receipt, changed freeze/root, stale or foreign action attestation,
+out-of-order transition and verifier-only
 status object all fail before claim and before mutation. Existing authority
 TTL, lease, exact DB/runtime binding and secret handling remain stricter and
 are not weakened.
@@ -1930,8 +2234,18 @@ not hotfix production.
 
 ### Task 12 — Production rollout, canary and rollback (`G14`, `G15`)
 
-Start exactly `RELEASE_SHA` with `RUNTIME_GIT_SHA` and approved label.
-Candidate must fail before Telegram/workers if schema verification fails.
+Consume the fresh G14 operational attestation from the exact G13-passed
+manifest. The approved runtime manager must then perform this fixed sequence:
+
+1. reverify G13, schema 032, previous-runtime identity and singleton state;
+2. stop the exact previous runtime and persist direct stopped evidence;
+3. only after that evidence exists, start exactly `RELEASE_SHA` with
+   `RUNTIME_GIT_SHA` and the approved label;
+4. persist direct candidate-start evidence and run the immediate checks below.
+
+The candidate must fail before Telegram/workers if schema verification fails.
+Starting the candidate before a proven previous-runtime stop, or stopping the
+previous runtime before exact G13-passed verification, fails G14.
 
 Immediate `G14` gates:
 
@@ -1956,8 +2270,10 @@ npm run release:verify -- --phase g14 --artifact-root $env:PLAN5_ARTIFACT_ROOT
 
 Any failure triggers rollback; no production hotfix.
 
+Consume a separate fresh G15 operational attestation at observation start.
 Observe at least two complete polling cycles and 15 minutes, whichever is
-longer. Verify:
+longer, and fail closed if the observation has not passed by 30 minutes.
+Verify:
 
 1. receipt row/version/filename/full checksum and all schema postconditions;
 2. `/version` still matches startup verifier and `RELEASE_SHA`;
@@ -1994,9 +2310,14 @@ Telegram presentation P0/P1, Address Poisoning regression or secret leakage.
 1. Require the failed schema/rollout/canary producer to persist typed fixed-path
    failure evidence. Advance `production_failed`; the writer derives the exact
    failed gate and blocked suffix without a free gate argument.
-2. Stop candidate process through the exact manager authority.
-3. Do **not** delete receipt 032, columns, constraints or delivery rows.
-4. Start the exact previous verified runtime/worktree with its recorded label.
+2. For `G13_PRODUCTION_MIGRATION` failure before any previous-runtime stop,
+   retain the exact previous runtime; candidate-stop and previous-start actions
+   are forbidden. The rollback outcome is `previous_runtime_retained`.
+3. For `G14_PRODUCTION_ROLLOUT` or `G15_PRODUCTION_CANARY` failure after
+   candidate start, stop the candidate and then start the exact previous
+   verified runtime/worktree with its recorded label. The rollback outcome is
+   `candidate_replaced_with_previous`, with both ordered manager captures.
+4. Do **not** delete receipt 032, columns, constraints or delivery rows.
 5. Verify Admin, singleton, `/version`, queues and conservative allowance view.
 6. Confirm `sent` delivery remains sent and completed results unchanged.
 7. Run `release:production:rollback:evidence`, advance
@@ -2232,10 +2553,10 @@ reviews. No autosquash/rewrite after `RELEASE_SHA` freeze.
 | Sanitized runtime records an external send | block readiness; invalidate manual/runtime evidence; no production GO |
 | Previous-SHA rollback rehearsal fails | block readiness; do not substitute an untested command/runtime |
 | Backup unavailable/invalid after GO | leave the verified old runtime unchanged; keep V2 manifest `ready_for_release`; do not advance G12 or migrate |
-| Migration transaction fails before receipt | verify rollback/no receipt; leave the exact previous runtime unchanged; do not start candidate |
-| Schema 032 verifies but candidate startup fails | keep additive 032; start exact previous runtime; verify conservative mirrors/results/sent fingerprints |
-| `/version` mismatch | stop candidate; start previous runtime; no DB down-migration |
-| Worker/delivery/Telegram/Admin canary fails | application rollback; preserve sent/result state |
+| G13 migration fails before any previous-runtime stop | persist the durable failed-after-attempt schema receipt/failure evidence; retain the exact previous runtime; forbid candidate-stop/previous-start captures; record `previous_runtime_retained` |
+| Schema 032 verifies but G14 candidate startup fails after the previous runtime stopped | keep additive 032; stop any partial candidate and start exact previous runtime; record `candidate_replaced_with_previous`; verify conservative mirrors/results/sent fingerprints |
+| G14 `/version` mismatch after candidate start | stop candidate; start previous runtime; record `candidate_replaced_with_previous`; no DB down-migration |
+| G15 worker/delivery/Telegram/Admin canary fails | stop candidate; start previous runtime; record `candidate_replaced_with_previous`; preserve sent/result state |
 | Production failure without typed failure evidence | stop forward progress; do not hand-edit failed/blocked gates and do not invoke rollback manager until `production_failed` transition is valid |
 | Actual rollback evidence replaced by G10 rehearsal | reject `rolled_back`; require manager/query-bound production rollback evidence |
 | Terminal legacy count/ID/result aggregate mismatch | immediate rollback and P0 incident evidence; do not accept a sample-only explanation |
@@ -2314,6 +2635,22 @@ hashes, not secrets or full raw logs.
 - [x] Task 8B freezes RED tests for init/order/every transition, semantic
   G00–G15 evidence, forged-manifest rejection, CAS/concurrency, crash/replay,
   byte-identical verifier, mutator guards, G14/G15 and actual rollback.
+- [x] Pending, executed and blocked gates are disjoint; blocked gates contain
+  only their blocker and exact production-failure evidence.
+- [x] G12 binds one consumption, dump/list progress and final bytes, and cannot
+  pass while an operation lease remains; freshness is checked at consumption.
+- [x] Stable release-freeze identity is separate from fresh G12–G15 action
+  attestations; G15 remains bounded to 15–30 minutes after consumption.
+- [x] G13 persists the durable schema execution receipt with authority,
+  consumption, lock/session interval and the complete migration sequence.
+- [x] Previous runtime stops only after G13 passes and before candidate start;
+  rollback distinguishes retained previous runtime from candidate replacement.
+- [x] Claim/lease/prepared/committed receipt schemas, filenames, TTL/liveness,
+  crash recovery and `latestCommittedReceiptSha256` chaining are exact.
+- [x] Evidence policy staging is compile-time exhaustive only after G14/G15;
+  earlier stages cannot use placeholders or casts to claim completeness.
+- [x] Rollout/canary/failure/rollback V2 evidence uses fixed filenames and a
+  fail-closed canary requiring two cycles and 15–30 minutes.
 - [x] V2 has revision, previous-manifest hash, transition id, updated-at,
   artifact-root/Task0B binding, typed per-gate refs and honest pending records.
 - [x] `release:manifest:advance` is the sole writer; candidate is clean HEAD;
