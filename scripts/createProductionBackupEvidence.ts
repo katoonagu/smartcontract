@@ -588,6 +588,7 @@ export async function executeProductionBackupStateMachine<T extends Buffer>(auth
   list(operationId: string): Promise<void>;
   recordListProgress(operationId: string): Promise<void>;
   attest(): Promise<void>;
+  validateOperation(): Promise<void>;
   buildEvidence(): Promise<T>;
   writeEvidence(bytes: T): Promise<void>;
 }): Promise<T> {
@@ -628,7 +629,9 @@ export async function executeProductionBackupStateMachine<T extends Buffer>(auth
       await dependencies.recordListProgress(operation.operationId);
     }
     await dependencies.attest();
+    await dependencies.validateOperation();
     const evidence = await dependencies.buildEvidence();
+    await dependencies.validateOperation();
     await dependencies.writeEvidence(evidence);
     return evidence;
   } finally { await operation.release(); }
@@ -1366,6 +1369,20 @@ export async function runProductionBackupCommand(
         } finally { await after.client.query("rollback").catch(() => undefined); await after.client.end().catch(() => undefined); }
         const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);
         await attestSchema032ProductionBackupFiles(artifactRoot, evidence, validated.task0b.postgresTools);
+      },
+      validateOperation: async () => {
+        if (!activeLease) throw new Error("production_backup_operation_lease_missing");
+        const binding = await readProgressBinding();
+        const leaseBytes = await readProtectedRegularFile(
+          artifactRoot, leaseFilename(binding.generationId), MAX_ARTIFACT_BYTES
+        );
+        const lease = validateOperationLease(JSON.parse(leaseBytes.toString("utf8")), binding, now());
+        if (lease.operationId !== activeLease.operationId || lease.ownerProcessId !== activeLease.ownerProcessId
+            || lease.acquiredAt !== activeLease.acquiredAt || lease.dumpContainerName !== activeLease.dumpContainerName
+            || lease.restoreContainerName !== activeLease.restoreContainerName) {
+          throw new Error("production_backup_operation_lease_changed");
+        }
+        assertOperationWithinTimeout(lease, now());
       },
       buildEvidence: async () => {
         const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);

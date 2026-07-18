@@ -218,6 +218,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         dump: async () => { sideEffects.push("dump"); },
         list: async () => { sideEffects.push("list"); },
         attest: async () => { sideEffects.push("attest"); },
+        validateOperation: async () => undefined,
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => { sideEffects.push("evidence"); }
       })).rejects.toThrow(/expired/);
@@ -254,6 +255,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       list: async () => { calls.push("list"); files.set("production-backup-restore-list.txt", Buffer.from("; archive\n1; TABLE public x\n")); },
       recordListProgress: async () => undefined,
       attest: async () => { calls.push("attest"); },
+      validateOperation: async () => undefined,
       buildEvidence: async () => Buffer.from(`${JSON.stringify({ version: "production-backup-evidence-v1", state: "passed" })}\n`),
       writeEvidence: async (bytes: Buffer) => { calls.push("evidence"); files.set("production-backup-evidence.json", bytes); }
     };
@@ -321,6 +323,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         },
         recordListProgress: (operationId: string) => api.recordProductionBackupListProgress(root, binding, operationId, now),
         attest: async () => { await api.validateProductionBackupProgress(root, binding, now); },
+        validateOperation: async () => undefined,
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => { calls.push("evidence"); }
       });
@@ -373,6 +376,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         },
         recordListProgress: (operationId: string) => api.recordProductionBackupListProgress(root, binding, operationId, expiredAt),
         attest: async () => { await api.validateProductionBackupProgress(root, binding, expiredAt); },
+        validateOperation: async () => undefined,
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => undefined
       });
@@ -414,6 +418,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         list: async () => { calls.push("list"); },
         recordListProgress: async () => { calls.push("list-progress"); },
         attest: async () => { calls.push("attest"); },
+        validateOperation: async () => undefined,
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => { calls.push("evidence"); }
       })).rejects.toThrow(/progress|ownership|receipt/i);
@@ -449,6 +454,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       list: async () => undefined,
       recordListProgress: async () => undefined,
       attest: async () => undefined,
+      validateOperation: async () => undefined,
       buildEvidence: async () => Buffer.from("evidence"),
       writeEvidence: async () => undefined
     });
@@ -481,10 +487,53 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       list: async () => { calls.push("list"); },
       recordListProgress: async () => undefined,
       attest: async () => { calls.push("identity-recheck"); throw new Error("production_backup_database_identity_changed"); },
+      validateOperation: async () => undefined,
       buildEvidence: async () => { calls.push("build-evidence"); return Buffer.from("evidence"); },
       writeEvidence: async () => { calls.push("write-evidence"); }
     })).rejects.toThrow(/database_identity_changed/);
     expect(calls).toEqual(["identity-recheck", "release"]);
+  });
+
+  it("revalidates the exact operation after attestation and again immediately before evidence publication", async () => {
+    const api = await loadProducer();
+    const value = fixture("C:/protected/plan5-g12-final-operation-check");
+    for (const failure of ["deadline", "replacement"] as const) {
+      const calls: string[] = [];
+      let operationValid = true;
+      let validationCount = 0;
+      await expect(api.executeProductionBackupStateMachine(value.authority, {
+        now: () => evaluatedAt,
+        readCompletedEvidence: async () => null,
+        hasClaim: async () => true,
+        claim: async () => undefined,
+        acquireOperation: async () => ({ operationId: "7".repeat(32), release: async () => { calls.push("release"); } }),
+        inspectPartial: async () => ({ dump: true, list: true }),
+        validatePartialProgress: async () => undefined,
+        dump: async () => undefined,
+        recordDumpProgress: async () => undefined,
+        list: async () => undefined,
+        recordListProgress: async () => undefined,
+        attest: async () => {
+          calls.push("attest");
+          if (failure === "deadline") operationValid = false;
+        },
+        validateOperation: async () => {
+          validationCount += 1;
+          calls.push(`validate-${validationCount}`);
+          if (!operationValid) throw new Error(`production_backup_operation_${failure}`);
+        },
+        buildEvidence: async () => {
+          calls.push("build");
+          if (failure === "replacement") operationValid = false;
+          return Buffer.from("evidence");
+        },
+        writeEvidence: async () => { calls.push("write"); }
+      })).rejects.toThrow(new RegExp(`operation_${failure}`));
+      expect(calls).toEqual(failure === "deadline"
+        ? ["attest", "validate-1", "release"]
+        : ["attest", "validate-1", "build", "validate-2", "release"]);
+      expect(calls).not.toContain("write");
+    }
   });
 
   it("revalidates exact authority inputs immediately before claim and before the first dump", async () => {
@@ -506,6 +555,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       list: async () => undefined,
       recordListProgress: async () => undefined,
       attest: async () => undefined,
+      validateOperation: async () => undefined,
       buildEvidence: async () => Buffer.from("evidence"),
       writeEvidence: async () => undefined
     })).rejects.toThrow(/binding_changed/);
@@ -527,6 +577,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       list: async () => undefined,
       recordListProgress: async () => undefined,
       attest: async () => undefined,
+      validateOperation: async () => undefined,
       buildEvidence: async () => Buffer.from("evidence"),
       writeEvidence: async () => undefined
     })).rejects.toThrow(/binding_changed/);
