@@ -103,7 +103,7 @@ it("[REQ-38][BOOTSTRAP-ROOT-WRITER-CRASH] discriminates bootstrap from frozen le
     const oldHash = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
     const takeover = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: r, expectedOldLeaseSha256: oldHash, evaluatedAt: "2026-07-18T10:02:00.000Z" });
     expect(takeover.sealed).toBe(false);
-    const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), evaluatedAt: "2026-07-18T10:02:00.000Z" });
+    const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), owner: undefined, evaluatedAt: "2026-07-18T10:02:00.000Z" });
     expect(recovered.freezeIdentity).toEqual(RELEASE_V2_FREEZE_IDENTITY);
   }
 });
