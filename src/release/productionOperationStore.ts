@@ -437,7 +437,8 @@ export class ProductionOperationStoreV2 {
       action,
       expectedSourceManifestSha256: identity.sourceManifestSha256,
       evaluatedAt: input.evaluatedAt,
-      minimumRemainingValidityMs: existingLease === null ? deadlineMs : remainingOperationMs
+      minimumRemainingValidityMs: existingLease === null ? deadlineMs : remainingOperationMs,
+      expectedConsumedAttestationSha256: existingLease?.value.operationalAttestationSha256
     });
     const authority = selected.authority;
     if (Date.parse(authority.expiresAt) < Date.parse(operationDeadlineAt)) {

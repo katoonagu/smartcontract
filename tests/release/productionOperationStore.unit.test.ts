@@ -14,7 +14,8 @@ import {
   initializeReleaseManifestV2,
   issueOperationalAttestationV2,
   materializeReleaseFreezeV2,
-  runWithRootWriterProcessRuntimeForTestsV2
+  runWithRootWriterProcessRuntimeForTestsV2,
+  selectOperationalAttestationFromStoreV2
 } from "../../src/release/releaseManifestStoreV2";
 import {
   buildReleaseManifestV2Fixture,
@@ -109,6 +110,15 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(true);
   expect(readdirSync(root).filter((name) => name.startsWith("production-operation-claim-")))
     .toHaveLength(1);
+  expect(existsSync(join(root,
+    `operational-attestation-consumption-${begun.selectedAuthoritySha256}.json`))).toBe(false);
+  expect(() => selectOperationalAttestationFromStoreV2({
+    artifactRoot: root,
+    action: "g14_rollout_passed",
+    expectedSourceManifestSha256: begun.lease.sourceManifestSha256,
+    evaluatedAt: "2026-07-18T10:00:01.000Z",
+    minimumRemainingValidityMs: 0
+  })).toThrow("operational_authority_tip_ambiguous");
   const preclaimBefore = readFileSync(join(root,
     `production-authority-preclaim-${begun.lease.operationId}.json`));
 

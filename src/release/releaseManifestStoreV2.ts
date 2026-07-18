@@ -1343,6 +1343,7 @@ export function selectOperationalAttestationFromStoreV2(input: {
   expectedSourceManifestSha256: string;
   evaluatedAt: string;
   minimumRemainingValidityMs: number;
+  expectedConsumedAttestationSha256?: string;
 }) {
   const root = assertTrustedArtifactRootPathV2(input.artifactRoot);
   const freeze = currentVerifiedFreeze(root);
@@ -1361,7 +1362,12 @@ export function selectOperationalAttestationFromStoreV2(input: {
     .filter((record) => {
       const consumptionPath = safeArtifactPath(root,
         `operational-attestation-consumption-${record.attestationSha256}.json`);
-      if (existsSync(consumptionPath) || terminalReceiptHashesForAuthorityV2(root, record).length !== 0) return false;
+      const atomicClaimPath = safeArtifactPath(root,
+        `production-operation-claim-${record.attestationSha256}.json`);
+      const replayingExpectedClaim = input.expectedConsumedAttestationSha256 === record.attestationSha256
+        && existsSync(atomicClaimPath) && !existsSync(consumptionPath);
+      if ((!replayingExpectedClaim && (existsSync(consumptionPath) || existsSync(atomicClaimPath)))
+          || terminalReceiptHashesForAuthorityV2(root, record).length !== 0) return false;
       const authority = record.authority;
       return authority.sourceManifestSha256 === input.expectedSourceManifestSha256
         && authority.commandId === policy.commandId
@@ -1372,6 +1378,10 @@ export function selectOperationalAttestationFromStoreV2(input: {
     });
   if (candidates.length !== 1) throw new Error("operational_authority_tip_ambiguous");
   const selected = candidates[0]!;
+  if (input.expectedConsumedAttestationSha256 !== undefined
+      && selected.attestationSha256 !== input.expectedConsumedAttestationSha256) {
+    throw new Error("operational_authority_replay_mismatch");
+  }
   const actionChain = committedAuthorityRecordsV2(root, freeze)
     .filter((record) => record.authority.action === input.action);
   if (actionChain.at(-1)?.attestationSha256 !== selected.attestationSha256) {
@@ -1558,13 +1568,16 @@ function consumedAuthorityHashForTransitionV2(
   const consumptionPath = safeArtifactPath(root,
     `operational-attestation-consumption-${hash}.json`);
   const claimPath = safeArtifactPath(root, `production-operation-claim-${hash}.json`);
-  if (!existsSync(consumptionPath) || !existsSync(claimPath)) {
+  if (!existsSync(claimPath)) {
     throw new Error("operational_authority_not_atomically_consumed");
   }
-  const consumptionBytes = readFileSync(consumptionPath);
-  const consumption = validateOperationalAttestationConsumptionV2(
-    JSON.parse(consumptionBytes.toString("utf8"))
-  );
+  const claimBytes = readFileSync(claimPath);
+  const claim = validateProductionOperationClaimV2(JSON.parse(claimBytes.toString("utf8")));
+  const consumption = validateOperationalAttestationConsumptionV2(claim.authorityConsumption);
+  const consumptionBytes = canonicalBytesV2(consumption);
+  if (existsSync(consumptionPath) && !readFileSync(consumptionPath).equals(consumptionBytes)) {
+    throw new Error("operational_attestation_consumption_conflict");
+  }
   if (consumption.candidateSha !== freeze.candidateSha
       || consumption.releaseGenerationId !== freeze.releaseGenerationId
       || consumption.sourceManifestSha256 !== sourceManifestSha256
@@ -1576,8 +1589,6 @@ function consumedAuthorityHashForTransitionV2(
       || !consumptionBytes.equals(canonicalBytesV2(consumption))) {
     throw new Error("operational_attestation_consumption_binding_invalid");
   }
-  const claimBytes = readFileSync(claimPath);
-  const claim = validateProductionOperationClaimV2(JSON.parse(claimBytes.toString("utf8")));
   if (claim.operationId !== consumption.operationId
       || claim.candidateSha !== freeze.candidateSha
       || claim.releaseGenerationId !== freeze.releaseGenerationId
