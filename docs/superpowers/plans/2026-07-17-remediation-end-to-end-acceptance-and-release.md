@@ -534,9 +534,11 @@ G13 failure, or G14 failure before `stop_previous`, uses
 `previous_runtime_retained` and must not invent stop/start captures. G14
 failure after previous stop but before candidate start uses
 `previous_runtime_restarted_without_candidate`; it proves that candidate never
-started and records only previous stop/restart captures. Once candidate start
-was attempted, G14/G15 rollback uses `candidate_replaced_with_previous` and
-records candidate start/stop followed by previous start. G10 rehearsal can
+started and records only previous stop/restart captures. A failed
+`start_candidate` command without confirmed candidate process/start evidence
+remains in this branch. Only confirmed candidate-start evidence permits G14/G15
+`candidate_replaced_with_previous`, which records candidate start/stop followed
+by previous start. G10 rehearsal can
 never satisfy any production outcome. A failed pre-release gate stays
 `not_ready`, does not skip forward, and requires a new candidate/evidence root.
 
@@ -715,9 +717,19 @@ type Schema032ProductionExecutionSuccessV2 =
     postconditionsSha256: string;
   };
 
+type Schema032StageFailureArtifactPath<S extends Schema032Stage> =
+  S extends "first_migration"
+    ? "schema032-failures/first-migration-failure-v2.json"
+    : S extends "first_verification"
+      ? "schema032-failures/first-verification-failure-v2.json"
+      : S extends "second_migration"
+        ? "schema032-failures/second-migration-failure-v2.json"
+        : "schema032-failures/final-verification-failure-v2.json";
+
 type Schema032StageFailureArtifactV2<S extends Schema032Stage> = {
   kind: "schema032_stage_failure";
   failedStep: S;
+  relativePath: Schema032StageFailureArtifactPath<S>;
   evidenceSha256: string;
 };
 
@@ -754,7 +766,18 @@ missing session identity, invalid lock interval, unreleased lock or checksum
 mismatch cannot pass G13. Success requires all four ordered stage receipts.
 Failure contains only stages completed before `failedStep`; omitted stages have
 no fields or invented hashes. `failureArtifact.failedStep` must equal the union
-branch and supplies the typed execution input for
+branch, and `relativePath` must be the matching exact entry below:
+
+| `failedStep` | Exact relative path |
+|---|---|
+| `first_migration` | `schema032-failures/first-migration-failure-v2.json` |
+| `first_verification` | `schema032-failures/first-verification-failure-v2.json` |
+| `second_migration` | `schema032-failures/second-migration-failure-v2.json` |
+| `final_verification` | `schema032-failures/final-verification-failure-v2.json` |
+
+The validator resolves only that regular non-symlink file under the protected
+root, hashes its actual bytes and rejects missing, foreign, traversal or
+step/path-swapped artifacts. The validated bytes supply the typed input for
 `ProductionFailureEvidenceV2`.
 
 ### 2.6 `TerminalLegacyPopulationV1`
@@ -857,18 +880,22 @@ type ProductionFailureEvidenceV2 = ProductionFailureEvidenceCommonV2 & (
         | "second_migration_failed" | "final_verification_failed" }
   | { failedGateId: "G14_PRODUCTION_ROLLOUT";
       evidenceKind: "runtime_manager_capture";
-      failureCode: "previous_runtime_stop_failed" | "candidate_start_failed" }
+      failureCode:
+        | "previous_runtime_identity_mismatch"
+        | "previous_runtime_stop_failed" | "candidate_start_failed" }
   | { failedGateId: "G14_PRODUCTION_ROLLOUT";
       evidenceKind: "runtime_rollout_checks";
       failureCode:
-        | "runtime_version_mismatch" | "admin_unhealthy"
+        | "schema_verification_failed" | "runtime_version_mismatch"
+        | "admin_unhealthy"
         | "singleton_violation" | "worker_start_failed"
         | "delivery_invariant_failed" | "legacy_population_changed"
         | "secret_detected" }
   | { failedGateId: "G15_PRODUCTION_CANARY";
       evidenceKind: "runtime_canary_checks";
       failureCode:
-        | "canary_timeout" | "polling_cycles_incomplete"
+        | "schema_verification_failed" | "canary_timeout"
+        | "polling_cycles_incomplete"
         | "runtime_version_mismatch" | "admin_unhealthy"
         | "singleton_violation" | "reconciliation_failed"
         | "delivery_invariant_failed" | "navigation_invariant_failed"
@@ -896,7 +923,10 @@ revalidates the fixed typed artifact behind `failedExecutionEvidenceSha256`
 and requires the same candidate, freeze, source manifest, failed step/window
 and observed execution. Unknown strings, cross-gate codes, a schema failure
 pointing at rollout captures or a manager failure pointing at canary queries
-fail closed.
+fail closed. `previous_runtime_identity_mismatch` is valid only for G14 manager
+evidence before `stop_previous`; `schema_verification_failed` is valid only for
+G14 rollout checks or G15 canary checks. Swapping gate, evidence kind or code
+is always invalid even when the same text is allowlisted in another branch.
 
 Canary must cover at least 15 minutes and two completed polling cycles, and
 must finish no later than 30 minutes after its consumed operational attestation
@@ -1624,13 +1654,14 @@ Add these exact test identities:
 [REQ-38][G13-FAIL-FIRST-VERIFICATION] records only completed first-migration receipt before exact failure
 [REQ-38][G13-FAIL-SECOND-MIGRATION] records exactly the first two completed ordered receipts before exact failure
 [REQ-38][G13-FAIL-FINAL-VERIFICATION] records exactly the first three completed ordered receipts before exact failure
-[REQ-38][PRODUCTION-FAILURE-CODE] rejects free-form cross-gate or evidence-kind-mismatched failure codes
+[REQ-38][PRODUCTION-FAILURE-CODE] rejects free-form or swapped gate evidence-kind and allowlisted failure-code combinations
+[REQ-38][G13-FAILURE-PATH] resolves only the failedStep-specific allowlisted relative artifact and rejects swapped foreign missing or symlink paths
 [REQ-35][REQ-38][G14-V2-EVIDENCE] derives rollout only from exact manager and query captures
 [REQ-35][REQ-38][G14-RUNTIME-ORDER] stops the exact previous runtime after G13 and before candidate start
 [REQ-03][REQ-35][REQ-36][G15-V2-EVIDENCE] requires two cycles and a 15-to-30-minute bounded canary with all checks
 [REQ-35][REQ-38][ROLLBACK-PRE-STOP] retains an already-running previous runtime without invented stop or start captures
-[REQ-35][REQ-38][ROLLBACK-POST-STOP-PRE-START] restarts the stopped previous runtime without invented candidate captures
-[REQ-35][REQ-38][ROLLBACK-POST-CANDIDATE-START] stops the started candidate before restarting previous runtime
+[REQ-35][REQ-38][ROLLBACK-POST-STOP-PRE-START] keeps failed candidate-start command without confirmed process evidence in previous-only restart and rejects candidate-stop fields
+[REQ-35][REQ-38][ROLLBACK-POST-CANDIDATE-START] requires confirmed candidate-start evidence before candidate stop and previous restart
 [REQ-35][REQ-38][PRODUCTION-ROLLBACK-V2] rejects cross-window fields and G10 rehearsal for all three outcomes
 [REQ-38][PRODUCTION-MUTATOR-V2] rejects V1 structural or V2 manifest without current transition receipt and root binding
 ```
@@ -1882,7 +1913,10 @@ The G13 RED/GREEN batch also proves that the schema producer always closes the
 advisory-lock interval and writes the durable execution receipt after an
 attempt. Each `failed_after_attempt` branch names one `failedStep`, contains
 only the exact ordered receipts for earlier completed stages and carries the
-matching typed failure artifact; later-stage fields/hashes are forbidden. A
+matching typed failure artifact at its one allowlisted `schema032-failures/*`
+relative path; later-stage fields/hashes are forbidden. Exact-path resolution
+hashes actual regular non-symlink bytes and rejects swapped/foreign/missing
+artifacts. A
 missing producer receipt, session hash or lock release blocks typed failure
 derivation; any non-success result, missing success-stage member or invented
 failure-stage hash blocks G13.
@@ -1969,9 +2003,11 @@ G13 failure or G14 pre-stop failure emits `previous_runtime_retained` and
 proves the previous runtime stayed healthy without stop/start captures. G14
 failure after previous stop but before candidate start emits
 `previous_runtime_restarted_without_candidate`, with previous stop/restart and
-proof of no candidate start. G14/G15 failure after candidate start emits
-`candidate_replaced_with_previous`, requiring candidate start/stop followed by
-previous-runtime start. Every branch rejects fields from another window,
+proof of no candidate start. A failed candidate-start command remains in that
+branch unless process/start evidence confirms the candidate actually started.
+Only then may G14/G15 emit `candidate_replaced_with_previous`, requiring exact
+candidate-start evidence, candidate stop and previous-runtime start. Every
+branch rejects fields from another window,
 retains additive schema 032, verifies version/Admin/singleton/conservative
 allowance/legacy/sent/no-duplicate state and rejects `rollback-rehearsal.json`
 by kind/schema/scope.
@@ -2034,6 +2070,8 @@ are not weakened.
 The failure path also validates the exact `failedGateId` + `evidenceKind` +
 allowlisted `failureCode` branch and rejects a failure artifact whose failed
 step, source manifest, candidate, freeze or referenced execution hash differs.
+It also resolves the G13 `failureArtifact.relativePath` from `failedStep`
+instead of accepting an operator-supplied filename.
 
 `release:verify` supports only read-only phase checks. It never invokes the
 writer and never changes manifest `overall`. Its exact phase allowlist is
@@ -2106,14 +2144,19 @@ worktree clean, and main 13 dirty paths/four stash hashes unchanged.
 After the commit run whole-plan spec-review and independent operational/
 security code-quality review. Task 8 becomes complete only when both reviews
 PASS and every Task 8B focused/full check is GREEN. Task 9 still requires a
-fresh Task 0B and separate resolution of the unmarked-runtime blocker.
+current operational-preflight revalidation against the existing immutable
+`ReleaseFreezeIdentityV2` and separate resolution of the unmarked-runtime
+blocker. It must not recreate the freeze; G12-G15 later consume their own fresh
+action-specific `OperationalAttestationV2`.
 
 ### Task 9 — Freeze candidate and execute all pre-release gates
 
 **Code/docs changes:** none after freeze. **Commit:** none.
 
-Before freezing the candidate, rerun and pass Task 0B operational/release
-preflight for the then-current runtime. The verifier requires evidence for the
+At Task 9 entry, revalidate Task 0B operational/release preflight for the
+then-current runtime against the existing immutable
+`ReleaseFreezeIdentityV2`; do not recreate or refresh the freeze. The verifier
+requires evidence for the
 exact previous runtime SHA/label, allowlisted start/stop command IDs and
 redacted-template hashes, production DB/schema state, rollback
 worktree/command, `pg_dump`/`pg_restore`, protected artifact root and isolated
@@ -2438,11 +2481,13 @@ Telegram presentation P0/P1, Address Poisoning regression or secret leakage.
 3. For G14 failure after previous stop but before candidate start, restart only
    the exact previous runtime. Record
    `previous_runtime_restarted_without_candidate` with previous stop/start and
-   no-candidate-start evidence; candidate stop is forbidden.
-4. For G14/G15 failure after candidate start, stop the candidate and then start
-   the exact previous verified runtime/worktree with its recorded label. Record
-   `candidate_replaced_with_previous`, with candidate start/stop and previous
-   start evidence in order.
+   no-candidate-start evidence; candidate stop is forbidden. A failed
+   candidate-start command stays here unless a process/start capture confirms
+   that the candidate actually started.
+4. Only with confirmed candidate-start process/evidence may G14/G15 stop the
+   candidate and then start the exact previous verified runtime/worktree with
+   its recorded label. Record `candidate_replaced_with_previous`, with
+   candidate start/stop and previous start evidence in order.
 5. Do **not** delete receipt 032, columns, constraints or delivery rows.
 6. Verify Admin, singleton, `/version`, queues and conservative allowance view.
 7. Confirm `sent` delivery remains sent and completed results unchanged.
@@ -2641,7 +2686,7 @@ never used as a test database.
 | 8B.2 | `feat(release): define manifest v2 lifecycle` | pure reducer GREEN; typecheck; state-machine spec + quality review |
 | 8B.3 | `feat(release): advance manifest atomically` | CAS/concurrency/crash/replay GREEN; filesystem spec + security review |
 | 8B.4 | `feat(release): bind pre-release gate evidence` | G00–G11 semantic/read-only GREEN; policy spec + security review |
-| 8B.5 | `feat(release): bind backup and migration transitions` | G12 settlement plus G13 four-stage success/all four honest failure-window RED→GREEN; production-order spec + security review |
+| 8B.5 | `feat(release): bind backup and migration transitions` | G12 settlement plus G13 four-stage success/all four honest failure-window and exact-path RED→GREEN; production-order spec + security review |
 | 8B.6a | `feat(release): capture production rollout evidence` | G14 injected/sanitized GREEN; spec + quality review |
 | 8B.6b | `feat(release): capture production canary evidence` | G15 duration/checks GREEN; spec + quality review |
 | 8B.6c | `feat(release): capture production rollback evidence` | all three rollback windows, gate-specific failure-code binding and G10-negative GREEN; spec + quality review |
@@ -2680,8 +2725,8 @@ reviews. No autosquash/rewrite after `RELEASE_SHA` freeze.
 | Previous-SHA rollback rehearsal fails | block readiness; do not substitute an untested command/runtime |
 | Backup unavailable/invalid after GO | leave the verified old runtime unchanged; keep V2 manifest `ready_for_release`; do not advance G12 or migrate |
 | G13 fails, or G14 fails before `stop_previous` | persist exact typed failure evidence; retain the exact previous runtime; forbid all stop/start captures; record `previous_runtime_retained` |
-| G14 fails after previous stop but before candidate start | keep additive 032; restart only the exact previous runtime; forbid candidate-stop capture; record `previous_runtime_restarted_without_candidate` |
-| G14 candidate startup was attempted and fails | keep additive 032; stop any partial candidate and start exact previous runtime; record `candidate_replaced_with_previous`; verify conservative mirrors/results/sent fingerprints |
+| G14 fails after previous stop; candidate start command fails without confirmed process/start evidence | keep additive 032; restart only the exact previous runtime; forbid candidate-stop capture; record `previous_runtime_restarted_without_candidate` |
+| G14 has confirmed candidate process/start evidence and then fails | keep additive 032; stop candidate and start exact previous runtime; record `candidate_replaced_with_previous`; verify conservative mirrors/results/sent fingerprints |
 | G14 `/version` mismatch after candidate start | stop candidate; start previous runtime; record `candidate_replaced_with_previous`; no DB down-migration |
 | G15 worker/delivery/Telegram/Admin canary fails | stop candidate; start previous runtime; record `candidate_replaced_with_previous`; preserve sent/result state |
 | Production failure without typed failure evidence | stop forward progress; do not hand-edit failed/blocked gates and do not invoke rollback manager until `production_failed` transition is valid |
@@ -2767,13 +2812,16 @@ hashes, not secrets or full raw logs.
 - [x] G12 binds one consumption, dump/list progress and final bytes, and cannot
   pass while an operation lease remains; freshness is checked at consumption.
 - [x] Stable release-freeze identity is separate from fresh G12–G15 action
-  attestations; G15 remains bounded to 15–30 minutes after consumption.
+  attestations; Task 9 revalidates but never recreates the freeze, and G15
+  remains bounded to 15–30 minutes after consumption.
 - [x] G13 success persists all four ordered stage receipts; each failure branch
   names its failed step, preserves only earlier completed stages and binds one
-  typed failure artifact without invented later hashes.
+  typed failure artifact without invented later hashes. The artifact resolves
+  only through its failed-step-specific allowlisted relative path.
 - [x] Previous runtime stops only after G13 passes and before candidate start;
   rollback distinguishes pre-stop retention, post-stop/pre-start restart and
-  candidate replacement with only window-applicable captures.
+  candidate replacement with only window-applicable captures. A failed start
+  command stays pre-start until direct process/start evidence proves otherwise.
 - [x] Claim/lease/prepared/committed receipt schemas, filenames, TTL/liveness,
   crash recovery and `latestCommittedReceiptSha256` chaining are exact.
 - [x] Evidence policy staging is compile-time exhaustive only after G14/G15;
@@ -2792,7 +2840,8 @@ hashes, not secrets or full raw logs.
   deleted lease bytes are not invented or retained. G13 binds consumed
   authority, source G12 and its honest success/failure sequence.
 - [x] Production failure evidence is gate/evidence-kind discriminated and uses
-  only allowlisted codes validated against the exact referenced artifact.
+  only allowlisted codes validated against the exact referenced artifact;
+  swapped gate/kind/code combinations fail even when each token exists.
 - [x] G14/G15/rollback producers are implemented and tested with injected or
   sanitized inputs before Task 9, but never run against production in Task 8B.
 - [x] Production mutators require fully verified V2 state/receipt/root binding,
@@ -2825,9 +2874,11 @@ hashes, not secrets or full raw logs.
 - сначала отдельным commit зафиксировать только этот документ;
 - Tasks 0–8B выполнять последовательно в отдельном worktree через
   subagent-driven development;
-- Task 9 не начинать до завершения Tasks 0–8B, fresh Task 0B, отдельного
-  подтверждения release-candidate evidence и разрешения unmarked-runtime
-  blocker;
+- Task 9 не начинать до завершения Tasks 0–8B, revalidation существующего
+  immutable `ReleaseFreezeIdentityV2` и current operational-preflight evidence,
+  отдельного подтверждения release-candidate evidence и разрешения
+  unmarked-runtime blocker; freeze не пересоздаётся, а G12–G15 позже используют
+  отдельные fresh action-specific `OperationalAttestationV2`;
 - production DB/runtime/Telegram не менять до полного `G00…G11`, merge в
   `master`, повторной строгой проверки и отдельного явного production GO;
 - Plan 1–4 semantics и Address Poisoning implementation не трогать;
