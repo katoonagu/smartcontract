@@ -19,9 +19,14 @@ import {
   validateTask0BPreviousRuntimeIdentity
 } from "./captureTask0BPreflight";
 import {
+  REMEDIATION_PRE_RELEASE_GATE_IDS,
   TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256,
   validateRemediationReleaseManifest,
   validateTask0BReleaseFreezeEvidence
+} from "../src/release/remediationReleaseManifest";
+import type {
+  ReleaseGateId,
+  RemediationReleaseManifestV1
 } from "../src/release/remediationReleaseManifest";
 
 const execFileAsync = promisify(execFile);
@@ -37,7 +42,19 @@ type RuntimeCommandId =
   | "runtime_manager_stop_candidate"
   | "runtime_manager_stop_previous"
   | "runtime_manager_rollback_previous";
+type RuntimeActionPhase =
+  | "pre_migration_shutdown"
+  | "post_migration_rollout"
+  | "rollback_candidate_stop"
+  | "rollback_previous_start";
 type ForcePolicy = "graceful_only" | "graceful_then_force";
+
+const RUNTIME_ACTION_PHASES: Readonly<Record<RuntimeCommandId, RuntimeActionPhase>> = Object.freeze({
+  runtime_manager_stop_previous: "pre_migration_shutdown",
+  runtime_manager_start_candidate: "post_migration_rollout",
+  runtime_manager_stop_candidate: "rollback_candidate_stop",
+  runtime_manager_rollback_previous: "rollback_previous_start"
+});
 
 export type Task0BProductionRuntimeAuthorityV1 = {
   version: "task0b-runtime-authority-v1";
@@ -45,6 +62,7 @@ export type Task0BProductionRuntimeAuthorityV1 = {
   source: "operator_protected_one_shot_production_go";
   generationId: string;
   commandId: RuntimeCommandId;
+  actionPhase: RuntimeActionPhase;
   commandTemplateSha256: string;
   issuedAt: string;
   expiresAt: string;
@@ -60,9 +78,9 @@ export type Task0BProductionRuntimeAuthorityV1 = {
   telegramTransport: "production";
   telegramBotIdentitySha256: string;
   task0bEvidenceSha256: string;
-  readyManifestPath: "release-manifest.json";
-  readyManifestSha256: string;
-  readyManifestOverall: "ready_for_release";
+  releaseManifestPath: "release-manifest.json";
+  releaseManifestSha256: string;
+  releaseManifestOverall: "not_ready";
   explicitGo: true;
   forcePolicy: ForcePolicy;
   startEvidencePath: string | null;
@@ -114,10 +132,10 @@ export function validateTask0BProductionRuntimeAuthority(
 ): Task0BProductionRuntimeAuthorityV1 {
   const authority = record(value, "task0b_runtime_authority_invalid");
   exactKeys(authority, [
-    "version", "scope", "source", "generationId", "commandId", "commandTemplateSha256", "issuedAt", "expiresAt", "candidateSha",
+    "version", "scope", "source", "generationId", "commandId", "actionPhase", "commandTemplateSha256", "issuedAt", "expiresAt", "candidateSha",
     "targetRuntimeSha", "targetRuntimeLabel", "targetWorktreePath", "targetWorktreeFingerprintSha256", "adminUrl",
     "adminUrlFingerprintSha256", "databaseRole", "databaseIdentityFingerprintSha256", "telegramTransport", "telegramBotIdentitySha256",
-    "task0bEvidenceSha256", "readyManifestPath", "readyManifestSha256", "readyManifestOverall", "explicitGo",
+    "task0bEvidenceSha256", "releaseManifestPath", "releaseManifestSha256", "releaseManifestOverall", "explicitGo",
     "forcePolicy", "startEvidencePath", "startEvidenceSha256"
   ], "task0b_runtime_authority_shape_invalid");
   const now = parseIso(evaluatedAt, "task0b_runtime_authority_time_invalid");
@@ -135,6 +153,7 @@ export function validateTask0BProductionRuntimeAuthority(
         "runtime_manager_start_candidate", "runtime_manager_stop_candidate", "runtime_manager_stop_previous",
         "runtime_manager_rollback_previous"
       ]).has(commandId)
+      || authority.actionPhase !== RUNTIME_ACTION_PHASES[commandId]
       || authority.commandTemplateSha256 !== TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256[commandId]
       || issuedAt > now || expiresAt <= now || expiresAt.getTime() - issuedAt.getTime() > 10 * 60_000
       || !SHA40.test(String(authority.candidateSha)) || !SHA40.test(String(authority.targetRuntimeSha))
@@ -150,8 +169,9 @@ export function validateTask0BProductionRuntimeAuthority(
       || authority.databaseRole !== "production" || !SHA256.test(String(authority.databaseIdentityFingerprintSha256))
       || authority.telegramTransport !== "production" || !SHA256.test(String(authority.telegramBotIdentitySha256))
       || !SHA256.test(String(authority.task0bEvidenceSha256))
-      || authority.readyManifestPath !== "release-manifest.json" || !SHA256.test(String(authority.readyManifestSha256))
-      || authority.readyManifestOverall !== "ready_for_release" || authority.explicitGo !== true
+      || authority.releaseManifestPath !== "release-manifest.json" || !SHA256.test(String(authority.releaseManifestSha256))
+      || authority.releaseManifestOverall !== "not_ready"
+      || authority.explicitGo !== true
       || !new Set<ForcePolicy>(["graceful_only", "graceful_then_force"]).has(authority.forcePolicy as ForcePolicy)
       || (isStart && (startPath !== null || startHash !== null))
       || (!isStart && (typeof startPath !== "string" || !START_EVIDENCE.test(startPath)
@@ -248,6 +268,78 @@ export function buildTask0BProductionRuntimeEnvironment(
   return env;
 }
 
+export function validateTask0BReleaseManifestBinding(
+  authority: Task0BProductionRuntimeAuthorityV1,
+  manifestBytes: Buffer
+): RemediationReleaseManifestV1 {
+  if (hash(manifestBytes) !== authority.releaseManifestSha256) {
+    throw new Error("task0b_runtime_release_manifest_hash_binding_invalid");
+  }
+  let value: unknown;
+  try { value = JSON.parse(manifestBytes.toString("utf8")); }
+  catch { throw new Error("task0b_runtime_release_manifest_json_invalid"); }
+  const manifest = validateRemediationReleaseManifest(value);
+  if (manifest.candidateSha !== authority.candidateSha
+      || manifest.overall !== authority.releaseManifestOverall) {
+    throw new Error("task0b_runtime_release_manifest_authority_binding_invalid");
+  }
+  return manifest;
+}
+
+function assertTask0BActionPhase(
+  authority: Task0BProductionRuntimeAuthorityV1,
+  manifest: RemediationReleaseManifestV1
+): void {
+  const gates = new Map(manifest.gates.map((gate) => [gate.id, gate]));
+  const state = (id: ReleaseGateId) => gates.get(id)!.state;
+  const passed = (id: ReleaseGateId) => state(id) === "passed";
+  const preReleasePassed = REMEDIATION_PRE_RELEASE_GATE_IDS.every((id) => passed(id));
+  if (!preReleasePassed || manifest.overall !== "not_ready"
+      || authority.releaseManifestOverall !== manifest.overall
+      || authority.actionPhase !== RUNTIME_ACTION_PHASES[authority.commandId]) {
+    throw new Error("task0b_runtime_action_phase_unverified");
+  }
+
+  const g12 = state("G12_PRODUCTION_BACKUP");
+  const g13 = state("G13_PRODUCTION_MIGRATION");
+  const g14 = state("G14_PRODUCTION_ROLLOUT");
+  const g15 = state("G15_PRODUCTION_CANARY");
+  switch (authority.commandId) {
+    case "runtime_manager_stop_previous":
+      if (g12 !== "passed" || [g13, g14, g15].some((gate) => gate !== "pending")) {
+        throw new Error("task0b_runtime_pre_migration_shutdown_phase_unverified");
+      }
+      return;
+    case "runtime_manager_start_candidate":
+      if (!passed("G12_PRODUCTION_BACKUP") || !passed("G13_PRODUCTION_MIGRATION")
+          || g14 !== "pending" || g15 !== "pending") {
+        throw new Error("task0b_runtime_post_migration_rollout_phase_unverified");
+      }
+      return;
+    case "runtime_manager_stop_candidate": {
+      const pair = `${g14}:${g15}`;
+      const attemptedRolloutPair = new Set([
+        "pending:pending", "passed:pending", "passed:failed", "passed:blocked",
+        "failed:pending", "failed:blocked", "blocked:pending", "blocked:blocked"
+      ]).has(pair);
+      const rollbackContext = [g14, g15].some((gate) => gate === "failed" || gate === "blocked")
+        || ([g14, g15].some((gate) => gate === "pending")
+          && authority.startEvidencePath !== null && authority.startEvidenceSha256 !== null);
+      if (!passed("G12_PRODUCTION_BACKUP") || !passed("G13_PRODUCTION_MIGRATION")
+          || !attemptedRolloutPair || pair === "passed:passed" || !rollbackContext) {
+        throw new Error("task0b_runtime_rollback_candidate_stop_phase_unverified");
+      }
+      return;
+    }
+    case "runtime_manager_rollback_previous":
+      if (!passed("G12_PRODUCTION_BACKUP")
+          || ![g13, g14, g15].some((gate) => gate === "failed" || gate === "blocked")) {
+        throw new Error("task0b_runtime_rollback_previous_start_phase_unverified");
+      }
+      return;
+  }
+}
+
 export function assertTask0BProductionGoBindings(
   authority: Task0BProductionRuntimeAuthorityV1,
   task0b: {
@@ -260,17 +352,18 @@ export function assertTask0BProductionGoBindings(
     productionDatabase: { approvedIdentityFingerprintSha256: string };
     runtimeManager: { executorPath: string; executorSha256: string; candidateAdminUrl: string };
   },
-  manifest: { candidateSha: string; overall: string },
+  manifestValue: unknown,
   observedDatabase: { approvedIdentityFingerprintSha256: string },
   managerExecutableSha256: string
 ): void {
+  const manifest = validateRemediationReleaseManifest(manifestValue);
+  assertTask0BActionPhase(authority, manifest);
   const candidateAction = authority.commandId === "runtime_manager_start_candidate"
     || authority.commandId === "runtime_manager_stop_candidate";
   const expectedWorktreeFingerprint = candidateAction
     ? task0b.candidateWorktree.worktreePathFingerprintSha256
     : task0b.rollbackWorktree.worktreePathFingerprintSha256;
   if (task0b.candidateSha !== authority.candidateSha || manifest.candidateSha !== authority.candidateSha
-      || manifest.overall !== "ready_for_release"
       || (candidateAction
         ? authority.targetRuntimeSha !== task0b.candidateSha
         : authority.targetRuntimeSha !== task0b.previousRuntimeSha
@@ -416,9 +509,8 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
   if (filename !== `runtime-authority-${authority.generationId}.json`) throw new Error("task0b_runtime_authority_filename_invalid");
   if (hash(task0bBytes) !== authority.task0bEvidenceSha256) throw new Error("task0b_runtime_task0b_binding_invalid");
   const managerExecutableSha256 = hash(await readFile(MANAGER_PATH));
-  const manifestBytes = await readProtectedRegularFile(artifactRoot, authority.readyManifestPath, MAX_ARTIFACT_BYTES);
-  if (hash(manifestBytes) !== authority.readyManifestSha256) throw new Error("task0b_runtime_ready_manifest_binding_invalid");
-  const manifest = validateRemediationReleaseManifest(JSON.parse(manifestBytes.toString("utf8")));
+  const manifestBytes = await readProtectedRegularFile(artifactRoot, authority.releaseManifestPath, MAX_ARTIFACT_BYTES);
+  const manifest = validateTask0BReleaseManifestBinding(authority, manifestBytes);
   const config = validateTask0BPreflightConfig(external.config, evaluatedAt);
   const database = await createTask0BDirectDependencies(config, external.binding).readProductionDatabase();
   assertTask0BProductionGoBindings(authority, task0b, manifest, database, managerExecutableSha256);
