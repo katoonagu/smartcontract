@@ -90,6 +90,11 @@ export function moveNoOverwriteDurable(source: string, destination: string): voi
   syncParentDirectory(source);
 }
 
+export function unlinkDurable(path: string): void {
+  unlinkSync(path);
+  syncParentDirectory(path);
+}
+
 export type RootWriterLeaseHandleV2 = {
   path: string;
   bytes: Buffer;
@@ -113,8 +118,7 @@ export function acquireRootWriterLeaseV2(root: string, payload: Record<string, u
     release() {
       if (released) return;
       if (releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
-      unlinkSync(path);
-      syncParentDirectory(path);
+      unlinkDurable(path);
       released = true;
     }
   };
@@ -148,8 +152,7 @@ export function resumeRootWriterLeaseV2(
     release() {
       if (released) return;
       if (releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
-      unlinkSync(path);
-      syncParentDirectory(path);
+      unlinkDurable(path);
       released = true;
     }
   };

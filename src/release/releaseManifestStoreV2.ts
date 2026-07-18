@@ -1,6 +1,4 @@
-import {
-  existsSync, lstatSync, readFileSync, readdirSync, unlinkSync
-} from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import type { ClientBase } from "pg";
 import {
   canonicalReleaseJsonV2,
@@ -27,6 +25,7 @@ import {
   replaceDurable,
   resumeRootWriterLeaseV2,
   safeArtifactPath,
+  unlinkDurable,
   writeExclusiveDurable
 } from "./releaseRootWriterStore";
 
@@ -860,7 +859,7 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
         reason: "owner_died_before_freeze_prepare", rootSealed: true,
         retryRequiresNewProtectedRoot: true, abandonedAt: input.evaluatedAt
       });
-      unlinkSync(path);
+      unlinkDurable(path);
       return { sealed: true, newLease, receipt };
     }
     return { sealed: false, newLease, receipt };
