@@ -1179,8 +1179,10 @@ it("[REQ-38][CANDIDATE-SCOPE] accepts only approved Plan5 Task0-8 files and reje
   expect(() => runner.validatePlan5CandidateScope([
     "src/release/remediationReleaseManifest.ts",
     "scripts/captureTask0BPreflight.ts",
+    "scripts/createProductionBackupEvidence.ts",
     "scripts/manageTask0BRuntime.ts",
     "tests/release/task0bRuntimeManager.acceptance.test.ts",
+    "tests/release/productionBackup.acceptance.test.ts",
     "scripts/finalizeTelegramAcceptance.ts",
     "scripts/rehearseRemediationRuntimePreload.ts",
     "docs/knowledge/03-job-lifecycle.md",

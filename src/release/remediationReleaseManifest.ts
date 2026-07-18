@@ -130,6 +130,7 @@ export const REMEDIATION_REQUIRED_SUITE_GROUPS = {
     "tests/release/acceptanceTrace.acceptance.test.ts",
     "tests/release/runtimeVersion.acceptance.test.ts",
     "tests/release/schema032Release.acceptance.test.ts",
+    "tests/release/productionBackup.acceptance.test.ts",
     "tests/release/manualTelegramEvidence.acceptance.test.ts",
     "tests/release/terminalLegacyPopulation.acceptance.test.ts",
     "tests/release/rollbackRehearsal.acceptance.test.ts"
