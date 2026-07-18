@@ -235,7 +235,7 @@ it("[REQ-38][MANIFEST-V2-RECOVERY] validates claim root-lease prepared canonical
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER] takes over only one exact expired dead-owner lease in the same generation through prepared tombstone new lease and receipt", async () => {
-  const api = await loadStoreApi(); const r = await root(); await writeExpiredRootWriterLease(r);
+  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); await writeExpiredRootWriterLease(r);
   const expectedOldLeaseSha256 = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
   const result = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: r, expectedOldLeaseSha256, evaluatedAt: "2026-07-18T10:01:00.000Z" });
   expect(result.newLease.leaseEpoch).toBe(2);
@@ -244,7 +244,7 @@ it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER] takes over only one exact expired dead-
 it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER-CRASH] replays exactly before and after tombstone new-lease and receipt boundaries without deleting or duplicating authority", async () => {
   const api = await loadStoreApi();
   for (const faultAt of ["after_prepare", "after_tombstone", "after_new_lease", "after_receipt"]) {
-    const r = await root(); await writeExpiredRootWriterLease(r);
+    const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); await writeExpiredRootWriterLease(r);
     const expectedOldLeaseSha256 = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
     const input = { artifactRoot: r, expectedOldLeaseSha256, evaluatedAt: "2026-07-18T10:01:00.000Z", faultAt };
     await expect(api.takeoverRootWriterLeaseByHashV2(input)).rejects.toThrow();
