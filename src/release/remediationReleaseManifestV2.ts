@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { validateGateEvidenceBytesV2 } from "./releaseGateEvidencePolicy";
+import {
+  validateGateEvidenceBytesV2,
+  type GateEvidenceBindingContextV2
+} from "./releaseGateEvidencePolicy";
 
 export const RELEASE_GATE_IDS_V2 = [
   "G00_BASE", "G01_TRACE", "G02_DATA", "G03_SCORING", "G04_RUNTIME",
@@ -2588,12 +2591,13 @@ export function reduceRemediationReleaseManifestV2(
 
 export function validateManifestGateEvidenceV2(
   manifestValue: unknown,
-  bytesByRelativePath: ReadonlyMap<string, Buffer>
+  bytesByRelativePath: ReadonlyMap<string, Buffer>,
+  expected: GateEvidenceBindingContextV2 = {}
 ): RemediationReleaseManifestV2 {
   const manifest = validateRemediationReleaseManifestV2(manifestValue);
   for (const gate of manifest.gates) {
     if (gate.state === "passed" || gate.state === "failed") {
-      validateGateEvidenceBytesV2(gate, bytesByRelativePath);
+      validateGateEvidenceBytesV2(gate, bytesByRelativePath, expected);
     }
   }
   return manifest;
@@ -2607,7 +2611,25 @@ export async function verifyRemediationReleaseArtifactsV2(
   let value: unknown;
   try { value = JSON.parse(manifestBytes.toString("utf8")); }
   catch { throw new Error("release_manifest_v2_json_invalid"); }
-  const manifest = validateManifestGateEvidenceV2(value, artifacts);
+  const freezeBytes = artifacts.get("release-freeze-identity-v2.json");
+  if (!freezeBytes) throw new Error("release_freeze_identity_v2_missing");
+  let freezeValue: unknown;
+  try { freezeValue = JSON.parse(freezeBytes.toString("utf8")); }
+  catch { throw new Error("release_freeze_identity_v2_json_invalid"); }
+  const freeze = validateReleaseFreezeIdentityV2(freezeValue);
+  if (!freezeBytes.equals(canonicalReleaseFreezeIdentityUtf8V2(freeze))) {
+    throw new Error("release_freeze_identity_v2_noncanonical");
+  }
+  const manifest = validateManifestGateEvidenceV2(value, artifacts, {
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze)
+  });
+  if (manifest.candidateSha !== freeze.candidateSha
+      || manifest.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
+      || manifest.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze)) {
+    throw new Error("release_manifest_freeze_binding_invalid");
+  }
   let failure: ProductionFailureEvidenceV2 | null = null;
   for (const ref of manifest.transitionEvidence) {
     const bytes = artifacts.get(ref.relativePath);
