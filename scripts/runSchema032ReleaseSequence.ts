@@ -1004,6 +1004,30 @@ export function validateSchema032ProductionAuthorization(input: {
   return authority;
 }
 
+type Schema032ProductionAuthorizationInput = Omit<
+  Parameters<typeof validateSchema032ProductionAuthorization>[0],
+  "evaluatedAt"
+>;
+
+export async function validateSchema032ProductionClaimWindow(input: {
+  authorization: Schema032ProductionAuthorizationInput;
+  initialEvaluatedAt: string;
+  attestBackup(): Promise<void>;
+  now(): string;
+}): Promise<{ authority: ProductionMigrationAuthorityV1; claimedAt: string }> {
+  validateSchema032ProductionAuthorization({
+    ...input.authorization,
+    evaluatedAt: input.initialEvaluatedAt
+  });
+  await input.attestBackup();
+  const claimedAt = input.now();
+  const authority = validateSchema032ProductionAuthorization({
+    ...input.authorization,
+    evaluatedAt: claimedAt
+  });
+  return { authority, claimedAt };
+}
+
 export function validateSchema032ProductionConsumptionState(
   value: unknown,
   expected: Pick<ProductionAuthorityConsumptionV1,
@@ -1044,26 +1068,25 @@ async function authorizeProductionMutation(input: {
   if (!/^schema032-production-authority-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(input.authorityFilename)) {
     fail("schema_032_sequence_production_authority_filename_invalid");
   }
-  const evaluatedAt = new Date().toISOString();
+  const initialEvaluatedAt = new Date().toISOString();
   const [authorityBytes, task0bBytes, manifestBytes, backupBytes] = await Promise.all([
     readProtectedRegularFile(input.artifactRoot, input.authorityFilename, MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(input.artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(input.artifactRoot, "release-manifest.json", MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(input.artifactRoot, "production-backup-evidence.json", MAX_ARTIFACT_BYTES)
   ]);
-  const authority = validateSchema032ProductionAuthorization({
+  const authorization: Schema032ProductionAuthorizationInput = {
     authority: parseJson(authorityBytes.toString("utf8"), "schema_032_sequence_production_authority_invalid"),
     task0bBytes,
     manifestBytes,
     backupBytes,
     candidateSha: input.candidateSha,
-    observedDatabaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256,
-    evaluatedAt
-  });
+    observedDatabaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256
+  };
   const task0b = validateTask0BReleaseFreezeEvidence(
     parseJson(task0bBytes.toString("utf8"), "schema_032_sequence_task0b_invalid"),
     input.candidateSha,
-    evaluatedAt
+    initialEvaluatedAt
   );
   const backup = parseProductionBackupEvidence(
     parseJson(backupBytes.toString("utf8"), "schema_032_sequence_production_backup_invalid"),
@@ -1072,7 +1095,12 @@ async function authorizeProductionMutation(input: {
       observedDatabaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256
     }
   );
-  await attestSchema032ProductionBackupFiles(input.artifactRoot, backup, task0b.postgresTools);
+  const { authority, claimedAt } = await validateSchema032ProductionClaimWindow({
+    authorization,
+    initialEvaluatedAt,
+    attestBackup: () => attestSchema032ProductionBackupFiles(input.artifactRoot, backup, task0b.postgresTools).then(() => undefined),
+    now: () => new Date().toISOString()
+  });
   if (input.authorityFilename !== `schema032-production-authority-${authority.generationId}.json`) {
     fail("schema_032_sequence_production_authority_filename_invalid");
   }
@@ -1091,17 +1119,22 @@ async function authorizeProductionMutation(input: {
     authoritySha256: expectedConsumption.authoritySha256,
     candidateSha: expectedConsumption.candidateSha,
     databaseIdentityFingerprintSha256: expectedConsumption.databaseIdentityFingerprintSha256,
-    claimedAt: evaluatedAt,
+    claimedAt,
     resumeExpiresAt: expectedConsumption.resumeExpiresAt
   };
   if (existing === null) {
     if (input.hasSequenceArtifacts) fail("schema_032_sequence_unconsumed_partial_production_state");
-    await writeArtifactExclusive(input.artifactRoot, consumptionName, consumption);
+    const validatedConsumption = validateSchema032ProductionConsumptionState(
+      consumption,
+      expectedConsumption,
+      claimedAt
+    );
+    await writeArtifactExclusive(input.artifactRoot, consumptionName, validatedConsumption);
   } else {
     validateSchema032ProductionConsumptionState(
       parseJson(existing, "schema_032_sequence_production_consumption_invalid"),
       expectedConsumption,
-      evaluatedAt
+      claimedAt
     );
   }
 }

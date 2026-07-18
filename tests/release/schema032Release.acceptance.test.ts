@@ -970,6 +970,26 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
       ...invalid
     })).toThrow(/schema_032_sequence_production|release phase/u);
   }
+
+  let clock = evaluatedAt;
+  let attested = false;
+  await expect(producer.validateSchema032ProductionClaimWindow({
+    authorization: {
+      authority,
+      task0bBytes,
+      manifestBytes,
+      backupBytes,
+      candidateSha: CANDIDATE_SHA,
+      observedDatabaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT
+    },
+    initialEvaluatedAt: evaluatedAt,
+    attestBackup: async () => {
+      attested = true;
+      clock = authority.expiresAt;
+    },
+    now: () => clock
+  })).rejects.toThrow("schema_032_sequence_production_authority_unverified");
+  expect(attested).toBe(true);
 });
 
 it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] verifies the protected backup bytes restore list and no-follow paths before production authorization", async () => {
