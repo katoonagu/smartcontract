@@ -127,6 +127,10 @@ export type ProtectedProductionOperationStoreV2 = Readonly<{
     claimSha256: string;
     takeoverChainSha256: string;
   };
+  heartbeat(operationId: string, evaluatedAt: string): {
+    lease: BegunProductionOperationV2["lease"];
+    leaseSha256: string;
+  };
   persistStepIntent(value: unknown): ProductionOperationStoreRecordV2;
   persistStepReceipt(value: unknown): ProductionOperationStoreRecordV2;
   persistExclusive(kind: string, relativePath: string, value: unknown): ProductionOperationStoreRecordV2;
@@ -139,6 +143,31 @@ type ProtectedExecutorDependenciesV2 = Readonly<{
   store?: ProtectedProductionOperationStoreV2;
   adapters: ProtectedProductionOperationAdaptersV2;
 }>;
+
+async function withProductionHeartbeatV2<T>(input: {
+  store: ProtectedProductionOperationStoreV2;
+  adapters: ProtectedProductionOperationAdaptersV2;
+  operationId: string;
+  run(): Promise<T>;
+}): Promise<T> {
+  let heartbeatFailure: unknown = null;
+  let heartbeatTail = Promise.resolve();
+  const timer = setInterval(() => {
+    heartbeatTail = heartbeatTail.then(() => {
+      input.store.heartbeat(input.operationId, input.adapters.now());
+    }).catch((error) => { heartbeatFailure = error; });
+  }, 5_000);
+  timer.unref?.();
+  try {
+    const result = await input.run();
+    await heartbeatTail;
+    if (heartbeatFailure !== null) throw heartbeatFailure;
+    return result;
+  } finally {
+    clearInterval(timer);
+    await heartbeatTail;
+  }
+}
 
 function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -420,7 +449,9 @@ export async function executeProtectedProductionOperationV2(
         recoveredAfterCrash = true;
       }
     } else {
-      leaf = await adapters.validateStep(leafInput);
+      leaf = await withProductionHeartbeatV2({ store, adapters,
+        operationId: begun.lease.operationId,
+        run: () => adapters.validateStep(leafInput) });
     }
     exactLeafResult(leaf, inputSha256);
     const finishedAt = adapters.now();

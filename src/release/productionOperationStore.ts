@@ -757,8 +757,9 @@ export class ProductionOperationStoreV2 {
         || existsSync(this.#path(`production-operation-terminal-abandoned-${operationId}.json`))) {
       throw new Error("production_operation_already_terminal");
     }
-    // ponytail: lease expiry is the dead-owner takeover grace, not a live-owner execution
-    // bound; immutable authority/deadline bounds fence effects. Add renewal only for cross-host liveness.
+    if (evaluatedAtMs >= Date.parse(lease.value.expiresAt)) {
+      throw new Error("production_operation_lease_expired");
+    }
     if (lease.value.capability === "cleanup_only") throw new Error("cleanup_only_operation_forbidden");
     const claim = this.#claimForLease(lease.value);
     if (claim === null) throw new Error("production_operation_claim_missing");
@@ -772,6 +773,85 @@ export class ProductionOperationStoreV2 {
     this.#assertManifestWriterAbsent();
     return { lease: lease.value, leaseSha256: lease.sha256,
       claim: claim.value, claimSha256: claim.sha256, takeoverChainSha256 };
+  }
+
+  heartbeat(operationId: string, evaluatedAt: string): {
+    lease: ProductionOperationLeaseV2; leaseSha256: string;
+  } {
+    exactOperationId(operationId);
+    const evaluatedAtMs = parseIso(evaluatedAt, "production_operation_heartbeat_at");
+    const oldLease = this.#readLease();
+    const owned = this.assertOwnedAndWithinBounds(operationId, evaluatedAt);
+    const owner = currentRootWriterOwnerIdentityV2();
+    if (evaluatedAtMs - Date.parse(oldLease.value.heartbeatAt) > 10_000) {
+      throw new Error("production_operation_heartbeat_interval_exceeded");
+    }
+    const newLease = validateProductionOperationLeaseV2({
+      ...oldLease.value,
+      leaseEpoch: oldLease.value.leaseEpoch + 1,
+      acquiredAt: evaluatedAt,
+      heartbeatAt: evaluatedAt,
+      expiresAt: new Date(Math.min(evaluatedAtMs + 60_000,
+        Date.parse(owned.claim.authorityConsumption.expiresAt),
+        Date.parse(oldLease.value.operationDeadlineAt))).toISOString()
+    }) as ProductionOperationLeaseV2 & { capability: "effect_capable" | "recovery_only" };
+    const newLeaseBytes = canonicalBytesV2(newLease);
+    const prepared = validatePreparedProductionOperationLeaseTakeoverV2({
+      version: "prepared-production-operation-lease-takeover-v2",
+      commandId: "production_operation_lease_takeover",
+      redactedTemplateSha256: PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
+      capability: oldLease.value.capability,
+      operationKind: oldLease.value.operationKind,
+      operationId: oldLease.value.operationId,
+      candidateSha: oldLease.value.candidateSha,
+      releaseGenerationId: oldLease.value.releaseGenerationId,
+      sourceManifestSha256: oldLease.value.sourceManifestSha256,
+      artifactRootFingerprintSha256: oldLease.value.artifactRootFingerprintSha256,
+      authorityConsumptionSha256: owned.claim.authorityConsumptionSha256,
+      oldLeaseSha256: oldLease.sha256,
+      oldLeaseEpoch: oldLease.value.leaseEpoch,
+      oldOwnerProcessIdentitySha256: operationOwnerSha(oldLease.value),
+      canonicalNewLease: newLease,
+      canonicalNewLeaseUtf8Base64: newLeaseBytes.toString("base64"),
+      newLeaseSha256: releaseSha256V2(newLeaseBytes),
+      newLeaseEpoch: newLease.leaseEpoch,
+      operationDeadlineAt: oldLease.value.operationDeadlineAt,
+      preparedAt: evaluatedAt
+    });
+    const preparedPath = this.#path(
+      `production-operation-root.lease-takeover-prepared-${oldLease.sha256}.json`);
+    const preparedBytes = canonicalBytesV2(prepared);
+    writeExclusiveDurable(preparedPath, preparedBytes);
+    const leasePath = this.#path(PRODUCTION_OPERATION_LEASE_FILE_V2);
+    const tombstonePath = this.#path(`production-operation-root.lease-tombstone-${oldLease.sha256}.json`);
+    moveNoOverwriteDurable(leasePath, tombstonePath);
+    exactReplayOrConflict(leasePath, newLeaseBytes, "production_operation_heartbeat_lease_conflict");
+    const committed = validateCommittedProductionOperationLeaseTakeoverV2({
+      version: "committed-production-operation-lease-takeover-v2",
+      commandId: "production_operation_lease_takeover",
+      redactedTemplateSha256: PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
+      capability: prepared.capability,
+      operationKind: prepared.operationKind,
+      operationId: prepared.operationId,
+      candidateSha: prepared.candidateSha,
+      releaseGenerationId: prepared.releaseGenerationId,
+      sourceManifestSha256: prepared.sourceManifestSha256,
+      artifactRootFingerprintSha256: prepared.artifactRootFingerprintSha256,
+      authorityConsumptionSha256: prepared.authorityConsumptionSha256,
+      preparedTakeoverSha256: releaseSha256V2(preparedBytes),
+      oldLeaseSha256: prepared.oldLeaseSha256,
+      tombstoneRelativePath: `production-operation-root.lease-tombstone-${prepared.oldLeaseSha256}.json`,
+      newLeaseSha256: prepared.newLeaseSha256,
+      newLeaseEpoch: prepared.newLeaseEpoch,
+      operationDeadlineAt: prepared.operationDeadlineAt,
+      committedAt: evaluatedAt
+    }, prepared);
+    const committedBytes = canonicalBytesV2(committed);
+    writeExclusiveDurable(this.#path(
+      `production-operation-root.lease-takeover-committed-${releaseSha256V2(committedBytes)}.json`),
+    committedBytes);
+    this.#assertManifestWriterAbsent();
+    return { lease: newLease, leaseSha256: releaseSha256V2(newLeaseBytes) };
   }
 
   persistStepIntent(value: unknown): ProductionOperationStoreRecordV2 {
@@ -1132,8 +1212,10 @@ export class ProductionOperationStoreV2 {
     const existingPrepared = existsSync(preparedPath)
       ? readCanonical(preparedPath, validatePreparedProductionOperationLeaseTakeoverV2,
         "prepared_production_operation_takeover") : null;
+    const currentContext = this.#assertTakeoverEligible(oldLease, input.evaluatedAt);
     const protocolAt = existingPrepared?.value.preparedAt ?? input.evaluatedAt;
-    const context = this.#assertTakeoverEligible(oldLease, protocolAt);
+    const context = { ...currentContext, evaluatedAtMs: parseIso(protocolAt,
+      "production_operation_takeover_protocol_at") };
     if (context.evaluatedAtMs >= Date.parse(context.authorityExpiresAt)) {
       throw new Error("production_operation_authority_bound_reached");
     }

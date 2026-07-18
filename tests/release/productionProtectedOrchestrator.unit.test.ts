@@ -57,6 +57,7 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
       return { lease: current.lease, leaseSha256: current.leaseSha256,
         claim: current.claim, claimSha256: current.claimSha256, takeoverChainSha256: "7".repeat(64) };
     },
+    heartbeat() { events.push("heartbeat"); return { lease: current.lease, leaseSha256: current.leaseSha256 }; },
     persistStepIntent(value: any) { events.push(`intent:${value.stepId}`); return { kind: "intent", relativePath: value.relativePath, sha256: "8".repeat(64), created: true }; },
     persistStepReceipt(value: any) { events.push(`receipt:${value.stepId}`); return { kind: "receipt", relativePath: `steps/${value.sequence}.json`, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
     persistExclusive(kindValue, path, value) { events.push(`persist:${kindValue}`); return { kind: kindValue, relativePath: path, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
