@@ -193,6 +193,122 @@ function exactLeafResult(result: ProtectedProductionLeafResultV2, inputSha256: s
   }
 }
 
+function productionFailureCode(
+  operationKind: "rollout" | "canary",
+  stepId: string,
+  error: unknown
+): string {
+  const message = error instanceof Error ? error.message : "";
+  if (operationKind === "rollout") {
+    const byStep: Record<string, string> = {
+      verify_g13: "g13_reverification_failed",
+      verify_schema: "schema_verification_failed",
+      verify_previous_runtime_identity: "previous_runtime_identity_mismatch",
+      verify_singleton_precondition: "singleton_precondition_failed",
+      stop_previous: "previous_runtime_stop_failed",
+      start_candidate: "candidate_start_failed"
+    };
+    if (byStep[stepId]) return byStep[stepId]!;
+    if (/admin/iu.test(message)) return "admin_unhealthy";
+    if (/singleton/iu.test(message)) return "singleton_violation";
+    if (/schema/iu.test(message)) return "schema_verification_failed";
+    if (/delivery/iu.test(message)) return "delivery_invariant_failed";
+    if (/legacy/iu.test(message)) return "legacy_population_changed";
+    if (/secret/iu.test(message)) return "secret_detected";
+    return "worker_start_failed";
+  }
+  if (/schema/iu.test(message)) return "schema_verification_failed";
+  if (/polling|cycle/iu.test(message)) return "polling_cycles_incomplete";
+  if (/version|runtime_sha|runtime_identity/iu.test(message)) return "runtime_version_mismatch";
+  if (/admin/iu.test(message)) return "admin_unhealthy";
+  if (/singleton/iu.test(message)) return "singleton_violation";
+  if (/reconcil/iu.test(message)) return "reconciliation_failed";
+  if (/delivery/iu.test(message)) return "delivery_invariant_failed";
+  if (/navigation/iu.test(message)) return "navigation_invariant_failed";
+  if (/allowance/iu.test(message)) return "allowance_invariant_failed";
+  if (/legacy/iu.test(message)) return "legacy_population_changed";
+  if (/queue/iu.test(message)) return "queue_growth_detected";
+  if (/limit/iu.test(message)) return "honest_limit_misreported";
+  if (/secret/iu.test(message)) return "secret_detected";
+  return "canary_timeout";
+}
+
+function settleProtectedFailure(input: {
+  operationKind: "rollout" | "canary";
+  stepId: string;
+  error: unknown;
+  store: ProtectedProductionOperationStoreV2;
+  adapters: ProtectedProductionOperationAdaptersV2;
+  begun: BegunProductionOperationV2;
+  releaseFreezeIdentitySha256: string;
+  completedStepReceipts: ReadonlyArray<{ relativePath: string; sha256: string }>;
+  captures: ReadonlyArray<{ stepId: string; sequence: number; executionKind: string;
+    outputSha256: string; observedStateSha256: string }>;
+  attemptedExternalEffect: boolean;
+}): void {
+  const observedAt = input.adapters.now();
+  const owned = input.store.assertOwnedAndWithinBounds(input.begun.lease.operationId, observedAt);
+  const failureCode = productionFailureCode(input.operationKind, input.stepId, input.error);
+  const progressSha256 = protectedHash({ completedStepReceipts: input.completedStepReceipts,
+    captures: input.captures });
+  const failureCapture = input.store.persistExclusive("production_operation_failure_capture",
+    `production-operation-failure-capture-${owned.lease.operationId}.json`, {
+      version: "production-operation-failure-capture-v2",
+      operationKind: input.operationKind,
+      operationId: owned.lease.operationId,
+      operationClaimSha256: owned.claimSha256,
+      stepId: input.stepId,
+      failureCode,
+      attemptedExternalEffect: input.operationKind === "canary" ? true : input.attemptedExternalEffect,
+      completedStepReceiptPrefixSha256: protectedHash(input.completedStepReceipts),
+      orchestrationProgressSha256: progressSha256,
+      observedAt
+    });
+  const common = {
+    version: "production-failure-evidence-v2" as const,
+    candidateSha: owned.lease.candidateSha,
+    releaseFreezeIdentitySha256: input.releaseFreezeIdentitySha256,
+    sourceManifestSha256: owned.lease.sourceManifestSha256,
+    failedExecutionEvidenceSha256: failureCapture.sha256,
+    observedAt,
+    failedGateId: input.operationKind === "rollout"
+      ? "G14_PRODUCTION_ROLLOUT" as const : "G15_PRODUCTION_CANARY" as const
+  };
+  const preEffect = input.operationKind === "rollout"
+    && ["verify_g13", "verify_schema", "verify_previous_runtime_identity", "verify_singleton_precondition"]
+      .includes(input.stepId);
+  const evidence = input.operationKind === "canary"
+    ? validateProductionFailureEvidenceV2({ ...common, evidenceKind: "runtime_canary_checks",
+      attemptedExternalEffect: true, orchestrationProgressSha256: progressSha256, failureCode })
+    : preEffect
+      ? validateProductionFailureEvidenceV2({ ...common, evidenceKind: "runtime_rollout_preflight",
+        attemptedExternalEffect: false, orchestrationProgressSha256: progressSha256,
+        preEffectValidationReceiptsSha256: protectedHash(input.completedStepReceipts), failureCode })
+      : validateProductionFailureEvidenceV2({ ...common,
+        evidenceKind: input.stepId === "stop_previous" || input.stepId === "start_candidate"
+          ? "runtime_manager_capture" : "runtime_rollout_checks",
+        attemptedExternalEffect: true, orchestrationProgressSha256: progressSha256, failureCode });
+  const evidenceRecord = input.store.persistExclusive("production_failure_evidence",
+    "production-failure-evidence-v2.json", evidence);
+  const settlement = validateProductionOperationSettlementV2({
+    version: "production-operation-settlement-v2", operationKind: input.operationKind,
+    operationId: owned.lease.operationId, candidateSha: owned.lease.candidateSha,
+    releaseGenerationId: owned.lease.releaseGenerationId,
+    sourceManifestSha256: owned.lease.sourceManifestSha256,
+    claimSha256: owned.claimSha256,
+    authorityConsumptionSha256: owned.claim.authorityConsumptionSha256,
+    finalLeaseSha256: owned.leaseSha256, finalLeaseEpoch: owned.lease.leaseEpoch,
+    operationDeadlineAt: owned.lease.operationDeadlineAt,
+    terminalEvidenceSha256: evidenceRecord.sha256,
+    authorityRevalidatedAt: observedAt, deadlineRevalidatedAt: observedAt, settledAt: observedAt,
+    capability: "effect_capable", result: "failed", orchestrationReceiptSha256: null,
+    attemptedExternalEffect: input.operationKind === "canary" ? true : input.attemptedExternalEffect
+  });
+  const settlementRecord = input.store.persistSettlement(settlement);
+  input.store.completeTerminal({ operationId: owned.lease.operationId, terminalStateKind: "settlement",
+    terminalStateSha256: settlementRecord.sha256, evaluatedAt: observedAt });
+}
+
 /**
  * The only effect-capable production entry point. Its caller supplies a protected root and
  * a closed operation kind; every command, query and capture is selected by fixed adapters.
@@ -246,8 +362,10 @@ export async function executeProtectedProductionOperationV2(
   const completedStepReceipts: Array<{ relativePath: string; sha256: string;
     receipt: ProductionOrchestrationStepReceiptV2 }> = [];
   let attemptedExternalEffect = false;
+  let activeStepId = "";
 
-  for (const [offset, stepId] of stepIds.entries()) {
+  try { for (const [offset, stepId] of stepIds.entries()) {
+    activeStepId = stepId;
     const sequence = offset + 1;
     const startedAt = adapters.now();
     let owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, startedAt);
@@ -291,8 +409,8 @@ export async function executeProtectedProductionOperationV2(
       intentSha256 = persistedIntent.sha256;
       owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, adapters.now());
       if (persistedIntent.created) {
-        leaf = await adapters.executeEffect({ ...leafInput, intendedExternalEffectSha256 });
         attemptedExternalEffect = true;
+        leaf = await adapters.executeEffect({ ...leafInput, intendedExternalEffectSha256 });
       } else {
         const reconciled = await adapters.reconcileEffect({ ...leafInput, intendedExternalEffectSha256,
           intent, intentSha256 });
@@ -337,6 +455,17 @@ export async function executeProtectedProductionOperationV2(
     completedStepReceipts.push({ relativePath: persisted.relativePath, sha256: persisted.sha256, receipt });
     captures.push({ stepId, sequence, executionKind, outputSha256: leaf.outputSha256,
       observedStateSha256: leaf.observedStateSha256 });
+  } } catch (error) {
+    if (input.operationKind === "rollout" || input.operationKind === "canary") {
+      try {
+        settleProtectedFailure({ operationKind: input.operationKind, stepId: activeStepId, error,
+          store, adapters, begun, releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
+          completedStepReceipts, captures, attemptedExternalEffect });
+      } catch (settlementError) {
+        throw new AggregateError([error, settlementError], "production_operation_failure_settlement_failed");
+      }
+    }
+    throw error;
   }
 
   const completedAt = adapters.now();

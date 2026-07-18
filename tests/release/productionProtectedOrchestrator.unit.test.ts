@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
-import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
+import {
+  releaseSha256V2,
+  validateProductionFailureEvidenceV2
+} from "../../src/release/remediationReleaseManifestV2";
 import { runProductionOperationCliV2 } from "../../scripts/productionOperationCliV2";
 import {
   executeProtectedProductionOperationV2,
@@ -121,5 +124,74 @@ describe("protected production orchestrator", () => {
 
     expect(events).toContain("reconcile:stop_previous");
     expect(events).not.toContain("effect:stop_previous");
+  });
+
+  it("settles a rollout preflight failure as typed no-effect evidence before rethrowing", async () => {
+    const { events, store, adapters } = harness("rollout");
+    const captured: unknown[] = [];
+    const failureStore: ProtectedProductionOperationStoreV2 = {
+      ...store,
+      persistExclusive(kind, path, value) {
+        captured.push(value);
+        return store.persistExclusive(kind, path, value);
+      }
+    };
+    const failureAdapters: ProtectedProductionOperationAdaptersV2 = {
+      ...adapters,
+      async validateStep(input) {
+        if (input.stepId === "verify_schema") throw new Error("schema verification failed");
+        return adapters.validateStep(input);
+      }
+    };
+    const root = mkdtempSync(join(tmpdir(), "plan5-protected-rollout-failure-"));
+
+    await expect(executeProtectedProductionOperationV2(
+      { artifactRoot: root, operationKind: "rollout" },
+      { store: failureStore, adapters: failureAdapters }
+    )).rejects.toThrow("schema verification failed");
+
+    const evidence = captured.find((value: any) => value?.version === "production-failure-evidence-v2");
+    expect(validateProductionFailureEvidenceV2(evidence)).toMatchObject({
+      failedGateId: "G14_PRODUCTION_ROLLOUT",
+      evidenceKind: "runtime_rollout_preflight",
+      attemptedExternalEffect: false,
+      failureCode: "schema_verification_failed"
+    });
+    expect(events).not.toContain("effect:stop_previous");
+    expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
+  });
+
+  it("settles a canary check failure as typed terminal evidence before rethrowing", async () => {
+    const { events, store, adapters } = harness("canary");
+    const captured: unknown[] = [];
+    const failureStore: ProtectedProductionOperationStoreV2 = {
+      ...store,
+      persistExclusive(kind, path, value) {
+        captured.push(value);
+        return store.persistExclusive(kind, path, value);
+      }
+    };
+    const failureAdapters: ProtectedProductionOperationAdaptersV2 = {
+      ...adapters,
+      async validateStep(input) {
+        if (input.stepId === "observe_cycle_1") throw new Error("delivery invariant failed");
+        return adapters.validateStep(input);
+      }
+    };
+    const root = mkdtempSync(join(tmpdir(), "plan5-protected-canary-failure-"));
+
+    await expect(executeProtectedProductionOperationV2(
+      { artifactRoot: root, operationKind: "canary" },
+      { store: failureStore, adapters: failureAdapters }
+    )).rejects.toThrow("delivery invariant failed");
+
+    const evidence = captured.find((value: any) => value?.version === "production-failure-evidence-v2");
+    expect(validateProductionFailureEvidenceV2(evidence)).toMatchObject({
+      failedGateId: "G15_PRODUCTION_CANARY",
+      evidenceKind: "runtime_canary_checks",
+      attemptedExternalEffect: true,
+      failureCode: "delivery_invariant_failed"
+    });
+    expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
   });
 });
