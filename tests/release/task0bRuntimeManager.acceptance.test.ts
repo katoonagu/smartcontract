@@ -389,6 +389,71 @@ it("[REQ-38][TASK0B-MANAGER-FRESHNESS] rejects a fresh GO over expired Task0B or
   )).toThrow(/operator|config|binding/i);
 });
 
+it("[REQ-38][PLAN5-RUNTIME-FINAL-FRESHNESS] revalidates authority Task0B and config after preflight before consumption", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const task0b = buildTask0BReleaseFreezeEvidence({ observedAt: "2026-07-18T09:00:00.000Z" });
+  const authority = productionAuthority({
+    issuedAt: "2026-07-18T09:00:00.000Z",
+    expiresAt: "2026-07-18T09:10:00.000Z"
+  });
+  const calls: string[] = [];
+  await expect(api.executeTask0BAuthorizedAction({
+    async prepare() { calls.push("preflight"); return {}; },
+    revalidateBeforeConsumption() {
+      calls.push("fresh-revalidate");
+      api.validateTask0BProductionGoEvidence(
+        authority,
+        task0b,
+        task0b.operatorConfig,
+        "2026-07-18T09:10:00.000Z"
+      );
+    },
+    async consumeAuthority() { calls.push("consume"); },
+    async recheckLive() { calls.push("live-recheck"); },
+    async mutateRuntime() { calls.push("spawn"); return {}; }
+  })).rejects.toThrow(/expired|authority|fresh|time/i);
+  expect(calls).toEqual(["preflight", "fresh-revalidate"]);
+});
+
+it("[REQ-38][PLAN5-RUNTIME-PREFLIGHT] preserves authority when target or Telegram identity preflight fails", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const authority = api.validateTask0BProductionRuntimeAuthority(productionAuthority(), "2026-07-18T09:01:00.000Z");
+  expect(() => api.assertTask0BProductionTelegramBinding(authority, "test-only-token")).not.toThrow();
+  for (const scenario of [
+    { botToken: "foreign-token", failure: null },
+    { botToken: "test-only-token", failure: "task0b_runtime_manager_worktree_unverified" },
+    { botToken: "test-only-token", failure: "task0b_runtime_stop_evidence_hash_mismatch" }
+  ]) {
+    const calls: string[] = [];
+    await expect(api.executeTask0BAuthorizedAction({
+      async prepare() {
+        calls.push("preflight");
+        api.assertTask0BProductionTelegramBinding(authority, scenario.botToken);
+        if (scenario.failure) throw new Error(scenario.failure);
+        return {};
+      },
+      revalidateBeforeConsumption() { calls.push("fresh-revalidate"); },
+      async consumeAuthority() { calls.push("consume"); },
+      async recheckLive() { calls.push("live-recheck"); },
+      async mutateRuntime() { calls.push("stop"); return {}; }
+    })).rejects.toThrow(/telegram|identity|binding|worktree|evidence/i);
+    expect(calls).toEqual(["preflight"]);
+  }
+});
+
+it("[REQ-38][PLAN5-RUNTIME-LIVE-RECHECK] consumes once then rechecks volatile identity before mutation", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const calls: string[] = [];
+  await expect(api.executeTask0BAuthorizedAction({
+    async prepare() { calls.push("preflight"); return { processId: 77 }; },
+    revalidateBeforeConsumption() { calls.push("fresh-revalidate"); },
+    async consumeAuthority() { calls.push("consume"); },
+    async recheckLive() { calls.push("live-recheck"); throw new Error("runtime identity changed"); },
+    async mutateRuntime() { calls.push("stop"); return {}; }
+  })).rejects.toThrow(/identity|changed/i);
+  expect(calls).toEqual(["preflight", "fresh-revalidate", "consume", "live-recheck"]);
+});
+
 it("[REQ-38][TASK0B-MANAGER-START] writes append-only generation evidence before success and cleans a failed child", async () => {
   const api = await import("../../scripts/manageTask0BRuntime");
   const calls: string[] = [];

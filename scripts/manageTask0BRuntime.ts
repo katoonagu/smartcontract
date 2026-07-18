@@ -93,6 +93,18 @@ type RuntimeIdentity = {
   runtimeProcessCount: number;
 };
 
+type PreparedStartRuntime = {
+  worktree: string;
+  physicalEntrypoint: string;
+};
+
+type PreparedStopRuntime = {
+  evidence: Record<string, unknown>;
+  processId: number;
+  observation: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>>;
+  managerExecutableSha256: string;
+};
+
 function hash(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -243,8 +255,8 @@ export function buildTask0BProductionRuntimeEnvironment(
 ): NodeJS.ProcessEnv {
   const authority = validateTask0BProductionRuntimeAuthority(authorityInput);
   const databaseUrl = source.TASK0B_PRODUCTION_DATABASE_URL;
-  if (!source.BOT_TOKEN || hash(source.BOT_TOKEN) !== authority.telegramBotIdentitySha256
-      || !databaseUrl || !isAbsolute(noDotenvPath)) throw new Error("task0b_runtime_production_environment_missing");
+  assertTask0BProductionTelegramBinding(authority, source.BOT_TOKEN);
+  if (!databaseUrl || !isAbsolute(noDotenvPath)) throw new Error("task0b_runtime_production_environment_missing");
   let database: URL;
   try { database = new URL(databaseUrl); } catch { throw new Error("task0b_runtime_production_database_invalid"); }
   if (database.protocol !== "postgresql:" || database.hostname !== "127.0.0.1"
@@ -266,6 +278,15 @@ export function buildTask0BProductionRuntimeEnvironment(
     DOTENV_CONFIG_PATH: noDotenvPath
   });
   return env;
+}
+
+export function assertTask0BProductionTelegramBinding(
+  authority: Task0BProductionRuntimeAuthorityV1,
+  botToken: string | undefined
+): void {
+  if (!botToken || hash(botToken) !== authority.telegramBotIdentitySha256) {
+    throw new Error("task0b_runtime_production_telegram_identity_unverified");
+  }
 }
 
 export function validateTask0BReleaseManifestBinding(
@@ -431,6 +452,20 @@ export async function executeTask0BAuthorizedStart<T>(dependencies: {
   return dependencies.startRuntime();
 }
 
+export async function executeTask0BAuthorizedAction<TPrepared, TResult>(dependencies: {
+  prepare(): Promise<TPrepared>;
+  revalidateBeforeConsumption(): void | Promise<void>;
+  consumeAuthority(): Promise<void>;
+  recheckLive(prepared: TPrepared): Promise<void>;
+  mutateRuntime(prepared: TPrepared): Promise<TResult>;
+}): Promise<TResult> {
+  const prepared = await dependencies.prepare();
+  await dependencies.revalidateBeforeConsumption();
+  await dependencies.consumeAuthority();
+  await dependencies.recheckLive(prepared);
+  return dependencies.mutateRuntime(prepared);
+}
+
 export async function stopTask0BManagedRuntime(
   expected: RuntimeIdentity,
   forcePolicy: ForcePolicy,
@@ -495,6 +530,7 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
   authority: Task0BProductionRuntimeAuthorityV1;
   authorityBytes: Buffer;
   task0bBytes: Buffer;
+  revalidateBeforeConsumption(): void;
 }> {
   const evaluatedAt = new Date().toISOString();
   const authorityBytes = await readProtectedRegularFile(artifactRoot, filename, MAX_ARTIFACT_BYTES);
@@ -514,7 +550,21 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
   const config = validateTask0BPreflightConfig(external.config, evaluatedAt);
   const database = await createTask0BDirectDependencies(config, external.binding).readProductionDatabase();
   assertTask0BProductionGoBindings(authority, task0b, manifest, database, managerExecutableSha256);
-  return { authority, authorityBytes, task0bBytes };
+  return {
+    authority,
+    authorityBytes,
+    task0bBytes,
+    revalidateBeforeConsumption() {
+      const freshNow = new Date().toISOString();
+      validateTask0BProductionGoEvidence(
+        JSON.parse(authorityBytes.toString("utf8")),
+        JSON.parse(task0bBytes.toString("utf8")),
+        external.binding,
+        freshNow
+      );
+      validateTask0BPreflightConfig(external.config, freshNow);
+    }
+  };
 }
 
 async function observeManagedOrNull(processId: number): Promise<Awaited<ReturnType<typeof observeWindowsRuntimeProcess>> | null> {
@@ -550,19 +600,31 @@ async function terminateSpawnedChildAndVerify(processId: number): Promise<void> 
   if (exists()) throw new Error("task0b_runtime_manager_failed_child_survived");
 }
 
-async function startRuntime(artifactRoot: string, authority: Task0BProductionRuntimeAuthorityV1): Promise<unknown> {
+async function prepareStartRuntime(authority: Task0BProductionRuntimeAuthorityV1): Promise<PreparedStartRuntime> {
   if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
   const worktree = await attestWorktree(authority);
   const entrypoint = resolve(worktree, "src", "index.ts");
   const physicalEntrypoint = resolve(await realpath(entrypoint));
   if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_runtime_manager_entrypoint_unverified");
+  return { worktree, physicalEntrypoint };
+}
+
+async function recheckStartRuntime(): Promise<void> {
+  if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
+}
+
+async function startRuntime(
+  artifactRoot: string,
+  authority: Task0BProductionRuntimeAuthorityV1,
+  prepared: PreparedStartRuntime
+): Promise<unknown> {
   const child = spawn(process.execPath, [
-    "--import", "tsx", physicalEntrypoint,
+    "--import", "tsx", prepared.physicalEntrypoint,
     "--task0b-manager-producer=task0b_repo_runtime_manager_v1",
     `--task0b-runtime-sha=${authority.targetRuntimeSha}`,
     `--task0b-runtime-label=${authority.targetRuntimeLabel}`
   ], {
-    cwd: worktree,
+    cwd: prepared.worktree,
     env: buildTask0BProductionRuntimeEnvironment(process.env, authority, join(artifactRoot, "plan5-no-dotenv")),
     detached: true,
     stdio: "ignore",
@@ -599,27 +661,54 @@ async function startRuntime(artifactRoot: string, authority: Task0BProductionRun
   return { status: "started", ...completed };
 }
 
-async function stopRuntime(artifactRoot: string, authority: Task0BProductionRuntimeAuthorityV1): Promise<unknown> {
+async function prepareStopRuntime(
+  artifactRoot: string,
+  authority: Task0BProductionRuntimeAuthorityV1
+): Promise<PreparedStopRuntime> {
   if (!authority.startEvidencePath || !authority.startEvidenceSha256) throw new Error("task0b_runtime_stop_evidence_missing");
   const evidenceBytes = await readProtectedRegularFile(artifactRoot, authority.startEvidencePath, MAX_ARTIFACT_BYTES);
   if (hash(evidenceBytes) !== authority.startEvidenceSha256) throw new Error("task0b_runtime_stop_evidence_hash_mismatch");
-  const evidence = JSON.parse(evidenceBytes.toString("utf8")) as Record<string, unknown>;
+  let evidence: Record<string, unknown>;
+  try { evidence = record(JSON.parse(evidenceBytes.toString("utf8")), "task0b_runtime_stop_evidence_invalid"); }
+  catch { throw new Error("task0b_runtime_stop_evidence_invalid"); }
   const processId = Number(evidence.processId);
   if (!Number.isSafeInteger(processId) || processId < 1 || await countTask0BRuntimeCandidates() !== 1) {
     throw new Error("task0b_runtime_stop_identity_invalid");
   }
   const observation = await observeWindowsRuntimeProcess(processId);
+  const managerExecutableSha256 = hash(await readFile(MANAGER_PATH));
   validateTask0BPreviousRuntimeIdentity(evidence, observation, {
     sha: authority.targetRuntimeSha,
     label: authority.targetRuntimeLabel,
-    managerExecutableSha256: hash(await readFile(MANAGER_PATH))
+    managerExecutableSha256
   }, authority.startEvidenceSha256);
-  await terminateExactAndVerify(observation, authority.forcePolicy);
+  return { evidence, processId, observation, managerExecutableSha256 };
+}
+
+async function recheckStopRuntime(
+  authority: Task0BProductionRuntimeAuthorityV1,
+  prepared: PreparedStopRuntime
+): Promise<void> {
+  if (await countTask0BRuntimeCandidates() !== 1) throw new Error("task0b_runtime_stop_identity_changed");
+  const observation = await observeWindowsRuntimeProcess(prepared.processId);
+  validateTask0BPreviousRuntimeIdentity(prepared.evidence, observation, {
+    sha: authority.targetRuntimeSha,
+    label: authority.targetRuntimeLabel,
+    managerExecutableSha256: prepared.managerExecutableSha256
+  }, authority.startEvidenceSha256!);
+}
+
+async function stopRuntime(
+  artifactRoot: string,
+  authority: Task0BProductionRuntimeAuthorityV1,
+  prepared: PreparedStopRuntime
+): Promise<unknown> {
+  await terminateExactAndVerify(prepared.observation, authority.forcePolicy);
   const stopEvidence = {
     version: "runtime-manager-stop-evidence-v1",
     generationId: authority.generationId,
-    stoppedProcessId: processId,
-    stoppedProcessStartedAt: observation.processStartedAt,
+    stoppedProcessId: prepared.processId,
+    stoppedProcessStartedAt: prepared.observation.processStartedAt,
     stoppedAt: new Date().toISOString(),
     forcePolicy: authority.forcePolicy,
     runtimeCandidatesAfter: 0,
@@ -627,7 +716,7 @@ async function stopRuntime(artifactRoot: string, authority: Task0BProductionRunt
   };
   const filename = runtimeGenerationEvidencePath("stop", authority.generationId);
   await writeProtectedExclusive(artifactRoot, filename, stopEvidence);
-  return { status: "stopped", processId, evidencePath: filename };
+  return { status: "stopped", processId: prepared.processId, evidencePath: filename };
 }
 
 async function main(): Promise<void> {
@@ -636,7 +725,11 @@ async function main(): Promise<void> {
       || process.argv.length !== 5) throw new Error("task0b_runtime_manager_arguments_invalid");
   const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
   await inspectProtectedPathChain(artifactRoot);
-  const { authority, authorityBytes } = await loadAndVerifyAuthority(artifactRoot, authorityFilename);
+  const {
+    authority,
+    authorityBytes,
+    revalidateBeforeConsumption
+  } = await loadAndVerifyAuthority(artifactRoot, authorityFilename);
   const commandMatches = action === "start"
     ? new Set<RuntimeCommandId>(["runtime_manager_start_candidate", "runtime_manager_rollback_previous"]).has(authority.commandId)
     : new Set<RuntimeCommandId>(["runtime_manager_stop_candidate", "runtime_manager_stop_previous"]).has(authority.commandId);
@@ -655,12 +748,26 @@ async function main(): Promise<void> {
     }
   ).then(() => undefined);
   const result = action === "start"
-    ? await executeTask0BAuthorizedStart({
-      countRuntimeCandidates: countTask0BRuntimeCandidates,
+    ? await executeTask0BAuthorizedAction({
+      async prepare() {
+        assertTask0BProductionTelegramBinding(authority, process.env.BOT_TOKEN);
+        return prepareStartRuntime(authority);
+      },
+      revalidateBeforeConsumption,
       consumeAuthority,
-      startRuntime: () => startRuntime(artifactRoot, authority)
+      recheckLive: recheckStartRuntime,
+      mutateRuntime: (prepared) => startRuntime(artifactRoot, authority, prepared)
     })
-    : await consumeAuthority().then(() => stopRuntime(artifactRoot, authority));
+    : await executeTask0BAuthorizedAction({
+      async prepare() {
+        assertTask0BProductionTelegramBinding(authority, process.env.BOT_TOKEN);
+        return prepareStopRuntime(artifactRoot, authority);
+      },
+      revalidateBeforeConsumption,
+      consumeAuthority,
+      recheckLive: (prepared) => recheckStopRuntime(authority, prepared),
+      mutateRuntime: (prepared) => stopRuntime(artifactRoot, authority, prepared)
+    });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
