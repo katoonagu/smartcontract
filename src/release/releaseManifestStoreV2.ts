@@ -126,7 +126,7 @@ export type RootWriterProcessRuntimeV2 = {
 
 const ROOT_WRITER_PROCESS_RUNTIME_V2 = new AsyncLocalStorage<RootWriterProcessRuntimeV2>();
 
-function currentRootWriterOwnerIdentityV2(): { pid: number; processStartFingerprintSha256: string } {
+export function currentRootWriterOwnerIdentityV2(): { pid: number; processStartFingerprintSha256: string } {
   const injected = ROOT_WRITER_PROCESS_RUNTIME_V2.getStore()?.currentOwnerIdentity();
   const identity = injected ?? {
     pid: process.pid,
@@ -2555,7 +2555,7 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
   });
 }
 
-function isLeaseOwnerProcessAliveV2(pid: number, expectedStartFingerprintSha256: string): boolean {
+export function isLeaseOwnerProcessAliveV2(pid: number, expectedStartFingerprintSha256: string): boolean {
   const injected = ROOT_WRITER_PROCESS_RUNTIME_V2.getStore();
   if (injected) return injected.isOwnerAlive(pid, expectedStartFingerprintSha256);
   try { process.kill(pid, 0); }
