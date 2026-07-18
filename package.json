@@ -24,7 +24,9 @@
     "release:verify:non-vitest": "node --import tsx scripts/verifyRemediationRelease.ts --non-vitest",
     "release:trace:capture": "node --import tsx scripts/captureRemediationTestEvidence.ts",
     "release:legacy:snapshot": "node --import tsx scripts/snapshotTerminalLegacyPopulation.ts",
-    "release:runtime:rehearse": "node --import tsx scripts/rehearseRemediationRuntime.ts"
+    "release:runtime:rehearse": "node --import tsx scripts/rehearseRemediationRuntime.ts",
+    "release:telegram:manual": "node --import tsx scripts/finalizeTelegramAcceptance.ts",
+    "release:telegram:finalize": "node --import tsx scripts/finalizeTelegramAcceptance.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",

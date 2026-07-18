@@ -36,6 +36,7 @@ import {
   assertTerminalLegacyPopulationUnchanged,
   validateTerminalLegacyPopulation
 } from "../src/release/terminalLegacyPopulation";
+import { MANUAL_TELEGRAM_ACCEPTANCE_CASES } from "./renderTelegramUxAcceptance";
 
 export type RemediationSuiteGroupId = keyof typeof REMEDIATION_REQUIRED_SUITE_GROUPS;
 
@@ -775,6 +776,10 @@ async function verifyConcreteArtifactBindings(
     requireEvidence(gateId, actualHash);
   }
 
+  if (outputs.has("G05_TELEGRAM")) {
+    await validateManualTelegramArtifactForRelease(root, manifest.candidateSha);
+  }
+
   if (outputs.has("G07_SCHEMA_OFFLINE")) {
     const clean = await readSafeArtifactFile(root, "schema-clean-evidence.json");
     const clone = await readSafeArtifactFile(root, "schema-production-clone-evidence.json");
@@ -846,6 +851,48 @@ async function verifyConcreteArtifactBindings(
       requireEvidence(gateId, await artifactHash(root, `suite-${groupId}.vitest.json`));
       requireEvidence(gateId, await artifactHash(root, `suite-${groupId}.evidence.json`));
     }
+  }
+}
+
+export async function validateManualTelegramArtifactForRelease(
+  artifactRoot: string,
+  candidateSha: string
+): Promise<void> {
+  const databaseUrl = process.env.PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL;
+  if (!databaseUrl) throw new Error("PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL is required for manual Telegram verification");
+  const bytes = await readSafeArtifactFile(artifactRoot, "manual-telegram-acceptance.json");
+  const raw = parseJson(bytes) as {
+    scenarioSummaries?: Array<{ runtimeLabel?: unknown }>;
+  };
+  const api = await import("./finalizeTelegramAcceptance");
+  const candidateStartBytes = await readSafeArtifactFile(artifactRoot, "runtime-candidate-start-evidence.json");
+  const candidateStart = parseJson(candidateStartBytes);
+  const runtimeLabel = requiredStringField(candidateStart, "runtimeLabel");
+  if (requiredStringField(candidateStart, "runtimeSha") !== candidateSha ||
+      raw.scenarioSummaries?.[0]?.runtimeLabel !== runtimeLabel) {
+    throw new Error("manual Telegram runtime label does not match candidate start evidence");
+  }
+  const runBytes = await readSafeArtifactFile(artifactRoot, "manual-telegram-candidate-run.json");
+  const run = api.validateManualTelegramCandidateRun(parseJson(runBytes), candidateSha, runtimeLabel);
+  const task0bEvidence = parseJson(await readSafeArtifactFile(artifactRoot, "task0b-release-freeze.json"));
+  const db = new Client({ connectionString: databaseUrl });
+  await db.connect();
+  try {
+    await api.verifyManualTelegramCandidateJobs(db, run, {
+      task0bEvidence,
+      candidateStartEvidence: candidateStart,
+      evaluatedAt: new Date().toISOString(),
+      databaseUrl
+    });
+    await api.finalizeManualTelegramAcceptance(raw, {
+      candidateSha,
+      runtimeLabel,
+      goldenIds: MANUAL_TELEGRAM_ACCEPTANCE_CASES.flatMap((item) => item.goldenIds),
+      candidateRun: run,
+      artifactRoot
+    });
+  } finally {
+    await db.end().catch(() => undefined);
   }
 }
 
