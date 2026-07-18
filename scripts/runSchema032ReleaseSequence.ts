@@ -38,7 +38,11 @@ import {
   type Schema032MigrationSessionIdentity
 } from "../src/release/schema032MigrationIdentity";
 import {
+  validateProductionFailureEvidenceV2,
   validateSchema032ProductionExecutionReceiptV2,
+  type ProductionFailureEvidenceV2,
+  type Schema032CompletedStageV2,
+  type Schema032ProductionExecutionReceiptCommonV2,
   type Schema032ProductionExecutionReceiptV2
 } from "../src/release/remediationReleaseManifestV2";
 
@@ -63,6 +67,13 @@ export const SCHEMA_032_SEQUENCE_FILES = Object.freeze({
   secondMigration: "schema032-second-migration-outcome.json",
   finalEvidence: "schema032-release-evidence.json"
 });
+
+const SCHEMA_032_FAILURE_PATHS = Object.freeze({
+  first_migration: "schema032-failures/first-migration-failure-v2.json",
+  first_verification: "schema032-failures/first-verification-failure-v2.json",
+  second_migration: "schema032-failures/second-migration-failure-v2.json",
+  final_verification: "schema032-failures/final-verification-failure-v2.json"
+} as const);
 
 const ROLE_ENV: Readonly<Record<string, string>> = {
   clean: "PLAN5_SCHEMA_CLEAN_DATABASE_URL",
@@ -1181,6 +1192,64 @@ export async function persistSchema032ProductionExecutionReceiptV2(
   return receipt;
 }
 
+type Schema032ProductionExecutionFailureV2 = Extract<Schema032ProductionExecutionReceiptV2,
+  { result: "failed_after_attempt" }>;
+type Schema032ProductionExecutionFailureInputV2 = Schema032ProductionExecutionReceiptCommonV2 & {
+  result: "failed_after_attempt";
+  failedStep: keyof typeof SCHEMA_032_FAILURE_PATHS;
+  completedStages: Schema032CompletedStageV2[];
+};
+
+export async function persistSchema032ProductionFailureRouteV2(
+  artifactRoot: string,
+  input: {
+    executionReceipt: Schema032ProductionExecutionFailureInputV2;
+    failureCode: string;
+  }
+): Promise<{
+  executionReceipt: Schema032ProductionExecutionFailureV2;
+  failureEvidence: ProductionFailureEvidenceV2;
+}> {
+  if (input.failureCode.length > 160 || !/^schema_032_[a-z0-9_:.-]+$/u.test(input.failureCode)) {
+    fail("schema_032_sequence_failure_code_invalid");
+  }
+  const { failedStep } = input.executionReceipt;
+  const stageFailure = {
+    version: "schema032-stage-failure-v2" as const,
+    candidateSha: input.executionReceipt.candidateSha,
+    failedStep,
+    failureCode: input.failureCode,
+    observedAt: input.executionReceipt.lockReleasedAt
+  };
+  const stageFailureBytes = Buffer.from(`${JSON.stringify(stageFailure)}\n`, "utf8");
+  const executionReceipt = validateSchema032ProductionExecutionReceiptV2({
+    ...input.executionReceipt,
+    failureArtifact: {
+      kind: "schema032_stage_failure",
+      failedStep,
+      relativePath: SCHEMA_032_FAILURE_PATHS[failedStep],
+      evidenceSha256: hash(stageFailureBytes)
+    }
+  }) as Schema032ProductionExecutionFailureV2;
+  const executionReceiptBytes = Buffer.from(`${JSON.stringify(executionReceipt)}\n`, "utf8");
+  const failureEvidence = validateProductionFailureEvidenceV2({
+    version: "production-failure-evidence-v2",
+    candidateSha: executionReceipt.candidateSha,
+    releaseFreezeIdentitySha256: executionReceipt.releaseFreezeIdentitySha256,
+    sourceManifestSha256: executionReceipt.sourceManifestSha256,
+    failedExecutionEvidenceSha256: hash(executionReceiptBytes),
+    observedAt: executionReceipt.lockReleasedAt,
+    failedGateId: "G13_PRODUCTION_MIGRATION",
+    evidenceKind: "schema032_execution_receipt",
+    attemptedExternalEffect: true,
+    failureCode: `${failedStep}_failed`
+  });
+  await writeArtifactExclusive(artifactRoot, SCHEMA_032_FAILURE_PATHS[failedStep], stageFailure);
+  await writeArtifactExclusive(artifactRoot, "schema032-production-execution-receipt-v2.json", executionReceipt);
+  await writeArtifactExclusive(artifactRoot, "production-failure-evidence-v2.json", failureEvidence);
+  return { executionReceipt, failureEvidence };
+}
+
 async function currentCandidateSha(): Promise<string> {
   const result = await new Promise<MigrationSpawnResult>((resolveResult) => {
     const child = spawn("git", ["rev-parse", "HEAD"], { cwd: resolve(fileURLToPath(new URL("..", import.meta.url))), windowsHide: true });
@@ -1335,35 +1404,24 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
       const count = completedCount < 0 ? existing.length : completedCount;
       const steps = ["first_migration", "first_verification", "second_migration", "final_verification"] as const;
       const failedStep = steps[Math.min(count, steps.length - 1)]!;
-      const failurePaths = {
-        first_migration: "schema032-failures/first-migration-failure-v2.json",
-        first_verification: "schema032-failures/first-verification-failure-v2.json",
-        second_migration: "schema032-failures/second-migration-failure-v2.json",
-        final_verification: "schema032-failures/final-verification-failure-v2.json"
-      } as const;
       const failureCode = safeErrorCode(caughtError);
-      const failureEvidenceSha256 = hash(`${failedStep}:${failureCode}`);
-      const failureArtifact = { kind: "schema032_stage_failure" as const, failedStep,
-        relativePath: failurePaths[failedStep], evidenceSha256: failureEvidenceSha256 };
-      await writeArtifactExclusive(artifactRoot, failureArtifact.relativePath, {
-        version: "schema032-stage-failure-v2", candidateSha: validated.candidateSha,
-        ...failureArtifact, failureCode, observedAt: lockReleasedAt
-      });
-      await persistSchema032ProductionExecutionReceiptV2(artifactRoot, {
-        version: "schema-032-production-execution-receipt-v2",
-        candidateSha: validated.candidateSha,
-        ...productionBinding,
-        advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
-        databaseSessionIdentitySha256: sessionIdentitySha256,
-        lockAcquiredAt,
-        lockReleasedAt,
-        migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
-        result: "failed_after_attempt",
-        failedStep,
-        completedStages: existing.slice(0, count).map((value, index) => ({
-          step: steps[index], receiptSha256: hash(Buffer.from(value!, "utf8"))
-        })),
-        failureArtifact
+      await persistSchema032ProductionFailureRouteV2(artifactRoot, {
+        executionReceipt: {
+          version: "schema-032-production-execution-receipt-v2",
+          candidateSha: validated.candidateSha,
+          ...productionBinding,
+          advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
+          databaseSessionIdentitySha256: sessionIdentitySha256,
+          lockAcquiredAt,
+          lockReleasedAt,
+          migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
+          result: "failed_after_attempt",
+          failedStep,
+          completedStages: existing.slice(0, count).map((value, index) => ({
+            step: steps[index], receiptSha256: hash(Buffer.from(value!, "utf8"))
+          }))
+        },
+        failureCode
       });
     }
     throw caughtError;
