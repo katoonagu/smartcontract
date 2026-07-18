@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +21,7 @@ import {
   PRE_RELEASE_GATE_IDS,
   buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
+import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
 
 const CREATED: string[] = [];
 const EVALUATED_AT = "2026-07-18T10:00:00.000Z";
@@ -75,7 +76,7 @@ async function materializeVerifiedFreeze(
   });
 }
 
-function initialGateOutputs(candidateSha: string) {
+function initialGateOutputs(candidateSha: string, artifactRoot: string) {
   return PRE_RELEASE_GATE_IDS.filter((id) => id !== "G05_TELEGRAM").map((id) => ({
     id,
     candidateSha,
@@ -86,13 +87,27 @@ function initialGateOutputs(candidateSha: string) {
     finishedAt: "2026-07-18T09:59:00.000Z",
     exitCode: 0,
     outputSha256: "9".repeat(64),
-    evidence: [{
-      kind: id === "G00_BASE" ? "task0_baseline" : "suite_evidence",
-      relativePath: `gates/${id.toLowerCase()}.json`,
-      sha256: "a".repeat(64),
-      schemaVersion: "gate-evidence-v2",
-      candidateSha
-    }]
+    evidence: (() => {
+      const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[id];
+      const refs: Array<{ kind: any; relativePath: string; sha256: string; schemaVersion: string; candidateSha: string }> = [];
+      const paths = [...policy.primaryPaths];
+      for (const [index, kind] of policy.requiredKinds.entries()) {
+        if (index >= paths.length) paths.push(`gates/${id.toLowerCase()}/${kind}.json`);
+      }
+      for (const [index, relativePath] of paths.entries()) {
+        const path = join(artifactRoot, ...relativePath.split("/"));
+        if (!existsSync(path)) {
+          mkdirSync(resolve(path, ".."), { recursive: true });
+          writeFileSync(path, canonicalBytesV2({ version: "gate-evidence-v2", candidateSha,
+            gateId: id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] }));
+        }
+        const bytes = readFileSync(path);
+        const parsed = JSON.parse(bytes.toString("utf8"));
+        refs.push({ kind: policy.requiredKinds[index] ?? policy.allowedKinds[0], relativePath,
+          sha256: createHash("sha256").update(bytes).digest("hex"), schemaVersion: parsed.version, candidateSha });
+      }
+      return refs;
+    })()
   }));
 }
 
@@ -108,7 +123,7 @@ function initialVerifiedInput(input: ReturnType<typeof makeRepositoryAndRoot>, c
     sourceManifestRevision: null,
     evaluatedAt: EVALUATED_AT,
     operationalAttestation: null,
-    verifiedGateOutputs: initialGateOutputs(candidateSha),
+    verifiedGateOutputs: initialGateOutputs(candidateSha, input.artifactRoot),
     verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null }
   };
 }
