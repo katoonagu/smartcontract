@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateGateEvidenceBytesV2 } from "./releaseGateEvidencePolicy";
 
 export const RELEASE_GATE_IDS_V2 = [
   "G00_BASE", "G01_TRACE", "G02_DATA", "G03_SCORING", "G04_RUNTIME",
@@ -2585,12 +2586,28 @@ export function reduceRemediationReleaseManifestV2(
   );
 }
 
-export function validateManifestGateEvidenceV2(): never {
-  throw new Error("gate_evidence_policy_not_implemented");
+export function validateManifestGateEvidenceV2(
+  manifestValue: unknown,
+  bytesByRelativePath: ReadonlyMap<string, Buffer>
+): RemediationReleaseManifestV2 {
+  const manifest = validateRemediationReleaseManifestV2(manifestValue);
+  for (const gate of manifest.gates) {
+    if (gate.state === "passed" || gate.state === "failed") {
+      validateGateEvidenceBytesV2(gate, bytesByRelativePath);
+    }
+  }
+  return manifest;
 }
 
-export async function verifyRemediationReleaseArtifactsV2(): Promise<never> {
-  throw new Error("gate_evidence_policy_not_implemented");
+export async function verifyRemediationReleaseArtifactsV2(
+  artifacts: ReadonlyMap<string, Buffer>
+): Promise<RemediationReleaseManifestV2> {
+  const manifestBytes = artifacts.get("release-manifest-v2.json");
+  if (!manifestBytes) throw new Error("release_manifest_v2_missing");
+  let value: unknown;
+  try { value = JSON.parse(manifestBytes.toString("utf8")); }
+  catch { throw new Error("release_manifest_v2_json_invalid"); }
+  return validateManifestGateEvidenceV2(value, artifacts);
 }
 
 export function assertProductionMutatorAuthorityV2(): never {
