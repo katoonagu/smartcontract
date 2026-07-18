@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
@@ -66,6 +66,20 @@ function fixture(root: string) {
     explicitGo: true
   };
   return { root, task0b, manifest, task0bBytes, manifestBytes, authority };
+}
+
+function commandFixture(root: string, generationId = "production-backup-generation-0001") {
+  const value = fixture(root);
+  const rootKey = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
+  value.task0b.artifactRoot.rootFingerprintSha256 = sha256(rootKey);
+  value.task0bBytes = Buffer.from(`${JSON.stringify(value.task0b)}\n`, "utf8");
+  value.authority = {
+    ...value.authority,
+    generationId,
+    artifactRootFingerprintSha256: value.task0b.artifactRoot.rootFingerprintSha256,
+    task0bEvidenceSha256: sha256(value.task0bBytes)
+  };
+  return value;
 }
 
 describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
@@ -232,9 +246,13 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       readCompletedEvidence: async () => files.get("production-backup-evidence.json") ?? null,
       claim: async () => { calls.push("claim"); files.set("claim", Buffer.from("claimed")); },
       hasClaim: async () => files.has("claim"),
+      acquireOperation: async () => ({ operationId: "d".repeat(32), release: async () => undefined }),
       inspectPartial: async () => ({ dump: files.has("production-backup.dump"), list: files.has("production-backup-restore-list.txt") }),
+      validatePartialProgress: async () => undefined,
       dump: async () => { calls.push("dump"); files.set("production-backup.dump", Buffer.from("PGDMP fixture")); },
+      recordDumpProgress: async () => undefined,
       list: async () => { calls.push("list"); files.set("production-backup-restore-list.txt", Buffer.from("; archive\n1; TABLE public x\n")); },
+      recordListProgress: async () => undefined,
       attest: async () => { calls.push("attest"); },
       buildEvidence: async () => Buffer.from(`${JSON.stringify({ version: "production-backup-evidence-v1", state: "passed" })}\n`),
       writeEvidence: async (bytes: Buffer) => { calls.push("evidence"); files.set("production-backup-evidence.json", bytes); }
@@ -260,6 +278,113 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       await expect(api.executeProductionBackupStateMachine(value.authority, dependencies)).rejects.toThrow(/unconsumed/);
       expect(calls).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects a valid claim followed by foreign custom dump and restore-list bytes without generation progress receipts", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-foreign-progress-");
+    const value = fixture(root);
+    const authorityBytes = Buffer.from(`${JSON.stringify(value.authority)}\n`);
+    const expected = {
+      generationId: value.authority.generationId,
+      authoritySha256: sha256(authorityBytes),
+      candidateSha: value.authority.candidateSha,
+      databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+      artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+      expiresAt: value.authority.expiresAt
+    };
+    try {
+      await api.claimProductionBackupAuthority(root, expected, value.authority.issuedAt);
+      const claimName = `production-backup-authority-consumed-${expected.generationId}.json`;
+      const binding = { ...expected, claimSha256: sha256(readFileSync(join(root, claimName))) };
+      writeFileSync(join(root, "production-backup.dump"), Buffer.from("PGDMP foreign-but-valid-header"), { flag: "wx" });
+      writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("; dbname: tron_watch\n1; TABLE public foreign_probe\n"), { flag: "wx" });
+      const before = new Map(readdirSync(root).map((name) => [name, readFileSync(join(root, name))]));
+      const calls: string[] = [];
+      await expect(api.executeProductionBackupStateMachine(value.authority, {
+        now: () => evaluatedAt,
+        readCompletedEvidence: async () => null,
+        hasClaim: async () => true,
+        claim: async () => { calls.push("claim"); },
+        acquireOperation: async () => ({ operationId: "a".repeat(32), release: async () => { calls.push("release"); } }),
+        inspectPartial: async () => ({ dump: true, list: true }),
+        validatePartialProgress: () => api.validateProductionBackupProgress(root, binding, evaluatedAt),
+        dump: async () => { calls.push("dump"); },
+        recordDumpProgress: async () => { calls.push("dump-progress"); },
+        list: async () => { calls.push("list"); },
+        recordListProgress: async () => { calls.push("list-progress"); },
+        attest: async () => { calls.push("attest"); },
+        buildEvidence: async () => Buffer.from("evidence"),
+        writeEvidence: async () => { calls.push("evidence"); }
+      })).rejects.toThrow(/progress|ownership|receipt/i);
+      expect(calls).toEqual(["release"]);
+      expect(existsSync(join(root, "production-backup-evidence.json"))).toBe(false);
+      for (const [name, bytes] of before) expect(readFileSync(join(root, name))).toEqual(bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("serializes two state machines sharing a consumed claim so exactly one can invoke pg_dump", async () => {
+    const api = await loadProducer();
+    const value = fixture("C:/protected/plan5-g12-concurrency");
+    let held = false;
+    let dumpCalls = 0;
+    let enterDump!: () => void;
+    let finishDump!: () => void;
+    const entered = new Promise<void>((resolveEntered) => { enterDump = resolveEntered; });
+    const finish = new Promise<void>((resolveFinish) => { finishDump = resolveFinish; });
+    const dependencies = () => ({
+      now: () => evaluatedAt,
+      readCompletedEvidence: async () => null,
+      hasClaim: async () => true,
+      claim: async () => undefined,
+      acquireOperation: async () => {
+        if (held) throw new Error("production_backup_operation_concurrent");
+        held = true;
+        return { operationId: "b".repeat(32), release: async () => { held = false; } };
+      },
+      inspectPartial: async () => ({ dump: false, list: false }),
+      validatePartialProgress: async () => undefined,
+      dump: async () => { dumpCalls += 1; enterDump(); await finish; },
+      recordDumpProgress: async () => undefined,
+      list: async () => undefined,
+      recordListProgress: async () => undefined,
+      attest: async () => undefined,
+      buildEvidence: async () => Buffer.from("evidence"),
+      writeEvidence: async () => undefined
+    });
+    const first = api.executeProductionBackupStateMachine(value.authority, dependencies());
+    await entered;
+    const second = api.executeProductionBackupStateMachine(value.authority, dependencies());
+    const resultsPromise = Promise.allSettled([first, second]);
+    await new Promise((resolveNext) => setImmediate(resolveNext));
+    finishDump();
+    const results = await resultsPromise;
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(dumpCalls).toBe(1);
+  });
+
+  it("blocks injected pre/post database identity drift before evidence publication", async () => {
+    const api = await loadProducer();
+    const value = fixture("C:/protected/plan5-g12-identity-drift");
+    const calls: string[] = [];
+    await expect(api.executeProductionBackupStateMachine(value.authority, {
+      now: () => evaluatedAt,
+      readCompletedEvidence: async () => null,
+      hasClaim: async () => true,
+      claim: async () => undefined,
+      acquireOperation: async () => ({ operationId: "c".repeat(32), release: async () => { calls.push("release"); } }),
+      inspectPartial: async () => ({ dump: true, list: true }),
+      validatePartialProgress: async () => undefined,
+      dump: async () => { calls.push("dump"); },
+      recordDumpProgress: async () => undefined,
+      list: async () => { calls.push("list"); },
+      recordListProgress: async () => undefined,
+      attest: async () => { calls.push("identity-recheck"); throw new Error("production_backup_database_identity_changed"); },
+      buildEvidence: async () => { calls.push("build-evidence"); return Buffer.from("evidence"); },
+      writeEvidence: async () => { calls.push("write-evidence"); }
+    })).rejects.toThrow(/database_identity_changed/);
+    expect(calls).toEqual(["identity-recheck", "release"]);
   });
 
   it("validates exact evidence bytes and rejects restore-list encoding, size, and artifact tamper", async () => {
@@ -309,6 +434,60 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       expect(readdirSync(root)).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 20_000);
+
+  it("command preflight leaves an expired or foreign generation and the release manifest byte-identical with zero side effects", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-command-fail-closed-");
+    const old = commandFixture(root);
+    const oldAuthorityName = `production-backup-authority-${old.authority.generationId}.json`;
+    const expected = {
+      generationId: old.authority.generationId,
+      authoritySha256: sha256(Buffer.from(`${JSON.stringify(old.authority)}\n`)),
+      candidateSha: old.authority.candidateSha,
+      databaseIdentityFingerprintSha256: old.authority.databaseIdentityFingerprintSha256,
+      artifactRootFingerprintSha256: old.authority.artifactRootFingerprintSha256,
+      expiresAt: old.authority.expiresAt
+    };
+    const sideEffects: string[] = [];
+    let now = "2026-07-18T09:10:00.001Z";
+    const dependencies = {
+      now: () => now,
+      currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+      observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("must not observe database"); },
+      attestProductionPostgresTools: async () => { sideEffects.push("docker"); },
+      stdout: (_value: string) => { sideEffects.push("stdout"); }
+    };
+    try {
+      writeFileSync(join(root, "task0b-release-freeze.json"), old.task0bBytes, { flag: "wx" });
+      writeFileSync(join(root, "release-manifest.json"), old.manifestBytes, { flag: "wx" });
+      writeFileSync(join(root, oldAuthorityName), Buffer.from(`${JSON.stringify(old.authority)}\n`), { flag: "wx" });
+      await api.claimProductionBackupAuthority(root, expected, old.authority.issuedAt);
+      writeFileSync(join(root, "production-backup.dump"), Buffer.from("PGDMP incomplete-expired-generation"), { flag: "wx" });
+      const beforeExpired = new Map(readdirSync(root).map((name) => [name, readFileSync(join(root, name))]));
+      await expect(api.runProductionBackupCommand([root, oldAuthorityName], {
+        TASK0B_PRODUCTION_DATABASE_URL: "postgresql://release:not-used@127.0.0.1:55998/tron_watch"
+      }, dependencies)).rejects.toThrow(/authority_expired/);
+      expect(sideEffects).toEqual([]);
+      expect(readFileSync(join(root, "release-manifest.json"))).toEqual(old.manifestBytes);
+      expect(readdirSync(root).sort()).toEqual([...beforeExpired.keys()].sort());
+      for (const [name, bytes] of beforeExpired) expect(readFileSync(join(root, name))).toEqual(bytes);
+
+      const next = commandFixture(root, "production-backup-generation-0002");
+      next.authority.issuedAt = "2026-07-18T09:11:00.000Z";
+      next.authority.expiresAt = "2026-07-18T09:15:00.000Z";
+      const nextAuthorityName = `production-backup-authority-${next.authority.generationId}.json`;
+      writeFileSync(join(root, nextAuthorityName), Buffer.from(`${JSON.stringify(next.authority)}\n`), { flag: "wx" });
+      const beforeNextGo = new Map(readdirSync(root).map((name) => [name, readFileSync(join(root, name))]));
+      now = "2026-07-18T09:12:00.000Z";
+      await expect(api.runProductionBackupCommand([root, nextAuthorityName], {
+        TASK0B_PRODUCTION_DATABASE_URL: "postgresql://release:not-used@127.0.0.1:55998/tron_watch"
+      }, dependencies)).rejects.toThrow(/foreign_generation|recovery_required/);
+      expect(sideEffects).toEqual([]);
+      expect(readFileSync(join(root, "release-manifest.json"))).toEqual(old.manifestBytes);
+      expect(readdirSync(root).sort()).toEqual([...beforeNextGo.keys()].sort());
+      for (const [name, bytes] of beforeNextGo) expect(readFileSync(join(root, name))).toEqual(bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
   postgresIt("creates a real custom-format backup and pinned pg_restore list from disposable tron_watch", async () => {
     const api = await loadProducer();
@@ -362,7 +541,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       await snapshot.client.query("rollback"); await snapshot.client.end(); snapshot = undefined;
       await api.writeProductionRestoreList(root, tools);
       const after = await api.observeProductionDatabase(url);
-      expect(after.identityFingerprintSha256).toBeTruthy();
+      expect(after.identityFingerprintSha256).toBe(identityFingerprintSha256);
       await after.client.query("rollback"); await after.client.end();
       expect(readFileSync(join(root, "production-backup.dump")).subarray(0, 5).toString("ascii")).toBe("PGDMP");
       expect(readFileSync(join(root, "production-backup-restore-list.txt"), "utf8")).toContain("plan5_backup_probe");
@@ -389,4 +568,51 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 120_000);
+
+  postgresIt("classifies and cleans only an exact dead same-generation lease, orphan temp, partial files, and Docker container", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-orphan-");
+    const value = fixture(root);
+    const authorityBytes = Buffer.from(`${JSON.stringify(value.authority)}\n`);
+    const expected = {
+      generationId: value.authority.generationId,
+      authoritySha256: sha256(authorityBytes),
+      candidateSha: value.authority.candidateSha,
+      databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+      artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
+      expiresAt: value.authority.expiresAt
+    };
+    let orphanContainer: string | undefined;
+    try {
+      await api.claimProductionBackupAuthority(root, expected, value.authority.issuedAt);
+      const claimName = `production-backup-authority-consumed-${expected.generationId}.json`;
+      const binding = { ...expected, claimSha256: sha256(readFileSync(join(root, claimName))) };
+      const abandoned = await api.acquireProductionBackupOperationLease(root, binding, evaluatedAt, {
+        ownerProcessId: 2_000_000_001,
+        isProcessAlive: async () => true
+      });
+      const containerName = abandoned.lease.dumpContainerName as string;
+      orphanContainer = containerName;
+      writeFileSync(join(root, `.production-backup-${abandoned.lease.operationId}.dump.tmp`), Buffer.from("orphan-temp"), { flag: "wx" });
+      writeFileSync(join(root, "production-backup.dump"), Buffer.from("PGDMP orphan-unreceipted"), { flag: "wx" });
+      writeFileSync(join(root, "production-backup-restore-list.txt"), Buffer.from("1; TABLE public orphan\n"), { flag: "wx" });
+      await execFileAsync("docker", ["run", "--detach", "--rm", "--name", containerName,
+        "--entrypoint", "/bin/sleep", "postgres:16-alpine", "60"]);
+
+      const recovered = await api.acquireProductionBackupOperationLease(root, binding, evaluatedAt, {
+        ownerProcessId: process.pid,
+        isProcessAlive: async (processId: number) => processId !== abandoned.lease.ownerProcessId
+      });
+      expect(existsSync(join(root, `.production-backup-${abandoned.lease.operationId}.dump.tmp`))).toBe(false);
+      expect(existsSync(join(root, "production-backup.dump"))).toBe(false);
+      expect(existsSync(join(root, "production-backup-restore-list.txt"))).toBe(false);
+      const remaining = (await execFileAsync("docker", ["ps", "-a", "--format", "{{.Names}}",
+        "--filter", `name=^/${containerName}$`])).stdout.trim();
+      expect(remaining).toBe("");
+      await recovered.release();
+    } finally {
+      if (orphanContainer) await execFileAsync("docker", ["rm", "--force", orphanContainer]).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

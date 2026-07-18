@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { link, lstat, open, unlink } from "node:fs/promises";
+import { link, lstat, open, readdir, unlink } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "pg";
@@ -26,6 +26,7 @@ import {
 const SHA40 = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
+const OPERATION_ID = /^[0-9a-f]{32}$/u;
 const SNAPSHOT = /^[0-9A-Fa-f-]{8,80}$/u;
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_BACKUP_BYTES = 1024 ** 4;
@@ -95,8 +96,56 @@ type ExpectedConsumption = Pick<ProductionBackupConsumptionV1,
   "generationId" | "authoritySha256" | "candidateSha" | "databaseIdentityFingerprintSha256"
   | "artifactRootFingerprintSha256" | "expiresAt">;
 
+export type ProductionBackupProgressBinding = ExpectedConsumption & { claimSha256: string };
+
+export type ProductionBackupDumpProgressV1 = ProductionBackupProgressBinding & {
+  version: "production-backup-dump-progress-v1";
+  operationId: string;
+  recordedAt: string;
+  backupFilename: "production-backup.dump";
+  backupBytes: number;
+  backupSha256: string;
+  backupPathFingerprintSha256: string;
+};
+
+export type ProductionBackupListProgressV1 = ProductionBackupProgressBinding & {
+  version: "production-backup-list-progress-v1";
+  operationId: string;
+  recordedAt: string;
+  dumpProgressSha256: string;
+  restoreListFilename: "production-backup-restore-list.txt";
+  restoreListBytes: number;
+  restoreListSha256: string;
+  restoreListEntryCount: number;
+};
+
+export type ProductionBackupOperationLeaseV1 = ProductionBackupProgressBinding & {
+  version: "production-backup-operation-lease-v1";
+  operationId: string;
+  ownerProcessId: number;
+  acquiredAt: string;
+  dumpContainerName: string;
+  restoreContainerName: string;
+};
+
 function hash(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function claimFilename(generationId: string): string {
+  return `production-backup-authority-consumed-${generationId}.json`;
+}
+
+function leaseFilename(generationId: string): string {
+  return `production-backup-operation-${generationId}.json`;
+}
+
+function dumpProgressFilename(generationId: string): string {
+  return `production-backup-dump-progress-${generationId}.json`;
+}
+
+function listProgressFilename(generationId: string): string {
+  return `production-backup-list-progress-${generationId}.json`;
 }
 
 function canonicalPathKey(path: string): string {
@@ -373,14 +422,166 @@ export async function inspectProductionBackupPartialState(root: string): Promise
   return { dump: dumpMetadata !== null, list: listMetadata !== null };
 }
 
+function validateProgressBinding(
+  value: Record<string, unknown>,
+  binding: ProductionBackupProgressBinding,
+  evaluatedAt: string,
+  code: string
+): void {
+  const recordedAt = iso(value.recordedAt, code);
+  const now = iso(evaluatedAt, code);
+  const expiresAt = iso(binding.expiresAt, code);
+  if (value.generationId !== binding.generationId || value.authoritySha256 !== binding.authoritySha256
+      || value.claimSha256 !== binding.claimSha256 || value.candidateSha !== binding.candidateSha
+      || value.databaseIdentityFingerprintSha256 !== binding.databaseIdentityFingerprintSha256
+      || value.artifactRootFingerprintSha256 !== binding.artifactRootFingerprintSha256
+      || value.expiresAt !== binding.expiresAt || !OPERATION_ID.test(String(value.operationId))
+      || recordedAt > now || recordedAt >= expiresAt) throw new Error(code);
+}
+
+function validateDumpProgress(
+  value: unknown,
+  binding: ProductionBackupProgressBinding,
+  evaluatedAt: string
+): ProductionBackupDumpProgressV1 {
+  assertNoSecretLikeArtifactValues(value);
+  const progress = record(value, "production_backup_dump_progress_invalid");
+  exactKeys(progress, [
+    "version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId", "recordedAt",
+    "backupFilename", "backupBytes", "backupSha256", "backupPathFingerprintSha256"
+  ], "production_backup_dump_progress_invalid");
+  validateProgressBinding(progress, binding, evaluatedAt, "production_backup_dump_progress_invalid");
+  if (progress.version !== "production-backup-dump-progress-v1" || progress.backupFilename !== BACKUP_FILENAME
+      || !Number.isSafeInteger(progress.backupBytes) || Number(progress.backupBytes) <= 0
+      || !SHA256.test(String(progress.backupSha256)) || !SHA256.test(String(progress.backupPathFingerprintSha256))) {
+    throw new Error("production_backup_dump_progress_invalid");
+  }
+  return progress as ProductionBackupDumpProgressV1;
+}
+
+function validateListProgress(
+  value: unknown,
+  binding: ProductionBackupProgressBinding,
+  evaluatedAt: string
+): ProductionBackupListProgressV1 {
+  assertNoSecretLikeArtifactValues(value);
+  const progress = record(value, "production_backup_list_progress_invalid");
+  exactKeys(progress, [
+    "version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId", "recordedAt",
+    "dumpProgressSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256", "restoreListEntryCount"
+  ], "production_backup_list_progress_invalid");
+  validateProgressBinding(progress, binding, evaluatedAt, "production_backup_list_progress_invalid");
+  if (progress.version !== "production-backup-list-progress-v1" || !SHA256.test(String(progress.dumpProgressSha256))
+      || progress.restoreListFilename !== LIST_FILENAME || !Number.isSafeInteger(progress.restoreListBytes)
+      || Number(progress.restoreListBytes) <= 0 || !SHA256.test(String(progress.restoreListSha256))
+      || !Number.isSafeInteger(progress.restoreListEntryCount) || Number(progress.restoreListEntryCount) <= 0) {
+    throw new Error("production_backup_list_progress_invalid");
+  }
+  return progress as ProductionBackupListProgressV1;
+}
+
+export async function validateProductionBackupProgress(
+  root: string,
+  binding: ProductionBackupProgressBinding,
+  evaluatedAt: string
+): Promise<{ dump: ProductionBackupDumpProgressV1 | null; list: ProductionBackupListProgressV1 | null }> {
+  if (!SHA256.test(binding.claimSha256)) throw new Error("production_backup_progress_binding_invalid");
+  const partial = await inspectProductionBackupPartialState(root);
+  const dumpProgressBytes = await readOptionalProtectedRegularFile(root, dumpProgressFilename(binding.generationId), MAX_ARTIFACT_BYTES);
+  const listProgressBytes = await readOptionalProtectedRegularFile(root, listProgressFilename(binding.generationId), MAX_ARTIFACT_BYTES);
+  if (partial.dump !== (dumpProgressBytes !== null) || partial.list !== (listProgressBytes !== null)) {
+    throw new Error("production_backup_progress_ownership_unverified");
+  }
+  let dumpProgress: ProductionBackupDumpProgressV1 | null = null;
+  if (dumpProgressBytes) {
+    dumpProgress = validateDumpProgress(JSON.parse(dumpProgressBytes.toString("utf8")), binding, evaluatedAt);
+    const dump = await stableFile(join(root, BACKUP_FILENAME), MAX_BACKUP_BYTES);
+    if (dump.bytes !== dumpProgress.backupBytes || dump.sha256 !== dumpProgress.backupSha256
+        || schema032BackupPathFingerprint(root, BACKUP_FILENAME) !== dumpProgress.backupPathFingerprintSha256) {
+      throw new Error("production_backup_progress_ownership_unverified");
+    }
+  }
+  let listProgress: ProductionBackupListProgressV1 | null = null;
+  if (listProgressBytes) {
+    if (!dumpProgressBytes || !dumpProgress) throw new Error("production_backup_progress_ownership_unverified");
+    listProgress = validateListProgress(JSON.parse(listProgressBytes.toString("utf8")), binding, evaluatedAt);
+    const list = await stableFile(join(root, LIST_FILENAME), MAX_LIST_BYTES, true);
+    const normalized = normalizeProductionRestoreList(list.content!);
+    if (listProgress.dumpProgressSha256 !== hash(dumpProgressBytes) || list.bytes !== listProgress.restoreListBytes
+        || list.sha256 !== listProgress.restoreListSha256 || normalized.entryCount !== listProgress.restoreListEntryCount) {
+      throw new Error("production_backup_progress_ownership_unverified");
+    }
+  }
+  return { dump: dumpProgress, list: listProgress };
+}
+
+export async function recordProductionBackupDumpProgress(
+  root: string,
+  binding: ProductionBackupProgressBinding,
+  operationId: string,
+  recordedAt: string
+): Promise<ProductionBackupDumpProgressV1> {
+  if (!OPERATION_ID.test(operationId)) throw new Error("production_backup_dump_progress_invalid");
+  const partial = await inspectProductionBackupPartialState(root);
+  if (!partial.dump || partial.list) throw new Error("production_backup_dump_progress_invalid");
+  const dump = await stableFile(join(root, BACKUP_FILENAME), MAX_BACKUP_BYTES);
+  const progress: ProductionBackupDumpProgressV1 = {
+    version: "production-backup-dump-progress-v1", ...binding, operationId, recordedAt,
+    backupFilename: BACKUP_FILENAME, backupBytes: dump.bytes, backupSha256: dump.sha256,
+    backupPathFingerprintSha256: schema032BackupPathFingerprint(root, BACKUP_FILENAME)
+  };
+  validateDumpProgress(progress, binding, recordedAt);
+  await writeExclusive(root, dumpProgressFilename(binding.generationId), Buffer.from(`${JSON.stringify(progress)}\n`),
+    `.production-backup-${operationId}.dump-progress.tmp`);
+  return progress;
+}
+
+export async function recordProductionBackupListProgress(
+  root: string,
+  binding: ProductionBackupProgressBinding,
+  operationId: string,
+  recordedAt: string
+): Promise<ProductionBackupListProgressV1> {
+  if (!OPERATION_ID.test(operationId)) throw new Error("production_backup_list_progress_invalid");
+  const partial = await inspectProductionBackupPartialState(root);
+  if (!partial.dump || !partial.list
+      || await readOptionalProtectedRegularFile(root, listProgressFilename(binding.generationId), MAX_ARTIFACT_BYTES)) {
+    throw new Error("production_backup_list_progress_invalid");
+  }
+  const dumpProgressBytes = await readProtectedRegularFile(root, dumpProgressFilename(binding.generationId), MAX_ARTIFACT_BYTES);
+  const dumpProgress = validateDumpProgress(JSON.parse(dumpProgressBytes.toString("utf8")), binding, recordedAt);
+  const dump = await stableFile(join(root, BACKUP_FILENAME), MAX_BACKUP_BYTES);
+  if (dump.bytes !== dumpProgress.backupBytes || dump.sha256 !== dumpProgress.backupSha256
+      || schema032BackupPathFingerprint(root, BACKUP_FILENAME) !== dumpProgress.backupPathFingerprintSha256) {
+    throw new Error("production_backup_progress_ownership_unverified");
+  }
+  const list = await stableFile(join(root, LIST_FILENAME), MAX_LIST_BYTES, true);
+  const normalized = normalizeProductionRestoreList(list.content!);
+  const progress: ProductionBackupListProgressV1 = {
+    version: "production-backup-list-progress-v1", ...binding, operationId, recordedAt,
+    dumpProgressSha256: hash(dumpProgressBytes), restoreListFilename: LIST_FILENAME, restoreListBytes: list.bytes,
+    restoreListSha256: list.sha256, restoreListEntryCount: normalized.entryCount
+  };
+  validateListProgress(progress, binding, recordedAt);
+  await writeExclusive(root, listProgressFilename(binding.generationId), Buffer.from(`${JSON.stringify(progress)}\n`),
+    `.production-backup-${operationId}.list-progress.tmp`);
+  return progress;
+}
+
 export async function executeProductionBackupStateMachine<T extends Buffer>(authority: ProductionBackupAuthorityV1, dependencies: {
   now(): string;
   readCompletedEvidence(): Promise<T | null>;
   claim(): Promise<void>;
   hasClaim(): Promise<boolean>;
+  acquireOperation(): Promise<{ operationId: string; release(): Promise<void> }>;
   inspectPartial(): Promise<{ dump: boolean; list: boolean }>;
-  dump(): Promise<void>;
-  list(): Promise<void>;
+  validatePartialProgress(partial: { dump: boolean; list: boolean }, operationId: string): Promise<void>;
+  dump(operationId: string): Promise<void>;
+  recordDumpProgress(operationId: string): Promise<void>;
+  list(operationId: string): Promise<void>;
+  recordListProgress(operationId: string): Promise<void>;
   attest(): Promise<void>;
   buildEvidence(): Promise<T>;
   writeEvidence(bytes: T): Promise<void>;
@@ -392,16 +593,34 @@ export async function executeProductionBackupStateMachine<T extends Buffer>(auth
   }
   validateProductionBackupAuthority(authority, dependencies.now());
   const hasClaim = await dependencies.hasClaim();
-  const partial = await dependencies.inspectPartial();
-  if (!hasClaim && (partial.dump || partial.list)) throw new Error("production_backup_unconsumed_partial_state");
-  if (!hasClaim) await dependencies.claim();
-  if (partial.list && !partial.dump) throw new Error("production_backup_partial_state_invalid");
-  if (!partial.dump) await dependencies.dump();
-  if (!partial.list) await dependencies.list();
-  await dependencies.attest();
-  const evidence = await dependencies.buildEvidence();
-  await dependencies.writeEvidence(evidence);
-  return evidence;
+  if (!hasClaim) {
+    const beforeClaim = await dependencies.inspectPartial();
+    if (beforeClaim.dump || beforeClaim.list) throw new Error("production_backup_unconsumed_partial_state");
+    await dependencies.claim();
+  }
+  const operation = await dependencies.acquireOperation();
+  try {
+    const completedAfterLease = await dependencies.readCompletedEvidence();
+    if (completedAfterLease) {
+      await dependencies.attest();
+      return completedAfterLease;
+    }
+    const partial = await dependencies.inspectPartial();
+    if (partial.list && !partial.dump) throw new Error("production_backup_partial_state_invalid");
+    await dependencies.validatePartialProgress(partial, operation.operationId);
+    if (!partial.dump) {
+      await dependencies.dump(operation.operationId);
+      await dependencies.recordDumpProgress(operation.operationId);
+    }
+    if (!partial.list) {
+      await dependencies.list(operation.operationId);
+      await dependencies.recordListProgress(operation.operationId);
+    }
+    await dependencies.attest();
+    const evidence = await dependencies.buildEvidence();
+    await dependencies.writeEvidence(evidence);
+    return evidence;
+  } finally { await operation.release(); }
 }
 
 async function terminateChildTree(child: ChildProcess, containerName?: string): Promise<void> {
@@ -439,6 +658,152 @@ async function runDockerBuffer(args: string[], maxBytes: number, timeoutMs = 120
       else resolveOutput(Buffer.concat(stdout, stdoutBytes));
     });
   });
+}
+
+function validateOperationLease(
+  value: unknown,
+  binding: ProductionBackupProgressBinding,
+  evaluatedAt: string
+): ProductionBackupOperationLeaseV1 {
+  assertNoSecretLikeArtifactValues(value);
+  const lease = record(value, "production_backup_operation_lease_invalid");
+  exactKeys(lease, [
+    "version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId",
+    "ownerProcessId", "acquiredAt", "dumpContainerName", "restoreContainerName"
+  ], "production_backup_operation_lease_invalid");
+  const acquiredAt = iso(lease.acquiredAt, "production_backup_operation_lease_invalid");
+  const now = iso(evaluatedAt, "production_backup_operation_lease_invalid");
+  const expiresAt = iso(binding.expiresAt, "production_backup_operation_lease_invalid");
+  if (lease.version !== "production-backup-operation-lease-v1" || lease.generationId !== binding.generationId
+      || lease.authoritySha256 !== binding.authoritySha256 || lease.claimSha256 !== binding.claimSha256
+      || lease.candidateSha !== binding.candidateSha
+      || lease.databaseIdentityFingerprintSha256 !== binding.databaseIdentityFingerprintSha256
+      || lease.artifactRootFingerprintSha256 !== binding.artifactRootFingerprintSha256
+      || lease.expiresAt !== binding.expiresAt || !OPERATION_ID.test(String(lease.operationId))
+      || !Number.isSafeInteger(lease.ownerProcessId) || Number(lease.ownerProcessId) < 1
+      || acquiredAt > now || acquiredAt >= expiresAt
+      || lease.dumpContainerName !== `plan5-g12-${lease.operationId}-dump`
+      || lease.restoreContainerName !== `plan5-g12-${lease.operationId}-restore`) {
+    throw new Error("production_backup_operation_lease_invalid");
+  }
+  return lease as ProductionBackupOperationLeaseV1;
+}
+
+async function removeExactDockerContainer(containerName: string): Promise<void> {
+  const listed = spawnSync(dockerExecutable(), [
+    "ps", "-a", "--format", "{{.Names}}", "--filter", `name=^/${containerName}$`
+  ], { env: safeChildEnv(process.env), encoding: "utf8", windowsHide: true, timeout: 10_000 });
+  if (listed.status !== 0 || listed.signal || listed.error) throw new Error("production_backup_operation_cleanup_failed");
+  const names = String(listed.stdout).trim().split(/\r?\n/u).filter(Boolean);
+  if (names.some((name) => name !== containerName)) throw new Error("production_backup_operation_cleanup_failed");
+  if (names.length === 0) return;
+  const removed = spawnSync(dockerExecutable(), ["rm", "--force", containerName], {
+    env: safeChildEnv(process.env), encoding: "utf8", windowsHide: true, timeout: 10_000
+  });
+  if (removed.status !== 0 || removed.signal || removed.error) throw new Error("production_backup_operation_cleanup_failed");
+}
+
+async function removeOwnedRegularFile(root: string, filename: string): Promise<void> {
+  const path = join(root, filename);
+  const metadata = await lstat(path).catch((error) => {
+    if (isMissing(error)) return null;
+    throw error;
+  });
+  if (!metadata) return;
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("production_backup_operation_cleanup_failed");
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat();
+    if (opened.dev !== metadata.dev || opened.ino !== metadata.ino || opened.size !== metadata.size) {
+      throw new Error("production_backup_operation_cleanup_failed");
+    }
+  } finally { await handle.close(); }
+  await unlink(path);
+}
+
+async function cleanupProductionBackupOperation(
+  root: string,
+  lease: ProductionBackupOperationLeaseV1,
+  removeContainer: (containerName: string) => Promise<void>
+): Promise<void> {
+  await removeContainer(lease.dumpContainerName);
+  await removeContainer(lease.restoreContainerName);
+  for (const suffix of ["dump.tmp", "list.tmp", "dump-progress.tmp", "list-progress.tmp", "evidence.tmp"] as const) {
+    await removeOwnedRegularFile(root, `.production-backup-${lease.operationId}.${suffix}`);
+  }
+  const dumpProgress = await readOptionalProtectedRegularFile(root, dumpProgressFilename(lease.generationId), MAX_ARTIFACT_BYTES);
+  const listProgress = await readOptionalProtectedRegularFile(root, listProgressFilename(lease.generationId), MAX_ARTIFACT_BYTES);
+  if (listProgress && !dumpProgress) throw new Error("production_backup_operation_cleanup_failed");
+  if (!listProgress) await removeOwnedRegularFile(root, LIST_FILENAME);
+  if (!dumpProgress) await removeOwnedRegularFile(root, BACKUP_FILENAME);
+}
+
+function processIsAlive(processId: number): boolean {
+  try { process.kill(processId, 0); return true; } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
+    return true;
+  }
+}
+
+export async function acquireProductionBackupOperationLease(
+  root: string,
+  binding: ProductionBackupProgressBinding,
+  evaluatedAt: string,
+  dependencies: {
+    ownerProcessId?: number;
+    isProcessAlive?(processId: number): Promise<boolean>;
+    removeContainer?(containerName: string): Promise<void>;
+  } = {}
+): Promise<{ lease: ProductionBackupOperationLeaseV1; operationId: string; release(): Promise<void> }> {
+  const expectedConsumption: ExpectedConsumption = binding;
+  const claimBytes = await readProtectedRegularFile(root, claimFilename(binding.generationId), MAX_ARTIFACT_BYTES);
+  if (hash(claimBytes) !== binding.claimSha256) throw new Error("production_backup_progress_binding_invalid");
+  validateProductionBackupConsumptionState(JSON.parse(claimBytes.toString("utf8")), expectedConsumption, evaluatedAt);
+  const filename = leaseFilename(binding.generationId);
+  const removeContainer = dependencies.removeContainer ?? removeExactDockerContainer;
+  const existingBytes = await readOptionalProtectedRegularFile(root, filename, MAX_ARTIFACT_BYTES);
+  if (existingBytes) {
+    const existing = validateOperationLease(JSON.parse(existingBytes.toString("utf8")), binding, evaluatedAt);
+    const alive = await (dependencies.isProcessAlive
+      ? dependencies.isProcessAlive(existing.ownerProcessId)
+      : Promise.resolve(processIsAlive(existing.ownerProcessId)));
+    if (alive) throw new Error("production_backup_operation_concurrent");
+    await cleanupProductionBackupOperation(root, existing, removeContainer);
+    const unchanged = await readProtectedRegularFile(root, filename, MAX_ARTIFACT_BYTES);
+    if (!unchanged.equals(existingBytes)) throw new Error("production_backup_operation_lease_changed");
+    await unlink(join(root, filename));
+  }
+  const operationId = randomBytes(16).toString("hex");
+  const ownerProcessId = dependencies.ownerProcessId ?? process.pid;
+  const lease: ProductionBackupOperationLeaseV1 = {
+    version: "production-backup-operation-lease-v1", ...binding, operationId, ownerProcessId,
+    acquiredAt: evaluatedAt, dumpContainerName: `plan5-g12-${operationId}-dump`,
+    restoreContainerName: `plan5-g12-${operationId}-restore`
+  };
+  validateOperationLease(lease, binding, evaluatedAt);
+  const leaseBytes = Buffer.from(`${JSON.stringify(lease)}\n`, "utf8");
+  try {
+    await writeExclusive(root, filename, leaseBytes, `.production-backup-${operationId}.lease.tmp`);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      throw new Error("production_backup_operation_concurrent");
+    }
+    throw error;
+  }
+  let released = false;
+  return {
+    lease,
+    operationId,
+    release: async () => {
+      if (released) return;
+      await cleanupProductionBackupOperation(root, lease, removeContainer);
+      const current = await readProtectedRegularFile(root, filename, MAX_ARTIFACT_BYTES);
+      if (!current.equals(leaseBytes)) throw new Error("production_backup_operation_lease_changed");
+      await unlink(join(root, filename));
+      released = true;
+    }
+  };
 }
 
 export async function attestProductionPostgresTools(tools: Task0BReleaseFreezeEvidenceV1["postgresTools"]): Promise<void> {
@@ -488,8 +853,11 @@ async function stableFile(path: string, maxBytes: number, capture = false): Prom
   } finally { await handle.close(); }
 }
 
-async function writeExclusive(root: string, filename: string, bytes: Buffer): Promise<void> {
-  const temporary = join(root, `.${filename}.${randomBytes(12).toString("hex")}.tmp`);
+async function writeExclusive(root: string, filename: string, bytes: Buffer, temporaryFilename?: string): Promise<void> {
+  if (temporaryFilename && (temporaryFilename.includes("/") || temporaryFilename.includes("\\"))) {
+    throw new Error("production_backup_temporary_filename_invalid");
+  }
+  const temporary = join(root, temporaryFilename ?? `.${filename}.${randomBytes(12).toString("hex")}.tmp`);
   const target = join(root, filename);
   const handle = await open(temporary, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
@@ -502,9 +870,13 @@ export async function writeProductionDump(
   root: string,
   invocation: Invocation,
   containerName: string,
-  timeoutMs = CHILD_TIMEOUT_MS
+  timeoutMs = CHILD_TIMEOUT_MS,
+  operationId?: string
 ): Promise<void> {
-  const temporary = join(root, `.production-backup-${randomBytes(12).toString("hex")}.dump.tmp`);
+  if (operationId !== undefined && !OPERATION_ID.test(operationId)) throw new Error("production_backup_operation_id_invalid");
+  const temporary = join(root, operationId
+    ? `.production-backup-${operationId}.dump.tmp`
+    : `.production-backup-${randomBytes(12).toString("hex")}.dump.tmp`);
   const target = join(root, BACKUP_FILENAME);
   const handle = await open(temporary, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0));
   try {
@@ -559,10 +931,17 @@ export function normalizeProductionRestoreList(bytes: Buffer): { bytes: Buffer; 
   return { bytes: Buffer.from(normalized, "utf8"), entryCount };
 }
 
-export async function writeProductionRestoreList(root: string, tools: Task0BReleaseFreezeEvidenceV1["postgresTools"]): Promise<void> {
-  const invocation = buildProductionPgRestoreListInvocation(root, tools);
+export async function writeProductionRestoreList(
+  root: string,
+  tools: Task0BReleaseFreezeEvidenceV1["postgresTools"],
+  containerName?: string,
+  operationId?: string
+): Promise<void> {
+  if (operationId !== undefined && !OPERATION_ID.test(operationId)) throw new Error("production_backup_operation_id_invalid");
+  const invocation = buildProductionPgRestoreListInvocation(root, tools, containerName);
   const raw = await runDockerBuffer(invocation.args, MAX_LIST_BYTES, 120_000, invocation.containerName);
-  await writeExclusive(root, LIST_FILENAME, normalizeProductionRestoreList(raw).bytes);
+  await writeExclusive(root, LIST_FILENAME, normalizeProductionRestoreList(raw).bytes,
+    operationId ? `.production-backup-${operationId}.list.tmp` : undefined);
 }
 
 export async function observeProductionDatabase(databaseUrl: string, beginSnapshot = false): Promise<{
@@ -656,12 +1035,41 @@ async function currentCandidate(): Promise<{ sha: string; clean: boolean }> {
   return { sha: String(sha.stdout).trim(), clean: sha.status === 0 && status.status === 0 && String(status.stdout) === "" };
 }
 
-async function main(): Promise<void> {
-  const [artifactRootInput, authorityFilename] = process.argv.slice(2);
-  if (!artifactRootInput || !authorityFilename || process.argv.slice(2).length !== 2
+async function assertNoForeignProductionBackupGeneration(root: string, generationId: string): Promise<void> {
+  const patterns = [
+    /^production-backup-authority-consumed-(.+)\.json$/u,
+    /^production-backup-operation-(.+)\.json$/u,
+    /^production-backup-dump-progress-(.+)\.json$/u,
+    /^production-backup-list-progress-(.+)\.json$/u
+  ];
+  for (const filename of await readdir(root)) {
+    for (const pattern of patterns) {
+      const matched = pattern.exec(filename);
+      if (matched && matched[1] !== generationId) throw new Error("production_backup_foreign_generation_recovery_required");
+    }
+  }
+}
+
+export async function runProductionBackupCommand(
+  args: string[],
+  environment: NodeJS.ProcessEnv,
+  dependencies: {
+    now?(): string;
+    currentCandidate?(): Promise<{ sha: string; clean: boolean }>;
+    observeProductionDatabase?: typeof observeProductionDatabase;
+    attestProductionPostgresTools?: typeof attestProductionPostgresTools;
+    stdout?(value: string): void;
+  } = {}
+): Promise<void> {
+  const [artifactRootInput, authorityFilename] = args;
+  if (!artifactRootInput || !authorityFilename || args.length !== 2
       || !/^production-backup-authority-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(authorityFilename)) {
     throw new Error("production_backup_arguments_invalid");
   }
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const observeDatabase = dependencies.observeProductionDatabase ?? observeProductionDatabase;
+  const attestTools = dependencies.attestProductionPostgresTools ?? attestProductionPostgresTools;
+  const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
   const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
   const rootFingerprint = hash(canonicalPathKey(artifactRoot));
   const [authorityBytes, task0bBytes, manifestBytes] = await Promise.all([
@@ -671,7 +1079,7 @@ async function main(): Promise<void> {
   ]);
   const authorityValue = JSON.parse(authorityBytes.toString("utf8"));
   const authorityForExisting = validateProductionBackupAuthority(authorityValue, String(authorityValue.issuedAt), false);
-  const candidate = await currentCandidate();
+  const candidate = await (dependencies.currentCandidate ?? currentCandidate)();
   if (!candidate.clean || candidate.sha !== authorityForExisting.candidateSha) throw new Error("production_backup_candidate_unverified");
   const expectedConsumption: ExpectedConsumption = {
     generationId: authorityForExisting.generationId,
@@ -681,7 +1089,7 @@ async function main(): Promise<void> {
     artifactRootFingerprintSha256: rootFingerprint,
     expiresAt: authorityForExisting.expiresAt
   };
-  const claimFilename = `production-backup-authority-consumed-${authorityForExisting.generationId}.json`;
+  const claimPathName = claimFilename(authorityForExisting.generationId);
   const existingEvidenceBytes = await readOptionalProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_ARTIFACT_BYTES);
   const rawTask0b = JSON.parse(task0bBytes.toString("utf8"));
   if (existingEvidenceBytes) {
@@ -697,15 +1105,16 @@ async function main(): Promise<void> {
       task0bEvaluatedAt: String(rawTask0b.observedAt)
     });
     const evidence = validateProductionBackupEvidence(JSON.parse(existingEvidenceBytes.toString("utf8")), validated.authority);
-    const claim = await readOptionalProtectedRegularFile(artifactRoot, claimFilename, MAX_ARTIFACT_BYTES);
+    const claim = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
     if (!claim) throw new Error("production_backup_consumption_missing");
-    validateProductionBackupConsumptionState(JSON.parse(claim.toString("utf8")), expectedConsumption, new Date().toISOString(), false);
-    await attestProductionPostgresTools(validated.task0b.postgresTools);
+    validateProductionBackupConsumptionState(JSON.parse(claim.toString("utf8")), expectedConsumption, now(), false);
+    await validateProductionBackupProgress(artifactRoot, { ...expectedConsumption, claimSha256: hash(claim) }, now());
+    await attestTools(validated.task0b.postgresTools);
     await attestSchema032ProductionBackupFiles(artifactRoot, evidence, validated.task0b.postgresTools);
-    process.stdout.write(`${JSON.stringify({ status: "already_completed", evidenceSha256: hash(existingEvidenceBytes) })}\n`);
+    stdout(`${JSON.stringify({ status: "already_completed", evidenceSha256: hash(existingEvidenceBytes) })}\n`);
     return;
   }
-  const preflightAt = new Date().toISOString();
+  const preflightAt = now();
   const preflight = validateProductionBackupAuthorization({
     authority: authorityValue,
     task0bBytes,
@@ -720,44 +1129,87 @@ async function main(): Promise<void> {
     preflight.task0b.postgresTools,
     `plan5-g12-${preflight.authority.generationId}`
   );
-  const initialClaim = await readOptionalProtectedRegularFile(artifactRoot, claimFilename, MAX_ARTIFACT_BYTES);
+  await assertNoForeignProductionBackupGeneration(artifactRoot, preflight.authority.generationId);
+  const initialClaim = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
   const claimExists = initialClaim !== null;
-  if (initialClaim) validateProductionBackupConsumptionState(JSON.parse(initialClaim.toString("utf8")), expectedConsumption, preflightAt);
+  if (initialClaim) {
+    validateProductionBackupConsumptionState(JSON.parse(initialClaim.toString("utf8")), expectedConsumption, preflightAt);
+    await validateProductionBackupProgress(
+      artifactRoot,
+      { ...expectedConsumption, claimSha256: hash(initialClaim) },
+      preflightAt
+    );
+  }
   const initialPartial = await inspectProductionBackupPartialState(artifactRoot);
   if (!claimExists && (initialPartial.dump || initialPartial.list)) throw new Error("production_backup_unconsumed_partial_state");
-  const databaseUrl = process.env.TASK0B_PRODUCTION_DATABASE_URL;
+  const databaseUrl = environment.TASK0B_PRODUCTION_DATABASE_URL;
   if (!databaseUrl) throw new Error("production_backup_database_url_missing");
-  const snapshot = await observeProductionDatabase(databaseUrl, true);
+  const snapshot = await observeDatabase(databaseUrl, true);
   try {
     const validated = validateProductionBackupAuthorization({
       authority: authorityValue, task0bBytes, manifestBytes, candidateSha: candidate.sha,
       observedDatabaseIdentityFingerprintSha256: snapshot.identityFingerprintSha256,
-      observedArtifactRootFingerprintSha256: rootFingerprint, evaluatedAt: new Date().toISOString()
+      observedArtifactRootFingerprintSha256: rootFingerprint, evaluatedAt: now()
     });
-    await attestProductionPostgresTools(validated.task0b.postgresTools);
-    const generation = validated.authority.generationId;
-    const containerName = `plan5-g12-${generation}`;
+    await attestTools(validated.task0b.postgresTools);
+    const readProgressBinding = async (): Promise<ProductionBackupProgressBinding> => {
+      const bytes = await readProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
+      validateProductionBackupConsumptionState(JSON.parse(bytes.toString("utf8")), expectedConsumption, now());
+      return { ...expectedConsumption, claimSha256: hash(bytes) };
+    };
+    let activeLease: ProductionBackupOperationLeaseV1 | undefined;
     const dependencies = {
-      now: () => new Date().toISOString(),
-      readCompletedEvidence: async () => null,
+      now,
+      readCompletedEvidence: async () => {
+        const bytes = await readOptionalProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_ARTIFACT_BYTES);
+        if (bytes) validateProductionBackupEvidence(JSON.parse(bytes.toString("utf8")), validated.authority);
+        return bytes;
+      },
       hasClaim: async () => {
-        const bytes = await readOptionalProtectedRegularFile(artifactRoot, claimFilename, MAX_ARTIFACT_BYTES);
+        const bytes = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
         if (!bytes) return false;
-        validateProductionBackupConsumptionState(JSON.parse(bytes.toString("utf8")), expectedConsumption, new Date().toISOString());
+        validateProductionBackupConsumptionState(JSON.parse(bytes.toString("utf8")), expectedConsumption, now());
         return true;
       },
       claim: async () => {
-        const result = await claimProductionBackupAuthority(artifactRoot, expectedConsumption, new Date().toISOString());
+        const result = await claimProductionBackupAuthority(artifactRoot, expectedConsumption, now());
         if (result !== "claimed") throw new Error("production_backup_consumption_concurrent");
       },
+      acquireOperation: async () => {
+        const acquired = await acquireProductionBackupOperationLease(artifactRoot, await readProgressBinding(), now());
+        activeLease = acquired.lease;
+        return {
+          operationId: acquired.operationId,
+          release: async () => { try { await acquired.release(); } finally { activeLease = undefined; } }
+        };
+      },
       inspectPartial: () => inspectProductionBackupPartialState(artifactRoot),
-      dump: async () => writeProductionDump(artifactRoot, buildProductionPgDumpInvocation({
-        imageId: validated.task0b.postgresTools.provider.immutableImageId,
-        containerName, databaseUrl, snapshotId: snapshot.snapshotId!
-      }), containerName),
-      list: async () => writeProductionRestoreList(artifactRoot, validated.task0b.postgresTools),
+      validatePartialProgress: async (_partial: { dump: boolean; list: boolean }) => {
+        await validateProductionBackupProgress(artifactRoot, await readProgressBinding(), now());
+      },
+      dump: async (operationId: string) => {
+        if (!activeLease || activeLease.operationId !== operationId) throw new Error("production_backup_operation_lease_missing");
+        await writeProductionDump(artifactRoot, buildProductionPgDumpInvocation({
+          imageId: validated.task0b.postgresTools.provider.immutableImageId,
+          containerName: activeLease.dumpContainerName, databaseUrl, snapshotId: snapshot.snapshotId!
+        }), activeLease.dumpContainerName, CHILD_TIMEOUT_MS, operationId);
+      },
+      recordDumpProgress: async (operationId: string) => {
+        await recordProductionBackupDumpProgress(artifactRoot, await readProgressBinding(), operationId, now());
+      },
+      list: async (operationId: string) => {
+        if (!activeLease || activeLease.operationId !== operationId) throw new Error("production_backup_operation_lease_missing");
+        await writeProductionRestoreList(
+          artifactRoot, validated.task0b.postgresTools, activeLease.restoreContainerName, operationId
+        );
+      },
+      recordListProgress: async (operationId: string) => {
+        await recordProductionBackupListProgress(artifactRoot, await readProgressBinding(), operationId, now());
+      },
       attest: async () => {
-        const after = await observeProductionDatabase(databaseUrl);
+        const progressBinding = await readProgressBinding();
+        await validateProductionBackupProgress(artifactRoot, progressBinding, now());
+        const after = await observeDatabase(databaseUrl);
         try {
           if (after.identityFingerprintSha256 !== snapshot.identityFingerprintSha256) throw new Error("production_backup_database_identity_changed");
         } finally { await after.client.query("rollback").catch(() => undefined); await after.client.end().catch(() => undefined); }
@@ -768,10 +1220,15 @@ async function main(): Promise<void> {
         const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);
         return Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8");
       },
-      writeEvidence: (bytes: Buffer) => writeExclusive(artifactRoot, EVIDENCE_FILENAME, bytes)
+      writeEvidence: (bytes: Buffer) => {
+        if (!activeLease) throw new Error("production_backup_operation_lease_missing");
+        return writeExclusive(
+          artifactRoot, EVIDENCE_FILENAME, bytes, `.production-backup-${activeLease.operationId}.evidence.tmp`
+        );
+      }
     };
     const evidenceBytes = await executeProductionBackupStateMachine(validated.authority, dependencies);
-    process.stdout.write(`${JSON.stringify({ status: "passed", evidenceSha256: hash(evidenceBytes) })}\n`);
+    stdout(`${JSON.stringify({ status: "passed", evidenceSha256: hash(evidenceBytes) })}\n`);
   } finally {
     await snapshot.client.query("rollback").catch(() => undefined);
     await snapshot.client.end().catch(() => undefined);
@@ -780,7 +1237,7 @@ async function main(): Promise<void> {
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath.toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {
-  main().catch(() => {
+  runProductionBackupCommand(process.argv.slice(2), process.env).catch(() => {
     process.stderr.write("production_backup_failed\n");
     process.exitCode = 1;
   });
