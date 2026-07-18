@@ -143,6 +143,38 @@ function validateEvidenceBindings(
   }
 }
 
+function validateProductionEvidencePath(
+  ref: GateEvidenceRefV2,
+  expected: GateEvidenceBindingContextV2
+): void {
+  const generation = expected.releaseGenerationId;
+  const fixed: Partial<Record<GateEvidenceKindV2, string>> = {
+    production_backup_dump: "production-backup.dump",
+    production_backup_restore_list: "production-backup-restore-list.txt",
+    production_backup_evidence: "production-backup-evidence.json",
+    production_migration_sequence: "schema032-production-execution-receipt-v2.json",
+    production_rollout_manager: "production-rollout-manager-captures-v2.json",
+    production_rollout_queries: "production-rollout-query-captures-v2.json",
+    production_rollout_orchestration: "production-rollout-orchestration-receipt-v2.json",
+    production_rollout_evidence: "production-rollout-evidence-v2.json",
+    production_canary_queries: "production-canary-query-captures-v2.json",
+    production_canary_logs: "production-canary-log-captures-v2.json",
+    production_canary_orchestration: "production-canary-orchestration-receipt-v2.json",
+    production_canary_evidence: "production-canary-evidence-v2.json"
+  };
+  const derived: Partial<Record<GateEvidenceKindV2, string | undefined>> = generation === undefined ? {} : {
+    production_backup_consumption: `production-backup-authority-consumed-${generation}.json`,
+    production_backup_dump_progress: `production-backup-dump-progress-${generation}.json`,
+    production_backup_list_progress: `production-backup-list-progress-${generation}.json`,
+    production_migration_authority: `schema032-production-authority-${generation}.json`,
+    production_migration_consumption: `schema032-production-authority-consumed-${generation}.json`
+  };
+  const wanted = fixed[ref.kind] ?? derived[ref.kind];
+  if (wanted !== undefined && ref.relativePath !== wanted) {
+    throw new Error(`gate_evidence_path_binding_invalid:${ref.kind}`);
+  }
+}
+
 function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): void {
   if (ref.kind === "production_backup_dump" || ref.kind === "production_backup_restore_list") {
     if (bytes.length === 0) throw new Error("gate_evidence_empty");
@@ -178,6 +210,9 @@ export function validateGateEvidenceBytesV2(
       throw new Error("gate_evidence_path_invalid");
     }
     seen.add(ref.relativePath);
+    if (gatePolicy.production && seenKinds.has(ref.kind)) {
+      throw new Error(`gate_evidence_duplicate_kind:${ref.kind}`);
+    }
     seenKinds.add(ref.kind);
     if (ref.candidateSha !== gate.candidateSha || !gatePolicy.allowedKinds.includes(ref.kind)) {
       throw new Error("gate_evidence_policy_binding_invalid");
@@ -187,6 +222,7 @@ export function validateGateEvidenceBytesV2(
       throw new Error("gate_evidence_bytes_invalid");
     }
     validateTypedEvidence(ref, bytes);
+    if (gatePolicy.production) validateProductionEvidencePath(ref, expected);
     if (ref.kind !== "production_backup_dump" && ref.kind !== "production_backup_restore_list") {
       validateEvidenceBindings(parseCanonicalEvidenceJson(bytes, ref), ref, expected);
     }
