@@ -164,12 +164,19 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     evaluatedAt: takeoverAt,
     faultAt: "after_prepare"
   }))).rejects.toThrow("injected_fault_after_prepare");
-  const takeover = await runWithRootWriterProcessRuntimeForTestsV2({
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => TAKEOVER_OWNER,
     isOwnerAlive: () => false
   }, () => store.takeoverEffectCapable({
     expectedOldLeaseSha256: heartbeat.leaseSha256,
     evaluatedAt: "2026-07-18T10:10:00.000Z"
+  }))).rejects.toThrow("production_operation_deadline_reached");
+  const takeover = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => TAKEOVER_OWNER,
+    isOwnerAlive: () => false
+  }, () => store.takeoverEffectCapable({
+    expectedOldLeaseSha256: heartbeat.leaseSha256,
+    evaluatedAt: "2026-07-18T10:01:06.000Z"
   }));
   const takeoverLease = JSON.parse(readFileSync(join(root,
     "production-operation-root.lease.json"), "utf8"));

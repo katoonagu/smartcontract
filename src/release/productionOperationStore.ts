@@ -1212,10 +1212,8 @@ export class ProductionOperationStoreV2 {
     const existingPrepared = existsSync(preparedPath)
       ? readCanonical(preparedPath, validatePreparedProductionOperationLeaseTakeoverV2,
         "prepared_production_operation_takeover") : null;
-    const currentContext = this.#assertTakeoverEligible(oldLease, input.evaluatedAt);
+    const context = this.#assertTakeoverEligible(oldLease, input.evaluatedAt);
     const protocolAt = existingPrepared?.value.preparedAt ?? input.evaluatedAt;
-    const context = { ...currentContext, evaluatedAtMs: parseIso(protocolAt,
-      "production_operation_takeover_protocol_at") };
     if (context.evaluatedAtMs >= Date.parse(context.authorityExpiresAt)) {
       throw new Error("production_operation_authority_bound_reached");
     }
