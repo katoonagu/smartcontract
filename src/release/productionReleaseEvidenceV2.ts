@@ -17,7 +17,13 @@ const SCENARIOS = new Set([
   "g13_failure_path", "g14_evidence", "g14_runtime_order", "g14_pre_effect_failure",
   "g15_evidence", "rollback_pre_stop", "rollback_post_stop_pre_start",
   "rollback_post_candidate_start", "rollback_transition_evidence", "preclaim_lineage_swap",
-  "production_rollback"
+  "production_rollback", "authority_two_phase", "preclaim_crash", "preclaim_lineage_publication",
+  "authority_effect_guard", "authority_expiry", "operation_deadline", "g14_orchestrator",
+  "g15_orchestrator", "rollback_orchestrator", "orchestration_only", "orchestration_lease",
+  "manifest_lease_exclusion", "cleanup_only_takeover", "cleanup_only_forbidden",
+  "cleanup_only_crash", "recovery_e2e", "recovery_no_replay", "recovery_typed_receipts",
+  "step_intent_crash", "orchestration_fence", "orchestration_crash", "lease_removal_crash",
+  "orchestration_takeover"
 ]);
 
 type EvidenceBundleV2 = {
