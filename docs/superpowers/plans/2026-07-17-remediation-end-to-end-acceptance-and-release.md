@@ -33,7 +33,11 @@
 > `G00…G15`, атомарный CAS lifecycle, production rollout/canary/rollback
 > sole orchestrators, explicit crash-safe expired-lease takeover, executable
 > protected-root trust boundary, mandatory disposable PostgreSQL RED и
-> обязательную full-verification binding для всех production mutators. Ручное
+> обязательную full-verification binding для всех production mutators.
+> Authority проходит только fresh-unconsumed preclaim → atomic claim/
+> consumption → unexpired current-lease guard перед каждым leaf; отдельный
+> production-operation lease/takeover/settlement protocol не переиспользует
+> authority. G14 pre-effect failure имеет typed no-effect rollback route. Ручное
 > создание или редактирование manifest/gate output и прямой запуск production
 > leaf-команд запрещены. Tasks 8B.0–8B.8 ниже являются частью утверждённого
 > Plan 5 и не разрешают production mutation.
@@ -276,6 +280,7 @@ type ReleaseCommandId =
   | "runtime_sanitized_rehearsal" | "manual_telegram_acceptance"
   | "legacy_terminal_population" | "rollback_rehearsal"
   | "artifact_root_preflight" | "manifest_lease_takeover"
+  | "production_operation_lease_takeover"
   | "address_poisoning_regression" | "production_backup"
   | "production_migration" | "production_rollout" | "production_canary"
   | "production_rollback";
@@ -301,6 +306,8 @@ type GateEvidenceKind =
   | "production_backup_dump" | "production_backup_restore_list"
   | "production_backup_evidence" | "production_migration_authority"
   | "production_migration_consumption" | "production_migration_sequence"
+  | "production_operation_claim" | "production_operation_settlement"
+  | "production_operation_cleanup"
   | "production_rollout_manager" | "production_rollout_queries"
   | "production_rollout_orchestration" | "production_rollout_evidence"
   | "production_canary_queries" | "production_canary_logs"
@@ -409,6 +416,176 @@ type OperationalAttestationV2 = {
   redactedTemplateSha256: string;
   issuedAt: string;
   expiresAt: string;
+};
+
+type ProductionOperationKindV2 = "rollout" | "canary" | "rollback";
+
+type ProductionAuthorityPreclaimValidationV2 = {
+  version: "production-authority-preclaim-validation-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  commandId: "production_rollout" | "production_canary" | "production_rollback";
+  redactedTemplateSha256: string;
+  checkedAt: string;
+  expiresAt: string;
+  minimumRequiredValidityMs: number;
+  status: "fresh_compatible_unconsumed";
+};
+
+type OperationalAttestationConsumptionV2 = {
+  version: "operational-attestation-consumption-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  preclaimValidationSha256: string;
+  commandId: "production_rollout" | "production_canary" | "production_rollback";
+  redactedTemplateSha256: string;
+  leaseEpochAtConsumption: number;
+  consumedAt: string;
+  expiresAt: string;
+};
+
+type ProductionOperationClaimV2 = {
+  version: "production-operation-claim-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  authorityConsumption: OperationalAttestationConsumptionV2;
+  authorityConsumptionSha256: string;
+  leaseEpochAtConsumption: number;
+  claimedAt: string;
+  claimantPid: number;
+  claimantProcessStartFingerprintSha256: string;
+};
+
+type ProductionOperationLeaseV2 = {
+  version: "production-operation-lease-v2";
+  scope: "artifact_root_production_operation";
+  relativePath: "production-operation-root.lease.json";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  leaseEpoch: number;
+  ownerPid: number;
+  ownerProcessStartFingerprintSha256: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: string; // rolling lease; policy operation deadline is separate
+  operationDeadlineAt: string;
+};
+
+type PreparedProductionOperationLeaseTakeoverV2 = {
+  version: "prepared-production-operation-lease-takeover-v2";
+  commandId: "production_operation_lease_takeover";
+  redactedTemplateSha256: string;
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  authorityConsumptionSha256: string | null;
+  oldLeaseSha256: string;
+  oldLeaseEpoch: number;
+  oldOwnerProcessIdentitySha256: string;
+  canonicalNewLease: ProductionOperationLeaseV2;
+  canonicalNewLeaseUtf8Base64: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  preparedAt: string;
+};
+
+type CommittedProductionOperationLeaseTakeoverV2 = {
+  version: "committed-production-operation-lease-takeover-v2";
+  commandId: "production_operation_lease_takeover";
+  redactedTemplateSha256: string;
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  authorityConsumptionSha256: string | null;
+  preparedTakeoverSha256: string;
+  oldLeaseSha256: string;
+  tombstoneRelativePath: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  committedAt: string;
+};
+
+type ProductionOperationSettlementV2 = {
+  version: "production-operation-settlement-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  claimSha256: string;
+  authorityConsumptionSha256: string;
+  finalLeaseSha256: string;
+  finalLeaseEpoch: number;
+  terminalEvidenceSha256: string;
+  authorityRevalidatedAt: string;
+  settledAt: string;
+} & (
+  | { result: "passed";
+      orchestrationReceiptSha256: string;
+      attemptedExternalEffect: boolean }
+  | { result: "failed";
+      orchestrationReceiptSha256: string | null;
+      attemptedExternalEffect: boolean }
+);
+
+type ProductionOperationTerminalCleanupV2 = {
+  version: "production-operation-terminal-cleanup-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  settlementSha256: string;
+  removedLeaseSha256: string;
+  cleanedAt: string;
+};
+
+type ProductionOperationTerminalAbandonedV2 = {
+  version: "production-operation-terminal-abandoned-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  claimSha256: string | null;
+  authorityConsumptionSha256: string | null;
+  finalLeaseSha256: string;
+  finalLeaseEpoch: number;
+  completedStepReceiptSetSha256: string;
+  attemptedExternalEffect: boolean;
+  reason:
+    | "authority_expired_before_claim"
+    | "authority_expired_after_claim"
+    | "ownership_protocol_failure";
+  removedLeaseSha256: string;
+  abandonedAt: string;
 };
 
 type RemediationReleaseManifestBaseV2 = {
@@ -575,13 +752,28 @@ Strict V2 invariants:
   a second generation is never selected or created in-place;
 - each external G12-G15 or actual-rollback action also binds a fresh
   action-specific attestation using the root's one frozen generation,
-  `operational-attestation-<transition>-<generation>.json`. It must be consumed
-  while `issuedAt <= consumedAt < expiresAt` and is never required to remain
-  fresh at later aggregation. Pre-manual/readiness transitions bind only the
-  chain-stable freeze identity and their immutable gate evidence;
-- a consumed attestation may authorize only its bounded operation. G15 canary
-  may continue after attestation expiry because consumption is durable, but its
-  observation must finish within the separately bounded 30-minute operation;
+  `operational-attestation-<transition>-<generation>.json`. Before operation
+  claim, the producer/orchestrator validates the exact compatible attestation
+  as fresh and `unconsumed`. The exclusive claim is the atomic consumption
+  point and durably binds attestation bytes to operation id, root, generation,
+  candidate, source manifest, command/template and lease epoch. No path may
+  describe authority as consumed before that claim exists;
+- a consumed attestation authorizes only its one bounded operation and is not a
+  perpetual capability. Immediately before every external effect, query and
+  success/failure settlement, the current owner must revalidate the exact
+  durable consumed-authority record, current operation id, current lease
+  hash/epoch and `now < expiresAt`. Expiry blocks every new effect/query and
+  settlement. Therefore each policy requires enough remaining validity before
+  claim for its maximum operation duration plus settlement margin (G15: more
+  than 30 minutes plus margin). A takeover preserves the original consumption
+  and never consumes the same or a replacement attestation for that operation;
+  it cannot revive expired authority. If expiry occurs after a leaf effect was
+  started, even read-only reconciliation, retry and settlement are blocked;
+  the durable intent/partial receipts remain audit evidence and a separately
+  authorized recovery operation is required. Clock anomaly/overrun fails closed
+  under the terminal recovery policy;
+- pre-manual/readiness transitions bind only the chain-stable freeze identity
+  and their immutable gate evidence;
 - pending gate не содержит фиктивных command/timestamp/exit/output полей;
 - passed/failed gate contains execution fields; blocked gate contains no
   invented execution fields and binds only `blockedByGateId` plus the exact
@@ -616,11 +808,34 @@ manifest-snapshots/release-manifest-r<revision>-<sha256>.json
 manifest-transition-receipt-<receiptSha256>.json
 release-root-terminal-abandoned.json
 release-manifest.json
+production-authority-preclaim-<operationId>.json
+production-operation-claim-<operationalAttestationSha256>.json
+production-operation-root.lease.json
+production-operation-root.lease-takeover-prepared-<oldLeaseSha256>.json
+production-operation-root.lease-tombstone-<oldLeaseSha256>.json
+production-operation-root.lease-takeover-committed-<committedSha256>.json
+production-operation-steps/<operationId>/<sequence>-<stepId>-v2.json
+production-operation-settlement-<operationId>.json
+production-operation-terminal-cleanup-<operationId>.json
+production-operation-terminal-abandoned-<operationId>.json
 ```
 
 `manifest-transition-root.lease.json` is the only writer lock for the root;
 transition-keyed lease filenames/locks are invalid even for different target
 revisions or transitions. Its payload identifies the current transition key.
+
+`production-operation-root.lease.json` is a distinct fixed root-wide lock for
+all rollout/canary/rollback operations. It never authorizes manifest writes and
+the manifest lease never authorizes production effects. A production operation
+must be terminally settled and its owned lease removed before the manifest
+writer can consume its evidence. Rollout, canary and rollback can never hold
+parallel production-operation leases, even with different operation ids.
+Cross-protocol exclusion is fail-closed: an orchestrator proves the manifest
+lease absent, acquires the production lease, then proves the manifest lease
+still absent before claim; the manifest writer acquires its lease first, then
+requires the production lease absent before evidence validation and again
+before replace. Thus neither lease is held while acquiring the other and no
+production operation can enter the absence-check/replace window.
 
 The filesystem threat model is deliberately narrow and executable. The
 protected artifact root and every mutable ancestor are pre-created local NTFS
@@ -638,6 +853,11 @@ platform inability to establish the required identity fails closed. Frozen
 tests cover pre-existing links/reparse points and detectable substitution; they
 do not assert impossible protection against a malicious same-principal
 undetectable Windows parent race.
+
+The identical trust-boundary, component-identity, no-overwrite tombstone and
+PID/start ownership rules apply independently to manifest-lease and production-
+operation-lease takeover. Neither protocol may infer ownership from a matching
+operation id alone.
 
 `committedAt` is injected and fixed before prepare. The canonical exact
 `CommittedManifestTransitionReceiptV2` object is serialized once; both that
@@ -690,6 +910,14 @@ type ProductionRollbackOutcomeV2 =
 
 G13 failure, or G14 failure before `stop_previous`, uses
 `previous_runtime_retained` and must not invent stop/start captures. G14
+pre-effect failure is legal only after fresh authority was atomically consumed
+by the operation claim and `verify_g13`/schema/runtime-identity/singleton
+validation produced an exact typed failure with
+`attemptedExternalEffect:false`. It may transition to `production_failed`,
+then a distinct rollback operation consumes fresh rollback authority and emits
+`previous_runtime_retained` from health/no-stop/no-candidate-start evidence.
+The G14 failure/rollback route never reuses rollout authority.
+G14
 failure after previous stop but before candidate start uses
 `previous_runtime_restarted_without_candidate`; it proves that candidate never
 started and records only previous stop/restart captures. A failed
@@ -996,39 +1224,106 @@ Fresh production evidence uses these exact primary filenames and schemas:
 production-rollout-manager-captures-v2.json
 production-rollout-query-captures-v2.json
 production-rollout-orchestration-receipt-v2.json
-production-rollout-steps/<sequence>-<stepId>-v2.json
 production-rollout-evidence-v2.json            ProductionRolloutEvidenceV2
 production-canary-query-captures-v2.json
 production-canary-log-captures-v2.json
 production-canary-orchestration-receipt-v2.json
-production-canary-steps/<sequence>-<stepId>-v2.json
 production-canary-evidence-v2.json             ProductionCanaryEvidenceV2
 production-failure-evidence-v2.json            ProductionFailureEvidenceV2
 production-rollback-manager-captures-v2.json
 production-rollback-query-captures-v2.json
 production-rollback-orchestration-receipt-v2.json
-production-rollback-steps/<sequence>-<stepId>-v2.json
+production-operation-steps/<operationId>/<sequence>-<stepId>-v2.json
 production-rollback-evidence-v2.json           ProductionRollbackEvidenceV2
 ```
 
+The production-operation ownership protocol is independent from manifest CAS:
+
+The lease heartbeat interval is at most 10 seconds and rolling lease expiry is
+at most 60 seconds. Hard operation deadlines from claim are exactly 10 minutes
+for rollout, 35 minutes for canary (30-minute observation bound plus 5-minute
+settlement margin) and 15 minutes for rollback. Preclaim requires
+`attestation.expiresAt >= operationDeadlineAt`; equality is acceptable only
+because every leaf additionally requires strict `now < expiresAt`.
+
+1. derive the deterministic `operationId` from operation kind, candidate,
+   source manifest, root, generation, command/template and attestation hash;
+   validate the exact attestation as compatible, fresh, sufficiently long-
+   lived and `unconsumed`, then persist the immutable pre-claim validation;
+2. acquire `production-operation-root.lease.json` with `O_EXCL`, epoch `1` and
+   the same operation/runtime/authority bindings. While holding it, revalidate
+   the attestation and atomically create the attestation-hash-addressed
+   `ProductionOperationClaimV2`; that one exclusive create is consumption.
+   The embedded canonical `OperationalAttestationConsumptionV2` binds the
+   operation id/root/generation/candidate/source/command/template and current
+   lease epoch. There is no consumed state before this claim;
+3. immediately before every leaf effect, query, crash-reconciliation read and
+   final settlement, re-open actual claim/lease bytes and require exact
+   operation id, authority-consumption hash, current lease hash/epoch,
+   PID/start owner and `now < authority.expiresAt`. A completed step receipt
+   whose actual bytes validate may be skipped idempotently; an incomplete step
+   is reconciled only while authority is still unexpired;
+4. a dead-owner expired production lease is transferred only by explicit
+   `release:production:lease:takeover` with exactly expected old lease SHA-256
+   and protected artifact root positionals. It uses the same trusted-root protocol as
+   manifest takeover: old-hash-addressed fsynced prepare, revalidation,
+   no-overwrite content-addressed tombstone, `O_EXCL` canonical epoch+1 lease
+   and fsynced committed takeover. Replay around prepare/tombstone/new lease/
+   committed boundaries never inherits PID/start ownership. If replay installs
+   a dead preparer's canonical lease, it remains fenced and must take over that
+   current dead lease into another epoch;
+5. takeover preserves `operationId` and the original
+   `authorityConsumptionSha256`, original `operationDeadlineAt` and authority
+   expiry; it never re-consumes or replaces authority.
+   Expired authority cannot be revived by takeover and forbids new effects,
+   reconciliation queries and settlement;
+6. after all exact steps, the current owner revalidates authority/lease,
+   fsyncs the orchestration receipt, derives typed pass/failure evidence,
+   revalidates again, fsyncs `ProductionOperationSettlementV2`, then removes
+   only its owned fixed lease and fsyncs `ProductionOperationTerminalCleanupV2`.
+   Claim, consumption, step, takeover, orchestration, settlement and cleanup
+   artifacts remain immutable audit evidence. Manifest advance is allowed only
+   after exact settlement plus cleanup and absence of the fixed production
+   lease.
+
+Crash resume before claim may continue the same operation only if the
+attestation remains fresh and unconsumed; otherwise it writes no claim/effect
+and records terminal abandonment before removing only its owned lease. Crash
+resume after claim always uses the same consumption and takeover chain. If
+authority expires after any started effect, the operation is fail-closed and
+cannot reconcile or settle; it fsyncs terminal-abandoned audit state and removes
+only its owned lease without manufacturing gate evidence. A new operation with
+a different fresh attestation may bind
+`recoveryFromAbandonedOperationSha256`; it may only reconcile the immutable
+partial state and emit the conservative typed failure route, never repeat the
+uncertain effect or adopt prior ownership. The old claim/consumption remains
+immutable and can never be consumed again.
+
 ```ts
 type ProductionRolloutStepIdV2 =
-  | "verify_g13" | "consume_authority" | "stop_previous"
+  | "verify_g13" | "verify_schema"
+  | "verify_previous_runtime_identity" | "verify_singleton_precondition"
+  | "stop_previous"
   | "prove_previous_stopped" | "start_candidate"
   | "prove_candidate_started" | "immediate_runtime_checks";
 
 type ProductionCanaryStepIdV2 =
-  | "verify_g14" | "consume_authority" | "observe_cycle_1"
+  | "verify_g14" | "observe_cycle_1"
   | "observe_cycle_2" | "bounded_runtime_checks";
 
 type ProductionRollbackStepIdV2 =
-  | "verify_failure" | "consume_authority" | "prove_previous_healthy"
+  | "verify_failure" | "prove_previous_healthy"
   | "prove_no_previous_stop" | "prove_no_candidate_start"
   | "restart_previous" | "stop_candidate" | "start_previous"
   | "rollback_runtime_checks";
 
 type ProductionOrchestrationStepReceiptV2 = {
   version: "production-orchestration-step-receipt-v2";
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  operationLeaseSha256: string;
+  operationLeaseEpoch: number;
   inputSha256: string;
   outputSha256: string;
   observedStateSha256: string;
@@ -1049,11 +1344,16 @@ type ProductionOrchestrationReceiptV2 = {
   candidateSha: string;
   releaseGenerationId: string;
   sourceManifestSha256: string;
+  operationId: string;
+  operationClaimSha256: string;
+  finalOperationLeaseSha256: string;
+  finalOperationLeaseEpoch: number;
+  operationLeaseTakeoverChainSha256: string;
   operationalAttestationConsumptionSha256: string;
   commandId: "production_rollout" | "production_canary" | "production_rollback";
   redactedTemplateSha256: string;
   completedStepReceipts: Array<{
-    relativePath: string; // exact <orchestration>-steps sequence/id grammar
+    relativePath: string; // exact production-operation-steps/<operationId>/... grammar
     sha256: string;       // actual immutable file bytes
     receipt: ProductionOrchestrationStepReceiptV2;
   }>;
@@ -1106,17 +1406,28 @@ type ProductionFailureEvidenceCommonV2 = {
 type ProductionFailureEvidenceV2 = ProductionFailureEvidenceCommonV2 & (
   | { failedGateId: "G13_PRODUCTION_MIGRATION";
       evidenceKind: "schema032_execution_receipt";
+      attemptedExternalEffect: true;
       failureCode:
         | "first_migration_failed" | "first_verification_failed"
         | "second_migration_failed" | "final_verification_failed" }
   | { failedGateId: "G14_PRODUCTION_ROLLOUT";
+      evidenceKind: "runtime_rollout_preflight";
+      attemptedExternalEffect: false;
+      orchestrationProgressSha256: string;
+      preEffectValidationReceiptsSha256: string;
+      failureCode:
+        | "g13_reverification_failed" | "schema_verification_failed"
+        | "previous_runtime_identity_mismatch"
+        | "singleton_precondition_failed" }
+  | { failedGateId: "G14_PRODUCTION_ROLLOUT";
       evidenceKind: "runtime_manager_capture";
+      attemptedExternalEffect: true;
       orchestrationProgressSha256: string;
       failureCode:
-        | "previous_runtime_identity_mismatch"
         | "previous_runtime_stop_failed" | "candidate_start_failed" }
   | { failedGateId: "G14_PRODUCTION_ROLLOUT";
       evidenceKind: "runtime_rollout_checks";
+      attemptedExternalEffect: true;
       orchestrationProgressSha256: string;
       failureCode:
         | "schema_verification_failed" | "runtime_version_mismatch"
@@ -1126,6 +1437,7 @@ type ProductionFailureEvidenceV2 = ProductionFailureEvidenceCommonV2 & (
         | "secret_detected" }
   | { failedGateId: "G15_PRODUCTION_CANARY";
       evidenceKind: "runtime_canary_checks";
+      attemptedExternalEffect: true;
       orchestrationProgressSha256: string;
       failureCode:
         | "schema_verification_failed" | "canary_timeout"
@@ -1164,44 +1476,63 @@ revalidates the fixed typed artifact behind `failedExecutionEvidenceSha256`
 and requires the same candidate, freeze, source manifest, failed step/window
 and observed execution. Unknown strings, cross-gate codes, a schema failure
 pointing at rollout captures or a manager failure pointing at canary queries
-fail closed. `previous_runtime_identity_mismatch` is valid only for G14 manager
-evidence before `stop_previous`; `schema_verification_failed` is valid only for
-G14 rollout checks or G15 canary checks. Swapping gate, evidence kind or code
-is always invalid even when the same text is allowlisted in another branch.
+fail closed. `previous_runtime_identity_mismatch` is valid only for G14
+`runtime_rollout_preflight` before `stop_previous`.
+`schema_verification_failed` is valid in the G14 pre-effect branch, G14
+post-start rollout checks or G15 canary checks only when the exact evidence kind
+and `attemptedExternalEffect` literal match. The pre-effect branch requires
+`false`, binds only actual G13/schema/runtime-identity/singleton validation
+receipts, and rejects every stop/start/candidate or post-start/canary query
+capture. Every G13,
+post-stop G14 and G15 branch requires `attemptedExternalEffect:true`. Swapping
+gate, evidence kind, effect flag or code is invalid even when each token exists
+elsewhere.
 G14/G15 failure additionally binds the actual immutable ordered partial-step
 receipt prefix through `orchestrationProgressSha256`; G13 branches forbid that
 field because schema sequencing has its own execution receipt.
-The actual-rollback validator additionally consumes one fresh
-`rollback_rolled_back` attestation and binds its exact bytes/consumption,
+For G14/G15, the transition-evidence policy also resolves the exact operation
+claim/consumption, settlement and terminal-cleanup files and requires the fixed
+production-operation lease to be absent. A failure evidence file alone cannot
+authorize `production_failed`. Settlement `terminalEvidenceSha256` and
+`attemptedExternalEffect` must exactly equal the validated failure evidence;
+cleanup must bind that settlement and the removed owned lease.
+The actual-rollback orchestrator first validates one fresh compatible
+unconsumed `rollback_rolled_back` attestation, then its exclusive operation
+claim atomically persists consumption. The validator binds exact attestation/
+claim/consumption bytes,
 `production_rollback` command/template, protected root, candidate, source
 failure manifest and previous-runtime identity. The transition evidence policy
 then resolves only `production-rollback-evidence-v2.json`, validates its outcome
 against manifest `actualRollback`, and rejects missing, swapped, stale or
-foreign rollback attestations before any mutator acts. The evidence itself is
+foreign rollback attestations/operation ownership before any mutator acts. The evidence itself is
 created from the bounded actions, then validated before reducer/manifest
 transition; it is not a pre-action gate and therefore creates no cycle.
 
 `release:production:{rollout|canary|rollback}:execute` are the sole production
 entry points and are invoked before the first effect or observation. Each
-orchestrator prevalidates and consumes its fresh authority, runs only its fixed
-allowlisted manager/query step sequence, and writes/fsyncs one immutable
-per-step receipt before advancing. Exact replay skips a completed step only
-after validating its receipt and observed state. If a crash occurs after an
-effect but before its receipt, the orchestrator performs the fixed read-only
-reconciliation for that step; it records recovered completion only when the
-exact idempotent outcome is proven, otherwise it fails closed. After all steps
-it writes the orchestration receipt and derived typed evidence. Operators never
-run the underlying stop/start/query/observation commands separately.
-Authority consumption creates the one exclusive operation identity for that
-phase/generation. A concurrent invocation cannot consume it again; only an
-exact same-operation resume after owner-liveness validation may read the
-ordered receipt prefix. A foreign operation, source manifest or generation
-fails before every leaf action.
+orchestrator first validates fresh compatible `unconsumed` authority, then
+acquires the fixed production-operation lease and atomically consumes authority
+inside its exclusive claim. It runs only its fixed allowlisted manager/query
+step sequence and writes/fsyncs one immutable per-step receipt. Exact replay
+skips a completed step only after validating its receipt and observed state.
+If a crash occurs after an effect but before its receipt, the current lease
+owner may perform the fixed read-only reconciliation only while the original
+consumed authority remains unexpired; it records recovered completion only
+when the exact idempotent outcome is proven, otherwise it fails closed. After
+all steps it writes orchestration receipt, typed evidence, settlement and
+terminal cleanup in that order. Operators never run underlying stop/start/
+query/observation commands separately. A concurrent invocation cannot consume
+authority again; only exact same-operation resume through current lease epoch/
+takeover lineage may read the ordered receipt prefix. Foreign operation,
+source manifest, generation, claim ownership or expired authority fails before
+every leaf action/query and settlement.
 
 Canary must cover at least 15 minutes and two completed polling cycles, and
-must finish no later than 30 minutes after its consumed operational attestation
-started the bounded observation. A shorter, longer, interrupted or clock-
-inconsistent observation fails closed.
+must finish no later than 30 minutes after its claim consumed the operational
+attestation and started the bounded observation. Pre-claim validation requires
+validity beyond that hard bound plus settlement margin. A shorter, longer,
+expired, interrupted or clock-inconsistent observation fails closed; takeover
+does not reset either time bound.
 
 Plan 5 does not invent a service manager. Task 0 discovers the actual current
 launch mechanism. If it is `Start-Process`, the approved command uses
@@ -1227,9 +1558,9 @@ is blocked.
 | `G10_ROLLBACK_REHEARSAL` | `rollback-rehearsal.json`; explicitly pre-GO only | `pre_manual` | block release |
 | `G11_POISONING_REGRESSION` | Address Poisoning suite report/evidence only | `pre_manual` | return separate owner/block |
 | `G12_PRODUCTION_BACKUP` | fresh operational attestation, one consumption claim, dump/list progress, final evidence and actual dump/list; no active lease remains | `g12_backup_passed` | block production mutation |
-| `G13_PRODUCTION_MIGRATION` | fresh consumed attestation, `Schema032ProductionExecutionReceiptV2`, source G12 receipt/backup and all first/verify/no-op/final production sequence bytes | `g13_migration_passed` | retain previous runtime or rollback decision |
-| `G14_PRODUCTION_ROLLOUT` | fresh authority consumption, fixed rollout step/orchestration receipts, manager/direct-query captures and derived rollout evidence | `g14_rollout_passed` | rollback orchestrator on failure |
-| `G15_PRODUCTION_CANARY` | fresh authority consumption, fixed bounded canary step/orchestration receipts, query/scheduler/log captures and derived canary evidence | `g15_canary_released` | rollback orchestrator on failure |
+| `G13_PRODUCTION_MIGRATION` | fresh-unconsumed preclaim validation, atomic claim/consumption, per-stage unexpired/session-lock guard, `Schema032ProductionExecutionReceiptV2`, source G12 receipt/backup and all first/verify/no-op/final sequence bytes | `g13_migration_passed` | retain previous runtime or rollback decision |
+| `G14_PRODUCTION_ROLLOUT` | fresh-unconsumed preclaim validation, atomic claim/consumption, fixed operation lease/takeover chain, rollout step/orchestration receipts, typed settlement/cleanup, manager/query captures and derived pass or pre/post-effect failure evidence | `g14_rollout_passed` | `production_failed`; rollback orchestrator on typed failure |
+| `G15_PRODUCTION_CANARY` | fresh-unconsumed preclaim validation, atomic claim/consumption, fixed operation lease/takeover chain, bounded canary step/orchestration receipts, typed settlement/cleanup, query/scheduler/log captures and derived evidence | `g15_canary_released` | `production_failed`; rollback orchestrator on failure |
 
 Phase rules:
 
@@ -1279,9 +1610,15 @@ created only after `released` or `rolled_back` and never changes the manifest.
   G00–G15 gate policy.
 - `src/release/releaseManifestStore.ts` — root lease/claim, CAS, durable
   content-addressed snapshots and recovery.
+- `src/release/productionOperationStore.ts` — shared rollout/canary/rollback
+  authority preclaim/atomic consumption, fixed lease/takeover, step,
+  settlement/cleanup and terminal-abandonment protocol.
 - `scripts/advanceRemediationReleaseManifest.ts` — sole manifest/gate writer.
 - `scripts/takeoverManifestLease.ts` — explicit same-generation expired-lease
   takeover and exact prepared/tombstone/new-lease/receipt replay.
+- `scripts/takeoverProductionOperationLease.ts` — explicit dead-owner
+  production-operation takeover preserving operation id and original authority
+  consumption across exact prepared/tombstone/epoch+1/committed replay.
 - `scripts/executeProductionRollout.ts` — sole G14 orchestrator and typed
   manager/query/step-receipt evidence producer.
 - `scripts/executeProductionCanary.ts` — sole bounded G15 observation
@@ -1311,6 +1648,7 @@ Created only after deployment/closeout:
 
 - `package.json` — existing release commands plus exact
   `release:manifest:advance`, `release:manifest:takeover`,
+  `release:production:lease:takeover`,
   `release:production:rollout:execute`,
   `release:production:canary:execute` and
   `release:production:rollback:execute`; no dependency changes.
@@ -1441,11 +1779,15 @@ any change to one of those facts invalidates/seals the manifest chain and
 requires a new protected root. Immediately before each external G12, G13, G14,
 G15 or actual-rollback action, the operator issues one separate bounded
 `OperationalAttestationV2` for that action using the same frozen generation. It
-must match the exact freeze, source manifest and candidate, and it must be
-consumed before expiry. No second/refreshed generation is accepted in-place;
-expiry or incompatibility requires a new root rather than copying old state.
-The G15 consumption starts the bounded observation; the already-consumed
-authority may expire during the required 15-to-30-minute canary.
+must match the exact freeze, source manifest and candidate, be fresh and
+unconsumed at pre-claim validation, and have enough remaining validity for the
+policy maximum plus settlement margin. The exclusive operation claim atomically
+persists consumption. Consumption is revalidated as unexpired before every
+effect/query/settlement; it does not make an expired attestation valid. No
+second/refreshed generation or re-consumption is accepted in-place. G15 must be
+issued with validity beyond its 30-minute hard observation bound plus
+settlement margin; an already-consumed authority that expires blocks the next
+query/effect/settlement and enters fail-closed operational recovery.
 The freeze stores the trust-boundary evidence hash. Task 9 and every production
 orchestration entry point rerun the same allowlisted redacted preflight guard;
 changed root/ancestor identity, ACL/mode, filesystem kind or a concurrent
@@ -1961,7 +2303,7 @@ Add these exact test identities:
 [REQ-38][MANIFEST-V2-AUTHORITY-SELECTION] accepts only the freeze generation rejects a second generation and seals incompatible or terminal roots
 [REQ-38][MANIFEST-V2-SEALED-ROOT] rejects every transition on terminal-abandoned root and never auto-copies state to a new root
 [REQ-38][MANIFEST-V2-VERIFY-READONLY] verifier leaves every artifact byte-identical
-[REQ-38][G12-V2-BINDING] binds one fresh-at-consumption claim progress final evidence actual bytes and no active lease
+[REQ-38][G12-V2-BINDING] validates fresh unconsumed authority before atomic claim and binds per-effect unexpired lease ownership progress final evidence actual bytes and no active lease
 [REQ-38][G13-V2-BINDING] binds schema execution receipt consumed authority lock session source G12 and complete sequence
 [REQ-38][G13-FAIL-FIRST-MIGRATION] records no completed stage hash and exact typed first-migration failure
 [REQ-38][G13-FAIL-FIRST-VERIFICATION] records only completed first-migration receipt before exact failure
@@ -1971,17 +2313,25 @@ Add these exact test identities:
 [REQ-38][G13-FAILURE-PATH] resolves only the failedStep-specific allowlisted relative artifact and rejects swapped foreign missing or symlink paths
 [REQ-35][REQ-38][G14-V2-EVIDENCE] derives rollout only from exact manager and query captures
 [REQ-35][REQ-38][G14-RUNTIME-ORDER] stops the exact previous runtime after G13 and before candidate start
-[REQ-35][REQ-38][G14-ORCHESTRATOR] consumes fresh authority before its first effect and crash-safely resumes only the fixed rollout step sequence
+[REQ-35][REQ-38][PRODUCTION-AUTHORITY-TWO-PHASE] validates exact fresh compatible unconsumed authority before claim and atomically consumes it only in the operation-bound claim
+[REQ-35][REQ-38][PRODUCTION-AUTHORITY-EFFECT-GUARD] rejects swapped operation ownership lease epoch expired authority and consumption before every effect query reconciliation and settlement
+[REQ-35][REQ-38][PRODUCTION-AUTHORITY-EXPIRY] prevents takeover from reviving expired authority preserves terminal partial evidence and permits only a separately claimed fresh-authority conservative recovery operation without repeating uncertain effects
+[REQ-35][REQ-38][G14-ORCHESTRATOR] claims and consumes fresh authority before its first effect and crash-safely resumes only the fixed rollout step sequence
+[REQ-35][REQ-38][G14-PRE-EFFECT-FAILURE] records exact attemptedExternalEffect false validation receipts transitions to production_failed and rolls back as previous_runtime_retained without stop start or candidate captures
 [REQ-03][REQ-35][REQ-36][G15-V2-EVIDENCE] requires two cycles and a 15-to-30-minute bounded canary with all checks
-[REQ-03][REQ-35][REQ-36][G15-ORCHESTRATOR] consumes fresh authority before its first observation and crash-safely resumes only the fixed canary step sequence
+[REQ-03][REQ-35][REQ-36][G15-ORCHESTRATOR] claims and consumes fresh authority before its first observation and crash-safely resumes only the fixed canary step sequence
 [REQ-35][REQ-38][ROLLBACK-PRE-STOP] retains an already-running previous runtime without invented stop or start captures
 [REQ-35][REQ-38][ROLLBACK-POST-STOP-PRE-START] keeps failed candidate-start command without confirmed process evidence in previous-only restart and rejects candidate-stop fields
 [REQ-35][REQ-38][ROLLBACK-POST-CANDIDATE-START] requires confirmed candidate-start evidence before candidate stop and previous restart
 [REQ-35][REQ-38][PRODUCTION-ROLLBACK-V2] rejects cross-window fields and G10 rehearsal for all three outcomes
-[REQ-35][REQ-38][ROLLBACK-TRANSITION-EVIDENCE] gates actions on fresh authority then binds post-action typed actualRollback ref outcome command template root candidate previous runtime and rejects swapped missing stale or foreign inputs without circular pre-action evidence
-[REQ-35][REQ-38][ROLLBACK-ORCHESTRATOR] consumes fresh authority before its first effect and crash-safely resumes only the fixed rollback branch
+[REQ-35][REQ-38][ROLLBACK-TRANSITION-EVIDENCE] validates fresh unconsumed authority then atomically claims consumption before actions and binds post-action typed actualRollback ref outcome command template root candidate previous runtime without circular pre-action evidence
+[REQ-35][REQ-38][ROLLBACK-ORCHESTRATOR] claims and consumes fresh authority before its first effect and crash-safely resumes only the fixed rollback branch
 [REQ-35][REQ-38][PRODUCTION-ORCHESTRATION-ONLY] rejects direct operator invocation or separately authored captures for rollout canary and rollback leaf steps
-[REQ-35][REQ-38][PRODUCTION-ORCHESTRATION-LEASE] permits only exact same-operation resume and rejects concurrent foreign source or generation execution
+[REQ-35][REQ-38][PRODUCTION-ORCHESTRATION-LEASE] one fixed production-operation lease permits only exact same-operation resume and rejects concurrent foreign source or generation execution
+[REQ-35][REQ-38][PRODUCTION-MANIFEST-LEASE-EXCLUSION] prevents production operation claim during manifest lease and prevents manifest evidence transition during production lease without cross-lock deadlock
+[REQ-35][REQ-38][PRODUCTION-ORCHESTRATION-TAKEOVER] crash-safely transfers only one expired dead-owner production lease through old-hash prepare tombstone epoch-plus-one lease and committed receipt without reconsuming authority
+[REQ-35][REQ-38][PRODUCTION-ORCHESTRATION-FENCE] checks current operation lease hash epoch and consumed authority before every leaf and fences old or replay process ownership
+[REQ-35][REQ-38][PRODUCTION-ORCHESTRATION-CRASH] replays before and after claim effects step receipts evidence settlement lease removal and cleanup without duplicate consumption effect or settlement
 [REQ-38][PRODUCTION-MUTATOR-V2] rejects V1 structural or V2 manifest without current transition receipt and root binding
 [REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an exact disposable non-production database with required execution report hash and cleanup
 ```
@@ -2168,8 +2518,9 @@ Store protocol:
 1. acquire the one fixed root-wide exclusive
    `manifest-transition-root.lease.json` first; its payload carries the current
    transition key, but its filename is never keyed. Only while holding it,
-   create the generation-bound exclusive claim. A live lease blocks every
-   other transition key before it can create a claim;
+   require `production-operation-root.lease.json` absent, then create the
+   generation-bound exclusive claim. A live lease blocks every other
+   transition key before it can create a claim;
 2. validate/open every path with the portable component `lstat` + canonical
    containment + pre/post `fstat` identity protocol in §2.2; POSIX may add
    `O_NOFOLLOW`, Windows rejects junction/reparse substitution. Require exact
@@ -2182,7 +2533,8 @@ Store protocol:
    put its exact hash into the target manifest, then write/fsync immutable gate
    outputs, target snapshot and `PreparedManifestTransitionV2` containing both
    receipt object and exact UTF-8 bytes before any manifest replace;
-6. while still owning the lease, re-read source bytes and repeat CAS;
+6. while still owning the lease, re-read source bytes, repeat CAS and require
+   the fixed production-operation lease still absent;
 7. write/fsync a same-directory temporary current manifest and atomically
    replace `release-manifest.json`; this replace is the only commit point;
 8. after replace, write/fsync the receipt file from prepared bytes only, verify
@@ -2355,8 +2707,10 @@ Task 8B.5 extends the pre-release policy map only as
 
 G12 policy starts only from exact `readiness` V2 bytes and binds:
 
-- chain-stable release freeze plus a fresh backup attestation whose freshness
-  is proven at the single consumption claim timestamp, not aggregation time;
+- chain-stable release freeze plus a backup attestation validated fresh/
+  unconsumed before the single atomic consumption claim and revalidated as
+  unexpired with the owned backup lease before every dump/list effect and
+  settlement;
 - exactly one consumption claim plus dump and list progress for its generation;
 - successful final evidence requires the operation lease to be absent because
   the producer deletes its owned lease after completion;
@@ -2371,7 +2725,10 @@ incompatible generation seals the root under Task 8B.3.
 
 G13 policy starts only from exact G12 target bytes and binds:
 
-- fresh consumed schema operational attestation;
+- schema operational attestation validated fresh/unconsumed before its atomic
+  claim/consumption and revalidated as unexpired with the exact DB session/
+  advisory-lock ownership before every migration/verification query and
+  settlement;
 - exact G12 transition receipt and backup bytes;
 - on success, the exact ordered four-stage tuple: first migration, first
   verification, second already-verified migration and final verification;
@@ -2413,23 +2770,27 @@ foreign sequence member fails closed.
 Then clean worktree, production-order spec-review and separate backup/schema
 security quality review. No producer is run against production.
 
-#### Task 8B.6 — Implement G14, G15 and actual rollback evidence producers
+#### Task 8B.6 — Implement G14, G15 and actual rollback orchestrators
 
 **Files:**
 
 - Create: `scripts/executeProductionRollout.ts`.
 - Create: `scripts/executeProductionCanary.ts`.
 - Create: `scripts/executeProductionRollback.ts`.
+- Create: `scripts/takeoverProductionOperationLease.ts`.
+- Create: `src/release/productionOperationStore.ts`.
 - Frozen Task 8B.1 acceptance/PostgreSQL files: run only; no edits.
 - Modify: `src/release/releaseGateEvidencePolicy.ts`.
 - Create: `src/release/releaseTransitionEvidencePolicy.ts`.
 - Modify: `src/release/remediationReleaseManifestV2.ts`.
-- Modify: `package.json` with only the three exact sole-orchestrator commands:
+- Modify: `package.json` with only the three exact sole-orchestrator commands
+  and their one explicit lease-takeover command:
 
   ```json
   "release:production:rollout:execute": "node --import tsx scripts/executeProductionRollout.ts",
   "release:production:canary:execute": "node --import tsx scripts/executeProductionCanary.ts",
-  "release:production:rollback:execute": "node --import tsx scripts/executeProductionRollback.ts"
+  "release:production:rollback:execute": "node --import tsx scripts/executeProductionRollback.ts",
+  "release:production:lease:takeover": "node --import tsx scripts/takeoverProductionOperationLease.ts"
   ```
 
 Task 8B.6 adds G14/G15 and only now exports the exhaustive
@@ -2446,8 +2807,13 @@ has no circular gate dependency.
 All three scripts accept only the protected artifact root and are the sole
 entry points for their production phase. Before the first effect or
 observation, each revalidates the actual V2 source manifest/receipt/freeze,
-claims and consumes the one fresh phase authority, and persists its exact
-consumption. Only then may it execute its fixed allowlisted step sequence.
+validates the one phase attestation as exact/fresh/compatible/unconsumed,
+acquires the fixed production-operation lease, then atomically persists claim
+plus consumption with exact operation/root/generation/candidate/source/
+command/template/current-epoch ownership. No consumed state exists before the
+claim. Only the exact claim/current lease owner may execute its fixed step
+sequence, and it revalidates unexpired consumed authority plus current lease
+hash/epoch before every effect/query/reconciliation/settlement.
 Their production implementations create the exact exclusive manager/query/log
 capture files listed in §2.7 directly from the repo runtime manager, protected
 PostgreSQL queries, bounded scheduler observations and sanitized log scanner.
@@ -2459,22 +2825,53 @@ The PostgreSQL branch uses only exact
 `tron_watch_plan5_runtime_sanitized`, requires `REQUIRE_PLAN5_POSTGRES=1`,
 recording-disabled Telegram and deterministic synthetic rows.
 
+Task 8B.6 implements the full §2.7 ownership store: one fixed root-wide
+production-operation lease, attestation-hash-addressed claim/atomic
+consumption, operation-bound step receipts, settlement/cleanup and explicit
+lease takeover. The takeover CLI accepts only expected old lease SHA-256 and
+protected root. It verifies dead PID/start plus expiry and exact operation/
+root/generation/candidate/source/authority bindings; fsyncs old-hash-addressed
+`PreparedProductionOperationLeaseTakeoverV2`; performs no-overwrite tombstone
+move and `O_EXCL` canonical epoch+1 lease; then fsyncs
+`CommittedProductionOperationLeaseTakeoverV2`. The same root-trust model and
+multi-epoch replay/fencing rules as manifest takeover apply. Post-claim
+takeover carries the original authority-consumption hash and never creates a
+second claim. Before-claim takeover may claim only if the original attestation
+is still fresh and unconsumed; otherwise it performs no effect and terminates
+the operation through immutable terminal-abandoned/owned-lease cleanup. After-
+claim expiry likewise cannot reconcile or settle. A separate operation with
+fresh authority may bind the abandoned-operation hash and derive only the
+conservative failure path from immutable partial receipts; it cannot repeat an
+uncertain effect.
+
 The allowlisted step ids and order are closed sets:
 
 ```text
-rollout: verify_g13, consume_authority, stop_previous, prove_previous_stopped,
-         start_candidate, prove_candidate_started, immediate_runtime_checks
-canary : verify_g14, consume_authority, observe_cycle_1, observe_cycle_2,
+rollout: verify_g13, verify_schema, verify_previous_runtime_identity,
+         verify_singleton_precondition, stop_previous,
+         prove_previous_stopped, start_candidate, prove_candidate_started,
+         immediate_runtime_checks
+canary : verify_g14, observe_cycle_1, observe_cycle_2,
          bounded_runtime_checks
-rollback(previous_runtime_retained): verify_failure, consume_authority,
+rollback(previous_runtime_retained): verify_failure,
          prove_previous_healthy, prove_no_previous_stop,
          prove_no_candidate_start
 rollback(previous_runtime_restarted_without_candidate): verify_failure,
-         consume_authority, restart_previous, prove_no_candidate_start,
+         restart_previous, prove_no_candidate_start,
          rollback_runtime_checks
-rollback(candidate_replaced_with_previous): verify_failure, consume_authority,
+rollback(candidate_replaced_with_previous): verify_failure,
          stop_candidate, start_previous, rollback_runtime_checks
 ```
+
+`consume_authority` is deliberately absent from the step list: consumption is
+the atomic claim protocol that precedes every step. The rollout prefix through
+`verify_singleton_precondition` is pre-effect. Any exact failure in that prefix
+produces only validation receipts and a typed G14
+`runtime_rollout_preflight` failure with
+`attemptedExternalEffect:false`; it forbids stop/start/candidate and post-start/
+canary query captures while retaining exact validation-query receipts.
+Failures at or after `stop_previous` are
+`attemptedExternalEffect:true` and must bind the actual ordered effect prefix.
 
 Every completed step is fsynced as an immutable
 `ProductionOrchestrationStepReceiptV2`. Before the next step, the orchestrator
@@ -2482,17 +2879,21 @@ validates the complete ordered prefix, including exact orchestration↔command,
 step-id↔sequence, source manifest, input/output and observed-state bindings.
 On restart it reconciles an effect whose
 process crashed before its receipt only through the fixed read-only observer
-for that step; it writes recovered completion only when the exact idempotent
+for that step, after revalidating current lease epoch and unexpired consumed
+authority; it writes recovered completion only when the exact idempotent
 post-state is proven, otherwise it fails closed. It never repeats an effect on
-uncertain state. After the final step it fsyncs the orchestration receipt and
+uncertain state. Expiry blocks reconciliation and cannot be repaired by
+takeover or re-consumption. After the final step it fsyncs the orchestration receipt and
 only then derives and emits the typed gate/transition evidence that binds that
-receipt. Evidence derivation is not itself a step and therefore creates no
-receipt/evidence hash cycle.
+receipt, revalidates ownership/authority, fsyncs settlement, removes only the
+owned lease, then fsyncs terminal cleanup. Evidence derivation is not itself a
+step and therefore creates no receipt/evidence hash cycle.
 
 G14 rollout orchestration requires all existing Task 12 checks:
 
 - exact G13 manifest/receipt and schema 032 verification;
-- a fresh G14 attestation consumed before action;
+- a fresh-unconsumed G14 attestation validated before claim and consumed only
+  by the exact atomic operation claim;
 - manager-owned `stop_previous` is allowed only from exact G13-passed state;
   direct liveness proves the previous runtime stopped before any
   `start_candidate` call; exact stop→start ordering is persisted and tested;
@@ -2502,8 +2903,9 @@ G14 rollout orchestration requires all existing Task 12 checks:
 - no raw secrets/actor ids, no duplicate delivery and unchanged terminal
   legacy population.
 
-G15 canary orchestration consumes its own fresh attestation at observation
-start. It requires at
+G15 canary orchestration validates its own fresh-unconsumed sufficiently long-
+lived attestation before claim and consumes it atomically at observation start.
+It requires at
 least two complete polling cycles and at least 15 minutes, but no more than 30
 minutes, and every Task 12 canary check: schema/version/
 Admin/singleton stability, one reconciliation, bounded delivery/fingerprint,
@@ -2511,17 +2913,34 @@ cache-only navigation plus explicit refresh, conservative stale allowance,
 unchanged terminal population, no secret/log leakage, no unexpected queue/
 terminal-intent growth and honest no-final safety ceilings.
 
-G13 sequence plus the G14 rollout and G15 canary orchestrators persist a fixed-path typed
-failure evidence when an external effect was attempted but the gate did not
-pass. `production_failed` derives the failed gate from that validated evidence.
+G13 sequence plus the G14 rollout and G15 canary orchestrators persist a fixed-
+path typed failure evidence when their exact typed failure route is reached.
+G14 pre-effect validation failure is legal after claim with
+`attemptedExternalEffect:false`; all external-effect/query failure branches use
+`attemptedExternalEffect:true`. `production_failed` derives the failed gate
+from that validated evidence.
 Its strict validator requires the exact gate-specific evidence kind and
 allowlisted failure code and revalidates the referenced execution bytes;
 operator-supplied gate ids, free-form reasons/codes and cross-kind evidence are
 rejected. A G12 backup failure before production mutation leaves the readiness
 manifest unchanged and does not enter rollback.
 
-Actual production rollback requires a preceding `production_failed` V2 state.
-G13 failure or G14 pre-stop failure emits `previous_runtime_retained` and
+For G14, an exact failure in `verify_g13`, `verify_schema`,
+`verify_previous_runtime_identity` or `verify_singleton_precondition` occurs
+after operation claim/authority consumption but before any runtime effect. The
+orchestrator persists only those actual validation step receipts, failure
+evidence with `evidenceKind=runtime_rollout_preflight` and
+`attemptedExternalEffect=false`, settlement and cleanup. The transition policy
+allows `production_failed` from that evidence and rejects any stop/start/
+candidate/post-start-query capture or effect-step receipt. Rollback then starts a new
+operation with its own fresh rollback attestation and may emit only
+`previous_runtime_retained` from exact previous-runtime health, no-stop and
+no-candidate-start evidence. It never reuses the consumed G14 authority.
+
+Actual production rollback requires a preceding `production_failed` V2 state
+and a new rollback operation/authority; it never reuses rollout consumption.
+G13 failure or G14 pre-effect/pre-stop failure emits
+`previous_runtime_retained` and
 proves the previous runtime stayed healthy without stop/start captures. G14
 failure after previous stop but before candidate start emits
 `previous_runtime_restarted_without_candidate`, with previous stop/restart and
@@ -2533,8 +2952,9 @@ branch rejects fields from another window,
 retains additive schema 032, verifies version/Admin/singleton/conservative
 allowance/legacy/sent/no-duplicate state and rejects `rollback-rehearsal.json`
 by kind/schema/scope.
-The rollback orchestrator consumes a fresh same-generation
-`OperationalAttestationV2` for `rollback_rolled_back`, binds command id
+The rollback orchestrator prevalidates a fresh-unconsumed same-generation
+`OperationalAttestationV2` for `rollback_rolled_back`, then atomically consumes
+it in its own claim. It binds command id
 `production_rollback`, redacted-template hash, root/candidate/source failure
 manifest and previous-runtime identity, and persists the exact fixed-path
 transition evidence. Missing/stale/foreign attestation fails before runtime
@@ -2544,7 +2964,8 @@ is never required before the actions that it records.
 
 Use three small commits in this order:
 
-1. `feat(release): orchestrate production rollout`;
+1. `feat(release): orchestrate production rollout` — also owns the shared
+   production-operation claim/lease/takeover/settlement store used by all three;
 2. `feat(release): orchestrate production canary`;
 3. `feat(release): orchestrate production rollback`.
 
@@ -2564,11 +2985,16 @@ npm run typecheck
 ```
 
 **Expected:** all G14/G15/rollback tests GREEN without external send; exact
-disposable PostgreSQL cleanup PASS. Frozen acceptance proves authority is
-consumed before the first effect/observation, direct leaf invocation is
-rejected, each exact ordered step has one durable receipt, and crashes around
-every effect/receipt boundary resume idempotently or fail closed without
-repeating uncertain effects.
+disposable PostgreSQL cleanup PASS. Frozen acceptance proves fresh unconsumed
+authority before claim, atomic operation-bound consumption, swapped ownership/
+epoch/expiry rejection before every effect/query/settlement, direct leaf
+rejection, one fixed production-operation lease, crash-safe multi-epoch
+takeover without re-consumption, deadlock-free mutual exclusion with manifest
+lease, exact durable step receipts and terminal
+settlement/cleanup. G14 pre-effect failure reaches `production_failed` and a
+fresh-authority `previous_runtime_retained` rollback without any invented stop/
+start/candidate capture. Crash windows resume idempotently or fail closed
+without repeating uncertain effects.
 
 #### Task 8B.7 — Require V2 verification in every production mutator
 
@@ -2583,21 +3009,28 @@ repeating uncertain effects.
 - Modify: `tests/release/task0bRuntimeManager.acceptance.test.ts`.
 - Frozen Task 8B.1 files: run only; no edits.
 
-Before authority claim/consumption and immediately before every external
-mutation, each mutator must verify:
+Before claim, each mutator/orchestrator validates exact compatible authority as
+fresh, sufficiently long-lived and `unconsumed`; it does not call it consumed.
+The exclusive claim atomically persists consumption. Immediately before every
+external mutation, query, reconciliation and settlement, it then verifies:
 
 - current actual `release-manifest.json` is strict V2 and its bytes equal the
   authority/expected source hash;
 - exact latest hash-chained transition receipt and immutable source snapshot;
-- current release-freeze/root/candidate binding and, for the requested external
-  action, one fresh compatible operational attestation consumed before expiry;
+- current release-freeze/root/candidate binding, exact immutable action claim/
+  consumption and current action ownership: G12 backup lease, G13 bound DB
+  session/advisory-lock interval, or G14/G15/rollback production-operation
+  lease hash/epoch/PID-start;
+- the consumed attestation still satisfies `now < expiresAt`; takeover never
+  refreshes it, changes operation id or consumes a replacement authority;
 - full semantic evidence for the required phase, not only gate state;
 - action-specific phase: readiness for backup, G12 for migration,
   G13 for candidate rollout, failed production state plus exact typed failure
   transition ref for rollback;
 - for actual rollback, one fresh same-generation attestation, allowlisted
   `production_rollback` command/template, exact root/candidate/previous-runtime
-  identity before mutation. After the actions and before the manifest writer,
+  identity validated unconsumed before claim and atomically consumed by that
+  rollback operation. After the actions and before the manifest writer,
   require `ActualRollbackTransitionEvidenceRefV2` whose referenced payload
   outcome equals target manifest `actualRollback`.
 
@@ -2605,6 +3038,11 @@ For G14/G15/actual rollback these checks are entered only through the three
 Task 8B.6 orchestrators. `manageTask0BRuntime` remains an internal fixed-step
 adapter and has no operator-facing production package command; direct leaf
 invocation cannot satisfy or advance a production gate.
+They also require exact settlement/terminal-cleanup bytes and absence of the
+fixed production-operation lease before any G14/G15/failure/rollback manifest
+transition. G14 `runtime_rollout_preflight` failure is accepted only with
+claim/consumption, pre-effect validation receipts,
+`attemptedExternalEffect:false` and no runtime-effect captures.
 
 V1, fixture-like hand-written V2, missing gate output, arbitrary evidence hash,
 stale receipt, changed freeze/root, stale or foreign action attestation,
@@ -2618,7 +3056,8 @@ step, source manifest, candidate, freeze or referenced execution hash differs.
 It also resolves the G13 `failureArtifact.relativePath` from `failedStep`
 instead of accepting an operator-supplied filename.
 The reducer, verifier and every rollback mutator reject missing, swapped,
-stale/expired-at-consumption or foreign transition refs/attestations and reject
+consumed-before-claim, duplicate-consumption, stale-at-claim, expired-before-
+effect/query/settlement or foreign operation/lease/transition refs and reject
 receipt transition refs that differ from manifest/actual bytes.
 
 `release:verify` supports only read-only phase checks. It never invokes the
@@ -2660,7 +3099,9 @@ Replace every instruction to “build/update manifest” manually with exact
 `release:manifest:advance` calls and the expected source SHA chain. State that
 `release:verify` is byte-identical/read-only. Document exact G14/G15/rollback
 `:execute` orchestration order, forbid direct leaf stop/start/query commands,
-and state that no production command was executed. Keep the unmarked runtime
+document two-phase authority claim, per-effect expiry checks, production-
+operation lease/takeover/terminal recovery and the G14 pre-effect failure path;
+state that no production command was executed. Keep the unmarked runtime
 blocker explicit.
 
 Focused and full GREEN:
@@ -2880,13 +3321,15 @@ G12 controlled backup:
 1. Revalidate the exact clean `RELEASE_SHA`, explicit production GO, immutable
    chain-bound `ReleaseFreezeIdentityV2`, `ready_for_release` manifest,
    production DB/root fingerprints, rollback rehearsal, receipt-032 pre-state
-   and terminal legacy snapshot. Consume a fresh G12
-   `OperationalAttestationV2` using the freeze's one release generation before
-   backup. The previous runtime remains unchanged; backup does not stop it.
+   and terminal legacy snapshot. Issue one fresh-unconsumed sufficiently long-
+   lived G12 `OperationalAttestationV2` using the freeze's release generation.
+   The producer validates it before claim; the exclusive backup claim is the
+   atomic consumption point. The previous runtime remains unchanged; backup
+   does not stop it.
 2. Supply the production secret only through the protected process environment
    as `TASK0B_PRODUCTION_DATABASE_URL`. It is never written to argv, the
    authority, logs or artifacts.
-3. Place the fresh consumed G12 attestation in the protected root and run:
+3. Place the fresh-unconsumed G12 attestation in the protected root and run:
 
    ```powershell
    npm run release:production:backup -- <protected-root> `
@@ -2895,7 +3338,9 @@ G12 controlled backup:
 
 4. The producer owns pinned Docker `pg_dump --format=custom` and
    `pg_restore --list`, claim/lease/progress receipts, bounded resume and exact
-   binding revalidation. It produces `production-backup.dump`,
+   binding revalidation. Before every dump/list effect and settlement it
+   revalidates exact consumed authority as unexpired plus current backup-lease
+   ownership. It produces `production-backup.dump`,
    `production-backup-restore-list.txt` and
    `production-backup-evidence.json`; it does not mutate the release manifest.
 5. Advance through the sole writer, then verify read-only:
@@ -2913,9 +3358,11 @@ G12 controlled backup:
 G13 controlled migration:
 
 1. Revalidate the same immutable `ReleaseFreezeIdentityV2`, then issue and
-   consume a fresh G13 `OperationalAttestationV2` bound to the current
-   `not_ready` manifest, same frozen release generation, exact candidate/DB
-   identity and verified G12 backup hash.
+   place one fresh-unconsumed sufficiently long-lived G13
+   `OperationalAttestationV2` bound to the current `not_ready` manifest, same
+   frozen release generation, exact candidate/DB identity and verified G12
+   backup hash. The sequence revalidates it before claim and atomically consumes
+   it only in the bound execution claim.
 2. Run the controlled sequence without `--offline`:
 
    ```powershell
@@ -2930,7 +3377,9 @@ G13 controlled migration:
 
 3. The sequence owns the first migration, full checksum/receipt and
    postcondition verification, the second `already_verified` no-op, and final
-   verification. Advance `g13_migration_passed` with the exact current source
+   verification. Before every migration/verification query and settlement it
+   revalidates the exact consumed authority as unexpired plus bound DB session/
+   advisory-lock ownership. Advance `g13_migration_passed` with the exact current source
    manifest SHA and then run read-only `--phase g13` verification. Only the
    writer marks `G13_PRODUCTION_MIGRATION` passed from the complete evidence.
    Candidate startup and previous-runtime stop remain Task 12/G14 operations.
@@ -2953,13 +3402,17 @@ automatically. A valid typed G13 execution failure instead follows the legal
 
 ### Task 12 — Production rollout, canary and rollback (`G14`, `G15`)
 
-The operator first places the fresh same-generation G14 attestation at its
-fixed protected-root path, then invokes exactly one production command. The
-rollout orchestrator is called before the first production effect; it alone
-revalidates G13/schema/runtime identity, consumes authority, stops the previous
-runtime, proves it stopped, starts the exact candidate, performs immediate
+The operator first places a fresh-unconsumed same-generation G14 attestation
+whose validity exceeds the rollout deadline plus settlement margin, then
+invokes exactly one production command. The rollout orchestrator is called
+before the first production query/effect; it alone validates authority,
+acquires the fixed production-operation lease, atomically claims/consumes
+authority, revalidates G13/schema/runtime identity/singleton, stops the previous
+runtime only after those checks pass, proves it stopped, starts the exact candidate, performs immediate
 `/version`/Admin/singleton/worker/delivery/legacy/log checks, fsyncs every step
-receipt, and creates the orchestration and typed rollout evidence. The
+receipt, orchestration/evidence/settlement/cleanup and removes its owned lease.
+Before every query/effect/settlement it checks the current lease epoch and
+unexpired consumed authority. The
 operator does not invoke stop, start, health, SQL or capture commands
 separately:
 
@@ -2971,18 +3424,37 @@ npm run release:manifest:advance -- g14_rollout_passed $source $env:PLAN5_ARTIFA
 npm run release:verify -- --phase g14 --artifact-root $env:PLAN5_ARTIFACT_ROOT
 ```
 
-If this command fails, the operator does not run a leaf recovery action; the
-fixed failure evidence selects the rollback branch below. A candidate that
+The `g14_rollout_passed` advance is legal only after exact passed settlement,
+terminal cleanup and absence of the production-operation lease. If instead the
+orchestrator emits typed failure settlement, the operator advances
+`production_failed`, not G14, then follows rollback below. A pre-effect
+G13/schema/runtime-identity/singleton failure has
+`attemptedExternalEffect:false`, contains only validation receipts and selects
+`previous_runtime_retained`; it never invents stop/start/candidate captures.
+For any exact typed failure settlement, use only:
+
+```powershell
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path $env:PLAN5_ARTIFACT_ROOT 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- production_failed $source $env:PLAN5_ARTIFACT_ROOT
+npm run release:verify -- --phase manifest --artifact-root $env:PLAN5_ARTIFACT_ROOT
+```
+
+The operator does not run a leaf recovery action. A candidate that
 cannot verify schema fails before Telegram/workers. Starting it before a
 proven previous stop, or stopping the previous runtime before verified G13,
 cannot produce a rollout receipt.
 
-For G15, the operator places the separate fresh canary attestation and invokes
-exactly the canary orchestrator before the first observation. It alone consumes
-authority, observes at least two full polling cycles and 15 minutes (hard
-30-minute bound), performs all schema/version/Admin/singleton/reconciliation/
+For G15, the operator places a separate fresh-unconsumed canary attestation
+whose validity exceeds 30 minutes plus settlement margin and invokes exactly
+the canary orchestrator before the first observation. It alone acquires the
+fixed operation lease, atomically claims/consumes authority, observes at least
+two full polling cycles and 15 minutes (hard 30-minute bound), performs all
+schema/version/Admin/singleton/reconciliation/
 delivery/navigation/allowance/legacy/secrets/queue/honest-limit checks from the
-fixed allowlist, and persists step, orchestration and canary evidence. The
+fixed allowlist, revalidates current lease epoch/unexpired authority before
+every query and settlement, and persists step, orchestration/evidence/
+settlement/cleanup before removing its lease. The
 operator does not issue observation queries or capture commands separately:
 
 ```powershell
@@ -3004,9 +3476,11 @@ Telegram presentation P0/P1, Address Poisoning regression or secret leakage.
 1. Require the failed migration/rollout/canary orchestration to persist its
    typed fixed-path failure evidence. Advance `production_failed`; the writer
    derives the exact failed gate and blocked suffix without a free gate.
-2. Place one fresh same-generation rollback attestation at its fixed path and
+2. Place one fresh-unconsumed sufficiently long-lived same-generation rollback
+   attestation at its fixed path and
    invoke only the rollback orchestrator. It is called before its first effect,
-   revalidates the immutable freeze and exact failure state, consumes authority,
+   validates authority, acquires the fixed operation lease, atomically claims/
+   consumes it, revalidates the immutable freeze and exact failure state,
    selects exactly one typed branch from observed evidence, and owns every
    required health/stop/start/query step. The operator never executes those
    leaf operations:
@@ -3024,10 +3498,13 @@ Telegram presentation P0/P1, Address Poisoning regression or secret leakage.
    cross-window actions absent, retains additive schema 032, verifies Admin,
    singleton, `/version`, queues, conservative allowance, sent delivery and
    immutable completed results, then writes orchestration and rollback
-   evidence. Crash resume reconciles exact observed state and never repeats an
+   evidence, settlement and cleanup before removing its lease. Crash resume
+   requires current lease epoch and unexpired original consumption; takeover
+   preserves consumption and never revives expiry. It never repeats an
    uncertain stop/start effect.
 4. Validate the fixed typed transition ref/outcome against the consumed
-   attestation, then perform only the manifest advance and read-only verify:
+   attestation, exact settlement/cleanup and absent production-operation lease,
+   then perform only the manifest advance and read-only verify:
 
    ```powershell
    $source = (Get-FileHash -Algorithm SHA256 `
@@ -3156,10 +3633,10 @@ never used as a test database.
 | REQ-32 | G05, G08, G14 | unified structure, exact links/terminology/golden, ordinary runtime hidden, production `/version` exact |
 | REQ-33 | G05 | linked direction, two routes plus aggregation |
 | REQ-34 | G02, G05 | true no-activity only after principal selection; no false percentages |
-| REQ-35 | G04, G08, G10, G14, G15 | wait-set reconciliation, sanitized runtime, previous-SHA rollback, production singleton/canary |
+| REQ-35 | G04, G08, G10, G14, G15 | wait-set reconciliation, sanitized runtime, previous-SHA rollback, production singleton/canary; fresh-unconsumed preclaim→atomic consumption, fixed operation lease/takeover, per-effect expiry/epoch guard and typed G14 pre-effect retained-runtime rollback |
 | REQ-36 | G04, G08, G10, G14, G15 | delivery CAS/lease/retry/atomic effect/immutability, zero-send rollback rehearsal and production queue canary |
 | REQ-37 | G04, G08, G14, G15 | cache-only navigation, explicit refresh, early callback in sanitized candidate and production runtime |
-| REQ-38 | G00–G15 | typed AC execution/RED trace; V2 exact receipt recovery, fixed root lease, explicit crash-safe expired-lease takeover with epoch fencing, achievable protected-root identity model and single-generation sealed-root semantics; sole authority-first rollout/canary/rollback orchestration with durable step receipts; exact G00–G15 gate evidence plus separate failure/actual-rollback transition refs; forged-manifest/mutator rejection; phase/secret/schema/version fail-closed validation |
+| REQ-38 | G00–G15 | typed AC execution/RED trace; V2 exact receipt recovery, fixed manifest root lease and distinct fixed production-operation lease, explicit crash-safe takeover/epoch fencing for both, achievable protected-root identity and single-generation semantics; two-phase authority claim, immutable consumption, per-leaf expiry/ownership guard, terminal settlement/cleanup/abandonment; G14 pre-effect `attemptedExternalEffect:false`; sole orchestrators/durable steps; exact gate/transition refs and fail-closed validation |
 
 ---
 
@@ -3207,7 +3684,7 @@ never used as a test database.
 | AC-38 | G01, G03 | timeout/JSON/schema scenarios make zero provider calls |
 | AC-39 | G01, G03, G05 | Bot/Alert + unified renderer exclude all legacy model text |
 | AC-40 | G01, G03 | every fresh deterministic contract case bypasses Flash/Pro |
-| AC-41 | G00–G15 | typed 41-AC RED/GREEN trace; mandatory disposable PostgreSQL RED/full suite/offline schema/sanitized runtime; frozen V2 acceptance for byte-exact crash receipt, cross-transition root lock, prepared/tombstone/new-lease takeover and epoch fence, detectable protected-root substitutions, single-generation seal, exact backup/migration and authority-first crash-safe rollout/canary/rollback orchestration with typed actual-rollback transition binding; AP regression |
+| AC-41 | G00–G15 | typed 41-AC RED/GREEN trace; mandatory disposable PostgreSQL RED/full suite/offline schema/sanitized runtime; frozen V2 acceptance for manifest and production-operation lease/takeover/fence crash boundaries, fresh-unconsumed→atomic claim/consumption, swapped/expired per-leaf rejection, terminal recovery, G14 pre-effect failure→fresh rollback retained runtime, exact backup/migration and crash-safe sole orchestration with typed actual rollback; AP regression |
 
 ---
 
@@ -3231,9 +3708,9 @@ never used as a test database.
 | 8B.3 | `feat(release): advance manifest atomically` | byte-exact receipt crash replay, cross-transition root lease, explicit prepared/tombstone/new-lease takeover, epoch fencing, achievable portable path trust and sealed-root GREEN; filesystem spec + security review |
 | 8B.4 | `feat(release): bind pre-release gate evidence` | G00–G11 semantic/read-only GREEN; policy spec + security review |
 | 8B.5 | `feat(release): bind backup and migration transitions` | G12 settlement plus G13 four-stage success/all four honest failure-window and exact-path RED→GREEN; production-order spec + security review |
-| 8B.6a | `feat(release): orchestrate production rollout` | fresh authority before effect, fixed ordered step receipts, crash-safe idempotent G14 resume and injected/sanitized GREEN; spec + quality review |
-| 8B.6b | `feat(release): orchestrate production canary` | fresh authority before observation, fixed bounded step receipts, crash-safe G15 resume and duration/checks GREEN; spec + quality review |
-| 8B.6c | `feat(release): orchestrate production rollback` | all rollback windows, fresh authority before effect, fixed branch receipts/crash resume, typed transition binding, gate-specific failure codes and G10-negative GREEN; spec + quality review |
+| 8B.6a | `feat(release): orchestrate production rollout` | shared fixed production-operation claim/lease/takeover/settlement store; two-phase authority/per-leaf guards; G14 pre-effect and effect routes; crash-safe GREEN; spec + quality review |
+| 8B.6b | `feat(release): orchestrate production canary` | same ownership protocol, sufficiently long-lived authority, fixed bounded steps, crash/expiry recovery and duration/checks GREEN; spec + quality review |
+| 8B.6c | `feat(release): orchestrate production rollback` | all rollback windows including fresh-authority retained runtime after G14 pre-effect failure; fixed branch lease/receipts/crash resume, typed transition binding and G10-negative GREEN; spec + quality review |
 | 8B.7 | `fix(release): require verified manifest transitions for production` | every mutator rejects structural-only manifests; spec + security review |
 | 8B.8 | `docs: document manifest v2 release lifecycle` | focused/PG/typecheck/full/AP/scope GREEN; whole-plan reviews |
 | 9 | none | frozen candidate; automated pre-manual gates with G05 pending; exact 15/19/11 manual finalization; strict `G00…G11` readiness verification |
@@ -3265,15 +3742,19 @@ reviews. No autosquash/rewrite after `RELEASE_SHA` freeze.
 | Crash before atomic manifest replace | previous manifest remains authoritative; same-generation exact replay recovers from owned prepared snapshot/canonical receipt bytes |
 | Crash after replace but before receipt file | restore the exact precommitted receipt bytes/hash from fsynced prepared state; never rerun clock/reducer/serializer, gate producer or external mutation |
 | Different transition competes for root lease | fixed root-wide lease blocks it regardless of transition key; no keyed parallel lock is allowed |
-| Expired dead-owner lease with one exact prepared operation | explicit same-generation takeover only: verify old hash/epoch/owner, fsync prepared replacement, no-overwrite tombstone, O_EXCL epoch+1 lease and receipt; crash replay is exact; old owner is fenced before every effect/replace |
+| Expired dead-owner manifest lease with one exact prepared transition | explicit same-generation takeover only: verify old hash/epoch/owner, fsync prepared replacement, no-overwrite tombstone, O_EXCL epoch+1 lease and receipt; crash replay is exact; old owner is fenced before replace |
 | Live/unexpired/foreign/multiple lease or platform cannot guarantee no-overwrite takeover inside the trusted root | fail closed; perform no takeover; require investigation or a manually created protected root as applicable |
+| Production orchestrator crashes before atomic claim/consumption | take over only the exact expired dead-owner fixed production lease; if attestation remains fresh/unconsumed, the same operation may claim once; otherwise terminal-abandon with zero effects and start a new fresh-authority operation |
+| Production orchestrator crashes after claim | explicit production-lease prepare/tombstone/O_EXCL epoch+1/committed takeover preserves operation id and original consumption; every new effect/query/settlement checks current epoch and unexpired authority; old/replay owner is fenced |
+| Consumed production authority expires | takeover cannot revive or replace it; block effects, reconciliation and settlement; persist terminal-abandoned partial state, clean only the owned lease, then use a separately claimed fresh-authority recovery operation that may derive only a conservative failure without repeating uncertain effects |
 | Root trust mismatch, pre-existing/detectable symlink/junction/reparse or file-identity substitution | fail closed and seal root; never follow/replace outside canonical protected root; no claim of defense against forbidden malicious same-principal path races |
 | Second generation or incompatible/terminal durable state in same root | write/fsync terminal-abandoned marker; reject root permanently; retry only through manual new protected root/freeze, with no automatic state copy |
 | Production clone contains runnable external delivery | destroy/recreate rehearsal DB; block readiness; investigate safety breach |
 | Sanitized runtime records an external send | block readiness; invalidate manual/runtime evidence; no production GO |
 | Previous-SHA rollback rehearsal fails | block readiness; do not substitute an untested command/runtime |
 | Backup unavailable/invalid after GO | leave the verified old runtime unchanged; keep V2 manifest `ready_for_release`; do not advance G12 or migrate |
-| G13 fails, or G14 fails before `stop_previous` | persist exact typed failure evidence; invoke only rollback orchestrator, which retains the exact previous runtime, forbids stop/start captures and records `previous_runtime_retained` |
+| G14 `verify_g13`/schema/runtime-identity/singleton fails after claim but before effects | persist only validation receipts plus `attemptedExternalEffect:false`, settle/cleanup operation, advance `production_failed`, then invoke a new fresh-authority rollback operation for `previous_runtime_retained`; stop/start/candidate captures are forbidden |
+| G13 fails, or G14 `stop_previous` is attempted but exact liveness proves the previous runtime remained running | persist exact typed failure evidence; invoke only rollback orchestrator, which retains the exact previous runtime, forbids successful stop/start captures and records `previous_runtime_retained` |
 | G14 fails after previous stop; candidate start command fails without confirmed process/start evidence | invoke only rollback orchestrator; it keeps additive 032, restarts only the exact previous runtime, forbids candidate-stop capture and records `previous_runtime_restarted_without_candidate` |
 | G14 has confirmed candidate process/start evidence and then fails | invoke only rollback orchestrator; it keeps additive 032, stops candidate, starts exact previous runtime, records `candidate_replaced_with_previous` and verifies conservative mirrors/results/sent fingerprints |
 | G14 `/version` mismatch after candidate start | invoke only rollback orchestrator for `candidate_replaced_with_previous`; no DB down-migration |
@@ -3366,10 +3847,14 @@ hashes, not secrets or full raw logs.
 - [x] Pending, executed and blocked gates are disjoint; blocked gates contain
   only their blocker and exact production-failure evidence.
 - [x] G12 binds one consumption, dump/list progress and final bytes, and cannot
-  pass while an operation lease remains; freshness is checked at consumption.
+  pass while an operation lease remains; authority is fresh/unconsumed before
+  claim and unexpired with current lease ownership before every effect and
+  settlement.
 - [x] Stable release-freeze identity is separate from fresh G12–G15/rollback action
-  attestations; Task 9 revalidates but never recreates the freeze, and G15
-  remains bounded to 15–30 minutes after consumption.
+  attestations; Task 9 revalidates but never recreates the freeze. Each action
+  validates fresh/unconsumed authority before claim, consumes it atomically in
+  the claim and requires it unexpired before every effect/query/settlement. G15
+  validity covers its 30-minute bound plus settlement margin.
 - [x] G13 success persists all four ordered stage receipts; each failure branch
   names its failed step, preserves only earlier completed stages and binds one
   typed failure artifact without invented later hashes. The artifact resolves
@@ -3383,8 +3868,8 @@ hashes, not secrets or full raw logs.
   fsynced prepared record contains canonical receipt object/bytes/hash chosen
   before replace, so post-replace crash replay is byte-exact without rerunning
   time, reducer or serializer.
-- [x] One fixed root-wide lease serializes all transition keys. An exact
-  expired dead-owner lease is recoverable only through prepared replacement,
+- [x] One fixed manifest root-wide lease serializes all transition keys. An exact
+  expired dead-owner manifest lease is recoverable only through prepared replacement,
   no-overwrite tombstone, O_EXCL epoch+1 lease and takeover receipt; old owners
   are hash/epoch-fenced before each effect and replace, including crash replay.
 - [x] Portable path safety uses a pre-created exclusive local root, hashed
@@ -3399,19 +3884,27 @@ hashes, not secrets or full raw logs.
 - [x] Evidence policy staging is compile-time exhaustive only after G14/G15;
   earlier stages cannot use placeholders or casts to claim completeness.
 - [x] Rollout/canary/rollback `:execute` commands are the sole production entry
-  points. Each consumes fresh authority before its first effect/observation,
-  owns a closed ordered step list, fsyncs step/orchestration receipts and
-  reconciles crash windows without repeating uncertain effects. Operators run
-  only the orchestrator, manifest advance and read-only verifier.
+  points. A distinct fixed root-wide production-operation lease serializes all
+  three. Each performs unconsumed preclaim validation, atomic operation-bound
+  consumption, current-epoch/unexpired per-leaf guards, closed ordered steps,
+  settlement and cleanup. Explicit takeover preserves consumption and fences
+  old owners; it never revives expiry or repeats uncertain effects. Operators
+  run only the orchestrator, manifest advance and read-only verifier.
 - [x] Orchestration has no hash cycle: operational step receipts are complete
   first, the orchestration receipt binds them second, and gate/rollback evidence
-  binds that receipt last; evidence derivation is not an orchestration step.
+  binds that receipt third; settlement binds evidence fourth, cleanup follows
+  owned-lease removal, and only then may manifest transition. Evidence
+  derivation is not an orchestration step.
+- [x] G14 validation failure after claim but before runtime effects is typed
+  `attemptedExternalEffect:false`, contains only exact validation receipts,
+  legally reaches `production_failed`, then uses a distinct fresh rollback
+  operation for `previous_runtime_retained` without stop/start/candidate data.
 - [x] Rollout/canary/failure/rollback V2 evidence uses fixed filenames and a
   fail-closed canary requiring two cycles and 15–30 minutes.
 - [x] V2 has revision, previous-manifest hash, transition id, updated-at,
   artifact-root/release-freeze binding, typed per-gate refs and honest pending
-  records; G12-G15 and actual-rollback actions separately consume fresh
-  same-generation attestations.
+  records; G12-G15 and actual rollback separately claim and consume fresh
+  same-generation attestations only after unconsumed validation.
 - [x] `release:manifest:advance` is the sole writer; candidate is clean HEAD;
   CLI accepts no candidate/gate/evidence path and performs durable CAS.
 - [x] G07 offline evidence is distinct from G13 production migration; G10
@@ -3419,7 +3912,8 @@ hashes, not secrets or full raw logs.
 - [x] Settled G12 binds durable authority-consumption/progress/final evidence
   and dump/list bytes, and proves that the producer deleted its owned lease;
   deleted lease bytes are not invented or retained. G13 binds consumed
-  authority, source G12 and its honest success/failure sequence.
+  authority, source G12 and its honest success/failure sequence. Both revalidate
+  unexpired authority and current ownership before each effect/query/settlement.
 - [x] Production failure evidence is gate/evidence-kind discriminated and uses
   only allowlisted codes validated against the exact referenced artifact;
   swapped gate/kind/code combinations fail even when each token exists.
@@ -3428,8 +3922,10 @@ hashes, not secrets or full raw logs.
   typed refs; actual rollback also binds fresh same-generation authority,
   `production_rollback` command/template, root/candidate and previous runtime.
 - [x] G14/G15/rollback orchestrators are implemented and tested with injected
-  or sanitized inputs before Task 9, including authority ordering, leaf-command
-  rejection and crash resume, but never run against production in Task 8B.
+  or sanitized inputs before Task 9, including both authority phases, swapped
+  ownership/epoch/expiry rejection, production-lease takeover/fencing,
+  terminal recovery, G14 pre-effect failure, leaf-command rejection and crash
+  resume, but never run against production in Task 8B.
 - [x] Production mutators require fully verified V2 state/receipt/root binding,
   not a structural fixture-like manifest.
 - [x] USDD PSM 2% outbound is recorded as base 20 + modifier 2 = 22, while tier
@@ -3465,8 +3961,9 @@ hashes, not secrets or full raw logs.
   immutable `ReleaseFreezeIdentityV2` и current operational-preflight evidence,
   отдельного подтверждения release-candidate evidence и разрешения
   unmarked-runtime blocker; freeze не пересоздаётся, а G12–G15 и actual rollback
-  позже используют отдельные fresh action-specific `OperationalAttestationV2`
-  той же frozen generation;
+  позже используют отдельные fresh-unconsumed action-specific
+  `OperationalAttestationV2` той же frozen generation, атомарно consumed только
+  в bound claim и остающиеся valid перед каждым effect/query/settlement;
 - production DB/runtime/Telegram не менять до полного `G00…G11`, merge в
   `master`, повторной строгой проверки и отдельного явного production GO;
 - Plan 1–4 semantics и Address Poisoning implementation не трогать;
