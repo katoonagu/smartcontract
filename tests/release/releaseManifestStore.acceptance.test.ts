@@ -135,14 +135,40 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-SELECTION] selects exactly one active compati
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-RECOVERY] issues fresh recovery authority only after exact prior terminal lineage and preserves prior bytes", async () => {
   const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
-  const original = Buffer.from(JSON.stringify(buildOperationalAttestationV2Fixture()));
-  const recovery = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: buildOperationalAttestationV2Fixture({ generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, priorTerminalLineageSha256: "a".repeat(64) }), priorTerminalReceipt: { sha256: "a".repeat(64) } });
-  expect(recovery.priorTerminalLineageSha256).toBe("a".repeat(64)); expect(original).toEqual(Buffer.from(JSON.stringify(buildOperationalAttestationV2Fixture())));
+  const expired = buildOperationalAttestationV2Fixture({ expiresAt: "2026-07-18T10:01:00.000Z" });
+  const issued = await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: expired });
+  const original = await readFile(join(r, `operational-attestation-${issued.attestationSha256}.json`));
+  await api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority: expired, evaluatedAt: "2026-07-18T10:02:00.000Z" });
+  const terminalReceiptPath = join(r, `authority-terminal-receipt-${issued.attestationSha256}.json`);
+  const terminalReceiptSha256 = createHash("sha256").update(await readFile(terminalReceiptPath)).digest("hex");
+  await expect(api.issueOperationalAttestationV2({
+    artifactRoot: r,
+    attestation: buildOperationalAttestationV2Fixture({
+      action: "readiness",
+      previousAttestationSha256: issued.attestationSha256,
+      priorTerminalLineageSha256: "f".repeat(64)
+    }),
+    priorTerminalReceipt: { sha256: "f".repeat(64) }
+  })).rejects.toThrow();
+  const recovery = await api.issueOperationalAttestationV2({
+    artifactRoot: r,
+    attestation: buildOperationalAttestationV2Fixture({
+      action: "readiness",
+      previousAttestationSha256: issued.attestationSha256,
+      priorTerminalLineageSha256: terminalReceiptSha256
+    }),
+    priorTerminalReceipt: { sha256: terminalReceiptSha256 }
+  });
+  expect(recovery.priorTerminalLineageSha256).toBe(terminalReceiptSha256);
+  expect(await readFile(join(r, `operational-attestation-${issued.attestationSha256}.json`))).toEqual(original);
 });
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalization terminalizes an expired never-claimed zero-effect authority through prepared and committed bytes permits bound replacement and rejects it when any preclaim claim consumption action lease G13 bound session advisory lock operation or effect artifact exists", async () => {
   const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
   const authority = buildOperationalAttestationV2Fixture({ expiresAt: "2026-07-18T10:01:00.000Z" });
+  const unissuedRoot = await root(); await api.materializeReleaseFreezeV2(materializeInput(unissuedRoot));
+  await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: unissuedRoot, authority, evaluatedAt: "2026-07-18T10:02:00.000Z" })).rejects.toThrow();
+  await api.issueOperationalAttestationV2({ artifactRoot: r, attestation: authority });
   await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:00:30.000Z" })).rejects.toThrow();
   const terminal = await api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:02:00.000Z", observedArtifacts: [] });
   expect(terminal.reason).toBe("expired_unclaimed");
