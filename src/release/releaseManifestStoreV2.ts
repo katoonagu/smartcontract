@@ -61,7 +61,10 @@ import {
   type PreparedFrozenRootWriterLeaseTakeoverV2,
   type RemediationReleaseManifestV2
 } from "./remediationReleaseManifestV2";
-import { validateGateEvidenceBytesV2 } from "./releaseGateEvidencePolicy";
+import {
+  deriveTask0BProductionGateBindingV2,
+  validateGateEvidenceBytesV2
+} from "./releaseGateEvidencePolicy";
 import {
   ROOT_WRITER_LEASE_FILE,
   acquireRootWriterLeaseV2,
@@ -1584,11 +1587,17 @@ function consumedAuthorityHashForTransitionV2(
       bytesByRelativePath.set(ref.relativePath,
         readFileSync(safeArtifactRelativePath(root, ref.relativePath)));
     }
+    const task0bBinding = deriveTask0BProductionGateBindingV2(
+      readFileSync(safeArtifactPath(root, "task0b-release-freeze.json")),
+      freeze.candidateSha,
+      freeze.productionDatabaseIdentityFingerprintSha256
+    );
     validateGateEvidenceBytesV2(gate, bytesByRelativePath, {
       releaseGenerationId: freeze.releaseGenerationId,
       artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
       releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
-      sourceManifestSha256
+      sourceManifestSha256,
+      ...task0bBinding
     });
     const attestation = gate.evidence.find((ref) => ref.kind === "operational_attestation");
     if (!attestation || attestation.sha256 !== hash) {

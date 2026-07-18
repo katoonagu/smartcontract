@@ -34,7 +34,10 @@ import {
   advanceReleaseManifestV2,
   initializeReleaseManifestV2
 } from "../src/release/releaseManifestStoreV2";
-import { validateGateEvidenceBytesV2 } from "../src/release/releaseGateEvidencePolicy";
+import {
+  deriveTask0BProductionGateBindingV2,
+  validateGateEvidenceBytesV2
+} from "../src/release/releaseGateEvidencePolicy";
 import { RELEASE_TRANSITION_EVIDENCE_POLICY_V2 } from "../src/release/releaseTransitionEvidencePolicy";
 
 const execFileAsync = promisify(execFile);
@@ -172,6 +175,11 @@ export async function runAdvanceRemediationReleaseManifest(
   const freeze = validateReleaseFreezeIdentityV2(readCanonicalJson(
     root, "release-freeze-identity-v2.json", "release_freeze_identity"));
   if (freeze.candidateSha !== head) throw new Error("candidate_head_binding_invalid");
+  const task0bBinding = deriveTask0BProductionGateBindingV2(
+    readStableFile(safeArtifactPath(root, "task0b-release-freeze.json")),
+    freeze.candidateSha,
+    freeze.productionDatabaseIdentityFingerprintSha256
+  );
   const transitionId = transitionToken as ManifestTransitionIdV2;
   const verifiedInput = validateVerifiedManifestAdvanceInputV2(readCanonicalJson(
     root,
@@ -223,7 +231,8 @@ export async function runAdvanceRemediationReleaseManifest(
       releaseGenerationId: freeze.releaseGenerationId,
       artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
       releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
-      sourceManifestSha256: expectedInputSource ?? undefined
+      sourceManifestSha256: expectedInputSource ?? undefined,
+      ...task0bBinding
     });
     if (gate.id === "G12_PRODUCTION_BACKUP"
         && existsSync(safeArtifactPath(root, `production-backup-operation-${freeze.releaseGenerationId}.json`))) {

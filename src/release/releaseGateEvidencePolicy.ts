@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
 import { canonicalBytesV2 } from "./releaseRootWriterStore";
 import {
   validateOperationalAttestationV2,
@@ -27,6 +28,33 @@ export type GateEvidencePolicyV2 = Readonly<{
   requiredKinds: readonly GateEvidenceKindV2[];
   production: boolean;
 }>;
+
+export type Task0BProductionGateBindingV2 = Readonly<{
+  task0bReleaseFreezeSha256: string;
+  productionDatabaseIdentityFingerprintSha256: string;
+}>;
+
+export function deriveTask0BProductionGateBindingV2(
+  bytes: Buffer,
+  candidateSha: string,
+  productionDatabaseIdentityFingerprintSha256: string
+): Task0BProductionGateBindingV2 {
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")); }
+  catch { throw new Error("task0b_release_freeze_json_invalid"); }
+  const task0b = validateTask0BReleaseFreezeEvidence(parsed, candidateSha);
+  if (!bytes.equals(canonicalBytesV2(task0b))) {
+    throw new Error("task0b_release_freeze_noncanonical");
+  }
+  if (task0b.productionDatabase.approvedIdentityFingerprintSha256
+      !== productionDatabaseIdentityFingerprintSha256) {
+    throw new Error("task0b_production_database_identity_mismatch");
+  }
+  return {
+    task0bReleaseFreezeSha256: createHash("sha256").update(bytes).digest("hex"),
+    productionDatabaseIdentityFingerprintSha256
+  };
+}
 
 const policy = (
   gateId: ReleaseGateIdV2,
@@ -361,6 +389,8 @@ export type GateEvidenceBindingContextV2 = Readonly<{
   artifactRootFingerprintSha256?: string;
   releaseFreezeIdentitySha256?: string;
   sourceManifestSha256?: string;
+  task0bReleaseFreezeSha256?: string;
+  productionDatabaseIdentityFingerprintSha256?: string;
   sourceManifestSha256ByGate?: Readonly<Partial<Record<ProductionGateIdV2, string>>>;
 }>;
 
@@ -558,6 +588,8 @@ type RequiredProductionGateContext = Readonly<{
   artifactRootFingerprintSha256: string;
   releaseFreezeIdentitySha256: string;
   sourceManifestSha256: string;
+  task0bReleaseFreezeSha256: string;
+  productionDatabaseIdentityFingerprintSha256: string;
 }>;
 
 function requireProductionBindingContext(expected: GateEvidenceBindingContextV2): RequiredProductionGateContext {
@@ -566,7 +598,10 @@ function requireProductionBindingContext(expected: GateEvidenceBindingContextV2)
       || !SHA256.test(expected.artifactRootFingerprintSha256)
       || typeof expected.releaseFreezeIdentitySha256 !== "string"
       || !SHA256.test(expected.releaseFreezeIdentitySha256)
-      || typeof expected.sourceManifestSha256 !== "string" || !SHA256.test(expected.sourceManifestSha256)) {
+      || typeof expected.sourceManifestSha256 !== "string" || !SHA256.test(expected.sourceManifestSha256)
+      || typeof expected.task0bReleaseFreezeSha256 !== "string" || !SHA256.test(expected.task0bReleaseFreezeSha256)
+      || typeof expected.productionDatabaseIdentityFingerprintSha256 !== "string"
+      || !SHA256.test(expected.productionDatabaseIdentityFingerprintSha256)) {
     throw new Error("production_gate_binding_context_incomplete");
   }
   return expected as RequiredProductionGateContext;
@@ -615,6 +650,9 @@ function validateG12Bindings(
       || authority.value.candidateSha !== gate.candidateSha
       || authority.value.releaseManifestSha256 !== expected.sourceManifestSha256
       || authority.value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || authority.value.task0bEvidenceSha256 !== expected.task0bReleaseFreezeSha256
+      || authority.value.databaseIdentityFingerprintSha256
+        !== expected.productionDatabaseIdentityFingerprintSha256
       || authority.value.commandTemplateSha256 !== attestation.value.redactedTemplateSha256
       || consumption.value.authoritySha256 !== authority.ref.sha256
       || consumption.value.generationId !== expected.releaseGenerationId
@@ -658,6 +696,9 @@ function validateG13Bindings(
       || authority.value.candidateSha !== gate.candidateSha
       || authority.value.commandTemplateSha256 !== attestation.value.redactedTemplateSha256
       || authority.value.releaseManifestSha256 !== expected.sourceManifestSha256
+      || authority.value.task0bEvidenceSha256 !== expected.task0bReleaseFreezeSha256
+      || authority.value.databaseIdentityFingerprintSha256
+        !== expected.productionDatabaseIdentityFingerprintSha256
       || consumption.value.generationId !== authority.value.generationId
       || consumption.value.authoritySha256 !== authority.ref.sha256
       || consumption.value.candidateSha !== authority.value.candidateSha

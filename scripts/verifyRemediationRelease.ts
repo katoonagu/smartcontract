@@ -971,7 +971,8 @@ export async function verifyRemediationReleaseArtifacts(
     const freezeIdentityPath = "release-freeze-identity-v2.json";
     const artifacts = new Map<string, Buffer>([
       [REMEDIATION_RELEASE_MANIFEST_FILE, manifestBytes],
-      [freezeIdentityPath, await readSafeArtifactFile(root, freezeIdentityPath)]
+      [freezeIdentityPath, await readSafeArtifactFile(root, freezeIdentityPath)],
+      ["task0b-release-freeze.json", await readSafeArtifactFile(root, "task0b-release-freeze.json")]
     ]);
     let lineageCursor = manifestV2;
     while (lineageCursor.revision > 1) {

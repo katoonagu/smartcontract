@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  deriveTask0BProductionGateBindingV2,
   validateGateEvidenceBytesV2,
   type GateEvidenceBindingContextV2
 } from "./releaseGateEvidencePolicy";
@@ -2674,12 +2675,20 @@ export async function verifyRemediationReleaseArtifactsV2(
     throw new Error("release_freeze_identity_v2_noncanonical");
   }
   const parsedManifest = validateRemediationReleaseManifestV2(value);
+  const task0bBytes = artifacts.get("task0b-release-freeze.json");
+  if (!task0bBytes) throw new Error("task0b_release_freeze_missing");
+  const task0bBinding = deriveTask0BProductionGateBindingV2(
+    task0bBytes,
+    freeze.candidateSha,
+    freeze.productionDatabaseIdentityFingerprintSha256
+  );
   const sourceManifestSha256ByGate = deriveProductionGateSourceManifestBindingsV2(parsedManifest, artifacts);
   const manifest = validateManifestGateEvidenceV2(value, artifacts, {
     releaseGenerationId: freeze.releaseGenerationId,
     artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
     releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
-    sourceManifestSha256ByGate
+    sourceManifestSha256ByGate,
+    ...task0bBinding
   });
   if (manifest.candidateSha !== freeze.candidateSha
       || manifest.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256

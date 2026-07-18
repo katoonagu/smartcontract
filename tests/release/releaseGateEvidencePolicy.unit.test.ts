@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import {
+  deriveTask0BProductionGateBindingV2,
   validateGateEvidenceBytesV2,
   validateProductionNestedGateEvidenceV2
 } from "../../src/release/releaseGateEvidencePolicy";
@@ -13,14 +14,21 @@ import {
   buildReleaseManifestV2Fixture,
   CANDIDATE_SHA,
   COMMAND_TEMPLATE_SHA256,
+  buildTask0BReleaseFreezeEvidence,
   RELEASE_V2_FREEZE_IDENTITY,
-  RELEASE_V2_FREEZE_SHA256
+  RELEASE_V2_FREEZE_SHA256,
+  RELEASE_V2_NOW
 } from "../fixtures/release/remediationReleaseFixtures";
 
 const SHA = "a".repeat(64);
 const SOURCE = "8".repeat(64);
 const STARTED = "2026-07-18T10:00:00.000Z";
 const FINISHED = "2026-07-18T10:16:00.000Z";
+const TASK0B = buildTask0BReleaseFreezeEvidence({ observedAt: RELEASE_V2_NOW });
+const TASK0B_BYTES = canonicalBytesV2(TASK0B);
+const TASK0B_SHA256 = releaseSha256V2(TASK0B_BYTES);
+const PRODUCTION_DATABASE_IDENTITY_SHA256 =
+  TASK0B.productionDatabase.approvedIdentityFingerprintSha256;
 
 function bytes(value: unknown): Buffer {
   return canonicalBytesV2(value);
@@ -61,9 +69,32 @@ function expected() {
     releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
     artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
     releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
-    sourceManifestSha256: SOURCE
+    sourceManifestSha256: SOURCE,
+    task0bReleaseFreezeSha256: TASK0B_SHA256,
+    productionDatabaseIdentityFingerprintSha256: PRODUCTION_DATABASE_IDENTITY_SHA256
   };
 }
+
+it("derives Task0B production binding only from canonical bytes and the approved database identity", () => {
+  expect(deriveTask0BProductionGateBindingV2(
+    TASK0B_BYTES,
+    CANDIDATE_SHA,
+    PRODUCTION_DATABASE_IDENTITY_SHA256
+  )).toEqual({
+    task0bReleaseFreezeSha256: TASK0B_SHA256,
+    productionDatabaseIdentityFingerprintSha256: PRODUCTION_DATABASE_IDENTITY_SHA256
+  });
+  expect(() => deriveTask0BProductionGateBindingV2(
+    Buffer.concat([TASK0B_BYTES, Buffer.from("\n")]),
+    CANDIDATE_SHA,
+    PRODUCTION_DATABASE_IDENTITY_SHA256
+  )).toThrow(/noncanonical/i);
+  expect(() => deriveTask0BProductionGateBindingV2(
+    TASK0B_BYTES,
+    CANDIDATE_SHA,
+    "f".repeat(64)
+  )).toThrow(/database_identity_mismatch/i);
+});
 
 it("rejects canonical but untyped G12 consumption and progress artifacts", () => {
   const attestation = buildOperationalAttestationV2Fixture({
@@ -151,8 +182,9 @@ function validG12Items() {
       generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, commandId: "production_backup",
       commandTemplateSha256: template, issuedAt: STARTED, expiresAt: "2026-07-18T10:10:00.000Z",
       candidateSha: CANDIDATE_SHA, databaseRole: "production",
-      databaseIdentityFingerprintSha256: "2".repeat(64), task0bEvidencePath: "task0b-release-freeze.json",
-      task0bEvidenceSha256: "3".repeat(64), releaseManifestPath: "release-manifest.json",
+      databaseIdentityFingerprintSha256: PRODUCTION_DATABASE_IDENTITY_SHA256,
+      task0bEvidencePath: "task0b-release-freeze.json",
+      task0bEvidenceSha256: TASK0B_SHA256, releaseManifestPath: "release-manifest.json",
       releaseManifestSha256: SOURCE, releaseManifestOverall: "ready_for_release",
       artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
       explicitGo: true
@@ -161,7 +193,7 @@ function validG12Items() {
     version: "production-backup-authority-consumption-v1",
     generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
     authoritySha256: authority.ref.sha256, candidateSha: CANDIDATE_SHA,
-    databaseIdentityFingerprintSha256: "2".repeat(64),
+    databaseIdentityFingerprintSha256: PRODUCTION_DATABASE_IDENTITY_SHA256,
     artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
     claimedAt: STARTED, expiresAt: "2026-07-18T10:10:00.000Z"
   };
@@ -223,6 +255,18 @@ it("accepts a G12 standalone consumption chain and rejects a forged progress cla
     .toThrow(/backup_artifact_binding/i);
 });
 
+it.each([
+  ["Task0B hash", { task0bReleaseFreezeSha256: "f".repeat(64) }],
+  ["production DB identity", { productionDatabaseIdentityFingerprintSha256: "f".repeat(64) }]
+])("rejects G12 authority bound to the wrong %s", (_label, override) => {
+  const items = validG12Items();
+  const validGate = { ...gate("G12_PRODUCTION_BACKUP", items),
+    redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.production_backup };
+  expect(() => validateGateEvidenceBytesV2(validGate as any,
+    new Map(items.map((item) => [item.ref.relativePath, item.content])),
+    { ...expected(), ...override })).toThrow(/backup_artifact_binding/i);
+});
+
 function validG13Items() {
   const template = COMMAND_TEMPLATE_SHA256.production_migration;
   const attestation = ref("operational_attestation", "operational-attestation-g13.json",
@@ -235,7 +279,8 @@ function validG13Items() {
       generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, commandId: "production_migration",
       commandTemplateSha256: template, issuedAt: STARTED, expiresAt: "2026-07-18T10:10:00.000Z",
       candidateSha: CANDIDATE_SHA, databaseRole: "production",
-      databaseIdentityFingerprintSha256: "2".repeat(64), task0bEvidenceSha256: "3".repeat(64),
+      databaseIdentityFingerprintSha256: PRODUCTION_DATABASE_IDENTITY_SHA256,
+      task0bEvidenceSha256: TASK0B_SHA256,
       releaseManifestPath: "release-manifest.json", releaseManifestSha256: SOURCE,
       releaseManifestOverall: "not_ready", backupEvidencePath: "production-backup-evidence.json",
       backupEvidenceSha256: "4".repeat(64), explicitGo: true
@@ -280,6 +325,18 @@ it("accepts a G13 standalone authority chain and rejects a swapped consumption a
     evidence: forgedItems.map((item) => item.ref) } as any,
   new Map(forgedItems.map((item) => [item.ref.relativePath, item.content])), expected()))
     .toThrow(/migration_artifact_binding/i);
+});
+
+it.each([
+  ["Task0B hash", { task0bReleaseFreezeSha256: "f".repeat(64) }],
+  ["production DB identity", { productionDatabaseIdentityFingerprintSha256: "f".repeat(64) }]
+])("rejects G13 authority bound to the wrong %s", (_label, override) => {
+  const items = validG13Items();
+  const validGate = { ...gate("G13_PRODUCTION_MIGRATION", items),
+    redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.production_migration };
+  expect(() => validateGateEvidenceBytesV2(validGate as any,
+    new Map(items.map((item) => [item.ref.relativePath, item.content])),
+    { ...expected(), ...override })).toThrow(/migration_artifact_binding/i);
 });
 
 function orchestration(kind: "rollout" | "canary") {
