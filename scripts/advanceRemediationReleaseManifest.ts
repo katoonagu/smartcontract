@@ -1,14 +1,20 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   MANIFEST_TRANSITIONS_V2,
   releaseSha256V2,
   validateRemediationReleaseManifestV2,
+  validateReleaseFreezeIdentityV2,
   type ManifestTransitionIdV2
 } from "../src/release/remediationReleaseManifestV2";
+import {
+  assertArtifactRootOutsideRepository,
+  assertSafeArtifactRootPath,
+  safeArtifactPath
+} from "../src/release/releaseRootWriterStore";
 import {
   advanceReleaseManifestV2,
   initializeReleaseManifestV2
@@ -29,8 +35,14 @@ export async function runAdvanceRemediationReleaseManifest(
   const cwd = dependencies.cwd ?? process.cwd();
   const status = await execFileAsync("git", ["status", "--porcelain=v1"], { cwd });
   if (status.stdout.trim().length !== 0) throw new Error("candidate_worktree_dirty");
-  const root = resolve(rawRoot);
-  const manifestPath = resolve(root, "release-manifest.json");
+  if (!isAbsolute(rawRoot)) throw new Error("artifact_root_must_be_absolute");
+  const head = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim().toLowerCase();
+  const root = assertSafeArtifactRootPath(rawRoot);
+  assertArtifactRootOutsideRepository(root, cwd);
+  const freeze = validateReleaseFreezeIdentityV2(JSON.parse(readFileSync(
+    safeArtifactPath(root, "release-freeze-identity-v2.json"), "utf8")));
+  if (freeze.candidateSha !== head) throw new Error("candidate_head_binding_invalid");
+  const manifestPath = safeArtifactPath(root, "release-manifest.json");
   const actualBytes = existsSync(manifestPath) ? readFileSync(manifestPath) : null;
   if (expectedSourceSha === "absent" ? actualBytes !== null : actualBytes === null
       || (actualBytes && releaseSha256V2(actualBytes) !== expectedSourceSha)) {
