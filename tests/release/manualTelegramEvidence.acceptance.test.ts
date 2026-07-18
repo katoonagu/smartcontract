@@ -4,16 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { expect, it } from "vitest";
-import { REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256 } from "../../src/release/remediationReleaseManifest";
 import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
 import {
   CANDIDATE_SHA,
   COMMAND_TEMPLATE_SHA256,
   MANUAL_GOLDEN_IDS,
-  PREVIOUS_RUNTIME_LABEL,
-  PREVIOUS_RUNTIME_SHA,
   RUNTIME_LABEL,
   buildManualTelegramAcceptance,
+  buildTask0BReleaseFreezeEvidence,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
 
@@ -132,28 +130,7 @@ function hash(value: Uint8Array | string): string {
 function task0bEvidence(evaluatedAt: string, databaseFingerprintSha256 = "e".repeat(64)) {
   const evaluatedAtMs = Date.parse(evaluatedAt);
   const observedAt = new Date(evaluatedAtMs - 60_000).toISOString();
-  return {
-    version: "task0b-release-freeze-evidence-v1",
-    candidateSha: CANDIDATE_SHA,
-    observedAt,
-    freezeCutoff: observedAt,
-    expiresAt: new Date(evaluatedAtMs + 23 * 60 * 60_000).toISOString(),
-    previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
-    previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
-    databaseRole: "runtime_sanitized",
-    databaseName: "tron_watch_plan5_runtime_sanitized",
-    databaseFingerprintSha256,
-    operationalConfigPath: "runtime-operational-config.json",
-    operationalConfigSha256: "8".repeat(64),
-    candidateStartCommandId: "runtime_sanitized_rehearsal",
-    candidateStartTemplateSha256: COMMAND_TEMPLATE_SHA256.runtime_sanitized_rehearsal,
-    candidateStopCommandId: "runtime_sanitized_stop",
-    candidateStopTemplateSha256: REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.runtime_sanitized_stop,
-    previousStartCommandId: "rollback_rehearsal",
-    previousStartTemplateSha256: COMMAND_TEMPLATE_SHA256.rollback_rehearsal,
-    previousStopCommandId: "rollback_stop",
-    previousStopTemplateSha256: REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.rollback_stop
-  };
+  return buildTask0BReleaseFreezeEvidence({ observedAt, databaseFingerprintSha256 });
 }
 
 function candidateStartEvidence() {

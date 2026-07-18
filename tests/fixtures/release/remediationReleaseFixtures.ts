@@ -95,6 +95,240 @@ export const COMMAND_TEMPLATE_SHA256 = Object.fromEntries(Object.entries(REDACTE
   ([commandId, template]) => [commandId, createHash("sha256").update(template, "utf8").digest("hex")]
 )) as Record<keyof typeof REDACTED_COMMAND_TEMPLATES, string>;
 
+export const TASK0B_COMMAND_TEMPLATE_SHA256 = Object.fromEntries([
+  ["runtime_manager_start_candidate", "release:task0b:runtime-manager start <artifact-root> <production-go-authority-file>"],
+  ["runtime_manager_stop_candidate", "release:task0b:runtime-manager stop <artifact-root> <production-go-authority-file>"],
+  ["runtime_manager_stop_previous", "release:task0b:runtime-manager stop <artifact-root> <production-go-authority-file>"],
+  ["runtime_manager_rollback_previous", "release:task0b:runtime-manager start <artifact-root> <production-go-authority-file>"],
+  ["runtime_manager_previous_identity", "task0b_repo_runtime_manager_v1 start-attestation <pid> <process-started-at> <absolute-entrypoint> <worktree-fingerprint> <sha> <label>"],
+  ["postgres_tool_pg_dump_attest", "postgres-tool:attest pg_dump <provider-kind> <immutable-provider-identity>"],
+  ["postgres_tool_pg_restore_attest", "postgres-tool:attest pg_restore <provider-kind> <immutable-provider-identity>"]
+].map(([commandId, template]) => [
+  commandId,
+  createHash("sha256").update(template, "utf8").digest("hex")
+])) as Record<string, string>;
+
+export const TASK0B_EXPECTED_PRODUCTION_DATABASE = Object.freeze({
+  databaseName: "tron_watch" as const,
+  endpointHost: "127.0.0.1" as const,
+  endpointPort: 55999,
+  connectedServerPort: 5432,
+  systemIdentifier: "7390000000000000000",
+  databaseOid: "16384",
+  serverVersionNum: "160014"
+});
+
+export const TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT = createHash("sha256").update(JSON.stringify([
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.databaseName,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.endpointHost,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.endpointPort,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.connectedServerPort,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.systemIdentifier,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.databaseOid,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE.serverVersionNum
+])).digest("hex");
+
+export function buildTask0BReleaseFreezeEvidence(input: {
+  candidateSha?: string;
+  previousRuntimeSha?: string;
+  previousRuntimeLabel?: string;
+  observedAt?: string;
+  databaseFingerprintSha256?: string;
+  operationalConfigSha256?: string;
+} = {}) {
+  const candidateSha = input.candidateSha ?? CANDIDATE_SHA;
+  const previousRuntimeSha = input.previousRuntimeSha ?? PREVIOUS_RUNTIME_SHA;
+  const previousRuntimeLabel = input.previousRuntimeLabel ?? PREVIOUS_RUNTIME_LABEL;
+  const observedAt = input.observedAt ?? "2026-07-18T09:00:00.000Z";
+  return {
+    version: "task0b-release-freeze-evidence-v1",
+    candidateSha,
+    observedAt,
+    freezeCutoff: observedAt,
+    expiresAt: new Date(Date.parse(observedAt) + 15 * 60_000).toISOString(),
+    source: "task0b_direct_operational_preflight",
+    operatorConfig: {
+      filename: "task0b-preflight-config.json",
+      contentSha256: "1".repeat(64),
+      fileIdentitySha256: "2".repeat(64),
+      configExpiresAt: new Date(Date.parse(observedAt) + 15 * 60_000).toISOString(),
+      source: "protected_file_handle_direct_read",
+      verified: true
+    },
+    candidateWorktree: {
+      headBeforeSha: candidateSha,
+      headAfterSha: candidateSha,
+      worktreePathFingerprintSha256: "0".repeat(64),
+      cleanBefore: true,
+      cleanAfter: true,
+      source: "git_direct_read_before_and_after",
+      verified: true
+    },
+    previousRuntimeSha,
+    previousRuntimeLabel,
+    previousRuntimeSource: "runtime_manager_attestation_and_process_direct_read",
+    previousRuntimeVerified: true,
+    previousRuntimeIdentity: {
+      generationId: "previous-runtime-generation-0001",
+      runtimeSha: previousRuntimeSha,
+      runtimeLabel: previousRuntimeLabel,
+      processId: 11088,
+      processStartedAt: "2026-07-17T19:39:12.000Z",
+      commandLineSha256: "a".repeat(64),
+      executablePathSha256: "b".repeat(64),
+      workingDirectoryFingerprintSha256: "3".repeat(64),
+      entrypointPathFingerprintSha256: "c".repeat(64),
+      managerExecutableSha256: "6".repeat(64),
+      attestedAt: "2026-07-17T19:39:42.000Z",
+      producerId: "task0b_repo_runtime_manager_v1",
+      liveRecheckSha256: "7".repeat(64),
+      startEvidenceSha256: "d".repeat(64),
+      commandId: "runtime_manager_previous_identity",
+      templateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.runtime_manager_previous_identity,
+      exitCode: 0,
+      source: "repo_runtime_manager_start_evidence_and_process_direct_read",
+      verified: true
+    },
+    databaseRole: "runtime_sanitized",
+    databaseName: "tron_watch_plan5_runtime_sanitized",
+    databaseFingerprintSha256: input.databaseFingerprintSha256 ?? SANITIZED_DATABASE_FINGERPRINT,
+    operationalConfigPath: "runtime-operational-config.json",
+    operationalConfigSha256: input.operationalConfigSha256 ?? "8".repeat(64),
+    candidateStartCommandId: "runtime_sanitized_rehearsal",
+    candidateStartTemplateSha256: COMMAND_TEMPLATE_SHA256.runtime_sanitized_rehearsal,
+    candidateStopCommandId: "runtime_sanitized_stop",
+    candidateStopTemplateSha256: createHash("sha256")
+      .update("release:runtime:stop <candidate-sha> <runtime-label>", "utf8").digest("hex"),
+    previousStartCommandId: "rollback_rehearsal",
+    previousStartTemplateSha256: COMMAND_TEMPLATE_SHA256.rollback_rehearsal,
+    previousStopCommandId: "rollback_stop",
+    previousStopTemplateSha256: createHash("sha256")
+      .update("rollback:stop-previous-runtime <previous-sha> <runtime-label>", "utf8").digest("hex"),
+    runtimeManager: {
+      source: "repo_owned_runtime_manager_registry_verified",
+      executorPath: "scripts/manageTask0BRuntime.ts",
+      executorSha256: "6".repeat(64),
+      producerId: "task0b_repo_runtime_manager_v1",
+      candidateAdminUrl: "http://127.0.0.1:18787/",
+      candidateAdminUrlFingerprintSha256: createHash("sha256").update("http://127.0.0.1:18787/").digest("hex"),
+      startCandidateCommandId: "runtime_manager_start_candidate",
+      startCandidateTemplateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.runtime_manager_start_candidate,
+      stopCandidateCommandId: "runtime_manager_stop_candidate",
+      stopCandidateTemplateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.runtime_manager_stop_candidate,
+      stopPreviousCommandId: "runtime_manager_stop_previous",
+      stopPreviousTemplateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.runtime_manager_stop_previous,
+      rollbackPreviousCommandId: "runtime_manager_rollback_previous",
+      rollbackPreviousTemplateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.runtime_manager_rollback_previous,
+      verified: true
+    },
+    productionDatabase: {
+      name: "tron_watch",
+      endpointHostClass: "loopback",
+      endpointPort: 55999,
+      endpointFingerprintSha256: "1".repeat(64),
+      connectedServerPort: 5432,
+      connectedServerAddressFingerprintSha256: "8".repeat(64),
+      clusterFingerprintSha256: "2".repeat(64),
+      databaseOidFingerprintSha256: "a".repeat(64),
+      approvedIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+      identityMatchedApprovedConfig: true,
+      serverVersion: "16.14",
+      serverVersionNum: "160014",
+      schemaState: "legacy_031",
+      schema032ReceiptPrestate: {
+        state: "absent",
+        version: 32,
+        filename: "032_telegram_runtime_forensics_data_contracts.sql",
+        checksumSha256: null
+      },
+      schemaReceiptSet: {
+        count: 0,
+        maxVersion: null,
+        aggregateSha256: createHash("sha256").update("[]").digest("hex"),
+        source: "postgresql_direct_read_only"
+      },
+      source: "protected_config_bound_postgresql_direct_read_only",
+      verified: true
+    },
+    rollbackWorktree: {
+      previousRuntimeSha,
+      headSha: previousRuntimeSha,
+      worktreePathFingerprintSha256: "3".repeat(64),
+      clean: true,
+      source: "git_direct_read",
+      verified: true
+    },
+    postgresTools: {
+      source: "pinned_docker_image_direct_probe",
+      verified: true,
+      provider: {
+        kind: "docker_pinned_image",
+        immutableImageId: `sha256:${"9".repeat(64)}`,
+        immutableImageIdSha256: createHash("sha256").update(`sha256:${"9".repeat(64)}`).digest("hex"),
+        networkMode: "none",
+        pullAllowed: false,
+        source: "external_allowlisted_config_verified"
+      },
+      pgDump: {
+        executableIdentitySha256: "4".repeat(64),
+        version: "pg_dump (PostgreSQL) 16.14",
+        versionProbeExitCode: 0,
+        commandId: "postgres_tool_pg_dump_attest",
+        templateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.postgres_tool_pg_dump_attest
+      },
+      pgRestore: {
+        executableIdentitySha256: "5".repeat(64),
+        version: "pg_restore (PostgreSQL) 16.14",
+        versionProbeExitCode: 0,
+        commandId: "postgres_tool_pg_restore_attest",
+        templateSha256: TASK0B_COMMAND_TEMPLATE_SHA256.postgres_tool_pg_restore_attest
+      }
+    },
+    artifactRoot: {
+      rootFingerprintSha256: "6".repeat(64),
+      outsideRepository: true,
+      noSymlink: true,
+      ownerIdentityFingerprintSha256: "e".repeat(64),
+      accessControlFingerprintSha256: "f".repeat(64),
+      accessControlSource: "windows_acl_direct_read",
+      restrictiveAccessVerified: true,
+      exclusiveWriteVerified: true,
+      exclusiveWriteFingerprintSha256: "7".repeat(64),
+      source: "filesystem_direct_probe",
+      verified: true
+    },
+    candidatePort: {
+      host: "127.0.0.1",
+      port: 18787,
+      available: true,
+      adminUrlFingerprintSha256: createHash("sha256").update("http://127.0.0.1:18787/").digest("hex"),
+      bindingSource: "protected_runtime_operational_config",
+      source: "loopback_bind_probe",
+      verified: true
+    },
+    observedEffects: {
+      runtimeStopCount: 0,
+      runtimeStartCount: 0,
+      databaseMigrationCount: 0,
+      telegramSendCount: 0,
+      readOnlyOperationCount: 12,
+      operationIds: [
+        "operator_config_read", "candidate_state_read_before", "previous_runtime_read_before",
+        "sanitized_runtime_binding_read", "runtime_manager_registry_read", "production_database_read_only",
+        "rollback_worktree_read", "postgres_tools_read_only", "artifact_root_probe", "candidate_port_probe",
+        "candidate_state_read_after", "previous_runtime_read_after"
+      ],
+      operationSequenceSha256: createHash("sha256").update(JSON.stringify([
+        "operator_config_read", "candidate_state_read_before", "previous_runtime_read_before",
+        "sanitized_runtime_binding_read", "runtime_manager_registry_read", "production_database_read_only",
+        "rollback_worktree_read", "postgres_tools_read_only", "artifact_root_probe", "candidate_port_probe",
+        "candidate_state_read_after", "previous_runtime_read_after"
+      ])).digest("hex"),
+      source: "instrumented_read_only_operation_ledger"
+    }
+  };
+}
+
 export const REQUIRED_SUITE_GROUPS = {
   plan1: [
     "tests/forensics/forensicCoverageV2.test.ts",

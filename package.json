@@ -23,6 +23,8 @@
     "release:verify": "node --import tsx scripts/verifyRemediationRelease.ts",
     "release:verify:non-vitest": "node --import tsx scripts/verifyRemediationRelease.ts --non-vitest",
     "release:trace:capture": "node --import tsx scripts/captureRemediationTestEvidence.ts",
+    "release:task0b:preflight": "node --import tsx scripts/captureTask0BPreflight.ts",
+    "release:task0b:runtime-manager": "node --import tsx scripts/manageTask0BRuntime.ts",
     "release:legacy:snapshot": "node --import tsx scripts/snapshotTerminalLegacyPopulation.ts",
     "release:runtime:rehearse": "node --import tsx scripts/rehearseRemediationRuntime.ts",
     "release:telegram:manual": "node --import tsx scripts/finalizeTelegramAcceptance.ts",

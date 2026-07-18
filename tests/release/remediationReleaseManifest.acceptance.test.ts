@@ -1,6 +1,12 @@
 import { expect, it } from "vitest";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { promisify } from "node:util";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import pg from "pg";
 import {
   REMEDIATION_COMMAND_TEMPLATE_SHA256,
   REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256
@@ -18,11 +24,14 @@ import {
   REQUIRED_SUITE_GROUPS,
   RUNTIME_LABEL,
   SANITIZED_DATABASE_FINGERPRINT,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE,
+  TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
   buildAcceptanceTraceSet,
   buildReleaseManifest,
   buildRollbackRehearsalEvidence,
   buildRuntimeVersion,
   buildRuntimeRehearsalEvidence,
+  buildTask0BReleaseFreezeEvidence,
   buildTerminalLegacyPopulation,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
@@ -31,6 +40,33 @@ type ManifestApi = {
   REMEDIATION_REQUIRED_SUITE_GROUPS: unknown;
   validateRemediationReleaseManifest(value: unknown): unknown;
 };
+
+const postgresIt = process.env.REQUIRE_PLAN5_POSTGRES === "1" ? it : it.skip;
+const dockerIt = process.env.REQUIRE_PLAN5_DOCKER === "1" ? it : it.skip;
+const execFileAsync = promisify(execFile);
+
+async function makeProtectedTempDir(prefix: string): Promise<string> {
+  const path = await mkdtemp(join(homedir(), prefix));
+  if (process.platform === "win32") {
+    const { stdout } = await execFileAsync("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
+    ]);
+    const currentSid = stdout.trim();
+    if (!/^S-1-[0-9-]+$/.test(currentSid)) throw new Error("test_current_sid_unavailable");
+    await execFileAsync("icacls.exe", [
+      path,
+      "/inheritance:r",
+      "/grant:r",
+      `*${currentSid}:(OI)(CI)F`,
+      "*S-1-5-18:(OI)(CI)F",
+      "*S-1-5-32-544:(OI)(CI)F"
+    ]);
+  } else {
+    await chmod(path, 0o700);
+  }
+  return path;
+}
 
 async function loadManifestApi(): Promise<ManifestApi> {
   const modulePath: string = "../../src/release/remediationReleaseManifest";
@@ -41,6 +77,73 @@ async function loadManifestApi(): Promise<ManifestApi> {
   } catch (error) {
     throw new Error("Plan 5 feature missing: remediation release manifest validator", { cause: error });
   }
+}
+
+function buildCompleteTask0BPreflight() {
+  return buildTask0BReleaseFreezeEvidence();
+}
+
+function buildTask0BPreflightConfig(artifactRoot: string, rollbackWorktreePath = resolve(artifactRoot, "rollback")) {
+  const evidence = buildCompleteTask0BPreflight();
+  const issuedAt = new Date();
+  const {
+    databaseRole,
+    databaseName,
+    databaseFingerprintSha256,
+    operationalConfigPath,
+    operationalConfigSha256,
+    candidateStartCommandId,
+    candidateStartTemplateSha256,
+    candidateStopCommandId,
+    candidateStopTemplateSha256,
+    previousStartCommandId,
+    previousStartTemplateSha256,
+    previousStopCommandId,
+    previousStopTemplateSha256
+  } = evidence;
+  return {
+    version: "task0b-preflight-config-v1",
+    source: "operator_approved_external_preflight_config",
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: new Date(issuedAt.getTime() + 15 * 60_000).toISOString(),
+    candidateSha: CANDIDATE_SHA,
+    previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
+    previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
+    previousRuntimeIdentity: {
+      evidencePath: "runtime-start-evidence-previous-runtime-generation-0001.json",
+      evidenceSha256: evidence.previousRuntimeIdentity.startEvidenceSha256
+    },
+    databaseConnectionEnvName: "TASK0B_PRODUCTION_DATABASE_URL",
+    productionDatabaseExpected: {
+      ...TASK0B_EXPECTED_PRODUCTION_DATABASE,
+      identityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT
+    },
+    rollbackWorktreePath,
+    artifactRoot,
+    candidatePort: { host: "127.0.0.1", port: 18787 },
+    postgresToolProvider: {
+      kind: "docker_pinned_image",
+      immutableImageId: evidence.postgresTools.provider.immutableImageId,
+      networkMode: "none",
+      pullAllowed: false
+    },
+    runtimeManager: evidence.runtimeManager,
+    sanitizedRehearsal: {
+      databaseRole,
+      databaseName,
+      databaseFingerprintSha256,
+      operationalConfigPath,
+      operationalConfigSha256,
+      candidateStartCommandId,
+      candidateStartTemplateSha256,
+      candidateStopCommandId,
+      candidateStopTemplateSha256,
+      previousStartCommandId,
+      previousStartTemplateSha256,
+      previousStopCommandId,
+      previousStopTemplateSha256
+    }
+  };
 }
 
 it("[AC-41] validates the release regression manifest and required suite set", async () => {
@@ -138,26 +241,16 @@ it("[REQ-35][REQ-38][RUNTIME-ARTIFACT-SEMANTICS] rejects hashable but false runt
     telegramRecorderPath: "runtime-telegram-recorder.json"
   }));
   const task0b = Buffer.from(JSON.stringify({
-    version: "task0b-release-freeze-evidence-v1",
-    candidateSha: CANDIDATE_SHA,
+    ...buildCompleteTask0BPreflight(),
     observedAt: terminal.cutoff,
     freezeCutoff: terminal.cutoff,
-    expiresAt: "2026-07-19T00:00:00.000Z",
-    previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
-    previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
-    databaseRole: "runtime_sanitized",
-    databaseName: "tron_watch_plan5_runtime_sanitized",
-    databaseFingerprintSha256: SANITIZED_DATABASE_FINGERPRINT,
-    operationalConfigPath: "runtime-operational-config.json",
+    expiresAt: "2026-07-18T00:15:00.000Z",
     operationalConfigSha256: createHash("sha256").update(operationalConfig).digest("hex"),
-    candidateStartCommandId: "runtime_sanitized_rehearsal",
-    candidateStartTemplateSha256: REMEDIATION_COMMAND_TEMPLATE_SHA256.runtime_sanitized_rehearsal,
-    candidateStopCommandId: "runtime_sanitized_stop",
-    candidateStopTemplateSha256: REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.runtime_sanitized_stop,
-    previousStartCommandId: "rollback_rehearsal",
-    previousStartTemplateSha256: REMEDIATION_COMMAND_TEMPLATE_SHA256.rollback_rehearsal,
-    previousStopCommandId: "rollback_stop",
-    previousStopTemplateSha256: REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.rollback_stop
+    productionDatabase: {
+      ...buildCompleteTask0BPreflight().productionDatabase,
+      endpointFingerprintSha256: "1".repeat(64),
+      clusterFingerprintSha256: "2".repeat(64)
+    }
   }));
   terminal.task0bEvidenceSha256 = createHash("sha256").update(task0b).digest("hex");
   const state = {
@@ -464,10 +557,630 @@ it("[REQ-38][TASK0-BASELINE] parses typed baseline evidence and rejects nested s
   }, CANDIDATE_SHA, { isAncestor: () => true })).toThrow(/secret/i);
 });
 
+it("[REQ-38][TASK0B-PREFLIGHT] rejects every missing stale or unverified operational release input", async () => {
+  const api: any = await import("../../src/release/remediationReleaseManifest");
+  const complete = buildCompleteTask0BPreflight();
+  expect(() => api.validateTask0BReleaseFreezeEvidence(
+    complete,
+    CANDIDATE_SHA,
+    "2026-07-18T09:10:00.000Z"
+  )).not.toThrow();
+
+  const invalid: Array<(value: any) => void> = [
+    (value) => { value.operatorConfig.contentSha256 = "not-a-hash"; },
+    (value) => { value.operatorConfig.configExpiresAt = "2026-07-18T08:59:59.000Z"; },
+    (value) => { delete value.previousRuntimeSource; },
+    (value) => { value.previousRuntimeLabel += " --force"; },
+    (value) => { value.candidateWorktree.cleanAfter = false; },
+    (value) => { value.candidateWorktree.headAfterSha = "f".repeat(40); },
+    (value) => { value.previousRuntimeVerified = false; },
+    (value) => { value.previousRuntimeIdentity.runtimeSha = "f".repeat(40); },
+    (value) => { value.previousRuntimeIdentity.processId = 0; },
+    (value) => { value.previousRuntimeIdentity.commandLineSha256 = "not-a-hash"; },
+    (value) => { value.previousRuntimeIdentity.producerId = "operator_guess"; },
+    (value) => { value.previousRuntimeIdentity.attestedAt = "2026-07-17T19:42:00.001Z"; },
+    (value) => { value.previousRuntimeIdentity.workingDirectoryFingerprintSha256 = "e".repeat(64); },
+    (value) => { value.runtimeManager.verified = false; },
+    (value) => { value.runtimeManager.source = "external_allowlisted_config_verified"; },
+    (value) => { value.runtimeManager.executorSha256 = "f".repeat(64); },
+    (value) => { value.runtimeManager.candidateAdminUrl = "http://127.0.0.1:18788/"; },
+    (value) => {
+      value.runtimeManager.candidateAdminUrl = "http://127.0.0.1:18788/";
+      value.runtimeManager.candidateAdminUrlFingerprintSha256 = createHash("sha256")
+        .update(value.runtimeManager.candidateAdminUrl).digest("hex");
+    },
+    (value) => { value.runtimeManager.rollbackPreviousTemplateSha256 = "f".repeat(64); },
+    (value) => { value.productionDatabase.name = "tron_watch_plan5_clone"; },
+    (value) => { value.productionDatabase.source = "operator_guess"; },
+    (value) => { value.productionDatabase.identityMatchedApprovedConfig = false; },
+    (value) => { value.productionDatabase.approvedIdentityFingerprintSha256 = "not-a-hash"; },
+    (value) => { value.productionDatabase.schema032ReceiptPrestate.state = "unknown"; },
+    (value) => { value.productionDatabase.schemaReceiptSet.count = 2; },
+    (value) => { value.productionDatabase.schemaReceiptSet.aggregateSha256 = "f".repeat(64); },
+    (value) => { value.productionDatabase.serverVersion = "17.1"; },
+    (value) => {
+      value.productionDatabase.schemaState = "schema_032_verified";
+      value.productionDatabase.schema032ReceiptPrestate = {
+        state: "verified",
+        version: 32,
+        filename: "032_telegram_runtime_forensics_data_contracts.sql",
+        checksumSha256: "f".repeat(64)
+      };
+    },
+    (value) => { value.rollbackWorktree.headSha = "f".repeat(40); },
+    (value) => { value.rollbackWorktree.clean = false; },
+    (value) => { value.postgresTools.pgDump.version = ""; },
+    (value) => { value.postgresTools.pgDump.version = "pg_dump (PostgreSQL) 16.14 --evil"; },
+    (value) => { value.postgresTools.pgRestore.version = "pg_restore (PostgreSQL) 15.9"; },
+    (value) => { value.postgresTools.provider.immutableImageId = "postgres:16-alpine"; },
+    (value) => { value.postgresTools.provider.networkMode = "bridge"; },
+    (value) => { value.postgresTools.provider.pullAllowed = true; },
+    (value) => { value.postgresTools.provider.kind = "host_executables"; },
+    (value) => { value.postgresTools.pgDump.versionProbeExitCode = 1; },
+    (value) => { value.postgresTools.pgDump.commandId = "raw_docker_command"; },
+    (value) => { value.postgresTools.pgRestore.templateSha256 = "f".repeat(64); },
+    (value) => { value.postgresTools.verified = false; },
+    (value) => { value.artifactRoot.outsideRepository = false; },
+    (value) => { value.artifactRoot.noSymlink = false; },
+    (value) => { value.artifactRoot.restrictiveAccessVerified = false; },
+    (value) => { value.artifactRoot.accessControlSource = "operator_guess"; },
+    (value) => { value.artifactRoot.exclusiveWriteVerified = false; },
+    (value) => { value.artifactRoot.source = "operator_guess"; },
+    (value) => { value.candidatePort.host = "0.0.0.0"; },
+    (value) => { value.candidatePort.port = value.productionDatabase.endpointPort; },
+    (value) => { value.candidatePort.available = false; },
+    (value) => { value.candidatePort.bindingSource = "operator_guess"; },
+    (value) => { value.observedEffects.runtimeStopCount = 1; },
+    (value) => { value.observedEffects.runtimeStartCount = 1; },
+    (value) => { value.observedEffects.databaseMigrationCount = 1; },
+    (value) => { value.observedEffects.telegramSendCount = 1; },
+    (value) => { value.observedEffects.operationIds[0] = "runtime_start"; },
+    (value) => { value.observedEffects.operationSequenceSha256 = "f".repeat(64); }
+  ];
+  for (const mutate of invalid) {
+    const evidence: any = structuredClone(complete);
+    mutate(evidence);
+    expect(() => api.validateTask0BReleaseFreezeEvidence(
+      evidence,
+      CANDIDATE_SHA,
+      "2026-07-18T09:10:00.000Z"
+    )).toThrow();
+  }
+  expect(() => api.validateTask0BReleaseFreezeEvidence(
+    complete,
+    CANDIDATE_SHA,
+    "2026-07-18T09:15:00.001Z"
+  )).toThrow(/stale/i);
+  expect(() => api.validateTask0BReleaseFreezeEvidence({
+    ...complete,
+    nested: { databaseUrl: "postgresql://release:secret@127.0.0.1/tron_watch" }
+  }, CANDIDATE_SHA, "2026-07-18T09:10:00.000Z")).toThrow(/secret/i);
+});
+
+it("[REQ-38][TASK0B-CAPTURE] produces secret-free direct evidence without runtime DB migration or Telegram mutation", async () => {
+  const producer: any = await import("../../scripts/captureTask0BPreflight");
+  const reads: string[] = [];
+  const direct = buildCompleteTask0BPreflight();
+  const sanitized = {
+    databaseRole: direct.databaseRole,
+    databaseName: direct.databaseName,
+    databaseFingerprintSha256: direct.databaseFingerprintSha256,
+    operationalConfigPath: direct.operationalConfigPath,
+    operationalConfigSha256: direct.operationalConfigSha256,
+    candidateStartCommandId: direct.candidateStartCommandId,
+    candidateStartTemplateSha256: direct.candidateStartTemplateSha256,
+    candidateStopCommandId: direct.candidateStopCommandId,
+    candidateStopTemplateSha256: direct.candidateStopTemplateSha256,
+    previousStartCommandId: direct.previousStartCommandId,
+    previousStartTemplateSha256: direct.previousStartTemplateSha256,
+    previousStopCommandId: direct.previousStopCommandId,
+    previousStopTemplateSha256: direct.previousStopTemplateSha256
+  };
+  const evidence = await producer.captureTask0BReleaseFreezeEvidence({
+    now: () => new Date("2026-07-18T09:00:00.000Z"),
+    readOperatorConfigBinding: async () => { reads.push("operator_config"); return direct.operatorConfig; },
+    readCandidateState: async () => {
+      const phase = reads.includes("candidate_before") ? "candidate_after" : "candidate_before";
+      reads.push(phase);
+      return {
+        sha: CANDIDATE_SHA,
+        clean: true,
+        worktreePathFingerprintSha256: direct.candidateWorktree.worktreePathFingerprintSha256,
+        source: "git_direct_read"
+      };
+    },
+    readPreviousRuntime: async () => {
+      reads.push("runtime");
+      return {
+        sha: PREVIOUS_RUNTIME_SHA,
+        label: PREVIOUS_RUNTIME_LABEL,
+        source: "runtime_manager_attestation_and_process_direct_read",
+        verified: true,
+        identity: direct.previousRuntimeIdentity
+      };
+    },
+    readSanitizedRehearsalBinding: async () => {
+      reads.push("sanitized");
+      return sanitized;
+    },
+    readRuntimeManager: async () => { reads.push("manager"); return direct.runtimeManager; },
+    readProductionDatabase: async () => { reads.push("database"); return direct.productionDatabase; },
+    readRollbackWorktree: async () => { reads.push("rollback"); return direct.rollbackWorktree; },
+    readPostgresTools: async () => { reads.push("tools"); return direct.postgresTools; },
+    inspectArtifactRoot: async () => { reads.push("root"); return direct.artifactRoot; },
+    probeCandidatePort: async () => { reads.push("port"); return direct.candidatePort; }
+  });
+  expect(reads).toEqual([
+    "operator_config", "candidate_before", "runtime", "sanitized", "manager", "database", "rollback", "tools", "root", "port",
+    "candidate_after", "runtime"
+  ]);
+  expect(evidence).toEqual(direct);
+  expect(JSON.stringify(evidence)).not.toMatch(/postgresql:\/\/|bot.?token|api.?key|credential|secret/i);
+
+  const guessed = {
+    now: () => new Date("2026-07-18T09:00:00.000Z"),
+    readOperatorConfigBinding: async () => direct.operatorConfig,
+    readCandidateState: async () => ({
+      sha: CANDIDATE_SHA,
+      clean: true,
+      worktreePathFingerprintSha256: direct.candidateWorktree.worktreePathFingerprintSha256,
+      source: "git_direct_read"
+    }),
+    readPreviousRuntime: async () => ({
+      sha: PREVIOUS_RUNTIME_SHA,
+      label: PREVIOUS_RUNTIME_LABEL,
+      source: "operator_guess",
+      verified: true
+    }),
+    readSanitizedRehearsalBinding: async () => sanitized,
+    readRuntimeManager: async () => direct.runtimeManager,
+    readProductionDatabase: async () => direct.productionDatabase,
+    readRollbackWorktree: async () => direct.rollbackWorktree,
+    readPostgresTools: async () => direct.postgresTools,
+    inspectArtifactRoot: async () => direct.artifactRoot,
+    probeCandidatePort: async () => direct.candidatePort
+  };
+  await expect(producer.captureTask0BReleaseFreezeEvidence(guessed)).rejects.toThrow(/source|verified/i);
+  const verifiedRuntime = async () => ({
+    sha: PREVIOUS_RUNTIME_SHA,
+    label: PREVIOUS_RUNTIME_LABEL,
+    source: "runtime_manager_attestation_and_process_direct_read",
+    verified: true,
+    identity: direct.previousRuntimeIdentity
+  });
+  const unstableStates = [
+    { sha: CANDIDATE_SHA, clean: true, worktreePathFingerprintSha256: "0".repeat(64), source: "git_direct_read" },
+    { sha: "f".repeat(40), clean: true, worktreePathFingerprintSha256: "0".repeat(64), source: "git_direct_read" }
+  ];
+  await expect(producer.captureTask0BReleaseFreezeEvidence({
+    ...guessed,
+    readPreviousRuntime: verifiedRuntime,
+    readCandidateState: async () => unstableStates.shift()
+  })).rejects.toThrow(/candidate|worktree|head/i);
+  await expect(producer.captureTask0BReleaseFreezeEvidence({
+    ...guessed,
+    readPreviousRuntime: verifiedRuntime,
+    readCandidateState: async () => ({
+      sha: CANDIDATE_SHA,
+      clean: false,
+      worktreePathFingerprintSha256: "0".repeat(64),
+      source: "git_direct_read"
+    })
+  })).rejects.toThrow(/candidate|worktree|clean/i);
+  let runtimeReadCount = 0;
+  await expect(producer.captureTask0BReleaseFreezeEvidence({
+    ...guessed,
+    readPreviousRuntime: async () => {
+      runtimeReadCount += 1;
+      const runtime = await verifiedRuntime();
+      return runtimeReadCount === 1 ? runtime : {
+        ...runtime,
+        identity: { ...runtime.identity, processId: runtime.identity.processId + 1 }
+      };
+    }
+  })).rejects.toThrow(/runtime.*changed/i);
+
+  const runtimeStartEvidence = {
+    version: "runtime-manager-start-evidence-v1",
+    generationId: direct.previousRuntimeIdentity.generationId,
+    runtimeSha: PREVIOUS_RUNTIME_SHA,
+    runtimeLabel: PREVIOUS_RUNTIME_LABEL,
+    processId: direct.previousRuntimeIdentity.processId,
+    processStartedAt: direct.previousRuntimeIdentity.processStartedAt,
+    commandLineSha256: direct.previousRuntimeIdentity.commandLineSha256,
+    executablePathSha256: direct.previousRuntimeIdentity.executablePathSha256,
+    workingDirectoryFingerprintSha256: direct.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+    entrypointPathFingerprintSha256: direct.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+    managerExecutableSha256: direct.previousRuntimeIdentity.managerExecutableSha256,
+    attestedAt: direct.previousRuntimeIdentity.attestedAt,
+    producerId: direct.previousRuntimeIdentity.producerId,
+    commandId: "runtime_manager_previous_identity",
+    templateSha256: direct.previousRuntimeIdentity.templateSha256,
+    exitCode: 0
+  };
+  const runtimeProcess = {
+    processId: runtimeStartEvidence.processId,
+    processStartedAt: runtimeStartEvidence.processStartedAt,
+    commandLineSha256: runtimeStartEvidence.commandLineSha256,
+    executablePathSha256: runtimeStartEvidence.executablePathSha256,
+    runtimeSha: runtimeStartEvidence.runtimeSha,
+    runtimeLabel: runtimeStartEvidence.runtimeLabel,
+    workingDirectoryFingerprintSha256: runtimeStartEvidence.workingDirectoryFingerprintSha256,
+    entrypointPathFingerprintSha256: runtimeStartEvidence.entrypointPathFingerprintSha256,
+    runtimeProcessCount: 1
+  };
+  expect(() => producer.validateTask0BPreviousRuntimeIdentity(
+    runtimeStartEvidence,
+    runtimeProcess,
+    {
+      sha: PREVIOUS_RUNTIME_SHA,
+      label: PREVIOUS_RUNTIME_LABEL,
+      managerExecutableSha256: runtimeStartEvidence.managerExecutableSha256
+    },
+    direct.previousRuntimeIdentity.startEvidenceSha256
+  )).not.toThrow();
+  for (const mutation of [
+    (value: any) => { value.runtimeSha = "f".repeat(40); },
+    (value: any) => { value.runtimeLabel = `previous-${"f".repeat(8)}`; },
+    (value: any) => { value.processId += 1; },
+    (value: any) => { value.processStartedAt = "2026-07-17T19:39:13.000Z"; },
+    (value: any) => { value.commandLineSha256 = "e".repeat(64); },
+    (value: any) => { value.executablePathSha256 = "e".repeat(64); },
+    (value: any) => { value.workingDirectoryFingerprintSha256 = "e".repeat(64); },
+    (value: any) => { value.entrypointPathFingerprintSha256 = "e".repeat(64); },
+    (value: any) => { value.managerExecutableSha256 = "e".repeat(64); },
+    (value: any) => { value.producerId = "operator_guess"; },
+    (value: any) => { value.attestedAt = "2026-07-17T19:42:00.001Z"; },
+    (value: any) => { value.exitCode = 1; }
+  ]) {
+    const invalid = structuredClone(runtimeStartEvidence);
+    mutation(invalid);
+    expect(() => producer.validateTask0BPreviousRuntimeIdentity(
+      invalid,
+      runtimeProcess,
+      {
+        sha: PREVIOUS_RUNTIME_SHA,
+        label: PREVIOUS_RUNTIME_LABEL,
+        managerExecutableSha256: runtimeStartEvidence.managerExecutableSha256
+      },
+      direct.previousRuntimeIdentity.startEvidenceSha256
+    )).toThrow();
+  }
+  expect(() => producer.createTask0BRuntimeManagerStartEvidence({
+    observation: runtimeProcess,
+    generationId: runtimeStartEvidence.generationId,
+    runtimeSha: PREVIOUS_RUNTIME_SHA,
+    runtimeLabel: PREVIOUS_RUNTIME_LABEL,
+    managerExecutableSha256: runtimeStartEvidence.managerExecutableSha256,
+    attestedAt: runtimeStartEvidence.attestedAt
+  })).not.toThrow();
+  const managedCommand = `node --import tsx "${resolve("src", "index.ts")}" `
+    + `--task0b-manager-producer=task0b_repo_runtime_manager_v1 `
+    + `--task0b-runtime-sha=${PREVIOUS_RUNTIME_SHA} --task0b-runtime-label=${PREVIOUS_RUNTIME_LABEL}`;
+  expect(producer.parseTask0BManagedRuntimeCommand(managedCommand)).toEqual({
+    runtimeSha: PREVIOUS_RUNTIME_SHA,
+    runtimeLabel: PREVIOUS_RUNTIME_LABEL,
+    entrypointPath: resolve("src", "index.ts")
+  });
+  for (const invalidCommand of [
+    managedCommand.replace("--task0b-manager-producer=task0b_repo_runtime_manager_v1 ", ""),
+    `${managedCommand} --task0b-runtime-sha=${PREVIOUS_RUNTIME_SHA}`,
+    managedCommand.replace(PREVIOUS_RUNTIME_LABEL, "foreign-label"),
+    managedCommand.replace(`"${resolve("src", "index.ts")}"`, "src/index.ts")
+  ]) expect(() => producer.parseTask0BManagedRuntimeCommand(invalidCommand)).toThrow(/command|binding/i);
+  expect(() => producer.validateTask0BPreflightConfig({ version: "task0b-preflight-config-v1" })).toThrow();
+  const staleConfig = buildTask0BPreflightConfig(resolve(tmpdir(), "task0b-stale"));
+  staleConfig.issuedAt = "2026-07-18T08:00:00.000Z";
+  staleConfig.expiresAt = "2026-07-18T08:15:00.000Z";
+  expect(() => producer.validateTask0BPreflightConfig(staleConfig, "2026-07-18T08:15:00.001Z")).toThrow(/unverified/i);
+  expect(() => producer.validateTask0BPreflightConfig({
+    ...buildTask0BPreflightConfig(resolve(tmpdir(), "task0b-secret")),
+    rawCommand: "BOT_TOKEN=123456789:AAExampleTokenValue"
+  })).toThrow(/secret/i);
+  for (const invalidProvider of [
+    { kind: "host_executables" },
+    { kind: "docker_pinned_image", immutableImageId: "postgres:16-alpine", networkMode: "none", pullAllowed: false },
+    { kind: "docker_pinned_image", immutableImageId: `sha256:${"f".repeat(64)}`, networkMode: "bridge", pullAllowed: false },
+    { kind: "docker_pinned_image", immutableImageId: `sha256:${"f".repeat(64)}`, networkMode: "none", pullAllowed: true }
+  ]) {
+    expect(() => producer.validateTask0BPreflightConfig({
+      ...buildTask0BPreflightConfig(resolve(tmpdir(), "task0b-provider")),
+      postgresToolProvider: invalidProvider
+    })).toThrow(/postgres|provider|unverified/i);
+  }
+
+  const artifactRoot = await makeProtectedTempDir("task0b-preflight-");
+  try {
+    const packageJson = JSON.parse(await readFile(resolve("package.json"), "utf8"));
+    expect(packageJson.scripts["release:task0b:preflight"]).toBe(
+      "node --import tsx scripts/captureTask0BPreflight.ts"
+    );
+    expect(packageJson.scripts["release:task0b:runtime-manager"]).toBe(
+      "node --import tsx scripts/manageTask0BRuntime.ts"
+    );
+    const managerBytes = await readFile(resolve("scripts", "manageTask0BRuntime.ts"));
+    const managerConfig = buildTask0BPreflightConfig(artifactRoot);
+    managerConfig.runtimeManager.executorSha256 = createHash("sha256").update(managerBytes).digest("hex");
+    await expect(producer.createTask0BDirectDependencies(
+      producer.validateTask0BPreflightConfig(managerConfig)
+    ).readRuntimeManager()).resolves.toMatchObject({
+      executorPath: "scripts/manageTask0BRuntime.ts",
+      producerId: "task0b_repo_runtime_manager_v1"
+    });
+    const wrongManagerConfig = structuredClone(managerConfig);
+    wrongManagerConfig.runtimeManager.executorSha256 = "f".repeat(64);
+    await expect(producer.createTask0BDirectDependencies(
+      producer.validateTask0BPreflightConfig(wrongManagerConfig)
+    ).readRuntimeManager()).rejects.toThrow(/manager|executor|hash/i);
+    await expect(producer.captureTask0BPreflightFromArtifactRoot(artifactRoot)).rejects.toThrow(/config/i);
+    const guessedConfig = buildTask0BPreflightConfig(artifactRoot);
+    guessedConfig.source = "operator_guess" as any;
+    await writeFile(join(artifactRoot, "task0b-preflight-config.json"), JSON.stringify(guessedConfig));
+    await expect(producer.captureTask0BPreflightFromArtifactRoot(artifactRoot)).rejects.toThrow(/config|verified/i);
+
+    const stableEvidence = buildCompleteTask0BPreflight();
+    await producer.writeTask0BReleaseFreezeEvidenceExclusive(artifactRoot, stableEvidence);
+    const firstBytes = await readFile(join(artifactRoot, "task0b-release-freeze.json"));
+    await expect(producer.writeTask0BReleaseFreezeEvidenceExclusive(artifactRoot, stableEvidence)).rejects.toThrow();
+    expect(await readFile(join(artifactRoot, "task0b-release-freeze.json"))).toEqual(firstBytes);
+
+    const candidatePort = await new Promise<number>((resolvePort, reject) => {
+      const server = createServer();
+      server.once("error", reject);
+      server.listen({ host: "127.0.0.1", port: 0 }, () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        server.close((error) => error ? reject(error) : resolvePort(port));
+      });
+    });
+    const portConfig = buildTask0BPreflightConfig(artifactRoot);
+    portConfig.candidatePort.port = candidatePort;
+    portConfig.runtimeManager.candidateAdminUrl = `http://127.0.0.1:${candidatePort}/`;
+    portConfig.runtimeManager.candidateAdminUrlFingerprintSha256 = createHash("sha256")
+      .update(portConfig.runtimeManager.candidateAdminUrl).digest("hex");
+    const operationalConfig = Buffer.from(JSON.stringify({
+      version: "controlled-runtime-operational-config-v1",
+      candidateWorktree: resolve("."),
+      previousWorktree: portConfig.rollbackWorktreePath,
+      candidateAdminUrl: `http://127.0.0.1:${candidatePort}/`,
+      previousAdminUrl: "http://127.0.0.1:28787/",
+      databaseUrlEnv: "PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL",
+      telegramRecorderPath: "runtime-telegram-recorder.json"
+    }));
+    portConfig.sanitizedRehearsal.operationalConfigSha256 = createHash("sha256").update(operationalConfig).digest("hex");
+    await writeFile(join(artifactRoot, "runtime-operational-config.json"), operationalConfig);
+    const portDependencies = producer.createTask0BDirectDependencies(producer.validateTask0BPreflightConfig(portConfig));
+    await portDependencies.readSanitizedRehearsalBinding();
+    const portEvidence = await portDependencies.probeCandidatePort();
+    expect(portEvidence).toMatchObject({ host: "127.0.0.1", port: candidatePort, available: true });
+    const mismatchedPortConfig = structuredClone(portConfig);
+    mismatchedPortConfig.candidatePort.port = candidatePort === 65_535 ? candidatePort - 1 : candidatePort + 1;
+    expect(() => producer.validateTask0BPreflightConfig(mismatchedPortConfig)).toThrow(/admin|port|binding/i);
+    await new Promise<void>((resolveBind, reject) => {
+      const server = createServer();
+      server.once("error", reject);
+      server.listen({ host: "127.0.0.1", port: candidatePort }, () => {
+        server.close((error) => error ? reject(error) : resolveBind());
+      });
+    });
+    const wrongOperationalConfig = Buffer.from(JSON.stringify({
+      ...JSON.parse(operationalConfig.toString("utf8")),
+      candidateAdminUrl: `http://127.0.0.1:${candidatePort === 65_535 ? candidatePort - 1 : candidatePort + 1}/`
+    }));
+    const operationalMismatch = structuredClone(portConfig);
+    operationalMismatch.sanitizedRehearsal.operationalConfigSha256 = createHash("sha256")
+      .update(wrongOperationalConfig).digest("hex");
+    await writeFile(join(artifactRoot, "runtime-operational-config.json"), wrongOperationalConfig);
+    const operationalMismatchDependencies = producer.createTask0BDirectDependencies(
+      producer.validateTask0BPreflightConfig(operationalMismatch)
+    );
+    await operationalMismatchDependencies.readSanitizedRehearsalBinding();
+    await expect(operationalMismatchDependencies.probeCandidatePort()).rejects.toThrow(/admin|port|binding/i);
+  } finally {
+    await rm(artifactRoot, { recursive: true, force: true });
+  }
+  const unsafeRoot = await makeProtectedTempDir("task0b-unsafe-root-");
+  try {
+    if (process.platform === "win32") {
+      await execFileAsync("icacls.exe", [unsafeRoot, "/grant", "*S-1-1-0:(OI)(CI)M"]);
+    } else {
+      await chmod(unsafeRoot, 0o777);
+    }
+    await expect(producer.captureTask0BPreflightFromArtifactRoot(unsafeRoot)).rejects.toThrow(/access|acl|permission/i);
+  } finally {
+    await rm(unsafeRoot, { recursive: true, force: true });
+  }
+
+  const unsafeParent = await mkdtemp(join(homedir(), "task0b-unsafe-parent-"));
+  const protectedChild = join(unsafeParent, "protected-child");
+  await mkdir(protectedChild);
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFileAsync("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
+      ]);
+      const currentSid = stdout.trim();
+      await execFileAsync("icacls.exe", [
+        protectedChild,
+        "/inheritance:r",
+        "/grant:r",
+        `*${currentSid}:(OI)(CI)F`,
+        "*S-1-5-18:(OI)(CI)F",
+        "*S-1-5-32-544:(OI)(CI)F"
+      ]);
+      await execFileAsync("icacls.exe", [
+        unsafeParent,
+        "/inheritance:r",
+        "/grant:r",
+        `*${currentSid}:(OI)(CI)F`,
+        "*S-1-5-18:(OI)(CI)F",
+        "*S-1-5-32-544:(OI)(CI)F",
+        "*S-1-5-32-546:(OI)(CI)M"
+      ]);
+    } else {
+      await chmod(unsafeParent, 0o770);
+      await chmod(protectedChild, 0o700);
+    }
+    await expect(producer.captureTask0BPreflightFromArtifactRoot(protectedChild))
+      .rejects.toThrow(/access|acl|permission/i);
+  } finally {
+    await rm(unsafeParent, { recursive: true, force: true });
+  }
+});
+
+dockerIt("[REQ-38][TASK0B-TOOLS] attests pg tools from an existing pinned image without pull or network", async () => {
+  const producer: any = await import("../../scripts/captureTask0BPreflight");
+  const artifactRoot = await makeProtectedTempDir("task0b-tools-");
+  try {
+    const { stdout } = await execFileAsync("docker", ["image", "inspect", "postgres:16-alpine", "--format", "{{.Id}}"]);
+    const immutableImageId = stdout.trim();
+    const config: any = buildTask0BPreflightConfig(artifactRoot);
+    config.postgresToolProvider = {
+      kind: "docker_pinned_image",
+      immutableImageId,
+      networkMode: "none",
+      pullAllowed: false
+    };
+    const tools = await producer.createTask0BDirectDependencies(
+      producer.validateTask0BPreflightConfig(config)
+    ).readPostgresTools();
+    expect(tools).toMatchObject({
+      source: "pinned_docker_image_direct_probe",
+      verified: true,
+      provider: {
+        kind: "docker_pinned_image",
+        immutableImageId,
+        networkMode: "none",
+        pullAllowed: false
+      },
+      pgDump: { versionProbeExitCode: 0, commandId: "postgres_tool_pg_dump_attest" },
+      pgRestore: { versionProbeExitCode: 0, commandId: "postgres_tool_pg_restore_attest" }
+    });
+    expect(JSON.stringify(tools)).not.toMatch(/postgres:16-alpine|--pull|postgresql:\/\//i);
+
+    config.postgresToolProvider.immutableImageId = `sha256:${"f".repeat(64)}`;
+    await expect(producer.createTask0BDirectDependencies(
+      producer.validateTask0BPreflightConfig(config)
+    ).readPostgresTools()).rejects.toThrow(/direct_probe|docker|image|tool/i);
+  } finally {
+    await rm(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+postgresIt("[REQ-38][TASK0B-DATABASE] reads production identity and schema pre-state in a disposable read-only transaction", async () => {
+  const databaseUrl = process.env.PLAN5_TASK0B_TEST_DATABASE_URL;
+  if (!databaseUrl) throw new Error("PLAN5_TASK0B_TEST_DATABASE_URL is required");
+  const parsed = new URL(databaseUrl);
+  if (decodeURIComponent(parsed.pathname.slice(1)) !== "tron_watch" || Number(parsed.port || 5432) === 55999) {
+    throw new Error("Task0B PostgreSQL test requires an isolated disposable tron_watch database");
+  }
+  const producer: any = await import("../../scripts/captureTask0BPreflight");
+  const artifactRoot = await makeProtectedTempDir("task0b-postgres-");
+  const previous = process.env.TASK0B_PRODUCTION_DATABASE_URL;
+  process.env.TASK0B_PRODUCTION_DATABASE_URL = databaseUrl;
+  const observer = new pg.Client({ connectionString: databaseUrl });
+  await observer.connect();
+  try {
+    await observer.query(`create table wallet_approvals (
+      watched_wallet_id text, token_contract text, spender_address text, amount_raw text, is_unlimited boolean,
+      current_allowance_raw text, spender_type text, status text, last_approval_tx_hash text, last_approval_at timestamptz,
+      risk_level text, risk_score integer, risk_reasons jsonb, last_alerted_tx_hash text, updated_at timestamptz
+    )`);
+    await observer.query(`create table observed_transactions (
+      poisoning_check_status text, poisoning_attempts integer, poisoning_next_retry_at timestamptz,
+      poisoning_logical_offset integer, poisoning_page_count integer, poisoning_fetched_count integer,
+      poisoning_oldest_fetched_at timestamptz, poisoning_lookup_coverage text,
+      poisoning_accumulated_lookup_json jsonb, poisoning_last_error text, poisoning_updated_at timestamptz,
+      poisoning_checked_at timestamptz
+    )`);
+    const before = await observer.query("select to_regclass('public.schema_migration_receipts')::text as receipt_table");
+    const identity = await observer.query(`select inet_server_port() as server_port,
+      current_setting('server_version_num') as server_version_num,
+      (select oid::text from pg_database where datname = current_database()) as database_oid`);
+    const control = await observer.query("select system_identifier::text as system_identifier from pg_control_system()");
+    const configInput: any = buildTask0BPreflightConfig(artifactRoot);
+    configInput.productionDatabaseExpected = {
+      databaseName: "tron_watch",
+      endpointHost: "127.0.0.1",
+      endpointPort: Number(parsed.port),
+      connectedServerPort: Number(identity.rows[0].server_port),
+      systemIdentifier: String(control.rows[0].system_identifier),
+      databaseOid: String(identity.rows[0].database_oid),
+      serverVersionNum: String(identity.rows[0].server_version_num)
+    };
+    configInput.productionDatabaseExpected.identityFingerprintSha256 =
+      producer.buildTask0BProductionDatabaseIdentityFingerprint(configInput.productionDatabaseExpected);
+    const config = producer.validateTask0BPreflightConfig(configInput);
+    const evidence = await producer.createTask0BDirectDependencies(config).readProductionDatabase();
+    expect(evidence).toMatchObject({
+      name: "tron_watch",
+      endpointHostClass: "loopback",
+      source: "protected_config_bound_postgresql_direct_read_only",
+      verified: true
+    });
+    expect(evidence.endpointFingerprintSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(evidence.clusterFingerprintSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(evidence.approvedIdentityFingerprintSha256).toBe(configInput.productionDatabaseExpected.identityFingerprintSha256);
+    expect(evidence.identityMatchedApprovedConfig).toBe(true);
+    const after = await observer.query("select to_regclass('public.schema_migration_receipts')::text as receipt_table");
+    expect(after.rows).toEqual(before.rows);
+    process.env.TASK0B_PRODUCTION_DATABASE_URL = `${databaseUrl}?host=example.invalid&port=5432`;
+    await expect(producer.createTask0BDirectDependencies(config).readProductionDatabase()).rejects.toThrow(/binding|query|url/i);
+    process.env.TASK0B_PRODUCTION_DATABASE_URL = `${databaseUrl}#host=example.invalid`;
+    await expect(producer.createTask0BDirectDependencies(config).readProductionDatabase()).rejects.toThrow(/binding|query|url/i);
+    process.env.TASK0B_PRODUCTION_DATABASE_URL = databaseUrl;
+    for (const field of ["systemIdentifier", "databaseOid", "serverVersionNum"] as const) {
+      const wrongInput = structuredClone(configInput);
+      wrongInput.productionDatabaseExpected[field] = field === "serverVersionNum" ? "150000" : "9".repeat(12);
+      wrongInput.productionDatabaseExpected.identityFingerprintSha256 =
+        producer.buildTask0BProductionDatabaseIdentityFingerprint(wrongInput.productionDatabaseExpected);
+      const wrongConfig = producer.validateTask0BPreflightConfig(wrongInput);
+      await expect(producer.createTask0BDirectDependencies(wrongConfig).readProductionDatabase())
+        .rejects.toThrow(/identity|database|binding/i);
+    }
+    const wrongPortInput = structuredClone(configInput);
+    wrongPortInput.productionDatabaseExpected.endpointPort += 1;
+    wrongPortInput.productionDatabaseExpected.identityFingerprintSha256 =
+      producer.buildTask0BProductionDatabaseIdentityFingerprint(wrongPortInput.productionDatabaseExpected);
+    const wrongPortConfig = producer.validateTask0BPreflightConfig(wrongPortInput);
+    await expect(producer.createTask0BDirectDependencies(wrongPortConfig).readProductionDatabase())
+      .rejects.toThrow(/binding|database|connect|probe/i);
+    const forgedFingerprintInput = structuredClone(configInput);
+    forgedFingerprintInput.productionDatabaseExpected.identityFingerprintSha256 = "f".repeat(64);
+    expect(() => producer.validateTask0BPreflightConfig(forgedFingerprintInput)).toThrow(/database|identity|unverified/i);
+    await observer.query(`create table schema_migration_receipts (
+      version integer primary key, filename text not null, checksum_sha256 text not null
+    )`);
+    await observer.query(
+      "insert into schema_migration_receipts(version, filename, checksum_sha256) values (33, '033_unknown.sql', $1)",
+      ["f".repeat(64)]
+    );
+    await expect(producer.createTask0BDirectDependencies(config).readProductionDatabase()).rejects.toThrow(/receipt|schema/i);
+    await observer.query("truncate schema_migration_receipts");
+    await observer.query(
+      "insert into schema_migration_receipts(version, filename, checksum_sha256) values (32, $1, $2)",
+      ["032_telegram_runtime_forensics_data_contracts.sql", "f".repeat(64)]
+    );
+    await expect(producer.createTask0BDirectDependencies(config).readProductionDatabase()).rejects.toThrow(/receipt|schema/i);
+  } finally {
+    await observer.query("drop table if exists schema_migration_receipts").catch(() => undefined);
+    await observer.query("drop table if exists observed_transactions").catch(() => undefined);
+    await observer.query("drop table if exists wallet_approvals").catch(() => undefined);
+    await observer.end();
+    if (previous === undefined) delete process.env.TASK0B_PRODUCTION_DATABASE_URL;
+    else process.env.TASK0B_PRODUCTION_DATABASE_URL = previous;
+    await rm(artifactRoot, { recursive: true, force: true });
+  }
+});
+
 it("[REQ-38][CANDIDATE-SCOPE] accepts only approved Plan5 Task0-8 files and rejects AP or unknown paths", async () => {
   const runner: any = await import("../../scripts/verifyRemediationRelease");
   expect(() => runner.validatePlan5CandidateScope([
     "src/release/remediationReleaseManifest.ts",
+    "scripts/captureTask0BPreflight.ts",
+    "scripts/manageTask0BRuntime.ts",
+    "tests/release/task0bRuntimeManager.acceptance.test.ts",
     "scripts/finalizeTelegramAcceptance.ts",
     "scripts/rehearseRemediationRuntimePreload.ts",
     "docs/knowledge/03-job-lifecycle.md",

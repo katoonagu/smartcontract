@@ -69,6 +69,8 @@ const repositoryRoot = resolve(scriptDirectory, "..");
 export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
   "docs/superpowers/plans/2026-07-17-remediation-end-to-end-acceptance-and-release.md",
   "package.json",
+  "scripts/captureTask0BPreflight.ts",
+  "scripts/manageTask0BRuntime.ts",
   "scripts/captureRemediationTestEvidence.ts",
   "scripts/finalizeTelegramAcceptance.ts",
   "scripts/rehearseRemediationRuntime.ts",
@@ -82,6 +84,7 @@ export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
   "src/release/acceptanceTrace.ts",
   "src/release/remediationReleaseManifest.ts",
   "src/release/terminalLegacyPopulation.ts",
+  "tests/release/task0bRuntimeManager.acceptance.test.ts",
   "src/runtime/runtimeVersion.ts",
   "tests/bot/createBot.test.ts",
   "tests/check/contractDecisionV2.acceptance.test.ts",

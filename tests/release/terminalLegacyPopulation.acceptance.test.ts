@@ -1,11 +1,11 @@
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { buildTerminalLegacyPopulation, cloneFixture } from "../fixtures/release/remediationReleaseFixtures";
 import {
-  REMEDIATION_COMMAND_TEMPLATE_SHA256,
-  REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256
-} from "../../src/release/remediationReleaseManifest";
+  buildTask0BReleaseFreezeEvidence,
+  buildTerminalLegacyPopulation,
+  cloneFixture
+} from "../fixtures/release/remediationReleaseFixtures";
 
 type LegacyApi = { assertTerminalLegacyPopulationUnchanged(before: unknown, after: unknown): void };
 
@@ -136,28 +136,13 @@ it("[REQ-03][REQ-04][PLAN5-LEGACY-SNAPSHOT] hashes the complete cutoff populatio
 
 it("[REQ-03][REQ-04][PLAN5-LEGACY-FREEZE] requires authoritative Task0B cutoff and exact sanitized database binding", async () => {
   const api: any = await import("../../src/release/terminalLegacyPopulation");
-  const task0b = {
-    version: "task0b-release-freeze-evidence-v1",
+  const task0b = buildTask0BReleaseFreezeEvidence({
     candidateSha: "c".repeat(40),
-    observedAt: "2026-07-18T00:00:00.000Z",
-    freezeCutoff: "2026-07-18T00:00:00.000Z",
-    expiresAt: "2026-07-19T00:00:00.000Z",
     previousRuntimeSha: "a".repeat(40),
     previousRuntimeLabel: "previous-aaaaaaaa",
-    databaseRole: "runtime_sanitized",
-    databaseName: "tron_watch_plan5_runtime_sanitized",
-    databaseFingerprintSha256: "e".repeat(64),
-    operationalConfigPath: "runtime-operational-config.json",
-    operationalConfigSha256: "8".repeat(64),
-    candidateStartCommandId: "runtime_sanitized_rehearsal",
-    candidateStartTemplateSha256: REMEDIATION_COMMAND_TEMPLATE_SHA256.runtime_sanitized_rehearsal,
-    candidateStopCommandId: "runtime_sanitized_stop",
-    candidateStopTemplateSha256: REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.runtime_sanitized_stop,
-    previousStartCommandId: "rollback_rehearsal",
-    previousStartTemplateSha256: REMEDIATION_COMMAND_TEMPLATE_SHA256.rollback_rehearsal,
-    previousStopCommandId: "rollback_stop",
-    previousStopTemplateSha256: REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256.rollback_stop
-  };
+    observedAt: "2026-07-18T00:00:00.000Z",
+    databaseFingerprintSha256: "e".repeat(64)
+  });
   const task0bBytes = Buffer.from(JSON.stringify(task0b));
   const binding = api.deriveTerminalLegacyFreezeBinding(task0bBytes, "c".repeat(40), task0b.observedAt);
   const snapshot = api.createTerminalLegacyPopulationSnapshot([], binding);
@@ -175,7 +160,7 @@ it("[REQ-03][REQ-04][PLAN5-LEGACY-FREEZE] requires authoritative Task0B cutoff a
   expect(() => api.deriveTerminalLegacyFreezeBinding(
     task0bBytes,
     "c".repeat(40),
-    "2026-07-19T00:00:00.001Z"
+    "2026-07-18T00:15:00.001Z"
   )).toThrow(/stale/i);
   const unrelated = Buffer.from(JSON.stringify({ ...task0b, databaseName: "tron_watch_plan5_clone" }));
   expect(() => api.deriveTerminalLegacyFreezeBinding(
