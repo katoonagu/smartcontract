@@ -1,23 +1,40 @@
 import { existsSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { afterEach, expect, it, vi } from "vitest";
 import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   RELEASE_V2_FREEZE_IDENTITY,
-  RELEASE_V2_FREEZE_SHA256,
   COMMAND_TEMPLATE_SHA256,
   buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
+  buildReleaseFreezeIdentityV2Fixture,
   buildReleaseManifestV2Fixture,
   buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
 
 const roots: string[] = [];
-const ownerProcesses: ChildProcess[] = [];
+const freezeByRoot = new Map<string, ReturnType<typeof buildReleaseFreezeIdentityV2Fixture>>();
+const manifestByRoot = new Map<string, Record<string, unknown>>();
+
+function artifactRootFingerprint(rootPath: string): string {
+  const absolute = resolve(rootPath);
+  const key = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  return createHash("sha256").update(key, "utf8").digest("hex");
+}
+
+function freezeFor(rootPath: string) {
+  const freeze = freezeByRoot.get(rootPath);
+  if (!freeze) throw new Error("test_freeze_missing");
+  return freeze;
+}
+
+function freezeShaFor(rootPath: string): string {
+  return createHash("sha256").update(`${canonicalReleaseJsonV2(freezeFor(rootPath))}\n`, "utf8").digest("hex");
+}
 async function root(): Promise<string> {
   const value = await mkdtemp(join(tmpdir(), "plan5-manifest-v2-"));
   if (process.platform === "win32") {
@@ -33,7 +50,7 @@ async function root(): Promise<string> {
 function readinessAdvance(artifactRoot: string, overrides: Record<string, unknown> = {}) {
   return {
     artifactRoot,
-    sourceManifest: buildReleaseManifestV2Fixture(),
+    sourceManifest: manifestByRoot.get(artifactRoot) ?? buildReleaseManifestV2Fixture(),
     transition: { transitionId: "readiness" },
     verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G05_TELEGRAM")],
     verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null },
@@ -43,11 +60,12 @@ function readinessAdvance(artifactRoot: string, overrides: Record<string, unknow
 
 async function initializeManifestRoot(api: any, artifactRoot: string) {
   await api.materializeReleaseFreezeV2(materializeInput(artifactRoot));
-  await api.initializeReleaseManifestV2({
+  const initialized = await api.initializeReleaseManifestV2({
     artifactRoot,
     evaluatedAt: "2026-07-18T10:00:00.000Z",
     verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
   });
+  manifestByRoot.set(artifactRoot, initialized.manifest);
 }
 
 function authorityValue(issued: Record<string, unknown>) {
@@ -58,30 +76,11 @@ function authorityValue(issued: Record<string, unknown>) {
 async function recursiveRelativeFiles(artifactRoot: string): Promise<string[]> {
   return (await readdir(artifactRoot, { recursive: true })).map((value) => String(value).replace(/\\/gu, "/"));
 }
-async function liveOwnerProcess(): Promise<ChildProcess> {
-  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {
-    stdio: "ignore", windowsHide: true
-  });
-  ownerProcesses.push(child);
-  await new Promise<void>((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
-  return child;
-}
-
-async function stopOwnerProcess(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-  if (process.platform === "win32" && child.pid !== undefined) {
-    execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-  } else child.kill("SIGKILL");
-  await exited;
-}
 afterEach(async () => {
   vi.useRealTimers();
-  await Promise.all(ownerProcesses.splice(0).map(stopOwnerProcess));
   await Promise.all(roots.splice(0).map((value) => rm(value, { recursive: true, force: true })));
+  freezeByRoot.clear();
+  manifestByRoot.clear();
 });
 
 async function loadStoreApi(): Promise<any> {
@@ -92,24 +91,37 @@ async function loadStoreApi(): Promise<any> {
 
 function materializeInput(rootPath: string) {
   const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
-    observedAt: "2026-07-18T10:00:00.000Z"
+    observedAt: "2026-07-18T10:00:00.000Z",
+    artifactRootFingerprintSha256: artifactRootFingerprint(rootPath)
   });
-  task0BPreflightEvidence.artifactRoot.rootFingerprintSha256 =
-    RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256;
+  const freezeIdentity = buildReleaseFreezeIdentityV2Fixture(task0BPreflightEvidence);
+  freezeByRoot.set(rootPath, freezeIdentity);
   const task0BPath = join(rootPath, "task0b-release-freeze.json");
   if (!existsSync(task0BPath)) writeFileSync(task0BPath,
     `${canonicalReleaseJsonV2(task0BPreflightEvidence)}\n`, { flag: "wx" });
   return {
     artifactRoot: rootPath,
-    freezeIdentity: RELEASE_V2_FREEZE_IDENTITY,
+    freezeIdentity,
     task0BPreflightEvidence,
     producerId: "release_freeze_materialize" as const,
-    evaluatedAt: "2026-07-18T10:00:00.000Z",
-    owner: { pid: process.pid }
+    evaluatedAt: "2026-07-18T10:00:00.000Z"
   };
 }
 
+const DEAD_TEST_OWNER = {
+  pid: 2_147_483_647,
+  processStartFingerprintSha256: "f".repeat(64)
+};
+
+function asDeadTestOwner<T>(api: any, action: () => T): T {
+  return api.runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => DEAD_TEST_OWNER,
+    isOwnerAlive: () => false
+  }, action);
+}
+
 async function writeExpiredRootWriterLease(rootPath: string) {
+  const freeze = freezeFor(rootPath);
   const lease = {
     version: "frozen-root-writer-lease-v2",
     scope: "artifact_root",
@@ -117,10 +129,10 @@ async function writeExpiredRootWriterLease(rootPath: string) {
     writerOperationKind: "manifest_transition",
     writerOperationKeySha256: "a".repeat(64),
     transitionKeySha256: "b".repeat(64),
-    protectedRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
-    candidateSha: RELEASE_V2_FREEZE_IDENTITY.candidateSha,
-    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
-    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    protectedRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId,
+    releaseFreezeIdentitySha256: freezeShaFor(rootPath),
     leaseEpoch: 1,
     ownerPid: 2147483647,
     ownerProcessStartFingerprintSha256: "c".repeat(64),
@@ -137,12 +149,12 @@ it("[REQ-38][RELEASE-FREEZE-MATERIALIZER] only release freeze materializer conve
   const api = await loadStoreApi(); const r = await root();
   const input = materializeInput(r);
   const result = await api.materializeReleaseFreezeV2({ ...input, freezeIdentity: undefined });
-  expect(result.freezeIdentity).toEqual(RELEASE_V2_FREEZE_IDENTITY);
+  expect(result.freezeIdentity).toEqual(freezeFor(r));
   expect(await readdir(r)).toContain("release-freeze-identity-v2.json");
   await expect(api.materializeReleaseFreezeV2({ ...materializeInput(r), producerId: "captureTask0BPreflight" })).rejects.toThrow();
   await expect(api.materializeReleaseFreezeV2({
     ...materializeInput(r),
-    freezeIdentity: { ...RELEASE_V2_FREEZE_IDENTITY, postgresToolIdentitySha256: "f".repeat(64) }
+    freezeIdentity: { ...freezeFor(r), postgresToolIdentitySha256: "f".repeat(64) }
   })).rejects.toThrow(/freeze_identity_mismatch/);
 });
 
@@ -161,7 +173,7 @@ it("[REQ-38][RELEASE-FREEZE-CONSUMER-BUNDLE] rejects frozen lifecycle initializa
       verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
     })).rejects.toThrow(/freeze.*(bundle|prepared|receipt|materialization)/i);
   }
-});
+}, 30_000);
 
 it("[REQ-38][RELEASE-FREEZE-CONSUMER-BINDING] rejects forged prepared receipt or freeze bytes before frozen lifecycle authority", async () => {
   const api = await loadStoreApi();
@@ -195,23 +207,38 @@ it("[REQ-38][RELEASE-FREEZE-CONSUMER-BINDING] rejects forged prepared receipt or
       verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
     })).rejects.toThrow(/freeze.*(bundle|binding|bytes|hash|prepared|receipt|materialization)/i);
   }
-});
+}, 30_000);
+
+it("[REQ-38][RELEASE-FREEZE-ROOT-FINGERPRINT] rejects a byte-exact freeze bundle copied into another trusted artifact root", async () => {
+  const api = await loadStoreApi();
+  const sourceRoot = await root();
+  await api.materializeReleaseFreezeV2(materializeInput(sourceRoot));
+  const copiedRoot = await root();
+  for (const filename of [
+    "task0b-release-freeze.json",
+    "release-freeze-materialization-prepared-v2.json",
+    "release-freeze-materialization-receipt-v2.json",
+    "release-freeze-identity-v2.json"
+  ]) {
+    await writeFile(join(copiedRoot, filename), await readFile(join(sourceRoot, filename)), { flag: "wx" });
+  }
+  await expect(api.verifyReleaseManifestStoreV2(copiedRoot))
+    .rejects.toThrow(/artifact.*root.*fingerprint|root.*fingerprint.*mismatch/i);
+}, 30_000);
 
 it("[REQ-38][RELEASE-FREEZE-CONSUMER-CRASH-REPLAY] accepts the exact verified freeze bundle after prepared-publication takeover recovery", async () => {
   const api = await loadStoreApi();
   const r = await root();
-  const owner = await liveOwnerProcess();
-  await expect(api.materializeReleaseFreezeV2({
-    ...materializeInput(r), owner: { pid: owner.pid! }, faultAt: "after_identity"
-  })).rejects.toThrow();
-  await stopOwnerProcess(owner);
+  await expect(asDeadTestOwner(api, () => api.materializeReleaseFreezeV2({
+    ...materializeInput(r), faultAt: "after_identity"
+  }))).rejects.toThrow();
   const oldHash = createHash("sha256")
     .update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
   await api.takeoverRootWriterLeaseByHashV2({
     artifactRoot: r, expectedOldLeaseSha256: oldHash, evaluatedAt: "2026-07-18T10:20:00.000Z"
   });
   await api.materializeReleaseFreezeV2({
-    ...materializeInput(r), owner: undefined, evaluatedAt: "2026-07-18T10:20:00.000Z"
+    ...materializeInput(r), evaluatedAt: "2026-07-18T10:20:00.000Z"
   });
   await expect(api.initializeReleaseManifestV2({
     artifactRoot: r,
@@ -223,11 +250,9 @@ it("[REQ-38][RELEASE-FREEZE-CONSUMER-CRASH-REPLAY] accepts the exact verified fr
 it("[REQ-38][BOOTSTRAP-ROOT-WRITER-CRASH] discriminates bootstrap from frozen lease takeover and terminal bytes resumes exact prepared freeze after dead-owner takeover and seals the root for new-root retry when owner dies before prepare including crash after lease acquisition and after prepare before freeze receipt", async () => {
   const api = await loadStoreApi();
   const unpreparedRoot = await root();
-  const unpreparedOwner = await liveOwnerProcess();
-  await expect(api.materializeReleaseFreezeV2({
-    ...materializeInput(unpreparedRoot), owner: { pid: unpreparedOwner.pid! }, faultAt: "after_lease"
-  })).rejects.toThrow();
-  await stopOwnerProcess(unpreparedOwner);
+  await expect(asDeadTestOwner(api, () => api.materializeReleaseFreezeV2({
+    ...materializeInput(unpreparedRoot), faultAt: "after_lease"
+  }))).rejects.toThrow();
   const unpreparedHash = createHash("sha256").update(await readFile(join(unpreparedRoot, "manifest-transition-root.lease.json"))).digest("hex");
   const abandoned = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: unpreparedRoot, expectedOldLeaseSha256: unpreparedHash, evaluatedAt: "2026-07-18T10:20:00.000Z" });
   expect(abandoned.sealed).toBe(true);
@@ -236,16 +261,14 @@ it("[REQ-38][BOOTSTRAP-ROOT-WRITER-CRASH] discriminates bootstrap from frozen le
   expect(await readdir(unpreparedRoot)).not.toContain("release-freeze-identity-v2.json");
   for (const faultAt of ["after_prepare", "after_identity"]) {
     const r = await root();
-    const owner = await liveOwnerProcess();
-    await expect(api.materializeReleaseFreezeV2({
-      ...materializeInput(r), owner: { pid: owner.pid! }, faultAt
-    })).rejects.toThrow();
-    await stopOwnerProcess(owner);
+    await expect(asDeadTestOwner(api, () => api.materializeReleaseFreezeV2({
+      ...materializeInput(r), faultAt
+    }))).rejects.toThrow();
     const oldHash = createHash("sha256").update(await readFile(join(r, "manifest-transition-root.lease.json"))).digest("hex");
     const takeover = await api.takeoverRootWriterLeaseByHashV2({ artifactRoot: r, expectedOldLeaseSha256: oldHash, evaluatedAt: "2026-07-18T10:20:00.000Z" });
     expect(takeover.sealed).toBe(false);
-    const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), owner: undefined, evaluatedAt: "2026-07-18T10:20:00.000Z" });
-    expect(recovered.freezeIdentity).toEqual(RELEASE_V2_FREEZE_IDENTITY);
+    const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), evaluatedAt: "2026-07-18T10:20:00.000Z" });
+    expect(recovered.freezeIdentity).toEqual(freezeFor(r));
   }
 }, 30_000);
 
@@ -265,7 +288,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-ISSUER] appends content-addressed attestation
     artifactRoot: r, authority: authorityValue(first), evaluatedAt: "2026-07-18T11:01:00.000Z"
   });
   const terminalRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
-    name.startsWith(`authority-terminal-receipts/g12_backup_passed/${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}/`))!;
+    name.startsWith(`authority-terminal-receipts/g12_backup_passed/${freezeFor(r).releaseGenerationId}/`))!;
   const terminalSha256 = createHash("sha256").update(await readFile(join(r, terminalRelativePath))).digest("hex");
   vi.setSystemTime(new Date("2026-07-18T11:02:00.000Z"));
   const second = await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" });
@@ -370,10 +393,10 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-COMPLETED-TAKEOVER-LINEAGE] rejects completed
     writerOperationKind: "operational_authority_issue",
     writerOperationKeySha256: operationKey,
     transitionKeySha256: null,
-    protectedRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
-    candidateSha: RELEASE_V2_FREEZE_IDENTITY.candidateSha,
-    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
-    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    protectedRootFingerprintSha256: freezeFor(r).artifactRootFingerprintSha256,
+    candidateSha: freezeFor(r).candidateSha,
+    releaseGenerationId: freezeFor(r).releaseGenerationId,
+    releaseFreezeIdentitySha256: freezeShaFor(r),
     leaseEpoch: 1,
     ownerPid: 2147483647,
     ownerProcessStartFingerprintSha256: "e".repeat(64),
@@ -445,13 +468,13 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-RECOVERY] issues fresh recovery authority onl
   const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
   const issued = await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" });
   const authorityRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
-    name === `operational-attestations/g12_backup_passed/${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}/${issued.attestationSha256}.json`)!;
+    name === `operational-attestations/g12_backup_passed/${freezeFor(r).releaseGenerationId}/${issued.attestationSha256}.json`)!;
   const original = await readFile(join(r, authorityRelativePath));
   await api.terminalizeExpiredOperationalAttestationV2({
     artifactRoot: r, authority: authorityValue(issued), evaluatedAt: "2026-07-18T11:01:00.000Z"
   });
   const terminalReceiptRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
-    name.startsWith(`authority-terminal-receipts/g12_backup_passed/${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}/`))!;
+    name.startsWith(`authority-terminal-receipts/g12_backup_passed/${freezeFor(r).releaseGenerationId}/`))!;
   const terminalReceiptPath = join(r, terminalReceiptRelativePath);
   const terminalReceiptSha256 = createHash("sha256").update(await readFile(terminalReceiptPath)).digest("hex");
   vi.setSystemTime(new Date("2026-07-18T11:02:00.000Z"));
@@ -487,8 +510,8 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalizat
     await writeFile(conflictPath, `${canonicalReleaseJsonV2({
       version: `production-${artifact}-test-v2`,
       operationalAttestationSha256: conflictIssued.attestationSha256,
-      releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
-      candidateSha: RELEASE_V2_FREEZE_IDENTITY.candidateSha
+      releaseGenerationId: freezeFor(conflictRoot).releaseGenerationId,
+      candidateSha: freezeFor(conflictRoot).candidateSha
     })}\n`, { flag: "wx" });
     await expect(api.terminalizeExpiredOperationalAttestationV2({
       artifactRoot: conflictRoot, authority: conflictAuthority, evaluatedAt: "2026-07-18T11:01:00.000Z"
@@ -537,6 +560,27 @@ it("[REQ-38][MANIFEST-V2-INITIAL-CRASH] resumes revision-one prepare manifest-re
   }
 }, 30_000);
 
+it("[REQ-38][MANIFEST-V2-INITIAL-TARGET-PATH] rejects revision-one replay when prepared target path is not its exact revision and bytes hash", async () => {
+  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
+  const input = {
+    artifactRoot: r,
+    evaluatedAt: "2026-07-18T10:00:00.000Z",
+    verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed"),
+    faultAt: "after_prepare"
+  };
+  await expect(api.initializeReleaseManifestV2(input)).rejects.toThrow();
+  const preparedName = (await readdir(r)).find((name) => name.startsWith("manifest-transition-prepared-"))!;
+  const preparedPath = join(r, preparedName);
+  const prepared = JSON.parse(String(await readFile(preparedPath)));
+  const forgedRelativePath = "manifest-snapshots/release-manifest-r1-forged.json";
+  await writeFile(join(r, forgedRelativePath),
+    await readFile(join(r, String(prepared.targetSnapshotRelativePath))), { flag: "wx" });
+  prepared.targetSnapshotRelativePath = forgedRelativePath;
+  await writeFile(preparedPath, `${canonicalReleaseJsonV2(prepared)}\n`);
+  await expect(api.initializeReleaseManifestV2({ ...input, faultAt: undefined }))
+    .rejects.toThrow(/initial.*target.*snapshot.*path|snapshot.*path.*invalid/i);
+}, 30_000);
+
 it("[REQ-38][MANIFEST-V2-CRASH] recovers exactly before and after the atomic manifest replace", async () => {
   const api = await loadStoreApi();
   for (const faultAt of ["before_manifest_replace", "after_manifest_replace"]) {
@@ -557,13 +601,55 @@ it("[REQ-38][MANIFEST-V2-CRASH-RECEIPT] restores exact prepared canonical receip
   const before = await readFile(join(r, preparedName));
   await api.advanceReleaseManifestV2({ ...input, faultAt: undefined, evaluatedAt: "2099-01-01T00:00:00.000Z" });
   expect(await readFile(join(r, preparedName))).toEqual(before);
-});
+}, 30_000);
+
+it("[REQ-38][MANIFEST-V2-PREPARED-TARGET-HEAD] rejects a prepared transition whose target snapshot path is not the exact revision and bytes hash of the current head", async () => {
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
+  const input = readinessAdvance(r, {
+    evaluatedAt: "2026-07-18T10:03:00.000Z",
+    faultAt: "after_manifest_replace"
+  });
+  await expect(api.advanceReleaseManifestV2(input)).rejects.toThrow();
+  const preparedName = (await Promise.all((await readdir(r))
+    .filter((name) => name.startsWith("manifest-transition-prepared-"))
+    .map(async (name) => ({
+      name,
+      transitionId: JSON.parse(String(await readFile(join(r, name)))).transitionId
+    })))).find((value) => value.transitionId === "readiness")!.name;
+  const preparedPath = join(r, preparedName);
+  const prepared = JSON.parse(String(await readFile(preparedPath)));
+  const originalSnapshot = join(r, String(prepared.targetSnapshotRelativePath));
+  const forgedRelativePath = `manifest-snapshots/release-manifest-r${prepared.targetRevision}-forged.json`;
+  await writeFile(join(r, forgedRelativePath), await readFile(originalSnapshot), { flag: "wx" });
+  prepared.targetSnapshotRelativePath = forgedRelativePath;
+  await writeFile(preparedPath, `${canonicalReleaseJsonV2(prepared)}\n`);
+  await expect(api.advanceReleaseManifestV2({ ...input, faultAt: undefined }))
+    .rejects.toThrow(/target.*snapshot.*path|prepared.*snapshot.*path/i);
+}, 30_000);
+
+it("[REQ-38][MANIFEST-V2-HISTORICAL-TARGET-BINDING] rejects historical prepared target path hash or revision drift before issuing later authority", async () => {
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
+  await api.advanceReleaseManifestV2(readinessAdvance(r));
+  const preparedNames = (await readdir(r)).filter((name) => name.startsWith("manifest-transition-prepared-"));
+  const initialPreparedName = (await Promise.all(preparedNames.map(async (name) => ({
+    name,
+    value: JSON.parse(String(await readFile(join(r, name))))
+  })))).find((entry) => entry.value.transitionId === "pre_manual")!;
+  const preparedPath = join(r, initialPreparedName.name);
+  const forgedRelativePath = "manifest-snapshots/release-manifest-r1-historical-forged.json";
+  await writeFile(join(r, forgedRelativePath),
+    await readFile(join(r, String(initialPreparedName.value.targetSnapshotRelativePath))), { flag: "wx" });
+  initialPreparedName.value.targetSnapshotRelativePath = forgedRelativePath;
+  await writeFile(preparedPath, `${canonicalReleaseJsonV2(initialPreparedName.value)}\n`);
+  await expect(api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" }))
+    .rejects.toThrow(/prepared.*(target|receipt)|snapshot.*path|manifest.*chain/i);
+}, 30_000);
 
 it("[REQ-38][MANIFEST-V2-REPLAY] exact replay is byte-identical and conflicting replay fails closed", async () => {
   const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r); const input = readinessAdvance(r);
   const first = await api.advanceReleaseManifestV2(input); const second = await api.advanceReleaseManifestV2(input); expect(second).toEqual(first);
   await expect(api.advanceReleaseManifestV2({ ...input, transition: { transitionId: "g12_backup_passed" }, verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G12_PRODUCTION_BACKUP")] })).rejects.toThrow();
-});
+}, 30_000);
 
 it("[REQ-38][MANIFEST-V2-ROOT-LEASE] one fixed root-wide lease serializes competing different transition keys before the loser creates a claim", async () => {
   const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
@@ -598,7 +684,7 @@ it("[REQ-38][ARTIFACT-ROOT-UNTRUSTED-WRITE] rejects writable Everyone Users fore
 
 it("[REQ-38][MANIFEST-V2-RECOVERY] validates claim root-lease prepared canonical-receipt committed filenames TTL liveness exact-generation resume and receipt chain", async () => {
   const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
-  const state = await api.recoverReleaseManifestStoreV2({ artifactRoot: r, expectedGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, evaluatedAt: "2026-07-18T10:05:00.000Z" }); expect(state.generationId).toBe(RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId);
+  const state = await api.recoverReleaseManifestStoreV2({ artifactRoot: r, expectedGenerationId: freezeFor(r).releaseGenerationId, evaluatedAt: "2026-07-18T10:05:00.000Z" }); expect(state.generationId).toBe(freezeFor(r).releaseGenerationId);
   await expect(api.recoverReleaseManifestStoreV2({ artifactRoot: r, expectedGenerationId: "foreign", evaluatedAt: "2026-07-18T10:05:00.000Z" })).rejects.toThrow();
 });
 
@@ -712,3 +798,165 @@ it("[REQ-38][ROOT-WRITER-TAKEOVER-CANONICAL-OLD-LEASE] rejects a hash-matching b
     })).rejects.toThrow(/noncanonical|canonical/i);
   }
 });
+
+it("[REQ-38][PRODUCTION-RECOVERY-CANONICAL-BINDINGS] binds every recovery evidence hash to its canonical artifact", async () => {
+  const api = await loadStoreApi(); const r = await root();
+  await api.materializeReleaseFreezeV2(materializeInput(r));
+  const freeze = freezeFor(r); const sourceManifestSha256 = "a".repeat(64);
+  const attestationSha256 = "b".repeat(64); const issuerSha256 = "c".repeat(64);
+  const recoveryLeaseSha256 = "d".repeat(64); const priorOperationId = "rollout-operation-1";
+  const operationId = "recovery-operation-1"; const t0 = "2026-07-18T10:00:00.000Z";
+  const t1 = "2026-07-18T10:10:00.000Z";
+  const canonicalBytes = (value: unknown) => Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8");
+  const sha = (value: unknown) => createHash("sha256").update(canonicalBytes(value)).digest("hex");
+  const save = async (relativePath: string, value: unknown) => {
+    const path = join(r, ...relativePath.split("/"));
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, canonicalBytes(value), { flag: "wx" });
+    return sha(value);
+  };
+
+  const abandoned = {
+    version: "production-operation-terminal-abandoned-v2" as const,
+    operationKind: "rollout" as const, operationId: priorOperationId,
+    candidateSha: freeze.candidateSha, releaseGenerationId: freeze.releaseGenerationId,
+    sourceManifestSha256, claimSha256: null, authorityConsumptionSha256: null,
+    capability: "cleanup_only" as const, cleanupOnlyTakeoverSha256: "1".repeat(64),
+    finalLeaseSha256: "2".repeat(64), finalLeaseEpoch: 2,
+    completedStepReceiptSetSha256: sha([]), attemptedExternalEffect: false,
+    reason: "authority_expired_after_claim" as const, abandonedAt: t0
+  };
+  const abandonedSha256 = await save(
+    `production-operation-terminal-abandoned-${priorOperationId}.json`, abandoned);
+  const cleanup = {
+    version: "production-operation-terminal-cleanup-v2" as const,
+    operationKind: "rollout" as const, operationId: priorOperationId,
+    terminalStateSha256: abandonedSha256, capability: "cleanup_only" as const,
+    preparedRemovalSha256: "3".repeat(64), leaseRemovalReceiptSha256: "4".repeat(64),
+    removedLeaseSha256: abandoned.finalLeaseSha256, cleanedAt: t0
+  };
+  const cleanupSha256 = await save(
+    `production-operation-terminal-cleanup-${priorOperationId}.json`, cleanup);
+
+  const preclaim = {
+    version: "production-authority-preclaim-validation-v2" as const,
+    operationKind: "recovery" as const, operationId, candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId, sourceManifestSha256,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    operationalAttestationSha256: attestationSha256,
+    operationalAttestationIssuerReceiptSha256: issuerSha256,
+    recoveryFromAbandonedOperationSha256: abandonedSha256,
+    commandId: "production_recovery" as const, redactedTemplateSha256: "5".repeat(64),
+    originalLeaseSha256: recoveryLeaseSha256, originalLeaseEpoch: 1,
+    originalLeaseOwnerProcessIdentitySha256: "6".repeat(64), checkedAt: t0, expiresAt: t1,
+    operationDeadlineAt: t1, minimumRequiredValidityMs: 1,
+    status: "fresh_compatible_unconsumed" as const
+  };
+  const preclaimSha256 = await save(`production-authority-preclaim-${operationId}.json`, preclaim);
+  const consumption = {
+    version: "operational-attestation-consumption-v2" as const,
+    operationKind: "recovery" as const, operationId, candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId, sourceManifestSha256,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    operationalAttestationSha256: attestationSha256,
+    operationalAttestationIssuerReceiptSha256: issuerSha256,
+    recoveryFromAbandonedOperationSha256: abandonedSha256,
+    preclaimValidationSha256: preclaimSha256,
+    preclaimLeaseLineageRelativePath: `production-preclaim-lease-lineages/${operationId}/${recoveryLeaseSha256}.json`,
+    preclaimLeaseLineageSha256: "7".repeat(64),
+    preclaimLeaseLineageCurrentTipSha256: recoveryLeaseSha256,
+    commandId: "production_recovery" as const, redactedTemplateSha256: preclaim.redactedTemplateSha256,
+    leaseSha256AtConsumption: recoveryLeaseSha256, leaseEpochAtConsumption: 1,
+    consumedAt: t0, expiresAt: t1, operationDeadlineAt: t1
+  };
+  const consumptionBytes = canonicalBytes(consumption); const consumptionSha256 = sha(consumption);
+  const claim = {
+    version: "production-operation-claim-v2" as const,
+    operationKind: "recovery" as const, operationId, candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId, sourceManifestSha256,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    operationalAttestationSha256: attestationSha256,
+    operationalAttestationIssuerReceiptSha256: issuerSha256,
+    recoveryFromAbandonedOperationSha256: abandonedSha256,
+    authorityConsumption: consumption, authorityConsumptionSha256: consumptionSha256,
+    preclaimLeaseLineageRelativePath: consumption.preclaimLeaseLineageRelativePath,
+    preclaimLeaseLineageSha256: consumption.preclaimLeaseLineageSha256,
+    preclaimLeaseLineageCurrentTipSha256: recoveryLeaseSha256,
+    capability: "recovery_only" as const, leaseEpochAtConsumption: 1,
+    operationDeadlineAt: t1, claimedAt: t0, claimantPid: 123,
+    claimantProcessStartFingerprintSha256: "8".repeat(64)
+  };
+  const claimBytes = canonicalBytes(claim); const claimSha256 = sha(claim);
+  const completedStepReceiptPrefix: never[] = [];
+  const prefixSha256 = sha(completedStepReceiptPrefix);
+  const recoveryInput = {
+    version: "production-recovery-input-v2" as const,
+    priorOperationKind: "rollout" as const, priorOperationId,
+    priorTerminalAbandonedSha256: abandonedSha256, priorTerminalCleanupSha256: cleanupSha256,
+    completedStepReceiptPrefix, completedStepReceiptPrefixSha256: prefixSha256,
+    uncertainStepMarker: null, uncertainStepMarkerSha256: null,
+    recoveryOperationalAttestationSha256: attestationSha256,
+    recoveryProductionLeaseSha256: recoveryLeaseSha256,
+    recoveryAuthorityPreclaimSha256: preclaimSha256, recoveryOperationClaimSha256: claimSha256,
+    recoveryAuthorityConsumptionSha256: consumptionSha256, verifiedAt: t0
+  };
+  const recoveryInputSha256 = await save("production-recovery-input-v2.json", recoveryInput);
+  const recoverySteps = ["verify_abandoned_cleanup", "verify_completed_prefix",
+    "verify_uncertain_step_intent", "validate_failure_derivation_inputs"] as const;
+  const completedStepReceipts = [];
+  for (const [index, stepId] of recoverySteps.entries()) {
+    const sequence = index + 1;
+    const receipt = {
+      version: "production-orchestration-step-receipt-v2" as const, operationId,
+      operationClaimSha256: claimSha256, authorityConsumptionSha256: consumptionSha256,
+      operationLeaseSha256: recoveryLeaseSha256, operationLeaseEpoch: 1,
+      operationDeadlineAt: t1, inputSha256: "9".repeat(64), outputSha256: "a".repeat(64),
+      observedStateSha256: "b".repeat(64), sequence, startedAt: t0, finishedAt: t0,
+      recoveredAfterCrash: false as const, result: "completed" as const,
+      capability: "recovery_only" as const, commandId: "production_recovery" as const,
+      redactedTemplateSha256: preclaim.redactedTemplateSha256,
+      executionKind: "local_validation" as const, stepIntentRelativePath: null,
+      stepIntentSha256: null, orchestration: "recovery" as const, stepId
+    };
+    const relativePath = `production-operation-steps/${operationId}/${sequence}-${stepId}-v2.json`;
+    const receiptSha256 = await save(relativePath, receipt);
+    completedStepReceipts.push({ relativePath, sha256: receiptSha256, receipt });
+  }
+  const orchestration = {
+    version: "production-orchestration-receipt-v2" as const,
+    candidateSha: freeze.candidateSha, releaseGenerationId: freeze.releaseGenerationId,
+    sourceManifestSha256, operationId, operationClaimSha256: claimSha256,
+    finalOperationLeaseSha256: recoveryLeaseSha256, finalOperationLeaseEpoch: 1,
+    operationDeadlineAt: t1, operationLeaseTakeoverChainSha256: "c".repeat(64),
+    operationalAttestationConsumptionSha256: consumptionSha256,
+    redactedTemplateSha256: preclaim.redactedTemplateSha256, result: "completed" as const,
+    orchestration: "recovery" as const, capability: "recovery_only" as const,
+    commandId: "production_recovery" as const, recoveryInputSha256,
+    recoveryAttemptedExternalEffect: false as const, priorAttemptedExternalEffect: false,
+    priorCompletedStepReceiptPrefixSha256: prefixSha256, priorUncertainStepMarkerSha256: null,
+    completedStepReceipts
+  };
+  const orchestrationSha256 = await save("production-recovery-orchestration-receipt-v2.json", orchestration);
+  const evidence = {
+    version: "production-failure-evidence-v2" as const, candidateSha: freeze.candidateSha,
+    releaseFreezeIdentitySha256: freezeShaFor(r), sourceManifestSha256,
+    failedExecutionEvidenceSha256: orchestrationSha256, observedAt: t0,
+    failedGateId: "G14_PRODUCTION_ROLLOUT" as const,
+    evidenceKind: "abandoned_operation_recovery" as const, priorAttemptedExternalEffect: false,
+    recoveryAttemptedExternalEffect: false as const, recoveryInputSha256,
+    recoveryOrchestrationReceiptSha256: orchestrationSha256,
+    priorTerminalAbandonedSha256: abandonedSha256, priorTerminalCleanupSha256: cleanupSha256,
+    completedStepReceiptPrefixSha256: prefixSha256, uncertainStepMarkerSha256: null,
+    recoveryOperationalAttestationSha256: attestationSha256,
+    recoveryProductionLeaseSha256: recoveryLeaseSha256, recoveryAuthorityPreclaimSha256: preclaimSha256,
+    recoveryOperationClaimSha256: claimSha256,
+    recoveryAuthorityConsumptionSha256: consumptionSha256,
+    failureCode: "authority_expired_after_claim" as const
+  };
+  const bindingInput = { root: r, freeze, sourceManifestSha256, evidence,
+    consumption, consumptionBytes, claim, claimBytes };
+  expect(() => api.assertRecoveryFailureArtifactBindingsV2(bindingInput)).not.toThrow();
+  expect(() => api.assertRecoveryFailureArtifactBindingsV2({
+    ...bindingInput, evidence: { ...evidence, recoveryInputSha256: "f".repeat(64) }
+  })).toThrow(/recovery.*binding|canonical/i);
+}, 30_000);

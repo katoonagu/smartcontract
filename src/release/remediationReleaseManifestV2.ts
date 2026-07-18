@@ -66,6 +66,10 @@ export const OPERATIONAL_ATTESTATION_POLICY_V2 = Object.freeze({
     commandId: "production_canary",
     redactedTemplate: "release:production:canary <candidate-sha> <runtime-label>"
   },
+  production_failed: {
+    commandId: "production_recovery",
+    redactedTemplate: "release:production:recovery <abandoned-operation> <protected-artifact-root>"
+  },
   rollback_rolled_back: {
     commandId: "production_rollback",
     redactedTemplate: "release:production:rollback <previous-runtime-sha> <runtime-label>"
@@ -320,6 +324,572 @@ export type ProductionRollbackOutcomeV2 =
       candidateStopEvidenceSha256: string;
       previousStartEvidenceSha256: string;
     };
+
+export type ProductionOperationKindV2 = "rollout" | "canary" | "rollback" | "recovery";
+export type ProductionOperationCapabilityV2 = "effect_capable" | "recovery_only" | "cleanup_only";
+export type ProductionOperationCommandIdV2 =
+  | "production_rollout" | "production_canary" | "production_rollback" | "production_recovery";
+
+export type ProductionAuthorityPreclaimValidationV2 = {
+  version: "production-authority-preclaim-validation-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  operationalAttestationIssuerReceiptSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  commandId: ProductionOperationCommandIdV2;
+  redactedTemplateSha256: string;
+  originalLeaseSha256: string;
+  originalLeaseEpoch: number;
+  originalLeaseOwnerProcessIdentitySha256: string;
+  checkedAt: string;
+  expiresAt: string;
+  operationDeadlineAt: string;
+  minimumRequiredValidityMs: number;
+  status: "fresh_compatible_unconsumed";
+};
+
+export type ProductionPreclaimLeaseLineageV2 = {
+  version: "production-preclaim-lease-lineage-v2";
+  operationId: string;
+  relativePath: string;
+  preclaimValidationSha256: string;
+  previousLineageSha256: string | null;
+  originalLeaseSha256: string;
+  originalLeaseEpoch: number;
+  originalLeaseOwnerProcessIdentitySha256: string;
+  committedTakeoverReceiptSuffixSha256s: [] | [string];
+  currentTipLeaseSha256: string;
+  currentTipLeaseEpoch: number;
+  currentTipLeaseOwnerProcessIdentitySha256: string;
+  lineageStartedAt: string;
+  resolvedAt: string;
+};
+
+export type OperationalAttestationConsumptionV2 = {
+  version: "operational-attestation-consumption-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  operationalAttestationIssuerReceiptSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  preclaimValidationSha256: string;
+  preclaimLeaseLineageRelativePath: string;
+  preclaimLeaseLineageSha256: string;
+  preclaimLeaseLineageCurrentTipSha256: string;
+  commandId: ProductionOperationCommandIdV2;
+  redactedTemplateSha256: string;
+  leaseSha256AtConsumption: string;
+  leaseEpochAtConsumption: number;
+  consumedAt: string;
+  expiresAt: string;
+  operationDeadlineAt: string;
+};
+
+export type ProductionOperationClaimV2 = {
+  version: "production-operation-claim-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  operationalAttestationIssuerReceiptSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  authorityConsumption: OperationalAttestationConsumptionV2;
+  authorityConsumptionSha256: string;
+  preclaimLeaseLineageRelativePath: string;
+  preclaimLeaseLineageSha256: string;
+  preclaimLeaseLineageCurrentTipSha256: string;
+  capability: "effect_capable" | "recovery_only";
+  leaseEpochAtConsumption: number;
+  operationDeadlineAt: string;
+  claimedAt: string;
+  claimantPid: number;
+  claimantProcessStartFingerprintSha256: string;
+};
+
+export type ProductionOperationLeaseV2 = {
+  version: "production-operation-lease-v2";
+  scope: "artifact_root_production_operation";
+  relativePath: "production-operation-root.lease.json";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  operationalAttestationSha256: string;
+  recoveryFromAbandonedOperationSha256: string | null;
+  capability: ProductionOperationCapabilityV2;
+  leaseEpoch: number;
+  ownerPid: number;
+  ownerProcessStartFingerprintSha256: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  operationDeadlineAt: string;
+};
+
+export type PreparedProductionOperationLeaseTakeoverV2 = {
+  version: "prepared-production-operation-lease-takeover-v2";
+  commandId: "production_operation_lease_takeover";
+  redactedTemplateSha256: string;
+  capability: "effect_capable" | "recovery_only";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  authorityConsumptionSha256: string | null;
+  oldLeaseSha256: string;
+  oldLeaseEpoch: number;
+  oldOwnerProcessIdentitySha256: string;
+  canonicalNewLease: ProductionOperationLeaseV2 & { capability: "effect_capable" | "recovery_only" };
+  canonicalNewLeaseUtf8Base64: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  operationDeadlineAt: string;
+  preparedAt: string;
+};
+
+export type CommittedProductionOperationLeaseTakeoverV2 = {
+  version: "committed-production-operation-lease-takeover-v2";
+  commandId: "production_operation_lease_takeover";
+  redactedTemplateSha256: string;
+  capability: "effect_capable" | "recovery_only";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  authorityConsumptionSha256: string | null;
+  preparedTakeoverSha256: string;
+  oldLeaseSha256: string;
+  tombstoneRelativePath: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  operationDeadlineAt: string;
+  committedAt: string;
+};
+
+export type PreparedCleanupOnlyProductionOperationTakeoverV2 = {
+  version: "prepared-cleanup-only-production-operation-takeover-v2";
+  commandId: "production_operation_cleanup_only_takeover";
+  redactedTemplateSha256: string;
+  capability: "cleanup_only";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  authorityConsumptionSha256: string | null;
+  terminalReason: "authority_expired_before_claim" | "authority_expired_after_claim" | "operation_deadline_reached";
+  oldLeaseSha256: string;
+  oldLeaseEpoch: number;
+  oldOwnerProcessIdentitySha256: string;
+  canonicalNewLease: ProductionOperationLeaseV2 & { capability: "cleanup_only" };
+  canonicalNewLeaseUtf8Base64: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  operationDeadlineAt: string;
+  preparedAt: string;
+};
+
+export type CleanupOnlyProductionOperationTakeoverV2 = {
+  version: "cleanup-only-production-operation-takeover-v2";
+  commandId: "production_operation_cleanup_only_takeover";
+  redactedTemplateSha256: string;
+  capability: "cleanup_only";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  authorityConsumptionSha256: string | null;
+  terminalReason: "authority_expired_before_claim" | "authority_expired_after_claim" | "operation_deadline_reached";
+  preparedTakeoverSha256: string;
+  oldLeaseSha256: string;
+  tombstoneRelativePath: string;
+  newLeaseSha256: string;
+  newLeaseEpoch: number;
+  operationDeadlineAt: string;
+  committedAt: string;
+};
+
+type ProductionOperationSettlementCommonV2 = {
+  version: "production-operation-settlement-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  claimSha256: string;
+  authorityConsumptionSha256: string;
+  finalLeaseSha256: string;
+  finalLeaseEpoch: number;
+  operationDeadlineAt: string;
+  terminalEvidenceSha256: string;
+  authorityRevalidatedAt: string;
+  deadlineRevalidatedAt: string;
+  settledAt: string;
+};
+
+export type ProductionOperationSettlementV2 = ProductionOperationSettlementCommonV2 & (
+  | { capability: "effect_capable"; result: "passed"; orchestrationReceiptSha256: string; attemptedExternalEffect: boolean }
+  | { capability: "effect_capable"; result: "failed"; orchestrationReceiptSha256: string | null; attemptedExternalEffect: boolean }
+  | { capability: "recovery_only"; result: "failed"; orchestrationReceiptSha256: string; recoveryAttemptedExternalEffect: false; priorAttemptedExternalEffect: boolean }
+);
+
+export type ProductionOperationLeaseRemovalReceiptV2 = {
+  version: "production-operation-lease-removal-receipt-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  terminalStateKind: "settlement" | "terminal_abandoned";
+  terminalStateSha256: string;
+  capability: ProductionOperationCapabilityV2;
+  removedLeaseSha256: string;
+  removedLeaseEpoch: number;
+  removedAt: string;
+};
+
+export type PreparedProductionOperationLeaseRemovalV2 = {
+  version: "prepared-production-operation-lease-removal-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  terminalStateKind: "settlement" | "terminal_abandoned";
+  terminalStateSha256: string;
+  capability: ProductionOperationCapabilityV2;
+  exactCurrentLeaseSha256: string;
+  exactCurrentLeaseEpoch: number;
+  canonicalRemovalReceipt: ProductionOperationLeaseRemovalReceiptV2;
+  canonicalRemovalReceiptUtf8Base64: string;
+  canonicalRemovalReceiptSha256: string;
+  preparedAt: string;
+};
+
+export type ProductionOperationTerminalCleanupV2 = {
+  version: "production-operation-terminal-cleanup-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  terminalStateSha256: string;
+  capability: ProductionOperationCapabilityV2;
+  preparedRemovalSha256: string;
+  leaseRemovalReceiptSha256: string;
+  removedLeaseSha256: string;
+  cleanedAt: string;
+};
+
+export type ProductionOperationTerminalAbandonedV2 = {
+  version: "production-operation-terminal-abandoned-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  claimSha256: string | null;
+  authorityConsumptionSha256: string | null;
+  capability: ProductionOperationCapabilityV2;
+  cleanupOnlyTakeoverSha256: string | null;
+  finalLeaseSha256: string;
+  finalLeaseEpoch: number;
+  completedStepReceiptSetSha256: string;
+  attemptedExternalEffect: boolean;
+  reason: "authority_expired_before_claim" | "authority_expired_after_claim" | "operation_deadline_reached" | "ownership_protocol_failure";
+  abandonedAt: string;
+};
+
+export type Schema032ReleaseEvidenceV1 = {
+  candidateSha: string;
+  databaseRole: "clean" | "production_clone" | "runtime_sanitized" | "production";
+  databaseFingerprintSha256: string;
+  migrationFilename: "032_telegram_runtime_forensics_data_contracts.sql";
+  candidateBytesChecksumSha256: string;
+  receiptChecksumSha256: string;
+  shortChecksum: string;
+  postconditionsSha256: string;
+  firstApply: "applied" | "already_verified";
+  secondApply: "already_verified";
+};
+
+export type Schema032Stage = "first_migration" | "first_verification" | "second_migration" | "final_verification";
+export type Schema032CompletedStageV2<S extends Schema032Stage = Schema032Stage> = { step: S; receiptSha256: string };
+export type Schema032ProductionExecutionReceiptCommonV2 = {
+  version: "schema-032-production-execution-receipt-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  operationalAttestationSha256: string;
+  authorityConsumptionSha256: string;
+  sourceManifestSha256: string;
+  g12TransitionReceiptSha256: string;
+  productionBackupEvidenceSha256: string;
+  advisoryLockKey: 320032500;
+  databaseSessionIdentitySha256: string;
+  lockAcquiredAt: string;
+  lockReleasedAt: string;
+  migrationBytesChecksumSha256: string;
+};
+export type Schema032ProductionExecutionSuccessV2 = Schema032ProductionExecutionReceiptCommonV2 & {
+  result: "applied_and_verified";
+  completedStages: [
+    Schema032CompletedStageV2<"first_migration">,
+    Schema032CompletedStageV2<"first_verification">,
+    Schema032CompletedStageV2<"second_migration">,
+    Schema032CompletedStageV2<"final_verification">
+  ];
+  receiptChecksumSha256: string;
+  postconditionsSha256: string;
+};
+export type Schema032StageFailureArtifactPath<S extends Schema032Stage> =
+  S extends "first_migration" ? "schema032-failures/first-migration-failure-v2.json"
+    : S extends "first_verification" ? "schema032-failures/first-verification-failure-v2.json"
+      : S extends "second_migration" ? "schema032-failures/second-migration-failure-v2.json"
+        : "schema032-failures/final-verification-failure-v2.json";
+export type Schema032StageFailureArtifactV2<S extends Schema032Stage = Schema032Stage> = {
+  kind: "schema032_stage_failure";
+  failedStep: S;
+  relativePath: Schema032StageFailureArtifactPath<S>;
+  evidenceSha256: string;
+};
+export type Schema032ProductionExecutionFailureV2 = Schema032ProductionExecutionReceiptCommonV2 & (
+  | { result: "failed_after_attempt"; failedStep: "first_migration"; completedStages: [];
+      failureArtifact: Schema032StageFailureArtifactV2<"first_migration"> }
+  | { result: "failed_after_attempt"; failedStep: "first_verification";
+      completedStages: [Schema032CompletedStageV2<"first_migration">];
+      failureArtifact: Schema032StageFailureArtifactV2<"first_verification"> }
+  | { result: "failed_after_attempt"; failedStep: "second_migration";
+      completedStages: [Schema032CompletedStageV2<"first_migration">, Schema032CompletedStageV2<"first_verification">];
+      failureArtifact: Schema032StageFailureArtifactV2<"second_migration"> }
+  | { result: "failed_after_attempt"; failedStep: "final_verification";
+      completedStages: [Schema032CompletedStageV2<"first_migration">, Schema032CompletedStageV2<"first_verification">,
+        Schema032CompletedStageV2<"second_migration">];
+      failureArtifact: Schema032StageFailureArtifactV2<"final_verification"> }
+);
+export type Schema032ProductionExecutionReceiptV2 =
+  | Schema032ProductionExecutionSuccessV2 | Schema032ProductionExecutionFailureV2;
+
+export type ProductionRolloutStepIdV2 =
+  | "verify_g13" | "verify_schema" | "verify_previous_runtime_identity" | "verify_singleton_precondition"
+  | "stop_previous" | "prove_previous_stopped" | "start_candidate" | "prove_candidate_started"
+  | "immediate_runtime_checks";
+export type ProductionCanaryStepIdV2 = "verify_g14" | "observe_cycle_1" | "observe_cycle_2" | "bounded_runtime_checks";
+export type ProductionRollbackStepIdV2 =
+  | "verify_failure" | "prove_previous_healthy" | "prove_no_previous_stop" | "prove_no_candidate_start"
+  | "restart_previous" | "stop_candidate" | "start_previous" | "rollback_runtime_checks";
+export type ProductionRecoveryStepIdV2 =
+  | "verify_abandoned_cleanup" | "verify_completed_prefix" | "verify_uncertain_step_intent"
+  | "validate_failure_derivation_inputs";
+export type ProductionExternalEffectStepIdV2 =
+  | "stop_previous" | "start_candidate" | "restart_previous" | "stop_candidate" | "start_previous";
+
+export type ProductionOrchestrationStepIntentV2 = {
+  version: "production-orchestration-step-intent-v2";
+  capability: "effect_capable";
+  orchestration: "rollout" | "canary" | "rollback";
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  sequence: number;
+  stepId: ProductionExternalEffectStepIdV2;
+  attempt: 1;
+  relativePath: string;
+  currentOperationLeaseSha256: string;
+  currentOperationLeaseEpoch: number;
+  commandId: "production_rollout" | "production_canary" | "production_rollback";
+  redactedTemplateSha256: string;
+  inputSha256: string;
+  intendedExternalEffectSha256: string;
+  preparedAt: string;
+};
+
+export type ProductionOrchestrationStepReceiptCommonV2 = {
+  version: "production-orchestration-step-receipt-v2";
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  operationLeaseSha256: string;
+  operationLeaseEpoch: number;
+  operationDeadlineAt: string;
+  inputSha256: string;
+  outputSha256: string;
+  observedStateSha256: string;
+  sequence: number;
+  startedAt: string;
+  finishedAt: string;
+  recoveredAfterCrash: boolean;
+  result: "completed";
+};
+export type EffectCapableProductionOrchestrationStepReceiptV2 = ProductionOrchestrationStepReceiptCommonV2 & {
+  capability: "effect_capable";
+  commandId: "production_rollout" | "production_canary" | "production_rollback";
+  redactedTemplateSha256: string;
+} & (
+  | { executionKind: "local_validation"; stepIntentRelativePath: null; stepIntentSha256: null }
+  | { executionKind: "external_effect"; stepIntentRelativePath: string; stepIntentSha256: string }
+) & (
+  | { orchestration: "rollout"; stepId: ProductionRolloutStepIdV2 }
+  | { orchestration: "canary"; stepId: ProductionCanaryStepIdV2 }
+  | { orchestration: "rollback"; stepId: ProductionRollbackStepIdV2 }
+);
+export type RecoveryOnlyProductionOrchestrationStepReceiptV2 = ProductionOrchestrationStepReceiptCommonV2 & {
+  capability: "recovery_only";
+  orchestration: "recovery";
+  stepId: ProductionRecoveryStepIdV2;
+  executionKind: "local_validation";
+  commandId: "production_recovery";
+  redactedTemplateSha256: string;
+  stepIntentRelativePath: null;
+  stepIntentSha256: null;
+  recoveredAfterCrash: false;
+};
+export type ProductionOrchestrationStepReceiptV2 =
+  | EffectCapableProductionOrchestrationStepReceiptV2 | RecoveryOnlyProductionOrchestrationStepReceiptV2;
+
+export type ProductionOrchestrationReceiptCommonV2 = {
+  version: "production-orchestration-receipt-v2";
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  operationId: string;
+  operationClaimSha256: string;
+  finalOperationLeaseSha256: string;
+  finalOperationLeaseEpoch: number;
+  operationDeadlineAt: string;
+  operationLeaseTakeoverChainSha256: string;
+  operationalAttestationConsumptionSha256: string;
+  redactedTemplateSha256: string;
+  result: "completed";
+};
+export type CompletedStepReceiptRefV2<T extends ProductionOrchestrationStepReceiptV2> = {
+  relativePath: string;
+  sha256: string;
+  receipt: T;
+};
+export type EffectCapableProductionOrchestrationReceiptV2 = ProductionOrchestrationReceiptCommonV2 & {
+  orchestration: "rollout" | "canary" | "rollback";
+  capability: "effect_capable";
+  commandId: "production_rollout" | "production_canary" | "production_rollback";
+  recoveryInputSha256: null;
+  completedStepReceipts: Array<CompletedStepReceiptRefV2<EffectCapableProductionOrchestrationStepReceiptV2>>;
+};
+export type RecoveryOnlyProductionOrchestrationReceiptV2 = ProductionOrchestrationReceiptCommonV2 & {
+  orchestration: "recovery";
+  capability: "recovery_only";
+  commandId: "production_recovery";
+  recoveryInputSha256: string;
+  recoveryAttemptedExternalEffect: false;
+  priorAttemptedExternalEffect: boolean;
+  priorCompletedStepReceiptPrefixSha256: string;
+  priorUncertainStepMarkerSha256: string | null;
+  completedStepReceipts: Array<CompletedStepReceiptRefV2<RecoveryOnlyProductionOrchestrationStepReceiptV2>>;
+};
+export type ProductionOrchestrationReceiptV2 =
+  | EffectCapableProductionOrchestrationReceiptV2 | RecoveryOnlyProductionOrchestrationReceiptV2;
+
+export type ProductionRolloutEvidenceV2 = {
+  version: "production-rollout-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  operationalAttestationConsumptionSha256: string;
+  sourceManifestSha256: string;
+  previousStopEvidenceSha256: string;
+  candidateStartEvidenceSha256: string;
+  managerCapturesSha256: string;
+  queryCapturesSha256: string;
+  orchestrationReceiptSha256: string;
+  checks: Record<"schema" | "version" | "admin" | "singleton" | "workers" | "logs" | "delivery" | "legacy", true>;
+  result: "passed";
+};
+export type ProductionCanaryEvidenceV2 = {
+  version: "production-canary-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  operationalAttestationConsumptionSha256: string;
+  sourceManifestSha256: string;
+  observationStartedAt: string;
+  observationFinishedAt: string;
+  completedPollingCycles: number;
+  queryCapturesSha256: string;
+  logCapturesSha256: string;
+  orchestrationReceiptSha256: string;
+  checks: Record<"schema" | "version" | "admin" | "singleton" | "reconciliation" | "delivery" | "navigation" | "allowance" | "legacy" | "secrets" | "queues" | "honest_limits", true>;
+  result: "passed";
+};
+
+export type UncertainProductionStepMarkerV2 = {
+  sequence: number;
+  stepId: ProductionExternalEffectStepIdV2;
+  attempt: 1;
+  stepIntentRelativePath: string;
+  stepIntentSha256: string;
+  externalEffectMayHaveStarted: true;
+  observedOutcome: "unknown";
+};
+export type ProductionRecoveryInputV2 = {
+  version: "production-recovery-input-v2";
+  priorOperationKind: "rollout" | "canary";
+  priorOperationId: string;
+  priorTerminalAbandonedSha256: string;
+  priorTerminalCleanupSha256: string;
+  completedStepReceiptPrefix: Array<{ sequence: number; stepId: string; receiptSha256: string }>;
+  completedStepReceiptPrefixSha256: string;
+  uncertainStepMarker: UncertainProductionStepMarkerV2 | null;
+  uncertainStepMarkerSha256: string | null;
+  recoveryOperationalAttestationSha256: string;
+  recoveryProductionLeaseSha256: string;
+  recoveryAuthorityPreclaimSha256: string;
+  recoveryOperationClaimSha256: string;
+  recoveryAuthorityConsumptionSha256: string;
+  verifiedAt: string;
+};
+
+export type ProductionFailureEvidenceCommonV2 = {
+  version: "production-failure-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  sourceManifestSha256: string;
+  failedExecutionEvidenceSha256: string;
+  observedAt: string;
+};
+export type ProductionFailureEvidenceV2 = ProductionFailureEvidenceCommonV2 & (
+  | { failedGateId: "G13_PRODUCTION_MIGRATION"; evidenceKind: "schema032_execution_receipt"; attemptedExternalEffect: true; failureCode: "first_migration_failed" | "first_verification_failed" | "second_migration_failed" | "final_verification_failed" }
+  | { failedGateId: "G14_PRODUCTION_ROLLOUT"; evidenceKind: "runtime_rollout_preflight"; attemptedExternalEffect: false; orchestrationProgressSha256: string; preEffectValidationReceiptsSha256: string; failureCode: "g13_reverification_failed" | "schema_verification_failed" | "previous_runtime_identity_mismatch" | "singleton_precondition_failed" }
+  | { failedGateId: "G14_PRODUCTION_ROLLOUT"; evidenceKind: "runtime_manager_capture"; attemptedExternalEffect: true; orchestrationProgressSha256: string; failureCode: "previous_runtime_stop_failed" | "candidate_start_failed" }
+  | { failedGateId: "G14_PRODUCTION_ROLLOUT"; evidenceKind: "runtime_rollout_checks"; attemptedExternalEffect: true; orchestrationProgressSha256: string; failureCode: "schema_verification_failed" | "runtime_version_mismatch" | "admin_unhealthy" | "singleton_violation" | "worker_start_failed" | "delivery_invariant_failed" | "legacy_population_changed" | "secret_detected" }
+  | { failedGateId: "G15_PRODUCTION_CANARY"; evidenceKind: "runtime_canary_checks"; attemptedExternalEffect: true; orchestrationProgressSha256: string; failureCode: "schema_verification_failed" | "canary_timeout" | "polling_cycles_incomplete" | "runtime_version_mismatch" | "admin_unhealthy" | "singleton_violation" | "reconciliation_failed" | "delivery_invariant_failed" | "navigation_invariant_failed" | "allowance_invariant_failed" | "legacy_population_changed" | "queue_growth_detected" | "honest_limit_misreported" | "secret_detected" }
+  | { failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY"; evidenceKind: "abandoned_operation_recovery"; priorAttemptedExternalEffect: boolean; recoveryAttemptedExternalEffect: false; recoveryInputSha256: string; recoveryOrchestrationReceiptSha256: string; priorTerminalAbandonedSha256: string; priorTerminalCleanupSha256: string; completedStepReceiptPrefixSha256: string; uncertainStepMarkerSha256: string | null; recoveryOperationalAttestationSha256: string; recoveryProductionLeaseSha256: string; recoveryAuthorityPreclaimSha256: string; recoveryOperationClaimSha256: string; recoveryAuthorityConsumptionSha256: string; failureCode: "authority_expired_before_claim" | "authority_expired_after_claim" | "operation_deadline_reached" }
+);
+
+export type ProductionRollbackEvidenceV2 = {
+  version: "production-rollback-evidence-v2";
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  artifactRootFingerprintSha256: string;
+  sourceManifestSha256: string;
+  failureEvidenceSha256: string;
+  operationalAttestationSha256: string;
+  operationalAttestationConsumptionSha256: string;
+  commandId: "production_rollback";
+  redactedTemplateSha256: string;
+  previousRuntimeIdentitySha256: string;
+  orchestrationReceiptSha256: string;
+  outcome: ProductionRollbackOutcomeV2;
+  queryCapturesSha256: string;
+  checks: Record<"schema032_retained" | "previous_version" | "admin" | "singleton" | "allowance" | "legacy" | "sent" | "no_duplicate_send", true>;
+};
 
 export type PendingReleaseGateV2 = {
   id: ReleaseGateIdV2;
@@ -585,6 +1155,7 @@ export type VerifiedManifestTransitionV2 = {
 export type VerifiedManifestTransitionEvidenceV2 = {
   refs: ManifestTransitionEvidenceRefV2[];
   actualRollbackOutcome: ProductionRollbackOutcomeV2 | null;
+  productionFailureEvidence?: ProductionFailureEvidenceV2;
 };
 
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -1772,9 +2343,16 @@ function parseVerifiedTransition(value: unknown): VerifiedManifestTransitionV2 {
   return transition as VerifiedManifestTransitionV2;
 }
 
-function parseVerifiedTransitionEvidence(value: unknown): VerifiedManifestTransitionEvidenceV2 {
+export function validateVerifiedManifestTransitionEvidenceV2(
+  value: unknown
+): VerifiedManifestTransitionEvidenceV2 {
   const verified = record(value, "verified_transition_evidence");
-  exactKeys(verified, ["refs", "actualRollbackOutcome"], "verified_transition_evidence");
+  const hasProductionFailureEvidence = Object.prototype.hasOwnProperty.call(
+    verified, "productionFailureEvidence"
+  );
+  exactKeys(verified, hasProductionFailureEvidence
+    ? ["refs", "actualRollbackOutcome", "productionFailureEvidence"]
+    : ["refs", "actualRollbackOutcome"], "verified_transition_evidence");
   if (!Array.isArray(verified.refs)) throw new Error("verified_transition_refs_invalid");
   const refs = verified.refs.map((ref) => {
     const kind = record(ref, "transition_evidence_ref").kind;
@@ -1784,18 +2362,29 @@ function parseVerifiedTransitionEvidence(value: unknown): VerifiedManifestTransi
   });
   const actualRollbackOutcome = verified.actualRollbackOutcome === null
     ? null : validateProductionRollbackOutcomeV2(verified.actualRollbackOutcome);
-  return { refs, actualRollbackOutcome };
+  return hasProductionFailureEvidence
+    ? { refs, actualRollbackOutcome,
+      productionFailureEvidence: validateProductionFailureEvidenceV2(
+        verified.productionFailureEvidence) }
+    : { refs, actualRollbackOutcome };
 }
 
 function requireOperationalAttestation(
   transition: VerifiedManifestTransitionV2,
   current: RemediationReleaseManifestV2,
-  sourceManifestSha256: string
+  sourceManifestSha256: string,
+  transitionEvidence: VerifiedManifestTransitionEvidenceV2
 ): void {
+  const recoveryEvidence = transitionEvidence.productionFailureEvidence;
+  const isRecoveryFailure = transition.transitionId === "production_failed"
+    && recoveryEvidence?.evidenceKind === "abandoned_operation_recovery";
+  if (recoveryEvidence !== undefined && !isRecoveryFailure) {
+    throw new Error("production_recovery_evidence_branch_invalid");
+  }
   const productionAction = [
     "g12_backup_passed", "g13_migration_passed", "g14_rollout_passed",
     "g15_canary_released", "rollback_rolled_back"
-  ].includes(transition.transitionId);
+  ].includes(transition.transitionId) || isRecoveryFailure;
   if (!productionAction) {
     if (transition.operationalAttestation !== null) throw new Error("unexpected_operational_attestation");
     return;
@@ -1809,6 +2398,14 @@ function requireOperationalAttestation(
       || Date.parse(attestation.issuedAt) > Date.parse(transition.evaluatedAt)
       || Date.parse(transition.evaluatedAt) >= Date.parse(attestation.expiresAt)) {
     throw new Error("operational_attestation_transition_binding_invalid");
+  }
+  if (isRecoveryFailure && recoveryEvidence !== undefined
+      && (recoveryEvidence.candidateSha !== current.candidateSha
+        || recoveryEvidence.releaseFreezeIdentitySha256 !== current.releaseFreezeIdentitySha256
+        || recoveryEvidence.sourceManifestSha256 !== sourceManifestSha256
+        || recoveryEvidence.recoveryOperationalAttestationSha256
+          !== releaseSha256V2(`${canonicalReleaseJsonV2(attestation)}\n`))) {
+    throw new Error("production_recovery_authority_evidence_binding_invalid");
   }
   const policy = OPERATIONAL_ATTESTATION_POLICY_V2[
     transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2
@@ -1880,9 +2477,11 @@ export function reduceManifestTransition(
   const current = validateRemediationReleaseManifestV2(currentValue);
   const transition = parseVerifiedTransition(transitionValue);
   const gateOutputs = parseVerifiedGateOutputs(verifiedGateOutputsValue, current.candidateSha);
-  const transitionEvidence = parseVerifiedTransitionEvidence(verifiedTransitionEvidenceValue);
+  const transitionEvidence = validateVerifiedManifestTransitionEvidenceV2(
+    verifiedTransitionEvidenceValue
+  );
   const sourceManifestSha256 = releaseManifestSha256V2(current);
-  requireOperationalAttestation(transition, current, sourceManifestSha256);
+  requireOperationalAttestation(transition, current, sourceManifestSha256, transitionEvidence);
 
   let gates = [...current.gates];
   let overall: RemediationReleaseManifestV2["overall"] = "not_ready";
@@ -1915,6 +2514,17 @@ export function reduceManifestTransition(
     }
     const failure = validateProductionFailureTransitionEvidenceRefV2(transitionEvidence.refs[0], current.candidateSha);
     if (failure.sourceManifestSha256 !== sourceManifestSha256) throw new Error("production_failure_source_invalid");
+    if (transitionEvidence.productionFailureEvidence !== undefined) {
+      const recovery = transitionEvidence.productionFailureEvidence;
+      if (recovery.evidenceKind !== "abandoned_operation_recovery"
+          || recovery.failedGateId !== failedGateId
+          || recovery.candidateSha !== current.candidateSha
+          || recovery.releaseFreezeIdentitySha256 !== current.releaseFreezeIdentitySha256
+          || recovery.sourceManifestSha256 !== sourceManifestSha256
+          || failure.sha256 !== releaseSha256V2(`${canonicalReleaseJsonV2(recovery)}\n`)) {
+        throw new Error("production_recovery_failure_evidence_binding_invalid");
+      }
+    }
     const failedIndex = RELEASE_GATE_IDS_V2.indexOf(failedGateId);
     gates = gates.map((gate, index) => {
       if (index === failedIndex) return gateOutputs[0];
@@ -1985,4 +2595,931 @@ export async function verifyRemediationReleaseArtifactsV2(): Promise<never> {
 
 export function assertProductionMutatorAuthorityV2(): never {
   throw new Error("production_mutator_authority_unverified");
+}
+
+const PRODUCTION_OPERATION_KINDS_V2 = ["rollout", "canary", "rollback", "recovery"] as const;
+const PRODUCTION_CAPABILITIES_V2 = ["effect_capable", "recovery_only", "cleanup_only"] as const;
+const PRODUCTION_OPERATION_COMMANDS_V2 = [
+  "production_rollout", "production_canary", "production_rollback", "production_recovery"
+] as const;
+const SCHEMA032_CHECKSUM_V2 = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
+const SCHEMA032_STAGES_V2 = [
+  "first_migration", "first_verification", "second_migration", "final_verification"
+] as const;
+
+function nonEmpty(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${label}_invalid`);
+  return value;
+}
+
+function nullableSha(value: unknown, label: string): string | null {
+  return value === null ? null : sha(value, SHA256, label);
+}
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label}_invalid`);
+  return value;
+}
+
+function operationCommand(kind: unknown, commandId: unknown, label: string): void {
+  const expected: Record<ProductionOperationKindV2, ProductionOperationCommandIdV2> = {
+    rollout: "production_rollout", canary: "production_canary",
+    rollback: "production_rollback", recovery: "production_recovery"
+  };
+  if (expected[oneOf(kind, PRODUCTION_OPERATION_KINDS_V2, `${label}_kind`)] !== commandId) {
+    throw new Error(`${label}_command_binding_invalid`);
+  }
+}
+
+function canonicalObjectSha(value: unknown): string {
+  return releaseSha256V2(Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8"));
+}
+
+function productionIdentityFields(input: Record<string, unknown>, label: string): void {
+  oneOf(input.operationKind, PRODUCTION_OPERATION_KINDS_V2, `${label}_kind`);
+  nonEmpty(input.operationId, `${label}_operation_id`);
+  sha(input.candidateSha, SHA40, `${label}_candidate_sha`);
+  nonEmpty(input.releaseGenerationId, `${label}_generation`);
+  sha(input.sourceManifestSha256, SHA256, `${label}_source_manifest`);
+  sha(input.artifactRootFingerprintSha256, SHA256, `${label}_root_fingerprint`);
+}
+
+export function validateProductionAuthorityPreclaimValidationV2(
+  value: unknown
+): ProductionAuthorityPreclaimValidationV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_authority_preclaim_validation");
+  exactKeys(input, [
+    "version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
+    "sourceManifestSha256", "artifactRootFingerprintSha256", "operationalAttestationSha256",
+    "operationalAttestationIssuerReceiptSha256", "recoveryFromAbandonedOperationSha256",
+    "commandId", "redactedTemplateSha256", "originalLeaseSha256", "originalLeaseEpoch",
+    "originalLeaseOwnerProcessIdentitySha256", "checkedAt", "expiresAt", "operationDeadlineAt",
+    "minimumRequiredValidityMs", "status"
+  ], "production_authority_preclaim_validation");
+  if (input.version !== "production-authority-preclaim-validation-v2"
+      || input.status !== "fresh_compatible_unconsumed") throw new Error("production_authority_preclaim_validation_literal_invalid");
+  productionIdentityFields(input, "production_authority_preclaim_validation");
+  for (const key of ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
+    "redactedTemplateSha256", "originalLeaseSha256", "originalLeaseOwnerProcessIdentitySha256"]) {
+    sha(input[key], SHA256, key);
+  }
+  nullableSha(input.recoveryFromAbandonedOperationSha256, "recovery_from_abandoned");
+  oneOf(input.commandId, PRODUCTION_OPERATION_COMMANDS_V2, "preclaim_command");
+  operationCommand(input.operationKind, input.commandId, "preclaim");
+  positiveInteger(input.originalLeaseEpoch, "original_lease_epoch");
+  positiveInteger(input.minimumRequiredValidityMs, "minimum_required_validity_ms");
+  const checked = iso(input.checkedAt, "preclaim_checked_at");
+  const expires = iso(input.expiresAt, "preclaim_expires_at");
+  const deadline = iso(input.operationDeadlineAt, "preclaim_deadline_at");
+  if (Date.parse(expires) <= Date.parse(checked)
+      || Date.parse(deadline) <= Date.parse(checked)
+      || Date.parse(expires) - Date.parse(checked) < Number(input.minimumRequiredValidityMs)
+      || Date.parse(deadline) - Date.parse(checked) < Number(input.minimumRequiredValidityMs)
+      || ((input.operationKind === "recovery") !== (input.recoveryFromAbandonedOperationSha256 !== null))) {
+    throw new Error("production_authority_preclaim_validation_time_invalid");
+  }
+  return input as ProductionAuthorityPreclaimValidationV2;
+}
+
+export function validateProductionPreclaimLeaseLineageV2(value: unknown): ProductionPreclaimLeaseLineageV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_preclaim_lease_lineage");
+  exactKeys(input, [
+    "version", "operationId", "relativePath", "preclaimValidationSha256", "previousLineageSha256",
+    "originalLeaseSha256", "originalLeaseEpoch", "originalLeaseOwnerProcessIdentitySha256",
+    "committedTakeoverReceiptSuffixSha256s", "currentTipLeaseSha256", "currentTipLeaseEpoch",
+    "currentTipLeaseOwnerProcessIdentitySha256", "lineageStartedAt", "resolvedAt"
+  ], "production_preclaim_lease_lineage");
+  if (input.version !== "production-preclaim-lease-lineage-v2") throw new Error("production_preclaim_lease_lineage_version_invalid");
+  const operationId = nonEmpty(input.operationId, "lineage_operation_id");
+  for (const key of ["preclaimValidationSha256", "originalLeaseSha256", "originalLeaseOwnerProcessIdentitySha256",
+    "currentTipLeaseSha256", "currentTipLeaseOwnerProcessIdentitySha256"]) sha(input[key], SHA256, key);
+  nullableSha(input.previousLineageSha256, "previous_lineage_sha");
+  const originalEpoch = positiveInteger(input.originalLeaseEpoch, "original_lease_epoch");
+  const currentEpoch = positiveInteger(input.currentTipLeaseEpoch, "current_tip_lease_epoch");
+  if (!Array.isArray(input.committedTakeoverReceiptSuffixSha256s)
+      || input.committedTakeoverReceiptSuffixSha256s.length > 1) throw new Error("lineage_suffix_invalid");
+  input.committedTakeoverReceiptSuffixSha256s.forEach((item) => sha(item, SHA256, "lineage_suffix_sha"));
+  const expectedPath = `production-preclaim-lease-lineages/${operationId}/${String(input.currentTipLeaseSha256)}.json`;
+  if (input.relativePath !== expectedPath || !SAFE_RELATIVE_PATH.test(expectedPath)) throw new Error("lineage_path_binding_invalid");
+  if (currentEpoch !== originalEpoch + input.committedTakeoverReceiptSuffixSha256s.length
+      || (input.committedTakeoverReceiptSuffixSha256s.length === 0
+        && (input.previousLineageSha256 !== null || input.currentTipLeaseSha256 !== input.originalLeaseSha256
+          || input.currentTipLeaseOwnerProcessIdentitySha256 !== input.originalLeaseOwnerProcessIdentitySha256))) {
+    throw new Error("lineage_binding_invalid");
+  }
+  const started = iso(input.lineageStartedAt, "lineage_started_at");
+  const resolved = iso(input.resolvedAt, "lineage_resolved_at");
+  if (Date.parse(resolved) < Date.parse(started)) throw new Error("lineage_time_invalid");
+  return input as ProductionPreclaimLeaseLineageV2;
+}
+
+export function validateOperationalAttestationConsumptionV2(value: unknown): OperationalAttestationConsumptionV2 {
+  assertNoSecrets(value);
+  const input = record(value, "operational_attestation_consumption");
+  exactKeys(input, [
+    "version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
+    "sourceManifestSha256", "artifactRootFingerprintSha256", "operationalAttestationSha256",
+    "operationalAttestationIssuerReceiptSha256", "recoveryFromAbandonedOperationSha256",
+    "preclaimValidationSha256", "preclaimLeaseLineageRelativePath", "preclaimLeaseLineageSha256",
+    "preclaimLeaseLineageCurrentTipSha256", "commandId", "redactedTemplateSha256",
+    "leaseSha256AtConsumption", "leaseEpochAtConsumption", "consumedAt", "expiresAt", "operationDeadlineAt"
+  ], "operational_attestation_consumption");
+  if (input.version !== "operational-attestation-consumption-v2") throw new Error("operational_attestation_consumption_version_invalid");
+  productionIdentityFields(input, "operational_attestation_consumption");
+  for (const key of ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
+    "preclaimValidationSha256", "preclaimLeaseLineageSha256", "preclaimLeaseLineageCurrentTipSha256",
+    "redactedTemplateSha256", "leaseSha256AtConsumption"]) sha(input[key], SHA256, key);
+  nullableSha(input.recoveryFromAbandonedOperationSha256, "recovery_from_abandoned");
+  oneOf(input.commandId, PRODUCTION_OPERATION_COMMANDS_V2, "consumption_command");
+  operationCommand(input.operationKind, input.commandId, "consumption");
+  positiveInteger(input.leaseEpochAtConsumption, "lease_epoch_at_consumption");
+  const expectedPath = `production-preclaim-lease-lineages/${String(input.operationId)}/${String(input.preclaimLeaseLineageCurrentTipSha256)}.json`;
+  if (input.preclaimLeaseLineageRelativePath !== expectedPath
+      || input.leaseSha256AtConsumption !== input.preclaimLeaseLineageCurrentTipSha256) {
+    throw new Error("consumption_lineage_path_binding_invalid");
+  }
+  const consumed = iso(input.consumedAt, "consumed_at");
+  const expires = iso(input.expiresAt, "consumption_expires_at");
+  const deadline = iso(input.operationDeadlineAt, "consumption_deadline_at");
+  if (Date.parse(consumed) >= Date.parse(expires) || Date.parse(consumed) >= Date.parse(deadline)) {
+    throw new Error("consumption_time_invalid");
+  }
+  if ((input.operationKind === "recovery") !== (input.recoveryFromAbandonedOperationSha256 !== null)) {
+    throw new Error("consumption_recovery_binding_invalid");
+  }
+  return input as OperationalAttestationConsumptionV2;
+}
+
+export function validateProductionOperationClaimV2(value: unknown): ProductionOperationClaimV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_operation_claim");
+  exactKeys(input, [
+    "version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
+    "sourceManifestSha256", "artifactRootFingerprintSha256", "operationalAttestationSha256",
+    "operationalAttestationIssuerReceiptSha256", "recoveryFromAbandonedOperationSha256",
+    "authorityConsumption", "authorityConsumptionSha256", "preclaimLeaseLineageRelativePath",
+    "preclaimLeaseLineageSha256", "preclaimLeaseLineageCurrentTipSha256", "capability",
+    "leaseEpochAtConsumption", "operationDeadlineAt", "claimedAt", "claimantPid",
+    "claimantProcessStartFingerprintSha256"
+  ], "production_operation_claim");
+  if (input.version !== "production-operation-claim-v2") throw new Error("production_operation_claim_version_invalid");
+  productionIdentityFields(input, "production_operation_claim");
+  const consumption = validateOperationalAttestationConsumptionV2(input.authorityConsumption);
+  const consumptionSha = sha(input.authorityConsumptionSha256, SHA256, "authority_consumption_sha");
+  if (canonicalObjectSha(consumption) !== consumptionSha) throw new Error("claim_consumption_hash_binding_invalid");
+  const boundKeys = ["operationKind", "operationId", "candidateSha", "releaseGenerationId", "sourceManifestSha256",
+    "artifactRootFingerprintSha256", "operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
+    "recoveryFromAbandonedOperationSha256", "preclaimLeaseLineageRelativePath", "preclaimLeaseLineageSha256",
+    "preclaimLeaseLineageCurrentTipSha256", "leaseEpochAtConsumption", "operationDeadlineAt"] as const;
+  if (boundKeys.some((key) => input[key] !== consumption[key])) throw new Error("claim_consumption_binding_invalid");
+  const capability = oneOf(input.capability, ["effect_capable", "recovery_only"] as const, "claim_capability");
+  if ((input.operationKind === "recovery") !== (capability === "recovery_only")) throw new Error("claim_capability_binding_invalid");
+  iso(input.claimedAt, "claim_claimed_at");
+  if (Date.parse(String(input.claimedAt)) < Date.parse(consumption.consumedAt)
+      || Date.parse(String(input.claimedAt)) >= Date.parse(consumption.expiresAt)
+      || Date.parse(String(input.claimedAt)) >= Date.parse(consumption.operationDeadlineAt)) {
+    throw new Error("claim_time_binding_invalid");
+  }
+  positiveInteger(input.claimantPid, "claimant_pid");
+  sha(input.claimantProcessStartFingerprintSha256, SHA256, "claimant_process_start");
+  return input as ProductionOperationClaimV2;
+}
+
+export function validateProductionOperationLeaseV2(value: unknown): ProductionOperationLeaseV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_operation_lease");
+  exactKeys(input, [
+    "version", "scope", "relativePath", "operationKind", "operationId", "candidateSha",
+    "releaseGenerationId", "sourceManifestSha256", "artifactRootFingerprintSha256",
+    "operationalAttestationSha256", "recoveryFromAbandonedOperationSha256", "capability",
+    "leaseEpoch", "ownerPid", "ownerProcessStartFingerprintSha256", "acquiredAt", "heartbeatAt",
+    "expiresAt", "operationDeadlineAt"
+  ], "production_operation_lease");
+  if (input.version !== "production-operation-lease-v2" || input.scope !== "artifact_root_production_operation"
+      || input.relativePath !== "production-operation-root.lease.json") throw new Error("production_operation_lease_literal_invalid");
+  productionIdentityFields(input, "production_operation_lease");
+  sha(input.operationalAttestationSha256, SHA256, "lease_attestation");
+  nullableSha(input.recoveryFromAbandonedOperationSha256, "lease_recovery_from");
+  const capability = oneOf(input.capability, PRODUCTION_CAPABILITIES_V2, "lease_capability");
+  if ((capability === "recovery_only" && input.operationKind !== "recovery")
+      || (capability === "effect_capable" && input.operationKind === "recovery")
+      || ((input.operationKind === "recovery") !== (input.recoveryFromAbandonedOperationSha256 !== null))) {
+    throw new Error("lease_capability_binding_invalid");
+  }
+  positiveInteger(input.leaseEpoch, "lease_epoch");
+  positiveInteger(input.ownerPid, "lease_owner_pid");
+  sha(input.ownerProcessStartFingerprintSha256, SHA256, "lease_owner_process");
+  const acquired = iso(input.acquiredAt, "lease_acquired_at");
+  const heartbeat = iso(input.heartbeatAt, "lease_heartbeat_at");
+  const expires = iso(input.expiresAt, "lease_expires_at");
+  iso(input.operationDeadlineAt, "lease_deadline_at");
+  if (Date.parse(heartbeat) < Date.parse(acquired) || Date.parse(expires) <= Date.parse(heartbeat)) {
+    throw new Error("production_operation_lease_time_invalid");
+  }
+  return input as ProductionOperationLeaseV2;
+}
+
+function validateTakeoverCommon(input: Record<string, unknown>, expectedCapability: ProductionOperationCapabilityV2): ProductionOperationLeaseV2 {
+  productionIdentityFields(input, "production_operation_takeover");
+  if (input.capability !== expectedCapability) throw new Error("takeover_capability_invalid");
+  sha(input.redactedTemplateSha256, SHA256, "takeover_template");
+  nullableSha(input.authorityConsumptionSha256, "takeover_consumption");
+  sha(input.oldLeaseSha256, SHA256, "takeover_old_lease");
+  const oldEpoch = positiveInteger(input.oldLeaseEpoch, "takeover_old_epoch");
+  sha(input.oldOwnerProcessIdentitySha256, SHA256, "takeover_old_owner");
+  const lease = validateProductionOperationLeaseV2(input.canonicalNewLease);
+  canonicalEmbeddedBytesV2(lease, input.canonicalNewLeaseUtf8Base64, input.newLeaseSha256, "takeover_new_lease");
+  const newEpoch = positiveInteger(input.newLeaseEpoch, "takeover_new_epoch");
+  if (newEpoch !== oldEpoch + 1 || lease.leaseEpoch !== newEpoch || lease.capability !== expectedCapability
+      || lease.operationKind !== input.operationKind || lease.operationId !== input.operationId
+      || lease.candidateSha !== input.candidateSha || lease.releaseGenerationId !== input.releaseGenerationId
+      || lease.sourceManifestSha256 !== input.sourceManifestSha256
+      || lease.artifactRootFingerprintSha256 !== input.artifactRootFingerprintSha256
+      || lease.operationDeadlineAt !== input.operationDeadlineAt) throw new Error("takeover_lease_binding_invalid");
+  iso(input.operationDeadlineAt, "takeover_deadline");
+  iso(input.preparedAt, "takeover_prepared_at");
+  return lease;
+}
+
+export function validatePreparedProductionOperationLeaseTakeoverV2(
+  value: unknown
+): PreparedProductionOperationLeaseTakeoverV2 {
+  assertNoSecrets(value);
+  const input = record(value, "prepared_production_operation_lease_takeover");
+  exactKeys(input, [
+    "version", "commandId", "redactedTemplateSha256", "capability", "operationKind", "operationId",
+    "candidateSha", "releaseGenerationId", "sourceManifestSha256", "artifactRootFingerprintSha256",
+    "authorityConsumptionSha256", "oldLeaseSha256", "oldLeaseEpoch", "oldOwnerProcessIdentitySha256",
+    "canonicalNewLease", "canonicalNewLeaseUtf8Base64", "newLeaseSha256", "newLeaseEpoch",
+    "operationDeadlineAt", "preparedAt"
+  ], "prepared_production_operation_lease_takeover");
+  if (input.version !== "prepared-production-operation-lease-takeover-v2"
+      || input.commandId !== "production_operation_lease_takeover") throw new Error("prepared_takeover_literal_invalid");
+  oneOf(input.capability, ["effect_capable", "recovery_only"] as const, "prepared_takeover_capability");
+  validateTakeoverCommon(input, input.capability as "effect_capable" | "recovery_only");
+  return input as PreparedProductionOperationLeaseTakeoverV2;
+}
+
+export function validateCommittedProductionOperationLeaseTakeoverV2(
+  value: unknown,
+  preparedValue?: unknown
+): CommittedProductionOperationLeaseTakeoverV2 {
+  assertNoSecrets(value);
+  const input = record(value, "committed_production_operation_lease_takeover");
+  exactKeys(input, [
+    "version", "commandId", "redactedTemplateSha256", "capability", "operationKind", "operationId",
+    "candidateSha", "releaseGenerationId", "sourceManifestSha256", "artifactRootFingerprintSha256",
+    "authorityConsumptionSha256", "preparedTakeoverSha256", "oldLeaseSha256", "tombstoneRelativePath",
+    "newLeaseSha256", "newLeaseEpoch", "operationDeadlineAt", "committedAt"
+  ], "committed_production_operation_lease_takeover");
+  if (input.version !== "committed-production-operation-lease-takeover-v2"
+      || input.commandId !== "production_operation_lease_takeover") throw new Error("committed_takeover_literal_invalid");
+  productionIdentityFields(input, "committed_takeover");
+  oneOf(input.capability, ["effect_capable", "recovery_only"] as const, "committed_takeover_capability");
+  for (const key of ["redactedTemplateSha256", "preparedTakeoverSha256", "oldLeaseSha256", "newLeaseSha256"]) sha(input[key], SHA256, key);
+  nullableSha(input.authorityConsumptionSha256, "committed_takeover_consumption");
+  positiveInteger(input.newLeaseEpoch, "committed_takeover_epoch");
+  if (input.tombstoneRelativePath !== `production-operation-root.lease-tombstone-${String(input.oldLeaseSha256)}.json`) {
+    throw new Error("committed_takeover_tombstone_binding_invalid");
+  }
+  iso(input.operationDeadlineAt, "committed_takeover_deadline");
+  iso(input.committedAt, "committed_takeover_at");
+  if (preparedValue !== undefined) {
+    const prepared = validatePreparedProductionOperationLeaseTakeoverV2(preparedValue);
+    if (canonicalObjectSha(prepared) !== input.preparedTakeoverSha256) throw new Error("committed_takeover_prepared_hash_binding_invalid");
+    const pairs: Array<[unknown, unknown]> = [
+      [input.operationKind, prepared.operationKind], [input.operationId, prepared.operationId],
+      [input.candidateSha, prepared.candidateSha], [input.releaseGenerationId, prepared.releaseGenerationId],
+      [input.sourceManifestSha256, prepared.sourceManifestSha256], [input.artifactRootFingerprintSha256, prepared.artifactRootFingerprintSha256],
+      [input.authorityConsumptionSha256, prepared.authorityConsumptionSha256], [input.capability, prepared.capability],
+      [input.oldLeaseSha256, prepared.oldLeaseSha256], [input.newLeaseSha256, prepared.newLeaseSha256],
+      [input.newLeaseEpoch, prepared.newLeaseEpoch], [input.operationDeadlineAt, prepared.operationDeadlineAt]
+    ];
+    if (pairs.some(([actual, expected]) => actual !== expected)) throw new Error("committed_takeover_binding_invalid");
+  }
+  return input as CommittedProductionOperationLeaseTakeoverV2;
+}
+
+export function validatePreparedCleanupOnlyProductionOperationTakeoverV2(
+  value: unknown
+): PreparedCleanupOnlyProductionOperationTakeoverV2 {
+  assertNoSecrets(value);
+  const input = record(value, "prepared_cleanup_only_production_operation_takeover");
+  exactKeys(input, [
+    "version", "commandId", "redactedTemplateSha256", "capability", "operationKind", "operationId",
+    "candidateSha", "releaseGenerationId", "sourceManifestSha256", "artifactRootFingerprintSha256",
+    "authorityConsumptionSha256", "terminalReason", "oldLeaseSha256", "oldLeaseEpoch",
+    "oldOwnerProcessIdentitySha256", "canonicalNewLease", "canonicalNewLeaseUtf8Base64", "newLeaseSha256",
+    "newLeaseEpoch", "operationDeadlineAt", "preparedAt"
+  ], "prepared_cleanup_only_production_operation_takeover");
+  if (input.version !== "prepared-cleanup-only-production-operation-takeover-v2"
+      || input.commandId !== "production_operation_cleanup_only_takeover" || input.capability !== "cleanup_only") {
+    throw new Error("prepared_cleanup_only_takeover_literal_invalid");
+  }
+  oneOf(input.terminalReason, ["authority_expired_before_claim", "authority_expired_after_claim", "operation_deadline_reached"] as const, "cleanup_takeover_reason");
+  validateTakeoverCommon(input, "cleanup_only");
+  return input as PreparedCleanupOnlyProductionOperationTakeoverV2;
+}
+
+export function validateCleanupOnlyProductionOperationTakeoverV2(
+  value: unknown,
+  preparedValue?: unknown
+): CleanupOnlyProductionOperationTakeoverV2 {
+  assertNoSecrets(value);
+  const input = record(value, "cleanup_only_production_operation_takeover");
+  exactKeys(input, [
+    "version", "commandId", "redactedTemplateSha256", "capability", "operationKind", "operationId",
+    "candidateSha", "releaseGenerationId", "sourceManifestSha256", "artifactRootFingerprintSha256",
+    "authorityConsumptionSha256", "terminalReason", "preparedTakeoverSha256", "oldLeaseSha256",
+    "tombstoneRelativePath", "newLeaseSha256", "newLeaseEpoch", "operationDeadlineAt", "committedAt"
+  ], "cleanup_only_production_operation_takeover");
+  if (input.version !== "cleanup-only-production-operation-takeover-v2"
+      || input.commandId !== "production_operation_cleanup_only_takeover" || input.capability !== "cleanup_only") {
+    throw new Error("cleanup_only_takeover_literal_invalid");
+  }
+  productionIdentityFields(input, "cleanup_only_takeover");
+  oneOf(input.terminalReason, ["authority_expired_before_claim", "authority_expired_after_claim", "operation_deadline_reached"] as const, "cleanup_takeover_reason");
+  for (const key of ["redactedTemplateSha256", "preparedTakeoverSha256", "oldLeaseSha256", "newLeaseSha256"]) sha(input[key], SHA256, key);
+  nullableSha(input.authorityConsumptionSha256, "cleanup_takeover_consumption");
+  positiveInteger(input.newLeaseEpoch, "cleanup_takeover_epoch");
+  if (input.tombstoneRelativePath !== `production-operation-root.lease-tombstone-${String(input.oldLeaseSha256)}.json`) {
+    throw new Error("cleanup_takeover_tombstone_binding_invalid");
+  }
+  iso(input.operationDeadlineAt, "cleanup_takeover_deadline");
+  iso(input.committedAt, "cleanup_takeover_committed_at");
+  if (preparedValue !== undefined) {
+    const prepared = validatePreparedCleanupOnlyProductionOperationTakeoverV2(preparedValue);
+    if (canonicalObjectSha(prepared) !== input.preparedTakeoverSha256
+        || input.operationId !== prepared.operationId || input.newLeaseSha256 !== prepared.newLeaseSha256
+        || input.newLeaseEpoch !== prepared.newLeaseEpoch || input.terminalReason !== prepared.terminalReason) {
+      throw new Error("cleanup_takeover_prepared_binding_invalid");
+    }
+  }
+  return input as CleanupOnlyProductionOperationTakeoverV2;
+}
+
+export function validateProductionOperationSettlementV2(value: unknown): ProductionOperationSettlementV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_operation_settlement");
+  const common = ["version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
+    "sourceManifestSha256", "claimSha256", "authorityConsumptionSha256", "finalLeaseSha256",
+    "finalLeaseEpoch", "operationDeadlineAt", "terminalEvidenceSha256", "authorityRevalidatedAt",
+    "deadlineRevalidatedAt", "settledAt", "capability", "result", "orchestrationReceiptSha256"];
+  const recovery = input.capability === "recovery_only";
+  exactKeys(input, recovery ? [...common, "recoveryAttemptedExternalEffect", "priorAttemptedExternalEffect"]
+    : [...common, "attemptedExternalEffect"], "production_operation_settlement");
+  if (input.version !== "production-operation-settlement-v2") throw new Error("production_settlement_version_invalid");
+  oneOf(input.operationKind, PRODUCTION_OPERATION_KINDS_V2, "settlement_kind");
+  nonEmpty(input.operationId, "settlement_operation_id");
+  sha(input.candidateSha, SHA40, "settlement_candidate");
+  nonEmpty(input.releaseGenerationId, "settlement_generation");
+  for (const key of ["sourceManifestSha256", "claimSha256", "authorityConsumptionSha256", "finalLeaseSha256",
+    "terminalEvidenceSha256"]) sha(input[key], SHA256, key);
+  positiveInteger(input.finalLeaseEpoch, "settlement_lease_epoch");
+  const deadline = iso(input.operationDeadlineAt, "settlement_deadline");
+  const settledAt = iso(input.settledAt, "settlement_at");
+  iso(input.authorityRevalidatedAt, "authority_revalidated_at");
+  iso(input.deadlineRevalidatedAt, "deadline_revalidated_at");
+  if (Date.parse(settledAt) >= Date.parse(deadline)) throw new Error("settlement_deadline_binding_invalid");
+  if (recovery) {
+    if (input.operationKind !== "recovery" || input.result !== "failed" || input.recoveryAttemptedExternalEffect !== false) {
+      throw new Error("recovery_settlement_literal_invalid");
+    }
+    sha(input.orchestrationReceiptSha256, SHA256, "recovery_orchestration_receipt");
+    booleanValue(input.priorAttemptedExternalEffect, "prior_attempted_external_effect");
+  } else {
+    if (input.capability !== "effect_capable" || (input.result !== "passed" && input.result !== "failed")) {
+      throw new Error("effect_settlement_literal_invalid");
+    }
+    if (input.orchestrationReceiptSha256 !== null) sha(input.orchestrationReceiptSha256, SHA256, "orchestration_receipt");
+    if (input.result === "passed" && input.orchestrationReceiptSha256 === null) throw new Error("settlement_receipt_required");
+    booleanValue(input.attemptedExternalEffect, "attempted_external_effect");
+  }
+  return input as ProductionOperationSettlementV2;
+}
+
+export function validateProductionOperationLeaseRemovalReceiptV2(
+  value: unknown
+): ProductionOperationLeaseRemovalReceiptV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_operation_lease_removal_receipt");
+  exactKeys(input, ["version", "operationKind", "operationId", "terminalStateKind", "terminalStateSha256",
+    "capability", "removedLeaseSha256", "removedLeaseEpoch", "removedAt"], "production_operation_lease_removal_receipt");
+  if (input.version !== "production-operation-lease-removal-receipt-v2") throw new Error("lease_removal_receipt_version_invalid");
+  oneOf(input.operationKind, PRODUCTION_OPERATION_KINDS_V2, "lease_removal_kind");
+  nonEmpty(input.operationId, "lease_removal_operation_id");
+  oneOf(input.terminalStateKind, ["settlement", "terminal_abandoned"] as const, "lease_removal_terminal_kind");
+  sha(input.terminalStateSha256, SHA256, "lease_removal_terminal_sha");
+  oneOf(input.capability, PRODUCTION_CAPABILITIES_V2, "lease_removal_capability");
+  sha(input.removedLeaseSha256, SHA256, "removed_lease_sha");
+  positiveInteger(input.removedLeaseEpoch, "removed_lease_epoch");
+  iso(input.removedAt, "lease_removed_at");
+  return input as ProductionOperationLeaseRemovalReceiptV2;
+}
+
+export function validatePreparedProductionOperationLeaseRemovalV2(
+  value: unknown
+): PreparedProductionOperationLeaseRemovalV2 {
+  assertNoSecrets(value);
+  const input = record(value, "prepared_production_operation_lease_removal");
+  exactKeys(input, ["version", "operationKind", "operationId", "terminalStateKind", "terminalStateSha256",
+    "capability", "exactCurrentLeaseSha256", "exactCurrentLeaseEpoch", "canonicalRemovalReceipt",
+    "canonicalRemovalReceiptUtf8Base64", "canonicalRemovalReceiptSha256", "preparedAt"],
+  "prepared_production_operation_lease_removal");
+  if (input.version !== "prepared-production-operation-lease-removal-v2") throw new Error("prepared_lease_removal_version_invalid");
+  oneOf(input.operationKind, PRODUCTION_OPERATION_KINDS_V2, "prepared_removal_kind");
+  nonEmpty(input.operationId, "prepared_removal_operation_id");
+  oneOf(input.terminalStateKind, ["settlement", "terminal_abandoned"] as const, "prepared_removal_terminal_kind");
+  sha(input.terminalStateSha256, SHA256, "prepared_removal_terminal_sha");
+  oneOf(input.capability, PRODUCTION_CAPABILITIES_V2, "prepared_removal_capability");
+  sha(input.exactCurrentLeaseSha256, SHA256, "prepared_removal_lease_sha");
+  positiveInteger(input.exactCurrentLeaseEpoch, "prepared_removal_lease_epoch");
+  const receipt = validateProductionOperationLeaseRemovalReceiptV2(input.canonicalRemovalReceipt);
+  canonicalEmbeddedBytesV2(receipt, input.canonicalRemovalReceiptUtf8Base64,
+    input.canonicalRemovalReceiptSha256, "prepared_removal_receipt");
+  if (input.operationKind !== receipt.operationKind || input.operationId !== receipt.operationId
+      || input.terminalStateKind !== receipt.terminalStateKind || input.terminalStateSha256 !== receipt.terminalStateSha256
+      || input.capability !== receipt.capability || input.exactCurrentLeaseSha256 !== receipt.removedLeaseSha256
+      || input.exactCurrentLeaseEpoch !== receipt.removedLeaseEpoch || input.preparedAt !== receipt.removedAt) {
+    throw new Error("prepared_removal_binding_invalid");
+  }
+  iso(input.preparedAt, "prepared_removal_at");
+  return input as PreparedProductionOperationLeaseRemovalV2;
+}
+
+export function validateProductionOperationTerminalCleanupV2(value: unknown): ProductionOperationTerminalCleanupV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_operation_terminal_cleanup");
+  exactKeys(input, ["version", "operationKind", "operationId", "terminalStateSha256", "capability",
+    "preparedRemovalSha256", "leaseRemovalReceiptSha256", "removedLeaseSha256", "cleanedAt"],
+  "production_operation_terminal_cleanup");
+  if (input.version !== "production-operation-terminal-cleanup-v2") throw new Error("terminal_cleanup_version_invalid");
+  oneOf(input.operationKind, PRODUCTION_OPERATION_KINDS_V2, "terminal_cleanup_kind");
+  nonEmpty(input.operationId, "terminal_cleanup_operation_id");
+  oneOf(input.capability, PRODUCTION_CAPABILITIES_V2, "terminal_cleanup_capability");
+  for (const key of ["terminalStateSha256", "preparedRemovalSha256", "leaseRemovalReceiptSha256", "removedLeaseSha256"]) sha(input[key], SHA256, key);
+  iso(input.cleanedAt, "terminal_cleanup_at");
+  return input as ProductionOperationTerminalCleanupV2;
+}
+
+export function validateProductionOperationTerminalAbandonedV2(value: unknown): ProductionOperationTerminalAbandonedV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_operation_terminal_abandoned");
+  exactKeys(input, ["version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
+    "sourceManifestSha256", "claimSha256", "authorityConsumptionSha256", "capability",
+    "cleanupOnlyTakeoverSha256", "finalLeaseSha256", "finalLeaseEpoch", "completedStepReceiptSetSha256",
+    "attemptedExternalEffect", "reason", "abandonedAt"], "production_operation_terminal_abandoned");
+  if (input.version !== "production-operation-terminal-abandoned-v2") throw new Error("terminal_abandoned_version_invalid");
+  oneOf(input.operationKind, PRODUCTION_OPERATION_KINDS_V2, "terminal_abandoned_kind");
+  nonEmpty(input.operationId, "terminal_abandoned_operation_id");
+  sha(input.candidateSha, SHA40, "terminal_abandoned_candidate");
+  nonEmpty(input.releaseGenerationId, "terminal_abandoned_generation");
+  sha(input.sourceManifestSha256, SHA256, "terminal_abandoned_source");
+  nullableSha(input.claimSha256, "terminal_abandoned_claim");
+  nullableSha(input.authorityConsumptionSha256, "terminal_abandoned_consumption");
+  oneOf(input.capability, PRODUCTION_CAPABILITIES_V2, "terminal_abandoned_capability");
+  nullableSha(input.cleanupOnlyTakeoverSha256, "terminal_abandoned_cleanup_takeover");
+  sha(input.finalLeaseSha256, SHA256, "terminal_abandoned_lease");
+  positiveInteger(input.finalLeaseEpoch, "terminal_abandoned_epoch");
+  sha(input.completedStepReceiptSetSha256, SHA256, "terminal_abandoned_step_set");
+  booleanValue(input.attemptedExternalEffect, "terminal_abandoned_attempted_effect");
+  oneOf(input.reason, ["authority_expired_before_claim", "authority_expired_after_claim", "operation_deadline_reached", "ownership_protocol_failure"] as const, "terminal_abandoned_reason");
+  iso(input.abandonedAt, "terminal_abandoned_at");
+  return input as ProductionOperationTerminalAbandonedV2;
+}
+
+export function validateSchema032ReleaseEvidenceV1(value: unknown): Schema032ReleaseEvidenceV1 {
+  assertNoSecrets(value);
+  const input = record(value, "schema032_release_evidence");
+  exactKeys(input, ["candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
+    "candidateBytesChecksumSha256", "receiptChecksumSha256", "shortChecksum", "postconditionsSha256",
+    "firstApply", "secondApply"], "schema032_release_evidence");
+  sha(input.candidateSha, SHA40, "schema032_candidate");
+  oneOf(input.databaseRole, ["clean", "production_clone", "runtime_sanitized", "production"] as const, "schema032_database_role");
+  sha(input.databaseFingerprintSha256, SHA256, "schema032_database_fingerprint");
+  if (input.migrationFilename !== "032_telegram_runtime_forensics_data_contracts.sql"
+      || input.candidateBytesChecksumSha256 !== SCHEMA032_CHECKSUM_V2
+      || input.receiptChecksumSha256 !== SCHEMA032_CHECKSUM_V2
+      || input.shortChecksum !== SCHEMA032_CHECKSUM_V2.slice(0, 12)) throw new Error("schema032_checksum_binding_invalid");
+  sha(input.postconditionsSha256, SHA256, "schema032_postconditions");
+  oneOf(input.firstApply, ["applied", "already_verified"] as const, "schema032_first_apply");
+  if (input.secondApply !== "already_verified") throw new Error("schema032_second_apply_invalid");
+  return input as Schema032ReleaseEvidenceV1;
+}
+
+const SCHEMA032_FAILURE_PATHS_V2: Record<Schema032Stage, string> = {
+  first_migration: "schema032-failures/first-migration-failure-v2.json",
+  first_verification: "schema032-failures/first-verification-failure-v2.json",
+  second_migration: "schema032-failures/second-migration-failure-v2.json",
+  final_verification: "schema032-failures/final-verification-failure-v2.json"
+};
+
+function validateSchemaStages(value: unknown, expected: readonly Schema032Stage[], label: string): Schema032CompletedStageV2[] {
+  if (!Array.isArray(value) || value.length !== expected.length) throw new Error(`${label}_stage_order_invalid`);
+  return value.map((item, index) => {
+    const stage = record(item, `${label}_stage`);
+    exactKeys(stage, ["step", "receiptSha256"], `${label}_stage`);
+    if (stage.step !== expected[index]) throw new Error(`${label}_stage_order_invalid`);
+    sha(stage.receiptSha256, SHA256, `${label}_stage_receipt`);
+    return stage as Schema032CompletedStageV2;
+  });
+}
+
+export function validateSchema032ProductionExecutionReceiptV2(
+  value: unknown
+): Schema032ProductionExecutionReceiptV2 {
+  assertNoSecrets(value);
+  const input = record(value, "schema032_production_execution_receipt");
+  const common = ["version", "candidateSha", "releaseFreezeIdentitySha256", "operationalAttestationSha256",
+    "authorityConsumptionSha256", "sourceManifestSha256", "g12TransitionReceiptSha256",
+    "productionBackupEvidenceSha256", "advisoryLockKey", "databaseSessionIdentitySha256",
+    "lockAcquiredAt", "lockReleasedAt", "migrationBytesChecksumSha256", "result", "completedStages"];
+  exactKeys(input, input.result === "applied_and_verified"
+    ? [...common, "receiptChecksumSha256", "postconditionsSha256"]
+    : [...common, "failedStep", "failureArtifact"], "schema032_production_execution_receipt");
+  if (input.version !== "schema-032-production-execution-receipt-v2" || input.advisoryLockKey !== 320032500
+      || input.migrationBytesChecksumSha256 !== SCHEMA032_CHECKSUM_V2) throw new Error("schema032_production_receipt_literal_invalid");
+  sha(input.candidateSha, SHA40, "schema032_production_candidate");
+  for (const key of ["releaseFreezeIdentitySha256", "operationalAttestationSha256", "authorityConsumptionSha256",
+    "sourceManifestSha256", "g12TransitionReceiptSha256", "productionBackupEvidenceSha256",
+    "databaseSessionIdentitySha256"]) sha(input[key], SHA256, key);
+  const acquired = iso(input.lockAcquiredAt, "schema032_lock_acquired");
+  const released = iso(input.lockReleasedAt, "schema032_lock_released");
+  if (Date.parse(released) < Date.parse(acquired)) throw new Error("schema032_lock_order_invalid");
+  if (input.result === "applied_and_verified") {
+    validateSchemaStages(input.completedStages, SCHEMA032_STAGES_V2, "schema032_success");
+    if (input.receiptChecksumSha256 !== SCHEMA032_CHECKSUM_V2) throw new Error("schema032_receipt_checksum_invalid");
+    sha(input.postconditionsSha256, SHA256, "schema032_postconditions");
+  } else if (input.result === "failed_after_attempt") {
+    const failedStep = oneOf(input.failedStep, SCHEMA032_STAGES_V2, "schema032_failed_step");
+    validateSchemaStages(input.completedStages, SCHEMA032_STAGES_V2.slice(0, SCHEMA032_STAGES_V2.indexOf(failedStep)), "schema032_failure");
+    const artifact = record(input.failureArtifact, "schema032_failure_artifact");
+    exactKeys(artifact, ["kind", "failedStep", "relativePath", "evidenceSha256"], "schema032_failure_artifact");
+    if (artifact.kind !== "schema032_stage_failure" || artifact.failedStep !== failedStep
+        || artifact.relativePath !== SCHEMA032_FAILURE_PATHS_V2[failedStep]) throw new Error("schema032_failure_artifact_binding_invalid");
+    sha(artifact.evidenceSha256, SHA256, "schema032_failure_evidence");
+  } else throw new Error("schema032_production_result_invalid");
+  return input as Schema032ProductionExecutionReceiptV2;
+}
+
+const ROLLOUT_STEPS_V2 = ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
+  "verify_singleton_precondition", "stop_previous", "prove_previous_stopped", "start_candidate",
+  "prove_candidate_started", "immediate_runtime_checks"] as const;
+const CANARY_STEPS_V2 = ["verify_g14", "observe_cycle_1", "observe_cycle_2", "bounded_runtime_checks"] as const;
+const ROLLBACK_STEPS_V2 = ["verify_failure", "prove_previous_healthy", "prove_no_previous_stop",
+  "prove_no_candidate_start", "restart_previous", "stop_candidate", "start_previous", "rollback_runtime_checks"] as const;
+const RECOVERY_STEPS_V2 = ["verify_abandoned_cleanup", "verify_completed_prefix", "verify_uncertain_step_intent",
+  "validate_failure_derivation_inputs"] as const;
+const EXTERNAL_EFFECT_STEPS_V2 = ["stop_previous", "start_candidate", "restart_previous", "stop_candidate", "start_previous"] as const;
+
+function orchestrationCommand(orchestration: unknown, commandId: unknown, label: string): void {
+  const expected = { rollout: "production_rollout", canary: "production_canary",
+    rollback: "production_rollback", recovery: "production_recovery" } as const;
+  const key = oneOf(orchestration, ["rollout", "canary", "rollback", "recovery"] as const, `${label}_orchestration`);
+  if (expected[key] !== commandId) throw new Error(`${label}_command_binding_invalid`);
+}
+
+function validateOrchestrationStep(orchestration: unknown, stepId: unknown, label: string): void {
+  if (orchestration === "rollout") oneOf(stepId, ROLLOUT_STEPS_V2, label);
+  else if (orchestration === "canary") oneOf(stepId, CANARY_STEPS_V2, label);
+  else if (orchestration === "rollback") oneOf(stepId, ROLLBACK_STEPS_V2, label);
+  else if (orchestration === "recovery") oneOf(stepId, RECOVERY_STEPS_V2, label);
+  else throw new Error(`${label}_orchestration_invalid`);
+}
+
+export function validateProductionOrchestrationStepIntentV2(
+  value: unknown
+): ProductionOrchestrationStepIntentV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_orchestration_step_intent");
+  exactKeys(input, ["version", "capability", "orchestration", "operationId", "operationClaimSha256",
+    "authorityConsumptionSha256", "sequence", "stepId", "attempt", "relativePath",
+    "currentOperationLeaseSha256", "currentOperationLeaseEpoch", "commandId", "redactedTemplateSha256",
+    "inputSha256", "intendedExternalEffectSha256", "preparedAt"], "production_orchestration_step_intent");
+  if (input.version !== "production-orchestration-step-intent-v2" || input.capability !== "effect_capable"
+      || input.attempt !== 1) throw new Error("production_step_intent_literal_invalid");
+  const orchestration = oneOf(input.orchestration, ["rollout", "canary", "rollback"] as const, "step_intent_orchestration");
+  const operationId = nonEmpty(input.operationId, "step_intent_operation_id");
+  for (const key of ["operationClaimSha256", "authorityConsumptionSha256", "currentOperationLeaseSha256",
+    "redactedTemplateSha256", "inputSha256", "intendedExternalEffectSha256"]) sha(input[key], SHA256, key);
+  const sequence = positiveInteger(input.sequence, "step_intent_sequence");
+  const stepId = oneOf(input.stepId, EXTERNAL_EFFECT_STEPS_V2, "step_intent_step");
+  validateOrchestrationStep(orchestration, stepId, "step_intent_step");
+  positiveInteger(input.currentOperationLeaseEpoch, "step_intent_lease_epoch");
+  orchestrationCommand(orchestration, input.commandId, "step_intent");
+  const expectedPath = `production-operation-step-intents/${operationId}/${sequence}-${stepId}-1-v2.json`;
+  if (input.relativePath !== expectedPath || !SAFE_RELATIVE_PATH.test(expectedPath)) throw new Error("step_intent_path_binding_invalid");
+  iso(input.preparedAt, "step_intent_prepared_at");
+  return input as ProductionOrchestrationStepIntentV2;
+}
+
+export function validateProductionOrchestrationStepReceiptV2(
+  value: unknown
+): ProductionOrchestrationStepReceiptV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_orchestration_step_receipt");
+  exactKeys(input, ["version", "operationId", "operationClaimSha256", "authorityConsumptionSha256",
+    "operationLeaseSha256", "operationLeaseEpoch", "operationDeadlineAt", "inputSha256", "outputSha256",
+    "observedStateSha256", "sequence", "startedAt", "finishedAt", "recoveredAfterCrash", "result",
+    "capability", "commandId", "redactedTemplateSha256", "executionKind", "stepIntentRelativePath",
+    "stepIntentSha256", "orchestration", "stepId"], "production_orchestration_step_receipt");
+  if (input.version !== "production-orchestration-step-receipt-v2" || input.result !== "completed") {
+    throw new Error("production_step_receipt_literal_invalid");
+  }
+  nonEmpty(input.operationId, "step_receipt_operation_id");
+  for (const key of ["operationClaimSha256", "authorityConsumptionSha256", "operationLeaseSha256", "inputSha256",
+    "outputSha256", "observedStateSha256", "redactedTemplateSha256"]) sha(input[key], SHA256, key);
+  positiveInteger(input.operationLeaseEpoch, "step_receipt_lease_epoch");
+  positiveInteger(input.sequence, "step_receipt_sequence");
+  iso(input.operationDeadlineAt, "step_receipt_deadline");
+  const started = iso(input.startedAt, "step_receipt_started");
+  const finished = iso(input.finishedAt, "step_receipt_finished");
+  if (Date.parse(finished) < Date.parse(started)
+      || Date.parse(finished) >= Date.parse(String(input.operationDeadlineAt))) throw new Error("step_receipt_time_invalid");
+  const capability = oneOf(input.capability, ["effect_capable", "recovery_only"] as const, "step_receipt_capability");
+  validateOrchestrationStep(input.orchestration, input.stepId, "step_receipt_step");
+  orchestrationCommand(input.orchestration, input.commandId, "step_receipt");
+  if (capability === "recovery_only") {
+    if (input.orchestration !== "recovery" || input.commandId !== "production_recovery"
+        || input.executionKind !== "local_validation" || input.stepIntentRelativePath !== null
+        || input.stepIntentSha256 !== null || input.recoveredAfterCrash !== false) {
+      throw new Error("recovery_step_receipt_binding_invalid");
+    }
+  } else {
+    if (input.orchestration === "recovery") throw new Error("effect_step_receipt_binding_invalid");
+    booleanValue(input.recoveredAfterCrash, "step_receipt_recovered_after_crash");
+    if (input.executionKind === "external_effect") {
+      oneOf(input.stepId, EXTERNAL_EFFECT_STEPS_V2, "external_effect_step");
+      const expectedIntentPath = `production-operation-step-intents/${String(input.operationId)}/${String(input.sequence)}-${String(input.stepId)}-1-v2.json`;
+      if (input.stepIntentRelativePath !== expectedIntentPath
+          || !SAFE_RELATIVE_PATH.test(expectedIntentPath)) {
+        throw new Error("step_receipt_intent_path_invalid");
+      }
+      sha(input.stepIntentSha256, SHA256, "step_receipt_intent_sha");
+    } else if (input.executionKind === "local_validation") {
+      if (input.stepIntentRelativePath !== null || input.stepIntentSha256 !== null
+          || (EXTERNAL_EFFECT_STEPS_V2 as readonly string[]).includes(String(input.stepId))) {
+        throw new Error("step_receipt_local_binding_invalid");
+      }
+    } else throw new Error("step_receipt_execution_kind_invalid");
+  }
+  return input as ProductionOrchestrationStepReceiptV2;
+}
+
+export function validateProductionOrchestrationReceiptV2(value: unknown): ProductionOrchestrationReceiptV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_orchestration_receipt");
+  const common = ["version", "candidateSha", "releaseGenerationId", "sourceManifestSha256", "operationId",
+    "operationClaimSha256", "finalOperationLeaseSha256", "finalOperationLeaseEpoch", "operationDeadlineAt",
+    "operationLeaseTakeoverChainSha256", "operationalAttestationConsumptionSha256", "redactedTemplateSha256",
+    "result", "orchestration", "capability", "commandId", "recoveryInputSha256", "completedStepReceipts"];
+  exactKeys(input, input.capability === "recovery_only"
+    ? [...common, "recoveryAttemptedExternalEffect", "priorAttemptedExternalEffect",
+      "priorCompletedStepReceiptPrefixSha256", "priorUncertainStepMarkerSha256"] : common,
+  "production_orchestration_receipt");
+  if (input.version !== "production-orchestration-receipt-v2" || input.result !== "completed") {
+    throw new Error("production_orchestration_receipt_literal_invalid");
+  }
+  sha(input.candidateSha, SHA40, "orchestration_candidate");
+  nonEmpty(input.releaseGenerationId, "orchestration_generation");
+  nonEmpty(input.operationId, "orchestration_operation_id");
+  for (const key of ["sourceManifestSha256", "operationClaimSha256", "finalOperationLeaseSha256",
+    "operationLeaseTakeoverChainSha256", "operationalAttestationConsumptionSha256", "redactedTemplateSha256"]) sha(input[key], SHA256, key);
+  positiveInteger(input.finalOperationLeaseEpoch, "orchestration_lease_epoch");
+  iso(input.operationDeadlineAt, "orchestration_deadline");
+  const capability = oneOf(input.capability, ["effect_capable", "recovery_only"] as const, "orchestration_capability");
+  orchestrationCommand(input.orchestration, input.commandId, "orchestration_receipt");
+  if (capability === "recovery_only") {
+    if (input.orchestration !== "recovery" || input.recoveryAttemptedExternalEffect !== false) throw new Error("recovery_receipt_binding_invalid");
+    sha(input.recoveryInputSha256, SHA256, "recovery_input_sha");
+    booleanValue(input.priorAttemptedExternalEffect, "prior_attempted_external_effect");
+    sha(input.priorCompletedStepReceiptPrefixSha256, SHA256, "prior_step_prefix_sha");
+    nullableSha(input.priorUncertainStepMarkerSha256, "prior_uncertain_step_marker");
+  } else if (input.orchestration === "recovery" || input.recoveryInputSha256 !== null) {
+    throw new Error("effect_orchestration_receipt_binding_invalid");
+  }
+  if (!Array.isArray(input.completedStepReceipts)) throw new Error("completed_step_receipts_invalid");
+  let previousSequence = 0;
+  const completedStepIds: string[] = [];
+  input.completedStepReceipts.forEach((entryValue, index) => {
+    const entry = record(entryValue, "completed_step_receipt_ref");
+    exactKeys(entry, ["relativePath", "sha256", "receipt"], "completed_step_receipt_ref");
+    if (typeof entry.relativePath !== "string" || !SAFE_RELATIVE_PATH.test(entry.relativePath)) throw new Error("completed_step_receipt_path_invalid");
+    const receipt = validateProductionOrchestrationStepReceiptV2(entry.receipt);
+    if (entry.sha256 !== canonicalObjectSha(receipt)) throw new Error("completed_step_receipt_hash_binding_invalid");
+    if (receipt.sequence !== index + 1 || receipt.sequence <= previousSequence
+        || receipt.operationId !== input.operationId
+        || receipt.operationClaimSha256 !== input.operationClaimSha256
+        || receipt.authorityConsumptionSha256 !== input.operationalAttestationConsumptionSha256
+        || receipt.operationDeadlineAt !== input.operationDeadlineAt
+        || receipt.orchestration !== input.orchestration || receipt.capability !== capability) {
+      throw new Error("completed_step_receipt_binding_invalid");
+    }
+    previousSequence = receipt.sequence;
+    completedStepIds.push(String(receipt.stepId));
+  });
+  const rollbackSequences = [
+    ["verify_failure", "prove_previous_healthy", "prove_no_previous_stop", "prove_no_candidate_start"],
+    ["verify_failure", "restart_previous", "prove_no_candidate_start", "rollback_runtime_checks"],
+    ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"]
+  ] as const;
+  const allowedCompleteSequences: readonly (readonly string[])[] = input.orchestration === "rollout"
+    ? [ROLLOUT_STEPS_V2] : input.orchestration === "canary"
+      ? [CANARY_STEPS_V2] : input.orchestration === "recovery"
+        ? [RECOVERY_STEPS_V2] : rollbackSequences;
+  if (!allowedCompleteSequences.some((steps) => canonicalReleaseJsonV2(steps)
+      === canonicalReleaseJsonV2(completedStepIds))) {
+    throw new Error("completed_step_receipts_sequence_incomplete");
+  }
+  return input as ProductionOrchestrationReceiptV2;
+}
+
+function validateTrueChecks(value: unknown, keys: readonly string[], label: string): void {
+  const checks = record(value, label);
+  exactKeys(checks, keys, label);
+  if (keys.some((key) => checks[key] !== true)) throw new Error(`${label}_invalid`);
+}
+
+export function validateProductionRolloutEvidenceV2(value: unknown): ProductionRolloutEvidenceV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_rollout_evidence");
+  exactKeys(input, ["version", "candidateSha", "releaseFreezeIdentitySha256",
+    "operationalAttestationConsumptionSha256", "sourceManifestSha256", "previousStopEvidenceSha256",
+    "candidateStartEvidenceSha256", "managerCapturesSha256", "queryCapturesSha256",
+    "orchestrationReceiptSha256", "checks", "result"], "production_rollout_evidence");
+  if (input.version !== "production-rollout-evidence-v2" || input.result !== "passed") throw new Error("rollout_evidence_literal_invalid");
+  sha(input.candidateSha, SHA40, "rollout_candidate");
+  for (const key of ["releaseFreezeIdentitySha256", "operationalAttestationConsumptionSha256", "sourceManifestSha256",
+    "previousStopEvidenceSha256", "candidateStartEvidenceSha256", "managerCapturesSha256",
+    "queryCapturesSha256", "orchestrationReceiptSha256"]) sha(input[key], SHA256, key);
+  validateTrueChecks(input.checks, ["schema", "version", "admin", "singleton", "workers", "logs", "delivery", "legacy"], "rollout_checks");
+  return input as ProductionRolloutEvidenceV2;
+}
+
+export function validateProductionCanaryEvidenceV2(value: unknown): ProductionCanaryEvidenceV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_canary_evidence");
+  exactKeys(input, ["version", "candidateSha", "releaseFreezeIdentitySha256",
+    "operationalAttestationConsumptionSha256", "sourceManifestSha256", "observationStartedAt",
+    "observationFinishedAt", "completedPollingCycles", "queryCapturesSha256", "logCapturesSha256",
+    "orchestrationReceiptSha256", "checks", "result"], "production_canary_evidence");
+  if (input.version !== "production-canary-evidence-v2" || input.result !== "passed") throw new Error("canary_evidence_literal_invalid");
+  sha(input.candidateSha, SHA40, "canary_candidate");
+  for (const key of ["releaseFreezeIdentitySha256", "operationalAttestationConsumptionSha256", "sourceManifestSha256",
+    "queryCapturesSha256", "logCapturesSha256", "orchestrationReceiptSha256"]) sha(input[key], SHA256, key);
+  const started = iso(input.observationStartedAt, "canary_observation_started");
+  const finished = iso(input.observationFinishedAt, "canary_observation_finished");
+  if (Date.parse(finished) <= Date.parse(started)) throw new Error("canary_observation_time_invalid");
+  positiveInteger(input.completedPollingCycles, "canary_polling_cycles");
+  validateTrueChecks(input.checks, ["schema", "version", "admin", "singleton", "reconciliation", "delivery",
+    "navigation", "allowance", "legacy", "secrets", "queues", "honest_limits"], "canary_checks");
+  return input as ProductionCanaryEvidenceV2;
+}
+
+export function validateUncertainProductionStepMarkerV2(value: unknown): UncertainProductionStepMarkerV2 {
+  assertNoSecrets(value);
+  const input = record(value, "uncertain_production_step_marker");
+  exactKeys(input, ["sequence", "stepId", "attempt", "stepIntentRelativePath", "stepIntentSha256",
+    "externalEffectMayHaveStarted", "observedOutcome"], "uncertain_production_step_marker");
+  positiveInteger(input.sequence, "uncertain_step_sequence");
+  oneOf(input.stepId, EXTERNAL_EFFECT_STEPS_V2, "uncertain_step_id");
+  if (input.attempt !== 1 || input.externalEffectMayHaveStarted !== true || input.observedOutcome !== "unknown"
+      || typeof input.stepIntentRelativePath !== "string" || !SAFE_RELATIVE_PATH.test(input.stepIntentRelativePath)) {
+    throw new Error("uncertain_step_marker_literal_invalid");
+  }
+  sha(input.stepIntentSha256, SHA256, "uncertain_step_intent_sha");
+  return input as UncertainProductionStepMarkerV2;
+}
+
+export function validateProductionRecoveryInputV2(value: unknown): ProductionRecoveryInputV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_recovery_input");
+  exactKeys(input, ["version", "priorOperationKind", "priorOperationId", "priorTerminalAbandonedSha256",
+    "priorTerminalCleanupSha256", "completedStepReceiptPrefix", "completedStepReceiptPrefixSha256",
+    "uncertainStepMarker", "uncertainStepMarkerSha256", "recoveryOperationalAttestationSha256",
+    "recoveryProductionLeaseSha256", "recoveryAuthorityPreclaimSha256", "recoveryOperationClaimSha256",
+    "recoveryAuthorityConsumptionSha256", "verifiedAt"], "production_recovery_input");
+  if (input.version !== "production-recovery-input-v2") throw new Error("production_recovery_input_version_invalid");
+  oneOf(input.priorOperationKind, ["rollout", "canary"] as const, "recovery_prior_kind");
+  nonEmpty(input.priorOperationId, "recovery_prior_operation_id");
+  for (const key of ["priorTerminalAbandonedSha256", "priorTerminalCleanupSha256", "completedStepReceiptPrefixSha256",
+    "recoveryOperationalAttestationSha256", "recoveryProductionLeaseSha256", "recoveryAuthorityPreclaimSha256",
+    "recoveryOperationClaimSha256", "recoveryAuthorityConsumptionSha256"]) sha(input[key], SHA256, key);
+  if (!Array.isArray(input.completedStepReceiptPrefix)) throw new Error("recovery_step_prefix_invalid");
+  const priorSteps = input.priorOperationKind === "rollout" ? ROLLOUT_STEPS_V2 : CANARY_STEPS_V2;
+  if (input.completedStepReceiptPrefix.length > priorSteps.length) {
+    throw new Error("recovery_step_prefix_invalid");
+  }
+  let previous = 0;
+  input.completedStepReceiptPrefix.forEach((valueItem, index) => {
+    const item = record(valueItem, "recovery_step_prefix_item");
+    exactKeys(item, ["sequence", "stepId", "receiptSha256"], "recovery_step_prefix_item");
+    const sequence = positiveInteger(item.sequence, "recovery_prefix_sequence");
+    if (sequence !== index + 1 || sequence <= previous || item.stepId !== priorSteps[index]) {
+      throw new Error("recovery_step_prefix_order_invalid");
+    }
+    previous = sequence;
+    nonEmpty(item.stepId, "recovery_prefix_step_id");
+    sha(item.receiptSha256, SHA256, "recovery_prefix_receipt_sha");
+  });
+  if (input.completedStepReceiptPrefixSha256 !== canonicalObjectSha(input.completedStepReceiptPrefix)) {
+    throw new Error("recovery_step_prefix_hash_binding_invalid");
+  }
+  if (input.uncertainStepMarker === null) {
+    if (input.uncertainStepMarkerSha256 !== null) throw new Error("recovery_uncertain_marker_binding_invalid");
+  } else {
+    const marker = validateUncertainProductionStepMarkerV2(input.uncertainStepMarker);
+    if (input.uncertainStepMarkerSha256 !== canonicalObjectSha(marker)
+        || marker.sequence !== previous + 1
+        || marker.stepId !== priorSteps[previous]
+        || marker.stepIntentRelativePath
+          !== `production-operation-step-intents/${String(input.priorOperationId)}/${marker.sequence}-${marker.stepId}-1-v2.json`) {
+      throw new Error("recovery_uncertain_marker_binding_invalid");
+    }
+  }
+  iso(input.verifiedAt, "recovery_input_verified_at");
+  return input as ProductionRecoveryInputV2;
+}
+
+export function validateProductionFailureEvidenceV2(value: unknown): ProductionFailureEvidenceV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_failure_evidence");
+  const common = ["version", "candidateSha", "releaseFreezeIdentitySha256", "sourceManifestSha256",
+    "failedExecutionEvidenceSha256", "observedAt", "failedGateId", "evidenceKind", "attemptedExternalEffect", "failureCode"];
+  let extra: string[] = [];
+  let codes: readonly string[];
+  if (input.failedGateId === "G13_PRODUCTION_MIGRATION" && input.evidenceKind === "schema032_execution_receipt") {
+    codes = ["first_migration_failed", "first_verification_failed", "second_migration_failed", "final_verification_failed"];
+    if (input.attemptedExternalEffect !== true) throw new Error("failure_external_effect_binding_invalid");
+  } else if (input.failedGateId === "G14_PRODUCTION_ROLLOUT" && input.evidenceKind === "runtime_rollout_preflight") {
+    extra = ["orchestrationProgressSha256", "preEffectValidationReceiptsSha256"];
+    codes = ["g13_reverification_failed", "schema_verification_failed", "previous_runtime_identity_mismatch", "singleton_precondition_failed"];
+    if (input.attemptedExternalEffect !== false) throw new Error("failure_external_effect_binding_invalid");
+  } else if (input.failedGateId === "G14_PRODUCTION_ROLLOUT" && input.evidenceKind === "runtime_manager_capture") {
+    extra = ["orchestrationProgressSha256"];
+    codes = ["previous_runtime_stop_failed", "candidate_start_failed"];
+    if (input.attemptedExternalEffect !== true) throw new Error("failure_external_effect_binding_invalid");
+  } else if (input.failedGateId === "G14_PRODUCTION_ROLLOUT" && input.evidenceKind === "runtime_rollout_checks") {
+    extra = ["orchestrationProgressSha256"];
+    codes = ["schema_verification_failed", "runtime_version_mismatch", "admin_unhealthy", "singleton_violation",
+      "worker_start_failed", "delivery_invariant_failed", "legacy_population_changed", "secret_detected"];
+    if (input.attemptedExternalEffect !== true) throw new Error("failure_external_effect_binding_invalid");
+  } else if (input.failedGateId === "G15_PRODUCTION_CANARY" && input.evidenceKind === "runtime_canary_checks") {
+    extra = ["orchestrationProgressSha256"];
+    codes = ["schema_verification_failed", "canary_timeout", "polling_cycles_incomplete", "runtime_version_mismatch",
+      "admin_unhealthy", "singleton_violation", "reconciliation_failed", "delivery_invariant_failed",
+      "navigation_invariant_failed", "allowance_invariant_failed", "legacy_population_changed", "queue_growth_detected",
+      "honest_limit_misreported", "secret_detected"];
+    if (input.attemptedExternalEffect !== true) throw new Error("failure_external_effect_binding_invalid");
+  } else if ((input.failedGateId === "G14_PRODUCTION_ROLLOUT" || input.failedGateId === "G15_PRODUCTION_CANARY")
+      && input.evidenceKind === "abandoned_operation_recovery") {
+    const recoveryKeys = ["priorAttemptedExternalEffect", "recoveryAttemptedExternalEffect", "recoveryInputSha256",
+      "recoveryOrchestrationReceiptSha256", "priorTerminalAbandonedSha256", "priorTerminalCleanupSha256",
+      "completedStepReceiptPrefixSha256", "uncertainStepMarkerSha256", "recoveryOperationalAttestationSha256",
+      "recoveryProductionLeaseSha256", "recoveryAuthorityPreclaimSha256", "recoveryOperationClaimSha256",
+      "recoveryAuthorityConsumptionSha256"];
+    exactKeys(input, [...common.filter((key) => key !== "attemptedExternalEffect"), ...recoveryKeys], "production_failure_evidence");
+    codes = ["authority_expired_before_claim", "authority_expired_after_claim", "operation_deadline_reached"];
+    booleanValue(input.priorAttemptedExternalEffect, "failure_prior_effect");
+    if (input.recoveryAttemptedExternalEffect !== false) throw new Error("failure_recovery_effect_invalid");
+    recoveryKeys.slice(2).forEach((key) => {
+      if (key === "uncertainStepMarkerSha256") nullableSha(input[key], key);
+      else sha(input[key], SHA256, key);
+    });
+  } else throw new Error("production_failure_branch_invalid");
+  if (input.evidenceKind !== "abandoned_operation_recovery") {
+    exactKeys(input, [...common, ...extra], "production_failure_evidence");
+    extra.forEach((key) => sha(input[key], SHA256, key));
+  }
+  if (input.version !== "production-failure-evidence-v2") throw new Error("production_failure_version_invalid");
+  sha(input.candidateSha, SHA40, "failure_candidate");
+  for (const key of ["releaseFreezeIdentitySha256", "sourceManifestSha256", "failedExecutionEvidenceSha256"]) sha(input[key], SHA256, key);
+  iso(input.observedAt, "failure_observed_at");
+  oneOf(input.failureCode, codes, "production_failure_code");
+  return input as ProductionFailureEvidenceV2;
+}
+
+export function validateProductionRollbackEvidenceV2(value: unknown): ProductionRollbackEvidenceV2 {
+  assertNoSecrets(value);
+  const input = record(value, "production_rollback_evidence");
+  exactKeys(input, ["version", "candidateSha", "releaseFreezeIdentitySha256", "artifactRootFingerprintSha256",
+    "sourceManifestSha256", "failureEvidenceSha256", "operationalAttestationSha256",
+    "operationalAttestationConsumptionSha256", "commandId", "redactedTemplateSha256",
+    "previousRuntimeIdentitySha256", "orchestrationReceiptSha256", "outcome", "queryCapturesSha256", "checks"],
+  "production_rollback_evidence");
+  if (input.version !== "production-rollback-evidence-v2" || input.commandId !== "production_rollback") {
+    throw new Error("production_rollback_evidence_literal_invalid");
+  }
+  sha(input.candidateSha, SHA40, "rollback_candidate");
+  for (const key of ["releaseFreezeIdentitySha256", "artifactRootFingerprintSha256", "sourceManifestSha256",
+    "failureEvidenceSha256", "operationalAttestationSha256", "operationalAttestationConsumptionSha256",
+    "redactedTemplateSha256", "previousRuntimeIdentitySha256", "orchestrationReceiptSha256", "queryCapturesSha256"]) {
+    sha(input[key], SHA256, key);
+  }
+  validateProductionRollbackOutcomeV2(input.outcome);
+  validateTrueChecks(input.checks, ["schema032_retained", "previous_version", "admin", "singleton", "allowance",
+    "legacy", "sent", "no_duplicate_send"], "rollback_checks");
+  return input as ProductionRollbackEvidenceV2;
 }

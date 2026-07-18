@@ -213,6 +213,66 @@ describe("RemediationReleaseManifestV2 exact lifecycle", () => {
     expect(rolledBack).toMatchObject({ overall: "rolled_back", actualRollback: { outcome } });
   });
 
+  it("allows production_recovery authority only with exact typed abandoned-operation recovery evidence while direct production_failed remains authority-free", () => {
+    let current = advance(initial(), "readiness", "G05_TELEGRAM", "manual_telegram_acceptance");
+    current = advance(current, "g12_backup_passed", "G12_PRODUCTION_BACKUP", "production_backup");
+    current = advance(current, "g13_migration_passed", "G13_PRODUCTION_MIGRATION", "production_migration");
+    const sourceSha = releaseManifestSha256V2(current);
+    const recoveryAuthority = attestation(current, "production_failed", "production_recovery");
+    const recoveryEvidence = {
+      version: "production-failure-evidence-v2" as const,
+      candidateSha,
+      releaseFreezeIdentitySha256: current.releaseFreezeIdentitySha256,
+      sourceManifestSha256: sourceSha,
+      failedExecutionEvidenceSha256: "1".repeat(64),
+      observedAt: "2026-07-18T10:04:00.000Z",
+      failedGateId: "G14_PRODUCTION_ROLLOUT" as const,
+      evidenceKind: "abandoned_operation_recovery" as const,
+      priorAttemptedExternalEffect: true,
+      recoveryAttemptedExternalEffect: false as const,
+      recoveryInputSha256: "2".repeat(64),
+      recoveryOrchestrationReceiptSha256: "1".repeat(64),
+      priorTerminalAbandonedSha256: "3".repeat(64),
+      priorTerminalCleanupSha256: "4".repeat(64),
+      completedStepReceiptPrefixSha256: "5".repeat(64),
+      uncertainStepMarkerSha256: null,
+      recoveryOperationalAttestationSha256: releaseSha256V2(
+        `${canonicalReleaseJsonV2(recoveryAuthority)}\n`),
+      recoveryProductionLeaseSha256: "6".repeat(64),
+      recoveryAuthorityPreclaimSha256: "7".repeat(64),
+      recoveryOperationClaimSha256: "8".repeat(64),
+      recoveryAuthorityConsumptionSha256: "9".repeat(64),
+      failureCode: "authority_expired_after_claim" as const
+    };
+    const failureRef = {
+      kind: "production_failure_evidence" as const,
+      relativePath: "production-failure-evidence-v2.json" as const,
+      sha256: releaseSha256V2(`${canonicalReleaseJsonV2(recoveryEvidence)}\n`),
+      schemaVersion: "production-failure-evidence-v2" as const,
+      candidateSha,
+      sourceManifestSha256: sourceSha
+    };
+    const transition = {
+      transitionId: "production_failed" as const,
+      evaluatedAt: "2026-07-18T10:04:00.000Z",
+      latestCommittedReceiptSha256: "f".repeat(64),
+      operationalAttestation: recoveryAuthority
+    };
+    const verified = {
+      refs: [failureRef], actualRollbackOutcome: null, productionFailureEvidence: recoveryEvidence
+    };
+    expect(reduceManifestTransition(current, transition,
+      [output("G14_PRODUCTION_ROLLOUT", "failed")], verified).transitionId)
+      .toBe("production_failed");
+    expect(() => reduceManifestTransition(current, transition,
+      [output("G14_PRODUCTION_ROLLOUT", "failed")], {
+        refs: [failureRef], actualRollbackOutcome: null
+      })).toThrow(/unexpected.*attestation|recovery.*evidence/i);
+    expect(() => reduceManifestTransition(current, { ...transition, operationalAttestation: null },
+      [output("G14_PRODUCTION_ROLLOUT", "failed")], verified))
+      .toThrow(/attestation.*required/i);
+  });
+
   it("rejects exact-set drift, free command/evidence kinds, secrets, and bootstrap/frozen confusion", () => {
     const manifest = structuredClone(initial()) as unknown as Record<string, unknown>;
     (manifest.requiredRequirementIds as string[]).pop();

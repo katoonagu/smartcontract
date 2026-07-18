@@ -285,6 +285,7 @@ export function buildTask0BReleaseFreezeEvidence(input: {
   observedAt?: string;
   databaseFingerprintSha256?: string;
   operationalConfigSha256?: string;
+  artifactRootFingerprintSha256?: string;
 } = {}) {
   const candidateSha = input.candidateSha ?? CANDIDATE_SHA;
   const previousRuntimeSha = input.previousRuntimeSha ?? PREVIOUS_RUNTIME_SHA;
@@ -435,7 +436,7 @@ export function buildTask0BReleaseFreezeEvidence(input: {
       }
     },
     artifactRoot: {
-      rootFingerprintSha256: "1".repeat(64),
+      rootFingerprintSha256: input.artifactRootFingerprintSha256 ?? "1".repeat(64),
       outsideRepository: true,
       noSymlink: true,
       ownerIdentityFingerprintSha256: "e".repeat(64),
@@ -480,33 +481,40 @@ export function buildTask0BReleaseFreezeEvidence(input: {
 }
 
 const RELEASE_V2_TASK0B_EVIDENCE = buildTask0BReleaseFreezeEvidence({ observedAt: RELEASE_V2_NOW });
-const RELEASE_V2_TASK0B_SHA256 = createHash("sha256")
-  .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE)}\n`, "utf8").digest("hex");
-const RELEASE_V2_GENERATION_SHA256 = createHash("sha256").update(canonicalFixtureJson([
-  "release-freeze-generation-v2",
-  RELEASE_V2_TASK0B_EVIDENCE.candidateSha,
-  RELEASE_V2_TASK0B_EVIDENCE.artifactRoot.rootFingerprintSha256,
-  RELEASE_V2_TASK0B_SHA256
-])).digest("hex");
-
-export const RELEASE_V2_FREEZE_IDENTITY = Object.freeze({
-  version: "release-freeze-identity-v2" as const,
-  releaseGenerationId: `release-generation-${RELEASE_V2_GENERATION_SHA256.slice(0, 32)}`,
-  candidateSha: RELEASE_V2_TASK0B_EVIDENCE.candidateSha,
-  planBaseSha: PLAN_BASE_SHA,
-  artifactRootFingerprintSha256: RELEASE_V2_TASK0B_EVIDENCE.artifactRoot.rootFingerprintSha256,
+export function buildReleaseFreezeIdentityV2Fixture(
+  task0b: ReturnType<typeof buildTask0BReleaseFreezeEvidence>
+) {
+  const task0BSha256 = createHash("sha256")
+    .update(`${canonicalFixtureJson(task0b)}\n`, "utf8").digest("hex");
+  const generationSha256 = createHash("sha256").update(canonicalFixtureJson([
+    "release-freeze-generation-v2",
+    task0b.candidateSha,
+    task0b.artifactRoot.rootFingerprintSha256,
+    task0BSha256
+  ])).digest("hex");
+  return {
+    version: "release-freeze-identity-v2" as const,
+    releaseGenerationId: `release-generation-${generationSha256.slice(0, 32)}`,
+    candidateSha: task0b.candidateSha,
+    planBaseSha: PLAN_BASE_SHA,
+    artifactRootFingerprintSha256: task0b.artifactRoot.rootFingerprintSha256,
   artifactRootTrustBoundaryEvidenceSha256: createHash("sha256")
-    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.artifactRoot)}\n`, "utf8").digest("hex"),
+      .update(`${canonicalFixtureJson(task0b.artifactRoot)}\n`, "utf8").digest("hex"),
   productionDatabaseIdentityFingerprintSha256:
-    RELEASE_V2_TASK0B_EVIDENCE.productionDatabase.approvedIdentityFingerprintSha256,
+      task0b.productionDatabase.approvedIdentityFingerprintSha256,
   postgresToolIdentitySha256: createHash("sha256")
-    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.postgresTools)}\n`, "utf8").digest("hex"),
+      .update(`${canonicalFixtureJson(task0b.postgresTools)}\n`, "utf8").digest("hex"),
   previousRuntimeDiscoverySha256: createHash("sha256")
-    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.previousRuntimeIdentity)}\n`, "utf8").digest("hex"),
+      .update(`${canonicalFixtureJson(task0b.previousRuntimeIdentity)}\n`, "utf8").digest("hex"),
   rollbackWorktreeIdentitySha256: createHash("sha256")
-    .update(`${canonicalFixtureJson(RELEASE_V2_TASK0B_EVIDENCE.rollbackWorktree)}\n`, "utf8").digest("hex"),
-  createdAt: RELEASE_V2_TASK0B_EVIDENCE.freezeCutoff
-});
+      .update(`${canonicalFixtureJson(task0b.rollbackWorktree)}\n`, "utf8").digest("hex"),
+    createdAt: task0b.freezeCutoff
+  };
+}
+
+export const RELEASE_V2_FREEZE_IDENTITY = Object.freeze(
+  buildReleaseFreezeIdentityV2Fixture(RELEASE_V2_TASK0B_EVIDENCE)
+);
 
 export const RELEASE_V2_FREEZE_SHA256 = createHash("sha256")
   .update(`${canonicalFixtureJson(RELEASE_V2_FREEZE_IDENTITY)}\n`, "utf8").digest("hex");

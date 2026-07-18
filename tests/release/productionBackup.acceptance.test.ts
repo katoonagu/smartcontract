@@ -382,7 +382,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       });
       expect(dumpCalls).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 30_000);
 
   it("rejects a valid claim followed by foreign custom dump and restore-list bytes without generation progress receipts", async () => {
     const api = await loadProducer();

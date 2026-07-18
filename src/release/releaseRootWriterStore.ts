@@ -444,7 +444,19 @@ export function writeExclusiveDurable(path: string, bytes: Buffer): void {
   writeExclusiveDurableWithOpsV2(path, bytes, DEFAULT_EXCLUSIVE_PUBLICATION_OPS);
 }
 
-export function replaceDurable(path: string, bytes: Buffer): void {
+export type ReplaceDurableOpsV2 = {
+  beforeCommittedVerification(): void;
+};
+
+const DEFAULT_REPLACE_OPS: ReplaceDurableOpsV2 = {
+  beforeCommittedVerification() { /* production has no injected fault */ }
+};
+
+export function replaceDurableWithOpsV2(
+  path: string,
+  bytes: Buffer,
+  operations: ReplaceDurableOpsV2
+): void {
   const temporary = `${path}.replace-${process.pid}-${releaseSha256V2(bytes).slice(0, 12)}`;
   assertExistingPathComponentsNotReparse(dirname(path));
   assertStableDirectory(dirname(path));
@@ -466,15 +478,20 @@ export function replaceDurable(path: string, bytes: Buffer): void {
   }
   const temporaryIdentity = assertStableRegularFile(temporary, dirname(path));
   assertTrustedPublishedRegularFileV2(temporary, temporaryIdentity);
+  if (!readStableRegularFile(temporary, dirname(path)).equals(bytes)) {
+    throw new Error("durable_replace_temp_verification_failed");
+  }
   renameSync(temporary, path);
   syncParentDirectory(path);
-  try {
-    assertTrustedPublishedRegularFileV2(path, temporaryIdentity);
-    if (!readStableRegularFile(path, dirname(path)).equals(bytes)) throw new Error("durable_replace_verification_failed");
-  } catch (error) {
-    removeExactNewFileV2(path, temporaryIdentity);
-    throw error;
-  }
+  // rename is the commit point: after it succeeds the target must remain the
+  // authoritative new version even if a later trust/read verification faults.
+  operations.beforeCommittedVerification();
+  assertTrustedPublishedRegularFileV2(path, temporaryIdentity);
+  if (!readStableRegularFile(path, dirname(path)).equals(bytes)) throw new Error("durable_replace_verification_failed");
+}
+
+export function replaceDurable(path: string, bytes: Buffer): void {
+  replaceDurableWithOpsV2(path, bytes, DEFAULT_REPLACE_OPS);
 }
 
 export type MoveNoOverwriteDurableOpsV2 = {
@@ -502,7 +519,21 @@ export function moveNoOverwriteDurableWithOpsV2(
   destination: string,
   operations: MoveNoOverwriteDurableOpsV2
 ): void {
-  if (operations.destinationExists(destination)) throw new Error("durable_move_destination_exists");
+  if (operations.destinationExists(destination)) {
+    const sourceIdentity = operations.assertStableRegularFile(source);
+    const destinationIdentity = operations.statIdentity(destination);
+    if (!sameIdentity(destinationIdentity, sourceIdentity)) throw new Error("durable_move_destination_exists");
+    operations.syncParentDirectory(destination);
+    const destinationAfterSync = operations.statIdentity(destination);
+    const sourceBeforeUnlink = operations.statIdentity(source);
+    if (!sameIdentity(destinationAfterSync, sourceIdentity) || !sameIdentity(sourceBeforeUnlink, sourceIdentity)) {
+      throw new Error("durable_move_resume_identity_changed");
+    }
+    operations.assertTrustedPublishedFile(destination, sourceIdentity);
+    operations.unlink(source);
+    operations.syncParentDirectory(source);
+    return;
+  }
   const original = operations.assertStableRegularFile(source);
   operations.link(source, destination);
   const linked = operations.statIdentity(destination);
@@ -547,8 +578,36 @@ export type RootWriterLeaseHandleV2 = {
   assertOwned(): void;
 };
 
-export function acquireRootWriterLeaseV2(root: string, payload: Record<string, unknown>): RootWriterLeaseHandleV2 {
+export type RootWriterOwnerIdentityV2 = {
+  pid: number;
+  processStartFingerprintSha256: string;
+};
+
+export type RootWriterOwnerIdentityProviderV2 = () => RootWriterOwnerIdentityV2;
+
+function assertCurrentRootWriterOwnerV2(
+  payload: ReleaseRootWriterLeaseV2,
+  ownerIdentity: RootWriterOwnerIdentityProviderV2
+): void {
+  const current = ownerIdentity();
+  if (!Number.isSafeInteger(current.pid) || current.pid < 1
+      || !/^[0-9a-f]{64}$/u.test(current.processStartFingerprintSha256)) {
+    throw new Error("root_writer_current_process_identity_invalid");
+  }
+  if (payload.ownerPid !== current.pid
+      || payload.ownerProcessStartFingerprintSha256 !== current.processStartFingerprintSha256) {
+    throw new Error("root_writer_owner_process_identity_mismatch");
+  }
+}
+
+export function acquireRootWriterLeaseV2(
+  root: string,
+  payloadValue: Record<string, unknown>,
+  ownerIdentity: RootWriterOwnerIdentityProviderV2
+): RootWriterLeaseHandleV2 {
   const path = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
+  const payload = validateReleaseRootWriterLeaseV2(payloadValue);
+  assertCurrentRootWriterOwnerV2(payload, ownerIdentity);
   const bytes = canonicalBytesV2(payload);
   writeExclusiveDurable(path, bytes);
   const sha256 = releaseSha256V2(bytes);
@@ -556,10 +615,12 @@ export function acquireRootWriterLeaseV2(root: string, payload: Record<string, u
   return {
     path, bytes, sha256, payload,
     assertOwned() {
+      assertCurrentRootWriterOwnerV2(payload, ownerIdentity);
       if (released || releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
     },
     release() {
       if (released) return;
+      assertCurrentRootWriterOwnerV2(payload, ownerIdentity);
       if (releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
       unlinkDurable(path);
       released = true;
@@ -569,7 +630,8 @@ export function acquireRootWriterLeaseV2(root: string, payload: Record<string, u
 
 export function resumeRootWriterLeaseV2(
   root: string,
-  expected: ReleaseRootWriterLeaseV2
+  expected: ReleaseRootWriterLeaseV2,
+  ownerIdentity: RootWriterOwnerIdentityProviderV2
 ): RootWriterLeaseHandleV2 {
   const path = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
   const bytes = readStableRegularFile(path, realpathSync(root));
@@ -585,15 +647,18 @@ export function resumeRootWriterLeaseV2(
   if (!canonicalBytesV2(exactExpected).equals(bytes)) {
     throw new Error("root_writer_lease_not_owned");
   }
+  assertCurrentRootWriterOwnerV2(payload, ownerIdentity);
   const sha256 = releaseSha256V2(bytes);
   let released = false;
   return {
     path, bytes, sha256, payload: payload as unknown as Record<string, unknown>,
     assertOwned() {
+      assertCurrentRootWriterOwnerV2(payload, ownerIdentity);
       if (released || releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
     },
     release() {
       if (released) return;
+      assertCurrentRootWriterOwnerV2(payload, ownerIdentity);
       if (releaseSha256V2(readFileSync(path)) !== sha256) throw new Error("root_writer_lease_fenced");
       unlinkDurable(path);
       released = true;

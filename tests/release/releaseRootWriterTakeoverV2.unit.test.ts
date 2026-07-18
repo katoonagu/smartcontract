@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, linkSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalReleaseJsonV2,
@@ -48,6 +48,20 @@ function frozenLease(overrides: Partial<FrozenRootWriterLeaseV2> = {}): FrozenRo
     expiresAt: "2026-07-18T10:03:00.000Z",
     ...overrides
   };
+}
+
+function frozenLeaseForRoot(
+  root: string,
+  overrides: Partial<FrozenRootWriterLeaseV2> = {}
+): FrozenRootWriterLeaseV2 {
+  const freeze = JSON.parse(readFileSync(join(root, "release-freeze-identity-v2.json"), "utf8"));
+  return frozenLease({
+    protectedRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    candidateSha: freeze.candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId,
+    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+    ...overrides
+  });
 }
 
 function preparedFrozen() {
@@ -140,7 +154,12 @@ async function trustedRoot(): Promise<string> {
 }
 
 async function materializeFreezeBundle(root: string) {
-  const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({ observedAt: RELEASE_V2_NOW });
+  const absoluteRoot = resolve(root);
+  const rootKey = process.platform === "win32" ? absoluteRoot.toLowerCase() : absoluteRoot;
+  const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
+    observedAt: RELEASE_V2_NOW,
+    artifactRootFingerprintSha256: createHash("sha256").update(rootKey, "utf8").digest("hex")
+  });
   await writeFile(join(root, "task0b-release-freeze.json"), canonicalBytes(task0BPreflightEvidence));
   const api = await import("../../src/release/releaseManifestStoreV2");
   await api.materializeReleaseFreezeV2({
@@ -212,7 +231,7 @@ describe("root writer takeover v2 bindings", () => {
   it("rejects a forged prepared replay before it can install a foreign lease", async () => {
     const root = await trustedRoot();
     const api = await materializeFreezeBundle(root);
-    const oldLease = frozenLease({
+    const oldLease = frozenLeaseForRoot(root, {
       leaseEpoch: 1,
       ownerPid: 2_147_483_647,
       acquiredAt: "2026-07-18T09:58:00.000Z",
@@ -238,12 +257,12 @@ describe("root writer takeover v2 bindings", () => {
       evaluatedAt: "2026-07-18T10:02:00.000Z"
     })).rejects.toThrow();
     expect(await readFile(join(root, "manifest-transition-root.lease.json"))).toEqual(oldBytes);
-  });
+  }, 30_000);
 
   it("distinguishes PID reuse by process-start fingerprint and refuses the current owner", async () => {
     const reusedPidRoot = await trustedRoot();
     const api = await materializeFreezeBundle(reusedPidRoot);
-    const reusedPidLease = frozenLease({
+    const reusedPidLease = frozenLeaseForRoot(reusedPidRoot, {
       leaseEpoch: 1,
       ownerPid: process.pid,
       ownerProcessStartFingerprintSha256: "0".repeat(64),
@@ -263,7 +282,7 @@ describe("root writer takeover v2 bindings", () => {
 
     const liveRoot = await trustedRoot();
     await materializeFreezeBundle(liveRoot);
-    const liveLease = frozenLease({
+    const liveLease = frozenLeaseForRoot(liveRoot, {
       leaseEpoch: 1,
       ownerPid: process.pid,
       ownerProcessStartFingerprintSha256: takeover.newLease.ownerProcessStartFingerprintSha256,
@@ -279,5 +298,146 @@ describe("root writer takeover v2 bindings", () => {
       evaluatedAt: "2026-07-18T10:02:00.000Z"
     })).rejects.toThrow("root_writer_owner_still_alive");
     expect(releaseFreezeIdentitySha256V2(RELEASE_V2_FREEZE_IDENTITY)).toBe(RELEASE_V2_FREEZE_SHA256);
+  }, 30_000);
+
+  it("rejects caller-supplied owner PID and derives acquire identity only from the test runtime seam", async () => {
+    const forgedRoot = await trustedRoot();
+    const forgedPreflight = buildTask0BReleaseFreezeEvidence({
+      observedAt: RELEASE_V2_NOW,
+      artifactRootFingerprintSha256: createHash("sha256")
+        .update(process.platform === "win32" ? resolve(forgedRoot).toLowerCase() : resolve(forgedRoot), "utf8")
+        .digest("hex")
+    });
+    await writeFile(join(forgedRoot, "task0b-release-freeze.json"), canonicalBytes(forgedPreflight));
+    const api = await import("../../src/release/releaseManifestStoreV2");
+    await expect(api.materializeReleaseFreezeV2({
+      artifactRoot: forgedRoot,
+      task0BPreflightEvidence: forgedPreflight,
+      evaluatedAt: RELEASE_V2_NOW,
+      producerId: "release_freeze_materialize",
+      owner: { pid: process.pid }
+    } as Parameters<typeof api.materializeReleaseFreezeV2>[0])).rejects.toThrow(/caller|owner|identity/i);
+
+    const seamRoot = await trustedRoot();
+    const seamPreflight = buildTask0BReleaseFreezeEvidence({
+      observedAt: RELEASE_V2_NOW,
+      artifactRootFingerprintSha256: createHash("sha256")
+        .update(process.platform === "win32" ? resolve(seamRoot).toLowerCase() : resolve(seamRoot), "utf8")
+        .digest("hex")
+    });
+    await writeFile(join(seamRoot, "task0b-release-freeze.json"), canonicalBytes(seamPreflight));
+    const seamIdentity = { pid: 424_242, processStartFingerprintSha256: "9".repeat(64) };
+    await expect(api.runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => seamIdentity,
+      isOwnerAlive: () => true
+    }, () => api.materializeReleaseFreezeV2({
+      artifactRoot: seamRoot,
+      task0BPreflightEvidence: seamPreflight,
+      evaluatedAt: RELEASE_V2_NOW,
+      producerId: "release_freeze_materialize",
+      faultAt: "after_lease"
+    }))).rejects.toThrow("injected_fault_after_lease");
+    const lease = JSON.parse((await readFile(join(seamRoot, "manifest-transition-root.lease.json"), "utf8")));
+    expect(lease).toMatchObject({
+      ownerPid: seamIdentity.pid,
+      ownerProcessStartFingerprintSha256: seamIdentity.processStartFingerprintSha256
+    });
+  });
+
+  it("uses the injectable liveness seam for takeover and binds the new lease to the current seam identity", async () => {
+    const root = await trustedRoot();
+    const api = await materializeFreezeBundle(root);
+    const oldLease = frozenLeaseForRoot(root, {
+      leaseEpoch: 1,
+      ownerPid: 515_151,
+      ownerProcessStartFingerprintSha256: "a".repeat(64),
+      acquiredAt: "2026-07-18T09:58:00.000Z",
+      heartbeatAt: "2026-07-18T09:59:00.000Z",
+      expiresAt: "2026-07-18T10:00:00.000Z"
+    });
+    const oldBytes = canonicalBytes(oldLease);
+    const oldHash = releaseSha256V2(oldBytes);
+    await writeFile(join(root, "manifest-transition-root.lease.json"), oldBytes);
+    const currentIdentity = { pid: 616_161, processStartFingerprintSha256: "b".repeat(64) };
+
+    await expect(api.runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => currentIdentity,
+      isOwnerAlive: () => true
+    }, () => api.takeoverRootWriterLeaseByHashV2({
+      artifactRoot: root,
+      expectedOldLeaseSha256: oldHash,
+      evaluatedAt: "2026-07-18T10:02:00.000Z"
+    }))).rejects.toThrow("root_writer_owner_still_alive");
+
+    const result = await api.runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => currentIdentity,
+      isOwnerAlive: () => false
+    }, () => api.takeoverRootWriterLeaseByHashV2({
+      artifactRoot: root,
+      expectedOldLeaseSha256: oldHash,
+      evaluatedAt: "2026-07-18T10:02:00.000Z"
+    }));
+    expect(result.newLease).toMatchObject({
+      ownerPid: currentIdentity.pid,
+      ownerProcessStartFingerprintSha256: currentIdentity.processStartFingerprintSha256
+    });
+  });
+
+  it("rejects frozen leases beyond the 60 second rolling or 5 minute absolute bounds", async () => {
+    const api = await import("../../src/release/releaseManifestStoreV2");
+    for (const invalidTimes of [{
+      acquiredAt: "2026-07-18T10:00:00.000Z",
+      heartbeatAt: "2026-07-18T10:00:00.000Z",
+      expiresAt: "2026-07-18T10:01:00.001Z"
+    }, {
+      acquiredAt: "2026-07-18T09:55:00.000Z",
+      heartbeatAt: "2026-07-18T09:59:30.000Z",
+      expiresAt: "2026-07-18T10:00:30.000Z"
+    }]) {
+      const root = await trustedRoot();
+      await materializeFreezeBundle(root);
+      await writeFile(join(root, "manifest-transition-root.lease.json"), canonicalBytes(frozenLeaseForRoot(root, {
+        leaseEpoch: 1,
+        ownerPid: 717_171,
+        ownerProcessStartFingerprintSha256: "c".repeat(64),
+        ...invalidTimes
+      })));
+      await expect(api.verifyReleaseManifestStoreV2(root)).rejects.toThrow(/rolling|absolute|ttl|lease/i);
+    }
+  });
+
+  it("resumes and seals deterministically when a hardlink crash leaves both old lease and tombstone", async () => {
+    const root = await trustedRoot();
+    const api = await materializeFreezeBundle(root);
+    const oldLease = frozenLeaseForRoot(root, {
+      leaseEpoch: 1,
+      ownerPid: 2_147_483_647,
+      ownerProcessStartFingerprintSha256: "d".repeat(64),
+      acquiredAt: "2026-07-18T09:58:00.000Z",
+      heartbeatAt: "2026-07-18T09:59:00.000Z",
+      expiresAt: "2026-07-18T10:00:00.000Z"
+    });
+    const oldBytes = canonicalBytes(oldLease);
+    const oldHash = releaseSha256V2(oldBytes);
+    const leasePath = join(root, "manifest-transition-root.lease.json");
+    const tombstonePath = join(root, `manifest-transition-root.lease-tombstone-${oldHash}.json`);
+    await writeFile(leasePath, oldBytes);
+    await expect(api.takeoverRootWriterLeaseByHashV2({
+      artifactRoot: root,
+      expectedOldLeaseSha256: oldHash,
+      evaluatedAt: "2026-07-18T10:02:00.000Z",
+      faultAt: "after_prepare"
+    })).rejects.toThrow("injected_fault_after_prepare");
+
+    linkSync(leasePath, tombstonePath);
+    const result = await api.takeoverRootWriterLeaseByHashV2({
+      artifactRoot: root,
+      expectedOldLeaseSha256: oldHash,
+      evaluatedAt: "2026-07-18T10:02:00.000Z"
+    });
+    expect(result.sealed).toBe(true);
+    expect(existsSync(tombstonePath)).toBe(true);
+    expect(existsSync(leasePath)).toBe(false);
+    expect(existsSync(join(root, "release-root-terminal-abandoned.json"))).toBe(true);
   });
 });

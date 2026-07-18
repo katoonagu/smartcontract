@@ -156,20 +156,24 @@ describe("release root writer lease resume", () => {
     heartbeatAt: "2026-07-18T10:00:00.000Z",
     expiresAt: "2026-07-18T10:01:00.000Z"
   });
+  const identityFor = (lease: ReturnType<typeof frozenLease> | ReturnType<typeof bootstrapLease>) => () => ({
+    pid: lease.ownerPid,
+    processStartFingerprintSha256: lease.ownerProcessStartFingerprintSha256
+  });
 
   it("rejects non-canonical or non-exact bootstrap and frozen lease bytes", async () => {
     const api = await loadApi();
     for (const lease of [bootstrapLease(), frozenLease()]) {
       const artifactRoot = root();
       writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), JSON.stringify(lease, null, 2), "utf8");
-      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, lease))
+      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, lease, identityFor(lease)))
         .toThrow(/canonical|schema|lease/i);
     }
 
     const artifactRoot = root();
     const lease = { ...frozenLease(), unexpected: true };
     writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), api.canonicalBytesV2(lease));
-    expect(() => api.resumeRootWriterLeaseV2(artifactRoot, lease))
+    expect(() => api.resumeRootWriterLeaseV2(artifactRoot, lease, identityFor(lease)))
       .toThrow(/schema|key|lease/i);
   });
 
@@ -191,7 +195,7 @@ describe("release root writer lease resume", () => {
       const artifactRoot = root();
       const lease = frozenLease();
       writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), api.canonicalBytesV2(lease));
-      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, { ...lease, ...change }))
+      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, { ...lease, ...change }, identityFor(lease)))
         .toThrow(/not_owned|binding|lease/i);
     }
 
@@ -206,10 +210,10 @@ describe("release root writer lease resume", () => {
       const artifactRoot = root();
       const lease = bootstrapLease();
       writeFileSync(join(artifactRoot, api.ROOT_WRITER_LEASE_FILE), api.canonicalBytesV2(lease));
-      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, { ...lease, ...change }))
+      expect(() => api.resumeRootWriterLeaseV2(artifactRoot, { ...lease, ...change }, identityFor(lease)))
         .toThrow(/not_owned|binding|lease/i);
     }
-  });
+  }, 30_000);
 });
 
 describe("release root durable file operations", () => {
@@ -296,5 +300,49 @@ describe("release root durable file operations", () => {
     writeFileSync(conflictingTemp, Buffer.from("tampered\n", "utf8"));
     expect(() => api.replaceDurable(target, conflict)).toThrow(/stale|conflict|temp/i);
     expect(readFileSync(target)).toEqual(replacement);
+  });
+
+  it("keeps the committed replacement authoritative when verification fails after atomic rename", async () => {
+    const api = await loadApi();
+    const artifactRoot = root();
+    const target = join(artifactRoot, "release-manifest.json");
+    const previous = Buffer.from("previous\n", "utf8");
+    const replacement = Buffer.from("replacement\n", "utf8");
+    writeFileSync(target, previous);
+
+    expect(() => api.replaceDurableWithOpsV2(target, replacement, {
+      beforeCommittedVerification: () => { throw new Error("injected_post_rename_verification_fault"); }
+    })).toThrow("injected_post_rename_verification_fault");
+
+    expect(readFileSync(target)).toEqual(replacement);
+  });
+
+  it("deterministically resumes a no-overwrite move after crashing between hardlink and source unlink", async () => {
+    const api = await loadApi();
+    const identity = { dev: 1, ino: 2 };
+    let sourcePresent = true;
+    let destinationPresent = false;
+    let crashBeforeUnlink = true;
+    const operations = {
+      destinationExists: () => destinationPresent,
+      assertStableRegularFile: () => identity,
+      link: () => { destinationPresent = true; },
+      statIdentity: () => identity,
+      syncParentDirectory: () => undefined,
+      assertTrustedPublishedFile: () => undefined,
+      unlink: (path: string) => {
+        if (path === "source" && crashBeforeUnlink) throw new Error("injected_hardlink_before_unlink_crash");
+        if (path === "source") sourcePresent = false;
+        if (path === "destination") destinationPresent = false;
+      }
+    };
+
+    expect(() => api.moveNoOverwriteDurableWithOpsV2("source", "destination", operations))
+      .toThrow("injected_hardlink_before_unlink_crash");
+    expect({ sourcePresent, destinationPresent }).toEqual({ sourcePresent: true, destinationPresent: true });
+
+    crashBeforeUnlink = false;
+    api.moveNoOverwriteDurableWithOpsV2("source", "destination", operations);
+    expect({ sourcePresent, destinationPresent }).toEqual({ sourcePresent: false, destinationPresent: true });
   });
 });

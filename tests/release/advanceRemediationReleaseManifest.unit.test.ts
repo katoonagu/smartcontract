@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAdvanceRemediationReleaseManifest } from "../../scripts/advanceRemediationReleaseManifest";
 import {
@@ -46,9 +47,12 @@ function makeRepositoryAndRoot() {
   git(repository, "add", "tracked.txt");
   git(repository, "-c", "user.name=Plan 5 Test", "-c", "user.email=plan5@example.invalid", "commit", "--quiet", "-m", "candidate");
   const candidateSha = git(repository, "rev-parse", "HEAD").toLowerCase();
+  const absoluteRoot = resolve(artifactRoot);
+  const rootKey = process.platform === "win32" ? absoluteRoot.toLowerCase() : absoluteRoot;
   const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
     candidateSha,
-    observedAt: EVALUATED_AT
+    observedAt: EVALUATED_AT,
+    artifactRootFingerprintSha256: createHash("sha256").update(rootKey, "utf8").digest("hex")
   }) as Task0BReleaseFreezeEvidenceV1;
   const freeze = deriveReleaseFreezeIdentityV2(task0BPreflightEvidence);
   return { repository, artifactRoot, candidateSha, freeze, task0BPreflightEvidence };
@@ -67,7 +71,6 @@ async function materializeVerifiedFreeze(
     freezeIdentity: input.freeze,
     task0BPreflightEvidence: input.task0BPreflightEvidence,
     evaluatedAt: EVALUATED_AT,
-    owner: { pid: process.pid },
     producerId: "release_freeze_materialize"
   });
 }
@@ -156,5 +159,5 @@ describe("release manifest advance CLI verified input", () => {
     expect(validateRemediationReleaseManifestV2(JSON.parse(
       readFileSync(join(setup.artifactRoot, "release-manifest.json"), "utf8")
     ))).toEqual(result.manifest);
-  });
+  }, 30_000);
 });

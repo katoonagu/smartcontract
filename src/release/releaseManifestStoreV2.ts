@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, relative } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { dirname, relative, resolve } from "node:path";
 import type { ClientBase } from "pg";
 import {
   PLAN5_APPROVED_BASE_SHA,
@@ -24,6 +25,7 @@ import {
   validateFrozenRootWriterLeaseTakeoverReceiptV2,
   validateManifestCommittedReceiptBindingV2,
   validateManifestTransitionClaimV2,
+  validateOperationalAttestationConsumptionV2,
   validateOperationalAttestationV2,
   validateOperationalAttestationIssuerReceiptV2,
   validatePreparedManifestTransitionV2,
@@ -32,13 +34,26 @@ import {
   validatePreparedFrozenRootWriterLeaseTakeoverV2,
   validatePreparedOperationalAttestationIssuanceV2,
   validatePreparedReleaseFreezeMaterializationV2,
+  validateVerifiedManifestTransitionEvidenceV2,
   validateReleaseFreezeMaterializationReceiptV2,
   validateReleaseFreezeIdentityV2,
   validateReleaseRootWriterLeaseV2,
   validateRemediationReleaseManifestV2,
+  validateProductionAuthorityPreclaimValidationV2,
+  validateProductionOperationClaimV2,
+  validateProductionOperationTerminalAbandonedV2,
+  validateProductionOperationTerminalCleanupV2,
+  validateProductionOrchestrationReceiptV2,
+  validateProductionOrchestrationStepIntentV2,
+  validateProductionOrchestrationStepReceiptV2,
+  validateProductionRecoveryInputV2,
   type ManifestTransitionIdV2,
   type OperationalAttestationV2,
+  type ProductionFailureEvidenceV2,
+  type OperationalAttestationConsumptionV2,
+  type ProductionOperationClaimV2,
   type ReleaseFreezeIdentityV2,
+  type ReleaseRootWriterLeaseV2,
   type BootstrapRootWriterLeaseV2,
   type FrozenRootWriterLeaseV2,
   type PreparedBootstrapRootWriterLeaseTakeoverV2,
@@ -104,22 +119,47 @@ const CURRENT_PROCESS_START_FINGERPRINT_SHA256 = (() => {
   return releaseSha256V2(`fallback:${process.pid}:${process.execPath}:${approximateStartedAt}`);
 })();
 
+export type RootWriterProcessRuntimeV2 = {
+  currentOwnerIdentity(): { pid: number; processStartFingerprintSha256: string };
+  isOwnerAlive(pid: number, processStartFingerprintSha256: string): boolean;
+};
+
+const ROOT_WRITER_PROCESS_RUNTIME_V2 = new AsyncLocalStorage<RootWriterProcessRuntimeV2>();
+
+function currentRootWriterOwnerIdentityV2(): { pid: number; processStartFingerprintSha256: string } {
+  const injected = ROOT_WRITER_PROCESS_RUNTIME_V2.getStore()?.currentOwnerIdentity();
+  const identity = injected ?? {
+    pid: process.pid,
+    processStartFingerprintSha256: CURRENT_PROCESS_START_FINGERPRINT_SHA256
+  };
+  if (!Number.isSafeInteger(identity.pid) || identity.pid < 1
+      || !/^[0-9a-f]{64}$/u.test(identity.processStartFingerprintSha256)) {
+    throw new Error("root_writer_current_process_identity_invalid");
+  }
+  return identity;
+}
+
+export function runWithRootWriterProcessRuntimeForTestsV2<T>(
+  runtime: RootWriterProcessRuntimeV2,
+  action: () => T
+): T {
+  if (process.env.NODE_ENV !== "test") throw new Error("root_writer_process_runtime_test_seam_forbidden");
+  return ROOT_WRITER_PROCESS_RUNTIME_V2.run(runtime, action);
+}
+
+function validateBoundedRootWriterLeaseV2(value: unknown): ReleaseRootWriterLeaseV2 {
+  const lease = validateReleaseRootWriterLeaseV2(value);
+  const rollingMs = Date.parse(lease.expiresAt) - Date.parse(lease.heartbeatAt);
+  const absoluteMs = Date.parse(lease.expiresAt) - Date.parse(lease.acquiredAt);
+  if (rollingMs > 60_000) throw new Error("root_writer_lease_rolling_ttl_invalid");
+  if (absoluteMs > 300_000) throw new Error("root_writer_lease_absolute_ttl_invalid");
+  return lease;
+}
+
 function observedProcessStartFingerprintSha256V2(pid: number): string | null {
   if (pid === process.pid) return CURRENT_PROCESS_START_FINGERPRINT_SHA256;
   const observed = observedProcessStartIdentityV2(pid);
   return observed === null ? null : releaseSha256V2(observed);
-}
-
-function ownerProcessStartFingerprintSha256V2(
-  owner: { ownerId?: string; pid?: number; processStartedAt?: string } | undefined,
-  pid: number
-): string {
-  if (owner?.processStartedAt !== undefined || owner?.ownerId !== undefined) {
-    throw new Error("caller_supplied_root_writer_process_identity_forbidden");
-  }
-  const observed = observedProcessStartFingerprintSha256V2(pid);
-  if (observed === null) throw new Error("root_writer_owner_process_identity_unavailable");
-  return observed;
 }
 
 const NESTED_LIFECYCLE_ROOTS = new Set([
@@ -129,7 +169,9 @@ const NESTED_LIFECYCLE_ROOTS = new Set([
   "operational-attestation-issuer-receipts",
   "operational-attestation-issuance-committed",
   "authority-terminal-prepared",
-  "authority-terminal-receipts"
+  "authority-terminal-receipts",
+  "production-operation-step-intents",
+  "production-operation-steps"
 ]);
 
 function lifecyclePath(root: string, relativePath: string, createParents = false): string {
@@ -166,6 +208,23 @@ function exactReplayOrConflict(root: string, filename: string, bytes: Buffer): v
   else if (!readFileSync(path).equals(bytes)) throw new Error(`${filename}_conflict`);
 }
 
+function readCanonicalLifecycleArtifactV2<T>(
+  root: string,
+  relativePath: string,
+  expectedSha256: string,
+  validator: (value: unknown) => T,
+  label: string
+): { value: T; bytes: Buffer } {
+  const path = lifecyclePath(root, relativePath);
+  if (!existsSync(path)) throw new Error(`${label}_missing`);
+  const bytes = readFileSync(path);
+  const value = validator(JSON.parse(bytes.toString("utf8")));
+  if (!bytes.equals(canonicalBytesV2(value)) || releaseSha256V2(bytes) !== expectedSha256) {
+    throw new Error(`${label}_canonical_binding_invalid`);
+  }
+  return { value, bytes };
+}
+
 function injectedFault(name: string | undefined, expected: string): void {
   if (name === expected) throw new Error(`injected_fault_${expected}`);
 }
@@ -173,6 +232,12 @@ function injectedFault(name: string | undefined, expected: string): void {
 const MATERIALIZER_TEMPLATE_SHA256 = releaseSha256V2(
   "release:freeze:materialize <protected-artifact-root>"
 );
+
+function currentArtifactRootFingerprintSha256V2(root: string): string {
+  const absolute = resolve(root);
+  const canonicalPathKey = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  return releaseSha256V2(canonicalPathKey);
+}
 
 function currentVerifiedFreeze(root: string): ReleaseFreezeIdentityV2 {
   const preflightPath = safeArtifactPath(root, "task0b-release-freeze.json");
@@ -192,6 +257,10 @@ function currentVerifiedFreeze(root: string): ReleaseFreezeIdentityV2 {
   const preflight = validateTask0BReleaseFreezeEvidence(JSON.parse(preflightBytes.toString("utf8")));
   if (!preflightBytes.equals(canonicalBytesV2(preflight))) {
     throw new Error("release_freeze_materialization_preflight_noncanonical");
+  }
+  if (preflight.artifactRoot.rootFingerprintSha256
+      !== currentArtifactRootFingerprintSha256V2(root)) {
+    throw new Error("release_freeze_artifact_root_fingerprint_mismatch");
   }
   const derivedFreeze = deriveReleaseFreezeIdentityV2(preflight);
 
@@ -259,7 +328,7 @@ function currentVerifiedFreeze(root: string): ReleaseFreezeIdentityV2 {
   const leasePath = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
   if (existsSync(leasePath)) {
     const leaseBytes = readFileSync(leasePath);
-    const lease = validateReleaseRootWriterLeaseV2(JSON.parse(leaseBytes.toString("utf8")));
+    const lease = validateBoundedRootWriterLeaseV2(JSON.parse(leaseBytes.toString("utf8")));
     if (!leaseBytes.equals(canonicalBytesV2(lease))) {
       throw new Error("release_freeze_materialization_lease_noncanonical");
     }
@@ -303,12 +372,11 @@ export function deriveReleaseFreezeIdentityV2(
 }
 
 function ownerPayload(input: {
-  owner?: { ownerId?: string; pid?: number; processStartedAt?: string };
   evaluatedAt?: string;
 }, kind: "manifest_transition" | "operational_authority_issue" | "operational_authority_terminalize",
 root: string, freeze: ReleaseFreezeIdentityV2, operationKey: string, transitionKey: string | null = null) {
   const now = input.evaluatedAt ?? new Date().toISOString();
-  const ownerPid = input.owner?.pid ?? process.pid;
+  const owner = currentRootWriterOwnerIdentityV2();
   return {
     version: "frozen-root-writer-lease-v2", scope: "artifact_root",
     relativePath: ROOT_WRITER_LEASE_FILE, writerOperationKind: kind,
@@ -316,8 +384,8 @@ root: string, freeze: ReleaseFreezeIdentityV2, operationKey: string, transitionK
     protectedRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
     candidateSha: freeze.candidateSha, releaseGenerationId: freeze.releaseGenerationId,
     releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze), leaseEpoch: 1,
-    ownerPid,
-    ownerProcessStartFingerprintSha256: ownerProcessStartFingerprintSha256V2(input.owner, ownerPid),
+    ownerPid: owner.pid,
+    ownerProcessStartFingerprintSha256: owner.processStartFingerprintSha256,
     acquiredAt: now, heartbeatAt: now,
     expiresAt: new Date(Date.parse(now) + 60_000).toISOString()
   };
@@ -350,7 +418,7 @@ function exactLeaseBindingMatchesV2(
 
 function readCanonicalRootWriterLeaseV2(root: string): BootstrapRootWriterLeaseV2 | FrozenRootWriterLeaseV2 {
   const bytes = readFileSync(safeArtifactPath(root, ROOT_WRITER_LEASE_FILE));
-  const lease = validateReleaseRootWriterLeaseV2(JSON.parse(bytes.toString("utf8")));
+  const lease = validateBoundedRootWriterLeaseV2(JSON.parse(bytes.toString("utf8")));
   if (!bytes.equals(canonicalBytesV2(lease))) throw new Error("root_writer_lease_bytes_noncanonical");
   return lease;
 }
@@ -399,7 +467,7 @@ function assertCommittedRootWriterTakeoverLineageV2(
     if (releaseSha256V2(tombstoneBytes) !== prepared.oldLeaseSha256) {
       throw new Error("root_writer_takeover_tombstone_hash_invalid");
     }
-    const oldLease = validateReleaseRootWriterLeaseV2(JSON.parse(tombstoneBytes.toString("utf8")));
+    const oldLease = validateBoundedRootWriterLeaseV2(JSON.parse(tombstoneBytes.toString("utf8")));
     const oldOwnerProcessIdentitySha256 = rootWriterOwnerProcessIdentitySha256V2(
       oldLease.ownerPid,
       oldLease.ownerProcessStartFingerprintSha256
@@ -472,7 +540,7 @@ function assertCommittedRootWriterTakeoverLineageV2(
 }
 
 function resumeBoundRootWriterLeaseV2(root: string, expectedValue: Record<string, unknown>) {
-  const expected = validateReleaseRootWriterLeaseV2(expectedValue);
+  const expected = validateBoundedRootWriterLeaseV2(expectedValue);
   const current = readCanonicalRootWriterLeaseV2(root);
   if (!exactLeaseBindingMatchesV2(current, expected)) throw new Error("root_writer_lease_not_owned");
   const observedFingerprint = observedProcessStartFingerprintSha256V2(current.ownerPid);
@@ -481,12 +549,14 @@ function resumeBoundRootWriterLeaseV2(root: string, expectedValue: Record<string
     throw new Error("root_writer_owner_process_identity_mismatch");
   }
   assertCommittedRootWriterTakeoverLineageV2(root, current);
-  return resumeRootWriterLeaseV2(root, current);
+  return resumeRootWriterLeaseV2(root, current, currentRootWriterOwnerIdentityV2);
 }
 
 function acquireOrResumeFrozenLease(root: string, payload: Record<string, unknown>, preparedExists: boolean) {
-  const expected = validateReleaseRootWriterLeaseV2(payload);
-  if (!existsSync(safeArtifactPath(root, ROOT_WRITER_LEASE_FILE))) return acquireRootWriterLeaseV2(root, payload);
+  const expected = validateBoundedRootWriterLeaseV2(payload);
+  if (!existsSync(safeArtifactPath(root, ROOT_WRITER_LEASE_FILE))) {
+    return acquireRootWriterLeaseV2(root, payload, currentRootWriterOwnerIdentityV2);
+  }
   if (!preparedExists) throw new Error("root_writer_busy");
   return resumeBoundRootWriterLeaseV2(root, expected as unknown as Record<string, unknown>);
 }
@@ -499,7 +569,7 @@ function releaseCompletedReplayLeaseIfOwned(
   const path = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
   if (!existsSync(path)) return;
   const current = readCanonicalRootWriterLeaseV2(root);
-  const expected = validateReleaseRootWriterLeaseV2(payload);
+  const expected = validateBoundedRootWriterLeaseV2(payload);
   if (!exactLeaseBindingMatchesV2(current, expected)) throw new Error("completed_replay_foreign_root_writer_lease");
   if (Date.parse(evaluatedAt) >= Date.parse(current.expiresAt)) {
     throw new Error("completed_replay_stale_root_writer_lease");
@@ -513,11 +583,13 @@ export async function materializeReleaseFreezeV2(input: {
   freezeIdentity?: unknown;
   task0BPreflightEvidence: unknown;
   evaluatedAt: string;
-  owner?: { ownerId?: string; pid?: number; processStartedAt?: string };
   producerId: "release_freeze_materialize";
   recoverDeadOwner?: boolean;
   faultAt?: string;
 }) {
+  if (Object.prototype.hasOwnProperty.call(input, "owner")) {
+    throw new Error("caller_supplied_root_writer_process_identity_forbidden");
+  }
   const root = assertTrustedArtifactRootPathV2(input.artifactRoot);
   if (input.producerId !== "release_freeze_materialize") {
     throw new Error("freeze_producer_not_authorized");
@@ -532,6 +604,10 @@ export async function materializeReleaseFreezeV2(input: {
   const preflight = validateTask0BReleaseFreezeEvidence(storedPreflight);
   if (!readFileSync(preflightPath).equals(canonicalBytesV2(preflight))) {
     throw new Error("task0b_preflight_artifact_noncanonical");
+  }
+  if (preflight.artifactRoot.rootFingerprintSha256
+      !== currentArtifactRootFingerprintSha256V2(root)) {
+    throw new Error("release_freeze_artifact_root_fingerprint_mismatch");
   }
   const freeze = deriveReleaseFreezeIdentityV2(preflight);
   if (input.freezeIdentity !== undefined
@@ -549,7 +625,7 @@ export async function materializeReleaseFreezeV2(input: {
     "release_freeze_materialization", freeze.candidateSha,
     freeze.artifactRootFingerprintSha256, preflightSha256
   ]));
-  const bootstrapOwnerPid = input.owner?.pid ?? process.pid;
+  const bootstrapOwner = currentRootWriterOwnerIdentityV2();
   const bootstrapPayload = {
     version: "bootstrap-root-writer-lease-v2", scope: "artifact_root",
     relativePath: ROOT_WRITER_LEASE_FILE,
@@ -560,8 +636,8 @@ export async function materializeReleaseFreezeV2(input: {
     candidateSha: freeze.candidateSha,
     runtimeIdentitySha256,
     releaseGenerationId: null, releaseFreezeIdentitySha256: null,
-    leaseEpoch: 1, ownerPid: bootstrapOwnerPid,
-    ownerProcessStartFingerprintSha256: ownerProcessStartFingerprintSha256V2(input.owner, bootstrapOwnerPid),
+    leaseEpoch: 1, ownerPid: bootstrapOwner.pid,
+    ownerProcessStartFingerprintSha256: bootstrapOwner.processStartFingerprintSha256,
     acquiredAt: input.evaluatedAt, heartbeatAt: input.evaluatedAt,
     expiresAt: new Date(Date.parse(input.evaluatedAt) + 60_000).toISOString()
   };
@@ -709,10 +785,22 @@ function validateCanonicalManifestChainHeadV2(
     const prepared = validatePreparedManifestTransitionV2(
       JSON.parse(preparedBytes.toString("utf8")));
     const embeddedReceiptBytes = Buffer.from(prepared.canonicalCommittedReceiptUtf8Base64, "base64");
+    const manifestBytes = canonicalBytesV2(manifest);
+    const manifestSha256 = releaseSha256V2(manifestBytes);
+    const expectedTargetSnapshotRelativePath =
+      `manifest-snapshots/release-manifest-r${manifest.revision}-${manifestSha256}.json`;
     if (!preparedBytes.equals(canonicalBytesV2(prepared))
         || prepared.committedReceiptSha256 !== manifest.latestCommittedReceiptSha256
+        || prepared.targetRevision !== manifest.revision
+        || prepared.targetSnapshotSha256 !== manifestSha256
+        || prepared.targetSnapshotRelativePath !== expectedTargetSnapshotRelativePath
         || !embeddedReceiptBytes.equals(receiptBytes)) {
       throw new Error("release_manifest_prepared_receipt_binding_invalid");
+    }
+    const targetSnapshotBytes = readFileSync(lifecyclePath(
+      root, prepared.targetSnapshotRelativePath));
+    if (!targetSnapshotBytes.equals(manifestBytes)) {
+      throw new Error("release_manifest_prepared_target_snapshot_binding_invalid");
     }
     const claimPath = safeArtifactPath(root,
       `manifest-transition-claim-${receipt.transitionKeySha256}.json`);
@@ -962,6 +1050,7 @@ const OPERATIONAL_ATTESTATION_TTL_MS_V2: Readonly<Record<OperationalAttestationA
   g13_migration_passed: 30 * 60_000,
   g14_rollout_passed: 15 * 60_000,
   g15_canary_released: 40 * 60_000,
+  production_failed: 15 * 60_000,
   rollback_rolled_back: 20 * 60_000
 });
 
@@ -1295,15 +1384,153 @@ export function selectOperationalAttestationFromStoreV2(input: {
   };
 }
 
+type AbandonedRecoveryEvidenceV2 = Extract<
+  ProductionFailureEvidenceV2,
+  { evidenceKind: "abandoned_operation_recovery" }
+>;
+
+export function assertRecoveryFailureArtifactBindingsV2(input: {
+  root: string;
+  freeze: ReleaseFreezeIdentityV2;
+  sourceManifestSha256: string;
+  evidence: AbandonedRecoveryEvidenceV2;
+  consumption: OperationalAttestationConsumptionV2;
+  consumptionBytes: Buffer;
+  claim: ProductionOperationClaimV2;
+  claimBytes: Buffer;
+}): void {
+  const { root, freeze, sourceManifestSha256, evidence, consumption, consumptionBytes, claim, claimBytes } = input;
+  const freezeSha256 = releaseFreezeIdentitySha256V2(freeze);
+  const consumptionSha256 = releaseSha256V2(consumptionBytes);
+  const claimSha256 = releaseSha256V2(claimBytes);
+  if (evidence.candidateSha !== freeze.candidateSha
+      || evidence.releaseFreezeIdentitySha256 !== freezeSha256
+      || evidence.sourceManifestSha256 !== sourceManifestSha256
+      || evidence.recoveryAuthorityConsumptionSha256 !== consumptionSha256
+      || evidence.recoveryOperationClaimSha256 !== claimSha256
+      || evidence.recoveryOperationalAttestationSha256 !== consumption.operationalAttestationSha256) {
+    throw new Error("production_recovery_primary_artifact_binding_invalid");
+  }
+
+  const preclaim = readCanonicalLifecycleArtifactV2(root,
+    `production-authority-preclaim-${claim.operationId}.json`,
+    evidence.recoveryAuthorityPreclaimSha256,
+    validateProductionAuthorityPreclaimValidationV2,
+    "production_recovery_preclaim").value;
+  if (preclaim.operationKind !== "recovery" || preclaim.operationId !== claim.operationId
+      || preclaim.candidateSha !== freeze.candidateSha
+      || preclaim.releaseGenerationId !== freeze.releaseGenerationId
+      || preclaim.sourceManifestSha256 !== sourceManifestSha256
+      || preclaim.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
+      || preclaim.operationalAttestationSha256 !== evidence.recoveryOperationalAttestationSha256
+      || preclaim.recoveryFromAbandonedOperationSha256 !== evidence.priorTerminalAbandonedSha256) {
+    throw new Error("production_recovery_preclaim_binding_invalid");
+  }
+
+  const recoveryInput = readCanonicalLifecycleArtifactV2(root,
+    "production-recovery-input-v2.json", evidence.recoveryInputSha256,
+    validateProductionRecoveryInputV2, "production_recovery_input").value;
+  if (recoveryInput.recoveryOperationalAttestationSha256 !== evidence.recoveryOperationalAttestationSha256
+      || recoveryInput.recoveryProductionLeaseSha256 !== evidence.recoveryProductionLeaseSha256
+      || recoveryInput.recoveryAuthorityPreclaimSha256 !== evidence.recoveryAuthorityPreclaimSha256
+      || recoveryInput.recoveryOperationClaimSha256 !== evidence.recoveryOperationClaimSha256
+      || recoveryInput.recoveryAuthorityConsumptionSha256 !== evidence.recoveryAuthorityConsumptionSha256
+      || recoveryInput.priorTerminalAbandonedSha256 !== evidence.priorTerminalAbandonedSha256
+      || recoveryInput.priorTerminalCleanupSha256 !== evidence.priorTerminalCleanupSha256
+      || recoveryInput.completedStepReceiptPrefixSha256 !== evidence.completedStepReceiptPrefixSha256
+      || recoveryInput.uncertainStepMarkerSha256 !== evidence.uncertainStepMarkerSha256) {
+    throw new Error("production_recovery_input_evidence_binding_invalid");
+  }
+
+  const abandoned = readCanonicalLifecycleArtifactV2(root,
+    `production-operation-terminal-abandoned-${recoveryInput.priorOperationId}.json`,
+    evidence.priorTerminalAbandonedSha256,
+    validateProductionOperationTerminalAbandonedV2,
+    "production_recovery_prior_abandoned").value;
+  const cleanup = readCanonicalLifecycleArtifactV2(root,
+    `production-operation-terminal-cleanup-${recoveryInput.priorOperationId}.json`,
+    evidence.priorTerminalCleanupSha256,
+    validateProductionOperationTerminalCleanupV2,
+    "production_recovery_prior_cleanup").value;
+  if (abandoned.operationKind !== recoveryInput.priorOperationKind
+      || abandoned.operationId !== recoveryInput.priorOperationId
+      || abandoned.candidateSha !== freeze.candidateSha
+      || abandoned.releaseGenerationId !== freeze.releaseGenerationId
+      || abandoned.sourceManifestSha256 !== sourceManifestSha256
+      || abandoned.attemptedExternalEffect !== evidence.priorAttemptedExternalEffect
+      || abandoned.reason !== evidence.failureCode
+      || cleanup.operationKind !== abandoned.operationKind
+      || cleanup.operationId !== abandoned.operationId
+      || cleanup.terminalStateSha256 !== evidence.priorTerminalAbandonedSha256) {
+    throw new Error("production_recovery_prior_terminal_binding_invalid");
+  }
+
+  recoveryInput.completedStepReceiptPrefix.forEach((prefix) => {
+    const relativePath = `production-operation-steps/${recoveryInput.priorOperationId}/${prefix.sequence}-${prefix.stepId}-v2.json`;
+    const receipt = readCanonicalLifecycleArtifactV2(root, relativePath, prefix.receiptSha256,
+      validateProductionOrchestrationStepReceiptV2, "production_recovery_prior_step").value;
+    if (receipt.operationId !== recoveryInput.priorOperationId
+        || receipt.sequence !== prefix.sequence || receipt.stepId !== prefix.stepId
+        || receipt.orchestration !== recoveryInput.priorOperationKind) {
+      throw new Error("production_recovery_prior_step_binding_invalid");
+    }
+  });
+  if (recoveryInput.uncertainStepMarker !== null) {
+    const marker = recoveryInput.uncertainStepMarker;
+    const intent = readCanonicalLifecycleArtifactV2(root, marker.stepIntentRelativePath,
+      marker.stepIntentSha256, validateProductionOrchestrationStepIntentV2,
+      "production_recovery_uncertain_step_intent").value;
+    if (intent.operationId !== recoveryInput.priorOperationId
+        || intent.orchestration !== recoveryInput.priorOperationKind
+        || intent.sequence !== marker.sequence || intent.stepId !== marker.stepId) {
+      throw new Error("production_recovery_uncertain_step_intent_binding_invalid");
+    }
+  }
+
+  const recoveryReceipt = readCanonicalLifecycleArtifactV2(root,
+    "production-recovery-orchestration-receipt-v2.json",
+    evidence.recoveryOrchestrationReceiptSha256,
+    validateProductionOrchestrationReceiptV2,
+    "production_recovery_orchestration_receipt").value;
+  if (evidence.failedExecutionEvidenceSha256 !== evidence.recoveryOrchestrationReceiptSha256
+      || recoveryReceipt.orchestration !== "recovery"
+      || recoveryReceipt.operationId !== claim.operationId
+      || recoveryReceipt.operationClaimSha256 !== claimSha256
+      || recoveryReceipt.operationalAttestationConsumptionSha256 !== consumptionSha256
+      || recoveryReceipt.recoveryInputSha256 !== evidence.recoveryInputSha256
+      || recoveryReceipt.finalOperationLeaseSha256 !== evidence.recoveryProductionLeaseSha256
+      || recoveryReceipt.priorAttemptedExternalEffect !== evidence.priorAttemptedExternalEffect
+      || recoveryReceipt.priorCompletedStepReceiptPrefixSha256 !== evidence.completedStepReceiptPrefixSha256
+      || recoveryReceipt.priorUncertainStepMarkerSha256 !== evidence.uncertainStepMarkerSha256) {
+    throw new Error("production_recovery_orchestration_evidence_binding_invalid");
+  }
+  recoveryReceipt.completedStepReceipts.forEach((entry) => {
+    const actual = readCanonicalLifecycleArtifactV2(root, entry.relativePath, entry.sha256,
+      validateProductionOrchestrationStepReceiptV2, "production_recovery_step_receipt").value;
+    if (canonicalReleaseJsonV2(actual) !== canonicalReleaseJsonV2(entry.receipt)) {
+      throw new Error("production_recovery_step_receipt_embedding_invalid");
+    }
+  });
+}
+
 function consumedAuthorityHashForTransitionV2(
   root: string,
   freeze: ReleaseFreezeIdentityV2,
   sourceManifestSha256: string,
-  transition: AdvanceInput["transition"]
+  transition: AdvanceInput["transition"],
+  verifiedTransitionEvidenceValue: unknown
 ): string | null {
-  const policy = OPERATIONAL_ATTESTATION_POLICY_V2[
-    transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2
-  ];
+  const transitionEvidence = validateVerifiedManifestTransitionEvidenceV2(
+    verifiedTransitionEvidenceValue
+  );
+  const recoveryEvidence = transitionEvidence.productionFailureEvidence;
+  const isRecoveryFailure = transition.transitionId === "production_failed"
+    && recoveryEvidence?.evidenceKind === "abandoned_operation_recovery";
+  const policy = transition.transitionId === "production_failed" && !isRecoveryFailure
+    ? undefined
+    : OPERATIONAL_ATTESTATION_POLICY_V2[
+      transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2
+    ];
   if (!policy) {
     if (transition.operationalAttestation !== undefined
         && transition.operationalAttestation !== null) {
@@ -1335,18 +1562,10 @@ function consumedAuthorityHashForTransitionV2(
     throw new Error("operational_authority_not_atomically_consumed");
   }
   const consumptionBytes = readFileSync(consumptionPath);
-  const consumption = JSON.parse(consumptionBytes.toString("utf8")) as Record<string, unknown>;
-  exactRecordKeys(consumption, [
-    "version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
-    "sourceManifestSha256", "artifactRootFingerprintSha256", "operationalAttestationSha256",
-    "operationalAttestationIssuerReceiptSha256", "recoveryFromAbandonedOperationSha256",
-    "preclaimValidationSha256", "preclaimLeaseLineageRelativePath", "preclaimLeaseLineageSha256",
-    "preclaimLeaseLineageCurrentTipSha256", "commandId", "redactedTemplateSha256",
-    "leaseSha256AtConsumption", "leaseEpochAtConsumption", "consumedAt", "expiresAt",
-    "operationDeadlineAt"
-  ], "operational_attestation_consumption");
-  if (consumption.version !== "operational-attestation-consumption-v2"
-      || consumption.candidateSha !== freeze.candidateSha
+  const consumption = validateOperationalAttestationConsumptionV2(
+    JSON.parse(consumptionBytes.toString("utf8"))
+  );
+  if (consumption.candidateSha !== freeze.candidateSha
       || consumption.releaseGenerationId !== freeze.releaseGenerationId
       || consumption.sourceManifestSha256 !== sourceManifestSha256
       || consumption.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
@@ -1358,18 +1577,8 @@ function consumedAuthorityHashForTransitionV2(
     throw new Error("operational_attestation_consumption_binding_invalid");
   }
   const claimBytes = readFileSync(claimPath);
-  const claim = JSON.parse(claimBytes.toString("utf8")) as Record<string, unknown>;
-  exactRecordKeys(claim, [
-    "version", "operationKind", "operationId", "candidateSha", "releaseGenerationId",
-    "sourceManifestSha256", "artifactRootFingerprintSha256", "operationalAttestationSha256",
-    "operationalAttestationIssuerReceiptSha256", "recoveryFromAbandonedOperationSha256",
-    "authorityConsumption", "authorityConsumptionSha256", "preclaimLeaseLineageRelativePath",
-    "preclaimLeaseLineageSha256", "preclaimLeaseLineageCurrentTipSha256", "capability",
-    "leaseEpochAtConsumption", "operationDeadlineAt", "claimedAt", "claimantPid",
-    "claimantProcessStartFingerprintSha256"
-  ], "production_operation_claim");
-  if (claim.version !== "production-operation-claim-v2"
-      || claim.operationId !== consumption.operationId
+  const claim = validateProductionOperationClaimV2(JSON.parse(claimBytes.toString("utf8")));
+  if (claim.operationId !== consumption.operationId
       || claim.candidateSha !== freeze.candidateSha
       || claim.releaseGenerationId !== freeze.releaseGenerationId
       || claim.sourceManifestSha256 !== sourceManifestSha256
@@ -1380,6 +1589,32 @@ function consumedAuthorityHashForTransitionV2(
       || claim.authorityConsumptionSha256 !== releaseSha256V2(consumptionBytes)
       || !claimBytes.equals(canonicalBytesV2(claim))) {
     throw new Error("production_operation_claim_binding_invalid");
+  }
+  if (isRecoveryFailure) {
+    if (recoveryEvidence === undefined
+        || claim.capability !== "recovery_only"
+        || consumption.operationKind !== "recovery"
+        || consumption.commandId !== "production_recovery"
+        || recoveryEvidence.recoveryOperationalAttestationSha256 !== hash) {
+      throw new Error("production_recovery_operation_binding_invalid");
+    }
+    const failureRefs = transitionEvidence.refs.filter(
+      (ref) => ref.kind === "production_failure_evidence"
+    );
+    const recoveryBytes = canonicalBytesV2(recoveryEvidence);
+    if (failureRefs.length !== 1
+        || failureRefs[0]!.relativePath !== "production-failure-evidence-v2.json"
+        || failureRefs[0]!.sha256 !== releaseSha256V2(recoveryBytes)) {
+      throw new Error("production_recovery_failure_ref_binding_invalid");
+    }
+    const evidencePath = lifecyclePath(root, failureRefs[0]!.relativePath);
+    if (!existsSync(evidencePath) || !readFileSync(evidencePath).equals(recoveryBytes)) {
+      throw new Error("production_recovery_failure_evidence_bytes_invalid");
+    }
+    assertRecoveryFailureArtifactBindingsV2({
+      root, freeze, sourceManifestSha256, evidence: recoveryEvidence,
+      consumption, consumptionBytes, claim, claimBytes
+    });
   }
   return hash;
 }
@@ -1615,6 +1850,11 @@ function loadPreparedManifestResult(
     throw new Error("prepared_receipt_bytes_invalid");
   }
   const receipt = validateCommittedManifestTransitionReceiptV2(JSON.parse(receiptBytes.toString("utf8")));
+  const expectedTargetSnapshotRelativePath =
+    `manifest-snapshots/release-manifest-r${prepared.targetRevision}-${prepared.targetSnapshotSha256}.json`;
+  if (prepared.targetSnapshotRelativePath !== expectedTargetSnapshotRelativePath) {
+    throw new Error("prepared_transition_target_snapshot_path_invalid");
+  }
   const snapshotPath = lifecyclePath(root, prepared.targetSnapshotRelativePath);
   if (!existsSync(snapshotPath)) throw new Error("prepared_transition_snapshot_missing");
   const targetBytes = readFileSync(snapshotPath);
@@ -1663,7 +1903,7 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
   const currentManifestBeforeClaim = currentHeadBeforeClaim.manifest;
   const currentManifestShaBeforeClaim = releaseSha256V2(currentHeadBeforeClaim.bytes);
   const operationalAuthoritySha256 = consumedAuthorityHashForTransitionV2(
-    root, freeze, sourceShaForKey, input.transition);
+    root, freeze, sourceShaForKey, input.transition, input.verifiedTransitionEvidence);
   const transitionKey = releaseSha256V2(canonicalReleaseJsonV2([
     source.candidateSha, sourceShaForKey, input.transition.transitionId,
     freeze.releaseGenerationId, freeze.artifactRootFingerprintSha256,
@@ -1692,6 +1932,11 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
 
   if (existsSync(preparedPath)) {
     const built = loadPreparedManifestResult(root, preparedPath, source, freeze, transitionKey, input);
+    if (currentManifestShaBeforeClaim !== sourceShaForKey
+        && (!currentHeadBeforeClaim.bytes.equals(built.targetBytes)
+          || currentManifestShaBeforeClaim !== built.prepared.targetSnapshotSha256)) {
+      throw new Error("prepared_transition_current_head_target_mismatch");
+    }
     const receiptName = `manifest-transition-receipt-${String(built.prepared.committedReceiptSha256)}.json`;
     const completedReceiptPath = safeArtifactPath(root, receiptName);
     if (existsSync(manifestPath) && existsSync(completedReceiptPath)
@@ -1769,7 +2014,7 @@ export async function recoverReleaseManifestStoreV2(input: {
   const leasePath = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
   let leaseState: "absent" | "live" | "expired" = "absent";
   if (existsSync(leasePath)) {
-    const lease = validateReleaseRootWriterLeaseV2(readJson(leasePath));
+    const lease = validateBoundedRootWriterLeaseV2(readJson(leasePath));
     if (lease.version !== "frozen-root-writer-lease-v2"
         || lease.releaseGenerationId !== freeze.releaseGenerationId
         || lease.candidateSha !== freeze.candidateSha
@@ -1859,7 +2104,7 @@ function takeoverFrozenRootWriterLeaseByHashV2(input: {
   evaluatedAt: string;
   faultAt?: string;
 }) {
-  const parsedOldLease = validateReleaseRootWriterLeaseV2(JSON.parse(input.oldBytes.toString("utf8")));
+  const parsedOldLease = validateBoundedRootWriterLeaseV2(JSON.parse(input.oldBytes.toString("utf8")));
   if (!input.oldBytes.equals(canonicalBytesV2(parsedOldLease))) {
     throw new Error("frozen_old_lease_noncanonical");
   }
@@ -1910,11 +2155,12 @@ function takeoverFrozenRootWriterLeaseByHashV2(input: {
       throw new Error("prepared_takeover_noncanonical");
     }
   } else {
-    newLease = validateReleaseRootWriterLeaseV2({
+    const currentOwner = currentRootWriterOwnerIdentityV2();
+    newLease = validateBoundedRootWriterLeaseV2({
       ...oldLease,
       leaseEpoch: oldLease.leaseEpoch + 1,
-      ownerPid: process.pid,
-      ownerProcessStartFingerprintSha256: CURRENT_PROCESS_START_FINGERPRINT_SHA256,
+      ownerPid: currentOwner.pid,
+      ownerProcessStartFingerprintSha256: currentOwner.processStartFingerprintSha256,
       acquiredAt: input.evaluatedAt,
       heartbeatAt: input.evaluatedAt,
       expiresAt: new Date(Date.parse(input.evaluatedAt) + 60_000).toISOString()
@@ -2039,7 +2285,12 @@ function takeoverFrozenRootWriterLeaseByHashV2(input: {
       throw new Error("old_lease_binding_mismatch");
     }
     moveNoOverwriteDurable(leasePath, tombstonePath);
-  } else if (!readFileSync(tombstonePath).equals(input.oldBytes)) throw new Error("old_lease_tombstone_conflict");
+  } else {
+    if (!readFileSync(tombstonePath).equals(input.oldBytes)) throw new Error("old_lease_tombstone_conflict");
+    if (existsSync(leasePath) && readFileSync(leasePath).equals(input.oldBytes)) {
+      moveNoOverwriteDurable(leasePath, tombstonePath);
+    }
+  }
   injectedFault(input.faultAt, "after_tombstone");
 
   if (!existsSync(leasePath)) writeExclusiveDurable(leasePath, newBytes);
@@ -2118,7 +2369,7 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
     throw new Error(fixedBytes === null ? "root_writer_lease_absent" : "root_writer_lease_hash_mismatch");
   }
   const old = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-  const parsedLease = validateReleaseRootWriterLeaseV2(old);
+  const parsedLease = validateBoundedRootWriterLeaseV2(old);
   if (!bytes.equals(canonicalBytesV2(parsedLease))) {
     throw new Error("old_root_writer_lease_noncanonical");
   }
@@ -2134,7 +2385,7 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
     throw new Error("root_writer_owner_still_alive");
   }
   if (old.version === "bootstrap-root-writer-lease-v2") {
-    const parsedOld = validateReleaseRootWriterLeaseV2(old) as BootstrapRootWriterLeaseV2;
+    const parsedOld = validateBoundedRootWriterLeaseV2(old) as BootstrapRootWriterLeaseV2;
     if (!bytes.equals(canonicalBytesV2(parsedOld))) {
       throw new Error("bootstrap_old_lease_noncanonical");
     }
@@ -2167,11 +2418,12 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
         throw new Error("prepared_bootstrap_takeover_noncanonical");
       }
     } else {
-      newLease = validateReleaseRootWriterLeaseV2({
+      const currentOwner = currentRootWriterOwnerIdentityV2();
+      newLease = validateBoundedRootWriterLeaseV2({
         ...parsedOld,
         leaseEpoch: oldEpoch + 1,
-        ownerPid: process.pid,
-        ownerProcessStartFingerprintSha256: CURRENT_PROCESS_START_FINGERPRINT_SHA256,
+        ownerPid: currentOwner.pid,
+        ownerProcessStartFingerprintSha256: currentOwner.processStartFingerprintSha256,
         acquiredAt: input.evaluatedAt,
         heartbeatAt: input.evaluatedAt,
         expiresAt: new Date(Date.parse(input.evaluatedAt) + 60_000).toISOString()
@@ -2246,7 +2498,10 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
     if (!existsSync(tombstonePath)) {
       if (!existsSync(path) || !readFileSync(path).equals(bytes)) throw new Error("old_lease_binding_mismatch");
       moveNoOverwriteDurable(path, tombstonePath);
-    } else if (!readFileSync(tombstonePath).equals(bytes)) throw new Error("old_lease_tombstone_conflict");
+    } else {
+      if (!readFileSync(tombstonePath).equals(bytes)) throw new Error("old_lease_tombstone_conflict");
+      if (existsSync(path) && readFileSync(path).equals(bytes)) moveNoOverwriteDurable(path, tombstonePath);
+    }
     injectedFault(input.faultAt, "after_tombstone");
     if (!existsSync(path)) writeExclusiveDurable(path, newBytes);
     else if (!readFileSync(path).equals(newBytes)) throw new Error("new_lease_conflict");
@@ -2301,6 +2556,8 @@ export async function takeoverRootWriterLeaseByHashV2(input: {
 }
 
 function isLeaseOwnerProcessAliveV2(pid: number, expectedStartFingerprintSha256: string): boolean {
+  const injected = ROOT_WRITER_PROCESS_RUNTIME_V2.getStore();
+  if (injected) return injected.isOwnerAlive(pid, expectedStartFingerprintSha256);
   try { process.kill(pid, 0); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
   const observed = observedProcessStartFingerprintSha256V2(pid);
@@ -2490,6 +2747,11 @@ function loadInitialManifestResultV2(
   const receiptBytes = Buffer.from(prepared.canonicalCommittedReceiptUtf8Base64, "base64");
   const receipt = validateCommittedManifestTransitionReceiptV2(
     JSON.parse(receiptBytes.toString("utf8")));
+  const expectedTargetSnapshotRelativePath =
+    `manifest-snapshots/release-manifest-r${prepared.targetRevision}-${prepared.targetSnapshotSha256}.json`;
+  if (prepared.targetSnapshotRelativePath !== expectedTargetSnapshotRelativePath) {
+    throw new Error("initial_prepared_target_snapshot_path_invalid");
+  }
   const snapshotPath = lifecyclePath(root, prepared.targetSnapshotRelativePath);
   const targetBytes = readFileSync(snapshotPath);
   const manifest = validateRemediationReleaseManifestV2(JSON.parse(targetBytes.toString("utf8")));
@@ -2583,7 +2845,7 @@ export async function verifyReleaseManifestStoreV2(root: string) {
 export async function persistPostgresManifestTransitionV2(
   client: ClientBase,
   input: {
-    releaseGenerationId: string;
+    artifactRoot: string;
     sourceRevision: number;
     sourceManifestSha256: string;
     transition: {
@@ -2597,7 +2859,12 @@ export async function persistPostgresManifestTransitionV2(
     evaluatedAt: string;
   }
   ) {
-  if (!input.releaseGenerationId) throw new Error("postgres_manifest_transition_binding_invalid");
+  if (Object.prototype.hasOwnProperty.call(input, "releaseGenerationId")) {
+    throw new Error("postgres_manifest_caller_generation_forbidden");
+  }
+  const root = assertTrustedArtifactRootPathV2(input.artifactRoot);
+  const freeze = currentVerifiedFreeze(root);
+  const releaseGenerationId = freeze.releaseGenerationId;
   await client.query(`create table if not exists plan5_release_manifest_v2_cas(
     release_generation_id text primary key,
     revision integer not null,
@@ -2611,7 +2878,7 @@ export async function persistPostgresManifestTransitionV2(
     current_manifest_sha256: string;
     current_manifest_utf8_base64: string;
   }>(`select revision, current_manifest_sha256, current_manifest_utf8_base64
-      from plan5_release_manifest_v2_cas where release_generation_id=$1`, [input.releaseGenerationId]);
+      from plan5_release_manifest_v2_cas where release_generation_id=$1`, [releaseGenerationId]);
   if (currentResult.rowCount !== 1) throw new Error("postgres_manifest_source_missing");
   const currentRow = currentResult.rows[0]!;
   const sourceBytes = Buffer.from(currentRow.current_manifest_utf8_base64, "base64");
@@ -2623,6 +2890,11 @@ export async function persistPostgresManifestTransitionV2(
   }
   const source = validateRemediationReleaseManifestV2(JSON.parse(sourceBytes.toString("utf8")));
   if (!sourceBytes.equals(canonicalBytesV2(source))) throw new Error("postgres_manifest_source_noncanonical");
+  if (source.candidateSha !== freeze.candidateSha
+      || source.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
+      || source.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze)) {
+    throw new Error("postgres_manifest_freeze_binding_invalid");
+  }
   const target = reduceRemediationReleaseManifestV2(source, input.transition,
     input.verifiedGateOutputs, input.verifiedTransitionEvidence);
   const targetBytes = canonicalBytesV2(target);
@@ -2630,7 +2902,7 @@ export async function persistPostgresManifestTransitionV2(
     revision=$2, current_manifest_sha256=$4, current_manifest_json=$5::jsonb,
     current_manifest_utf8_base64=$6, evaluated_at=$7::timestamptz
   where release_generation_id=$1 and revision=$3 and current_manifest_sha256=$8
-  returning revision`, [input.releaseGenerationId, target.revision, input.sourceRevision,
+  returning revision`, [releaseGenerationId, target.revision, input.sourceRevision,
     releaseSha256V2(targetBytes), JSON.stringify(target), targetBytes.toString("base64"),
     input.evaluatedAt, input.sourceManifestSha256]);
   if (result.rowCount !== 1) throw new Error("postgres_manifest_transition_cas_conflict");
@@ -2639,11 +2911,21 @@ export async function persistPostgresManifestTransitionV2(
 
 export async function initializePostgresManifestStateV2(
   client: ClientBase,
-  input: { releaseGenerationId: string; sourceManifestBytes: Buffer; evaluatedAt: string }
+  input: { artifactRoot: string; sourceManifestBytes: Buffer; evaluatedAt: string }
 ) {
-  if (!input.releaseGenerationId) throw new Error("release_generation_invalid");
+  if (Object.prototype.hasOwnProperty.call(input, "releaseGenerationId")) {
+    throw new Error("postgres_manifest_caller_generation_forbidden");
+  }
+  const root = assertTrustedArtifactRootPathV2(input.artifactRoot);
+  const freeze = currentVerifiedFreeze(root);
+  const releaseGenerationId = freeze.releaseGenerationId;
   const source = validateRemediationReleaseManifestV2(JSON.parse(input.sourceManifestBytes.toString("utf8")));
   if (!input.sourceManifestBytes.equals(canonicalBytesV2(source))) throw new Error("postgres_manifest_source_noncanonical");
+  if (source.candidateSha !== freeze.candidateSha
+      || source.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
+      || source.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze)) {
+    throw new Error("postgres_manifest_freeze_binding_invalid");
+  }
   const sourceSha256 = releaseSha256V2(input.sourceManifestBytes);
   await client.query(`create table if not exists plan5_release_manifest_v2_cas(
     release_generation_id text primary key,
@@ -2657,7 +2939,7 @@ export async function initializePostgresManifestStateV2(
     release_generation_id, revision, current_manifest_sha256, current_manifest_json,
     current_manifest_utf8_base64, evaluated_at
   ) values ($1,$2,$3,$4::jsonb,$5,$6::timestamptz) on conflict do nothing`, [
-    input.releaseGenerationId, source.revision, sourceSha256, JSON.stringify(source),
+    releaseGenerationId, source.revision, sourceSha256, JSON.stringify(source),
     input.sourceManifestBytes.toString("base64"), input.evaluatedAt
   ]);
   if (result.rowCount !== 1) throw new Error("postgres_manifest_source_already_initialized");
