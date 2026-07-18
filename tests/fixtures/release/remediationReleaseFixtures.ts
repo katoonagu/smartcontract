@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import { fingerprintTelegramMessagePayload } from "../../../src/forensics/telegramDelivery";
+import { adaptTelegramForensicResult } from "../../../src/telegram/forensicPresentationAdapters";
+import { renderTelegramForensicResult } from "../../../src/telegram/forensicResultRenderer";
+import { MANUAL_TELEGRAM_ACCEPTANCE_CASES } from "../../../scripts/renderTelegramUxAcceptance";
+import { remediationTelegramUxCase } from "../telegram/remediationTelegramUxCases";
 
 export const CANDIDATE_SHA = "c".repeat(40);
 export const PLAN_BASE_SHA = "4761e1453ea03a96845b68039e6d6f4812aae540";
@@ -500,25 +505,34 @@ export type ManualTelegramAcceptanceV1 = {
 
 export function buildManualTelegramAcceptance(): ManualTelegramAcceptanceV1 {
   const messageRecords: ManualTelegramMessageRecordV1[] = [];
-  const scenarioSummaries = MANUAL_SCENARIO_IDS.map((scenarioId, scenarioIndex): ManualTelegramScenarioSummaryV1 => {
-    const messagesInScenario = scenarioIndex < 4 ? 2 : 1;
+  const scenarioSummaries = MANUAL_TELEGRAM_ACCEPTANCE_CASES.map((definition, scenarioIndex): ManualTelegramScenarioSummaryV1 => {
+    const scenarioId = definition.artifactId;
     const messageRecordIds: string[] = [];
-    for (let messageIndex = 0; messageIndex < messagesInScenario; messageIndex += 1) {
+    for (const fixtureId of definition.fixtureIds) {
       const sequence = messageRecords.length + 1;
       const id = `message-${String(sequence).padStart(2, "0")}`;
+      const fixture = remediationTelegramUxCase(fixtureId);
+      const rendered = renderTelegramForensicResult(adaptTelegramForensicResult(fixture.source));
+      const payloadSha256 = fingerprintTelegramMessagePayload({
+        version: "telegram-message-payload-v1",
+        chatId: "recording_disabled",
+        text: rendered,
+        parseMode: "HTML",
+        replyMarkup: null
+      });
       messageRecordIds.push(id);
       messageRecords.push({
         id,
         scenarioId,
         candidateSha: CANDIDATE_SHA,
         runtimeLabel: RUNTIME_LABEL,
-        checkedWallet: `T${"A".repeat(33)}`,
+        checkedWallet: fixture.source.checkedWalletAddress,
         jobId: `synthetic-job-${String(sequence).padStart(2, "0")}`,
         telegramMessageId: 1000 + sequence,
-        payloadSha256: sequence.toString(16).padStart(64, "0"),
+        payloadSha256,
         screenshotFilename: `${id}.png`,
         screenshotSha256: (sequence + 100).toString(16).padStart(64, "0"),
-        requirementIds: [REQUIRED_REQUIREMENT_IDS[scenarioIndex % REQUIRED_REQUIREMENT_IDS.length]],
+        requirementIds: [...definition.expectedRequirementIds],
         result: "pass"
       });
     }
@@ -527,9 +541,9 @@ export function buildManualTelegramAcceptance(): ManualTelegramAcceptanceV1 {
       candidateSha: CANDIDATE_SHA,
       runtimeLabel: RUNTIME_LABEL,
       messageRecordIds,
-      fixtureIds: [`fixture-${String(scenarioIndex + 1).padStart(2, "0")}`],
-      goldenIds: scenarioIndex < MANUAL_GOLDEN_IDS.length ? [MANUAL_GOLDEN_IDS[scenarioIndex]] : [],
-      requirementIds: [REQUIRED_REQUIREMENT_IDS[scenarioIndex % REQUIRED_REQUIREMENT_IDS.length]],
+      fixtureIds: [...definition.fixtureIds],
+      goldenIds: [...definition.goldenIds],
+      requirementIds: [...definition.expectedRequirementIds],
       reviewer: "release-reviewer",
       reviewedAt: `2026-07-17T12:${String(scenarioIndex).padStart(2, "0")}:00.000Z`,
       result: "pass"
