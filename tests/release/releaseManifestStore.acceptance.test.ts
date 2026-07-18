@@ -42,7 +42,12 @@ it("[REQ-38][RELEASE-FREEZE-MATERIALIZER] only release freeze materializer conve
 
 it("[REQ-38][BOOTSTRAP-ROOT-WRITER-CRASH] discriminates bootstrap from frozen lease takeover and terminal bytes resumes exact prepared freeze after dead-owner takeover and seals the root for new-root retry when owner dies before prepare including crash after lease acquisition and after prepare before freeze receipt", async () => {
   const api = await loadStoreApi();
-  for (const faultAt of ["after_lease", "after_prepare", "after_identity"]) {
+  const unpreparedRoot = await root();
+  await expect(api.materializeReleaseFreezeV2({ ...materializeInput(unpreparedRoot), faultAt: "after_lease" })).rejects.toThrow();
+  await expect(api.materializeReleaseFreezeV2({ ...materializeInput(unpreparedRoot), owner: { ownerId: "owner-b", pid: 2147483647, processStartedAt: "2026-07-18T10:01:00.000Z" }, recoverDeadOwner: true })).rejects.toThrow(/new_root|sealed|abandoned/);
+  expect(await readdir(unpreparedRoot)).toContain("bootstrap-root-terminal-abandoned-v2.json");
+  expect(await readdir(unpreparedRoot)).not.toContain("release-freeze-identity-v2.json");
+  for (const faultAt of ["after_prepare", "after_identity"]) {
     const r = await root();
     await expect(api.materializeReleaseFreezeV2({ ...materializeInput(r), faultAt })).rejects.toThrow();
     const recovered = await api.materializeReleaseFreezeV2({ ...materializeInput(r), owner: { ownerId: "owner-b", pid: 2147483647, processStartedAt: "2026-07-18T10:01:00.000Z" }, recoverDeadOwner: true });
