@@ -968,7 +968,21 @@ export async function verifyRemediationReleaseArtifacts(
   const parsedManifest = parseJson(manifestBytes);
   if ((parsedManifest as { version?: unknown }).version === "remediation-release-manifest-v2") {
     const manifestV2 = validateRemediationReleaseManifestV2(parsedManifest);
-    const artifacts = new Map<string, Buffer>([[REMEDIATION_RELEASE_MANIFEST_FILE, manifestBytes]]);
+    const freezeIdentityPath = "release-freeze-identity-v2.json";
+    const artifacts = new Map<string, Buffer>([
+      [REMEDIATION_RELEASE_MANIFEST_FILE, manifestBytes],
+      [freezeIdentityPath, await readSafeArtifactFile(root, freezeIdentityPath)]
+    ]);
+    let lineageCursor = manifestV2;
+    while (lineageCursor.revision > 1) {
+      if (typeof lineageCursor.previousManifestSha256 !== "string") {
+        throw new Error("release manifest V2 source lineage is incomplete");
+      }
+      const relativePath = `manifest-snapshots/release-manifest-r${lineageCursor.revision - 1}-${lineageCursor.previousManifestSha256}.json`;
+      const snapshotBytes = await readSafeArtifactFile(root, relativePath);
+      artifacts.set(relativePath, snapshotBytes);
+      lineageCursor = validateRemediationReleaseManifestV2(parseJson(snapshotBytes));
+    }
     for (const gate of manifestV2.gates) {
       if (gate.state !== "passed" && gate.state !== "failed") continue;
       for (const ref of gate.evidence) artifacts.set(ref.relativePath,

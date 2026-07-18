@@ -37,6 +37,7 @@ import {
   validateVerifiedManifestTransitionEvidenceV2,
   validateReleaseFreezeMaterializationReceiptV2,
   validateReleaseFreezeIdentityV2,
+  validateReleaseGateV2,
   validateReleaseRootWriterLeaseV2,
   validateRemediationReleaseManifestV2,
   validateProductionAuthorityPreclaimValidationV2,
@@ -60,6 +61,7 @@ import {
   type PreparedFrozenRootWriterLeaseTakeoverV2,
   type RemediationReleaseManifestV2
 } from "./remediationReleaseManifestV2";
+import { validateGateEvidenceBytesV2 } from "./releaseGateEvidencePolicy";
 import {
   ROOT_WRITER_LEASE_FILE,
   acquireRootWriterLeaseV2,
@@ -1528,7 +1530,8 @@ function consumedAuthorityHashForTransitionV2(
   freeze: ReleaseFreezeIdentityV2,
   sourceManifestSha256: string,
   transition: AdvanceInput["transition"],
-  verifiedTransitionEvidenceValue: unknown
+  verifiedTransitionEvidenceValue: unknown,
+  verifiedGateOutputsValue: unknown
 ): string | null {
   const transitionEvidence = validateVerifiedManifestTransitionEvidenceV2(
     verifiedTransitionEvidenceValue
@@ -1564,6 +1567,40 @@ function consumedAuthorityHashForTransitionV2(
           transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2)
       || terminalReceiptHashesForAuthorityV2(root, record).length !== 0) {
     throw new Error("operational_authority_not_committed_transition_tip");
+  }
+  const standaloneGateId = transition.transitionId === "g12_backup_passed"
+    ? "G12_PRODUCTION_BACKUP" : transition.transitionId === "g13_migration_passed"
+      ? "G13_PRODUCTION_MIGRATION" : null;
+  if (standaloneGateId !== null) {
+    if (!Array.isArray(verifiedGateOutputsValue) || verifiedGateOutputsValue.length !== 1) {
+      throw new Error("standalone_production_gate_output_invalid");
+    }
+    const gate = validateReleaseGateV2(verifiedGateOutputsValue[0]);
+    if (gate.id !== standaloneGateId || (gate.state !== "passed" && gate.state !== "failed")) {
+      throw new Error("standalone_production_gate_output_invalid");
+    }
+    const bytesByRelativePath = new Map<string, Buffer>();
+    for (const ref of gate.evidence) {
+      bytesByRelativePath.set(ref.relativePath,
+        readFileSync(safeArtifactRelativePath(root, ref.relativePath)));
+    }
+    validateGateEvidenceBytesV2(gate, bytesByRelativePath, {
+      releaseGenerationId: freeze.releaseGenerationId,
+      artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+      releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+      sourceManifestSha256
+    });
+    const attestation = gate.evidence.find((ref) => ref.kind === "operational_attestation");
+    if (!attestation || attestation.sha256 !== hash) {
+      throw new Error("standalone_production_authority_binding_invalid");
+    }
+    const genericConsumptionPath = safeArtifactPath(root,
+      `operational-attestation-consumption-${hash}.json`);
+    const genericClaimPath = safeArtifactPath(root, `production-operation-claim-${hash}.json`);
+    if (existsSync(genericConsumptionPath) || existsSync(genericClaimPath)) {
+      throw new Error("standalone_production_consumption_conflict");
+    }
+    return hash;
   }
   const consumptionPath = safeArtifactPath(root,
     `operational-attestation-consumption-${hash}.json`);
@@ -1914,7 +1951,8 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
   const currentManifestBeforeClaim = currentHeadBeforeClaim.manifest;
   const currentManifestShaBeforeClaim = releaseSha256V2(currentHeadBeforeClaim.bytes);
   const operationalAuthoritySha256 = consumedAuthorityHashForTransitionV2(
-    root, freeze, sourceShaForKey, input.transition, input.verifiedTransitionEvidence);
+    root, freeze, sourceShaForKey, input.transition, input.verifiedTransitionEvidence,
+    input.verifiedGateOutputs);
   const transitionKey = releaseSha256V2(canonicalReleaseJsonV2([
     source.candidateSha, sourceShaForKey, input.transition.transitionId,
     freeze.releaseGenerationId, freeze.artifactRootFingerprintSha256,

@@ -71,7 +71,7 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
 export const PRODUCTION_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G12_PRODUCTION_BACKUP: policy("G12_PRODUCTION_BACKUP", [
     "production-backup-evidence.json", "production-backup.dump", "production-backup-restore-list.txt"
-  ], ["operational_attestation", "production_backup_consumption", "production_backup_dump_progress",
+  ], ["operational_attestation", "production_backup_authority", "production_backup_consumption", "production_backup_dump_progress",
     "production_backup_list_progress", "production_backup_dump", "production_backup_restore_list",
     "production_backup_evidence"], true),
   G13_PRODUCTION_MIGRATION: policy("G13_PRODUCTION_MIGRATION", [
@@ -96,6 +96,247 @@ export const RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
 } satisfies Record<ReleaseGateIdV2, GateEvidencePolicyV2>);
 
 const SAFE_RELATIVE = /^(?![A-Za-z]:)(?![\\/])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))[A-Za-z0-9._/-]+$/u;
+const SHA40 = /^[0-9a-f]{40}$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
+const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
+
+function evidenceRecord(value: unknown, code: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(code);
+  return value as Record<string, unknown>;
+}
+
+function exactEvidenceKeys(value: Record<string, unknown>, keys: readonly string[], code: string): void {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(code);
+  }
+}
+
+function evidenceSha(value: unknown, code: string): string {
+  if (typeof value !== "string" || !SHA256.test(value)) throw new Error(code);
+  return value;
+}
+
+function evidenceCandidate(value: unknown, code: string): string {
+  if (typeof value !== "string" || !SHA40.test(value)) throw new Error(code);
+  return value;
+}
+
+function evidenceIso(value: unknown, code: string): string {
+  if (typeof value !== "string") throw new Error(code);
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) throw new Error(code);
+  return value;
+}
+
+function positiveInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error(code);
+  return Number(value);
+}
+
+function canonicalEvidenceSha(value: unknown): string {
+  return createHash("sha256").update(canonicalBytesV2(value)).digest("hex");
+}
+
+function validateProductionBackupConsumption(value: unknown): Record<string, unknown> {
+  const input = evidenceRecord(value, "production_backup_consumption_invalid");
+  exactEvidenceKeys(input, ["version", "generationId", "authoritySha256", "candidateSha",
+    "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "claimedAt", "expiresAt"],
+  "production_backup_consumption_invalid");
+  if (input.version !== "production-backup-authority-consumption-v1"
+      || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)) {
+    throw new Error("production_backup_consumption_invalid");
+  }
+  evidenceSha(input.authoritySha256, "production_backup_consumption_invalid");
+  evidenceCandidate(input.candidateSha, "production_backup_consumption_invalid");
+  evidenceSha(input.databaseIdentityFingerprintSha256, "production_backup_consumption_invalid");
+  evidenceSha(input.artifactRootFingerprintSha256, "production_backup_consumption_invalid");
+  const claimedAt = evidenceIso(input.claimedAt, "production_backup_consumption_invalid");
+  const expiresAt = evidenceIso(input.expiresAt, "production_backup_consumption_invalid");
+  if (Date.parse(claimedAt) >= Date.parse(expiresAt)) throw new Error("production_backup_consumption_invalid");
+  return input;
+}
+
+function validateProductionBackupAuthority(value: unknown): Record<string, unknown> {
+  const code = "production_backup_authority_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "scope", "source", "generationId", "commandId",
+    "commandTemplateSha256", "issuedAt", "expiresAt", "candidateSha", "databaseRole",
+    "databaseIdentityFingerprintSha256", "task0bEvidencePath", "task0bEvidenceSha256",
+    "releaseManifestPath", "releaseManifestSha256", "releaseManifestOverall",
+    "artifactRootFingerprintSha256", "explicitGo"], code);
+  if (input.version !== "production-backup-authority-v1" || input.scope !== "production_backup"
+      || input.source !== "operator_protected_one_shot_production_go"
+      || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)
+      || input.commandId !== "production_backup" || input.databaseRole !== "production"
+      || input.task0bEvidencePath !== "task0b-release-freeze.json"
+      || input.releaseManifestPath !== "release-manifest.json"
+      || input.releaseManifestOverall !== "ready_for_release" || input.explicitGo !== true) {
+    throw new Error(code);
+  }
+  evidenceCandidate(input.candidateSha, code);
+  for (const key of ["commandTemplateSha256", "databaseIdentityFingerprintSha256", "task0bEvidenceSha256",
+    "releaseManifestSha256", "artifactRootFingerprintSha256"]) evidenceSha(input[key], code);
+  const issuedAt = evidenceIso(input.issuedAt, code);
+  const expiresAt = evidenceIso(input.expiresAt, code);
+  if (Date.parse(issuedAt) >= Date.parse(expiresAt)
+      || Date.parse(expiresAt) - Date.parse(issuedAt) > 10 * 60_000) throw new Error(code);
+  return input;
+}
+
+function validateProductionBackupProgress(value: unknown, kind: "dump" | "list"): Record<string, unknown> {
+  const code = `production_backup_${kind}_progress_invalid`;
+  const input = evidenceRecord(value, code);
+  const common = ["version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId", "recordedAt"];
+  exactEvidenceKeys(input, kind === "dump"
+    ? [...common, "backupFilename", "backupBytes", "backupSha256", "backupPathFingerprintSha256"]
+    : [...common, "dumpProgressSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256",
+      "restoreListEntryCount"], code);
+  if (input.version !== `production-backup-${kind}-progress-v1`
+      || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)
+      || typeof input.operationId !== "string" || input.operationId.length === 0) throw new Error(code);
+  for (const key of ["authoritySha256", "claimSha256", "databaseIdentityFingerprintSha256",
+    "artifactRootFingerprintSha256"]) evidenceSha(input[key], code);
+  evidenceCandidate(input.candidateSha, code);
+  evidenceIso(input.expiresAt, code);
+  evidenceIso(input.recordedAt, code);
+  if (kind === "dump") {
+    if (input.backupFilename !== "production-backup.dump") throw new Error(code);
+    positiveInteger(input.backupBytes, code);
+    evidenceSha(input.backupSha256, code);
+    evidenceSha(input.backupPathFingerprintSha256, code);
+  } else {
+    if (input.restoreListFilename !== "production-backup-restore-list.txt") throw new Error(code);
+    positiveInteger(input.restoreListBytes, code);
+    positiveInteger(input.restoreListEntryCount, code);
+    evidenceSha(input.dumpProgressSha256, code);
+    evidenceSha(input.restoreListSha256, code);
+  }
+  return input;
+}
+
+function validateProductionBackupEvidence(value: unknown): Record<string, unknown> {
+  const code = "production_backup_evidence_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "candidateSha", "gateId", "commandId", "redactedTemplateSha256",
+    "databaseIdentityFingerprintSha256", "backupFilename", "backupBytes", "backupSha256",
+    "backupPathFingerprintSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256",
+    "restoreListEntryCount", "state"], code);
+  if (input.version !== "production-backup-evidence-v1" || input.gateId !== "G12_PRODUCTION_BACKUP"
+      || input.commandId !== "production_backup" || input.backupFilename !== "production-backup.dump"
+      || input.restoreListFilename !== "production-backup-restore-list.txt" || input.state !== "passed") {
+    throw new Error(code);
+  }
+  evidenceCandidate(input.candidateSha, code);
+  for (const key of ["redactedTemplateSha256", "databaseIdentityFingerprintSha256", "backupSha256",
+    "backupPathFingerprintSha256", "restoreListSha256"]) evidenceSha(input[key], code);
+  positiveInteger(input.backupBytes, code);
+  positiveInteger(input.restoreListBytes, code);
+  positiveInteger(input.restoreListEntryCount, code);
+  return input;
+}
+
+function validateProductionMigrationAuthority(value: unknown): Record<string, unknown> {
+  const code = "schema_032_sequence_production_authority_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "scope", "source", "generationId", "commandId",
+    "commandTemplateSha256", "issuedAt", "expiresAt", "candidateSha", "databaseRole",
+    "databaseIdentityFingerprintSha256", "task0bEvidenceSha256", "releaseManifestPath",
+    "releaseManifestSha256", "releaseManifestOverall", "backupEvidencePath", "backupEvidenceSha256",
+    "explicitGo"], code);
+  if (input.version !== "schema-032-production-authority-v1"
+      || input.scope !== "schema_032_production_migration"
+      || input.source !== "operator_protected_one_shot_production_go"
+      || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)
+      || input.commandId !== "production_migration" || input.databaseRole !== "production"
+      || input.releaseManifestPath !== "release-manifest.json" || input.releaseManifestOverall !== "not_ready"
+      || input.backupEvidencePath !== "production-backup-evidence.json" || input.explicitGo !== true) {
+    throw new Error(code);
+  }
+  evidenceCandidate(input.candidateSha, code);
+  for (const key of ["commandTemplateSha256", "databaseIdentityFingerprintSha256", "task0bEvidenceSha256",
+    "releaseManifestSha256", "backupEvidenceSha256"]) evidenceSha(input[key], code);
+  const issuedAt = evidenceIso(input.issuedAt, code);
+  const expiresAt = evidenceIso(input.expiresAt, code);
+  if (Date.parse(issuedAt) >= Date.parse(expiresAt)
+      || Date.parse(expiresAt) - Date.parse(issuedAt) > 10 * 60_000) throw new Error(code);
+  return input;
+}
+
+function validateProductionMigrationConsumption(value: unknown): Record<string, unknown> {
+  const code = "schema_032_sequence_production_consumption_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "generationId", "authoritySha256", "candidateSha",
+    "databaseIdentityFingerprintSha256", "claimedAt", "resumeExpiresAt"], code);
+  if (input.version !== "schema-032-production-authority-consumption-v1"
+      || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)) throw new Error(code);
+  evidenceSha(input.authoritySha256, code);
+  evidenceCandidate(input.candidateSha, code);
+  evidenceSha(input.databaseIdentityFingerprintSha256, code);
+  const claimedAt = evidenceIso(input.claimedAt, code);
+  const expiresAt = evidenceIso(input.resumeExpiresAt, code);
+  if (Date.parse(claimedAt) >= Date.parse(expiresAt)) throw new Error(code);
+  return input;
+}
+
+type NestedCapture = Readonly<{
+  stepId: string;
+  sequence: number;
+  executionKind: "local_validation" | "external_effect";
+  outputSha256: string;
+  observedStateSha256: string;
+}>;
+
+function validateQueryCaptures(value: unknown): { operationId: string; captures: NestedCapture[] } {
+  const code = "production_query_captures_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "operationId", "captures"], code);
+  if (input.version !== "production-orchestration-captures-v2"
+      || typeof input.operationId !== "string" || input.operationId.length === 0
+      || !Array.isArray(input.captures) || input.captures.length === 0) throw new Error(code);
+  const captures = input.captures.map((item, index) => {
+    const capture = evidenceRecord(item, code);
+    exactEvidenceKeys(capture, ["stepId", "sequence", "executionKind", "outputSha256", "observedStateSha256"], code);
+    if (typeof capture.stepId !== "string" || capture.stepId.length === 0 || capture.sequence !== index + 1
+        || (capture.executionKind !== "local_validation" && capture.executionKind !== "external_effect")) {
+      throw new Error(code);
+    }
+    evidenceSha(capture.outputSha256, code);
+    evidenceSha(capture.observedStateSha256, code);
+    return capture as NestedCapture;
+  });
+  return { operationId: input.operationId, captures };
+}
+
+function validateManagerCaptures(value: unknown): { operationId: string; captures: NestedCapture[] } {
+  const code = "production_manager_captures_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "operationId", "captures"], code);
+  if (input.version !== "production-manager-captures-v2" || typeof input.operationId !== "string"
+      || input.operationId.length === 0 || !Array.isArray(input.captures)) throw new Error(code);
+  const captures = input.captures.map((item) => {
+    const capture = evidenceRecord(item, code);
+    exactEvidenceKeys(capture, ["stepId", "sequence", "executionKind", "outputSha256", "observedStateSha256"], code);
+    if (typeof capture.stepId !== "string" || !Number.isSafeInteger(capture.sequence)
+        || capture.executionKind !== "external_effect") throw new Error(code);
+    evidenceSha(capture.outputSha256, code);
+    evidenceSha(capture.observedStateSha256, code);
+    return capture as NestedCapture;
+  });
+  return { operationId: input.operationId, captures };
+}
+
+function validateLogCaptures(value: unknown): { operationId: string; captureSha256s: string[] } {
+  const code = "production_canary_log_captures_invalid";
+  const input = evidenceRecord(value, code);
+  exactEvidenceKeys(input, ["version", "operationId", "captureSha256s"], code);
+  if (input.version !== "production-canary-log-captures-v2" || typeof input.operationId !== "string"
+      || input.operationId.length === 0 || !Array.isArray(input.captureSha256s)) throw new Error(code);
+  const captureSha256s = input.captureSha256s.map((valueSha) => evidenceSha(valueSha, code));
+  return { operationId: input.operationId, captureSha256s };
+}
 
 function parseCanonicalEvidenceJson(bytes: Buffer, ref: GateEvidenceRefV2): Record<string, unknown> {
   let value: unknown;
@@ -120,6 +361,7 @@ export type GateEvidenceBindingContextV2 = Readonly<{
   artifactRootFingerprintSha256?: string;
   releaseFreezeIdentitySha256?: string;
   sourceManifestSha256?: string;
+  sourceManifestSha256ByGate?: Readonly<Partial<Record<ProductionGateIdV2, string>>>;
 }>;
 
 function validateEvidenceBindings(
@@ -174,6 +416,7 @@ function validateProductionEvidencePath(
     production_canary_evidence: "production-canary-evidence-v2.json"
   };
   const derived: Partial<Record<GateEvidenceKindV2, string | undefined>> = generation === undefined ? {} : {
+    production_backup_authority: `production-backup-authority-${generation}.json`,
     production_backup_consumption: `production-backup-authority-consumed-${generation}.json`,
     production_backup_dump_progress: `production-backup-dump-progress-${generation}.json`,
     production_backup_list_progress: `production-backup-list-progress-${generation}.json`,
@@ -186,13 +429,87 @@ function validateProductionEvidencePath(
   }
 }
 
-function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): void {
+export function validateProductionNestedGateEvidenceV2(input: Readonly<{
+  gateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+  evidence: unknown;
+  managerCaptures?: unknown;
+  queryCaptures: unknown;
+  logCaptures?: unknown;
+  orchestrationReceipt: unknown;
+}>): void {
+  const queries = validateQueryCaptures(input.queryCaptures);
+  const orchestration = validateProductionOrchestrationReceiptV2(input.orchestrationReceipt);
+  const evidence = input.gateId === "G14_PRODUCTION_ROLLOUT"
+    ? validateProductionRolloutEvidenceV2(input.evidence)
+    : validateProductionCanaryEvidenceV2(input.evidence);
+  const expectedOrchestration = input.gateId === "G14_PRODUCTION_ROLLOUT" ? "rollout" : "canary";
+  if (orchestration.orchestration !== expectedOrchestration
+      || orchestration.operationId !== queries.operationId
+      || orchestration.candidateSha !== evidence.candidateSha
+      || orchestration.sourceManifestSha256 !== evidence.sourceManifestSha256
+      || orchestration.operationalAttestationConsumptionSha256
+        !== evidence.operationalAttestationConsumptionSha256
+      || evidence.queryCapturesSha256 !== canonicalEvidenceSha(input.queryCaptures)
+      || evidence.orchestrationReceiptSha256 !== canonicalEvidenceSha(input.orchestrationReceipt)) {
+    throw new Error("production_nested_orchestration_binding_invalid");
+  }
+  const receiptCaptures = orchestration.completedStepReceipts.map(({ receipt }) => ({
+    stepId: receipt.stepId,
+    sequence: receipt.sequence,
+    executionKind: receipt.executionKind,
+    outputSha256: receipt.outputSha256,
+    observedStateSha256: receipt.observedStateSha256
+  }));
+  if (!canonicalBytesV2(receiptCaptures).equals(canonicalBytesV2(queries.captures))) {
+    throw new Error("production_query_capture_receipt_binding_invalid");
+  }
+  if (input.gateId === "G14_PRODUCTION_ROLLOUT") {
+    if (input.managerCaptures === undefined || input.logCaptures !== undefined) {
+      throw new Error("production_rollout_nested_artifacts_invalid");
+    }
+    const manager = validateManagerCaptures(input.managerCaptures);
+    const rollout = evidence as ReturnType<typeof validateProductionRolloutEvidenceV2>;
+    const external = queries.captures.filter((capture) => capture.executionKind === "external_effect");
+    if (manager.operationId !== queries.operationId
+        || !canonicalBytesV2(manager.captures).equals(canonicalBytesV2(external))
+        || rollout.managerCapturesSha256 !== canonicalEvidenceSha(input.managerCaptures)) {
+      throw new Error("production_manager_capture_hash_binding_invalid");
+    }
+    if (rollout.previousStopEvidenceSha256
+          !== queries.captures.find((capture) => capture.stepId === "stop_previous")?.outputSha256
+        || rollout.candidateStartEvidenceSha256
+          !== queries.captures.find((capture) => capture.stepId === "start_candidate")?.outputSha256) {
+      throw new Error("production_manager_effect_binding_invalid");
+    }
+    return;
+  }
+  if (input.logCaptures === undefined || input.managerCaptures !== undefined) {
+    throw new Error("production_canary_nested_artifacts_invalid");
+  }
+  const logs = validateLogCaptures(input.logCaptures);
+  const canary = evidence as ReturnType<typeof validateProductionCanaryEvidenceV2>;
+  if (logs.operationId !== queries.operationId
+      || !canonicalBytesV2(logs.captureSha256s)
+        .equals(canonicalBytesV2(queries.captures.map((capture) => capture.outputSha256)))
+      || canary.logCapturesSha256 !== canonicalEvidenceSha(input.logCaptures)) {
+    throw new Error("production_canary_log_capture_binding_invalid");
+  }
+}
+
+function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): Record<string, unknown> | null {
   if (ref.kind === "production_backup_dump" || ref.kind === "production_backup_restore_list") {
     if (bytes.length === 0) throw new Error("gate_evidence_empty");
-    return;
+    return null;
   }
   const value = parseCanonicalEvidenceJson(bytes, ref);
   if (ref.kind === "operational_attestation") validateOperationalAttestationV2(value);
+  else if (ref.kind === "production_backup_authority") validateProductionBackupAuthority(value);
+  else if (ref.kind === "production_backup_consumption") validateProductionBackupConsumption(value);
+  else if (ref.kind === "production_backup_dump_progress") validateProductionBackupProgress(value, "dump");
+  else if (ref.kind === "production_backup_list_progress") validateProductionBackupProgress(value, "list");
+  else if (ref.kind === "production_backup_evidence") validateProductionBackupEvidence(value);
+  else if (ref.kind === "production_migration_authority") validateProductionMigrationAuthority(value);
+  else if (ref.kind === "production_migration_consumption") validateProductionMigrationConsumption(value);
   else if (ref.kind === "production_migration_sequence") validateSchema032ProductionExecutionReceiptV2(value);
   else if (ref.kind === "production_operation_claim") validateProductionOperationClaimV2(value);
   else if (ref.kind === "production_operation_settlement") validateProductionOperationSettlementV2(value);
@@ -205,6 +522,222 @@ function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): void {
     validateProductionOrchestrationReceiptV2(value);
   } else if (ref.kind === "production_rollout_evidence") validateProductionRolloutEvidenceV2(value);
   else if (ref.kind === "production_canary_evidence") validateProductionCanaryEvidenceV2(value);
+  else if (ref.kind === "production_rollout_manager") validateManagerCaptures(value);
+  else if (ref.kind === "production_rollout_queries" || ref.kind === "production_canary_queries") {
+    validateQueryCaptures(value);
+  } else if (ref.kind === "production_canary_logs") validateLogCaptures(value);
+  return value;
+}
+
+type ParsedGateArtifact = Readonly<{
+  ref: GateEvidenceRefV2;
+  bytes: Buffer;
+  value: Record<string, unknown> | null;
+}>;
+
+function requireArtifact(
+  artifacts: ReadonlyMap<GateEvidenceKindV2, ParsedGateArtifact>,
+  kind: GateEvidenceKindV2
+): ParsedGateArtifact {
+  const artifact = artifacts.get(kind);
+  if (!artifact) throw new Error(`gate_evidence_kind_missing:${kind}`);
+  return artifact;
+}
+
+function requireJsonArtifact(
+  artifacts: ReadonlyMap<GateEvidenceKindV2, ParsedGateArtifact>,
+  kind: GateEvidenceKindV2
+): ParsedGateArtifact & { value: Record<string, unknown> } {
+  const artifact = requireArtifact(artifacts, kind);
+  if (artifact.value === null) throw new Error(`gate_evidence_json_required:${kind}`);
+  return artifact as ParsedGateArtifact & { value: Record<string, unknown> };
+}
+
+type RequiredProductionGateContext = Readonly<{
+  releaseGenerationId: string;
+  artifactRootFingerprintSha256: string;
+  releaseFreezeIdentitySha256: string;
+  sourceManifestSha256: string;
+}>;
+
+function requireProductionBindingContext(expected: GateEvidenceBindingContextV2): RequiredProductionGateContext {
+  if (typeof expected.releaseGenerationId !== "string" || !GENERATION.test(expected.releaseGenerationId)
+      || typeof expected.artifactRootFingerprintSha256 !== "string"
+      || !SHA256.test(expected.artifactRootFingerprintSha256)
+      || typeof expected.releaseFreezeIdentitySha256 !== "string"
+      || !SHA256.test(expected.releaseFreezeIdentitySha256)
+      || typeof expected.sourceManifestSha256 !== "string" || !SHA256.test(expected.sourceManifestSha256)) {
+    throw new Error("production_gate_binding_context_incomplete");
+  }
+  return expected as RequiredProductionGateContext;
+}
+
+function validateOperationalGateAttestation(
+  gate: ExecutedReleaseGateV2,
+  artifact: ParsedGateArtifact & { value: Record<string, unknown> },
+  expected: RequiredProductionGateContext
+): void {
+  const wantedAction = {
+    G12_PRODUCTION_BACKUP: "g12_backup_passed",
+    G13_PRODUCTION_MIGRATION: "g13_migration_passed",
+    G14_PRODUCTION_ROLLOUT: "g14_rollout_passed",
+    G15_PRODUCTION_CANARY: "g15_canary_released"
+  } as const;
+  const value = artifact.value;
+  if (value.action !== wantedAction[gate.id as ProductionGateIdV2]
+      || value.candidateSha !== gate.candidateSha
+      || value.generationId !== expected.releaseGenerationId
+      || value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
+      || value.sourceManifestSha256 !== expected.sourceManifestSha256
+      || value.commandId !== gate.commandId || value.redactedTemplateSha256 !== gate.redactedTemplateSha256) {
+    throw new Error("production_gate_attestation_binding_invalid");
+  }
+}
+
+function validateG12Bindings(
+  gate: ExecutedReleaseGateV2,
+  artifacts: ReadonlyMap<GateEvidenceKindV2, ParsedGateArtifact>,
+  expected: RequiredProductionGateContext
+): void {
+  const attestation = requireJsonArtifact(artifacts, "operational_attestation");
+  const authority = requireJsonArtifact(artifacts, "production_backup_authority");
+  const consumption = requireJsonArtifact(artifacts, "production_backup_consumption");
+  const dumpProgress = requireJsonArtifact(artifacts, "production_backup_dump_progress");
+  const listProgress = requireJsonArtifact(artifacts, "production_backup_list_progress");
+  const dump = requireArtifact(artifacts, "production_backup_dump");
+  const restoreList = requireArtifact(artifacts, "production_backup_restore_list");
+  const evidence = requireJsonArtifact(artifacts, "production_backup_evidence");
+  validateOperationalGateAttestation(gate, attestation, expected);
+  const common = ["generationId", "candidateSha", "databaseIdentityFingerprintSha256",
+    "artifactRootFingerprintSha256", "expiresAt"] as const;
+  if (authority.value.generationId !== expected.releaseGenerationId
+      || authority.value.candidateSha !== gate.candidateSha
+      || authority.value.releaseManifestSha256 !== expected.sourceManifestSha256
+      || authority.value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || authority.value.commandTemplateSha256 !== attestation.value.redactedTemplateSha256
+      || consumption.value.authoritySha256 !== authority.ref.sha256
+      || consumption.value.generationId !== expected.releaseGenerationId
+      || consumption.value.candidateSha !== gate.candidateSha
+      || consumption.value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || common.some((key) => dumpProgress.value[key] !== consumption.value[key])
+      || common.some((key) => listProgress.value[key] !== consumption.value[key])
+      || dumpProgress.value.authoritySha256 !== consumption.value.authoritySha256
+      || listProgress.value.authoritySha256 !== consumption.value.authoritySha256
+      || dumpProgress.value.claimSha256 !== consumption.ref.sha256
+      || listProgress.value.claimSha256 !== consumption.ref.sha256
+      || listProgress.value.operationId !== dumpProgress.value.operationId
+      || listProgress.value.dumpProgressSha256 !== dumpProgress.ref.sha256
+      || dumpProgress.value.backupBytes !== dump.bytes.length
+      || dumpProgress.value.backupSha256 !== dump.ref.sha256
+      || listProgress.value.restoreListBytes !== restoreList.bytes.length
+      || listProgress.value.restoreListSha256 !== restoreList.ref.sha256
+      || evidence.value.candidateSha !== gate.candidateSha
+      || evidence.value.redactedTemplateSha256 !== attestation.value.redactedTemplateSha256
+      || evidence.value.databaseIdentityFingerprintSha256 !== consumption.value.databaseIdentityFingerprintSha256
+      || evidence.value.backupBytes !== dump.bytes.length || evidence.value.backupSha256 !== dump.ref.sha256
+      || evidence.value.backupPathFingerprintSha256 !== dumpProgress.value.backupPathFingerprintSha256
+      || evidence.value.restoreListBytes !== restoreList.bytes.length
+      || evidence.value.restoreListSha256 !== restoreList.ref.sha256
+      || evidence.value.restoreListEntryCount !== listProgress.value.restoreListEntryCount) {
+    throw new Error("production_backup_artifact_binding_invalid");
+  }
+}
+
+function validateG13Bindings(
+  gate: ExecutedReleaseGateV2,
+  artifacts: ReadonlyMap<GateEvidenceKindV2, ParsedGateArtifact>,
+  expected: RequiredProductionGateContext
+): void {
+  const attestation = requireJsonArtifact(artifacts, "operational_attestation");
+  const authority = requireJsonArtifact(artifacts, "production_migration_authority");
+  const consumption = requireJsonArtifact(artifacts, "production_migration_consumption");
+  const receipt = requireJsonArtifact(artifacts, "production_migration_sequence");
+  validateOperationalGateAttestation(gate, attestation, expected);
+  if (authority.value.generationId !== expected.releaseGenerationId
+      || authority.value.candidateSha !== gate.candidateSha
+      || authority.value.commandTemplateSha256 !== attestation.value.redactedTemplateSha256
+      || authority.value.releaseManifestSha256 !== expected.sourceManifestSha256
+      || consumption.value.generationId !== authority.value.generationId
+      || consumption.value.authoritySha256 !== authority.ref.sha256
+      || consumption.value.candidateSha !== authority.value.candidateSha
+      || consumption.value.databaseIdentityFingerprintSha256 !== authority.value.databaseIdentityFingerprintSha256
+      || consumption.value.resumeExpiresAt !== authority.value.expiresAt
+      || receipt.value.candidateSha !== gate.candidateSha
+      || receipt.value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
+      || receipt.value.operationalAttestationSha256 !== authority.ref.sha256
+      || receipt.value.authorityConsumptionSha256 !== consumption.ref.sha256
+      || receipt.value.sourceManifestSha256 !== expected.sourceManifestSha256
+      || receipt.value.productionBackupEvidenceSha256 !== authority.value.backupEvidenceSha256) {
+    throw new Error("production_migration_artifact_binding_invalid");
+  }
+}
+
+function validateG14G15Bindings(
+  gate: ExecutedReleaseGateV2,
+  artifacts: ReadonlyMap<GateEvidenceKindV2, ParsedGateArtifact>,
+  expected: RequiredProductionGateContext
+): void {
+  const attestation = requireJsonArtifact(artifacts, "operational_attestation");
+  const claim = requireJsonArtifact(artifacts, "production_operation_claim");
+  const settlement = requireJsonArtifact(artifacts, "production_operation_settlement");
+  const preparedRemoval = requireJsonArtifact(artifacts, "production_operation_lease_removal_prepared");
+  const removal = requireJsonArtifact(artifacts, "production_operation_lease_removal");
+  const cleanup = requireJsonArtifact(artifacts, "production_operation_cleanup");
+  validateOperationalGateAttestation(gate, attestation, expected);
+  const rollout = gate.id === "G14_PRODUCTION_ROLLOUT";
+  const orchestration = requireJsonArtifact(artifacts,
+    rollout ? "production_rollout_orchestration" : "production_canary_orchestration");
+  const evidence = requireJsonArtifact(artifacts,
+    rollout ? "production_rollout_evidence" : "production_canary_evidence");
+  const operationKind = rollout ? "rollout" : "canary";
+  if (claim.value.operationKind !== operationKind || settlement.value.operationKind !== operationKind
+      || claim.value.candidateSha !== gate.candidateSha || settlement.value.candidateSha !== gate.candidateSha
+      || claim.value.releaseGenerationId !== expected.releaseGenerationId
+      || settlement.value.releaseGenerationId !== expected.releaseGenerationId
+      || claim.value.sourceManifestSha256 !== expected.sourceManifestSha256
+      || settlement.value.sourceManifestSha256 !== expected.sourceManifestSha256
+      || claim.value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || claim.value.operationalAttestationSha256 !== attestation.ref.sha256
+      || settlement.value.claimSha256 !== claim.ref.sha256
+      || settlement.value.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+      || settlement.value.orchestrationReceiptSha256 !== orchestration.ref.sha256
+      || settlement.value.terminalEvidenceSha256 !== evidence.ref.sha256
+      || preparedRemoval.value.terminalStateSha256 !== settlement.ref.sha256
+      || preparedRemoval.value.canonicalRemovalReceiptSha256 !== removal.ref.sha256
+      || removal.value.terminalStateSha256 !== settlement.ref.sha256
+      || cleanup.value.terminalStateSha256 !== settlement.ref.sha256
+      || cleanup.value.preparedRemovalSha256 !== preparedRemoval.ref.sha256
+      || cleanup.value.leaseRemovalReceiptSha256 !== removal.ref.sha256
+      || orchestration.value.operationClaimSha256 !== claim.ref.sha256
+      || orchestration.value.operationalAttestationConsumptionSha256 !== claim.value.authorityConsumptionSha256
+      || orchestration.value.sourceManifestSha256 !== expected.sourceManifestSha256
+      || orchestration.value.releaseGenerationId !== expected.releaseGenerationId
+      || evidence.value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256) {
+    throw new Error("production_operation_artifact_binding_invalid");
+  }
+  validateProductionNestedGateEvidenceV2({
+    gateId: gate.id as "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY",
+    evidence: evidence.value,
+    managerCaptures: rollout ? requireJsonArtifact(artifacts, "production_rollout_manager").value : undefined,
+    queryCaptures: requireJsonArtifact(artifacts,
+      rollout ? "production_rollout_queries" : "production_canary_queries").value,
+    logCaptures: rollout ? undefined : requireJsonArtifact(artifacts, "production_canary_logs").value,
+    orchestrationReceipt: orchestration.value
+  });
+}
+
+function validateProductionGateBindings(
+  gate: ExecutedReleaseGateV2,
+  artifacts: ReadonlyMap<GateEvidenceKindV2, ParsedGateArtifact>,
+  expectedValue: GateEvidenceBindingContextV2
+): void {
+  const expected = requireProductionBindingContext(expectedValue);
+  if (gate.id === "G12_PRODUCTION_BACKUP") validateG12Bindings(gate, artifacts, expected);
+  else if (gate.id === "G13_PRODUCTION_MIGRATION") validateG13Bindings(gate, artifacts, expected);
+  else if (gate.id === "G14_PRODUCTION_ROLLOUT" || gate.id === "G15_PRODUCTION_CANARY") {
+    validateG14G15Bindings(gate, artifacts, expected);
+  }
 }
 
 export function validateGateEvidenceBytesV2(
@@ -216,6 +749,7 @@ export function validateGateEvidenceBytesV2(
   if (gate.candidateSha.length !== 40 || gate.evidence.length === 0) throw new Error("gate_evidence_missing");
   const seen = new Set<string>();
   const seenKinds = new Set<GateEvidenceKindV2>();
+  const artifacts = new Map<GateEvidenceKindV2, ParsedGateArtifact>();
   for (const ref of gate.evidence) {
     if (!SAFE_RELATIVE.test(ref.relativePath) || seen.has(ref.relativePath)) {
       throw new Error("gate_evidence_path_invalid");
@@ -232,7 +766,8 @@ export function validateGateEvidenceBytesV2(
     if (!bytes || createHash("sha256").update(bytes).digest("hex") !== ref.sha256) {
       throw new Error("gate_evidence_bytes_invalid");
     }
-    validateTypedEvidence(ref, bytes);
+    const value = validateTypedEvidence(ref, bytes);
+    artifacts.set(ref.kind, { ref, bytes, value });
     if (gatePolicy.production) validateProductionEvidencePath(ref, expected);
     if (ref.kind !== "production_backup_dump" && ref.kind !== "production_backup_restore_list") {
       validateEvidenceBindings(parseCanonicalEvidenceJson(bytes, ref), ref, expected);
@@ -244,5 +779,6 @@ export function validateGateEvidenceBytesV2(
   for (const kind of gatePolicy.requiredKinds) {
     if (!seenKinds.has(kind)) throw new Error(`gate_evidence_kind_missing:${kind}`);
   }
+  if (gatePolicy.production) validateProductionGateBindings(gate, artifacts, expected);
   return gate.evidence;
 }

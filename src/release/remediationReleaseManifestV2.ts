@@ -40,7 +40,7 @@ export const GATE_EVIDENCE_KINDS_V2 = [
   "full_regression", "schema_clean", "schema_production_clone",
   "schema_runtime_sanitized", "runtime_rehearsal", "terminal_legacy_population",
   "rollback_rehearsal", "manual_telegram_acceptance", "operational_attestation",
-  "production_backup_consumption", "production_backup_dump_progress",
+  "production_backup_authority", "production_backup_consumption", "production_backup_dump_progress",
   "production_backup_list_progress", "production_backup_dump",
   "production_backup_restore_list", "production_backup_evidence",
   "production_migration_authority", "production_migration_consumption",
@@ -2597,10 +2597,63 @@ export function validateManifestGateEvidenceV2(
   const manifest = validateRemediationReleaseManifestV2(manifestValue);
   for (const gate of manifest.gates) {
     if (gate.state === "passed" || gate.state === "failed") {
-      validateGateEvidenceBytesV2(gate, bytesByRelativePath, expected);
+      const sourceManifestSha256 = (gate.id === "G12_PRODUCTION_BACKUP"
+          || gate.id === "G13_PRODUCTION_MIGRATION" || gate.id === "G14_PRODUCTION_ROLLOUT"
+          || gate.id === "G15_PRODUCTION_CANARY")
+        ? expected.sourceManifestSha256ByGate?.[gate.id] ?? expected.sourceManifestSha256
+        : expected.sourceManifestSha256;
+      validateGateEvidenceBytesV2(gate, bytesByRelativePath, { ...expected, sourceManifestSha256 });
     }
   }
   return manifest;
+}
+
+export function deriveProductionGateSourceManifestBindingsV2(
+  head: RemediationReleaseManifestV2,
+  artifacts: ReadonlyMap<string, Buffer>
+): Readonly<Partial<Record<ProductionGateIdV2, string>>> {
+  const result: Partial<Record<ProductionGateIdV2, string>> = {};
+  let target = head;
+  while (target.revision > 1) {
+    if (typeof target.previousManifestSha256 !== "string") {
+      throw new Error("release_manifest_source_lineage_invalid");
+    }
+    const sourcePath = `manifest-snapshots/release-manifest-r${target.revision - 1}-${target.previousManifestSha256}.json`;
+    const sourceBytes = artifacts.get(sourcePath);
+    if (!sourceBytes || releaseSha256V2(sourceBytes) !== target.previousManifestSha256) {
+      throw new Error("release_manifest_source_snapshot_missing");
+    }
+    let sourceValue: unknown;
+    try { sourceValue = JSON.parse(sourceBytes.toString("utf8")); }
+    catch { throw new Error("release_manifest_source_snapshot_json_invalid"); }
+    const source = validateRemediationReleaseManifestV2(sourceValue);
+    if (!sourceBytes.equals(Buffer.from(`${canonicalReleaseJsonV2(source)}\n`, "utf8"))
+        || source.revision !== target.revision - 1
+        || source.candidateSha !== target.candidateSha
+        || source.artifactRootFingerprintSha256 !== target.artifactRootFingerprintSha256
+        || source.releaseFreezeIdentitySha256 !== target.releaseFreezeIdentitySha256) {
+      throw new Error("release_manifest_source_snapshot_binding_invalid");
+    }
+    for (const gateId of PRODUCTION_GATE_IDS_V2) {
+      const before = source.gates.find((gate) => gate.id === gateId)!;
+      const after = target.gates.find((gate) => gate.id === gateId)!;
+      const becameExecuted = (after.state === "passed" || after.state === "failed")
+        && before.state !== after.state;
+      if (!becameExecuted) continue;
+      if (before.state === "passed" || before.state === "failed" || result[gateId] !== undefined) {
+        throw new Error("release_manifest_production_gate_lineage_invalid");
+      }
+      result[gateId] = target.previousManifestSha256;
+    }
+    target = source;
+  }
+  for (const gateId of PRODUCTION_GATE_IDS_V2) {
+    const gate = head.gates.find((item) => item.id === gateId)!;
+    if ((gate.state === "passed" || gate.state === "failed") && result[gateId] === undefined) {
+      throw new Error(`release_manifest_production_gate_source_missing:${gateId}`);
+    }
+  }
+  return result;
 }
 
 export async function verifyRemediationReleaseArtifactsV2(
@@ -2620,10 +2673,13 @@ export async function verifyRemediationReleaseArtifactsV2(
   if (!freezeBytes.equals(canonicalReleaseFreezeIdentityUtf8V2(freeze))) {
     throw new Error("release_freeze_identity_v2_noncanonical");
   }
+  const parsedManifest = validateRemediationReleaseManifestV2(value);
+  const sourceManifestSha256ByGate = deriveProductionGateSourceManifestBindingsV2(parsedManifest, artifacts);
   const manifest = validateManifestGateEvidenceV2(value, artifacts, {
     releaseGenerationId: freeze.releaseGenerationId,
     artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
-    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze)
+    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+    sourceManifestSha256ByGate
   });
   if (manifest.candidateSha !== freeze.candidateSha
       || manifest.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
