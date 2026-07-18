@@ -45,6 +45,7 @@ import type {
   WalletIntelligenceTag
 } from "../storage/repositories";
 import type { IndexedTronUsdtTransfer, RiskLevel, RiskReport, WhereIsMoneyReport } from "../types";
+import type { RuntimeNavigationProbeV1, RuntimeProofV1 } from "../runtime/runtimeLiveProof";
 
 export type AdminServerConfig = {
   host: string;
@@ -68,6 +69,8 @@ export type AdminServerDeps = {
   refreshDeepCheckSecondLayer?(jobId: string): Promise<unknown>;
   listWalletIntelligenceAddressSummaries?(input: ListWalletIntelligenceAddressSummariesInput): Promise<WalletIntelligenceAddressSummary[]>;
   getWalletIntelligenceAddressDetail?(address: string): Promise<WalletIntelligenceAddressDetail | null>;
+  getRuntimeProof?(): RuntimeProofV1;
+  runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
 };
 
 export type RunningAdminServer = {
@@ -1420,6 +1423,41 @@ async function handleApiRequest(
   const auth = authorizeAdminRequest(request.headers.authorization, deps.config.token);
   if (!auth.ok) {
     writeJson(response, auth.statusCode, { error: auth.message });
+    return;
+  }
+
+  if (url.pathname === "/admin/api/runtime-proof" || url.pathname === "/admin/api/runtime-navigation-probe") {
+    const remoteAddress = request.socket.remoteAddress ?? "";
+    if (remoteAddress !== "127.0.0.1" && remoteAddress !== "::1" && remoteAddress !== "::ffff:127.0.0.1") {
+      writeJson(response, 403, { error: "Runtime proof requires a loopback connection." });
+      return;
+    }
+    if (url.pathname === "/admin/api/runtime-proof") {
+      if (request.method !== "GET") {
+        writeJson(response, 405, { error: "Method not allowed." });
+        return;
+      }
+      if (!deps.getRuntimeProof) {
+        writeJson(response, 501, { error: "Runtime proof is not configured." });
+        return;
+      }
+      writeJson(response, 200, deps.getRuntimeProof());
+      return;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if ((request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0")
+        || request.headers["transfer-encoding"] !== undefined) {
+      writeJson(response, 400, { error: "Runtime navigation probe accepts no request body." });
+      return;
+    }
+    if (!deps.runRuntimeNavigationProbe) {
+      writeJson(response, 501, { error: "Runtime navigation probe is not configured." });
+      return;
+    }
+    writeJson(response, 200, await deps.runRuntimeNavigationProbe());
     return;
   }
 

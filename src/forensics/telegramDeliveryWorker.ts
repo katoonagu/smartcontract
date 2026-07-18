@@ -99,6 +99,7 @@ export type ForensicTelegramDeliveryCycleInput<TDb = unknown> = {
 };
 
 export type ForensicTelegramDeliveryCycleResult = {
+  claimProbeCount: number;
   prepared: number;
   preparationFailed: number;
   claimed: number;
@@ -252,6 +253,7 @@ export async function runSingleForensicTelegramDeliveryCycle<TDb = unknown>(
   input: ForensicTelegramDeliveryCycleInput<TDb>
 ): Promise<ForensicTelegramDeliveryCycleResult> {
   const result: ForensicTelegramDeliveryCycleResult = {
+    claimProbeCount: 0,
     prepared: 0,
     preparationFailed: 0,
     claimed: 0,
@@ -270,6 +272,7 @@ export async function runSingleForensicTelegramDeliveryCycle<TDb = unknown>(
   // ponytail: claim null can mean either an empty queue or an expired fourth
   // attempt was terminalized; bounded probing is capped at the batch limit.
   for (let index = 0; index < deliveryLimit; index += 1) {
+    result.claimProbeCount += 1;
     const claim = await input.repository.claimNextForensicTelegramDelivery(
       input.db,
       { now: input.now() }

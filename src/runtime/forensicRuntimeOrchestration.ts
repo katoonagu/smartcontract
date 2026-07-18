@@ -20,12 +20,13 @@ import type {
   TelegramMessagePayloadV1,
   WaitReconciliationResultV1
 } from "../types";
+import type { RuntimeCycleWorkSummary } from "./runtimeLiveProof";
 
 export type ForensicRuntimeOrchestration = {
   runVerifiedStartup(): Promise<void>;
-  runBeforeWherePoll(): Promise<void>;
-  runBeforeIncomingPoll(): Promise<void>;
-  runAfterTargetedIndexCompletion(): Promise<void>;
+  runBeforeWherePoll(): Promise<RuntimeCycleWorkSummary>;
+  runBeforeIncomingPoll(): Promise<RuntimeCycleWorkSummary>;
+  runAfterTargetedIndexCompletion(): Promise<RuntimeCycleWorkSummary>;
   runForensicCycle(): Promise<void>;
   runDeliveryCycle(): Promise<void>;
 };
@@ -81,7 +82,7 @@ export function createForensicRuntimeOrchestration(
 ): ForensicRuntimeOrchestration {
   let reconciliationTail = Promise.resolve();
 
-  const reconcile = (): Promise<void> => {
+  const reconcile = (): Promise<RuntimeCycleWorkSummary> => {
     const cycle = reconciliationTail.then(async () => {
       const results = input.reconcileWaitingForensicJobs
         ? await input.reconcileWaitingForensicJobs()
@@ -102,8 +103,10 @@ export function createForensicRuntimeOrchestration(
           diagnosticCode: result.diagnosticCode
         });
       }
+      const examinedCount = results?.length ?? 0;
+      return { sourceQueryCompleted: true as const, examinedCount, completedCount: examinedCount };
     });
-    reconciliationTail = cycle.catch(() => undefined);
+    reconciliationTail = cycle.then(() => undefined, () => undefined);
     return cycle;
   };
 

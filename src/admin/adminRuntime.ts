@@ -10,6 +10,7 @@ import type {
   UpdateTheftReportAdminStateInput
 } from "../storage/repositories";
 import type { IndexedTronUsdtTransfer } from "../types";
+import type { RuntimeNavigationProbeV1, RuntimeProofV1 } from "../runtime/runtimeLiveProof";
 
 export type AdminRuntimeDeps = {
   config: Pick<AppConfig, "adminDashboardEnabled" | "adminDashboardHost" | "adminDashboardPort" | "adminDashboardToken">;
@@ -29,6 +30,8 @@ export type AdminRuntimeDeps = {
   getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
+  getRuntimeProof?(): RuntimeProofV1;
+  runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
 };
 
 export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<RunningAdminServer | null> {
@@ -49,6 +52,8 @@ export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<
     updateTheftReportAdminState: deps.updateTheftReportAdminState,
     getTargetedHistoryProgressForJob: deps.getTargetedHistoryProgressForJob,
     listIndexedUsdtTransfersByHashes: deps.listIndexedUsdtTransfersByHashes,
-    findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses
+    findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses,
+    getRuntimeProof: deps.getRuntimeProof,
+    runRuntimeNavigationProbe: deps.runRuntimeNavigationProbe
   });
 }

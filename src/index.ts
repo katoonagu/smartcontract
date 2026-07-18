@@ -6,7 +6,7 @@ import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalAllowanceRefreshCycle } from "./approvals/allowanceRefreshWorker";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
-import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
+import { createBot, createRuntimeNavigationProbe, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
 import {
   bindApprovalSafetyAuditForContractDecision,
   checkSmartContractAddress as runSmartContractAddressCheck
@@ -47,6 +47,11 @@ import {
   createForensicRuntimeOrchestration,
   type ForensicRuntimeOrchestration
 } from "./runtime/forensicRuntimeOrchestration";
+import {
+  createRuntimeCycleRecorder,
+  type RuntimeCycleName,
+  type RuntimeCycleWorkSummary
+} from "./runtime/runtimeLiveProof";
 import { buildRuntimeVersion, type RuntimeVersionV1 } from "./runtime/runtimeVersion";
 import { runStartupSchemaGate } from "./runtime/startupSchemaGate";
 import {
@@ -203,6 +208,23 @@ try {
   await closeDb(db);
   throw error;
 }
+const runtimeCycleRecorder = createRuntimeCycleRecorder({ runtimeVersion, logger });
+
+async function runRecordedRuntimeCycle<T>(
+  cycleName: RuntimeCycleName,
+  work: () => Promise<T>,
+  summarize: (result: T) => RuntimeCycleWorkSummary
+): Promise<T> {
+  const cycle = runtimeCycleRecorder.start(cycleName);
+  try {
+    const result = await work();
+    cycle.complete(summarize(result));
+    return result;
+  } catch (error) {
+    cycle.fail();
+    throw error;
+  }
+}
 const tronscanScheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   globalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
@@ -232,6 +254,7 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
 });
+const runRuntimeNavigationProbe = createRuntimeNavigationProbe(config, db, tronClient, runtimeVersion);
 
 function getBackgroundUsdtAllowance(input: {
   ownerAddress: string;
@@ -341,7 +364,9 @@ const adminDashboard = await maybeStartAdminDashboard({
   updateTheftReportAdminState: (input) => updateTheftReportAdminState(db, input),
   getTargetedHistoryProgressForJob: (jobId) => getForensicJobTargetedHistoryProgress(db, jobId),
   listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
-  findLatestSavedWalletRiskByAddresses: (addresses) => findLatestSavedWalletRiskByAddresses(db, addresses)
+  findLatestSavedWalletRiskByAddresses: (addresses) => findLatestSavedWalletRiskByAddresses(db, addresses),
+  getRuntimeProof: () => runtimeCycleRecorder.proof(),
+  runRuntimeNavigationProbe
 });
 if (adminDashboard) logger.info("admin_dashboard_started", { url: adminDashboard.url });
 
@@ -840,42 +865,58 @@ const forensicTelegramDeliveryRepository: ForensicTelegramDeliveryRepository<typ
 };
 
 const forensicTelegramDeliveryWork = createNonOverlappingStartupWork(
-  () => runSingleForensicTelegramDeliveryCycle({
-    db,
-    now: () => new Date(),
-    repository: forensicTelegramDeliveryRepository,
-    recoveryLimit: 10,
-    deliveryLimit: 10,
-    buildRecoveredTelegramDelivery: buildRecoveredForensicTelegramDelivery,
-    sendTelegram: async (payload, signal) => {
-      const options = {
-        ...(payload.parseMode ? { parse_mode: payload.parseMode } : {}),
-        ...(payload.replyMarkup ? { reply_markup: payload.replyMarkup } : {})
-      } as Parameters<typeof bot.api.sendMessage>[2];
-      const message = await bot.api.sendMessage(
-        payload.chatId,
-        payload.text,
-        options,
-        signal as Parameters<typeof bot.api.sendMessage>[3]
-      );
-      return { telegramMessageId: String(message.message_id) };
-    },
-    logger
-  }).then(() => undefined),
+  () => runRecordedRuntimeCycle(
+    "forensic_delivery",
+    () => runSingleForensicTelegramDeliveryCycle({
+      db,
+      now: () => new Date(),
+      repository: forensicTelegramDeliveryRepository,
+      recoveryLimit: 10,
+      deliveryLimit: 10,
+      buildRecoveredTelegramDelivery: buildRecoveredForensicTelegramDelivery,
+      sendTelegram: async (payload, signal) => {
+        const options = {
+          ...(payload.parseMode ? { parse_mode: payload.parseMode } : {}),
+          ...(payload.replyMarkup ? { reply_markup: payload.replyMarkup } : {})
+        } as Parameters<typeof bot.api.sendMessage>[2];
+        const message = await bot.api.sendMessage(
+          payload.chatId,
+          payload.text,
+          options,
+          signal as Parameters<typeof bot.api.sendMessage>[3]
+        );
+        return { telegramMessageId: String(message.message_id) };
+      },
+      logger
+    }),
+    (result) => ({
+      sourceQueryCompleted: true,
+      examinedCount: result.claimProbeCount,
+      completedCount: result.claimProbeCount
+    })
+  ).then(() => undefined),
   () => shuttingDown
 );
 
 const approvalAllowanceRefreshWork = createNonOverlappingStartupWork(
-  () => runSingleApprovalAllowanceRefreshCycle({
-    db,
-    now: () => new Date(),
-    getUsdtAllowance: getBackgroundUsdtAllowance,
-    saveWalletApprovalAllowanceStateV2: (input) => saveWalletApprovalAllowanceStateV2(db, input),
-    repository: {
-      listDueApprovalAllowanceRefreshTargets,
-      tryAcquireApprovalAllowanceRefreshLock
-    }
-  }),
+  () => runRecordedRuntimeCycle(
+    "allowance_refresh",
+    () => runSingleApprovalAllowanceRefreshCycle({
+      db,
+      now: () => new Date(),
+      getUsdtAllowance: getBackgroundUsdtAllowance,
+      saveWalletApprovalAllowanceStateV2: (input) => saveWalletApprovalAllowanceStateV2(db, input),
+      repository: {
+        listDueApprovalAllowanceRefreshTargets,
+        tryAcquireApprovalAllowanceRefreshLock
+      }
+    }),
+    (result) => ({
+      sourceQueryCompleted: true,
+      examinedCount: result.selected,
+      completedCount: result.completed
+    })
+  ).then(() => undefined),
   () => shuttingDown
 );
 
@@ -887,7 +928,7 @@ async function pollOnce(): Promise<void> {
   });
   if (activePoll) return activePoll;
 
-  activePoll = (async () => {
+  activePoll = runRecordedRuntimeCycle("poll", async () => {
     const wallets = await listWatchedWallets(db);
     await runSinglePollingCycle({
       wallets,
@@ -1024,7 +1065,12 @@ async function pollOnce(): Promise<void> {
       sendAdminAlert,
       logger
     });
-  })().finally(() => {
+    return wallets.length;
+  }, (walletCount) => ({
+    sourceQueryCompleted: true,
+    examinedCount: walletCount,
+    completedCount: walletCount
+  })).then(() => undefined).finally(() => {
     activePoll = null;
   });
 
@@ -1268,8 +1314,16 @@ async function whereForensicOnce(): Promise<void> {
     });
   });
   if (activeWhereForensicPoll) return activeWhereForensicPoll;
-  activeWhereForensicPoll = forensicRuntimeOrchestration.runBeforeWherePoll()
-    .then(() => runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll))
+  activeWhereForensicPoll = runRecordedRuntimeCycle(
+    "wait_reconciliation",
+    () => forensicRuntimeOrchestration.runBeforeWherePoll(),
+    (summary) => summary
+  )
+    .then(() => runRecordedRuntimeCycle(
+      "where_forensic",
+      () => runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll),
+      (handled) => ({ sourceQueryCompleted: true, examinedCount: handled, completedCount: handled })
+    ))
     .then((handled) => {
       if (handled > 0) logger.info("where_forensic_jobs_processed", { handled });
     })
@@ -1283,7 +1337,7 @@ async function addressIndexOnce(): Promise<void> {
   if (activeAddressIndexPoll) return activeAddressIndexPoll;
   const isCandidateWindowReason = (reason: string): boolean =>
     reason === "where_candidate_window" || reason === "incoming_candidate_window";
-  activeAddressIndexPoll = runAddressIndexWorkerOnce({
+  activeAddressIndexPoll = runRecordedRuntimeCycle("address_index", () => runAddressIndexWorkerOnce({
     claimQueuedTronAddressUsdtIndexStates: (input) => claimQueuedTronAddressUsdtIndexStates(db, input),
     ensureAddressUsdtHistory,
     queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
@@ -1305,7 +1359,13 @@ async function addressIndexOnce(): Promise<void> {
     }),
     failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),
     markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
-    reconcileWaitingForensicJobs: () => forensicRuntimeOrchestration.runAfterTargetedIndexCompletion(),
+    reconcileWaitingForensicJobs: async () => {
+      await runRecordedRuntimeCycle(
+        "wait_reconciliation",
+        () => forensicRuntimeOrchestration.runAfterTargetedIndexCompletion(),
+        (summary) => summary
+      );
+    },
     onWaitReconciliationError: () => logger.warn("forensic_wait_reconciliation_failed", {
       diagnosticCode: "wait_reconciliation_failed"
     }),
@@ -1323,7 +1383,11 @@ async function addressIndexOnce(): Promise<void> {
       maxAttempts: TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS,
       retryDelayMs: 30_000
     }
-  })
+  }), (summary) => ({
+    sourceQueryCompleted: true,
+    examinedCount: summary.claimed,
+    completedCount: summary.completed + summary.requeued + summary.failed
+  }))
     .then(() => undefined)
     .finally(() => {
       activeAddressIndexPoll = null;
@@ -1338,7 +1402,11 @@ async function deepForensicOnce(): Promise<void> {
       error: error instanceof Error ? error.message : String(error)
     });
   });
-  activeDeepForensicPoll = runForensicJobsOnce(["address_deep_check"], 1)
+  activeDeepForensicPoll = runRecordedRuntimeCycle(
+    "deep_forensic",
+    () => runForensicJobsOnce(["address_deep_check"], 1),
+    (handled) => ({ sourceQueryCompleted: true, examinedCount: handled, completedCount: handled })
+  )
     .then((handled) => {
       void refreshDeepCheckSecondLayerOnce().catch((error) => {
         logger.warn("deep_second_layer_refresh_failed", {
@@ -1359,11 +1427,17 @@ async function deepForensicOnce(): Promise<void> {
 async function incomingDepositOnce(): Promise<void> {
   if (activeIncomingDepositPoll) return activeIncomingDepositPoll;
   activeIncomingDepositPoll = (async () => {
-    await forensicRuntimeOrchestration.runBeforeIncomingPoll();
+    await runRecordedRuntimeCycle(
+      "wait_reconciliation",
+      () => forensicRuntimeOrchestration.runBeforeIncomingPoll(),
+      (summary) => summary
+    );
     await recoverStaleForensicJobsOnce();
-    return runForensicJobBatch({
-      maxJobs: config.forensicIncomingJobsPerPoll,
-      runSingleCycle: () => runSingleIncomingDepositJobCycle({
+    return runRecordedRuntimeCycle(
+      "incoming_deposit",
+      () => runForensicJobBatch({
+        maxJobs: config.forensicIncomingJobsPerPoll,
+        runSingleCycle: () => runSingleIncomingDepositJobCycle({
         claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds: ["incoming_deposit_check"] }),
         completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
         indexWalletIntelligenceJob: indexWalletIntelligenceCompletedJob,
@@ -1382,8 +1456,10 @@ async function incomingDepositOnce(): Promise<void> {
           ...input,
           deps: incomingDepositRuntimeDeps
         })
-      })
-    });
+        })
+      }),
+      (handled) => ({ sourceQueryCompleted: true, examinedCount: handled, completedCount: handled })
+    );
   })()
     .then((handled) => {
       if (handled > 0) logger.info("incoming_deposit_jobs_processed", { handled });

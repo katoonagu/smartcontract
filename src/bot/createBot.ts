@@ -23,6 +23,11 @@ import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskCl
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { formatRuntimeVersion, type RuntimeVersionV1 } from "../runtime/runtimeVersion";
+import {
+  runAckBeforeDeferredWork,
+  runRuntimeNavigationProbeV1,
+  type RuntimeNavigationProbeV1
+} from "../runtime/runtimeLiveProof";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import {
   buildRiskExplanationSummary,
@@ -4947,6 +4952,54 @@ async function addWalletAndShowDashboard(
   await showWalletDashboard(ctx, config, db, wallet, startRefresh, startRenderGuard, locale);
 }
 
+export function createRuntimeNavigationProbe(
+  config: AppConfig,
+  db: Db,
+  tronClient: TronDashboardClient,
+  runtimeVersion: RuntimeVersionV1
+): () => Promise<RuntimeNavigationProbeV1> {
+  return async () => {
+    let providerCalls = 0;
+    let selectedWallet: WatchedWallet | null = null;
+    const countedClient = new Proxy(tronClient, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          providerCalls += 1;
+          return Reflect.apply(value, target, args);
+        };
+      }
+    });
+    const readCachedDashboard = async (): Promise<"cache" | "stale" | null> => {
+      if (selectedWallet) {
+        const dashboard = await buildWalletDashboard(config, db, selectedWallet);
+        return dashboard?.source === "cache" || dashboard?.source === "stale" ? dashboard.source : null;
+      }
+      const wallets = await listWatchedWallets(db);
+      for (const wallet of wallets) {
+        const dashboard = await buildWalletDashboard(config, db, wallet);
+        if (dashboard?.source === "cache" || dashboard?.source === "stale") {
+          selectedWallet = wallet;
+          return dashboard.source;
+        }
+      }
+      return null;
+    };
+
+    return runRuntimeNavigationProbeV1({
+      runtimeVersion,
+      providerCallCount: () => providerCalls,
+      readCachedDashboard,
+      refreshDashboard: async () => {
+        if (!selectedWallet) return "error";
+        const dashboard = await buildRefreshedWalletDashboard(config, db, countedClient, selectedWallet);
+        return dashboard.source === "fresh" ? "fresh" : dashboard.source === "stale" ? "stale" : "error";
+      }
+    });
+  };
+}
+
 export function createBot(
   config: AppConfig,
   db: Db,
@@ -5506,13 +5559,18 @@ export function createBot(
 
     const previousWalletDashboardRender = invalidateWalletDashboardRender(ctx);
     const id = telegramId(ctx);
-    await answerCallbackQuerySafely(ctx);
-    await previousWalletDashboardRender;
-    await upsertTelegramUser(db, {
-      telegramUserId: id,
-      username: ctx.from?.username ?? null
-    });
-    let locale = await getBotLocale(db, id);
+    const acknowledged = await runAckBeforeDeferredWork(
+      () => answerCallbackQuerySafely(ctx),
+      async () => {
+        await previousWalletDashboardRender;
+        await upsertTelegramUser(db, {
+          telegramUserId: id,
+          username: ctx.from?.username ?? null
+        });
+        return getBotLocale(db, id);
+      }
+    );
+    let locale = await acknowledged.work;
 
     if (!callback) {
       await replyOrEdit(ctx, locale === "en" ? "Unknown action." : "Неизвестное действие.", mainMenuKeyboard(locale));

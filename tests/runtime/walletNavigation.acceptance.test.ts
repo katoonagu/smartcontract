@@ -203,6 +203,7 @@ async function loadBotFactory() {
 async function createRuntimeBot(input: {
   db: ReturnType<typeof createDashboardDb>;
   getAccount: () => Promise<unknown>;
+  beforeTelegramCall?(method: string, payload: Record<string, unknown>): Promise<void>;
 }) {
   const createBot = await loadBotFactory();
   let providerCalls = 0;
@@ -232,6 +233,7 @@ async function createRuntimeBot(input: {
     if (method === "getMe") {
       return { ok: true, result: { id: 123456, is_bot: true, first_name: "Runtime", username: "runtime_bot" } };
     }
+    await input.beforeTelegramCall?.(method, payload);
     calls.push({ method, payload });
     return { ok: true, result: true };
   });
@@ -305,5 +307,40 @@ describe("Plan 3 wallet navigation acceptance", () => {
 
     expect(runtime.providerCalls()).toBe(0);
     expect(renderedText(runtime.calls)).toContain("125");
+  });
+
+  it("[REQ-37][CALLBACK-PRELUDE] invalidates a pending render before awaiting ack", async () => {
+    const account = createDeferred<unknown>();
+    const secondAck = createDeferred<void>();
+    const events: string[] = [];
+    const db = createDashboardDb(dashboardSnapshot(new Date(NOW.getTime() - 3_600_000)));
+    const runtime = await createRuntimeBot({
+      db,
+      getAccount: () => account.promise,
+      beforeTelegramCall: async (method, payload) => {
+        if (method === "answerCallbackQuery" && payload.callback_query_id === "runtime-callback-501") {
+          events.push("second_ack_started");
+          await secondAck.promise;
+          events.push("second_ack_completed");
+        }
+      }
+    });
+
+    await runtime.bot.handleUpdate(callbackUpdate(`wl:refresh:${WALLET_ID}`, 500));
+    const second = runtime.bot.handleUpdate(callbackUpdate(`wl:view:${WALLET_ID}`, 501));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(events).toEqual(["second_ack_started"]);
+
+    account.resolve(accountFixture());
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(runtime.providerCalls()).toBe(1);
+    expect(renderedText(runtime.calls)).not.toContain("130.00");
+
+    secondAck.resolve();
+    await second;
+    expect(events).toEqual(["second_ack_started", "second_ack_completed"]);
+    expect(renderedText(runtime.calls)).toContain("130.00");
+    expect(runtime.providerCalls()).toBe(1);
   });
 });

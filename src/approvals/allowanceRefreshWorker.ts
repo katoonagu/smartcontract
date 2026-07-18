@@ -88,19 +88,22 @@ export async function runSingleApprovalAllowanceRefreshCycle<Database>(deps: {
     allowance: ApprovalAllowanceStateV2;
   }): Promise<void>;
   repository: ApprovalAllowanceRefreshRepository<Database>;
-}): Promise<void> {
+}): Promise<{ selected: number; locked: number; attempted: number; completed: number }> {
   const cycleNow = deps.now();
   const targets = await deps.repository.listDueApprovalAllowanceRefreshTargets(deps.db, {
     now: cycleNow,
     limit: ALLOWANCE_REFRESH_BATCH_LIMIT
   });
+  const result = { selected: targets.length, locked: 0, attempted: 0, completed: 0 };
 
   for (const target of targets.slice(0, ALLOWANCE_REFRESH_BATCH_LIMIT)) {
     if (target.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) continue;
     const attemptedAt = deps.now();
     const lock = await deps.repository.tryAcquireApprovalAllowanceRefreshLock(deps.db, { ...target, now: attemptedAt });
     if (!lock) continue;
+    result.locked += 1;
     try {
+      result.attempted += 1;
       const allowance = await buildApprovalAllowanceRefreshState({
         client: {
           getUsdtAllowance: () => getAllowanceWithTimeout({
@@ -120,10 +123,13 @@ export async function runSingleApprovalAllowanceRefreshCycle<Database>(deps: {
         watchedWalletId: target.watchedWalletId,
         allowance
       });
+      result.completed += 1;
     } catch (error) {
       if (!isExpectedCausalWriteRejection(error)) throw error;
+      result.completed += 1;
     } finally {
       await lock.release();
     }
   }
+  return result;
 }

@@ -119,8 +119,9 @@ export async function runAddressIndexWorkerOnce(
     workerId: string;
     targetedRetry?: Partial<TargetedIndexRetryOptions>;
   }
-): Promise<void> {
+): Promise<{ claimed: number; completed: number; requeued: number; failed: number }> {
   const targetedRetry = normalizeTargetedRetryOptions(options.targetedRetry);
+  const summary = { claimed: 0, completed: 0, requeued: 0, failed: 0 };
   const reconcileWaitingJobsAfterIndex = async (): Promise<void> => {
     try {
       await deps.reconcileWaitingForensicJobs?.();
@@ -137,6 +138,7 @@ export async function runAddressIndexWorkerOnce(
     lockOwner: options.workerId,
     lockMs: options.lockMs
   });
+  summary.claimed = states.length;
 
   await Promise.all(states.map(async (state) => {
     try {
@@ -178,6 +180,7 @@ export async function runAddressIndexWorkerOnce(
             maxAttempts: nextTargetedMaxAttempts(state, targetedRetry)
           }
         });
+        summary.requeued += 1;
         return;
       }
       const completed = await deps.ensureAddressUsdtHistory({
@@ -226,6 +229,7 @@ export async function runAddressIndexWorkerOnce(
           lastError: completed.lastError,
           state: queued ?? completed
         });
+        summary.requeued += 1;
         return;
       }
       if (state.coverageMode === "targeted") {
@@ -256,7 +260,9 @@ export async function runAddressIndexWorkerOnce(
           lastError: completed.lastError
         });
       }
+      summary.completed += 1;
     } catch (error) {
+      summary.failed += 1;
       const message = error instanceof Error ? error.message : String(error);
       const errorClass = classifyAddressIndexError(error);
       await deps.failTronAddressUsdtIndexState({
@@ -326,6 +332,7 @@ export async function runAddressIndexWorkerOnce(
       }
     }
   }));
+  return summary;
 }
 
 function shouldRequeueClaimedStaleTargetedIndex(
