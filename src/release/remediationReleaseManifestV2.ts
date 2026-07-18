@@ -49,6 +49,37 @@ export const GATE_EVIDENCE_KINDS_V2 = [
   "production_canary_orchestration", "production_canary_evidence"
 ] as const;
 
+export const OPERATIONAL_ATTESTATION_POLICY_V2 = Object.freeze({
+  g12_backup_passed: {
+    commandId: "production_backup",
+    redactedTemplate: "release:production:backup <database-fingerprint> <protected-artifact-root>"
+  },
+  g13_migration_passed: {
+    commandId: "production_migration",
+    redactedTemplate: "release:production:migrate schema-032 <database-fingerprint>"
+  },
+  g14_rollout_passed: {
+    commandId: "production_rollout",
+    redactedTemplate: "release:production:rollout <candidate-sha> <runtime-label>"
+  },
+  g15_canary_released: {
+    commandId: "production_canary",
+    redactedTemplate: "release:production:canary <candidate-sha> <runtime-label>"
+  },
+  rollback_rolled_back: {
+    commandId: "production_rollback",
+    redactedTemplate: "release:production:rollback <previous-runtime-sha> <runtime-label>"
+  }
+} as const);
+
+export function operationalAttestationTemplateSha256V2(
+  transitionId: keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2
+): string {
+  return createHash("sha256")
+    .update(OPERATIONAL_ATTESTATION_POLICY_V2[transitionId].redactedTemplate, "utf8")
+    .digest("hex");
+}
+
 export const REQUIRED_REQUIREMENT_IDS_V2 = Array.from(
   { length: 38 }, (_, index) => `REQ-${String(index + 1).padStart(2, "0")}`
 ) as readonly string[];
@@ -92,6 +123,131 @@ export type OperationalAttestationV2 = {
   priorTerminalLineageSha256: string | null;
   issuedAt: string;
   expiresAt: string;
+};
+
+export type ReleaseFreezeMaterializationReceiptV2 = {
+  version: "release-freeze-materialization-receipt-v2";
+  commandId: "release_freeze_materialize";
+  redactedTemplateSha256: string;
+  task0BPreflightEvidenceSha256: string;
+  protectedRootFingerprintSha256: string;
+  candidateSha: string;
+  runtimeIdentitySha256: string;
+  bootstrapLeaseSha256: string;
+  bootstrapLeaseEpoch: number;
+  canonicalFreezeIdentity: ReleaseFreezeIdentityV2;
+  canonicalFreezeIdentityUtf8Base64: string;
+  canonicalFreezeIdentitySha256: string;
+  materializedAt: string;
+};
+
+export type PreparedReleaseFreezeMaterializationV2 = {
+  version: "prepared-release-freeze-materialization-v2";
+  commandId: "release_freeze_materialize";
+  redactedTemplateSha256: string;
+  protectedRootFingerprintSha256: string;
+  task0BPreflightEvidenceSha256: string;
+  candidateSha: string;
+  runtimeIdentitySha256: string;
+  bootstrapLeaseSha256: string;
+  bootstrapLeaseEpoch: number;
+  canonicalFreezeIdentity: ReleaseFreezeIdentityV2;
+  canonicalFreezeIdentityUtf8Base64: string;
+  canonicalFreezeIdentitySha256: string;
+  canonicalFreezeIdentityRelativePath: "release-freeze-identity-v2.json";
+  canonicalMaterializationReceipt: ReleaseFreezeMaterializationReceiptV2;
+  canonicalMaterializationReceiptUtf8Base64: string;
+  canonicalMaterializationReceiptSha256: string;
+  canonicalMaterializationReceiptRelativePath: "release-freeze-materialization-receipt-v2.json";
+  preparedAt: string;
+};
+
+export type OperationalAttestationIssuerReceiptV2 = {
+  version: "operational-attestation-issuer-receipt-v2";
+  commandId: "operational_authority_issue";
+  redactedTemplateSha256: string;
+  action: ManifestTransitionIdV2;
+  generationId: string;
+  sequence: number;
+  previousIssuerReceiptSha256: string | null;
+  attestationRelativePath: string;
+  attestationSha256: string;
+  previousAttestationSha256: string | null;
+  priorTerminalLineageSha256: string | null;
+  issuedAt: string;
+};
+
+export type CommittedOperationalAttestationIssuanceV2 = {
+  version: "committed-operational-attestation-issuance-v2";
+  commandId: "operational_authority_issue";
+  redactedTemplateSha256: string;
+  action: ManifestTransitionIdV2;
+  generationId: string;
+  issuanceIntentSha256: string;
+  attestationSha256: string;
+  issuerReceiptSha256: string;
+  committedAt: string;
+};
+
+export type PreparedOperationalAttestationIssuanceV2 = {
+  version: "prepared-operational-attestation-issuance-v2";
+  commandId: "operational_authority_issue";
+  redactedTemplateSha256: string;
+  action: ManifestTransitionIdV2;
+  generationId: string;
+  sequence: number;
+  previousIssuerReceiptSha256: string | null;
+  canonicalAttestation: OperationalAttestationV2;
+  canonicalAttestationUtf8Base64: string;
+  canonicalAttestationSha256: string;
+  canonicalAttestationRelativePath: string;
+  canonicalIssuerReceipt: OperationalAttestationIssuerReceiptV2;
+  canonicalIssuerReceiptUtf8Base64: string;
+  canonicalIssuerReceiptSha256: string;
+  canonicalIssuerReceiptRelativePath: string;
+  canonicalCommittedIssuance: CommittedOperationalAttestationIssuanceV2;
+  canonicalCommittedIssuanceUtf8Base64: string;
+  canonicalCommittedIssuanceSha256: string;
+  canonicalCommittedIssuanceRelativePath: string;
+  previousAttestationSha256: string | null;
+  priorTerminalLineageSha256: string | null;
+  preparedAt: string;
+};
+
+export type AuthorityTerminalReceiptV2 = {
+  version: "authority-terminal-receipt-v2";
+  commandId: "operational_authority_terminalize";
+  redactedTemplateSha256: string;
+  action: ManifestTransitionIdV2;
+  generationId: string;
+  candidateSha: string;
+  releaseFreezeIdentitySha256: string;
+  sourceManifestSha256: string;
+  artifactRootFingerprintSha256: string;
+  attestationSha256: string;
+  issuerReceiptSha256: string;
+  previousIssuerReceiptSha256: string | null;
+  reason: "expired_unclaimed";
+  preclaimAbsent: true;
+  claimAbsent: true;
+  consumptionAbsent: true;
+  actionLeaseAbsent: true;
+  g13BoundSessionAbsent: true;
+  g13AdvisoryLockAbsent: true;
+  operationAbsent: true;
+  externalEffectCount: 0;
+  terminalizedAt: string;
+};
+
+export type PreparedAuthorityTerminalV2 = {
+  version: "prepared-authority-terminal-v2";
+  commandId: "operational_authority_terminalize";
+  redactedTemplateSha256: string;
+  canonicalTerminalReceipt: AuthorityTerminalReceiptV2;
+  canonicalTerminalReceiptUtf8Base64: string;
+  canonicalTerminalReceiptSha256: string;
+  canonicalTerminalReceiptRelativePath: string;
+  preparedAt: string;
 };
 
 export type GateEvidenceRefV2 = {
@@ -185,7 +341,7 @@ type RemediationReleaseManifestBaseV2 = {
   updatedAt: string;
   artifactRootFingerprintSha256: string;
   releaseFreezeIdentitySha256: string;
-  latestCommittedReceiptSha256: string | null;
+  latestCommittedReceiptSha256: string;
   requiredRequirementIds: string[];
   requiredAcceptanceIds: string[];
   gates: ReleaseGateV2[];
@@ -279,6 +435,52 @@ export type ReleaseRootTerminalAbandonedV2 = {
   observedAt: string;
 };
 
+export type ManifestTransitionClaimV2 = {
+  version: "manifest-transition-claim-v2";
+  transitionId: ManifestTransitionIdV2;
+  transitionKeySha256: string;
+  generationId: string;
+  sourceManifestSha256: string | null;
+  claimedAt: string;
+  expiresAt: string;
+  claimantPid: number;
+  claimantProcessStartFingerprintSha256: string;
+};
+
+export type CommittedManifestTransitionReceiptV2 = {
+  version: "committed-manifest-transition-receipt-v2";
+  transitionId: ManifestTransitionIdV2;
+  transitionKeySha256: string;
+  candidateSha: string;
+  artifactRootFingerprintSha256: string;
+  releaseFreezeIdentitySha256: string;
+  sourceManifestSha256: string | null;
+  previousReceiptSha256: string | null;
+  targetManifestProjectionSha256: string;
+  sourceRevision: number | null;
+  targetRevision: number;
+  gateOutputSha256s: string[];
+  transitionEvidence: ManifestTransitionEvidenceRefV2[];
+  committedAt: string;
+};
+
+export type PreparedManifestTransitionV2 = {
+  version: "prepared-manifest-transition-v2";
+  transitionId: ManifestTransitionIdV2;
+  transitionKeySha256: string;
+  generationId: string;
+  sourceManifestSha256: string | null;
+  previousReceiptSha256: string | null;
+  targetRevision: number;
+  gateOutputSha256s: string[];
+  targetSnapshotRelativePath: string;
+  targetSnapshotSha256: string;
+  canonicalCommittedReceipt: CommittedManifestTransitionReceiptV2;
+  canonicalCommittedReceiptUtf8Base64: string;
+  committedReceiptSha256: string;
+  preparedAt: string;
+};
+
 export type VerifiedManifestTransitionV2 = {
   transitionId: Exclude<ManifestTransitionIdV2, "pre_manual">;
   evaluatedAt: string;
@@ -370,6 +572,15 @@ export function releaseSha256V2(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function canonicalReleaseFreezeIdentityUtf8V2(value: unknown): Buffer {
+  const freeze = validateReleaseFreezeIdentityV2(value);
+  return Buffer.from(`${canonicalReleaseJsonV2(freeze)}\n`, "utf8");
+}
+
+export function releaseFreezeIdentitySha256V2(value: unknown): string {
+  return releaseSha256V2(canonicalReleaseFreezeIdentityUtf8V2(value));
+}
+
 export function releaseManifestSha256V2(value: RemediationReleaseManifestV2): string {
   return releaseSha256V2(Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8"));
 }
@@ -430,10 +641,261 @@ export function validateOperationalAttestationV2(
   if (freeze && (input.generationId !== freeze.releaseGenerationId
       || input.candidateSha !== freeze.candidateSha
       || input.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
-      || input.releaseFreezeIdentitySha256 !== releaseSha256V2(canonicalReleaseJsonV2(freeze)))) {
+      || input.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze))) {
     throw new Error("operational_attestation_freeze_binding_invalid");
   }
   return input as OperationalAttestationV2;
+}
+
+function canonicalEmbeddedBytesV2(
+  value: unknown,
+  base64: unknown,
+  expectedSha256: unknown,
+  label: string
+): Buffer {
+  if (typeof base64 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(base64)) {
+    throw new Error(`${label}_bytes_invalid`);
+  }
+  const bytes = Buffer.from(base64, "base64");
+  if (bytes.toString("base64") !== base64
+      || !bytes.equals(Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8"))
+      || releaseSha256V2(bytes) !== sha(expectedSha256, SHA256, `${label}_sha`)) {
+    throw new Error(`${label}_bytes_invalid`);
+  }
+  return bytes;
+}
+
+export function validateReleaseFreezeMaterializationReceiptV2(
+  value: unknown
+): ReleaseFreezeMaterializationReceiptV2 {
+  assertNoSecrets(value);
+  const receipt = record(value, "release_freeze_materialization_receipt");
+  exactKeys(receipt, [
+    "version", "commandId", "redactedTemplateSha256", "task0BPreflightEvidenceSha256",
+    "protectedRootFingerprintSha256", "candidateSha", "runtimeIdentitySha256",
+    "bootstrapLeaseSha256", "bootstrapLeaseEpoch", "canonicalFreezeIdentity",
+    "canonicalFreezeIdentityUtf8Base64", "canonicalFreezeIdentitySha256", "materializedAt"
+  ], "release_freeze_materialization_receipt");
+  if (receipt.version !== "release-freeze-materialization-receipt-v2"
+      || receipt.commandId !== "release_freeze_materialize") {
+    throw new Error("release_freeze_materialization_receipt_invalid");
+  }
+  const freeze = validateReleaseFreezeIdentityV2(receipt.canonicalFreezeIdentity);
+  for (const key of [
+    "redactedTemplateSha256", "task0BPreflightEvidenceSha256", "protectedRootFingerprintSha256",
+    "runtimeIdentitySha256", "bootstrapLeaseSha256", "canonicalFreezeIdentitySha256"
+  ]) sha(receipt[key], SHA256, key);
+  positiveInteger(receipt.bootstrapLeaseEpoch, "bootstrap_lease_epoch");
+  canonicalEmbeddedBytesV2(freeze, receipt.canonicalFreezeIdentityUtf8Base64,
+    receipt.canonicalFreezeIdentitySha256, "freeze_identity");
+  if (receipt.candidateSha !== freeze.candidateSha
+      || receipt.protectedRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256) {
+    throw new Error("release_freeze_materialization_binding_invalid");
+  }
+  iso(receipt.materializedAt, "materialized_at");
+  return { ...receipt, canonicalFreezeIdentity: freeze } as ReleaseFreezeMaterializationReceiptV2;
+}
+
+export function validatePreparedReleaseFreezeMaterializationV2(
+  value: unknown
+): PreparedReleaseFreezeMaterializationV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "prepared_release_freeze_materialization");
+  exactKeys(prepared, [
+    "version", "commandId", "redactedTemplateSha256", "protectedRootFingerprintSha256",
+    "task0BPreflightEvidenceSha256", "candidateSha", "runtimeIdentitySha256",
+    "bootstrapLeaseSha256", "bootstrapLeaseEpoch", "canonicalFreezeIdentity",
+    "canonicalFreezeIdentityUtf8Base64", "canonicalFreezeIdentitySha256",
+    "canonicalFreezeIdentityRelativePath", "canonicalMaterializationReceipt",
+    "canonicalMaterializationReceiptUtf8Base64", "canonicalMaterializationReceiptSha256",
+    "canonicalMaterializationReceiptRelativePath", "preparedAt"
+  ], "prepared_release_freeze_materialization");
+  if (prepared.version !== "prepared-release-freeze-materialization-v2"
+      || prepared.commandId !== "release_freeze_materialize"
+      || prepared.canonicalFreezeIdentityRelativePath !== "release-freeze-identity-v2.json"
+      || prepared.canonicalMaterializationReceiptRelativePath
+        !== "release-freeze-materialization-receipt-v2.json") {
+    throw new Error("prepared_release_freeze_materialization_invalid");
+  }
+  const freeze = validateReleaseFreezeIdentityV2(prepared.canonicalFreezeIdentity);
+  const receipt = validateReleaseFreezeMaterializationReceiptV2(prepared.canonicalMaterializationReceipt);
+  canonicalEmbeddedBytesV2(freeze, prepared.canonicalFreezeIdentityUtf8Base64,
+    prepared.canonicalFreezeIdentitySha256, "prepared_freeze_identity");
+  canonicalEmbeddedBytesV2(receipt, prepared.canonicalMaterializationReceiptUtf8Base64,
+    prepared.canonicalMaterializationReceiptSha256, "prepared_freeze_receipt");
+  if (prepared.redactedTemplateSha256 !== receipt.redactedTemplateSha256
+      || prepared.protectedRootFingerprintSha256 !== receipt.protectedRootFingerprintSha256
+      || prepared.task0BPreflightEvidenceSha256 !== receipt.task0BPreflightEvidenceSha256
+      || prepared.candidateSha !== receipt.candidateSha
+      || prepared.runtimeIdentitySha256 !== receipt.runtimeIdentitySha256
+      || prepared.bootstrapLeaseSha256 !== receipt.bootstrapLeaseSha256
+      || prepared.bootstrapLeaseEpoch !== receipt.bootstrapLeaseEpoch
+      || prepared.canonicalFreezeIdentitySha256 !== receipt.canonicalFreezeIdentitySha256
+      || prepared.preparedAt !== receipt.materializedAt) {
+    throw new Error("prepared_release_freeze_materialization_binding_invalid");
+  }
+  return { ...prepared, canonicalFreezeIdentity: freeze,
+    canonicalMaterializationReceipt: receipt } as PreparedReleaseFreezeMaterializationV2;
+}
+
+export function validateOperationalAttestationIssuerReceiptV2(
+  value: unknown
+): OperationalAttestationIssuerReceiptV2 {
+  assertNoSecrets(value);
+  const receipt = record(value, "operational_attestation_issuer_receipt");
+  exactKeys(receipt, [
+    "version", "commandId", "redactedTemplateSha256", "action", "generationId", "sequence",
+    "previousIssuerReceiptSha256", "attestationRelativePath", "attestationSha256",
+    "previousAttestationSha256", "priorTerminalLineageSha256", "issuedAt"
+  ], "operational_attestation_issuer_receipt");
+  const action = oneOf(receipt.action, MANIFEST_TRANSITIONS_V2, "issuer_receipt_action");
+  if (receipt.version !== "operational-attestation-issuer-receipt-v2"
+      || receipt.commandId !== "operational_authority_issue"
+      || typeof receipt.generationId !== "string" || !receipt.generationId) {
+    throw new Error("operational_attestation_issuer_receipt_invalid");
+  }
+  positiveInteger(receipt.sequence, "issuer_receipt_sequence");
+  for (const key of ["redactedTemplateSha256", "attestationSha256"]) sha(receipt[key], SHA256, key);
+  for (const key of ["previousIssuerReceiptSha256", "previousAttestationSha256", "priorTerminalLineageSha256"]) {
+    if (receipt[key] !== null) sha(receipt[key], SHA256, key);
+  }
+  const expectedPath = `operational-attestations/${action}/${receipt.generationId}/${receipt.attestationSha256}.json`;
+  if (receipt.attestationRelativePath !== expectedPath) throw new Error("issuer_receipt_attestation_path_invalid");
+  iso(receipt.issuedAt, "issuer_receipt_issued_at");
+  return receipt as OperationalAttestationIssuerReceiptV2;
+}
+
+export function validateCommittedOperationalAttestationIssuanceV2(
+  value: unknown
+): CommittedOperationalAttestationIssuanceV2 {
+  assertNoSecrets(value);
+  const committed = record(value, "committed_operational_attestation_issuance");
+  exactKeys(committed, [
+    "version", "commandId", "redactedTemplateSha256", "action", "generationId",
+    "issuanceIntentSha256", "attestationSha256", "issuerReceiptSha256", "committedAt"
+  ], "committed_operational_attestation_issuance");
+  if (committed.version !== "committed-operational-attestation-issuance-v2"
+      || committed.commandId !== "operational_authority_issue"
+      || typeof committed.generationId !== "string" || !committed.generationId) {
+    throw new Error("committed_operational_attestation_issuance_invalid");
+  }
+  oneOf(committed.action, MANIFEST_TRANSITIONS_V2, "committed_authority_action");
+  for (const key of [
+    "redactedTemplateSha256", "issuanceIntentSha256", "attestationSha256", "issuerReceiptSha256"
+  ]) sha(committed[key], SHA256, key);
+  iso(committed.committedAt, "committed_authority_time");
+  return committed as CommittedOperationalAttestationIssuanceV2;
+}
+
+export function validatePreparedOperationalAttestationIssuanceV2(
+  value: unknown
+): PreparedOperationalAttestationIssuanceV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "prepared_operational_attestation_issuance");
+  exactKeys(prepared, [
+    "version", "commandId", "redactedTemplateSha256", "action", "generationId", "sequence",
+    "previousIssuerReceiptSha256", "canonicalAttestation", "canonicalAttestationUtf8Base64",
+    "canonicalAttestationSha256", "canonicalAttestationRelativePath", "canonicalIssuerReceipt",
+    "canonicalIssuerReceiptUtf8Base64", "canonicalIssuerReceiptSha256",
+    "canonicalIssuerReceiptRelativePath", "canonicalCommittedIssuance",
+    "canonicalCommittedIssuanceUtf8Base64", "canonicalCommittedIssuanceSha256",
+    "canonicalCommittedIssuanceRelativePath", "previousAttestationSha256",
+    "priorTerminalLineageSha256", "preparedAt"
+  ], "prepared_operational_attestation_issuance");
+  if (prepared.version !== "prepared-operational-attestation-issuance-v2"
+      || prepared.commandId !== "operational_authority_issue") {
+    throw new Error("prepared_operational_attestation_issuance_invalid");
+  }
+  const authority = validateOperationalAttestationV2(prepared.canonicalAttestation);
+  const receipt = validateOperationalAttestationIssuerReceiptV2(prepared.canonicalIssuerReceipt);
+  const committed = validateCommittedOperationalAttestationIssuanceV2(prepared.canonicalCommittedIssuance);
+  canonicalEmbeddedBytesV2(authority, prepared.canonicalAttestationUtf8Base64,
+    prepared.canonicalAttestationSha256, "prepared_attestation");
+  canonicalEmbeddedBytesV2(receipt, prepared.canonicalIssuerReceiptUtf8Base64,
+    prepared.canonicalIssuerReceiptSha256, "prepared_issuer_receipt");
+  canonicalEmbeddedBytesV2(committed, prepared.canonicalCommittedIssuanceUtf8Base64,
+    prepared.canonicalCommittedIssuanceSha256, "prepared_committed_issuance");
+  const expectedPreparedPath = `operational-attestation-issuance-prepared/${authority.action}/${authority.generationId}/${prepared.canonicalIssuerReceiptSha256}.json`;
+  const expectedReceiptPath = `operational-attestation-issuer-receipts/${authority.action}/${authority.generationId}/${prepared.canonicalIssuerReceiptSha256}.json`;
+  const expectedCommittedPath = `operational-attestation-issuance-committed/${authority.action}/${authority.generationId}/${prepared.canonicalIssuerReceiptSha256}.json`;
+  const expectedAttestationPath = `operational-attestations/${authority.action}/${authority.generationId}/${prepared.canonicalAttestationSha256}.json`;
+  if (prepared.action !== authority.action || prepared.generationId !== authority.generationId
+      || prepared.sequence !== receipt.sequence
+      || prepared.previousIssuerReceiptSha256 !== receipt.previousIssuerReceiptSha256
+      || prepared.previousAttestationSha256 !== authority.previousAttestationSha256
+      || prepared.priorTerminalLineageSha256 !== authority.priorTerminalLineageSha256
+      || prepared.canonicalAttestationRelativePath !== expectedAttestationPath
+      || prepared.canonicalIssuerReceiptRelativePath !== expectedReceiptPath
+      || prepared.canonicalCommittedIssuanceRelativePath !== expectedCommittedPath
+      || receipt.attestationRelativePath !== expectedAttestationPath
+      || committed.attestationSha256 !== prepared.canonicalAttestationSha256
+      || committed.issuerReceiptSha256 !== prepared.canonicalIssuerReceiptSha256
+      || committed.issuanceIntentSha256 !== releaseSha256V2(canonicalReleaseJsonV2([
+        authority.action, authority.generationId, prepared.canonicalAttestationSha256,
+        prepared.canonicalIssuerReceiptSha256
+      ]))
+      || prepared.preparedAt !== authority.issuedAt || receipt.issuedAt !== authority.issuedAt
+      || committed.committedAt !== authority.issuedAt
+      || !expectedPreparedPath.endsWith(`/${prepared.canonicalIssuerReceiptSha256}.json`)) {
+    throw new Error("prepared_operational_attestation_binding_invalid");
+  }
+  return { ...prepared, canonicalAttestation: authority, canonicalIssuerReceipt: receipt,
+    canonicalCommittedIssuance: committed } as PreparedOperationalAttestationIssuanceV2;
+}
+
+export function validateAuthorityTerminalReceiptV2(value: unknown): AuthorityTerminalReceiptV2 {
+  assertNoSecrets(value);
+  const receipt = record(value, "authority_terminal_receipt");
+  exactKeys(receipt, [
+    "version", "commandId", "redactedTemplateSha256", "action", "generationId", "candidateSha",
+    "releaseFreezeIdentitySha256", "sourceManifestSha256", "artifactRootFingerprintSha256",
+    "attestationSha256", "issuerReceiptSha256", "previousIssuerReceiptSha256", "reason",
+    "preclaimAbsent", "claimAbsent", "consumptionAbsent", "actionLeaseAbsent",
+    "g13BoundSessionAbsent", "g13AdvisoryLockAbsent", "operationAbsent",
+    "externalEffectCount", "terminalizedAt"
+  ], "authority_terminal_receipt");
+  if (receipt.version !== "authority-terminal-receipt-v2"
+      || receipt.commandId !== "operational_authority_terminalize"
+      || receipt.reason !== "expired_unclaimed" || receipt.externalEffectCount !== 0
+      || ["preclaimAbsent", "claimAbsent", "consumptionAbsent", "actionLeaseAbsent",
+        "g13BoundSessionAbsent", "g13AdvisoryLockAbsent", "operationAbsent"]
+        .some((key) => receipt[key] !== true)) {
+    throw new Error("authority_terminal_receipt_invalid");
+  }
+  oneOf(receipt.action, MANIFEST_TRANSITIONS_V2, "terminal_receipt_action");
+  if (typeof receipt.generationId !== "string" || !receipt.generationId) throw new Error("authority_terminal_receipt_invalid");
+  sha(receipt.candidateSha, SHA40, "terminal_candidate_sha");
+  for (const key of [
+    "redactedTemplateSha256", "releaseFreezeIdentitySha256", "sourceManifestSha256",
+    "artifactRootFingerprintSha256", "attestationSha256", "issuerReceiptSha256"
+  ]) sha(receipt[key], SHA256, key);
+  if (receipt.previousIssuerReceiptSha256 !== null) sha(receipt.previousIssuerReceiptSha256, SHA256, "previous_issuer_receipt_sha");
+  iso(receipt.terminalizedAt, "terminalized_at");
+  return receipt as AuthorityTerminalReceiptV2;
+}
+
+export function validatePreparedAuthorityTerminalV2(value: unknown): PreparedAuthorityTerminalV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "prepared_authority_terminal");
+  exactKeys(prepared, [
+    "version", "commandId", "redactedTemplateSha256", "canonicalTerminalReceipt",
+    "canonicalTerminalReceiptUtf8Base64", "canonicalTerminalReceiptSha256",
+    "canonicalTerminalReceiptRelativePath", "preparedAt"
+  ], "prepared_authority_terminal");
+  if (prepared.version !== "prepared-authority-terminal-v2"
+      || prepared.commandId !== "operational_authority_terminalize") {
+    throw new Error("prepared_authority_terminal_invalid");
+  }
+  const receipt = validateAuthorityTerminalReceiptV2(prepared.canonicalTerminalReceipt);
+  canonicalEmbeddedBytesV2(receipt, prepared.canonicalTerminalReceiptUtf8Base64,
+    prepared.canonicalTerminalReceiptSha256, "prepared_terminal_receipt");
+  const expectedPath = `authority-terminal-receipts/${receipt.action}/${receipt.generationId}/${prepared.canonicalTerminalReceiptSha256}.json`;
+  if (prepared.redactedTemplateSha256 !== receipt.redactedTemplateSha256
+      || prepared.canonicalTerminalReceiptRelativePath !== expectedPath
+      || prepared.preparedAt !== receipt.terminalizedAt) {
+    throw new Error("prepared_authority_terminal_binding_invalid");
+  }
+  return { ...prepared, canonicalTerminalReceipt: receipt } as PreparedAuthorityTerminalV2;
 }
 
 function validateGateEvidenceRefV2(value: unknown, candidateSha: string): GateEvidenceRefV2 {
@@ -655,9 +1117,7 @@ export function validateRemediationReleaseManifestV2(value: unknown): Remediatio
   const previousManifestSha256 = manifest.previousManifestSha256 === null
     ? null : sha(manifest.previousManifestSha256, SHA256, "previous_manifest_sha");
   if ((revision === 1) !== (previousManifestSha256 === null)) throw new Error("previous_manifest_revision_invalid");
-  if (revision === 1) {
-    if (manifest.latestCommittedReceiptSha256 !== null) throw new Error("initial_receipt_must_be_null");
-  } else sha(manifest.latestCommittedReceiptSha256, SHA256, "latest_committed_receipt_sha");
+  sha(manifest.latestCommittedReceiptSha256, SHA256, "latest_committed_receipt_sha");
   iso(manifest.updatedAt, "updated_at");
   sha(manifest.artifactRootFingerprintSha256, SHA256, "artifact_root_fingerprint_sha");
   sha(manifest.releaseFreezeIdentitySha256, SHA256, "release_freeze_identity_sha");
@@ -693,6 +1153,7 @@ export function validateRemediationReleaseManifestV2(value: unknown): Remediatio
 export function validateReleaseRootWriterLeaseV2(value: unknown): ReleaseRootWriterLeaseV2 {
   assertNoSecrets(value);
   const lease = record(value, "release_root_writer_lease");
+  const isBootstrap = lease.version === "bootstrap-root-writer-lease-v2";
   const commonKeys = [
     "version", "scope", "relativePath", "writerOperationKind", "writerOperationKeySha256",
     "protectedRootFingerprintSha256", "candidateSha", "releaseGenerationId",
@@ -735,7 +1196,236 @@ export function validateReleaseRootWriterLeaseV2(value: unknown): ReleaseRootWri
   if (Date.parse(heartbeatAt) < Date.parse(acquiredAt) || Date.parse(expiresAt) <= Date.parse(heartbeatAt)) {
     throw new Error("release_root_writer_lease_time_invalid");
   }
+  if (isBootstrap && Date.parse(expiresAt) - Date.parse(heartbeatAt) > 60_000) {
+    throw new Error("bootstrap_root_writer_lease_rolling_ttl_invalid");
+  }
+  if (isBootstrap && Date.parse(expiresAt) - Date.parse(acquiredAt) > 300_000) {
+    throw new Error("bootstrap_root_writer_lease_absolute_ttl_invalid");
+  }
   return lease as ReleaseRootWriterLeaseV2;
+}
+
+export function validateManifestTransitionClaimV2(value: unknown): ManifestTransitionClaimV2 {
+  assertNoSecrets(value);
+  const claim = record(value, "manifest_transition_claim");
+  exactKeys(claim, [
+    "version", "transitionId", "transitionKeySha256", "generationId",
+    "sourceManifestSha256", "claimedAt", "expiresAt", "claimantPid",
+    "claimantProcessStartFingerprintSha256"
+  ], "manifest_transition_claim");
+  if (claim.version !== "manifest-transition-claim-v2"
+      || typeof claim.generationId !== "string" || claim.generationId.length === 0) {
+    throw new Error("manifest_transition_claim_invalid");
+  }
+  const transitionId = oneOf(claim.transitionId, MANIFEST_TRANSITIONS_V2, "manifest_transition_claim_transition");
+  sha(claim.transitionKeySha256, SHA256, "manifest_transition_key_sha");
+  if (transitionId === "pre_manual") {
+    if (claim.sourceManifestSha256 !== null) throw new Error("manifest_transition_claim_source_invalid");
+  } else {
+    sha(claim.sourceManifestSha256, SHA256, "manifest_transition_claim_source_sha");
+  }
+  positiveInteger(claim.claimantPid, "manifest_transition_claimant_pid");
+  sha(claim.claimantProcessStartFingerprintSha256, SHA256, "manifest_transition_claimant_start_sha");
+  const claimedAt = Date.parse(iso(claim.claimedAt, "manifest_transition_claimed_at"));
+  const expiresAt = Date.parse(iso(claim.expiresAt, "manifest_transition_claim_expires_at"));
+  if (expiresAt <= claimedAt || expiresAt - claimedAt > 120_000) {
+    throw new Error("manifest_transition_claim_ttl_invalid");
+  }
+  return claim as ManifestTransitionClaimV2;
+}
+
+function validateReceiptEvidenceRefsV2(
+  value: unknown,
+  transitionId: ManifestTransitionIdV2,
+  candidateSha: string
+): ManifestTransitionEvidenceRefV2[] {
+  if (!Array.isArray(value)) throw new Error("committed_receipt_transition_evidence_invalid");
+  const refs = value.map((item) => {
+    const kind = record(item, "committed_receipt_transition_evidence").kind;
+    if (kind === "production_failure_evidence") {
+      return validateProductionFailureTransitionEvidenceRefV2(item, candidateSha);
+    }
+    if (kind === "actual_rollback_evidence") {
+      return validateActualRollbackTransitionEvidenceRefV2(item, candidateSha);
+    }
+    throw new Error("committed_receipt_transition_evidence_invalid");
+  });
+  const kinds = refs.map((ref) => ref.kind);
+  const expected = transitionId === "production_failed"
+    ? ["production_failure_evidence"]
+    : transitionId === "rollback_rolled_back"
+      ? ["production_failure_evidence", "actual_rollback_evidence"]
+      : [];
+  if (canonicalReleaseJsonV2(kinds) !== canonicalReleaseJsonV2(expected)) {
+    throw new Error("committed_receipt_transition_evidence_invalid");
+  }
+  return refs;
+}
+
+export function validateCommittedManifestTransitionReceiptV2(
+  value: unknown
+): CommittedManifestTransitionReceiptV2 {
+  assertNoSecrets(value);
+  const receipt = record(value, "committed_manifest_transition_receipt");
+  exactKeys(receipt, [
+    "version", "transitionId", "transitionKeySha256", "candidateSha",
+    "artifactRootFingerprintSha256", "releaseFreezeIdentitySha256",
+    "sourceManifestSha256", "previousReceiptSha256",
+    "targetManifestProjectionSha256", "sourceRevision", "targetRevision",
+    "gateOutputSha256s", "transitionEvidence", "committedAt"
+  ], "committed_manifest_transition_receipt");
+  if (receipt.version !== "committed-manifest-transition-receipt-v2") {
+    throw new Error("committed_manifest_transition_receipt_invalid");
+  }
+  const transitionId = oneOf(receipt.transitionId, MANIFEST_TRANSITIONS_V2, "committed_receipt_transition");
+  const candidateSha = sha(receipt.candidateSha, SHA40, "committed_receipt_candidate_sha");
+  for (const key of [
+    "transitionKeySha256", "artifactRootFingerprintSha256",
+    "releaseFreezeIdentitySha256", "targetManifestProjectionSha256"
+  ]) sha(receipt[key], SHA256, key);
+  const targetRevision = positiveInteger(receipt.targetRevision, "committed_receipt_target_revision");
+  if (transitionId === "pre_manual") {
+    if (receipt.sourceManifestSha256 !== null || receipt.previousReceiptSha256 !== null
+        || receipt.sourceRevision !== null || targetRevision !== 1) {
+      throw new Error("committed_receipt_initial_lineage_invalid");
+    }
+  } else {
+    sha(receipt.sourceManifestSha256, SHA256, "committed_receipt_source_manifest_sha");
+    sha(receipt.previousReceiptSha256, SHA256, "committed_receipt_previous_receipt_sha");
+    const sourceRevision = positiveInteger(receipt.sourceRevision, "committed_receipt_source_revision");
+    if (targetRevision !== sourceRevision + 1) throw new Error("committed_receipt_revision_invalid");
+  }
+  if (!Array.isArray(receipt.gateOutputSha256s)
+      || new Set(receipt.gateOutputSha256s).size !== receipt.gateOutputSha256s.length) {
+    throw new Error("committed_receipt_gate_outputs_invalid");
+  }
+  receipt.gateOutputSha256s.forEach((item) => sha(item, SHA256, "committed_receipt_gate_output_sha"));
+  const transitionEvidence = validateReceiptEvidenceRefsV2(
+    receipt.transitionEvidence,
+    transitionId,
+    candidateSha
+  );
+  iso(receipt.committedAt, "committed_receipt_committed_at");
+  return { ...receipt, transitionEvidence } as CommittedManifestTransitionReceiptV2;
+}
+
+function canonicalCommittedReceiptUtf8V2(receipt: CommittedManifestTransitionReceiptV2): Buffer {
+  return Buffer.from(`${canonicalReleaseJsonV2(receipt)}\n`, "utf8");
+}
+
+export function validatePreparedManifestTransitionV2(value: unknown): PreparedManifestTransitionV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "prepared_manifest_transition");
+  exactKeys(prepared, [
+    "version", "transitionId", "transitionKeySha256", "generationId",
+    "sourceManifestSha256", "previousReceiptSha256", "targetRevision",
+    "gateOutputSha256s", "targetSnapshotRelativePath", "targetSnapshotSha256",
+    "canonicalCommittedReceipt", "canonicalCommittedReceiptUtf8Base64",
+    "committedReceiptSha256", "preparedAt"
+  ], "prepared_manifest_transition");
+  if (prepared.version !== "prepared-manifest-transition-v2"
+      || typeof prepared.generationId !== "string" || prepared.generationId.length === 0
+      || typeof prepared.targetSnapshotRelativePath !== "string"
+      || !SAFE_RELATIVE_PATH.test(prepared.targetSnapshotRelativePath)) {
+    throw new Error("prepared_manifest_transition_invalid");
+  }
+  const transitionId = oneOf(prepared.transitionId, MANIFEST_TRANSITIONS_V2, "prepared_manifest_transition_id");
+  sha(prepared.transitionKeySha256, SHA256, "prepared_transition_key_sha");
+  sha(prepared.targetSnapshotSha256, SHA256, "prepared_target_snapshot_sha");
+  const targetRevision = positiveInteger(prepared.targetRevision, "prepared_target_revision");
+  const receipt = validateCommittedManifestTransitionReceiptV2(prepared.canonicalCommittedReceipt);
+  if (typeof prepared.canonicalCommittedReceiptUtf8Base64 !== "string"
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        prepared.canonicalCommittedReceiptUtf8Base64
+      )) {
+    throw new Error("prepared_manifest_receipt_bytes_invalid");
+  }
+  const receiptBytes = Buffer.from(prepared.canonicalCommittedReceiptUtf8Base64, "base64");
+  if (!receiptBytes.equals(canonicalCommittedReceiptUtf8V2(receipt))
+      || receiptBytes.toString("base64") !== prepared.canonicalCommittedReceiptUtf8Base64) {
+    throw new Error("prepared_manifest_receipt_bytes_invalid");
+  }
+  sha(prepared.committedReceiptSha256, SHA256, "prepared_committed_receipt_sha");
+  if (releaseSha256V2(receiptBytes) !== prepared.committedReceiptSha256) {
+    throw new Error("prepared_manifest_receipt_hash_invalid");
+  }
+  if (!Array.isArray(prepared.gateOutputSha256s)
+      || canonicalReleaseJsonV2(prepared.gateOutputSha256s)
+        !== canonicalReleaseJsonV2(receipt.gateOutputSha256s)
+      || prepared.transitionId !== receipt.transitionId
+      || prepared.transitionKeySha256 !== receipt.transitionKeySha256
+      || prepared.sourceManifestSha256 !== receipt.sourceManifestSha256
+      || prepared.previousReceiptSha256 !== receipt.previousReceiptSha256
+      || targetRevision !== receipt.targetRevision
+      || prepared.preparedAt !== receipt.committedAt) {
+    throw new Error("prepared_manifest_receipt_binding_invalid");
+  }
+  iso(prepared.preparedAt, "prepared_at");
+  return { ...prepared, canonicalCommittedReceipt: receipt } as PreparedManifestTransitionV2;
+}
+
+export function validateManifestCommittedReceiptBindingV2(
+  manifestValue: unknown,
+  receiptValue: unknown,
+  sourceManifestValue?: unknown
+): {
+  manifest: RemediationReleaseManifestV2;
+  receipt: CommittedManifestTransitionReceiptV2;
+} {
+  const manifest = validateRemediationReleaseManifestV2(manifestValue);
+  const receipt = validateCommittedManifestTransitionReceiptV2(receiptValue);
+  const receiptSha256 = releaseSha256V2(canonicalCommittedReceiptUtf8V2(receipt));
+  if (manifest.latestCommittedReceiptSha256 !== receiptSha256) {
+    throw new Error("manifest_receipt_hash_invalid");
+  }
+  const { latestCommittedReceiptSha256: _omitted, ...projection } = manifest;
+  if (receipt.targetManifestProjectionSha256
+      !== releaseSha256V2(canonicalReleaseJsonV2(projection))) {
+    throw new Error("manifest_receipt_projection_invalid");
+  }
+  if (receipt.transitionId !== manifest.transitionId
+      || receipt.candidateSha !== manifest.candidateSha
+      || receipt.artifactRootFingerprintSha256 !== manifest.artifactRootFingerprintSha256
+      || receipt.releaseFreezeIdentitySha256 !== manifest.releaseFreezeIdentitySha256
+      || receipt.targetRevision !== manifest.revision
+      || receipt.committedAt !== manifest.updatedAt
+      || canonicalReleaseJsonV2(receipt.transitionEvidence)
+        !== canonicalReleaseJsonV2(manifest.transitionEvidence)) {
+    throw new Error("manifest_receipt_target_binding_invalid");
+  }
+  let source: RemediationReleaseManifestV2 | undefined;
+  if (manifest.revision === 1) {
+    if (sourceManifestValue !== undefined || receipt.sourceManifestSha256 !== null
+        || receipt.previousReceiptSha256 !== null || receipt.sourceRevision !== null) {
+      throw new Error("manifest_receipt_initial_binding_invalid");
+    }
+  } else {
+    if (sourceManifestValue === undefined) throw new Error("manifest_receipt_source_required");
+    source = validateRemediationReleaseManifestV2(sourceManifestValue);
+    const sourceSha256 = releaseManifestSha256V2(source);
+    if (manifest.previousManifestSha256 !== sourceSha256
+        || receipt.sourceManifestSha256 !== sourceSha256
+        || receipt.previousReceiptSha256 !== source.latestCommittedReceiptSha256
+        || receipt.sourceRevision !== source.revision
+        || manifest.revision !== source.revision + 1
+        || source.candidateSha !== manifest.candidateSha
+        || source.planBaseSha !== manifest.planBaseSha
+        || source.artifactRootFingerprintSha256 !== manifest.artifactRootFingerprintSha256
+        || source.releaseFreezeIdentitySha256 !== manifest.releaseFreezeIdentitySha256) {
+      throw new Error("manifest_receipt_source_binding_invalid");
+    }
+  }
+  const expectedGateOutputSha256s = manifest.gates
+    .filter((gate, index) => gate.state === "passed" || gate.state === "failed"
+      ? source === undefined
+        || canonicalReleaseJsonV2(gate) !== canonicalReleaseJsonV2(source.gates[index])
+      : false)
+    .map((gate) => releaseSha256V2(`${canonicalReleaseJsonV2(gate)}\n`));
+  if (canonicalReleaseJsonV2(receipt.gateOutputSha256s)
+      !== canonicalReleaseJsonV2(expectedGateOutputSha256s)) {
+    throw new Error("manifest_receipt_gate_output_binding_invalid");
+  }
+  return { manifest, receipt };
 }
 
 function expectedNextNormalTransition(current: ManifestTransitionIdV2, target: ManifestTransitionIdV2): boolean {
@@ -808,14 +1498,14 @@ function requireOperationalAttestation(
       || Date.parse(transition.evaluatedAt) >= Date.parse(attestation.expiresAt)) {
     throw new Error("operational_attestation_transition_binding_invalid");
   }
-  const expectedCommand = ({
-    g12_backup_passed: "production_backup",
-    g13_migration_passed: "production_migration",
-    g14_rollout_passed: "production_rollout",
-    g15_canary_released: "production_canary",
-    rollback_rolled_back: "production_rollback"
-  } as Partial<Record<ManifestTransitionIdV2, ReleaseCommandIdV2>>)[transition.transitionId];
-  if (attestation.commandId !== expectedCommand) throw new Error("operational_attestation_command_invalid");
+  const policy = OPERATIONAL_ATTESTATION_POLICY_V2[
+    transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2
+  ];
+  if (attestation.commandId !== policy.commandId
+      || attestation.redactedTemplateSha256
+        !== operationalAttestationTemplateSha256V2(transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2)) {
+    throw new Error("operational_attestation_command_invalid");
+  }
 }
 
 function parseVerifiedGateOutputs(value: unknown, candidateSha: string): ExecutedReleaseGateV2[] {
@@ -831,11 +1521,17 @@ export function createInitialRemediationReleaseManifestV2(input: {
   freezeIdentity: unknown;
   sourceManifest?: unknown;
   evaluatedAt: string;
+  latestCommittedReceiptSha256: unknown;
   verifiedGateOutputs?: unknown;
 }): RemediationReleaseManifestV2 {
   if (input.sourceManifest !== undefined) throw new Error("initial_manifest_requires_absent_source");
   const freeze = validateReleaseFreezeIdentityV2(input.freezeIdentity);
   const evaluatedAt = iso(input.evaluatedAt, "evaluated_at");
+  const latestCommittedReceiptSha256 = sha(
+    input.latestCommittedReceiptSha256,
+    SHA256,
+    "latest_committed_receipt_sha"
+  );
   const outputs = parseVerifiedGateOutputs(input.verifiedGateOutputs, freeze.candidateSha);
   const expectedPassed = RELEASE_GATE_IDS_V2.filter((_, index) => index <= 4 || (index >= 6 && index <= 11));
   if (outputs.length !== expectedPassed.length
@@ -851,8 +1547,8 @@ export function createInitialRemediationReleaseManifestV2(input: {
     previousManifestSha256: null,
     updatedAt: evaluatedAt,
     artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
-    releaseFreezeIdentitySha256: releaseSha256V2(canonicalReleaseJsonV2(freeze)),
-    latestCommittedReceiptSha256: null,
+    releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
+    latestCommittedReceiptSha256,
     requiredRequirementIds: [...REQUIRED_REQUIREMENT_IDS_V2],
     requiredAcceptanceIds: [...REQUIRED_ACCEPTANCE_IDS_V2],
     gates: RELEASE_GATE_IDS_V2.map((id) => outputMap.get(id) ?? ({ id, candidateSha: freeze.candidateSha, state: "pending" })),

@@ -8,6 +8,7 @@ import {
   reduceManifestTransition,
   releaseManifestSha256V2,
   releaseSha256V2,
+  operationalAttestationTemplateSha256V2,
   validateReleaseRootWriterLeaseV2,
   validateRemediationReleaseManifestV2,
   type ExecutedReleaseGateV2,
@@ -81,6 +82,7 @@ function initial(): RemediationReleaseManifestV2 {
   return createInitialRemediationReleaseManifestV2({
     freezeIdentity: freeze,
     evaluatedAt: "2026-07-18T10:02:00.000Z",
+    latestCommittedReceiptSha256: "a".repeat(64),
     verifiedGateOutputs: initialIds.map((id) => output(id))
   });
 }
@@ -99,7 +101,9 @@ function attestation(
     sourceManifestSha256: releaseManifestSha256V2(current),
     artifactRootFingerprintSha256: rootSha,
     commandId,
-    redactedTemplateSha256: "a".repeat(64),
+    redactedTemplateSha256: operationalAttestationTemplateSha256V2(
+      action as Parameters<typeof operationalAttestationTemplateSha256V2>[0]
+    ),
     previousAttestationSha256: null,
     priorTerminalLineageSha256: null,
     issuedAt: "2026-07-18T10:02:30.000Z",
@@ -125,13 +129,14 @@ describe("RemediationReleaseManifestV2 exact lifecycle", () => {
   it("requires verified initial gate outputs and persists exact chain fields without fabricating execution", () => {
     expect(() => createInitialRemediationReleaseManifestV2({
       freezeIdentity: freeze,
-      evaluatedAt: "2026-07-18T10:02:00.000Z"
+      evaluatedAt: "2026-07-18T10:02:00.000Z",
+      latestCommittedReceiptSha256: "a".repeat(64)
     })).toThrow("verified_gate_outputs_required");
     const manifest = initial();
     expect(manifest).toMatchObject({
       revision: 1,
       previousManifestSha256: null,
-      latestCommittedReceiptSha256: null,
+      latestCommittedReceiptSha256: "a".repeat(64),
       artifactRootFingerprintSha256: rootSha,
       requiredRequirementIds: REQUIRED_REQUIREMENT_IDS_V2,
       requiredAcceptanceIds: REQUIRED_ACCEPTANCE_IDS_V2,
