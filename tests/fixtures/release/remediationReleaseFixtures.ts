@@ -51,6 +51,110 @@ export const PRODUCTION_GATE_IDS = [
 
 export const REQUIRED_GATE_IDS = [...PRE_RELEASE_GATE_IDS, ...PRODUCTION_GATE_IDS] as const;
 
+// Immutable Plan 5 Manifest V2 acceptance fixtures. They intentionally remain
+// plain JSON so the frozen RED batch does not depend on the future validators.
+export const RELEASE_V2_NOW = "2026-07-18T10:00:00.000Z";
+export const RELEASE_V2_FREEZE_IDENTITY = Object.freeze({
+  version: "release-freeze-identity-v2" as const,
+  releaseGenerationId: "release-generation-0001",
+  candidateSha: CANDIDATE_SHA,
+  planBaseSha: PLAN_BASE_SHA,
+  artifactRootFingerprintSha256: "1".repeat(64),
+  artifactRootTrustBoundaryEvidenceSha256: "2".repeat(64),
+  productionDatabaseIdentityFingerprintSha256: "3".repeat(64),
+  postgresToolIdentitySha256: "4".repeat(64),
+  previousRuntimeDiscoverySha256: "5".repeat(64),
+  rollbackWorktreeIdentitySha256: "6".repeat(64),
+  createdAt: RELEASE_V2_NOW
+});
+
+export function buildOperationalAttestationV2Fixture(overrides: Record<string, unknown> = {}) {
+  return {
+    version: "operational-attestation-v2",
+    action: "pre_manual",
+    generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    candidateSha: CANDIDATE_SHA,
+    releaseFreezeIdentitySha256: "7".repeat(64),
+    sourceManifestSha256: "8".repeat(64),
+    artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    commandId: "base_audit",
+    redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.base_audit,
+    previousAttestationSha256: null,
+    priorTerminalLineageSha256: null,
+    issuedAt: RELEASE_V2_NOW,
+    expiresAt: "2026-07-18T10:15:00.000Z",
+    ...overrides
+  };
+}
+
+export function buildReleaseManifestV2Fixture(overrides: Record<string, unknown> = {}) {
+  const gates = REQUIRED_GATE_IDS.map((id) => ({
+    id,
+    candidateSha: CANDIDATE_SHA,
+    state: id === "G05_TELEGRAM" || id.startsWith("G12_") || id.startsWith("G13_") ||
+      id.startsWith("G14_") || id.startsWith("G15_") ? "pending" : "passed",
+    ...(id === "G05_TELEGRAM" || id.startsWith("G12_") || id.startsWith("G13_") ||
+      id.startsWith("G14_") || id.startsWith("G15_") ? {} : {
+      commandId: GATE_COMMAND_IDS[id],
+      redactedTemplateSha256: COMMAND_TEMPLATE_SHA256[GATE_COMMAND_IDS[id]],
+      startedAt: "2026-07-18T09:58:00.000Z",
+      finishedAt: "2026-07-18T09:59:00.000Z",
+      exitCode: 0,
+      outputSha256: "9".repeat(64),
+      evidence: [{
+        kind: id === "G00_BASE" ? "task0_baseline" : "suite_evidence",
+        relativePath: `gates/${id.toLowerCase()}.json`,
+        sha256: "a".repeat(64),
+        schemaVersion: "gate-evidence-v2",
+        candidateSha: CANDIDATE_SHA
+      }]
+    })
+  }));
+  return {
+    version: "remediation-release-manifest-v2",
+    revision: 1,
+    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    candidateSha: CANDIDATE_SHA,
+    planBaseSha: PLAN_BASE_SHA,
+    releaseFreezeIdentitySha256: "7".repeat(64),
+    sourceManifestSha256: null,
+    transitionId: "pre_manual",
+    overall: "not_ready",
+    gates,
+    transitionEvidence: [],
+    updatedAt: RELEASE_V2_NOW,
+    ...overrides
+  };
+}
+
+export function buildProductionEvidenceScenarioV2(
+  scenario: string,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    version: "production-release-evidence-bundle-v2",
+    scenario,
+    candidateSha: CANDIDATE_SHA,
+    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    freezeIdentitySha256: "7".repeat(64),
+    sourceManifestSha256: "8".repeat(64),
+    authority: buildOperationalAttestationV2Fixture({ action: "g14_rollout_passed" }),
+    operation: {
+      operationId: `operation-${scenario}`,
+      kind: scenario.includes("canary") ? "canary" : scenario.includes("rollback") ? "rollback" : "rollout",
+      capability: "effect_capable",
+      leaseEpoch: 1,
+      ownerId: "plan5-test-owner",
+      operationDeadlineAt: "2026-07-18T10:20:00.000Z"
+    },
+    receipts: [],
+    captures: [],
+    attemptedExternalEffect: false,
+    evaluatedAt: "2026-07-18T10:05:00.000Z",
+    ...overrides
+  };
+}
+
 export const GATE_COMMAND_IDS = {
   G00_BASE: "base_audit",
   G01_TRACE: "acceptance_trace",
