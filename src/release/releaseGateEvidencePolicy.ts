@@ -138,6 +138,17 @@ function validateEvidenceBindings(
       throw new Error(`gate_evidence_${key}_binding_invalid`);
     }
   }
+  if (value.generationId !== undefined
+      && (typeof value.generationId !== "string"
+        || (expected.releaseGenerationId !== undefined && value.generationId !== expected.releaseGenerationId))) {
+    throw new Error("gate_evidence_generationId_binding_invalid");
+  }
+  if (value.freezeIdentitySha256 !== undefined
+      && (typeof value.freezeIdentitySha256 !== "string"
+        || (expected.releaseFreezeIdentitySha256 !== undefined
+          && value.freezeIdentitySha256 !== expected.releaseFreezeIdentitySha256))) {
+    throw new Error("gate_evidence_freezeIdentitySha256_binding_invalid");
+  }
   if (value.candidateSha !== undefined && value.candidateSha !== ref.candidateSha) {
     throw new Error("gate_evidence_candidate_payload_mismatch");
   }
