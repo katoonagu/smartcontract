@@ -28,6 +28,15 @@ function readinessAdvance(artifactRoot: string, overrides: Record<string, unknow
     ...overrides
   };
 }
+
+async function initializeManifestRoot(api: any, artifactRoot: string) {
+  await api.materializeReleaseFreezeV2(materializeInput(artifactRoot));
+  await api.initializeReleaseManifestV2({
+    artifactRoot,
+    evaluatedAt: "2026-07-18T10:00:00.000Z",
+    verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
+  });
+}
 afterEach(async () => { await Promise.all(roots.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
 
 async function loadStoreApi(): Promise<any> {
@@ -198,7 +207,7 @@ it("[REQ-38][ROOT-WRITER-SERIALIZATION] one fixed root-writer lease and CAS seri
 });
 
 it("[REQ-38][MANIFEST-V2-CAS] rejects stale and concurrent writers without overwriting the winner", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
   const outcomes = await Promise.allSettled([1, 2].map(() => api.advanceReleaseManifestV2(readinessAdvance(r))));
   expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
 });
@@ -206,35 +215,40 @@ it("[REQ-38][MANIFEST-V2-CAS] rejects stale and concurrent writers without overw
 it("[REQ-38][MANIFEST-V2-CRASH] recovers exactly before and after the atomic manifest replace", async () => {
   const api = await loadStoreApi();
   for (const faultAt of ["before_manifest_replace", "after_manifest_replace"]) {
-    const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = readinessAdvance(r, { faultAt });
+    const r = await root(); await initializeManifestRoot(api, r); const input = readinessAdvance(r, { faultAt });
     await expect(api.advanceReleaseManifestV2(input)).rejects.toThrow();
     const recovered = await api.advanceReleaseManifestV2({ ...input, faultAt: undefined }); expect(recovered.manifest.revision).toBe(2);
   }
 });
 
 it("[REQ-38][MANIFEST-V2-CRASH-RECEIPT] restores exact prepared canonical receipt bytes and hash after replace-before-receipt without rerunning time reducer or serializer", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = readinessAdvance(r, { evaluatedAt: "2026-07-18T10:03:00.000Z", faultAt: "after_manifest_replace" });
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r); const input = readinessAdvance(r, { evaluatedAt: "2026-07-18T10:03:00.000Z", faultAt: "after_manifest_replace" });
   await expect(api.advanceReleaseManifestV2(input)).rejects.toThrow();
-  const preparedName = (await readdir(r)).find((name) => name.startsWith("manifest-transition-prepared-"))!;
+  const preparedNames = (await readdir(r)).filter((name) => name.startsWith("manifest-transition-prepared-"));
+  const preparedName = (await Promise.all(preparedNames.map(async (name) => ({
+    name,
+    transitionId: JSON.parse(String(await readFile(join(r, name)))).transitionId
+  })))).find((value) => value.transitionId === "readiness")!.name;
   const before = await readFile(join(r, preparedName));
   await api.advanceReleaseManifestV2({ ...input, faultAt: undefined, evaluatedAt: "2099-01-01T00:00:00.000Z" });
   expect(await readFile(join(r, preparedName))).toEqual(before);
 });
 
 it("[REQ-38][MANIFEST-V2-REPLAY] exact replay is byte-identical and conflicting replay fails closed", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r)); const input = readinessAdvance(r);
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r); const input = readinessAdvance(r);
   const first = await api.advanceReleaseManifestV2(input); const second = await api.advanceReleaseManifestV2(input); expect(second).toEqual(first);
   await expect(api.advanceReleaseManifestV2({ ...input, transition: { transitionId: "g12_backup_passed" }, verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G12_PRODUCTION_BACKUP")] })).rejects.toThrow();
 });
 
 it("[REQ-38][MANIFEST-V2-ROOT-LEASE] one fixed root-wide lease serializes competing different transition keys before the loser creates a claim", async () => {
-  const api = await loadStoreApi(); const r = await root(); await api.materializeReleaseFreezeV2(materializeInput(r));
+  const api = await loadStoreApi(); const r = await root(); await initializeManifestRoot(api, r);
+  const claimCountBefore = (await readdir(r)).filter((name) => name.includes("claim")).length;
   const outcomes = await Promise.allSettled([
     readinessAdvance(r),
     readinessAdvance(r, { transition: { transitionId: "g12_backup_passed" }, verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G12_PRODUCTION_BACKUP")] })
   ].map((input) => api.advanceReleaseManifestV2(input)));
   expect(outcomes.filter((item) => item.status === "fulfilled").length).toBeLessThanOrEqual(1);
-  expect((await readdir(r)).filter((name) => name.includes("claim"))).toHaveLength(1);
+  expect((await readdir(r)).filter((name) => name.includes("claim"))).toHaveLength(claimCountBefore + 1);
 });
 
 it("[REQ-38][MANIFEST-V2-PATH-SAFETY] requires allowlisted trusted principal policy and rejects pre-existing or detectable POSIX symlink Windows junction reparse and identity substitutions without claiming undetectable same-principal race defense", async () => {
