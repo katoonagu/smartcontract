@@ -15,10 +15,15 @@ import {
   VERIFY20
 } from "../fixtures/forensics/remediationScoringCases";
 
-const PLAN2_DATABASE_URL = "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan2";
+const PLAN2_DATABASE_URL = process.env.PLAN2_TEST_DATABASE_URL
+  ?? "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan2";
 const required = process.env.REQUIRE_PLAN2_POSTGRES === "1";
 const connectionString = process.env.TEST_DATABASE_URL;
-if (required && connectionString !== PLAN2_DATABASE_URL) {
+const plan2Url = new URL(PLAN2_DATABASE_URL);
+if (required && (connectionString !== PLAN2_DATABASE_URL
+    || plan2Url.hostname !== "127.0.0.1"
+    || plan2Url.pathname !== "/tron_watch_plan2"
+    || plan2Url.port === "55999")) {
   throw new Error(`PLAN2 PostgreSQL acceptance requires TEST_DATABASE_URL=${PLAN2_DATABASE_URL}`);
 }
 const postgresDescribe = required ? describe : describe.skip;

@@ -4,13 +4,18 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { DeepSecondLayerRelationshipProfile } from "../../src/types";
 import { CANONICAL_DEEP_SECOND_LAYER_PROFILE } from "../fixtures/runtime/remediationRuntimeCases";
 
-const PLAN3_DATABASE_URL = "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3";
+const PLAN3_DATABASE_URL = process.env.PLAN3_TEST_DATABASE_URL
+  ?? "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3";
 const OFFICIAL_USDT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 const required = process.env.REQUIRE_PLAN3_POSTGRES === "1";
 const connectionString = process.env.TEST_DATABASE_URL;
 
-if (required && connectionString !== PLAN3_DATABASE_URL) {
+const plan3Url = new URL(PLAN3_DATABASE_URL);
+if (required && (connectionString !== PLAN3_DATABASE_URL
+    || plan3Url.hostname !== "127.0.0.1"
+    || plan3Url.pathname !== "/tron_watch_plan3"
+    || plan3Url.port === "55999")) {
   throw new Error(`Plan 3 PostgreSQL acceptance requires TEST_DATABASE_URL=${PLAN3_DATABASE_URL}`);
 }
 

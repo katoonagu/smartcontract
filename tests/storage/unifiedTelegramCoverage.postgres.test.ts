@@ -16,11 +16,16 @@ import {
   TGYT
 } from "../fixtures/telegram/remediationTelegramUxCases";
 
-const PLAN4_DATABASE_URL = "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan4";
+const PLAN4_DATABASE_URL = process.env.PLAN4_TEST_DATABASE_URL
+  ?? "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan4";
 const required = process.env.REQUIRE_PLAN4_POSTGRES === "1";
 const connectionString = process.env.TEST_DATABASE_URL;
 
-if (required && connectionString !== PLAN4_DATABASE_URL) {
+const plan4Url = new URL(PLAN4_DATABASE_URL);
+if (required && (connectionString !== PLAN4_DATABASE_URL
+    || plan4Url.hostname !== "127.0.0.1"
+    || plan4Url.pathname !== "/tron_watch_plan4"
+    || plan4Url.port === "55999")) {
   throw new Error(`Plan 4 PostgreSQL acceptance requires TEST_DATABASE_URL=${PLAN4_DATABASE_URL}`);
 }
 
