@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -30,6 +30,19 @@ function materializeInput(rootPath: string) {
     evaluatedAt: "2026-07-18T10:00:00.000Z",
     owner: { ownerId: "owner-a", pid: process.pid, processStartedAt: "2026-07-18T09:59:00.000Z" }
   };
+}
+
+async function writeExpiredRootWriterLease(rootPath: string) {
+  const lease = {
+    version: "frozen-root-writer-lease-v2",
+    generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    ownerId: "dead",
+    pid: 2147483647,
+    epoch: 1,
+    expiresAt: "2026-07-18T10:00:00.000Z"
+  };
+  await writeFile(join(rootPath, "manifest-transition-root.lease.json"), `${JSON.stringify(lease)}\n`, { flag: "wx" });
+  return lease;
 }
 
 it("[REQ-38][RELEASE-FREEZE-MATERIALIZER] only release freeze materializer converts verified Task0B evidence into one O_EXCL canonical identity while captureTask0BPreflight cannot impersonate the producer", async () => {
@@ -185,12 +198,12 @@ it("[REQ-38][MANIFEST-V2-RECOVERY] validates claim root-lease prepared canonical
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER] takes over only one exact expired dead-owner lease in the same generation through prepared tombstone new lease and receipt", async () => {
-  const api = await loadStoreApi(); const r = await root(); const result = await api.takeoverRootWriterLeaseV2({ artifactRoot: r, generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, oldLease: { ownerId: "dead", pid: 2147483647, epoch: 1, expiresAt: "2026-07-18T10:00:00.000Z" }, newOwner: { ownerId: "owner-b", pid: process.pid }, evaluatedAt: "2026-07-18T10:01:00.000Z" }); expect(result.newLease.epoch).toBe(2);
+  const api = await loadStoreApi(); const r = await root(); const oldLease = await writeExpiredRootWriterLease(r); const result = await api.takeoverRootWriterLeaseV2({ artifactRoot: r, generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, oldLease, newOwner: { ownerId: "owner-b", pid: process.pid }, evaluatedAt: "2026-07-18T10:01:00.000Z" }); expect(result.newLease.epoch).toBe(2);
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-TAKEOVER-CRASH] replays exactly before and after tombstone new-lease and receipt boundaries without deleting or duplicating authority", async () => {
   const api = await loadStoreApi();
-  for (const faultAt of ["after_prepare", "after_tombstone", "after_new_lease", "after_receipt"]) { const r = await root(); const input = { artifactRoot: r, generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, oldLease: { ownerId: "dead", pid: 2147483647, epoch: 1, expiresAt: "2026-07-18T10:00:00.000Z" }, newOwner: { ownerId: "owner-b", pid: process.pid }, evaluatedAt: "2026-07-18T10:01:00.000Z", faultAt }; await expect(api.takeoverRootWriterLeaseV2(input)).rejects.toThrow(); const result = await api.takeoverRootWriterLeaseV2({ ...input, faultAt: undefined }); expect(result.newLease.epoch).toBe(2); }
+  for (const faultAt of ["after_prepare", "after_tombstone", "after_new_lease", "after_receipt"]) { const r = await root(); const oldLease = await writeExpiredRootWriterLease(r); const input = { artifactRoot: r, generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, oldLease, newOwner: { ownerId: "owner-b", pid: process.pid }, evaluatedAt: "2026-07-18T10:01:00.000Z", faultAt }; await expect(api.takeoverRootWriterLeaseV2(input)).rejects.toThrow(); const result = await api.takeoverRootWriterLeaseV2({ ...input, faultAt: undefined }); expect(result.newLease.epoch).toBe(2); }
 });
 
 it("[REQ-38][MANIFEST-V2-LEASE-FENCE] prevents the old owner from any effect or manifest replace after lease hash or epoch changes", async () => {
