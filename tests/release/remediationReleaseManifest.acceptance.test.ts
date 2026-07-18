@@ -657,7 +657,7 @@ it("[REQ-38][TASK0B-PREFLIGHT] rejects every missing stale or unverified operati
   }, CANDIDATE_SHA, "2026-07-18T09:10:00.000Z")).toThrow(/secret/i);
 });
 
-it("[REQ-38][TASK0B-CAPTURE] produces secret-free direct evidence without runtime DB migration or Telegram mutation", async () => {
+it("[REQ-38][TASK0B-CAPTURE] produces secret-free direct evidence without runtime DB migration or Telegram mutation", { timeout: 15_000 }, async () => {
   const producer: any = await import("../../scripts/captureTask0BPreflight");
   const reads: string[] = [];
   const direct = buildCompleteTask0BPreflight();

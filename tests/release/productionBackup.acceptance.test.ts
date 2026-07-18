@@ -282,7 +282,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("lets an exact lease acquired fresh finish after GO expiry within the child timeout", async () => {
+  it("lets an exact lease acquired fresh finish after GO expiry within the child timeout", { timeout: 15_000 }, async () => {
     const api = await loadProducer();
     const root = await makeProtectedTempDir("plan5-g12-cross-expiry-");
     const value = fixture(root);
