@@ -700,6 +700,31 @@ it.each([
     expect(() => store.verifyFailedSettledRolloutForRecovery(operationId, settlement.claimSha256))
       .toThrow(/terminal_bundle|failure.*(?:prefix|draft|capture)/i);
     await writeFile(firstReceiptPath, firstReceiptBytes);
+    const preparedPath = join(root, `production-operation-lease-removal-prepared-${operationId}.json`);
+    const removalPath = join(root, `production-operation-lease-removal-${operationId}.json`);
+    const cleanupPath = join(root, `production-operation-terminal-cleanup-${operationId}.json`);
+    const preparedBytes = readFileSync(preparedPath);
+    const removalBytes = readFileSync(removalPath);
+    const cleanupBytes = readFileSync(cleanupPath);
+    const prepared = JSON.parse(preparedBytes.toString("utf8"));
+    const removal = { ...JSON.parse(removalBytes.toString("utf8")), capability: "cleanup_only" };
+    const rewrittenRemovalBytes = canonicalBytes(removal);
+    const rewrittenRemovalSha256 = releaseSha256V2(rewrittenRemovalBytes);
+    const rewrittenPrepared = { ...prepared, capability: "cleanup_only", canonicalRemovalReceipt: removal,
+      canonicalRemovalReceiptUtf8Base64: rewrittenRemovalBytes.toString("base64"),
+      canonicalRemovalReceiptSha256: rewrittenRemovalSha256 };
+    const rewrittenPreparedBytes = canonicalBytes(rewrittenPrepared);
+    const cleanup = JSON.parse(cleanupBytes.toString("utf8"));
+    await writeFile(preparedPath, rewrittenPreparedBytes);
+    await writeFile(removalPath, rewrittenRemovalBytes);
+    await writeFile(cleanupPath, canonicalBytes({ ...cleanup, capability: "cleanup_only",
+      preparedRemovalSha256: releaseSha256V2(rewrittenPreparedBytes),
+      leaseRemovalReceiptSha256: rewrittenRemovalSha256, cleanedAt: "2026-07-18T10:00:01.000Z" }));
+    expect(() => store.verifyFailedSettledRolloutForRecovery(operationId, settlement.claimSha256))
+      .toThrow(/cleanup.*binding/i);
+    await writeFile(preparedPath, preparedBytes);
+    await writeFile(removalPath, removalBytes);
+    await writeFile(cleanupPath, cleanupBytes);
   }
   await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true

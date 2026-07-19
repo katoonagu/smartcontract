@@ -83,6 +83,7 @@ export type SettledRollbackHistoricalProofVerifierV2 = (input: Readonly<{
   operationDeadlineAt: string;
   lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
   failureEvidenceSha256: string;
+  previousRuntimeIdentitySha256: string;
   outcome: ProductionRollbackOutcomeV2;
 }>) => void;
 export const PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2 = createHash("sha256")
@@ -2056,19 +2057,18 @@ export class ProductionOperationStoreV2 {
         validateProductionFailureEvidenceV2, "production_terminal_bundle_prior_failure");
       const output = (stepId: string) => captures.find((capture) => capture.stepId === stepId)?.outputSha256;
       const outcome = evidence.value.outcome;
-      if (outcome.kind !== "previous_runtime_retained") {
-        if (verifySettledRollbackHistoricalProofs === undefined) {
-          throw new Error("production_terminal_bundle_rollback_historical_proof_verifier_missing");
-        }
-        verifySettledRollbackHistoricalProofs({ operationId: state.operationId,
-          operationClaimSha256: claim.sha256,
-          authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
-          authorityExpiresAt: claim.value.authorityConsumption.expiresAt,
-          candidateSha: state.candidateSha, releaseGenerationId: state.releaseGenerationId,
-          sourceManifestSha256: state.sourceManifestSha256,
-          operationDeadlineAt: state.operationDeadlineAt, lineageLeaseTips: takeover.leaseTips,
-          failureEvidenceSha256: priorFailure.sha256, outcome });
+      if (verifySettledRollbackHistoricalProofs === undefined) {
+        throw new Error("production_terminal_bundle_rollback_historical_proof_verifier_missing");
       }
+      verifySettledRollbackHistoricalProofs({ operationId: state.operationId,
+        operationClaimSha256: claim.sha256,
+        authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+        authorityExpiresAt: claim.value.authorityConsumption.expiresAt,
+        candidateSha: state.candidateSha, releaseGenerationId: state.releaseGenerationId,
+        sourceManifestSha256: state.sourceManifestSha256,
+        operationDeadlineAt: state.operationDeadlineAt, lineageLeaseTips: takeover.leaseTips,
+        failureEvidenceSha256: priorFailure.sha256,
+        previousRuntimeIdentitySha256: evidence.value.previousRuntimeIdentitySha256, outcome });
       const actionBindingInvalid = (outcome.kind === "previous_runtime_retained"
           && (outcome.previousRuntimeHealthEvidenceSha256 !== output("prove_previous_healthy")
             || outcome.noPreviousStopEvidenceSha256 !== output("prove_no_previous_stop")
@@ -2224,6 +2224,7 @@ export class ProductionOperationStoreV2 {
     if (preparedRemoval.value.operationKind !== "rollout" || preparedRemoval.value.operationId !== operationId
         || preparedRemoval.value.terminalStateKind !== "settlement"
         || preparedRemoval.value.terminalStateSha256 !== settlement.sha256
+        || preparedRemoval.value.capability !== settlement.value.capability
         || preparedRemoval.value.exactCurrentLeaseSha256 !== settlement.value.finalLeaseSha256
         || preparedRemoval.value.exactCurrentLeaseEpoch !== settlement.value.finalLeaseEpoch
         || removalReceipt.sha256 !== preparedRemoval.value.canonicalRemovalReceiptSha256
@@ -2232,13 +2233,16 @@ export class ProductionOperationStoreV2 {
         || removalReceipt.value.operationKind !== "rollout" || removalReceipt.value.operationId !== operationId
         || removalReceipt.value.terminalStateKind !== "settlement"
         || removalReceipt.value.terminalStateSha256 !== settlement.sha256
+        || removalReceipt.value.capability !== settlement.value.capability
         || removalReceipt.value.removedLeaseSha256 !== settlement.value.finalLeaseSha256
         || removalReceipt.value.removedLeaseEpoch !== settlement.value.finalLeaseEpoch
         || cleanup.value.operationKind !== "rollout" || cleanup.value.operationId !== operationId
         || cleanup.value.terminalStateSha256 !== settlement.sha256
+        || cleanup.value.capability !== settlement.value.capability
         || cleanup.value.preparedRemovalSha256 !== preparedRemoval.sha256
         || cleanup.value.leaseRemovalReceiptSha256 !== removalReceipt.sha256
-        || cleanup.value.removedLeaseSha256 !== settlement.value.finalLeaseSha256) {
+        || cleanup.value.removedLeaseSha256 !== settlement.value.finalLeaseSha256
+        || cleanup.value.cleanedAt !== preparedRemoval.value.preparedAt) {
       throw new Error("production_failed_rollout_cleanup_binding_invalid");
     }
     return { operationId, operationClaimSha256: claim.sha256,

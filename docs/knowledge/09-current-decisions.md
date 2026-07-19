@@ -292,8 +292,9 @@ of these decisions, update this file in the same work.
   process identity. Historical rollback effect proof is accepted only after the
   abandoned claim, normal lease lineage, topology, intent, exact runtime
   authority, target, receipt output, and observation bounds are revalidated.
-  Settlement replay also reopens these exact prior action proofs before it may
-  publish or remove a terminal rollback bundle.
+  Settlement replay also reopens the exact prior and current manager-or-
+  reconciliation action proofs and the frozen Task 0B previous-runtime
+  identity before it may publish or remove a terminal rollback bundle.
 - Configured `hard_safety_limit_exceeded`, provider/page/local ceilings and
   bounded retries remain honest technical no-final outcomes; Plan 5 does not
   promise unlimited history. Address Poisoning is forbidden release scope.
