@@ -2048,6 +2048,33 @@ function rollbackTopologyTargets(root: string) {
   } as const;
 }
 
+export function assertFrozenPreviousRuntimeSingletonV2(
+  topology: Readonly<{ candidates: readonly RuntimeTopologyCandidateV2[] }>,
+  frozen: Readonly<{
+    processId: number;
+    processStartedAt: string;
+    runtimeSha: string;
+    runtimeLabel: string;
+    commandLineSha256: string;
+    executablePathSha256: string;
+    workingDirectoryFingerprintSha256: string;
+    entrypointPathFingerprintSha256: string;
+  }>
+): void {
+  const candidate = topology.candidates[0];
+  if (topology.candidates.length !== 1 || candidate === undefined
+      || candidate.processId !== frozen.processId
+      || candidate.processStartedAt !== frozen.processStartedAt
+      || candidate.runtimeSha !== frozen.runtimeSha
+      || candidate.runtimeLabel !== frozen.runtimeLabel
+      || candidate.commandLineSha256 !== frozen.commandLineSha256
+      || candidate.executablePathSha256 !== frozen.executablePathSha256
+      || candidate.worktreePathFingerprintSha256 !== frozen.workingDirectoryFingerprintSha256
+      || candidate.entrypointPathFingerprintSha256 !== frozen.entrypointPathFingerprintSha256) {
+    throw new Error("production_rollback_retained_previous_identity_invalid");
+  }
+}
+
 function nestedArtifactDirectory(root: string, relativeDirectory: string): string | null {
   try { return dirname(safeArtifactRelativePath(root, `${relativeDirectory}/probe.json`)); }
   catch (error) {
@@ -2768,6 +2795,9 @@ async function deriveRollbackContext(root: string, operationId: string) {
       throw new Error("production_rollback_topology_plan_binding_invalid");
     }
     assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(existing.value, before);
+    if (existing.value.selectedWindow.kind === "previous_runtime_retained") {
+      assertFrozenPreviousRuntimeSingletonV2(existing.value.topology, task0b.previousRuntimeIdentity);
+    }
     return { window: existing.value.selectedWindow, failureEvidenceSha256: failure.sha256,
       previousRuntimeIdentitySha256: shaFromTask0B(root, "previousRuntimeIdentity"),
       topologyEvidence: existing.value };
@@ -2795,6 +2825,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
     if (topologyState !== "previous_singleton" || failure.value.failedGateId === "G15_PRODUCTION_CANARY") {
       throw new Error("production_rollback_history_topology_conflict");
     }
+    assertFrozenPreviousRuntimeSingletonV2(topology, task0b.previousRuntimeIdentity);
     window = { kind: "previous_runtime_retained", failedGateId: failure.value.failedGateId };
   } else if (topologyState === "candidate_singleton") {
     if (failure.value.failedGateId === "G13_PRODUCTION_MIGRATION") {
@@ -2905,6 +2936,9 @@ async function assertFreshRollbackTopologyState(
   });
   const state = classifyRuntimeRollbackTopologyV2(topology, evidence.previousTarget, evidence.candidateTarget);
   if (state !== expectedState) throw new Error("production_rollback_effect_topology_changed");
+  if (evidence.selectedWindow.kind === "previous_runtime_retained") {
+    assertFrozenPreviousRuntimeSingletonV2(topology, loadTask0B(root).previousRuntimeIdentity);
+  }
   const after = store.assertOwnedAndWithinBounds(operationId, new Date().toISOString());
   assertOwnedObservationContinuityV2(before, after);
 }
@@ -3043,6 +3077,8 @@ export function verifySettledRollbackHistoricalProofsV2(
     if (input.outcome.kind !== "previous_runtime_retained") {
       throw new Error("production_settled_rollback_window_outcome_binding_invalid");
     }
+    assertFrozenPreviousRuntimeSingletonV2(topology.value.topology,
+      loadTask0B(root).previousRuntimeIdentity);
     return;
   }
   const startProof = candidateStart();

@@ -286,7 +286,10 @@ of these decisions, update this file in the same work.
   only within the same failure evidence, freeze identity, candidate, generation,
   and source-manifest lineage. An owned heartbeat may advance that lineage during
   topology observation, but owner identity and immutable operation bounds cannot
-  change. After an abandoned rollback restarted the previous runtime, later
+  change. A `previous_runtime_retained` result requires the live singleton's
+  complete PID/start-time, command, executable, worktree and entrypoint identity
+  to remain equal to frozen Task 0B at selection and terminal re-observation.
+  After an abandoned rollback restarted the previous runtime, later
   rollback checks use the latest matching operation/claim/intent-bound start
   receipt and manager/reconciliation proof rather than the frozen pre-restart
   process identity. Historical rollback effect proof is accepted only after the

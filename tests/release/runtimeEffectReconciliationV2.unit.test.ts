@@ -11,7 +11,7 @@ import {
   validateRuntimeRollbackTopologyEvidenceV2,
   type RuntimeTopologyCandidateV2
 } from "../../src/release/runtimeEffectReconciliationV2";
-import { assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2 } from
+import { assertFrozenPreviousRuntimeSingletonV2, assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2 } from
   "../../src/release/productionOperationAdaptersV2";
 
 const SHA40 = "a".repeat(40);
@@ -114,6 +114,27 @@ describe("runtime effect crash reconciliation", () => {
     expect(classifyRuntimeRollbackTopologyV2(topology([candidate(), previousCandidate]), previous, next)).toBeNull();
     expect(classifyRuntimeRollbackTopologyV2(topology([candidate({ runtimeSha: "f".repeat(40) })]),
       previous, next)).toBeNull();
+  });
+
+  it("accepts retained previous runtime only with the complete frozen process identity", () => {
+    const exact = candidate();
+    const frozen = {
+      processId: exact.processId, processStartedAt: exact.processStartedAt,
+      runtimeSha: exact.runtimeSha, runtimeLabel: exact.runtimeLabel,
+      commandLineSha256: exact.commandLineSha256, executablePathSha256: exact.executablePathSha256,
+      workingDirectoryFingerprintSha256: exact.worktreePathFingerprintSha256,
+      entrypointPathFingerprintSha256: exact.entrypointPathFingerprintSha256
+    };
+    expect(() => assertFrozenPreviousRuntimeSingletonV2(topology([exact]), frozen)).not.toThrow();
+    expect(() => assertFrozenPreviousRuntimeSingletonV2(topology([
+      { ...exact, processStartedAt: "2026-07-19T00:00:02.000Z" }
+    ]), frozen)).toThrow(/retained.previous.identity/i);
+    expect(() => assertFrozenPreviousRuntimeSingletonV2(topology([
+      { ...exact, commandLineSha256: "9".repeat(64) }
+    ]), frozen)).toThrow(/retained.previous.identity/i);
+    expect(() => assertFrozenPreviousRuntimeSingletonV2(topology([
+      { ...exact, executablePathSha256: "8".repeat(64) }
+    ]), frozen)).toThrow(/retained.previous.identity/i);
   });
 
   it("binds rollback topology evidence to the claimed operation, exact snapshot, identities and compatible window", () => {
