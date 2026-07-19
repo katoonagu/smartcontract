@@ -191,6 +191,11 @@ it("[REQ-38][PLAN5-RUNTIME-PHASE-POSITIVE] authorizes each runtime action only a
       authority, bindings.task0b, bindings.manifest, bindings.database, "9".repeat(64)
     )).not.toThrow();
   }
+  const reconciledStartPath = `production-runtime-effect-reconciliations/production-rollout-${"7".repeat(64)}/7-start_candidate-${"8".repeat(64)}-v2.json`;
+  expect(() => api.validateTask0BProductionRuntimeAuthority(authorityFor(
+    "runtime_manager_stop_candidate", actionManifest("runtime_manager_stop_candidate"),
+    { startEvidencePath: reconciledStartPath }
+  ), "2026-07-18T09:01:00.000Z")).not.toThrow();
   expect(() => api.validateTask0BProductionRuntimeAuthority(
     authorityFor("runtime_manager_stop_candidate", actionManifest("runtime_manager_start_candidate")),
     "2026-07-18T09:01:00.000Z"
@@ -780,6 +785,19 @@ it("[REQ-38][TASK0B-MANAGER-TYPED-EVIDENCE] validates canonical consumption star
     targetRuntimeSha: PREVIOUS_RUNTIME_SHA,
     targetRuntimeLabel: PREVIOUS_RUNTIME_LABEL
   })).toEqual(stopEvidence);
+  const reconciliationPath = `production-runtime-effect-reconciliations/production-rollout-${"7".repeat(64)}/7-start_candidate-${"8".repeat(64)}-v2.json`;
+  const reconciledCandidateStop = { ...stopEvidence, commandId: "runtime_manager_stop_candidate",
+    targetRuntimeSha: SHA, targetRuntimeLabel: `master-${SHA.slice(0, 8)}`,
+    startEvidencePath: reconciliationPath };
+  expect(api.validateRuntimeManagerStopEffectEvidenceV2(reconciledCandidateStop, {
+    generationId: GENERATION, commandId: "runtime_manager_stop_candidate", authoritySha256,
+    targetRuntimeSha: SHA, targetRuntimeLabel: `master-${SHA.slice(0, 8)}`
+  })).toEqual(reconciledCandidateStop);
+  expect(() => api.validateRuntimeManagerStopEffectEvidenceV2({ ...stopEvidence,
+    startEvidencePath: reconciliationPath }, {
+    generationId: GENERATION, commandId: "runtime_manager_stop_previous", authoritySha256,
+    targetRuntimeSha: PREVIOUS_RUNTIME_SHA, targetRuntimeLabel: PREVIOUS_RUNTIME_LABEL
+  })).toThrow(/stop|binding/i);
 
   for (const forged of [
     { ...consumption, commandId: "runtime_manager_stop_previous" },

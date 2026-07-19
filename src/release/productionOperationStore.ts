@@ -1291,6 +1291,25 @@ export class ProductionOperationStoreV2 {
     }
     this.#verifyStoredPreclaimLineage(preclaim, lineage);
 
+    const action = OPERATION_ACTION[terminal.operationKind];
+    const attestation = readCanonical(safeArtifactRelativePath(this.#root,
+      `operational-attestations/${action}/${terminal.releaseGenerationId}/${claim.value.operationalAttestationSha256}.json`),
+    validateOperationalAttestationV2, "production_abandoned_operational_attestation");
+    const issuerReceipt = readCanonical(safeArtifactRelativePath(this.#root,
+      `operational-attestation-issuer-receipts/${action}/${terminal.releaseGenerationId}/${claim.value.operationalAttestationIssuerReceiptSha256}.json`),
+    validateOperationalAttestationIssuerReceiptV2, "production_abandoned_operational_attestation_issuer_receipt");
+    if (attestation.sha256 !== claim.value.operationalAttestationSha256
+        || attestation.value.action !== action
+        || attestation.value.generationId !== terminal.releaseGenerationId
+        || attestation.value.candidateSha !== terminal.candidateSha
+        || attestation.value.sourceManifestSha256 !== terminal.sourceManifestSha256
+        || issuerReceipt.sha256 !== claim.value.operationalAttestationIssuerReceiptSha256
+        || issuerReceipt.value.attestationSha256 !== attestation.sha256
+        || issuerReceipt.value.action !== action
+        || issuerReceipt.value.generationId !== terminal.releaseGenerationId) {
+      throw new Error("production_abandoned_authority_binding_invalid");
+    }
+
     const cleanupTakeover = readCanonical(this.#path(
       `production-operation-root.lease-cleanup-only-committed-${terminal.cleanupOnlyTakeoverSha256}.json`),
     (raw) => {
@@ -1333,6 +1352,48 @@ export class ProductionOperationStoreV2 {
       sha256: cleanupTakeover.value.oldLeaseSha256,
       epoch: cleanupPrepared.value.oldLeaseEpoch
     });
+    const storedTerminal = readCanonical(this.#path(
+      `production-operation-terminal-abandoned-${terminal.operationId}.json`),
+    validateProductionOperationTerminalAbandonedV2, "production_operation_terminal_abandoned");
+    const terminalBytes = canonicalBytesV2(terminal);
+    const terminalSha256 = releaseSha256V2(terminalBytes);
+    const preparedRemoval = readCanonical(this.#path(
+      `production-operation-lease-removal-prepared-${terminal.operationId}.json`),
+    validatePreparedProductionOperationLeaseRemovalV2, "prepared_production_operation_lease_removal");
+    const removalReceipt = readCanonical(this.#path(
+      `production-operation-lease-removal-${terminal.operationId}.json`),
+    validateProductionOperationLeaseRemovalReceiptV2, "production_operation_lease_removal_receipt");
+    const cleanup = readCanonical(this.#path(
+      `production-operation-terminal-cleanup-${terminal.operationId}.json`),
+    validateProductionOperationTerminalCleanupV2, "production_operation_terminal_cleanup");
+    if (storedTerminal.sha256 !== terminalSha256 || !storedTerminal.bytes.equals(terminalBytes)
+        || preparedRemoval.value.operationId !== terminal.operationId
+        || preparedRemoval.value.operationKind !== terminal.operationKind
+        || preparedRemoval.value.terminalStateKind !== "terminal_abandoned"
+        || preparedRemoval.value.terminalStateSha256 !== terminalSha256
+        || preparedRemoval.value.capability !== "cleanup_only"
+        || preparedRemoval.value.exactCurrentLeaseSha256 !== terminal.finalLeaseSha256
+        || preparedRemoval.value.exactCurrentLeaseEpoch !== terminal.finalLeaseEpoch
+        || removalReceipt.sha256 !== preparedRemoval.value.canonicalRemovalReceiptSha256
+        || !removalReceipt.bytes.equals(Buffer.from(
+          preparedRemoval.value.canonicalRemovalReceiptUtf8Base64, "base64"))
+        || removalReceipt.value.operationId !== terminal.operationId
+        || removalReceipt.value.operationKind !== terminal.operationKind
+        || removalReceipt.value.terminalStateKind !== "terminal_abandoned"
+        || removalReceipt.value.terminalStateSha256 !== terminalSha256
+        || removalReceipt.value.capability !== "cleanup_only"
+        || removalReceipt.value.removedLeaseSha256 !== terminal.finalLeaseSha256
+        || removalReceipt.value.removedLeaseEpoch !== terminal.finalLeaseEpoch
+        || cleanup.value.operationId !== terminal.operationId
+        || cleanup.value.operationKind !== terminal.operationKind
+        || cleanup.value.terminalStateSha256 !== terminalSha256
+        || cleanup.value.capability !== "cleanup_only"
+        || cleanup.value.preparedRemovalSha256 !== preparedRemoval.sha256
+        || cleanup.value.leaseRemovalReceiptSha256 !== removalReceipt.sha256
+        || cleanup.value.removedLeaseSha256 !== terminal.finalLeaseSha256
+        || cleanup.value.cleanedAt !== preparedRemoval.value.preparedAt) {
+      throw new Error("production_abandoned_cleanup_bundle_invalid");
+    }
     return { claimSha256: claim.sha256,
       authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
       leaseTips: new Set(normal.leaseTips.map((tip) => `${tip.epoch}:${tip.sha256}`)) };

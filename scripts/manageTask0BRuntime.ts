@@ -39,6 +39,12 @@ import {
 import { PRODUCTION_OPERATION_LEASE_FILE_V2 } from "../src/release/productionOperationStore";
 import { ProductionOperationStoreV2 } from "../src/release/productionOperationStore";
 import { observedProcessStartFingerprintSha256V2 } from "../src/release/releaseManifestStoreV2";
+import { canonicalBytesV2 } from "../src/release/releaseRootWriterStore";
+import {
+  runtimeCandidateFromReconciledStartV2,
+  validateRuntimeEffectReconciliationEvidenceV2,
+  type RuntimeTopologyCandidateV2
+} from "../src/release/runtimeEffectReconciliationV2";
 import type {
   Task0BReleaseFreezeEvidenceV1
 } from "../src/release/remediationReleaseManifest";
@@ -48,6 +54,7 @@ const SHA40 = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
 const START_EVIDENCE = /^runtime-start-evidence-(?:[a-z0-9][a-z0-9-]{15,63}|[a-z0-9][a-z0-9-]{15,63}-runtime_manager_(?:start_candidate|rollback_previous)-[0-9a-f]{64})\.json$/u;
+const RECONCILED_CANDIDATE_START_EVIDENCE = /^production-runtime-effect-reconciliations\/production-rollout-[0-9a-f]{64}\/[1-9][0-9]*-start_candidate-[0-9a-f]{64}-v2\.json$/u;
 const MAX_ARTIFACT_BYTES = 256 * 1024;
 const MANAGER_PATH = fileURLToPath(import.meta.url);
 
@@ -131,10 +138,16 @@ type PreparedStartRuntime = {
 
 type PreparedStopRuntime = {
   evidence: Record<string, unknown>;
+  reconciledIdentity: RuntimeTopologyCandidateV2 | null;
   processId: number;
   observation: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>>;
   managerExecutableSha256: string;
 };
+
+function validStopStartEvidencePath(value: unknown, commandId: RuntimeCommandId): value is string {
+  return typeof value === "string" && (START_EVIDENCE.test(value)
+    || (commandId === "runtime_manager_stop_candidate" && RECONCILED_CANDIDATE_START_EVIDENCE.test(value)));
+}
 
 function hash(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -255,7 +268,7 @@ export function validateTask0BProductionRuntimeAuthority(
       || authority.explicitGo !== true
       || !new Set<ForcePolicy>(["graceful_only", "graceful_then_force"]).has(authority.forcePolicy as ForcePolicy)
       || (isStart && (startPath !== null || startHash !== null))
-      || (!isStart && (typeof startPath !== "string" || !START_EVIDENCE.test(startPath)
+      || (!isStart && (!validStopStartEvidencePath(startPath, commandId)
         || !SHA256.test(String(startHash))))) {
     throw new Error("task0b_runtime_authority_unverified");
   }
@@ -581,7 +594,7 @@ export function validateRuntimeManagerStopEffectEvidenceV2(
       || evidence.targetRuntimeLabel !== expected.targetRuntimeLabel
       || !new Set(["runtime_manager_stop_candidate", "runtime_manager_stop_previous"]).has(expected.commandId)
       || !SHA256.test(expected.authoritySha256) || !SHA40.test(expected.targetRuntimeSha)
-      || typeof evidence.startEvidencePath !== "string" || !START_EVIDENCE.test(evidence.startEvidencePath)
+      || !validStopStartEvidencePath(evidence.startEvidencePath, expected.commandId)
       || !SHA256.test(String(evidence.startEvidenceSha256))
       || !Number.isSafeInteger(evidence.stoppedProcessId) || Number(evidence.stoppedProcessId) < 1
       || stoppedAt < startedAt || !new Set(["graceful_only", "graceful_then_force"]).has(String(evidence.forcePolicy))
@@ -1194,6 +1207,7 @@ async function prepareStopRuntime(
   let evidence: Record<string, unknown>;
   try { evidence = record(JSON.parse(evidenceBytes.toString("utf8")), "task0b_runtime_stop_evidence_invalid"); }
   catch { throw new Error("task0b_runtime_stop_evidence_invalid"); }
+  let reconciledIdentity: RuntimeTopologyCandidateV2 | null = null;
   if (evidence.version === "runtime-manager-start-effect-evidence-v2") {
     const commandId = evidence.commandId;
     const authoritySha256 = evidence.authoritySha256;
@@ -1206,21 +1220,79 @@ async function prepareStopRuntime(
       generationId: String(evidence.generationId), commandId, authoritySha256, targetRuntimeSha, targetRuntimeLabel
     });
     if (authority.startEvidencePath !== runtimeGenerationEvidencePath("start", managed.generationId,
-      managed.commandId, managed.authoritySha256)) throw new Error("task0b_runtime_stop_evidence_binding_invalid");
+        managed.commandId, managed.authoritySha256)) throw new Error("task0b_runtime_stop_evidence_binding_invalid");
     evidence = managed.runtimeEvidence as unknown as Record<string, unknown>;
+  } else if (evidence.version === "runtime-effect-reconciliation-evidence-v2") {
+    if (authority.commandId !== "runtime_manager_stop_candidate"
+        || !RECONCILED_CANDIDATE_START_EVIDENCE.test(authority.startEvidencePath)) {
+      throw new Error("task0b_runtime_stop_reconciliation_scope_invalid");
+    }
+    const reconciliation = validateRuntimeEffectReconciliationEvidenceV2(evidence);
+    const expectedPath = `production-runtime-effect-reconciliations/${reconciliation.operationId}/${reconciliation.sequence}-${reconciliation.stepId}-${reconciliation.intentSha256}-v2.json`;
+    const candidates = reconciliation.topologySnapshot.candidates.filter((candidate) =>
+      candidate.runtimeSha === authority.targetRuntimeSha
+      && candidate.runtimeLabel === authority.targetRuntimeLabel
+      && candidate.worktreePathFingerprintSha256 === authority.targetWorktreeFingerprintSha256);
+    if (authority.startEvidencePath !== expectedPath
+        || reconciliation.operationKind !== "rollout" || reconciliation.stepId !== "start_candidate"
+        || reconciliation.observedPostState !== "target_singleton" || candidates.length !== 1) {
+      throw new Error("task0b_runtime_stop_reconciliation_binding_invalid");
+    }
+    const candidate = candidates[0]!;
+    reconciledIdentity = runtimeCandidateFromReconciledStartV2(reconciliation, {
+      runtimeSha: authority.targetRuntimeSha,
+      runtimeLabel: authority.targetRuntimeLabel,
+      worktreePathFingerprintSha256: authority.targetWorktreeFingerprintSha256,
+      entrypointPathFingerprintSha256: candidate.entrypointPathFingerprintSha256,
+      exactProcessId: null,
+      exactProcessStartedAt: null
+    });
+    if (reconciliation.targetIdentitySha256 !== releaseSha256V2(canonicalBytesV2({
+      runtimeSha: authority.targetRuntimeSha,
+      runtimeLabel: authority.targetRuntimeLabel,
+      worktreePathFingerprintSha256: authority.targetWorktreeFingerprintSha256,
+      entrypointPathFingerprintSha256: candidate.entrypointPathFingerprintSha256,
+      exactProcessId: null,
+      exactProcessStartedAt: null
+    }))) throw new Error("task0b_runtime_stop_reconciliation_target_invalid");
   }
-  const processId = Number(evidence.processId);
+  const processId = reconciledIdentity?.processId ?? Number(evidence.processId);
   if (!Number.isSafeInteger(processId) || processId < 1 || await countTask0BRuntimeCandidates() !== 1) {
     throw new Error("task0b_runtime_stop_identity_invalid");
   }
   const observation = await observeWindowsRuntimeProcess(processId);
   const managerExecutableSha256 = hash(await readFile(MANAGER_PATH));
-  validateTask0BPreviousRuntimeIdentity(evidence, observation, {
-    sha: authority.targetRuntimeSha,
-    label: authority.targetRuntimeLabel,
-    managerExecutableSha256
-  }, authority.startEvidenceSha256);
-  return { evidence, processId, observation, managerExecutableSha256 };
+  if (reconciledIdentity === null) {
+    validateTask0BPreviousRuntimeIdentity(evidence, observation, {
+      sha: authority.targetRuntimeSha,
+      label: authority.targetRuntimeLabel,
+      managerExecutableSha256
+    }, authority.startEvidenceSha256);
+  } else {
+    assertReconciledStopIdentity(reconciledIdentity, observation, authority);
+  }
+  return { evidence, reconciledIdentity, processId, observation, managerExecutableSha256 };
+}
+
+function assertReconciledStopIdentity(
+  expected: RuntimeTopologyCandidateV2,
+  observation: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>>,
+  authority: Task0BProductionRuntimeAuthorityV1
+): void {
+  if (expected.processId !== observation.processId
+      || expected.processStartedAt !== observation.processStartedAt
+      || expected.runtimeSha !== authority.targetRuntimeSha
+      || expected.runtimeSha !== observation.runtimeSha
+      || expected.runtimeLabel !== authority.targetRuntimeLabel
+      || expected.runtimeLabel !== observation.runtimeLabel
+      || expected.commandLineSha256 !== observation.commandLineSha256
+      || expected.executablePathSha256 !== observation.executablePathSha256
+      || expected.worktreePathFingerprintSha256 !== observation.workingDirectoryFingerprintSha256
+      || expected.worktreePathFingerprintSha256 !== authority.targetWorktreeFingerprintSha256
+      || expected.entrypointPathFingerprintSha256 !== observation.entrypointPathFingerprintSha256
+      || observation.runtimeProcessCount !== 1) {
+    throw new Error("task0b_runtime_stop_reconciled_identity_invalid");
+  }
 }
 
 async function recheckStopRuntime(
@@ -1229,11 +1301,15 @@ async function recheckStopRuntime(
 ): Promise<void> {
   if (await countTask0BRuntimeCandidates() !== 1) throw new Error("task0b_runtime_stop_identity_changed");
   const observation = await observeWindowsRuntimeProcess(prepared.processId);
-  validateTask0BPreviousRuntimeIdentity(prepared.evidence, observation, {
-    sha: authority.targetRuntimeSha,
-    label: authority.targetRuntimeLabel,
-    managerExecutableSha256: prepared.managerExecutableSha256
-  }, authority.startEvidenceSha256!);
+  if (prepared.reconciledIdentity === null) {
+    validateTask0BPreviousRuntimeIdentity(prepared.evidence, observation, {
+      sha: authority.targetRuntimeSha,
+      label: authority.targetRuntimeLabel,
+      managerExecutableSha256: prepared.managerExecutableSha256
+    }, authority.startEvidenceSha256!);
+  } else {
+    assertReconciledStopIdentity(prepared.reconciledIdentity, observation, authority);
+  }
 }
 
 async function stopRuntime(

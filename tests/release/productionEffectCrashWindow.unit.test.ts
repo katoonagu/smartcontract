@@ -270,16 +270,20 @@ describe("production effect crash windows", () => {
       { ...binding, operationId: `production-rollback-${"1".repeat(64)}`, abandonedAt: "2026-07-19T00:01:00.000Z",
         attemptedExternalEffect: true,
         stepIds: new Set(["verify_failure", "stop_candidate"]),
+        completedStepIds: new Set(["verify_failure", "stop_candidate"]),
         proofSha256: (stepId: string) => stepId === "stop_candidate" ? "4".repeat(64) : null },
       { ...binding, operationId: `production-rollback-${"2".repeat(64)}`, abandonedAt: "2026-07-19T00:02:00.000Z",
         attemptedExternalEffect: true,
         stepIds: new Set(["verify_failure", "start_previous"]),
+        completedStepIds: new Set(["verify_failure", "start_previous"]),
         proofSha256: (stepId: string) => stepId === "start_previous" ? "5".repeat(64) : null },
       { ...unrelated, operationId: `production-rollback-${"3".repeat(64)}`, abandonedAt: "2026-07-19T00:03:00.000Z",
         attemptedExternalEffect: false,
-        stepIds: new Set(["restart_previous"]), proofSha256: () => "6".repeat(64) }
+        stepIds: new Set(["restart_previous"]), completedStepIds: new Set(["restart_previous"]),
+        proofSha256: () => "6".repeat(64) }
     ], expected);
     expect([...merged!.stepIds]).toEqual(["verify_failure", "stop_candidate", "start_previous"]);
+    expect([...merged!.completedStepIds]).toEqual(["verify_failure", "stop_candidate", "start_previous"]);
     expect(merged!.proofSha256("stop_candidate")).toBe("4".repeat(64));
     expect(merged!.proofSha256("start_previous")).toBe("5".repeat(64));
   });
@@ -289,11 +293,25 @@ describe("production effect crash windows", () => {
       candidateSha: SHA40, releaseGenerationId: "generation-1", sourceManifestSha256: "3".repeat(64) };
     const topologyless = { ...expected, failureEvidenceSha256: null, releaseFreezeIdentitySha256: null,
       operationId: `production-rollback-${"4".repeat(64)}`, abandonedAt: "2026-07-19T00:00:00.000Z",
-      attemptedExternalEffect: false, stepIds: new Set<string>(), proofSha256: () => null };
+      attemptedExternalEffect: false, stepIds: new Set<string>(), completedStepIds: new Set<string>(),
+      proofSha256: () => null };
     expect(mergePriorAbandonedRollbackAttemptsV2([topologyless], expected)).toBeNull();
     expect(() => mergePriorAbandonedRollbackAttemptsV2([
       { ...topologyless, stepIds: new Set(["verify_failure"]) }
     ], expected)).toThrow("production_prior_rollback_topology_missing_with_history");
+  });
+
+  it("does not promote an orphan start intent into completed abandoned rollback history", () => {
+    const expected = { failureEvidenceSha256: "1".repeat(64), releaseFreezeIdentitySha256: "2".repeat(64),
+      candidateSha: SHA40, releaseGenerationId: "generation-1", sourceManifestSha256: "3".repeat(64) };
+    const orphan = { ...expected, operationId: `production-rollback-${"5".repeat(64)}`,
+      abandonedAt: "2026-07-19T00:01:00.000Z", attemptedExternalEffect: true,
+      stepIds: new Set(["verify_failure", "start_previous"]), completedStepIds: new Set(["verify_failure"]),
+      proofSha256: () => null };
+    const merged = mergePriorAbandonedRollbackAttemptsV2([orphan], expected)!;
+    expect(merged.stepIds.has("start_previous")).toBe(true);
+    expect(merged.completedStepIds.has("start_previous")).toBe(false);
+    expect(merged.runtimeStartProof?.()).toBeNull();
   });
 
   it("uses the latest operation-bound previous-runtime start across abandoned rollback attempts", () => {
@@ -304,20 +322,23 @@ describe("production effect crash windows", () => {
         runtimeLabel: "previous", commandLineSha256: "4".repeat(64), executablePathSha256: "5".repeat(64),
         worktreePathFingerprintSha256: "6".repeat(64), entrypointPathFingerprintSha256: "7".repeat(64) },
       generationId: "generation-1", commandId: "runtime_manager_rollback_previous" as const,
-      authoritySha256: "8".repeat(64), proofSha256
+      authoritySha256: "8".repeat(64), proofRelativePath: "runtime-start-evidence-generation-1.json",
+      proofSha256
     });
     const attempts = [
       { ...expected, operationId: `production-rollback-${"1".repeat(64)}`,
         abandonedAt: "2026-07-19T00:01:00.000Z", attemptedExternalEffect: true,
-        stepIds: new Set(["start_previous"]), proofSha256: () => "9".repeat(64),
+        stepIds: new Set(["start_previous"]), completedStepIds: new Set(["start_previous"]),
+        proofSha256: () => "9".repeat(64),
         runtimeStartProof: () => runtimeProof(101, "9".repeat(64)) },
       { ...expected, operationId: `production-rollback-${"2".repeat(64)}`,
         abandonedAt: "2026-07-19T00:02:00.000Z", attemptedExternalEffect: true,
-        stepIds: new Set(["start_previous"]), proofSha256: () => "a".repeat(64),
+        stepIds: new Set(["start_previous"]), completedStepIds: new Set(["start_previous"]),
+        proofSha256: () => "a".repeat(64),
         runtimeStartProof: () => runtimeProof(202, "a".repeat(64)) },
       { ...expected, operationId: `production-rollback-${"3".repeat(64)}`,
         abandonedAt: "2026-07-19T00:03:00.000Z", attemptedExternalEffect: false,
-        stepIds: new Set<string>(), proofSha256: () => null }
+        stepIds: new Set<string>(), completedStepIds: new Set<string>(), proofSha256: () => null }
     ];
     expect(selectLatestPriorAbandonedRollbackRuntimeStartProofV2(attempts, expected)?.candidate.processId).toBe(202);
     expect(mergePriorAbandonedRollbackAttemptsV2(attempts, expected)?.proofSha256("start_previous"))
@@ -371,7 +392,7 @@ describe("production effect crash windows", () => {
       executablePathSha256: "3".repeat(64), worktreePathFingerprintSha256: "4".repeat(64),
       entrypointPathFingerprintSha256: "5".repeat(64) }, generationId: "generation-1",
       commandId: "runtime_manager_start_candidate" as const, authoritySha256: "1".repeat(64),
-      proofSha256: "6".repeat(64) };
+      proofRelativePath: startEvidencePath, proofSha256: "6".repeat(64) };
     const authority = { startEvidencePath, startEvidenceSha256: startProof.proofSha256,
       forcePolicy: "graceful_only", issuedAt: "2026-07-19T00:01:00.000Z",
       expiresAt: "2026-07-19T00:05:00.000Z" } as any;

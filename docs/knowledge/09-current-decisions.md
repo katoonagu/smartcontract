@@ -269,8 +269,12 @@ of these decisions, update this file in the same work.
   through its exact original effect/recovery-capable lease binding, including a
   proven-dead owner, after the complete terminal receipt/intent/lease lineage,
   orchestration, captures, kind-specific evidence, index, and settlement bundle
-  is revalidated. Reconciled runtime starts remain valid only through their exact
-  operation, claim, intent, authority, target identity, and observation window.
+  is revalidated. Abandoned-history reuse additionally reopens the operational
+  attestation/issuer and exact lease-removal prepare/receipt/cleanup chain.
+  Reconciled runtime starts remain valid only through their exact operation,
+  claim, intent, authority, target identity, and observation window; an exact
+  receipt-bound reconciliation may supply candidate stop identity when the
+  runtime manager crashed before writing its own start artifact.
   Canary invariants are checked in every observation cycle and persisted cycle
   state is restored before resumed bounded checks. Actual rollback binds the
   current `production_failed` manifest and committed transition receipt back to

@@ -44,8 +44,29 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
   const releaseGenerationId = "generation-123456";
   const sourceManifestSha256 = "b".repeat(64);
   const artifactRootFingerprintSha256 = "c".repeat(64);
-  const operationalAttestationSha256 = "d".repeat(64);
-  const issuerReceiptSha256 = "e".repeat(64);
+  const attestation = {
+    version: "operational-attestation-v2" as const, action: "g14_rollout_passed" as const,
+    generationId: releaseGenerationId, candidateSha,
+    releaseFreezeIdentitySha256: "0".repeat(64), sourceManifestSha256,
+    artifactRootFingerprintSha256, commandId: "production_rollout" as const,
+    redactedTemplateSha256: "1".repeat(64), previousAttestationSha256: null,
+    priorTerminalLineageSha256: null, issuedAt: NOW, expiresAt: "2026-07-19T01:00:00.000Z"
+  };
+  const attestationBytes = canonicalBytesV2(attestation);
+  const operationalAttestationSha256 = releaseSha256V2(attestationBytes);
+  const attestationPath = `operational-attestations/g14_rollout_passed/${releaseGenerationId}/${operationalAttestationSha256}.json`;
+  save(root, attestationPath, attestation);
+  const issuerReceipt = {
+    version: "operational-attestation-issuer-receipt-v2" as const,
+    commandId: "operational_authority_issue" as const, redactedTemplateSha256: "2".repeat(64),
+    action: "g14_rollout_passed" as const, generationId: releaseGenerationId, sequence: 1,
+    previousIssuerReceiptSha256: null, attestationRelativePath: attestationPath,
+    attestationSha256: operationalAttestationSha256, previousAttestationSha256: null,
+    priorTerminalLineageSha256: null, issuedAt: NOW
+  };
+  const issuerReceiptSha256 = releaseSha256V2(canonicalBytesV2(issuerReceipt));
+  const issuerReceiptPath = `operational-attestation-issuer-receipts/g14_rollout_passed/${releaseGenerationId}/${issuerReceiptSha256}.json`;
+  save(root, issuerReceiptPath, issuerReceipt);
   const ownerFingerprint = "f".repeat(64);
   const ownerIdentity = rootWriterOwnerProcessIdentitySha256V2(1234, ownerFingerprint);
   const originalLease = {
@@ -197,11 +218,33 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
   };
   const terminalPath = `production-operation-terminal-abandoned-${OPERATION_ID}.json`;
   const terminalSha256 = save(root, terminalPath, terminal);
+  const removalReceipt = {
+    version: "production-operation-lease-removal-receipt-v2" as const,
+    operationKind: "rollout" as const, operationId: OPERATION_ID,
+    terminalStateKind: "terminal_abandoned" as const, terminalStateSha256: terminalSha256,
+    capability: "cleanup_only" as const, removedLeaseSha256: cleanupLeaseSha256,
+    removedLeaseEpoch: 2, removedAt: ABANDONED_AT
+  };
+  const removalReceiptBytes = canonicalBytesV2(removalReceipt);
+  const removalReceiptSha256 = releaseSha256V2(removalReceiptBytes);
+  const preparedRemoval = {
+    version: "prepared-production-operation-lease-removal-v2" as const,
+    operationKind: "rollout" as const, operationId: OPERATION_ID,
+    terminalStateKind: "terminal_abandoned" as const, terminalStateSha256: terminalSha256,
+    capability: "cleanup_only" as const, exactCurrentLeaseSha256: cleanupLeaseSha256,
+    exactCurrentLeaseEpoch: 2, canonicalRemovalReceipt: removalReceipt,
+    canonicalRemovalReceiptUtf8Base64: removalReceiptBytes.toString("base64"),
+    canonicalRemovalReceiptSha256: removalReceiptSha256, preparedAt: ABANDONED_AT
+  };
+  const preparedRemovalPath = `production-operation-lease-removal-prepared-${OPERATION_ID}.json`;
+  const preparedRemovalSha256 = save(root, preparedRemovalPath, preparedRemoval);
+  const removalReceiptPath = `production-operation-lease-removal-${OPERATION_ID}.json`;
+  save(root, removalReceiptPath, removalReceipt);
   const cleanup = {
     version: "production-operation-terminal-cleanup-v2" as const,
     operationKind: "rollout" as const, operationId: OPERATION_ID,
     terminalStateSha256: terminalSha256, capability: "cleanup_only" as const,
-    preparedRemovalSha256: "d".repeat(64), leaseRemovalReceiptSha256: "e".repeat(64),
+    preparedRemovalSha256, leaseRemovalReceiptSha256: removalReceiptSha256,
     removedLeaseSha256: cleanupLeaseSha256, cleanedAt: ABANDONED_AT
   };
   const cleanupPath = `production-operation-terminal-cleanup-${OPERATION_ID}.json`;
@@ -209,7 +252,8 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
   return { root, refs, terminal, terminalPath, cleanup, cleanupPath, orphanRecord,
     claim, claimPath: `production-operation-claim-${operationalAttestationSha256}.json`,
     preclaim, preclaimPath: `production-authority-preclaim-${OPERATION_ID}.json`,
-    lineage, lineagePath };
+    lineage, lineagePath, attestation, attestationPath, issuerReceipt, issuerReceiptPath,
+    preparedRemoval, preparedRemovalPath, removalReceipt, removalReceiptPath };
 }
 
 describe("abandoned production recovery source integrity", () => {
@@ -226,7 +270,7 @@ describe("abandoned production recovery source integrity", () => {
 
   it.each(["forged_claim", "foreign_receipt_lease", "foreign_intent_lease", "cleanup_lease",
     "aggregate_hash", "foreign_operation", "claim_artifact", "preclaim", "lineage",
-    "embedded_consumption"] as const)(
+    "embedded_consumption", "attestation", "issuer_receipt", "prepared_removal", "removal_receipt"] as const)(
     "rejects %s instead of deriving recovery authority",
     (mutation) => {
       const value = fixture({ orphanSequence: 5 });
@@ -243,6 +287,14 @@ describe("abandoned production recovery source integrity", () => {
       else if (mutation === "embedded_consumption") save(value.root, value.claimPath,
         { ...value.claim, authorityConsumption: { ...value.claim.authorityConsumption,
           leaseSha256AtConsumption: "0".repeat(64) } });
+      else if (mutation === "attestation") save(value.root, value.attestationPath,
+        { ...value.attestation, sourceManifestSha256: "0".repeat(64) });
+      else if (mutation === "issuer_receipt") save(value.root, value.issuerReceiptPath,
+        { ...value.issuerReceipt, attestationSha256: "0".repeat(64) });
+      else if (mutation === "prepared_removal") save(value.root, value.preparedRemovalPath,
+        { ...value.preparedRemoval, exactCurrentLeaseSha256: "0".repeat(64) });
+      else if (mutation === "removal_receipt") save(value.root, value.removalReceiptPath,
+        { ...value.removalReceipt, removedLeaseSha256: "0".repeat(64) });
       else if (mutation === "foreign_intent_lease") {
         save(value.root, value.orphanRecord!.relativePath, {
           ...value.orphanRecord!.intent,
@@ -255,7 +307,7 @@ describe("abandoned production recovery source integrity", () => {
             : mutation === "foreign_receipt_lease" ? { operationLeaseSha256: "f".repeat(64) }
             : { operationId: `production-rollout-${"f".repeat(64)}` }) });
       }
-      expect(() => loadRecoverySource(value.root)).toThrow(/recovery|binding|cleanup|step|completed/i);
+      expect(() => loadRecoverySource(value.root)).toThrow(/recovery|binding|cleanup|step|completed|issuer/i);
     }
   );
 
