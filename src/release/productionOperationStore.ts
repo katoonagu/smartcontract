@@ -43,6 +43,7 @@ import {
   type ProductionOperationKindV2,
   type ProductionOperationLeaseRemovalReceiptV2,
   type ProductionOperationLeaseV2,
+  type ProductionRollbackOutcomeV2,
   type ProductionOperationSettlementV2,
   type ProductionOperationTerminalAbandonedV2,
   type ProductionOperationTerminalCleanupV2,
@@ -71,6 +72,19 @@ import {
 } from "./releaseRootWriterStore";
 
 export const PRODUCTION_OPERATION_LEASE_FILE_V2 = "production-operation-root.lease.json";
+export type SettledRollbackHistoricalProofVerifierV2 = (input: Readonly<{
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  authorityExpiresAt: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  operationDeadlineAt: string;
+  lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
+  failureEvidenceSha256: string;
+  outcome: ProductionRollbackOutcomeV2;
+}>) => void;
 export const PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2 = createHash("sha256")
   .update("release:production:lease:takeover <expected-old-lease-sha256> <protected-artifact-root>", "utf8")
   .digest("hex");
@@ -1768,8 +1782,14 @@ export class ProductionOperationStoreV2 {
   #verifySettlementTerminalBundle(
     settlement: Readonly<{ value: ProductionOperationSettlementV2; sha256: string }>,
     claim: Readonly<{ value: ProductionOperationClaimV2; sha256: string }>,
-    takeover: Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }>
-  ): Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null {
+    takeover: Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }>,
+    verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2
+  ): Readonly<{
+    orchestration: Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null;
+    completedStepReceipts: readonly Readonly<{
+      relativePath: string; sha256: string; receipt: ProductionOrchestrationStepReceiptV2;
+    }>[];
+  }> {
     const state = settlement.value;
     if (state.operationId !== claim.value.operationId || state.operationKind !== claim.value.operationKind
         || state.candidateSha !== claim.value.candidateSha
@@ -1975,7 +1995,7 @@ export class ProductionOperationStoreV2 {
             && evidence.value.preEffectValidationReceiptsSha256 !== prefixSha256)) {
         throw new Error("production_terminal_bundle_failure_evidence_binding_invalid");
       }
-      return null;
+      return { orchestration: null, completedStepReceipts };
     }
     if (orchestration === null) throw new Error("production_terminal_bundle_orchestration_missing");
     if (state.operationKind === "rollout") {
@@ -2036,6 +2056,19 @@ export class ProductionOperationStoreV2 {
         validateProductionFailureEvidenceV2, "production_terminal_bundle_prior_failure");
       const output = (stepId: string) => captures.find((capture) => capture.stepId === stepId)?.outputSha256;
       const outcome = evidence.value.outcome;
+      if (outcome.kind !== "previous_runtime_retained") {
+        if (verifySettledRollbackHistoricalProofs === undefined) {
+          throw new Error("production_terminal_bundle_rollback_historical_proof_verifier_missing");
+        }
+        verifySettledRollbackHistoricalProofs({ operationId: state.operationId,
+          operationClaimSha256: claim.sha256,
+          authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+          authorityExpiresAt: claim.value.authorityConsumption.expiresAt,
+          candidateSha: state.candidateSha, releaseGenerationId: state.releaseGenerationId,
+          sourceManifestSha256: state.sourceManifestSha256,
+          operationDeadlineAt: state.operationDeadlineAt, lineageLeaseTips: takeover.leaseTips,
+          failureEvidenceSha256: priorFailure.sha256, outcome });
+      }
       const actionBindingInvalid = (outcome.kind === "previous_runtime_retained"
           && (outcome.previousRuntimeHealthEvidenceSha256 !== output("prove_previous_healthy")
             || outcome.noPreviousStopEvidenceSha256 !== output("prove_no_previous_stop")
@@ -2084,12 +2117,143 @@ export class ProductionOperationStoreV2 {
         throw new Error("production_terminal_bundle_recovery_evidence_binding_invalid");
       }
     }
-    return orchestration;
+    return { orchestration, completedStepReceipts };
+  }
+
+  verifyFailedSettledRolloutForRecovery(
+    operationIdInput: string,
+    operationClaimSha256Input: string
+  ): Readonly<{
+    operationId: string;
+    operationClaimSha256: string;
+    authorityConsumptionSha256: string;
+    releaseGenerationId: string;
+    sourceManifestSha256: string;
+    releaseFreezeIdentitySha256: string;
+    lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
+    completedStepReceipts: readonly Readonly<{
+      relativePath: string; sha256: string; receipt: ProductionOrchestrationStepReceiptV2;
+    }>[];
+  }> {
+    const operationId = exactOperationId(operationIdInput);
+    const expectedClaimSha256 = exactSha(operationClaimSha256Input,
+      "production_failed_rollout_claim_sha256");
+    const settlement = readCanonical(this.#path(`production-operation-settlement-${operationId}.json`),
+      validateProductionOperationSettlementV2, "production_failed_rollout_settlement");
+    if (settlement.value.operationKind !== "rollout" || settlement.value.result !== "failed"
+        || settlement.value.operationId !== operationId
+        || settlement.value.claimSha256 !== expectedClaimSha256
+        || settlement.value.orchestrationReceiptSha256 !== null) {
+      throw new Error("production_failed_rollout_settlement_binding_invalid");
+    }
+    const claimEntries = readdirSync(this.#root, { withFileTypes: true }).filter((entry) =>
+      entry.name.startsWith("production-operation-claim-") && entry.name.endsWith(".json"));
+    if (claimEntries.some((entry) => !entry.isFile()
+        || !/^production-operation-claim-[0-9a-f]{64}\.json$/u.test(entry.name))) {
+      throw new Error("production_failed_rollout_claim_artifact_invalid");
+    }
+    const claims = claimEntries.map((entry) => {
+      const record = readCanonical(this.#path(entry.name), validateProductionOperationClaimV2,
+        "production_failed_rollout_claim");
+      if (entry.name !== `production-operation-claim-${record.value.operationalAttestationSha256}.json`) {
+        throw new Error("production_failed_rollout_claim_filename_invalid");
+      }
+      return record;
+    }).filter((record) => record.sha256 === expectedClaimSha256);
+    if (claims.length !== 1) throw new Error("production_failed_rollout_claim_missing_or_ambiguous");
+    const claim = claims[0]!;
+    if (claim.value.operationKind !== "rollout" || claim.value.operationId !== operationId
+        || claim.value.authorityConsumptionSha256 !== settlement.value.authorityConsumptionSha256
+        || claim.value.candidateSha !== settlement.value.candidateSha
+        || claim.value.releaseGenerationId !== settlement.value.releaseGenerationId
+        || claim.value.sourceManifestSha256 !== settlement.value.sourceManifestSha256) {
+      throw new Error("production_failed_rollout_claim_binding_invalid");
+    }
+    const preclaim = readCanonical(this.#path(`production-authority-preclaim-${operationId}.json`),
+      validateProductionAuthorityPreclaimValidationV2, "production_failed_rollout_preclaim");
+    const lineage = readCanonical(this.#path(claim.value.preclaimLeaseLineageRelativePath),
+      validateProductionPreclaimLeaseLineageV2, "production_failed_rollout_preclaim_lineage");
+    if (preclaim.sha256 !== claim.value.authorityConsumption.preclaimValidationSha256
+        || preclaim.value.operationKind !== "rollout" || preclaim.value.operationId !== operationId
+        || lineage.sha256 !== claim.value.preclaimLeaseLineageSha256
+        || lineage.value.operationId !== operationId
+        || lineage.value.preclaimValidationSha256 !== preclaim.sha256
+        || lineage.value.currentTipLeaseSha256 !== claim.value.preclaimLeaseLineageCurrentTipSha256
+        || lineage.value.currentTipLeaseEpoch !== claim.value.leaseEpochAtConsumption) {
+      throw new Error("production_failed_rollout_preclaim_lineage_binding_invalid");
+    }
+    this.#verifyStoredPreclaimLineage(preclaim, lineage);
+    const takeover = this.#verifyNormalTakeoverChainToTip(claim.value, {
+      sha256: settlement.value.finalLeaseSha256, epoch: settlement.value.finalLeaseEpoch
+    });
+    const freeze = readCanonical(this.#path("release-freeze-identity-v2.json"),
+      validateReleaseFreezeIdentityV2, "production_failed_rollout_freeze");
+    const attestation = readCanonical(safeArtifactRelativePath(this.#root,
+      `operational-attestations/g14_rollout_passed/${claim.value.releaseGenerationId}/${claim.value.operationalAttestationSha256}.json`),
+    validateOperationalAttestationV2, "production_failed_rollout_attestation");
+    const issuerReceipt = readCanonical(safeArtifactRelativePath(this.#root,
+      `operational-attestation-issuer-receipts/g14_rollout_passed/${claim.value.releaseGenerationId}/${claim.value.operationalAttestationIssuerReceiptSha256}.json`),
+    validateOperationalAttestationIssuerReceiptV2, "production_failed_rollout_issuer_receipt");
+    if (freeze.value.releaseGenerationId !== claim.value.releaseGenerationId
+        || freeze.value.candidateSha !== claim.value.candidateSha
+        || freeze.value.artifactRootFingerprintSha256 !== claim.value.artifactRootFingerprintSha256
+        || attestation.sha256 !== claim.value.operationalAttestationSha256
+        || attestation.value.action !== "g14_rollout_passed"
+        || attestation.value.releaseFreezeIdentitySha256 !== freeze.sha256
+        || attestation.value.sourceManifestSha256 !== claim.value.sourceManifestSha256
+        || attestation.value.commandId !== claim.value.authorityConsumption.commandId
+        || attestation.value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+        || issuerReceipt.sha256 !== claim.value.operationalAttestationIssuerReceiptSha256
+        || issuerReceipt.value.attestationSha256 !== attestation.sha256) {
+      throw new Error("production_failed_rollout_authority_binding_invalid");
+    }
+    assertCommittedOperationalAuthorityRecordV2(this.#root, freeze.value, {
+      attestationSha256: attestation.sha256, issuerReceiptSha256: issuerReceipt.sha256
+    });
+    const verified = this.#verifySettlementTerminalBundle(settlement, claim, takeover);
+    if (verified.orchestration !== null) {
+      throw new Error("production_failed_rollout_orchestration_unexpected");
+    }
+    const preparedRemoval = readCanonical(this.#path(
+      `production-operation-lease-removal-prepared-${operationId}.json`),
+    validatePreparedProductionOperationLeaseRemovalV2, "production_failed_rollout_prepared_removal");
+    const removalReceipt = readCanonical(this.#path(`production-operation-lease-removal-${operationId}.json`),
+      validateProductionOperationLeaseRemovalReceiptV2, "production_failed_rollout_removal_receipt");
+    const cleanup = readCanonical(this.#path(`production-operation-terminal-cleanup-${operationId}.json`),
+      validateProductionOperationTerminalCleanupV2, "production_failed_rollout_terminal_cleanup");
+    if (preparedRemoval.value.operationKind !== "rollout" || preparedRemoval.value.operationId !== operationId
+        || preparedRemoval.value.terminalStateKind !== "settlement"
+        || preparedRemoval.value.terminalStateSha256 !== settlement.sha256
+        || preparedRemoval.value.exactCurrentLeaseSha256 !== settlement.value.finalLeaseSha256
+        || preparedRemoval.value.exactCurrentLeaseEpoch !== settlement.value.finalLeaseEpoch
+        || removalReceipt.sha256 !== preparedRemoval.value.canonicalRemovalReceiptSha256
+        || !removalReceipt.bytes.equals(Buffer.from(
+          preparedRemoval.value.canonicalRemovalReceiptUtf8Base64, "base64"))
+        || removalReceipt.value.operationKind !== "rollout" || removalReceipt.value.operationId !== operationId
+        || removalReceipt.value.terminalStateKind !== "settlement"
+        || removalReceipt.value.terminalStateSha256 !== settlement.sha256
+        || removalReceipt.value.removedLeaseSha256 !== settlement.value.finalLeaseSha256
+        || removalReceipt.value.removedLeaseEpoch !== settlement.value.finalLeaseEpoch
+        || cleanup.value.operationKind !== "rollout" || cleanup.value.operationId !== operationId
+        || cleanup.value.terminalStateSha256 !== settlement.sha256
+        || cleanup.value.preparedRemovalSha256 !== preparedRemoval.sha256
+        || cleanup.value.leaseRemovalReceiptSha256 !== removalReceipt.sha256
+        || cleanup.value.removedLeaseSha256 !== settlement.value.finalLeaseSha256) {
+      throw new Error("production_failed_rollout_cleanup_binding_invalid");
+    }
+    return { operationId, operationClaimSha256: claim.sha256,
+      authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+      releaseGenerationId: claim.value.releaseGenerationId,
+      sourceManifestSha256: claim.value.sourceManifestSha256,
+      releaseFreezeIdentitySha256: freeze.sha256,
+      lineageLeaseTips: takeover.leaseTips,
+      completedStepReceipts: verified.completedStepReceipts };
   }
 
   resumeCompletedSettlementBeforeBegin(
     operationKind: ProductionOperationKindV2,
-    evaluatedAt: string
+    evaluatedAt: string,
+    verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2
   ): null | Readonly<{
     result: "passed" | "failed";
     operationId: string;
@@ -2208,7 +2372,9 @@ export class ProductionOperationStoreV2 {
         || issuerReceipt.value.generationId !== identity.releaseGenerationId) {
       throw new Error("production_prebegin_authority_binding_invalid");
     }
-    const orchestration = this.#verifySettlementTerminalBundle(settlement, claim, takeover);
+    const verifiedBundle = this.#verifySettlementTerminalBundle(settlement, claim, takeover,
+      verifySettledRollbackHistoricalProofs);
+    const orchestration = verifiedBundle.orchestration;
     const preparedPath = this.#path(
       `production-operation-lease-removal-prepared-${settlement.value.operationId}.json`);
     const prepared = existsSync(preparedPath)
@@ -2234,7 +2400,8 @@ export class ProductionOperationStoreV2 {
       orchestrationReceiptSha256: orchestration?.sha256 ?? null };
   }
 
-  resumeCompletedSettlement(operationId: string, evaluatedAt: string): null | Readonly<{
+  resumeCompletedSettlement(operationId: string, evaluatedAt: string,
+    verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2): null | Readonly<{
     settlement: ProductionOperationSettlementV2;
     orchestrationReceipt: ProductionOrchestrationReceiptV2 | null;
     orchestrationReceiptSha256: string | null;
@@ -2261,7 +2428,8 @@ export class ProductionOperationStoreV2 {
       throw new Error("production_completed_settlement_binding_invalid");
     }
     const takeover = this.#verifyNormalTakeoverChain(claim.value, lease);
-    const orchestration = this.#verifySettlementTerminalBundle(settlement, claim, takeover);
+    const orchestration = this.#verifySettlementTerminalBundle(settlement, claim, takeover,
+      verifySettledRollbackHistoricalProofs).orchestration;
     this.publishTerminalArtifacts(operationId);
     this.completeTerminal({ operationId, terminalStateKind: "settlement",
       terminalStateSha256: settlement.sha256, evaluatedAt });

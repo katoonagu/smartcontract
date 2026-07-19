@@ -688,6 +688,19 @@ it.each([
   const before = existsSync(qualifiedRoot)
     ? Object.fromEntries(readdirSync(qualifiedRoot).filter((name) => name.endsWith(".json"))
       .map((name) => [name, readFileSync(join(qualifiedRoot, name))])) : {};
+  if (faultAt === "after_terminal_cleanup") {
+    const settlement = JSON.parse(readFileSync(join(root,
+      `production-operation-settlement-${operationId}.json`), "utf8"));
+    expect(store.verifyFailedSettledRolloutForRecovery(operationId, settlement.claimSha256)
+      .completedStepReceipts).toHaveLength(1);
+    const firstReceiptPath = join(root, "production-operation-steps", operationId,
+      "1-verify_g13-v2.json");
+    const firstReceiptBytes = readFileSync(firstReceiptPath);
+    await unlink(firstReceiptPath);
+    expect(() => store.verifyFailedSettledRolloutForRecovery(operationId, settlement.claimSha256))
+      .toThrow(/terminal_bundle|failure.*(?:prefix|draft|capture)/i);
+    await writeFile(firstReceiptPath, firstReceiptBytes);
+  }
   await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true
   }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },

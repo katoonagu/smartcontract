@@ -274,7 +274,11 @@ of these decisions, update this file in the same work.
   Reconciled runtime starts remain valid only through their exact operation,
   claim, intent, authority, target identity, and observation window; an exact
   receipt-bound reconciliation may supply candidate stop identity when the
-  runtime manager crashed before writing its own start artifact.
+  runtime manager crashed before writing its own start artifact, but a
+  contradictory manager artifact cannot fall through to reconciliation.
+  A failed settled rollout supplies recovery start history only after its
+  contiguous receipt prefix, failure draft/capture/evidence, terminal index,
+  full authority issuance, settlement, and lease-removal cleanup are reopened.
   Canary invariants are checked in every observation cycle and persisted cycle
   state is restored before resumed bounded checks. Actual rollback binds the
   current `production_failed` manifest and committed transition receipt back to
@@ -288,6 +292,8 @@ of these decisions, update this file in the same work.
   process identity. Historical rollback effect proof is accepted only after the
   abandoned claim, normal lease lineage, topology, intent, exact runtime
   authority, target, receipt output, and observation bounds are revalidated.
+  Settlement replay also reopens these exact prior action proofs before it may
+  publish or remove a terminal rollback bundle.
 - Configured `hard_safety_limit_exceeded`, provider/page/local ceilings and
   bounded retries remain honest technical no-final outcomes; Plan 5 does not
   promise unlimited history. Address Poisoning is forbidden release scope.

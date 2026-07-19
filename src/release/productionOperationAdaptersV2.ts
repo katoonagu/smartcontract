@@ -69,7 +69,10 @@ import {
   readExternalConfig
 } from "../../scripts/captureTask0BPreflight";
 import { verifyRequiredSchema032, type Schema032Verification } from "../storage/schemaMigrations";
-import { ProductionOperationStoreV2 } from "./productionOperationStore";
+import {
+  ProductionOperationStoreV2,
+  type SettledRollbackHistoricalProofVerifierV2
+} from "./productionOperationStore";
 import {
   RUNTIME_CYCLE_NAMES,
   type RuntimeCycleName,
@@ -1480,7 +1483,10 @@ function boundRuntimeStartProof(root: string, binding: BoundRuntimeStartV2): Bou
     operationId: binding.operationId, operationClaimSha256: binding.operationClaimSha256,
     intentSha256: intent.sha256
   });
-  if (manager !== null && manager.sha256 === receipt.outputSha256) {
+  if (manager !== null) {
+    if (manager.sha256 !== receipt.outputSha256) {
+      throw new Error("production_runtime_start_manager_receipt_conflict");
+    }
     if (manager.startEvidence === null) throw new Error("production_runtime_start_evidence_missing");
     const runtime = manager.startEvidence.runtimeEvidence;
     if (runtime.runtimeSha !== target.runtimeSha || runtime.runtimeLabel !== target.runtimeLabel
@@ -1590,66 +1596,16 @@ function settledOperationStartBinding(
   operationId: string,
   operationClaimSha256: string
 ): BoundRuntimeStartV2 {
-  const claims = readdirSync(root).filter((name) => name.startsWith("production-operation-claim-")
-    && name.endsWith(".json")).map((name) => readCanonical(root, name, validateProductionOperationClaimV2))
-    .filter((claim) => claim.sha256 === operationClaimSha256);
-  if (claims.length !== 1) throw new Error("production_runtime_start_claim_ambiguous");
-  const claim = claims[0]!;
-  if (claim.value.operationId !== operationId || claim.value.operationKind !== "rollout") {
-    throw new Error("production_runtime_start_claim_binding_invalid");
-  }
-  const settlement = readCanonical(root, `production-operation-settlement-${operationId}.json`,
-    validateProductionOperationSettlementV2);
-  const cleanup = readCanonical(root, `production-operation-terminal-cleanup-${operationId}.json`,
-    validateProductionOperationTerminalCleanupV2);
-  if (settlement.value.operationId !== operationId || settlement.value.operationKind !== "rollout"
-      || settlement.value.claimSha256 !== claim.sha256
-      || settlement.value.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
-      || settlement.value.candidateSha !== claim.value.candidateSha
-      || settlement.value.releaseGenerationId !== claim.value.releaseGenerationId
-      || settlement.value.sourceManifestSha256 !== claim.value.sourceManifestSha256
-      || cleanup.value.operationId !== operationId || cleanup.value.terminalStateSha256 !== settlement.sha256) {
-    throw new Error("production_runtime_start_settlement_binding_invalid");
-  }
-  const directory = nestedArtifactDirectory(root, `production-operation-steps/${operationId}`);
-  const entries = directory === null ? [] : readdirSync(directory, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isFile() || !/^\d+-[a-z0-9_]+-v2\.json$/u.test(entry.name))) {
-    throw new Error("production_runtime_start_step_artifact_invalid");
-  }
-  const receipts = entries.map((entry) => {
-    const relativePath = `production-operation-steps/${operationId}/${entry.name}`;
-    const receipt = readCanonical(root, relativePath, validateProductionOrchestrationStepReceiptV2);
-    if (entry.name !== `${receipt.value.sequence}-${receipt.value.stepId}-v2.json`
-        || receipt.value.operationId !== operationId
-        || receipt.value.operationClaimSha256 !== claim.sha256
-        || receipt.value.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256) {
-      throw new Error("production_runtime_start_step_binding_invalid");
-    }
-    return { relativePath, sha256: receipt.sha256, receipt: receipt.value };
-  }).sort((left, right) => left.receipt.sequence - right.receipt.sequence);
-  const tips = new Map<string, { sha256: string; epoch: number }>();
-  for (const entry of receipts) {
-    tips.set(`${entry.receipt.operationLeaseEpoch}:${entry.receipt.operationLeaseSha256}`,
-      { sha256: entry.receipt.operationLeaseSha256, epoch: entry.receipt.operationLeaseEpoch });
-    if (entry.receipt.executionKind === "external_effect" && entry.receipt.stepIntentRelativePath !== null) {
-      const intent = readCanonical(root, entry.receipt.stepIntentRelativePath,
-        validateProductionOrchestrationStepIntentV2);
-      if (intent.sha256 !== entry.receipt.stepIntentSha256) {
-        throw new Error("production_runtime_start_step_intent_binding_invalid");
-      }
-      tips.set(`${intent.value.currentOperationLeaseEpoch}:${intent.value.currentOperationLeaseSha256}`,
-        { sha256: intent.value.currentOperationLeaseSha256, epoch: intent.value.currentOperationLeaseEpoch });
-    }
-  }
-  tips.set(`${settlement.value.finalLeaseEpoch}:${settlement.value.finalLeaseSha256}`,
-    { sha256: settlement.value.finalLeaseSha256, epoch: settlement.value.finalLeaseEpoch });
-  const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
-  return { operationKind: "rollout", operationId, operationClaimSha256: claim.sha256,
-    authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
-    releaseGenerationId: claim.value.releaseGenerationId,
-    sourceManifestSha256: claim.value.sourceManifestSha256,
-    releaseFreezeIdentitySha256: freeze.sha256, lineageLeaseTips: [...tips.values()],
-    completedStepReceipts: receipts };
+  const verified = new ProductionOperationStoreV2(root)
+    .verifyFailedSettledRolloutForRecovery(operationId, operationClaimSha256);
+  return { operationKind: "rollout", operationId: verified.operationId,
+    operationClaimSha256: verified.operationClaimSha256,
+    authorityConsumptionSha256: verified.authorityConsumptionSha256,
+    releaseGenerationId: verified.releaseGenerationId,
+    sourceManifestSha256: verified.sourceManifestSha256,
+    releaseFreezeIdentitySha256: verified.releaseFreezeIdentitySha256,
+    lineageLeaseTips: verified.lineageLeaseTips,
+    completedStepReceipts: verified.completedStepReceipts };
 }
 
 async function issueRuntimeAuthority(
@@ -2118,9 +2074,29 @@ function exactRuntimeEvidenceForOperationStep(
     && intent.value.relativePath === `${directory}/${intent.value.sequence}-${stepId}-1-v2.json`);
   if (matches.length > 1) throw new Error("production_failed_runtime_intent_ambiguous");
   const intent = matches[0];
-  return intent ? actualRuntimeEvidence(root, RUNTIME_COMMAND[stepId], stepId, {
+  if (!intent) return null;
+  const manager = actualRuntimeEvidence(root, RUNTIME_COMMAND[stepId], stepId, {
     operationId, operationClaimSha256, intentSha256: intent.sha256
-  }) : null;
+  });
+  if (manager === null) return null;
+  const receiptRelativePath = `production-operation-steps/${operationId}/${intent.value.sequence}-${stepId}-v2.json`;
+  let receiptPath: string | null = null;
+  try { receiptPath = safeArtifactRelativePath(root, receiptRelativePath); }
+  catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
+  }
+  if (receiptPath !== null && existsSync(receiptPath)) {
+    const receipt = readCanonical(root, receiptRelativePath, validateProductionOrchestrationStepReceiptV2);
+    if (receipt.value.operationId !== operationId
+        || receipt.value.operationClaimSha256 !== operationClaimSha256
+        || receipt.value.sequence !== intent.value.sequence || receipt.value.stepId !== stepId
+        || receipt.value.stepIntentRelativePath !== intent.value.relativePath
+        || receipt.value.stepIntentSha256 !== intent.sha256) {
+      throw new Error("production_failed_runtime_receipt_binding_invalid");
+    }
+    assertRuntimeStartReceiptProofBindingV2(receipt.value, manager.sha256);
+  }
+  return manager;
 }
 
 function failedOperationBinding(root: string, failure: ReturnType<typeof validateProductionFailureEvidenceV2>): {
@@ -2802,6 +2778,102 @@ async function assertFreshRollbackTopologyState(
   assertOwnedObservationContinuityV2(before, after);
 }
 
+export function verifySettledRollbackHistoricalProofsV2(
+  rootInput: string,
+  input: Parameters<SettledRollbackHistoricalProofVerifierV2>[0]
+): void {
+  const root = assertTrustedArtifactRootPathV2(rootInput);
+  const failure = readCanonical(root, "production-failure-evidence-v2.json",
+    validateProductionFailureEvidenceV2);
+  const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+  if (failure.sha256 !== input.failureEvidenceSha256
+      || failure.value.candidateSha !== input.candidateSha
+      || failure.value.releaseFreezeIdentitySha256 !== freeze.sha256
+      || freeze.value.releaseGenerationId !== input.releaseGenerationId) {
+    throw new Error("production_settled_rollback_failure_binding_invalid");
+  }
+  const topologyNames = readdirSync(root).filter((name) =>
+    name.startsWith(`production-rollback-topology-${input.operationId}-`) && name.endsWith(".json"));
+  if (topologyNames.length !== 1) throw new Error("production_settled_rollback_topology_ambiguous");
+  const topology = readCanonical(root, topologyNames[0]!, validateRuntimeRollbackTopologyEvidenceV2);
+  if (topologyNames[0]
+        !== `production-rollback-topology-${input.operationId}-${topology.value.topologySnapshotSha256}.json`
+      || topology.value.failureEvidenceSha256 !== failure.sha256
+      || topology.value.releaseFreezeIdentitySha256 !== freeze.sha256) {
+    throw new Error("production_settled_rollback_topology_binding_invalid");
+  }
+  assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(topology.value, {
+    lease: { operationId: input.operationId, candidateSha: input.candidateSha,
+      releaseGenerationId: input.releaseGenerationId, sourceManifestSha256: input.sourceManifestSha256,
+      operationDeadlineAt: input.operationDeadlineAt },
+    leaseSha256: topology.value.operationLeaseSha256,
+    claim: { authorityConsumptionSha256: input.authorityConsumptionSha256,
+      authorityConsumption: { expiresAt: input.authorityExpiresAt } },
+    claimSha256: input.operationClaimSha256, lineageLeaseTips: input.lineageLeaseTips
+  });
+  const window = topology.value.selectedWindow;
+  if (window.failedGateId !== input.outcome.failedGateId) {
+    throw new Error("production_settled_rollback_window_outcome_binding_invalid");
+  }
+  const failed = failedOperationBinding(root, failure.value);
+  const previousStop = () => exactRuntimeEvidenceForOperationStep(root, failed.operationId,
+    failed.operationClaimSha256, "stop_previous")?.sha256 ?? null;
+  const candidateStart = () => rollbackCandidateStartProof(root, failure.value)?.proofSha256 ?? null;
+  const prior = () => loadPriorAbandonedRollbackHistory(root, {
+    failureEvidenceSha256: failure.sha256, releaseFreezeIdentitySha256: freeze.sha256,
+    candidateSha: input.candidateSha, releaseGenerationId: input.releaseGenerationId,
+    sourceManifestSha256: input.sourceManifestSha256
+  });
+  if (window.kind === "previous_runtime_restarted_without_candidate") {
+    const proof = previousStop();
+    if (input.outcome.kind !== "previous_runtime_restarted_without_candidate" || proof === null
+        || window.previousStopEvidenceSha256 !== proof
+        || input.outcome.previousStopEvidenceSha256 !== proof) {
+      throw new Error("production_settled_rollback_previous_stop_proof_invalid");
+    }
+    return;
+  }
+  if (window.kind === "previous_already_restarted_without_candidate") {
+    const history = prior();
+    const stopProof = previousStop();
+    const startProof = history?.runtimeStartProof?.()?.proofSha256 ?? null;
+    if (input.outcome.kind !== "previous_runtime_restarted_without_candidate"
+        || stopProof === null || startProof === null
+        || !history?.completedStepIds.has("restart_previous")
+        || window.previousStopEvidenceSha256 !== stopProof
+        || input.outcome.previousStopEvidenceSha256 !== stopProof
+        || window.previousStartEvidenceSha256 !== startProof
+        || input.outcome.previousStartEvidenceSha256 !== startProof) {
+      throw new Error("production_settled_rollback_previous_restart_history_invalid");
+    }
+    return;
+  }
+  if (window.kind === "previous_runtime_retained") {
+    throw new Error("production_settled_rollback_window_outcome_binding_invalid");
+  }
+  const startProof = candidateStart();
+  if (input.outcome.kind !== "candidate_replaced_with_previous" || startProof === null
+      || window.candidateStartEvidenceSha256 !== startProof
+      || input.outcome.candidateStartEvidenceSha256 !== startProof) {
+    throw new Error("production_settled_rollback_candidate_start_proof_invalid");
+  }
+  if (window.kind === "candidate_replaced_with_previous") return;
+  const history = prior();
+  const stopProof = history?.proofSha256("stop_candidate") ?? null;
+  if (stopProof === null || !history?.completedStepIds.has("stop_candidate")
+      || window.candidateStopEvidenceSha256 !== stopProof
+      || input.outcome.candidateStopEvidenceSha256 !== stopProof) {
+    throw new Error("production_settled_rollback_candidate_stop_history_invalid");
+  }
+  if (window.kind === "candidate_already_stopped_previous_not_started") return;
+  const previousStart = history.runtimeStartProof?.()?.proofSha256 ?? null;
+  if (previousStart === null || !history.completedStepIds.has("start_previous")
+      || window.previousStartEvidenceSha256 !== previousStart
+      || input.outcome.previousStartEvidenceSha256 !== previousStart) {
+    throw new Error("production_settled_rollback_previous_start_history_invalid");
+  }
+}
+
 export function assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(
   evidence: RuntimeRollbackTopologyEvidenceV2,
   current: Readonly<{
@@ -2981,6 +3053,9 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
   let selectedRollbackTopologyEvidence: RuntimeRollbackTopologyEvidenceV2 | null = null;
   return {
     now: () => new Date().toISOString(),
+    verifySettledRollbackHistoricalProofs(input) {
+      verifySettledRollbackHistoricalProofsV2(artifactRoot, input);
+    },
     async loadReleaseContext(root) {
       if (root !== artifactRoot) throw new Error("production_artifact_root_changed");
       const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);

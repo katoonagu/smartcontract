@@ -22,7 +22,8 @@ import { canonicalBytesV2 } from "./releaseRootWriterStore";
 import {
   ProductionOperationStoreV2,
   type BegunProductionOperationV2,
-  type ProductionOperationStoreRecordV2
+  type ProductionOperationStoreRecordV2,
+  type SettledRollbackHistoricalProofVerifierV2
 } from "./productionOperationStore";
 
 type ProductionDependenciesV2 = {
@@ -127,6 +128,7 @@ export type ProtectedProductionOperationAdaptersV2 = Readonly<{
   prepareEffect(input: ProtectedProductionEffectPreparationInputV2): Promise<string>;
   executeEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2>;
   reconcileEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2 | null>;
+  verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2;
   resolveRollbackContext?(input: Readonly<{ artifactRoot: string; operationId: string }>): Promise<{
     window: ProtectedRollbackWindowV2;
     failureEvidenceSha256: string;
@@ -204,7 +206,8 @@ export type ProtectedProductionOperationStoreV2 = Readonly<{
   persistTerminalArtifactIndex?(value: unknown, evaluatedAt: string): ProductionOperationStoreRecordV2;
   publishTerminalArtifacts?(operationId: string): void;
   persistSettlement(value: unknown): ProductionOperationStoreRecordV2;
-  resumeCompletedSettlementBeforeBegin?(operationKind: ProductionOperationKindV2, evaluatedAt: string): null | Readonly<{
+  resumeCompletedSettlementBeforeBegin?(operationKind: ProductionOperationKindV2, evaluatedAt: string,
+    verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2): null | Readonly<{
     result: "passed" | "failed";
     operationId: string;
     finalLeaseEpoch: number;
@@ -213,7 +216,8 @@ export type ProtectedProductionOperationStoreV2 = Readonly<{
     }>[] }> | null;
     orchestrationReceiptSha256: string | null;
   }>;
-  resumeCompletedSettlement?(operationId: string, evaluatedAt: string): null | Readonly<{
+  resumeCompletedSettlement?(operationId: string, evaluatedAt: string,
+    verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2): null | Readonly<{
     settlement: Readonly<{ finalLeaseEpoch: number; result: "passed" | "failed" }>;
     orchestrationReceipt: Readonly<{ completedStepReceipts: readonly Readonly<{
       receipt: Readonly<{ stepId: string }>;
@@ -530,7 +534,7 @@ export async function executeProtectedProductionOperationV2(
   const adapters = dependencies.adapters;
   const store = dependencies.store ?? new ProductionOperationStoreV2(input.artifactRoot);
   const preBeginSettlement = store.resumeCompletedSettlementBeforeBegin?.(
-    input.operationKind, adapters.now()) ?? null;
+    input.operationKind, adapters.now(), adapters.verifySettledRollbackHistoricalProofs) ?? null;
   if (preBeginSettlement !== null) {
     if ((preBeginSettlement.result !== "passed" && input.operationKind !== "recovery")
         || preBeginSettlement.orchestrationReceipt === null
@@ -556,7 +560,8 @@ export async function executeProtectedProductionOperationV2(
     evaluatedAt: beganAt,
     recoveryFromAbandonedOperationSha256: recoveryContext?.priorTerminalAbandonedSha256 ?? null
   });
-  const completedSettlement = store.resumeCompletedSettlement?.(begun.lease.operationId, adapters.now()) ?? null;
+  const completedSettlement = store.resumeCompletedSettlement?.(begun.lease.operationId, adapters.now(),
+    adapters.verifySettledRollbackHistoricalProofs) ?? null;
   if (completedSettlement !== null) {
     if (completedSettlement.settlement.result !== "passed"
         || completedSettlement.orchestrationReceipt === null

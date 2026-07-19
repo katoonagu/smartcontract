@@ -175,6 +175,33 @@ function rolloutPrefix(length: number) {
 }
 
 describe("production effect crash windows", () => {
+  it("threads the historical proof verifier through rollback settlement replay", async () => {
+    const verifySettledRollbackHistoricalProofs = vi.fn();
+    const store = {
+      resumeCompletedSettlementBeforeBegin(operationKind: string, _evaluatedAt: string, verify: any) {
+        expect(operationKind).toBe("rollback");
+        expect(verify).toBe(verifySettledRollbackHistoricalProofs);
+        verify({ operationId: `production-rollback-${"f".repeat(64)}`,
+          operationClaimSha256: "1".repeat(64), authorityConsumptionSha256: "2".repeat(64),
+          authorityExpiresAt: "2026-07-19T00:30:00.000Z", candidateSha: SHA40,
+          releaseGenerationId: "generation-1", sourceManifestSha256: "3".repeat(64),
+          operationDeadlineAt: "2026-07-19T00:20:00.000Z", lineageLeaseTips: [],
+          failureEvidenceSha256: "4".repeat(64), outcome: {
+            kind: "previous_runtime_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
+            previousStopEvidenceSha256: "5".repeat(64), noCandidateStartEvidenceSha256: "6".repeat(64),
+            previousStartEvidenceSha256: "7".repeat(64)
+          } });
+        return { result: "passed", operationId: `production-rollback-${"f".repeat(64)}`,
+          finalLeaseEpoch: 1, orchestrationReceipt: { completedStepReceipts: [] },
+          orchestrationReceiptSha256: "8".repeat(64) };
+      }
+    } as any;
+    const adapters = { now: () => NOW, verifySettledRollbackHistoricalProofs } as any;
+    await expect(executeProtectedProductionOperationV2({ artifactRoot: "C:/protected",
+      operationKind: "rollback" }, { store, adapters })).resolves.toMatchObject({ completedSteps: [] });
+    expect(verifySettledRollbackHistoricalProofs).toHaveBeenCalledOnce();
+  });
+
   it.each([[4, 2], [5, 1], [9, 0]] as const)(
     "[PRODUCTION-COMPLETED-PREFIX] hydrates %i exact receipts and executes only %i remaining effects",
     async (prefixLength, remainingEffects) => {
