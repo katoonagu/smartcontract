@@ -906,13 +906,15 @@ async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: st
         statement_timeout: timeoutMs, query_timeout: timeoutMs, application_name: "plan5_production_live_proof" });
       await client.connect();
       let transactionStarted = false;
+      const boundedQuery = async (text: string, values: unknown[] = []) =>
+        runWithinProductionObservationBoundV2({ hardDeadlineAt, configuredTimeoutMs: timeoutMs,
+          async run(remainingMs) {
+            await client.query({ text: `set statement_timeout to ${remainingMs}`,
+              query_timeout: remainingMs } as any);
+            return client.query({ text, values, query_timeout: productionObservationTimeoutMsV2(
+              hardDeadlineAt, timeoutMs) } as any);
+          } });
       try {
-        const boundedQuery = async (text: string, values: unknown[] = []) => {
-          const timeout = productionObservationTimeoutMsV2(hardDeadlineAt, timeoutMs);
-          await client.query({ text: `set statement_timeout to ${timeout}`, query_timeout: timeout } as any);
-          return client.query({ text, values,
-            query_timeout: productionObservationTimeoutMsV2(hardDeadlineAt, timeoutMs) } as any);
-        };
         await boundedQuery("begin isolation level repeatable read read only");
         transactionStarted = true;
         const expected = external.config.productionDatabaseExpected;
@@ -935,8 +937,13 @@ async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: st
         return { identity, invariants, terminalLegacyUnchanged: true as const };
       } catch (error) {
         if (transactionStarted) {
-          try { await client.query("rollback"); }
-          catch (rollbackError) { throw new AggregateError([error, rollbackError], "production_live_proof_rollback_failed"); }
+          try { await boundedQuery("rollback"); }
+          catch (rollbackError) {
+            if (!(rollbackError instanceof Error)
+                || !rollbackError.message.includes("production_observation_bound_reached")) {
+              throw new AggregateError([error, rollbackError], "production_live_proof_rollback_failed");
+            }
+          }
         }
         throw error;
       } finally {

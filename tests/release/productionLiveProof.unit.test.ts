@@ -302,6 +302,15 @@ describe("production live proof", () => {
     expect(() => productionObservationTimeoutMsV2(deadline, 15_000, () => now))
       .toThrow(/observation.*bound/i);
     expect(queryTimeouts).toHaveLength(2);
+
+    let rollbackQueries = 0;
+    await expect(runWithinProductionObservationBoundV2({
+      hardDeadlineAt: deadline,
+      configuredTimeoutMs: 15_000,
+      nowMs: () => now,
+      async run() { rollbackQueries += 1; }
+    })).rejects.toThrow(/observation.*bound/i);
+    expect(rollbackQueries).toBe(0);
   });
 
   it("validates exact runtime and navigation response schemas and hash bindings", async () => {
