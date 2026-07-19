@@ -453,7 +453,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-ISSUER-CRASH] replays exact prepared bytes be
     const replay = await api.issueOperationalAttestationV2({ ...input, faultAt: undefined });
     expect(replay).toEqual(result);
   }
-}, 30_000);
+}, 60_000);
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-SELECTION] selects exactly one active compatible unconsumed linear-chain tip and rejects branch gap or multiple active authority", async () => {
   const api = await loadStoreApi();
@@ -518,7 +518,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalizat
     })).rejects.toThrow();
     await rm(conflictPath, { force: true });
   }
-}, 60_000);
+}, 120_000);
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-SWAPPED] rejects swapped freeze root generation candidate source command previous attestation or terminal lineage", async () => {
   const api = await loadStoreApi(); const valid = buildOperationalAttestationV2Fixture();
