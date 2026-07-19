@@ -1297,7 +1297,8 @@ function actualRuntimeEvidence(root: string, commandId: RuntimeManagerCommandId,
   exactBinding?: Readonly<{ operationId: string; operationClaimSha256: string; intentSha256: string }>): { sha256: string; bytes: Buffer;
   effectIdentitySha256: string; generationId: string; commandId: string; authoritySha256: string;
   authority: Task0BProductionRuntimeAuthorityV1;
-  startEvidence: ReturnType<typeof validateRuntimeManagerStartEffectEvidenceV2> | null } | null {
+  startEvidence: ReturnType<typeof validateRuntimeManagerStartEffectEvidenceV2> | null;
+  stopEvidence: ReturnType<typeof validateRuntimeManagerStopEffectEvidenceV2> | null } | null {
   const match = selectExactRuntimeAuthorityV2(runtimeAuthorities(root, commandId, true), exactStepId, exactBinding);
   if (match === null) return null;
   const action = commandId.includes("start") || commandId.includes("rollback") ? "start" : "stop";
@@ -1317,8 +1318,10 @@ function actualRuntimeEvidence(root: string, commandId: RuntimeManagerCommandId,
   const startEvidence = action === "start"
     ? validateRuntimeManagerStartEffectEvidenceV2(parsed, expected as Parameters<typeof validateRuntimeManagerStartEffectEvidenceV2>[1])
     : null;
-  const validated = startEvidence ?? validateRuntimeManagerStopEffectEvidenceV2(parsed,
-    expected as Parameters<typeof validateRuntimeManagerStopEffectEvidenceV2>[1]);
+  const stopEvidence = action === "stop" ? validateRuntimeManagerStopEffectEvidenceV2(parsed,
+    expected as Parameters<typeof validateRuntimeManagerStopEffectEvidenceV2>[1]) : null;
+  const validated = startEvidence ?? stopEvidence;
+  if (validated === null) throw new Error("production_runtime_effect_evidence_kind_invalid");
   if (!bytes.equals(canonicalRuntimeManagerArtifactBytes(validated))) {
     throw new Error("production_runtime_effect_evidence_noncanonical");
   }
@@ -1328,7 +1331,7 @@ function actualRuntimeEvidence(root: string, commandId: RuntimeManagerCommandId,
   return { bytes, sha256: hash(bytes), effectIdentitySha256: match.authority.intendedExternalEffectSha256,
     generationId: match.generationId, commandId, authoritySha256: match.sha256,
     authority: match.authority,
-    startEvidence };
+    startEvidence, stopEvidence };
 }
 
 type BoundRuntimeStartV2 = Readonly<{
@@ -1351,6 +1354,34 @@ type BoundRuntimeStartProofV2 = Readonly<{
   authoritySha256: string;
   proofSha256: string;
 }>;
+
+export function assertPriorRollbackManagerStopBindingV2(input: Readonly<{
+  startProof: BoundRuntimeStartProofV2;
+  authority: Task0BProductionRuntimeAuthorityV1;
+  stopEvidence: ReturnType<typeof validateRuntimeManagerStopEffectEvidenceV2>;
+  exactStartEvidencePath: string;
+  intentPreparedAt: string;
+  receiptStartedAt: string;
+  receiptFinishedAt: string;
+  operationDeadlineAt: string;
+}>): void {
+  const stop = input.stopEvidence;
+  if (input.authority.startEvidencePath !== input.exactStartEvidencePath
+      || input.authority.startEvidenceSha256 !== input.startProof.proofSha256
+      || stop.startEvidencePath !== input.exactStartEvidencePath
+      || stop.startEvidenceSha256 !== input.startProof.proofSha256
+      || stop.stoppedProcessId !== input.startProof.candidate.processId
+      || stop.stoppedProcessStartedAt !== input.startProof.candidate.processStartedAt
+      || stop.forcePolicy !== input.authority.forcePolicy
+      || Date.parse(stop.stoppedAt) < Date.parse(input.intentPreparedAt)
+      || Date.parse(stop.stoppedAt) < Date.parse(input.authority.issuedAt)
+      || Date.parse(stop.stoppedAt) < Date.parse(input.receiptStartedAt)
+      || Date.parse(stop.stoppedAt) >= Date.parse(input.authority.expiresAt)
+      || Date.parse(stop.stoppedAt) >= Date.parse(input.operationDeadlineAt)
+      || Date.parse(stop.stoppedAt) > Date.parse(input.receiptFinishedAt)) {
+    throw new Error("production_prior_rollback_manager_stop_binding_invalid");
+  }
+}
 
 export function assertRuntimeStartReceiptProofBindingV2(
   receipt: Readonly<{ stepId: string; outputSha256: string; observedStateSha256: string }>,
@@ -2086,7 +2117,7 @@ type PriorAbandonedRollbackBindingV2 = Readonly<{
 export function mergePriorAbandonedRollbackAttemptsV2(
   attempts: readonly PriorAbandonedRollbackAttemptV2[],
   expected: PriorAbandonedRollbackBindingV2
-): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256"> {
+): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256" | "runtimeStartProof"> {
   for (const attempt of attempts) {
     const topologyMissing = attempt.failureEvidenceSha256 === null
       || attempt.releaseFreezeIdentitySha256 === null;
@@ -2112,7 +2143,23 @@ export function mergePriorAbandonedRollbackAttemptsV2(
     throw new Error("production_prior_rollback_history_ambiguous");
   }
   const stepIds = new Set(matching.flatMap((attempt) => [...attempt.stepIds]));
-  return { stepIds, proofSha256(stepId) {
+  const latestRuntimeStartProof = () => {
+    for (const attempt of [...matching].reverse()) {
+      const proof = attempt.runtimeStartProof?.() ?? null;
+      if (proof !== null) return proof;
+    }
+    return null;
+  };
+  return { stepIds, runtimeStartProof: latestRuntimeStartProof, proofSha256(stepId) {
+    if (stepId === "start_previous" || stepId === "restart_previous") {
+      const runtimeProof = latestRuntimeStartProof();
+      if (runtimeProof !== null) return runtimeProof.proofSha256;
+      for (const attempt of [...matching].reverse()) {
+        const proof = attempt.proofSha256(stepId);
+        if (proof !== null) return proof;
+      }
+      return null;
+    }
     const proofs = matching.map((attempt) => attempt.proofSha256(stepId))
       .filter((value): value is string => value !== null);
     if (new Set(proofs).size > 1) throw new Error("production_prior_rollback_proof_conflict");
@@ -2124,18 +2171,7 @@ export function selectLatestPriorAbandonedRollbackRuntimeStartProofV2(
   attempts: readonly PriorAbandonedRollbackAttemptV2[],
   expected: PriorAbandonedRollbackBindingV2
 ): BoundRuntimeStartProofV2 | null {
-  if (mergePriorAbandonedRollbackAttemptsV2(attempts, expected) === null) return null;
-  const matching = attempts.filter((attempt) => attempt.failureEvidenceSha256 === expected.failureEvidenceSha256
-    && attempt.releaseFreezeIdentitySha256 === expected.releaseFreezeIdentitySha256
-    && attempt.candidateSha === expected.candidateSha
-    && attempt.releaseGenerationId === expected.releaseGenerationId
-    && attempt.sourceManifestSha256 === expected.sourceManifestSha256)
-    .sort((left, right) => Date.parse(right.abandonedAt) - Date.parse(left.abandonedAt));
-  for (const attempt of matching) {
-    const proof = attempt.runtimeStartProof?.() ?? null;
-    if (proof !== null) return proof;
-  }
-  return null;
+  return mergePriorAbandonedRollbackAttemptsV2(attempts, expected)?.runtimeStartProof?.() ?? null;
 }
 
 function loadPriorAbandonedRollbackAttempt(
@@ -2391,6 +2427,14 @@ function loadPriorAbandonedRollbackAttempt(
         intentSha256: intent.sha256
       });
       if (manager !== null) {
+        const stop = manager.stopEvidence;
+        const exactStartEvidencePath = runtimeGenerationEvidencePath("start", candidateStart.generationId,
+          candidateStart.commandId, candidateStart.authoritySha256);
+        if (stop === null) throw new Error("production_prior_rollback_manager_stop_binding_invalid");
+        assertPriorRollbackManagerStopBindingV2({ startProof: candidateStart,
+          authority: manager.authority, stopEvidence: stop, exactStartEvidencePath,
+          intentPreparedAt: intent.value.preparedAt, receiptStartedAt: receipt.value.startedAt,
+          receiptFinishedAt: receipt.value.finishedAt, operationDeadlineAt: claim.value.operationDeadlineAt });
         assertRuntimeStartReceiptProofBindingV2(receipt.value, manager.sha256);
         return manager.sha256;
       }
@@ -2420,7 +2464,7 @@ function loadPriorAbandonedRollbackAttempt(
 function loadPriorAbandonedRollbackHistory(
   root: string,
   expected: PriorAbandonedRollbackBindingV2
-): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256"> {
+): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256" | "runtimeStartProof"> {
   const terminalNames = readdirSync(root).filter((name) =>
     /^production-operation-terminal-abandoned-production-rollback-[0-9a-f]{64}\.json$/u.test(name));
   return mergePriorAbandonedRollbackAttemptsV2(
@@ -2610,7 +2654,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
     if (priorRollback?.stepIds.has("start_previous")) {
       const candidateStart = candidateStartHistory();
       const candidateStopSha256 = priorRollback.proofSha256("stop_candidate") ?? snapshotSha256;
-      const previousStartSha256 = priorRollback.proofSha256("start_previous") ?? snapshotSha256;
+      const previousStartSha256 = priorRollback.runtimeStartProof?.()?.proofSha256 ?? snapshotSha256;
       if (!candidateStart || !priorRollback.stepIds.has("stop_candidate")) {
         throw new Error("production_rollback_completed_history_missing");
       }
@@ -2628,7 +2672,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
       if (!previousStop) throw new Error("production_rollback_completed_history_missing");
       window = { kind: "previous_already_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
         previousStopEvidenceSha256: previousStop.sha256,
-        previousStartEvidenceSha256: priorRollback.proofSha256("restart_previous") ?? snapshotSha256 };
+        previousStartEvidenceSha256: priorRollback.runtimeStartProof?.()?.proofSha256 ?? snapshotSha256 };
     } else {
       throw new Error("production_rollback_completed_history_missing");
     }

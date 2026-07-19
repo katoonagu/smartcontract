@@ -13,6 +13,7 @@ import {
 } from "../../src/release/productionReleaseOrchestratorV2";
 import {
   assertOwnedObservationContinuityV2,
+  assertPriorRollbackManagerStopBindingV2,
   assertRollbackFailureTransitionLineageV2,
   assertRuntimeStartReceiptProofBindingV2,
   mergePriorAbandonedRollbackAttemptsV2,
@@ -312,13 +313,15 @@ describe("production effect crash windows", () => {
         runtimeStartProof: () => runtimeProof(101, "9".repeat(64)) },
       { ...expected, operationId: `production-rollback-${"2".repeat(64)}`,
         abandonedAt: "2026-07-19T00:02:00.000Z", attemptedExternalEffect: true,
-        stepIds: new Set(["start_previous"]), proofSha256: () => "9".repeat(64),
+        stepIds: new Set(["start_previous"]), proofSha256: () => "a".repeat(64),
         runtimeStartProof: () => runtimeProof(202, "a".repeat(64)) },
       { ...expected, operationId: `production-rollback-${"3".repeat(64)}`,
         abandonedAt: "2026-07-19T00:03:00.000Z", attemptedExternalEffect: false,
         stepIds: new Set<string>(), proofSha256: () => null }
     ];
     expect(selectLatestPriorAbandonedRollbackRuntimeStartProofV2(attempts, expected)?.candidate.processId).toBe(202);
+    expect(mergePriorAbandonedRollbackAttemptsV2(attempts, expected)?.proofSha256("start_previous"))
+      .toBe("a".repeat(64));
   });
 
   it("accepts an own heartbeat across topology observation but rejects a foreign owner", () => {
@@ -359,6 +362,32 @@ describe("production effect crash windows", () => {
       observedStateSha256 }, proofSha256)).not.toThrow();
     expect(() => assertRuntimeStartReceiptProofBindingV2({ stepId: "start_candidate", outputSha256: proofSha256,
       observedStateSha256 }, "9".repeat(64))).toThrow(/receipt|proof|binding/i);
+  });
+
+  it("binds historical manager stop evidence to the exact candidate start identity and strict time window", () => {
+    const startEvidencePath = `runtime-start-evidence-generation-1-runtime_manager_start_candidate-${"1".repeat(64)}.json`;
+    const startProof = { candidate: { processId: 101, processStartedAt: "2026-07-19T00:00:01.000Z",
+      runtimeSha: SHA40, runtimeLabel: "candidate", commandLineSha256: "2".repeat(64),
+      executablePathSha256: "3".repeat(64), worktreePathFingerprintSha256: "4".repeat(64),
+      entrypointPathFingerprintSha256: "5".repeat(64) }, generationId: "generation-1",
+      commandId: "runtime_manager_start_candidate" as const, authoritySha256: "1".repeat(64),
+      proofSha256: "6".repeat(64) };
+    const authority = { startEvidencePath, startEvidenceSha256: startProof.proofSha256,
+      forcePolicy: "graceful_only", issuedAt: "2026-07-19T00:01:00.000Z",
+      expiresAt: "2026-07-19T00:05:00.000Z" } as any;
+    const stopEvidence = { startEvidencePath, startEvidenceSha256: startProof.proofSha256,
+      stoppedProcessId: 101, stoppedProcessStartedAt: startProof.candidate.processStartedAt,
+      stoppedAt: "2026-07-19T00:02:00.000Z", forcePolicy: "graceful_only" } as any;
+    const input = { startProof, authority, stopEvidence, exactStartEvidencePath: startEvidencePath,
+      intentPreparedAt: "2026-07-19T00:00:30.000Z", receiptStartedAt: "2026-07-19T00:00:45.000Z",
+      receiptFinishedAt: "2026-07-19T00:02:30.000Z", operationDeadlineAt: "2026-07-19T00:10:00.000Z" };
+    expect(() => assertPriorRollbackManagerStopBindingV2(input)).not.toThrow();
+    expect(() => assertPriorRollbackManagerStopBindingV2({ ...input,
+      stopEvidence: { ...stopEvidence, stoppedProcessId: 202 } })).toThrow(/manager.stop.binding/i);
+    expect(() => assertPriorRollbackManagerStopBindingV2({ ...input,
+      stopEvidence: { ...stopEvidence, startEvidenceSha256: "7".repeat(64) } })).toThrow(/manager.stop.binding/i);
+    expect(() => assertPriorRollbackManagerStopBindingV2({ ...input,
+      stopEvidence: { ...stopEvidence, stoppedAt: authority.expiresAt } })).toThrow(/manager.stop.binding/i);
   });
 
   for (const scenario of [
