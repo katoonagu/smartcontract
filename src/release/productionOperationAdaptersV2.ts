@@ -54,6 +54,7 @@ import {
 } from "../../scripts/manageTask0BRuntime";
 import {
   countTask0BRuntimeCandidates,
+  observeTask0BRuntimeTopologySnapshotV2,
   observeTask0BProductionDatabase,
   observeWindowsRuntimeProcess,
   readExternalConfig
@@ -67,6 +68,11 @@ import {
   type RuntimeProofV1
 } from "../runtime/runtimeLiveProof";
 import { formatRuntimeVersion, validateRuntimeVersion } from "../runtime/runtimeVersion";
+import {
+  resolveRuntimeEffectReconciliationV2,
+  validateRuntimeEffectReconciliationEvidenceV2,
+  type RuntimeEffectReconciliationInputV2
+} from "./runtimeEffectReconciliationV2";
 
 const execFileAsync = promisify(execFile);
 const MAX_CAPTURE_BYTES = 1024 * 1024;
@@ -1179,6 +1185,139 @@ async function executeRuntimeEffect(root: string, input: ProtectedProductionEffe
   return leafCapture(input, output);
 }
 
+function runtimePathFingerprint(path: string): string {
+  const canonical = resolve(path);
+  return hash(process.platform === "win32" ? canonical.toLowerCase() : canonical);
+}
+
+function runtimeReconciliationTarget(
+  root: string,
+  input: ProtectedProductionEffectExecutionInputV2
+): RuntimeEffectReconciliationInputV2["target"] {
+  const task0b = loadTask0B(root);
+  if (input.stepId === "stop_previous") {
+    return {
+      runtimeSha: task0b.previousRuntimeSha,
+      runtimeLabel: task0b.previousRuntimeLabel,
+      worktreePathFingerprintSha256: task0b.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+      entrypointPathFingerprintSha256: task0b.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+      exactProcessId: task0b.previousRuntimeIdentity.processId,
+      exactProcessStartedAt: task0b.previousRuntimeIdentity.processStartedAt
+    };
+  }
+  if (input.stepId === "stop_candidate") {
+    const started = actualRuntimeEvidence(root, "runtime_manager_start_candidate", "start_candidate")?.startEvidence;
+    if (!started) throw new Error("production_runtime_candidate_start_evidence_missing");
+    return {
+      runtimeSha: started.runtimeEvidence.runtimeSha,
+      runtimeLabel: started.runtimeEvidence.runtimeLabel,
+      worktreePathFingerprintSha256: started.runtimeEvidence.workingDirectoryFingerprintSha256,
+      entrypointPathFingerprintSha256: started.runtimeEvidence.entrypointPathFingerprintSha256,
+      exactProcessId: started.runtimeEvidence.processId,
+      exactProcessStartedAt: started.runtimeEvidence.processStartedAt
+    };
+  }
+  const previousTarget = input.stepId === "start_previous" || input.stepId === "restart_previous";
+  return previousTarget ? {
+    runtimeSha: task0b.previousRuntimeSha,
+    runtimeLabel: task0b.previousRuntimeLabel,
+    worktreePathFingerprintSha256: task0b.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+    entrypointPathFingerprintSha256: task0b.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+    exactProcessId: null,
+    exactProcessStartedAt: null
+  } : {
+    runtimeSha: task0b.candidateSha,
+    runtimeLabel: `master-${task0b.candidateSha.slice(0, 8)}`,
+    worktreePathFingerprintSha256: task0b.candidateWorktree.worktreePathFingerprintSha256,
+    entrypointPathFingerprintSha256: runtimePathFingerprint(resolve(process.cwd(), "src/index.ts")),
+    exactProcessId: null,
+    exactProcessStartedAt: null
+  };
+}
+
+function runtimeReconciliationInput(
+  input: ProtectedProductionEffectExecutionInputV2,
+  owned: ReturnType<ProductionOperationStoreV2["assertOwnedAndWithinBounds"]>,
+  observedAt: string,
+  target: RuntimeEffectReconciliationInputV2["target"]
+): RuntimeEffectReconciliationInputV2 {
+  if (owned.claimSha256 !== input.operationClaimSha256
+      || owned.claim.authorityConsumptionSha256 !== input.authorityConsumptionSha256
+      || input.intent.operationId !== input.operationId
+      || input.intent.operationClaimSha256 !== input.operationClaimSha256
+      || input.intent.authorityConsumptionSha256 !== input.authorityConsumptionSha256
+      || input.intent.sequence !== input.sequence || input.intent.stepId !== input.stepId
+      || input.intent.inputSha256 !== input.inputSha256
+      || input.intent.intendedExternalEffectSha256 !== input.intendedExternalEffectSha256
+      || input.intentSha256 !== releaseSha256V2(canonicalBytesV2(input.intent))) {
+    throw new Error("production_runtime_reconciliation_binding_invalid");
+  }
+  const desiredState = input.stepId === "stop_previous" || input.stepId === "stop_candidate"
+    ? "target_absent" as const : "target_singleton" as const;
+  return {
+    operationKind: input.operationKind,
+    operationId: input.operationId,
+    operationClaimSha256: input.operationClaimSha256,
+    authorityConsumptionSha256: input.authorityConsumptionSha256,
+    sequence: input.sequence,
+    stepId: input.stepId as RuntimeEffectReconciliationInputV2["stepId"],
+    intentRelativePath: input.intent.relativePath,
+    intentSha256: input.intentSha256,
+    intendedExternalEffectSha256: input.intendedExternalEffectSha256,
+    currentOperationLeaseSha256: owned.leaseSha256,
+    currentOperationLeaseEpoch: owned.lease.leaseEpoch,
+    authorityExpiresAt: owned.claim.authorityConsumption.expiresAt,
+    operationDeadlineAt: owned.lease.operationDeadlineAt,
+    observedAt,
+    desiredState,
+    effectNotBefore: input.intent.preparedAt,
+    target
+  };
+}
+
+async function reconcileRuntimeEffect(
+  root: string,
+  input: ProtectedProductionEffectExecutionInputV2
+): Promise<ProtectedProductionLeafResultV2 | null> {
+  const store = new ProductionOperationStoreV2(root);
+  const before = store.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+  const target = runtimeReconciliationTarget(root, input);
+  const relativePath = `production-runtime-effect-reconciliations/${input.operationId}/${input.sequence}-${input.stepId}-${input.intentSha256}-v2.json`;
+  let storedPath: string | null = null;
+  try { storedPath = safeArtifactRelativePath(root, relativePath); }
+  catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
+  }
+  if (storedPath !== null && existsSync(storedPath)) {
+    const stored = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
+    const expectedInput = runtimeReconciliationInput(input, before, stored.value.observedAt, target);
+    validateRuntimeEffectReconciliationEvidenceV2(stored.value, {
+      ...expectedInput,
+      topologySnapshotSha256: stored.value.topologySnapshotSha256,
+      targetIdentitySha256: releaseSha256V2(canonicalBytesV2(target)),
+      observedPostState: expectedInput.desiredState
+    });
+    return leafCapture(input, stored.bytes);
+  }
+  const hardDeadlineAt = productionObservationHardDeadlineV2(
+    before.lease.operationDeadlineAt,
+    before.claim.authorityConsumption.expiresAt
+  );
+  const topology = await observeTask0BRuntimeTopologySnapshotV2({
+    hardDeadlineAt,
+    configuredTimeoutMs: 10_000
+  });
+  const owned = store.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+  const reconciliationInput = runtimeReconciliationInput(input, owned, topology.observedAt, target);
+  const evidence = resolveRuntimeEffectReconciliationV2(reconciliationInput, topology);
+  if (evidence === null) return null;
+  const record = store.persistExclusive("runtime_effect_reconciliation", relativePath, evidence);
+  if (record.sha256 !== releaseSha256V2(canonicalBytesV2(evidence))) {
+    throw new Error("production_runtime_reconciliation_persistence_invalid");
+  }
+  return leafCapture(input, canonicalBytesV2(evidence));
+}
+
 function shaFromTask0B(root: string, field: "previousRuntimeIdentity"): string {
   const bytes = readFileSync(safeArtifactPath(root, "task0b-release-freeze.json"));
   const value = validateTask0BReleaseFreezeEvidence(JSON.parse(bytes.toString("utf8")));
@@ -1333,26 +1472,7 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
       return runtimeEffectIdentity(input, commandId);
     },
     executeEffect: (input) => executeRuntimeEffect(artifactRoot, input),
-    async reconcileEffect(input) {
-      const commandId = RUNTIME_COMMAND[input.stepId];
-      if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
-      const evidence = actualRuntimeEvidence(artifactRoot, commandId, input.stepId);
-      if (evidence === null || evidence.effectIdentitySha256 !== input.intent.intendedExternalEffectSha256) return null;
-      const authority = evidence.authority;
-      if (authority.operationKind !== input.operationKind || authority.operationId !== input.operationId
-          || authority.operationClaimSha256 !== input.operationClaimSha256
-          || authority.authorityConsumptionSha256 !== input.authorityConsumptionSha256
-          || authority.sequence !== input.sequence || authority.stepId !== input.stepId
-          || authority.inputSha256 !== input.inputSha256
-          || authority.intentSha256 !== input.intentSha256
-          || authority.intentRelativePath !== input.intent.relativePath
-          || authority.releaseFreezeIdentitySha256 !== input.releaseFreezeIdentitySha256
-          || authority.sourceManifestSha256 !== input.sourceManifestSha256
-          || releaseSha256V2(canonicalBytesV2(input.intent)) !== input.intentSha256) {
-        throw new Error("production_runtime_reconciliation_binding_invalid");
-      }
-      return leafCapture(input, evidence.bytes);
-    },
+    reconcileEffect: (input) => reconcileRuntimeEffect(artifactRoot, input),
     async resolveRollbackContext(root) {
       if (root !== artifactRoot) throw new Error("production_artifact_root_changed");
       const context = deriveRollbackContext(root);

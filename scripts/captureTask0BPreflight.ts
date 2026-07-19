@@ -21,6 +21,10 @@ import {
   REQUIRED_SCHEMA_VERSION,
   verifyRequiredSchema032
 } from "../src/storage/schemaMigrations";
+import {
+  validateRuntimeTopologySnapshotV2,
+  type RuntimeTopologySnapshotV2
+} from "../src/release/runtimeEffectReconciliationV2";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -28,6 +32,7 @@ const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1
 const CONFIG_FILENAME = "task0b-preflight-config.json";
 const EVIDENCE_FILENAME = "task0b-release-freeze.json";
 const MAX_CONFIG_BYTES = 64 * 1024;
+export const TASK0B_RUNTIME_ENTRYPOINT_PROCESS_PATTERN_V2 = "src[\\\\/]index\\.ts";
 const LEGACY_031_WALLET_APPROVAL_COLUMNS = [
   "watched_wallet_id", "token_contract", "spender_address", "amount_raw", "is_unlimited", "current_allowance_raw",
   "spender_type", "status", "last_approval_tx_hash", "last_approval_at", "risk_level", "risk_score", "risk_reasons",
@@ -884,6 +889,57 @@ export async function observeWindowsRuntimeProcess(
     entrypointPathFingerprintSha256: hash(canonicalPathKey(physicalEntrypoint)),
     runtimeProcessCount: processes.length
   };
+}
+
+/** One OS process enumeration, followed only by identity checks for that immutable snapshot. */
+export async function observeTask0BRuntimeTopologySnapshotV2(
+  bounded: Task0BBoundedProbeOptions
+): Promise<RuntimeTopologySnapshotV2> {
+  if (process.platform !== "win32") throw new Error("task0b_runtime_process_probe_unsupported");
+  const processJson = await run("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    `$items = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match '${TASK0B_RUNTIME_ENTRYPOINT_PROCESS_PATTERN_V2}' } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; processStartedAt = $_.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$_.CommandLine; executablePath = [string]$_.ExecutablePath } }); ConvertTo-Json -Compress -InputObject $items`
+  ], undefined, undefined, task0BProbeTimeout(bounded));
+  const observedAt = new Date((bounded.nowMs ?? Date.now)()).toISOString();
+  let processes: unknown;
+  try { processes = JSON.parse(processJson); }
+  catch (error) { throw new Error("task0b_runtime_topology_json_invalid", { cause: error }); }
+  if (!Array.isArray(processes)) throw new Error("task0b_runtime_topology_invalid");
+  const candidates = await Promise.all(processes.map(async (raw) => {
+    const item = record(raw, "task0b_runtime_topology_candidate");
+    if (!Number.isSafeInteger(item.processId) || Number(item.processId) < 1
+        || typeof item.processStartedAt !== "string" || typeof item.commandLine !== "string"
+        || typeof item.executablePath !== "string") throw new Error("task0b_runtime_topology_candidate_invalid");
+    const startedAt = new Date(item.processStartedAt);
+    if (!Number.isFinite(startedAt.getTime())) throw new Error("task0b_runtime_topology_candidate_invalid");
+    const parsed = parseTask0BManagedRuntimeCommand(item.commandLine);
+    const entrypoint = resolve(parsed.entrypointPath);
+    const physicalEntrypoint = resolve(await realpath(entrypoint));
+    if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_runtime_topology_entrypoint_invalid");
+    const worktree = dirname(dirname(physicalEntrypoint));
+    const [gitTopLevel, gitHead, gitStatus] = await Promise.all([
+      run("git", ["rev-parse", "--show-toplevel"], worktree, undefined, task0BProbeTimeout(bounded)),
+      run("git", ["rev-parse", "HEAD"], worktree, undefined, task0BProbeTimeout(bounded)),
+      run("git", ["status", "--porcelain"], worktree, undefined, task0BProbeTimeout(bounded))
+    ]);
+    const physicalTopLevel = resolve(await realpath(gitTopLevel));
+    if (!sameCanonicalPath(physicalTopLevel, worktree) || gitHead !== parsed.runtimeSha || gitStatus !== "") {
+      throw new Error("task0b_runtime_topology_worktree_invalid");
+    }
+    return {
+      processId: Number(item.processId),
+      processStartedAt: startedAt.toISOString(),
+      runtimeSha: parsed.runtimeSha,
+      runtimeLabel: parsed.runtimeLabel,
+      commandLineSha256: hash(item.commandLine),
+      executablePathSha256: hash(item.executablePath.toLowerCase()),
+      worktreePathFingerprintSha256: hash(canonicalPathKey(physicalTopLevel)),
+      entrypointPathFingerprintSha256: hash(canonicalPathKey(physicalEntrypoint))
+    };
+  }));
+  task0BProbeTimeout(bounded);
+  candidates.sort((left, right) => left.processId - right.processId);
+  return validateRuntimeTopologySnapshotV2({ version: "runtime-topology-snapshot-v2", observedAt, candidates });
 }
 
 export async function countTask0BRuntimeCandidates(bounded?: Task0BBoundedProbeOptions): Promise<number> {
