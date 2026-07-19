@@ -3466,6 +3466,7 @@ export function validateProductionOrchestrationReceiptV2(value: unknown): Produc
     ["verify_failure", "prove_previous_healthy", "prove_no_previous_stop", "prove_no_candidate_start"],
     ["verify_failure", "restart_previous", "prove_no_candidate_start", "rollback_runtime_checks"],
     ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"],
+    ["verify_failure", "start_previous", "rollback_runtime_checks"],
     ["verify_failure", "prove_previous_healthy", "prove_no_candidate_running", "rollback_runtime_checks"]
   ] as const;
   const allowedCompleteSequences: readonly (readonly string[])[] = input.orchestration === "rollout"

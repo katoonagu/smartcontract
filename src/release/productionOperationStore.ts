@@ -81,6 +81,15 @@ const OPERATION_DEADLINE_MS: Readonly<Record<ProductionOperationKindV2, number>>
   rollback: 15 * 60_000,
   recovery: 5 * 60_000
 });
+
+export function productionOperationAttemptedExternalEffectV2(
+  operationKind: ProductionOperationKindV2,
+  hasIntent: boolean,
+  receiptExecutionKinds: readonly ("local_validation" | "external_effect")[]
+): boolean {
+  return operationKind === "canary" || hasIntent
+    || receiptExecutionKinds.includes("external_effect");
+}
 const OPERATION_ACTION = Object.freeze({
   rollout: "g14_rollout_passed",
   canary: "g15_canary_released",
@@ -1706,12 +1715,20 @@ export class ProductionOperationStoreV2 {
     const prepared = readCanonical(this.#path(
       `production-operation-lease-removal-prepared-${settlement.value.operationId}.json`),
     validatePreparedProductionOperationLeaseRemovalV2, "prepared_production_operation_lease_removal");
+    const cleanupTakeover = prepared.value.exactCurrentLeaseSha256 === settlement.value.finalLeaseSha256
+      ? null : this.#committedCleanupTakeoverForOld(settlement.value.finalLeaseSha256);
+    const preparedLeaseBindingValid = prepared.value.exactCurrentLeaseSha256 === settlement.value.finalLeaseSha256
+      && prepared.value.exactCurrentLeaseEpoch === settlement.value.finalLeaseEpoch
+      || cleanupTakeover !== null
+        && prepared.value.capability === "cleanup_only"
+        && cleanupTakeover.value.operationId === settlement.value.operationId
+        && cleanupTakeover.value.newLeaseSha256 === prepared.value.exactCurrentLeaseSha256
+        && cleanupTakeover.value.newLeaseEpoch === prepared.value.exactCurrentLeaseEpoch;
     if (prepared.value.operationId !== settlement.value.operationId
         || prepared.value.operationKind !== operationKind
         || prepared.value.terminalStateKind !== "settlement"
         || prepared.value.terminalStateSha256 !== settlement.sha256
-        || prepared.value.exactCurrentLeaseSha256 !== settlement.value.finalLeaseSha256
-        || prepared.value.exactCurrentLeaseEpoch !== settlement.value.finalLeaseEpoch) {
+        || !preparedLeaseBindingValid) {
       throw new Error("production_prebegin_settlement_prepared_binding_invalid");
     }
     const claims = readdirSync(this.#root, { withFileTypes: true }).filter((entry) =>
@@ -1917,19 +1934,32 @@ export class ProductionOperationStoreV2 {
       const owner = currentRootWriterOwnerIdentityV2();
       const ownerMatches = lease.value.ownerPid === owner.pid
         && lease.value.ownerProcessStartFingerprintSha256 === owner.processStartFingerprintSha256;
-      const resumableDeadCleanup = input.terminalStateKind === "terminal_abandoned"
-        && lease.value.capability === "cleanup_only"
+      let settledCleanupRecovery = false;
+      if (input.terminalStateKind === "settlement" && lease.value.capability === "cleanup_only") {
+        const settlement = terminalState as ProductionOperationSettlementV2;
+        const takeover = this.#committedCleanupTakeoverForOld(settlement.finalLeaseSha256);
+        settledCleanupRecovery = takeover !== null
+          && takeover.value.operationId === lease.value.operationId
+          && takeover.value.oldLeaseSha256 === settlement.finalLeaseSha256
+          && takeover.value.newLeaseSha256 === lease.sha256
+          && takeover.value.newLeaseEpoch === lease.value.leaseEpoch;
+      }
+      const resumableDeadCleanup = lease.value.capability === "cleanup_only"
+        && (input.terminalStateKind === "terminal_abandoned" || settledCleanupRecovery)
         && !isLeaseOwnerProcessAliveV2(lease.value.ownerPid,
           lease.value.ownerProcessStartFingerprintSha256);
+      const terminalLeaseBindingValid = settledCleanupRecovery || (
+        terminalState.capability === lease.value.capability
+        && terminalState.finalLeaseSha256 === lease.sha256
+        && terminalState.finalLeaseEpoch === lease.value.leaseEpoch
+      );
       if (lease.value.operationId !== input.operationId
           || (!ownerMatches && !resumableDeadCleanup)
           || terminalState.operationKind !== lease.value.operationKind
-          || terminalState.capability !== lease.value.capability
-          || terminalState.finalLeaseSha256 !== lease.sha256
-          || terminalState.finalLeaseEpoch !== lease.value.leaseEpoch) {
+          || !terminalLeaseBindingValid) {
         throw new Error("production_terminal_lease_binding_invalid");
       }
-      if (resumableDeadCleanup) {
+      if (resumableDeadCleanup && input.terminalStateKind === "terminal_abandoned") {
         const abandoned = terminalState as ProductionOperationTerminalAbandonedV2;
         if (abandoned.cleanupOnlyTakeoverSha256 === null) {
           throw new Error("cleanup_only_takeover_terminal_binding_invalid");
@@ -2278,7 +2308,7 @@ export class ProductionOperationStoreV2 {
     return committed;
   }
 
-  #completedStepState(operationId: string): {
+  #completedStepState(operationId: string, operationKind: ProductionOperationKindV2): {
     completedStepReceiptSetSha256: string;
     attemptedExternalEffect: boolean;
   } {
@@ -2319,8 +2349,9 @@ export class ProductionOperationStoreV2 {
     const refs = receipts.map(({ relativePath, sha256 }) => ({ relativePath, sha256 }));
     return {
       completedStepReceiptSetSha256: releaseSha256V2(canonicalBytesV2(refs)),
-      attemptedExternalEffect: hasIntent
-        || receipts.some((receipt) => receipt.executionKind === "external_effect")
+      attemptedExternalEffect: productionOperationAttemptedExternalEffectV2(
+        operationKind, hasIntent, receipts.map((receipt) => receipt.executionKind)
+      )
     };
   }
 
@@ -2328,7 +2359,8 @@ export class ProductionOperationStoreV2 {
     expectedOldLeaseSha256: string; evaluatedAt: string; faultAt?: string;
   }): Promise<{
     takeover: CleanupOnlyProductionOperationTakeoverV2;
-    abandoned: ProductionOperationTerminalAbandonedV2;
+    abandoned: ProductionOperationTerminalAbandonedV2 | null;
+    settlement: ProductionOperationSettlementV2 | null;
     cleanup: ProductionOperationTerminalCleanupV2;
   }> {
     const expectedOldLeaseSha256 = exactSha(input.expectedOldLeaseSha256,
@@ -2345,6 +2377,24 @@ export class ProductionOperationStoreV2 {
     const authorityExpired = context.evaluatedAtMs >= Date.parse(context.authorityExpiresAt);
     const deadlineReached = context.evaluatedAtMs >= Date.parse(oldLease.value.operationDeadlineAt);
     if (!authorityExpired && !deadlineReached) throw new Error("cleanup_only_takeover_bound_not_reached");
+    const settlementPath = this.#path(
+      `production-operation-settlement-${oldLease.value.operationId}.json`);
+    const settled = existsSync(settlementPath)
+      ? readCanonical(settlementPath, validateProductionOperationSettlementV2,
+        "production_operation_settlement") : null;
+    if (settled !== null && (context.claim === null
+        || settled.value.operationId !== oldLease.value.operationId
+        || settled.value.operationKind !== oldLease.value.operationKind
+        || settled.value.candidateSha !== oldLease.value.candidateSha
+        || settled.value.releaseGenerationId !== oldLease.value.releaseGenerationId
+        || settled.value.sourceManifestSha256 !== oldLease.value.sourceManifestSha256
+        || settled.value.claimSha256 !== context.claim.sha256
+        || settled.value.authorityConsumptionSha256 !== context.authorityConsumptionSha256
+        || settled.value.finalLeaseSha256 !== oldLease.sha256
+        || settled.value.finalLeaseEpoch !== oldLease.value.leaseEpoch
+        || settled.value.capability !== oldLease.value.capability)) {
+      throw new Error("production_cleanup_settlement_binding_invalid");
+    }
     const terminalReason = deadlineReached ? "operation_deadline_reached"
       : context.claim === null ? "authority_expired_before_claim" : "authority_expired_after_claim";
     let prepared: PreparedCleanupOnlyProductionOperationTakeoverV2;
@@ -2456,7 +2506,18 @@ export class ProductionOperationStoreV2 {
       takeoverBytes, "cleanup_only_takeover_committed_conflict");
     }
     injectedFault(input.faultAt, "after_committed");
-    const stepState = this.#completedStepState(oldLease.value.operationId);
+    if (settled !== null) {
+      this.publishTerminalArtifacts(oldLease.value.operationId);
+      const terminal = this.completeTerminal({
+        operationId: oldLease.value.operationId,
+        terminalStateKind: "settlement",
+        terminalStateSha256: settled.sha256,
+        evaluatedAt: prepared.preparedAt,
+        faultAt: input.faultAt
+      });
+      return { takeover, abandoned: null, settlement: settled.value, cleanup: terminal.cleanup };
+    }
+    const stepState = this.#completedStepState(oldLease.value.operationId, oldLease.value.operationKind);
     const abandoned = validateProductionOperationTerminalAbandonedV2({
       version: "production-operation-terminal-abandoned-v2",
       operationKind: oldLease.value.operationKind,
@@ -2485,7 +2546,7 @@ export class ProductionOperationStoreV2 {
       evaluatedAt: prepared.preparedAt,
       faultAt: input.faultAt
     });
-    return { takeover, abandoned, cleanup: terminal.cleanup };
+    return { takeover, abandoned, settlement: null, cleanup: terminal.cleanup };
   }
 
   #originalLeaseForOperation(operationId: string): { sha256: string; ownerSha256: string } {
@@ -2525,7 +2586,8 @@ export async function takeoverCleanupOnlyProductionOperationLeaseV2(input: {
   faultAt?: string;
 }): Promise<{
   takeover: CleanupOnlyProductionOperationTakeoverV2;
-  abandoned: ProductionOperationTerminalAbandonedV2;
+  abandoned: ProductionOperationTerminalAbandonedV2 | null;
+  settlement: ProductionOperationSettlementV2 | null;
   cleanup: ProductionOperationTerminalCleanupV2;
 }> {
   return new ProductionOperationStoreV2(input.artifactRoot).takeoverCleanupOnly(input);

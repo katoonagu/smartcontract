@@ -9,6 +9,7 @@ import {
   PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
   ProductionOperationStoreV2
 } from "../../src/release/productionOperationStore";
+import * as operationStoreApi from "../../src/release/productionOperationStore";
 import {
   canonicalReleaseJsonV2,
   releaseSha256V2,
@@ -85,6 +86,13 @@ async function initializedAuthorityRoot(): Promise<string> {
 afterEach(async () => {
   vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("treats canary observation receipts as an attempted production effect", () => {
+  const attempted = (operationStoreApi as any).productionOperationAttemptedExternalEffectV2;
+  expect(typeof attempted).toBe("function");
+  expect(attempted("canary", false, ["local_validation"])).toBe(true);
+  expect(attempted("rollout", false, ["local_validation"])).toBe(false);
 });
 
 it("durably acquires lease then persists immutable preclaim lineage and atomic consumption claim", async () => {
@@ -466,6 +474,16 @@ it.each([
       "after_settlement"].includes(faultAt)) {
       expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(false);
     }
+    if (faultAt === "after_settlement") {
+      const leaseBytes = readFileSync(join(root, "production-operation-root.lease.json"));
+      const recovered = await runWithRootWriterProcessRuntimeForTestsV2({
+        currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
+      }, () => store.takeoverCleanupOnly({ expectedOldLeaseSha256: releaseSha256V2(leaseBytes),
+        evaluatedAt: "2026-07-18T10:11:00.000Z" }));
+      expect(recovered.abandoned).toBeNull();
+      expect(recovered.settlement).not.toBeNull();
+      expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(true);
+    }
     if (faultAt === "after_lease_removal") {
       const operationId = readdirSync(root).find((name) =>
         name.startsWith("production-operation-settlement-production-rollout-"))!
@@ -723,8 +741,9 @@ it.each(["after_prepare", "after_tombstone", "after_new_lease", "after_committed
       currentOwnerIdentity: () => CLEANUP_REPLAY_OWNER, isOwnerAlive: () => false
     }, () => cleanupStore.takeoverCleanupOnly({ expectedOldLeaseSha256: cleanupBegun.leaseSha256,
       evaluatedAt: "2026-07-18T10:11:00.000Z" }));
-    expect(cleanupTerminal.abandoned.operationId).toBe(cleanupBegun.lease.operationId);
-    expect(cleanupTerminal.cleanup.removedLeaseSha256).toBe(cleanupTerminal.abandoned.finalLeaseSha256);
+    expect(cleanupTerminal.abandoned).not.toBeNull();
+    expect(cleanupTerminal.abandoned!.operationId).toBe(cleanupBegun.lease.operationId);
+    expect(cleanupTerminal.cleanup.removedLeaseSha256).toBe(cleanupTerminal.abandoned!.finalLeaseSha256);
     expect(existsSync(join(cleanupRoot, "production-operation-root.lease.json"))).toBe(false);
 }, 90_000);
 

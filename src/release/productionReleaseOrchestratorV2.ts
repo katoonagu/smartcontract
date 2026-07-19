@@ -115,7 +115,10 @@ export type ProtectedRollbackWindowV2 =
   | Readonly<{ kind: "candidate_already_replaced_with_previous";
       failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
       candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string;
-      previousStartEvidenceSha256: string }>;
+      previousStartEvidenceSha256: string }>
+  | Readonly<{ kind: "candidate_already_stopped_previous_not_started";
+      failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+      candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string }>;
 
 export type ProtectedProductionOperationAdaptersV2 = Readonly<{
   now(): string;
@@ -283,6 +286,9 @@ function rollbackSteps(outcome: ProtectedRollbackWindowV2): readonly string[] {
       || outcome.kind === "candidate_already_replaced_with_previous") {
     return ["verify_failure", "prove_previous_healthy", "prove_no_candidate_running", "rollback_runtime_checks"];
   }
+  if (outcome.kind === "candidate_already_stopped_previous_not_started") {
+    return ["verify_failure", "start_previous", "rollback_runtime_checks"];
+  }
   return ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"];
 }
 
@@ -318,6 +324,12 @@ function materializeRollbackOutcome(
       candidateStartEvidenceSha256: selected.candidateStartEvidenceSha256,
       candidateStopEvidenceSha256: selected.candidateStopEvidenceSha256,
       previousStartEvidenceSha256: selected.previousStartEvidenceSha256 };
+  }
+  if (selected.kind === "candidate_already_stopped_previous_not_started") {
+    return { kind: "candidate_replaced_with_previous", failedGateId: selected.failedGateId,
+      candidateStartEvidenceSha256: selected.candidateStartEvidenceSha256,
+      candidateStopEvidenceSha256: selected.candidateStopEvidenceSha256,
+      previousStartEvidenceSha256: output("start_previous") };
   }
   return { kind: selected.kind, failedGateId: selected.failedGateId,
     candidateStartEvidenceSha256: selected.candidateStartEvidenceSha256,

@@ -542,21 +542,78 @@ type CanaryResumeStateV2 = Readonly<{
   version: "production-canary-resume-state-v2";
   operationId: string;
   operationClaimSha256: string;
+  operationLeaseSha256: string;
+  operationLeaseEpoch: number;
+  inputSha256: string;
+  basicOutputSha256: string;
   canaryStartedAt: string;
   queueBaseline: number;
   cycleSnapshot: RuntimeCycleSnapshotV2;
+  proof: ProductionLiveProofSnapshotV2;
   leafResult: ProtectedProductionLeafResultV2;
   recordedAt: string;
 }>;
 
+function validateCanaryLiveProofV2(value: unknown): ProductionLiveProofSnapshotV2 {
+  const keys = ["schemaState", "schemaChecksumSha256", "runtimeSha", "adminStatus",
+    "runtimeProcessCount", "workerScheduleCount", "botStartedCount", "fatalLogCount",
+    "secretDetected", "deliveryInvariantViolationCount", "terminalLegacyUnchanged",
+    "reconciliationStrandedCount", "navigationStatus", "allowanceMirrorMismatchCount",
+    "queueGrowthCount", "honestLimitViolationCount", "sentFingerprintDuplicateCount",
+    "runtimeCycleHighWatermarksVerified"] as const;
+  const proof = exactObject(value, keys, "production_canary_resume_proof_invalid");
+  if ((proof.schemaState !== "legacy_031" && proof.schemaState !== "schema_032_verified")
+      || (proof.schemaChecksumSha256 !== null
+        && !SHA256_HEX.test(String(proof.schemaChecksumSha256)))
+      || !/^[0-9a-f]{40}$/u.test(String(proof.runtimeSha))) {
+    throw new Error("production_canary_resume_proof_invalid");
+  }
+  for (const key of ["adminStatus", "runtimeProcessCount", "workerScheduleCount", "botStartedCount",
+    "fatalLogCount", "deliveryInvariantViolationCount", "reconciliationStrandedCount", "navigationStatus",
+    "allowanceMirrorMismatchCount", "queueGrowthCount", "honestLimitViolationCount",
+    "sentFingerprintDuplicateCount"] as const) {
+    exactNonnegativeInteger(proof[key], `production_canary_resume_proof_${key}_invalid`);
+  }
+  for (const key of ["secretDetected", "terminalLegacyUnchanged",
+    "runtimeCycleHighWatermarksVerified"] as const) {
+    if (typeof proof[key] !== "boolean") throw new Error("production_canary_resume_proof_invalid");
+  }
+  return proof as unknown as ProductionLiveProofSnapshotV2;
+}
+
+function canaryCycleOneLeafResultV2(input: Readonly<{
+  inputSha256: string;
+  basicOutputSha256: string;
+  proof: ProductionLiveProofSnapshotV2;
+  queuePopulationCount: number;
+  cycleSnapshot: RuntimeCycleSnapshotV2;
+}>): ProtectedProductionLeafResultV2 {
+  const outputSha256 = hash(canonicalBytesV2({ basicOutputSha256: input.basicOutputSha256,
+    proof: input.proof, queuePopulationCount: input.queuePopulationCount,
+    cycleSnapshot: input.cycleSnapshot }));
+  return { inputSha256: input.inputSha256, outputSha256,
+    observedStateSha256: hash(Buffer.from(canonicalReleaseJsonV2({
+      stepId: "observe_cycle_1", outputSha256
+    }), "utf8")) };
+}
+
 export function validateCanaryResumeStateV2(value: unknown): CanaryResumeStateV2 {
-  const input = exactObject(value, ["version", "operationId", "operationClaimSha256", "canaryStartedAt",
-    "queueBaseline", "cycleSnapshot", "leafResult", "recordedAt"], "production_canary_resume_state");
+  const input = exactObject(value, ["version", "operationId", "operationClaimSha256",
+    "operationLeaseSha256", "operationLeaseEpoch", "inputSha256", "basicOutputSha256", "canaryStartedAt",
+    "queueBaseline", "cycleSnapshot", "proof", "leafResult", "recordedAt"],
+  "production_canary_resume_state");
   const cycle = exactObject(input.cycleSnapshot, RUNTIME_CYCLE_NAMES, "production_canary_resume_cycles");
   if (input.version !== "production-canary-resume-state-v2" || typeof input.operationId !== "string"
-      || !SHA256_HEX.test(String(input.operationClaimSha256))) {
+      || !/^production-canary-[0-9a-f]{64}$/u.test(input.operationId)
+      || !SHA256_HEX.test(String(input.operationClaimSha256))
+      || !SHA256_HEX.test(String(input.operationLeaseSha256))
+      || !SHA256_HEX.test(String(input.inputSha256))
+      || !SHA256_HEX.test(String(input.basicOutputSha256))) {
     throw new Error("production_canary_resume_state_invalid");
   }
+  const operationLeaseEpoch = exactNonnegativeInteger(input.operationLeaseEpoch,
+    "production_canary_resume_lease_epoch_invalid");
+  if (operationLeaseEpoch < 1) throw new Error("production_canary_resume_lease_epoch_invalid");
   const startedAt = exactIso(input.canaryStartedAt, "production_canary_resume_started_at");
   const recordedAt = exactIso(input.recordedAt, "production_canary_resume_recorded_at");
   if (Date.parse(recordedAt) < Date.parse(startedAt)) throw new Error("production_canary_resume_time_invalid");
@@ -570,11 +627,23 @@ export function validateCanaryResumeStateV2(value: unknown): CanaryResumeStateV2
   for (const field of ["inputSha256", "outputSha256", "observedStateSha256"] as const) {
     if (!SHA256_HEX.test(String(leaf[field]))) throw new Error("production_canary_resume_leaf_invalid");
   }
+  const proof = validateCanaryLiveProofV2(input.proof);
+  const leafResult = { inputSha256: String(leaf.inputSha256), outputSha256: String(leaf.outputSha256),
+    observedStateSha256: String(leaf.observedStateSha256) };
+  const expectedLeaf = canaryCycleOneLeafResultV2({ inputSha256: String(input.inputSha256),
+    basicOutputSha256: String(input.basicOutputSha256), proof,
+    queuePopulationCount: exactNonnegativeInteger(input.queueBaseline, "production_canary_resume_queue"),
+    cycleSnapshot });
+  if (!canonicalBytesV2(leafResult).equals(canonicalBytesV2(expectedLeaf))) {
+    throw new Error("production_canary_resume_state_binding_invalid");
+  }
   return { version: "production-canary-resume-state-v2", operationId: String(input.operationId),
-    operationClaimSha256: String(input.operationClaimSha256), canaryStartedAt: startedAt,
+    operationClaimSha256: String(input.operationClaimSha256),
+    operationLeaseSha256: String(input.operationLeaseSha256), operationLeaseEpoch,
+    inputSha256: String(input.inputSha256), basicOutputSha256: String(input.basicOutputSha256),
+    canaryStartedAt: startedAt,
     queueBaseline: exactNonnegativeInteger(input.queueBaseline, "production_canary_resume_queue"),
-    cycleSnapshot, leafResult: { inputSha256: String(leaf.inputSha256),
-      outputSha256: String(leaf.outputSha256), observedStateSha256: String(leaf.observedStateSha256) },
+    cycleSnapshot, proof, leafResult,
     recordedAt };
 }
 
@@ -583,6 +652,7 @@ export function restoreCanaryResumeStateV2(input: Readonly<{
   operationId: string;
   operationClaimSha256: string;
   inputSha256?: string;
+  lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
   completedPrefix: readonly Readonly<{ stepId: string; startedAt: string; finishedAt: string }>[];
 }>): CanaryResumeStateV2 {
   const state = validateCanaryResumeStateV2(input.value);
@@ -591,7 +661,10 @@ export function restoreCanaryResumeStateV2(input: Readonly<{
       || (cycleOne !== undefined && cycleOne.stepId !== "observe_cycle_1")
       || state.operationId !== input.operationId
       || state.operationClaimSha256 !== input.operationClaimSha256
+      || !input.lineageLeaseTips.some((tip) => tip.sha256 === state.operationLeaseSha256
+        && tip.epoch === state.operationLeaseEpoch)
       || (input.inputSha256 !== undefined && state.leafResult.inputSha256 !== input.inputSha256)
+      || state.inputSha256 !== state.leafResult.inputSha256
       || Date.parse(state.recordedAt) < Date.parse(cycleOne?.startedAt
         ?? input.completedPrefix[0]!.startedAt)
       || (cycleOne !== undefined && Date.parse(state.recordedAt) > Date.parse(cycleOne.finishedAt))) {
@@ -605,15 +678,29 @@ export async function selectCanaryCycleOneResumeBeforeObservationV2(input: Reado
   operationId: string;
   operationClaimSha256: string;
   inputSha256: string;
+  lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
   completedPrefix: readonly Readonly<{ stepId: string; startedAt: string; finishedAt: string }>[];
   observeOnlyWhenMissing(): Promise<ProtectedProductionLeafResultV2 | null>;
 }>): Promise<ProtectedProductionLeafResultV2 | null> {
   if (input.storedState !== null) {
     return restoreCanaryResumeStateV2({ value: input.storedState, operationId: input.operationId,
       operationClaimSha256: input.operationClaimSha256, inputSha256: input.inputSha256,
+      lineageLeaseTips: input.lineageLeaseTips,
       completedPrefix: input.completedPrefix }).leafResult;
   }
   return input.observeOnlyWhenMissing();
+}
+
+export function productionCanaryObservationHardDeadlineV2(
+  canaryStartedAt: string,
+  operationDeadlineAt: string,
+  authorityExpiresAt: string
+): string {
+  return new Date(Math.min(
+    Date.parse(exactIso(canaryStartedAt, "production_canary_started_at_invalid")) + 30 * 60_000,
+    Date.parse(exactIso(operationDeadlineAt, "production_operation_deadline_invalid")),
+    Date.parse(exactIso(authorityExpiresAt, "production_authority_expiry_invalid"))
+  )).toISOString();
 }
 
 function cycleSnapshot(
@@ -1671,7 +1758,8 @@ function loadPriorAbandonedRollbackHistory(root: string): null | {
     ...orphanIntents.map((intent) => String(intent.value.stepId))];
   const rollbackSequences = [
     ["verify_failure", "restart_previous", "prove_no_candidate_start", "rollback_runtime_checks"],
-    ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"]
+    ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"],
+    ["verify_failure", "start_previous", "rollback_runtime_checks"]
   ];
   if (!rollbackSequences.some((sequence) => orderedStepIds.every((stepId, index) => sequence[index] === stepId))) {
     throw new Error("production_prior_rollback_step_sequence_invalid");
@@ -1750,6 +1838,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
   let window: ProtectedRollbackWindowV2;
   const attemptedExternalEffect = "attemptedExternalEffect" in failure.value
     ? failure.value.attemptedExternalEffect : failure.value.priorAttemptedExternalEffect;
+  const priorRollback = loadPriorAbandonedRollbackHistory(root);
   if (!attemptedExternalEffect) {
     if (topologyState !== "previous_singleton" || failure.value.failedGateId === "G15_PRODUCTION_CANARY") {
       throw new Error("production_rollback_history_topology_conflict");
@@ -1765,15 +1854,28 @@ async function deriveRollbackContext(root: string, operationId: string) {
     window = { kind: "candidate_replaced_with_previous", failedGateId: failure.value.failedGateId,
       candidateStartEvidenceSha256: candidateStart.sha256 };
   } else if (topologyState === "none") {
-    const previousStop = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
-      failedBinding.operationClaimSha256, "stop_previous");
-    if (!previousStop || failure.value.failedGateId !== "G14_PRODUCTION_ROLLOUT") {
-      throw new Error("production_rollback_previous_stop_history_missing");
+    if (priorRollback?.stepIds.has("stop_candidate")) {
+      const candidateStart = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
+        failedBinding.operationClaimSha256, "start_candidate");
+      const candidateStopSha256 = priorRollback.proofSha256("stop_candidate");
+      if (!candidateStart || candidateStopSha256 === null
+          || failure.value.failedGateId === "G13_PRODUCTION_MIGRATION") {
+        throw new Error("production_rollback_candidate_stop_history_missing");
+      }
+      window = { kind: "candidate_already_stopped_previous_not_started",
+        failedGateId: failure.value.failedGateId,
+        candidateStartEvidenceSha256: candidateStart.sha256,
+        candidateStopEvidenceSha256: candidateStopSha256 };
+    } else {
+      const previousStop = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
+        failedBinding.operationClaimSha256, "stop_previous");
+      if (!previousStop || failure.value.failedGateId !== "G14_PRODUCTION_ROLLOUT") {
+        throw new Error("production_rollback_previous_stop_history_missing");
+      }
+      window = { kind: "previous_runtime_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
+        previousStopEvidenceSha256: previousStop.sha256 };
     }
-    window = { kind: "previous_runtime_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
-      previousStopEvidenceSha256: previousStop.sha256 };
   } else {
-    const priorRollback = loadPriorAbandonedRollbackHistory(root);
     if (priorRollback?.stepIds.has("start_previous")) {
       const candidateStart = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
         failedBinding.operationClaimSha256, "start_candidate");
@@ -2076,11 +2178,13 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
         const resumedLeaf = await selectCanaryCycleOneResumeBeforeObservationV2({
           storedState: storedValue, operationId: input.operationId,
           operationClaimSha256: operation.claimSha256, inputSha256: input.inputSha256,
+          lineageLeaseTips: operation.lineageLeaseTips,
           completedPrefix, observeOnlyWhenMissing: async () => null
         });
         if (resumedLeaf !== null) {
           const restored = restoreCanaryResumeStateV2({ value: storedValue,
             operationId: input.operationId, operationClaimSha256: operation.claimSha256,
+            lineageLeaseTips: operation.lineageLeaseTips,
             inputSha256: input.inputSha256, completedPrefix });
           canaryStartedAt = Date.parse(restored.canaryStartedAt);
           canaryQueueBaseline = restored.queueBaseline;
@@ -2102,15 +2206,24 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
             `production-canary-resume-state-${input.operationId}.json`, validateCanaryResumeStateV2);
           const restored = restoreCanaryResumeStateV2({ value: stored.value,
             operationId: input.operationId, operationClaimSha256: operation.claimSha256,
+            lineageLeaseTips: operation.lineageLeaseTips,
             completedPrefix: prefix.map((record) => ({ stepId: record.receipt.stepId,
               startedAt: record.receipt.startedAt, finishedAt: record.receipt.finishedAt })) });
           canaryStartedAt = Date.parse(restored.canaryStartedAt);
           canaryQueueBaseline = restored.queueBaseline;
           canaryCycleSnapshot = restored.cycleSnapshot;
         }
+        const operationStore = new ProductionOperationStoreV2(artifactRoot);
+        const operation = operationStore.assertOwnedAndWithinBounds(input.operationId,
+          new Date().toISOString());
+        const canaryHardDeadlineAt = productionCanaryObservationHardDeadlineV2(
+          new Date(canaryStartedAt).toISOString(), operation.lease.operationDeadlineAt,
+          operation.claim.authorityConsumption.expiresAt);
         while (Date.now() - canaryStartedAt < 15 * 60_000) {
+          const remainingHardMs = Date.parse(canaryHardDeadlineAt) - Date.now();
+          if (remainingHardMs <= 0) throw new Error("production_canary_observation_window_expired");
           await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(30_000,
-          15 * 60_000 - (Date.now() - canaryStartedAt!))));
+            15 * 60_000 - (Date.now() - canaryStartedAt!), remainingHardMs)));
         }
       }
       const basic = await validateFixedStep(artifactRoot, input);
@@ -2128,25 +2241,38 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
       const operationStore = new ProductionOperationStoreV2(artifactRoot);
       const operation = operationStore
         .assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
-      const observationHardDeadlineAt = productionObservationHardDeadlineV2(
-        operation.lease.operationDeadlineAt,
-        operation.claim.authorityConsumption.expiresAt
-      );
       const canaryObservation = liveKind === "canary";
+      const observationHardDeadlineAt = canaryObservation
+        ? (() => {
+          if (canaryStartedAt === null) throw new Error("production_canary_start_time_missing");
+          return productionCanaryObservationHardDeadlineV2(new Date(canaryStartedAt).toISOString(),
+            operation.lease.operationDeadlineAt, operation.claim.authorityConsumption.expiresAt);
+        })()
+        : productionObservationHardDeadlineV2(operation.lease.operationDeadlineAt,
+          operation.claim.authorityConsumption.expiresAt);
+      if (Date.now() >= Date.parse(observationHardDeadlineAt)) {
+        throw new Error(canaryObservation ? "production_canary_observation_window_expired"
+          : "production_operation_deadline_reached");
+      }
       const observed = await observeProductionLiveProof(artifactRoot, liveKind,
         canaryObservation ? canaryQueueBaseline : null,
         canaryObservation ? canaryCycleSnapshot : null,
         canaryObservation && (input.stepId === "observe_cycle_2" || input.stepId === "bounded_runtime_checks"),
         observationHardDeadlineAt);
       operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+      if (canaryObservation && Date.now() >= Date.parse(observationHardDeadlineAt)) {
+        throw new Error("production_canary_observation_window_expired");
+      }
       const task0b = loadTask0B(artifactRoot);
       const verifiedChecks = isRolloutTerminal || isCanaryTerminal || isRollbackTerminal
         ? deriveVerifiedProductionChecksV2(liveKind, observed.proof, {
           candidateSha: task0b.candidateSha,
           previousSha: task0b.previousRuntimeSha
         }) : undefined;
-      const result = valueCapture(input,
-        { basicOutputSha256: basic.outputSha256, proof: observed.proof }, verifiedChecks);
+      const result = valueCapture(input, input.stepId === "observe_cycle_1"
+        ? { basicOutputSha256: basic.outputSha256, proof: observed.proof,
+          queuePopulationCount: observed.queuePopulationCount, cycleSnapshot: observed.cycleSnapshot }
+        : { basicOutputSha256: basic.outputSha256, proof: observed.proof }, verifiedChecks);
       if (input.stepId === "observe_cycle_1") {
         if (canaryStartedAt === null || observed.cycleSnapshot === null) {
           throw new Error("production_canary_resume_state_unavailable");
@@ -2158,9 +2284,14 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
             version: "production-canary-resume-state-v2",
             operationId: input.operationId,
             operationClaimSha256: operation.claimSha256,
+            operationLeaseSha256: operation.leaseSha256,
+            operationLeaseEpoch: operation.lease.leaseEpoch,
+            inputSha256: input.inputSha256,
+            basicOutputSha256: basic.outputSha256,
             canaryStartedAt: new Date(canaryStartedAt).toISOString(),
             queueBaseline: canaryQueueBaseline,
             cycleSnapshot: canaryCycleSnapshot,
+            proof: observed.proof,
             leafResult: result,
             recordedAt: new Date().toISOString()
           }));

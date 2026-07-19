@@ -227,6 +227,31 @@ describe("production effect crash windows", () => {
     expect(resolver).not.toHaveBeenCalled();
   });
 
+  it("resumes rollback after candidate stop by starting only the previous runtime", async () => {
+    const { events, store, adapters } = crashHarness({ operationKind: "rollback", crashStep: "start_previous" });
+    const resumedAdapters = { ...adapters,
+      async executeEffect(leaf: any) {
+        events.push(`effect:${leaf.stepId}`);
+        return { inputSha256: leaf.inputSha256, outputSha256: "e".repeat(64),
+          observedStateSha256: "f".repeat(64) };
+      },
+      async resolveRollbackContext() {
+      return { window: {
+        kind: "candidate_already_stopped_previous_not_started",
+        failedGateId: "G15_PRODUCTION_CANARY",
+        candidateStartEvidenceSha256: "8".repeat(64),
+        candidateStopEvidenceSha256: "9".repeat(64)
+      } as any, failureEvidenceSha256: "1".repeat(64),
+      previousRuntimeIdentitySha256: "2".repeat(64) };
+    } };
+    await executeProtectedProductionOperationV2({
+      artifactRoot: mkdtempSync(join(tmpdir(), "plan5-rollback-stopped-candidate-")),
+      operationKind: "rollback"
+    }, { store, adapters: resumedAdapters });
+    expect(events).not.toContain("effect:stop_candidate");
+    expect(events).toContain("effect:start_previous");
+  });
+
   for (const scenario of [
     { operationKind: "rollout", crashStep: "stop_previous", forbiddenLaterEffect: "start_candidate" },
     { operationKind: "rollout", crashStep: "start_candidate", forbiddenLaterEffect: null },

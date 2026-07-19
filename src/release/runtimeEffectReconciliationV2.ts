@@ -104,7 +104,10 @@ export type RuntimeRollbackWindowV2 =
   | Readonly<{ kind: "previous_already_restarted_without_candidate"; failedGateId: "G14_PRODUCTION_ROLLOUT";
       previousStopEvidenceSha256: string; previousStartEvidenceSha256: string }>
   | Readonly<{ kind: "candidate_already_replaced_with_previous"; failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
-      candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string; previousStartEvidenceSha256: string }>;
+      candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string; previousStartEvidenceSha256: string }>
+  | Readonly<{ kind: "candidate_already_stopped_previous_not_started";
+      failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+      candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string }>;
 export type RuntimeRollbackTopologyEvidenceV2 = Readonly<{
   version: "runtime-rollback-topology-evidence-v2";
   operationId: string;
@@ -319,7 +322,9 @@ function validateRuntimeRollbackWindowV2(value: unknown): RuntimeRollbackWindowV
     candidate_replaced_with_previous: ["candidateStartEvidenceSha256"],
     previous_already_restarted_without_candidate: ["previousStopEvidenceSha256", "previousStartEvidenceSha256"],
     candidate_already_replaced_with_previous: ["candidateStartEvidenceSha256", "candidateStopEvidenceSha256",
-      "previousStartEvidenceSha256"]
+      "previousStartEvidenceSha256"],
+    candidate_already_stopped_previous_not_started: ["candidateStartEvidenceSha256",
+      "candidateStopEvidenceSha256"]
   });
   const fields = extras[String(input.kind)];
   if (!fields) throw new Error("runtime_rollback_window_invalid");
@@ -329,7 +334,8 @@ function validateRuntimeRollbackWindowV2(value: unknown): RuntimeRollbackWindowV
       || (input.failedGateId === "G13_PRODUCTION_MIGRATION" && input.kind !== "previous_runtime_retained")
       || (input.failedGateId === "G15_PRODUCTION_CANARY"
         && input.kind !== "candidate_replaced_with_previous"
-        && input.kind !== "candidate_already_replaced_with_previous")) {
+        && input.kind !== "candidate_already_replaced_with_previous"
+        && input.kind !== "candidate_already_stopped_previous_not_started")) {
     throw new Error("runtime_rollback_window_invalid");
   }
   for (const field of fields) if (!SHA256.test(String(input[field]))) {
@@ -339,7 +345,8 @@ function validateRuntimeRollbackWindowV2(value: unknown): RuntimeRollbackWindowV
 }
 
 function rollbackWindowMatchesTopology(state: RuntimeRollbackTopologyStateV2, kind: string): boolean {
-  return state === "none" ? kind === "previous_runtime_restarted_without_candidate"
+  return state === "none" ? new Set(["previous_runtime_restarted_without_candidate",
+    "candidate_already_stopped_previous_not_started"]).has(kind)
     : state === "candidate_singleton" ? kind === "candidate_replaced_with_previous"
       : new Set(["previous_runtime_retained", "previous_already_restarted_without_candidate",
         "candidate_already_replaced_with_previous"]).has(kind);
