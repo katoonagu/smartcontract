@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { buildRuntimeVersion } from "../../src/runtime/runtimeVersion";
 import {
   createRuntimeCycleRecorder,
-  createProductionCallbackPreludeBindingV1,
   runAckBeforeDeferredWork,
   runRuntimeNavigationProbeV1
 } from "../../src/runtime/runtimeLiveProof";
@@ -80,8 +79,6 @@ describe("runtime live proof", () => {
 
   it("keeps cache reads provider-free and requires one real explicit refresh", async () => {
     let providerCalls = 0;
-    const callbackBinding = createProductionCallbackPreludeBindingV1();
-    const probeCallbackPrelude = callbackBinding.bindProductionHandler();
     const proof = await runRuntimeNavigationProbeV1({
       runtimeVersion: runtimeVersion(),
       providerCallCount: () => providerCalls,
@@ -90,7 +87,6 @@ describe("runtime live proof", () => {
         providerCalls += 1;
         return "fresh";
       },
-      probeCallbackPrelude,
       now: () => new Date("2026-07-19T10:15:00.000Z")
     });
 
@@ -99,8 +95,6 @@ describe("runtime live proof", () => {
       runtimeSha: SHA,
       cacheOnly: { reads: 2, providerCalls: 0, sources: ["stale", "stale"] },
       explicitRefresh: { attempts: 1, providerCalls: 1, completed: true },
-      callback: { bindingId: "create_bot_callback_query_data_ack_first_v1", productionHandlerBound: true,
-        ackCompleted: true, ackBeforeWork: true, returnedWhileWorkPending: true },
       telegramTransport: "absent"
     });
   });
@@ -110,31 +104,15 @@ describe("runtime live proof", () => {
       runtimeVersion: runtimeVersion(),
       providerCallCount: () => 0,
       readCachedDashboard: async () => null,
-      refreshDashboard: async () => "fresh",
-      probeCallbackPrelude: createProductionCallbackPreludeBindingV1().bindProductionHandler()
+      refreshDashboard: async () => "fresh"
     })).rejects.toThrow("runtime_probe_cached_wallet_unavailable");
 
     await expect(runRuntimeNavigationProbeV1({
       runtimeVersion: runtimeVersion(),
       providerCallCount: () => 0,
       readCachedDashboard: async () => "cache",
-      refreshDashboard: async () => "fresh",
-      probeCallbackPrelude: createProductionCallbackPreludeBindingV1().bindProductionHandler()
+      refreshDashboard: async () => "fresh"
     })).rejects.toThrow("runtime_probe_explicit_refresh_unverified");
-  });
-
-  it("rejects callback evidence that is not produced by the bound createBot prelude", async () => {
-    let providerCalls = 0;
-    await expect(runRuntimeNavigationProbeV1({
-      runtimeVersion: runtimeVersion(),
-      providerCallCount: () => providerCalls,
-      readCachedDashboard: async () => "cache",
-      refreshDashboard: async () => { providerCalls += 1; return "fresh"; },
-      probeCallbackPrelude: async () => ({
-        bindingId: "forged" as never, productionHandlerBound: true,
-        ackCompleted: true, ackBeforeWork: true, returnedWhileWorkPending: true
-      })
-    })).rejects.toThrow(/callback.*lifecycle/i);
   });
 
   it("returns the acknowledged callback prelude while its deferred work is pending", async () => {

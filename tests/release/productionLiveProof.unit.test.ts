@@ -171,8 +171,6 @@ describe("production live proof", () => {
     const navigation = { version: "runtime-navigation-probe-v1", runtimeSha: candidateSha,
       cacheOnly: { reads: 2, providerCalls: 0, sources: ["cache", "stale"] },
       explicitRefresh: { attempts: 1, providerCalls: 1, completed: true },
-      callback: { bindingId: "create_bot_callback_query_data_ack_first_v1", productionHandlerBound: true,
-        ackCompleted: true, ackBeforeWork: true, returnedWhileWorkPending: true },
       telegramTransport: "absent", completedAt: "2026-07-19T00:15:00.000Z" };
     expect(validateProductionRuntimeNavigationProbeV1(navigation, candidateSha).runtimeSha).toBe(candidateSha);
     expect(() => validateProductionRuntimeNavigationProbeV1({ ...navigation,

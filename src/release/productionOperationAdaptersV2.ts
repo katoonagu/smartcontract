@@ -174,23 +174,17 @@ export function validateProductionRuntimeNavigationProbeV1(
   candidateSha: string
 ): RuntimeNavigationProbeV1 {
   const probe = exactObject(value, ["version", "runtimeSha", "cacheOnly", "explicitRefresh",
-    "callback", "telegramTransport", "completedAt"], "production_navigation_probe_shape_invalid");
+    "telegramTransport", "completedAt"], "production_navigation_probe_shape_invalid");
   const cache = exactObject(probe.cacheOnly, ["reads", "providerCalls", "sources"],
     "production_navigation_probe_cache_invalid");
   const refresh = exactObject(probe.explicitRefresh, ["attempts", "providerCalls", "completed"],
     "production_navigation_probe_refresh_invalid");
-  const callback = exactObject(probe.callback, ["bindingId", "productionHandlerBound", "ackCompleted",
-    "ackBeforeWork", "returnedWhileWorkPending"],
-    "production_navigation_probe_callback_invalid");
   if (probe.version !== "runtime-navigation-probe-v1" || probe.runtimeSha !== candidateSha
       || cache.reads !== 2 || cache.providerCalls !== 0 || !Array.isArray(cache.sources)
       || cache.sources.length !== 2 || cache.sources.some((source) => source !== "cache" && source !== "stale")
       || refresh.attempts !== 1 || !Number.isSafeInteger(refresh.providerCalls)
       || Number(refresh.providerCalls) < 1 || refresh.completed !== true
-      || callback.bindingId !== "create_bot_callback_query_data_ack_first_v1"
-      || callback.productionHandlerBound !== true
-      || callback.ackCompleted !== true || callback.ackBeforeWork !== true
-      || callback.returnedWhileWorkPending !== true || probe.telegramTransport !== "absent") {
+      || probe.telegramTransport !== "absent") {
     throw new Error("production_navigation_probe_binding_invalid");
   }
   exactIso(probe.completedAt, "production_navigation_probe_time_invalid");

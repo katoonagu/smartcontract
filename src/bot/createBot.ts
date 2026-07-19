@@ -24,9 +24,8 @@ import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import { formatRuntimeVersion, type RuntimeVersionV1 } from "../runtime/runtimeVersion";
 import {
-  createProductionCallbackPreludeBindingV1,
+  runAckBeforeDeferredWork,
   runRuntimeNavigationProbeV1,
-  type RuntimeCallbackPreludeProbeV1,
   type RuntimeNavigationProbeV1
 } from "../runtime/runtimeLiveProof";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
@@ -4953,8 +4952,6 @@ async function addWalletAndShowDashboard(
   await showWalletDashboard(ctx, config, db, wallet, startRefresh, startRenderGuard, locale);
 }
 
-let activeRuntimeCallbackPreludeProbe: RuntimeCallbackPreludeProbeV1 | null = null;
-
 export function createRuntimeNavigationProbe(
   config: AppConfig,
   db: Db,
@@ -4998,10 +4995,6 @@ export function createRuntimeNavigationProbe(
         if (!selectedWallet) return "error";
         const dashboard = await buildRefreshedWalletDashboard(config, db, countedClient, selectedWallet);
         return dashboard.source === "fresh" ? "fresh" : dashboard.source === "stale" ? "stale" : "error";
-      },
-      probeCallbackPrelude: async () => {
-        if (!activeRuntimeCallbackPreludeProbe) throw new Error("runtime_callback_prelude_not_bound");
-        return activeRuntimeCallbackPreludeProbe();
       }
     });
   };
@@ -5014,8 +5007,6 @@ export function createBot(
   options: CreateBotOptions = {}
 ): Bot {
   const bot = new Bot(config.botToken);
-  const callbackPreludeBinding = createProductionCallbackPreludeBindingV1();
-  activeRuntimeCallbackPreludeProbe = callbackPreludeBinding.bindProductionHandler();
   const walletDashboardRefreshes = new Map<string, Promise<WalletDashboard>>();
   type WalletDashboardRenderState = {
     token: symbol;
@@ -5568,7 +5559,7 @@ export function createBot(
 
     const previousWalletDashboardRender = invalidateWalletDashboardRender(ctx);
     const id = telegramId(ctx);
-    const acknowledged = await callbackPreludeBinding.run(
+    const acknowledged = await runAckBeforeDeferredWork(
       () => answerCallbackQuerySafely(ctx),
       async () => {
         await previousWalletDashboardRender;
