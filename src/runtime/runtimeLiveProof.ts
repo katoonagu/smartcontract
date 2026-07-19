@@ -48,6 +48,8 @@ export type RuntimeNavigationProbeV1 = Readonly<{
     completed: true;
   }>;
   callback: Readonly<{
+    bindingId: "create_bot_callback_query_data_ack_first_v1";
+    productionHandlerBound: true;
     ackCompleted: true;
     ackBeforeWork: true;
     returnedWhileWorkPending: true;
@@ -146,11 +148,60 @@ export async function runAckBeforeDeferredWork<T>(
   return Object.freeze({ work, workSettled: () => settled });
 }
 
+export type RuntimeCallbackPreludeProbeV1 = () => Promise<RuntimeNavigationProbeV1["callback"]>;
+
+export function createProductionCallbackPreludeBindingV1(): Readonly<{
+  run<T>(acknowledge: () => Promise<void>, startWork: () => Promise<T>): Promise<Readonly<{
+    work: Promise<T>;
+    workSettled(): boolean;
+  }>>;
+  bindProductionHandler(): RuntimeCallbackPreludeProbeV1;
+}> {
+  let productionHandlerBound = false;
+  const run = <T>(acknowledge: () => Promise<void>, startWork: () => Promise<T>) =>
+    runAckBeforeDeferredWork(acknowledge, startWork);
+  return Object.freeze({
+    run,
+    bindProductionHandler() {
+      if (productionHandlerBound) throw new Error("runtime_callback_prelude_already_bound");
+      productionHandlerBound = true;
+      return async () => {
+        let acknowledged = false;
+        let workStartedAfterAck = false;
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        const callback = await run(
+          async () => { acknowledged = true; },
+          () => {
+            workStartedAfterAck = acknowledged;
+            return pending;
+          }
+        );
+        await Promise.resolve();
+        const returnedWhileWorkPending = !callback.workSettled();
+        release();
+        await callback.work;
+        if (!productionHandlerBound || !acknowledged || !workStartedAfterAck || !returnedWhileWorkPending) {
+          throw new Error("runtime_probe_callback_lifecycle_unverified");
+        }
+        return Object.freeze({
+          bindingId: "create_bot_callback_query_data_ack_first_v1" as const,
+          productionHandlerBound: true as const,
+          ackCompleted: true as const,
+          ackBeforeWork: true as const,
+          returnedWhileWorkPending: true as const
+        });
+      };
+    }
+  });
+}
+
 export async function runRuntimeNavigationProbeV1(input: {
   runtimeVersion: RuntimeVersionV1;
   providerCallCount(): number;
   readCachedDashboard(): Promise<"cache" | "stale" | null>;
   refreshDashboard(): Promise<"fresh" | "stale" | "error">;
+  probeCallbackPrelude(): Promise<RuntimeNavigationProbeV1["callback"]>;
   now?: () => Date;
 }): Promise<RuntimeNavigationProbeV1> {
   const beforeCache = safeCount(input.providerCallCount(), "runtime_probe_provider_count_invalid");
@@ -172,22 +223,10 @@ export async function runRuntimeNavigationProbeV1(input: {
     throw new Error("runtime_probe_explicit_refresh_unverified");
   }
 
-  let acknowledged = false;
-  let workStartedAfterAck = false;
-  let release!: () => void;
-  const pending = new Promise<void>((resolve) => { release = resolve; });
-  const callback = await runAckBeforeDeferredWork(
-    async () => { acknowledged = true; },
-    () => {
-      workStartedAfterAck = acknowledged;
-      return pending;
-    }
-  );
-  await Promise.resolve();
-  const returnedWhileWorkPending = !callback.workSettled();
-  release();
-  await callback.work;
-  if (!acknowledged || !workStartedAfterAck || !returnedWhileWorkPending) {
+  const callback = await input.probeCallbackPrelude();
+  if (callback.bindingId !== "create_bot_callback_query_data_ack_first_v1"
+      || callback.productionHandlerBound !== true || callback.ackCompleted !== true
+      || callback.ackBeforeWork !== true || callback.returnedWhileWorkPending !== true) {
     throw new Error("runtime_probe_callback_lifecycle_unverified");
   }
 
@@ -196,7 +235,7 @@ export async function runRuntimeNavigationProbeV1(input: {
     runtimeSha: input.runtimeVersion.gitCommitSha,
     cacheOnly: Object.freeze({ reads: 2, providerCalls: 0, sources: [first, second] as const }),
     explicitRefresh: Object.freeze({ attempts: 1, providerCalls: afterRefresh - beforeRefresh, completed: true }),
-    callback: Object.freeze({ ackCompleted: true, ackBeforeWork: true, returnedWhileWorkPending: true }),
+    callback: Object.freeze({ ...callback }),
     telegramTransport: "absent",
     completedAt: (input.now?.() ?? new Date()).toISOString()
   });

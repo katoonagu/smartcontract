@@ -4,9 +4,14 @@ import {
   CANDIDATE_SHA,
   PREVIOUS_RUNTIME_LABEL,
   PREVIOUS_RUNTIME_SHA,
+  RELEASE_V2_FREEZE_IDENTITY,
   buildReleaseManifest,
+  buildExecutedReleaseGateV2Fixture,
+  buildReleaseManifestV2Fixture,
   buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
+import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
+import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
 
 const SHA = CANDIDATE_SHA;
 const SHA256 = "b".repeat(64);
@@ -15,9 +20,11 @@ const START_TEMPLATE = createHash("sha256")
   .update("release:task0b:runtime-manager start <artifact-root> <production-go-authority-file>").digest("hex");
 const STOP_TEMPLATE = createHash("sha256")
   .update("release:task0b:runtime-manager stop <artifact-root> <production-go-authority-file>").digest("hex");
+const PREVIOUS_IDENTITY_TEMPLATE = createHash("sha256")
+  .update("task0b_repo_runtime_manager_v1 start-attestation <pid> <process-started-at> <absolute-entrypoint> <worktree-fingerprint> <sha> <label>").digest("hex");
 
 const ACTION_PHASES = {
-  runtime_manager_stop_previous: "pre_migration_shutdown",
+  runtime_manager_stop_previous: "post_migration_rollout",
   runtime_manager_start_candidate: "post_migration_rollout",
   runtime_manager_stop_candidate: "rollback_candidate_stop",
   runtime_manager_rollback_previous: "rollback_previous_start"
@@ -26,37 +33,65 @@ const ACTION_PHASES = {
 type RuntimeCommandId = keyof typeof ACTION_PHASES;
 
 function manifestBytes(manifest: unknown): Buffer {
-  return Buffer.from(`${JSON.stringify(manifest)}\n`, "utf8");
-}
-
-function setGate(
-  manifest: ReturnType<typeof buildReleaseManifest>,
-  id: string,
-  state: "pending" | "passed" | "failed" | "blocked"
-): void {
-  const gate = manifest.gates.find((candidate) => candidate.id === id);
-  if (!gate) throw new Error(`missing test gate ${id}`);
-  gate.state = state;
-  gate.exitCode = state === "failed" ? 1 : 0;
+  return canonicalBytesV2(manifest);
 }
 
 function actionManifest(commandId: RuntimeCommandId) {
-  const manifest = structuredClone(buildReleaseManifest("ready_for_release"));
-  manifest.overall = "not_ready";
-  setGate(manifest, "G12_PRODUCTION_BACKUP", "passed");
-  if (commandId !== "runtime_manager_stop_previous") setGate(manifest, "G13_PRODUCTION_MIGRATION", "passed");
-  if (commandId === "runtime_manager_stop_candidate") setGate(manifest, "G14_PRODUCTION_ROLLOUT", "failed");
-  if (commandId === "runtime_manager_rollback_previous") setGate(manifest, "G13_PRODUCTION_MIGRATION", "failed");
-  return manifest;
+  if (commandId === "runtime_manager_stop_previous" || commandId === "runtime_manager_start_candidate") {
+    return buildReleaseManifestV2Fixture({
+      transitionId: "g13_migration_passed",
+      overall: "not_ready",
+      gates: buildReleaseManifestV2Fixture().gates.map((gate, index) => index < 14
+        ? buildExecutedReleaseGateV2Fixture(gate.id, "passed") : gate)
+    });
+  }
+  const sourceManifestSha256 = "f".repeat(64);
+  const failureRef = {
+    kind: "production_failure_evidence",
+    relativePath: "production-failure-evidence-v2.json",
+    sha256: "e".repeat(64),
+    schemaVersion: "production-failure-evidence-v2",
+    candidateSha: SHA,
+    sourceManifestSha256
+  };
+  return buildReleaseManifestV2Fixture({
+    transitionId: "production_failed",
+    overall: "not_ready",
+    transitionEvidence: [failureRef],
+    actualRollback: null,
+    previousManifestSha256: sourceManifestSha256,
+    revision: 2,
+    gates: buildReleaseManifestV2Fixture().gates.map((gate, index) => {
+      if (index < 14) return buildExecutedReleaseGateV2Fixture(gate.id, "passed");
+      if (gate.id === "G14_PRODUCTION_ROLLOUT") return buildExecutedReleaseGateV2Fixture(gate.id, "failed");
+      return { id: gate.id, candidateSha: SHA, state: "blocked", blockedByGateId: "G14_PRODUCTION_ROLLOUT",
+        productionFailureEvidence: failureRef };
+    })
+  });
 }
 
 function productionAuthority(overrides: Record<string, unknown> = {}) {
   const manifest = actionManifest("runtime_manager_start_candidate");
   const bytes = manifestBytes(manifest);
   return {
-    version: "task0b-runtime-authority-v1",
+    version: "repo-issued-runtime-effect-authority-v2",
     scope: "production_go",
-    source: "operator_protected_one_shot_production_go",
+    source: "protected_production_orchestrator",
+    operationKind: "rollout",
+    operationId: `production-rollout-${"1".repeat(64)}`,
+    operationClaimSha256: "2".repeat(64),
+    authorityConsumptionSha256: "3".repeat(64),
+    sequence: 7,
+    stepId: "start_candidate",
+    inputSha256: "4".repeat(64),
+    intendedExternalEffectSha256: "5".repeat(64),
+    intentRelativePath: `production-operation-step-intents/production-rollout-${"1".repeat(64)}/7-start_candidate-1-v2.json`,
+    intentSha256: "6".repeat(64),
+    operationLeaseSha256: "7".repeat(64),
+    operationLeaseEpoch: 1,
+    operationDeadlineAt: "2026-07-18T09:20:00.000Z",
+    releaseFreezeIdentitySha256: manifest.releaseFreezeIdentitySha256,
+    sourceManifestSha256: createHash("sha256").update(bytes).digest("hex"),
     generationId: GENERATION,
     commandId: "runtime_manager_start_candidate",
     actionPhase: "post_migration_rollout",
@@ -78,6 +113,7 @@ function productionAuthority(overrides: Record<string, unknown> = {}) {
     releaseManifestPath: "release-manifest.json",
     releaseManifestSha256: createHash("sha256").update(bytes).digest("hex"),
     releaseManifestOverall: "not_ready",
+    releaseManifestTransitionId: manifest.transitionId,
     explicitGo: true,
     forcePolicy: "graceful_only",
     startEvidencePath: null,
@@ -90,7 +126,18 @@ function authorityFor(commandId: RuntimeCommandId, manifest = actionManifest(com
   const previousAction = commandId === "runtime_manager_stop_previous" || commandId === "runtime_manager_rollback_previous";
   const stopAction = commandId === "runtime_manager_stop_previous" || commandId === "runtime_manager_stop_candidate";
   const bytes = manifestBytes(manifest);
+  const operationKind = commandId === "runtime_manager_stop_previous" || commandId === "runtime_manager_start_candidate"
+    ? "rollout" : "rollback";
+  const stepId = commandId === "runtime_manager_stop_previous" ? "stop_previous"
+    : commandId === "runtime_manager_start_candidate" ? "start_candidate"
+      : commandId === "runtime_manager_stop_candidate" ? "stop_candidate" : "start_previous";
+  const operationId = `production-${operationKind}-${"1".repeat(64)}`;
   return productionAuthority({
+    operationKind,
+    operationId,
+    sequence: commandId === "runtime_manager_stop_previous" ? 5 : commandId === "runtime_manager_start_candidate" ? 7 : 2,
+    stepId,
+    intentRelativePath: `production-operation-step-intents/${operationId}/${commandId === "runtime_manager_stop_previous" ? 5 : commandId === "runtime_manager_start_candidate" ? 7 : 2}-${stepId}-1-v2.json`,
     commandId,
     actionPhase: ACTION_PHASES[commandId],
     commandTemplateSha256: commandId.includes("stop") ? STOP_TEMPLATE : START_TEMPLATE,
@@ -99,13 +146,16 @@ function authorityFor(commandId: RuntimeCommandId, manifest = actionManifest(com
     targetWorktreeFingerprintSha256: previousAction ? "2".repeat(64) : SHA256,
     releaseManifestSha256: createHash("sha256").update(bytes).digest("hex"),
     releaseManifestOverall: manifest.overall,
+    releaseManifestTransitionId: manifest.transitionId,
+    sourceManifestSha256: createHash("sha256").update(bytes).digest("hex"),
+    releaseFreezeIdentitySha256: manifest.releaseFreezeIdentitySha256,
     startEvidencePath: stopAction ? `runtime-start-evidence-${GENERATION}.json` : null,
     startEvidenceSha256: stopAction ? "1".repeat(64) : null,
     ...overrides
   });
 }
 
-function productionBindings(manifest: ReturnType<typeof buildReleaseManifest>) {
+function productionBindings(manifest: ReturnType<typeof actionManifest>) {
   return {
     task0b: {
       candidateSha: SHA,
@@ -139,52 +189,36 @@ it("[REQ-38][PLAN5-RUNTIME-PHASE-POSITIVE] authorizes each runtime action only a
       authority, bindings.task0b, bindings.manifest, bindings.database, "9".repeat(64)
     )).not.toThrow();
   }
-  const partialRollout = actionManifest("runtime_manager_start_candidate");
-  const partialStop = api.validateTask0BProductionRuntimeAuthority(
-    authorityFor("runtime_manager_stop_candidate", partialRollout),
+  expect(() => api.validateTask0BProductionRuntimeAuthority(
+    authorityFor("runtime_manager_stop_candidate", actionManifest("runtime_manager_start_candidate")),
     "2026-07-18T09:01:00.000Z"
-  );
-  const partialBindings = productionBindings(partialRollout);
-  expect(() => api.assertTask0BProductionGoBindings(
-    partialStop, partialBindings.task0b, partialBindings.manifest, partialBindings.database, "9".repeat(64)
-  )).not.toThrow();
+  )).toThrow(/authority|phase/i);
 });
 
 it("[REQ-38][PLAN5-RUNTIME-PHASE-NEGATIVE] rejects wrong overall gates phases and completed release before mutation or consumption", async () => {
   const api = await import("../../scripts/manageTask0BRuntime");
-  const attempts: Array<{ commandId: RuntimeCommandId; manifest: ReturnType<typeof buildReleaseManifest> }> = [];
-  const ready = buildReleaseManifest("ready_for_release");
-  attempts.push({ commandId: "runtime_manager_stop_previous", manifest: ready });
-  const missingG12 = actionManifest("runtime_manager_stop_previous");
-  setGate(missingG12, "G12_PRODUCTION_BACKUP", "pending");
-  missingG12.overall = "ready_for_release";
-  attempts.push({ commandId: "runtime_manager_stop_previous", manifest: missingG12 });
-  const missingG13 = actionManifest("runtime_manager_start_candidate");
-  setGate(missingG13, "G13_PRODUCTION_MIGRATION", "pending");
-  missingG13.overall = "not_ready";
-  attempts.push({ commandId: "runtime_manager_start_candidate", manifest: missingG13 });
-  const missingPreReleaseGate = actionManifest("runtime_manager_stop_previous");
-  setGate(missingPreReleaseGate, "G11_POISONING_REGRESSION", "failed");
-  attempts.push({ commandId: "runtime_manager_stop_previous", manifest: missingPreReleaseGate });
-  for (const commandId of Object.keys(ACTION_PHASES) as RuntimeCommandId[]) {
-    attempts.push({ commandId, manifest: buildReleaseManifest("released") });
-  }
+  const validManifest = actionManifest("runtime_manager_start_candidate");
+  const invalidGateManifest = structuredClone(validManifest);
+  invalidGateManifest.gates[13] = buildReleaseManifestV2Fixture().gates[13]!;
+  const invalidBytes = manifestBytes(invalidGateManifest);
+  const invalidAuthority = api.validateTask0BProductionRuntimeAuthority(authorityFor(
+    "runtime_manager_start_candidate", invalidGateManifest, {
+      releaseManifestSha256: createHash("sha256").update(invalidBytes).digest("hex"),
+      sourceManifestSha256: createHash("sha256").update(invalidBytes).digest("hex")
+    }
+  ), "2026-07-18T09:01:00.000Z");
+  expect(() => api.validateTask0BReleaseManifestBinding(invalidAuthority, invalidBytes))
+    .toThrow(/manifest|gate|phase/i);
 
-  for (const { commandId, manifest } of attempts) {
-    const calls: string[] = [];
-    expect(() => {
-      const authority = api.validateTask0BProductionRuntimeAuthority(
-        authorityFor(commandId, manifest),
-        "2026-07-18T09:01:00.000Z"
-      );
-      const bindings = productionBindings(manifest);
-      api.assertTask0BProductionGoBindings(
-        authority, bindings.task0b, bindings.manifest, bindings.database, "9".repeat(64)
-      );
-      calls.push("consume", commandId.includes("stop") ? "stop" : "spawn");
-    }).toThrow(/phase|gate|overall|release|binding|authority/i);
-    expect(calls).toEqual([]);
-  }
+  const legacyBytes = manifestBytes(buildReleaseManifest("released"));
+  const legacyAuthority = api.validateTask0BProductionRuntimeAuthority(authorityFor(
+    "runtime_manager_start_candidate", validManifest, {
+      releaseManifestSha256: createHash("sha256").update(legacyBytes).digest("hex"),
+      sourceManifestSha256: createHash("sha256").update(legacyBytes).digest("hex")
+    }
+  ), "2026-07-18T09:01:00.000Z");
+  expect(() => api.validateTask0BReleaseManifestBinding(legacyAuthority, legacyBytes))
+    .toThrow(/manifest|version|release/i);
 
   expect(() => api.validateTask0BProductionRuntimeAuthority(authorityFor(
     "runtime_manager_start_candidate",
@@ -247,6 +281,94 @@ it("[REQ-38][PLAN5-RUNTIME-MANIFEST-BYTES] validates the full exact manifest bef
   }
 });
 
+it("[REQ-38][PLAN5-RUNTIME-REPO-AUTHORITY] binds the repo-issued effect authority to the live lease claim and durable intent", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const operationId = `production-rollout-${"1".repeat(64)}`;
+  const sourceManifestSha256 = "f".repeat(64);
+  const lease = {
+    version: "production-operation-lease-v2", scope: "artifact_root_production_operation",
+    relativePath: "production-operation-root.lease.json", operationKind: "rollout", operationId,
+    candidateSha: SHA, releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    sourceManifestSha256, artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    operationalAttestationSha256: "8".repeat(64), recoveryFromAbandonedOperationSha256: null,
+    capability: "effect_capable", leaseEpoch: 1, ownerPid: 123,
+    ownerProcessStartFingerprintSha256: "9".repeat(64), acquiredAt: "2026-07-18T09:00:00.000Z",
+    heartbeatAt: "2026-07-18T09:00:00.000Z", expiresAt: "2026-07-18T09:05:00.000Z",
+    operationDeadlineAt: "2026-07-18T09:20:00.000Z"
+  } as const;
+  const leaseSha256 = releaseSha256V2(canonicalBytesV2(lease));
+  const consumption = {
+    version: "operational-attestation-consumption-v2", operationKind: "rollout", operationId,
+    candidateSha: SHA, releaseGenerationId: lease.releaseGenerationId, sourceManifestSha256,
+    artifactRootFingerprintSha256: lease.artifactRootFingerprintSha256,
+    operationalAttestationSha256: lease.operationalAttestationSha256,
+    operationalAttestationIssuerReceiptSha256: "a".repeat(64), recoveryFromAbandonedOperationSha256: null,
+    preclaimValidationSha256: "b".repeat(64),
+    preclaimLeaseLineageRelativePath: `production-preclaim-lease-lineages/${operationId}/${leaseSha256}.json`,
+    preclaimLeaseLineageSha256: "c".repeat(64), preclaimLeaseLineageCurrentTipSha256: leaseSha256,
+    commandId: "production_rollout", redactedTemplateSha256: "d".repeat(64),
+    leaseSha256AtConsumption: leaseSha256, leaseEpochAtConsumption: 1,
+    consumedAt: "2026-07-18T09:00:00.000Z", expiresAt: "2026-07-18T09:10:00.000Z",
+    operationDeadlineAt: lease.operationDeadlineAt
+  } as const;
+  const authorityConsumptionSha256 = releaseSha256V2(canonicalBytesV2(consumption));
+  const claim = {
+    version: "production-operation-claim-v2", operationKind: "rollout", operationId,
+    candidateSha: SHA, releaseGenerationId: lease.releaseGenerationId, sourceManifestSha256,
+    artifactRootFingerprintSha256: lease.artifactRootFingerprintSha256,
+    operationalAttestationSha256: lease.operationalAttestationSha256,
+    operationalAttestationIssuerReceiptSha256: consumption.operationalAttestationIssuerReceiptSha256,
+    recoveryFromAbandonedOperationSha256: null, authorityConsumption: consumption,
+    authorityConsumptionSha256, preclaimLeaseLineageRelativePath: consumption.preclaimLeaseLineageRelativePath,
+    preclaimLeaseLineageSha256: consumption.preclaimLeaseLineageSha256,
+    preclaimLeaseLineageCurrentTipSha256: leaseSha256, capability: "effect_capable",
+    leaseEpochAtConsumption: 1, operationDeadlineAt: lease.operationDeadlineAt,
+    claimedAt: "2026-07-18T09:00:00.000Z", claimantPid: 123,
+    claimantProcessStartFingerprintSha256: lease.ownerProcessStartFingerprintSha256
+  } as const;
+  const claimSha256 = releaseSha256V2(canonicalBytesV2(claim));
+  const intendedExternalEffectSha256 = "5".repeat(64);
+  const intent = {
+    version: "production-orchestration-step-intent-v2", capability: "effect_capable",
+    orchestration: "rollout", operationId, operationClaimSha256: claimSha256,
+    authorityConsumptionSha256, sequence: 5, stepId: "stop_previous", attempt: 1,
+    relativePath: `production-operation-step-intents/${operationId}/5-stop_previous-1-v2.json`,
+    currentOperationLeaseSha256: leaseSha256, currentOperationLeaseEpoch: 1,
+    commandId: "production_rollout", redactedTemplateSha256: "d".repeat(64),
+    inputSha256: "4".repeat(64), intendedExternalEffectSha256,
+    preparedAt: "2026-07-18T09:00:00.000Z"
+  } as const;
+  const intentSha256 = releaseSha256V2(canonicalBytesV2(intent));
+  const authority = api.validateTask0BProductionRuntimeAuthority(authorityFor(
+    "runtime_manager_stop_previous", actionManifest("runtime_manager_stop_previous"), {
+      operationId, operationClaimSha256: claimSha256, authorityConsumptionSha256,
+      sequence: 5, stepId: "stop_previous", inputSha256: intent.inputSha256,
+      intendedExternalEffectSha256, intentRelativePath: intent.relativePath, intentSha256,
+      operationLeaseSha256: leaseSha256, operationLeaseEpoch: 1,
+      operationDeadlineAt: lease.operationDeadlineAt,
+      releaseFreezeIdentitySha256: releaseSha256V2(canonicalBytesV2(RELEASE_V2_FREEZE_IDENTITY)),
+      sourceManifestSha256, generationId: lease.releaseGenerationId,
+      releaseManifestSha256: sourceManifestSha256,
+      issuedAt: "2026-07-18T09:00:00.000Z", expiresAt: "2026-07-18T09:04:00.000Z"
+    }
+  ), "2026-07-18T09:01:00.000Z");
+  const protection = { freezeValue: RELEASE_V2_FREEZE_IDENTITY, leaseValue: lease, leaseSha256,
+    claimValue: claim, claimSha256, intentValue: intent, intentSha256,
+    evaluatedAt: "2026-07-18T09:01:00.000Z" };
+  expect(api.validateRepoIssuedRuntimeAuthorityProtectionV2(authority, protection).intent)
+    .toEqual(intent);
+  for (const foreign of [
+    { ...protection, claimSha256: "0".repeat(64) },
+    { ...protection, intentSha256: "0".repeat(64) },
+    { ...protection, leaseSha256: "0".repeat(64) },
+    { ...protection, evaluatedAt: "2026-07-18T09:05:00.000Z" }
+  ]) expect(() => api.validateRepoIssuedRuntimeAuthorityProtectionV2(authority, foreign))
+    .toThrow(/binding|authority|time/i);
+  expect(() => api.validateTask0BProductionRuntimeAuthority({ ...authority,
+    version: "task0b-runtime-authority-v1", source: "operator_protected_one_shot_production_go" },
+  "2026-07-18T09:01:00.000Z")).toThrow(/authority/i);
+});
+
 it("[REQ-38][TASK0B-MANAGER-AUTHORITY] keeps exact target manager DB Telegram and one-shot bindings", async () => {
   const api = await import("../../scripts/manageTask0BRuntime");
   const manifest = actionManifest("runtime_manager_start_candidate");
@@ -287,6 +409,12 @@ it("[REQ-38][TASK0B-MANAGER-AUTHORITY] keeps exact target manager DB Telegram an
   }
   const candidateAuthoritySha = "a".repeat(64);
   const rollbackAuthoritySha = "b".repeat(64);
+  expect(api.runtimeAuthorityFilename(GENERATION, "runtime_manager_start_candidate")).toBe(
+    `runtime-authority-${GENERATION}-runtime_manager_start_candidate.json`
+  );
+  expect(api.runtimeAuthorityFilename(GENERATION, "runtime_manager_rollback_previous")).not.toBe(
+    api.runtimeAuthorityFilename(GENERATION, "runtime_manager_start_candidate")
+  );
   expect(api.runtimeGenerationEvidencePath("start", GENERATION,
     "runtime_manager_start_candidate", candidateAuthoritySha)).toBe(
     `runtime-start-evidence-${GENERATION}-runtime_manager_start_candidate-${candidateAuthoritySha}.json`
@@ -346,7 +474,8 @@ it("[REQ-38][TASK0B-MANAGER-ENV] strips inherited environment and binds producti
   const api = await import("../../scripts/manageTask0BRuntime");
   const currentAuthority = productionAuthority({
     issuedAt: new Date(Date.now() - 1_000).toISOString(),
-    expiresAt: new Date(Date.now() + 60_000).toISOString()
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    operationDeadlineAt: new Date(Date.now() + 120_000).toISOString()
   });
   const env = api.buildTask0BProductionRuntimeEnvironment({
     SystemRoot: "C:\\Windows",
@@ -391,7 +520,8 @@ it("[REQ-38][TASK0B-MANAGER-FRESHNESS] rejects a fresh GO over expired Task0B or
   const freshGo = {
     ...authority,
     issuedAt: "2026-07-18T09:15:30.000Z",
-    expiresAt: "2026-07-18T09:20:00.000Z"
+    expiresAt: "2026-07-18T09:20:00.000Z",
+    operationDeadlineAt: "2026-07-18T09:21:00.000Z"
   };
   expect(() => api.validateTask0BProductionGoEvidence(
     freshGo, task0b, task0b.operatorConfig, "2026-07-18T09:16:00.000Z"
@@ -531,6 +661,111 @@ it("[REQ-38][TASK0B-MANAGER-EFFECT-IDENTITY] isolates rollout and rollback autho
   expect(effects).toEqual(identities.map(([commandId]) => commandId));
   await expect(run("runtime_manager_start_candidate", "b".repeat(64))).rejects.toThrow(/consumption|collision/i);
   expect(effects).toHaveLength(4);
+});
+
+it("[REQ-38][TASK0B-MANAGER-TYPED-EVIDENCE] validates canonical consumption start and stop evidence against the exact authority", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const authoritySha256 = "a".repeat(64);
+  const consumption = {
+    version: "runtime-manager-authority-consumption-v1",
+    generationId: GENERATION,
+    authoritySha256,
+    commandId: "runtime_manager_start_candidate",
+    consumedAt: "2026-07-18T09:01:00.000Z"
+  };
+  expect(api.validateRuntimeManagerAuthorityConsumptionV1(consumption, {
+    generationId: GENERATION,
+    commandId: "runtime_manager_start_candidate",
+    authoritySha256,
+    issuedAt: "2026-07-18T09:00:00.000Z",
+    expiresAt: "2026-07-18T09:10:00.000Z"
+  })).toEqual(consumption);
+
+  const runtimeEvidence = {
+    version: "runtime-manager-start-evidence-v1",
+    generationId: GENERATION,
+    runtimeSha: SHA,
+    runtimeLabel: `master-${SHA.slice(0, 8)}`,
+    processId: 77,
+    processStartedAt: "2026-07-18T09:00:30.000Z",
+    commandLineSha256: "1".repeat(64),
+    executablePathSha256: "2".repeat(64),
+    workingDirectoryFingerprintSha256: "3".repeat(64),
+    entrypointPathFingerprintSha256: "4".repeat(64),
+    managerExecutableSha256: "5".repeat(64),
+    attestedAt: "2026-07-18T09:00:31.000Z",
+    producerId: "task0b_repo_runtime_manager_v1",
+    commandId: "runtime_manager_previous_identity",
+    templateSha256: PREVIOUS_IDENTITY_TEMPLATE,
+    exitCode: 0
+  };
+  const startEvidence = {
+    version: "runtime-manager-start-effect-evidence-v2",
+    generationId: GENERATION,
+    commandId: "runtime_manager_start_candidate",
+    authoritySha256,
+    targetRuntimeSha: SHA,
+    targetRuntimeLabel: `master-${SHA.slice(0, 8)}`,
+    runtimeEvidence
+  };
+  expect(api.validateRuntimeManagerStartEffectEvidenceV2(startEvidence, {
+    generationId: GENERATION,
+    commandId: "runtime_manager_start_candidate",
+    authoritySha256,
+    targetRuntimeSha: SHA,
+    targetRuntimeLabel: `master-${SHA.slice(0, 8)}`
+  })).toEqual(startEvidence);
+
+  const stopEvidence = {
+    version: "runtime-manager-stop-effect-evidence-v2",
+    generationId: GENERATION,
+    commandId: "runtime_manager_stop_previous",
+    authoritySha256,
+    targetRuntimeSha: PREVIOUS_RUNTIME_SHA,
+    targetRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
+    startEvidencePath: `runtime-start-evidence-${GENERATION}.json`,
+    startEvidenceSha256: "6".repeat(64),
+    stoppedProcessId: 77,
+    stoppedProcessStartedAt: "2026-07-18T09:00:30.000Z",
+    stoppedAt: "2026-07-18T09:01:00.000Z",
+    forcePolicy: "graceful_only",
+    runtimeCandidatesAfter: 0,
+    verified: true
+  };
+  expect(api.validateRuntimeManagerStopEffectEvidenceV2(stopEvidence, {
+    generationId: GENERATION,
+    commandId: "runtime_manager_stop_previous",
+    authoritySha256,
+    targetRuntimeSha: PREVIOUS_RUNTIME_SHA,
+    targetRuntimeLabel: PREVIOUS_RUNTIME_LABEL
+  })).toEqual(stopEvidence);
+
+  for (const forged of [
+    { ...consumption, commandId: "runtime_manager_stop_previous" },
+    { ...consumption, authoritySha256: "f".repeat(64) }
+  ]) expect(() => api.validateRuntimeManagerAuthorityConsumptionV1(forged, {
+    generationId: GENERATION,
+    commandId: "runtime_manager_start_candidate",
+    authoritySha256,
+    issuedAt: "2026-07-18T09:00:00.000Z",
+    expiresAt: "2026-07-18T09:10:00.000Z"
+  })).toThrow(/consumption|binding/i);
+  expect(() => api.validateRuntimeManagerStartEffectEvidenceV2({ ...startEvidence,
+    authoritySha256: "f".repeat(64) }, {
+    generationId: GENERATION,
+    commandId: "runtime_manager_start_candidate",
+    authoritySha256,
+    targetRuntimeSha: SHA,
+    targetRuntimeLabel: `master-${SHA.slice(0, 8)}`
+  })).toThrow(/start|binding/i);
+  expect(() => api.validateRuntimeManagerStopEffectEvidenceV2({ ...stopEvidence,
+    commandId: "runtime_manager_stop_candidate" }, {
+    generationId: GENERATION,
+    commandId: "runtime_manager_stop_previous",
+    authoritySha256,
+    targetRuntimeSha: PREVIOUS_RUNTIME_SHA,
+    targetRuntimeLabel: PREVIOUS_RUNTIME_LABEL
+  })).toThrow(/stop|binding/i);
 });
 
 it("[REQ-38][TASK0B-MANAGER-UNMARKED] blocks before authority consumption spawn or evidence", async () => {

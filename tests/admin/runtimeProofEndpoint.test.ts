@@ -32,6 +32,8 @@ function deps() {
       cacheOnly: { reads: 2 as const, providerCalls: 0 as const, sources: ["cache", "cache"] as const },
       explicitRefresh: { attempts: 1 as const, providerCalls: 1, completed: true as const },
       callback: {
+        bindingId: "create_bot_callback_query_data_ack_first_v1" as const,
+        productionHandlerBound: true as const,
         ackCompleted: true as const,
         ackBeforeWork: true as const,
         returnedWhileWorkPending: true as const

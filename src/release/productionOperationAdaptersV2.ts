@@ -7,6 +7,8 @@ import { Client } from "pg";
 import type {
   ProtectedProductionLeafInputV2,
   ProtectedProductionLeafResultV2,
+  ProtectedProductionEffectPreparationInputV2,
+  ProtectedProductionEffectExecutionInputV2,
   ProtectedProductionOperationAdaptersV2,
   ProtectedRollbackWindowV2
 } from "./productionReleaseOrchestratorV2";
@@ -28,17 +30,27 @@ import {
   safeArtifactPath,
   safeArtifactRelativePath
 } from "./releaseRootWriterStore";
-import { assertNoSecretLikeArtifactValues, validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
+import {
+  TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256,
+  assertNoSecretLikeArtifactValues,
+  validateTask0BReleaseFreezeEvidence
+} from "./remediationReleaseManifest";
 import {
   assertTerminalLegacyPopulationUnchanged,
   snapshotTerminalLegacyPopulation,
   validateTerminalLegacyPopulation
 } from "./terminalLegacyPopulation";
 import {
+  canonicalRuntimeManagerArtifactBytes,
   runtimeGenerationDiagnosticPaths,
   runtimeGenerationConsumptionPath,
   runtimeGenerationEvidencePath,
-  validateTask0BProductionRuntimeAuthority
+  runtimeAuthorityFilename,
+  validateRuntimeManagerAuthorityConsumptionV1,
+  validateRuntimeManagerStartEffectEvidenceV2,
+  validateRuntimeManagerStopEffectEvidenceV2,
+  validateTask0BProductionRuntimeAuthority,
+  type Task0BProductionRuntimeAuthorityV1
 } from "../../scripts/manageTask0BRuntime";
 import {
   countTask0BRuntimeCandidates,
@@ -46,6 +58,15 @@ import {
   observeWindowsRuntimeProcess,
   readExternalConfig
 } from "../../scripts/captureTask0BPreflight";
+import { verifyRequiredSchema032, type Schema032Verification } from "../storage/schemaMigrations";
+import { ProductionOperationStoreV2 } from "./productionOperationStore";
+import {
+  RUNTIME_CYCLE_NAMES,
+  type RuntimeCycleName,
+  type RuntimeNavigationProbeV1,
+  type RuntimeProofV1
+} from "../runtime/runtimeLiveProof";
+import { formatRuntimeVersion, validateRuntimeVersion } from "../runtime/runtimeVersion";
 
 const execFileAsync = promisify(execFile);
 const MAX_CAPTURE_BYTES = 1024 * 1024;
@@ -82,6 +103,7 @@ export type ProductionLiveProofSnapshotV2 = Readonly<{
   queueGrowthCount: number;
   honestLimitViolationCount: number;
   sentFingerprintDuplicateCount: number;
+  runtimeCycleHighWatermarksVerified: boolean;
 }>;
 
 type ProductionLiveProofKindV2 = "rollout" | "canary" | "rollback";
@@ -98,6 +120,83 @@ function requireLiveProof(condition: boolean, code: string): void {
   if (!condition) throw new Error(code);
 }
 
+function exactObject(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(code);
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(code);
+  }
+  return record;
+}
+
+function exactIso(value: unknown, code: string): string {
+  if (typeof value !== "string") throw new Error(code);
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) throw new Error(code);
+  return value;
+}
+
+function exactNonnegativeInteger(value: unknown, code: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error(code);
+  return Number(value);
+}
+
+export function validateProductionRuntimeProofV1(value: unknown, candidateSha: string): RuntimeProofV1 {
+  const proof = exactObject(value, ["version", "runtimeVersion", "runtimeVersionSha256",
+    "formattedRuSha256", "formattedEnSha256", "cycleHighWatermarks"], "production_runtime_proof_shape_invalid");
+  if (proof.version !== "runtime-proof-v1") throw new Error("production_runtime_proof_version_invalid");
+  const runtimeVersion = validateRuntimeVersion(proof.runtimeVersion, candidateSha);
+  if (runtimeVersion.migration.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM
+      || proof.runtimeVersionSha256 !== hash(JSON.stringify(runtimeVersion))
+      || proof.formattedRuSha256 !== hash(formatRuntimeVersion(runtimeVersion, "ru"))
+      || proof.formattedEnSha256 !== hash(formatRuntimeVersion(runtimeVersion, "en"))) {
+    throw new Error("production_runtime_proof_hash_binding_invalid");
+  }
+  const watermarks = exactObject(proof.cycleHighWatermarks, RUNTIME_CYCLE_NAMES,
+    "production_runtime_proof_cycles_shape_invalid");
+  for (const cycle of RUNTIME_CYCLE_NAMES) {
+    const watermark = watermarks[cycle];
+    if (watermark === null) continue;
+    const parsed = exactObject(watermark, ["sequence", "completedAt"],
+      "production_runtime_proof_cycle_invalid");
+    if (exactNonnegativeInteger(parsed.sequence, "production_runtime_proof_cycle_invalid") < 1) {
+      throw new Error("production_runtime_proof_cycle_invalid");
+    }
+    exactIso(parsed.completedAt, "production_runtime_proof_cycle_invalid");
+  }
+  return proof as unknown as RuntimeProofV1;
+}
+
+export function validateProductionRuntimeNavigationProbeV1(
+  value: unknown,
+  candidateSha: string
+): RuntimeNavigationProbeV1 {
+  const probe = exactObject(value, ["version", "runtimeSha", "cacheOnly", "explicitRefresh",
+    "callback", "telegramTransport", "completedAt"], "production_navigation_probe_shape_invalid");
+  const cache = exactObject(probe.cacheOnly, ["reads", "providerCalls", "sources"],
+    "production_navigation_probe_cache_invalid");
+  const refresh = exactObject(probe.explicitRefresh, ["attempts", "providerCalls", "completed"],
+    "production_navigation_probe_refresh_invalid");
+  const callback = exactObject(probe.callback, ["bindingId", "productionHandlerBound", "ackCompleted",
+    "ackBeforeWork", "returnedWhileWorkPending"],
+    "production_navigation_probe_callback_invalid");
+  if (probe.version !== "runtime-navigation-probe-v1" || probe.runtimeSha !== candidateSha
+      || cache.reads !== 2 || cache.providerCalls !== 0 || !Array.isArray(cache.sources)
+      || cache.sources.length !== 2 || cache.sources.some((source) => source !== "cache" && source !== "stale")
+      || refresh.attempts !== 1 || !Number.isSafeInteger(refresh.providerCalls)
+      || Number(refresh.providerCalls) < 1 || refresh.completed !== true
+      || callback.bindingId !== "create_bot_callback_query_data_ack_first_v1"
+      || callback.productionHandlerBound !== true
+      || callback.ackCompleted !== true || callback.ackBeforeWork !== true
+      || callback.returnedWhileWorkPending !== true || probe.telegramTransport !== "absent") {
+    throw new Error("production_navigation_probe_binding_invalid");
+  }
+  exactIso(probe.completedAt, "production_navigation_probe_time_invalid");
+  return probe as unknown as RuntimeNavigationProbeV1;
+}
+
 export function deriveVerifiedProductionChecksV2(
   kind: ProductionLiveProofKindV2,
   proof: ProductionLiveProofSnapshotV2,
@@ -112,6 +211,9 @@ export function deriveVerifiedProductionChecksV2(
   requireLiveProof(proof.allowanceMirrorMismatchCount === 0, "production_allowance_invariant_failed");
   requireLiveProof(proof.terminalLegacyUnchanged, "production_legacy_population_changed");
   requireLiveProof(proof.sentFingerprintDuplicateCount === 0, "production_duplicate_sent_fingerprint_detected");
+  if (kind !== "rollback") {
+    requireLiveProof(proof.runtimeCycleHighWatermarksVerified, "production_runtime_cycles_unverified");
+  }
   if (kind === "rollout") {
     requireLiveProof(proof.workerScheduleCount === 1, "production_worker_schedule_unverified");
     requireLiveProof(proof.botStartedCount === 1, "production_bot_start_unverified");
@@ -129,11 +231,14 @@ export function deriveVerifiedProductionChecksV2(
   return VERIFIED_CHECKS[kind];
 }
 
-export function inspectRuntimeDiagnosticLogsV2(stdout: string, stderr: string): Readonly<{
+export function inspectRuntimeDiagnosticLogsV2(stdout: string, stderr: string, expectedRuntimeSha?: string): Readonly<{
   workerScheduleCount: number;
   botStartedCount: number;
   fatalLogCount: number;
   secretDetected: false;
+  cycleHighWatermarks: Readonly<Record<RuntimeCycleName, number>>;
+  startupMaximumDelayMs: number;
+  botStartedAt: string | null;
 }> {
   try { assertNoSecretLikeArtifactValues({ stdout, stderr }); }
   catch (error) { throw new Error("production_runtime_log_secret_detected", { cause: error }); }
@@ -156,6 +261,7 @@ export function inspectRuntimeDiagnosticLogsV2(stdout: string, stderr: string): 
   const scheduleRecords = records.filter((record) => record.event === "startup_work_schedule_started");
   const expectedSchedule = ["poll", "where_forensic", "incoming_deposit", "deep_forensic", "address_index",
     "address_poisoning"];
+  let startupMaximumDelayMs = 0;
   for (const record of scheduleRecords) {
     const schedule = Array.isArray(record.schedule) ? record.schedule : [];
     const labels = schedule.map((item) => item && typeof item === "object" && !Array.isArray(item)
@@ -163,17 +269,77 @@ export function inspectRuntimeDiagnosticLogsV2(stdout: string, stderr: string): 
     if (labels.length !== expectedSchedule.length || labels.some((label, index) => label !== expectedSchedule[index])) {
       throw new Error("production_runtime_worker_schedule_invalid");
     }
+    for (const item of schedule) {
+      const entry = exactObject(item, ["label", "delayMs"], "production_runtime_worker_schedule_invalid");
+      startupMaximumDelayMs = Math.max(startupMaximumDelayMs,
+        exactNonnegativeInteger(entry.delayMs, "production_runtime_worker_schedule_invalid"));
+    }
+  }
+  const botStarted = records.filter((record) => record.event === "bot_started");
+  const botStartedAt = botStarted.length === 1
+    ? exactIso(botStarted[0]!.timestamp, "production_runtime_log_bot_started_invalid") : null;
+  const cycleHighWatermarks = Object.fromEntries(RUNTIME_CYCLE_NAMES.map((cycle) => [cycle, 0])) as Record<RuntimeCycleName, number>;
+  for (const record of records.filter((candidate) => candidate.event === "runtime_cycle_completed")) {
+    exactObject(record, ["level", "event", "timestamp", "runtimeSha", "cycle", "sequence", "startedAt",
+      "finishedAt", "durationMs", "sourceQueryCompleted", "examinedCount", "completedCount"],
+    "production_runtime_cycle_log_shape_invalid");
+    if (record.level !== "info" || typeof record.runtimeSha !== "string" || !/^[0-9a-f]{40}$/u.test(record.runtimeSha)
+        || (expectedRuntimeSha !== undefined && record.runtimeSha !== expectedRuntimeSha)
+        || !RUNTIME_CYCLE_NAMES.includes(record.cycle as RuntimeCycleName)
+        || record.sourceQueryCompleted !== true) throw new Error("production_runtime_cycle_log_invalid");
+    const cycle = record.cycle as RuntimeCycleName;
+    const sequence = exactNonnegativeInteger(record.sequence, "production_runtime_cycle_log_invalid");
+    const examined = exactNonnegativeInteger(record.examinedCount, "production_runtime_cycle_log_invalid");
+    const completed = exactNonnegativeInteger(record.completedCount, "production_runtime_cycle_log_invalid");
+    const duration = exactNonnegativeInteger(record.durationMs, "production_runtime_cycle_log_invalid");
+    const startedAt = Date.parse(exactIso(record.startedAt, "production_runtime_cycle_log_time_invalid"));
+    const finishedAt = Date.parse(exactIso(record.finishedAt, "production_runtime_cycle_log_time_invalid"));
+    exactIso(record.timestamp, "production_runtime_cycle_log_time_invalid");
+    if (sequence !== cycleHighWatermarks[cycle] + 1 || completed > examined
+        || finishedAt < startedAt || finishedAt - startedAt !== duration
+        || botStartedAt === null || finishedAt < Date.parse(botStartedAt)) {
+      throw new Error("production_runtime_cycle_log_sequence_invalid");
+    }
+    cycleHighWatermarks[cycle] = sequence;
   }
   return {
     workerScheduleCount: scheduleRecords.length,
     botStartedCount: records.filter((record) => record.event === "bot_started").length,
     fatalLogCount,
-    secretDetected: false
+    secretDetected: false,
+    cycleHighWatermarks,
+    startupMaximumDelayMs,
+    botStartedAt
   };
 }
 
+export function runtimeStartupReadyDeadlineV2(
+  botStartedAt: string,
+  startupMaximumDelayMs: number,
+  hardDeadlineAt: string
+): string {
+  const botAt = Date.parse(exactIso(botStartedAt, "production_runtime_startup_time_invalid"));
+  const hardAt = Date.parse(exactIso(hardDeadlineAt, "production_runtime_startup_deadline_invalid"));
+  const delay = exactNonnegativeInteger(startupMaximumDelayMs, "production_runtime_startup_delay_invalid");
+  return new Date(Math.min(hardAt, botAt + delay + 15_000)).toISOString();
+}
+
+export function assertRuntimeStartupCyclesReadyV2(
+  highWatermarks: Readonly<Record<RuntimeCycleName, number>>,
+  evaluatedAt: string,
+  readyDeadlineAt: string
+): boolean {
+  if (RUNTIME_CYCLE_NAMES.every((cycle) => Number.isSafeInteger(highWatermarks[cycle])
+      && highWatermarks[cycle] >= 1)) return true;
+  if (Date.parse(exactIso(evaluatedAt, "production_runtime_startup_time_invalid"))
+      >= Date.parse(exactIso(readyDeadlineAt, "production_runtime_startup_deadline_invalid"))) {
+    throw new Error("production_runtime_cycle_startup_timeout");
+  }
+  return false;
+}
+
 type ProductionRuntimeQueryableV2 = Readonly<{
-  query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }>;
+  query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
 }>;
 
 function exactProbeCount(result: { rows: unknown[] }, label: string): number {
@@ -266,7 +432,7 @@ function readCanonical<T>(root: string, relativePath: string, validator: (value:
 }
 
 function runtimeAuthorities(root: string, commandId: RuntimeManagerCommandId, includeConsumed: boolean): Array<{
-  filename: string; generationId: string; sha256: string;
+  filename: string; generationId: string; sha256: string; authority: Task0BProductionRuntimeAuthorityV1;
 }> {
   return readdirSync(root).filter((name) => /^runtime-authority-[A-Za-z0-9._-]+\.json$/u.test(name))
     .flatMap((filename) => {
@@ -276,21 +442,52 @@ function runtimeAuthorities(root: string, commandId: RuntimeManagerCommandId, in
       catch { throw new Error("production_runtime_authority_json_invalid"); }
       const issuedAt = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).issuedAt : undefined;
-      const value = validateTask0BProductionRuntimeAuthority(parsed,
-        includeConsumed && typeof issuedAt === "string" ? issuedAt : new Date().toISOString());
+      if (typeof issuedAt !== "string") throw new Error("production_runtime_authority_issued_at_invalid");
+      const value = validateTask0BProductionRuntimeAuthority(parsed, issuedAt);
       if (!bytes.equals(canonicalBytesV2(value))) throw new Error("production_runtime_authority_noncanonical");
       const generationId = value.generationId;
+      if (filename !== runtimeAuthorityFilename(generationId, value.commandId)) {
+        throw new Error("production_runtime_authority_filename_invalid");
+      }
       if (value.commandId !== commandId) return [];
-      const consumed = existsSync(safeArtifactPath(root,
-        runtimeGenerationConsumptionPath(generationId, value.commandId, hash(bytes))));
-      return includeConsumed === consumed ? [{ filename, generationId, sha256: hash(bytes) }] : [];
+      const authoritySha256 = hash(bytes);
+      const consumptionPath = runtimeGenerationConsumptionPath(generationId, value.commandId, authoritySha256);
+      const consumed = existsSync(safeArtifactPath(root, consumptionPath));
+      if (consumed) {
+        const consumptionBytes = readFileSync(safeArtifactPath(root, consumptionPath));
+        let consumptionValue: unknown;
+        try { consumptionValue = JSON.parse(consumptionBytes.toString("utf8")); }
+        catch { throw new Error("production_runtime_authority_consumption_json_invalid"); }
+        const consumption = validateRuntimeManagerAuthorityConsumptionV1(consumptionValue, {
+          generationId, commandId: value.commandId, authoritySha256,
+          issuedAt: value.issuedAt, expiresAt: value.expiresAt
+        });
+        if (!consumptionBytes.equals(canonicalRuntimeManagerArtifactBytes(consumption))) {
+          throw new Error("production_runtime_authority_consumption_noncanonical");
+        }
+      }
+      if (includeConsumed !== consumed) return [];
+      if (!includeConsumed) validateTask0BProductionRuntimeAuthority(parsed, new Date().toISOString());
+      return [{ filename, generationId, sha256: authoritySha256, authority: value }];
     });
 }
 
-function runtimeEffectIdentity(stepId: string, selected: { filename: string; generationId: string; sha256: string }): string {
+function runtimeEffectIdentity(input: ProtectedProductionEffectPreparationInputV2, commandId: RuntimeManagerCommandId): string {
+  const task0b = loadTask0B(input.artifactRoot);
+  const freeze = readCanonical(input.artifactRoot, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+  const manifest = readCanonical(input.artifactRoot, "release-manifest.json", validateRemediationReleaseManifestV2);
   return releaseSha256V2(canonicalBytesV2({ version: "production-runtime-effect-identity-v2",
-    stepId, authorityFilename: selected.filename, authoritySha256: selected.sha256,
-    generationId: selected.generationId }));
+    operationKind: input.operationKind, operationId: input.operationId,
+    operationClaimSha256: input.operationClaimSha256,
+    authorityConsumptionSha256: input.authorityConsumptionSha256,
+    sequence: input.sequence, stepId: input.stepId, inputSha256: input.inputSha256,
+    commandId, candidateSha: task0b.candidateSha,
+    task0bEvidenceSha256: releaseSha256V2(readFileSync(safeArtifactPath(input.artifactRoot,
+      "task0b-release-freeze.json"))),
+    releaseGenerationId: input.releaseGenerationId,
+    releaseFreezeIdentitySha256: freeze.sha256,
+    sourceManifestSha256: manifest.sha256
+  }));
 }
 
 async function runNodeScript(script: string, args: string[]): Promise<Buffer> {
@@ -325,18 +522,63 @@ function loadTask0B(root: string) {
   return validateTask0BReleaseFreezeEvidence(JSON.parse(bytes.toString("utf8")));
 }
 
-async function observeAdmin(root: string) {
+type RuntimeCycleSnapshotV2 = Readonly<Record<RuntimeCycleName, number>>;
+
+function cycleSnapshot(
+  proof: RuntimeProofV1,
+  baseline: RuntimeCycleSnapshotV2 | null
+): RuntimeCycleSnapshotV2 {
+  const result = {} as Record<RuntimeCycleName, number>;
+  for (const cycle of RUNTIME_CYCLE_NAMES) {
+    const value = proof.cycleHighWatermarks[cycle];
+    if (value === null || value.sequence < 1 || (baseline !== null && value.sequence <= baseline[cycle])) {
+      throw new Error(`production_runtime_cycle_not_advanced:${cycle}`);
+    }
+    result[cycle] = value.sequence;
+  }
+  return Object.freeze(result);
+}
+
+async function fetchTypedJson(url: URL, init: RequestInit, label: string): Promise<{ status: number; value: unknown }> {
+  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
+  const text = await response.text();
+  if (text.length > MAX_CAPTURE_BYTES) throw new Error(`production_${label}_too_large`);
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch (error) { throw new Error(`production_${label}_json_invalid`, { cause: error }); }
+  return { status: response.status, value };
+}
+
+async function observeAdmin(
+  root: string,
+  kind: ProductionLiveProofKindV2,
+  priorCycleSnapshot: RuntimeCycleSnapshotV2 | null,
+  runNavigationProbe: boolean
+) {
   const task0b = loadTask0B(root);
   const base = new URL(task0b.runtimeManager.candidateAdminUrl);
   const admin = await fetch(base, { signal: AbortSignal.timeout(10_000) });
   if (admin.status !== 200) throw new Error("production_runtime_http_check_failed");
   const adminToken = process.env.ADMIN_DASHBOARD_TOKEN;
   if (!adminToken) throw new Error("production_navigation_authority_missing");
-  const navigation = await fetch(new URL("/admin/api/forensic-jobs?limit=1", base), {
-    headers: { authorization: `Bearer ${adminToken}` },
-    signal: AbortSignal.timeout(10_000)
-  });
-  if (navigation.status !== 200) throw new Error("production_navigation_invariant_failed");
+  let cycles: RuntimeCycleSnapshotV2 | null = null;
+  if (kind !== "rollback") {
+    const runtimeResponse = await fetchTypedJson(new URL("/admin/api/runtime-proof", base), {
+      headers: { authorization: `Bearer ${adminToken}` },
+    }, "runtime_proof");
+    if (runtimeResponse.status !== 200) throw new Error("production_runtime_proof_http_invalid");
+    cycles = cycleSnapshot(validateProductionRuntimeProofV1(runtimeResponse.value, task0b.candidateSha),
+      priorCycleSnapshot);
+  }
+  let navigationStatus = runNavigationProbe ? 0 : 200;
+  if (runNavigationProbe) {
+    const navigation = await fetchTypedJson(new URL("/admin/api/runtime-navigation-probe", base), {
+      method: "POST", headers: { authorization: `Bearer ${adminToken}` }
+    }, "navigation_probe");
+    if (navigation.status !== 200) throw new Error("production_navigation_invariant_failed");
+    validateProductionRuntimeNavigationProbeV1(navigation.value, task0b.candidateSha);
+    navigationStatus = navigation.status;
+  }
   const startEvidence = (["runtime_manager_start_candidate", "runtime_manager_rollback_previous"] as const)
     .map((commandId) => actualRuntimeEvidence(root, commandId)).filter((value) => value !== null);
   let live: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>> | null = null;
@@ -344,12 +586,18 @@ async function observeAdmin(root: string) {
   let runtimeStartCommandId: "runtime_manager_start_candidate" | "runtime_manager_rollback_previous" | null = null;
   let runtimeAuthoritySha256: string | null = null;
   for (const evidence of startEvidence) {
-    const parsed = JSON.parse(evidence.bytes.toString("utf8")) as Record<string, unknown>;
-    const processId = Number(parsed.processId);
+    if (!evidence.startEvidence) throw new Error("production_runtime_start_evidence_missing");
+    const processId = evidence.startEvidence.runtimeEvidence.processId;
     if (!Number.isSafeInteger(processId) || processId < 1) continue;
     try {
       live = await observeWindowsRuntimeProcess(processId);
-      if (parsed.runtimeSha !== live.runtimeSha || parsed.runtimeLabel !== live.runtimeLabel) {
+      const runtime = evidence.startEvidence.runtimeEvidence;
+      if (runtime.runtimeSha !== live.runtimeSha || runtime.runtimeLabel !== live.runtimeLabel
+          || runtime.processStartedAt !== live.processStartedAt
+          || runtime.commandLineSha256 !== live.commandLineSha256
+          || runtime.executablePathSha256 !== live.executablePathSha256
+          || runtime.workingDirectoryFingerprintSha256 !== live.workingDirectoryFingerprintSha256
+          || runtime.entrypointPathFingerprintSha256 !== live.entrypointPathFingerprintSha256) {
         throw new Error("production_runtime_start_evidence_mismatch");
       }
       runtimeGenerationId = evidence.generationId;
@@ -372,17 +620,25 @@ async function observeAdmin(root: string) {
   }
   return { adminStatus: admin.status, runtimeSha: live.runtimeSha,
     runtimeLabelSha256: hash(live.runtimeLabel), runtimeProcessCount: await countTask0BRuntimeCandidates(),
-    navigationStatus: navigation.status, runtimeGenerationId, runtimeStartCommandId, runtimeAuthoritySha256 };
+    navigationStatus, runtimeGenerationId, runtimeStartCommandId, runtimeAuthoritySha256,
+    cycleSnapshot: cycles };
 }
 
 async function observeProductionLiveProof(
   root: string,
   kind: ProductionLiveProofKindV2,
-  queueBaseline: number | null
-): Promise<{ proof: ProductionLiveProofSnapshotV2; queuePopulationCount: number }> {
-  const [admin, database] = await Promise.all([observeAdmin(root), observeProductionDatabaseRuntime(root)]);
+  queueBaseline: number | null,
+  cycleBaseline: RuntimeCycleSnapshotV2 | null,
+  runNavigationProbe: boolean
+): Promise<{ proof: ProductionLiveProofSnapshotV2; queuePopulationCount: number;
+    cycleSnapshot: RuntimeCycleSnapshotV2 | null }> {
+  const [admin, database] = await Promise.all([
+    observeAdmin(root, kind, cycleBaseline, runNavigationProbe),
+    observeProductionDatabaseRuntime(root)
+  ]);
   const diagnostics = kind === "rollback"
-    ? { workerScheduleCount: 0, botStartedCount: 0, fatalLogCount: 0, secretDetected: false as const }
+    ? { workerScheduleCount: 0, botStartedCount: 0, fatalLogCount: 0, secretDetected: false as const,
+      cycleHighWatermarks: Object.fromEntries(RUNTIME_CYCLE_NAMES.map((cycle) => [cycle, 0])) as Record<RuntimeCycleName, number> }
     : admin.runtimeGenerationId === null || admin.runtimeStartCommandId === null || admin.runtimeAuthoritySha256 === null
       ? (() => { throw new Error("production_runtime_log_generation_unverified"); })()
       : await observeRuntimeDiagnostics(root, admin.runtimeGenerationId, admin.runtimeStartCommandId,
@@ -406,9 +662,12 @@ async function observeProductionLiveProof(
       allowanceMirrorMismatchCount: database.invariants.allowanceMirrorMismatchCount,
       queueGrowthCount: queueBaseline === null ? 0 : Math.max(0, queuePopulationCount - queueBaseline),
       honestLimitViolationCount: database.invariants.honestLimitViolationCount,
-      sentFingerprintDuplicateCount: database.invariants.sentFingerprintDuplicateCount
+      sentFingerprintDuplicateCount: database.invariants.sentFingerprintDuplicateCount,
+      runtimeCycleHighWatermarksVerified: kind === "rollback" || (admin.cycleSnapshot !== null
+        && RUNTIME_CYCLE_NAMES.every((cycle) => diagnostics.cycleHighWatermarks[cycle] >= admin.cycleSnapshot![cycle]))
     },
-    queuePopulationCount
+    queuePopulationCount,
+    cycleSnapshot: admin.cycleSnapshot
   };
 }
 
@@ -451,27 +710,78 @@ async function observeRuntimeDiagnostics(
   readRuntimeLogBinding(root, generationId, commandId, authoritySha256, runtimeSha);
   const paths = runtimeGenerationDiagnosticPaths(generationId, commandId, authoritySha256);
   let lastError: unknown = new Error("production_runtime_logs_not_ready");
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  const evidence = actualRuntimeEvidence(root, commandId);
+  if (!evidence) throw new Error("production_runtime_start_evidence_missing");
+  const hardDeadlineMs = Math.min(Date.parse(evidence.authority.expiresAt),
+    Date.parse(evidence.authority.operationDeadlineAt));
+  let startupReadyDeadlineMs: number | null = null;
+  while (Date.now() < hardDeadlineMs) {
     try {
       const stdout = readFileSync(safeArtifactPath(root, paths.stdout));
       const stderr = readFileSync(safeArtifactPath(root, paths.stderr));
       if (stdout.length > MAX_CAPTURE_BYTES || stderr.length > MAX_CAPTURE_BYTES) {
         throw new Error("production_runtime_log_too_large");
       }
-      const proof = inspectRuntimeDiagnosticLogsV2(stdout.toString("utf8"), stderr.toString("utf8"));
+      const proof = inspectRuntimeDiagnosticLogsV2(stdout.toString("utf8"), stderr.toString("utf8"), runtimeSha);
       if (proof.workerScheduleCount > 1 || proof.botStartedCount > 1) {
         throw new Error("production_runtime_log_duplicate_startup");
       }
-      if (proof.workerScheduleCount === 1 && proof.botStartedCount === 1) return proof;
+      if (proof.workerScheduleCount === 1 && proof.botStartedAt !== null) {
+        startupReadyDeadlineMs ??= Date.parse(runtimeStartupReadyDeadlineV2(proof.botStartedAt,
+          proof.startupMaximumDelayMs, new Date(hardDeadlineMs).toISOString()));
+      }
+      if (proof.workerScheduleCount === 1 && proof.botStartedCount === 1 && startupReadyDeadlineMs !== null
+          && assertRuntimeStartupCyclesReadyV2(proof.cycleHighWatermarks, new Date().toISOString(),
+            new Date(startupReadyDeadlineMs).toISOString())) {
+        return proof;
+      }
       lastError = new Error("production_runtime_logs_not_ready");
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : "";
-      if (/secret|fatal|duplicate|too_large|binding|schedule_invalid/iu.test(message)) throw error;
+      if (/secret|fatal|duplicate|too_large|binding|schedule_invalid|startup_timeout/iu.test(message)) throw error;
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error("production_runtime_logs_unverified", { cause: lastError });
+}
+
+type ProductionDatabaseSnapshotExpectedV2 = Readonly<{
+  databaseName: "tron_watch";
+  connectedServerPort: number;
+  serverVersionNum: string;
+  databaseOid: string;
+  systemIdentifier: string;
+}>;
+
+export async function verifyProductionDatabaseSnapshotBindingV2(
+  db: ProductionRuntimeQueryableV2,
+  expected: ProductionDatabaseSnapshotExpectedV2,
+  verifySchema: (queryable: ProductionRuntimeQueryableV2) => Promise<Schema032Verification> =
+    (queryable) => verifyRequiredSchema032(queryable, APPROVED_SCHEMA_032_CHECKSUM)
+): Promise<Schema032Verification> {
+  const current = await db.query(`select current_database() as database_name,
+    inet_server_port() as server_port,
+    current_setting('server_version_num') as server_version_num,
+    (select oid::text from pg_database where datname = current_database()) as database_oid`);
+  const control = await db.query("select system_identifier::text as system_identifier from pg_control_system()");
+  const row = current.rows[0] as Record<string, unknown> | undefined;
+  const controlRow = control.rows[0] as Record<string, unknown> | undefined;
+  if (current.rows.length !== 1 || control.rows.length !== 1 || row?.database_name !== expected.databaseName
+      || Number(row?.server_port) !== expected.connectedServerPort
+      || String(row?.server_version_num) !== expected.serverVersionNum
+      || String(row?.database_oid) !== expected.databaseOid
+      || String(controlRow?.system_identifier) !== expected.systemIdentifier) {
+    throw new Error("production_database_identity_changed");
+  }
+  const schema = await verifySchema(db);
+  if (schema.verified !== true || schema.version !== 32
+      || schema.filename !== "032_telegram_runtime_forensics_data_contracts.sql"
+      || schema.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM
+      || schema.shortChecksum !== APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)) {
+    throw new Error("production_schema_verification_failed");
+  }
+  return schema;
 }
 
 async function observeProductionDatabaseRuntime(root: string) {
@@ -494,19 +804,16 @@ async function observeProductionDatabaseRuntime(root: string) {
   try {
     await client.query("begin isolation level repeatable read read only");
     transactionStarted = true;
-    const current = await client.query(`select current_database() as database_name,
-      inet_server_port() as server_port,
-      current_setting('server_version_num') as server_version_num,
-      (select oid::text from pg_database where datname = current_database()) as database_oid`);
-    const control = await client.query("select system_identifier::text as system_identifier from pg_control_system()");
     const expected = external.config.productionDatabaseExpected;
-    if (current.rows.length !== 1 || current.rows[0]?.database_name !== "tron_watch"
-        || Number(current.rows[0]?.server_port) !== expected.connectedServerPort
-        || String(current.rows[0]?.server_version_num) !== expected.serverVersionNum
-        || String(current.rows[0]?.database_oid) !== expected.databaseOid
-        || String(control.rows[0]?.system_identifier) !== expected.systemIdentifier) {
-      throw new Error("production_database_identity_changed");
-    }
+    await verifyProductionDatabaseSnapshotBindingV2({
+      query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
+    }, {
+      databaseName: expected.databaseName,
+      connectedServerPort: expected.connectedServerPort,
+      serverVersionNum: expected.serverVersionNum,
+      databaseOid: expected.databaseOid,
+      systemIdentifier: expected.systemIdentifier
+    });
     const invariants = await queryProductionRuntimeInvariantsV2({
       query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
     });
@@ -593,29 +900,161 @@ async function validateFixedStep(root: string, input: ProtectedProductionLeafInp
 }
 
 function actualRuntimeEvidence(root: string, commandId: RuntimeManagerCommandId, exactStepId?: string): { sha256: string; bytes: Buffer;
-  effectIdentitySha256: string; generationId: string; commandId: string; authoritySha256: string } | null {
+  effectIdentitySha256: string; generationId: string; commandId: string; authoritySha256: string;
+  authority: Task0BProductionRuntimeAuthorityV1;
+  startEvidence: ReturnType<typeof validateRuntimeManagerStartEffectEvidenceV2> | null } | null {
   const matches = runtimeAuthorities(root, commandId, true);
   if (matches.length !== 1) return null;
   const action = commandId.includes("start") || commandId.includes("rollback") ? "start" : "stop";
   const filename = runtimeGenerationEvidencePath(action, matches[0]!.generationId, commandId, matches[0]!.sha256);
   if (!existsSync(safeArtifactPath(root, filename))) return null;
   const bytes = readFileSync(safeArtifactPath(root, filename));
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")); }
+  catch { throw new Error("production_runtime_effect_evidence_json_invalid"); }
+  const match = matches[0]!;
+  const expected = {
+    generationId: match.generationId,
+    commandId: match.authority.commandId,
+    authoritySha256: match.sha256,
+    targetRuntimeSha: match.authority.targetRuntimeSha,
+    targetRuntimeLabel: match.authority.targetRuntimeLabel
+  };
+  const startEvidence = action === "start"
+    ? validateRuntimeManagerStartEffectEvidenceV2(parsed, expected as Parameters<typeof validateRuntimeManagerStartEffectEvidenceV2>[1])
+    : null;
+  const validated = startEvidence ?? validateRuntimeManagerStopEffectEvidenceV2(parsed,
+    expected as Parameters<typeof validateRuntimeManagerStopEffectEvidenceV2>[1]);
+  if (!bytes.equals(canonicalRuntimeManagerArtifactBytes(validated))) {
+    throw new Error("production_runtime_effect_evidence_noncanonical");
+  }
   const reverseStep = exactStepId ?? Object.entries(RUNTIME_COMMAND).find(([, command]) => command === commandId)?.[0];
   if (!reverseStep) throw new Error("production_runtime_effect_step_forbidden");
-  return { bytes, sha256: hash(bytes), effectIdentitySha256: runtimeEffectIdentity(reverseStep, matches[0]!),
-    generationId: matches[0]!.generationId, commandId, authoritySha256: matches[0]!.sha256 };
+  if (match.authority.stepId !== reverseStep) throw new Error("production_runtime_effect_step_binding_invalid");
+  return { bytes, sha256: hash(bytes), effectIdentitySha256: match.authority.intendedExternalEffectSha256,
+    generationId: match.generationId, commandId, authoritySha256: match.sha256,
+    authority: match.authority,
+    startEvidence };
 }
 
-async function executeRuntimeEffect(root: string, input: ProtectedProductionLeafInputV2): Promise<ProtectedProductionLeafResultV2> {
+async function issueRuntimeAuthority(
+  root: string,
+  input: ProtectedProductionEffectExecutionInputV2,
+  commandId: RuntimeManagerCommandId
+): Promise<{ filename: string; generationId: string; sha256: string; authority: Task0BProductionRuntimeAuthorityV1 }> {
+  const now = new Date();
+  const task0bBytes = readFileSync(safeArtifactPath(root, "task0b-release-freeze.json"));
+  const task0b = validateTask0BReleaseFreezeEvidence(JSON.parse(task0bBytes.toString("utf8")), undefined,
+    now.toISOString());
+  const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+  const manifest = readCanonical(root, "release-manifest.json", validateRemediationReleaseManifestV2);
+  const external = await readExternalConfig(root);
+  const store = new ProductionOperationStoreV2(root);
+  const owned = store.assertOwnedAndWithinBounds(input.operationId, now.toISOString());
+  const intent = validateProductionOrchestrationStepIntentV2(input.intent);
+  if (owned.claimSha256 !== input.operationClaimSha256
+      || owned.claim.authorityConsumptionSha256 !== input.authorityConsumptionSha256
+      || owned.lease.releaseGenerationId !== input.releaseGenerationId
+      || owned.lease.sourceManifestSha256 !== input.sourceManifestSha256
+      || owned.leaseSha256 !== intent.currentOperationLeaseSha256
+      || owned.lease.leaseEpoch !== intent.currentOperationLeaseEpoch
+      || releaseSha256V2(canonicalBytesV2(intent)) !== input.intentSha256
+      || intent.intendedExternalEffectSha256 !== input.intendedExternalEffectSha256
+      || manifest.sha256 !== input.sourceManifestSha256
+      || freeze.sha256 !== input.releaseFreezeIdentitySha256) {
+    throw new Error("production_runtime_authority_intent_binding_invalid");
+  }
+  const candidateAction = commandId === "runtime_manager_start_candidate"
+    || commandId === "runtime_manager_stop_candidate";
+  const startAction = commandId === "runtime_manager_start_candidate"
+    || commandId === "runtime_manager_rollback_previous";
+  let startEvidencePath: string | null = null;
+  let startEvidenceSha256: string | null = null;
+  if (!startAction && commandId === "runtime_manager_stop_previous") {
+    startEvidencePath = external.config.previousRuntimeIdentity.evidencePath;
+    startEvidenceSha256 = external.config.previousRuntimeIdentity.evidenceSha256;
+  } else if (!startAction) {
+    const candidateStart = actualRuntimeEvidence(root, "runtime_manager_start_candidate");
+    if (!candidateStart) throw new Error("production_runtime_candidate_start_evidence_missing");
+    startEvidencePath = runtimeGenerationEvidencePath("start", candidateStart.generationId,
+      "runtime_manager_start_candidate", candidateStart.authoritySha256);
+    startEvidenceSha256 = candidateStart.sha256;
+  }
+  const boundExpiryMs = Math.min(
+    now.getTime() + 10 * 60_000,
+    Date.parse(owned.lease.expiresAt),
+    Date.parse(owned.lease.operationDeadlineAt),
+    Date.parse(owned.claim.authorityConsumption.expiresAt),
+    Date.parse(task0b.expiresAt),
+    Date.parse(external.config.expiresAt)
+  ) - 1;
+  if (boundExpiryMs <= now.getTime()) throw new Error("production_runtime_authority_window_unavailable");
+  const targetRuntimeSha = candidateAction ? task0b.candidateSha : task0b.previousRuntimeSha;
+  const botToken = process.env.BOT_TOKEN;
+  if (!botToken) throw new Error("production_runtime_telegram_identity_missing");
+  const authority = validateTask0BProductionRuntimeAuthority({
+    version: "repo-issued-runtime-effect-authority-v2",
+    scope: "production_go",
+    source: "protected_production_orchestrator",
+    operationKind: input.operationKind,
+    operationId: input.operationId,
+    operationClaimSha256: input.operationClaimSha256,
+    authorityConsumptionSha256: input.authorityConsumptionSha256,
+    sequence: input.sequence,
+    stepId: input.stepId,
+    inputSha256: input.inputSha256,
+    intendedExternalEffectSha256: input.intendedExternalEffectSha256,
+    intentRelativePath: intent.relativePath,
+    intentSha256: input.intentSha256,
+    operationLeaseSha256: owned.leaseSha256,
+    operationLeaseEpoch: owned.lease.leaseEpoch,
+    operationDeadlineAt: owned.lease.operationDeadlineAt,
+    releaseFreezeIdentitySha256: freeze.sha256,
+    sourceManifestSha256: manifest.sha256,
+    generationId: owned.lease.releaseGenerationId,
+    commandId,
+    actionPhase: input.operationKind === "rollout" ? "post_migration_rollout"
+      : commandId === "runtime_manager_stop_candidate" ? "rollback_candidate_stop" : "rollback_previous_start",
+    commandTemplateSha256: TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256[commandId],
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(boundExpiryMs).toISOString(),
+    candidateSha: task0b.candidateSha,
+    targetRuntimeSha,
+    targetRuntimeLabel: candidateAction ? `master-${targetRuntimeSha.slice(0, 8)}` : task0b.previousRuntimeLabel,
+    targetWorktreePath: candidateAction ? process.cwd() : external.config.rollbackWorktreePath,
+    targetWorktreeFingerprintSha256: candidateAction
+      ? task0b.candidateWorktree.worktreePathFingerprintSha256
+      : task0b.rollbackWorktree.worktreePathFingerprintSha256,
+    adminUrl: task0b.runtimeManager.candidateAdminUrl,
+    adminUrlFingerprintSha256: task0b.runtimeManager.candidateAdminUrlFingerprintSha256,
+    databaseRole: "production",
+    databaseIdentityFingerprintSha256: task0b.productionDatabase.approvedIdentityFingerprintSha256,
+    telegramTransport: "production",
+    telegramBotIdentitySha256: hash(botToken),
+    task0bEvidenceSha256: releaseSha256V2(task0bBytes),
+    releaseManifestPath: "release-manifest.json",
+    releaseManifestSha256: manifest.sha256,
+    releaseManifestOverall: "not_ready",
+    releaseManifestTransitionId: input.operationKind === "rollout" ? "g13_migration_passed" : "production_failed",
+    explicitGo: true,
+    forcePolicy: "graceful_only",
+    startEvidencePath,
+    startEvidenceSha256
+  }, now.toISOString());
+  const filename = runtimeAuthorityFilename(authority.generationId, commandId);
+  const record = store.persistExclusive("repo_issued_runtime_effect_authority", filename, authority);
+  return { filename, generationId: authority.generationId, sha256: record.sha256, authority };
+}
+
+async function executeRuntimeEffect(root: string, input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2> {
   const commandId = RUNTIME_COMMAND[input.stepId];
   if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
-  const matches = runtimeAuthorities(root, commandId, false);
-  if (matches.length !== 1) throw new Error("production_runtime_authority_selection_ambiguous");
-  if (input.intendedExternalEffectSha256 !== runtimeEffectIdentity(input.stepId, matches[0]!)) {
+  const selected = await issueRuntimeAuthority(root, input, commandId);
+  if (input.intendedExternalEffectSha256 !== selected.authority.intendedExternalEffectSha256) {
     throw new Error("production_runtime_effect_identity_changed");
   }
   const action = commandId.includes("start") || commandId.includes("rollback") ? "start" : "stop";
-  const output = await runNodeScript("scripts/manageTask0BRuntime.ts", [action, root, matches[0]!.filename]);
+  const output = await runNodeScript("scripts/manageTask0BRuntime.ts", [action, root, selected.filename]);
   return leafCapture(input, output);
 }
 
@@ -708,6 +1147,7 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
   const artifactRoot = assertTrustedArtifactRootPathV2(artifactRootInput);
   let canaryStartedAt: number | null = null;
   let canaryQueueBaseline: number | null = null;
+  let canaryCycleSnapshot: RuntimeCycleSnapshotV2 | null = null;
   let selectedRollbackWindow: ProtectedRollbackWindowV2 | null = null;
   return {
     now: () => new Date().toISOString(),
@@ -721,6 +1161,7 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
       if (input.operationKind === "canary" && input.stepId === "verify_g14") {
         canaryStartedAt = Date.now();
         canaryQueueBaseline = null;
+        canaryCycleSnapshot = null;
       }
       if (input.operationKind === "canary" && input.stepId === "observe_cycle_2") {
         if (canaryStartedAt === null) throw new Error("production_canary_cycle_order_invalid");
@@ -741,9 +1182,13 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
       const liveKind = isRolloutTerminal ? "rollout" : isCanaryObservation ? "canary"
         : isRollbackTerminal ? "rollback" : null;
       if (liveKind === null) return basic;
+      const canaryObservation = liveKind === "canary";
       const observed = await observeProductionLiveProof(artifactRoot, liveKind,
-        liveKind === "canary" ? canaryQueueBaseline : null);
+        canaryObservation ? canaryQueueBaseline : null,
+        canaryObservation ? canaryCycleSnapshot : null,
+        canaryObservation && (input.stepId === "observe_cycle_2" || input.stepId === "bounded_runtime_checks"));
       if (input.stepId === "observe_cycle_1") canaryQueueBaseline = observed.queuePopulationCount;
+      if (input.stepId === "observe_cycle_1") canaryCycleSnapshot = observed.cycleSnapshot;
       const task0b = loadTask0B(artifactRoot);
       const verifiedChecks = isRolloutTerminal || isCanaryTerminal || isRollbackTerminal
         ? deriveVerifiedProductionChecksV2(liveKind, observed.proof, {
@@ -755,9 +1200,7 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
     async prepareEffect(input) {
       const commandId = RUNTIME_COMMAND[input.stepId];
       if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
-      const matches = runtimeAuthorities(artifactRoot, commandId, false);
-      if (matches.length !== 1) throw new Error("production_runtime_authority_selection_ambiguous");
-      return runtimeEffectIdentity(input.stepId, matches[0]!);
+      return runtimeEffectIdentity(input, commandId);
     },
     executeEffect: (input) => executeRuntimeEffect(artifactRoot, input),
     async reconcileEffect(input) {
@@ -765,6 +1208,19 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
       if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
       const evidence = actualRuntimeEvidence(artifactRoot, commandId, input.stepId);
       if (evidence === null || evidence.effectIdentitySha256 !== input.intent.intendedExternalEffectSha256) return null;
+      const authority = evidence.authority;
+      if (authority.operationKind !== input.operationKind || authority.operationId !== input.operationId
+          || authority.operationClaimSha256 !== input.operationClaimSha256
+          || authority.authorityConsumptionSha256 !== input.authorityConsumptionSha256
+          || authority.sequence !== input.sequence || authority.stepId !== input.stepId
+          || authority.inputSha256 !== input.inputSha256
+          || authority.intentSha256 !== input.intentSha256
+          || authority.intentRelativePath !== input.intent.relativePath
+          || authority.releaseFreezeIdentitySha256 !== input.releaseFreezeIdentitySha256
+          || authority.sourceManifestSha256 !== input.sourceManifestSha256
+          || releaseSha256V2(canonicalBytesV2(input.intent)) !== input.intentSha256) {
+        throw new Error("production_runtime_reconciliation_binding_invalid");
+      }
       return leafCapture(input, evidence.bytes);
     },
     async resolveRollbackContext(root) {

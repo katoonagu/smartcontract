@@ -86,6 +86,20 @@ export type ProtectedProductionLeafInputV2 = Readonly<{
   intendedExternalEffectSha256?: string;
 }>;
 
+export type ProtectedProductionEffectPreparationInputV2 = ProtectedProductionLeafInputV2 & Readonly<{
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  releaseFreezeIdentitySha256: string;
+}>;
+
+export type ProtectedProductionEffectExecutionInputV2 = ProtectedProductionEffectPreparationInputV2 & Readonly<{
+  intendedExternalEffectSha256: string;
+  intent: ProductionOrchestrationStepIntentV2;
+  intentSha256: string;
+}>;
+
 export type ProtectedRollbackWindowV2 =
   | Readonly<{ kind: "previous_runtime_retained";
       failedGateId: "G13_PRODUCTION_MIGRATION" | "G14_PRODUCTION_ROLLOUT" }>
@@ -99,12 +113,9 @@ export type ProtectedProductionOperationAdaptersV2 = Readonly<{
   now(): string;
   loadReleaseContext(artifactRoot: string): Promise<{ releaseFreezeIdentitySha256: string }>;
   validateStep(input: ProtectedProductionLeafInputV2): Promise<ProtectedProductionLeafResultV2>;
-  prepareEffect(input: ProtectedProductionLeafInputV2): Promise<string>;
-  executeEffect(input: ProtectedProductionLeafInputV2): Promise<ProtectedProductionLeafResultV2>;
-  reconcileEffect(input: ProtectedProductionLeafInputV2 & {
-    intent: ProductionOrchestrationStepIntentV2;
-    intentSha256: string;
-  }): Promise<ProtectedProductionLeafResultV2 | null>;
+  prepareEffect(input: ProtectedProductionEffectPreparationInputV2): Promise<string>;
+  executeEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2>;
+  reconcileEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2 | null>;
   resolveRollbackContext?(artifactRoot: string): Promise<{
     window: ProtectedRollbackWindowV2;
     failureEvidenceSha256: string;
@@ -442,7 +453,15 @@ export async function executeProtectedProductionOperationV2(
     let recoveredAfterCrash = false;
     if (EFFECT_STEPS.has(stepId)) {
       executionKind = "external_effect";
-      const intendedExternalEffectSha256 = await adapters.prepareEffect(leafInput);
+      const effectPreparation = {
+        ...leafInput,
+        operationClaimSha256: owned.claimSha256,
+        authorityConsumptionSha256: owned.claim.authorityConsumptionSha256,
+        releaseGenerationId: owned.lease.releaseGenerationId,
+        sourceManifestSha256: owned.lease.sourceManifestSha256,
+        releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256
+      };
+      const intendedExternalEffectSha256 = await adapters.prepareEffect(effectPreparation);
       if (!/^[0-9a-f]{64}$/u.test(intendedExternalEffectSha256)) {
         throw new Error("production_intended_effect_binding_invalid");
       }
@@ -472,9 +491,10 @@ export async function executeProtectedProductionOperationV2(
       owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, adapters.now());
       if (persistedIntent.created) {
         attemptedExternalEffect = true;
-        leaf = await adapters.executeEffect({ ...leafInput, intendedExternalEffectSha256 });
+        leaf = await adapters.executeEffect({ ...effectPreparation, intendedExternalEffectSha256,
+          intent, intentSha256 });
       } else {
-        const reconciled = await adapters.reconcileEffect({ ...leafInput, intendedExternalEffectSha256,
+        const reconciled = await adapters.reconcileEffect({ ...effectPreparation, intendedExternalEffectSha256,
           intent, intentSha256 });
         if (reconciled === null) throw new Error(`production_effect_outcome_uncertain:${stepId}`);
         leaf = reconciled;
