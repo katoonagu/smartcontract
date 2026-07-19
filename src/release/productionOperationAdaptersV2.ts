@@ -66,7 +66,8 @@ import {
   observeTask0BRuntimeTopologySnapshotV2,
   observeTask0BProductionDatabase,
   observeWindowsRuntimeProcess,
-  readExternalConfig
+  readExternalConfig,
+  validateTask0BPreviousRuntimeIdentity
 } from "../../scripts/captureTask0BPreflight";
 import { verifyRequiredSchema032, type Schema032Verification } from "../storage/schemaMigrations";
 import {
@@ -1360,13 +1361,13 @@ type BoundRuntimeStartProofV2 = Readonly<{
 }>;
 
 export function assertPriorRollbackManagerStopBindingV2(input: Readonly<{
-  startProof: BoundRuntimeStartProofV2;
+  startProof: Readonly<Pick<BoundRuntimeStartProofV2, "candidate" | "proofSha256">>;
   authority: Task0BProductionRuntimeAuthorityV1;
   stopEvidence: ReturnType<typeof validateRuntimeManagerStopEffectEvidenceV2>;
   exactStartEvidencePath: string;
   intentPreparedAt: string;
-  receiptStartedAt: string;
-  receiptFinishedAt: string;
+  receiptStartedAt?: string;
+  receiptFinishedAt?: string;
   operationDeadlineAt: string;
 }>): void {
   const stop = input.stopEvidence;
@@ -1379,10 +1380,12 @@ export function assertPriorRollbackManagerStopBindingV2(input: Readonly<{
       || stop.forcePolicy !== input.authority.forcePolicy
       || Date.parse(stop.stoppedAt) < Date.parse(input.intentPreparedAt)
       || Date.parse(stop.stoppedAt) < Date.parse(input.authority.issuedAt)
-      || Date.parse(stop.stoppedAt) < Date.parse(input.receiptStartedAt)
+      || (input.receiptStartedAt !== undefined
+        && Date.parse(stop.stoppedAt) < Date.parse(input.receiptStartedAt))
       || Date.parse(stop.stoppedAt) >= Date.parse(input.authority.expiresAt)
       || Date.parse(stop.stoppedAt) >= Date.parse(input.operationDeadlineAt)
-      || Date.parse(stop.stoppedAt) > Date.parse(input.receiptFinishedAt)) {
+      || (input.receiptFinishedAt !== undefined
+        && Date.parse(stop.stoppedAt) > Date.parse(input.receiptFinishedAt))) {
     throw new Error("production_prior_rollback_manager_stop_binding_invalid");
   }
 }
@@ -2059,9 +2062,9 @@ function exactRuntimeEvidenceForOperationStep(
   operationClaimSha256: string,
   stepId: "stop_previous" | "start_candidate"
 ) {
+  const settled = settledOperationStartBinding(root, operationId, operationClaimSha256);
   if (stepId === "start_candidate") {
-    const proof = boundRuntimeStartProof(root,
-      settledOperationStartBinding(root, operationId, operationClaimSha256));
+    const proof = boundRuntimeStartProof(root, settled);
     return proof === null ? null : { sha256: proof.proofSha256 };
   }
   const directory = `production-operation-step-intents/${operationId}`;
@@ -2075,28 +2078,143 @@ function exactRuntimeEvidenceForOperationStep(
   if (matches.length > 1) throw new Error("production_failed_runtime_intent_ambiguous");
   const intent = matches[0];
   if (!intent) return null;
-  const manager = actualRuntimeEvidence(root, RUNTIME_COMMAND[stepId], stepId, {
+  if (intent.value.orchestration !== "rollout"
+      || intent.value.authorityConsumptionSha256 !== settled.authorityConsumptionSha256) {
+    throw new Error("production_failed_runtime_intent_binding_invalid");
+  }
+  const receipts = settled.completedStepReceipts.filter((entry) => entry.receipt.stepId === stepId
+    && entry.receipt.sequence === intent.value.sequence);
+  if (receipts.length > 1) throw new Error("production_failed_runtime_receipt_ambiguous");
+  const receipt = receipts[0];
+  if (receipt !== undefined && (receipt.receipt.operationId !== operationId
+      || receipt.receipt.operationClaimSha256 !== operationClaimSha256
+      || receipt.receipt.authorityConsumptionSha256 !== settled.authorityConsumptionSha256
+      || receipt.receipt.orchestration !== "rollout"
+      || receipt.receipt.executionKind !== "external_effect"
+      || receipt.receipt.stepIntentRelativePath !== intent.value.relativePath
+      || receipt.receipt.stepIntentSha256 !== intent.sha256
+      || receipt.receipt.inputSha256 !== intent.value.inputSha256)) {
+    throw new Error("production_failed_runtime_receipt_binding_invalid");
+  }
+  const claims = readdirSync(root).filter((name) => name.startsWith("production-operation-claim-")
+    && name.endsWith(".json")).map((name) => readCanonical(root, name,
+    validateProductionOperationClaimV2)).filter((entry) => entry.sha256 === operationClaimSha256);
+  if (claims.length !== 1) throw new Error("production_failed_runtime_claim_ambiguous");
+  const claim = claims[0]!;
+  if (claim.value.operationKind !== "rollout" || claim.value.operationId !== operationId
+      || claim.value.authorityConsumptionSha256 !== settled.authorityConsumptionSha256
+      || claim.value.releaseGenerationId !== settled.releaseGenerationId
+      || claim.value.sourceManifestSha256 !== settled.sourceManifestSha256) {
+    throw new Error("production_failed_runtime_claim_binding_invalid");
+  }
+  const commandId = RUNTIME_COMMAND[stepId];
+  const authority = selectExactRuntimeAuthorityV2(runtimeAuthorities(root, commandId, true), stepId, {
     operationId, operationClaimSha256, intentSha256: intent.sha256
   });
-  if (manager === null) return null;
-  const receiptRelativePath = `production-operation-steps/${operationId}/${intent.value.sequence}-${stepId}-v2.json`;
-  let receiptPath: string | null = null;
-  try { receiptPath = safeArtifactRelativePath(root, receiptRelativePath); }
-  catch (error) {
-    if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
+  if (authority === null) return null;
+  const task0b = loadTask0B(root);
+  const target: RuntimeEffectReconciliationInputV2["target"] = {
+    runtimeSha: task0b.previousRuntimeSha,
+    runtimeLabel: task0b.previousRuntimeLabel,
+    worktreePathFingerprintSha256: task0b.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+    entrypointPathFingerprintSha256: task0b.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+    exactProcessId: task0b.previousRuntimeIdentity.processId,
+    exactProcessStartedAt: task0b.previousRuntimeIdentity.processStartedAt
+  };
+  const executionInput: ProtectedProductionEffectExecutionInputV2 = {
+    artifactRoot: root, operationKind: "rollout", operationId,
+    operationClaimSha256, authorityConsumptionSha256: settled.authorityConsumptionSha256,
+    releaseGenerationId: settled.releaseGenerationId, sourceManifestSha256: settled.sourceManifestSha256,
+    releaseFreezeIdentitySha256: settled.releaseFreezeIdentitySha256,
+    sequence: intent.value.sequence, stepId, inputSha256: intent.value.inputSha256,
+    intendedExternalEffectSha256: intent.value.intendedExternalEffectSha256,
+    intent: intent.value, intentSha256: intent.sha256
+  };
+  assertExactManagerRuntimeReconciliationBindingV2({
+    effectIdentitySha256: authority.authority.intendedExternalEffectSha256,
+    authority: authority.authority
+  }, executionInput);
+  if (authority.generationId !== settled.releaseGenerationId
+      || authority.authority.operationDeadlineAt !== claim.value.operationDeadlineAt
+      || (receipt !== undefined && receipt.receipt.operationDeadlineAt !== claim.value.operationDeadlineAt)
+      || authority.authority.targetRuntimeSha !== target.runtimeSha
+      || authority.authority.targetRuntimeLabel !== target.runtimeLabel
+      || authority.authority.targetWorktreeFingerprintSha256 !== target.worktreePathFingerprintSha256
+      || !settled.lineageLeaseTips.some((tip) => tip.sha256 === intent.value.currentOperationLeaseSha256
+        && tip.epoch === intent.value.currentOperationLeaseEpoch)) {
+    throw new Error("production_failed_runtime_authority_binding_invalid");
   }
-  if (receiptPath !== null && existsSync(receiptPath)) {
-    const receipt = readCanonical(root, receiptRelativePath, validateProductionOrchestrationStepReceiptV2);
-    if (receipt.value.operationId !== operationId
-        || receipt.value.operationClaimSha256 !== operationClaimSha256
-        || receipt.value.sequence !== intent.value.sequence || receipt.value.stepId !== stepId
-        || receipt.value.stepIntentRelativePath !== intent.value.relativePath
-        || receipt.value.stepIntentSha256 !== intent.sha256) {
-      throw new Error("production_failed_runtime_receipt_binding_invalid");
+  const manager = actualRuntimeEvidence(root, commandId, stepId, {
+    operationId, operationClaimSha256, intentSha256: intent.sha256
+  });
+  if (manager !== null) {
+    if (manager.stopEvidence === null || manager.authority.startEvidencePath === null
+        || manager.authority.startEvidenceSha256 !== task0b.previousRuntimeIdentity.startEvidenceSha256) {
+      throw new Error("production_failed_runtime_manager_stop_binding_invalid");
     }
-    assertRuntimeStartReceiptProofBindingV2(receipt.value, manager.sha256);
+    const startBytes = readFileSync(safeArtifactPath(root, manager.authority.startEvidencePath));
+    if (hash(startBytes) !== task0b.previousRuntimeIdentity.startEvidenceSha256) {
+      throw new Error("production_failed_runtime_previous_start_evidence_invalid");
+    }
+    let startValue: unknown;
+    try { startValue = JSON.parse(startBytes.toString("utf8")); }
+    catch { throw new Error("production_failed_runtime_previous_start_evidence_invalid"); }
+    const reopened = validateTask0BPreviousRuntimeIdentity(startValue, {
+      processId: task0b.previousRuntimeIdentity.processId,
+      processStartedAt: task0b.previousRuntimeIdentity.processStartedAt,
+      commandLineSha256: task0b.previousRuntimeIdentity.commandLineSha256,
+      executablePathSha256: task0b.previousRuntimeIdentity.executablePathSha256,
+      runtimeSha: task0b.previousRuntimeIdentity.runtimeSha,
+      runtimeLabel: task0b.previousRuntimeIdentity.runtimeLabel,
+      workingDirectoryFingerprintSha256: task0b.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+      entrypointPathFingerprintSha256: task0b.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+      runtimeProcessCount: 1
+    }, { sha: task0b.previousRuntimeSha, label: task0b.previousRuntimeLabel,
+      managerExecutableSha256: task0b.previousRuntimeIdentity.managerExecutableSha256 }, hash(startBytes));
+    if (!canonicalBytesV2(reopened).equals(canonicalBytesV2(task0b.previousRuntimeIdentity))) {
+      throw new Error("production_failed_runtime_previous_start_identity_invalid");
+    }
+    const startProof: Pick<BoundRuntimeStartProofV2, "candidate" | "proofSha256"> = {
+      candidate: {
+        runtimeSha: target.runtimeSha, runtimeLabel: target.runtimeLabel,
+        worktreePathFingerprintSha256: target.worktreePathFingerprintSha256,
+        entrypointPathFingerprintSha256: target.entrypointPathFingerprintSha256,
+        processId: task0b.previousRuntimeIdentity.processId,
+        processStartedAt: task0b.previousRuntimeIdentity.processStartedAt,
+        commandLineSha256: task0b.previousRuntimeIdentity.commandLineSha256,
+        executablePathSha256: task0b.previousRuntimeIdentity.executablePathSha256
+      },
+      proofSha256: task0b.previousRuntimeIdentity.startEvidenceSha256
+    };
+    assertPriorRollbackManagerStopBindingV2({ startProof, authority: manager.authority,
+      stopEvidence: manager.stopEvidence, exactStartEvidencePath: manager.authority.startEvidencePath,
+      intentPreparedAt: intent.value.preparedAt,
+      ...(receipt === undefined ? {} : { receiptStartedAt: receipt.receipt.startedAt,
+        receiptFinishedAt: receipt.receipt.finishedAt }),
+      operationDeadlineAt: claim.value.operationDeadlineAt });
+    if (receipt !== undefined) assertRuntimeStartReceiptProofBindingV2(receipt.receipt, manager.sha256);
+    return manager;
   }
-  return manager;
+  if (receipt === undefined) return null;
+  const relativePath = `production-runtime-effect-reconciliations/${operationId}/${intent.value.sequence}-${stepId}-${intent.sha256}-v2.json`;
+  const reconciliation = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
+  validateRuntimeEffectReconciliationEvidenceV2(reconciliation.value, {
+    operationKind: "rollout", operationId, operationClaimSha256,
+    authorityConsumptionSha256: settled.authorityConsumptionSha256,
+    sequence: intent.value.sequence, stepId,
+    intentRelativePath: intent.value.relativePath, intentSha256: intent.sha256,
+    intendedExternalEffectSha256: intent.value.intendedExternalEffectSha256,
+    currentOperationLeaseSha256: intent.value.currentOperationLeaseSha256,
+    currentOperationLeaseEpoch: intent.value.currentOperationLeaseEpoch,
+    authorityExpiresAt: authority.authority.expiresAt,
+    operationDeadlineAt: claim.value.operationDeadlineAt,
+    topologySnapshotSha256: reconciliation.value.topologySnapshotSha256,
+    targetIdentitySha256: releaseSha256V2(canonicalBytesV2(target)),
+    effectNotBefore: intent.value.preparedAt, observedPostState: "target_absent",
+    observedAt: reconciliation.value.observedAt
+  });
+  assertRuntimeStartReceiptProofBindingV2(receipt.receipt, reconciliation.sha256);
+  return { sha256: reconciliation.sha256 };
 }
 
 function failedOperationBinding(root: string, failure: ReturnType<typeof validateProductionFailureEvidenceV2>): {
@@ -2824,7 +2942,9 @@ export function verifySettledRollbackHistoricalProofsV2(
       authorityConsumption: { expiresAt: input.authorityExpiresAt } },
     claimSha256: input.operationClaimSha256, lineageLeaseTips: input.lineageLeaseTips
   });
-  if (input.previousRuntimeIdentitySha256 !== shaFromTask0B(root, "previousRuntimeIdentity")) {
+  const previousRuntimeIdentitySha256 = shaFromTask0B(root, "previousRuntimeIdentity");
+  if (input.previousRuntimeIdentitySha256 !== previousRuntimeIdentitySha256
+      || previousRuntimeIdentitySha256 !== freeze.value.previousRuntimeDiscoverySha256) {
     throw new Error("production_settled_rollback_previous_identity_invalid");
   }
   const claims = readdirSync(root).filter((name) => name.startsWith("production-operation-claim-")

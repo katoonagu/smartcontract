@@ -430,6 +430,9 @@ describe("production effect crash windows", () => {
       intentPreparedAt: "2026-07-19T00:00:30.000Z", receiptStartedAt: "2026-07-19T00:00:45.000Z",
       receiptFinishedAt: "2026-07-19T00:02:30.000Z", operationDeadlineAt: "2026-07-19T00:10:00.000Z" };
     expect(() => assertPriorRollbackManagerStopBindingV2(input)).not.toThrow();
+    const { receiptStartedAt: _receiptStartedAt, receiptFinishedAt: _receiptFinishedAt,
+      ...crashBeforeReceipt } = input;
+    expect(() => assertPriorRollbackManagerStopBindingV2(crashBeforeReceipt)).not.toThrow();
     expect(() => assertPriorRollbackManagerStopBindingV2({ ...input,
       stopEvidence: { ...stopEvidence, stoppedProcessId: 202 } })).toThrow(/manager.stop.binding/i);
     expect(() => assertPriorRollbackManagerStopBindingV2({ ...input,
