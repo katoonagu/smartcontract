@@ -12,6 +12,7 @@ import {
   validateProductionRollbackEvidenceV2,
   validateProductionRolloutEvidenceV2,
   type ProductionOperationKindV2,
+  type ProductionOrchestrationReceiptV2,
   type ProductionOrchestrationStepIntentV2,
   type ProductionOrchestrationStepReceiptV2,
   type ProductionRecoveryInputV2,
@@ -107,7 +108,14 @@ export type ProtectedRollbackWindowV2 =
       failedGateId: "G14_PRODUCTION_ROLLOUT"; previousStopEvidenceSha256: string }>
   | Readonly<{ kind: "candidate_replaced_with_previous";
       failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
-      candidateStartEvidenceSha256: string }>;
+      candidateStartEvidenceSha256: string }>
+  | Readonly<{ kind: "previous_already_restarted_without_candidate";
+      failedGateId: "G14_PRODUCTION_ROLLOUT";
+      previousStopEvidenceSha256: string; previousStartEvidenceSha256: string }>
+  | Readonly<{ kind: "candidate_already_replaced_with_previous";
+      failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+      candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string;
+      previousStartEvidenceSha256: string }>;
 
 export type ProtectedProductionOperationAdaptersV2 = Readonly<{
   now(): string;
@@ -116,7 +124,7 @@ export type ProtectedProductionOperationAdaptersV2 = Readonly<{
   prepareEffect(input: ProtectedProductionEffectPreparationInputV2): Promise<string>;
   executeEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2>;
   reconcileEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2 | null>;
-  resolveRollbackContext?(artifactRoot: string): Promise<{
+  resolveRollbackContext?(input: Readonly<{ artifactRoot: string; operationId: string }>): Promise<{
     window: ProtectedRollbackWindowV2;
     failureEvidenceSha256: string;
     previousRuntimeIdentitySha256: string;
@@ -151,13 +159,80 @@ export type ProtectedProductionOperationStoreV2 = Readonly<{
     leaseSha256: string;
   };
   persistStepIntent(value: unknown): ProductionOperationStoreRecordV2;
+  loadStepIntent?(operationId: string, sequence: number, stepId: string, evaluatedAt: string): null | Readonly<{
+    relativePath: string;
+    sha256: string;
+    intent: ProductionOrchestrationStepIntentV2;
+  }>;
   persistStepReceipt(value: unknown): ProductionOperationStoreRecordV2;
+  loadCompletedStepPrefix?(operationId: string, evaluatedAt: string): readonly Readonly<{
+    relativePath: string;
+    sha256: string;
+    receipt: ProductionOrchestrationStepReceiptV2;
+  }>[];
+  loadCompletedOrchestrationReceipt?(operationId: string, evaluatedAt: string): null | Readonly<{
+    relativePath: string;
+    sha256: string;
+    receipt: ProductionOrchestrationReceiptV2;
+  }>;
   hasUnresolvedStepIntent(input: { operationId: string; sequence: number; stepId: string }): boolean;
   persistExclusive(kind: string, relativePath: string, value: unknown): ProductionOperationStoreRecordV2;
+  loadOrPersistFailureDraft?(input: Readonly<{
+    operationKind: "rollout" | "canary";
+    operationId: string;
+    operationClaimSha256: string;
+    stepId: string;
+    failureCode: string;
+    attemptedExternalEffect: boolean;
+    completedStepReceiptPrefixSha256: string;
+    orchestrationProgressSha256: string;
+  }>, evaluatedAt: string): Readonly<{ value: Readonly<{ observedAt: string }>; sha256: string }>;
+  loadFailureDraft?(operationId: string, evaluatedAt: string): null | Readonly<{ value: Readonly<{
+    operationKind: "rollout" | "canary";
+    operationId: string;
+    operationClaimSha256: string;
+    stepId: string;
+    failureCode: string;
+    attemptedExternalEffect: boolean;
+    completedStepReceiptPrefixSha256: string;
+    orchestrationProgressSha256: string;
+    observedAt: string;
+  }>; sha256: string }>;
+  persistTerminalArtifactIndex?(value: unknown, evaluatedAt: string): ProductionOperationStoreRecordV2;
+  publishTerminalArtifacts?(operationId: string): void;
   persistSettlement(value: unknown): ProductionOperationStoreRecordV2;
+  resumeCompletedSettlementBeforeBegin?(operationKind: ProductionOperationKindV2, evaluatedAt: string): null | Readonly<{
+    result: "passed" | "failed";
+    operationId: string;
+    finalLeaseEpoch: number;
+    orchestrationReceipt: Readonly<{ completedStepReceipts: readonly Readonly<{
+      receipt: Readonly<{ stepId: string }>;
+    }>[] }> | null;
+    orchestrationReceiptSha256: string | null;
+  }>;
+  resumeCompletedSettlement?(operationId: string, evaluatedAt: string): null | Readonly<{
+    settlement: Readonly<{ finalLeaseEpoch: number; result: "passed" | "failed" }>;
+    orchestrationReceipt: Readonly<{ completedStepReceipts: readonly Readonly<{
+      receipt: Readonly<{ stepId: string }>;
+    }>[] }> | null;
+    orchestrationReceiptSha256: string | null;
+  }>;
   completeTerminal(input: { operationId: string; terminalStateKind: "settlement";
-    terminalStateSha256: string; evaluatedAt: string }): unknown;
+    terminalStateSha256: string; evaluatedAt: string; faultAt?: string }): unknown;
 }>;
+
+function terminalArtifactPath(
+  store: ProtectedProductionOperationStoreV2,
+  operationId: string,
+  canonicalRelativePath: string
+): string {
+  return store.persistTerminalArtifactIndex === undefined ? canonicalRelativePath
+    : `production-operation-terminal-artifacts/${operationId}/${canonicalRelativePath}`;
+}
+
+function injectedOperationFault(actual: string | undefined, expected: string): void {
+  if (actual === expected) throw new Error(`injected_operation_fault:${expected}`);
+}
 
 type ProtectedExecutorDependenciesV2 = Readonly<{
   store?: ProtectedProductionOperationStoreV2;
@@ -204,6 +279,10 @@ function rollbackSteps(outcome: ProtectedRollbackWindowV2): readonly string[] {
   if (outcome.kind === "previous_runtime_restarted_without_candidate") {
     return ["verify_failure", "restart_previous", "prove_no_candidate_start", "rollback_runtime_checks"];
   }
+  if (outcome.kind === "previous_already_restarted_without_candidate"
+      || outcome.kind === "candidate_already_replaced_with_previous") {
+    return ["verify_failure", "prove_previous_healthy", "prove_no_candidate_running", "rollback_runtime_checks"];
+  }
   return ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"];
 }
 
@@ -227,6 +306,18 @@ function materializeRollbackOutcome(
       previousStopEvidenceSha256: selected.previousStopEvidenceSha256,
       noCandidateStartEvidenceSha256: output("prove_no_candidate_start"),
       previousStartEvidenceSha256: output("restart_previous") };
+  }
+  if (selected.kind === "previous_already_restarted_without_candidate") {
+    return { kind: "previous_runtime_restarted_without_candidate", failedGateId: selected.failedGateId,
+      previousStopEvidenceSha256: selected.previousStopEvidenceSha256,
+      noCandidateStartEvidenceSha256: output("prove_no_candidate_running"),
+      previousStartEvidenceSha256: selected.previousStartEvidenceSha256 };
+  }
+  if (selected.kind === "candidate_already_replaced_with_previous") {
+    return { kind: "candidate_replaced_with_previous", failedGateId: selected.failedGateId,
+      candidateStartEvidenceSha256: selected.candidateStartEvidenceSha256,
+      candidateStopEvidenceSha256: selected.candidateStopEvidenceSha256,
+      previousStartEvidenceSha256: selected.previousStartEvidenceSha256 };
   }
   return { kind: selected.kind, failedGateId: selected.failedGateId,
     candidateStartEvidenceSha256: selected.candidateStartEvidenceSha256,
@@ -317,25 +408,38 @@ function settleProtectedFailure(input: {
   captures: ReadonlyArray<{ stepId: string; sequence: number; executionKind: string;
     outputSha256: string; observedStateSha256: string; verifiedChecks?: readonly string[] }>;
   attemptedExternalEffect: boolean;
+  faultAt?: string;
+  failureCodeOverride?: string;
 }): void {
-  const observedAt = input.adapters.now();
-  const owned = input.store.assertOwnedAndWithinBounds(input.begun.lease.operationId, observedAt);
-  const failureCode = productionFailureCode(input.operationKind, input.stepId, input.error);
+  const evaluatedAt = input.adapters.now();
+  const owned = input.store.assertOwnedAndWithinBounds(input.begun.lease.operationId, evaluatedAt);
+  const failureCode = input.failureCodeOverride
+    ?? productionFailureCode(input.operationKind, input.stepId, input.error);
   const progressSha256 = protectedHash({ completedStepReceipts: input.completedStepReceipts,
     captures: input.captures });
+  const attemptedExternalEffect = input.operationKind === "canary" ? true : input.attemptedExternalEffect;
+  const draft = input.store.loadOrPersistFailureDraft?.({ operationKind: input.operationKind,
+    operationId: owned.lease.operationId, operationClaimSha256: owned.claimSha256,
+    stepId: input.stepId, failureCode, attemptedExternalEffect,
+    completedStepReceiptPrefixSha256: protectedHash(input.completedStepReceipts),
+    orchestrationProgressSha256: progressSha256 }, evaluatedAt);
+  const observedAt = draft?.value.observedAt ?? evaluatedAt;
+  injectedOperationFault(input.faultAt, "after_failure_draft");
+  const failureCaptureCanonicalPath = `production-operation-failure-capture-${owned.lease.operationId}.json`;
   const failureCapture = input.store.persistExclusive("production_operation_failure_capture",
-    `production-operation-failure-capture-${owned.lease.operationId}.json`, {
+    terminalArtifactPath(input.store, owned.lease.operationId, failureCaptureCanonicalPath), {
       version: "production-operation-failure-capture-v2",
       operationKind: input.operationKind,
       operationId: owned.lease.operationId,
       operationClaimSha256: owned.claimSha256,
       stepId: input.stepId,
       failureCode,
-      attemptedExternalEffect: input.operationKind === "canary" ? true : input.attemptedExternalEffect,
+      attemptedExternalEffect,
       completedStepReceiptPrefixSha256: protectedHash(input.completedStepReceipts),
       orchestrationProgressSha256: progressSha256,
       observedAt
     });
+  injectedOperationFault(input.faultAt, "after_failure_capture");
   const common = {
     version: "production-failure-evidence-v2" as const,
     candidateSha: owned.lease.candidateSha,
@@ -360,8 +464,26 @@ function settleProtectedFailure(input: {
         evidenceKind: input.stepId === "stop_previous" || input.stepId === "start_candidate"
           ? "runtime_manager_capture" : "runtime_rollout_checks",
         attemptedExternalEffect: true, orchestrationProgressSha256: progressSha256, failureCode });
+  const evidenceCanonicalPath = "production-failure-evidence-v2.json";
   const evidenceRecord = input.store.persistExclusive("production_failure_evidence",
-    "production-failure-evidence-v2.json", evidence);
+    terminalArtifactPath(input.store, owned.lease.operationId, evidenceCanonicalPath), evidence);
+  injectedOperationFault(input.faultAt, "after_failure_evidence");
+  input.store.persistTerminalArtifactIndex?.({
+    version: "production-terminal-artifact-index-v2",
+    operationKind: input.operationKind,
+    operationId: owned.lease.operationId,
+    operationClaimSha256: owned.claimSha256,
+    authorityConsumptionSha256: owned.claim.authorityConsumptionSha256,
+    terminalEvidenceSha256: evidenceRecord.sha256,
+    orchestrationReceiptSha256: null,
+    artifacts: [
+      { kind: "failure_capture", operationQualifiedRelativePath: failureCapture.relativePath,
+        canonicalRelativePath: failureCaptureCanonicalPath, sha256: failureCapture.sha256 },
+      { kind: "failure_evidence", operationQualifiedRelativePath: evidenceRecord.relativePath,
+        canonicalRelativePath: evidenceCanonicalPath, sha256: evidenceRecord.sha256 }
+    ]
+  }, evaluatedAt);
+  injectedOperationFault(input.faultAt, "after_failure_terminal_index");
   const settlement = validateProductionOperationSettlementV2({
     version: "production-operation-settlement-v2", operationKind: input.operationKind,
     operationId: owned.lease.operationId, candidateSha: owned.lease.candidateSha,
@@ -374,11 +496,15 @@ function settleProtectedFailure(input: {
     terminalEvidenceSha256: evidenceRecord.sha256,
     authorityRevalidatedAt: observedAt, deadlineRevalidatedAt: observedAt, settledAt: observedAt,
     capability: "effect_capable", result: "failed", orchestrationReceiptSha256: null,
-    attemptedExternalEffect: input.operationKind === "canary" ? true : input.attemptedExternalEffect
+    attemptedExternalEffect
   });
   const settlementRecord = input.store.persistSettlement(settlement);
+  injectedOperationFault(input.faultAt, "after_failure_settlement");
+  input.store.publishTerminalArtifacts?.(owned.lease.operationId);
+  injectedOperationFault(input.faultAt, "after_failure_terminal_publication");
   input.store.completeTerminal({ operationId: owned.lease.operationId, terminalStateKind: "settlement",
-    terminalStateSha256: settlementRecord.sha256, evaluatedAt: observedAt });
+    terminalStateSha256: settlementRecord.sha256, evaluatedAt,
+    faultAt: input.faultAt });
 }
 
 /**
@@ -386,11 +512,25 @@ function settleProtectedFailure(input: {
  * a closed operation kind; every command, query and capture is selected by fixed adapters.
  */
 export async function executeProtectedProductionOperationV2(
-  input: { artifactRoot: string; operationKind: ProductionOperationKindV2 },
+  input: { artifactRoot: string; operationKind: ProductionOperationKindV2; faultAt?: string },
   dependencies: ProtectedExecutorDependenciesV2
 ): Promise<{ operationId: string; leaseEpoch: number; receiptSha256: string; completedSteps: readonly string[] }> {
   const adapters = dependencies.adapters;
   const store = dependencies.store ?? new ProductionOperationStoreV2(input.artifactRoot);
+  const preBeginSettlement = store.resumeCompletedSettlementBeforeBegin?.(
+    input.operationKind, adapters.now()) ?? null;
+  if (preBeginSettlement !== null) {
+    if ((preBeginSettlement.result !== "passed" && input.operationKind !== "recovery")
+        || preBeginSettlement.orchestrationReceipt === null
+        || preBeginSettlement.orchestrationReceiptSha256 === null) {
+      throw new Error("production_operation_previous_failure_settled");
+    }
+    return { operationId: preBeginSettlement.operationId,
+      leaseEpoch: preBeginSettlement.finalLeaseEpoch,
+      receiptSha256: preBeginSettlement.orchestrationReceiptSha256,
+      completedSteps: preBeginSettlement.orchestrationReceipt.completedStepReceipts
+        .map((record) => record.receipt.stepId) };
+  }
   const releaseContext = await adapters.loadReleaseContext(input.artifactRoot);
   let recoveryContext: Awaited<ReturnType<NonNullable<typeof adapters.loadRecoveryContext>>> | null = null;
   let rollbackContext: Awaited<ReturnType<NonNullable<typeof adapters.resolveRollbackContext>>> | null = null;
@@ -398,16 +538,34 @@ export async function executeProtectedProductionOperationV2(
     if (!adapters.loadRecoveryContext) throw new Error("production_recovery_context_unavailable");
     recoveryContext = await adapters.loadRecoveryContext(input.artifactRoot);
   }
-  if (input.operationKind === "rollback") {
-    if (!adapters.resolveRollbackContext) throw new Error("production_rollback_context_unavailable");
-    rollbackContext = await adapters.resolveRollbackContext(input.artifactRoot);
-  }
   const beganAt = adapters.now();
   const begun = await store.beginOperation({
     operationKind: input.operationKind,
     evaluatedAt: beganAt,
     recoveryFromAbandonedOperationSha256: recoveryContext?.priorTerminalAbandonedSha256 ?? null
   });
+  const completedSettlement = store.resumeCompletedSettlement?.(begun.lease.operationId, adapters.now()) ?? null;
+  if (completedSettlement !== null) {
+    if (completedSettlement.settlement.result !== "passed"
+        || completedSettlement.orchestrationReceipt === null
+        || completedSettlement.orchestrationReceiptSha256 === null) {
+      throw new Error("production_operation_previous_failure_settled");
+    }
+    return { operationId: begun.lease.operationId,
+      leaseEpoch: completedSettlement.settlement.finalLeaseEpoch,
+      receiptSha256: completedSettlement.orchestrationReceiptSha256,
+      completedSteps: completedSettlement.orchestrationReceipt.completedStepReceipts
+        .map((record) => record.receipt.stepId) };
+  }
+  if (input.operationKind === "rollback") {
+    if (!adapters.resolveRollbackContext) throw new Error("production_rollback_context_unavailable");
+    store.assertOwnedAndWithinBounds(begun.lease.operationId, adapters.now());
+    rollbackContext = await adapters.resolveRollbackContext({
+      artifactRoot: input.artifactRoot,
+      operationId: begun.lease.operationId
+    });
+    store.assertOwnedAndWithinBounds(begun.lease.operationId, adapters.now());
+  }
   const recoveryInput = recoveryContext === null ? null : validateProductionRecoveryInputV2({
     version: "production-recovery-input-v2",
     priorOperationKind: recoveryContext.priorOperationKind,
@@ -438,11 +596,59 @@ export async function executeProtectedProductionOperationV2(
   let successSettlementPersisted = false;
   let unresolvedEffectIntent = false;
   let activeEffectIntent: { operationId: string; sequence: number; stepId: string } | null = null;
+  let activeStepSequence = 0;
+
+  const durablePrefix = store.loadCompletedStepPrefix?.(begun.lease.operationId, adapters.now()) ?? [];
+  durablePrefix.forEach((record, index) => {
+    const expectedStepId = stepIds[index];
+    const receipt = record.receipt;
+    const expectedInputSha256 = protectedHash({ version: "production-leaf-input-v2",
+      operationId: begun.lease.operationId, operationKind: input.operationKind,
+      sequence: index + 1, stepId: expectedStepId });
+    if (expectedStepId === undefined || receipt.sequence !== index + 1 || receipt.stepId !== expectedStepId
+        || receipt.inputSha256 !== expectedInputSha256 || receipt.commandId !== commandId
+        || receipt.redactedTemplateSha256 !== begun.selectedAuthority.redactedTemplateSha256) {
+      throw new Error("production_completed_step_prefix_binding_invalid");
+    }
+    const checks = receipt.verifiedChecks === null ? undefined : receipt.verifiedChecks;
+    exactTerminalVerifiedChecks(input.operationKind, receipt.stepId, stepIds[stepIds.length - 1]!, checks);
+    completedStepReceipts.push(record);
+    captures.push({ stepId: receipt.stepId, sequence: receipt.sequence,
+      executionKind: receipt.executionKind, outputSha256: receipt.outputSha256,
+      observedStateSha256: receipt.observedStateSha256,
+      ...(checks === undefined ? {} : { verifiedChecks: [...checks] }) });
+    if (receipt.executionKind === "external_effect") attemptedExternalEffect = true;
+  });
+
+  const durableFailure = store.loadFailureDraft?.(begun.lease.operationId, adapters.now()) ?? null;
+  if (durableFailure !== null) {
+    const expectedFailedStep = stepIds[durablePrefix.length];
+    const expectedAttemptedEffect = input.operationKind === "canary" ? true : attemptedExternalEffect;
+    if ((input.operationKind !== "rollout" && input.operationKind !== "canary")
+        || expectedFailedStep === undefined
+        || durableFailure.value.operationKind !== input.operationKind
+        || durableFailure.value.operationId !== begun.lease.operationId
+        || durableFailure.value.operationClaimSha256 !== begun.claimSha256
+        || durableFailure.value.stepId !== expectedFailedStep
+        || durableFailure.value.attemptedExternalEffect !== expectedAttemptedEffect
+        || durableFailure.value.completedStepReceiptPrefixSha256 !== protectedHash(completedStepReceipts)
+        || durableFailure.value.orchestrationProgressSha256 !== protectedHash({ completedStepReceipts,
+          captures })) {
+      throw new Error("production_failure_draft_resume_binding_invalid");
+    }
+    settleProtectedFailure({ operationKind: input.operationKind, stepId: expectedFailedStep,
+      error: new Error("durable production failure"), failureCodeOverride: durableFailure.value.failureCode,
+      store, adapters, begun, releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
+      completedStepReceipts, captures, attemptedExternalEffect, faultAt: input.faultAt });
+    throw new Error("production_operation_previous_failure_settled");
+  }
 
   try {
   for (const [offset, stepId] of stepIds.entries()) {
     activeStepId = stepId;
     const sequence = offset + 1;
+    activeStepSequence = sequence;
+    if (sequence <= durablePrefix.length) continue;
     const startedAt = adapters.now();
     let owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, startedAt);
     const inputSha256 = protectedHash({ version: "production-leaf-input-v2", operationId: begun.lease.operationId,
@@ -464,12 +670,14 @@ export async function executeProtectedProductionOperationV2(
         sourceManifestSha256: owned.lease.sourceManifestSha256,
         releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256
       };
-      const intendedExternalEffectSha256 = await adapters.prepareEffect(effectPreparation);
+      const relativePath = `production-operation-step-intents/${begun.lease.operationId}/${sequence}-${stepId}-1-v2.json`;
+      const existingIntent = store.loadStepIntent?.(begun.lease.operationId, sequence, stepId, startedAt) ?? null;
+      const intendedExternalEffectSha256 = existingIntent?.intent.intendedExternalEffectSha256
+        ?? await adapters.prepareEffect(effectPreparation);
       if (!/^[0-9a-f]{64}$/u.test(intendedExternalEffectSha256)) {
         throw new Error("production_intended_effect_binding_invalid");
       }
-      const relativePath = `production-operation-step-intents/${begun.lease.operationId}/${sequence}-${stepId}-1-v2.json`;
-      const intent = validateProductionOrchestrationStepIntentV2({
+      const intent = existingIntent?.intent ?? validateProductionOrchestrationStepIntentV2({
         version: "production-orchestration-step-intent-v2",
         capability: "effect_capable",
         orchestration: input.operationKind,
@@ -488,18 +696,27 @@ export async function executeProtectedProductionOperationV2(
         intendedExternalEffectSha256,
         preparedAt: startedAt
       });
+      if (intent.inputSha256 !== inputSha256 || intent.intendedExternalEffectSha256 !== intendedExternalEffectSha256
+          || intent.commandId !== commandId
+          || intent.redactedTemplateSha256 !== begun.selectedAuthority.redactedTemplateSha256) {
+        throw new Error("production_existing_step_intent_binding_invalid");
+      }
       activeEffectIntent = { operationId: begun.lease.operationId, sequence, stepId };
-      const persistedIntent = store.persistStepIntent(intent);
+      const persistedIntent = existingIntent === null ? store.persistStepIntent(intent)
+        : { kind: "production_orchestration_step_intent", relativePath: existingIntent.relativePath,
+          sha256: existingIntent.sha256, created: false };
       intentPath = persistedIntent.relativePath;
       intentSha256 = persistedIntent.sha256;
       // ponytail: one durable attempt per effect; an intent without its exact receipt is
       // uncertain and must remain available for bounded read-only reconciliation.
       unresolvedEffectIntent = true;
+      injectedOperationFault(input.faultAt, `after_step_intent:${stepId}`);
       owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, adapters.now());
       if (persistedIntent.created) {
         attemptedExternalEffect = true;
         leaf = await adapters.executeEffect({ ...effectPreparation, intendedExternalEffectSha256,
           intent, intentSha256 });
+        injectedOperationFault(input.faultAt, `after_external_effect:${stepId}`);
       } else {
         const reconciled = await adapters.reconcileEffect({ ...effectPreparation, intendedExternalEffectSha256,
           intent, intentSha256 });
@@ -532,6 +749,7 @@ export async function executeProtectedProductionOperationV2(
       startedAt,
       finishedAt,
       recoveredAfterCrash,
+      verifiedChecks: leaf.verifiedChecks === undefined ? null : [...leaf.verifiedChecks],
       result: "completed",
       capability: begun.lease.capability,
       commandId,
@@ -550,11 +768,14 @@ export async function executeProtectedProductionOperationV2(
     captures.push({ stepId, sequence, executionKind, outputSha256: leaf.outputSha256,
       observedStateSha256: leaf.observedStateSha256, ...(leaf.verifiedChecks === undefined
         ? {} : { verifiedChecks: [...leaf.verifiedChecks] }) });
+    injectedOperationFault(input.faultAt, `after_step_receipt:${stepId}`);
   }
 
-  const completedAt = adapters.now();
+  const completedAt = completedStepReceipts.at(-1)?.receipt.finishedAt ?? adapters.now();
   const final = store.assertOwnedAndWithinBounds(begun.lease.operationId, completedAt);
-  const orchestrationReceipt = validateProductionOrchestrationReceiptV2({
+  const existingOrchestration = store.loadCompletedOrchestrationReceipt?.(
+    begun.lease.operationId, adapters.now()) ?? null;
+  const orchestrationReceipt = existingOrchestration?.receipt ?? validateProductionOrchestrationReceiptV2({
     version: "production-orchestration-receipt-v2",
     candidateSha: final.lease.candidateSha,
     releaseGenerationId: final.lease.releaseGenerationId,
@@ -580,24 +801,40 @@ export async function executeProtectedProductionOperationV2(
     }),
     completedStepReceipts
   });
-  const orchestrationRecord = store.persistExclusive(`${input.operationKind}_orchestration`,
-    PROTECTED_RECEIPT_PATH[input.operationKind], orchestrationReceipt);
+  const orchestrationRecord = existingOrchestration === null
+    ? store.persistExclusive(`${input.operationKind}_orchestration`,
+      terminalArtifactPath(store, begun.lease.operationId, PROTECTED_RECEIPT_PATH[input.operationKind]),
+      orchestrationReceipt)
+    : { kind: `${input.operationKind}_orchestration`, relativePath: existingOrchestration.relativePath,
+      sha256: existingOrchestration.sha256, created: false };
   if (orchestrationRecord.sha256 !== protectedHash(orchestrationReceipt)) {
     throw new Error("production_orchestration_receipt_hash_invalid");
   }
+  injectedOperationFault(input.faultAt, "after_orchestration_receipt");
 
-  const capturesRecord = store.persistExclusive(`${input.operationKind}_captures`,
-    input.operationKind === "rollout" ? "production-rollout-query-captures-v2.json"
+  const capturesCanonicalPath = input.operationKind === "rollout" ? "production-rollout-query-captures-v2.json"
       : input.operationKind === "canary" ? "production-canary-query-captures-v2.json"
         : input.operationKind === "rollback" ? "production-rollback-query-captures-v2.json"
-          : "production-recovery-validation-captures-v2.json",
+          : "production-recovery-validation-captures-v2.json";
+  const capturesRecord = store.persistExclusive(`${input.operationKind}_captures`,
+    terminalArtifactPath(store, begun.lease.operationId, capturesCanonicalPath),
     { version: "production-orchestration-captures-v2", operationId: begun.lease.operationId, captures });
+  injectedOperationFault(input.faultAt, "after_query_captures");
+  const terminalArtifactRefs: Array<{ kind: string; operationQualifiedRelativePath: string;
+    canonicalRelativePath: string | null; sha256: string }> = [
+    { kind: `${input.operationKind}_orchestration`, operationQualifiedRelativePath: orchestrationRecord.relativePath,
+      canonicalRelativePath: PROTECTED_RECEIPT_PATH[input.operationKind], sha256: orchestrationRecord.sha256 },
+    { kind: `${input.operationKind}_captures`, operationQualifiedRelativePath: capturesRecord.relativePath,
+      canonicalRelativePath: capturesCanonicalPath, sha256: capturesRecord.sha256 }
+  ];
   let terminalEvidence: ProductionOperationStoreRecordV2;
   if (input.operationKind === "rollout") {
+    const managerCanonicalPath = "production-rollout-manager-captures-v2.json";
     const manager = store.persistExclusive("production_rollout_manager",
-      "production-rollout-manager-captures-v2.json",
+      terminalArtifactPath(store, begun.lease.operationId, managerCanonicalPath),
       { version: "production-manager-captures-v2", operationId: begun.lease.operationId,
         captures: captures.filter((item) => item.executionKind === "external_effect") });
+    injectedOperationFault(input.faultAt, "after_auxiliary_captures");
     const evidence = validateProductionRolloutEvidenceV2({
       version: "production-rollout-evidence-v2", candidateSha: final.lease.candidateSha,
       releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
@@ -609,29 +846,47 @@ export async function executeProtectedProductionOperationV2(
       orchestrationReceiptSha256: orchestrationRecord.sha256,
       checks: verifiedCheckRecord(captures.at(-1)?.verifiedChecks), result: "passed"
     });
+    const evidenceCanonicalPath = "production-rollout-evidence-v2.json";
     terminalEvidence = store.persistExclusive("production_rollout_evidence",
-      "production-rollout-evidence-v2.json", evidence);
+      terminalArtifactPath(store, begun.lease.operationId, evidenceCanonicalPath), evidence);
+    terminalArtifactRefs.push(
+      { kind: "rollout_manager", operationQualifiedRelativePath: manager.relativePath,
+        canonicalRelativePath: managerCanonicalPath, sha256: manager.sha256 },
+      { kind: "rollout_evidence", operationQualifiedRelativePath: terminalEvidence.relativePath,
+        canonicalRelativePath: evidenceCanonicalPath, sha256: terminalEvidence.sha256 });
   } else if (input.operationKind === "canary") {
-    const logs = store.persistExclusive("production_canary_logs", "production-canary-log-captures-v2.json",
+    const logsCanonicalPath = "production-canary-log-captures-v2.json";
+    const logs = store.persistExclusive("production_canary_logs",
+      terminalArtifactPath(store, begun.lease.operationId, logsCanonicalPath),
       { version: "production-canary-log-captures-v2", operationId: begun.lease.operationId,
         captureSha256s: captures.map((item) => item.outputSha256) });
+    injectedOperationFault(input.faultAt, "after_auxiliary_captures");
     const evidence = validateProductionCanaryEvidenceV2({
       version: "production-canary-evidence-v2", candidateSha: final.lease.candidateSha,
       releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
       operationalAttestationConsumptionSha256: final.claim.authorityConsumptionSha256,
       sourceManifestSha256: final.lease.sourceManifestSha256,
-      observationStartedAt: beganAt, observationFinishedAt: completedAt, completedPollingCycles: 2,
+      observationStartedAt: completedStepReceipts[0]?.receipt.startedAt ?? beganAt,
+      observationFinishedAt: completedAt, completedPollingCycles: 2,
       queryCapturesSha256: capturesRecord.sha256, logCapturesSha256: logs.sha256,
       orchestrationReceiptSha256: orchestrationRecord.sha256,
       checks: verifiedCheckRecord(captures.at(-1)?.verifiedChecks), result: "passed"
     });
+    const evidenceCanonicalPath = "production-canary-evidence-v2.json";
     terminalEvidence = store.persistExclusive("production_canary_evidence",
-      "production-canary-evidence-v2.json", evidence);
+      terminalArtifactPath(store, begun.lease.operationId, evidenceCanonicalPath), evidence);
+    terminalArtifactRefs.push(
+      { kind: "canary_logs", operationQualifiedRelativePath: logs.relativePath,
+        canonicalRelativePath: logsCanonicalPath, sha256: logs.sha256 },
+      { kind: "canary_evidence", operationQualifiedRelativePath: terminalEvidence.relativePath,
+        canonicalRelativePath: evidenceCanonicalPath, sha256: terminalEvidence.sha256 });
   } else if (input.operationKind === "rollback") {
+    const managerCanonicalPath = "production-rollback-manager-captures-v2.json";
     const manager = store.persistExclusive("production_rollback_manager",
-      "production-rollback-manager-captures-v2.json",
+      terminalArtifactPath(store, begun.lease.operationId, managerCanonicalPath),
       { version: "production-manager-captures-v2", operationId: begun.lease.operationId,
         captures: captures.filter((item) => item.executionKind === "external_effect") });
+    injectedOperationFault(input.faultAt, "after_auxiliary_captures");
     const evidence = validateProductionRollbackEvidenceV2({
       version: "production-rollback-evidence-v2", candidateSha: final.lease.candidateSha,
       releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
@@ -648,8 +903,14 @@ export async function executeProtectedProductionOperationV2(
       checks: verifiedCheckRecord(captures.at(-1)?.verifiedChecks)
     });
     void manager;
+    const evidenceCanonicalPath = "production-rollback-evidence-v2.json";
     terminalEvidence = store.persistExclusive("production_rollback_evidence",
-      "production-rollback-evidence-v2.json", evidence);
+      terminalArtifactPath(store, begun.lease.operationId, evidenceCanonicalPath), evidence);
+    terminalArtifactRefs.push(
+      { kind: "rollback_manager", operationQualifiedRelativePath: manager.relativePath,
+        canonicalRelativePath: managerCanonicalPath, sha256: manager.sha256 },
+      { kind: "rollback_evidence", operationQualifiedRelativePath: terminalEvidence.relativePath,
+        canonicalRelativePath: evidenceCanonicalPath, sha256: terminalEvidence.sha256 });
   } else {
     const evidence = validateProductionFailureEvidenceV2({
       version: "production-failure-evidence-v2", candidateSha: final.lease.candidateSha,
@@ -673,12 +934,29 @@ export async function executeProtectedProductionOperationV2(
       recoveryAuthorityConsumptionSha256: final.claim.authorityConsumptionSha256,
       failureCode: recoveryContext!.failureCode
     });
+    const evidenceCanonicalPath = "production-failure-evidence-v2.json";
     terminalEvidence = store.persistExclusive("production_failure_evidence",
-      "production-failure-evidence-v2.json", evidence);
+      terminalArtifactPath(store, begun.lease.operationId, evidenceCanonicalPath), evidence);
+    terminalArtifactRefs.push({ kind: "recovery_failure_evidence",
+      operationQualifiedRelativePath: terminalEvidence.relativePath,
+      canonicalRelativePath: evidenceCanonicalPath, sha256: terminalEvidence.sha256 });
   }
+
+  injectedOperationFault(input.faultAt, "after_terminal_evidence");
 
   const settlementTime = adapters.now();
   const settlementOwned = store.assertOwnedAndWithinBounds(begun.lease.operationId, settlementTime);
+  store.persistTerminalArtifactIndex?.({
+    version: "production-terminal-artifact-index-v2",
+    operationKind: input.operationKind,
+    operationId: settlementOwned.lease.operationId,
+    operationClaimSha256: settlementOwned.claimSha256,
+    authorityConsumptionSha256: settlementOwned.claim.authorityConsumptionSha256,
+    terminalEvidenceSha256: terminalEvidence.sha256,
+    orchestrationReceiptSha256: orchestrationRecord.sha256,
+    artifacts: terminalArtifactRefs
+  }, settlementTime);
+  injectedOperationFault(input.faultAt, "after_terminal_index");
   const settlement = validateProductionOperationSettlementV2(input.operationKind === "recovery" ? {
     version: "production-operation-settlement-v2", operationKind: input.operationKind,
     operationId: settlementOwned.lease.operationId, candidateSha: settlementOwned.lease.candidateSha,
@@ -709,11 +987,26 @@ export async function executeProtectedProductionOperationV2(
   });
   const settlementRecord = store.persistSettlement(settlement);
   successSettlementPersisted = true;
+  injectedOperationFault(input.faultAt, "after_settlement");
+  store.publishTerminalArtifacts?.(begun.lease.operationId);
+  injectedOperationFault(input.faultAt, "after_terminal_publication");
   store.completeTerminal({ operationId: begun.lease.operationId, terminalStateKind: "settlement",
-    terminalStateSha256: settlementRecord.sha256, evaluatedAt: settlementTime });
+    terminalStateSha256: settlementRecord.sha256, evaluatedAt: settlementTime,
+    faultAt: input.faultAt });
   return { operationId: begun.lease.operationId, leaseEpoch: settlementOwned.lease.leaseEpoch,
     receiptSha256: orchestrationRecord.sha256, completedSteps: [...stepIds] };
   } catch (error) {
+    let activeStepDurablyCompleted = false;
+    if (activeStepSequence > 0 && store.loadCompletedStepPrefix) {
+      try {
+        const prefix = store.loadCompletedStepPrefix(begun.lease.operationId, adapters.now());
+        activeStepDurablyCompleted = prefix.some((record) =>
+          record.receipt.sequence === activeStepSequence && record.receipt.stepId === activeStepId);
+      } catch {
+        // A corrupt or racing prefix is not authority to synthesize a failure settlement.
+        activeStepDurablyCompleted = true;
+      }
+    }
     if (activeEffectIntent !== null) {
       try {
         unresolvedEffectIntent = store.hasUnresolvedStepIntent(activeEffectIntent);
@@ -723,11 +1016,11 @@ export async function executeProtectedProductionOperationV2(
       }
     }
     if ((input.operationKind === "rollout" || input.operationKind === "canary")
-        && !successSettlementPersisted && !unresolvedEffectIntent) {
+        && !successSettlementPersisted && !unresolvedEffectIntent && !activeStepDurablyCompleted) {
       try {
         settleProtectedFailure({ operationKind: input.operationKind, stepId: activeStepId, error,
           store, adapters, begun, releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,
-          completedStepReceipts, captures, attemptedExternalEffect });
+          completedStepReceipts, captures, attemptedExternalEffect, faultAt: input.faultAt });
       } catch (settlementError) {
         throw new AggregateError([error, settlementError], "production_operation_failure_settlement_failed");
       }

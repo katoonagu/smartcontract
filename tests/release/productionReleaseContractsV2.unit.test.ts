@@ -30,7 +30,7 @@ function rolloutStep(sequence: number, stepId: typeof ROLLOUT_STEPS[number]) {
     operationId: "rollout-operation-1", operationClaimSha256: S,
     authorityConsumptionSha256: S, operationLeaseSha256: S, operationLeaseEpoch: 1,
     operationDeadlineAt: T1, inputSha256: S, outputSha256: S, observedStateSha256: S,
-    sequence, startedAt: T0, finishedAt: T0, recoveredAfterCrash: false,
+    sequence, startedAt: T0, finishedAt: T0, recoveredAfterCrash: false, verifiedChecks: null,
     result: "completed" as const, capability: "effect_capable" as const,
     commandId: "production_rollout" as const, redactedTemplateSha256: S,
     executionKind: external ? "external_effect" as const : "local_validation" as const,

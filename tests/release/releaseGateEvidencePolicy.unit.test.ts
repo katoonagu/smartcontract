@@ -364,6 +364,7 @@ function orchestration(kind: "rollout" | "canary") {
       startedAt: `2026-07-18T10:${String(index).padStart(2, "0")}:00.000Z`,
       finishedAt: `2026-07-18T10:${String(index).padStart(2, "0")}:01.000Z`,
       recoveredAfterCrash: false,
+      verifiedChecks: null,
       result: "completed",
       capability: "effect_capable",
       commandId,

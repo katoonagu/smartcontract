@@ -693,7 +693,8 @@ export type ProductionRolloutStepIdV2 =
 export type ProductionCanaryStepIdV2 = "verify_g14" | "observe_cycle_1" | "observe_cycle_2" | "bounded_runtime_checks";
 export type ProductionRollbackStepIdV2 =
   | "verify_failure" | "prove_previous_healthy" | "prove_no_previous_stop" | "prove_no_candidate_start"
-  | "restart_previous" | "stop_candidate" | "start_previous" | "rollback_runtime_checks";
+  | "prove_no_candidate_running" | "restart_previous" | "stop_candidate" | "start_previous"
+  | "rollback_runtime_checks";
 export type ProductionRecoveryStepIdV2 =
   | "verify_abandoned_cleanup" | "verify_completed_prefix" | "verify_uncertain_step_intent"
   | "validate_failure_derivation_inputs";
@@ -735,6 +736,7 @@ export type ProductionOrchestrationStepReceiptCommonV2 = {
   startedAt: string;
   finishedAt: string;
   recoveredAfterCrash: boolean;
+  verifiedChecks: readonly string[] | null;
   result: "completed";
 };
 export type EffectCapableProductionOrchestrationStepReceiptV2 = ProductionOrchestrationStepReceiptCommonV2 & {
@@ -3301,7 +3303,8 @@ const ROLLOUT_STEPS_V2 = ["verify_g13", "verify_schema", "verify_previous_runtim
   "prove_candidate_started", "immediate_runtime_checks"] as const;
 const CANARY_STEPS_V2 = ["verify_g14", "observe_cycle_1", "observe_cycle_2", "bounded_runtime_checks"] as const;
 const ROLLBACK_STEPS_V2 = ["verify_failure", "prove_previous_healthy", "prove_no_previous_stop",
-  "prove_no_candidate_start", "restart_previous", "stop_candidate", "start_previous", "rollback_runtime_checks"] as const;
+  "prove_no_candidate_start", "prove_no_candidate_running", "restart_previous", "stop_candidate",
+  "start_previous", "rollback_runtime_checks"] as const;
 const RECOVERY_STEPS_V2 = ["verify_abandoned_cleanup", "verify_completed_prefix", "verify_uncertain_step_intent",
   "validate_failure_derivation_inputs"] as const;
 const EXTERNAL_EFFECT_STEPS_V2 = ["stop_previous", "start_candidate", "restart_previous", "stop_candidate", "start_previous"] as const;
@@ -3354,7 +3357,7 @@ export function validateProductionOrchestrationStepReceiptV2(
   const input = record(value, "production_orchestration_step_receipt");
   exactKeys(input, ["version", "operationId", "operationClaimSha256", "authorityConsumptionSha256",
     "operationLeaseSha256", "operationLeaseEpoch", "operationDeadlineAt", "inputSha256", "outputSha256",
-    "observedStateSha256", "sequence", "startedAt", "finishedAt", "recoveredAfterCrash", "result",
+    "observedStateSha256", "sequence", "startedAt", "finishedAt", "recoveredAfterCrash", "verifiedChecks", "result",
     "capability", "commandId", "redactedTemplateSha256", "executionKind", "stepIntentRelativePath",
     "stepIntentSha256", "orchestration", "stepId"], "production_orchestration_step_receipt");
   if (input.version !== "production-orchestration-step-receipt-v2" || input.result !== "completed") {
@@ -3370,6 +3373,13 @@ export function validateProductionOrchestrationStepReceiptV2(
   const finished = iso(input.finishedAt, "step_receipt_finished");
   if (Date.parse(finished) < Date.parse(started)
       || Date.parse(finished) >= Date.parse(String(input.operationDeadlineAt))) throw new Error("step_receipt_time_invalid");
+  if (input.verifiedChecks !== null) {
+    if (!Array.isArray(input.verifiedChecks) || input.verifiedChecks.length === 0
+        || input.verifiedChecks.some((check) => typeof check !== "string" || !/^[a-z][a-z0-9_]*$/u.test(check))
+        || new Set(input.verifiedChecks).size !== input.verifiedChecks.length) {
+      throw new Error("step_receipt_verified_checks_invalid");
+    }
+  }
   const capability = oneOf(input.capability, ["effect_capable", "recovery_only"] as const, "step_receipt_capability");
   validateOrchestrationStep(input.orchestration, input.stepId, "step_receipt_step");
   orchestrationCommand(input.orchestration, input.commandId, "step_receipt");
@@ -3455,7 +3465,8 @@ export function validateProductionOrchestrationReceiptV2(value: unknown): Produc
   const rollbackSequences = [
     ["verify_failure", "prove_previous_healthy", "prove_no_previous_stop", "prove_no_candidate_start"],
     ["verify_failure", "restart_previous", "prove_no_candidate_start", "rollback_runtime_checks"],
-    ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"]
+    ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"],
+    ["verify_failure", "prove_previous_healthy", "prove_no_candidate_running", "rollback_runtime_checks"]
   ] as const;
   const allowedCompleteSequences: readonly (readonly string[])[] = input.orchestration === "rollout"
     ? [ROLLOUT_STEPS_V2] : input.orchestration === "canary"

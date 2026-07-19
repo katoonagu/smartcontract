@@ -16,10 +16,13 @@ import {
   canonicalReleaseJsonV2,
   releaseSha256V2,
   validateProductionFailureEvidenceV2,
+  validateCommittedProductionOperationLeaseTakeoverV2,
+  validatePreparedProductionOperationLeaseTakeoverV2,
   validateRemediationReleaseManifestV2,
   validateSchema032ProductionExecutionReceiptV2,
   validateProductionOperationTerminalAbandonedV2,
   validateProductionOperationTerminalCleanupV2,
+  validateProductionOperationLeaseV2,
   validateProductionOrchestrationStepIntentV2,
   validateProductionOrchestrationStepReceiptV2,
   validateReleaseFreezeIdentityV2,
@@ -69,13 +72,18 @@ import {
 } from "../runtime/runtimeLiveProof";
 import { formatRuntimeVersion, validateRuntimeVersion } from "../runtime/runtimeVersion";
 import {
+  classifyRuntimeRollbackTopologyV2,
+  createRuntimeRollbackTopologyEvidenceV2,
   resolveRuntimeEffectReconciliationV2,
   validateRuntimeEffectReconciliationEvidenceV2,
-  type RuntimeEffectReconciliationInputV2
+  validateRuntimeRollbackTopologyEvidenceV2,
+  type RuntimeEffectReconciliationInputV2,
+  type RuntimeRollbackTopologyEvidenceV2
 } from "./runtimeEffectReconciliationV2";
 
 const execFileAsync = promisify(execFile);
 const MAX_CAPTURE_BYTES = 1024 * 1024;
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
 const RUNTIME_COMMAND: Readonly<Record<string, "runtime_manager_start_candidate" | "runtime_manager_stop_candidate"
   | "runtime_manager_stop_previous" | "runtime_manager_rollback_previous">> = Object.freeze({
@@ -85,6 +93,12 @@ const RUNTIME_COMMAND: Readonly<Record<string, "runtime_manager_start_candidate"
   start_previous: "runtime_manager_rollback_previous",
   restart_previous: "runtime_manager_rollback_previous"
 });
+const RECOVERY_SOURCE_STEPS = Object.freeze({
+  rollout: ["verify_g13", "verify_schema", "verify_previous_runtime_identity", "verify_singleton_precondition",
+    "stop_previous", "prove_previous_stopped", "start_candidate", "prove_candidate_started",
+    "immediate_runtime_checks"],
+  canary: ["verify_g14", "observe_cycle_1", "observe_cycle_2", "bounded_runtime_checks"]
+} as const);
 type RuntimeManagerCommandId = typeof RUNTIME_COMMAND[keyof typeof RUNTIME_COMMAND];
 
 function hash(value: Buffer | string): string {
@@ -446,7 +460,8 @@ function runtimeAuthorities(root: string, commandId: RuntimeManagerCommandId, in
       const value = validateTask0BProductionRuntimeAuthority(parsed, issuedAt);
       if (!bytes.equals(canonicalBytesV2(value))) throw new Error("production_runtime_authority_noncanonical");
       const generationId = value.generationId;
-      if (filename !== runtimeAuthorityFilename(generationId, value.commandId)) {
+      if (filename !== runtimeAuthorityFilename(generationId, value.commandId)
+          && filename !== runtimeAuthorityFilename(generationId, value.commandId, releaseSha256V2(bytes))) {
         throw new Error("production_runtime_authority_filename_invalid");
       }
       if (value.commandId !== commandId) return [];
@@ -523,6 +538,83 @@ function loadTask0B(root: string) {
 }
 
 type RuntimeCycleSnapshotV2 = Readonly<Record<RuntimeCycleName, number>>;
+type CanaryResumeStateV2 = Readonly<{
+  version: "production-canary-resume-state-v2";
+  operationId: string;
+  operationClaimSha256: string;
+  canaryStartedAt: string;
+  queueBaseline: number;
+  cycleSnapshot: RuntimeCycleSnapshotV2;
+  leafResult: ProtectedProductionLeafResultV2;
+  recordedAt: string;
+}>;
+
+export function validateCanaryResumeStateV2(value: unknown): CanaryResumeStateV2 {
+  const input = exactObject(value, ["version", "operationId", "operationClaimSha256", "canaryStartedAt",
+    "queueBaseline", "cycleSnapshot", "leafResult", "recordedAt"], "production_canary_resume_state");
+  const cycle = exactObject(input.cycleSnapshot, RUNTIME_CYCLE_NAMES, "production_canary_resume_cycles");
+  if (input.version !== "production-canary-resume-state-v2" || typeof input.operationId !== "string"
+      || !SHA256_HEX.test(String(input.operationClaimSha256))) {
+    throw new Error("production_canary_resume_state_invalid");
+  }
+  const startedAt = exactIso(input.canaryStartedAt, "production_canary_resume_started_at");
+  const recordedAt = exactIso(input.recordedAt, "production_canary_resume_recorded_at");
+  if (Date.parse(recordedAt) < Date.parse(startedAt)) throw new Error("production_canary_resume_time_invalid");
+  const cycleSnapshot = Object.fromEntries(RUNTIME_CYCLE_NAMES.map((name) => {
+    const sequence = exactNonnegativeInteger(cycle[name], `production_canary_resume_cycle_${name}`);
+    if (sequence < 1) throw new Error(`production_canary_resume_cycle_${name}_invalid`);
+    return [name, sequence];
+  })) as Record<RuntimeCycleName, number>;
+  const leaf = exactObject(input.leafResult, ["inputSha256", "outputSha256", "observedStateSha256"],
+    "production_canary_resume_leaf");
+  for (const field of ["inputSha256", "outputSha256", "observedStateSha256"] as const) {
+    if (!SHA256_HEX.test(String(leaf[field]))) throw new Error("production_canary_resume_leaf_invalid");
+  }
+  return { version: "production-canary-resume-state-v2", operationId: String(input.operationId),
+    operationClaimSha256: String(input.operationClaimSha256), canaryStartedAt: startedAt,
+    queueBaseline: exactNonnegativeInteger(input.queueBaseline, "production_canary_resume_queue"),
+    cycleSnapshot, leafResult: { inputSha256: String(leaf.inputSha256),
+      outputSha256: String(leaf.outputSha256), observedStateSha256: String(leaf.observedStateSha256) },
+    recordedAt };
+}
+
+export function restoreCanaryResumeStateV2(input: Readonly<{
+  value: unknown;
+  operationId: string;
+  operationClaimSha256: string;
+  inputSha256?: string;
+  completedPrefix: readonly Readonly<{ stepId: string; startedAt: string; finishedAt: string }>[];
+}>): CanaryResumeStateV2 {
+  const state = validateCanaryResumeStateV2(input.value);
+  const cycleOne = input.completedPrefix[1];
+  if (input.completedPrefix.length < 1 || input.completedPrefix[0]?.stepId !== "verify_g14"
+      || (cycleOne !== undefined && cycleOne.stepId !== "observe_cycle_1")
+      || state.operationId !== input.operationId
+      || state.operationClaimSha256 !== input.operationClaimSha256
+      || (input.inputSha256 !== undefined && state.leafResult.inputSha256 !== input.inputSha256)
+      || Date.parse(state.recordedAt) < Date.parse(cycleOne?.startedAt
+        ?? input.completedPrefix[0]!.startedAt)
+      || (cycleOne !== undefined && Date.parse(state.recordedAt) > Date.parse(cycleOne.finishedAt))) {
+    throw new Error("production_canary_resume_state_binding_invalid");
+  }
+  return state;
+}
+
+export async function selectCanaryCycleOneResumeBeforeObservationV2(input: Readonly<{
+  storedState: unknown | null;
+  operationId: string;
+  operationClaimSha256: string;
+  inputSha256: string;
+  completedPrefix: readonly Readonly<{ stepId: string; startedAt: string; finishedAt: string }>[];
+  observeOnlyWhenMissing(): Promise<ProtectedProductionLeafResultV2 | null>;
+}>): Promise<ProtectedProductionLeafResultV2 | null> {
+  if (input.storedState !== null) {
+    return restoreCanaryResumeStateV2({ value: input.storedState, operationId: input.operationId,
+      operationClaimSha256: input.operationClaimSha256, inputSha256: input.inputSha256,
+      completedPrefix: input.completedPrefix }).leafResult;
+  }
+  return input.observeOnlyWhenMissing();
+}
 
 function cycleSnapshot(
   proof: RuntimeProofV1,
@@ -1013,6 +1105,11 @@ async function validateFixedStep(root: string, input: ProtectedProductionLeafInp
     if (actualRuntimeEvidence(root, "runtime_manager_start_candidate")) throw new Error("production_candidate_start_detected");
     return valueCapture(input, { candidateStartEvidenceCount: 0, runtimeProcessCount: await countTask0BRuntimeCandidates() });
   }
+  if (input.stepId === "prove_no_candidate_running") {
+    const count = await countTask0BRuntimeCandidates();
+    if (count !== 1) throw new Error("production_candidate_runtime_still_present");
+    return valueCapture(input, { candidateRuntimePresent: false, runtimeProcessCount: count });
+  }
   if (["immediate_runtime_checks", "observe_cycle_1", "observe_cycle_2", "bounded_runtime_checks",
     "rollback_runtime_checks"].includes(input.stepId)) {
     return valueCapture(input, { stepId: input.stepId });
@@ -1024,20 +1121,46 @@ async function validateFixedStep(root: string, input: ProtectedProductionLeafInp
   return leafCapture(input, await verifyRoot(root));
 }
 
-function actualRuntimeEvidence(root: string, commandId: RuntimeManagerCommandId, exactStepId?: string): { sha256: string; bytes: Buffer;
+export function selectExactRuntimeAuthorityV2<T extends Readonly<{ authority: Readonly<{
+  stepId: string; operationId: string; operationClaimSha256: string; intentSha256: string;
+}> }>>(items: readonly T[], exactStepId?: string,
+  exactBinding?: Readonly<{ operationId: string; operationClaimSha256: string; intentSha256: string }>): T | null {
+  const matches = items.filter(({ authority }) =>
+    (exactStepId === undefined || authority.stepId === exactStepId)
+    && (exactBinding === undefined || (authority.operationId === exactBinding.operationId
+      && authority.operationClaimSha256 === exactBinding.operationClaimSha256
+      && authority.intentSha256 === exactBinding.intentSha256)));
+  if (matches.length > 1) throw new Error("production_runtime_effect_evidence_ambiguous");
+  return matches[0] ?? null;
+}
+
+export async function selectRuntimeEffectRecoverySourceV2<TManager, TTopology>(input: Readonly<{
+  managerEvidence: TManager | null;
+  validateManagerEvidence(value: TManager): void;
+  observeTopology(): Promise<TTopology>;
+}>): Promise<Readonly<{ source: "manager_evidence"; value: TManager }>
+  | Readonly<{ source: "topology"; value: TTopology }>> {
+  if (input.managerEvidence !== null) {
+    input.validateManagerEvidence(input.managerEvidence);
+    return { source: "manager_evidence", value: input.managerEvidence };
+  }
+  return { source: "topology", value: await input.observeTopology() };
+}
+
+function actualRuntimeEvidence(root: string, commandId: RuntimeManagerCommandId, exactStepId?: string,
+  exactBinding?: Readonly<{ operationId: string; operationClaimSha256: string; intentSha256: string }>): { sha256: string; bytes: Buffer;
   effectIdentitySha256: string; generationId: string; commandId: string; authoritySha256: string;
   authority: Task0BProductionRuntimeAuthorityV1;
   startEvidence: ReturnType<typeof validateRuntimeManagerStartEffectEvidenceV2> | null } | null {
-  const matches = runtimeAuthorities(root, commandId, true);
-  if (matches.length !== 1) return null;
+  const match = selectExactRuntimeAuthorityV2(runtimeAuthorities(root, commandId, true), exactStepId, exactBinding);
+  if (match === null) return null;
   const action = commandId.includes("start") || commandId.includes("rollback") ? "start" : "stop";
-  const filename = runtimeGenerationEvidencePath(action, matches[0]!.generationId, commandId, matches[0]!.sha256);
+  const filename = runtimeGenerationEvidencePath(action, match.generationId, commandId, match.sha256);
   if (!existsSync(safeArtifactPath(root, filename))) return null;
   const bytes = readFileSync(safeArtifactPath(root, filename));
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString("utf8")); }
   catch { throw new Error("production_runtime_effect_evidence_json_invalid"); }
-  const match = matches[0]!;
   const expected = {
     generationId: match.generationId,
     commandId: match.authority.commandId,
@@ -1168,7 +1291,8 @@ async function issueRuntimeAuthority(
     startEvidencePath,
     startEvidenceSha256
   }, now.toISOString());
-  const filename = runtimeAuthorityFilename(authority.generationId, commandId);
+  const filename = runtimeAuthorityFilename(authority.generationId, commandId,
+    releaseSha256V2(canonicalBytesV2(authority)));
   const record = store.persistExclusive("repo_issued_runtime_effect_authority", filename, authority);
   return { filename, generationId: authority.generationId, sha256: record.sha256, authority };
 }
@@ -1275,12 +1399,22 @@ function runtimeReconciliationInput(
   };
 }
 
+export async function selectDurableReconciliationBeforeObservationV2<T>(input: Readonly<{
+  loadDurable(): T | null;
+  observeOnlyWhenMissing(): Promise<T | null>;
+}>): Promise<T | null> {
+  const durable = input.loadDurable();
+  return durable ?? input.observeOnlyWhenMissing();
+}
+
 async function reconcileRuntimeEffect(
   root: string,
   input: ProtectedProductionEffectExecutionInputV2
 ): Promise<ProtectedProductionLeafResultV2 | null> {
   const store = new ProductionOperationStoreV2(root);
   const before = store.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+  const commandId = RUNTIME_COMMAND[input.stepId];
+  if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
   const target = runtimeReconciliationTarget(root, input);
   const relativePath = `production-runtime-effect-reconciliations/${input.operationId}/${input.sequence}-${input.stepId}-${input.intentSha256}-v2.json`;
   let storedPath: string | null = null;
@@ -1288,34 +1422,78 @@ async function reconcileRuntimeEffect(
   catch (error) {
     if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
   }
-  if (storedPath !== null && existsSync(storedPath)) {
-    const stored = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
-    const expectedInput = runtimeReconciliationInput(input, before, stored.value.observedAt, target);
-    validateRuntimeEffectReconciliationEvidenceV2(stored.value, {
-      ...expectedInput,
-      topologySnapshotSha256: stored.value.topologySnapshotSha256,
-      targetIdentitySha256: releaseSha256V2(canonicalBytesV2(target)),
-      observedPostState: expectedInput.desiredState
-    });
-    return leafCapture(input, stored.bytes);
-  }
-  const hardDeadlineAt = productionObservationHardDeadlineV2(
-    before.lease.operationDeadlineAt,
-    before.claim.authorityConsumption.expiresAt
-  );
-  const topology = await observeTask0BRuntimeTopologySnapshotV2({
-    hardDeadlineAt,
-    configuredTimeoutMs: 10_000
+  return selectDurableReconciliationBeforeObservationV2({
+    loadDurable: () => {
+      // Durable reconciliation is authoritative for this exact intent. Consulting live topology
+      // first would make a previously committed decision non-replayable after topology changes.
+      if (storedPath === null || !existsSync(storedPath)) return null;
+      const stored = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
+      const expectedInput = runtimeReconciliationInput(input, before, stored.value.observedAt, target);
+      validateRuntimeEffectReconciliationEvidenceV2(stored.value, {
+        ...expectedInput,
+        topologySnapshotSha256: stored.value.topologySnapshotSha256,
+        targetIdentitySha256: releaseSha256V2(canonicalBytesV2(target)),
+        observedPostState: expectedInput.desiredState
+      });
+      return leafCapture(input, stored.bytes);
+    },
+    observeOnlyWhenMissing: async () => {
+      const managerEvidence = actualRuntimeEvidence(root, commandId, input.stepId, {
+        operationId: input.operationId,
+        operationClaimSha256: input.operationClaimSha256,
+        intentSha256: input.intentSha256
+      });
+      const selectedSource = await selectRuntimeEffectRecoverySourceV2({
+        managerEvidence,
+        validateManagerEvidence: (value) => assertExactManagerRuntimeReconciliationBindingV2(value, input),
+        observeTopology: () => observeTask0BRuntimeTopologySnapshotV2({
+          hardDeadlineAt: productionObservationHardDeadlineV2(
+            before.lease.operationDeadlineAt,
+            before.claim.authorityConsumption.expiresAt
+          ),
+          configuredTimeoutMs: 10_000
+        })
+      });
+      if (selectedSource.source === "manager_evidence") {
+        return leafCapture(input, selectedSource.value.bytes);
+      }
+      const topology = selectedSource.value;
+      const owned = store.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+      const reconciliationInput = runtimeReconciliationInput(input, owned, topology.observedAt, target);
+      const evidence = resolveRuntimeEffectReconciliationV2(reconciliationInput, topology);
+      if (evidence === null) return null;
+      const record = store.persistExclusive("runtime_effect_reconciliation", relativePath, evidence);
+      if (record.sha256 !== releaseSha256V2(canonicalBytesV2(evidence))) {
+        throw new Error("production_runtime_reconciliation_persistence_invalid");
+      }
+      return leafCapture(input, canonicalBytesV2(evidence));
+    }
   });
-  const owned = store.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
-  const reconciliationInput = runtimeReconciliationInput(input, owned, topology.observedAt, target);
-  const evidence = resolveRuntimeEffectReconciliationV2(reconciliationInput, topology);
-  if (evidence === null) return null;
-  const record = store.persistExclusive("runtime_effect_reconciliation", relativePath, evidence);
-  if (record.sha256 !== releaseSha256V2(canonicalBytesV2(evidence))) {
-    throw new Error("production_runtime_reconciliation_persistence_invalid");
+}
+
+export function assertExactManagerRuntimeReconciliationBindingV2(
+  managerEvidence: Readonly<{
+    effectIdentitySha256: string;
+    authority: Task0BProductionRuntimeAuthorityV1;
+  }>,
+  input: ProtectedProductionEffectExecutionInputV2
+): void {
+  const authority = managerEvidence.authority;
+  if (managerEvidence.effectIdentitySha256 !== input.intendedExternalEffectSha256
+      || authority.operationKind !== input.operationKind || authority.operationId !== input.operationId
+      || authority.operationClaimSha256 !== input.operationClaimSha256
+      || authority.authorityConsumptionSha256 !== input.authorityConsumptionSha256
+      || authority.sequence !== input.sequence || authority.stepId !== input.stepId
+      || authority.inputSha256 !== input.inputSha256
+      || authority.intentSha256 !== input.intentSha256
+      || authority.intentRelativePath !== input.intent.relativePath
+      || authority.operationLeaseSha256 !== input.intent.currentOperationLeaseSha256
+      || authority.operationLeaseEpoch !== input.intent.currentOperationLeaseEpoch
+      || authority.releaseFreezeIdentitySha256 !== input.releaseFreezeIdentitySha256
+      || authority.sourceManifestSha256 !== input.sourceManifestSha256
+      || releaseSha256V2(canonicalBytesV2(input.intent)) !== input.intentSha256) {
+    throw new Error("production_runtime_reconciliation_binding_invalid");
   }
-  return leafCapture(input, canonicalBytesV2(evidence));
 }
 
 function shaFromTask0B(root: string, field: "previousRuntimeIdentity"): string {
@@ -1324,38 +1502,415 @@ function shaFromTask0B(root: string, field: "previousRuntimeIdentity"): string {
   return releaseSha256V2(canonicalBytesV2(value[field]));
 }
 
-function deriveRollbackContext(root: string) {
+function rollbackTopologyTargets(root: string) {
+  const task0b = loadTask0B(root);
+  return {
+    previous: {
+      runtimeSha: task0b.previousRuntimeSha,
+      runtimeLabel: task0b.previousRuntimeLabel,
+      worktreePathFingerprintSha256: task0b.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+      entrypointPathFingerprintSha256: task0b.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+      exactProcessId: null,
+      exactProcessStartedAt: null
+    },
+    candidate: {
+      runtimeSha: task0b.candidateSha,
+      runtimeLabel: `master-${task0b.candidateSha.slice(0, 8)}`,
+      worktreePathFingerprintSha256: task0b.candidateWorktree.worktreePathFingerprintSha256,
+      entrypointPathFingerprintSha256: runtimePathFingerprint(resolve(process.cwd(), "src/index.ts")),
+      exactProcessId: null,
+      exactProcessStartedAt: null
+    }
+  } as const;
+}
+
+function nestedArtifactDirectory(root: string, relativeDirectory: string): string | null {
+  try { return dirname(safeArtifactRelativePath(root, `${relativeDirectory}/probe.json`)); }
+  catch (error) {
+    if (error instanceof Error && error.message.includes("artifact_parent_missing")) return null;
+    throw error;
+  }
+}
+
+function exactRuntimeEvidenceForOperationStep(
+  root: string,
+  operationId: string,
+  operationClaimSha256: string,
+  stepId: "stop_previous" | "start_candidate"
+) {
+  const directory = `production-operation-step-intents/${operationId}`;
+  const physical = nestedArtifactDirectory(root, directory);
+  if (physical === null) return null;
+  const matches = readdirSync(physical).filter((name) => name.endsWith(`-${stepId}-1-v2.json`)).map((name) =>
+    readCanonical(root, `${directory}/${name}`, validateProductionOrchestrationStepIntentV2)).filter((intent) =>
+    intent.value.operationId === operationId && intent.value.operationClaimSha256 === operationClaimSha256
+    && intent.value.stepId === stepId
+    && intent.value.relativePath === `${directory}/${intent.value.sequence}-${stepId}-1-v2.json`);
+  if (matches.length > 1) throw new Error("production_failed_runtime_intent_ambiguous");
+  const intent = matches[0];
+  return intent ? actualRuntimeEvidence(root, RUNTIME_COMMAND[stepId], stepId, {
+    operationId, operationClaimSha256, intentSha256: intent.sha256
+  }) : null;
+}
+
+function failedOperationBinding(root: string, failure: ReturnType<typeof validateProductionFailureEvidenceV2>): {
+  operationId: string;
+  operationClaimSha256: string;
+} {
+  if (failure.evidenceKind === "abandoned_operation_recovery") {
+    const terminalNames = readdirSync(root).filter((name) =>
+      name.startsWith("production-operation-terminal-abandoned-") && name.endsWith(".json"));
+    const terminals = terminalNames.map((name) => readCanonical(root, name,
+      validateProductionOperationTerminalAbandonedV2)).filter((entry) =>
+      entry.sha256 === failure.priorTerminalAbandonedSha256);
+    if (terminals.length !== 1 || terminals[0]!.value.claimSha256 === null) {
+      throw new Error("production_failed_operation_terminal_binding_invalid");
+    }
+    const terminal = terminals[0]!;
+    return { operationId: terminal.value.operationId,
+      operationClaimSha256: String(terminal.value.claimSha256) };
+  }
+  const names = readdirSync(root).filter((name) =>
+    /^production-operation-failure-capture-production-(?:rollout|canary)-[0-9a-f]{64}\.json$/u.test(name));
+  const matches = names.map((name) => {
+    const bytes = readFileSync(safeArtifactPath(root, name));
+    let value: any;
+    try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error("production_failure_capture_json_invalid"); }
+    return { name, bytes, sha256: hash(bytes), value };
+  }).filter((entry) => entry.sha256 === failure.failedExecutionEvidenceSha256);
+  if (matches.length !== 1) throw new Error("production_failed_operation_capture_ambiguous");
+  const match = matches[0]!;
+  if (match.name !== `production-operation-failure-capture-${String(match.value.operationId)}.json`
+      || typeof match.value.operationId !== "string" || !SHA256_HEX.test(String(match.value.operationClaimSha256))) {
+    throw new Error("production_failed_operation_capture_binding_invalid");
+  }
+  return { operationId: match.value.operationId, operationClaimSha256: match.value.operationClaimSha256 };
+}
+
+function loadPriorAbandonedRollbackHistory(root: string): null | {
+  operationId: string;
+  claimSha256: string;
+  authorityConsumptionSha256: string;
+  stepIds: ReadonlySet<string>;
+  proofSha256(stepId: "restart_previous" | "stop_candidate" | "start_previous"): string | null;
+} {
+  const terminalNames = readdirSync(root).filter((name) =>
+    /^production-operation-terminal-abandoned-production-rollback-[0-9a-f]{64}\.json$/u.test(name));
+  if (terminalNames.length === 0) return null;
+  if (terminalNames.length !== 1) throw new Error("production_prior_rollback_history_ambiguous");
+  const abandoned = readCanonical(root, terminalNames[0]!, validateProductionOperationTerminalAbandonedV2);
+  if (terminalNames[0] !== `production-operation-terminal-abandoned-${abandoned.value.operationId}.json`
+      || abandoned.value.operationKind !== "rollback" || abandoned.value.capability !== "cleanup_only"
+      || abandoned.value.claimSha256 === null || abandoned.value.authorityConsumptionSha256 === null) {
+    throw new Error("production_prior_rollback_history_invalid");
+  }
+  const cleanup = readCanonical(root, `production-operation-terminal-cleanup-${abandoned.value.operationId}.json`,
+    validateProductionOperationTerminalCleanupV2);
+  if (cleanup.value.operationId !== abandoned.value.operationId || cleanup.value.operationKind !== "rollback"
+      || cleanup.value.capability !== "cleanup_only" || cleanup.value.terminalStateSha256 !== abandoned.sha256
+      || cleanup.value.removedLeaseSha256 !== abandoned.value.finalLeaseSha256) {
+    throw new Error("production_prior_rollback_cleanup_invalid");
+  }
+  const stepDirectory = `production-operation-steps/${abandoned.value.operationId}`;
+  const stepRoot = nestedArtifactDirectory(root, stepDirectory);
+  const receiptEntries = stepRoot === null ? [] : readdirSync(stepRoot, { withFileTypes: true });
+  if (receiptEntries.some((entry) => !entry.isFile()
+      || !/^\d+-[a-z0-9_]+-v2\.json$/u.test(entry.name))) {
+    throw new Error("production_prior_rollback_step_invalid");
+  }
+  const receiptNames = receiptEntries.map((entry) => entry.name);
+  const receipts = receiptNames.map((name) => ({ name, ...readCanonical(root, `${stepDirectory}/${name}`,
+    validateProductionOrchestrationStepReceiptV2) })).sort((a, b) => a.value.sequence - b.value.sequence);
+  if (receipts.some((receipt, index) => receipt.value.operationId !== abandoned.value.operationId
+      || receipt.value.orchestration !== "rollback" || receipt.value.capability !== "effect_capable"
+      || receipt.value.operationClaimSha256 !== abandoned.value.claimSha256
+      || receipt.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+      || receipt.value.sequence !== index + 1
+      || receipt.name !== `${receipt.value.sequence}-${receipt.value.stepId}-v2.json`)) {
+    throw new Error("production_prior_rollback_step_binding_invalid");
+  }
+  const refs = receipts.map(({ value, sha256 }) => ({ relativePath:
+    `${stepDirectory}/${value.sequence}-${value.stepId}-v2.json`, sha256 }));
+  if (releaseSha256V2(canonicalBytesV2(refs)) !== abandoned.value.completedStepReceiptSetSha256) {
+    throw new Error("production_prior_rollback_step_set_invalid");
+  }
+  const intentDirectory = `production-operation-step-intents/${abandoned.value.operationId}`;
+  const intentRoot = nestedArtifactDirectory(root, intentDirectory);
+  const intentEntries = intentRoot === null ? [] : readdirSync(intentRoot, { withFileTypes: true });
+  if (intentEntries.some((entry) => !entry.isFile()
+      || !/^\d+-[a-z0-9_]+-1-v2\.json$/u.test(entry.name))) {
+    throw new Error("production_prior_rollback_intent_invalid");
+  }
+  const intentNames = intentEntries.map((entry) => entry.name);
+  const intents = intentNames.map((name) => ({ name, ...readCanonical(root, `${intentDirectory}/${name}`,
+    validateProductionOrchestrationStepIntentV2) }));
+  if (intents.some((intent) => intent.value.operationId !== abandoned.value.operationId
+      || intent.value.orchestration !== "rollback"
+      || intent.value.operationClaimSha256 !== abandoned.value.claimSha256
+      || intent.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+      || intent.name !== `${intent.value.sequence}-${intent.value.stepId}-1-v2.json`
+      || intent.value.relativePath !== `${intentDirectory}/${intent.name}`)) {
+    throw new Error("production_prior_rollback_intent_binding_invalid");
+  }
+  const receiptsBySequence = new Map(receipts.map((receipt) => [receipt.value.sequence, receipt]));
+  const orphanIntents = intents.filter((intent) => !receiptsBySequence.has(intent.value.sequence));
+  if (orphanIntents.length > 1 || orphanIntents.some((intent) => intent.value.sequence !== receipts.length + 1)) {
+    throw new Error("production_prior_rollback_uncertain_intent_invalid");
+  }
+  for (const intent of intents) {
+    const receipt = receiptsBySequence.get(intent.value.sequence);
+    if (receipt && (receipt.value.executionKind !== "external_effect"
+        || receipt.value.stepIntentRelativePath !== intent.value.relativePath
+        || receipt.value.stepIntentSha256 !== intent.sha256)) {
+      throw new Error("production_prior_rollback_receipt_intent_invalid");
+    }
+  }
+  const stepIds = new Set([...receipts.map((receipt) => String(receipt.value.stepId)),
+    ...orphanIntents.map((intent) => String(intent.value.stepId))]);
+  const orderedStepIds = [...receipts.map((receipt) => String(receipt.value.stepId)),
+    ...orphanIntents.map((intent) => String(intent.value.stepId))];
+  const rollbackSequences = [
+    ["verify_failure", "restart_previous", "prove_no_candidate_start", "rollback_runtime_checks"],
+    ["verify_failure", "stop_candidate", "start_previous", "rollback_runtime_checks"]
+  ];
+  if (!rollbackSequences.some((sequence) => orderedStepIds.every((stepId, index) => sequence[index] === stepId))) {
+    throw new Error("production_prior_rollback_step_sequence_invalid");
+  }
+  return {
+    operationId: abandoned.value.operationId,
+    claimSha256: abandoned.value.claimSha256,
+    authorityConsumptionSha256: abandoned.value.authorityConsumptionSha256,
+    stepIds,
+    proofSha256(stepId) {
+      const intent = intents.find((item) => item.value.stepId === stepId);
+      if (!intent) return null;
+      const commandId = RUNTIME_COMMAND[stepId]!;
+      const manager = actualRuntimeEvidence(root, commandId, stepId, {
+        operationId: abandoned.value.operationId,
+        operationClaimSha256: abandoned.value.claimSha256!,
+        intentSha256: intent.sha256
+      });
+      if (manager) return manager.sha256;
+      const reconciliationRoot = nestedArtifactDirectory(root,
+        `production-runtime-effect-reconciliations/${abandoned.value.operationId}`);
+      if (reconciliationRoot === null) return null;
+      const matches = readdirSync(reconciliationRoot).filter((name) => name.endsWith(".json")).map((name) =>
+        readCanonical(root, `production-runtime-effect-reconciliations/${abandoned.value.operationId}/${name}`,
+          validateRuntimeEffectReconciliationEvidenceV2)).filter((item) =>
+        item.value.operationId === abandoned.value.operationId && item.value.stepId === stepId
+        && item.value.intentSha256 === intent.sha256 && item.value.operationClaimSha256 === abandoned.value.claimSha256
+        && item.value.authorityConsumptionSha256 === abandoned.value.authorityConsumptionSha256);
+      if (matches.length > 1) throw new Error("production_prior_rollback_reconciliation_ambiguous");
+      return matches[0]?.sha256 ?? null;
+    }
+  };
+}
+
+async function deriveRollbackContext(root: string, operationId: string) {
   const failure = readCanonical(root, "production-failure-evidence-v2.json", validateProductionFailureEvidenceV2);
+  const store = new ProductionOperationStoreV2(root);
+  const before = store.assertOwnedAndWithinBounds(operationId, new Date().toISOString());
+  if (before.lease.operationKind !== "rollback") throw new Error("production_rollback_operation_binding_invalid");
+  const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+  const task0b = loadTask0B(root);
+  if (failure.value.candidateSha !== before.lease.candidateSha
+      || failure.value.sourceManifestSha256 !== before.lease.sourceManifestSha256
+      || failure.value.releaseFreezeIdentitySha256 !== freeze.sha256
+      || task0b.candidateSha !== before.lease.candidateSha
+      || freeze.value.releaseGenerationId !== before.lease.releaseGenerationId) {
+    throw new Error("production_rollback_failure_operation_binding_invalid");
+  }
+  const failedBinding = failedOperationBinding(root, failure.value);
+  const existingPlanNames = readdirSync(root).filter((name) =>
+    name.startsWith(`production-rollback-topology-${operationId}-`) && name.endsWith(".json"));
+  if (existingPlanNames.length > 1) throw new Error("production_rollback_topology_plan_ambiguous");
+  if (existingPlanNames.length === 1) {
+    const existing = readCanonical(root, existingPlanNames[0]!, validateRuntimeRollbackTopologyEvidenceV2);
+    if (existingPlanNames[0] !== `production-rollback-topology-${operationId}-${existing.value.topologySnapshotSha256}.json`
+        || existing.value.failureEvidenceSha256 !== failure.sha256
+        || existing.value.releaseFreezeIdentitySha256 !== freeze.sha256) {
+      throw new Error("production_rollback_topology_plan_binding_invalid");
+    }
+    assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(existing.value, before);
+    return { window: existing.value.selectedWindow, failureEvidenceSha256: failure.sha256,
+      previousRuntimeIdentitySha256: shaFromTask0B(root, "previousRuntimeIdentity"),
+      topologyEvidence: existing.value };
+  }
+  const hardDeadlineAt = productionObservationHardDeadlineV2(before.lease.operationDeadlineAt,
+    before.claim.authorityConsumption.expiresAt);
+  const topology = await observeTask0BRuntimeTopologySnapshotV2({ hardDeadlineAt, configuredTimeoutMs: 10_000 });
+  const after = store.assertOwnedAndWithinBounds(operationId, new Date().toISOString());
+  if (after.leaseSha256 !== before.leaseSha256 || after.lease.leaseEpoch !== before.lease.leaseEpoch) {
+    throw new Error("production_rollback_observation_lease_changed");
+  }
+  const targets = rollbackTopologyTargets(root);
+  const topologyState = classifyRuntimeRollbackTopologyV2(topology, targets.previous, targets.candidate);
+  if (topologyState === null) throw new Error("production_rollback_topology_ambiguous");
+  const snapshotSha256 = releaseSha256V2(canonicalBytesV2(topology));
   let window: ProtectedRollbackWindowV2;
   const attemptedExternalEffect = "attemptedExternalEffect" in failure.value
     ? failure.value.attemptedExternalEffect : failure.value.priorAttemptedExternalEffect;
-  if (failure.value.failedGateId === "G13_PRODUCTION_MIGRATION"
-      || (failure.value.failedGateId === "G14_PRODUCTION_ROLLOUT" && !attemptedExternalEffect)) {
+  if (!attemptedExternalEffect) {
+    if (topologyState !== "previous_singleton" || failure.value.failedGateId === "G15_PRODUCTION_CANARY") {
+      throw new Error("production_rollback_history_topology_conflict");
+    }
     window = { kind: "previous_runtime_retained", failedGateId: failure.value.failedGateId };
+  } else if (topologyState === "candidate_singleton") {
+    if (failure.value.failedGateId === "G13_PRODUCTION_MIGRATION") {
+      throw new Error("production_rollback_history_topology_conflict");
+    }
+    const candidateStart = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
+      failedBinding.operationClaimSha256, "start_candidate");
+    if (!candidateStart) throw new Error("production_rollback_candidate_history_missing");
+    window = { kind: "candidate_replaced_with_previous", failedGateId: failure.value.failedGateId,
+      candidateStartEvidenceSha256: candidateStart.sha256 };
+  } else if (topologyState === "none") {
+    const previousStop = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
+      failedBinding.operationClaimSha256, "stop_previous");
+    if (!previousStop || failure.value.failedGateId !== "G14_PRODUCTION_ROLLOUT") {
+      throw new Error("production_rollback_previous_stop_history_missing");
+    }
+    window = { kind: "previous_runtime_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
+      previousStopEvidenceSha256: previousStop.sha256 };
   } else {
-    const candidateStart = actualRuntimeEvidence(root, "runtime_manager_start_candidate");
-    if (candidateStart) {
-      window = { kind: "candidate_replaced_with_previous", failedGateId: failure.value.failedGateId,
-        candidateStartEvidenceSha256: candidateStart.sha256 };
+    const priorRollback = loadPriorAbandonedRollbackHistory(root);
+    if (priorRollback?.stepIds.has("start_previous")) {
+      const candidateStart = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
+        failedBinding.operationClaimSha256, "start_candidate");
+      const candidateStopSha256 = priorRollback.proofSha256("stop_candidate") ?? snapshotSha256;
+      const previousStartSha256 = priorRollback.proofSha256("start_previous") ?? snapshotSha256;
+      if (!candidateStart || !priorRollback.stepIds.has("stop_candidate")) {
+        throw new Error("production_rollback_completed_history_missing");
+      }
+      if (failure.value.failedGateId === "G13_PRODUCTION_MIGRATION") {
+        throw new Error("production_rollback_history_topology_conflict");
+      }
+      window = { kind: "candidate_already_replaced_with_previous", failedGateId: failure.value.failedGateId,
+        candidateStartEvidenceSha256: candidateStart.sha256,
+        candidateStopEvidenceSha256: candidateStopSha256,
+        previousStartEvidenceSha256: previousStartSha256 };
+    } else if (priorRollback?.stepIds.has("restart_previous")
+        && failure.value.failedGateId === "G14_PRODUCTION_ROLLOUT") {
+      const previousStop = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
+        failedBinding.operationClaimSha256, "stop_previous");
+      if (!previousStop) throw new Error("production_rollback_completed_history_missing");
+      window = { kind: "previous_already_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
+        previousStopEvidenceSha256: previousStop.sha256,
+        previousStartEvidenceSha256: priorRollback.proofSha256("restart_previous") ?? snapshotSha256 };
     } else {
-      const previousStop = actualRuntimeEvidence(root, "runtime_manager_stop_previous");
-      if (!previousStop) throw new Error("production_rollback_window_uncertain");
-      window = { kind: "previous_runtime_restarted_without_candidate", failedGateId: "G14_PRODUCTION_ROLLOUT",
-        previousStopEvidenceSha256: previousStop.sha256 };
+      throw new Error("production_rollback_completed_history_missing");
     }
   }
+  const evidence = createRuntimeRollbackTopologyEvidenceV2({
+    version: "runtime-rollback-topology-evidence-v2",
+    operationId,
+    operationClaimSha256: after.claimSha256,
+    authorityConsumptionSha256: after.claim.authorityConsumptionSha256,
+    operationLeaseSha256: after.leaseSha256,
+    operationLeaseEpoch: after.lease.leaseEpoch,
+    authorityExpiresAt: after.claim.authorityConsumption.expiresAt,
+    operationDeadlineAt: after.lease.operationDeadlineAt,
+    candidateSha: after.lease.candidateSha,
+    releaseGenerationId: after.lease.releaseGenerationId,
+    sourceManifestSha256: after.lease.sourceManifestSha256,
+    releaseFreezeIdentitySha256: freeze.sha256,
+    failureEvidenceSha256: failure.sha256,
+    topology,
+    topologySnapshotSha256: snapshotSha256,
+    previousTarget: targets.previous,
+    previousTargetSha256: releaseSha256V2(canonicalBytesV2(targets.previous)),
+    candidateTarget: targets.candidate,
+    candidateTargetSha256: releaseSha256V2(canonicalBytesV2(targets.candidate)),
+    topologyState,
+    selectedWindow: window,
+    selectedWindowSha256: releaseSha256V2(canonicalBytesV2(window)),
+    observedAt: topology.observedAt
+  });
+  store.persistExclusive("production_rollback_topology_reconciliation",
+    `production-rollback-topology-${operationId}-${snapshotSha256}.json`, {
+      ...evidence
+    });
   return { window, failureEvidenceSha256: failure.sha256,
-    previousRuntimeIdentitySha256: shaFromTask0B(root, "previousRuntimeIdentity") };
+    previousRuntimeIdentitySha256: shaFromTask0B(root, "previousRuntimeIdentity"), topologyEvidence: evidence };
 }
 
-function loadRecoverySource(root: string) {
+async function assertFreshRollbackTopologyState(
+  root: string,
+  operationId: string,
+  evidence: RuntimeRollbackTopologyEvidenceV2,
+  expectedState: "none" | "previous_singleton" | "candidate_singleton"
+): Promise<void> {
+  const store = new ProductionOperationStoreV2(root);
+  const before = store.assertOwnedAndWithinBounds(operationId, new Date().toISOString());
+  assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(evidence, before);
+  const topology = await observeTask0BRuntimeTopologySnapshotV2({
+    hardDeadlineAt: productionObservationHardDeadlineV2(before.lease.operationDeadlineAt,
+      before.claim.authorityConsumption.expiresAt),
+    configuredTimeoutMs: 10_000
+  });
+  const state = classifyRuntimeRollbackTopologyV2(topology, evidence.previousTarget, evidence.candidateTarget);
+  if (state !== expectedState) throw new Error("production_rollback_effect_topology_changed");
+  const after = store.assertOwnedAndWithinBounds(operationId, new Date().toISOString());
+  if (after.leaseSha256 !== before.leaseSha256 || after.lease.leaseEpoch !== before.lease.leaseEpoch) {
+    throw new Error("production_rollback_effect_lease_changed");
+  }
+}
+
+export function assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(
+  evidence: RuntimeRollbackTopologyEvidenceV2,
+  current: Readonly<{
+    lease: Readonly<{ operationId: string; candidateSha: string; releaseGenerationId: string;
+      sourceManifestSha256: string; operationDeadlineAt: string }>;
+    leaseSha256: string;
+    claim: Readonly<{ authorityConsumptionSha256: string;
+      authorityConsumption: Readonly<{ expiresAt: string }> }>;
+    claimSha256: string;
+    lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
+  }>
+): void {
+  validateRuntimeRollbackTopologyEvidenceV2(evidence, {
+    operationId: current.lease.operationId,
+    operationClaimSha256: current.claimSha256,
+    authorityConsumptionSha256: current.claim.authorityConsumptionSha256,
+    authorityExpiresAt: current.claim.authorityConsumption.expiresAt,
+    operationDeadlineAt: current.lease.operationDeadlineAt,
+    candidateSha: current.lease.candidateSha,
+    releaseGenerationId: current.lease.releaseGenerationId,
+    sourceManifestSha256: current.lease.sourceManifestSha256
+  });
+  if (!current.lineageLeaseTips.some((tip) => tip.sha256 === evidence.operationLeaseSha256
+      && tip.epoch === evidence.operationLeaseEpoch)) {
+    throw new Error("production_rollback_topology_lease_lineage_invalid");
+  }
+}
+
+export function loadRecoverySource(root: string) {
   const terminalFiles = readdirSync(root).filter((name) => /^production-operation-terminal-abandoned-production-(?:rollout|canary)-[0-9a-f]{64}\.json$/u.test(name));
   if (terminalFiles.length !== 1) throw new Error("production_recovery_source_ambiguous");
   const abandoned = readCanonical(root, terminalFiles[0]!, validateProductionOperationTerminalAbandonedV2);
-  if (abandoned.value.reason === "ownership_protocol_failure") throw new Error("production_recovery_reason_forbidden");
+  if (terminalFiles[0] !== `production-operation-terminal-abandoned-${abandoned.value.operationId}.json`
+      || abandoned.value.reason === "ownership_protocol_failure"
+      || abandoned.value.capability !== "cleanup_only"
+      || abandoned.value.cleanupOnlyTakeoverSha256 === null
+      || (abandoned.value.operationKind !== "rollout" && abandoned.value.operationKind !== "canary")) {
+    throw new Error("production_recovery_source_binding_invalid");
+  }
   const cleanupFile = `production-operation-terminal-cleanup-${abandoned.value.operationId}.json`;
   const cleanup = readCanonical(root, cleanupFile, validateProductionOperationTerminalCleanupV2);
-  if (cleanup.value.terminalStateSha256 !== abandoned.sha256) throw new Error("production_recovery_cleanup_binding_invalid");
+  if (cleanup.value.terminalStateSha256 !== abandoned.sha256
+      || cleanup.value.operationId !== abandoned.value.operationId
+      || cleanup.value.operationKind !== abandoned.value.operationKind
+      || cleanup.value.capability !== abandoned.value.capability
+      || cleanup.value.removedLeaseSha256 !== abandoned.value.finalLeaseSha256) {
+    throw new Error("production_recovery_cleanup_binding_invalid");
+  }
+  const recoveryLineage = new ProductionOperationStoreV2(root)
+    .verifyAbandonedRecoverySourceLineage(abandoned.value);
+  if (recoveryLineage.claimSha256 !== abandoned.value.claimSha256
+      || recoveryLineage.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256) {
+    throw new Error("production_recovery_source_lineage_binding_invalid");
+  }
+  const leaseTips = recoveryLineage.leaseTips;
   const directory = `production-operation-steps/${abandoned.value.operationId}`;
   let stepRoot: string;
   try { stepRoot = dirname(safeArtifactRelativePath(root, `${directory}/probe.json`)); }
@@ -1363,11 +1918,39 @@ function loadRecoverySource(root: string) {
     if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
     stepRoot = resolve(root, "__missing_production_step_directory__");
   }
-  const receipts = existsSync(stepRoot) ? readdirSync(stepRoot).filter((name) => /^\d+-[a-z0-9_]+-v2\.json$/u.test(name)) : [];
-  const completedStepReceiptPrefix = receipts.map((name) => {
+  const receiptEntries = existsSync(stepRoot) ? readdirSync(stepRoot, { withFileTypes: true }) : [];
+  if (receiptEntries.some((entry) => !entry.isFile()
+      || !/^\d+-[a-z0-9_]+-v2\.json$/u.test(entry.name))) {
+    throw new Error("production_recovery_step_artifact_invalid");
+  }
+  const receiptNames = receiptEntries.map((entry) => entry.name);
+  const allowedSteps = RECOVERY_SOURCE_STEPS[abandoned.value.operationKind as "rollout" | "canary"];
+  const receiptRecords = receiptNames.map((name) => {
     const receipt = readCanonical(root, `${directory}/${name}`, validateProductionOrchestrationStepReceiptV2);
-    return { sequence: receipt.value.sequence, stepId: receipt.value.stepId, receiptSha256: receipt.sha256 };
-  }).sort((left, right) => left.sequence - right.sequence);
+    if (receipt.value.operationId !== abandoned.value.operationId
+        || receipt.value.orchestration !== abandoned.value.operationKind
+        || receipt.value.capability !== "effect_capable"
+        || receipt.value.operationClaimSha256 !== abandoned.value.claimSha256
+        || receipt.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+        || name !== `${receipt.value.sequence}-${receipt.value.stepId}-v2.json`
+        || receipt.value.stepId !== allowedSteps[receipt.value.sequence - 1]
+        || !leaseTips.has(`${receipt.value.operationLeaseEpoch}:${receipt.value.operationLeaseSha256}`)) {
+      throw new Error("production_recovery_step_binding_invalid");
+    }
+    return { ...receipt, name };
+  }).sort((left, right) => left.value.sequence - right.value.sequence);
+  if (receiptRecords.some((receipt, index) => receipt.value.sequence !== index + 1)) {
+    throw new Error("production_recovery_step_prefix_invalid");
+  }
+  const receiptRefs = receiptRecords.map(({ value, sha256 }) => ({
+    relativePath: `${directory}/${value.sequence}-${value.stepId}-v2.json`, sha256
+  }));
+  if (releaseSha256V2(canonicalBytesV2(receiptRefs)) !== abandoned.value.completedStepReceiptSetSha256) {
+    throw new Error("production_recovery_completed_step_set_binding_invalid");
+  }
+  const completedStepReceiptPrefix = receiptRecords.map(({ value, sha256 }) => ({
+    sequence: value.sequence, stepId: value.stepId, receiptSha256: sha256
+  }));
   const prefixSha = releaseSha256V2(canonicalBytesV2(completedStepReceiptPrefix));
   const nextSequence = completedStepReceiptPrefix.length + 1;
   const intentDirectory = `production-operation-step-intents/${abandoned.value.operationId}`;
@@ -1377,12 +1960,52 @@ function loadRecoverySource(root: string) {
     if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
     intentRoot = resolve(root, "__missing_production_intent_directory__");
   }
-  const intentNames = existsSync(intentRoot) ? readdirSync(intentRoot).filter((name) => name.startsWith(`${nextSequence}-`)) : [];
-  if (intentNames.length > 1) throw new Error("production_recovery_uncertain_marker_ambiguous");
+  const intentEntries = existsSync(intentRoot) ? readdirSync(intentRoot, { withFileTypes: true }) : [];
+  if (intentEntries.some((entry) => !entry.isFile()
+      || !/^\d+-[a-z0-9_]+-1-v2\.json$/u.test(entry.name))) {
+    throw new Error("production_recovery_intent_artifact_invalid");
+  }
+  const intentNames = intentEntries.map((entry) => entry.name);
+  const intents = intentNames.map((name) => {
+    const intent = readCanonical(root, `${intentDirectory}/${name}`, validateProductionOrchestrationStepIntentV2);
+    if (intent.value.operationId !== abandoned.value.operationId
+        || intent.value.orchestration !== abandoned.value.operationKind
+        || intent.value.operationClaimSha256 !== abandoned.value.claimSha256
+        || intent.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+        || name !== `${intent.value.sequence}-${intent.value.stepId}-1-v2.json`
+        || intent.value.relativePath !== `${intentDirectory}/${name}`
+        || intent.value.stepId !== allowedSteps[intent.value.sequence - 1]
+        || !leaseTips.has(`${intent.value.currentOperationLeaseEpoch}:${intent.value.currentOperationLeaseSha256}`)) {
+      throw new Error("production_recovery_intent_binding_invalid");
+    }
+    return { ...intent, name };
+  });
+  const receiptBySequence = new Map(receiptRecords.map((receipt) => [receipt.value.sequence, receipt]));
+  for (const receipt of receiptRecords) {
+    if (receipt.value.executionKind !== "external_effect") continue;
+    const matching = intents.filter((intent) => intent.value.sequence === receipt.value.sequence);
+    if (matching.length !== 1 || receipt.value.stepIntentRelativePath !== matching[0]!.value.relativePath
+        || receipt.value.stepIntentSha256 !== matching[0]!.sha256) {
+      throw new Error("production_recovery_receipt_intent_binding_invalid");
+    }
+  }
+  for (const intent of intents) {
+    const receipt = receiptBySequence.get(intent.value.sequence);
+    if (receipt !== undefined && (receipt.value.executionKind !== "external_effect"
+        || receipt.value.stepIntentRelativePath !== intent.value.relativePath
+        || receipt.value.stepIntentSha256 !== intent.sha256)) {
+      throw new Error("production_recovery_intent_receipt_conflict");
+    }
+  }
+  const orphanIntents = intents.filter((intent) => !receiptBySequence.has(intent.value.sequence));
+  if (orphanIntents.length > 1
+      || orphanIntents.some((intent) => intent.value.sequence !== nextSequence)) {
+    throw new Error("production_recovery_uncertain_marker_ambiguous");
+  }
   let uncertainStepMarker = null;
   let uncertainStepMarkerSha256 = null;
-  if (intentNames.length === 1) {
-    const intent = readCanonical(root, `${intentDirectory}/${intentNames[0]!}`, validateProductionOrchestrationStepIntentV2);
+  if (orphanIntents.length === 1) {
+    const intent = orphanIntents[0]!;
     uncertainStepMarker = { sequence: intent.value.sequence, stepId: intent.value.stepId, attempt: 1 as const,
       stepIntentRelativePath: intent.value.relativePath, stepIntentSha256: intent.sha256,
       externalEffectMayHaveStarted: true as const, observedOutcome: "unknown" as const };
@@ -1409,6 +2032,7 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
   let canaryQueueBaseline: number | null = null;
   let canaryCycleSnapshot: RuntimeCycleSnapshotV2 | null = null;
   let selectedRollbackWindow: ProtectedRollbackWindowV2 | null = null;
+  let selectedRollbackTopologyEvidence: RuntimeRollbackTopologyEvidenceV2 | null = null;
   return {
     now: () => new Date().toISOString(),
     async loadReleaseContext(root) {
@@ -1418,13 +2042,72 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
     },
     async validateStep(input) {
       if (input.artifactRoot !== artifactRoot) throw new Error("production_artifact_root_changed");
+      if (input.operationKind === "rollback"
+          && (input.stepId === "prove_previous_healthy" || input.stepId === "prove_no_candidate_running")) {
+        if (selectedRollbackTopologyEvidence === null) {
+          throw new Error("production_rollback_topology_evidence_missing");
+        }
+        await assertFreshRollbackTopologyState(artifactRoot, input.operationId,
+          selectedRollbackTopologyEvidence, "previous_singleton");
+      }
       if (input.operationKind === "canary" && input.stepId === "verify_g14") {
         canaryStartedAt = Date.now();
         canaryQueueBaseline = null;
         canaryCycleSnapshot = null;
       }
+      if (input.operationKind === "canary" && input.stepId === "observe_cycle_1"
+          && canaryStartedAt === null) {
+        const operationStore = new ProductionOperationStoreV2(artifactRoot);
+        const operation = operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+        const prefix = operationStore.loadCompletedStepPrefix(input.operationId, new Date().toISOString());
+        if (prefix.length !== 1 || prefix[0]?.receipt.stepId !== "verify_g14") {
+          throw new Error("production_canary_cycle_order_invalid");
+        }
+        const relativePath = `production-canary-resume-state-${input.operationId}.json`;
+        let statePath: string | null = null;
+        try { statePath = safeArtifactRelativePath(artifactRoot, relativePath); }
+        catch (error) {
+          if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
+        }
+        const storedValue = statePath !== null && existsSync(statePath)
+          ? readCanonical(artifactRoot, relativePath, validateCanaryResumeStateV2).value : null;
+        const completedPrefix = prefix.map((record) => ({ stepId: record.receipt.stepId,
+          startedAt: record.receipt.startedAt, finishedAt: record.receipt.finishedAt }));
+        const resumedLeaf = await selectCanaryCycleOneResumeBeforeObservationV2({
+          storedState: storedValue, operationId: input.operationId,
+          operationClaimSha256: operation.claimSha256, inputSha256: input.inputSha256,
+          completedPrefix, observeOnlyWhenMissing: async () => null
+        });
+        if (resumedLeaf !== null) {
+          const restored = restoreCanaryResumeStateV2({ value: storedValue,
+            operationId: input.operationId, operationClaimSha256: operation.claimSha256,
+            inputSha256: input.inputSha256, completedPrefix });
+          canaryStartedAt = Date.parse(restored.canaryStartedAt);
+          canaryQueueBaseline = restored.queueBaseline;
+          canaryCycleSnapshot = restored.cycleSnapshot;
+          return resumedLeaf;
+        }
+        canaryStartedAt = Date.parse(prefix[0].receipt.startedAt);
+      }
       if (input.operationKind === "canary" && input.stepId === "observe_cycle_2") {
-        if (canaryStartedAt === null) throw new Error("production_canary_cycle_order_invalid");
+        if (canaryStartedAt === null) {
+          const operationStore = new ProductionOperationStoreV2(artifactRoot);
+          const operation = operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+          const prefix = operationStore.loadCompletedStepPrefix(input.operationId, new Date().toISOString());
+          if (prefix.length < 2 || prefix[0]?.receipt.stepId !== "verify_g14"
+              || prefix[1]?.receipt.stepId !== "observe_cycle_1") {
+            throw new Error("production_canary_cycle_order_invalid");
+          }
+          const stored = readCanonical(artifactRoot,
+            `production-canary-resume-state-${input.operationId}.json`, validateCanaryResumeStateV2);
+          const restored = restoreCanaryResumeStateV2({ value: stored.value,
+            operationId: input.operationId, operationClaimSha256: operation.claimSha256,
+            completedPrefix: prefix.map((record) => ({ stepId: record.receipt.stepId,
+              startedAt: record.receipt.startedAt, finishedAt: record.receipt.finishedAt })) });
+          canaryStartedAt = Date.parse(restored.canaryStartedAt);
+          canaryQueueBaseline = restored.queueBaseline;
+          canaryCycleSnapshot = restored.cycleSnapshot;
+        }
         while (Date.now() - canaryStartedAt < 15 * 60_000) {
           await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(30_000,
           15 * 60_000 - (Date.now() - canaryStartedAt!))));
@@ -1456,27 +2139,55 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
         canaryObservation && (input.stepId === "observe_cycle_2" || input.stepId === "bounded_runtime_checks"),
         observationHardDeadlineAt);
       operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
-      if (input.stepId === "observe_cycle_1") canaryQueueBaseline = observed.queuePopulationCount;
-      if (input.stepId === "observe_cycle_1") canaryCycleSnapshot = observed.cycleSnapshot;
       const task0b = loadTask0B(artifactRoot);
       const verifiedChecks = isRolloutTerminal || isCanaryTerminal || isRollbackTerminal
         ? deriveVerifiedProductionChecksV2(liveKind, observed.proof, {
           candidateSha: task0b.candidateSha,
           previousSha: task0b.previousRuntimeSha
         }) : undefined;
-      return valueCapture(input, { basicOutputSha256: basic.outputSha256, proof: observed.proof }, verifiedChecks);
+      const result = valueCapture(input,
+        { basicOutputSha256: basic.outputSha256, proof: observed.proof }, verifiedChecks);
+      if (input.stepId === "observe_cycle_1") {
+        if (canaryStartedAt === null || observed.cycleSnapshot === null) {
+          throw new Error("production_canary_resume_state_unavailable");
+        }
+        canaryQueueBaseline = observed.queuePopulationCount;
+        canaryCycleSnapshot = observed.cycleSnapshot;
+        operationStore.persistExclusive("production_canary_resume_state",
+          `production-canary-resume-state-${input.operationId}.json`, validateCanaryResumeStateV2({
+            version: "production-canary-resume-state-v2",
+            operationId: input.operationId,
+            operationClaimSha256: operation.claimSha256,
+            canaryStartedAt: new Date(canaryStartedAt).toISOString(),
+            queueBaseline: canaryQueueBaseline,
+            cycleSnapshot: canaryCycleSnapshot,
+            leafResult: result,
+            recordedAt: new Date().toISOString()
+          }));
+      }
+      return result;
     },
     async prepareEffect(input) {
       const commandId = RUNTIME_COMMAND[input.stepId];
       if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
       return runtimeEffectIdentity(input, commandId);
     },
-    executeEffect: (input) => executeRuntimeEffect(artifactRoot, input),
+    async executeEffect(input) {
+      if (input.operationKind === "rollback") {
+        if (selectedRollbackTopologyEvidence === null) {
+          throw new Error("production_rollback_topology_evidence_missing");
+        }
+        await assertFreshRollbackTopologyState(artifactRoot, input.operationId, selectedRollbackTopologyEvidence,
+          input.stepId === "stop_candidate" ? "candidate_singleton" : "none");
+      }
+      return executeRuntimeEffect(artifactRoot, input);
+    },
     reconcileEffect: (input) => reconcileRuntimeEffect(artifactRoot, input),
-    async resolveRollbackContext(root) {
-      if (root !== artifactRoot) throw new Error("production_artifact_root_changed");
-      const context = deriveRollbackContext(root);
+    async resolveRollbackContext(input) {
+      if (input.artifactRoot !== artifactRoot) throw new Error("production_artifact_root_changed");
+      const context = await deriveRollbackContext(input.artifactRoot, input.operationId);
       selectedRollbackWindow = context.window;
+      selectedRollbackTopologyEvidence = context.topologyEvidence;
       return context;
     },
     async loadRecoveryContext(root) {

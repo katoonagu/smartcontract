@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
 import {
+  classifyRuntimeRollbackTopologyV2,
+  createRuntimeRollbackTopologyEvidenceV2,
   resolveRuntimeEffectReconciliationV2,
   validateRuntimeEffectReconciliationEvidenceV2,
   validateRuntimeTopologySnapshotV2,
+  validateRuntimeRollbackTopologyEvidenceV2,
   type RuntimeTopologyCandidateV2
 } from "../../src/release/runtimeEffectReconciliationV2";
+import { assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2 } from
+  "../../src/release/productionOperationAdaptersV2";
 
 const SHA40 = "a".repeat(40);
 const SHA256 = "b".repeat(64);
@@ -90,6 +95,91 @@ function expectedBinding(input: ReturnType<typeof reconciliationInput>, topology
 }
 
 describe("runtime effect crash reconciliation", () => {
+  it("classifies only exact none, previous singleton or candidate singleton rollback topology", () => {
+    const previous = { ...reconciliationInput("start_previous").target,
+      runtimeSha: "c".repeat(40), runtimeLabel: `master-${"c".repeat(8)}`,
+      worktreePathFingerprintSha256: "d".repeat(64),
+      entrypointPathFingerprintSha256: "e".repeat(64) };
+    const next = reconciliationInput("start_candidate").target;
+    const previousCandidate = candidate({ runtimeSha: previous.runtimeSha, runtimeLabel: previous.runtimeLabel,
+      processId: 4243,
+      worktreePathFingerprintSha256: previous.worktreePathFingerprintSha256,
+      entrypointPathFingerprintSha256: previous.entrypointPathFingerprintSha256 });
+    expect(classifyRuntimeRollbackTopologyV2(topology([]), previous, next)).toBe("none");
+    expect(classifyRuntimeRollbackTopologyV2(topology([previousCandidate]), previous, next))
+      .toBe("previous_singleton");
+    expect(classifyRuntimeRollbackTopologyV2(topology([candidate()]), previous, next))
+      .toBe("candidate_singleton");
+    expect(classifyRuntimeRollbackTopologyV2(topology([candidate(), previousCandidate]), previous, next)).toBeNull();
+    expect(classifyRuntimeRollbackTopologyV2(topology([candidate({ runtimeSha: "f".repeat(40) })]),
+      previous, next)).toBeNull();
+  });
+
+  it("binds rollback topology evidence to the claimed operation, exact snapshot, identities and compatible window", () => {
+    const previous = { ...reconciliationInput("start_previous").target,
+      runtimeSha: "c".repeat(40), runtimeLabel: `master-${"c".repeat(8)}`,
+      worktreePathFingerprintSha256: "d".repeat(64),
+      entrypointPathFingerprintSha256: "e".repeat(64) };
+    const next = reconciliationInput("start_candidate").target;
+    const snapshot = topology([candidate()]);
+    const window = { kind: "candidate_replaced_with_previous" as const,
+      failedGateId: "G14_PRODUCTION_ROLLOUT" as const, candidateStartEvidenceSha256: "f".repeat(64) };
+    const withoutBinding = {
+      version: "runtime-rollback-topology-evidence-v2" as const,
+      operationId: `production-rollback-${"1".repeat(64)}`,
+      operationClaimSha256: "2".repeat(64), authorityConsumptionSha256: "3".repeat(64),
+      operationLeaseSha256: "4".repeat(64), operationLeaseEpoch: 2,
+      authorityExpiresAt: "2026-07-19T00:10:00.000Z",
+      operationDeadlineAt: "2026-07-19T00:20:00.000Z",
+      candidateSha: SHA40, releaseGenerationId: "generation-123456",
+      sourceManifestSha256: "5".repeat(64), releaseFreezeIdentitySha256: "6".repeat(64),
+      failureEvidenceSha256: "7".repeat(64), topology: snapshot,
+      topologySnapshotSha256: releaseSha256V2(canonicalBytesV2(snapshot)),
+      previousTarget: previous, previousTargetSha256: releaseSha256V2(canonicalBytesV2(previous)),
+      candidateTarget: next, candidateTargetSha256: releaseSha256V2(canonicalBytesV2(next)),
+      topologyState: "candidate_singleton" as const,
+      selectedWindow: window, selectedWindowSha256: releaseSha256V2(canonicalBytesV2(window)),
+      observedAt: OBSERVED_AT
+    };
+    const evidence = createRuntimeRollbackTopologyEvidenceV2(withoutBinding);
+    expect(validateRuntimeRollbackTopologyEvidenceV2(evidence, {
+      operationId: withoutBinding.operationId,
+      operationClaimSha256: withoutBinding.operationClaimSha256,
+      topologySnapshotSha256: withoutBinding.topologySnapshotSha256,
+      selectedWindowSha256: withoutBinding.selectedWindowSha256
+    })).toEqual(evidence);
+    expect(() => validateRuntimeRollbackTopologyEvidenceV2(evidence, {
+      operationId: `production-rollback-${"9".repeat(64)}`
+    })).toThrow(/expected_binding/i);
+    expect(() => createRuntimeRollbackTopologyEvidenceV2({ ...withoutBinding,
+      topology: topology([]), topologyState: "candidate_singleton" })).toThrow(/topology_binding/i);
+    expect(() => createRuntimeRollbackTopologyEvidenceV2({ ...withoutBinding,
+      selectedWindow: { kind: "previous_runtime_retained", failedGateId: "G14_PRODUCTION_ROLLOUT" },
+      selectedWindowSha256: releaseSha256V2(canonicalBytesV2({
+        kind: "previous_runtime_retained", failedGateId: "G14_PRODUCTION_ROLLOUT" }))
+    })).toThrow(/topology_binding/i);
+    const current = {
+      lease: { operationId: withoutBinding.operationId, candidateSha: withoutBinding.candidateSha,
+        releaseGenerationId: withoutBinding.releaseGenerationId,
+        sourceManifestSha256: withoutBinding.sourceManifestSha256,
+        operationDeadlineAt: withoutBinding.operationDeadlineAt },
+      leaseSha256: "9".repeat(64),
+      claim: { authorityConsumptionSha256: withoutBinding.authorityConsumptionSha256,
+        authorityConsumption: { expiresAt: withoutBinding.authorityExpiresAt } },
+      claimSha256: withoutBinding.operationClaimSha256,
+      lineageLeaseTips: [
+        { sha256: withoutBinding.operationLeaseSha256, epoch: withoutBinding.operationLeaseEpoch },
+        { sha256: "9".repeat(64), epoch: withoutBinding.operationLeaseEpoch + 1 }
+      ]
+    };
+    expect(() => assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(evidence, current)).not.toThrow();
+    expect(() => assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(evidence, {
+      ...current, lineageLeaseTips: [{ sha256: "9".repeat(64), epoch: withoutBinding.operationLeaseEpoch + 1 }]
+    })).toThrow(/lease_lineage/i);
+    expect(() => assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(evidence, {
+      ...current, claimSha256: "8".repeat(64)
+    })).toThrow(/expected_binding/i);
+  });
   for (const stepId of ["stop_previous", "start_candidate", "stop_candidate", "start_previous",
     "restart_previous"] as const) {
     it(`[PRODUCTION-EFFECT-CRASH-RECONCILE] confirms ${stepId} from one canonical topology snapshot`, () => {

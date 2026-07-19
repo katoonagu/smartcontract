@@ -912,7 +912,7 @@ it("[REQ-38][PRODUCTION-RECOVERY-CANONICAL-BINDINGS] binds every recovery eviden
       operationLeaseSha256: recoveryLeaseSha256, operationLeaseEpoch: 1,
       operationDeadlineAt: t1, inputSha256: "9".repeat(64), outputSha256: "a".repeat(64),
       observedStateSha256: "b".repeat(64), sequence, startedAt: t0, finishedAt: t0,
-      recoveredAfterCrash: false as const, result: "completed" as const,
+      recoveredAfterCrash: false as const, verifiedChecks: null, result: "completed" as const,
       capability: "recovery_only" as const, commandId: "production_recovery" as const,
       redactedTemplateSha256: preclaim.redactedTemplateSha256,
       executionKind: "local_validation" as const, stepIntentRelativePath: null,

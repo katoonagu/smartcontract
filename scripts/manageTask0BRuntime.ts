@@ -369,11 +369,18 @@ export function runtimeGenerationEvidencePath(
   return `runtime-${kind}-evidence-${generationId}-${commandId}-${authoritySha256}.json`;
 }
 
-export function runtimeAuthorityFilename(generationId: string, commandId: RuntimeCommandId): string {
+export function runtimeAuthorityFilename(
+  generationId: string,
+  commandId: RuntimeCommandId,
+  authoritySha256?: string
+): string {
   if (!GENERATION.test(generationId) || !RUNTIME_ACTION_PHASES[commandId]) {
     throw new Error("task0b_runtime_authority_filename_invalid");
   }
-  return `runtime-authority-${generationId}-${commandId}.json`;
+  if (authoritySha256 !== undefined && !SHA256.test(authoritySha256)) {
+    throw new Error("task0b_runtime_authority_filename_invalid");
+  }
+  return `runtime-authority-${generationId}-${commandId}${authoritySha256 ? `-${authoritySha256}` : ""}.json`;
 }
 
 export type RuntimeManagerAuthorityConsumptionV1 = Readonly<{
@@ -805,16 +812,42 @@ export async function completeTask0BManagedRuntimeStart(input: {
   evidence: unknown;
   writeEvidence(path: string, evidence: unknown): Promise<void>;
   terminateAndVerify(processId: number): Promise<void>;
+  faultHooks?: Readonly<{
+    afterObservedBeforeEvidence?(): void | Promise<void>;
+    afterEvidenceBeforeReturn?(): void | Promise<void>;
+  }>;
 }): Promise<{ processId: number; evidencePath: string }> {
   const evidencePath = runtimeGenerationEvidencePath("start", input.generationId, input.commandId,
     input.authoritySha256);
+  let evidenceWritten = false;
   try {
+    await input.faultHooks?.afterObservedBeforeEvidence?.();
     await input.writeEvidence(evidencePath, input.evidence);
+    evidenceWritten = true;
+    await input.faultHooks?.afterEvidenceBeforeReturn?.();
   } catch (error) {
-    await input.terminateAndVerify(input.processId);
+    if (!evidenceWritten) await input.terminateAndVerify(input.processId);
     throw error;
   }
   return { processId: input.processId, evidencePath };
+}
+
+export async function completeTask0BManagedRuntimeStop<T>(input: {
+  processId: number;
+  evidencePath: string;
+  performStop(): Promise<void>;
+  buildEvidence(): T;
+  writeEvidence(path: string, evidence: T): Promise<void>;
+  faultHooks?: Readonly<{
+    afterStopBeforeEvidence?(): void | Promise<void>;
+    afterEvidenceBeforeReturn?(): void | Promise<void>;
+  }>;
+}): Promise<{ status: "stopped"; processId: number; evidencePath: string }> {
+  await input.performStop();
+  await input.faultHooks?.afterStopBeforeEvidence?.();
+  await input.writeEvidence(input.evidencePath, input.buildEvidence());
+  await input.faultHooks?.afterEvidenceBeforeReturn?.();
+  return { status: "stopped", processId: input.processId, evidencePath: input.evidencePath };
 }
 
 export async function executeTask0BAuthorizedStart<T>(dependencies: {
@@ -943,7 +976,9 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
     external.binding,
     evaluatedAt
   );
-  if (filename !== runtimeAuthorityFilename(authority.generationId, authority.commandId)) {
+  const authoritySha256 = hash(authorityBytes);
+  if (filename !== runtimeAuthorityFilename(authority.generationId, authority.commandId)
+      && filename !== runtimeAuthorityFilename(authority.generationId, authority.commandId, authoritySha256)) {
     throw new Error("task0b_runtime_authority_filename_invalid");
   }
   const loadProtectedOperation = async () => {
@@ -1207,36 +1242,40 @@ async function stopRuntime(
   prepared: PreparedStopRuntime,
   authoritySha256: string
 ): Promise<unknown> {
-  await terminateExactAndVerify(prepared.observation, authority.forcePolicy);
   if (authority.commandId !== "runtime_manager_stop_candidate"
       && authority.commandId !== "runtime_manager_stop_previous") {
     throw new Error("task0b_runtime_effect_identity_invalid");
   }
-  const stopEvidence = validateRuntimeManagerStopEffectEvidenceV2({
-    version: "runtime-manager-stop-effect-evidence-v2",
-    generationId: authority.generationId,
-    commandId: authority.commandId,
-    authoritySha256,
-    targetRuntimeSha: authority.targetRuntimeSha,
-    targetRuntimeLabel: authority.targetRuntimeLabel,
-    startEvidencePath: authority.startEvidencePath,
-    startEvidenceSha256: authority.startEvidenceSha256,
-    stoppedProcessId: prepared.processId,
-    stoppedProcessStartedAt: prepared.observation.processStartedAt,
-    stoppedAt: new Date().toISOString(),
-    forcePolicy: authority.forcePolicy,
-    runtimeCandidatesAfter: 0,
-    verified: true
-  }, {
-    generationId: authority.generationId,
-    commandId: authority.commandId,
-    authoritySha256,
-    targetRuntimeSha: authority.targetRuntimeSha,
-    targetRuntimeLabel: authority.targetRuntimeLabel
+  const commandId = authority.commandId;
+  const filename = runtimeGenerationEvidencePath("stop", authority.generationId, commandId, authoritySha256);
+  return completeTask0BManagedRuntimeStop({
+    processId: prepared.processId,
+    evidencePath: filename,
+    performStop: () => terminateExactAndVerify(prepared.observation, authority.forcePolicy),
+    buildEvidence: () => validateRuntimeManagerStopEffectEvidenceV2({
+      version: "runtime-manager-stop-effect-evidence-v2",
+      generationId: authority.generationId,
+      commandId,
+      authoritySha256,
+      targetRuntimeSha: authority.targetRuntimeSha,
+      targetRuntimeLabel: authority.targetRuntimeLabel,
+      startEvidencePath: authority.startEvidencePath,
+      startEvidenceSha256: authority.startEvidenceSha256,
+      stoppedProcessId: prepared.processId,
+      stoppedProcessStartedAt: prepared.observation.processStartedAt,
+      stoppedAt: new Date().toISOString(),
+      forcePolicy: authority.forcePolicy,
+      runtimeCandidatesAfter: 0,
+      verified: true
+    }, {
+      generationId: authority.generationId,
+      commandId,
+      authoritySha256,
+      targetRuntimeSha: authority.targetRuntimeSha,
+      targetRuntimeLabel: authority.targetRuntimeLabel
+    }),
+    writeEvidence: (path, value) => writeProtectedExclusive(artifactRoot, path, value).then(() => undefined)
   });
-  const filename = runtimeGenerationEvidencePath("stop", authority.generationId, authority.commandId, authoritySha256);
-  await writeProtectedExclusive(artifactRoot, filename, stopEvidence);
-  return { status: "stopped", processId: prepared.processId, evidencePath: filename };
 }
 
 async function main(): Promise<void> {

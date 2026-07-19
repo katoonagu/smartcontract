@@ -1476,7 +1476,9 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
       || abandoned.reason !== evidence.failureCode
       || cleanup.operationKind !== abandoned.operationKind
       || cleanup.operationId !== abandoned.operationId
-      || cleanup.terminalStateSha256 !== evidence.priorTerminalAbandonedSha256) {
+      || cleanup.terminalStateSha256 !== evidence.priorTerminalAbandonedSha256
+      || cleanup.capability !== abandoned.capability
+      || cleanup.removedLeaseSha256 !== abandoned.finalLeaseSha256) {
     throw new Error("production_recovery_prior_terminal_binding_invalid");
   }
 
@@ -1486,7 +1488,9 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
       validateProductionOrchestrationStepReceiptV2, "production_recovery_prior_step").value;
     if (receipt.operationId !== recoveryInput.priorOperationId
         || receipt.sequence !== prefix.sequence || receipt.stepId !== prefix.stepId
-        || receipt.orchestration !== recoveryInput.priorOperationKind) {
+        || receipt.orchestration !== recoveryInput.priorOperationKind
+        || receipt.operationClaimSha256 !== abandoned.claimSha256
+        || receipt.authorityConsumptionSha256 !== abandoned.authorityConsumptionSha256) {
       throw new Error("production_recovery_prior_step_binding_invalid");
     }
   });
@@ -1497,7 +1501,9 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
       "production_recovery_uncertain_step_intent").value;
     if (intent.operationId !== recoveryInput.priorOperationId
         || intent.orchestration !== recoveryInput.priorOperationKind
-        || intent.sequence !== marker.sequence || intent.stepId !== marker.stepId) {
+        || intent.sequence !== marker.sequence || intent.stepId !== marker.stepId
+        || intent.operationClaimSha256 !== abandoned.claimSha256
+        || intent.authorityConsumptionSha256 !== abandoned.authorityConsumptionSha256) {
       throw new Error("production_recovery_uncertain_step_intent_binding_invalid");
     }
   }

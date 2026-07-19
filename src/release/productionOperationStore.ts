@@ -10,6 +10,7 @@ import {
   validateCommittedProductionOperationLeaseTakeoverV2,
   validateOperationalAttestationV2,
   validateOperationalAttestationConsumptionV2,
+  validateOperationalAttestationIssuerReceiptV2,
   validatePreparedCleanupOnlyProductionOperationTakeoverV2,
   validatePreparedProductionOperationLeaseRemovalV2,
   validatePreparedProductionOperationLeaseTakeoverV2,
@@ -22,6 +23,7 @@ import {
   validateProductionOperationTerminalCleanupV2,
   validateProductionOrchestrationStepIntentV2,
   validateProductionOrchestrationStepReceiptV2,
+  validateProductionOrchestrationReceiptV2,
   validateProductionPreclaimLeaseLineageV2,
   validateReleaseFreezeIdentityV2,
   validateRemediationReleaseManifestV2,
@@ -42,6 +44,7 @@ import {
   type ProductionOperationTerminalCleanupV2,
   type ProductionOrchestrationStepIntentV2,
   type ProductionOrchestrationStepReceiptV2,
+  type ProductionOrchestrationReceiptV2,
   type ProductionPreclaimLeaseLineageV2
 } from "./remediationReleaseManifestV2";
 import {
@@ -58,6 +61,7 @@ import {
   safeArtifactPath,
   safeArtifactRelativePath,
   unlinkDurable,
+  replaceDurable,
   writeExclusiveDurable
 } from "./releaseRootWriterStore";
 
@@ -91,8 +95,199 @@ const OPERATION_CAPABILITY: Readonly<Record<ProductionOperationKindV2,
 const ALLOWED_NESTED_ROOTS = new Set([
   "production-preclaim-lease-lineages",
   "production-operation-step-intents",
-  "production-operation-steps"
+  "production-operation-steps",
+  "production-runtime-effect-reconciliations",
+  "production-operation-terminal-artifacts"
 ]);
+
+type ProductionTerminalArtifactIndexV2 = Readonly<{
+  version: "production-terminal-artifact-index-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  terminalEvidenceSha256: string;
+  orchestrationReceiptSha256: string | null;
+  artifacts: readonly Readonly<{
+    kind: string;
+    operationQualifiedRelativePath: string;
+    canonicalRelativePath: string | null;
+    sha256: string;
+  }>[];
+}>;
+
+type ProductionTerminalArtifactPointerV2 = Readonly<{
+  version: "production-terminal-artifact-pointer-v2";
+  operationKind: ProductionOperationKindV2;
+  operationId: string;
+  terminalArtifactIndexSha256: string;
+  settlementSha256: string;
+}>;
+
+type ProductionFailureDraftV2 = Readonly<{
+  version: "production-failure-draft-v2";
+  operationKind: "rollout" | "canary";
+  operationId: string;
+  operationClaimSha256: string;
+  stepId: string;
+  failureCode: string;
+  attemptedExternalEffect: boolean;
+  completedStepReceiptPrefixSha256: string;
+  orchestrationProgressSha256: string;
+  observedAt: string;
+}>;
+
+function validateProductionFailureDraft(value: unknown): ProductionFailureDraftV2 {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("production_failure_draft_invalid");
+  }
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).sort().join("|") !== ["version", "operationKind", "operationId",
+    "operationClaimSha256", "stepId", "failureCode", "attemptedExternalEffect",
+    "completedStepReceiptPrefixSha256", "orchestrationProgressSha256", "observedAt"].sort().join("|")
+      || input.version !== "production-failure-draft-v2"
+      || !["rollout", "canary"].includes(String(input.operationKind))
+      || typeof input.stepId !== "string" || !/^[a-z][a-z0-9_]*$/u.test(input.stepId)
+      || typeof input.failureCode !== "string" || !/^[a-z][a-z0-9_]*$/u.test(input.failureCode)
+      || typeof input.attemptedExternalEffect !== "boolean") {
+    throw new Error("production_failure_draft_invalid");
+  }
+  exactOperationId(String(input.operationId));
+  exactSha(String(input.operationClaimSha256), "production_failure_draft_claim");
+  exactSha(String(input.completedStepReceiptPrefixSha256), "production_failure_draft_prefix");
+  exactSha(String(input.orchestrationProgressSha256), "production_failure_draft_progress");
+  parseIso(String(input.observedAt), "production_failure_draft_observed_at");
+  return value as ProductionFailureDraftV2;
+}
+
+function validateTerminalArtifactPointer(value: unknown): ProductionTerminalArtifactPointerV2 {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("production_terminal_artifact_pointer_invalid");
+  }
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).sort().join("|") !== ["version", "operationKind", "operationId",
+    "terminalArtifactIndexSha256", "settlementSha256"].sort().join("|")
+      || input.version !== "production-terminal-artifact-pointer-v2"
+      || !["rollout", "canary", "rollback", "recovery"].includes(String(input.operationKind))) {
+    throw new Error("production_terminal_artifact_pointer_invalid");
+  }
+  exactOperationId(String(input.operationId));
+  exactSha(String(input.terminalArtifactIndexSha256), "production_terminal_pointer_index");
+  exactSha(String(input.settlementSha256), "production_terminal_pointer_settlement");
+  return value as ProductionTerminalArtifactPointerV2;
+}
+
+const TERMINAL_CANONICAL_PATHS = new Set([
+  "production-rollout-orchestration-receipt-v2.json", "production-rollout-query-captures-v2.json",
+  "production-rollout-manager-captures-v2.json", "production-rollout-evidence-v2.json",
+  "production-canary-orchestration-receipt-v2.json", "production-canary-query-captures-v2.json",
+  "production-canary-log-captures-v2.json", "production-canary-evidence-v2.json",
+  "production-rollback-orchestration-receipt-v2.json", "production-rollback-query-captures-v2.json",
+  "production-rollback-manager-captures-v2.json", "production-rollback-evidence-v2.json",
+  "production-recovery-orchestration-receipt-v2.json", "production-recovery-validation-captures-v2.json",
+  "production-failure-evidence-v2.json"
+]);
+
+function terminalCanonicalPath(operationId: string, kind: string): string | null {
+  const fixed: Readonly<Record<string, string>> = Object.freeze({
+    rollout_orchestration: "production-rollout-orchestration-receipt-v2.json",
+    rollout_captures: "production-rollout-query-captures-v2.json",
+    rollout_manager: "production-rollout-manager-captures-v2.json",
+    rollout_evidence: "production-rollout-evidence-v2.json",
+    canary_orchestration: "production-canary-orchestration-receipt-v2.json",
+    canary_captures: "production-canary-query-captures-v2.json",
+    canary_logs: "production-canary-log-captures-v2.json",
+    canary_evidence: "production-canary-evidence-v2.json",
+    rollback_orchestration: "production-rollback-orchestration-receipt-v2.json",
+    rollback_captures: "production-rollback-query-captures-v2.json",
+    rollback_manager: "production-rollback-manager-captures-v2.json",
+    rollback_evidence: "production-rollback-evidence-v2.json",
+    recovery_orchestration: "production-recovery-orchestration-receipt-v2.json",
+    recovery_captures: "production-recovery-validation-captures-v2.json",
+    recovery_failure_evidence: "production-failure-evidence-v2.json",
+    failure_evidence: "production-failure-evidence-v2.json"
+  });
+  return kind === "failure_capture" ? `production-operation-failure-capture-${operationId}.json`
+    : fixed[kind] ?? null;
+}
+
+function validateTerminalArtifactIndex(value: unknown): ProductionTerminalArtifactIndexV2 {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("production_terminal_artifact_index_invalid");
+  }
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).sort().join("|") !== ["artifacts", "authorityConsumptionSha256", "operationClaimSha256",
+    "operationId", "operationKind", "orchestrationReceiptSha256", "terminalEvidenceSha256", "version"]
+    .sort().join("|") || input.version !== "production-terminal-artifact-index-v2"
+      || !["rollout", "canary", "rollback", "recovery"].includes(String(input.operationKind))) {
+    throw new Error("production_terminal_artifact_index_invalid");
+  }
+  const operationId = exactOperationId(String(input.operationId));
+  for (const field of ["operationClaimSha256", "authorityConsumptionSha256", "terminalEvidenceSha256"] as const) {
+    exactSha(String(input[field]), `production_terminal_index_${field}`);
+  }
+  if (input.orchestrationReceiptSha256 !== null) {
+    exactSha(String(input.orchestrationReceiptSha256), "production_terminal_index_orchestration");
+  }
+  if (!Array.isArray(input.artifacts) || input.artifacts.length < 1 || input.artifacts.length > 5) {
+    throw new Error("production_terminal_artifact_index_entries_invalid");
+  }
+  const seenQualified = new Set<string>();
+  const seenCanonical = new Set<string>();
+  const seenKinds = new Set<string>();
+  for (const raw of input.artifacts) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("production_terminal_artifact_index_entry_invalid");
+    }
+    const entry = raw as Record<string, unknown>;
+    if (Object.keys(entry).sort().join("|") !== ["canonicalRelativePath", "kind",
+      "operationQualifiedRelativePath", "sha256"].sort().join("|")
+        || typeof entry.kind !== "string" || !/^[a-z][a-z0-9_]*$/u.test(entry.kind)) {
+      throw new Error("production_terminal_artifact_index_entry_invalid");
+    }
+    if (seenKinds.has(String(entry.kind))) throw new Error("production_terminal_artifact_kind_duplicate");
+    seenKinds.add(String(entry.kind));
+    const qualified = String(entry.operationQualifiedRelativePath);
+    if (!qualified.startsWith(`production-operation-terminal-artifacts/${operationId}/`)
+        || !/^[a-z0-9/_-]+\.json$/u.test(qualified) || seenQualified.has(qualified)) {
+      throw new Error("production_terminal_artifact_index_path_invalid");
+    }
+    seenQualified.add(qualified);
+    if (entry.canonicalRelativePath === null) {
+      throw new Error("production_terminal_artifact_canonical_path_invalid");
+    } else {
+      const canonical = String(entry.canonicalRelativePath);
+      if ((!TERMINAL_CANONICAL_PATHS.has(canonical)
+          && canonical !== `production-operation-failure-capture-${operationId}.json`)
+          || canonical !== terminalCanonicalPath(operationId, String(entry.kind))
+          || seenCanonical.has(canonical)) {
+        throw new Error("production_terminal_artifact_canonical_path_invalid");
+      }
+      seenCanonical.add(canonical);
+    }
+    exactSha(String(entry.sha256), "production_terminal_artifact_sha");
+  }
+  const bundle = [...seenKinds].sort().join("|");
+  const expectedBundles: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    rollout: ["rollout_captures|rollout_evidence|rollout_manager|rollout_orchestration",
+      "failure_capture|failure_evidence"],
+    canary: ["canary_captures|canary_evidence|canary_logs|canary_orchestration",
+      "failure_capture|failure_evidence"],
+    rollback: ["rollback_captures|rollback_evidence|rollback_manager|rollback_orchestration"],
+    recovery: ["recovery_captures|recovery_failure_evidence|recovery_orchestration"]
+  });
+  if (!expectedBundles[String(input.operationKind)]?.includes(bundle)) {
+    throw new Error("production_terminal_artifact_bundle_invalid");
+  }
+  const artifacts = input.artifacts as ProductionTerminalArtifactIndexV2["artifacts"];
+  const evidence = artifacts.find((artifact) => artifact.kind.endsWith("_evidence"));
+  const orchestration = artifacts.find((artifact) => artifact.kind.endsWith("_orchestration"));
+  if (evidence?.sha256 !== input.terminalEvidenceSha256
+      || (orchestration?.sha256 ?? null) !== input.orchestrationReceiptSha256) {
+    throw new Error("production_terminal_artifact_terminal_refs_invalid");
+  }
+  return value as ProductionTerminalArtifactIndexV2;
+}
 
 export type ProductionOperationStoreRecordV2 = Readonly<{
   kind: string;
@@ -273,6 +468,165 @@ export class ProductionOperationStoreV2 {
     return { kind, relativePath, sha256: releaseSha256V2(bytes), created };
   }
 
+  loadOrPersistFailureDraft(input: Omit<ProductionFailureDraftV2, "version" | "observedAt">,
+    evaluatedAt: string): Readonly<{ value: ProductionFailureDraftV2; sha256: string }> {
+    const current = this.assertOwnedAndWithinBounds(input.operationId, evaluatedAt);
+    if (input.operationKind !== current.lease.operationKind
+        || input.operationClaimSha256 !== current.claimSha256) {
+      throw new Error("production_failure_draft_operation_binding_invalid");
+    }
+    const relativePath = `production-operation-failure-draft-${input.operationId}.json`;
+    const path = this.#path(relativePath);
+    if (existsSync(path)) {
+      const stored = readCanonical(path, validateProductionFailureDraft, "production_failure_draft");
+      const expected = { ...input };
+      const actual = { operationKind: stored.value.operationKind, operationId: stored.value.operationId,
+        operationClaimSha256: stored.value.operationClaimSha256, stepId: stored.value.stepId,
+        failureCode: stored.value.failureCode,
+        attemptedExternalEffect: stored.value.attemptedExternalEffect,
+        completedStepReceiptPrefixSha256: stored.value.completedStepReceiptPrefixSha256,
+        orchestrationProgressSha256: stored.value.orchestrationProgressSha256 };
+      if (!canonicalBytesV2(actual).equals(canonicalBytesV2(expected))) {
+        throw new Error("production_failure_draft_replay_conflict");
+      }
+      return { value: stored.value, sha256: stored.sha256 };
+    }
+    const draft = validateProductionFailureDraft({ version: "production-failure-draft-v2",
+      ...input, observedAt: evaluatedAt });
+    const record = this.persistExclusive("production_failure_draft", relativePath, draft);
+    return { value: draft, sha256: record.sha256 };
+  }
+
+  loadFailureDraft(operationId: string, evaluatedAt: string): null | Readonly<{
+    value: ProductionFailureDraftV2; sha256: string }> {
+    exactOperationId(operationId);
+    const current = this.assertOwnedAndWithinBounds(operationId, evaluatedAt);
+    const path = this.#path(`production-operation-failure-draft-${operationId}.json`);
+    if (!existsSync(path)) return null;
+    const stored = readCanonical(path, validateProductionFailureDraft, "production_failure_draft");
+    if (stored.value.operationId !== operationId
+        || stored.value.operationKind !== current.lease.operationKind
+        || stored.value.operationClaimSha256 !== current.claimSha256) {
+      throw new Error("production_failure_draft_operation_binding_invalid");
+    }
+    return { value: stored.value, sha256: stored.sha256 };
+  }
+
+  persistTerminalArtifactIndex(value: unknown, evaluatedAt: string): ProductionOperationStoreRecordV2 {
+    const index = validateTerminalArtifactIndex(value);
+    const current = this.assertOwnedAndWithinBounds(index.operationId, evaluatedAt);
+    if (index.operationKind !== current.lease.operationKind
+        || index.operationClaimSha256 !== current.claimSha256
+        || index.authorityConsumptionSha256 !== current.claim.authorityConsumptionSha256) {
+      throw new Error("production_terminal_artifact_index_operation_binding_invalid");
+    }
+    for (const artifact of index.artifacts) {
+      const bytes = readFileSync(this.#path(artifact.operationQualifiedRelativePath));
+      if (releaseSha256V2(bytes) !== artifact.sha256) {
+        throw new Error("production_terminal_artifact_index_hash_invalid");
+      }
+    }
+    return this.persistExclusive("production_terminal_artifact_index",
+      `production-terminal-artifact-index-${index.operationId}.json`, index);
+  }
+
+  publishTerminalArtifacts(operationId: string): void {
+    exactOperationId(operationId);
+    const index = readCanonical(this.#path(`production-terminal-artifact-index-${operationId}.json`),
+      validateTerminalArtifactIndex, "production_terminal_artifact_index");
+    const settlement = readCanonical(this.#path(`production-operation-settlement-${operationId}.json`),
+      validateProductionOperationSettlementV2, "production_operation_settlement");
+    if (index.value.operationId !== operationId
+        || index.value.operationKind !== settlement.value.operationKind
+        || index.value.operationClaimSha256 !== settlement.value.claimSha256
+        || index.value.authorityConsumptionSha256 !== settlement.value.authorityConsumptionSha256
+        || index.value.terminalEvidenceSha256 !== settlement.value.terminalEvidenceSha256
+        || index.value.orchestrationReceiptSha256 !== settlement.value.orchestrationReceiptSha256) {
+      throw new Error("production_terminal_artifact_index_settlement_binding_invalid");
+    }
+    const pointerValue = validateTerminalArtifactPointer({
+      version: "production-terminal-artifact-pointer-v2",
+      operationKind: index.value.operationKind,
+      operationId,
+      terminalArtifactIndexSha256: index.sha256,
+      settlementSha256: settlement.sha256
+    });
+    const pointerPath = this.#path(
+      `production-terminal-artifact-pointer-${index.value.operationKind}-v2.json`);
+    let priorPointer: { value: ProductionTerminalArtifactPointerV2; sha256: string } | null = null;
+    let priorArtifacts = new Map<string, string>();
+    if (existsSync(pointerPath)) {
+      const storedPointer = readCanonical(pointerPath, validateTerminalArtifactPointer,
+        "production_terminal_artifact_pointer");
+      priorPointer = { value: storedPointer.value, sha256: storedPointer.sha256 };
+      if (storedPointer.value.operationKind !== index.value.operationKind) {
+        throw new Error("production_terminal_artifact_pointer_kind_invalid");
+      }
+      const priorIndex = readCanonical(this.#path(
+        `production-terminal-artifact-index-${storedPointer.value.operationId}.json`),
+      validateTerminalArtifactIndex, "production_terminal_artifact_index");
+      const priorSettlement = readCanonical(this.#path(
+        `production-operation-settlement-${storedPointer.value.operationId}.json`),
+      validateProductionOperationSettlementV2, "production_operation_settlement");
+      if (priorIndex.sha256 !== storedPointer.value.terminalArtifactIndexSha256
+          || priorSettlement.sha256 !== storedPointer.value.settlementSha256
+          || priorIndex.value.operationId !== storedPointer.value.operationId
+          || priorIndex.value.operationKind !== storedPointer.value.operationKind
+          || priorSettlement.value.operationId !== storedPointer.value.operationId
+          || priorSettlement.value.operationKind !== storedPointer.value.operationKind
+          || priorIndex.value.operationClaimSha256 !== priorSettlement.value.claimSha256
+          || priorIndex.value.authorityConsumptionSha256
+            !== priorSettlement.value.authorityConsumptionSha256) {
+        throw new Error("production_terminal_artifact_pointer_binding_invalid");
+      }
+      if (storedPointer.value.operationId !== operationId) {
+        const priorCleanup = readCanonical(this.#path(
+          `production-operation-terminal-cleanup-${storedPointer.value.operationId}.json`),
+        validateProductionOperationTerminalCleanupV2, "production_operation_terminal_cleanup");
+        if (priorCleanup.value.operationId !== storedPointer.value.operationId
+            || priorCleanup.value.terminalStateSha256 !== priorSettlement.sha256) {
+          throw new Error("production_terminal_artifact_pointer_cleanup_invalid");
+        }
+      }
+      priorArtifacts = new Map(priorIndex.value.artifacts.flatMap((artifact) =>
+        artifact.canonicalRelativePath === null ? [] : [[artifact.canonicalRelativePath, artifact.sha256]]));
+    }
+    const publications = index.value.artifacts.map((artifact) => {
+      const source = readFileSync(this.#path(artifact.operationQualifiedRelativePath));
+      if (releaseSha256V2(source) !== artifact.sha256) {
+        throw new Error("production_terminal_artifact_publication_hash_invalid");
+      }
+      if (artifact.canonicalRelativePath === null) return { artifact, source, target: null };
+      const target = this.#path(artifact.canonicalRelativePath);
+      if (existsSync(target)) {
+        const actualSha = releaseSha256V2(readFileSync(target));
+        const priorSha = priorArtifacts.get(artifact.canonicalRelativePath);
+        if (actualSha !== artifact.sha256 && actualSha !== priorSha) {
+          throw new Error("production_terminal_artifact_publication_conflict");
+        }
+      }
+      return { artifact, source, target };
+    });
+    for (const publication of publications) {
+      if (publication.target === null) continue;
+      if (!existsSync(publication.target)) {
+        exactReplayOrConflict(publication.target, publication.source,
+          "production_terminal_artifact_publication_conflict");
+      } else if (releaseSha256V2(readFileSync(publication.target)) !== publication.artifact.sha256) {
+        replaceDurable(publication.target, publication.source);
+      }
+    }
+    const pointerBytes = canonicalBytesV2(pointerValue);
+    if (priorPointer === null) writeExclusiveDurable(pointerPath, pointerBytes);
+    else if (priorPointer.value.operationId !== operationId
+        || priorPointer.value.terminalArtifactIndexSha256 !== index.sha256
+        || priorPointer.value.settlementSha256 !== settlement.sha256) {
+      replaceDurable(pointerPath, pointerBytes);
+    } else if (!readFileSync(pointerPath).equals(pointerBytes)) {
+      throw new Error("production_terminal_artifact_pointer_conflict");
+    }
+  }
+
   acquireLease(value: unknown): ProductionOperationStoreRecordV2 {
     const lease = validateProductionOperationLeaseV2(value);
     const owner = currentRootWriterOwnerIdentityV2();
@@ -383,6 +737,75 @@ export class ProductionOperationStoreV2 {
       tipOwner = nextOwner;
     }
     return current;
+  }
+
+  #verifyStoredPreclaimLineage(
+    preclaim: { value: ProductionAuthorityPreclaimValidationV2; sha256: string },
+    tip: { value: ProductionPreclaimLeaseLineageV2; sha256: string }
+  ): void {
+    const visited = new Set<string>();
+    let current = tip;
+    while (true) {
+      if (visited.has(current.sha256)) throw new Error("production_preclaim_lineage_cycle");
+      visited.add(current.sha256);
+      const value = current.value;
+      if (value.operationId !== preclaim.value.operationId
+          || value.preclaimValidationSha256 !== preclaim.sha256
+          || value.relativePath
+            !== `production-preclaim-lease-lineages/${preclaim.value.operationId}/${value.currentTipLeaseSha256}.json`
+          || value.lineageStartedAt !== preclaim.value.checkedAt) {
+        throw new Error("production_preclaim_lineage_binding_invalid");
+      }
+      if (value.previousLineageSha256 === null) {
+        if (value.originalLeaseSha256 !== preclaim.value.originalLeaseSha256
+            || value.originalLeaseEpoch !== preclaim.value.originalLeaseEpoch
+            || value.originalLeaseOwnerProcessIdentitySha256
+              !== preclaim.value.originalLeaseOwnerProcessIdentitySha256
+            || value.currentTipLeaseSha256 !== preclaim.value.originalLeaseSha256
+            || value.currentTipLeaseEpoch !== preclaim.value.originalLeaseEpoch
+            || value.currentTipLeaseOwnerProcessIdentitySha256
+              !== preclaim.value.originalLeaseOwnerProcessIdentitySha256
+            || value.committedTakeoverReceiptSuffixSha256s.length !== 0) {
+          throw new Error("production_preclaim_lineage_root_invalid");
+        }
+        return;
+      }
+      if (value.committedTakeoverReceiptSuffixSha256s.length !== 1) {
+        throw new Error("production_preclaim_lineage_suffix_invalid");
+      }
+      const previous = readCanonical(this.#path(
+        `production-preclaim-lease-lineages/${preclaim.value.operationId}/${value.originalLeaseSha256}.json`),
+      validateProductionPreclaimLeaseLineageV2, "production_preclaim_lease_lineage");
+      if (previous.sha256 !== value.previousLineageSha256
+          || previous.value.currentTipLeaseSha256 !== value.originalLeaseSha256
+          || previous.value.currentTipLeaseEpoch !== value.originalLeaseEpoch
+          || previous.value.currentTipLeaseOwnerProcessIdentitySha256
+            !== value.originalLeaseOwnerProcessIdentitySha256) {
+        throw new Error("production_preclaim_lineage_previous_invalid");
+      }
+      const receiptSha256 = value.committedTakeoverReceiptSuffixSha256s[0]!;
+      let prepared!: { value: PreparedProductionOperationLeaseTakeoverV2; sha256: string };
+      const receipt = readCanonical(this.#path(
+        `production-operation-root.lease-takeover-committed-${receiptSha256}.json`),
+      (raw) => {
+        prepared = readCanonical(this.#path(
+          `production-operation-root.lease-takeover-prepared-${value.originalLeaseSha256}.json`),
+        validatePreparedProductionOperationLeaseTakeoverV2, "prepared_production_operation_takeover");
+        return validateCommittedProductionOperationLeaseTakeoverV2(raw, prepared.value);
+      },
+      "committed_production_operation_takeover");
+      const tombstone = readCanonical(this.#path(receipt.value.tombstoneRelativePath),
+        validateProductionOperationLeaseV2, "production_operation_tombstone");
+      if (receipt.sha256 !== receiptSha256 || receipt.value.oldLeaseSha256 !== value.originalLeaseSha256
+          || receipt.value.newLeaseSha256 !== value.currentTipLeaseSha256
+          || receipt.value.newLeaseEpoch !== value.currentTipLeaseEpoch
+          || tombstone.sha256 !== value.originalLeaseSha256
+          || operationOwnerSha(prepared.value.canonicalNewLease)
+            !== value.currentTipLeaseOwnerProcessIdentitySha256) {
+        throw new Error("production_preclaim_lineage_takeover_invalid");
+      }
+      current = previous;
+    }
   }
 
   #leaseFromPrepared(oldLeaseSha256: string): ProductionOperationLeaseV2 {
@@ -706,6 +1129,16 @@ export class ProductionOperationStoreV2 {
     claim: ProductionOperationClaimV2,
     currentLease: { value: ProductionOperationLeaseV2; sha256: string }
   ): Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }> {
+    return this.#verifyNormalTakeoverChainToTip(claim, {
+      sha256: currentLease.sha256,
+      epoch: currentLease.value.leaseEpoch
+    });
+  }
+
+  #verifyNormalTakeoverChainToTip(
+    claim: ProductionOperationClaimV2,
+    currentTip: Readonly<{ sha256: string; epoch: number }>
+  ): Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }> {
     let tipSha = claim.authorityConsumption.leaseSha256AtConsumption;
     let tipEpoch = claim.authorityConsumption.leaseEpochAtConsumption;
     const leaseTips: Array<Readonly<{ sha256: string; epoch: number }>> = [
@@ -714,7 +1147,7 @@ export class ProductionOperationStoreV2 {
     const receipts = this.#normalTakeoverReceipts();
     const visited = new Set<string>();
     const receiptSha256s: string[] = [];
-    while (tipSha !== currentLease.sha256) {
+    while (tipSha !== currentTip.sha256) {
       if (visited.has(tipSha)) throw new Error("production_operation_takeover_chain_cycle");
       visited.add(tipSha);
       // Every old lease hash has one global successor. Filtering a foreign receipt first
@@ -775,8 +1208,111 @@ export class ProductionOperationStoreV2 {
       tipEpoch = receipt.newLeaseEpoch;
       leaseTips.push({ sha256: tipSha, epoch: tipEpoch });
     }
-    if (tipEpoch !== currentLease.value.leaseEpoch) throw new Error("production_operation_takeover_tip_invalid");
+    if (tipEpoch !== currentTip.epoch) throw new Error("production_operation_takeover_tip_invalid");
     return { sha256: releaseSha256V2(canonicalBytesV2(receiptSha256s)), leaseTips };
+  }
+
+  verifyAbandonedRecoverySourceLineage(
+    terminalInput: unknown
+  ): Readonly<{ claimSha256: string; authorityConsumptionSha256: string;
+    leaseTips: ReadonlySet<string> }> {
+    const terminal = validateProductionOperationTerminalAbandonedV2(terminalInput);
+    if (terminal.claimSha256 === null || terminal.authorityConsumptionSha256 === null
+        || terminal.capability !== "cleanup_only" || terminal.cleanupOnlyTakeoverSha256 === null
+        || !["rollout", "canary"].includes(terminal.operationKind)) {
+      throw new Error("production_recovery_terminal_claim_missing");
+    }
+    const claimEntries = readdirSync(this.#root, { withFileTypes: true }).filter((entry) =>
+      entry.name.startsWith("production-operation-claim-") && entry.name.endsWith(".json"));
+    if (claimEntries.some((entry) => !entry.isFile()
+        || !/^production-operation-claim-[0-9a-f]{64}\.json$/u.test(entry.name))) {
+      throw new Error("production_recovery_claim_artifact_invalid");
+    }
+    const matchingClaims = claimEntries.map((entry) => {
+      const record = readCanonical(this.#path(entry.name), validateProductionOperationClaimV2,
+        "production_operation_claim");
+      if (entry.name !== `production-operation-claim-${record.value.operationalAttestationSha256}.json`) {
+        throw new Error("production_recovery_claim_filename_invalid");
+      }
+      return record;
+    }).filter((record) => record.sha256 === terminal.claimSha256);
+    if (matchingClaims.length !== 1) throw new Error("production_recovery_claim_missing_or_ambiguous");
+    const claim = matchingClaims[0]!;
+    if (claim.value.operationKind !== terminal.operationKind
+        || claim.value.operationId !== terminal.operationId
+        || claim.value.candidateSha !== terminal.candidateSha
+        || claim.value.releaseGenerationId !== terminal.releaseGenerationId
+        || claim.value.sourceManifestSha256 !== terminal.sourceManifestSha256
+        || claim.value.authorityConsumptionSha256 !== terminal.authorityConsumptionSha256
+        || claim.value.capability !== "effect_capable"
+        || releaseSha256V2(canonicalBytesV2(claim.value.authorityConsumption))
+          !== terminal.authorityConsumptionSha256) {
+      throw new Error("production_recovery_claim_binding_invalid");
+    }
+    const preclaim = readCanonical(this.#path(`production-authority-preclaim-${terminal.operationId}.json`),
+      validateProductionAuthorityPreclaimValidationV2, "production_authority_preclaim");
+    const lineage = readCanonical(this.#path(claim.value.preclaimLeaseLineageRelativePath),
+      validateProductionPreclaimLeaseLineageV2, "production_preclaim_lease_lineage");
+    if (preclaim.sha256 !== claim.value.authorityConsumption.preclaimValidationSha256
+        || preclaim.value.operationId !== terminal.operationId
+        || preclaim.value.operationKind !== terminal.operationKind
+        || preclaim.value.candidateSha !== terminal.candidateSha
+        || preclaim.value.releaseGenerationId !== terminal.releaseGenerationId
+        || preclaim.value.sourceManifestSha256 !== terminal.sourceManifestSha256
+        || lineage.sha256 !== claim.value.preclaimLeaseLineageSha256
+        || lineage.value.operationId !== terminal.operationId
+        || lineage.value.preclaimValidationSha256 !== preclaim.sha256
+        || lineage.value.currentTipLeaseSha256 !== claim.value.preclaimLeaseLineageCurrentTipSha256
+        || lineage.value.currentTipLeaseEpoch !== claim.value.leaseEpochAtConsumption) {
+      throw new Error("production_recovery_preclaim_lineage_binding_invalid");
+    }
+    this.#verifyStoredPreclaimLineage(preclaim, lineage);
+
+    const cleanupTakeover = readCanonical(this.#path(
+      `production-operation-root.lease-cleanup-only-committed-${terminal.cleanupOnlyTakeoverSha256}.json`),
+    (raw) => {
+      const candidate = raw as { oldLeaseSha256?: unknown };
+      if (typeof candidate.oldLeaseSha256 !== "string") {
+        throw new Error("production_recovery_cleanup_takeover_invalid");
+      }
+      const prepared = readCanonical(this.#path(
+        `production-operation-root.lease-cleanup-only-prepared-${candidate.oldLeaseSha256}.json`),
+      validatePreparedCleanupOnlyProductionOperationTakeoverV2,
+      "prepared_cleanup_only_production_operation_takeover");
+      return validateCleanupOnlyProductionOperationTakeoverV2(raw, prepared.value);
+    }, "cleanup_only_production_operation_takeover");
+    if (cleanupTakeover.sha256 !== terminal.cleanupOnlyTakeoverSha256
+        || cleanupTakeover.value.operationKind !== terminal.operationKind
+        || cleanupTakeover.value.operationId !== terminal.operationId
+        || cleanupTakeover.value.candidateSha !== terminal.candidateSha
+        || cleanupTakeover.value.releaseGenerationId !== terminal.releaseGenerationId
+        || cleanupTakeover.value.sourceManifestSha256 !== terminal.sourceManifestSha256
+        || cleanupTakeover.value.authorityConsumptionSha256 !== terminal.authorityConsumptionSha256
+        || cleanupTakeover.value.newLeaseSha256 !== terminal.finalLeaseSha256
+        || cleanupTakeover.value.newLeaseEpoch !== terminal.finalLeaseEpoch) {
+      throw new Error("production_recovery_cleanup_takeover_binding_invalid");
+    }
+    const cleanupPrepared = readCanonical(this.#path(
+      `production-operation-root.lease-cleanup-only-prepared-${cleanupTakeover.value.oldLeaseSha256}.json`),
+    validatePreparedCleanupOnlyProductionOperationTakeoverV2,
+    "prepared_cleanup_only_production_operation_takeover");
+    const cleanupTombstone = readCanonical(this.#path(cleanupTakeover.value.tombstoneRelativePath),
+      validateProductionOperationLeaseV2, "production_operation_tombstone");
+    if (cleanupPrepared.sha256 !== cleanupTakeover.value.preparedTakeoverSha256
+        || cleanupPrepared.value.oldLeaseSha256 !== cleanupTakeover.value.oldLeaseSha256
+        || cleanupTombstone.sha256 !== cleanupTakeover.value.oldLeaseSha256
+        || cleanupTombstone.value.leaseEpoch !== cleanupPrepared.value.oldLeaseEpoch
+        || cleanupTombstone.value.operationId !== terminal.operationId
+        || cleanupTombstone.value.capability !== "effect_capable") {
+      throw new Error("production_recovery_cleanup_tombstone_binding_invalid");
+    }
+    const normal = this.#verifyNormalTakeoverChainToTip(claim.value, {
+      sha256: cleanupTakeover.value.oldLeaseSha256,
+      epoch: cleanupPrepared.value.oldLeaseEpoch
+    });
+    return { claimSha256: claim.sha256,
+      authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+      leaseTips: new Set(normal.leaseTips.map((tip) => `${tip.epoch}:${tip.sha256}`)) };
   }
 
   verifyImmutableAuthorityLineage(operationId: string, evaluatedAt: string): {
@@ -922,6 +1458,38 @@ export class ProductionOperationStoreV2 {
     return this.persistExclusive("production_orchestration_step_intent", intent.relativePath, intent);
   }
 
+  loadStepIntent(operationId: string, sequence: number, stepId: string, evaluatedAt: string): null | Readonly<{
+    relativePath: string;
+    sha256: string;
+    intent: ProductionOrchestrationStepIntentV2;
+  }> {
+    if (!Number.isSafeInteger(sequence) || sequence < 1 || !/^[a-z][a-z0-9_]*$/u.test(stepId)) {
+      throw new Error("production_step_intent_lookup_invalid");
+    }
+    const current = this.assertOwnedAndWithinBounds(operationId, evaluatedAt);
+    const relativePath = `production-operation-step-intents/${operationId}/${sequence}-${stepId}-1-v2.json`;
+    let path: string;
+    try { path = this.#path(relativePath); }
+    catch (error) {
+      if ((error as Error).message === "artifact_parent_missing") return null;
+      throw error;
+    }
+    if (!existsSync(path)) return null;
+    const stored = readCanonical(path, validateProductionOrchestrationStepIntentV2,
+      "production_step_intent");
+    const leaseIsVerifiedAncestor = current.lineageLeaseTips.some((tip) =>
+      tip.sha256 === stored.value.currentOperationLeaseSha256
+      && tip.epoch === stored.value.currentOperationLeaseEpoch);
+    if (stored.value.relativePath !== relativePath || stored.value.operationId !== operationId
+        || stored.value.operationClaimSha256 !== current.claimSha256
+        || stored.value.authorityConsumptionSha256 !== current.claim.authorityConsumptionSha256
+        || stored.value.sequence !== sequence || stored.value.stepId !== stepId
+        || stored.value.orchestration !== current.lease.operationKind || !leaseIsVerifiedAncestor) {
+      throw new Error("production_step_intent_ancestor_binding_invalid");
+    }
+    return { relativePath, sha256: stored.sha256, intent: stored.value };
+  }
+
   hasUnresolvedStepIntent(input: { operationId: string; sequence: number; stepId: string }): boolean {
     exactOperationId(input.operationId);
     if (!Number.isSafeInteger(input.sequence) || input.sequence < 1 || !/^[a-z][a-z0-9_]*$/u.test(input.stepId)) {
@@ -950,6 +1518,104 @@ export class ProductionOperationStoreV2 {
     return false;
   }
 
+  loadCompletedStepPrefix(operationId: string, evaluatedAt: string): readonly Readonly<{
+    relativePath: string;
+    sha256: string;
+    receipt: ProductionOrchestrationStepReceiptV2;
+  }>[] {
+    const current = this.assertOwnedAndWithinBounds(operationId, evaluatedAt);
+    const relativeDirectory = `production-operation-steps/${operationId}`;
+    let directory: string;
+    try { directory = dirname(this.#path(`${relativeDirectory}/probe.json`)); }
+    catch (error) {
+      if ((error as Error).message === "artifact_parent_missing") return [];
+      throw error;
+    }
+    const names = readdirSync(directory).filter((name) => name.endsWith(".json"));
+    if (names.some((name) => !/^\d+-[a-z][a-z0-9_]*-v2\.json$/u.test(name))) {
+      throw new Error("production_step_receipt_prefix_artifact_invalid");
+    }
+    const records = names.map((name) => {
+      const read = readCanonical(this.#path(`${relativeDirectory}/${name}`),
+        validateProductionOrchestrationStepReceiptV2, "production_step_receipt");
+      if (name !== `${read.value.sequence}-${read.value.stepId}-v2.json`) {
+        throw new Error("production_step_receipt_prefix_filename_invalid");
+      }
+      return { relativePath: `${relativeDirectory}/${name}`, sha256: read.sha256, receipt: read.value };
+    }).sort((left, right) => left.receipt.sequence - right.receipt.sequence);
+    records.forEach((record, index) => {
+      const receipt = record.receipt;
+      const receiptLeaseIsVerifiedAncestor = current.lineageLeaseTips.some((tip) =>
+        tip.sha256 === receipt.operationLeaseSha256 && tip.epoch === receipt.operationLeaseEpoch);
+      if (receipt.sequence !== index + 1 || receipt.operationId !== operationId
+          || receipt.operationClaimSha256 !== current.claimSha256
+          || receipt.authorityConsumptionSha256 !== current.claim.authorityConsumptionSha256
+          || receipt.operationDeadlineAt !== current.lease.operationDeadlineAt
+          || receipt.capability !== current.lease.capability
+          || receipt.orchestration !== current.lease.operationKind
+          || !receiptLeaseIsVerifiedAncestor) {
+        throw new Error("production_step_receipt_prefix_binding_invalid");
+      }
+      if (receipt.executionKind === "external_effect") {
+        const intent = readCanonical(this.#path(receipt.stepIntentRelativePath),
+          validateProductionOrchestrationStepIntentV2, "production_step_intent");
+        const intentLeaseIsVerifiedAncestor = current.lineageLeaseTips.some((tip) =>
+          tip.sha256 === intent.value.currentOperationLeaseSha256
+          && tip.epoch === intent.value.currentOperationLeaseEpoch);
+        if (intent.sha256 !== receipt.stepIntentSha256 || intent.value.operationId !== operationId
+            || intent.value.operationClaimSha256 !== current.claimSha256
+            || intent.value.authorityConsumptionSha256 !== current.claim.authorityConsumptionSha256
+            || intent.value.sequence !== receipt.sequence || intent.value.stepId !== receipt.stepId
+            || intent.value.inputSha256 !== receipt.inputSha256 || !intentLeaseIsVerifiedAncestor) {
+          throw new Error("production_step_receipt_prefix_intent_invalid");
+        }
+      }
+    });
+    return records;
+  }
+
+  loadCompletedOrchestrationReceipt(operationId: string, evaluatedAt: string): null | Readonly<{
+    relativePath: string;
+    sha256: string;
+    receipt: ProductionOrchestrationReceiptV2;
+  }> {
+    const current = this.assertOwnedAndWithinBounds(operationId, evaluatedAt);
+    const relativePath = {
+      rollout: "production-rollout-orchestration-receipt-v2.json",
+      canary: "production-canary-orchestration-receipt-v2.json",
+      rollback: "production-rollback-orchestration-receipt-v2.json",
+      recovery: "production-recovery-orchestration-receipt-v2.json"
+    }[current.lease.operationKind];
+    const qualifiedRelativePath = `production-operation-terminal-artifacts/${operationId}/${relativePath}`;
+    let qualifiedPath: string | null = null;
+    try { qualifiedPath = this.#path(qualifiedRelativePath); }
+    catch (error) {
+      if ((error as Error).message !== "artifact_parent_missing") throw error;
+    }
+    const path = qualifiedPath !== null && existsSync(qualifiedPath) ? qualifiedPath : this.#path(relativePath);
+    if (!existsSync(path)) return null;
+    const stored = readCanonical(path, validateProductionOrchestrationReceiptV2,
+      "production_orchestration_receipt");
+    const finalLeaseIsVerifiedAncestor = current.lineageLeaseTips.some((tip) =>
+      tip.sha256 === stored.value.finalOperationLeaseSha256
+      && tip.epoch === stored.value.finalOperationLeaseEpoch);
+    const prefix = this.loadCompletedStepPrefix(operationId, evaluatedAt);
+    if (stored.value.operationId !== operationId || stored.value.orchestration !== current.lease.operationKind
+        || stored.value.capability !== current.lease.capability
+        || stored.value.operationClaimSha256 !== current.claimSha256
+        || stored.value.operationalAttestationConsumptionSha256
+          !== current.claim.authorityConsumptionSha256
+        || stored.value.operationDeadlineAt !== current.lease.operationDeadlineAt
+        || !finalLeaseIsVerifiedAncestor
+        || stored.value.completedStepReceipts.length !== prefix.length
+        || stored.value.completedStepReceipts.some((entry, index) =>
+          entry.relativePath !== prefix[index]?.relativePath || entry.sha256 !== prefix[index]?.sha256)) {
+      throw new Error("production_completed_orchestration_binding_invalid");
+    }
+    return { relativePath: qualifiedPath !== null && existsSync(qualifiedPath) ? qualifiedRelativePath : relativePath,
+      sha256: stored.sha256, receipt: stored.value };
+  }
+
   persistStepReceipt(value: unknown): ProductionOperationStoreRecordV2 {
     const receipt = validateProductionOrchestrationStepReceiptV2(value);
     const current = this.assertOwnedAndWithinBounds(receipt.operationId, receipt.finishedAt);
@@ -965,13 +1631,15 @@ export class ProductionOperationStoreV2 {
     if (receipt.executionKind === "external_effect") {
       const intent = readCanonical(this.#path(receipt.stepIntentRelativePath),
         validateProductionOrchestrationStepIntentV2, "production_step_intent");
+      const intentLeaseIsVerifiedAncestor = current.lineageLeaseTips.some((tip) =>
+        tip.sha256 === intent.value.currentOperationLeaseSha256
+        && tip.epoch === intent.value.currentOperationLeaseEpoch);
       if (intent.sha256 !== receipt.stepIntentSha256
           || intent.value.operationId !== receipt.operationId
           || intent.value.sequence !== receipt.sequence
           || intent.value.stepId !== receipt.stepId
           || intent.value.inputSha256 !== receipt.inputSha256
-          || intent.value.currentOperationLeaseSha256 !== receipt.operationLeaseSha256
-          || intent.value.currentOperationLeaseEpoch !== receipt.operationLeaseEpoch) {
+          || !intentLeaseIsVerifiedAncestor) {
         throw new Error("production_step_receipt_intent_binding_invalid");
       }
     }
@@ -997,6 +1665,203 @@ export class ProductionOperationStoreV2 {
     }
     const relativePath = `production-operation-settlement-${settlement.operationId}.json`;
     return this.persistExclusive("production_operation_settlement", relativePath, settlement);
+  }
+
+  resumeCompletedSettlementBeforeBegin(
+    operationKind: ProductionOperationKindV2,
+    evaluatedAt: string
+  ): null | Readonly<{
+    result: "passed" | "failed";
+    operationId: string;
+    finalLeaseEpoch: number;
+    orchestrationReceipt: ProductionOrchestrationReceiptV2 | null;
+    orchestrationReceiptSha256: string | null;
+  }> {
+    parseIso(evaluatedAt, "production_operation_prebegin_resume_at");
+    if (existsSync(this.#path(PRODUCTION_OPERATION_LEASE_FILE_V2))) return null;
+    const identity = this.#readFreezeAndManifest();
+    const entries = readdirSync(this.#root, { withFileTypes: true }).filter((entry) =>
+      entry.name.startsWith("production-operation-settlement-") && entry.name.endsWith(".json"));
+    if (entries.some((entry) => !entry.isFile()
+        || !/^production-operation-settlement-production-(?:rollout|canary|rollback|recovery)-[0-9a-f]{64}\.json$/u
+          .test(entry.name))) {
+      throw new Error("production_prebegin_settlement_artifact_invalid");
+    }
+    const parsedSettlements = entries.map((entry) => {
+      const record = readCanonical(this.#path(entry.name),
+        validateProductionOperationSettlementV2, "production_operation_settlement");
+      exactOperationId(record.value.operationId);
+      if (entry.name !== `production-operation-settlement-${record.value.operationId}.json`) {
+        throw new Error("production_prebegin_settlement_filename_invalid");
+      }
+      return record;
+    });
+    const candidates = parsedSettlements.filter(({ value }) => value.operationKind === operationKind
+      && value.candidateSha === identity.candidateSha
+      && value.releaseGenerationId === identity.releaseGenerationId
+      && value.sourceManifestSha256 === identity.sourceManifestSha256);
+    if (candidates.length === 0) return null;
+    if (candidates.length !== 1) throw new Error("production_prebegin_settlement_ambiguous");
+    const settlement = candidates[0]!;
+    const prepared = readCanonical(this.#path(
+      `production-operation-lease-removal-prepared-${settlement.value.operationId}.json`),
+    validatePreparedProductionOperationLeaseRemovalV2, "prepared_production_operation_lease_removal");
+    if (prepared.value.operationId !== settlement.value.operationId
+        || prepared.value.operationKind !== operationKind
+        || prepared.value.terminalStateKind !== "settlement"
+        || prepared.value.terminalStateSha256 !== settlement.sha256
+        || prepared.value.exactCurrentLeaseSha256 !== settlement.value.finalLeaseSha256
+        || prepared.value.exactCurrentLeaseEpoch !== settlement.value.finalLeaseEpoch) {
+      throw new Error("production_prebegin_settlement_prepared_binding_invalid");
+    }
+    const claims = readdirSync(this.#root, { withFileTypes: true }).filter((entry) =>
+      entry.name.startsWith("production-operation-claim-") && entry.name.endsWith(".json"));
+    if (claims.some((entry) => !entry.isFile()
+        || !/^production-operation-claim-[0-9a-f]{64}\.json$/u.test(entry.name))) {
+      throw new Error("production_prebegin_claim_artifact_invalid");
+    }
+    const matchingClaims = claims.map((entry) => {
+      const record = readCanonical(this.#path(entry.name), validateProductionOperationClaimV2,
+        "production_operation_claim");
+      if (entry.name !== `production-operation-claim-${record.value.operationalAttestationSha256}.json`) {
+        throw new Error("production_prebegin_claim_filename_invalid");
+      }
+      return record;
+    })
+      .filter((claim) => claim.sha256 === settlement.value.claimSha256);
+    if (matchingClaims.length !== 1) throw new Error("production_prebegin_claim_missing");
+    const claim = matchingClaims[0]!;
+    if (claim.value.operationId !== settlement.value.operationId
+        || claim.value.operationKind !== operationKind
+        || claim.value.authorityConsumptionSha256 !== settlement.value.authorityConsumptionSha256
+        || claim.value.candidateSha !== identity.candidateSha
+        || claim.value.releaseGenerationId !== identity.releaseGenerationId
+        || claim.value.sourceManifestSha256 !== identity.sourceManifestSha256
+        || claim.value.preclaimLeaseLineageCurrentTipSha256
+          !== claim.value.authorityConsumption.preclaimLeaseLineageCurrentTipSha256) {
+      throw new Error("production_prebegin_claim_binding_invalid");
+    }
+    const preclaim = readCanonical(this.#path(`production-authority-preclaim-${settlement.value.operationId}.json`),
+      validateProductionAuthorityPreclaimValidationV2, "production_authority_preclaim");
+    const lineage = readCanonical(this.#path(claim.value.preclaimLeaseLineageRelativePath),
+      validateProductionPreclaimLeaseLineageV2, "production_preclaim_lease_lineage");
+    if (preclaim.sha256 !== claim.value.authorityConsumption.preclaimValidationSha256
+        || preclaim.value.operationId !== settlement.value.operationId
+        || lineage.sha256 !== claim.value.preclaimLeaseLineageSha256
+        || lineage.value.operationId !== settlement.value.operationId
+        || lineage.value.preclaimValidationSha256 !== preclaim.sha256
+        || lineage.value.currentTipLeaseSha256 !== claim.value.preclaimLeaseLineageCurrentTipSha256
+        || lineage.value.currentTipLeaseEpoch !== claim.value.leaseEpochAtConsumption) {
+      throw new Error("production_prebegin_lineage_binding_invalid");
+    }
+    this.#verifyStoredPreclaimLineage(preclaim, lineage);
+    this.#verifyNormalTakeoverChainToTip(claim.value, {
+      sha256: settlement.value.finalLeaseSha256,
+      epoch: settlement.value.finalLeaseEpoch
+    });
+    const action = OPERATION_ACTION[operationKind];
+    const attestationPath = safeArtifactRelativePath(this.#root,
+      `operational-attestations/${action}/${identity.releaseGenerationId}/${claim.value.operationalAttestationSha256}.json`);
+    const attestation = readCanonical(attestationPath, validateOperationalAttestationV2,
+      "operational_attestation");
+    const issuerReceiptPath = safeArtifactRelativePath(this.#root,
+      `operational-attestation-issuer-receipts/${action}/${identity.releaseGenerationId}/${claim.value.operationalAttestationIssuerReceiptSha256}.json`);
+    const issuerReceipt = readCanonical(issuerReceiptPath, validateOperationalAttestationIssuerReceiptV2,
+      "operational_attestation_issuer_receipt");
+    if (attestation.sha256 !== claim.value.operationalAttestationSha256
+        || attestation.value.action !== action
+        || attestation.value.generationId !== identity.releaseGenerationId
+        || attestation.value.sourceManifestSha256 !== identity.sourceManifestSha256
+        || issuerReceipt.sha256 !== claim.value.operationalAttestationIssuerReceiptSha256
+        || issuerReceipt.value.attestationSha256 !== attestation.sha256
+        || issuerReceipt.value.action !== action
+        || issuerReceipt.value.generationId !== identity.releaseGenerationId) {
+      throw new Error("production_prebegin_authority_binding_invalid");
+    }
+    let orchestration: { value: ProductionOrchestrationReceiptV2; sha256: string } | null = null;
+    if (settlement.value.orchestrationReceiptSha256 !== null) {
+      const canonical = {
+        rollout: "production-rollout-orchestration-receipt-v2.json",
+        canary: "production-canary-orchestration-receipt-v2.json",
+        rollback: "production-rollback-orchestration-receipt-v2.json",
+        recovery: "production-recovery-orchestration-receipt-v2.json"
+      }[operationKind];
+      orchestration = readCanonical(this.#path(
+        `production-operation-terminal-artifacts/${settlement.value.operationId}/${canonical}`),
+      validateProductionOrchestrationReceiptV2, "production_orchestration_receipt");
+      if (orchestration.sha256 !== settlement.value.orchestrationReceiptSha256
+          || orchestration.value.operationId !== settlement.value.operationId
+          || orchestration.value.operationClaimSha256 !== settlement.value.claimSha256) {
+        throw new Error("production_prebegin_orchestration_binding_invalid");
+      }
+    }
+    this.publishTerminalArtifacts(settlement.value.operationId);
+    this.completeTerminal({ operationId: settlement.value.operationId, terminalStateKind: "settlement",
+      terminalStateSha256: settlement.sha256, evaluatedAt });
+    return { result: settlement.value.result, operationId: settlement.value.operationId,
+      finalLeaseEpoch: settlement.value.finalLeaseEpoch,
+      orchestrationReceipt: orchestration?.value ?? null,
+      orchestrationReceiptSha256: orchestration?.sha256 ?? null };
+  }
+
+  resumeCompletedSettlement(operationId: string, evaluatedAt: string): null | Readonly<{
+    settlement: ProductionOperationSettlementV2;
+    orchestrationReceipt: ProductionOrchestrationReceiptV2 | null;
+    orchestrationReceiptSha256: string | null;
+  }> {
+    exactOperationId(operationId);
+    parseIso(evaluatedAt, "production_operation_resume_at");
+    const settlementPath = this.#path(`production-operation-settlement-${operationId}.json`);
+    if (!existsSync(settlementPath)) return null;
+    const settlement = readCanonical(settlementPath, validateProductionOperationSettlementV2,
+      "production_operation_settlement");
+    const lease = this.#readLease();
+    const claim = this.#claimForLease(lease.value);
+    const owner = currentRootWriterOwnerIdentityV2();
+    if (claim === null || lease.value.operationId !== operationId
+        || lease.value.ownerPid !== owner.pid
+        || lease.value.ownerProcessStartFingerprintSha256 !== owner.processStartFingerprintSha256
+        || settlement.value.operationId !== operationId
+        || settlement.value.operationKind !== lease.value.operationKind
+        || settlement.value.claimSha256 !== claim.sha256
+        || settlement.value.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+        || settlement.value.finalLeaseSha256 !== lease.sha256
+        || settlement.value.finalLeaseEpoch !== lease.value.leaseEpoch
+        || settlement.value.operationDeadlineAt !== lease.value.operationDeadlineAt) {
+      throw new Error("production_completed_settlement_binding_invalid");
+    }
+    this.#verifyNormalTakeoverChain(claim.value, lease);
+    let orchestration: { value: ProductionOrchestrationReceiptV2; sha256: string } | null = null;
+    if (settlement.value.orchestrationReceiptSha256 !== null) {
+      const canonicalOrchestrationPath = {
+      rollout: "production-rollout-orchestration-receipt-v2.json",
+      canary: "production-canary-orchestration-receipt-v2.json",
+      rollback: "production-rollback-orchestration-receipt-v2.json",
+      recovery: "production-recovery-orchestration-receipt-v2.json"
+      }[lease.value.operationKind];
+      let qualifiedOrchestrationPath: string | null = null;
+      try { qualifiedOrchestrationPath = this.#path(
+        `production-operation-terminal-artifacts/${operationId}/${canonicalOrchestrationPath}`); }
+      catch (error) {
+        if ((error as Error).message !== "artifact_parent_missing") throw error;
+      }
+      const orchestrationPath = qualifiedOrchestrationPath !== null && existsSync(qualifiedOrchestrationPath)
+        ? qualifiedOrchestrationPath : this.#path(canonicalOrchestrationPath);
+      orchestration = readCanonical(orchestrationPath, validateProductionOrchestrationReceiptV2,
+        "production_orchestration_receipt");
+      if (orchestration.sha256 !== settlement.value.orchestrationReceiptSha256
+          || orchestration.value.operationId !== operationId
+          || orchestration.value.operationClaimSha256 !== claim.sha256
+          || orchestration.value.operationalAttestationConsumptionSha256
+            !== claim.value.authorityConsumptionSha256) {
+        throw new Error("production_completed_settlement_orchestration_binding_invalid");
+      }
+    }
+    this.publishTerminalArtifacts(operationId);
+    this.completeTerminal({ operationId, terminalStateKind: "settlement",
+      terminalStateSha256: settlement.sha256, evaluatedAt });
+    return { settlement: settlement.value, orchestrationReceipt: orchestration?.value ?? null,
+      orchestrationReceiptSha256: orchestration?.sha256 ?? null };
   }
 
   #terminalState(input: {
@@ -1285,7 +2150,19 @@ export class ProductionOperationStoreV2 {
     const expectedOldLeaseSha256 = exactSha(input.expectedOldLeaseSha256,
       "production_operation_expected_old_lease_sha");
     const replay = this.#committedTakeoverForOld(expectedOldLeaseSha256);
-    if (replay !== null) return replay;
+    if (replay !== null) {
+      const live = this.#readLease();
+      const claim = this.#claimForLease(live.value);
+      if (claim === null || live.value.operationId !== replay.operationId) {
+        throw new Error("production_operation_takeover_replay_live_tip_invalid");
+      }
+      const lineage = this.#verifyNormalTakeoverChain(claim.value, live);
+      if (!lineage.leaseTips.some((tip) => tip.sha256 === replay.newLeaseSha256
+          && tip.epoch === replay.newLeaseEpoch)) {
+        throw new Error("production_operation_takeover_replay_not_ancestor");
+      }
+      return replay;
+    }
     this.#assertManifestWriterAbsent();
     const oldLease = this.#oldLeaseForTakeover(expectedOldLeaseSha256);
     if (oldLease.value.capability === "cleanup_only") throw new Error("effect_capable_takeover_cleanup_lease_forbidden");

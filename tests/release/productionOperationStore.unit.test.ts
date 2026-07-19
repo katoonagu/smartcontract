@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ import {
   runWithRootWriterProcessRuntimeForTestsV2,
   selectOperationalAttestationFromStoreV2
 } from "../../src/release/releaseManifestStoreV2";
+import { executeProtectedProductionOperationV2 } from "../../src/release/productionReleaseOrchestratorV2";
 import {
   buildReleaseManifestV2Fixture,
   buildTask0BReleaseFreezeEvidence
@@ -206,6 +207,8 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     { sha256: heartbeat.leaseSha256, epoch: 2 },
     { sha256: takeover.newLeaseSha256, epoch: 3 }
   ]);
+  await expect(store.takeoverEffectCapable({ expectedOldLeaseSha256: heartbeat.leaseSha256,
+    evaluatedAt: "2026-07-18T10:01:06.002Z" })).resolves.toEqual(takeover);
   const committedName = `production-operation-root.lease-takeover-committed-${releaseSha256V2(canonicalBytes(takeover))}.json`;
   const committedPath = join(root, committedName);
   const hiddenPath = join(root, `${committedName}.hidden`);
@@ -219,6 +222,8 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
   const branchPath = join(root,
     `production-operation-root.lease-takeover-committed-${releaseSha256V2(branchBytes)}.json`);
   await writeFile(branchPath, branchBytes);
+  await expect(store.takeoverEffectCapable({ expectedOldLeaseSha256: heartbeat.leaseSha256,
+    evaluatedAt: "2026-07-18T10:01:06.004Z" })).rejects.toThrow(/takeover.*(?:chain|ancestor|invalid|ambiguous)/i);
   expect(() => store.verifyImmutableAuthorityLineage(
     begun.lease.operationId, "2026-07-18T10:01:06.004Z"
   )).toThrow(/takeover.*chain|committed/i);
@@ -260,6 +265,398 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
 }, 45_000);
 
+it("persists one recovered effect receipt after a same-claim committed heartbeat and rejects a foreign intent lease", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const begun = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  const intent = {
+    version: "production-orchestration-step-intent-v2" as const,
+    capability: "effect_capable" as const,
+    orchestration: "rollout" as const,
+    operationId: begun.lease.operationId,
+    operationClaimSha256: begun.claimSha256,
+    authorityConsumptionSha256: begun.claim.authorityConsumptionSha256,
+    sequence: 5,
+    stepId: "stop_previous" as const,
+    attempt: 1 as const,
+    relativePath: `production-operation-step-intents/${begun.lease.operationId}/5-stop_previous-1-v2.json`,
+    currentOperationLeaseSha256: begun.leaseSha256,
+    currentOperationLeaseEpoch: begun.lease.leaseEpoch,
+    commandId: "production_rollout" as const,
+    redactedTemplateSha256: begun.selectedAuthority.redactedTemplateSha256,
+    inputSha256: "5".repeat(64),
+    intendedExternalEffectSha256: "6".repeat(64),
+    preparedAt: T0
+  };
+  const intentRecord = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.persistStepIntent(intent));
+  const heartbeat = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.heartbeat(begun.lease.operationId, "2026-07-18T10:00:05.000Z"));
+  expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.loadStepIntent(begun.lease.operationId, 5, "stop_previous",
+    "2026-07-18T10:00:05.001Z"))).toMatchObject({ sha256: intentRecord.sha256, intent });
+  const receipt = {
+    version: "production-orchestration-step-receipt-v2" as const,
+    operationId: begun.lease.operationId,
+    operationClaimSha256: begun.claimSha256,
+    authorityConsumptionSha256: begun.claim.authorityConsumptionSha256,
+    operationLeaseSha256: heartbeat.leaseSha256,
+    operationLeaseEpoch: heartbeat.lease.leaseEpoch,
+    operationDeadlineAt: begun.lease.operationDeadlineAt,
+    inputSha256: intent.inputSha256,
+    outputSha256: "7".repeat(64),
+    observedStateSha256: "8".repeat(64),
+    sequence: 5,
+    startedAt: T0,
+    finishedAt: "2026-07-18T10:00:05.001Z",
+    recoveredAfterCrash: true,
+    verifiedChecks: null,
+    result: "completed" as const,
+    capability: "effect_capable" as const,
+    commandId: "production_rollout" as const,
+    redactedTemplateSha256: begun.selectedAuthority.redactedTemplateSha256,
+    executionKind: "external_effect" as const,
+    stepIntentRelativePath: intent.relativePath,
+    stepIntentSha256: intentRecord.sha256,
+    orchestration: "rollout" as const,
+    stepId: "stop_previous" as const
+  };
+  expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.persistStepReceipt(receipt))).toMatchObject({ created: true });
+  expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.persistStepReceipt(receipt))).toMatchObject({ created: false });
+
+  const foreignIntent = { ...intent, currentOperationLeaseSha256: "9".repeat(64),
+    sequence: 7, stepId: "start_candidate" as const,
+    relativePath: `production-operation-step-intents/${begun.lease.operationId}/7-start_candidate-1-v2.json` };
+  await writeFile(join(root, foreignIntent.relativePath), canonicalBytes(foreignIntent));
+  const foreignReceipt = { ...receipt, stepIntentSha256: releaseSha256V2(canonicalBytes(foreignIntent)),
+    sequence: 7, stepId: "start_candidate" as const,
+    stepIntentRelativePath: foreignIntent.relativePath };
+  expect(() => runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.persistStepReceipt(foreignReceipt))).toThrow(/intent.*binding/i);
+}, 45_000);
+
+it("resumes a real operation after an external receipt was durably written and skips every completed effect and query", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const effects: string[] = [];
+  const validations: string[] = [];
+  const adapters = {
+    now: () => T0,
+    async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+    async validateStep(input: any) {
+      validations.push(input.stepId);
+      return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
+        observedStateSha256: "2".repeat(64),
+        ...(input.stepId === "immediate_runtime_checks" ? { verifiedChecks: [
+          "schema", "version", "admin", "singleton", "workers", "logs", "delivery", "legacy"
+        ] } : {}) };
+    },
+    async prepareEffect(input: any) { return createHash("sha256").update(input.stepId).digest("hex"); },
+    async executeEffect(input: any) {
+      effects.push(input.stepId);
+      return { inputSha256: input.inputSha256, outputSha256: "3".repeat(64),
+        observedStateSha256: "4".repeat(64) };
+    },
+    async reconcileEffect() { throw new Error("completed_effect_must_not_reconcile"); }
+  } as any;
+  const persistReceipt = store.persistStepReceipt.bind(store);
+  let injected = false;
+  (store as any).persistStepReceipt = (value: any) => {
+    const record = persistReceipt(value);
+    if (!injected && value.stepId === "stop_previous") {
+      injected = true;
+      throw new Error("crash_after_external_receipt_fsync");
+    }
+    return record;
+  };
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
+    { store: store as any, adapters }))).rejects.toThrow("crash_after_external_receipt_fsync");
+  (store as any).persistStepReceipt = persistReceipt;
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
+    { store: store as any, adapters }))).resolves.toMatchObject({
+      completedSteps: ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
+        "verify_singleton_precondition", "stop_previous", "prove_previous_stopped", "start_candidate",
+        "prove_candidate_started", "immediate_runtime_checks"]
+    });
+  expect(effects).toEqual(["stop_previous", "start_candidate"]);
+  expect(validations.filter((step) => ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
+    "verify_singleton_precondition"].includes(step))).toHaveLength(4);
+  expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+}, 45_000);
+
+it.each([
+  "after_step_receipt:immediate_runtime_checks",
+  "after_orchestration_receipt",
+  "after_query_captures",
+  "after_auxiliary_captures",
+  "after_terminal_evidence",
+  "after_terminal_index",
+  "after_settlement",
+  "after_terminal_publication",
+  "after_removal_prepare",
+  "after_lease_removal",
+  "after_removal_receipt",
+  "after_terminal_cleanup"
+])("resumes byte-exactly at %s and publishes canonical evidence only after settlement", async (faultAt) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+    const root = await initializedAuthorityRoot();
+    const store = new ProductionOperationStoreV2(root);
+    const effects: string[] = [];
+    const validations: string[] = [];
+    const adapters = {
+      now: () => T0,
+      async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+      async validateStep(input: any) {
+        validations.push(input.stepId);
+        return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
+          observedStateSha256: "2".repeat(64),
+          ...(input.stepId === "immediate_runtime_checks" ? { verifiedChecks: [
+            "schema", "version", "admin", "singleton", "workers", "logs", "delivery", "legacy"
+          ] } : {}) };
+      },
+      async prepareEffect(input: any) { return createHash("sha256").update(input.stepId).digest("hex"); },
+      async executeEffect(input: any) {
+        effects.push(input.stepId);
+        return { inputSha256: input.inputSha256, outputSha256: "3".repeat(64),
+          observedStateSha256: "4".repeat(64) };
+      },
+      async reconcileEffect() { throw new Error("completed_effect_must_not_reconcile"); }
+    } as any;
+    await expect(runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true
+    }, () => executeProtectedProductionOperationV2({
+      artifactRoot: root, operationKind: "rollout", faultAt
+    }, { store: store as any, adapters }))).rejects.toThrow(/injected_(?:operation_)?fault/);
+
+    const operationDirectory = join(root, "production-operation-terminal-artifacts");
+    const before = existsSync(operationDirectory)
+      ? Object.fromEntries(readdirSync(operationDirectory, { recursive: true })
+        .filter((name) => String(name).endsWith(".json"))
+        .map((name) => [String(name), readFileSync(join(operationDirectory, String(name)))])) : {};
+    if (["after_step_receipt:immediate_runtime_checks", "after_orchestration_receipt",
+      "after_query_captures", "after_auxiliary_captures", "after_terminal_evidence", "after_terminal_index",
+      "after_settlement"].includes(faultAt)) {
+      expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(false);
+    }
+    if (faultAt === "after_lease_removal") {
+      const operationId = readdirSync(root).find((name) =>
+        name.startsWith("production-operation-settlement-production-rollout-"))!
+        .replace(/^production-operation-settlement-/u, "").replace(/\.json$/u, "");
+      const preparedPath = join(root, `production-operation-lease-removal-prepared-${operationId}.json`);
+      const preparedBytes = readFileSync(preparedPath);
+      await unlink(preparedPath);
+      expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+        .toThrow(/parent_missing|ENOENT|prepared/i);
+      await writeFile(preparedPath, preparedBytes);
+      const settlementPath = join(root, `production-operation-settlement-${operationId}.json`);
+      const settlementBytes = readFileSync(settlementPath);
+      const settlement = JSON.parse(settlementBytes.toString("utf8"));
+      await writeFile(settlementPath, canonicalBytes({ ...settlement,
+        sourceManifestSha256: "f".repeat(64) }));
+      expect(store.resumeCompletedSettlementBeforeBegin("rollout", T0)).toBeNull();
+      await writeFile(settlementPath, settlementBytes);
+      const claimName = readdirSync(root).find((name) => name.startsWith("production-operation-claim-"))!;
+      const claim = JSON.parse(readFileSync(join(root, claimName), "utf8"));
+      const lineagePath = join(root, ...String(claim.preclaimLeaseLineageRelativePath).split("/"));
+      const lineageBytes = readFileSync(lineagePath);
+      await unlink(lineagePath);
+      expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+        .toThrow(/parent_missing|ENOENT|lineage/i);
+      await writeFile(lineagePath, lineageBytes);
+      const lineage = JSON.parse(lineageBytes.toString("utf8"));
+      await writeFile(lineagePath, canonicalBytes({ ...lineage,
+        operationId: `production-rollout-${"f".repeat(64)}` }));
+      expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+        .toThrow(/lineage|binding/i);
+      await writeFile(lineagePath, lineageBytes);
+      const attestationPath = join(root, "operational-attestations", "g14_rollout_passed",
+        claim.releaseGenerationId, `${claim.operationalAttestationSha256}.json`);
+      const attestationBytes = readFileSync(attestationPath);
+      await unlink(attestationPath);
+      expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+        .toThrow(/parent_missing|ENOENT|authority|attestation/i);
+      await writeFile(attestationPath, attestationBytes);
+    }
+    await expect(runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true
+    }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
+      { store: store as any, adapters }))).resolves.toMatchObject({
+        completedSteps: ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
+          "verify_singleton_precondition", "stop_previous", "prove_previous_stopped", "start_candidate",
+          "prove_candidate_started", "immediate_runtime_checks"]
+      });
+    for (const [name, bytes] of Object.entries(before)) {
+      expect(readFileSync(join(operationDirectory, name))).toEqual(bytes);
+    }
+    expect(effects).toEqual(["stop_previous", "start_candidate"]);
+    expect(validations).toHaveLength(7);
+    expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(true);
+    expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+}, 60_000);
+
+it("publishes later same-kind terminal artifacts through a durable per-kind pointer", async () => {
+  const root = await trustedRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const operation = async (digit: string) => {
+    const operationId = `production-rollout-${digit.repeat(64)}`;
+    const directory = join(root, "production-operation-terminal-artifacts", operationId);
+    await mkdir(directory, { recursive: true });
+    const captureRelativePath = `production-operation-terminal-artifacts/${operationId}/failure-capture.json`;
+    const evidenceRelativePath = `production-operation-terminal-artifacts/${operationId}/failure-evidence.json`;
+    const capture = canonicalBytes({ operationId, marker: `${digit}-capture` });
+    const evidence = canonicalBytes({ operationId, marker: `${digit}-evidence` });
+    await writeFile(join(root, ...captureRelativePath.split("/")), capture);
+    await writeFile(join(root, ...evidenceRelativePath.split("/")), evidence);
+    const settlement = {
+      version: "production-operation-settlement-v2", operationKind: "rollout", operationId,
+      candidateSha: digit.repeat(40), releaseGenerationId: `generation-${digit.repeat(8)}`,
+      sourceManifestSha256: "a".repeat(64), claimSha256: "b".repeat(64),
+      authorityConsumptionSha256: "c".repeat(64), finalLeaseSha256: "d".repeat(64),
+      finalLeaseEpoch: 1, operationDeadlineAt: "2026-07-18T10:10:00.000Z",
+      terminalEvidenceSha256: releaseSha256V2(evidence), authorityRevalidatedAt: T0,
+      deadlineRevalidatedAt: T0, settledAt: T0, capability: "effect_capable", result: "failed",
+      orchestrationReceiptSha256: null, attemptedExternalEffect: false
+    };
+    const settlementBytes = canonicalBytes(settlement);
+    await writeFile(join(root, `production-operation-settlement-${operationId}.json`), settlementBytes);
+    const index = {
+      version: "production-terminal-artifact-index-v2", operationKind: "rollout", operationId,
+      operationClaimSha256: settlement.claimSha256,
+      authorityConsumptionSha256: settlement.authorityConsumptionSha256,
+      terminalEvidenceSha256: settlement.terminalEvidenceSha256, orchestrationReceiptSha256: null,
+      artifacts: [
+        { kind: "failure_capture", operationQualifiedRelativePath: captureRelativePath,
+          canonicalRelativePath: `production-operation-failure-capture-${operationId}.json`,
+          sha256: releaseSha256V2(capture) },
+        { kind: "failure_evidence", operationQualifiedRelativePath: evidenceRelativePath,
+          canonicalRelativePath: "production-failure-evidence-v2.json",
+          sha256: releaseSha256V2(evidence) }
+      ]
+    };
+    const indexBytes = canonicalBytes(index);
+    await writeFile(join(root, `production-terminal-artifact-index-${operationId}.json`), indexBytes);
+    const cleanup = {
+      version: "production-operation-terminal-cleanup-v2", operationKind: "rollout", operationId,
+      terminalStateSha256: releaseSha256V2(settlementBytes), capability: "effect_capable",
+      preparedRemovalSha256: "e".repeat(64), leaseRemovalReceiptSha256: "f".repeat(64),
+      removedLeaseSha256: settlement.finalLeaseSha256, cleanedAt: T0
+    };
+    await writeFile(join(root, `production-operation-terminal-cleanup-${operationId}.json`),
+      canonicalBytes(cleanup));
+    return { operationId, capture, evidence };
+  };
+  const first = await operation("1");
+  const second = await operation("2");
+  store.publishTerminalArtifacts(first.operationId);
+  expect(readFileSync(join(root, "production-failure-evidence-v2.json"))).toEqual(first.evidence);
+  // Simulate a crash after one second-operation alias changed but before the pointer commit.
+  await writeFile(join(root, `production-operation-failure-capture-${second.operationId}.json`),
+    second.capture);
+  store.publishTerminalArtifacts(second.operationId);
+  expect(readFileSync(join(root, "production-failure-evidence-v2.json"))).toEqual(second.evidence);
+  expect(JSON.parse(readFileSync(join(root,
+    "production-terminal-artifact-pointer-rollout-v2.json"), "utf8"))
+    .operationId).toBe(second.operationId);
+  expect(() => store.publishTerminalArtifacts(second.operationId)).not.toThrow();
+  const pointerPath = join(root, "production-terminal-artifact-pointer-rollout-v2.json");
+  const pointerBytes = readFileSync(pointerPath);
+  const pointer = JSON.parse(pointerBytes.toString("utf8"));
+  await writeFile(pointerPath, canonicalBytes({ ...pointer, settlementSha256: "0".repeat(64) }));
+  expect(() => store.publishTerminalArtifacts(second.operationId)).toThrow(/pointer.*binding/i);
+  await writeFile(pointerPath, pointerBytes);
+  const canonicalEvidencePath = join(root, "production-failure-evidence-v2.json");
+  await writeFile(canonicalEvidencePath, canonicalBytes({ unauthorized: true }));
+  expect(() => store.publishTerminalArtifacts(second.operationId)).toThrow(/publication_conflict/i);
+  await writeFile(canonicalEvidencePath, second.evidence);
+}, 45_000);
+
+it.each([
+  "after_failure_draft",
+  "after_failure_capture",
+  "after_failure_evidence",
+  "after_failure_terminal_index",
+  "after_failure_settlement",
+  "after_failure_terminal_publication",
+  "after_removal_prepare",
+  "after_lease_removal",
+  "after_removal_receipt",
+  "after_terminal_cleanup"
+])("resumes a failed terminal byte-exactly at %s without repeating its validation", async (faultAt) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const validations: string[] = [];
+  const effects: string[] = [];
+  const adapters = {
+    now: () => T0,
+    async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+    async validateStep(input: any) {
+      validations.push(input.stepId);
+      if (input.stepId === "verify_schema") throw new Error("schema verification failed");
+      return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
+        observedStateSha256: "2".repeat(64) };
+    },
+    async prepareEffect(input: any) { return createHash("sha256").update(input.stepId).digest("hex"); },
+    async executeEffect(input: any) {
+      effects.push(input.stepId);
+      return { inputSha256: input.inputSha256, outputSha256: "3".repeat(64),
+        observedStateSha256: "4".repeat(64) };
+    },
+    async reconcileEffect() { throw new Error("failed_terminal_must_not_reconcile"); }
+  } as any;
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout", faultAt },
+    { store: store as any, adapters }))).rejects.toThrow(/injected_(?:operation_)?fault|failure_settlement_failed/);
+  const operationId = JSON.parse(readFileSync(join(root,
+    readdirSync(root).find((name) => name.startsWith("production-operation-failure-draft-"))!), "utf8"))
+    .operationId as string;
+  const qualifiedRoot = join(root, "production-operation-terminal-artifacts", operationId);
+  const before = existsSync(qualifiedRoot)
+    ? Object.fromEntries(readdirSync(qualifiedRoot).filter((name) => name.endsWith(".json"))
+      .map((name) => [name, readFileSync(join(qualifiedRoot, name))])) : {};
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
+    { store: store as any, adapters }))).rejects.toThrow(/previous_failure_settled/);
+  expect(validations).toEqual(["verify_g13", "verify_schema"]);
+  expect(effects).toEqual([]);
+  for (const [name, bytes] of Object.entries(before)) {
+    expect(readFileSync(join(qualifiedRoot, name))).toEqual(bytes);
+  }
+  expect(existsSync(join(root, "production-failure-evidence-v2.json"))).toBe(true);
+  expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+}, 60_000);
+
 it("rejects an extra foreign committed receipt sharing the exact old lease hash", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(T0));
@@ -286,6 +683,50 @@ it("rejects an extra foreign committed receipt sharing the exact old lease hash"
     begun.lease.operationId, "2026-07-18T10:00:05.002Z"
   )).toThrow(/takeover.*(?:ambiguous|chain|binding)/i);
 }, 45_000);
+
+it.each(["after_prepare", "after_tombstone", "after_new_lease", "after_committed"])(
+"resumes normal and cleanup-only takeover at %s boundary", async (faultAt) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+    const normalRoot = await initializedAuthorityRoot();
+    const normalStore = new ProductionOperationStoreV2(normalRoot);
+    const normalBegun = await runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
+    }, () => normalStore.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+    await expect(runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => TAKEOVER_OWNER, isOwnerAlive: () => false
+    }, () => normalStore.takeoverEffectCapable({ expectedOldLeaseSha256: normalBegun.leaseSha256,
+      evaluatedAt: "2026-07-18T10:01:00.000Z", faultAt })))
+      .rejects.toThrow(`injected_fault_${faultAt}`);
+    const normalTakeover = await runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => TAKEOVER_OWNER, isOwnerAlive: () => false
+    }, () => normalStore.takeoverEffectCapable({ expectedOldLeaseSha256: normalBegun.leaseSha256,
+      evaluatedAt: "2026-07-18T10:01:01.000Z" }));
+    const normalLive = JSON.parse(readFileSync(join(normalRoot, "production-operation-root.lease.json"), "utf8"));
+    expect(releaseSha256V2(canonicalBytes(normalLive))).toBe(normalTakeover.newLeaseSha256);
+    expect(runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => TAKEOVER_OWNER, isOwnerAlive: () => true
+    }, () => normalStore.verifyImmutableAuthorityLineage(normalBegun.lease.operationId,
+      "2026-07-18T10:01:01.001Z")).leaseSha256).toBe(normalTakeover.newLeaseSha256);
+
+    const cleanupRoot = await initializedAuthorityRoot();
+    const cleanupStore = new ProductionOperationStoreV2(cleanupRoot);
+    const cleanupBegun = await runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
+    }, () => cleanupStore.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+    await expect(runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
+    }, () => cleanupStore.takeoverCleanupOnly({ expectedOldLeaseSha256: cleanupBegun.leaseSha256,
+      evaluatedAt: "2026-07-18T10:10:00.000Z", faultAt })))
+      .rejects.toThrow(`injected_fault_${faultAt}`);
+    const cleanupTerminal = await runWithRootWriterProcessRuntimeForTestsV2({
+      currentOwnerIdentity: () => CLEANUP_REPLAY_OWNER, isOwnerAlive: () => false
+    }, () => cleanupStore.takeoverCleanupOnly({ expectedOldLeaseSha256: cleanupBegun.leaseSha256,
+      evaluatedAt: "2026-07-18T10:11:00.000Z" }));
+    expect(cleanupTerminal.abandoned.operationId).toBe(cleanupBegun.lease.operationId);
+    expect(cleanupTerminal.cleanup.removedLeaseSha256).toBe(cleanupTerminal.abandoned.finalLeaseSha256);
+    expect(existsSync(join(cleanupRoot, "production-operation-root.lease.json"))).toBe(false);
+}, 90_000);
 
 it("rejects a multi-hop takeover identity switch even when the final lease switches back", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });

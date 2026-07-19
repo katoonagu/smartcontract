@@ -93,6 +93,45 @@ export type RuntimeEffectReconciliationEvidenceV2 = Readonly<{
   bindingSha256: string;
 }>;
 
+export type RuntimeIdentityExpectationV2 = RuntimeEffectReconciliationInputV2["target"];
+export type RuntimeRollbackTopologyStateV2 = "none" | "previous_singleton" | "candidate_singleton";
+export type RuntimeRollbackWindowV2 =
+  | Readonly<{ kind: "previous_runtime_retained"; failedGateId: "G13_PRODUCTION_MIGRATION" | "G14_PRODUCTION_ROLLOUT" }>
+  | Readonly<{ kind: "previous_runtime_restarted_without_candidate"; failedGateId: "G14_PRODUCTION_ROLLOUT";
+      previousStopEvidenceSha256: string }>
+  | Readonly<{ kind: "candidate_replaced_with_previous"; failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+      candidateStartEvidenceSha256: string }>
+  | Readonly<{ kind: "previous_already_restarted_without_candidate"; failedGateId: "G14_PRODUCTION_ROLLOUT";
+      previousStopEvidenceSha256: string; previousStartEvidenceSha256: string }>
+  | Readonly<{ kind: "candidate_already_replaced_with_previous"; failedGateId: "G14_PRODUCTION_ROLLOUT" | "G15_PRODUCTION_CANARY";
+      candidateStartEvidenceSha256: string; candidateStopEvidenceSha256: string; previousStartEvidenceSha256: string }>;
+export type RuntimeRollbackTopologyEvidenceV2 = Readonly<{
+  version: "runtime-rollback-topology-evidence-v2";
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  operationLeaseSha256: string;
+  operationLeaseEpoch: number;
+  authorityExpiresAt: string;
+  operationDeadlineAt: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  releaseFreezeIdentitySha256: string;
+  failureEvidenceSha256: string;
+  topology: RuntimeTopologySnapshotV2;
+  topologySnapshotSha256: string;
+  previousTarget: RuntimeIdentityExpectationV2;
+  previousTargetSha256: string;
+  candidateTarget: RuntimeIdentityExpectationV2;
+  candidateTargetSha256: string;
+  topologyState: RuntimeRollbackTopologyStateV2;
+  selectedWindow: RuntimeRollbackWindowV2;
+  selectedWindowSha256: string;
+  observedAt: string;
+  bindingSha256: string;
+}>;
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}_invalid`);
   return value as Record<string, unknown>;
@@ -163,8 +202,147 @@ function matchesTarget(
     && Date.parse(candidate.processStartedAt) <= Date.parse(input.observedAt);
 }
 
+function matchesIdentity(candidate: RuntimeTopologyCandidateV2, target: RuntimeIdentityExpectationV2): boolean {
+  return candidate.runtimeSha === target.runtimeSha
+    && candidate.runtimeLabel === target.runtimeLabel
+    && candidate.worktreePathFingerprintSha256 === target.worktreePathFingerprintSha256
+    && candidate.entrypointPathFingerprintSha256 === target.entrypointPathFingerprintSha256
+    && (target.exactProcessId === null || candidate.processId === target.exactProcessId)
+    && (target.exactProcessStartedAt === null || candidate.processStartedAt === target.exactProcessStartedAt);
+}
+
+function validateIdentityExpectation(target: RuntimeIdentityExpectationV2): RuntimeIdentityExpectationV2 {
+  if (!SHA40.test(target.runtimeSha) || typeof target.runtimeLabel !== "string" || target.runtimeLabel.length === 0
+      || !SHA256.test(target.worktreePathFingerprintSha256)
+      || !SHA256.test(target.entrypointPathFingerprintSha256)
+      || (target.exactProcessId !== null && (!Number.isSafeInteger(target.exactProcessId)
+        || target.exactProcessId < 1))
+      || (target.exactProcessStartedAt !== null
+        && exactIso(target.exactProcessStartedAt, "runtime_identity_target_started_at")
+          !== target.exactProcessStartedAt)
+      || (target.exactProcessId === null) !== (target.exactProcessStartedAt === null)) {
+    throw new Error("runtime_identity_target_invalid");
+  }
+  return target;
+}
+
+export function classifyRuntimeRollbackTopologyV2(
+  topologyValue: unknown,
+  previous: RuntimeIdentityExpectationV2,
+  candidate: RuntimeIdentityExpectationV2
+): RuntimeRollbackTopologyStateV2 | null {
+  const topology = validateRuntimeTopologySnapshotV2(topologyValue);
+  validateIdentityExpectation(previous);
+  validateIdentityExpectation(candidate);
+  if (topology.candidates.length === 0) return "none";
+  if (topology.candidates.length !== 1) return null;
+  const processCandidate = topology.candidates[0]!;
+  const previousMatches = matchesIdentity(processCandidate, previous);
+  const candidateMatches = matchesIdentity(processCandidate, candidate);
+  if (previousMatches === candidateMatches) return null;
+  return previousMatches ? "previous_singleton" : "candidate_singleton";
+}
+
 function evidenceBinding(value: Omit<RuntimeEffectReconciliationEvidenceV2, "bindingSha256">): string {
   return releaseSha256V2(canonicalBytesV2(value));
+}
+
+export function createRuntimeRollbackTopologyEvidenceV2(
+  value: Omit<RuntimeRollbackTopologyEvidenceV2, "bindingSha256">
+): RuntimeRollbackTopologyEvidenceV2 {
+  return validateRuntimeRollbackTopologyEvidenceV2({ ...value,
+    bindingSha256: releaseSha256V2(canonicalBytesV2(value)) });
+}
+
+export function validateRuntimeRollbackTopologyEvidenceV2(
+  value: unknown,
+  expected?: Partial<Omit<RuntimeRollbackTopologyEvidenceV2,
+    "version" | "topology" | "previousTarget" | "candidateTarget" | "bindingSha256">>
+): RuntimeRollbackTopologyEvidenceV2 {
+  const input = record(value, "runtime_rollback_topology_evidence");
+  exactKeys(input, ["version", "operationId", "operationClaimSha256", "authorityConsumptionSha256",
+    "operationLeaseSha256", "operationLeaseEpoch", "authorityExpiresAt", "operationDeadlineAt",
+    "candidateSha", "releaseGenerationId", "sourceManifestSha256", "releaseFreezeIdentitySha256",
+    "failureEvidenceSha256", "topology", "topologySnapshotSha256", "previousTarget",
+    "previousTargetSha256", "candidateTarget", "candidateTargetSha256", "topologyState",
+    "selectedWindow", "selectedWindowSha256", "observedAt", "bindingSha256"],
+  "runtime_rollback_topology_evidence");
+  if (input.version !== "runtime-rollback-topology-evidence-v2"
+      || typeof input.operationId !== "string"
+      || !/^production-rollback-[0-9a-f]{64}$/u.test(input.operationId)
+      || !Number.isSafeInteger(input.operationLeaseEpoch) || Number(input.operationLeaseEpoch) < 1
+      || typeof input.releaseGenerationId !== "string" || input.releaseGenerationId.length === 0
+      || !new Set(["none", "previous_singleton", "candidate_singleton"]).has(String(input.topologyState))) {
+    throw new Error("runtime_rollback_topology_evidence_invalid");
+  }
+  for (const key of ["operationClaimSha256", "authorityConsumptionSha256", "operationLeaseSha256",
+    "sourceManifestSha256", "releaseFreezeIdentitySha256", "failureEvidenceSha256", "topologySnapshotSha256",
+    "previousTargetSha256", "candidateTargetSha256", "selectedWindowSha256", "bindingSha256"] as const) {
+    if (!SHA256.test(String(input[key]))) throw new Error("runtime_rollback_topology_evidence_invalid");
+  }
+  if (!SHA40.test(String(input.candidateSha))) throw new Error("runtime_rollback_topology_evidence_invalid");
+  const authorityExpiresAt = exactIso(input.authorityExpiresAt, "runtime_rollback_authority_expiry");
+  const operationDeadlineAt = exactIso(input.operationDeadlineAt, "runtime_rollback_operation_deadline");
+  const observedAt = exactIso(input.observedAt, "runtime_rollback_observed_at");
+  if (Date.parse(observedAt) >= Date.parse(authorityExpiresAt)
+      || Date.parse(observedAt) >= Date.parse(operationDeadlineAt)) {
+    throw new Error("runtime_rollback_topology_bound_reached");
+  }
+  const topology = validateRuntimeTopologySnapshotV2(input.topology);
+  const previousTarget = validateIdentityExpectation(input.previousTarget as RuntimeIdentityExpectationV2);
+  const candidateTarget = validateIdentityExpectation(input.candidateTarget as RuntimeIdentityExpectationV2);
+  const topologyState = classifyRuntimeRollbackTopologyV2(topology, previousTarget, candidateTarget);
+  const selectedWindow = validateRuntimeRollbackWindowV2(input.selectedWindow);
+  if (topology.observedAt !== observedAt || topologyState === null || topologyState !== input.topologyState
+      || input.topologySnapshotSha256 !== releaseSha256V2(canonicalBytesV2(topology))
+      || input.previousTargetSha256 !== releaseSha256V2(canonicalBytesV2(previousTarget))
+      || input.candidateTargetSha256 !== releaseSha256V2(canonicalBytesV2(candidateTarget))
+      || input.selectedWindowSha256 !== releaseSha256V2(canonicalBytesV2(selectedWindow))
+      || !rollbackWindowMatchesTopology(topologyState, selectedWindow.kind)) {
+    throw new Error("runtime_rollback_topology_binding_invalid");
+  }
+  const { bindingSha256, ...withoutBinding } = input;
+  if (bindingSha256 !== releaseSha256V2(canonicalBytesV2(withoutBinding))) {
+    throw new Error("runtime_rollback_topology_binding_invalid");
+  }
+  if (expected !== undefined && Object.entries(expected).some(([key, expectedValue]) =>
+    input[key] !== expectedValue)) throw new Error("runtime_rollback_topology_expected_binding_invalid");
+  return input as RuntimeRollbackTopologyEvidenceV2;
+}
+
+function validateRuntimeRollbackWindowV2(value: unknown): RuntimeRollbackWindowV2 {
+  const input = record(value, "runtime_rollback_window");
+  const common = ["kind", "failedGateId"];
+  const extras: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    previous_runtime_retained: [],
+    previous_runtime_restarted_without_candidate: ["previousStopEvidenceSha256"],
+    candidate_replaced_with_previous: ["candidateStartEvidenceSha256"],
+    previous_already_restarted_without_candidate: ["previousStopEvidenceSha256", "previousStartEvidenceSha256"],
+    candidate_already_replaced_with_previous: ["candidateStartEvidenceSha256", "candidateStopEvidenceSha256",
+      "previousStartEvidenceSha256"]
+  });
+  const fields = extras[String(input.kind)];
+  if (!fields) throw new Error("runtime_rollback_window_invalid");
+  exactKeys(input, [...common, ...fields], "runtime_rollback_window");
+  if (!new Set(["G13_PRODUCTION_MIGRATION", "G14_PRODUCTION_ROLLOUT", "G15_PRODUCTION_CANARY"])
+    .has(String(input.failedGateId))
+      || (input.failedGateId === "G13_PRODUCTION_MIGRATION" && input.kind !== "previous_runtime_retained")
+      || (input.failedGateId === "G15_PRODUCTION_CANARY"
+        && input.kind !== "candidate_replaced_with_previous"
+        && input.kind !== "candidate_already_replaced_with_previous")) {
+    throw new Error("runtime_rollback_window_invalid");
+  }
+  for (const field of fields) if (!SHA256.test(String(input[field]))) {
+    throw new Error("runtime_rollback_window_invalid");
+  }
+  return input as RuntimeRollbackWindowV2;
+}
+
+function rollbackWindowMatchesTopology(state: RuntimeRollbackTopologyStateV2, kind: string): boolean {
+  return state === "none" ? kind === "previous_runtime_restarted_without_candidate"
+    : state === "candidate_singleton" ? kind === "candidate_replaced_with_previous"
+      : new Set(["previous_runtime_retained", "previous_already_restarted_without_candidate",
+        "candidate_already_replaced_with_previous"]).has(kind);
 }
 
 export function resolveRuntimeEffectReconciliationV2(
@@ -196,16 +374,9 @@ export function resolveRuntimeEffectReconciliationV2(
   }
   const effectNotBefore = exactIso(input.effectNotBefore, "runtime_effect_reconciliation_effect_not_before");
   const target = input.target;
-  if (!SHA40.test(target.runtimeSha) || typeof target.runtimeLabel !== "string" || target.runtimeLabel.length === 0
-      || !SHA256.test(target.worktreePathFingerprintSha256)
-      || !SHA256.test(target.entrypointPathFingerprintSha256)
-      || (target.exactProcessId !== null && (!Number.isSafeInteger(target.exactProcessId)
-        || target.exactProcessId < 1))
-      || (target.exactProcessStartedAt !== null
-        && exactIso(target.exactProcessStartedAt, "runtime_effect_reconciliation_target_started_at")
-          !== target.exactProcessStartedAt)
-      || (target.exactProcessId === null) !== (target.exactProcessStartedAt === null)
-      || Date.parse(effectNotBefore) > Date.parse(observedAt)) {
+  try { validateIdentityExpectation(target); }
+  catch (error) { throw new Error("runtime_effect_reconciliation_target_invalid", { cause: error }); }
+  if (Date.parse(effectNotBefore) > Date.parse(observedAt)) {
     throw new Error("runtime_effect_reconciliation_target_invalid");
   }
   const confirmed = input.desiredState === "target_absent"

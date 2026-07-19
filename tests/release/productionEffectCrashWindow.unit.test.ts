@@ -10,6 +10,11 @@ import {
   type ProtectedProductionOperationStoreV2,
   type ProtectedRollbackWindowV2
 } from "../../src/release/productionReleaseOrchestratorV2";
+import { selectRuntimeEffectRecoverySourceV2 } from "../../src/release/productionOperationAdaptersV2";
+import {
+  completeTask0BManagedRuntimeStart,
+  completeTask0BManagedRuntimeStop
+} from "../../scripts/manageTask0BRuntime";
 
 const SHA40 = "a".repeat(40);
 const SHA256 = "b".repeat(64);
@@ -22,6 +27,9 @@ const TERMINAL_CHECKS = Object.freeze({
 } as const);
 
 type OperationKind = "rollout" | "rollback";
+const ROLLOUT_STEP_IDS = ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
+  "verify_singleton_precondition", "stop_previous", "prove_previous_stopped", "start_candidate",
+  "prove_candidate_started", "immediate_runtime_checks"] as const;
 
 function operation(kind: OperationKind) {
   return {
@@ -72,8 +80,10 @@ function crashHarness(input: {
     heartbeat() { return { lease: begun.lease, leaseSha256: begun.leaseSha256 }; },
     persistStepIntent(value: any) {
       events.push(`intent:${value.stepId}`);
-      unresolvedIntents.add(`${value.operationId}:${value.sequence}:${value.stepId}`);
-      return { kind: "intent", relativePath: value.relativePath, sha256: "a".repeat(64), created: true };
+      const key = `${value.operationId}:${value.sequence}:${value.stepId}`;
+      const created = !unresolvedIntents.has(key) && !events.includes(`receipt:${value.stepId}`);
+      unresolvedIntents.add(key);
+      return { kind: "intent", relativePath: value.relativePath, sha256: "a".repeat(64), created };
     },
     persistStepReceipt(value: any) {
       events.push(`receipt:${value.stepId}`);
@@ -121,7 +131,102 @@ function crashHarness(input: {
   return { events, persisted, store, adapters };
 }
 
+function rolloutPrefix(length: number) {
+  const begun = operation("rollout");
+  return ROLLOUT_STEP_IDS.slice(0, length).map((stepId, offset) => {
+    const sequence = offset + 1;
+    const inputSha256 = releaseSha256V2(canonicalBytesV2({ version: "production-leaf-input-v2",
+      operationId: begun.lease.operationId, operationKind: "rollout", sequence, stepId }));
+    const external = stepId === "stop_previous" || stepId === "start_candidate";
+    const relativePath = `production-operation-steps/${begun.lease.operationId}/${sequence}-${stepId}-v2.json`;
+    const intentPath = external
+      ? `production-operation-step-intents/${begun.lease.operationId}/${sequence}-${stepId}-1-v2.json` : null;
+    const receipt = {
+      version: "production-orchestration-step-receipt-v2" as const,
+      operationId: begun.lease.operationId,
+      operationClaimSha256: begun.claimSha256,
+      authorityConsumptionSha256: begun.claim.authorityConsumptionSha256,
+      operationLeaseSha256: begun.leaseSha256,
+      operationLeaseEpoch: begun.lease.leaseEpoch,
+      operationDeadlineAt: begun.lease.operationDeadlineAt,
+      inputSha256, outputSha256: String(sequence).repeat(64).slice(0, 64),
+      observedStateSha256: "a".repeat(64), sequence,
+      startedAt: NOW, finishedAt: NOW, recoveredAfterCrash: false,
+      verifiedChecks: stepId === "immediate_runtime_checks" ? [...TERMINAL_CHECKS.immediate_runtime_checks] : null,
+      result: "completed" as const, capability: "effect_capable" as const,
+      commandId: "production_rollout" as const,
+      redactedTemplateSha256: begun.selectedAuthority.redactedTemplateSha256,
+      executionKind: external ? "external_effect" as const : "local_validation" as const,
+      stepIntentRelativePath: intentPath,
+      stepIntentSha256: external ? "b".repeat(64) : null,
+      orchestration: "rollout" as const, stepId
+    };
+    return { relativePath, sha256: releaseSha256V2(canonicalBytesV2(receipt)), receipt: receipt as any };
+  });
+}
+
 describe("production effect crash windows", () => {
+  it.each([[4, 2], [5, 1], [9, 0]] as const)(
+    "[PRODUCTION-COMPLETED-PREFIX] hydrates %i exact receipts and executes only %i remaining effects",
+    async (prefixLength, remainingEffects) => {
+      const { events, store, adapters } = crashHarness({ operationKind: "rollout", crashStep: "start_candidate" });
+      const prefix = rolloutPrefix(prefixLength);
+      const effect = vi.fn(async (leaf: any) => ({ inputSha256: leaf.inputSha256,
+        outputSha256: "e".repeat(64), observedStateSha256: "f".repeat(64) }));
+      const validate = vi.fn(async (leaf: any) => ({ inputSha256: leaf.inputSha256,
+        outputSha256: "b".repeat(64), observedStateSha256: "c".repeat(64),
+        verifiedChecks: leaf.stepId === "immediate_runtime_checks"
+          ? TERMINAL_CHECKS.immediate_runtime_checks : undefined }));
+      const prefixStore = { ...store, loadCompletedStepPrefix: () => prefix };
+      await expect(executeProtectedProductionOperationV2({
+        artifactRoot: mkdtempSync(join(tmpdir(), "plan5-prefix-resume-")), operationKind: "rollout"
+      }, { store: prefixStore, adapters: { ...adapters, validateStep: validate, executeEffect: effect } }))
+        .resolves.toMatchObject({ completedSteps: [...ROLLOUT_STEP_IDS] });
+      expect(effect).toHaveBeenCalledTimes(remainingEffects);
+      expect(validate).toHaveBeenCalledTimes(ROLLOUT_STEP_IDS.length - prefixLength - remainingEffects);
+      for (const record of prefix) expect(events).not.toContain(`effect:${record.receipt.stepId}`);
+    }
+  );
+  it("resolves rollback topology only after a fresh operation claim and an in-bound ownership check", async () => {
+    const begun = operation("rollback");
+    const events: string[] = [];
+    const store = {
+      async beginOperation() { events.push("begin+claim"); return begun; },
+      assertOwnedAndWithinBounds() { events.push("owned+in-bound"); return { lease: begun.lease,
+        leaseSha256: begun.leaseSha256, claim: begun.claim, claimSha256: begun.claimSha256,
+        takeoverChainSha256: SHA256 }; }
+    } as any;
+    const adapters = {
+      now: () => NOW,
+      async loadReleaseContext() { return { releaseFreezeIdentitySha256: SHA256 }; },
+      async resolveRollbackContext(input: any) {
+        events.push(`resolve:${input.operationId}`);
+        throw new Error("stop_after_bound_topology_query");
+      }
+    } as any;
+    await expect(executeProtectedProductionOperationV2({ artifactRoot: "C:/protected", operationKind: "rollback" },
+      { store, adapters })).rejects.toThrow("stop_after_bound_topology_query");
+    expect(events).toEqual(["begin+claim", "owned+in-bound", `resolve:${begun.lease.operationId}`]);
+  });
+
+  it.each(["claim unavailable", "strict bound equality"])("does not query rollback topology when %s", async (kind) => {
+    const begun = operation("rollback");
+    const resolver = vi.fn();
+    const store = {
+      async beginOperation() {
+        if (kind === "claim unavailable") throw new Error("fresh_claim_unavailable");
+        return begun;
+      },
+      assertOwnedAndWithinBounds() { throw new Error("production_operation_authority_bound_reached"); }
+    } as any;
+    const adapters = { now: () => NOW,
+      async loadReleaseContext() { return { releaseFreezeIdentitySha256: SHA256 }; },
+      resolveRollbackContext: resolver } as any;
+    await expect(executeProtectedProductionOperationV2({ artifactRoot: "C:/protected", operationKind: "rollback" },
+      { store, adapters })).rejects.toThrow(/claim_unavailable|bound_reached/);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
   for (const scenario of [
     { operationKind: "rollout", crashStep: "stop_previous", forbiddenLaterEffect: "start_candidate" },
     { operationKind: "rollout", crashStep: "start_candidate", forbiddenLaterEffect: null },
@@ -170,4 +275,77 @@ describe("production effect crash windows", () => {
     expect(events).not.toContain("settlement");
     expect(events).not.toContain("terminal");
   });
+
+  it.each([
+    ["after_stop_before_evidence", "stop_previous", "target_absent", false],
+    ["after_spawn_observed_before_evidence", "start_candidate", "target_singleton", false],
+    ["after_evidence_before_stdout", "start_candidate", "observer_forbidden", true]
+  ] as const)("[PRODUCTION-MANAGER-CRASH-POINT] %s recovers the exact receipt without replaying the uncertain effect",
+    async (crashPoint, crashStep, topologyState, durableManagerEvidence) => {
+      const { events, store, adapters } = crashHarness({ operationKind: "rollout", crashStep });
+      const root = mkdtempSync(join(tmpdir(), "plan5-manager-crash-point-"));
+      let effectCalls = 0;
+      let managerEvidence: { outputSha256: string } | null = null;
+      const managerFault = () => { throw new Error(`manager_crash_point:${crashPoint}`); };
+      const recoveringAdapters = {
+        ...adapters,
+        async executeEffect(leaf: any) {
+          events.push(`effect:${leaf.stepId}`);
+          if (leaf.stepId === crashStep) {
+            effectCalls += 1;
+            if (crashPoint === "after_stop_before_evidence") {
+              await completeTask0BManagedRuntimeStop({
+                processId: 77,
+                evidencePath: "stop-evidence.json",
+                async performStop() {},
+                buildEvidence: () => ({ outputSha256: "e".repeat(64) }),
+                async writeEvidence(_path, value) { managerEvidence = value; },
+                faultHooks: { afterStopBeforeEvidence: managerFault }
+              });
+              throw new Error("unreachable_manager_stop_completion");
+            }
+            await completeTask0BManagedRuntimeStart({
+              generationId: "generation-123456",
+              commandId: "runtime_manager_start_candidate",
+              authoritySha256: "a".repeat(64),
+              processId: 77,
+              evidence: { outputSha256: "e".repeat(64) },
+              async writeEvidence(_path, value) { managerEvidence = value as { outputSha256: string }; },
+              async terminateAndVerify() {},
+              faultHooks: crashPoint === "after_spawn_observed_before_evidence"
+                ? { afterObservedBeforeEvidence: managerFault }
+                : { afterEvidenceBeforeReturn: managerFault }
+            });
+            throw new Error("unreachable_manager_start_completion");
+          }
+          return { inputSha256: leaf.inputSha256, outputSha256: "e".repeat(64),
+            observedStateSha256: "f".repeat(64) };
+        },
+        async reconcileEffect(leaf: any) {
+          events.push(`reconcile:${leaf.stepId}`);
+          const observer = vi.fn(async () => {
+            if (topologyState === "observer_forbidden") throw new Error("topology_observer_must_not_run");
+            return topologyState;
+          });
+          const recovered = await selectRuntimeEffectRecoverySourceV2({
+            managerEvidence,
+            validateManagerEvidence(value) {
+              expect(value).toEqual({ outputSha256: "e".repeat(64) });
+            },
+            observeTopology: observer
+          });
+          expect(recovered.source).toBe(durableManagerEvidence ? "manager_evidence" : "topology");
+          expect(observer).toHaveBeenCalledTimes(durableManagerEvidence ? 0 : 1);
+          return { inputSha256: leaf.inputSha256, outputSha256: "e".repeat(64),
+            observedStateSha256: "f".repeat(64) };
+        }
+      };
+      await expect(executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
+        { store, adapters: recoveringAdapters })).rejects.toThrow(`manager_crash_point:${crashPoint}`);
+      await expect(executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
+        { store, adapters: recoveringAdapters })).resolves.toMatchObject({ operationId: operation("rollout").lease.operationId });
+      expect(effectCalls).toBe(1);
+      expect(events.filter((event) => event === `receipt:${crashStep}`)).toHaveLength(1);
+      expect(events).toContain(`reconcile:${crashStep}`);
+    });
 });
