@@ -8,6 +8,7 @@ import {
   assertRuntimeStartupCyclesReadyV2,
   waitForRuntimeCycleSnapshotV2,
   productionObservationHardDeadlineV2,
+  productionObservationTimeoutMsV2,
   runWithinProductionObservationBoundV2,
   queryProductionRuntimeInvariantsV2,
   verifyProductionDatabaseSnapshotBindingV2,
@@ -284,6 +285,23 @@ describe("production live proof", () => {
       async run() { calls += 1; now += 1; return "late"; }
     })).rejects.toThrow(/observation.*bound/i);
     expect(calls).toBe(1);
+  });
+
+  it("recomputes the remaining PostgreSQL budget before every query and never starts a query at the bound", async () => {
+    const deadline = "2026-07-19T00:00:00.010Z";
+    let now = Date.parse("2026-07-19T00:00:00.000Z");
+    const queryTimeouts: number[] = [];
+    const query = async () => {
+      const timeout = productionObservationTimeoutMsV2(deadline, 15_000, () => now);
+      queryTimeouts.push(timeout);
+      now += 5;
+    };
+    await query();
+    await query();
+    expect(queryTimeouts).toEqual([10, 5]);
+    expect(() => productionObservationTimeoutMsV2(deadline, 15_000, () => now))
+      .toThrow(/observation.*bound/i);
+    expect(queryTimeouts).toHaveLength(2);
   });
 
   it("validates exact runtime and navigation response schemas and hash bindings", async () => {

@@ -586,11 +586,25 @@ export async function runWithinProductionObservationBoundV2<T>(input: Readonly<{
     throw new Error("production_observation_timeout_invalid");
   }
   const nowMs = input.nowMs ?? Date.now;
-  const remainingMs = deadlineMs - nowMs();
-  if (remainingMs <= 0) throw new Error("production_observation_bound_reached");
-  const result = await input.run(Math.min(input.configuredTimeoutMs, remainingMs));
+  const timeoutMs = productionObservationTimeoutMsV2(input.hardDeadlineAt,
+    input.configuredTimeoutMs, nowMs);
+  const result = await input.run(timeoutMs);
   if (nowMs() >= deadlineMs) throw new Error("production_observation_bound_reached");
   return result;
+}
+
+export function productionObservationTimeoutMsV2(
+  hardDeadlineAt: string,
+  configuredTimeoutMs: number,
+  nowMs: () => number = Date.now
+): number {
+  const deadlineMs = Date.parse(exactIso(hardDeadlineAt, "production_observation_deadline_invalid"));
+  if (!Number.isSafeInteger(configuredTimeoutMs) || configuredTimeoutMs < 1) {
+    throw new Error("production_observation_timeout_invalid");
+  }
+  const remainingMs = deadlineMs - nowMs();
+  if (remainingMs <= 0) throw new Error("production_observation_bound_reached");
+  return Math.min(configuredTimeoutMs, remainingMs);
 }
 
 async function fetchTypedJson(
@@ -893,11 +907,17 @@ async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: st
       await client.connect();
       let transactionStarted = false;
       try {
-        await client.query("begin isolation level repeatable read read only");
+        const boundedQuery = async (text: string, values: unknown[] = []) => {
+          const timeout = productionObservationTimeoutMsV2(hardDeadlineAt, timeoutMs);
+          await client.query({ text: `set statement_timeout to ${timeout}`, query_timeout: timeout } as any);
+          return client.query({ text, values,
+            query_timeout: productionObservationTimeoutMsV2(hardDeadlineAt, timeoutMs) } as any);
+        };
+        await boundedQuery("begin isolation level repeatable read read only");
         transactionStarted = true;
         const expected = external.config.productionDatabaseExpected;
         await verifyProductionDatabaseSnapshotBindingV2({
-          query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
+          query: (text, values) => boundedQuery(text, values).then((result) => ({ rows: result.rows }))
         }, {
           databaseName: expected.databaseName,
           connectedServerPort: expected.connectedServerPort,
@@ -906,11 +926,11 @@ async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: st
           systemIdentifier: expected.systemIdentifier
         });
         const invariants = await queryProductionRuntimeInvariantsV2({
-          query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
+          query: (text, values) => boundedQuery(text, values).then((result) => ({ rows: result.rows }))
         });
-        const currentTerminal = await snapshotTerminalLegacyPopulation(client, terminal);
+        const currentTerminal = await snapshotTerminalLegacyPopulation({ query: boundedQuery }, terminal);
         assertTerminalLegacyPopulationUnchanged(terminal, currentTerminal);
-        await client.query("commit");
+        await boundedQuery("commit");
         transactionStarted = false;
         return { identity, invariants, terminalLegacyUnchanged: true as const };
       } catch (error) {
