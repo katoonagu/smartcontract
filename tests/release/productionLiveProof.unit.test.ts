@@ -7,6 +7,7 @@ import {
   assertRuntimeStartupCyclesReadyV2,
   waitForRuntimeCycleSnapshotV2,
   productionObservationHardDeadlineV2,
+  runWithinProductionObservationBoundV2,
   queryProductionRuntimeInvariantsV2,
   verifyProductionDatabaseSnapshotBindingV2,
   validateProductionRuntimeNavigationProbeV1,
@@ -234,6 +235,44 @@ describe("production live proof", () => {
       })).rejects.toThrow(/advance.*timeout/i);
       expect(readsAtEquality).toBe(0);
     }
+  });
+
+  it("caps every production observation timeout to the remaining strict authority/deadline budget", async () => {
+    let now = Date.parse("2026-07-19T00:00:00.000Z");
+    const configuredTimeouts: number[] = [];
+    await expect(runWithinProductionObservationBoundV2({
+      hardDeadlineAt: "2026-07-19T00:00:00.250Z",
+      configuredTimeoutMs: 10_000,
+      nowMs: () => now,
+      async run(timeoutMs) {
+        configuredTimeouts.push(timeoutMs);
+        now += 249;
+        return "ok";
+      }
+    })).resolves.toBe("ok");
+    expect(configuredTimeouts).toEqual([250]);
+  });
+
+  it("does not start HTTP or PostgreSQL observation at equality and rejects cross-bound completion", async () => {
+    const deadline = "2026-07-19T00:00:00.250Z";
+    let now = Date.parse(deadline);
+    let calls = 0;
+    await expect(runWithinProductionObservationBoundV2({
+      hardDeadlineAt: deadline,
+      configuredTimeoutMs: 15_000,
+      nowMs: () => now,
+      async run() { calls += 1; return "unreachable"; }
+    })).rejects.toThrow(/observation.*bound/i);
+    expect(calls).toBe(0);
+
+    now -= 1;
+    await expect(runWithinProductionObservationBoundV2({
+      hardDeadlineAt: deadline,
+      configuredTimeoutMs: 15_000,
+      nowMs: () => now,
+      async run() { calls += 1; now += 1; return "late"; }
+    })).rejects.toThrow(/observation.*bound/i);
+    expect(calls).toBe(1);
   });
 
   it("validates exact runtime and navigation response schemas and hash bindings", async () => {

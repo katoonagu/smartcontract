@@ -574,78 +574,109 @@ export function productionObservationHardDeadlineV2(
   return new Date(Math.min(operation, authority)).toISOString();
 }
 
-async function fetchTypedJson(url: URL, init: RequestInit, label: string): Promise<{ status: number; value: unknown }> {
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
-  const text = await response.text();
-  if (text.length > MAX_CAPTURE_BYTES) throw new Error(`production_${label}_too_large`);
-  let value: unknown;
-  try { value = JSON.parse(text); }
-  catch (error) { throw new Error(`production_${label}_json_invalid`, { cause: error }); }
-  return { status: response.status, value };
+export async function runWithinProductionObservationBoundV2<T>(input: Readonly<{
+  hardDeadlineAt: string;
+  configuredTimeoutMs: number;
+  nowMs?: () => number;
+  run(timeoutMs: number): Promise<T>;
+}>): Promise<T> {
+  const deadlineMs = Date.parse(exactIso(input.hardDeadlineAt,
+    "production_observation_deadline_invalid"));
+  if (!Number.isSafeInteger(input.configuredTimeoutMs) || input.configuredTimeoutMs < 1) {
+    throw new Error("production_observation_timeout_invalid");
+  }
+  const nowMs = input.nowMs ?? Date.now;
+  const remainingMs = deadlineMs - nowMs();
+  if (remainingMs <= 0) throw new Error("production_observation_bound_reached");
+  const result = await input.run(Math.min(input.configuredTimeoutMs, remainingMs));
+  if (nowMs() >= deadlineMs) throw new Error("production_observation_bound_reached");
+  return result;
+}
+
+async function fetchTypedJson(
+  url: URL,
+  init: RequestInit,
+  label: string,
+  hardDeadlineAt: string
+): Promise<{ status: number; value: unknown }> {
+  return runWithinProductionObservationBoundV2({ hardDeadlineAt, configuredTimeoutMs: 10_000,
+    async run(timeoutMs) {
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const text = await response.text();
+      if (text.length > MAX_CAPTURE_BYTES) throw new Error(`production_${label}_too_large`);
+      let value: unknown;
+      try { value = JSON.parse(text); }
+      catch (error) { throw new Error(`production_${label}_json_invalid`, { cause: error }); }
+      return { status: response.status, value };
+    } });
 }
 
 async function observeAdmin(
   root: string,
-  runNavigationProbe: boolean
+  runNavigationProbe: boolean,
+  hardDeadlineAt: string
 ) {
-  const task0b = loadTask0B(root);
-  const base = new URL(task0b.runtimeManager.candidateAdminUrl);
-  const admin = await fetch(base, { signal: AbortSignal.timeout(10_000) });
-  if (admin.status !== 200) throw new Error("production_runtime_http_check_failed");
-  const adminToken = process.env.ADMIN_DASHBOARD_TOKEN;
-  if (!adminToken) throw new Error("production_navigation_authority_missing");
-  let navigationStatus = runNavigationProbe ? 0 : 200;
-  if (runNavigationProbe) {
-    const navigation = await fetchTypedJson(new URL("/admin/api/runtime-navigation-probe", base), {
-      method: "POST", headers: { authorization: `Bearer ${adminToken}` }
-    }, "navigation_probe");
-    if (navigation.status !== 200) throw new Error("production_navigation_invariant_failed");
-    validateProductionRuntimeNavigationProbeV1(navigation.value, task0b.candidateSha);
-    navigationStatus = navigation.status;
-  }
-  const startEvidence = (["runtime_manager_start_candidate", "runtime_manager_rollback_previous"] as const)
-    .map((commandId) => actualRuntimeEvidence(root, commandId)).filter((value) => value !== null);
-  let live: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>> | null = null;
-  let runtimeGenerationId: string | null = null;
-  let runtimeStartCommandId: "runtime_manager_start_candidate" | "runtime_manager_rollback_previous" | null = null;
-  let runtimeAuthoritySha256: string | null = null;
-  for (const evidence of startEvidence) {
-    if (!evidence.startEvidence) throw new Error("production_runtime_start_evidence_missing");
-    const processId = evidence.startEvidence.runtimeEvidence.processId;
-    if (!Number.isSafeInteger(processId) || processId < 1) continue;
-    try {
-      live = await observeWindowsRuntimeProcess(processId);
-      const runtime = evidence.startEvidence.runtimeEvidence;
-      if (runtime.runtimeSha !== live.runtimeSha || runtime.runtimeLabel !== live.runtimeLabel
-          || runtime.processStartedAt !== live.processStartedAt
-          || runtime.commandLineSha256 !== live.commandLineSha256
-          || runtime.executablePathSha256 !== live.executablePathSha256
-          || runtime.workingDirectoryFingerprintSha256 !== live.workingDirectoryFingerprintSha256
-          || runtime.entrypointPathFingerprintSha256 !== live.entrypointPathFingerprintSha256) {
-        throw new Error("production_runtime_start_evidence_mismatch");
+  return runWithinProductionObservationBoundV2({ hardDeadlineAt, configuredTimeoutMs: 10_000,
+    async run(timeoutMs) {
+      const task0b = loadTask0B(root);
+      const base = new URL(task0b.runtimeManager.candidateAdminUrl);
+      const admin = await fetch(base, { signal: AbortSignal.timeout(timeoutMs) });
+      if (admin.status !== 200) throw new Error("production_runtime_http_check_failed");
+      const adminToken = process.env.ADMIN_DASHBOARD_TOKEN;
+      if (!adminToken) throw new Error("production_navigation_authority_missing");
+      let navigationStatus = runNavigationProbe ? 0 : 200;
+      if (runNavigationProbe) {
+        const navigation = await fetchTypedJson(new URL("/admin/api/runtime-navigation-probe", base), {
+          method: "POST", headers: { authorization: `Bearer ${adminToken}` }
+        }, "navigation_probe", hardDeadlineAt);
+        if (navigation.status !== 200) throw new Error("production_navigation_invariant_failed");
+        validateProductionRuntimeNavigationProbeV1(navigation.value, task0b.candidateSha);
+        navigationStatus = navigation.status;
       }
-      runtimeGenerationId = evidence.generationId;
-      if (evidence.commandId !== "runtime_manager_start_candidate"
-          && evidence.commandId !== "runtime_manager_rollback_previous") continue;
-      runtimeStartCommandId = evidence.commandId;
-      runtimeAuthoritySha256 = evidence.authoritySha256;
-      break;
-    } catch { /* another issued start may be historical */ }
-  }
-  if (live === null) {
-    try { live = await observeWindowsRuntimeProcess(task0b.previousRuntimeIdentity.processId); }
-    catch { throw new Error("production_runtime_identity_unverified"); }
-    if (live.runtimeSha !== task0b.previousRuntimeSha || live.runtimeLabel !== task0b.previousRuntimeLabel) {
-      throw new Error("production_previous_runtime_identity_changed");
-    }
-  }
-  if (live.runtimeSha !== task0b.candidateSha && live.runtimeSha !== task0b.previousRuntimeSha) {
-    throw new Error("production_runtime_sha_unverified");
-  }
-  return { adminStatus: admin.status, runtimeSha: live.runtimeSha,
-    runtimeLabelSha256: hash(live.runtimeLabel), runtimeProcessCount: await countTask0BRuntimeCandidates(),
-    navigationStatus, runtimeGenerationId, runtimeStartCommandId, runtimeAuthoritySha256,
-    cycleSnapshot: null as RuntimeCycleSnapshotV2 | null };
+      const startEvidence = (["runtime_manager_start_candidate", "runtime_manager_rollback_previous"] as const)
+        .map((commandId) => actualRuntimeEvidence(root, commandId)).filter((value) => value !== null);
+      let live: Awaited<ReturnType<typeof observeWindowsRuntimeProcess>> | null = null;
+      let runtimeGenerationId: string | null = null;
+      let runtimeStartCommandId: "runtime_manager_start_candidate" | "runtime_manager_rollback_previous" | null = null;
+      let runtimeAuthoritySha256: string | null = null;
+      for (const evidence of startEvidence) {
+        if (!evidence.startEvidence) throw new Error("production_runtime_start_evidence_missing");
+        const processId = evidence.startEvidence.runtimeEvidence.processId;
+        if (!Number.isSafeInteger(processId) || processId < 1) continue;
+        try {
+          live = await observeWindowsRuntimeProcess(processId);
+          const runtime = evidence.startEvidence.runtimeEvidence;
+          if (runtime.runtimeSha !== live.runtimeSha || runtime.runtimeLabel !== live.runtimeLabel
+              || runtime.processStartedAt !== live.processStartedAt
+              || runtime.commandLineSha256 !== live.commandLineSha256
+              || runtime.executablePathSha256 !== live.executablePathSha256
+              || runtime.workingDirectoryFingerprintSha256 !== live.workingDirectoryFingerprintSha256
+              || runtime.entrypointPathFingerprintSha256 !== live.entrypointPathFingerprintSha256) {
+            throw new Error("production_runtime_start_evidence_mismatch");
+          }
+          runtimeGenerationId = evidence.generationId;
+          if (evidence.commandId !== "runtime_manager_start_candidate"
+              && evidence.commandId !== "runtime_manager_rollback_previous") continue;
+          runtimeStartCommandId = evidence.commandId;
+          runtimeAuthoritySha256 = evidence.authoritySha256;
+          break;
+        } catch { /* another issued start may be historical */ }
+      }
+      if (live === null) {
+        try { live = await observeWindowsRuntimeProcess(task0b.previousRuntimeIdentity.processId); }
+        catch { throw new Error("production_runtime_identity_unverified"); }
+        if (live.runtimeSha !== task0b.previousRuntimeSha || live.runtimeLabel !== task0b.previousRuntimeLabel) {
+          throw new Error("production_previous_runtime_identity_changed");
+        }
+      }
+      if (live.runtimeSha !== task0b.candidateSha && live.runtimeSha !== task0b.previousRuntimeSha) {
+        throw new Error("production_runtime_sha_unverified");
+      }
+      return { adminStatus: admin.status, runtimeSha: live.runtimeSha,
+        runtimeLabelSha256: hash(live.runtimeLabel), runtimeProcessCount: await countTask0BRuntimeCandidates(),
+        navigationStatus, runtimeGenerationId, runtimeStartCommandId, runtimeAuthoritySha256,
+        cycleSnapshot: null as RuntimeCycleSnapshotV2 | null };
+    } });
 }
 
 async function observeProductionLiveProof(
@@ -658,8 +689,8 @@ async function observeProductionLiveProof(
 ): Promise<{ proof: ProductionLiveProofSnapshotV2; queuePopulationCount: number;
     cycleSnapshot: RuntimeCycleSnapshotV2 | null }> {
   const [admin, database] = await Promise.all([
-    observeAdmin(root, runNavigationProbe),
-    observeProductionDatabaseRuntime(root)
+    observeAdmin(root, runNavigationProbe, operationDeadlineAt),
+    observeProductionDatabaseRuntime(root, operationDeadlineAt)
   ]);
   const diagnostics = kind === "rollback"
     ? { workerScheduleCount: 0, botStartedCount: 0, fatalLogCount: 0, secretDetected: false as const,
@@ -686,7 +717,7 @@ async function observeProductionLiveProof(
       async readProof() {
         const runtimeResponse = await fetchTypedJson(new URL("/admin/api/runtime-proof", base), {
           headers: { authorization: `Bearer ${adminToken}` }
-        }, "runtime_proof");
+        }, "runtime_proof", operationDeadlineAt);
         if (runtimeResponse.status !== 200) throw new Error("production_runtime_proof_http_invalid");
         return runtimeResponse.value;
       }
@@ -834,53 +865,56 @@ export async function verifyProductionDatabaseSnapshotBindingV2(
   return schema;
 }
 
-async function observeProductionDatabaseRuntime(root: string) {
-  const external = await readExternalConfig(root);
-  const databaseUrl = process.env[external.config.databaseConnectionEnvName];
-  if (!databaseUrl) throw new Error("production_database_binding_missing");
-  const identity = await observeTask0BProductionDatabase(external.config);
-  if (process.env[external.config.databaseConnectionEnvName] !== databaseUrl) {
-    throw new Error("production_database_binding_changed");
-  }
-  if (identity.schemaState !== "schema_032_verified"
-      || identity.schema032ReceiptPrestate.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM) {
-    throw new Error("production_schema_verification_failed");
-  }
-  const terminal = readCanonical(root, "terminal-legacy-population.json", validateTerminalLegacyPopulation).value;
-  const client = new Client({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000,
-    statement_timeout: 15_000, query_timeout: 15_000, application_name: "plan5_production_live_proof" });
-  await client.connect();
-  let transactionStarted = false;
-  try {
-    await client.query("begin isolation level repeatable read read only");
-    transactionStarted = true;
-    const expected = external.config.productionDatabaseExpected;
-    await verifyProductionDatabaseSnapshotBindingV2({
-      query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
-    }, {
-      databaseName: expected.databaseName,
-      connectedServerPort: expected.connectedServerPort,
-      serverVersionNum: expected.serverVersionNum,
-      databaseOid: expected.databaseOid,
-      systemIdentifier: expected.systemIdentifier
-    });
-    const invariants = await queryProductionRuntimeInvariantsV2({
-      query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
-    });
-    const currentTerminal = await snapshotTerminalLegacyPopulation(client, terminal);
-    assertTerminalLegacyPopulationUnchanged(terminal, currentTerminal);
-    await client.query("commit");
-    transactionStarted = false;
-    return { identity, invariants, terminalLegacyUnchanged: true as const };
-  } catch (error) {
-    if (transactionStarted) {
-      try { await client.query("rollback"); }
-      catch (rollbackError) { throw new AggregateError([error, rollbackError], "production_live_proof_rollback_failed"); }
-    }
-    throw error;
-  } finally {
-    await client.end();
-  }
+async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: string) {
+  return runWithinProductionObservationBoundV2({ hardDeadlineAt, configuredTimeoutMs: 15_000,
+    async run(timeoutMs) {
+      const external = await readExternalConfig(root);
+      const databaseUrl = process.env[external.config.databaseConnectionEnvName];
+      if (!databaseUrl) throw new Error("production_database_binding_missing");
+      const identity = await observeTask0BProductionDatabase(external.config);
+      if (process.env[external.config.databaseConnectionEnvName] !== databaseUrl) {
+        throw new Error("production_database_binding_changed");
+      }
+      if (identity.schemaState !== "schema_032_verified"
+          || identity.schema032ReceiptPrestate.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM) {
+        throw new Error("production_schema_verification_failed");
+      }
+      const terminal = readCanonical(root, "terminal-legacy-population.json", validateTerminalLegacyPopulation).value;
+      const client = new Client({ connectionString: databaseUrl, connectionTimeoutMillis: Math.min(5_000, timeoutMs),
+        statement_timeout: timeoutMs, query_timeout: timeoutMs, application_name: "plan5_production_live_proof" });
+      await client.connect();
+      let transactionStarted = false;
+      try {
+        await client.query("begin isolation level repeatable read read only");
+        transactionStarted = true;
+        const expected = external.config.productionDatabaseExpected;
+        await verifyProductionDatabaseSnapshotBindingV2({
+          query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
+        }, {
+          databaseName: expected.databaseName,
+          connectedServerPort: expected.connectedServerPort,
+          serverVersionNum: expected.serverVersionNum,
+          databaseOid: expected.databaseOid,
+          systemIdentifier: expected.systemIdentifier
+        });
+        const invariants = await queryProductionRuntimeInvariantsV2({
+          query: (text, values) => client.query(text, values).then((result) => ({ rows: result.rows }))
+        });
+        const currentTerminal = await snapshotTerminalLegacyPopulation(client, terminal);
+        assertTerminalLegacyPopulationUnchanged(terminal, currentTerminal);
+        await client.query("commit");
+        transactionStarted = false;
+        return { identity, invariants, terminalLegacyUnchanged: true as const };
+      } catch (error) {
+        if (transactionStarted) {
+          try { await client.query("rollback"); }
+          catch (rollbackError) { throw new AggregateError([error, rollbackError], "production_live_proof_rollback_failed"); }
+        }
+        throw error;
+      } finally {
+        await client.end();
+      }
+    } });
 }
 
 async function validateFixedStep(root: string, input: ProtectedProductionLeafInputV2): Promise<ProtectedProductionLeafResultV2> {
