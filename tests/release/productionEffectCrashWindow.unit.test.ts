@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
-import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
+import { canonicalReleaseJsonV2, releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   executeProtectedProductionOperationV2,
   type ProtectedProductionOperationAdaptersV2,
@@ -13,6 +14,7 @@ import {
 import {
   assertOwnedObservationContinuityV2,
   assertRollbackFailureTransitionLineageV2,
+  assertRuntimeStartReceiptProofBindingV2,
   mergePriorAbandonedRollbackAttemptsV2,
   selectRuntimeEffectRecoverySourceV2
 } from "../../src/release/productionOperationAdaptersV2";
@@ -320,6 +322,16 @@ describe("production effect crash windows", () => {
     expect(() => assertRollbackFailureTransitionLineageV2(input)).not.toThrow();
     expect(() => assertRollbackFailureTransitionLineageV2({ ...input,
       rollbackSourceManifestSha256: oldManifestSha256 })).toThrow(/lineage/i);
+  });
+
+  it("binds recovered runtime start proof bytes to the durable receipt output and observed state", () => {
+    const proofSha256 = "8".repeat(64);
+    const observedStateSha256 = createHash("sha256").update(Buffer.from(canonicalReleaseJsonV2({
+      stepId: "start_candidate", outputSha256: proofSha256 }), "utf8")).digest("hex");
+    expect(() => assertRuntimeStartReceiptProofBindingV2({ stepId: "start_candidate", outputSha256: proofSha256,
+      observedStateSha256 }, proofSha256)).not.toThrow();
+    expect(() => assertRuntimeStartReceiptProofBindingV2({ stepId: "start_candidate", outputSha256: proofSha256,
+      observedStateSha256 }, "9".repeat(64))).toThrow(/receipt|proof|binding/i);
   });
 
   for (const scenario of [
