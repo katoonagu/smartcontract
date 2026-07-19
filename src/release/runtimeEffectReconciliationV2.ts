@@ -509,6 +509,25 @@ export function validateRuntimeEffectReconciliationEvidenceV2(
   return input as RuntimeEffectReconciliationEvidenceV2;
 }
 
+export function runtimeCandidateFromReconciledStartV2(
+  evidenceValue: unknown,
+  targetValue: RuntimeIdentityExpectationV2
+): RuntimeTopologyCandidateV2 {
+  const evidence = validateRuntimeEffectReconciliationEvidenceV2(evidenceValue);
+  const target = validateIdentityExpectation(targetValue);
+  const candidate = evidence.topologySnapshot.candidates[0];
+  if (!new Set(["start_candidate", "start_previous", "restart_previous"]).has(evidence.stepId)
+      || evidence.observedPostState !== "target_singleton"
+      || evidence.topologySnapshot.candidates.length !== 1 || candidate === undefined
+      || evidence.targetIdentitySha256 !== releaseSha256V2(canonicalBytesV2(target))
+      || !matchesIdentity(candidate, target)
+      || Date.parse(candidate.processStartedAt) < Date.parse(evidence.effectNotBefore)
+      || Date.parse(candidate.processStartedAt) > Date.parse(evidence.observedAt)) {
+    throw new Error("runtime_reconciled_start_target_identity_invalid");
+  }
+  return candidate;
+}
+
 function topologyBoundViolated(input: Record<string, unknown>): boolean {
   const observedAt = Date.parse(String(input.observedAt));
   return observedAt >= Date.parse(String(input.authorityExpiresAt))

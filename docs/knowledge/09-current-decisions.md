@@ -267,9 +267,18 @@ of these decisions, update this file in the same work.
 - Protected production-operation crash recovery keeps `cleanup_only` strictly
   abandonment-and-cleanup-only. A durably fsynced settlement is replayed only
   through its exact original effect/recovery-capable lease binding, including a
-  proven-dead owner; repeated abandoned rollback attempts are combined only
-  within the same failure evidence, freeze identity, candidate, generation, and
-  source-manifest lineage.
+  proven-dead owner, after the complete terminal receipt/intent/lease lineage,
+  orchestration, captures, kind-specific evidence, index, and settlement bundle
+  is revalidated. Reconciled runtime starts remain valid only through their exact
+  operation, claim, intent, authority, target identity, and observation window.
+  Canary invariants are checked in every observation cycle and persisted cycle
+  state is restored before resumed bounded checks. Actual rollback binds the
+  current `production_failed` manifest and committed transition receipt back to
+  the failure source manifest; repeated abandoned rollback attempts are combined
+  only within the same failure evidence, freeze identity, candidate, generation,
+  and source-manifest lineage. An owned heartbeat may advance that lineage during
+  topology observation, but owner identity and immutable operation bounds cannot
+  change.
 - Configured `hard_safety_limit_exceeded`, provider/page/local ceilings and
   bounded retries remain honest technical no-final outcomes; Plan 5 does not
   promise unlimited history. Address Poisoning is forbidden release scope.

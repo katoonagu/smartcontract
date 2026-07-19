@@ -5,6 +5,7 @@ import {
   classifyRuntimeRollbackTopologyV2,
   createRuntimeRollbackTopologyEvidenceV2,
   resolveRuntimeEffectReconciliationV2,
+  runtimeCandidateFromReconciledStartV2,
   validateRuntimeEffectReconciliationEvidenceV2,
   validateRuntimeTopologySnapshotV2,
   validateRuntimeRollbackTopologyEvidenceV2,
@@ -203,6 +204,14 @@ describe("runtime effect crash reconciliation", () => {
       });
     });
   }
+
+  it("recovers the exact live runtime identity from operation-bound start reconciliation", () => {
+    const input = reconciliationInput("start_candidate");
+    const evidence = resolveRuntimeEffectReconciliationV2(input, topology([candidate()]))!;
+    expect(runtimeCandidateFromReconciledStartV2(evidence, input.target)).toEqual(candidate());
+    expect(() => runtimeCandidateFromReconciledStartV2(evidence,
+      { ...input.target, runtimeSha: "f".repeat(40) })).toThrow(/target|identity/i);
+  });
 
   it.each([
     ["desired start none", "start_candidate", []],

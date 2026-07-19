@@ -371,7 +371,8 @@ it("resumes a real operation after an external receipt was durably written and s
   const validations: string[] = [];
   const adapters = {
     now: () => T0,
-    async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+    async loadReleaseContext() { return { releaseFreezeIdentitySha256:
+      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
     async validateStep(input: any) {
       validations.push(input.stepId);
       return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
@@ -441,7 +442,8 @@ it.each([
     const validations: string[] = [];
     const adapters = {
       now: () => T0,
-      async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+      async loadReleaseContext() { return { releaseFreezeIdentitySha256:
+        releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
       async validateStep(input: any) {
         validations.push(input.stepId);
         return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
@@ -482,6 +484,28 @@ it.each([
         evaluatedAt: "2026-07-18T10:11:00.000Z" })))
         .rejects.toThrow("production_operation_settlement_resume_required");
       expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(false);
+      const operationId = readdirSync(root).find((name) =>
+        name.startsWith("production-operation-settlement-production-rollout-"))!
+        .replace(/^production-operation-settlement-/u, "").replace(/\.json$/u, "");
+      const capturesPath = join(root, "production-operation-terminal-artifacts", operationId,
+        "production-rollout-query-captures-v2.json");
+      const indexPath = join(root, `production-terminal-artifact-index-${operationId}.json`);
+      const capturesBytes = readFileSync(capturesPath);
+      const indexBytes = readFileSync(indexPath);
+      const captures = JSON.parse(capturesBytes.toString("utf8"));
+      captures.captures[0].outputSha256 = "a".repeat(64);
+      const tamperedCapturesBytes = canonicalBytes(captures);
+      const index = JSON.parse(indexBytes.toString("utf8"));
+      index.artifacts.find((artifact: any) => artifact.kind === "rollout_captures").sha256 =
+        releaseSha256V2(tamperedCapturesBytes);
+      await writeFile(capturesPath, tamperedCapturesBytes);
+      await writeFile(indexPath, canonicalBytes(index));
+      await expect(runWithRootWriterProcessRuntimeForTestsV2({
+        currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
+      }, async () => store.resumeCompletedSettlementBeforeBegin("rollout", T0)))
+        .rejects.toThrow(/terminal_bundle|capture.*binding/i);
+      await writeFile(capturesPath, capturesBytes);
+      await writeFile(indexPath, indexBytes);
     }
     if (faultAt === "after_lease_removal") {
       const operationId = readdirSync(root).find((name) =>
@@ -637,7 +661,8 @@ it.each([
   const effects: string[] = [];
   const adapters = {
     now: () => T0,
-    async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+    async loadReleaseContext() { return { releaseFreezeIdentitySha256:
+      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
     async validateStep(input: any) {
       validations.push(input.stepId);
       if (input.stepId === "verify_schema") throw new Error("schema verification failed");

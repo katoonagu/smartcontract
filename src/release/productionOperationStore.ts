@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   canonicalReleaseJsonV2,
@@ -21,6 +21,10 @@ import {
   validateProductionOperationSettlementV2,
   validateProductionOperationTerminalAbandonedV2,
   validateProductionOperationTerminalCleanupV2,
+  validateProductionCanaryEvidenceV2,
+  validateProductionFailureEvidenceV2,
+  validateProductionRollbackEvidenceV2,
+  validateProductionRolloutEvidenceV2,
   validateProductionOrchestrationStepIntentV2,
   validateProductionOrchestrationStepReceiptV2,
   validateProductionOrchestrationReceiptV2,
@@ -100,6 +104,15 @@ const OPERATION_CAPABILITY: Readonly<Record<ProductionOperationKindV2,
   "effect_capable" | "recovery_only">> = Object.freeze({
   rollout: "effect_capable", canary: "effect_capable",
   rollback: "effect_capable", recovery: "recovery_only"
+});
+const COMPLETE_OPERATION_STEPS: Readonly<Record<ProductionOperationKindV2, readonly string[]>> = Object.freeze({
+  rollout: ["verify_g13", "verify_schema", "verify_previous_runtime_identity", "verify_singleton_precondition",
+    "stop_previous", "prove_previous_stopped", "start_candidate", "prove_candidate_started",
+    "immediate_runtime_checks"],
+  canary: ["verify_g14", "observe_cycle_1", "observe_cycle_2", "bounded_runtime_checks"],
+  rollback: [],
+  recovery: ["verify_abandoned_cleanup", "verify_completed_prefix", "verify_uncertain_step_intent",
+    "validate_failure_derivation_inputs"]
 });
 const ALLOWED_NESTED_ROOTS = new Set([
   "production-preclaim-lease-lineages",
@@ -1676,6 +1689,328 @@ export class ProductionOperationStoreV2 {
     return this.persistExclusive("production_operation_settlement", relativePath, settlement);
   }
 
+  #verifySettlementTerminalBundle(
+    settlement: Readonly<{ value: ProductionOperationSettlementV2; sha256: string }>,
+    claim: Readonly<{ value: ProductionOperationClaimV2; sha256: string }>,
+    takeover: Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }>
+  ): Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null {
+    const state = settlement.value;
+    if (state.operationId !== claim.value.operationId || state.operationKind !== claim.value.operationKind
+        || state.candidateSha !== claim.value.candidateSha
+        || state.releaseGenerationId !== claim.value.releaseGenerationId
+        || state.sourceManifestSha256 !== claim.value.sourceManifestSha256
+        || state.claimSha256 !== claim.sha256
+        || state.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+        || state.operationDeadlineAt !== claim.value.operationDeadlineAt
+        || state.capability !== claim.value.capability
+        || !takeover.leaseTips.some((tip) => tip.sha256 === state.finalLeaseSha256
+          && tip.epoch === state.finalLeaseEpoch)
+        || Date.parse(state.authorityRevalidatedAt) >= Date.parse(claim.value.authorityConsumption.expiresAt)
+        || Date.parse(state.deadlineRevalidatedAt) >= Date.parse(state.operationDeadlineAt)) {
+      throw new Error("production_terminal_bundle_settlement_binding_invalid");
+    }
+    const index = readCanonical(this.#path(`production-terminal-artifact-index-${state.operationId}.json`),
+      validateTerminalArtifactIndex, "production_terminal_artifact_index");
+    if (index.value.operationId !== state.operationId || index.value.operationKind !== state.operationKind
+        || index.value.operationClaimSha256 !== claim.sha256
+        || index.value.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+        || index.value.terminalEvidenceSha256 !== state.terminalEvidenceSha256
+        || index.value.orchestrationReceiptSha256 !== state.orchestrationReceiptSha256) {
+      throw new Error("production_terminal_bundle_index_binding_invalid");
+    }
+    const artifact = <T>(kind: string, validator: Validator<T>, label: string) => {
+      const matches = index.value.artifacts.filter((entry) => entry.kind === kind);
+      if (matches.length !== 1) throw new Error("production_terminal_bundle_artifact_missing");
+      const entry = matches[0]!;
+      const stored = readCanonical(this.#path(entry.operationQualifiedRelativePath), validator, label);
+      if (stored.sha256 !== entry.sha256) throw new Error("production_terminal_bundle_artifact_hash_invalid");
+      return stored;
+    };
+    const relativeDirectory = `production-operation-steps/${state.operationId}`;
+    let receiptEntries: Dirent<string>[] = [];
+    try {
+      receiptEntries = readdirSync(dirname(this.#path(`${relativeDirectory}/probe.json`)), { withFileTypes: true });
+    } catch (error) {
+      if ((error as Error).message !== "artifact_parent_missing") throw error;
+    }
+    if (receiptEntries.some((entry) => !entry.isFile() || !/^\d+-[a-z][a-z0-9_]*-v2\.json$/u.test(entry.name))) {
+      throw new Error("production_terminal_bundle_step_artifact_invalid");
+    }
+    const receipts = receiptEntries.map((entry) => {
+      const relativePath = `${relativeDirectory}/${entry.name}`;
+      const stored = readCanonical(this.#path(relativePath), validateProductionOrchestrationStepReceiptV2,
+        "production_terminal_bundle_step_receipt");
+      return { relativePath, sha256: stored.sha256, bytes: stored.bytes, receipt: stored.value,
+        filename: entry.name };
+    }).sort((left, right) => left.receipt.sequence - right.receipt.sequence);
+    const commandId = claim.value.authorityConsumption.commandId;
+    receipts.forEach((entry, indexValue) => {
+      const receipt = entry.receipt;
+      const expectedInputSha256 = releaseSha256V2(canonicalBytesV2({ version: "production-leaf-input-v2",
+        operationId: state.operationId, operationKind: state.operationKind,
+        sequence: indexValue + 1, stepId: receipt.stepId }));
+      if (entry.filename !== `${receipt.sequence}-${receipt.stepId}-v2.json`
+          || receipt.sequence !== indexValue + 1 || receipt.operationId !== state.operationId
+          || receipt.operationClaimSha256 !== claim.sha256
+          || receipt.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || receipt.operationDeadlineAt !== state.operationDeadlineAt
+          || receipt.capability !== state.capability || receipt.orchestration !== state.operationKind
+          || receipt.commandId !== commandId
+          || receipt.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+          || receipt.inputSha256 !== expectedInputSha256
+          || !takeover.leaseTips.some((tip) => tip.sha256 === receipt.operationLeaseSha256
+            && tip.epoch === receipt.operationLeaseEpoch)) {
+        throw new Error("production_terminal_bundle_step_binding_invalid");
+      }
+    });
+    const intentDirectory = `production-operation-step-intents/${state.operationId}`;
+    let intentEntries: Dirent<string>[] = [];
+    try {
+      intentEntries = readdirSync(dirname(this.#path(`${intentDirectory}/probe.json`)), { withFileTypes: true });
+    } catch (error) {
+      if ((error as Error).message !== "artifact_parent_missing") throw error;
+    }
+    if (intentEntries.some((entry) => !entry.isFile() || !/^\d+-[a-z][a-z0-9_]*-1-v2\.json$/u.test(entry.name))) {
+      throw new Error("production_terminal_bundle_intent_artifact_invalid");
+    }
+    const intents = intentEntries.map((entry) => {
+      const relativePath = `${intentDirectory}/${entry.name}`;
+      const stored = readCanonical(this.#path(relativePath), validateProductionOrchestrationStepIntentV2,
+        "production_terminal_bundle_step_intent");
+      const matchingReceipt = receipts.find((receipt) => receipt.receipt.sequence === stored.value.sequence
+        && receipt.receipt.stepId === stored.value.stepId);
+      if (entry.name !== `${stored.value.sequence}-${stored.value.stepId}-1-v2.json`
+          || stored.value.relativePath !== relativePath || stored.value.operationId !== state.operationId
+          || stored.value.operationClaimSha256 !== claim.sha256
+          || stored.value.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || stored.value.orchestration !== state.operationKind || stored.value.commandId !== commandId
+          || stored.value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+          || !takeover.leaseTips.some((tip) => tip.sha256 === stored.value.currentOperationLeaseSha256
+            && tip.epoch === stored.value.currentOperationLeaseEpoch)
+          || (matchingReceipt !== undefined && (matchingReceipt.receipt.executionKind !== "external_effect"
+            || matchingReceipt.receipt.stepIntentRelativePath !== relativePath
+            || matchingReceipt.receipt.stepIntentSha256 !== stored.sha256
+            || matchingReceipt.receipt.inputSha256 !== stored.value.inputSha256))) {
+        throw new Error("production_terminal_bundle_intent_binding_invalid");
+      }
+      return { relativePath, sha256: stored.sha256, intent: stored.value, matchingReceipt };
+    });
+    if (receipts.some((entry) => entry.receipt.executionKind === "external_effect"
+        && !intents.some((intent) => intent.sha256 === entry.receipt.stepIntentSha256))) {
+      throw new Error("production_terminal_bundle_receipt_intent_missing");
+    }
+    const completedStepReceipts = receipts.map(({ relativePath, sha256, receipt }) =>
+      ({ relativePath, sha256, receipt }));
+    const captures = receipts.map(({ receipt }) => ({ stepId: receipt.stepId, sequence: receipt.sequence,
+      executionKind: receipt.executionKind, outputSha256: receipt.outputSha256,
+      observedStateSha256: receipt.observedStateSha256,
+      ...(receipt.verifiedChecks === null ? {} : { verifiedChecks: [...receipt.verifiedChecks] }) }));
+    const captureKind = `${state.operationKind}_captures`;
+    const captureArtifact = state.orchestrationReceiptSha256 === null ? null
+      : artifact(captureKind, (value) => value, "production_terminal_bundle_query_captures");
+    const expectedCaptureBundle = { version: "production-orchestration-captures-v2",
+      operationId: state.operationId, captures };
+    if (captureArtifact !== null && !captureArtifact.bytes.equals(canonicalBytesV2(expectedCaptureBundle))) {
+      throw new Error("production_terminal_bundle_capture_binding_invalid");
+    }
+    const freeze = readCanonical(this.#path("release-freeze-identity-v2.json"), validateReleaseFreezeIdentityV2,
+      "production_terminal_bundle_freeze");
+    let orchestration: Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null = null;
+    if (state.orchestrationReceiptSha256 !== null) {
+      orchestration = artifact(`${state.operationKind}_orchestration`, validateProductionOrchestrationReceiptV2,
+        "production_terminal_bundle_orchestration");
+      const value = orchestration.value;
+      if (orchestration.sha256 !== state.orchestrationReceiptSha256
+          || value.operationId !== state.operationId || value.orchestration !== state.operationKind
+          || value.operationClaimSha256 !== claim.sha256
+          || value.operationalAttestationConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || value.candidateSha !== state.candidateSha || value.releaseGenerationId !== state.releaseGenerationId
+          || value.sourceManifestSha256 !== state.sourceManifestSha256
+          || value.finalOperationLeaseSha256 !== state.finalLeaseSha256
+          || value.finalOperationLeaseEpoch !== state.finalLeaseEpoch
+          || value.operationDeadlineAt !== state.operationDeadlineAt || value.capability !== state.capability
+          || value.operationLeaseTakeoverChainSha256 !== takeover.sha256
+          || value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+          || value.completedStepReceipts.length !== receipts.length
+          || value.completedStepReceipts.some((ref, indexValue) =>
+            ref.relativePath !== receipts[indexValue]?.relativePath || ref.sha256 !== receipts[indexValue]?.sha256
+            || !canonicalBytesV2(ref.receipt).equals(receipts[indexValue]!.bytes))) {
+        throw new Error("production_terminal_bundle_orchestration_binding_invalid");
+      }
+      if (intents.some((intent) => intent.matchingReceipt === undefined)) {
+        throw new Error("production_terminal_bundle_unresolved_intent_invalid");
+      }
+    } else if (state.result !== "failed" || !["rollout", "canary"].includes(state.operationKind)) {
+      throw new Error("production_terminal_bundle_orchestration_missing");
+    }
+    const terminalChecks = Object.fromEntries((receipts.at(-1)?.receipt.verifiedChecks ?? [])
+      .map((check) => [check, true]));
+    if (state.result === "failed" && orchestration === null) {
+      const steps = COMPLETE_OPERATION_STEPS[state.operationKind];
+      if (receipts.some((entry, indexValue) => entry.receipt.stepId !== steps[indexValue])
+          || receipts.length >= steps.length) {
+        throw new Error("production_terminal_bundle_failure_prefix_invalid");
+      }
+      const expectedFailedStep = steps[receipts.length]!;
+      if (intents.some((intent) => intent.matchingReceipt === undefined
+          && (intent.intent.sequence !== receipts.length + 1 || intent.intent.stepId !== expectedFailedStep))
+          || intents.filter((intent) => intent.matchingReceipt === undefined).length > 1) {
+        throw new Error("production_terminal_bundle_unresolved_intent_invalid");
+      }
+      const draft = readCanonical(this.#path(`production-operation-failure-draft-${state.operationId}.json`),
+        validateProductionFailureDraft, "production_terminal_bundle_failure_draft");
+      const prefixSha256 = releaseSha256V2(canonicalBytesV2(completedStepReceipts));
+      const progressSha256 = releaseSha256V2(canonicalBytesV2({ completedStepReceipts, captures }));
+      const attemptedExternalEffect = state.operationKind === "canary"
+        || receipts.some((entry) => entry.receipt.executionKind === "external_effect")
+        || intents.some((intent) => intent.matchingReceipt === undefined);
+      if (draft.value.operationKind !== state.operationKind || draft.value.operationId !== state.operationId
+          || draft.value.operationClaimSha256 !== claim.sha256 || draft.value.stepId !== expectedFailedStep
+          || draft.value.attemptedExternalEffect !== attemptedExternalEffect
+          || draft.value.completedStepReceiptPrefixSha256 !== prefixSha256
+          || draft.value.orchestrationProgressSha256 !== progressSha256
+          || ("attemptedExternalEffect" in state && state.attemptedExternalEffect !== attemptedExternalEffect)) {
+        throw new Error("production_terminal_bundle_failure_draft_binding_invalid");
+      }
+      const failureCapture = artifact("failure_capture", (value) => value,
+        "production_terminal_bundle_failure_capture");
+      const expectedFailureCapture = { version: "production-operation-failure-capture-v2",
+        operationKind: state.operationKind, operationId: state.operationId, operationClaimSha256: claim.sha256,
+        stepId: expectedFailedStep, failureCode: draft.value.failureCode, attemptedExternalEffect,
+        completedStepReceiptPrefixSha256: prefixSha256, orchestrationProgressSha256: progressSha256,
+        observedAt: draft.value.observedAt };
+      if (!failureCapture.bytes.equals(canonicalBytesV2(expectedFailureCapture))) {
+        throw new Error("production_terminal_bundle_failure_capture_binding_invalid");
+      }
+      const evidence = artifact("failure_evidence", validateProductionFailureEvidenceV2,
+        "production_terminal_bundle_failure_evidence");
+      if (evidence.sha256 !== state.terminalEvidenceSha256
+          || evidence.value.candidateSha !== state.candidateSha
+          || evidence.value.releaseFreezeIdentitySha256 !== freeze.sha256
+          || evidence.value.sourceManifestSha256 !== state.sourceManifestSha256
+          || evidence.value.failedExecutionEvidenceSha256 !== failureCapture.sha256
+          || evidence.value.observedAt !== draft.value.observedAt
+          || evidence.value.failureCode !== draft.value.failureCode
+          || !("attemptedExternalEffect" in evidence.value)
+          || evidence.value.attemptedExternalEffect !== attemptedExternalEffect
+          || ("orchestrationProgressSha256" in evidence.value
+            && evidence.value.orchestrationProgressSha256 !== progressSha256)
+          || ("preEffectValidationReceiptsSha256" in evidence.value
+            && evidence.value.preEffectValidationReceiptsSha256 !== prefixSha256)) {
+        throw new Error("production_terminal_bundle_failure_evidence_binding_invalid");
+      }
+      return null;
+    }
+    if (orchestration === null) throw new Error("production_terminal_bundle_orchestration_missing");
+    if (state.operationKind === "rollout") {
+      const manager = artifact("rollout_manager", (value) => value, "production_terminal_bundle_manager");
+      const expectedManager = { version: "production-manager-captures-v2", operationId: state.operationId,
+        captures: captures.filter((capture) => capture.executionKind === "external_effect") };
+      if (!manager.bytes.equals(canonicalBytesV2(expectedManager))) {
+        throw new Error("production_terminal_bundle_manager_binding_invalid");
+      }
+      const evidence = artifact("rollout_evidence", validateProductionRolloutEvidenceV2,
+        "production_terminal_bundle_rollout_evidence");
+      if (evidence.sha256 !== state.terminalEvidenceSha256 || evidence.value.candidateSha !== state.candidateSha
+          || evidence.value.releaseFreezeIdentitySha256 !== freeze.sha256
+          || evidence.value.operationalAttestationConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || evidence.value.sourceManifestSha256 !== state.sourceManifestSha256
+          || evidence.value.previousStopEvidenceSha256
+            !== captures.find((capture) => capture.stepId === "stop_previous")?.outputSha256
+          || evidence.value.candidateStartEvidenceSha256
+            !== captures.find((capture) => capture.stepId === "start_candidate")?.outputSha256
+          || evidence.value.managerCapturesSha256 !== manager.sha256
+          || evidence.value.queryCapturesSha256 !== captureArtifact!.sha256
+          || evidence.value.orchestrationReceiptSha256 !== orchestration.sha256
+          || !canonicalBytesV2(evidence.value.checks).equals(canonicalBytesV2(terminalChecks))) {
+        throw new Error("production_terminal_bundle_rollout_evidence_binding_invalid");
+      }
+    } else if (state.operationKind === "canary") {
+      const logs = artifact("canary_logs", (value) => value, "production_terminal_bundle_canary_logs");
+      const expectedLogs = { version: "production-canary-log-captures-v2", operationId: state.operationId,
+        captureSha256s: captures.map((capture) => capture.outputSha256) };
+      if (!logs.bytes.equals(canonicalBytesV2(expectedLogs))) {
+        throw new Error("production_terminal_bundle_canary_logs_binding_invalid");
+      }
+      const evidence = artifact("canary_evidence", validateProductionCanaryEvidenceV2,
+        "production_terminal_bundle_canary_evidence");
+      if (evidence.sha256 !== state.terminalEvidenceSha256 || evidence.value.candidateSha !== state.candidateSha
+          || evidence.value.releaseFreezeIdentitySha256 !== freeze.sha256
+          || evidence.value.operationalAttestationConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || evidence.value.sourceManifestSha256 !== state.sourceManifestSha256
+          || evidence.value.observationStartedAt !== receipts[0]?.receipt.startedAt
+          || evidence.value.observationFinishedAt !== receipts.at(-1)?.receipt.finishedAt
+          || evidence.value.completedPollingCycles !== 2
+          || evidence.value.queryCapturesSha256 !== captureArtifact!.sha256
+          || evidence.value.logCapturesSha256 !== logs.sha256
+          || evidence.value.orchestrationReceiptSha256 !== orchestration.sha256
+          || !canonicalBytesV2(evidence.value.checks).equals(canonicalBytesV2(terminalChecks))) {
+        throw new Error("production_terminal_bundle_canary_evidence_binding_invalid");
+      }
+    } else if (state.operationKind === "rollback") {
+      const manager = artifact("rollback_manager", (value) => value, "production_terminal_bundle_manager");
+      const expectedManager = { version: "production-manager-captures-v2", operationId: state.operationId,
+        captures: captures.filter((capture) => capture.executionKind === "external_effect") };
+      if (!manager.bytes.equals(canonicalBytesV2(expectedManager))) {
+        throw new Error("production_terminal_bundle_manager_binding_invalid");
+      }
+      const evidence = artifact("rollback_evidence", validateProductionRollbackEvidenceV2,
+        "production_terminal_bundle_rollback_evidence");
+      const priorFailure = readCanonical(this.#path("production-failure-evidence-v2.json"),
+        validateProductionFailureEvidenceV2, "production_terminal_bundle_prior_failure");
+      const output = (stepId: string) => captures.find((capture) => capture.stepId === stepId)?.outputSha256;
+      const outcome = evidence.value.outcome;
+      const actionBindingInvalid = (outcome.kind === "previous_runtime_retained"
+          && (outcome.previousRuntimeHealthEvidenceSha256 !== output("prove_previous_healthy")
+            || outcome.noPreviousStopEvidenceSha256 !== output("prove_no_previous_stop")
+            || outcome.noCandidateStartEvidenceSha256 !== output("prove_no_candidate_start")))
+        || (outcome.kind === "previous_runtime_restarted_without_candidate"
+          && ((output("restart_previous") !== undefined
+              && outcome.previousStartEvidenceSha256 !== output("restart_previous"))
+            || outcome.noCandidateStartEvidenceSha256
+              !== (output("prove_no_candidate_start") ?? output("prove_no_candidate_running"))))
+        || (outcome.kind === "candidate_replaced_with_previous"
+          && ((output("stop_candidate") !== undefined
+              && outcome.candidateStopEvidenceSha256 !== output("stop_candidate"))
+            || (output("start_previous") !== undefined
+              && outcome.previousStartEvidenceSha256 !== output("start_previous"))));
+      if (evidence.sha256 !== state.terminalEvidenceSha256 || evidence.value.candidateSha !== state.candidateSha
+          || evidence.value.releaseFreezeIdentitySha256 !== freeze.sha256
+          || evidence.value.artifactRootFingerprintSha256 !== claim.value.artifactRootFingerprintSha256
+          || evidence.value.sourceManifestSha256 !== state.sourceManifestSha256
+          || evidence.value.failureEvidenceSha256 !== priorFailure.sha256
+          || evidence.value.operationalAttestationSha256 !== claim.value.operationalAttestationSha256
+          || evidence.value.operationalAttestationConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || evidence.value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+          || evidence.value.queryCapturesSha256 !== captureArtifact!.sha256
+          || evidence.value.orchestrationReceiptSha256 !== orchestration.sha256
+          || !canonicalBytesV2(evidence.value.checks).equals(canonicalBytesV2(terminalChecks))
+          || actionBindingInvalid) {
+        throw new Error("production_terminal_bundle_rollback_evidence_binding_invalid");
+      }
+    } else {
+      const evidence = artifact("recovery_failure_evidence", validateProductionFailureEvidenceV2,
+        "production_terminal_bundle_recovery_evidence");
+      if (evidence.value.evidenceKind !== "abandoned_operation_recovery"
+          || evidence.sha256 !== state.terminalEvidenceSha256
+          || evidence.value.candidateSha !== state.candidateSha
+          || evidence.value.releaseFreezeIdentitySha256 !== freeze.sha256
+          || evidence.value.sourceManifestSha256 !== state.sourceManifestSha256
+          || evidence.value.failedExecutionEvidenceSha256 !== orchestration.sha256
+          || evidence.value.recoveryOrchestrationReceiptSha256 !== orchestration.sha256
+          || evidence.value.recoveryOperationalAttestationSha256 !== claim.value.operationalAttestationSha256
+          || evidence.value.recoveryProductionLeaseSha256 !== state.finalLeaseSha256
+          || evidence.value.recoveryOperationClaimSha256 !== claim.sha256
+          || evidence.value.recoveryAuthorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+          || evidence.value.recoveryAttemptedExternalEffect !== false
+          || !("recoveryAttemptedExternalEffect" in state) || state.recoveryAttemptedExternalEffect !== false
+          || evidence.value.priorAttemptedExternalEffect !== state.priorAttemptedExternalEffect) {
+        throw new Error("production_terminal_bundle_recovery_evidence_binding_invalid");
+      }
+    }
+    return orchestration;
+  }
+
   resumeCompletedSettlementBeforeBegin(
     operationKind: ProductionOperationKindV2,
     evaluatedAt: string
@@ -1774,7 +2109,7 @@ export class ProductionOperationStoreV2 {
       throw new Error("production_prebegin_lineage_binding_invalid");
     }
     this.#verifyStoredPreclaimLineage(preclaim, lineage);
-    this.#verifyNormalTakeoverChainToTip(claim.value, {
+    const takeover = this.#verifyNormalTakeoverChainToTip(claim.value, {
       sha256: settlement.value.finalLeaseSha256,
       epoch: settlement.value.finalLeaseEpoch
     });
@@ -1797,23 +2132,7 @@ export class ProductionOperationStoreV2 {
         || issuerReceipt.value.generationId !== identity.releaseGenerationId) {
       throw new Error("production_prebegin_authority_binding_invalid");
     }
-    let orchestration: { value: ProductionOrchestrationReceiptV2; sha256: string } | null = null;
-    if (settlement.value.orchestrationReceiptSha256 !== null) {
-      const canonical = {
-        rollout: "production-rollout-orchestration-receipt-v2.json",
-        canary: "production-canary-orchestration-receipt-v2.json",
-        rollback: "production-rollback-orchestration-receipt-v2.json",
-        recovery: "production-recovery-orchestration-receipt-v2.json"
-      }[operationKind];
-      orchestration = readCanonical(this.#path(
-        `production-operation-terminal-artifacts/${settlement.value.operationId}/${canonical}`),
-      validateProductionOrchestrationReceiptV2, "production_orchestration_receipt");
-      if (orchestration.sha256 !== settlement.value.orchestrationReceiptSha256
-          || orchestration.value.operationId !== settlement.value.operationId
-          || orchestration.value.operationClaimSha256 !== settlement.value.claimSha256) {
-        throw new Error("production_prebegin_orchestration_binding_invalid");
-      }
-    }
+    const orchestration = this.#verifySettlementTerminalBundle(settlement, claim, takeover);
     const preparedPath = this.#path(
       `production-operation-lease-removal-prepared-${settlement.value.operationId}.json`);
     const prepared = existsSync(preparedPath)
@@ -1865,33 +2184,8 @@ export class ProductionOperationStoreV2 {
         || settlement.value.operationDeadlineAt !== lease.value.operationDeadlineAt) {
       throw new Error("production_completed_settlement_binding_invalid");
     }
-    this.#verifyNormalTakeoverChain(claim.value, lease);
-    let orchestration: { value: ProductionOrchestrationReceiptV2; sha256: string } | null = null;
-    if (settlement.value.orchestrationReceiptSha256 !== null) {
-      const canonicalOrchestrationPath = {
-      rollout: "production-rollout-orchestration-receipt-v2.json",
-      canary: "production-canary-orchestration-receipt-v2.json",
-      rollback: "production-rollback-orchestration-receipt-v2.json",
-      recovery: "production-recovery-orchestration-receipt-v2.json"
-      }[lease.value.operationKind];
-      let qualifiedOrchestrationPath: string | null = null;
-      try { qualifiedOrchestrationPath = this.#path(
-        `production-operation-terminal-artifacts/${operationId}/${canonicalOrchestrationPath}`); }
-      catch (error) {
-        if ((error as Error).message !== "artifact_parent_missing") throw error;
-      }
-      const orchestrationPath = qualifiedOrchestrationPath !== null && existsSync(qualifiedOrchestrationPath)
-        ? qualifiedOrchestrationPath : this.#path(canonicalOrchestrationPath);
-      orchestration = readCanonical(orchestrationPath, validateProductionOrchestrationReceiptV2,
-        "production_orchestration_receipt");
-      if (orchestration.sha256 !== settlement.value.orchestrationReceiptSha256
-          || orchestration.value.operationId !== operationId
-          || orchestration.value.operationClaimSha256 !== claim.sha256
-          || orchestration.value.operationalAttestationConsumptionSha256
-            !== claim.value.authorityConsumptionSha256) {
-        throw new Error("production_completed_settlement_orchestration_binding_invalid");
-      }
-    }
+    const takeover = this.#verifyNormalTakeoverChain(claim.value, lease);
+    const orchestration = this.#verifySettlementTerminalBundle(settlement, claim, takeover);
     this.publishTerminalArtifacts(operationId);
     this.completeTerminal({ operationId, terminalStateKind: "settlement",
       terminalStateSha256: settlement.sha256, evaluatedAt });

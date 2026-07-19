@@ -66,6 +66,16 @@ describe("production canary cross-process resume state", () => {
       completedPrefix: completedPrefix.slice(0, 1) })).toEqual(value);
   });
 
+  it("restores process-local canary state before bounded checks after cycle two was durable", () => {
+    const restoreForStep = (canaryApi as any).restoreCanaryResumeForStepV2;
+    expect(typeof restoreForStep).toBe("function");
+    expect(restoreForStep({ stepId: "bounded_runtime_checks", storedState: value,
+      operationId: OPERATION_ID, operationClaimSha256: CLAIM, lineageLeaseTips,
+      completedPrefix: [...completedPrefix, { stepId: "observe_cycle_2",
+        startedAt: "2026-07-19T00:15:00.000Z", finishedAt: "2026-07-19T00:16:00.000Z" }] }))
+      .toEqual(value);
+  });
+
   it("does not repeat live cycle observation after the resume state was fsynced", async () => {
     const observe = vi.fn(async () => { throw new Error("live canary observation must not repeat"); });
     await expect(selectCanaryCycleOneResumeBeforeObservationV2({ storedState: value,

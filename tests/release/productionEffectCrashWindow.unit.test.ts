@@ -11,6 +11,8 @@ import {
   type ProtectedRollbackWindowV2
 } from "../../src/release/productionReleaseOrchestratorV2";
 import {
+  assertOwnedObservationContinuityV2,
+  assertRollbackFailureTransitionLineageV2,
   mergePriorAbandonedRollbackAttemptsV2,
   selectRuntimeEffectRecoverySourceV2
 } from "../../src/release/productionOperationAdaptersV2";
@@ -288,6 +290,36 @@ describe("production effect crash windows", () => {
     expect(() => mergePriorAbandonedRollbackAttemptsV2([
       { ...topologyless, stepIds: new Set(["verify_failure"]) }
     ], expected)).toThrow("production_prior_rollback_topology_missing_with_history");
+  });
+
+  it("accepts an own heartbeat across topology observation but rejects a foreign owner", () => {
+    const immutable = { operationId: `production-rollback-${"7".repeat(64)}`, candidateSha: SHA40,
+      releaseGenerationId: "generation-1", sourceManifestSha256: "1".repeat(64),
+      operationDeadlineAt: "2026-07-19T00:35:00.000Z", ownerPid: 101,
+      ownerProcessStartFingerprintSha256: "2".repeat(64) };
+    const before = { lease: { ...immutable, leaseEpoch: 1 }, leaseSha256: "3".repeat(64),
+      claimSha256: "4".repeat(64), claim: { authorityConsumptionSha256: "5".repeat(64) },
+      lineageLeaseTips: [{ sha256: "3".repeat(64), epoch: 1 }] };
+    const heartbeat = { ...before, lease: { ...immutable, leaseEpoch: 2 }, leaseSha256: "6".repeat(64),
+      lineageLeaseTips: [{ sha256: "3".repeat(64), epoch: 1 }, { sha256: "6".repeat(64), epoch: 2 }] };
+    expect(() => assertOwnedObservationContinuityV2(before, heartbeat)).not.toThrow();
+    expect(() => assertOwnedObservationContinuityV2(before, { ...heartbeat,
+      lease: { ...heartbeat.lease, ownerPid: 202 } })).toThrow(/owner|continuity/i);
+  });
+
+  it("binds rollback authority to the committed production-failed transition lineage", () => {
+    const failureSha256 = "1".repeat(64);
+    const oldManifestSha256 = "2".repeat(64);
+    const failedManifestSha256 = "3".repeat(64);
+    const input = { rollbackSourceManifestSha256: failedManifestSha256,
+      currentManifestSha256: failedManifestSha256, currentTransitionId: "production_failed",
+      currentPreviousManifestSha256: oldManifestSha256, receiptTransitionId: "production_failed",
+      receiptSourceManifestSha256: oldManifestSha256, failureEvidenceSha256: failureSha256,
+      failureSourceManifestSha256: oldManifestSha256, transitionFailureEvidenceSha256: failureSha256,
+      transitionFailureSourceManifestSha256: oldManifestSha256 } as const;
+    expect(() => assertRollbackFailureTransitionLineageV2(input)).not.toThrow();
+    expect(() => assertRollbackFailureTransitionLineageV2({ ...input,
+      rollbackSourceManifestSha256: oldManifestSha256 })).toThrow(/lineage/i);
   });
 
   for (const scenario of [

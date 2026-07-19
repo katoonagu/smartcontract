@@ -14,6 +14,7 @@ import {
   verifyProductionDatabaseSnapshotBindingV2,
   validateProductionRuntimeNavigationProbeV1,
   validateProductionRuntimeProofV1,
+  validateCanaryObservationChecksV2,
   type ProductionLiveProofSnapshotV2
 } from "../../src/release/productionOperationAdaptersV2";
 
@@ -368,6 +369,12 @@ describe("production live proof", () => {
       expect(() => deriveVerifiedProductionChecksV2("canary", snapshot(invalid),
         { candidateSha, previousSha })).toThrow();
     }
+  });
+
+  it("rejects a bad required canary cycle even when it is not the terminal snapshot", () => {
+    expect(validateCanaryObservationChecksV2(snapshot(), { candidateSha, previousSha }, false)).toBeUndefined();
+    expect(() => validateCanaryObservationChecksV2(snapshot({ runtimeProcessCount: 2 }),
+      { candidateSha, previousSha }, false)).toThrow(/singleton/i);
   });
 
   it("derives rollback checks only for the exact previous runtime and unchanged safety state", () => {
