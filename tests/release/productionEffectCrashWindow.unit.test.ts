@@ -262,17 +262,32 @@ describe("production effect crash windows", () => {
     const unrelated = { ...binding, failureEvidenceSha256: "9".repeat(64) };
     const merged = mergePriorAbandonedRollbackAttemptsV2([
       { ...binding, operationId: `production-rollback-${"1".repeat(64)}`, abandonedAt: "2026-07-19T00:01:00.000Z",
+        attemptedExternalEffect: true,
         stepIds: new Set(["verify_failure", "stop_candidate"]),
         proofSha256: (stepId: string) => stepId === "stop_candidate" ? "4".repeat(64) : null },
       { ...binding, operationId: `production-rollback-${"2".repeat(64)}`, abandonedAt: "2026-07-19T00:02:00.000Z",
+        attemptedExternalEffect: true,
         stepIds: new Set(["verify_failure", "start_previous"]),
         proofSha256: (stepId: string) => stepId === "start_previous" ? "5".repeat(64) : null },
       { ...unrelated, operationId: `production-rollback-${"3".repeat(64)}`, abandonedAt: "2026-07-19T00:03:00.000Z",
+        attemptedExternalEffect: false,
         stepIds: new Set(["restart_previous"]), proofSha256: () => "6".repeat(64) }
     ], expected);
     expect([...merged!.stepIds]).toEqual(["verify_failure", "stop_candidate", "start_previous"]);
     expect(merged!.proofSha256("stop_candidate")).toBe("4".repeat(64));
     expect(merged!.proofSha256("start_previous")).toBe("5".repeat(64));
+  });
+
+  it("ignores only an empty no-effect rollback abandoned before topology persistence", () => {
+    const expected = { failureEvidenceSha256: "1".repeat(64), releaseFreezeIdentitySha256: "2".repeat(64),
+      candidateSha: SHA40, releaseGenerationId: "generation-1", sourceManifestSha256: "3".repeat(64) };
+    const topologyless = { ...expected, failureEvidenceSha256: null, releaseFreezeIdentitySha256: null,
+      operationId: `production-rollback-${"4".repeat(64)}`, abandonedAt: "2026-07-19T00:00:00.000Z",
+      attemptedExternalEffect: false, stepIds: new Set<string>(), proofSha256: () => null };
+    expect(mergePriorAbandonedRollbackAttemptsV2([topologyless], expected)).toBeNull();
+    expect(() => mergePriorAbandonedRollbackAttemptsV2([
+      { ...topologyless, stepIds: new Set(["verify_failure"]) }
+    ], expected)).toThrow("production_prior_rollback_topology_missing_with_history");
   });
 
   for (const scenario of [

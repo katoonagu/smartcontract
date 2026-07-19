@@ -1677,11 +1677,12 @@ function failedOperationBinding(root: string, failure: ReturnType<typeof validat
 type PriorAbandonedRollbackAttemptV2 = Readonly<{
   operationId: string;
   abandonedAt: string;
-  failureEvidenceSha256: string;
-  releaseFreezeIdentitySha256: string;
+  failureEvidenceSha256: string | null;
+  releaseFreezeIdentitySha256: string | null;
   candidateSha: string;
   releaseGenerationId: string;
   sourceManifestSha256: string;
+  attemptedExternalEffect: boolean;
   stepIds: ReadonlySet<string>;
   proofSha256(stepId: "restart_previous" | "stop_candidate" | "start_previous"): string | null;
 }>;
@@ -1698,6 +1699,19 @@ export function mergePriorAbandonedRollbackAttemptsV2(
   attempts: readonly PriorAbandonedRollbackAttemptV2[],
   expected: PriorAbandonedRollbackBindingV2
 ): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256"> {
+  for (const attempt of attempts) {
+    const topologyMissing = attempt.failureEvidenceSha256 === null
+      || attempt.releaseFreezeIdentitySha256 === null;
+    if (topologyMissing && (attempt.failureEvidenceSha256 !== null
+        || attempt.releaseFreezeIdentitySha256 !== null
+        || attempt.attemptedExternalEffect
+        || attempt.stepIds.size !== 0
+        || attempt.proofSha256("restart_previous") !== null
+        || attempt.proofSha256("stop_candidate") !== null
+        || attempt.proofSha256("start_previous") !== null)) {
+      throw new Error("production_prior_rollback_topology_missing_with_history");
+    }
+  }
   const matching = attempts.filter((attempt) => attempt.failureEvidenceSha256 === expected.failureEvidenceSha256
     && attempt.releaseFreezeIdentitySha256 === expected.releaseFreezeIdentitySha256
     && attempt.candidateSha === expected.candidateSha
@@ -1803,6 +1817,17 @@ function loadPriorAbandonedRollbackAttempt(
   }
   const topologyNames = readdirSync(root).filter((name) =>
     name.startsWith(`production-rollback-topology-${abandoned.value.operationId}-`) && name.endsWith(".json"));
+  if (topologyNames.length === 0) {
+    if (receipts.length !== 0 || intents.length !== 0 || stepIds.size !== 0
+        || abandoned.value.attemptedExternalEffect) {
+      throw new Error("production_prior_rollback_topology_missing_with_history");
+    }
+    return { operationId: abandoned.value.operationId, abandonedAt: abandoned.value.abandonedAt,
+      failureEvidenceSha256: null, releaseFreezeIdentitySha256: null,
+      candidateSha: abandoned.value.candidateSha, releaseGenerationId: abandoned.value.releaseGenerationId,
+      sourceManifestSha256: abandoned.value.sourceManifestSha256, attemptedExternalEffect: false,
+      stepIds, proofSha256: () => null };
+  }
   if (topologyNames.length !== 1) throw new Error("production_prior_rollback_topology_ambiguous");
   const topology = readCanonical(root, topologyNames[0]!, validateRuntimeRollbackTopologyEvidenceV2);
   if (topologyNames[0] !== `production-rollback-topology-${abandoned.value.operationId}-${topology.value.topologySnapshotSha256}.json`
@@ -1823,6 +1848,7 @@ function loadPriorAbandonedRollbackAttempt(
     candidateSha: abandoned.value.candidateSha,
     releaseGenerationId: abandoned.value.releaseGenerationId,
     sourceManifestSha256: abandoned.value.sourceManifestSha256,
+    attemptedExternalEffect: abandoned.value.attemptedExternalEffect,
     stepIds,
     proofSha256(stepId) {
       const intent = intents.find((item) => item.value.stepId === stepId);
