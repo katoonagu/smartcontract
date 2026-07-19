@@ -982,6 +982,22 @@ function committedAuthorityRecordsV2(
   return records;
 }
 
+export function assertCommittedOperationalAuthorityRecordV2(
+  root: string,
+  freezeInput: unknown,
+  expected: Readonly<{ attestationSha256: string; issuerReceiptSha256: string }>
+): void {
+  const freeze = validateReleaseFreezeIdentityV2(freezeInput);
+  if (!/^[0-9a-f]{64}$/u.test(expected.attestationSha256)
+      || !/^[0-9a-f]{64}$/u.test(expected.issuerReceiptSha256)) {
+    throw new Error("authority_exact_record_identity_invalid");
+  }
+  const matches = committedAuthorityRecordsV2(root, freeze).filter((record) =>
+    record.attestationSha256 === expected.attestationSha256
+    && record.issuerReceiptSha256 === expected.issuerReceiptSha256);
+  if (matches.length !== 1) throw new Error("authority_exact_committed_record_missing_or_ambiguous");
+}
+
 function exactTerminalReceiptV2(
   root: string,
   previous: CommittedAuthorityRecordV2,

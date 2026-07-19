@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import { loadRecoverySource } from "../../src/release/productionOperationAdaptersV2";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 import {
+  canonicalReleaseJsonV2,
+  releaseFreezeIdentitySha256V2,
   releaseSha256V2,
   rootWriterOwnerProcessIdentitySha256V2
 } from "../../src/release/remediationReleaseManifestV2";
@@ -44,10 +46,21 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
   const releaseGenerationId = "generation-123456";
   const sourceManifestSha256 = "b".repeat(64);
   const artifactRootFingerprintSha256 = "c".repeat(64);
+  const freeze = {
+    version: "release-freeze-identity-v2" as const, releaseGenerationId, candidateSha,
+    planBaseSha: "d".repeat(40), artifactRootFingerprintSha256,
+    artifactRootTrustBoundaryEvidenceSha256: "3".repeat(64),
+    productionDatabaseIdentityFingerprintSha256: "4".repeat(64),
+    postgresToolIdentitySha256: "5".repeat(64), previousRuntimeDiscoverySha256: "6".repeat(64),
+    rollbackWorktreeIdentitySha256: "7".repeat(64), createdAt: NOW
+  };
+  save(root, "release-freeze-identity-v2.json", freeze);
+  const releaseFreezeIdentitySha256 = releaseFreezeIdentitySha256V2(freeze);
+  const issuerTemplateSha256 = releaseSha256V2("operational_authority_issue:v2");
   const attestation = {
     version: "operational-attestation-v2" as const, action: "g14_rollout_passed" as const,
     generationId: releaseGenerationId, candidateSha,
-    releaseFreezeIdentitySha256: "0".repeat(64), sourceManifestSha256,
+    releaseFreezeIdentitySha256, sourceManifestSha256,
     artifactRootFingerprintSha256, commandId: "production_rollout" as const,
     redactedTemplateSha256: "1".repeat(64), previousAttestationSha256: null,
     priorTerminalLineageSha256: null, issuedAt: NOW, expiresAt: "2026-07-19T01:00:00.000Z"
@@ -58,7 +71,7 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
   save(root, attestationPath, attestation);
   const issuerReceipt = {
     version: "operational-attestation-issuer-receipt-v2" as const,
-    commandId: "operational_authority_issue" as const, redactedTemplateSha256: "2".repeat(64),
+    commandId: "operational_authority_issue" as const, redactedTemplateSha256: issuerTemplateSha256,
     action: "g14_rollout_passed" as const, generationId: releaseGenerationId, sequence: 1,
     previousIssuerReceiptSha256: null, attestationRelativePath: attestationPath,
     attestationSha256: operationalAttestationSha256, previousAttestationSha256: null,
@@ -67,6 +80,36 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
   const issuerReceiptSha256 = releaseSha256V2(canonicalBytesV2(issuerReceipt));
   const issuerReceiptPath = `operational-attestation-issuer-receipts/g14_rollout_passed/${releaseGenerationId}/${issuerReceiptSha256}.json`;
   save(root, issuerReceiptPath, issuerReceipt);
+  const committedAuthority = {
+    version: "committed-operational-attestation-issuance-v2" as const,
+    commandId: "operational_authority_issue" as const, redactedTemplateSha256: issuerTemplateSha256,
+    action: "g14_rollout_passed" as const, generationId: releaseGenerationId,
+    issuanceIntentSha256: releaseSha256V2(canonicalReleaseJsonV2([
+      "g14_rollout_passed", releaseGenerationId, operationalAttestationSha256, issuerReceiptSha256
+    ])),
+    attestationSha256: operationalAttestationSha256, issuerReceiptSha256, committedAt: NOW
+  };
+  const committedAuthorityBytes = canonicalBytesV2(committedAuthority);
+  const committedAuthorityPath = `operational-attestation-issuance-committed/g14_rollout_passed/${releaseGenerationId}/${issuerReceiptSha256}.json`;
+  const preparedAuthority = {
+    version: "prepared-operational-attestation-issuance-v2" as const,
+    commandId: "operational_authority_issue" as const, redactedTemplateSha256: issuerTemplateSha256,
+    action: "g14_rollout_passed" as const, generationId: releaseGenerationId, sequence: 1,
+    previousIssuerReceiptSha256: null, canonicalAttestation: attestation,
+    canonicalAttestationUtf8Base64: attestationBytes.toString("base64"),
+    canonicalAttestationSha256: operationalAttestationSha256,
+    canonicalAttestationRelativePath: attestationPath, canonicalIssuerReceipt: issuerReceipt,
+    canonicalIssuerReceiptUtf8Base64: canonicalBytesV2(issuerReceipt).toString("base64"),
+    canonicalIssuerReceiptSha256: issuerReceiptSha256,
+    canonicalIssuerReceiptRelativePath: issuerReceiptPath, canonicalCommittedIssuance: committedAuthority,
+    canonicalCommittedIssuanceUtf8Base64: committedAuthorityBytes.toString("base64"),
+    canonicalCommittedIssuanceSha256: releaseSha256V2(committedAuthorityBytes),
+    canonicalCommittedIssuanceRelativePath: committedAuthorityPath,
+    previousAttestationSha256: null, priorTerminalLineageSha256: null, preparedAt: NOW
+  };
+  const preparedAuthorityPath = `operational-attestation-issuance-prepared/g14_rollout_passed/${releaseGenerationId}/${issuerReceiptSha256}.json`;
+  save(root, preparedAuthorityPath, preparedAuthority);
+  save(root, committedAuthorityPath, committedAuthority);
   const ownerFingerprint = "f".repeat(64);
   const ownerIdentity = rootWriterOwnerProcessIdentitySha256V2(1234, ownerFingerprint);
   const originalLease = {
@@ -253,6 +296,7 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
     claim, claimPath: `production-operation-claim-${operationalAttestationSha256}.json`,
     preclaim, preclaimPath: `production-authority-preclaim-${OPERATION_ID}.json`,
     lineage, lineagePath, attestation, attestationPath, issuerReceipt, issuerReceiptPath,
+    preparedAuthority, preparedAuthorityPath, committedAuthority, committedAuthorityPath,
     preparedRemoval, preparedRemovalPath, removalReceipt, removalReceiptPath };
 }
 
@@ -270,7 +314,8 @@ describe("abandoned production recovery source integrity", () => {
 
   it.each(["forged_claim", "foreign_receipt_lease", "foreign_intent_lease", "cleanup_lease",
     "aggregate_hash", "foreign_operation", "claim_artifact", "preclaim", "lineage",
-    "embedded_consumption", "attestation", "issuer_receipt", "prepared_removal", "removal_receipt"] as const)(
+    "embedded_consumption", "attestation", "issuer_receipt", "prepared_authority",
+    "committed_authority", "prepared_removal", "removal_receipt"] as const)(
     "rejects %s instead of deriving recovery authority",
     (mutation) => {
       const value = fixture({ orphanSequence: 5 });
@@ -291,6 +336,10 @@ describe("abandoned production recovery source integrity", () => {
         { ...value.attestation, sourceManifestSha256: "0".repeat(64) });
       else if (mutation === "issuer_receipt") save(value.root, value.issuerReceiptPath,
         { ...value.issuerReceipt, attestationSha256: "0".repeat(64) });
+      else if (mutation === "prepared_authority") save(value.root, value.preparedAuthorityPath,
+        { ...value.preparedAuthority, canonicalAttestationSha256: "0".repeat(64) });
+      else if (mutation === "committed_authority") save(value.root, value.committedAuthorityPath,
+        { ...value.committedAuthority, issuanceIntentSha256: "0".repeat(64) });
       else if (mutation === "prepared_removal") save(value.root, value.preparedRemovalPath,
         { ...value.preparedRemoval, exactCurrentLeaseSha256: "0".repeat(64) });
       else if (mutation === "removal_receipt") save(value.root, value.removalReceiptPath,
@@ -307,7 +356,8 @@ describe("abandoned production recovery source integrity", () => {
             : mutation === "foreign_receipt_lease" ? { operationLeaseSha256: "f".repeat(64) }
             : { operationId: `production-rollout-${"f".repeat(64)}` }) });
       }
-      expect(() => loadRecoverySource(value.root)).toThrow(/recovery|binding|cleanup|step|completed|issuer/i);
+      expect(() => loadRecoverySource(value.root)).toThrow(
+        /recovery|binding|cleanup|step|completed|issuer|prepared/i);
     }
   );
 

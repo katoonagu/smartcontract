@@ -52,6 +52,7 @@ import {
   type ProductionPreclaimLeaseLineageV2
 } from "./remediationReleaseManifestV2";
 import {
+  assertCommittedOperationalAuthorityRecordV2,
   currentRootWriterOwnerIdentityV2,
   isLeaseOwnerProcessAliveV2,
   selectOperationalAttestationFromStoreV2
@@ -1292,6 +1293,8 @@ export class ProductionOperationStoreV2 {
     this.#verifyStoredPreclaimLineage(preclaim, lineage);
 
     const action = OPERATION_ACTION[terminal.operationKind];
+    const freeze = readCanonical(this.#path("release-freeze-identity-v2.json"),
+      validateReleaseFreezeIdentityV2, "release_freeze_identity");
     const attestation = readCanonical(safeArtifactRelativePath(this.#root,
       `operational-attestations/${action}/${terminal.releaseGenerationId}/${claim.value.operationalAttestationSha256}.json`),
     validateOperationalAttestationV2, "production_abandoned_operational_attestation");
@@ -1302,13 +1305,24 @@ export class ProductionOperationStoreV2 {
         || attestation.value.action !== action
         || attestation.value.generationId !== terminal.releaseGenerationId
         || attestation.value.candidateSha !== terminal.candidateSha
+        || attestation.value.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze.value)
         || attestation.value.sourceManifestSha256 !== terminal.sourceManifestSha256
+        || attestation.value.artifactRootFingerprintSha256 !== claim.value.artifactRootFingerprintSha256
+        || attestation.value.commandId !== claim.value.authorityConsumption.commandId
+        || attestation.value.redactedTemplateSha256
+          !== claim.value.authorityConsumption.redactedTemplateSha256
+        || freeze.value.releaseGenerationId !== terminal.releaseGenerationId
+        || freeze.value.candidateSha !== terminal.candidateSha
+        || freeze.value.artifactRootFingerprintSha256 !== claim.value.artifactRootFingerprintSha256
         || issuerReceipt.sha256 !== claim.value.operationalAttestationIssuerReceiptSha256
         || issuerReceipt.value.attestationSha256 !== attestation.sha256
         || issuerReceipt.value.action !== action
         || issuerReceipt.value.generationId !== terminal.releaseGenerationId) {
       throw new Error("production_abandoned_authority_binding_invalid");
     }
+    assertCommittedOperationalAuthorityRecordV2(this.#root, freeze.value, {
+      attestationSha256: attestation.sha256, issuerReceiptSha256: issuerReceipt.sha256
+    });
 
     const cleanupTakeover = readCanonical(this.#path(
       `production-operation-root.lease-cleanup-only-committed-${terminal.cleanupOnlyTakeoverSha256}.json`),
