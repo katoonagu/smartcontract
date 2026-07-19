@@ -1235,13 +1235,14 @@ export class ProductionOperationStoreV2 {
   }
 
   verifyAbandonedRecoverySourceLineage(
-    terminalInput: unknown
+    terminalInput: unknown,
+    allowedOperationKinds: readonly ProductionOperationKindV2[] = ["rollout", "canary"]
   ): Readonly<{ claimSha256: string; authorityConsumptionSha256: string;
     leaseTips: ReadonlySet<string> }> {
     const terminal = validateProductionOperationTerminalAbandonedV2(terminalInput);
     if (terminal.claimSha256 === null || terminal.authorityConsumptionSha256 === null
         || terminal.capability !== "cleanup_only" || terminal.cleanupOnlyTakeoverSha256 === null
-        || !["rollout", "canary"].includes(terminal.operationKind)) {
+        || !allowedOperationKinds.includes(terminal.operationKind)) {
       throw new Error("production_recovery_terminal_claim_missing");
     }
     const claimEntries = readdirSync(this.#root, { withFileTypes: true }).filter((entry) =>

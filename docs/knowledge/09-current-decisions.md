@@ -278,7 +278,12 @@ of these decisions, update this file in the same work.
   only within the same failure evidence, freeze identity, candidate, generation,
   and source-manifest lineage. An owned heartbeat may advance that lineage during
   topology observation, but owner identity and immutable operation bounds cannot
-  change.
+  change. After an abandoned rollback restarted the previous runtime, later
+  rollback checks use the latest matching operation/claim/intent-bound start
+  receipt and manager/reconciliation proof rather than the frozen pre-restart
+  process identity. Historical rollback effect proof is accepted only after the
+  abandoned claim, normal lease lineage, topology, intent, exact runtime
+  authority, target, receipt output, and observation bounds are revalidated.
 - Configured `hard_safety_limit_exceeded`, provider/page/local ceilings and
   bounded retries remain honest technical no-final outcomes; Plan 5 does not
   promise unlimited history. Address Poisoning is forbidden release scope.

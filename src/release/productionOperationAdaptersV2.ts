@@ -885,7 +885,18 @@ async function observeAdmin(
             completedStepReceipts: new ProductionOperationStoreV2(root)
               .loadCompletedStepPrefix(operation.lease.operationId, new Date().toISOString()) }
           : null;
-      const startProof = startBinding === null ? null : boundRuntimeStartProof(root, startBinding);
+      let startProof = startBinding === null ? null : boundRuntimeStartProof(root, startBinding);
+      if (startProof === null && kind === "rollback" && operation.lease.operationKind === "rollback") {
+        const failure = readCanonical(root, "production-failure-evidence-v2.json",
+          validateProductionFailureEvidenceV2);
+        startProof = loadPriorAbandonedRollbackRuntimeStartProof(root, {
+          failureEvidenceSha256: failure.sha256,
+          releaseFreezeIdentitySha256: freeze.sha256,
+          candidateSha: operation.lease.candidateSha,
+          releaseGenerationId: operation.lease.releaseGenerationId,
+          sourceManifestSha256: operation.lease.sourceManifestSha256
+        });
+      }
       if (startProof !== null) {
         live = await observeWindowsRuntimeProcess(startProof.candidate.processId, {
           hardDeadlineAt, configuredTimeoutMs: timeoutMs
@@ -1735,6 +1746,18 @@ function runtimePathFingerprint(path: string): string {
   return hash(process.platform === "win32" ? canonical.toLowerCase() : canonical);
 }
 
+function rollbackCandidateStartProof(
+  root: string,
+  failure: ReturnType<typeof validateProductionFailureEvidenceV2>
+): BoundRuntimeStartProofV2 | null {
+  if (failure.failedGateId === "G15_PRODUCTION_CANARY") {
+    return boundRuntimeStartProof(root, completedRolloutStartBinding(root));
+  }
+  const failed = failedOperationBinding(root, failure);
+  return boundRuntimeStartProof(root,
+    settledOperationStartBinding(root, failed.operationId, failed.operationClaimSha256));
+}
+
 function runtimeReconciliationTarget(
   root: string,
   input: ProtectedProductionEffectExecutionInputV2
@@ -1753,13 +1776,7 @@ function runtimeReconciliationTarget(
   if (input.stepId === "stop_candidate") {
     const failure = readCanonical(root, "production-failure-evidence-v2.json",
       validateProductionFailureEvidenceV2);
-    const started = failure.value.failedGateId === "G15_PRODUCTION_CANARY"
-      ? boundRuntimeStartProof(root, completedRolloutStartBinding(root))
-      : (() => {
-          const failed = failedOperationBinding(root, failure.value);
-          return boundRuntimeStartProof(root,
-            settledOperationStartBinding(root, failed.operationId, failed.operationClaimSha256));
-        })();
+    const started = rollbackCandidateStartProof(root, failure.value);
     if (started === null) throw new Error("production_runtime_candidate_start_evidence_missing");
     return {
       runtimeSha: started.candidate.runtimeSha,
@@ -1791,6 +1808,7 @@ function runtimeReconciliationTarget(
 function runtimeReconciliationInput(
   input: ProtectedProductionEffectExecutionInputV2,
   owned: ReturnType<ProductionOperationStoreV2["assertOwnedAndWithinBounds"]>,
+  authorityExpiresAt: string,
   observedAt: string,
   target: RuntimeEffectReconciliationInputV2["target"]
 ): RuntimeEffectReconciliationInputV2 {
@@ -1802,7 +1820,9 @@ function runtimeReconciliationInput(
       || input.intent.sequence !== input.sequence || input.intent.stepId !== input.stepId
       || input.intent.inputSha256 !== input.inputSha256
       || input.intent.intendedExternalEffectSha256 !== input.intendedExternalEffectSha256
-      || input.intentSha256 !== releaseSha256V2(canonicalBytesV2(input.intent))) {
+      || input.intentSha256 !== releaseSha256V2(canonicalBytesV2(input.intent))
+      || !owned.lineageLeaseTips.some((tip) => tip.sha256 === input.intent.currentOperationLeaseSha256
+        && tip.epoch === input.intent.currentOperationLeaseEpoch)) {
     throw new Error("production_runtime_reconciliation_binding_invalid");
   }
   const desiredState = input.stepId === "stop_previous" || input.stepId === "stop_candidate"
@@ -1817,9 +1837,9 @@ function runtimeReconciliationInput(
     intentRelativePath: input.intent.relativePath,
     intentSha256: input.intentSha256,
     intendedExternalEffectSha256: input.intendedExternalEffectSha256,
-    currentOperationLeaseSha256: owned.leaseSha256,
-    currentOperationLeaseEpoch: owned.lease.leaseEpoch,
-    authorityExpiresAt: owned.claim.authorityConsumption.expiresAt,
+    currentOperationLeaseSha256: input.intent.currentOperationLeaseSha256,
+    currentOperationLeaseEpoch: input.intent.currentOperationLeaseEpoch,
+    authorityExpiresAt,
     operationDeadlineAt: owned.lease.operationDeadlineAt,
     observedAt,
     desiredState,
@@ -1845,6 +1865,24 @@ async function reconcileRuntimeEffect(
   const commandId = RUNTIME_COMMAND[input.stepId];
   if (!commandId) throw new Error("production_runtime_effect_step_forbidden");
   const target = runtimeReconciliationTarget(root, input);
+  const authority = selectExactRuntimeAuthorityV2(runtimeAuthorities(root, commandId, true), input.stepId, {
+    operationId: input.operationId, operationClaimSha256: input.operationClaimSha256,
+    intentSha256: input.intentSha256
+  });
+  if (authority === null) throw new Error("production_runtime_reconciliation_authority_missing");
+  assertExactManagerRuntimeReconciliationBindingV2({
+    effectIdentitySha256: authority.authority.intendedExternalEffectSha256,
+    authority: authority.authority
+  }, input);
+  if (authority.generationId !== input.releaseGenerationId
+      || authority.authority.operationDeadlineAt !== before.lease.operationDeadlineAt
+      || authority.authority.targetRuntimeSha !== target.runtimeSha
+      || authority.authority.targetRuntimeLabel !== target.runtimeLabel
+      || authority.authority.targetWorktreeFingerprintSha256 !== target.worktreePathFingerprintSha256
+      || !before.lineageLeaseTips.some((tip) => tip.sha256 === authority.authority.operationLeaseSha256
+        && tip.epoch === authority.authority.operationLeaseEpoch)) {
+    throw new Error("production_runtime_reconciliation_authority_binding_invalid");
+  }
   const relativePath = `production-runtime-effect-reconciliations/${input.operationId}/${input.sequence}-${input.stepId}-${input.intentSha256}-v2.json`;
   let storedPath: string | null = null;
   try { storedPath = safeArtifactRelativePath(root, relativePath); }
@@ -1857,7 +1895,8 @@ async function reconcileRuntimeEffect(
       // first would make a previously committed decision non-replayable after topology changes.
       if (storedPath === null || !existsSync(storedPath)) return null;
       const stored = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
-      const expectedInput = runtimeReconciliationInput(input, before, stored.value.observedAt, target);
+      const expectedInput = runtimeReconciliationInput(input, before, authority.authority.expiresAt,
+        stored.value.observedAt, target);
       validateRuntimeEffectReconciliationEvidenceV2(stored.value, {
         ...expectedInput,
         topologySnapshotSha256: stored.value.topologySnapshotSha256,
@@ -1878,7 +1917,7 @@ async function reconcileRuntimeEffect(
         observeTopology: () => observeTask0BRuntimeTopologySnapshotV2({
           hardDeadlineAt: productionObservationHardDeadlineV2(
             before.lease.operationDeadlineAt,
-            before.claim.authorityConsumption.expiresAt
+            authority.authority.expiresAt
           ),
           configuredTimeoutMs: 10_000
         })
@@ -1888,7 +1927,8 @@ async function reconcileRuntimeEffect(
       }
       const topology = selectedSource.value;
       const owned = store.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
-      const reconciliationInput = runtimeReconciliationInput(input, owned, topology.observedAt, target);
+      const reconciliationInput = runtimeReconciliationInput(input, owned, authority.authority.expiresAt,
+        topology.observedAt, target);
       const evidence = resolveRuntimeEffectReconciliationV2(reconciliationInput, topology);
       if (evidence === null) return null;
       const record = store.persistExclusive("runtime_effect_reconciliation", relativePath, evidence);
@@ -2032,6 +2072,7 @@ type PriorAbandonedRollbackAttemptV2 = Readonly<{
   attemptedExternalEffect: boolean;
   stepIds: ReadonlySet<string>;
   proofSha256(stepId: "restart_previous" | "stop_candidate" | "start_previous"): string | null;
+  runtimeStartProof?(): BoundRuntimeStartProofV2 | null;
 }>;
 
 type PriorAbandonedRollbackBindingV2 = Readonly<{
@@ -2079,6 +2120,24 @@ export function mergePriorAbandonedRollbackAttemptsV2(
   } };
 }
 
+export function selectLatestPriorAbandonedRollbackRuntimeStartProofV2(
+  attempts: readonly PriorAbandonedRollbackAttemptV2[],
+  expected: PriorAbandonedRollbackBindingV2
+): BoundRuntimeStartProofV2 | null {
+  if (mergePriorAbandonedRollbackAttemptsV2(attempts, expected) === null) return null;
+  const matching = attempts.filter((attempt) => attempt.failureEvidenceSha256 === expected.failureEvidenceSha256
+    && attempt.releaseFreezeIdentitySha256 === expected.releaseFreezeIdentitySha256
+    && attempt.candidateSha === expected.candidateSha
+    && attempt.releaseGenerationId === expected.releaseGenerationId
+    && attempt.sourceManifestSha256 === expected.sourceManifestSha256)
+    .sort((left, right) => Date.parse(right.abandonedAt) - Date.parse(left.abandonedAt));
+  for (const attempt of matching) {
+    const proof = attempt.runtimeStartProof?.() ?? null;
+    if (proof !== null) return proof;
+  }
+  return null;
+}
+
 function loadPriorAbandonedRollbackAttempt(
   root: string,
   terminalName: string
@@ -2088,6 +2147,21 @@ function loadPriorAbandonedRollbackAttempt(
       || abandoned.value.operationKind !== "rollback" || abandoned.value.capability !== "cleanup_only"
       || abandoned.value.claimSha256 === null || abandoned.value.authorityConsumptionSha256 === null) {
     throw new Error("production_prior_rollback_history_invalid");
+  }
+  const verifiedLineage = new ProductionOperationStoreV2(root)
+    .verifyAbandonedRecoverySourceLineage(abandoned.value, ["rollback"]);
+  const claims = readdirSync(root).filter((name) => name.startsWith("production-operation-claim-")
+    && name.endsWith(".json")).map((name) => readCanonical(root, name, validateProductionOperationClaimV2))
+    .filter((claim) => claim.sha256 === abandoned.value.claimSha256);
+  if (claims.length !== 1) throw new Error("production_prior_rollback_claim_ambiguous");
+  const claim = claims[0]!;
+  if (verifiedLineage.claimSha256 !== claim.sha256
+      || verifiedLineage.authorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
+      || claim.value.operationKind !== "rollback" || claim.value.operationId !== abandoned.value.operationId
+      || claim.value.candidateSha !== abandoned.value.candidateSha
+      || claim.value.releaseGenerationId !== abandoned.value.releaseGenerationId
+      || claim.value.sourceManifestSha256 !== abandoned.value.sourceManifestSha256) {
+    throw new Error("production_prior_rollback_claim_binding_invalid");
   }
   const cleanup = readCanonical(root, `production-operation-terminal-cleanup-${abandoned.value.operationId}.json`,
     validateProductionOperationTerminalCleanupV2);
@@ -2110,6 +2184,15 @@ function loadPriorAbandonedRollbackAttempt(
       || receipt.value.orchestration !== "rollback" || receipt.value.capability !== "effect_capable"
       || receipt.value.operationClaimSha256 !== abandoned.value.claimSha256
       || receipt.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+      || receipt.value.operationDeadlineAt !== claim.value.operationDeadlineAt
+      || receipt.value.commandId !== claim.value.authorityConsumption.commandId
+      || receipt.value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+      || !verifiedLineage.leaseTips.has(`${receipt.value.operationLeaseEpoch}:${receipt.value.operationLeaseSha256}`)
+      || receipt.value.inputSha256 !== releaseSha256V2(canonicalBytesV2({
+        version: "production-leaf-input-v2", operationId: abandoned.value.operationId,
+        operationKind: "rollback", sequence: index + 1, stepId: receipt.value.stepId
+      }))
+      || Date.parse(receipt.value.finishedAt) > Date.parse(abandoned.value.abandonedAt)
       || receipt.value.sequence !== index + 1
       || receipt.name !== `${receipt.value.sequence}-${receipt.value.stepId}-v2.json`)) {
     throw new Error("production_prior_rollback_step_binding_invalid");
@@ -2133,6 +2216,13 @@ function loadPriorAbandonedRollbackAttempt(
       || intent.value.orchestration !== "rollback"
       || intent.value.operationClaimSha256 !== abandoned.value.claimSha256
       || intent.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+      || intent.value.commandId !== claim.value.authorityConsumption.commandId
+      || intent.value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+      || !verifiedLineage.leaseTips.has(
+        `${intent.value.currentOperationLeaseEpoch}:${intent.value.currentOperationLeaseSha256}`)
+      || Date.parse(intent.value.preparedAt) >= Date.parse(claim.value.operationDeadlineAt)
+      || Date.parse(intent.value.preparedAt) >= Date.parse(claim.value.authorityConsumption.expiresAt)
+      || Date.parse(intent.value.preparedAt) > Date.parse(abandoned.value.abandonedAt)
       || intent.name !== `${intent.value.sequence}-${intent.value.stepId}-1-v2.json`
       || intent.value.relativePath !== `${intentDirectory}/${intent.name}`)) {
     throw new Error("production_prior_rollback_intent_binding_invalid");
@@ -2146,9 +2236,14 @@ function loadPriorAbandonedRollbackAttempt(
     const receipt = receiptsBySequence.get(intent.value.sequence);
     if (receipt && (receipt.value.executionKind !== "external_effect"
         || receipt.value.stepIntentRelativePath !== intent.value.relativePath
-        || receipt.value.stepIntentSha256 !== intent.sha256)) {
+        || receipt.value.stepIntentSha256 !== intent.sha256
+        || receipt.value.inputSha256 !== intent.value.inputSha256)) {
       throw new Error("production_prior_rollback_receipt_intent_invalid");
     }
+  }
+  if (receipts.some((receipt) => receipt.value.executionKind === "external_effect"
+      && !intents.some((intent) => intent.sha256 === receipt.value.stepIntentSha256))) {
+    throw new Error("production_prior_rollback_receipt_intent_missing");
   }
   const stepIds = new Set([...receipts.map((receipt) => String(receipt.value.stepId)),
     ...orphanIntents.map((intent) => String(intent.value.stepId))]);
@@ -2177,6 +2272,15 @@ function loadPriorAbandonedRollbackAttempt(
   }
   if (topologyNames.length !== 1) throw new Error("production_prior_rollback_topology_ambiguous");
   const topology = readCanonical(root, topologyNames[0]!, validateRuntimeRollbackTopologyEvidenceV2);
+  const lineageLeaseTips = [...verifiedLineage.leaseTips].map((tip) => {
+    const separator = tip.indexOf(":");
+    const epoch = Number(tip.slice(0, separator));
+    const sha256 = tip.slice(separator + 1);
+    if (!Number.isSafeInteger(epoch) || epoch < 1 || !SHA256_HEX.test(sha256)) {
+      throw new Error("production_prior_rollback_lease_lineage_invalid");
+    }
+    return { sha256, epoch };
+  });
   if (topologyNames[0] !== `production-rollback-topology-${abandoned.value.operationId}-${topology.value.topologySnapshotSha256}.json`
       || topology.value.operationId !== abandoned.value.operationId
       || topology.value.operationClaimSha256 !== abandoned.value.claimSha256
@@ -2184,9 +2288,45 @@ function loadPriorAbandonedRollbackAttempt(
       || topology.value.candidateSha !== abandoned.value.candidateSha
       || topology.value.releaseGenerationId !== abandoned.value.releaseGenerationId
       || topology.value.sourceManifestSha256 !== abandoned.value.sourceManifestSha256
+      || !verifiedLineage.leaseTips.has(
+        `${topology.value.operationLeaseEpoch}:${topology.value.operationLeaseSha256}`)
       || Date.parse(topology.value.observedAt) > Date.parse(abandoned.value.abandonedAt)) {
     throw new Error("production_prior_rollback_topology_binding_invalid");
   }
+  assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(topology.value, {
+    lease: { operationId: claim.value.operationId, candidateSha: claim.value.candidateSha,
+      releaseGenerationId: claim.value.releaseGenerationId,
+      sourceManifestSha256: claim.value.sourceManifestSha256,
+      operationDeadlineAt: claim.value.operationDeadlineAt },
+    leaseSha256: topology.value.operationLeaseSha256,
+    claim: { authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+      authorityConsumption: { expiresAt: claim.value.authorityConsumption.expiresAt } },
+    claimSha256: claim.sha256, lineageLeaseTips
+  });
+  const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+  const failure = readCanonical(root, "production-failure-evidence-v2.json", validateProductionFailureEvidenceV2);
+  const targets = rollbackTopologyTargets(root);
+  if (freeze.sha256 !== topology.value.releaseFreezeIdentitySha256
+      || freeze.value.releaseGenerationId !== claim.value.releaseGenerationId
+      || failure.sha256 !== topology.value.failureEvidenceSha256
+      || failure.value.candidateSha !== claim.value.candidateSha
+      || failure.value.releaseFreezeIdentitySha256 !== freeze.sha256
+      || topology.value.previousTargetSha256 !== releaseSha256V2(canonicalBytesV2(targets.previous))
+      || topology.value.candidateTargetSha256 !== releaseSha256V2(canonicalBytesV2(targets.candidate))) {
+    throw new Error("production_prior_rollback_release_binding_invalid");
+  }
+  const startBinding: BoundRuntimeStartV2 = {
+    operationKind: "rollback", operationId: claim.value.operationId,
+    operationClaimSha256: claim.sha256,
+    authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+    releaseGenerationId: claim.value.releaseGenerationId,
+    sourceManifestSha256: claim.value.sourceManifestSha256,
+    releaseFreezeIdentitySha256: freeze.sha256, lineageLeaseTips,
+    completedStepReceipts: receipts.map((receipt) => ({
+      relativePath: `${stepDirectory}/${receipt.name}`, sha256: receipt.sha256, receipt: receipt.value
+    }))
+  };
+  const runtimeStartProof = () => boundRuntimeStartProof(root, startBinding);
   return {
     operationId: abandoned.value.operationId,
     abandonedAt: abandoned.value.abandonedAt,
@@ -2197,27 +2337,82 @@ function loadPriorAbandonedRollbackAttempt(
     sourceManifestSha256: abandoned.value.sourceManifestSha256,
     attemptedExternalEffect: abandoned.value.attemptedExternalEffect,
     stepIds,
+    runtimeStartProof,
     proofSha256(stepId) {
       const intent = intents.find((item) => item.value.stepId === stepId);
-      if (!intent) return null;
+      const receipt = receipts.find((item) => item.value.stepId === stepId);
+      if (!intent || !receipt) return null;
+      if (stepId === "start_previous" || stepId === "restart_previous") {
+        const proof = runtimeStartProof();
+        if (proof === null) throw new Error("production_prior_rollback_start_proof_missing");
+        return proof.proofSha256;
+      }
       const commandId = RUNTIME_COMMAND[stepId]!;
-      const manager = actualRuntimeEvidence(root, commandId, stepId, {
-        operationId: abandoned.value.operationId,
-        operationClaimSha256: abandoned.value.claimSha256!,
+      const authority = selectExactRuntimeAuthorityV2(runtimeAuthorities(root, commandId, true), stepId, {
+        operationId: claim.value.operationId, operationClaimSha256: claim.sha256,
         intentSha256: intent.sha256
       });
-      if (manager) return manager.sha256;
-      const reconciliationRoot = nestedArtifactDirectory(root,
-        `production-runtime-effect-reconciliations/${abandoned.value.operationId}`);
-      if (reconciliationRoot === null) return null;
-      const matches = readdirSync(reconciliationRoot).filter((name) => name.endsWith(".json")).map((name) =>
-        readCanonical(root, `production-runtime-effect-reconciliations/${abandoned.value.operationId}/${name}`,
-          validateRuntimeEffectReconciliationEvidenceV2)).filter((item) =>
-        item.value.operationId === abandoned.value.operationId && item.value.stepId === stepId
-        && item.value.intentSha256 === intent.sha256 && item.value.operationClaimSha256 === abandoned.value.claimSha256
-        && item.value.authorityConsumptionSha256 === abandoned.value.authorityConsumptionSha256);
-      if (matches.length > 1) throw new Error("production_prior_rollback_reconciliation_ambiguous");
-      return matches[0]?.sha256 ?? null;
+      if (authority === null) throw new Error("production_prior_rollback_authority_missing");
+      const candidateStart = rollbackCandidateStartProof(root, failure.value);
+      if (candidateStart === null) throw new Error("production_prior_rollback_candidate_start_missing");
+      const target: RuntimeEffectReconciliationInputV2["target"] = {
+        runtimeSha: candidateStart.candidate.runtimeSha,
+        runtimeLabel: candidateStart.candidate.runtimeLabel,
+        worktreePathFingerprintSha256: candidateStart.candidate.worktreePathFingerprintSha256,
+        entrypointPathFingerprintSha256: candidateStart.candidate.entrypointPathFingerprintSha256,
+        exactProcessId: candidateStart.candidate.processId,
+        exactProcessStartedAt: candidateStart.candidate.processStartedAt
+      };
+      const executionInput: ProtectedProductionEffectExecutionInputV2 = {
+        artifactRoot: root, operationKind: "rollback", operationId: claim.value.operationId,
+        operationClaimSha256: claim.sha256,
+        authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+        releaseGenerationId: claim.value.releaseGenerationId,
+        sourceManifestSha256: claim.value.sourceManifestSha256,
+        releaseFreezeIdentitySha256: freeze.sha256,
+        sequence: receipt.value.sequence, stepId, inputSha256: receipt.value.inputSha256,
+        intendedExternalEffectSha256: intent.value.intendedExternalEffectSha256,
+        intent: intent.value, intentSha256: intent.sha256
+      };
+      assertExactManagerRuntimeReconciliationBindingV2({
+        effectIdentitySha256: authority.authority.intendedExternalEffectSha256,
+        authority: authority.authority
+      }, executionInput);
+      if (authority.generationId !== claim.value.releaseGenerationId
+          || authority.authority.operationDeadlineAt !== claim.value.operationDeadlineAt
+          || authority.authority.targetRuntimeSha !== target.runtimeSha
+          || authority.authority.targetRuntimeLabel !== target.runtimeLabel
+          || authority.authority.targetWorktreeFingerprintSha256 !== target.worktreePathFingerprintSha256) {
+        throw new Error("production_prior_rollback_authority_binding_invalid");
+      }
+      const manager = actualRuntimeEvidence(root, commandId, stepId, {
+        operationId: claim.value.operationId,
+        operationClaimSha256: claim.sha256,
+        intentSha256: intent.sha256
+      });
+      if (manager !== null) {
+        assertRuntimeStartReceiptProofBindingV2(receipt.value, manager.sha256);
+        return manager.sha256;
+      }
+      const relativePath = `production-runtime-effect-reconciliations/${claim.value.operationId}/${receipt.value.sequence}-${stepId}-${intent.sha256}-v2.json`;
+      const reconciliation = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
+      validateRuntimeEffectReconciliationEvidenceV2(reconciliation.value, {
+        operationKind: "rollback", operationId: claim.value.operationId,
+        operationClaimSha256: claim.sha256,
+        authorityConsumptionSha256: claim.value.authorityConsumptionSha256,
+        sequence: receipt.value.sequence, stepId, intentRelativePath: intent.value.relativePath,
+        intentSha256: intent.sha256, intendedExternalEffectSha256: intent.value.intendedExternalEffectSha256,
+        currentOperationLeaseSha256: intent.value.currentOperationLeaseSha256,
+        currentOperationLeaseEpoch: intent.value.currentOperationLeaseEpoch,
+        authorityExpiresAt: authority.authority.expiresAt,
+        operationDeadlineAt: claim.value.operationDeadlineAt,
+        topologySnapshotSha256: reconciliation.value.topologySnapshotSha256,
+        targetIdentitySha256: releaseSha256V2(canonicalBytesV2(target)),
+        effectNotBefore: intent.value.preparedAt, observedPostState: "target_absent",
+        observedAt: reconciliation.value.observedAt
+      });
+      assertRuntimeStartReceiptProofBindingV2(receipt.value, reconciliation.sha256);
+      return reconciliation.sha256;
     }
   };
 }
@@ -2229,6 +2424,16 @@ function loadPriorAbandonedRollbackHistory(
   const terminalNames = readdirSync(root).filter((name) =>
     /^production-operation-terminal-abandoned-production-rollback-[0-9a-f]{64}\.json$/u.test(name));
   return mergePriorAbandonedRollbackAttemptsV2(
+    terminalNames.map((name) => loadPriorAbandonedRollbackAttempt(root, name)), expected);
+}
+
+function loadPriorAbandonedRollbackRuntimeStartProof(
+  root: string,
+  expected: PriorAbandonedRollbackBindingV2
+): BoundRuntimeStartProofV2 | null {
+  const terminalNames = readdirSync(root).filter((name) =>
+    /^production-operation-terminal-abandoned-production-rollback-[0-9a-f]{64}\.json$/u.test(name));
+  return selectLatestPriorAbandonedRollbackRuntimeStartProofV2(
     terminalNames.map((name) => loadPriorAbandonedRollbackAttempt(root, name)), expected);
 }
 

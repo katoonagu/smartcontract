@@ -16,6 +16,7 @@ import {
   assertRollbackFailureTransitionLineageV2,
   assertRuntimeStartReceiptProofBindingV2,
   mergePriorAbandonedRollbackAttemptsV2,
+  selectLatestPriorAbandonedRollbackRuntimeStartProofV2,
   selectRuntimeEffectRecoverySourceV2
 } from "../../src/release/productionOperationAdaptersV2";
 import {
@@ -292,6 +293,32 @@ describe("production effect crash windows", () => {
     expect(() => mergePriorAbandonedRollbackAttemptsV2([
       { ...topologyless, stepIds: new Set(["verify_failure"]) }
     ], expected)).toThrow("production_prior_rollback_topology_missing_with_history");
+  });
+
+  it("uses the latest operation-bound previous-runtime start across abandoned rollback attempts", () => {
+    const expected = { failureEvidenceSha256: "1".repeat(64), releaseFreezeIdentitySha256: "2".repeat(64),
+      candidateSha: SHA40, releaseGenerationId: "generation-1", sourceManifestSha256: "3".repeat(64) };
+    const runtimeProof = (processId: number, proofSha256: string) => ({
+      candidate: { processId, processStartedAt: "2026-07-19T00:01:00.000Z", runtimeSha: SHA40,
+        runtimeLabel: "previous", commandLineSha256: "4".repeat(64), executablePathSha256: "5".repeat(64),
+        worktreePathFingerprintSha256: "6".repeat(64), entrypointPathFingerprintSha256: "7".repeat(64) },
+      generationId: "generation-1", commandId: "runtime_manager_rollback_previous" as const,
+      authoritySha256: "8".repeat(64), proofSha256
+    });
+    const attempts = [
+      { ...expected, operationId: `production-rollback-${"1".repeat(64)}`,
+        abandonedAt: "2026-07-19T00:01:00.000Z", attemptedExternalEffect: true,
+        stepIds: new Set(["start_previous"]), proofSha256: () => "9".repeat(64),
+        runtimeStartProof: () => runtimeProof(101, "9".repeat(64)) },
+      { ...expected, operationId: `production-rollback-${"2".repeat(64)}`,
+        abandonedAt: "2026-07-19T00:02:00.000Z", attemptedExternalEffect: true,
+        stepIds: new Set(["start_previous"]), proofSha256: () => "9".repeat(64),
+        runtimeStartProof: () => runtimeProof(202, "a".repeat(64)) },
+      { ...expected, operationId: `production-rollback-${"3".repeat(64)}`,
+        abandonedAt: "2026-07-19T00:03:00.000Z", attemptedExternalEffect: false,
+        stepIds: new Set<string>(), proofSha256: () => null }
+    ];
+    expect(selectLatestPriorAbandonedRollbackRuntimeStartProofV2(attempts, expected)?.candidate.processId).toBe(202);
   });
 
   it("accepts an own heartbeat across topology observation but rejects a foreign owner", () => {
