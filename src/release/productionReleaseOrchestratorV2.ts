@@ -152,6 +152,7 @@ export type ProtectedProductionOperationStoreV2 = Readonly<{
   };
   persistStepIntent(value: unknown): ProductionOperationStoreRecordV2;
   persistStepReceipt(value: unknown): ProductionOperationStoreRecordV2;
+  hasUnresolvedStepIntent(input: { operationId: string; sequence: number; stepId: string }): boolean;
   persistExclusive(kind: string, relativePath: string, value: unknown): ProductionOperationStoreRecordV2;
   persistSettlement(value: unknown): ProductionOperationStoreRecordV2;
   completeTerminal(input: { operationId: string; terminalStateKind: "settlement";
@@ -435,6 +436,8 @@ export async function executeProtectedProductionOperationV2(
   let attemptedExternalEffect = false;
   let activeStepId = "";
   let successSettlementPersisted = false;
+  let unresolvedEffectIntent = false;
+  let activeEffectIntent: { operationId: string; sequence: number; stepId: string } | null = null;
 
   try {
   for (const [offset, stepId] of stepIds.entries()) {
@@ -485,9 +488,13 @@ export async function executeProtectedProductionOperationV2(
         intendedExternalEffectSha256,
         preparedAt: startedAt
       });
+      activeEffectIntent = { operationId: begun.lease.operationId, sequence, stepId };
       const persistedIntent = store.persistStepIntent(intent);
       intentPath = persistedIntent.relativePath;
       intentSha256 = persistedIntent.sha256;
+      // ponytail: one durable attempt per effect; an intent without its exact receipt is
+      // uncertain and must remain available for bounded read-only reconciliation.
+      unresolvedEffectIntent = true;
       owned = store.assertOwnedAndWithinBounds(begun.lease.operationId, adapters.now());
       if (persistedIntent.created) {
         attemptedExternalEffect = true;
@@ -537,6 +544,8 @@ export async function executeProtectedProductionOperationV2(
     });
     const persisted = store.persistStepReceipt(receipt);
     if (persisted.sha256 !== protectedHash(receipt)) throw new Error("production_step_receipt_hash_invalid");
+    unresolvedEffectIntent = false;
+    activeEffectIntent = null;
     completedStepReceipts.push({ relativePath: persisted.relativePath, sha256: persisted.sha256, receipt });
     captures.push({ stepId, sequence, executionKind, outputSha256: leaf.outputSha256,
       observedStateSha256: leaf.observedStateSha256, ...(leaf.verifiedChecks === undefined
@@ -705,7 +714,16 @@ export async function executeProtectedProductionOperationV2(
   return { operationId: begun.lease.operationId, leaseEpoch: settlementOwned.lease.leaseEpoch,
     receiptSha256: orchestrationRecord.sha256, completedSteps: [...stepIds] };
   } catch (error) {
-    if ((input.operationKind === "rollout" || input.operationKind === "canary") && !successSettlementPersisted) {
+    if (activeEffectIntent !== null) {
+      try {
+        unresolvedEffectIntent = store.hasUnresolvedStepIntent(activeEffectIntent);
+      } catch {
+        // An unreadable intent/receipt boundary is itself uncertain and cannot authorize failure settlement.
+        unresolvedEffectIntent = true;
+      }
+    }
+    if ((input.operationKind === "rollout" || input.operationKind === "canary")
+        && !successSettlementPersisted && !unresolvedEffectIntent) {
       try {
         settleProtectedFailure({ operationKind: input.operationKind, stepId: activeStepId, error,
           store, adapters, begun, releaseFreezeIdentitySha256: releaseContext.releaseFreezeIdentitySha256,

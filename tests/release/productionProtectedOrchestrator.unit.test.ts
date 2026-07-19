@@ -58,6 +58,7 @@ function begun(kind: "rollout" | "canary" | "rollback" | "recovery") {
 
 function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
   const events: string[] = [];
+  const unresolvedIntents = new Set<string>();
   const current = begun(kind);
   const store: ProtectedProductionOperationStoreV2 = {
     async beginOperation() { events.push("begin"); return current; },
@@ -67,8 +68,15 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
         claim: current.claim, claimSha256: current.claimSha256, takeoverChainSha256: "7".repeat(64) };
     },
     heartbeat() { events.push("heartbeat"); return { lease: current.lease, leaseSha256: current.leaseSha256 }; },
-    persistStepIntent(value: any) { events.push(`intent:${value.stepId}`); return { kind: "intent", relativePath: value.relativePath, sha256: "8".repeat(64), created: true }; },
-    persistStepReceipt(value: any) { events.push(`receipt:${value.stepId}`); return { kind: "receipt", relativePath: `steps/${value.sequence}.json`, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
+    persistStepIntent(value: any) { events.push(`intent:${value.stepId}`);
+      unresolvedIntents.add(`${value.operationId}:${value.sequence}:${value.stepId}`);
+      return { kind: "intent", relativePath: value.relativePath, sha256: "8".repeat(64), created: true }; },
+    persistStepReceipt(value: any) { events.push(`receipt:${value.stepId}`);
+      unresolvedIntents.delete(`${value.operationId}:${value.sequence}:${value.stepId}`);
+      return { kind: "receipt", relativePath: `steps/${value.sequence}.json`, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
+    hasUnresolvedStepIntent(value) {
+      return unresolvedIntents.has(`${value.operationId}:${value.sequence}:${value.stepId}`);
+    },
     persistExclusive(kindValue, path, value) { events.push(`persist:${kindValue}`); return { kind: kindValue, relativePath: path, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
     persistSettlement() { events.push("settlement"); return { kind: "settlement", relativePath: "settlement.json", sha256: SHA, created: true }; },
     completeTerminal() { events.push("terminal"); return { prepared: {}, receipt: {}, cleanup: {} } as any; }

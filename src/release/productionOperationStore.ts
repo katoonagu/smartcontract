@@ -922,6 +922,34 @@ export class ProductionOperationStoreV2 {
     return this.persistExclusive("production_orchestration_step_intent", intent.relativePath, intent);
   }
 
+  hasUnresolvedStepIntent(input: { operationId: string; sequence: number; stepId: string }): boolean {
+    exactOperationId(input.operationId);
+    if (!Number.isSafeInteger(input.sequence) || input.sequence < 1 || !/^[a-z][a-z0-9_]*$/u.test(input.stepId)) {
+      throw new Error("production_step_intent_lookup_invalid");
+    }
+    const intentPath = this.#path(
+      `production-operation-step-intents/${input.operationId}/${input.sequence}-${input.stepId}-1-v2.json`);
+    if (!existsSync(intentPath)) return false;
+    const intent = readCanonical(intentPath, validateProductionOrchestrationStepIntentV2,
+      "production_step_intent");
+    if (intent.value.operationId !== input.operationId || intent.value.sequence !== input.sequence
+        || intent.value.stepId !== input.stepId || intent.value.attempt !== 1) {
+      throw new Error("production_step_intent_lookup_binding_invalid");
+    }
+    const receiptPath = this.#path(
+      `production-operation-steps/${input.operationId}/${input.sequence}-${input.stepId}-v2.json`);
+    if (!existsSync(receiptPath)) return true;
+    const receipt = readCanonical(receiptPath, validateProductionOrchestrationStepReceiptV2,
+      "production_step_receipt");
+    if (receipt.value.operationId !== input.operationId || receipt.value.sequence !== input.sequence
+        || receipt.value.stepId !== input.stepId || receipt.value.executionKind !== "external_effect"
+        || receipt.value.stepIntentRelativePath !== intent.value.relativePath
+        || receipt.value.stepIntentSha256 !== intent.sha256) {
+      throw new Error("production_step_receipt_intent_binding_invalid");
+    }
+    return false;
+  }
+
   persistStepReceipt(value: unknown): ProductionOperationStoreRecordV2 {
     const receipt = validateProductionOrchestrationStepReceiptV2(value);
     const current = this.assertOwnedAndWithinBounds(receipt.operationId, receipt.finishedAt);
