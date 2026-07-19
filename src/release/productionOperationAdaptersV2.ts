@@ -644,7 +644,9 @@ async function observeAdmin(
         const processId = evidence.startEvidence.runtimeEvidence.processId;
         if (!Number.isSafeInteger(processId) || processId < 1) continue;
         try {
-          live = await observeWindowsRuntimeProcess(processId);
+          live = await observeWindowsRuntimeProcess(processId, {
+            hardDeadlineAt, configuredTimeoutMs: timeoutMs
+          });
           const runtime = evidence.startEvidence.runtimeEvidence;
           if (runtime.runtimeSha !== live.runtimeSha || runtime.runtimeLabel !== live.runtimeLabel
               || runtime.processStartedAt !== live.processStartedAt
@@ -663,7 +665,9 @@ async function observeAdmin(
         } catch { /* another issued start may be historical */ }
       }
       if (live === null) {
-        try { live = await observeWindowsRuntimeProcess(task0b.previousRuntimeIdentity.processId); }
+        try { live = await observeWindowsRuntimeProcess(task0b.previousRuntimeIdentity.processId, {
+          hardDeadlineAt, configuredTimeoutMs: timeoutMs
+        }); }
         catch { throw new Error("production_runtime_identity_unverified"); }
         if (live.runtimeSha !== task0b.previousRuntimeSha || live.runtimeLabel !== task0b.previousRuntimeLabel) {
           throw new Error("production_previous_runtime_identity_changed");
@@ -673,7 +677,9 @@ async function observeAdmin(
         throw new Error("production_runtime_sha_unverified");
       }
       return { adminStatus: admin.status, runtimeSha: live.runtimeSha,
-        runtimeLabelSha256: hash(live.runtimeLabel), runtimeProcessCount: await countTask0BRuntimeCandidates(),
+        runtimeLabelSha256: hash(live.runtimeLabel), runtimeProcessCount: await countTask0BRuntimeCandidates({
+          hardDeadlineAt, configuredTimeoutMs: timeoutMs
+        }),
         navigationStatus, runtimeGenerationId, runtimeStartCommandId, runtimeAuthoritySha256,
         cycleSnapshot: null as RuntimeCycleSnapshotV2 | null };
     } });
@@ -871,7 +877,9 @@ async function observeProductionDatabaseRuntime(root: string, hardDeadlineAt: st
       const external = await readExternalConfig(root);
       const databaseUrl = process.env[external.config.databaseConnectionEnvName];
       if (!databaseUrl) throw new Error("production_database_binding_missing");
-      const identity = await observeTask0BProductionDatabase(external.config);
+      const identity = await observeTask0BProductionDatabase(external.config, {
+        hardDeadlineAt, configuredTimeoutMs: timeoutMs
+      });
       if (process.env[external.config.databaseConnectionEnvName] !== databaseUrl) {
         throw new Error("production_database_binding_changed");
       }

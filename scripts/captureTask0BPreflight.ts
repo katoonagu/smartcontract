@@ -411,19 +411,44 @@ export async function captureTask0BReleaseFreezeEvidence(
   return evidence;
 }
 
-function run(executable: string, args: readonly string[], cwd?: string, extraEnv?: NodeJS.ProcessEnv): Promise<string> {
+function run(
+  executable: string,
+  args: readonly string[],
+  cwd?: string,
+  extraEnv?: NodeJS.ProcessEnv,
+  timeoutMs = 10_000
+): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(executable, [...args], {
       cwd,
       env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
       encoding: "utf8",
       windowsHide: true,
-      timeout: 10_000
+      timeout: timeoutMs
     }, (error, stdout) => {
       if (error) reject(new Error("task0b_direct_probe_failed"));
       else resolvePromise(stdout.trim());
     });
   });
+}
+
+export type Task0BBoundedProbeOptions = Readonly<{
+  hardDeadlineAt: string;
+  configuredTimeoutMs: number;
+  nowMs?: () => number;
+}>;
+
+export function task0BBoundedProbeTimeoutMs(options: Task0BBoundedProbeOptions): number {
+  const deadlineMs = Date.parse(options.hardDeadlineAt);
+  if (!Number.isFinite(deadlineMs) || !Number.isSafeInteger(options.configuredTimeoutMs)
+      || options.configuredTimeoutMs < 1) throw new Error("task0b_probe_budget_invalid");
+  const remainingMs = deadlineMs - (options.nowMs ?? Date.now)();
+  if (remainingMs <= 0) throw new Error("task0b_probe_bound_reached");
+  return Math.min(options.configuredTimeoutMs, remainingMs);
+}
+
+function task0BProbeTimeout(options: Task0BBoundedProbeOptions | undefined, fallbackMs = 10_000): number {
+  return options === undefined ? fallbackMs : task0BBoundedProbeTimeoutMs(options);
 }
 
 type ProtectedPathAccess = {
@@ -818,12 +843,15 @@ export function validateTask0BPreviousRuntimeIdentity(
   };
 }
 
-export async function observeWindowsRuntimeProcess(processId: number): Promise<Task0BDirectRuntimeProcessObservation> {
+export async function observeWindowsRuntimeProcess(
+  processId: number,
+  bounded?: Task0BBoundedProbeOptions
+): Promise<Task0BDirectRuntimeProcessObservation> {
   if (process.platform !== "win32") throw new Error("task0b_runtime_process_probe_unsupported");
   const processJson = await run("powershell.exe", [
     "-NoProfile", "-NonInteractive", "-Command",
     "$items = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match '--task0b-manager-producer=task0b_repo_runtime_manager_v1' } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; processStartedAt = $_.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$_.CommandLine; executablePath = [string]$_.ExecutablePath } }); ConvertTo-Json -Compress -InputObject $items"
-  ]);
+  ], undefined, undefined, task0BProbeTimeout(bounded));
   const processes = JSON.parse(processJson) as Array<Record<string, unknown>>;
   if (!Array.isArray(processes)) throw new Error("task0b_previous_runtime_process_unverified");
   const observed = processes.find((item) => item.processId === processId);
@@ -837,9 +865,9 @@ export async function observeWindowsRuntimeProcess(processId: number): Promise<T
   if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_previous_runtime_entrypoint_unverified");
   const worktree = dirname(dirname(physicalEntrypoint));
   const [gitTopLevel, gitHead, gitStatus] = await Promise.all([
-    run("git", ["rev-parse", "--show-toplevel"], worktree),
-    run("git", ["rev-parse", "HEAD"], worktree),
-    run("git", ["status", "--porcelain"], worktree)
+    run("git", ["rev-parse", "--show-toplevel"], worktree, undefined, task0BProbeTimeout(bounded)),
+    run("git", ["rev-parse", "HEAD"], worktree, undefined, task0BProbeTimeout(bounded)),
+    run("git", ["status", "--porcelain"], worktree, undefined, task0BProbeTimeout(bounded))
   ]);
   const physicalTopLevel = resolve(await realpath(gitTopLevel));
   if (!sameCanonicalPath(physicalTopLevel, worktree) || gitHead !== runtimeSha || gitStatus !== "") {
@@ -858,12 +886,12 @@ export async function observeWindowsRuntimeProcess(processId: number): Promise<T
   };
 }
 
-export async function countTask0BRuntimeCandidates(): Promise<number> {
+export async function countTask0BRuntimeCandidates(bounded?: Task0BBoundedProbeOptions): Promise<number> {
   if (process.platform !== "win32") throw new Error("task0b_runtime_process_probe_unsupported");
   const output = await run("powershell.exe", [
     "-NoProfile", "-NonInteractive", "-Command",
     "$items = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'src[\\\\/]index\\.ts' }); [string]$items.Count"
-  ]);
+  ], undefined, undefined, task0BProbeTimeout(bounded));
   const count = Number(output);
   if (!Number.isSafeInteger(count) || count < 0) throw new Error("task0b_runtime_process_count_unverified");
   return count;
@@ -936,7 +964,8 @@ async function observeRuntimeManagerRegistry(
 }
 
 export async function observeTask0BProductionDatabase(
-  config: Task0BPreflightConfigV1
+  config: Task0BPreflightConfigV1,
+  bounded?: Task0BBoundedProbeOptions
 ): Promise<Task0BReleaseFreezeEvidenceV1["productionDatabase"]> {
   const expected = assertExpectedProductionDatabase(config.productionDatabaseExpected);
   const databaseUrl = process.env[config.databaseConnectionEnvName];
@@ -953,6 +982,7 @@ export async function observeTask0BProductionDatabase(
       || !Number.isSafeInteger(endpointPort) || endpointPort < 1 || endpointPort > 65_535) {
     throw new Error("task0b_production_database_binding_invalid");
   }
+  const initialTimeoutMs = task0BProbeTimeout(bounded);
   const client = new Client({
     host: expected.endpointHost,
     port: endpointPort,
@@ -960,21 +990,26 @@ export async function observeTask0BProductionDatabase(
     user: decodeURIComponent(parsed.username),
     password: decodeURIComponent(parsed.password),
     application_name: "task0b_read_only_preflight",
-    connectionTimeoutMillis: 5_000,
-    statement_timeout: 10_000,
-    query_timeout: 10_000
+    connectionTimeoutMillis: Math.min(5_000, initialTimeoutMs),
+    statement_timeout: initialTimeoutMs,
+    query_timeout: initialTimeoutMs
   });
   await client.connect();
   try {
-    await client.query("begin read only");
-    const identity = await client.query(`select current_database() as database_name,
+    const boundedQuery = async (text: string, values?: unknown[]) => {
+      const timeoutMs = task0BProbeTimeout(bounded);
+      await client.query({ text: `set statement_timeout to ${timeoutMs}`, query_timeout: timeoutMs } as any);
+      return client.query({ text, values, query_timeout: task0BProbeTimeout(bounded) } as any);
+    };
+    await boundedQuery("begin read only");
+    const identity = await boundedQuery(`select current_database() as database_name,
       coalesce(inet_server_addr()::text, 'local') as server_address,
       inet_server_port() as server_port,
       current_setting('server_version') as server_version,
       current_setting('server_version_num') as server_version_num,
       (select oid::text from pg_database where datname = current_database()) as database_oid`);
-    const control = await client.query("select system_identifier::text as system_identifier from pg_control_system()");
-    const receiptTable = await client.query("select to_regclass('public.schema_migration_receipts')::text as receipt_table");
+    const control = await boundedQuery("select system_identifier::text as system_identifier from pg_control_system()");
+    const receiptTable = await boundedQuery("select to_regclass('public.schema_migration_receipts')::text as receipt_table");
     const row = identity.rows[0];
     const systemIdentifier = String(control.rows[0]?.system_identifier ?? "");
     const databaseOid = String(row?.database_oid ?? "");
@@ -1011,10 +1046,10 @@ export async function observeTask0BProductionDatabase(
       source: "postgresql_direct_read_only"
     };
     if (receiptTable.rows[0]?.receipt_table) {
-      const receipts = await client.query(
+      const receipts = await boundedQuery(
         "select version, filename, checksum_sha256 from public.schema_migration_receipts order by version"
       );
-      const canonicalReceipts = receipts.rows.map((receipt) => ({
+      const canonicalReceipts = receipts.rows.map((receipt: Record<string, unknown>) => ({
         version: Number(receipt.version),
         filename: String(receipt.filename),
         checksumSha256: String(receipt.checksum_sha256)
@@ -1024,7 +1059,7 @@ export async function observeTask0BProductionDatabase(
           || canonicalReceipts[0]?.checksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM) {
         throw new Error("task0b_schema_032_receipt_prestate_unverified");
       }
-      await verifyRequiredSchema032(client, APPROVED_SCHEMA_032_CHECKSUM);
+      await verifyRequiredSchema032({ query: boundedQuery }, APPROVED_SCHEMA_032_CHECKSUM);
       schemaState = "schema_032_verified";
       schema032ReceiptPrestate = {
         state: "verified",
@@ -1039,7 +1074,7 @@ export async function observeTask0BProductionDatabase(
         source: "postgresql_direct_read_only"
       };
     } else {
-      const columns = await client.query(`select table_name, column_name
+      const columns = await boundedQuery(`select table_name, column_name
         from information_schema.columns
         where table_schema = 'public'
           and ((table_name = 'wallet_approvals' and column_name = any($1::text[]))
@@ -1047,7 +1082,8 @@ export async function observeTask0BProductionDatabase(
         [...LEGACY_031_WALLET_APPROVAL_COLUMNS, ...SCHEMA_032_ALLOWANCE_COLUMNS],
         LEGACY_031_POISONING_COLUMNS
       ]);
-      const found = new Set(columns.rows.map((column) => `${String(column.table_name)}.${String(column.column_name)}`));
+      const found = new Set(columns.rows.map((column: Record<string, unknown>) =>
+        `${String(column.table_name)}.${String(column.column_name)}`));
       const missingLegacy = [
         ...LEGACY_031_WALLET_APPROVAL_COLUMNS.map((column) => `wallet_approvals.${column}`),
         ...LEGACY_031_POISONING_COLUMNS.map((column) => `observed_transactions.${column}`)

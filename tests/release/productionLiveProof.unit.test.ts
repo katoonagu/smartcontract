@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { task0BBoundedProbeTimeoutMs } from "../../scripts/captureTask0BPreflight";
 import {
   deriveVerifiedProductionChecksV2,
   inspectRuntimeDiagnosticLogsV2,
@@ -251,6 +252,16 @@ describe("production live proof", () => {
       }
     })).resolves.toBe("ok");
     expect(configuredTimeouts).toEqual([250]);
+    expect(task0BBoundedProbeTimeoutMs({
+      hardDeadlineAt: "2026-07-19T00:00:00.250Z",
+      configuredTimeoutMs: 10_000,
+      nowMs: () => Date.parse("2026-07-19T00:00:00.001Z")
+    })).toBe(249);
+    expect(() => task0BBoundedProbeTimeoutMs({
+      hardDeadlineAt: "2026-07-19T00:00:00.250Z",
+      configuredTimeoutMs: 10_000,
+      nowMs: () => Date.parse("2026-07-19T00:00:00.250Z")
+    })).toThrow(/probe.*bound/i);
   });
 
   it("does not start HTTP or PostgreSQL observation at equality and rejects cross-bound completion", async () => {
