@@ -5,10 +5,17 @@ import { mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { ProductionOperationStoreV2 } from "../../src/release/productionOperationStore";
+import {
+  PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
+  ProductionOperationStoreV2
+} from "../../src/release/productionOperationStore";
 import {
   canonicalReleaseJsonV2,
-  releaseSha256V2
+  releaseSha256V2,
+  rootWriterOwnerProcessIdentitySha256V2,
+  validateCommittedProductionOperationLeaseTakeoverV2,
+  validatePreparedProductionOperationLeaseTakeoverV2,
+  validateProductionOperationLeaseV2
 } from "../../src/release/remediationReleaseManifestV2";
 import {
   initializeReleaseManifestV2,
@@ -251,4 +258,116 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     capability: "cleanup_only"
   });
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+}, 45_000);
+
+it("rejects an extra foreign committed receipt sharing the exact old lease hash", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const begun = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.heartbeat(begun.lease.operationId, "2026-07-18T10:00:05.000Z"));
+  const receiptName = readdirSync(root).find((name) =>
+    name.startsWith("production-operation-root.lease-takeover-committed-"))!;
+  const receipt = JSON.parse(readFileSync(join(root, receiptName), "utf8"));
+  const foreign = { ...receipt, operationId: `production-rollout-${"9".repeat(64)}`,
+    committedAt: "2026-07-18T10:00:05.001Z" };
+  const foreignBytes = canonicalBytes(foreign);
+  await writeFile(join(root,
+    `production-operation-root.lease-takeover-committed-${releaseSha256V2(foreignBytes)}.json`), foreignBytes);
+
+  expect(() => store.verifyImmutableAuthorityLineage(
+    begun.lease.operationId, "2026-07-18T10:00:05.002Z"
+  )).toThrow(/takeover.*(?:ambiguous|chain|binding)/i);
+}, 45_000);
+
+it("rejects a multi-hop takeover identity switch even when the final lease switches back", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const begun = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  const livePath = join(root, "production-operation-root.lease.json");
+
+  const installForgedHop = async (oldLease: any, newLease: any, candidateSha: string, at: string) => {
+    const oldBytes = canonicalBytes(oldLease);
+    const oldSha = releaseSha256V2(oldBytes);
+    const newBytes = canonicalBytes(newLease);
+    const prepared = validatePreparedProductionOperationLeaseTakeoverV2({
+      version: "prepared-production-operation-lease-takeover-v2",
+      commandId: "production_operation_lease_takeover",
+      redactedTemplateSha256: PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
+      capability: "effect_capable",
+      operationKind: "rollout",
+      operationId: begun.lease.operationId,
+      candidateSha,
+      releaseGenerationId: begun.lease.releaseGenerationId,
+      sourceManifestSha256: begun.lease.sourceManifestSha256,
+      artifactRootFingerprintSha256: begun.lease.artifactRootFingerprintSha256,
+      authorityConsumptionSha256: begun.claim.authorityConsumptionSha256,
+      oldLeaseSha256: oldSha,
+      oldLeaseEpoch: oldLease.leaseEpoch,
+      oldOwnerProcessIdentitySha256: rootWriterOwnerProcessIdentitySha256V2(
+        oldLease.ownerPid, oldLease.ownerProcessStartFingerprintSha256),
+      canonicalNewLease: newLease,
+      canonicalNewLeaseUtf8Base64: newBytes.toString("base64"),
+      newLeaseSha256: releaseSha256V2(newBytes),
+      newLeaseEpoch: newLease.leaseEpoch,
+      operationDeadlineAt: begun.lease.operationDeadlineAt,
+      preparedAt: at
+    });
+    const preparedBytes = canonicalBytes(prepared);
+    await writeFile(join(root, `production-operation-root.lease-takeover-prepared-${oldSha}.json`), preparedBytes);
+    await rename(livePath, join(root, `production-operation-root.lease-tombstone-${oldSha}.json`));
+    await writeFile(livePath, newBytes);
+    const committed = validateCommittedProductionOperationLeaseTakeoverV2({
+      version: "committed-production-operation-lease-takeover-v2",
+      commandId: "production_operation_lease_takeover",
+      redactedTemplateSha256: PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2,
+      capability: "effect_capable",
+      operationKind: "rollout",
+      operationId: begun.lease.operationId,
+      candidateSha,
+      releaseGenerationId: begun.lease.releaseGenerationId,
+      sourceManifestSha256: begun.lease.sourceManifestSha256,
+      artifactRootFingerprintSha256: begun.lease.artifactRootFingerprintSha256,
+      authorityConsumptionSha256: begun.claim.authorityConsumptionSha256,
+      preparedTakeoverSha256: releaseSha256V2(preparedBytes),
+      oldLeaseSha256: oldSha,
+      tombstoneRelativePath: `production-operation-root.lease-tombstone-${oldSha}.json`,
+      newLeaseSha256: releaseSha256V2(newBytes),
+      newLeaseEpoch: newLease.leaseEpoch,
+      operationDeadlineAt: begun.lease.operationDeadlineAt,
+      committedAt: at
+    }, prepared);
+    const committedBytes = canonicalBytes(committed);
+    await writeFile(join(root,
+      `production-operation-root.lease-takeover-committed-${releaseSha256V2(committedBytes)}.json`), committedBytes);
+  };
+
+  const foreignCandidate = "9".repeat(40);
+  const foreignLease = validateProductionOperationLeaseV2({ ...begun.lease,
+    candidateSha: foreignCandidate, leaseEpoch: 2,
+    acquiredAt: "2026-07-18T10:00:01.000Z", heartbeatAt: "2026-07-18T10:00:01.000Z",
+    expiresAt: "2026-07-18T10:01:01.000Z" });
+  const restoredLease = validateProductionOperationLeaseV2({ ...foreignLease,
+    candidateSha: begun.lease.candidateSha, leaseEpoch: 3,
+    acquiredAt: "2026-07-18T10:00:02.000Z", heartbeatAt: "2026-07-18T10:00:02.000Z",
+    expiresAt: "2026-07-18T10:01:02.000Z" });
+  await installForgedHop(begun.lease, foreignLease, foreignCandidate, "2026-07-18T10:00:01.000Z");
+  await installForgedHop(foreignLease, restoredLease, begun.lease.candidateSha,
+    "2026-07-18T10:00:02.000Z");
+
+  expect(() => store.verifyImmutableAuthorityLineage(
+    begun.lease.operationId, "2026-07-18T10:00:02.001Z"
+  )).toThrow(/takeover.*(?:identity|binding|chain)/i);
 }, 45_000);

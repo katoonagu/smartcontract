@@ -717,10 +717,23 @@ export class ProductionOperationStoreV2 {
     while (tipSha !== currentLease.sha256) {
       if (visited.has(tipSha)) throw new Error("production_operation_takeover_chain_cycle");
       visited.add(tipSha);
-      const matches = receipts.filter(({ value }) => value.oldLeaseSha256 === tipSha
-        && value.operationId === claim.operationId);
+      // Every old lease hash has one global successor. Filtering a foreign receipt first
+      // would hide a branch and let a forged identity switch out and back into the claim.
+      const matches = receipts.filter(({ value }) => value.oldLeaseSha256 === tipSha);
       if (matches.length !== 1) throw new Error("production_operation_takeover_chain_invalid");
       const receipt = matches[0]!.value;
+      if (receipt.operationKind !== claim.operationKind
+          || receipt.operationId !== claim.operationId
+          || receipt.candidateSha !== claim.candidateSha
+          || receipt.releaseGenerationId !== claim.releaseGenerationId
+          || receipt.sourceManifestSha256 !== claim.sourceManifestSha256
+          || receipt.artifactRootFingerprintSha256 !== claim.artifactRootFingerprintSha256
+          || receipt.authorityConsumptionSha256 !== claim.authorityConsumptionSha256
+          || receipt.capability !== claim.capability
+          || receipt.operationDeadlineAt !== claim.operationDeadlineAt
+          || receipt.redactedTemplateSha256 !== PRODUCTION_OPERATION_TAKEOVER_TEMPLATE_SHA256_V2) {
+        throw new Error("production_operation_takeover_claim_binding_invalid");
+      }
       if (receipt.newLeaseEpoch !== tipEpoch + 1) throw new Error("production_operation_takeover_epoch_invalid");
       const prepared = readCanonical(
         this.#path(`production-operation-root.lease-takeover-prepared-${tipSha}.json`),
@@ -730,7 +743,31 @@ export class ProductionOperationStoreV2 {
       validateCommittedProductionOperationLeaseTakeoverV2(receipt, prepared.value);
       const tombstone = readCanonical(this.#path(receipt.tombstoneRelativePath),
         validateProductionOperationLeaseV2, "production_operation_tombstone");
-      if (tombstone.sha256 !== tipSha || tombstone.value.leaseEpoch !== tipEpoch) {
+      const nextLease = prepared.value.canonicalNewLease;
+      if (tombstone.sha256 !== tipSha || tombstone.value.leaseEpoch !== tipEpoch
+          || prepared.value.oldOwnerProcessIdentitySha256 !== operationOwnerSha(tombstone.value)
+          || tombstone.value.operationKind !== claim.operationKind
+          || tombstone.value.operationId !== claim.operationId
+          || tombstone.value.candidateSha !== claim.candidateSha
+          || tombstone.value.releaseGenerationId !== claim.releaseGenerationId
+          || tombstone.value.sourceManifestSha256 !== claim.sourceManifestSha256
+          || tombstone.value.artifactRootFingerprintSha256 !== claim.artifactRootFingerprintSha256
+          || tombstone.value.operationalAttestationSha256 !== claim.operationalAttestationSha256
+          || tombstone.value.recoveryFromAbandonedOperationSha256
+            !== claim.recoveryFromAbandonedOperationSha256
+          || tombstone.value.capability !== claim.capability
+          || tombstone.value.operationDeadlineAt !== claim.operationDeadlineAt
+          || nextLease.operationKind !== claim.operationKind
+          || nextLease.operationId !== claim.operationId
+          || nextLease.candidateSha !== claim.candidateSha
+          || nextLease.releaseGenerationId !== claim.releaseGenerationId
+          || nextLease.sourceManifestSha256 !== claim.sourceManifestSha256
+          || nextLease.artifactRootFingerprintSha256 !== claim.artifactRootFingerprintSha256
+          || nextLease.operationalAttestationSha256 !== claim.operationalAttestationSha256
+          || nextLease.recoveryFromAbandonedOperationSha256
+            !== claim.recoveryFromAbandonedOperationSha256
+          || nextLease.capability !== claim.capability
+          || nextLease.operationDeadlineAt !== claim.operationDeadlineAt) {
         throw new Error("production_operation_takeover_tombstone_invalid");
       }
       receiptSha256s.push(matches[0]!.sha256);
