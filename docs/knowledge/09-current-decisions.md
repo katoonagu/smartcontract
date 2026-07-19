@@ -288,7 +288,11 @@ of these decisions, update this file in the same work.
   topology observation, but owner identity and immutable operation bounds cannot
   change. A `previous_runtime_retained` result requires the live singleton's
   complete PID/start-time, command, executable, worktree and entrypoint identity
-  to remain equal to frozen Task 0B at selection and terminal re-observation.
+  to remain equal to frozen Task 0B at selection and terminal re-observation;
+  the terminal topology is persisted with operation/claim/lease/time bindings
+  and reopened during settlement replay. Every production runtime decision binds
+  the current Task 0B previous-identity hash to the immutable release freeze
+  before authority issuance, observation, effect execution or recovery.
   After an abandoned rollback restarted the previous runtime, later
   rollback checks use the latest matching operation/claim/intent-bound start
   receipt and manager/reconciliation proof rather than the frozen pre-restart

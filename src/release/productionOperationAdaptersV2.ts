@@ -88,6 +88,7 @@ import {
   runtimeCandidateFromReconciledStartV2,
   validateRuntimeEffectReconciliationEvidenceV2,
   validateRuntimeRollbackTopologyEvidenceV2,
+  validateRuntimeTopologySnapshotV2,
   type RuntimeEffectReconciliationInputV2,
   type RuntimeTopologyCandidateV2,
   type RuntimeRollbackTopologyEvidenceV2
@@ -509,7 +510,7 @@ function runtimeAuthorities(root: string, commandId: RuntimeManagerCommandId, in
 }
 
 function runtimeEffectIdentity(input: ProtectedProductionEffectPreparationInputV2, commandId: RuntimeManagerCommandId): string {
-  const task0b = loadTask0B(input.artifactRoot);
+  const task0b = loadFrozenTask0B(input.artifactRoot);
   const freeze = readCanonical(input.artifactRoot, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
   const manifest = readCanonical(input.artifactRoot, "release-manifest.json", validateRemediationReleaseManifestV2);
   return releaseSha256V2(canonicalBytesV2({ version: "production-runtime-effect-identity-v2",
@@ -553,9 +554,27 @@ function valueCapture(
     ? {} : { verifiedChecks: [...verifiedChecks] }) };
 }
 
-function loadTask0B(root: string) {
+function loadTask0B(root: string, evaluatedAt?: string) {
   const bytes = readFileSync(safeArtifactPath(root, "task0b-release-freeze.json"));
-  return validateTask0BReleaseFreezeEvidence(JSON.parse(bytes.toString("utf8")));
+  return validateTask0BReleaseFreezeEvidence(JSON.parse(bytes.toString("utf8")), undefined, evaluatedAt);
+}
+
+export function assertTask0BPreviousIdentityFreezeBindingV2(
+  previousRuntimeIdentity: unknown,
+  previousRuntimeDiscoverySha256: string
+): void {
+  if (!SHA256_HEX.test(previousRuntimeDiscoverySha256)
+      || releaseSha256V2(canonicalBytesV2(previousRuntimeIdentity)) !== previousRuntimeDiscoverySha256) {
+    throw new Error("production_task0b_previous_identity_freeze_binding_invalid");
+  }
+}
+
+function loadFrozenTask0B(root: string, evaluatedAt?: string) {
+  const task0b = loadTask0B(root, evaluatedAt);
+  const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+  assertTask0BPreviousIdentityFreezeBindingV2(task0b.previousRuntimeIdentity,
+    freeze.value.previousRuntimeDiscoverySha256);
+  return task0b;
 }
 
 type RuntimeCycleSnapshotV2 = Readonly<Record<RuntimeCycleName, number>>;
@@ -857,7 +876,7 @@ async function observeAdmin(
 ) {
   return runWithinProductionObservationBoundV2({ hardDeadlineAt, configuredTimeoutMs: 10_000,
     async run(timeoutMs) {
-      const task0b = loadTask0B(root);
+      const task0b = loadFrozenTask0B(root);
       const base = new URL(task0b.runtimeManager.candidateAdminUrl);
       const admin = await fetch(base, { signal: AbortSignal.timeout(timeoutMs) });
       if (admin.status !== 200) throw new Error("production_runtime_http_check_failed");
@@ -923,9 +942,13 @@ async function observeAdmin(
           hardDeadlineAt, configuredTimeoutMs: timeoutMs
         }); }
         catch { throw new Error("production_runtime_identity_unverified"); }
-        if (live.runtimeSha !== task0b.previousRuntimeSha || live.runtimeLabel !== task0b.previousRuntimeLabel) {
-          throw new Error("production_previous_runtime_identity_changed");
-        }
+        assertFrozenPreviousRuntimeSingletonV2({ candidates: [{
+          processId: live.processId, processStartedAt: live.processStartedAt,
+          runtimeSha: live.runtimeSha, runtimeLabel: live.runtimeLabel,
+          commandLineSha256: live.commandLineSha256, executablePathSha256: live.executablePathSha256,
+          worktreePathFingerprintSha256: live.workingDirectoryFingerprintSha256,
+          entrypointPathFingerprintSha256: live.entrypointPathFingerprintSha256
+        }] }, task0b.previousRuntimeIdentity);
       }
       if (live.runtimeSha !== task0b.candidateSha && live.runtimeSha !== task0b.previousRuntimeSha) {
         throw new Error("production_runtime_sha_unverified");
@@ -963,7 +986,7 @@ async function observeProductionLiveProof(
         admin.runtimeAuthoritySha256, admin.runtimeSha, operationDeadlineAt);
   if (kind !== "rollback") {
     if (diagnostics.botStartedAt === null) throw new Error("production_runtime_log_bot_started_missing");
-    const task0b = loadTask0B(root);
+    const task0b = loadFrozenTask0B(root);
     const base = new URL(task0b.runtimeManager.candidateAdminUrl);
     const adminToken = process.env.ADMIN_DASHBOARD_TOKEN;
     if (!adminToken) throw new Error("production_navigation_authority_missing");
@@ -1214,7 +1237,7 @@ async function validateFixedStep(root: string, input: ProtectedProductionLeafInp
       approvedIdentityFingerprintSha256: live.approvedIdentityFingerprintSha256 });
   }
   if (input.stepId === "verify_previous_runtime_identity") {
-    const task0b = loadTask0B(root);
+    const task0b = loadFrozenTask0B(root);
     const observation = await observeWindowsRuntimeProcess(task0b.previousRuntimeIdentity.processId);
     if (observation.runtimeSha !== task0b.previousRuntimeSha || observation.runtimeProcessCount !== 1) {
       throw new Error("production_previous_runtime_identity_changed");
@@ -1403,7 +1426,7 @@ export function assertRuntimeStartReceiptProofBindingV2(
 }
 
 function runtimeStartTarget(root: string, stepId: "start_candidate" | "start_previous" | "restart_previous") {
-  const task0b = loadTask0B(root);
+  const task0b = loadFrozenTask0B(root);
   return stepId === "start_candidate" ? {
     runtimeSha: task0b.candidateSha,
     runtimeLabel: `master-${task0b.candidateSha.slice(0, 8)}`,
@@ -1618,8 +1641,7 @@ async function issueRuntimeAuthority(
 ): Promise<{ filename: string; generationId: string; sha256: string; authority: Task0BProductionRuntimeAuthorityV1 }> {
   const now = new Date();
   const task0bBytes = readFileSync(safeArtifactPath(root, "task0b-release-freeze.json"));
-  const task0b = validateTask0BReleaseFreezeEvidence(JSON.parse(task0bBytes.toString("utf8")), undefined,
-    now.toISOString());
+  const task0b = loadFrozenTask0B(root, now.toISOString());
   const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
   const manifest = readCanonical(root, "release-manifest.json", validateRemediationReleaseManifestV2);
   const external = await readExternalConfig(root);
@@ -1817,7 +1839,7 @@ function runtimeReconciliationTarget(
   root: string,
   input: ProtectedProductionEffectExecutionInputV2
 ): RuntimeEffectReconciliationInputV2["target"] {
-  const task0b = loadTask0B(root);
+  const task0b = loadFrozenTask0B(root);
   if (input.stepId === "stop_previous") {
     return {
       runtimeSha: task0b.previousRuntimeSha,
@@ -2027,7 +2049,7 @@ function shaFromTask0B(root: string, field: "previousRuntimeIdentity"): string {
 }
 
 function rollbackTopologyTargets(root: string) {
-  const task0b = loadTask0B(root);
+  const task0b = loadFrozenTask0B(root);
   return {
     previous: {
       runtimeSha: task0b.previousRuntimeSha,
@@ -2073,6 +2095,135 @@ export function assertFrozenPreviousRuntimeSingletonV2(
       || candidate.entrypointPathFingerprintSha256 !== frozen.entrypointPathFingerprintSha256) {
     throw new Error("production_rollback_retained_previous_identity_invalid");
   }
+}
+
+type RetainedPreviousRuntimeTerminalEvidenceV2 = Readonly<{
+  version: "retained-previous-runtime-terminal-evidence-v2";
+  operationId: string;
+  operationClaimSha256: string;
+  authorityConsumptionSha256: string;
+  operationLeaseSha256: string;
+  operationLeaseEpoch: number;
+  authorityExpiresAt: string;
+  operationDeadlineAt: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+  releaseFreezeIdentitySha256: string;
+  stepId: "prove_no_candidate_start";
+  inputSha256: string;
+  topology: ReturnType<typeof validateRuntimeTopologySnapshotV2>;
+  topologySha256: string;
+  previousRuntimeIdentitySha256: string;
+  basicOutputSha256: string;
+  proof: ProductionLiveProofSnapshotV2;
+  observedAt: string;
+  recordedAt: string;
+}>;
+
+function validateRetainedPreviousRuntimeTerminalEvidenceV2(
+  value: unknown
+): RetainedPreviousRuntimeTerminalEvidenceV2 {
+  const evidence = exactObject(value, ["version", "operationId", "operationClaimSha256",
+    "authorityConsumptionSha256", "operationLeaseSha256", "operationLeaseEpoch", "authorityExpiresAt",
+    "operationDeadlineAt", "releaseGenerationId", "sourceManifestSha256", "releaseFreezeIdentitySha256",
+    "stepId", "inputSha256", "topology", "topologySha256", "previousRuntimeIdentitySha256",
+    "basicOutputSha256", "proof", "observedAt", "recordedAt"],
+  "production_retained_runtime_terminal_evidence_shape_invalid");
+  const topology = validateRuntimeTopologySnapshotV2(evidence.topology);
+  const proof = validateCanaryLiveProofV2(evidence.proof);
+  const observedAt = exactIso(evidence.observedAt,
+    "production_retained_runtime_terminal_evidence_time_invalid");
+  const recordedAt = exactIso(evidence.recordedAt,
+    "production_retained_runtime_terminal_evidence_time_invalid");
+  const authorityExpiresAt = exactIso(evidence.authorityExpiresAt,
+    "production_retained_runtime_terminal_evidence_time_invalid");
+  const operationDeadlineAt = exactIso(evidence.operationDeadlineAt,
+    "production_retained_runtime_terminal_evidence_time_invalid");
+  if (evidence.version !== "retained-previous-runtime-terminal-evidence-v2"
+      || typeof evidence.operationId !== "string"
+      || !/^production-rollback-[0-9a-f]{64}$/u.test(evidence.operationId)
+      || !Number.isSafeInteger(evidence.operationLeaseEpoch) || Number(evidence.operationLeaseEpoch) < 1
+      || typeof evidence.releaseGenerationId !== "string" || evidence.releaseGenerationId.length === 0
+      || evidence.stepId !== "prove_no_candidate_start"
+      || topology.observedAt !== observedAt
+      || evidence.topologySha256 !== releaseSha256V2(canonicalBytesV2(topology))
+      || Date.parse(recordedAt) < Date.parse(observedAt)
+      || Date.parse(recordedAt) >= Date.parse(authorityExpiresAt)
+      || Date.parse(recordedAt) >= Date.parse(operationDeadlineAt)) {
+    throw new Error("production_retained_runtime_terminal_evidence_invalid");
+  }
+  for (const key of ["operationClaimSha256", "authorityConsumptionSha256", "operationLeaseSha256",
+    "sourceManifestSha256", "releaseFreezeIdentitySha256", "inputSha256", "topologySha256",
+    "previousRuntimeIdentitySha256", "basicOutputSha256"] as const) {
+    if (!SHA256_HEX.test(String(evidence[key]))) {
+      throw new Error("production_retained_runtime_terminal_evidence_invalid");
+    }
+  }
+  return { ...evidence, operationId: evidence.operationId as string,
+    operationClaimSha256: evidence.operationClaimSha256 as string,
+    authorityConsumptionSha256: evidence.authorityConsumptionSha256 as string,
+    operationLeaseSha256: evidence.operationLeaseSha256 as string,
+    operationLeaseEpoch: evidence.operationLeaseEpoch as number,
+    authorityExpiresAt, operationDeadlineAt,
+    releaseGenerationId: evidence.releaseGenerationId as string,
+    sourceManifestSha256: evidence.sourceManifestSha256 as string,
+    releaseFreezeIdentitySha256: evidence.releaseFreezeIdentitySha256 as string,
+    stepId: "prove_no_candidate_start", inputSha256: evidence.inputSha256 as string,
+    topology, topologySha256: evidence.topologySha256 as string,
+    previousRuntimeIdentitySha256: evidence.previousRuntimeIdentitySha256 as string,
+    basicOutputSha256: evidence.basicOutputSha256 as string, proof, observedAt, recordedAt,
+    version: "retained-previous-runtime-terminal-evidence-v2" };
+}
+
+function retainedPreviousRuntimeTerminalPathV2(operationId: string): string {
+  return `production-rollback-retained-runtime-terminal-${operationId}.json`;
+}
+
+function assertRetainedPreviousRuntimeTerminalBindingV2(
+  root: string,
+  evidence: RetainedPreviousRuntimeTerminalEvidenceV2,
+  expected: Readonly<{
+    operationId: string;
+    operationClaimSha256: string;
+    authorityConsumptionSha256: string;
+    operationDeadlineAt: string;
+    authorityExpiresAt: string;
+    releaseGenerationId: string;
+    sourceManifestSha256: string;
+    releaseFreezeIdentitySha256: string;
+    lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
+    inputSha256: string;
+    receiptStartedAt?: string;
+    receiptFinishedAt?: string;
+  }>
+): readonly string[] {
+  const task0b = loadFrozenTask0B(root);
+  const previousRuntimeIdentitySha256 = releaseSha256V2(canonicalBytesV2(task0b.previousRuntimeIdentity));
+  if (evidence.operationId !== expected.operationId
+      || evidence.operationClaimSha256 !== expected.operationClaimSha256
+      || evidence.authorityConsumptionSha256 !== expected.authorityConsumptionSha256
+      || evidence.operationDeadlineAt !== expected.operationDeadlineAt
+      || evidence.authorityExpiresAt !== expected.authorityExpiresAt
+      || evidence.releaseGenerationId !== expected.releaseGenerationId
+      || evidence.sourceManifestSha256 !== expected.sourceManifestSha256
+      || evidence.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
+      || evidence.inputSha256 !== expected.inputSha256
+      || evidence.previousRuntimeIdentitySha256 !== previousRuntimeIdentitySha256
+      || evidence.basicOutputSha256 !== hash(canonicalBytesV2({
+        candidateStartEvidenceCount: 0, runtimeProcessCount: 1
+      }))
+      || !expected.lineageLeaseTips.some((tip) => tip.sha256 === evidence.operationLeaseSha256
+        && tip.epoch === evidence.operationLeaseEpoch)
+      || (expected.receiptStartedAt !== undefined
+        && Date.parse(evidence.observedAt) < Date.parse(expected.receiptStartedAt))
+      || (expected.receiptFinishedAt !== undefined
+        && Date.parse(evidence.recordedAt) > Date.parse(expected.receiptFinishedAt))) {
+    throw new Error("production_retained_runtime_terminal_binding_invalid");
+  }
+  assertFrozenPreviousRuntimeSingletonV2(evidence.topology, task0b.previousRuntimeIdentity);
+  return deriveVerifiedProductionChecksV2("rollback", evidence.proof, {
+    candidateSha: task0b.candidateSha, previousSha: task0b.previousRuntimeSha
+  });
 }
 
 function nestedArtifactDirectory(root: string, relativeDirectory: string): string | null {
@@ -2139,7 +2290,7 @@ function exactRuntimeEvidenceForOperationStep(
     operationId, operationClaimSha256, intentSha256: intent.sha256
   });
   if (authority === null) return null;
-  const task0b = loadTask0B(root);
+  const task0b = loadFrozenTask0B(root);
   const target: RuntimeEffectReconciliationInputV2["target"] = {
     runtimeSha: task0b.previousRuntimeSha,
     runtimeLabel: task0b.previousRuntimeLabel,
@@ -2620,6 +2771,7 @@ function loadPriorAbandonedRollbackAttempt(
       || failure.sha256 !== topology.value.failureEvidenceSha256
       || failure.value.candidateSha !== claim.value.candidateSha
       || failure.value.releaseFreezeIdentitySha256 !== freeze.sha256
+      || topology.value.previousRuntimeIdentitySha256 !== freeze.value.previousRuntimeDiscoverySha256
       || topology.value.previousTargetSha256 !== releaseSha256V2(canonicalBytesV2(targets.previous))
       || topology.value.candidateTargetSha256 !== releaseSha256V2(canonicalBytesV2(targets.candidate))) {
     throw new Error("production_prior_rollback_release_binding_invalid");
@@ -2768,7 +2920,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
     transitionFailureEvidenceSha256: failureRef.sha256,
     transitionFailureSourceManifestSha256: failureRef.sourceManifestSha256
   });
-  const task0b = loadTask0B(root);
+  const task0b = loadFrozenTask0B(root);
   if (failure.value.candidateSha !== before.lease.candidateSha
       || failure.value.releaseFreezeIdentitySha256 !== freeze.sha256
       || task0b.candidateSha !== before.lease.candidateSha
@@ -2791,7 +2943,8 @@ async function deriveRollbackContext(root: string, operationId: string) {
     const existing = readCanonical(root, existingPlanNames[0]!, validateRuntimeRollbackTopologyEvidenceV2);
     if (existingPlanNames[0] !== `production-rollback-topology-${operationId}-${existing.value.topologySnapshotSha256}.json`
         || existing.value.failureEvidenceSha256 !== failure.sha256
-        || existing.value.releaseFreezeIdentitySha256 !== freeze.sha256) {
+        || existing.value.releaseFreezeIdentitySha256 !== freeze.sha256
+        || existing.value.previousRuntimeIdentitySha256 !== freeze.value.previousRuntimeDiscoverySha256) {
       throw new Error("production_rollback_topology_plan_binding_invalid");
     }
     assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(existing.value, before);
@@ -2903,6 +3056,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
     failureEvidenceSha256: failure.sha256,
     topology,
     topologySnapshotSha256: snapshotSha256,
+    previousRuntimeIdentitySha256: releaseSha256V2(canonicalBytesV2(task0b.previousRuntimeIdentity)),
     previousTarget: targets.previous,
     previousTargetSha256: releaseSha256V2(canonicalBytesV2(targets.previous)),
     candidateTarget: targets.candidate,
@@ -2937,7 +3091,7 @@ async function assertFreshRollbackTopologyState(
   const state = classifyRuntimeRollbackTopologyV2(topology, evidence.previousTarget, evidence.candidateTarget);
   if (state !== expectedState) throw new Error("production_rollback_effect_topology_changed");
   if (evidence.selectedWindow.kind === "previous_runtime_retained") {
-    assertFrozenPreviousRuntimeSingletonV2(topology, loadTask0B(root).previousRuntimeIdentity);
+    assertFrozenPreviousRuntimeSingletonV2(topology, loadFrozenTask0B(root).previousRuntimeIdentity);
   }
   const after = store.assertOwnedAndWithinBounds(operationId, new Date().toISOString());
   assertOwnedObservationContinuityV2(before, after);
@@ -2964,7 +3118,8 @@ export function verifySettledRollbackHistoricalProofsV2(
   if (topologyNames[0]
         !== `production-rollback-topology-${input.operationId}-${topology.value.topologySnapshotSha256}.json`
       || topology.value.failureEvidenceSha256 !== failure.sha256
-      || topology.value.releaseFreezeIdentitySha256 !== freeze.sha256) {
+      || topology.value.releaseFreezeIdentitySha256 !== freeze.sha256
+      || topology.value.previousRuntimeIdentitySha256 !== freeze.value.previousRuntimeDiscoverySha256) {
     throw new Error("production_settled_rollback_topology_binding_invalid");
   }
   assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(topology.value, {
@@ -3078,7 +3233,36 @@ export function verifySettledRollbackHistoricalProofsV2(
       throw new Error("production_settled_rollback_window_outcome_binding_invalid");
     }
     assertFrozenPreviousRuntimeSingletonV2(topology.value.topology,
-      loadTask0B(root).previousRuntimeIdentity);
+      loadFrozenTask0B(root).previousRuntimeIdentity);
+    const terminalReceipt = receipts.find((entry) => entry.value.stepId === "prove_no_candidate_start");
+    if (terminalReceipt === undefined) {
+      throw new Error("production_settled_retained_runtime_terminal_receipt_missing");
+    }
+    const retained = readCanonical(root, retainedPreviousRuntimeTerminalPathV2(input.operationId),
+      validateRetainedPreviousRuntimeTerminalEvidenceV2);
+    const verifiedChecks = assertRetainedPreviousRuntimeTerminalBindingV2(root, retained.value, {
+      operationId: input.operationId, operationClaimSha256: input.operationClaimSha256,
+      authorityConsumptionSha256: input.authorityConsumptionSha256,
+      operationDeadlineAt: input.operationDeadlineAt, authorityExpiresAt: input.authorityExpiresAt,
+      releaseGenerationId: input.releaseGenerationId, sourceManifestSha256: input.sourceManifestSha256,
+      releaseFreezeIdentitySha256: freeze.sha256, lineageLeaseTips: input.lineageLeaseTips,
+      inputSha256: terminalReceipt.value.inputSha256,
+      receiptStartedAt: terminalReceipt.value.startedAt, receiptFinishedAt: terminalReceipt.value.finishedAt
+    });
+    const outputSha256 = hash(canonicalBytesV2({
+      basicOutputSha256: retained.value.basicOutputSha256,
+      proof: retained.value.proof,
+      retainedRuntimeTerminalEvidenceSha256: retained.sha256
+    }));
+    const observedStateSha256 = hash(Buffer.from(canonicalReleaseJsonV2({
+      stepId: terminalReceipt.value.stepId, outputSha256
+    }), "utf8"));
+    if (terminalReceipt.value.outputSha256 !== outputSha256
+        || terminalReceipt.value.observedStateSha256 !== observedStateSha256
+        || terminalReceipt.value.verifiedChecks === null
+        || !canonicalBytesV2(terminalReceipt.value.verifiedChecks).equals(canonicalBytesV2(verifiedChecks))) {
+      throw new Error("production_settled_retained_runtime_terminal_binding_invalid");
+    }
     return;
   }
   const startProof = candidateStart();
@@ -3308,8 +3492,39 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
     },
     async validateStep(input) {
       if (input.artifactRoot !== artifactRoot) throw new Error("production_artifact_root_changed");
+      const retainedTerminal = input.operationKind === "rollback"
+        && selectedRollbackWindow?.kind === "previous_runtime_retained"
+        && input.stepId === "prove_no_candidate_start";
+      if (retainedTerminal) {
+        const operationStore = new ProductionOperationStoreV2(artifactRoot);
+        const operation = operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+        const freeze = readCanonical(artifactRoot, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
+        const relativePath = retainedPreviousRuntimeTerminalPathV2(input.operationId);
+        let physicalPath: string | null = null;
+        try { physicalPath = safeArtifactRelativePath(artifactRoot, relativePath); }
+        catch (error) {
+          if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
+        }
+        if (physicalPath !== null && existsSync(physicalPath)) {
+          const stored = readCanonical(artifactRoot, relativePath,
+            validateRetainedPreviousRuntimeTerminalEvidenceV2);
+          const verifiedChecks = assertRetainedPreviousRuntimeTerminalBindingV2(artifactRoot, stored.value, {
+            operationId: input.operationId, operationClaimSha256: operation.claimSha256,
+            authorityConsumptionSha256: operation.claim.authorityConsumptionSha256,
+            operationDeadlineAt: operation.lease.operationDeadlineAt,
+            authorityExpiresAt: operation.claim.authorityConsumption.expiresAt,
+            releaseGenerationId: operation.lease.releaseGenerationId,
+            sourceManifestSha256: operation.lease.sourceManifestSha256,
+            releaseFreezeIdentitySha256: freeze.sha256, lineageLeaseTips: operation.lineageLeaseTips,
+            inputSha256: input.inputSha256
+          });
+          return valueCapture(input, { basicOutputSha256: stored.value.basicOutputSha256,
+            proof: stored.value.proof, retainedRuntimeTerminalEvidenceSha256: stored.sha256 }, verifiedChecks);
+        }
+      }
       if (input.operationKind === "rollback"
-          && (input.stepId === "prove_previous_healthy" || input.stepId === "prove_no_candidate_running")) {
+          && (input.stepId === "prove_previous_healthy" || input.stepId === "prove_no_candidate_running"
+            || retainedTerminal)) {
         if (selectedRollbackTopologyEvidence === null) {
           throw new Error("production_rollback_topology_evidence_missing");
         }
@@ -3422,20 +3637,65 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
         canaryObservation ? canaryCycleSnapshot : null,
         canaryObservation && (input.stepId === "observe_cycle_2" || input.stepId === "bounded_runtime_checks"),
         observationHardDeadlineAt, operation);
-      operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+      const afterLiveProof = operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+      assertOwnedObservationContinuityV2(operation, afterLiveProof);
       if (canaryObservation && Date.now() >= Date.parse(observationHardDeadlineAt)) {
         throw new Error("production_canary_observation_window_expired");
       }
-      const task0b = loadTask0B(artifactRoot);
+      const task0b = loadFrozenTask0B(artifactRoot);
       const expectedRuntime = { candidateSha: task0b.candidateSha, previousSha: task0b.previousRuntimeSha };
       const verifiedChecks = liveKind === "canary"
         ? validateCanaryObservationChecksV2(observed.proof, expectedRuntime, isCanaryTerminal)
         : isRolloutTerminal || isRollbackTerminal
           ? deriveVerifiedProductionChecksV2(liveKind, observed.proof, expectedRuntime) : undefined;
+      let retainedRuntimeTerminalEvidenceSha256: string | null = null;
+      if (retainedTerminal) {
+        const topology = await observeTask0BRuntimeTopologySnapshotV2({
+          hardDeadlineAt: observationHardDeadlineAt, configuredTimeoutMs: 10_000
+        });
+        assertFrozenPreviousRuntimeSingletonV2(topology, task0b.previousRuntimeIdentity);
+        const recordedAt = new Date().toISOString();
+        const terminalOwned = operationStore.assertOwnedAndWithinBounds(input.operationId, recordedAt);
+        assertOwnedObservationContinuityV2(afterLiveProof, terminalOwned);
+        const freeze = readCanonical(artifactRoot, "release-freeze-identity-v2.json",
+          validateReleaseFreezeIdentityV2);
+        const evidence = validateRetainedPreviousRuntimeTerminalEvidenceV2({
+          version: "retained-previous-runtime-terminal-evidence-v2",
+          operationId: input.operationId, operationClaimSha256: terminalOwned.claimSha256,
+          authorityConsumptionSha256: terminalOwned.claim.authorityConsumptionSha256,
+          operationLeaseSha256: terminalOwned.leaseSha256,
+          operationLeaseEpoch: terminalOwned.lease.leaseEpoch,
+          authorityExpiresAt: terminalOwned.claim.authorityConsumption.expiresAt,
+          operationDeadlineAt: terminalOwned.lease.operationDeadlineAt,
+          releaseGenerationId: terminalOwned.lease.releaseGenerationId,
+          sourceManifestSha256: terminalOwned.lease.sourceManifestSha256,
+          releaseFreezeIdentitySha256: freeze.sha256,
+          stepId: "prove_no_candidate_start", inputSha256: input.inputSha256,
+          topology, topologySha256: releaseSha256V2(canonicalBytesV2(topology)),
+          previousRuntimeIdentitySha256: releaseSha256V2(canonicalBytesV2(task0b.previousRuntimeIdentity)),
+          basicOutputSha256: basic.outputSha256, proof: observed.proof,
+          observedAt: topology.observedAt, recordedAt
+        });
+        assertRetainedPreviousRuntimeTerminalBindingV2(artifactRoot, evidence, {
+          operationId: input.operationId, operationClaimSha256: terminalOwned.claimSha256,
+          authorityConsumptionSha256: terminalOwned.claim.authorityConsumptionSha256,
+          operationDeadlineAt: terminalOwned.lease.operationDeadlineAt,
+          authorityExpiresAt: terminalOwned.claim.authorityConsumption.expiresAt,
+          releaseGenerationId: terminalOwned.lease.releaseGenerationId,
+          sourceManifestSha256: terminalOwned.lease.sourceManifestSha256,
+          releaseFreezeIdentitySha256: freeze.sha256, lineageLeaseTips: terminalOwned.lineageLeaseTips,
+          inputSha256: input.inputSha256
+        });
+        retainedRuntimeTerminalEvidenceSha256 = operationStore.persistExclusive(
+          "rollback_retained_runtime_terminal", retainedPreviousRuntimeTerminalPathV2(input.operationId),
+          evidence).sha256;
+      }
       const result = valueCapture(input, input.stepId === "observe_cycle_1"
         ? { basicOutputSha256: basic.outputSha256, proof: observed.proof,
           queuePopulationCount: observed.queuePopulationCount, cycleSnapshot: observed.cycleSnapshot }
-        : { basicOutputSha256: basic.outputSha256, proof: observed.proof }, verifiedChecks);
+        : { basicOutputSha256: basic.outputSha256, proof: observed.proof,
+          ...(retainedRuntimeTerminalEvidenceSha256 === null ? {}
+            : { retainedRuntimeTerminalEvidenceSha256 }) }, verifiedChecks);
       if (input.stepId === "observe_cycle_1") {
         if (canaryStartedAt === null || observed.cycleSnapshot === null) {
           throw new Error("production_canary_resume_state_unavailable");

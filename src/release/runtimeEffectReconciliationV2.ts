@@ -124,6 +124,7 @@ export type RuntimeRollbackTopologyEvidenceV2 = Readonly<{
   failureEvidenceSha256: string;
   topology: RuntimeTopologySnapshotV2;
   topologySnapshotSha256: string;
+  previousRuntimeIdentitySha256: string;
   previousTarget: RuntimeIdentityExpectationV2;
   previousTargetSha256: string;
   candidateTarget: RuntimeIdentityExpectationV2;
@@ -266,7 +267,7 @@ export function validateRuntimeRollbackTopologyEvidenceV2(
   exactKeys(input, ["version", "operationId", "operationClaimSha256", "authorityConsumptionSha256",
     "operationLeaseSha256", "operationLeaseEpoch", "authorityExpiresAt", "operationDeadlineAt",
     "candidateSha", "releaseGenerationId", "sourceManifestSha256", "releaseFreezeIdentitySha256",
-    "failureEvidenceSha256", "topology", "topologySnapshotSha256", "previousTarget",
+    "failureEvidenceSha256", "topology", "topologySnapshotSha256", "previousRuntimeIdentitySha256", "previousTarget",
     "previousTargetSha256", "candidateTarget", "candidateTargetSha256", "topologyState",
     "selectedWindow", "selectedWindowSha256", "observedAt", "bindingSha256"],
   "runtime_rollback_topology_evidence");
@@ -280,6 +281,7 @@ export function validateRuntimeRollbackTopologyEvidenceV2(
   }
   for (const key of ["operationClaimSha256", "authorityConsumptionSha256", "operationLeaseSha256",
     "sourceManifestSha256", "releaseFreezeIdentitySha256", "failureEvidenceSha256", "topologySnapshotSha256",
+    "previousRuntimeIdentitySha256",
     "previousTargetSha256", "candidateTargetSha256", "selectedWindowSha256", "bindingSha256"] as const) {
     if (!SHA256.test(String(input[key]))) throw new Error("runtime_rollback_topology_evidence_invalid");
   }

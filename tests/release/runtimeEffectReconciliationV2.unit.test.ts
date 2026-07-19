@@ -11,7 +11,8 @@ import {
   validateRuntimeRollbackTopologyEvidenceV2,
   type RuntimeTopologyCandidateV2
 } from "../../src/release/runtimeEffectReconciliationV2";
-import { assertFrozenPreviousRuntimeSingletonV2, assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2 } from
+import { assertFrozenPreviousRuntimeSingletonV2, assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2,
+  assertTask0BPreviousIdentityFreezeBindingV2 } from
   "../../src/release/productionOperationAdaptersV2";
 
 const SHA40 = "a".repeat(40);
@@ -137,6 +138,14 @@ describe("runtime effect crash reconciliation", () => {
     ]), frozen)).toThrow(/retained.previous.identity/i);
   });
 
+  it("rejects a replaced Task0B previous identity after the release freeze", () => {
+    const frozen = { processId: 4242, processStartedAt: "2026-07-19T00:00:01.000Z" };
+    const frozenSha256 = releaseSha256V2(canonicalBytesV2(frozen));
+    expect(() => assertTask0BPreviousIdentityFreezeBindingV2(frozen, frozenSha256)).not.toThrow();
+    expect(() => assertTask0BPreviousIdentityFreezeBindingV2({ ...frozen, processId: 4243 }, frozenSha256))
+      .toThrow(/previous.identity.freeze.binding/i);
+  });
+
   it("binds rollback topology evidence to the claimed operation, exact snapshot, identities and compatible window", () => {
     const previous = { ...reconciliationInput("start_previous").target,
       runtimeSha: "c".repeat(40), runtimeLabel: `master-${"c".repeat(8)}`,
@@ -157,6 +166,7 @@ describe("runtime effect crash reconciliation", () => {
       sourceManifestSha256: "5".repeat(64), releaseFreezeIdentitySha256: "6".repeat(64),
       failureEvidenceSha256: "7".repeat(64), topology: snapshot,
       topologySnapshotSha256: releaseSha256V2(canonicalBytesV2(snapshot)),
+      previousRuntimeIdentitySha256: "8".repeat(64),
       previousTarget: previous, previousTargetSha256: releaseSha256V2(canonicalBytesV2(previous)),
       candidateTarget: next, candidateTargetSha256: releaseSha256V2(canonicalBytesV2(next)),
       topologyState: "candidate_singleton" as const,
