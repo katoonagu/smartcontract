@@ -5,6 +5,8 @@ import {
   inspectRuntimeDiagnosticLogsV2,
   runtimeStartupReadyDeadlineV2,
   assertRuntimeStartupCyclesReadyV2,
+  waitForRuntimeCycleSnapshotV2,
+  productionObservationHardDeadlineV2,
   queryProductionRuntimeInvariantsV2,
   verifyProductionDatabaseSnapshotBindingV2,
   validateProductionRuntimeNavigationProbeV1,
@@ -14,6 +16,25 @@ import {
 
 const candidateSha = "a".repeat(40);
 const previousSha = "b".repeat(40);
+const cycleNames = ["poll", "where_forensic", "incoming_deposit", "deep_forensic", "address_index",
+  "wait_reconciliation", "forensic_delivery", "allowance_refresh"] as const;
+
+async function runtimeProof(sequence: number) {
+  const { buildRuntimeVersion, formatRuntimeVersion } = await import("../../src/runtime/runtimeVersion");
+  const runtime = buildRuntimeVersion({
+    gitCommitSha: candidateSha,
+    runtimeInstanceLabel: `candidate-${candidateSha.slice(0, 8)}`,
+    migration: { verified: true, version: 32, filename: "032_telegram_runtime_forensics_data_contracts.sql",
+      checksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+      shortChecksum: "41217f64c33c" }
+  });
+  return { version: "runtime-proof-v1", runtimeVersion: runtime,
+    runtimeVersionSha256: createHash("sha256").update(JSON.stringify(runtime)).digest("hex"),
+    formattedRuSha256: createHash("sha256").update(formatRuntimeVersion(runtime, "ru")).digest("hex"),
+    formattedEnSha256: createHash("sha256").update(formatRuntimeVersion(runtime, "en")).digest("hex"),
+    cycleHighWatermarks: Object.fromEntries(cycleNames.map((cycle) => [cycle,
+      sequence === 0 ? null : { sequence, completedAt: "2026-07-19T00:00:02.000Z" }])) };
+}
 
 function snapshot(overrides: Partial<ProductionLiveProofSnapshotV2> = {}): ProductionLiveProofSnapshotV2 {
   return {
@@ -146,6 +167,73 @@ describe("production live proof", () => {
       .map((cycle) => [cycle, cycle === "deep_forensic" ? 0 : 1])) as any;
     expect(assertRuntimeStartupCyclesReadyV2(watermarks, "2026-07-19T00:00:27.999Z", deadline)).toBe(false);
     expect(() => assertRuntimeStartupCyclesReadyV2(watermarks, deadline, deadline)).toThrow(/timeout/i);
+  });
+
+  it("retries a delayed G14 typed proof only inside the startup schedule bound", async () => {
+    let now = Date.parse("2026-07-19T00:00:01.000Z");
+    let reads = 0;
+    const snapshot = await waitForRuntimeCycleSnapshotV2({
+      candidateSha,
+      baseline: null,
+      readyDeadlineAt: "2026-07-19T00:00:28.000Z",
+      nowMs: () => now,
+      sleep: async (ms) => { now += ms; },
+      readProof: async () => runtimeProof(++reads < 3 ? 0 : 1)
+    });
+    expect(reads).toBe(3);
+    expect(snapshot).toEqual(Object.fromEntries(cycleNames.map((cycle) => [cycle, 1])));
+  });
+
+  it("allows the G15 proof to advance after fifteen minutes but fails closed at its operation deadline", async () => {
+    const started = Date.parse("2026-07-19T00:00:00.000Z");
+    let now = started;
+    const baseline = Object.fromEntries(cycleNames.map((cycle) => [cycle, 1])) as any;
+    const snapshot = await waitForRuntimeCycleSnapshotV2({
+      candidateSha,
+      baseline,
+      readyDeadlineAt: "2026-07-19T00:20:00.000Z",
+      nowMs: () => now,
+      sleep: async () => { now += 5 * 60_000; },
+      readProof: async () => runtimeProof(now - started >= 15 * 60_000 ? 2 : 1)
+    });
+    expect(now - started).toBe(15 * 60_000);
+    expect(snapshot).toEqual(Object.fromEntries(cycleNames.map((cycle) => [cycle, 2])));
+
+    now = started;
+    await expect(waitForRuntimeCycleSnapshotV2({
+      candidateSha,
+      baseline,
+      readyDeadlineAt: "2026-07-19T00:10:00.000Z",
+      nowMs: () => now,
+      sleep: async () => { now += 5 * 60_000; },
+      readProof: async () => runtimeProof(1)
+    })).rejects.toThrow(/advance.*timeout/i);
+  });
+
+  it("uses the earlier operation or claim bound and never observes at equality", async () => {
+    expect(productionObservationHardDeadlineV2(
+      "2026-07-19T00:20:00.000Z", "2026-07-19T00:25:00.000Z"
+    )).toBe("2026-07-19T00:20:00.000Z");
+    expect(productionObservationHardDeadlineV2(
+      "2026-07-19T00:25:00.000Z", "2026-07-19T00:20:00.000Z"
+    )).toBe("2026-07-19T00:20:00.000Z");
+    for (const readyDeadlineAt of [
+      productionObservationHardDeadlineV2(
+        "2026-07-19T00:20:00.000Z", "2026-07-19T00:25:00.000Z"),
+      productionObservationHardDeadlineV2(
+        "2026-07-19T00:25:00.000Z", "2026-07-19T00:20:00.000Z")
+    ]) {
+      let readsAtEquality = 0;
+      await expect(waitForRuntimeCycleSnapshotV2({
+        candidateSha,
+        baseline: Object.fromEntries(cycleNames.map((cycle) => [cycle, 1])) as any,
+        readyDeadlineAt,
+        nowMs: () => Date.parse(readyDeadlineAt),
+        sleep: async () => undefined,
+        readProof: async () => { readsAtEquality += 1; return runtimeProof(1); }
+      })).rejects.toThrow(/advance.*timeout/i);
+      expect(readsAtEquality).toBe(0);
+    }
   });
 
   it("validates exact runtime and navigation response schemas and hash bindings", async () => {

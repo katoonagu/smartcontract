@@ -533,6 +533,47 @@ function cycleSnapshot(
   return Object.freeze(result);
 }
 
+export async function waitForRuntimeCycleSnapshotV2(input: Readonly<{
+  readProof(): Promise<unknown>;
+  candidateSha: string;
+  baseline: RuntimeCycleSnapshotV2 | null;
+  readyDeadlineAt: string;
+  nowMs?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}>): Promise<RuntimeCycleSnapshotV2> {
+  const deadlineMs = Date.parse(exactIso(input.readyDeadlineAt,
+    "production_runtime_cycle_ready_deadline_invalid"));
+  const nowMs = input.nowMs ?? Date.now;
+  const sleep = input.sleep ?? ((ms: number) => new Promise((resolveWait) => setTimeout(resolveWait, ms)));
+  let lastNotReady: unknown = new Error("production_runtime_cycle_not_advanced");
+  while (nowMs() < deadlineMs) {
+    try {
+      return cycleSnapshot(validateProductionRuntimeProofV1(await input.readProof(), input.candidateSha),
+        input.baseline);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith("production_runtime_cycle_not_advanced:")) {
+        throw error;
+      }
+      lastNotReady = error;
+    }
+    if (nowMs() < deadlineMs) await sleep(Math.min(250, Math.max(1, deadlineMs - nowMs())));
+  }
+  throw new Error(input.baseline === null
+    ? "production_runtime_cycle_startup_timeout"
+    : "production_runtime_cycle_advance_timeout", { cause: lastNotReady });
+}
+
+export function productionObservationHardDeadlineV2(
+  operationDeadlineAt: string,
+  authorityConsumptionExpiresAt: string
+): string {
+  const operation = Date.parse(exactIso(operationDeadlineAt,
+    "production_runtime_operation_deadline_invalid"));
+  const authority = Date.parse(exactIso(authorityConsumptionExpiresAt,
+    "production_runtime_authority_deadline_invalid"));
+  return new Date(Math.min(operation, authority)).toISOString();
+}
+
 async function fetchTypedJson(url: URL, init: RequestInit, label: string): Promise<{ status: number; value: unknown }> {
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
   const text = await response.text();
@@ -545,8 +586,6 @@ async function fetchTypedJson(url: URL, init: RequestInit, label: string): Promi
 
 async function observeAdmin(
   root: string,
-  kind: ProductionLiveProofKindV2,
-  priorCycleSnapshot: RuntimeCycleSnapshotV2 | null,
   runNavigationProbe: boolean
 ) {
   const task0b = loadTask0B(root);
@@ -555,15 +594,6 @@ async function observeAdmin(
   if (admin.status !== 200) throw new Error("production_runtime_http_check_failed");
   const adminToken = process.env.ADMIN_DASHBOARD_TOKEN;
   if (!adminToken) throw new Error("production_navigation_authority_missing");
-  let cycles: RuntimeCycleSnapshotV2 | null = null;
-  if (kind !== "rollback") {
-    const runtimeResponse = await fetchTypedJson(new URL("/admin/api/runtime-proof", base), {
-      headers: { authorization: `Bearer ${adminToken}` },
-    }, "runtime_proof");
-    if (runtimeResponse.status !== 200) throw new Error("production_runtime_proof_http_invalid");
-    cycles = cycleSnapshot(validateProductionRuntimeProofV1(runtimeResponse.value, task0b.candidateSha),
-      priorCycleSnapshot);
-  }
   let navigationStatus = runNavigationProbe ? 0 : 200;
   if (runNavigationProbe) {
     const navigation = await fetchTypedJson(new URL("/admin/api/runtime-navigation-probe", base), {
@@ -615,7 +645,7 @@ async function observeAdmin(
   return { adminStatus: admin.status, runtimeSha: live.runtimeSha,
     runtimeLabelSha256: hash(live.runtimeLabel), runtimeProcessCount: await countTask0BRuntimeCandidates(),
     navigationStatus, runtimeGenerationId, runtimeStartCommandId, runtimeAuthoritySha256,
-    cycleSnapshot: cycles };
+    cycleSnapshot: null as RuntimeCycleSnapshotV2 | null };
 }
 
 async function observeProductionLiveProof(
@@ -623,20 +653,45 @@ async function observeProductionLiveProof(
   kind: ProductionLiveProofKindV2,
   queueBaseline: number | null,
   cycleBaseline: RuntimeCycleSnapshotV2 | null,
-  runNavigationProbe: boolean
+  runNavigationProbe: boolean,
+  operationDeadlineAt: string
 ): Promise<{ proof: ProductionLiveProofSnapshotV2; queuePopulationCount: number;
     cycleSnapshot: RuntimeCycleSnapshotV2 | null }> {
   const [admin, database] = await Promise.all([
-    observeAdmin(root, kind, cycleBaseline, runNavigationProbe),
+    observeAdmin(root, runNavigationProbe),
     observeProductionDatabaseRuntime(root)
   ]);
   const diagnostics = kind === "rollback"
     ? { workerScheduleCount: 0, botStartedCount: 0, fatalLogCount: 0, secretDetected: false as const,
-      cycleHighWatermarks: Object.fromEntries(RUNTIME_CYCLE_NAMES.map((cycle) => [cycle, 0])) as Record<RuntimeCycleName, number> }
+      cycleHighWatermarks: Object.fromEntries(RUNTIME_CYCLE_NAMES.map((cycle) => [cycle, 0])) as Record<RuntimeCycleName, number>,
+      startupMaximumDelayMs: 0, botStartedAt: null }
     : admin.runtimeGenerationId === null || admin.runtimeStartCommandId === null || admin.runtimeAuthoritySha256 === null
       ? (() => { throw new Error("production_runtime_log_generation_unverified"); })()
       : await observeRuntimeDiagnostics(root, admin.runtimeGenerationId, admin.runtimeStartCommandId,
-        admin.runtimeAuthoritySha256, admin.runtimeSha);
+        admin.runtimeAuthoritySha256, admin.runtimeSha, operationDeadlineAt);
+  if (kind !== "rollback") {
+    if (diagnostics.botStartedAt === null) throw new Error("production_runtime_log_bot_started_missing");
+    const task0b = loadTask0B(root);
+    const base = new URL(task0b.runtimeManager.candidateAdminUrl);
+    const adminToken = process.env.ADMIN_DASHBOARD_TOKEN;
+    if (!adminToken) throw new Error("production_navigation_authority_missing");
+    const readyDeadlineAt = cycleBaseline === null
+      ? runtimeStartupReadyDeadlineV2(diagnostics.botStartedAt, diagnostics.startupMaximumDelayMs,
+        operationDeadlineAt)
+      : operationDeadlineAt;
+    admin.cycleSnapshot = await waitForRuntimeCycleSnapshotV2({
+      candidateSha: task0b.candidateSha,
+      baseline: cycleBaseline,
+      readyDeadlineAt,
+      async readProof() {
+        const runtimeResponse = await fetchTypedJson(new URL("/admin/api/runtime-proof", base), {
+          headers: { authorization: `Bearer ${adminToken}` }
+        }, "runtime_proof");
+        if (runtimeResponse.status !== 200) throw new Error("production_runtime_proof_http_invalid");
+        return runtimeResponse.value;
+      }
+    });
+  }
   const queuePopulationCount = database.invariants.queuePopulationCount;
   return {
     proof: {
@@ -699,15 +754,16 @@ async function observeRuntimeDiagnostics(
   generationId: string,
   commandId: "runtime_manager_start_candidate" | "runtime_manager_rollback_previous",
   authoritySha256: string,
-  runtimeSha: string
+  runtimeSha: string,
+  operationDeadlineAt: string
 ) {
   readRuntimeLogBinding(root, generationId, commandId, authoritySha256, runtimeSha);
   const paths = runtimeGenerationDiagnosticPaths(generationId, commandId, authoritySha256);
   let lastError: unknown = new Error("production_runtime_logs_not_ready");
   const evidence = actualRuntimeEvidence(root, commandId);
   if (!evidence) throw new Error("production_runtime_start_evidence_missing");
-  const hardDeadlineMs = Math.min(Date.parse(evidence.authority.expiresAt),
-    Date.parse(evidence.authority.operationDeadlineAt));
+  const hardDeadlineMs = Date.parse(exactIso(operationDeadlineAt,
+    "production_runtime_operation_deadline_invalid"));
   let startupReadyDeadlineMs: number | null = null;
   while (Date.now() < hardDeadlineMs) {
     try {
@@ -1178,11 +1234,20 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
       const liveKind = isRolloutTerminal ? "rollout" : isCanaryObservation ? "canary"
         : isRollbackTerminal ? "rollback" : null;
       if (liveKind === null) return basic;
+      const operationStore = new ProductionOperationStoreV2(artifactRoot);
+      const operation = operationStore
+        .assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
+      const observationHardDeadlineAt = productionObservationHardDeadlineV2(
+        operation.lease.operationDeadlineAt,
+        operation.claim.authorityConsumption.expiresAt
+      );
       const canaryObservation = liveKind === "canary";
       const observed = await observeProductionLiveProof(artifactRoot, liveKind,
         canaryObservation ? canaryQueueBaseline : null,
         canaryObservation ? canaryCycleSnapshot : null,
-        canaryObservation && (input.stepId === "observe_cycle_2" || input.stepId === "bounded_runtime_checks"));
+        canaryObservation && (input.stepId === "observe_cycle_2" || input.stepId === "bounded_runtime_checks"),
+        observationHardDeadlineAt);
+      operationStore.assertOwnedAndWithinBounds(input.operationId, new Date().toISOString());
       if (input.stepId === "observe_cycle_1") canaryQueueBaseline = observed.queuePopulationCount;
       if (input.stepId === "observe_cycle_1") canaryCycleSnapshot = observed.cycleSnapshot;
       const task0b = loadTask0B(artifactRoot);
