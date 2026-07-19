@@ -476,13 +476,12 @@ it.each([
     }
     if (faultAt === "after_settlement") {
       const leaseBytes = readFileSync(join(root, "production-operation-root.lease.json"));
-      const recovered = await runWithRootWriterProcessRuntimeForTestsV2({
+      await expect(runWithRootWriterProcessRuntimeForTestsV2({
         currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
       }, () => store.takeoverCleanupOnly({ expectedOldLeaseSha256: releaseSha256V2(leaseBytes),
-        evaluatedAt: "2026-07-18T10:11:00.000Z" }));
-      expect(recovered.abandoned).toBeNull();
-      expect(recovered.settlement).not.toBeNull();
-      expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(true);
+        evaluatedAt: "2026-07-18T10:11:00.000Z" })))
+        .rejects.toThrow("production_operation_settlement_resume_required");
+      expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(false);
     }
     if (faultAt === "after_lease_removal") {
       const operationId = readdirSync(root).find((name) =>
@@ -523,8 +522,10 @@ it.each([
         .toThrow(/parent_missing|ENOENT|authority|attestation/i);
       await writeFile(attestationPath, attestationBytes);
     }
+    const resumesDeadSettledOwner = faultAt === "after_settlement" || faultAt === "after_removal_prepare";
     await expect(runWithRootWriterProcessRuntimeForTestsV2({
-      currentOwnerIdentity: () => OWNER, isOwnerAlive: () => true
+      currentOwnerIdentity: () => resumesDeadSettledOwner ? CLEANUP_OWNER : OWNER,
+      isOwnerAlive: () => !resumesDeadSettledOwner
     }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "rollout" },
       { store: store as any, adapters }))).resolves.toMatchObject({
         completedSteps: ["verify_g13", "verify_schema", "verify_previous_runtime_identity",

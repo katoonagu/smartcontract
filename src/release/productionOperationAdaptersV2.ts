@@ -1674,19 +1674,56 @@ function failedOperationBinding(root: string, failure: ReturnType<typeof validat
   return { operationId: match.value.operationId, operationClaimSha256: match.value.operationClaimSha256 };
 }
 
-function loadPriorAbandonedRollbackHistory(root: string): null | {
+type PriorAbandonedRollbackAttemptV2 = Readonly<{
   operationId: string;
-  claimSha256: string;
-  authorityConsumptionSha256: string;
+  abandonedAt: string;
+  failureEvidenceSha256: string;
+  releaseFreezeIdentitySha256: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
   stepIds: ReadonlySet<string>;
   proofSha256(stepId: "restart_previous" | "stop_candidate" | "start_previous"): string | null;
-} {
-  const terminalNames = readdirSync(root).filter((name) =>
-    /^production-operation-terminal-abandoned-production-rollback-[0-9a-f]{64}\.json$/u.test(name));
-  if (terminalNames.length === 0) return null;
-  if (terminalNames.length !== 1) throw new Error("production_prior_rollback_history_ambiguous");
-  const abandoned = readCanonical(root, terminalNames[0]!, validateProductionOperationTerminalAbandonedV2);
-  if (terminalNames[0] !== `production-operation-terminal-abandoned-${abandoned.value.operationId}.json`
+}>;
+
+type PriorAbandonedRollbackBindingV2 = Readonly<{
+  failureEvidenceSha256: string;
+  releaseFreezeIdentitySha256: string;
+  candidateSha: string;
+  releaseGenerationId: string;
+  sourceManifestSha256: string;
+}>;
+
+export function mergePriorAbandonedRollbackAttemptsV2(
+  attempts: readonly PriorAbandonedRollbackAttemptV2[],
+  expected: PriorAbandonedRollbackBindingV2
+): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256"> {
+  const matching = attempts.filter((attempt) => attempt.failureEvidenceSha256 === expected.failureEvidenceSha256
+    && attempt.releaseFreezeIdentitySha256 === expected.releaseFreezeIdentitySha256
+    && attempt.candidateSha === expected.candidateSha
+    && attempt.releaseGenerationId === expected.releaseGenerationId
+    && attempt.sourceManifestSha256 === expected.sourceManifestSha256)
+    .sort((left, right) => Date.parse(left.abandonedAt) - Date.parse(right.abandonedAt));
+  if (matching.length === 0) return null;
+  if (new Set(matching.map((attempt) => attempt.operationId)).size !== matching.length
+      || new Set(matching.map((attempt) => attempt.abandonedAt)).size !== matching.length) {
+    throw new Error("production_prior_rollback_history_ambiguous");
+  }
+  const stepIds = new Set(matching.flatMap((attempt) => [...attempt.stepIds]));
+  return { stepIds, proofSha256(stepId) {
+    const proofs = matching.map((attempt) => attempt.proofSha256(stepId))
+      .filter((value): value is string => value !== null);
+    if (new Set(proofs).size > 1) throw new Error("production_prior_rollback_proof_conflict");
+    return proofs[0] ?? null;
+  } };
+}
+
+function loadPriorAbandonedRollbackAttempt(
+  root: string,
+  terminalName: string
+): PriorAbandonedRollbackAttemptV2 {
+  const abandoned = readCanonical(root, terminalName, validateProductionOperationTerminalAbandonedV2);
+  if (terminalName !== `production-operation-terminal-abandoned-${abandoned.value.operationId}.json`
       || abandoned.value.operationKind !== "rollback" || abandoned.value.capability !== "cleanup_only"
       || abandoned.value.claimSha256 === null || abandoned.value.authorityConsumptionSha256 === null) {
     throw new Error("production_prior_rollback_history_invalid");
@@ -1764,10 +1801,28 @@ function loadPriorAbandonedRollbackHistory(root: string): null | {
   if (!rollbackSequences.some((sequence) => orderedStepIds.every((stepId, index) => sequence[index] === stepId))) {
     throw new Error("production_prior_rollback_step_sequence_invalid");
   }
+  const topologyNames = readdirSync(root).filter((name) =>
+    name.startsWith(`production-rollback-topology-${abandoned.value.operationId}-`) && name.endsWith(".json"));
+  if (topologyNames.length !== 1) throw new Error("production_prior_rollback_topology_ambiguous");
+  const topology = readCanonical(root, topologyNames[0]!, validateRuntimeRollbackTopologyEvidenceV2);
+  if (topologyNames[0] !== `production-rollback-topology-${abandoned.value.operationId}-${topology.value.topologySnapshotSha256}.json`
+      || topology.value.operationId !== abandoned.value.operationId
+      || topology.value.operationClaimSha256 !== abandoned.value.claimSha256
+      || topology.value.authorityConsumptionSha256 !== abandoned.value.authorityConsumptionSha256
+      || topology.value.candidateSha !== abandoned.value.candidateSha
+      || topology.value.releaseGenerationId !== abandoned.value.releaseGenerationId
+      || topology.value.sourceManifestSha256 !== abandoned.value.sourceManifestSha256
+      || Date.parse(topology.value.observedAt) > Date.parse(abandoned.value.abandonedAt)) {
+    throw new Error("production_prior_rollback_topology_binding_invalid");
+  }
   return {
     operationId: abandoned.value.operationId,
-    claimSha256: abandoned.value.claimSha256,
-    authorityConsumptionSha256: abandoned.value.authorityConsumptionSha256,
+    abandonedAt: abandoned.value.abandonedAt,
+    failureEvidenceSha256: topology.value.failureEvidenceSha256,
+    releaseFreezeIdentitySha256: topology.value.releaseFreezeIdentitySha256,
+    candidateSha: abandoned.value.candidateSha,
+    releaseGenerationId: abandoned.value.releaseGenerationId,
+    sourceManifestSha256: abandoned.value.sourceManifestSha256,
     stepIds,
     proofSha256(stepId) {
       const intent = intents.find((item) => item.value.stepId === stepId);
@@ -1792,6 +1847,16 @@ function loadPriorAbandonedRollbackHistory(root: string): null | {
       return matches[0]?.sha256 ?? null;
     }
   };
+}
+
+function loadPriorAbandonedRollbackHistory(
+  root: string,
+  expected: PriorAbandonedRollbackBindingV2
+): null | Pick<PriorAbandonedRollbackAttemptV2, "stepIds" | "proofSha256"> {
+  const terminalNames = readdirSync(root).filter((name) =>
+    /^production-operation-terminal-abandoned-production-rollback-[0-9a-f]{64}\.json$/u.test(name));
+  return mergePriorAbandonedRollbackAttemptsV2(
+    terminalNames.map((name) => loadPriorAbandonedRollbackAttempt(root, name)), expected);
 }
 
 async function deriveRollbackContext(root: string, operationId: string) {
@@ -1838,7 +1903,13 @@ async function deriveRollbackContext(root: string, operationId: string) {
   let window: ProtectedRollbackWindowV2;
   const attemptedExternalEffect = "attemptedExternalEffect" in failure.value
     ? failure.value.attemptedExternalEffect : failure.value.priorAttemptedExternalEffect;
-  const priorRollback = loadPriorAbandonedRollbackHistory(root);
+  const priorRollback = loadPriorAbandonedRollbackHistory(root, {
+    failureEvidenceSha256: failure.sha256,
+    releaseFreezeIdentitySha256: freeze.sha256,
+    candidateSha: before.lease.candidateSha,
+    releaseGenerationId: before.lease.releaseGenerationId,
+    sourceManifestSha256: before.lease.sourceManifestSha256
+  });
   if (!attemptedExternalEffect) {
     if (topologyState !== "previous_singleton" || failure.value.failedGateId === "G15_PRODUCTION_CANARY") {
       throw new Error("production_rollback_history_topology_conflict");

@@ -264,6 +264,12 @@ of these decisions, update this file in the same work.
   `tron_watch_plan5_runtime_sanitized` with recording-only Telegram transport.
   The real manual sender is restricted to guarded Task 9, a dedicated test bot,
   and a non-production test chat. The runtime/version command is `/version`.
+- Protected production-operation crash recovery keeps `cleanup_only` strictly
+  abandonment-and-cleanup-only. A durably fsynced settlement is replayed only
+  through its exact original effect/recovery-capable lease binding, including a
+  proven-dead owner; repeated abandoned rollback attempts are combined only
+  within the same failure evidence, freeze identity, candidate, generation, and
+  source-manifest lineage.
 - Configured `hard_safety_limit_exceeded`, provider/page/local ceilings and
   bounded retries remain honest technical no-final outcomes; Plan 5 does not
   promise unlimited history. Address Poisoning is forbidden release scope.

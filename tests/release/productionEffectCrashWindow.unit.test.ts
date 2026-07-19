@@ -10,7 +10,10 @@ import {
   type ProtectedProductionOperationStoreV2,
   type ProtectedRollbackWindowV2
 } from "../../src/release/productionReleaseOrchestratorV2";
-import { selectRuntimeEffectRecoverySourceV2 } from "../../src/release/productionOperationAdaptersV2";
+import {
+  mergePriorAbandonedRollbackAttemptsV2,
+  selectRuntimeEffectRecoverySourceV2
+} from "../../src/release/productionOperationAdaptersV2";
 import {
   completeTask0BManagedRuntimeStart,
   completeTask0BManagedRuntimeStop
@@ -250,6 +253,26 @@ describe("production effect crash windows", () => {
     }, { store, adapters: resumedAdapters });
     expect(events).not.toContain("effect:stop_candidate");
     expect(events).toContain("effect:start_previous");
+  });
+
+  it("combines consecutive abandoned rollback attempts for the same failure without mixing old releases", () => {
+    const expected = { failureEvidenceSha256: "1".repeat(64), releaseFreezeIdentitySha256: "2".repeat(64),
+      candidateSha: SHA40, releaseGenerationId: "generation-1", sourceManifestSha256: "3".repeat(64) };
+    const binding = { ...expected };
+    const unrelated = { ...binding, failureEvidenceSha256: "9".repeat(64) };
+    const merged = mergePriorAbandonedRollbackAttemptsV2([
+      { ...binding, operationId: `production-rollback-${"1".repeat(64)}`, abandonedAt: "2026-07-19T00:01:00.000Z",
+        stepIds: new Set(["verify_failure", "stop_candidate"]),
+        proofSha256: (stepId: string) => stepId === "stop_candidate" ? "4".repeat(64) : null },
+      { ...binding, operationId: `production-rollback-${"2".repeat(64)}`, abandonedAt: "2026-07-19T00:02:00.000Z",
+        stepIds: new Set(["verify_failure", "start_previous"]),
+        proofSha256: (stepId: string) => stepId === "start_previous" ? "5".repeat(64) : null },
+      { ...unrelated, operationId: `production-rollback-${"3".repeat(64)}`, abandonedAt: "2026-07-19T00:03:00.000Z",
+        stepIds: new Set(["restart_previous"]), proofSha256: () => "6".repeat(64) }
+    ], expected);
+    expect([...merged!.stepIds]).toEqual(["verify_failure", "stop_candidate", "start_previous"]);
+    expect(merged!.proofSha256("stop_candidate")).toBe("4".repeat(64));
+    expect(merged!.proofSha256("start_previous")).toBe("5".repeat(64));
   });
 
   for (const scenario of [
