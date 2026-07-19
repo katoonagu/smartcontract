@@ -89,6 +89,8 @@ function productionAuthority(overrides: Record<string, unknown> = {}) {
     intentSha256: "6".repeat(64),
     operationLeaseSha256: "7".repeat(64),
     operationLeaseEpoch: 1,
+    orchestratorPid: 123,
+    orchestratorProcessStartFingerprintSha256: "9".repeat(64),
     operationDeadlineAt: "2026-07-18T09:20:00.000Z",
     releaseFreezeIdentitySha256: manifest.releaseFreezeIdentitySha256,
     sourceManifestSha256: createHash("sha256").update(bytes).digest("hex"),
@@ -281,6 +283,18 @@ it("[REQ-38][PLAN5-RUNTIME-MANIFEST-BYTES] validates the full exact manifest bef
   }
 });
 
+it("[REQ-38][PLAN5-RUNTIME-AUTHORITY-BYTES] rejects noncanonical authority bytes before consumption", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const authority = productionAuthority();
+  const canonical = api.canonicalRuntimeManagerArtifactBytes(authority);
+  expect(api.validateCanonicalTask0BProductionRuntimeAuthorityBytesV2(
+    canonical, "2026-07-18T09:01:00.000Z"
+  )).toEqual(authority);
+  expect(() => api.validateCanonicalTask0BProductionRuntimeAuthorityBytesV2(
+    Buffer.from(`${JSON.stringify(authority)} `, "utf8"), "2026-07-18T09:01:00.000Z"
+  )).toThrow(/noncanonical/i);
+});
+
 it("[REQ-38][PLAN5-RUNTIME-REPO-AUTHORITY] binds the repo-issued effect authority to the live lease claim and durable intent", async () => {
   const api = await import("../../scripts/manageTask0BRuntime");
   const operationId = `production-rollout-${"1".repeat(64)}`;
@@ -354,6 +368,10 @@ it("[REQ-38][PLAN5-RUNTIME-REPO-AUTHORITY] binds the repo-issued effect authorit
   ), "2026-07-18T09:01:00.000Z");
   const protection = { freezeValue: RELEASE_V2_FREEZE_IDENTITY, leaseValue: lease, leaseSha256,
     claimValue: claim, claimSha256, intentValue: intent, intentSha256,
+    takeoverChainSha256: releaseSha256V2(canonicalBytesV2([])),
+    lineageLeaseTips: [{ sha256: leaseSha256, epoch: 1 }],
+    managerParentIdentity: { pid: lease.ownerPid,
+      processStartFingerprintSha256: lease.ownerProcessStartFingerprintSha256 },
     evaluatedAt: "2026-07-18T09:01:00.000Z" };
   expect(api.validateRepoIssuedRuntimeAuthorityProtectionV2(authority, protection).intent)
     .toEqual(intent);
@@ -361,6 +379,9 @@ it("[REQ-38][PLAN5-RUNTIME-REPO-AUTHORITY] binds the repo-issued effect authorit
     { ...protection, claimSha256: "0".repeat(64) },
     { ...protection, intentSha256: "0".repeat(64) },
     { ...protection, leaseSha256: "0".repeat(64) },
+    { ...protection, takeoverChainSha256: "invalid" },
+    { ...protection, lineageLeaseTips: [{ sha256: "0".repeat(64), epoch: 2 }] },
+    { ...protection, managerParentIdentity: { ...protection.managerParentIdentity, pid: 124 } },
     { ...protection, evaluatedAt: "2026-07-18T09:05:00.000Z" }
   ]) expect(() => api.validateRepoIssuedRuntimeAuthorityProtectionV2(authority, foreign))
     .toThrow(/binding|authority|time/i);
@@ -555,6 +576,7 @@ it("[REQ-38][PLAN5-RUNTIME-FINAL-FRESHNESS] revalidates authority Task0B and con
     },
     async consumeAuthority() { calls.push("consume"); },
     async recheckLive() { calls.push("live-recheck"); },
+    revalidateImmediatelyBeforeMutation() { calls.push("mutation-revalidate"); },
     async mutateRuntime() { calls.push("spawn"); return {}; }
   })).rejects.toThrow(/expired|authority|fresh|time/i);
   expect(calls).toEqual(["preflight", "fresh-revalidate"]);
@@ -580,6 +602,7 @@ it("[REQ-38][PLAN5-RUNTIME-PREFLIGHT] preserves authority when target or Telegra
       revalidateBeforeConsumption() { calls.push("fresh-revalidate"); },
       async consumeAuthority() { calls.push("consume"); },
       async recheckLive() { calls.push("live-recheck"); },
+      revalidateImmediatelyBeforeMutation() { calls.push("mutation-revalidate"); },
       async mutateRuntime() { calls.push("stop"); return {}; }
     })).rejects.toThrow(/telegram|identity|binding|worktree|evidence/i);
     expect(calls).toEqual(["preflight"]);
@@ -594,9 +617,26 @@ it("[REQ-38][PLAN5-RUNTIME-LIVE-RECHECK] consumes once then rechecks volatile id
     revalidateBeforeConsumption() { calls.push("fresh-revalidate"); },
     async consumeAuthority() { calls.push("consume"); },
     async recheckLive() { calls.push("live-recheck"); throw new Error("runtime identity changed"); },
+    revalidateImmediatelyBeforeMutation() { calls.push("mutation-revalidate"); },
     async mutateRuntime() { calls.push("stop"); return {}; }
   })).rejects.toThrow(/identity|changed/i);
   expect(calls).toEqual(["preflight", "fresh-revalidate", "consume", "live-recheck"]);
+});
+
+it("[REQ-38][PLAN5-RUNTIME-FINAL-FENCE] revalidates lease authority and time after volatile recheck", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  for (const failure of ["operation lease replaced", "authority expired during recheck"]) {
+    const calls: string[] = [];
+    await expect(api.executeTask0BAuthorizedAction({
+      async prepare() { calls.push("preflight"); return {}; },
+      revalidateBeforeConsumption() { calls.push("fresh-revalidate"); },
+      async consumeAuthority() { calls.push("consume"); },
+      async recheckLive() { calls.push("live-recheck"); },
+      revalidateImmediatelyBeforeMutation() { calls.push("mutation-revalidate"); throw new Error(failure); },
+      async mutateRuntime() { calls.push("mutate"); return {}; }
+    })).rejects.toThrow(/lease|authority|expired/i);
+    expect(calls).toEqual(["preflight", "fresh-revalidate", "consume", "live-recheck", "mutation-revalidate"]);
+  }
 });
 
 it("[REQ-38][TASK0B-MANAGER-START] writes append-only generation evidence before success and cleans a failed child", async () => {
@@ -648,6 +688,7 @@ it("[REQ-38][TASK0B-MANAGER-EFFECT-IDENTITY] isolates rollout and rollback autho
         consumed.add(path);
       },
       async recheckLive() {},
+      revalidateImmediatelyBeforeMutation() {},
       async mutateRuntime() { effects.push(commandId); }
     });
   };

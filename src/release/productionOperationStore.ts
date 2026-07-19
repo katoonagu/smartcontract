@@ -705,9 +705,12 @@ export class ProductionOperationStoreV2 {
   #verifyNormalTakeoverChain(
     claim: ProductionOperationClaimV2,
     currentLease: { value: ProductionOperationLeaseV2; sha256: string }
-  ): string {
+  ): Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }> {
     let tipSha = claim.authorityConsumption.leaseSha256AtConsumption;
     let tipEpoch = claim.authorityConsumption.leaseEpochAtConsumption;
+    const leaseTips: Array<Readonly<{ sha256: string; epoch: number }>> = [
+      { sha256: tipSha, epoch: tipEpoch }
+    ];
     const receipts = this.#normalTakeoverReceipts();
     const visited = new Set<string>();
     const receiptSha256s: string[] = [];
@@ -733,26 +736,23 @@ export class ProductionOperationStoreV2 {
       receiptSha256s.push(matches[0]!.sha256);
       tipSha = receipt.newLeaseSha256;
       tipEpoch = receipt.newLeaseEpoch;
+      leaseTips.push({ sha256: tipSha, epoch: tipEpoch });
     }
     if (tipEpoch !== currentLease.value.leaseEpoch) throw new Error("production_operation_takeover_tip_invalid");
-    return releaseSha256V2(canonicalBytesV2(receiptSha256s));
+    return { sha256: releaseSha256V2(canonicalBytesV2(receiptSha256s)), leaseTips };
   }
 
-  assertOwnedAndWithinBounds(operationId: string, evaluatedAt: string): {
+  verifyImmutableAuthorityLineage(operationId: string, evaluatedAt: string): {
     lease: ProductionOperationLeaseV2; leaseSha256: string;
     claim: ProductionOperationClaimV2; claimSha256: string;
     takeoverChainSha256: string;
+    lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
   } {
     exactOperationId(operationId);
     const evaluatedAtMs = parseIso(evaluatedAt, "production_operation_evaluated_at");
     this.#assertManifestWriterAbsent();
     const lease = this.#readLease();
-    const owner = currentRootWriterOwnerIdentityV2();
-    if (lease.value.operationId !== operationId
-        || lease.value.ownerPid !== owner.pid
-        || lease.value.ownerProcessStartFingerprintSha256 !== owner.processStartFingerprintSha256) {
-      throw new Error("production_operation_owner_fence_invalid");
-    }
+    if (lease.value.operationId !== operationId) throw new Error("production_operation_lineage_operation_invalid");
     if (existsSync(this.#path(`production-operation-settlement-${operationId}.json`))
         || existsSync(this.#path(`production-operation-terminal-abandoned-${operationId}.json`))) {
       throw new Error("production_operation_already_terminal");
@@ -769,10 +769,27 @@ export class ProductionOperationStoreV2 {
     if (evaluatedAtMs >= Date.parse(lease.value.operationDeadlineAt)) {
       throw new Error("production_operation_deadline_reached");
     }
-    const takeoverChainSha256 = this.#verifyNormalTakeoverChain(claim.value, lease);
+    const takeover = this.#verifyNormalTakeoverChain(claim.value, lease);
     this.#assertManifestWriterAbsent();
     return { lease: lease.value, leaseSha256: lease.sha256,
-      claim: claim.value, claimSha256: claim.sha256, takeoverChainSha256 };
+      claim: claim.value, claimSha256: claim.sha256, takeoverChainSha256: takeover.sha256,
+      lineageLeaseTips: takeover.leaseTips };
+  }
+
+  assertOwnedAndWithinBounds(operationId: string, evaluatedAt: string): {
+    lease: ProductionOperationLeaseV2; leaseSha256: string;
+    claim: ProductionOperationClaimV2; claimSha256: string;
+    takeoverChainSha256: string;
+    lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
+  } {
+    const verified = this.verifyImmutableAuthorityLineage(operationId, evaluatedAt);
+    const owner = currentRootWriterOwnerIdentityV2();
+    if (verified.lease.ownerPid !== owner.pid
+        || verified.lease.ownerProcessStartFingerprintSha256 !== owner.processStartFingerprintSha256) {
+      throw new Error("production_operation_owner_fence_invalid");
+    }
+    this.#assertManifestWriterAbsent();
+    return verified;
   }
 
   heartbeat(operationId: string, evaluatedAt: string): {

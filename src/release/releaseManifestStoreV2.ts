@@ -161,7 +161,7 @@ function validateBoundedRootWriterLeaseV2(value: unknown): ReleaseRootWriterLeas
   return lease;
 }
 
-function observedProcessStartFingerprintSha256V2(pid: number): string | null {
+export function observedProcessStartFingerprintSha256V2(pid: number): string | null {
   if (pid === process.pid) return CURRENT_PROCESS_START_FINGERPRINT_SHA256;
   const observed = observedProcessStartIdentityV2(pid);
   return observed === null ? null : releaseSha256V2(observed);

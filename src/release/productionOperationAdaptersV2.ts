@@ -1002,6 +1002,8 @@ async function issueRuntimeAuthority(
     intentSha256: input.intentSha256,
     operationLeaseSha256: owned.leaseSha256,
     operationLeaseEpoch: owned.lease.leaseEpoch,
+    orchestratorPid: owned.lease.ownerPid,
+    orchestratorProcessStartFingerprintSha256: owned.lease.ownerProcessStartFingerprintSha256,
     operationDeadlineAt: owned.lease.operationDeadlineAt,
     releaseFreezeIdentitySha256: freeze.sha256,
     sourceManifestSha256: manifest.sha256,

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -186,6 +186,39 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     newLeaseSha256: releaseSha256V2(canonicalBytes(takeoverLease))
   });
   expect(takeoverLease).toMatchObject({ leaseEpoch: 3, ownerPid: TAKEOVER_OWNER.pid });
+  const verifiedTakeover = store.verifyImmutableAuthorityLineage(
+    begun.lease.operationId, "2026-07-18T10:01:06.001Z"
+  );
+  expect(verifiedTakeover).toMatchObject({
+    leaseSha256: takeover.newLeaseSha256,
+    claimSha256: begun.claimSha256
+  });
+  expect(verifiedTakeover.takeoverChainSha256).toMatch(/^[0-9a-f]{64}$/u);
+  expect(verifiedTakeover.lineageLeaseTips).toEqual([
+    { sha256: begun.leaseSha256, epoch: 1 },
+    { sha256: heartbeat.leaseSha256, epoch: 2 },
+    { sha256: takeover.newLeaseSha256, epoch: 3 }
+  ]);
+  const committedName = `production-operation-root.lease-takeover-committed-${releaseSha256V2(canonicalBytes(takeover))}.json`;
+  const committedPath = join(root, committedName);
+  const hiddenPath = join(root, `${committedName}.hidden`);
+  await rename(committedPath, hiddenPath);
+  expect(() => store.verifyImmutableAuthorityLineage(
+    begun.lease.operationId, "2026-07-18T10:01:06.002Z"
+  )).toThrow(/takeover.*chain/i);
+  await rename(hiddenPath, committedPath);
+  const branch = { ...takeover, committedAt: "2026-07-18T10:01:06.003Z" };
+  const branchBytes = canonicalBytes(branch);
+  const branchPath = join(root,
+    `production-operation-root.lease-takeover-committed-${releaseSha256V2(branchBytes)}.json`);
+  await writeFile(branchPath, branchBytes);
+  expect(() => store.verifyImmutableAuthorityLineage(
+    begun.lease.operationId, "2026-07-18T10:01:06.004Z"
+  )).toThrow(/takeover.*chain|committed/i);
+  await unlink(branchPath);
+  expect(() => store.verifyImmutableAuthorityLineage(
+    `production-rollout-${"f".repeat(64)}`, "2026-07-18T10:01:06.005Z"
+  )).toThrow(/lineage.*operation/i);
 
   const cleanupAt = "2026-07-18T10:10:00.000Z";
   await expect(runWithRootWriterProcessRuntimeForTestsV2({

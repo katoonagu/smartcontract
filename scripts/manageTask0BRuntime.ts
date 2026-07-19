@@ -37,6 +37,8 @@ import {
   type RemediationReleaseManifestV2
 } from "../src/release/remediationReleaseManifestV2";
 import { PRODUCTION_OPERATION_LEASE_FILE_V2 } from "../src/release/productionOperationStore";
+import { ProductionOperationStoreV2 } from "../src/release/productionOperationStore";
+import { observedProcessStartFingerprintSha256V2 } from "../src/release/releaseManifestStoreV2";
 import type {
   Task0BReleaseFreezeEvidenceV1
 } from "../src/release/remediationReleaseManifest";
@@ -83,6 +85,8 @@ export type Task0BProductionRuntimeAuthorityV1 = {
   intentSha256: string;
   operationLeaseSha256: string;
   operationLeaseEpoch: number;
+  orchestratorPid: number;
+  orchestratorProcessStartFingerprintSha256: string;
   operationDeadlineAt: string;
   releaseFreezeIdentitySha256: string;
   sourceManifestSha256: string;
@@ -174,6 +178,7 @@ export function validateTask0BProductionRuntimeAuthority(
     "version", "scope", "source", "operationKind", "operationId", "operationClaimSha256",
     "authorityConsumptionSha256", "sequence", "stepId", "inputSha256", "intendedExternalEffectSha256",
     "intentRelativePath", "intentSha256", "operationLeaseSha256", "operationLeaseEpoch",
+    "orchestratorPid", "orchestratorProcessStartFingerprintSha256",
     "operationDeadlineAt", "releaseFreezeIdentitySha256", "sourceManifestSha256",
     "generationId", "commandId", "actionPhase", "commandTemplateSha256", "issuedAt", "expiresAt", "candidateSha",
     "targetRuntimeSha", "targetRuntimeLabel", "targetWorktreePath", "targetWorktreeFingerprintSha256", "adminUrl",
@@ -218,6 +223,8 @@ export function validateTask0BProductionRuntimeAuthority(
       || !SHA256.test(String(authority.intentSha256))
       || !SHA256.test(String(authority.operationLeaseSha256))
       || !Number.isSafeInteger(authority.operationLeaseEpoch) || Number(authority.operationLeaseEpoch) < 1
+      || !Number.isSafeInteger(authority.orchestratorPid) || Number(authority.orchestratorPid) < 1
+      || !SHA256.test(String(authority.orchestratorProcessStartFingerprintSha256))
       || operationDeadlineAt <= expiresAt
       || !SHA256.test(String(authority.releaseFreezeIdentitySha256))
       || !SHA256.test(String(authority.sourceManifestSha256))
@@ -265,6 +272,9 @@ export function validateRepoIssuedRuntimeAuthorityProtectionV2(
     claimSha256: string;
     intentValue: unknown;
     intentSha256: string;
+    takeoverChainSha256: string;
+    lineageLeaseTips: readonly Readonly<{ sha256: string; epoch: number }>[];
+    managerParentIdentity: Readonly<{ pid: number; processStartFingerprintSha256: string }>;
     evaluatedAt: string;
   }>
 ): Readonly<{
@@ -282,8 +292,12 @@ export function validateRepoIssuedRuntimeAuthorityProtectionV2(
     && authority.operationId === lease.operationId
     && authority.operationClaimSha256 === input.claimSha256
     && authority.authorityConsumptionSha256 === claim.authorityConsumptionSha256
-    && authority.operationLeaseSha256 === input.leaseSha256
-    && authority.operationLeaseEpoch === lease.leaseEpoch
+    && input.lineageLeaseTips.some((tip) => tip.sha256 === authority.operationLeaseSha256
+      && tip.epoch === authority.operationLeaseEpoch)
+    && authority.orchestratorPid === lease.ownerPid
+    && authority.orchestratorProcessStartFingerprintSha256 === lease.ownerProcessStartFingerprintSha256
+    && input.managerParentIdentity.pid === lease.ownerPid
+    && input.managerParentIdentity.processStartFingerprintSha256 === lease.ownerProcessStartFingerprintSha256
     && authority.operationDeadlineAt === lease.operationDeadlineAt
     && authority.releaseFreezeIdentitySha256 === releaseFreezeIdentitySha256V2(freeze)
     && authority.sourceManifestSha256 === lease.sourceManifestSha256
@@ -311,8 +325,7 @@ export function validateRepoIssuedRuntimeAuthorityProtectionV2(
     && freeze.candidateSha === authority.candidateSha
     && freeze.artifactRootFingerprintSha256 === lease.artifactRootFingerprintSha256
     && claim.capability === "effect_capable"
-    && claim.claimantPid === lease.ownerPid
-    && claim.claimantProcessStartFingerprintSha256 === lease.ownerProcessStartFingerprintSha256;
+    && SHA256.test(input.takeoverChainSha256);
   if (!bound || input.leaseSha256 !== releaseSha256V2(Buffer.from(`${canonicalReleaseJsonV2(lease)}\n`, "utf8"))
       || input.claimSha256 !== authority.operationClaimSha256
       || input.intentSha256 !== authority.intentSha256
@@ -427,6 +440,20 @@ export type RuntimeManagerStopEffectEvidenceV2 = Readonly<{
 
 export function canonicalRuntimeManagerArtifactBytes(value: unknown): Buffer {
   return Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8");
+}
+
+export function validateCanonicalTask0BProductionRuntimeAuthorityBytesV2(
+  bytes: Buffer,
+  evaluatedAt: string
+): Task0BProductionRuntimeAuthorityV1 {
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")); }
+  catch { throw new Error("task0b_runtime_authority_json_invalid"); }
+  const authority = validateTask0BProductionRuntimeAuthority(parsed, evaluatedAt);
+  if (!bytes.equals(canonicalRuntimeManagerArtifactBytes(authority))) {
+    throw new Error("task0b_runtime_authority_noncanonical");
+  }
+  return authority;
 }
 
 export function validateRuntimeManagerAuthorityConsumptionV1(
@@ -807,12 +834,14 @@ export async function executeTask0BAuthorizedAction<TPrepared, TResult>(dependen
   revalidateBeforeConsumption(): void | Promise<void>;
   consumeAuthority(): Promise<void>;
   recheckLive(prepared: TPrepared): Promise<void>;
+  revalidateImmediatelyBeforeMutation(): void | Promise<void>;
   mutateRuntime(prepared: TPrepared): Promise<TResult>;
 }): Promise<TResult> {
   const prepared = await dependencies.prepare();
   await dependencies.revalidateBeforeConsumption();
   await dependencies.consumeAuthority();
   await dependencies.recheckLive(prepared);
+  await dependencies.revalidateImmediatelyBeforeMutation();
   return dependencies.mutateRuntime(prepared);
 }
 
@@ -905,10 +934,11 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
 }> {
   const evaluatedAt = new Date().toISOString();
   const authorityBytes = await readProtectedRegularFile(artifactRoot, filename, MAX_ARTIFACT_BYTES);
+  const canonicalAuthority = validateCanonicalTask0BProductionRuntimeAuthorityBytesV2(authorityBytes, evaluatedAt);
   const task0bBytes = await readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES);
   const external = await readExternalConfig(artifactRoot);
   const { authority, task0b } = validateTask0BProductionGoEvidence(
-    JSON.parse(authorityBytes.toString("utf8")),
+    canonicalAuthority,
     JSON.parse(task0bBytes.toString("utf8")),
     external.binding,
     evaluatedAt
@@ -933,6 +963,14 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
         throw new Error(`repo_runtime_authority_${label}_noncanonical`);
       }
     }
+    const lineage = new ProductionOperationStoreV2(artifactRoot)
+      .verifyImmutableAuthorityLineage(authority.operationId, new Date().toISOString());
+    if (lineage.leaseSha256 !== releaseSha256V2(leaseBytes)
+        || lineage.claimSha256 !== releaseSha256V2(claimBytes)) {
+      throw new Error("repo_runtime_authority_takeover_lineage_binding_invalid");
+    }
+    const parentFingerprint = observedProcessStartFingerprintSha256V2(process.ppid);
+    if (parentFingerprint === null) throw new Error("repo_runtime_authority_parent_unverified");
     return validateRepoIssuedRuntimeAuthorityProtectionV2(authority, {
       freezeValue: JSON.parse(freezeBytes.toString("utf8")),
       leaseValue,
@@ -941,6 +979,9 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
       claimSha256: releaseSha256V2(claimBytes),
       intentValue: JSON.parse(intentBytes.toString("utf8")),
       intentSha256: releaseSha256V2(intentBytes),
+      takeoverChainSha256: lineage.takeoverChainSha256,
+      lineageLeaseTips: lineage.lineageLeaseTips,
+      managerParentIdentity: { pid: process.ppid, processStartFingerprintSha256: parentFingerprint },
       evaluatedAt: new Date().toISOString()
     });
   };
@@ -1243,6 +1284,7 @@ async function main(): Promise<void> {
       revalidateBeforeConsumption,
       consumeAuthority,
       recheckLive: recheckStartRuntime,
+      revalidateImmediatelyBeforeMutation: revalidateBeforeConsumption,
       mutateRuntime: (prepared) => startRuntime(artifactRoot, authority, prepared, hash(authorityBytes))
     })
     : await executeTask0BAuthorizedAction({
@@ -1253,6 +1295,7 @@ async function main(): Promise<void> {
       revalidateBeforeConsumption,
       consumeAuthority,
       recheckLive: (prepared) => recheckStopRuntime(authority, prepared),
+      revalidateImmediatelyBeforeMutation: revalidateBeforeConsumption,
       mutateRuntime: (prepared) => stopRuntime(artifactRoot, authority, prepared, hash(authorityBytes))
     });
   process.stdout.write(`${JSON.stringify(result)}\n`);
