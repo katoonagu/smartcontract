@@ -45,6 +45,8 @@ import {
   validateProductionFailureEvidenceV2,
   validateSchema032ProductionExecutionReceiptV2,
   type ProductionFailureEvidenceV2,
+  type ExecutedReleaseGateV2,
+  type GateEvidenceRefV2,
   type PreparedSchema032ProductionSettlementV2,
   type Schema032ProductionExecutionAttemptV2,
   type Schema032CompletedStageV2,
@@ -381,6 +383,12 @@ async function readOptionalArtifact(root: string, filename: string): Promise<str
     }
     return bytes.toString("utf8");
   } finally { await handle.close(); }
+}
+
+async function readRequiredArtifactBytes(root: string, filename: string): Promise<Buffer> {
+  const value = await readOptionalArtifact(root, filename);
+  if (value === null) fail("schema_032_sequence_artifact_missing");
+  return Buffer.from(value, "utf8");
 }
 
 async function writeArtifactExclusive(root: string, filename: string, value: unknown): Promise<string> {
@@ -1572,7 +1580,7 @@ async function replaySchema032ProductionTerminalReceiptV2(input: {
     readProtectedRegularFile(prepared.artifactRoot, consumptionName, MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(prepared.artifactRoot, receipt.executionAttemptRelativePath, MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(prepared.artifactRoot, receipt.preparedSettlementRelativePath, MAX_ARTIFACT_BYTES),
-    readProtectedRegularFile(prepared.artifactRoot, receipt.failureArtifact.relativePath, MAX_ARTIFACT_BYTES)
+    readRequiredArtifactBytes(prepared.artifactRoot, receipt.failureArtifact.relativePath)
   ]);
   const attemptLineage = await readValidatedSchema032AttemptLineage({
     artifactRoot: prepared.artifactRoot,
@@ -1596,20 +1604,31 @@ async function replaySchema032ProductionTerminalReceiptV2(input: {
     { kind: "production_migration_sequence", relativePath: "schema032-production-execution-receipt-v2.json",
       bytes: receiptBytes }
   ] as const;
-  const evidence = evidenceInputs.map(({ kind, relativePath, bytes }) => ({
-    kind, relativePath,
-    candidateSha: prepared.candidateSha,
-    sha256: hash(bytes)
-  }));
-  validateGateEvidenceBytesV2({
+  const evidence: GateEvidenceRefV2[] = evidenceInputs.map(({ kind, relativePath, bytes }) => {
+    const value = record(parseJson(bytes.toString("utf8"), "schema_032_sequence_replay_evidence_invalid"),
+      "schema_032_sequence_replay_evidence_invalid");
+    if (typeof value.version !== "string") fail("schema_032_sequence_replay_evidence_invalid");
+    return {
+      kind, relativePath,
+      candidateSha: prepared.candidateSha,
+      sha256: hash(bytes),
+      schemaVersion: value.version
+    };
+  });
+  const replayGate: ExecutedReleaseGateV2 = {
     id: "G13_PRODUCTION_MIGRATION",
     candidateSha: prepared.candidateSha,
     state: "failed",
     commandId: "production_migration",
     redactedTemplateSha256: SCHEMA_032_PRODUCTION_MIGRATION_TEMPLATE_SHA256,
-    observedAt: receipt.lockReleasedAt,
+    startedAt: receipt.lockAcquiredAt,
+    finishedAt: receipt.lockReleasedAt,
+    exitCode: 1,
+    outputSha256: hash(receiptBytes),
     evidence
-  } as any, new Map<string, Buffer>(evidenceInputs.map((item) => [item.relativePath, item.bytes])), {
+  };
+  validateGateEvidenceBytesV2(replayGate,
+    new Map<string, Buffer>(evidenceInputs.map((item) => [item.relativePath, item.bytes])), {
     releaseGenerationId: prepared.initialV2.freeze.releaseGenerationId,
     artifactRootFingerprintSha256: prepared.initialV2.freeze.artifactRootFingerprintSha256,
     releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(prepared.initialV2.freeze),
@@ -1697,9 +1716,18 @@ async function observeCandidateRepositoryState(): Promise<{ headSha: string; sta
   return { headSha, status, migrationFiles };
 }
 
-export async function runSchema032ReleaseSequence(options: Schema032SequenceCliOptions): Promise<Schema032ReleaseEvidenceV1> {
+export async function runSchema032ReleaseSequence(
+  options: Schema032SequenceCliOptions,
+  testDependencies?: {
+    observeCandidateRepositoryState(): Promise<{ headSha: string; status: string; migrationFiles: string[] }>;
+  }
+): Promise<Schema032ReleaseEvidenceV1> {
+  if (testDependencies !== undefined && process.env.NODE_ENV !== "test") {
+    fail("schema_032_sequence_test_dependencies_forbidden");
+  }
   const validated = validateSchema032ReleaseSequenceTarget(options);
-  const repository = await observeCandidateRepositoryState();
+  const repository = await (testDependencies?.observeCandidateRepositoryState
+    ?? observeCandidateRepositoryState)();
   validateSchema032CandidateRepositoryState({
     candidateSha: validated.candidateSha,
     headSha: repository.headSha,
