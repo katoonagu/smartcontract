@@ -40,6 +40,7 @@ import {
   validateReleaseGateV2,
   validateReleaseRootWriterLeaseV2,
   validateRemediationReleaseManifestV2,
+  verifyRemediationReleaseArtifactsSyncV2,
   validateProductionAuthorityPreclaimValidationV2,
   validateProductionOperationClaimV2,
   validateProductionOperationSettlementV2,
@@ -920,6 +921,112 @@ type CommittedAuthorityRecordV2 = {
   committed: Record<string, unknown>;
 };
 
+function exactCommittedAuthorityRecordV2(
+  root: string,
+  freeze: ReleaseFreezeIdentityV2,
+  action: OperationalAttestationV2["action"],
+  issuerReceiptSha256: string
+): CommittedAuthorityRecordV2 {
+  if (!/^[0-9a-f]{64}$/u.test(issuerReceiptSha256)) throw new Error("authority_receipt_hash_invalid");
+  const probeAuthority = { action, generationId: freeze.releaseGenerationId } as OperationalAttestationV2;
+  const committedPath = lifecyclePath(root,
+    exactAuthorityRelativePath("committed", probeAuthority, issuerReceiptSha256));
+  const committedBytes = readFileSync(committedPath);
+  const committed = validateCommittedOperationalAttestationIssuanceV2(
+    JSON.parse(committedBytes.toString("utf8")));
+  if (committed.version !== "committed-operational-attestation-issuance-v2"
+      || committed.commandId !== "operational_authority_issue"
+      || committed.redactedTemplateSha256 !== ISSUER_TEMPLATE_SHA256
+      || committed.action !== action
+      || committed.generationId !== freeze.releaseGenerationId
+      || committed.issuerReceiptSha256 !== issuerReceiptSha256) {
+    throw new Error("authority_committed_invalid");
+  }
+  if (!committedBytes.equals(canonicalBytesV2(committed))) {
+    throw new Error("authority_committed_noncanonical");
+  }
+  const receiptPath = lifecyclePath(root,
+    exactAuthorityRelativePath("receipt", probeAuthority, issuerReceiptSha256));
+  const receiptBytes = readFileSync(receiptPath);
+  if (releaseSha256V2(receiptBytes) !== issuerReceiptSha256) throw new Error("authority_receipt_hash_invalid");
+  const issuerReceipt = validateOperationalAttestationIssuerReceiptV2(
+    JSON.parse(receiptBytes.toString("utf8")));
+  const attestationSha256 = String(issuerReceipt.attestationSha256 ?? "");
+  if (issuerReceipt.version !== "operational-attestation-issuer-receipt-v2"
+      || issuerReceipt.commandId !== "operational_authority_issue"
+      || issuerReceipt.redactedTemplateSha256 !== ISSUER_TEMPLATE_SHA256
+      || issuerReceipt.action !== action
+      || issuerReceipt.generationId !== freeze.releaseGenerationId
+      || !/^[0-9a-f]{64}$/u.test(attestationSha256)
+      || issuerReceipt.attestationRelativePath
+        !== exactAuthorityRelativePath("attestation", probeAuthority, attestationSha256)) {
+    throw new Error("authority_issuer_receipt_invalid");
+  }
+  const attestationPath = lifecyclePath(root, String(issuerReceipt.attestationRelativePath));
+  const attestationBytes = readFileSync(attestationPath);
+  if (releaseSha256V2(attestationBytes) !== attestationSha256) throw new Error("authority_chain_bytes_invalid");
+  const authority = validateOperationalAttestationV2(JSON.parse(attestationBytes.toString("utf8")), freeze);
+  if (authorityHash(authority) !== attestationSha256
+      || !attestationBytes.equals(canonicalBytesV2(authority))
+      || !receiptBytes.equals(canonicalBytesV2(issuerReceipt))
+      || authority.previousAttestationSha256 !== issuerReceipt.previousAttestationSha256
+      || authority.priorTerminalLineageSha256 !== issuerReceipt.priorTerminalLineageSha256
+      || issuerReceipt.issuedAt !== authority.issuedAt
+      || committed.attestationSha256 !== attestationSha256
+      || committed.issuerReceiptSha256 !== issuerReceiptSha256
+      || committed.committedAt !== authority.issuedAt
+      || committed.issuanceIntentSha256 !== releaseSha256V2(canonicalReleaseJsonV2([
+        action, freeze.releaseGenerationId, attestationSha256, issuerReceiptSha256
+      ]))) {
+    throw new Error("authority_chain_binding_invalid");
+  }
+  const preparedPath = lifecyclePath(root,
+    exactAuthorityRelativePath("prepared", authority, issuerReceiptSha256));
+  const preparedBytes = readFileSync(preparedPath);
+  const prepared = validatePreparedOperationalAttestationIssuanceV2(
+    JSON.parse(preparedBytes.toString("utf8")));
+  if (!preparedBytes.equals(canonicalBytesV2(prepared))
+      || prepared.canonicalAttestationSha256 !== attestationSha256
+      || prepared.canonicalIssuerReceiptSha256 !== issuerReceiptSha256
+      || prepared.canonicalCommittedIssuanceSha256 !== releaseSha256V2(canonicalBytesV2(committed))) {
+    throw new Error("authority_prepared_bundle_invalid");
+  }
+  return { authority, attestationSha256, issuerReceipt, issuerReceiptSha256, committed };
+}
+
+function committedAuthorityChainThroughReceiptV2(
+  root: string,
+  freeze: ReleaseFreezeIdentityV2,
+  action: OperationalAttestationV2["action"],
+  tipIssuerReceiptSha256: string
+): CommittedAuthorityRecordV2[] {
+  const reversed: CommittedAuthorityRecordV2[] = [];
+  const seen = new Set<string>();
+  let issuerReceiptSha256: string | null = tipIssuerReceiptSha256;
+  while (issuerReceiptSha256 !== null) {
+    if (seen.has(issuerReceiptSha256)) throw new Error("authority_chain_not_linear");
+    seen.add(issuerReceiptSha256);
+    const record = exactCommittedAuthorityRecordV2(root, freeze, action, issuerReceiptSha256);
+    reversed.push(record);
+    const previous = record.issuerReceipt.previousIssuerReceiptSha256;
+    if (previous !== null && (typeof previous !== "string" || !/^[0-9a-f]{64}$/u.test(previous))) {
+      throw new Error("authority_chain_not_linear");
+    }
+    issuerReceiptSha256 = previous as string | null;
+  }
+  const chain = reversed.reverse();
+  chain.forEach((record, index) => {
+    if (record.issuerReceipt.sequence !== index + 1
+        || record.issuerReceipt.previousIssuerReceiptSha256
+          !== (index === 0 ? null : chain[index - 1]!.issuerReceiptSha256)
+        || record.authority.previousAttestationSha256
+          !== (index === 0 ? null : chain[index - 1]!.attestationSha256)) {
+      throw new Error("authority_chain_not_linear");
+    }
+  });
+  return chain;
+}
+
 function committedAuthorityRecordsV2(
   root: string,
   freeze: ReleaseFreezeIdentityV2
@@ -942,69 +1049,7 @@ function committedAuthorityRecordsV2(
     for (const filename of readdirSync(directory).sort()) {
       if (!/^[0-9a-f]{64}\.json$/u.test(filename)) throw new Error("authority_committed_filename_invalid");
       const issuerReceiptSha256 = filename.slice(0, 64);
-      const committedPath = lifecyclePath(root,
-        exactAuthorityRelativePath("committed", probeAuthority, issuerReceiptSha256));
-      const committedBytes = readFileSync(committedPath);
-      const committed = validateCommittedOperationalAttestationIssuanceV2(
-        JSON.parse(committedBytes.toString("utf8")));
-      if (committed.version !== "committed-operational-attestation-issuance-v2"
-          || committed.commandId !== "operational_authority_issue"
-          || committed.redactedTemplateSha256 !== ISSUER_TEMPLATE_SHA256
-          || committed.action !== action
-          || committed.generationId !== freeze.releaseGenerationId
-          || committed.issuerReceiptSha256 !== issuerReceiptSha256) {
-        throw new Error("authority_committed_invalid");
-      }
-      if (!committedBytes.equals(canonicalBytesV2(committed))) {
-        throw new Error("authority_committed_noncanonical");
-      }
-      const receiptPath = lifecyclePath(root,
-        exactAuthorityRelativePath("receipt", probeAuthority, issuerReceiptSha256));
-      const receiptBytes = readFileSync(receiptPath);
-      if (releaseSha256V2(receiptBytes) !== issuerReceiptSha256) throw new Error("authority_receipt_hash_invalid");
-      const issuerReceipt = validateOperationalAttestationIssuerReceiptV2(
-        JSON.parse(receiptBytes.toString("utf8")));
-      const attestationSha256 = String(issuerReceipt.attestationSha256 ?? "");
-      if (issuerReceipt.version !== "operational-attestation-issuer-receipt-v2"
-          || issuerReceipt.commandId !== "operational_authority_issue"
-          || issuerReceipt.redactedTemplateSha256 !== ISSUER_TEMPLATE_SHA256
-          || issuerReceipt.action !== action
-          || issuerReceipt.generationId !== freeze.releaseGenerationId
-          || !/^[0-9a-f]{64}$/u.test(attestationSha256)
-          || issuerReceipt.attestationRelativePath
-            !== exactAuthorityRelativePath("attestation", probeAuthority, attestationSha256)) {
-        throw new Error("authority_issuer_receipt_invalid");
-      }
-      const attestationPath = lifecyclePath(root, String(issuerReceipt.attestationRelativePath));
-      const attestationBytes = readFileSync(attestationPath);
-      if (releaseSha256V2(attestationBytes) !== attestationSha256) throw new Error("authority_chain_bytes_invalid");
-      const authority = validateOperationalAttestationV2(JSON.parse(attestationBytes.toString("utf8")), freeze);
-      if (authorityHash(authority) !== attestationSha256
-          || !attestationBytes.equals(canonicalBytesV2(authority))
-          || !receiptBytes.equals(canonicalBytesV2(issuerReceipt))
-          || authority.previousAttestationSha256 !== issuerReceipt.previousAttestationSha256
-          || authority.priorTerminalLineageSha256 !== issuerReceipt.priorTerminalLineageSha256
-          || issuerReceipt.issuedAt !== authority.issuedAt
-          || committed.attestationSha256 !== attestationSha256
-          || committed.issuerReceiptSha256 !== issuerReceiptSha256
-          || committed.committedAt !== authority.issuedAt
-          || committed.issuanceIntentSha256 !== releaseSha256V2(canonicalReleaseJsonV2([
-            action, freeze.releaseGenerationId, attestationSha256, issuerReceiptSha256
-          ]))) {
-        throw new Error("authority_chain_binding_invalid");
-      }
-      const preparedPath = lifecyclePath(root,
-        exactAuthorityRelativePath("prepared", authority, issuerReceiptSha256));
-      const preparedBytes = readFileSync(preparedPath);
-      const prepared = validatePreparedOperationalAttestationIssuanceV2(
-        JSON.parse(preparedBytes.toString("utf8")));
-      if (!preparedBytes.equals(canonicalBytesV2(prepared))
-          || prepared.canonicalAttestationSha256 !== attestationSha256
-          || prepared.canonicalIssuerReceiptSha256 !== issuerReceiptSha256
-          || prepared.canonicalCommittedIssuanceSha256 !== releaseSha256V2(canonicalBytesV2(committed))) {
-        throw new Error("authority_prepared_bundle_invalid");
-      }
-      records.push({ authority, attestationSha256, issuerReceipt, issuerReceiptSha256, committed });
+      records.push(exactCommittedAuthorityRecordV2(root, freeze, action, issuerReceiptSha256));
     }
   }
   records.sort((left, right) => left.authority.action.localeCompare(right.authority.action)
@@ -1104,6 +1149,32 @@ function authorityUseArtifactPresentV2(root: string, record: CommittedAuthorityR
   });
 }
 
+function verifiedTerminalLineageForAuthorityV2(root: string, record: CommittedAuthorityRecordV2): string | null {
+  const matches = terminalReceiptHashesForAuthorityV2(root, record);
+  if (matches.length > 1) throw new Error("terminal_lineage_ambiguous");
+  if (matches.length === 0) return null;
+  const terminalReceiptSha256 = matches[0]!;
+  const receipt = exactTerminalReceiptV2(root, record, terminalReceiptSha256);
+  const receiptBytes = canonicalBytesV2(receipt);
+  const preparedPath = lifecyclePath(root,
+    exactAuthorityRelativePath("terminal_prepared", record.authority, record.attestationSha256));
+  const preparedBytes = readFileSync(preparedPath);
+  const prepared = validatePreparedAuthorityTerminalV2(JSON.parse(preparedBytes.toString("utf8")));
+  if (!preparedBytes.equals(canonicalBytesV2(prepared))
+      || prepared.canonicalTerminalReceiptSha256 !== terminalReceiptSha256
+      || prepared.canonicalTerminalReceiptRelativePath
+        !== exactAuthorityRelativePath("terminal_receipt", record.authority, terminalReceiptSha256)
+      || prepared.canonicalTerminalReceiptUtf8Base64 !== receiptBytes.toString("base64")
+      || canonicalReleaseJsonV2(prepared.canonicalTerminalReceipt) !== canonicalReleaseJsonV2(receipt)
+      || prepared.preparedAt !== receipt.terminalizedAt) {
+    throw new Error("authority_terminal_bundle_invalid");
+  }
+  if (authorityUseArtifactPresentV2(root, record)) {
+    throw new Error("authority_terminal_use_artifact_conflict");
+  }
+  return terminalReceiptSha256;
+}
+
 type OperationalAttestationActionV2 = keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2;
 
 const OPERATIONAL_ATTESTATION_TTL_MS_V2: Readonly<Record<OperationalAttestationActionV2, number>> = Object.freeze({
@@ -1136,26 +1207,7 @@ function exactIssuerInputV2(value: unknown): {
 }
 
 function exactTerminalLineageForAuthorityV2(root: string, record: CommittedAuthorityRecordV2): string | null {
-  let directory: string;
-  try {
-    directory = dirname(lifecyclePath(root,
-      exactAuthorityRelativePath("terminal_receipt", record.authority, "0".repeat(64))));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT"
-        || (error as Error).message === "artifact_parent_missing") return null;
-    throw error;
-  }
-  const matches = readdirSync(directory).sort().filter((filename) => {
-    if (!/^[0-9a-f]{64}\.json$/u.test(filename)) throw new Error("terminal_lineage_filename_invalid");
-    const sha256 = filename.slice(0, 64);
-    try { exactTerminalReceiptV2(root, record, sha256); return true; }
-    catch (error) {
-      if ((error as Error).message === "terminal_lineage_unverified") return false;
-      throw error;
-    }
-  });
-  if (matches.length > 1) throw new Error("terminal_lineage_ambiguous");
-  return matches.length === 1 ? matches[0]!.slice(0, 64) : null;
+  return verifiedTerminalLineageForAuthorityV2(root, record);
 }
 
 type PreparedAuthorityIssuanceV2 = ReturnType<typeof validatePreparedOperationalAttestationIssuanceV2>;
@@ -1393,8 +1445,13 @@ function terminalReceiptHashesForAuthorityV2(
   return readdirSync(directory).filter((name) => /^[0-9a-f]{64}\.json$/u.test(name))
     .map((name) => name.slice(0, 64))
     .filter((hash) => {
-      const receipt = exactTerminalReceiptV2(root, record, hash);
-      return receipt.attestationSha256 === record.attestationSha256;
+      try {
+        const receipt = exactTerminalReceiptV2(root, record, hash);
+        return receipt.attestationSha256 === record.attestationSha256;
+      } catch (error) {
+        if ((error as Error).message === "terminal_lineage_unverified") return false;
+        throw error;
+      }
     });
 }
 
@@ -1418,7 +1475,12 @@ export function selectOperationalAttestationFromStoreV2(input: {
     throw new Error("authority_selector_source_invalid");
   }
   const policy = OPERATIONAL_ATTESTATION_POLICY_V2[input.action];
-  const candidates = committedAuthorityRecordsV2(root, freeze)
+  const records = committedAuthorityRecordsV2(root, freeze);
+  const terminalLineage = new Map(records.map((record) => [
+    record.attestationSha256,
+    verifiedTerminalLineageForAuthorityV2(root, record)
+  ]));
+  const candidates = records
     .filter((record) => record.authority.action === input.action)
     .filter((record) => {
       const consumptionPath = safeArtifactPath(root,
@@ -1428,7 +1490,7 @@ export function selectOperationalAttestationFromStoreV2(input: {
       const replayingExpectedClaim = input.expectedConsumedAttestationSha256 === record.attestationSha256
         && existsSync(atomicClaimPath) && !existsSync(consumptionPath);
       if ((!replayingExpectedClaim && (existsSync(consumptionPath) || existsSync(atomicClaimPath)))
-          || terminalReceiptHashesForAuthorityV2(root, record).length !== 0) return false;
+          || terminalLineage.get(record.attestationSha256) !== null) return false;
       const authority = record.authority;
       return authority.sourceManifestSha256 === input.expectedSourceManifestSha256
         && authority.commandId === policy.commandId
@@ -1443,7 +1505,7 @@ export function selectOperationalAttestationFromStoreV2(input: {
       && selected.attestationSha256 !== input.expectedConsumedAttestationSha256) {
     throw new Error("operational_authority_replay_mismatch");
   }
-  const actionChain = committedAuthorityRecordsV2(root, freeze)
+  const actionChain = records
     .filter((record) => record.authority.action === input.action);
   if (actionChain.at(-1)?.attestationSha256 !== selected.attestationSha256) {
     throw new Error("operational_authority_not_chain_tip");
@@ -1654,8 +1716,9 @@ function consumedAuthorityHashForTransitionV2(
   }
   const authority = validateOperationalAttestationV2(transition.operationalAttestation, freeze);
   const hash = authorityHash(authority);
-  const records = committedAuthorityRecordsV2(root, freeze)
-    .filter((record) => record.authority.action === transition.transitionId);
+  const allRecords = committedAuthorityRecordsV2(root, freeze);
+  for (const candidate of allRecords) verifiedTerminalLineageForAuthorityV2(root, candidate);
+  const records = allRecords.filter((record) => record.authority.action === transition.transitionId);
   const record = records.find((candidate) => candidate.attestationSha256 === hash);
   if (!record || records.at(-1)?.attestationSha256 !== hash
       || authority.sourceManifestSha256 !== sourceManifestSha256
@@ -1663,7 +1726,7 @@ function consumedAuthorityHashForTransitionV2(
       || authority.redactedTemplateSha256
         !== operationalAttestationTemplateSha256V2(
           transition.transitionId as keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2)
-      || terminalReceiptHashesForAuthorityV2(root, record).length !== 0) {
+      || verifiedTerminalLineageForAuthorityV2(root, record) !== null) {
     throw new Error("operational_authority_not_committed_transition_tip");
   }
   const standaloneGateId = transition.transitionId === "g12_backup_passed"
@@ -1692,10 +1755,22 @@ function consumedAuthorityHashForTransitionV2(
       artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
       releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
       sourceManifestSha256,
+      requireStandaloneAuthorityBinding: true,
       ...task0bBinding
     });
     const attestation = gate.evidence.find((ref) => ref.kind === "operational_attestation");
     if (!attestation || attestation.sha256 !== hash) {
+      throw new Error("standalone_production_authority_binding_invalid");
+    }
+    const consumptionKind = transition.transitionId === "g12_backup_passed"
+      ? "production_backup_consumption" : "production_migration_consumption";
+    const consumptionRef = gate.evidence.find((ref) => ref.kind === consumptionKind);
+    if (!consumptionRef) throw new Error("standalone_production_authority_binding_invalid");
+    const standaloneConsumption = JSON.parse(
+      readFileSync(safeArtifactRelativePath(root, consumptionRef.relativePath)).toString("utf8")
+    ) as Record<string, unknown>;
+    if (standaloneConsumption.operationalAttestationSha256 !== hash
+        || standaloneConsumption.operationalAttestationIssuerReceiptSha256 !== record.issuerReceiptSha256) {
       throw new Error("standalone_production_authority_binding_invalid");
     }
     const genericConsumptionPath = safeArtifactPath(root,
@@ -3001,6 +3076,58 @@ function verifyCurrentReleaseManifestChainAtCanonicalRootV2(
   const freeze = currentVerifiedFreeze(root, artifactPath);
   const { manifest, bytes: manifestBytes } = validateCanonicalCurrentManifestChainV2(
     root, freeze, artifactPath);
+  const evidencePath = artifactPath === trustedRootManifestArtifactPathV2
+    ? trustedRootManifestArtifactPathV2
+    : (semanticRoot: string, relativePath: string) => safeArtifactRelativePath(semanticRoot, relativePath);
+  const artifacts = new Map<string, Buffer>([
+    [MANIFEST_FILE, manifestBytes],
+    [FREEZE_FILE, readFileSync(artifactPath(root, FREEZE_FILE))],
+    ["task0b-release-freeze.json", readFileSync(artifactPath(root, "task0b-release-freeze.json"))]
+  ]);
+  for (const gate of manifest.gates) {
+    if (gate.state !== "passed" && gate.state !== "failed") continue;
+    for (const ref of gate.evidence) {
+      artifacts.set(ref.relativePath, readFileSync(evidencePath(root, ref.relativePath)));
+    }
+  }
+  for (const ref of manifest.transitionEvidence) {
+    artifacts.set(ref.relativePath, readFileSync(evidencePath(root, ref.relativePath)));
+  }
+  let source = manifest;
+  while (source.revision > 1) {
+    const relativePath = `manifest-snapshots/release-manifest-r${source.revision - 1}-${source.previousManifestSha256}.json`;
+    const bytes = readFileSync(artifactPath(root, relativePath));
+    artifacts.set(relativePath, bytes);
+    source = validateRemediationReleaseManifestV2(JSON.parse(bytes.toString("utf8")));
+  }
+  verifyRemediationReleaseArtifactsSyncV2(artifacts);
+  for (const gate of manifest.gates) {
+    if ((gate.id !== "G12_PRODUCTION_BACKUP" && gate.id !== "G13_PRODUCTION_MIGRATION")
+        || (gate.state !== "passed" && gate.state !== "failed")) continue;
+    const action = gate.id === "G12_PRODUCTION_BACKUP" ? "g12_backup_passed" : "g13_migration_passed";
+    const consumptionKind = gate.id === "G12_PRODUCTION_BACKUP"
+      ? "production_backup_consumption" : "production_migration_consumption";
+    const attestation = gate.evidence.find((ref) => ref.kind === "operational_attestation");
+    const consumption = gate.evidence.find((ref) => ref.kind === consumptionKind);
+    if (attestation === undefined || consumption === undefined) {
+      throw new Error("standalone_production_authority_binding_invalid");
+    }
+    const consumptionValue = JSON.parse(
+      readFileSync(evidencePath(root, consumption.relativePath)).toString("utf8")
+    ) as Record<string, unknown>;
+    const issuerReceiptSha256 = consumptionValue.operationalAttestationIssuerReceiptSha256;
+    if (typeof issuerReceiptSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(issuerReceiptSha256)) {
+      throw new Error("standalone_production_authority_binding_invalid");
+    }
+    const selected = committedAuthorityChainThroughReceiptV2(
+      root, freeze, action, issuerReceiptSha256
+    ).at(-1);
+    if (consumptionValue.operationalAttestationSha256 !== attestation.sha256
+        || selected?.attestationSha256 !== attestation.sha256
+        || selected.issuerReceiptSha256 !== issuerReceiptSha256) {
+      throw new Error("standalone_production_authority_binding_invalid");
+    }
+  }
   return { freeze, manifest, manifestBytes, manifestSha256: releaseSha256V2(manifestBytes) };
 }
 

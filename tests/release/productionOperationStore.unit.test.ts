@@ -23,13 +23,15 @@ import {
   issueOperationalAttestationV2,
   materializeReleaseFreezeV2,
   runWithRootWriterProcessRuntimeForTestsV2,
-  selectOperationalAttestationFromStoreV2
+  selectOperationalAttestationFromStoreV2,
+  terminalizeExpiredOperationalAttestationV2
 } from "../../src/release/releaseManifestStoreV2";
 import { executeProtectedProductionOperationV2 } from "../../src/release/productionReleaseOrchestratorV2";
 import {
   buildReleaseManifestV2Fixture,
   buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
+import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
 
 const roots: string[] = [];
 const T0 = "2026-07-18T10:00:00.000Z";
@@ -77,10 +79,40 @@ async function initializedAuthorityRoot(): Promise<string> {
   await initializeReleaseManifestV2({
     artifactRoot: root,
     evaluatedAt: T0,
-    verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
+    verifiedGateOutputs: await materializeInitialGateEvidence(root, task0BPreflightEvidence.candidateSha)
   });
   await issueOperationalAttestationV2({ artifactRoot: root, action: "g14_rollout_passed" });
   return root;
+}
+
+async function materializeInitialGateEvidence(root: string, candidateSha: string) {
+  const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
+  for (const gate of gates) {
+    const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id as keyof typeof PRE_RELEASE_GATE_EVIDENCE_POLICY_V2];
+    const paths = [...policy.primaryPaths];
+    for (const [index, kind] of policy.requiredKinds.entries()) {
+      if (index >= paths.length) paths.push(`gates/${gate.id.toLowerCase()}/${kind}.json`);
+    }
+    gate.evidence = [];
+    for (const [index, relativePath] of paths.entries()) {
+      const path = join(root, ...relativePath.split("/"));
+      if (!existsSync(path)) {
+        await mkdir(resolve(path, ".."), { recursive: true });
+        await writeFile(path, canonicalBytes({ version: "gate-evidence-v2", candidateSha,
+          gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] }));
+      }
+      const bytes = readFileSync(path);
+      const parsed = JSON.parse(bytes.toString("utf8"));
+      gate.evidence.push({
+        kind: policy.requiredKinds[index] ?? policy.allowedKinds[0],
+        relativePath,
+        sha256: releaseSha256V2(bytes),
+        schemaVersion: parsed.version,
+        candidateSha
+      } as never);
+    }
+  }
+  return gates;
 }
 
 afterEach(async () => {
@@ -290,6 +322,71 @@ it("revalidates current manifest receipt lineage before every owned production o
     isOwnerAlive: () => true
   }, () => store.assertOwnedAndWithinBounds(begun.lease.operationId, "2026-07-18T10:00:01.000Z")))
     .toThrow(/manifest|receipt|canonical|hash/i);
+}, 45_000);
+
+it("rejects changed executed gate evidence before creating a production lease or claim", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await trustedRoot();
+  const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
+    observedAt: T0,
+    artifactRootFingerprintSha256: rootFingerprint(root)
+  });
+  await writeFile(join(root, "task0b-release-freeze.json"), canonicalBytes(task0BPreflightEvidence));
+  await materializeReleaseFreezeV2({
+    artifactRoot: root,
+    task0BPreflightEvidence,
+    evaluatedAt: T0,
+    producerId: "release_freeze_materialize"
+  });
+  const gates = await materializeInitialGateEvidence(root, task0BPreflightEvidence.candidateSha);
+  await initializeReleaseManifestV2({ artifactRoot: root, evaluatedAt: T0, verifiedGateOutputs: gates });
+  await issueOperationalAttestationV2({ artifactRoot: root, action: "g14_rollout_passed" });
+  const evidencePath = "suite-plan1.evidence.json";
+  await writeFile(join(root, evidencePath), Buffer.concat([readFileSync(join(root, evidencePath)), Buffer.from(" ")]));
+
+  const store = new ProductionOperationStoreV2(root);
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 })))
+    .rejects.toThrow(/gate_evidence|evidence.*bytes|canonical/i);
+  expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+  expect(readdirSync(root).filter((name) => name.startsWith("production-operation-claim-"))).toEqual([]);
+}, 45_000);
+
+it("rejects a replacement tip when an expired terminal authority later gains a use artifact", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const first = selectOperationalAttestationFromStoreV2({
+    artifactRoot: root,
+    action: "g14_rollout_passed",
+    expectedSourceManifestSha256: releaseSha256V2(readFileSync(join(root, "release-manifest.json"))),
+    evaluatedAt: T0,
+    minimumRemainingValidityMs: 0
+  });
+  await terminalizeExpiredOperationalAttestationV2({
+    artifactRoot: root,
+    authority: first.authority,
+    evaluatedAt: "2026-07-18T10:16:00.000Z"
+  });
+  vi.setSystemTime(new Date("2026-07-18T10:16:01.000Z"));
+  const replacement = await issueOperationalAttestationV2({ artifactRoot: root, action: "g14_rollout_passed" });
+  await writeFile(join(root, `production-claim-conflict-${first.attestationSha256}.json`), canonicalBytes({
+    version: "production-claim-conflict-v2",
+    operationalAttestationSha256: first.attestationSha256,
+    releaseGenerationId: first.authority.generationId,
+    candidateSha: first.authority.candidateSha
+  }));
+
+  expect(() => selectOperationalAttestationFromStoreV2({
+    artifactRoot: root,
+    action: "g14_rollout_passed",
+    expectedSourceManifestSha256: replacement.sourceManifestSha256,
+    evaluatedAt: "2026-07-18T10:16:01.001Z",
+    minimumRemainingValidityMs: 0
+  })).toThrow("authority_terminal_use_artifact_conflict");
 }, 45_000);
 
 it("persists one recovered effect receipt after a same-claim committed heartbeat and rejects a foreign intent lease", async () => {

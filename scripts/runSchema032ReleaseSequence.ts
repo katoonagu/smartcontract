@@ -158,8 +158,13 @@ type ProductionAuthorityConsumptionV1 = {
   version: "schema-032-production-authority-consumption-v1";
   generationId: string;
   authoritySha256: string;
+  operationalAttestationSha256?: string;
+  operationalAttestationIssuerReceiptSha256?: string;
   candidateSha: string;
   databaseIdentityFingerprintSha256: string;
+  advisoryLockKey?: number;
+  databaseSessionIdentitySha256?: string;
+  lockAcquiredAt?: string;
   claimedAt: string;
   resumeExpiresAt: string;
 };
@@ -1120,12 +1125,26 @@ export async function validateSchema032ProductionClaimWindow(input: {
 export function validateSchema032ProductionConsumptionState(
   value: unknown,
   expected: Pick<ProductionAuthorityConsumptionV1,
-    "generationId" | "authoritySha256" | "candidateSha" | "databaseIdentityFingerprintSha256" | "resumeExpiresAt">,
+    "generationId" | "authoritySha256" | "operationalAttestationSha256"
+    | "operationalAttestationIssuerReceiptSha256" | "candidateSha" | "databaseIdentityFingerprintSha256"
+    | "advisoryLockKey" | "databaseSessionIdentitySha256" | "lockAcquiredAt" | "resumeExpiresAt">,
   evaluatedAt: string
 ): ProductionAuthorityConsumptionV1 {
   const consumption = record(value, "schema_032_sequence_production_consumption_invalid");
+  const bindsV2Session = expected.operationalAttestationSha256 !== undefined
+    || expected.operationalAttestationIssuerReceiptSha256 !== undefined
+    || expected.advisoryLockKey !== undefined || expected.databaseSessionIdentitySha256 !== undefined
+    || expected.lockAcquiredAt !== undefined;
+  if (bindsV2Session && (expected.operationalAttestationSha256 === undefined
+      || expected.operationalAttestationIssuerReceiptSha256 === undefined
+      || expected.advisoryLockKey === undefined || expected.databaseSessionIdentitySha256 === undefined
+      || expected.lockAcquiredAt === undefined)) {
+    fail("schema_032_sequence_production_consumption_mismatch");
+  }
   exactKeys(consumption, [
     "version", "generationId", "authoritySha256", "candidateSha", "databaseIdentityFingerprintSha256",
+    ...(bindsV2Session ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
+      "advisoryLockKey", "databaseSessionIdentitySha256", "lockAcquiredAt"] : []),
     "claimedAt", "resumeExpiresAt"
   ], "schema_032_sequence_production_consumption_invalid");
   const now = parseIso(evaluatedAt, "schema_032_sequence_production_consumption_invalid");
@@ -1135,10 +1154,21 @@ export function validateSchema032ProductionConsumptionState(
       || typeof consumption.generationId !== "string" || !GENERATION.test(consumption.generationId)
       || !SHA256.test(String(consumption.authoritySha256)) || !SHA40.test(String(consumption.candidateSha))
       || !SHA256.test(String(consumption.databaseIdentityFingerprintSha256))
+      || (bindsV2Session && (!SHA256.test(String(consumption.operationalAttestationSha256))
+        || !SHA256.test(String(consumption.operationalAttestationIssuerReceiptSha256))
+        || consumption.advisoryLockKey !== SCHEMA_032_PRODUCER_ADVISORY_LOCK
+        || !SHA256.test(String(consumption.databaseSessionIdentitySha256))
+        || parseIso(consumption.lockAcquiredAt, "schema_032_sequence_production_consumption_invalid") > now))
       || consumption.generationId !== expected.generationId
       || consumption.authoritySha256 !== expected.authoritySha256
+      || consumption.operationalAttestationSha256 !== expected.operationalAttestationSha256
+      || consumption.operationalAttestationIssuerReceiptSha256
+        !== expected.operationalAttestationIssuerReceiptSha256
       || consumption.candidateSha !== expected.candidateSha
       || consumption.databaseIdentityFingerprintSha256 !== expected.databaseIdentityFingerprintSha256
+      || consumption.advisoryLockKey !== expected.advisoryLockKey
+      || consumption.databaseSessionIdentitySha256 !== expected.databaseSessionIdentitySha256
+      || consumption.lockAcquiredAt !== expected.lockAcquiredAt
       || consumption.resumeExpiresAt !== expected.resumeExpiresAt
       || claimedAt > now || claimedAt >= resumeExpiresAt) {
     fail("schema_032_sequence_production_consumption_mismatch");
@@ -1150,22 +1180,20 @@ export function validateSchema032ProductionConsumptionState(
 type Schema032ProductionExecutionBindingV2 = {
   releaseFreezeIdentitySha256: string;
   operationalAttestationSha256: string;
+  operationalAttestationIssuerReceiptSha256: string;
   authorityConsumptionSha256: string;
   sourceManifestSha256: string;
   g12TransitionReceiptSha256: string;
   productionBackupEvidenceSha256: string;
 };
 
-async function authorizeProductionMutation(input: {
+type PreparedSchema032ProductionAuthorizationV2 = Awaited<ReturnType<typeof prepareProductionMutationAuthorization>>;
+
+async function prepareProductionMutationAuthorization(input: {
   artifactRoot: string;
   authorityFilename: string;
   candidateSha: string;
-  observedTask0bDatabaseFingerprintSha256: string;
-  hasSequenceArtifacts: boolean;
-}): Promise<{
-  binding: Schema032ProductionExecutionBindingV2;
-  revalidate(): Promise<void>;
-}> {
+}) {
   if (!/^schema032-production-authority-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(input.authorityFilename)) {
     fail("schema_032_sequence_production_authority_filename_invalid");
   }
@@ -1187,11 +1215,11 @@ async function authorizeProductionMutation(input: {
     parseJson(backupBytes.toString("utf8"), "schema_032_sequence_production_backup_invalid"),
     {
       candidateSha: input.candidateSha,
-      observedDatabaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256
+      observedDatabaseIdentityFingerprintSha256: authority.databaseIdentityFingerprintSha256
     }
   );
   if (task0b.productionDatabase.approvedIdentityFingerprintSha256
-      !== input.observedTask0bDatabaseFingerprintSha256) {
+      !== authority.databaseIdentityFingerprintSha256) {
     fail("schema_032_sequence_production_database_binding_unverified");
   }
   const initialV2 = verifySchema032ProductionManifestAuthorityV2({
@@ -1201,35 +1229,67 @@ async function authorizeProductionMutation(input: {
     backupBytes,
     evaluatedAt: initialEvaluatedAt
   });
-  await attestSchema032ProductionBackupFiles(input.artifactRoot, backup, task0b.postgresTools);
+  return { ...input, authorityBytes, task0bBytes, backupBytes, authorityValue, authority, task0b, backup, initialV2 };
+}
+
+async function authorizeProductionMutation(input: {
+  prepared: PreparedSchema032ProductionAuthorizationV2;
+  observedTask0bDatabaseFingerprintSha256: string;
+  databaseSessionIdentitySha256: string;
+  lockAcquiredAt: string;
+  hasSequenceArtifacts: boolean;
+}): Promise<{
+  binding: Schema032ProductionExecutionBindingV2;
+  revalidate(): Promise<void>;
+}> {
+  const { prepared } = input;
+  const { artifactRoot, authorityFilename, candidateSha, authorityBytes, task0bBytes, backupBytes,
+    authorityValue, task0b, backup, initialV2 } = prepared;
+  let authority = validateProductionAuthority(authorityValue, new Date().toISOString());
+  if (input.observedTask0bDatabaseFingerprintSha256 !== authority.databaseIdentityFingerprintSha256
+      || input.observedTask0bDatabaseFingerprintSha256
+        !== task0b.productionDatabase.approvedIdentityFingerprintSha256) {
+    fail("schema_032_sequence_production_database_binding_unverified");
+  }
+  await attestSchema032ProductionBackupFiles(artifactRoot, backup, task0b.postgresTools);
   const claimedAt = new Date().toISOString();
   authority = validateProductionAuthority(authorityValue, claimedAt);
   const claimedV2 = verifySchema032ProductionManifestAuthorityV2({
-    artifactRoot: input.artifactRoot,
+    artifactRoot,
     authority: authorityValue,
     task0bBytes,
     backupBytes,
     evaluatedAt: claimedAt,
     expectedAttestationSha256: initialV2.selected.attestationSha256
   });
-  if (input.authorityFilename !== `schema032-production-authority-${authority.generationId}.json`) {
+  if (authorityFilename !== `schema032-production-authority-${authority.generationId}.json`) {
     fail("schema_032_sequence_production_authority_filename_invalid");
   }
   const consumptionName = `schema032-production-authority-consumed-${authority.generationId}.json`;
-  const existing = await readOptionalArtifact(input.artifactRoot, consumptionName);
+  const existing = await readOptionalArtifact(artifactRoot, consumptionName);
   const expectedConsumption = {
     generationId: authority.generationId,
     authoritySha256: hash(authorityBytes),
-    candidateSha: input.candidateSha,
+    operationalAttestationSha256: claimedV2.selected.attestationSha256,
+    operationalAttestationIssuerReceiptSha256: claimedV2.selected.issuerReceiptSha256,
+    candidateSha,
     databaseIdentityFingerprintSha256: input.observedTask0bDatabaseFingerprintSha256,
+    advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
+    databaseSessionIdentitySha256: input.databaseSessionIdentitySha256,
+    lockAcquiredAt: input.lockAcquiredAt,
     resumeExpiresAt: authority.expiresAt
   };
   const consumption: ProductionAuthorityConsumptionV1 = {
     version: "schema-032-production-authority-consumption-v1",
     generationId: expectedConsumption.generationId,
     authoritySha256: expectedConsumption.authoritySha256,
+    operationalAttestationSha256: expectedConsumption.operationalAttestationSha256,
+    operationalAttestationIssuerReceiptSha256: expectedConsumption.operationalAttestationIssuerReceiptSha256,
     candidateSha: expectedConsumption.candidateSha,
     databaseIdentityFingerprintSha256: expectedConsumption.databaseIdentityFingerprintSha256,
+    advisoryLockKey: expectedConsumption.advisoryLockKey,
+    databaseSessionIdentitySha256: expectedConsumption.databaseSessionIdentitySha256,
+    lockAcquiredAt: expectedConsumption.lockAcquiredAt,
     claimedAt,
     resumeExpiresAt: expectedConsumption.resumeExpiresAt
   };
@@ -1241,7 +1301,7 @@ async function authorizeProductionMutation(input: {
       expectedConsumption,
       claimedAt
     );
-    await writeArtifactExclusive(input.artifactRoot, consumptionName, validatedConsumption);
+    await writeArtifactExclusive(artifactRoot, consumptionName, validatedConsumption);
     actualConsumption = validatedConsumption;
   } else {
     actualConsumption = validateSchema032ProductionConsumptionState(
@@ -1253,7 +1313,8 @@ async function authorizeProductionMutation(input: {
   const consumptionBytes = Buffer.from(`${JSON.stringify(actualConsumption)}\n`, "utf8");
   const binding = {
     releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(claimedV2.freeze),
-    operationalAttestationSha256: hash(authorityBytes),
+    operationalAttestationSha256: claimedV2.selected.attestationSha256,
+    operationalAttestationIssuerReceiptSha256: claimedV2.selected.issuerReceiptSha256,
     authorityConsumptionSha256: hash(consumptionBytes),
     sourceManifestSha256: claimedV2.manifestSha256,
     g12TransitionReceiptSha256: claimedV2.manifest.latestCommittedReceiptSha256,
@@ -1264,10 +1325,10 @@ async function authorizeProductionMutation(input: {
     async revalidate() {
       const evaluatedAt = new Date().toISOString();
       const [currentAuthorityBytes, currentTask0bBytes, currentBackupBytes, currentConsumption] = await Promise.all([
-        readProtectedRegularFile(input.artifactRoot, input.authorityFilename, MAX_ARTIFACT_BYTES),
-        readProtectedRegularFile(input.artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
-        readProtectedRegularFile(input.artifactRoot, "production-backup-evidence.json", MAX_ARTIFACT_BYTES),
-        readProtectedRegularFile(input.artifactRoot, consumptionName, MAX_ARTIFACT_BYTES)
+        readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES),
+        readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
+        readProtectedRegularFile(artifactRoot, "production-backup-evidence.json", MAX_ARTIFACT_BYTES),
+        readProtectedRegularFile(artifactRoot, consumptionName, MAX_ARTIFACT_BYTES)
       ]);
       if (!currentAuthorityBytes.equals(authorityBytes) || !currentTask0bBytes.equals(task0bBytes)
           || !currentBackupBytes.equals(backupBytes)) {
@@ -1279,7 +1340,7 @@ async function authorizeProductionMutation(input: {
         evaluatedAt
       );
       verifySchema032ProductionManifestAuthorityV2({
-        artifactRoot: input.artifactRoot,
+        artifactRoot,
         authority: authorityValue,
         task0bBytes,
         backupBytes,
@@ -1411,6 +1472,13 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
     fail("schema_032_sequence_migration_checksum_mismatch");
   }
   const artifactRoot = await attestArtifactRoot(validated.artifactRoot, validated.databaseRole === "production");
+  const preparedProduction = validated.databaseRole === "production"
+    ? await prepareProductionMutationAuthorization({
+      artifactRoot,
+      authorityFilename: validated.productionAuthorityFile!,
+      candidateSha: validated.candidateSha
+    })
+    : null;
   const client = new Client(buildSchema032ClientConfig(validated.databaseUrl, validated.offline));
   let locked = false;
   let lockAcquiredAt: string | null = null;
@@ -1450,10 +1518,10 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
     const initialState = await readSequenceState(artifactRoot);
     if (validated.databaseRole === "production") {
       const authorized = await authorizeProductionMutation({
-        artifactRoot,
-        authorityFilename: validated.productionAuthorityFile!,
-        candidateSha: validated.candidateSha,
+        prepared: preparedProduction!,
         observedTask0bDatabaseFingerprintSha256: before.task0bIdentityFingerprintSha256,
+        databaseSessionIdentitySha256: before.sessionIdentitySha256,
+        lockAcquiredAt,
         hasSequenceArtifacts: Object.values(initialState).some((value) => value !== null)
       });
       productionBinding = authorized.binding;
@@ -1511,13 +1579,68 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
     const after = await readDatabaseIdentity(client, validated.expectedEndpoint);
     if (JSON.stringify(after) !== JSON.stringify(before)) fail("schema_032_sequence_database_identity_changed");
     await revalidateProductionOperation?.();
-    productionSettlementAuthorized = validated.databaseRole !== "production" || revalidateProductionOperation !== null;
+    if (validated.databaseRole === "production") {
+      if (productionBinding === null || lockAcquiredAt === null || sessionIdentitySha256 === null
+          || revalidateProductionOperation === null) {
+        fail("schema_032_production_execution_binding_missing");
+      }
+      const state = await readSequenceState(artifactRoot);
+      const ordered = [state.firstMigration, state.firstVerification, state.secondMigration, state.finalEvidence];
+      if (ordered.some((value) => value === null)) fail("schema_032_production_execution_stage_missing");
+      await revalidateProductionOperation();
+      lockReleasedAt = new Date().toISOString();
+      await persistSchema032ProductionExecutionReceiptV2(artifactRoot, {
+        version: "schema-032-production-execution-receipt-v2",
+        candidateSha: validated.candidateSha,
+        ...productionBinding,
+        advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
+        databaseSessionIdentitySha256: sessionIdentitySha256,
+        lockAcquiredAt,
+        lockReleasedAt,
+        migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
+        result: "applied_and_verified",
+        completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
+          .map((step, index) => ({ step, receiptSha256: hash(Buffer.from(ordered[index]!, "utf8")) })),
+        receiptChecksumSha256: evidence.receiptChecksumSha256,
+        postconditionsSha256: evidence.postconditionsSha256
+      });
+    }
+    productionSettlementAuthorized = true;
     completedEvidence = evidence;
   } catch (error) {
     caughtError = error;
     if (validated.databaseRole === "production" && revalidateProductionOperation !== null) {
       try {
         await revalidateProductionOperation();
+        if (productionBinding === null || lockAcquiredAt === null || sessionIdentitySha256 === null) {
+          fail("schema_032_production_execution_binding_missing");
+        }
+        const state = await readSequenceState(artifactRoot);
+        const existing = [state.firstMigration, state.firstVerification, state.secondMigration, state.finalEvidence];
+        const completedCount = existing.findIndex((value) => value === null);
+        const count = completedCount < 0 ? existing.length : completedCount;
+        if (count === existing.length) throw caughtError;
+        const steps = ["first_migration", "first_verification", "second_migration", "final_verification"] as const;
+        const failedStep = steps[count]!;
+        lockReleasedAt = new Date().toISOString();
+        await persistSchema032ProductionFailureRouteV2(artifactRoot, {
+          executionReceipt: {
+            version: "schema-032-production-execution-receipt-v2",
+            candidateSha: validated.candidateSha,
+            ...productionBinding,
+            advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
+            databaseSessionIdentitySha256: sessionIdentitySha256,
+            lockAcquiredAt,
+            lockReleasedAt,
+            migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
+            result: "failed_after_attempt",
+            failedStep,
+            completedStages: existing.slice(0, count).map((value, index) => ({
+              step: steps[index], receiptSha256: hash(Buffer.from(value!, "utf8"))
+            }))
+          },
+          failureCode: safeErrorCode(caughtError)
+        });
         productionSettlementAuthorized = true;
       } catch (authorizationError) {
         caughtError = authorizationError;
@@ -1529,39 +1652,11 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
       const unlocked = await client.query("select pg_advisory_unlock($1) as unlocked",
         [SCHEMA_032_PRODUCER_ADVISORY_LOCK]).catch(() => null);
       if (unlocked?.rows[0]?.unlocked !== true) fail("schema_032_sequence_advisory_unlock_failed");
-      lockReleasedAt = new Date().toISOString();
+      lockReleasedAt ??= new Date().toISOString();
     }
     await client.end().catch(() => undefined);
   }
   if (caughtError !== null) {
-    if (validated.databaseRole === "production" && productionSettlementAuthorized && productionBinding !== null
-        && lockAcquiredAt !== null && lockReleasedAt !== null && sessionIdentitySha256 !== null) {
-      const state = await readSequenceState(artifactRoot);
-      const existing = [state.firstMigration, state.firstVerification, state.secondMigration, state.finalEvidence];
-      const completedCount = existing.findIndex((value) => value === null);
-      const count = completedCount < 0 ? existing.length : completedCount;
-      const steps = ["first_migration", "first_verification", "second_migration", "final_verification"] as const;
-      const failedStep = steps[Math.min(count, steps.length - 1)]!;
-      const failureCode = safeErrorCode(caughtError);
-      await persistSchema032ProductionFailureRouteV2(artifactRoot, {
-        executionReceipt: {
-          version: "schema-032-production-execution-receipt-v2",
-          candidateSha: validated.candidateSha,
-          ...productionBinding,
-          advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
-          databaseSessionIdentitySha256: sessionIdentitySha256,
-          lockAcquiredAt,
-          lockReleasedAt,
-          migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
-          result: "failed_after_attempt",
-          failedStep,
-          completedStages: existing.slice(0, count).map((value, index) => ({
-            step: steps[index], receiptSha256: hash(Buffer.from(value!, "utf8"))
-          }))
-        },
-        failureCode
-      });
-    }
     throw caughtError;
   }
   if (completedEvidence === null) fail("schema_032_sequence_incomplete");
@@ -1570,24 +1665,6 @@ export async function runSchema032ReleaseSequence(options: Schema032SequenceCliO
       fail("schema_032_production_execution_binding_missing");
     }
     if (!productionSettlementAuthorized) fail("schema_032_production_settlement_authority_missing");
-    const state = await readSequenceState(artifactRoot);
-    const ordered = [state.firstMigration, state.firstVerification, state.secondMigration, state.finalEvidence];
-    if (ordered.some((value) => value === null)) fail("schema_032_production_execution_stage_missing");
-    await persistSchema032ProductionExecutionReceiptV2(artifactRoot, {
-      version: "schema-032-production-execution-receipt-v2",
-      candidateSha: validated.candidateSha,
-      ...productionBinding,
-      advisoryLockKey: SCHEMA_032_PRODUCER_ADVISORY_LOCK,
-      databaseSessionIdentitySha256: sessionIdentitySha256,
-      lockAcquiredAt,
-      lockReleasedAt,
-      migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
-      result: "applied_and_verified",
-      completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
-        .map((step, index) => ({ step, receiptSha256: hash(Buffer.from(ordered[index]!, "utf8")) })),
-      receiptChecksumSha256: completedEvidence.receiptChecksumSha256,
-      postconditionsSha256: completedEvidence.postconditionsSha256
-    });
   }
   return completedEvidence;
 }

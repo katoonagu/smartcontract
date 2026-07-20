@@ -169,7 +169,10 @@ function canonicalEvidenceSha(value: unknown): string {
 
 function validateProductionBackupConsumption(value: unknown): Record<string, unknown> {
   const input = evidenceRecord(value, "production_backup_consumption_invalid");
+  const bindsV2 = Object.hasOwn(input, "operationalAttestationSha256")
+    || Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256");
   exactEvidenceKeys(input, ["version", "generationId", "authoritySha256", "candidateSha",
+    ...(bindsV2 ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : []),
     "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "claimedAt", "expiresAt"],
   "production_backup_consumption_invalid");
   if (input.version !== "production-backup-authority-consumption-v1"
@@ -177,6 +180,10 @@ function validateProductionBackupConsumption(value: unknown): Record<string, unk
     throw new Error("production_backup_consumption_invalid");
   }
   evidenceSha(input.authoritySha256, "production_backup_consumption_invalid");
+  if (bindsV2) {
+    evidenceSha(input.operationalAttestationSha256, "production_backup_consumption_invalid");
+    evidenceSha(input.operationalAttestationIssuerReceiptSha256, "production_backup_consumption_invalid");
+  }
   evidenceCandidate(input.candidateSha, "production_backup_consumption_invalid");
   evidenceSha(input.databaseIdentityFingerprintSha256, "production_backup_consumption_invalid");
   evidenceSha(input.artifactRootFingerprintSha256, "production_backup_consumption_invalid");
@@ -216,7 +223,10 @@ function validateProductionBackupAuthority(value: unknown): Record<string, unkno
 function validateProductionBackupProgress(value: unknown, kind: "dump" | "list"): Record<string, unknown> {
   const code = `production_backup_${kind}_progress_invalid`;
   const input = evidenceRecord(value, code);
+  const bindsV2 = Object.hasOwn(input, "operationalAttestationSha256")
+    || Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256");
   const common = ["version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    ...(bindsV2 ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : []),
     "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId", "recordedAt"];
   exactEvidenceKeys(input, kind === "dump"
     ? [...common, "backupFilename", "backupBytes", "backupSha256", "backupPathFingerprintSha256"]
@@ -226,7 +236,10 @@ function validateProductionBackupProgress(value: unknown, kind: "dump" | "list")
       || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)
       || typeof input.operationId !== "string" || input.operationId.length === 0) throw new Error(code);
   for (const key of ["authoritySha256", "claimSha256", "databaseIdentityFingerprintSha256",
-    "artifactRootFingerprintSha256"]) evidenceSha(input[key], code);
+    "artifactRootFingerprintSha256", ...(bindsV2
+      ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : [])]) {
+    evidenceSha(input[key], code);
+  }
   evidenceCandidate(input.candidateSha, code);
   evidenceIso(input.expiresAt, code);
   evidenceIso(input.recordedAt, code);
@@ -248,7 +261,10 @@ function validateProductionBackupProgress(value: unknown, kind: "dump" | "list")
 function validateProductionBackupEvidence(value: unknown): Record<string, unknown> {
   const code = "production_backup_evidence_invalid";
   const input = evidenceRecord(value, code);
+  const bindsV2 = Object.hasOwn(input, "operationalAttestationSha256")
+    || Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256");
   exactEvidenceKeys(input, ["version", "candidateSha", "gateId", "commandId", "redactedTemplateSha256",
+    ...(bindsV2 ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : []),
     "databaseIdentityFingerprintSha256", "backupFilename", "backupBytes", "backupSha256",
     "backupPathFingerprintSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256",
     "restoreListEntryCount", "state"], code);
@@ -259,7 +275,10 @@ function validateProductionBackupEvidence(value: unknown): Record<string, unknow
   }
   evidenceCandidate(input.candidateSha, code);
   for (const key of ["redactedTemplateSha256", "databaseIdentityFingerprintSha256", "backupSha256",
-    "backupPathFingerprintSha256", "restoreListSha256"]) evidenceSha(input[key], code);
+    "backupPathFingerprintSha256", "restoreListSha256", ...(bindsV2
+      ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : [])]) {
+    evidenceSha(input[key], code);
+  }
   positiveInteger(input.backupBytes, code);
   positiveInteger(input.restoreListBytes, code);
   positiveInteger(input.restoreListEntryCount, code);
@@ -296,11 +315,24 @@ function validateProductionMigrationAuthority(value: unknown): Record<string, un
 function validateProductionMigrationConsumption(value: unknown): Record<string, unknown> {
   const code = "schema_032_sequence_production_consumption_invalid";
   const input = evidenceRecord(value, code);
+  const bindsV2 = Object.hasOwn(input, "operationalAttestationSha256")
+    || Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
+    || Object.hasOwn(input, "advisoryLockKey") || Object.hasOwn(input, "databaseSessionIdentitySha256")
+    || Object.hasOwn(input, "lockAcquiredAt");
   exactEvidenceKeys(input, ["version", "generationId", "authoritySha256", "candidateSha",
+    ...(bindsV2 ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
+      "advisoryLockKey", "databaseSessionIdentitySha256", "lockAcquiredAt"] : []),
     "databaseIdentityFingerprintSha256", "claimedAt", "resumeExpiresAt"], code);
   if (input.version !== "schema-032-production-authority-consumption-v1"
       || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)) throw new Error(code);
   evidenceSha(input.authoritySha256, code);
+  if (bindsV2) {
+    evidenceSha(input.operationalAttestationSha256, code);
+    evidenceSha(input.operationalAttestationIssuerReceiptSha256, code);
+    if (input.advisoryLockKey !== 320032500) throw new Error(code);
+    evidenceSha(input.databaseSessionIdentitySha256, code);
+    evidenceIso(input.lockAcquiredAt, code);
+  }
   evidenceCandidate(input.candidateSha, code);
   evidenceSha(input.databaseIdentityFingerprintSha256, code);
   const claimedAt = evidenceIso(input.claimedAt, code);
@@ -392,6 +424,7 @@ export type GateEvidenceBindingContextV2 = Readonly<{
   task0bReleaseFreezeSha256?: string;
   productionDatabaseIdentityFingerprintSha256?: string;
   sourceManifestSha256ByGate?: Readonly<Partial<Record<ProductionGateIdV2, string>>>;
+  requireStandaloneAuthorityBinding?: boolean;
 }>;
 
 function validateEvidenceBindings(
@@ -590,6 +623,7 @@ type RequiredProductionGateContext = Readonly<{
   sourceManifestSha256: string;
   task0bReleaseFreezeSha256: string;
   productionDatabaseIdentityFingerprintSha256: string;
+  requireStandaloneAuthorityBinding?: boolean;
 }>;
 
 function requireProductionBindingContext(expected: GateEvidenceBindingContextV2): RequiredProductionGateContext {
@@ -677,7 +711,20 @@ function validateG12Bindings(
       || evidence.value.backupPathFingerprintSha256 !== dumpProgress.value.backupPathFingerprintSha256
       || evidence.value.restoreListBytes !== restoreList.bytes.length
       || evidence.value.restoreListSha256 !== restoreList.ref.sha256
-      || evidence.value.restoreListEntryCount !== listProgress.value.restoreListEntryCount) {
+      || evidence.value.restoreListEntryCount !== listProgress.value.restoreListEntryCount
+      || (expected.requireStandaloneAuthorityBinding === true
+        && (consumption.value.operationalAttestationSha256 !== attestation.ref.sha256
+          || typeof consumption.value.operationalAttestationIssuerReceiptSha256 !== "string"
+          || !SHA256.test(consumption.value.operationalAttestationIssuerReceiptSha256)
+          || dumpProgress.value.operationalAttestationSha256 !== attestation.ref.sha256
+          || listProgress.value.operationalAttestationSha256 !== attestation.ref.sha256
+          || evidence.value.operationalAttestationSha256 !== attestation.ref.sha256
+          || dumpProgress.value.operationalAttestationIssuerReceiptSha256
+            !== consumption.value.operationalAttestationIssuerReceiptSha256
+          || listProgress.value.operationalAttestationIssuerReceiptSha256
+            !== consumption.value.operationalAttestationIssuerReceiptSha256
+          || evidence.value.operationalAttestationIssuerReceiptSha256
+            !== consumption.value.operationalAttestationIssuerReceiptSha256))) {
     throw new Error("production_backup_artifact_binding_invalid");
   }
 }
@@ -706,10 +753,21 @@ function validateG13Bindings(
       || consumption.value.resumeExpiresAt !== authority.value.expiresAt
       || receipt.value.candidateSha !== gate.candidateSha
       || receipt.value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
-      || receipt.value.operationalAttestationSha256 !== authority.ref.sha256
+      || receipt.value.operationalAttestationSha256
+        !== (expected.requireStandaloneAuthorityBinding === true ? attestation.ref.sha256 : authority.ref.sha256)
       || receipt.value.authorityConsumptionSha256 !== consumption.ref.sha256
       || receipt.value.sourceManifestSha256 !== expected.sourceManifestSha256
-      || receipt.value.productionBackupEvidenceSha256 !== authority.value.backupEvidenceSha256) {
+      || receipt.value.productionBackupEvidenceSha256 !== authority.value.backupEvidenceSha256
+      || (expected.requireStandaloneAuthorityBinding === true
+        && (consumption.value.operationalAttestationSha256 !== attestation.ref.sha256
+          || typeof consumption.value.operationalAttestationIssuerReceiptSha256 !== "string"
+          || !SHA256.test(consumption.value.operationalAttestationIssuerReceiptSha256)
+          || receipt.value.operationalAttestationIssuerReceiptSha256
+            !== consumption.value.operationalAttestationIssuerReceiptSha256
+          || consumption.value.advisoryLockKey !== 320032500
+          || receipt.value.advisoryLockKey !== consumption.value.advisoryLockKey
+          || receipt.value.databaseSessionIdentitySha256 !== consumption.value.databaseSessionIdentitySha256
+          || receipt.value.lockAcquiredAt !== consumption.value.lockAcquiredAt))) {
     throw new Error("production_migration_artifact_binding_invalid");
   }
 }

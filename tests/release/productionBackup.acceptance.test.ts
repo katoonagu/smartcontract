@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Client } from "pg";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   CANDIDATE_SHA,
   COMMAND_TEMPLATE_SHA256,
+  PRE_RELEASE_GATE_IDS,
   TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
   buildExecutedReleaseGateV2Fixture,
   buildReleaseFreezeIdentityV2Fixture,
@@ -18,6 +19,7 @@ import {
   buildTask0BReleaseFreezeEvidence,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
+import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const evaluatedAt = "2026-07-18T09:05:00.000Z";
@@ -94,40 +96,67 @@ function verifiedV2AuthorityStub() {
   };
 }
 
+function materializeInitialGateEvidence(root: string) {
+  const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
+  for (const gate of gates) {
+    const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id as keyof typeof PRE_RELEASE_GATE_EVIDENCE_POLICY_V2];
+    const paths = [...policy.primaryPaths];
+    for (const [index, kind] of policy.requiredKinds.entries()) {
+      if (index >= paths.length) paths.push(`gates/${gate.id.toLowerCase()}/${kind}.json`);
+    }
+    gate.evidence = [];
+    for (const [index, relativePath] of paths.entries()) {
+      const path = join(root, ...relativePath.split("/"));
+      if (!existsSync(path)) {
+        mkdirSync(resolve(path, ".."), { recursive: true });
+        writeFileSync(path, `${canonicalReleaseJsonV2({ version: "gate-evidence-v2", candidateSha: CANDIDATE_SHA,
+          gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] })}\n`);
+      }
+      const bytes = readFileSync(path);
+      const parsed = JSON.parse(bytes.toString("utf8"));
+      gate.evidence.push({ kind: policy.requiredKinds[index] ?? policy.allowedKinds[0], relativePath,
+        sha256: sha256(bytes), schemaVersion: parsed.version, candidateSha: CANDIDATE_SHA } as never);
+    }
+  }
+  expect(gates.map((gate) => gate.id)).toEqual(PRE_RELEASE_GATE_IDS.filter((id) => id !== "G05_TELEGRAM"));
+  return gates;
+}
+
+async function materializeReadinessV2Root(root: string) {
+  const store = await import("../../src/release/releaseManifestStoreV2");
+  const rootKey = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
+  const task0b = buildTask0BReleaseFreezeEvidence({
+    observedAt: "2026-07-18T10:00:00.000Z",
+    artifactRootFingerprintSha256: sha256(rootKey)
+  });
+  const freeze = buildReleaseFreezeIdentityV2Fixture(task0b);
+  writeFileSync(join(root, "task0b-release-freeze.json"), `${canonicalReleaseJsonV2(task0b)}\n`, { flag: "wx" });
+  await store.materializeReleaseFreezeV2({ artifactRoot: root, freezeIdentity: freeze,
+    task0BPreflightEvidence: task0b, producerId: "release_freeze_materialize",
+    evaluatedAt: "2026-07-18T10:00:00.000Z" });
+  const initialized = await store.initializeReleaseManifestV2({ artifactRoot: root,
+    evaluatedAt: "2026-07-18T10:00:00.000Z", verifiedGateOutputs: materializeInitialGateEvidence(root) });
+  const manualBytes = Buffer.from(`${canonicalReleaseJsonV2({ version: "gate-evidence-v2",
+    candidateSha: CANDIDATE_SHA, gateId: "G05_TELEGRAM", kind: "manual_telegram_acceptance" })}\n`);
+  writeFileSync(join(root, "manual-telegram-acceptance.json"), manualBytes, { flag: "wx" });
+  const manual = { ...buildExecutedReleaseGateV2Fixture("G05_TELEGRAM"), evidence: [{
+    kind: "manual_telegram_acceptance", relativePath: "manual-telegram-acceptance.json",
+    sha256: sha256(manualBytes), schemaVersion: "gate-evidence-v2", candidateSha: CANDIDATE_SHA
+  }] };
+  const readiness = await store.advanceReleaseManifestV2({ artifactRoot: root,
+    sourceManifest: initialized.manifest, transition: { transitionId: "readiness" },
+    verifiedGateOutputs: [manual], verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null },
+    evaluatedAt: "2026-07-18T10:01:00.000Z" });
+  const issued = await store.issueOperationalAttestationV2({ artifactRoot: root, action: "g12_backup_passed" });
+  return { store, task0b, freeze, readiness, issued };
+}
+
 describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
   it("rejects a production manifest authority whose committed transition receipt bytes changed", async () => {
     const api = await loadProducer();
-    const store = await import("../../src/release/releaseManifestStoreV2");
     const root = await makeProtectedTempDir("plan5-g12-v2-manifest-authority-");
     try {
-      const rootKey = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
-      const task0b = buildTask0BReleaseFreezeEvidence({
-        observedAt: "2026-07-18T10:00:00.000Z",
-        artifactRootFingerprintSha256: sha256(rootKey)
-      });
-      const freeze = buildReleaseFreezeIdentityV2Fixture(task0b);
-      writeFileSync(join(root, "task0b-release-freeze.json"), `${canonicalReleaseJsonV2(task0b)}\n`, { flag: "wx" });
-      await store.materializeReleaseFreezeV2({
-        artifactRoot: root,
-        freezeIdentity: freeze,
-        task0BPreflightEvidence: task0b,
-        producerId: "release_freeze_materialize",
-        evaluatedAt: "2026-07-18T10:00:00.000Z"
-      });
-      const initialized = await store.initializeReleaseManifestV2({
-        artifactRoot: root,
-        evaluatedAt: "2026-07-18T10:00:00.000Z",
-        verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
-      });
-      const readiness = await store.advanceReleaseManifestV2({
-        artifactRoot: root,
-        sourceManifest: initialized.manifest,
-        transition: { transitionId: "readiness" },
-        verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G05_TELEGRAM")],
-        verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null },
-        evaluatedAt: "2026-07-18T10:01:00.000Z"
-      });
-      const issued = await store.issueOperationalAttestationV2({ artifactRoot: root, action: "g12_backup_passed" });
+      const { task0b, freeze, readiness, issued } = await materializeReadinessV2Root(root);
       const manifestBytes = readFileSync(join(root, "release-manifest.json"));
       const authority = {
         ...fixture(root).authority,
@@ -155,6 +184,39 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       })).toThrow(/manifest|receipt|canonical|hash/i);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 30_000);
+
+  it("runs command preflight against a materialized semantic V2 readiness root without a V1 manifest fallback", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-v2-command-");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-18T10:01:01.000Z"));
+    try {
+      const { task0b, freeze, issued } = await materializeReadinessV2Root(root);
+      const manifestBytes = readFileSync(join(root, "release-manifest.json"));
+      const authority = {
+        ...fixture(root).authority,
+        generationId: freeze.releaseGenerationId,
+        issuedAt: issued.issuedAt,
+        expiresAt: new Date(Date.parse(issued.issuedAt) + 5 * 60_000).toISOString(),
+        candidateSha: freeze.candidateSha,
+        databaseIdentityFingerprintSha256: freeze.productionDatabaseIdentityFingerprintSha256,
+        task0bEvidenceSha256: sha256(Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`)),
+        releaseManifestSha256: sha256(manifestBytes),
+        artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256
+      };
+      const authorityName = `production-backup-authority-${authority.generationId}.json`;
+      writeFileSync(join(root, authorityName), Buffer.from(`${JSON.stringify(authority)}\n`), { flag: "wx" });
+      const sideEffects: string[] = [];
+      await expect(api.runProductionBackupCommand([root, authorityName], {}, {
+        now: () => issued.issuedAt,
+        currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true }),
+        observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("unexpected_database"); },
+        attestProductionPostgresTools: async () => { sideEffects.push("docker"); },
+        stdout: () => { sideEffects.push("stdout"); }
+      })).rejects.toThrow("production_backup_database_url_missing");
+      expect(sideEffects).toEqual([]);
+    } finally { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
+  }, 45_000);
 
   it("requires a fresh exact one-shot GO bound to Task0B ready manifest database and protected root", async () => {
     const api = await loadProducer();
@@ -257,6 +319,8 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       candidateSha: authority.candidateSha,
       databaseIdentityFingerprintSha256: authority.databaseIdentityFingerprintSha256,
       artifactRootFingerprintSha256: authority.artifactRootFingerprintSha256,
+      operationalAttestationSha256: "a".repeat(64),
+      operationalAttestationIssuerReceiptSha256: "b".repeat(64),
       expiresAt: authority.expiresAt
     };
     try {
@@ -269,6 +333,10 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       await expect(api.claimProductionBackupAuthority(root, expected, evaluatedAt)).resolves.toBe("resumed");
       const claimName = `production-backup-authority-consumed-${authority.generationId}.json`;
       const claim = JSON.parse(readFileSync(join(root, claimName), "utf8"));
+      expect(claim).toMatchObject({
+        operationalAttestationSha256: expected.operationalAttestationSha256,
+        operationalAttestationIssuerReceiptSha256: expected.operationalAttestationIssuerReceiptSha256
+      });
       expect(() => api.validateProductionBackupConsumptionState(claim, expected, evaluatedAt)).not.toThrow();
       expect(() => api.validateProductionBackupConsumptionState(
         claim, { ...expected, authoritySha256: "f".repeat(64) }, evaluatedAt
@@ -606,8 +674,8 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         writeEvidence: async () => { calls.push("write"); }
       })).rejects.toThrow(new RegExp(`operation_${failure}`));
       expect(calls).toEqual(failure === "deadline"
-        ? ["validate-1", "validate-2", "validate-3", "validate-4", "attest", "validate-5", "release"]
-        : ["validate-1", "validate-2", "validate-3", "validate-4", "attest", "validate-5", "build", "validate-6", "release"]);
+        ? ["validate-1", "validate-2", "validate-3", "validate-4", "validate-5", "attest", "validate-6", "release"]
+        : ["validate-1", "validate-2", "validate-3", "validate-4", "validate-5", "attest", "validate-6", "build", "validate-7", "release"]);
       expect(calls).not.toContain("write");
     }
   });
@@ -815,6 +883,8 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       const expected = {
         generationId: value.authority.generationId,
         authoritySha256: sha256(authorityBytes),
+        operationalAttestationSha256: "a".repeat(64),
+        operationalAttestationIssuerReceiptSha256: "b".repeat(64),
         candidateSha: value.authority.candidateSha,
         databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
         artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
@@ -849,9 +919,42 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         expect(existsSync(join(root, "production-backup.dump"))).toBe(false);
         expect(existsSync(join(root, `production-backup-operation-${value.authority.generationId}.json`))).toBe(false);
         expect(existsSync(join(root, `production-backup-authority-consumed-${value.authority.generationId}.json`)))
-          .toBe(stage === "dump");
+          .toBe(true);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
+  });
+
+  it("acquires the exact backup claim and lease before database queries or Docker tool probes", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-owned-query-order-");
+    const value = commandFixture(root);
+    const authorityName = `production-backup-authority-${value.authority.generationId}.json`;
+    const claimPath = join(root, `production-backup-authority-consumed-${value.authority.generationId}.json`);
+    const leasePath = join(root, `production-backup-operation-${value.authority.generationId}.json`);
+    let toolsAttested = false;
+    try {
+      writeFileSync(join(root, "task0b-release-freeze.json"), value.task0bBytes, { flag: "wx" });
+      writeFileSync(join(root, "release-manifest.json"), value.manifestBytes, { flag: "wx" });
+      writeFileSync(join(root, authorityName), Buffer.from(`${JSON.stringify(value.authority)}\n`), { flag: "wx" });
+      await expect(api.runProductionBackupCommand([root, authorityName], {
+        TASK0B_PRODUCTION_DATABASE_URL: "postgresql://release:not-used@127.0.0.1:55998/tron_watch"
+      }, {
+        now: () => evaluatedAt,
+        currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+        verifyProductionManifestAuthorityV2: verifiedV2AuthorityStub,
+        attestProductionPostgresTools: async () => {
+          if (!existsSync(claimPath) || !existsSync(leasePath)) throw new Error("docker_before_backup_ownership");
+          toolsAttested = true;
+        },
+        observeProductionDatabase: async () => {
+          if (!existsSync(claimPath) || !existsSync(leasePath)) throw new Error("query_before_backup_ownership");
+          if (toolsAttested) throw new Error("stop_after_owned_query");
+          return { identityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
+            client: { query: async () => undefined, end: async () => undefined } } as any;
+        },
+        stdout: () => undefined
+      })).rejects.toThrow("stop_after_owned_query");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it("blocks a live completed-evidence lease and settles an exact dead crash lease without deleting receipted finals", async () => {

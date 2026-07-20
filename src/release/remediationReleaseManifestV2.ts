@@ -637,6 +637,7 @@ export type Schema032ProductionExecutionReceiptCommonV2 = {
   candidateSha: string;
   releaseFreezeIdentitySha256: string;
   operationalAttestationSha256: string;
+  operationalAttestationIssuerReceiptSha256?: string;
   authorityConsumptionSha256: string;
   sourceManifestSha256: string;
   g12TransitionReceiptSha256: string;
@@ -2659,9 +2660,9 @@ export function deriveProductionGateSourceManifestBindingsV2(
   return result;
 }
 
-export async function verifyRemediationReleaseArtifactsV2(
+export function verifyRemediationReleaseArtifactsSyncV2(
   artifacts: ReadonlyMap<string, Buffer>
-): Promise<RemediationReleaseManifestV2> {
+): RemediationReleaseManifestV2 {
   const manifestBytes = artifacts.get("release-manifest.json");
   if (!manifestBytes) throw new Error("release_manifest_v2_missing");
   let value: unknown;
@@ -2690,6 +2691,7 @@ export async function verifyRemediationReleaseArtifactsV2(
     artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
     releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
     sourceManifestSha256ByGate,
+    requireStandaloneAuthorityBinding: true,
     ...task0bBinding
   });
   if (manifest.candidateSha !== freeze.candidateSha
@@ -2725,6 +2727,12 @@ export async function verifyRemediationReleaseArtifactsV2(
     }
   }
   return manifest;
+}
+
+export async function verifyRemediationReleaseArtifactsV2(
+  artifacts: ReadonlyMap<string, Buffer>
+): Promise<RemediationReleaseManifestV2> {
+  return verifyRemediationReleaseArtifactsSyncV2(artifacts);
 }
 
 export function assertProductionMutatorAuthorityV2(): never {
@@ -3267,6 +3275,8 @@ export function validateSchema032ProductionExecutionReceiptV2(
   assertNoSecrets(value);
   const input = record(value, "schema032_production_execution_receipt");
   const common = ["version", "candidateSha", "releaseFreezeIdentitySha256", "operationalAttestationSha256",
+    ...(Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
+      ? ["operationalAttestationIssuerReceiptSha256"] : []),
     "authorityConsumptionSha256", "sourceManifestSha256", "g12TransitionReceiptSha256",
     "productionBackupEvidenceSha256", "advisoryLockKey", "databaseSessionIdentitySha256",
     "lockAcquiredAt", "lockReleasedAt", "migrationBytesChecksumSha256", "result", "completedStages"];
@@ -3277,6 +3287,8 @@ export function validateSchema032ProductionExecutionReceiptV2(
       || input.migrationBytesChecksumSha256 !== SCHEMA032_CHECKSUM_V2) throw new Error("schema032_production_receipt_literal_invalid");
   sha(input.candidateSha, SHA40, "schema032_production_candidate");
   for (const key of ["releaseFreezeIdentitySha256", "operationalAttestationSha256", "authorityConsumptionSha256",
+    ...(Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
+      ? ["operationalAttestationIssuerReceiptSha256"] : []),
     "sourceManifestSha256", "g12TransitionReceiptSha256", "productionBackupEvidenceSha256",
     "databaseSessionIdentitySha256"]) sha(input[key], SHA256, key);
   const acquired = iso(input.lockAcquiredAt, "schema032_lock_acquired");

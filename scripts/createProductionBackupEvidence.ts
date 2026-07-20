@@ -72,6 +72,8 @@ export type ProductionBackupEvidenceV1 = {
   gateId: "G12_PRODUCTION_BACKUP";
   commandId: "production_backup";
   redactedTemplateSha256: string;
+  operationalAttestationSha256?: string;
+  operationalAttestationIssuerReceiptSha256?: string;
   databaseIdentityFingerprintSha256: string;
   backupFilename: "production-backup.dump";
   backupBytes: number;
@@ -90,6 +92,8 @@ export type ProductionBackupConsumptionV1 = {
   version: "production-backup-authority-consumption-v1";
   generationId: string;
   authoritySha256: string;
+  operationalAttestationSha256?: string;
+  operationalAttestationIssuerReceiptSha256?: string;
   candidateSha: string;
   databaseIdentityFingerprintSha256: string;
   artifactRootFingerprintSha256: string;
@@ -99,7 +103,8 @@ export type ProductionBackupConsumptionV1 = {
 
 type ExpectedConsumption = Pick<ProductionBackupConsumptionV1,
   "generationId" | "authoritySha256" | "candidateSha" | "databaseIdentityFingerprintSha256"
-  | "artifactRootFingerprintSha256" | "expiresAt">;
+  | "artifactRootFingerprintSha256" | "expiresAt" | "operationalAttestationSha256"
+  | "operationalAttestationIssuerReceiptSha256">;
 
 export type ProductionBackupProgressBinding = ExpectedConsumption & { claimSha256: string };
 
@@ -276,7 +281,7 @@ export function verifyProductionBackupManifestAuthorityV2(input: {
     minimumRemainingValidityMs: remainingCustomValidityMs,
     expectedConsumedAttestationSha256: input.expectedAttestationSha256
   });
-  return selected;
+  return { ...verified, ...selected, selected };
 }
 
 function dockerExecutable(): string {
@@ -368,9 +373,17 @@ export function validateProductionBackupConsumptionState(
 ): ProductionBackupConsumptionV1 {
   assertNoSecretLikeArtifactValues(value);
   const consumption = record(value, "production_backup_consumption_invalid");
+  const bindsOperationalAttestation = expected.operationalAttestationSha256 !== undefined
+    || expected.operationalAttestationIssuerReceiptSha256 !== undefined;
+  if (bindsOperationalAttestation && (expected.operationalAttestationSha256 === undefined
+      || expected.operationalAttestationIssuerReceiptSha256 === undefined)) {
+    throw new Error("production_backup_consumption_mismatch");
+  }
   exactKeys(consumption, [
     "version", "generationId", "authoritySha256", "candidateSha", "databaseIdentityFingerprintSha256",
-    "artifactRootFingerprintSha256", "claimedAt", "expiresAt"
+    "artifactRootFingerprintSha256", ...(bindsOperationalAttestation
+      ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : []),
+    "claimedAt", "expiresAt"
   ], "production_backup_consumption_invalid");
   const now = iso(evaluatedAt, "production_backup_consumption_invalid");
   const claimedAt = iso(consumption.claimedAt, "production_backup_consumption_invalid");
@@ -380,10 +393,15 @@ export function validateProductionBackupConsumptionState(
       || !SHA256.test(String(consumption.authoritySha256)) || !SHA40.test(String(consumption.candidateSha))
       || !SHA256.test(String(consumption.databaseIdentityFingerprintSha256))
       || !SHA256.test(String(consumption.artifactRootFingerprintSha256))
+      || (bindsOperationalAttestation && (!SHA256.test(String(consumption.operationalAttestationSha256))
+        || !SHA256.test(String(consumption.operationalAttestationIssuerReceiptSha256))))
       || consumption.generationId !== expected.generationId || consumption.authoritySha256 !== expected.authoritySha256
       || consumption.candidateSha !== expected.candidateSha
       || consumption.databaseIdentityFingerprintSha256 !== expected.databaseIdentityFingerprintSha256
       || consumption.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || consumption.operationalAttestationSha256 !== expected.operationalAttestationSha256
+      || consumption.operationalAttestationIssuerReceiptSha256
+        !== expected.operationalAttestationIssuerReceiptSha256
       || consumption.expiresAt !== expected.expiresAt || claimedAt > now || claimedAt >= expiresAt) {
     throw new Error("production_backup_consumption_mismatch");
   }
@@ -470,6 +488,9 @@ function validateProgressBinding(
   if (now >= expiresAt) throw new Error("production_backup_authority_expired");
   if (value.generationId !== binding.generationId || value.authoritySha256 !== binding.authoritySha256
       || value.claimSha256 !== binding.claimSha256 || value.candidateSha !== binding.candidateSha
+      || value.operationalAttestationSha256 !== binding.operationalAttestationSha256
+      || value.operationalAttestationIssuerReceiptSha256
+        !== binding.operationalAttestationIssuerReceiptSha256
       || value.databaseIdentityFingerprintSha256 !== binding.databaseIdentityFingerprintSha256
       || value.artifactRootFingerprintSha256 !== binding.artifactRootFingerprintSha256
       || value.expiresAt !== binding.expiresAt || !OPERATION_ID.test(String(value.operationId))
@@ -485,6 +506,8 @@ function validateDumpProgress(
   const progress = record(value, "production_backup_dump_progress_invalid");
   exactKeys(progress, [
     "version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    ...(binding.operationalAttestationSha256 === undefined ? []
+      : ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"]),
     "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId", "recordedAt",
     "backupFilename", "backupBytes", "backupSha256", "backupPathFingerprintSha256"
   ], "production_backup_dump_progress_invalid");
@@ -506,6 +529,8 @@ function validateListProgress(
   const progress = record(value, "production_backup_list_progress_invalid");
   exactKeys(progress, [
     "version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    ...(binding.operationalAttestationSha256 === undefined ? []
+      : ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"]),
     "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId", "recordedAt",
     "dumpProgressSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256", "restoreListEntryCount"
   ], "production_backup_list_progress_invalid");
@@ -620,6 +645,7 @@ export async function executeProductionBackupStateMachine<T extends Buffer>(auth
   settleCompletedOperation?(): Promise<void>;
   revalidateBeforeClaim?(): Promise<void>;
   revalidateBeforeDump?(): Promise<void>;
+  attestOwnedTools?(): Promise<void>;
   dump(operationId: string): Promise<void>;
   recordDumpProgress(operationId: string): Promise<void>;
   list(operationId: string): Promise<void>;
@@ -647,6 +673,8 @@ export async function executeProductionBackupStateMachine<T extends Buffer>(auth
   }
   const operation = await dependencies.acquireOperation();
   try {
+    await dependencies.validateOperation();
+    await dependencies.attestOwnedTools?.();
     await dependencies.validateOperation();
     const completedAfterLease = await dependencies.readCompletedEvidence();
     if (completedAfterLease) {
@@ -733,6 +761,8 @@ function validateOperationLease(
   const lease = record(value, "production_backup_operation_lease_invalid");
   exactKeys(lease, [
     "version", "generationId", "authoritySha256", "claimSha256", "candidateSha",
+    ...(binding.operationalAttestationSha256 === undefined ? []
+      : ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"]),
     "databaseIdentityFingerprintSha256", "artifactRootFingerprintSha256", "expiresAt", "operationId",
     "ownerProcessId", "acquiredAt", "dumpContainerName", "restoreContainerName"
   ], "production_backup_operation_lease_invalid");
@@ -742,6 +772,9 @@ function validateOperationLease(
   if (lease.version !== "production-backup-operation-lease-v1" || lease.generationId !== binding.generationId
       || lease.authoritySha256 !== binding.authoritySha256 || lease.claimSha256 !== binding.claimSha256
       || lease.candidateSha !== binding.candidateSha
+      || lease.operationalAttestationSha256 !== binding.operationalAttestationSha256
+      || lease.operationalAttestationIssuerReceiptSha256
+        !== binding.operationalAttestationIssuerReceiptSha256
       || lease.databaseIdentityFingerprintSha256 !== binding.databaseIdentityFingerprintSha256
       || lease.artifactRootFingerprintSha256 !== binding.artifactRootFingerprintSha256
       || lease.expiresAt !== binding.expiresAt || !OPERATION_ID.test(String(lease.operationId))
@@ -1113,17 +1146,25 @@ export async function observeProductionDatabase(databaseUrl: string, beginSnapsh
   }
 }
 
-export function validateProductionBackupEvidence(value: unknown, authority: ProductionBackupAuthorityV1): ProductionBackupEvidenceV1 {
+export function validateProductionBackupEvidence(
+  value: unknown,
+  authority: ProductionBackupAuthorityV1,
+  operationalAuthority?: Readonly<{ attestationSha256: string; issuerReceiptSha256: string }>
+): ProductionBackupEvidenceV1 {
   assertNoSecretLikeArtifactValues(value);
   const evidence = record(value, "production_backup_evidence_invalid");
   exactKeys(evidence, [
     "version", "candidateSha", "gateId", "commandId", "redactedTemplateSha256", "databaseIdentityFingerprintSha256",
+    ...(operationalAuthority ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256"] : []),
     "backupFilename", "backupBytes", "backupSha256", "backupPathFingerprintSha256", "restoreListFilename", "restoreListBytes",
     "restoreListSha256", "restoreListEntryCount", "state"
   ], "production_backup_evidence_invalid");
   if (evidence.version !== "production-backup-evidence-v1" || evidence.candidateSha !== authority.candidateSha
       || evidence.gateId !== "G12_PRODUCTION_BACKUP" || evidence.commandId !== "production_backup"
       || evidence.redactedTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256.production_backup
+      || (operationalAuthority !== undefined
+        && (evidence.operationalAttestationSha256 !== operationalAuthority.attestationSha256
+          || evidence.operationalAttestationIssuerReceiptSha256 !== operationalAuthority.issuerReceiptSha256))
       || evidence.databaseIdentityFingerprintSha256 !== authority.databaseIdentityFingerprintSha256
       || evidence.backupFilename !== BACKUP_FILENAME || evidence.restoreListFilename !== LIST_FILENAME
       || !Number.isSafeInteger(evidence.backupBytes) || Number(evidence.backupBytes) <= 0 || !SHA256.test(String(evidence.backupSha256))
@@ -1137,7 +1178,8 @@ export function validateProductionBackupEvidence(value: unknown, authority: Prod
 
 export async function buildProductionBackupEvidence(
   root: string,
-  authority: ProductionBackupAuthorityV1
+  authority: ProductionBackupAuthorityV1,
+  operationalAuthority?: Readonly<{ attestationSha256: string; issuerReceiptSha256: string }>
 ): Promise<ProductionBackupEvidenceV1> {
   const partial = await inspectProductionBackupPartialState(root);
   if (!partial.dump || !partial.list) throw new Error("production_backup_artifacts_incomplete");
@@ -1150,6 +1192,10 @@ export async function buildProductionBackupEvidence(
     gateId: "G12_PRODUCTION_BACKUP",
     commandId: "production_backup",
     redactedTemplateSha256: REMEDIATION_COMMAND_TEMPLATE_SHA256.production_backup,
+    ...(operationalAuthority ? {
+      operationalAttestationSha256: operationalAuthority.attestationSha256,
+      operationalAttestationIssuerReceiptSha256: operationalAuthority.issuerReceiptSha256
+    } : {}),
     databaseIdentityFingerprintSha256: authority.databaseIdentityFingerprintSha256,
     backupFilename: BACKUP_FILENAME,
     backupBytes: dump.bytes,
@@ -1161,7 +1207,7 @@ export async function buildProductionBackupEvidence(
     restoreListEntryCount: normalized.entryCount,
     state: "passed"
   };
-  return validateProductionBackupEvidence(evidence, authority);
+  return validateProductionBackupEvidence(evidence, authority, operationalAuthority);
 }
 
 async function currentCandidate(): Promise<{ sha: string; clean: boolean }> {
@@ -1219,68 +1265,106 @@ export async function runProductionBackupCommand(
   const authorityForExisting = validateProductionBackupAuthority(authorityValue, String(authorityValue.issuedAt));
   const candidate = await (dependencies.currentCandidate ?? currentCandidate)();
   if (!candidate.clean || candidate.sha !== authorityForExisting.candidateSha) throw new Error("production_backup_candidate_unverified");
-  const expectedConsumption: ExpectedConsumption = {
-    generationId: authorityForExisting.generationId,
-    authoritySha256: hash(authorityBytes),
-    candidateSha: candidate.sha,
-    databaseIdentityFingerprintSha256: authorityForExisting.databaseIdentityFingerprintSha256,
-    artifactRootFingerprintSha256: rootFingerprint,
-    expiresAt: authorityForExisting.expiresAt
-  };
   const claimPathName = claimFilename(authorityForExisting.generationId);
-  const existingEvidenceBytes = await readOptionalProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_ARTIFACT_BYTES);
   const rawTask0b = JSON.parse(task0bBytes.toString("utf8"));
-  if (existingEvidenceBytes) {
-    const completedAt = now();
-    const validated = validateProductionBackupAuthorization({
-      authority: authorityValue,
-      task0bBytes,
-      manifestBytes,
-      candidateSha: candidate.sha,
-      observedDatabaseIdentityFingerprintSha256: authorityForExisting.databaseIdentityFingerprintSha256,
-      observedArtifactRootFingerprintSha256: rootFingerprint,
-      evaluatedAt: completedAt,
-      task0bEvaluatedAt: String(rawTask0b.observedAt)
-    });
-    const selected = verifyManifestAuthority({
+  const injectedManifestVerifier = dependencies.verifyProductionManifestAuthorityV2 !== undefined;
+  const validateBoundAuthority = (evaluatedAt: string, expectedAttestationSha256?: string) => {
+    const verified = verifyManifestAuthority({
       artifactRoot,
       authority: authorityValue,
-      evaluatedAt: completedAt
+      evaluatedAt,
+      ...(expectedAttestationSha256 ? { expectedAttestationSha256 } : {})
     });
-    const evidence = validateProductionBackupEvidence(JSON.parse(existingEvidenceBytes.toString("utf8")), validated.authority);
+    const authority = validateProductionBackupAuthority(authorityValue, evaluatedAt);
+    const task0b = validateTask0BReleaseFreezeEvidence(rawTask0b, candidate.sha,
+      injectedManifestVerifier ? String(rawTask0b.observedAt) : evaluatedAt);
+    if (injectedManifestVerifier) {
+      validateProductionBackupAuthorization({
+        authority: authorityValue, task0bBytes, manifestBytes, candidateSha: candidate.sha,
+        observedDatabaseIdentityFingerprintSha256: authority.databaseIdentityFingerprintSha256,
+        observedArtifactRootFingerprintSha256: rootFingerprint, evaluatedAt,
+        task0bEvaluatedAt: String(rawTask0b.observedAt)
+      });
+    } else if (!verified.manifestBytes.equals(manifestBytes)
+        || verified.manifestSha256 !== authority.releaseManifestSha256
+        || verified.freeze.candidateSha !== candidate.sha
+        || verified.freeze.artifactRootFingerprintSha256 !== rootFingerprint
+        || verified.freeze.productionDatabaseIdentityFingerprintSha256
+          !== authority.databaseIdentityFingerprintSha256
+        || task0b.productionDatabase.approvedIdentityFingerprintSha256
+          !== authority.databaseIdentityFingerprintSha256) {
+      throw new Error("production_backup_v2_command_binding_unverified");
+    }
+    return { authority, task0b, verified };
+  };
+  const preflightAt = now();
+  const preflight = validateBoundAuthority(preflightAt);
+  const selectedAuthority = preflight.verified;
+  const expectedConsumption: ExpectedConsumption = {
+    generationId: preflight.authority.generationId,
+    authoritySha256: hash(authorityBytes),
+    operationalAttestationSha256: selectedAuthority.attestationSha256,
+    operationalAttestationIssuerReceiptSha256: selectedAuthority.issuerReceiptSha256,
+    candidateSha: candidate.sha,
+    databaseIdentityFingerprintSha256: preflight.authority.databaseIdentityFingerprintSha256,
+    artifactRootFingerprintSha256: rootFingerprint,
+    expiresAt: preflight.authority.expiresAt
+  };
+  const operationalAuthority = {
+    attestationSha256: selectedAuthority.attestationSha256,
+    issuerReceiptSha256: selectedAuthority.issuerReceiptSha256
+  };
+  const databaseUrl = environment.TASK0B_PRODUCTION_DATABASE_URL;
+  if (!databaseUrl) throw new Error("production_backup_database_url_missing");
+  const revalidateExactBindings = async (checkDatabase: boolean): Promise<void> => {
+    const [currentAuthorityBytes, currentTask0bBytes, currentManifestBytes, currentCandidateState, currentRoot] = await Promise.all([
+      readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES),
+      readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
+      readProtectedRegularFile(artifactRoot, "release-manifest.json", MAX_ARTIFACT_BYTES),
+      (dependencies.currentCandidate ?? currentCandidate)(),
+      inspectRealDirectory(artifactRoot, true)
+    ]);
+    if (!currentAuthorityBytes.equals(authorityBytes) || !currentTask0bBytes.equals(task0bBytes)
+        || !currentManifestBytes.equals(manifestBytes) || !currentCandidateState.clean
+        || currentCandidateState.sha !== candidate.sha || canonicalPathKey(currentRoot) !== canonicalPathKey(artifactRoot)
+        || hash(canonicalPathKey(currentRoot)) !== rootFingerprint) {
+      throw new Error("production_backup_binding_changed");
+    }
+    validateBoundAuthority(now(), selectedAuthority.attestationSha256);
+    if (!checkDatabase) return;
+    const currentDatabase = await observeDatabase(databaseUrl);
+    try {
+      if (currentDatabase.identityFingerprintSha256 !== preflight.authority.databaseIdentityFingerprintSha256) {
+        throw new Error("production_backup_database_identity_changed");
+      }
+    } finally {
+      await currentDatabase.client.query("rollback").catch(() => undefined);
+      await currentDatabase.client.end().catch(() => undefined);
+    }
+  };
+  const existingEvidenceBytes = await readOptionalProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_ARTIFACT_BYTES);
+  if (existingEvidenceBytes) {
+    const completedAt = now();
+    const evidence = validateProductionBackupEvidence(
+      JSON.parse(existingEvidenceBytes.toString("utf8")), preflight.authority, operationalAuthority);
     const claim = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
     if (!claim) throw new Error("production_backup_consumption_missing");
     validateProductionBackupConsumptionState(JSON.parse(claim.toString("utf8")), expectedConsumption, completedAt);
     const completedBinding = { ...expectedConsumption, claimSha256: hash(claim) };
     await validateProductionBackupProgress(artifactRoot, completedBinding, completedAt);
-    verifyManifestAuthority({
-      artifactRoot,
-      authority: authorityValue,
-      evaluatedAt: now(),
-      expectedAttestationSha256: selected.attestationSha256
-    });
+    await revalidateExactBindings(false);
     await settleCompletedProductionBackupOperation(artifactRoot, completedBinding, now());
-    await attestTools(validated.task0b.postgresTools);
-    await attestSchema032ProductionBackupFiles(artifactRoot, evidence, validated.task0b.postgresTools);
+    const acquired = await acquireProductionBackupOperationLease(artifactRoot, completedBinding, now());
+    try {
+      await revalidateExactBindings(true);
+      await attestTools(preflight.task0b.postgresTools);
+      await revalidateExactBindings(true);
+      await attestSchema032ProductionBackupFiles(artifactRoot, evidence, preflight.task0b.postgresTools);
+    } finally { await acquired.release(); }
     stdout(`${JSON.stringify({ status: "already_completed", evidenceSha256: hash(existingEvidenceBytes) })}\n`);
     return;
   }
-  const preflightAt = now();
-  const preflight = validateProductionBackupAuthorization({
-    authority: authorityValue,
-    task0bBytes,
-    manifestBytes,
-    candidateSha: candidate.sha,
-    observedDatabaseIdentityFingerprintSha256: authorityForExisting.databaseIdentityFingerprintSha256,
-    observedArtifactRootFingerprintSha256: rootFingerprint,
-    evaluatedAt: preflightAt,
-  });
   await assertNoForeignProductionBackupGeneration(artifactRoot, preflight.authority.generationId);
-  const selectedAuthority = verifyManifestAuthority({
-    artifactRoot,
-    authority: authorityValue,
-    evaluatedAt: preflightAt
-  });
   const initialClaim = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
   const claimExists = initialClaim !== null;
   if (initialClaim) {
@@ -1298,53 +1382,7 @@ export async function runProductionBackupCommand(
     preflight.task0b.postgresTools,
     `plan5-g12-${preflight.authority.generationId}`
   );
-  const databaseUrl = environment.TASK0B_PRODUCTION_DATABASE_URL;
-  if (!databaseUrl) throw new Error("production_backup_database_url_missing");
-  const snapshot = await observeDatabase(databaseUrl, true);
-  try {
-    const validated = validateProductionBackupAuthorization({
-      authority: authorityValue, task0bBytes, manifestBytes, candidateSha: candidate.sha,
-      observedDatabaseIdentityFingerprintSha256: snapshot.identityFingerprintSha256,
-      observedArtifactRootFingerprintSha256: rootFingerprint, evaluatedAt: now()
-    });
-    await attestTools(validated.task0b.postgresTools);
-    const revalidateExactBindings = async (): Promise<void> => {
-      const [currentAuthorityBytes, currentTask0bBytes, currentManifestBytes, currentCandidateState, currentRoot] = await Promise.all([
-        readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES),
-        readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
-        readProtectedRegularFile(artifactRoot, "release-manifest.json", MAX_ARTIFACT_BYTES),
-        (dependencies.currentCandidate ?? currentCandidate)(),
-        inspectRealDirectory(artifactRoot, true)
-      ]);
-      if (!currentAuthorityBytes.equals(authorityBytes) || !currentTask0bBytes.equals(task0bBytes)
-          || !currentManifestBytes.equals(manifestBytes) || !currentCandidateState.clean
-          || currentCandidateState.sha !== candidate.sha || canonicalPathKey(currentRoot) !== canonicalPathKey(artifactRoot)
-          || hash(canonicalPathKey(currentRoot)) !== rootFingerprint) {
-        throw new Error("production_backup_binding_changed");
-      }
-      verifyManifestAuthority({
-        artifactRoot,
-        authority: authorityValue,
-        evaluatedAt: now(),
-        expectedAttestationSha256: selectedAuthority.attestationSha256
-      });
-      const currentDatabase = await observeDatabase(databaseUrl);
-      try {
-        validateProductionBackupAuthorization({
-          authority: JSON.parse(currentAuthorityBytes.toString("utf8")),
-          task0bBytes: currentTask0bBytes,
-          manifestBytes: currentManifestBytes,
-          candidateSha: currentCandidateState.sha,
-          observedDatabaseIdentityFingerprintSha256: currentDatabase.identityFingerprintSha256,
-          observedArtifactRootFingerprintSha256: rootFingerprint,
-          evaluatedAt: now(),
-        });
-      } finally {
-        await currentDatabase.client.query("rollback").catch(() => undefined);
-        await currentDatabase.client.end().catch(() => undefined);
-      }
-    };
-    let activeLease: ProductionBackupOperationLeaseV1 | undefined;
+  let activeLease: ProductionBackupOperationLeaseV1 | undefined;
     const readProgressBinding = async (): Promise<ProductionBackupProgressBinding> => {
       const bytes = await readProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
       validateProductionBackupConsumptionState(
@@ -1366,13 +1404,16 @@ export async function runProductionBackupCommand(
         throw new Error("production_backup_operation_lease_changed");
       }
       assertOperationWithinTimeout(lease, now());
-      await revalidateExactBindings();
+      await revalidateExactBindings(true);
     };
     const stateDependencies = {
       now,
       readCompletedEvidence: async () => {
         const bytes = await readOptionalProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_ARTIFACT_BYTES);
-        if (bytes) validateProductionBackupEvidence(JSON.parse(bytes.toString("utf8")), validated.authority);
+        if (bytes) {
+          if (!activeLease) throw new Error("production_backup_concurrent_completion");
+          validateProductionBackupEvidence(JSON.parse(bytes.toString("utf8")), preflight.authority, operationalAuthority);
+        }
         return bytes;
       },
       hasClaim: async () => {
@@ -1383,7 +1424,7 @@ export async function runProductionBackupCommand(
         );
         return true;
       },
-      revalidateBeforeClaim: () => revalidateExactBindings(),
+      revalidateBeforeClaim: () => revalidateExactBindings(false),
       claim: async () => {
         const result = await claimProductionBackupAuthority(artifactRoot, expectedConsumption, now());
         if (result !== "claimed") throw new Error("production_backup_consumption_concurrent");
@@ -1406,14 +1447,24 @@ export async function runProductionBackupCommand(
       revalidateBeforeDump: async () => {
         if (!activeLease) throw new Error("production_backup_operation_lease_missing");
         assertOperationWithinTimeout(activeLease, now());
-        await revalidateExactBindings();
+        await revalidateExactBindings(true);
       },
+      attestOwnedTools: () => attestTools(preflight.task0b.postgresTools),
       dump: async (operationId: string) => {
         if (!activeLease || activeLease.operationId !== operationId) throw new Error("production_backup_operation_lease_missing");
-        await writeProductionDump(artifactRoot, buildProductionPgDumpInvocation({
-          imageId: validated.task0b.postgresTools.provider.immutableImageId,
-          containerName: activeLease.dumpContainerName, databaseUrl, snapshotId: snapshot.snapshotId!
-        }), activeLease.dumpContainerName, CHILD_TIMEOUT_MS, operationId);
+        const snapshot = await observeDatabase(databaseUrl, true);
+        try {
+          if (snapshot.identityFingerprintSha256 !== preflight.authority.databaseIdentityFingerprintSha256) {
+            throw new Error("production_backup_database_identity_changed");
+          }
+          await writeProductionDump(artifactRoot, buildProductionPgDumpInvocation({
+            imageId: preflight.task0b.postgresTools.provider.immutableImageId,
+            containerName: activeLease.dumpContainerName, databaseUrl, snapshotId: snapshot.snapshotId!
+          }), activeLease.dumpContainerName, CHILD_TIMEOUT_MS, operationId);
+        } finally {
+          await snapshot.client.query("rollback").catch(() => undefined);
+          await snapshot.client.end().catch(() => undefined);
+        }
       },
       recordDumpProgress: async (operationId: string) => {
         await recordProductionBackupDumpProgress(artifactRoot, await readProgressBinding(), operationId, now());
@@ -1421,7 +1472,7 @@ export async function runProductionBackupCommand(
       list: async (operationId: string) => {
         if (!activeLease || activeLease.operationId !== operationId) throw new Error("production_backup_operation_lease_missing");
         await writeProductionRestoreList(
-          artifactRoot, validated.task0b.postgresTools, activeLease.restoreContainerName, operationId
+          artifactRoot, preflight.task0b.postgresTools, activeLease.restoreContainerName, operationId
         );
       },
       recordListProgress: async (operationId: string) => {
@@ -1432,14 +1483,16 @@ export async function runProductionBackupCommand(
         await validateProductionBackupProgress(artifactRoot, progressBinding, now());
         const after = await observeDatabase(databaseUrl);
         try {
-          if (after.identityFingerprintSha256 !== snapshot.identityFingerprintSha256) throw new Error("production_backup_database_identity_changed");
+          if (after.identityFingerprintSha256 !== preflight.authority.databaseIdentityFingerprintSha256) {
+            throw new Error("production_backup_database_identity_changed");
+          }
         } finally { await after.client.query("rollback").catch(() => undefined); await after.client.end().catch(() => undefined); }
-        const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);
-        await attestSchema032ProductionBackupFiles(artifactRoot, evidence, validated.task0b.postgresTools);
+        const evidence = await buildProductionBackupEvidence(artifactRoot, preflight.authority, operationalAuthority);
+        await attestSchema032ProductionBackupFiles(artifactRoot, evidence, preflight.task0b.postgresTools);
       },
       validateOperation: validateActiveOperation,
       buildEvidence: async () => {
-        const evidence = await buildProductionBackupEvidence(artifactRoot, validated.authority);
+        const evidence = await buildProductionBackupEvidence(artifactRoot, preflight.authority, operationalAuthority);
         return Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8");
       },
       writeEvidence: (bytes: Buffer) => {
@@ -1453,12 +1506,8 @@ export async function runProductionBackupCommand(
         );
       }
     };
-    const evidenceBytes = await executeProductionBackupStateMachine(validated.authority, stateDependencies);
-    stdout(`${JSON.stringify({ status: "passed", evidenceSha256: hash(evidenceBytes) })}\n`);
-  } finally {
-    await snapshot.client.query("rollback").catch(() => undefined);
-    await snapshot.client.end().catch(() => undefined);
-  }
+  const evidenceBytes = await executeProductionBackupStateMachine(preflight.authority, stateDependencies);
+  stdout(`${JSON.stringify({ status: "passed", evidenceSha256: hash(evidenceBytes) })}\n`);
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
