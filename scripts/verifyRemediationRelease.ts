@@ -42,6 +42,7 @@ import {
   validateRemediationReleaseManifestV2,
   type RemediationReleaseManifestV2
 } from "../src/release/remediationReleaseManifestV2";
+import type { GateEvidencePayloadV2 } from "../src/release/releaseGateEvidencePolicy";
 import { verifyCurrentReleaseManifestChainV2 } from "../src/release/releaseManifestStoreV2";
 
 export type RemediationSuiteGroupId = keyof typeof REMEDIATION_REQUIRED_SUITE_GROUPS;
@@ -627,6 +628,52 @@ export async function readSafeArtifactFile(root: string, relativePath: string): 
   return readSafeArtifactFileWithDependencies(root, relativePath, defaultArtifactReadDependencies);
 }
 
+async function readSafeGateEvidenceFile(
+  root: string,
+  relativePath: string,
+  kind: string
+): Promise<GateEvidencePayloadV2> {
+  if (kind !== "production_backup_dump" && kind !== "production_backup_restore_list") {
+    return readSafeArtifactFile(root, relativePath);
+  }
+  if (!relativePath || isAbsolute(relativePath)) throw new Error("artifact path must be relative");
+  const target = resolve(root, relativePath);
+  if (!isInside(root, target) || target === root) throw new Error("artifact path escapes its root");
+  const maxBytes = kind === "production_backup_dump" ? 1024 ** 4 : 100 * 1024 * 1024;
+  const metadata = await lstat(target);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0 || metadata.size > maxBytes) {
+    throw new Error("artifact must be a bounded regular file");
+  }
+  const physical = resolve(await realpath(target));
+  if (!isInside(root, physical) || !sameArtifactPath(physical, target)) {
+    throw new Error("artifact path traverses a symlink or escapes its root");
+  }
+  const handle = await open(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameFileIdentity(metadata, opened) || opened.size !== metadata.size) {
+      throw new Error("artifact identity changed before read");
+    }
+    const digest = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    while (position < opened.size) {
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, opened.size - position), position);
+      if (bytesRead <= 0) throw new Error("artifact identity changed during read");
+      digest.update(chunk.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    const after = await handle.stat();
+    if (!sameFileIdentity(opened, after) || after.size !== opened.size
+        || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
+      throw new Error("artifact identity changed during read");
+    }
+    return { byteLength: opened.size, sha256: digest.digest("hex") };
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function readSafeArtifactFileWithDependencies(
   root: string,
   relativePath: string,
@@ -1010,7 +1057,7 @@ export async function verifyRemediationReleaseArtifacts(
     }
     const manifestV2 = validateRemediationReleaseManifestV2(parsedManifest);
     const freezeIdentityPath = "release-freeze-identity-v2.json";
-    const artifacts = new Map<string, Buffer>([
+    const artifacts = new Map<string, GateEvidencePayloadV2>([
       [REMEDIATION_RELEASE_MANIFEST_FILE, manifestBytes],
       [freezeIdentityPath, await readSafeArtifactFile(root, freezeIdentityPath)],
       ["task0b-release-freeze.json", await readSafeArtifactFile(root, "task0b-release-freeze.json")]
@@ -1028,7 +1075,7 @@ export async function verifyRemediationReleaseArtifacts(
     for (const gate of manifestV2.gates) {
       if (gate.state !== "passed" && gate.state !== "failed") continue;
       for (const ref of gate.evidence) artifacts.set(ref.relativePath,
-        await readSafeArtifactFile(root, ref.relativePath));
+        await readSafeGateEvidenceFile(root, ref.relativePath, ref.kind));
     }
     for (const ref of manifestV2.transitionEvidence) artifacts.set(ref.relativePath,
       await readSafeArtifactFile(root, ref.relativePath));

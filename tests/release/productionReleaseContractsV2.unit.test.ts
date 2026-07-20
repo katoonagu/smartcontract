@@ -10,6 +10,8 @@ import {
   validateProductionRecoveryInputV2,
   validatePreparedProductionOperationLeaseRemovalV2,
   validateProductionOrchestrationStepIntentV2,
+  validatePreparedSchema032ProductionSettlementV2,
+  validateSchema032ProductionExecutionAttemptV2,
   validateSchema032ProductionExecutionReceiptV2
 } from "../../src/release/remediationReleaseManifestV2";
 
@@ -259,10 +261,14 @@ it("validates byte-exact lease-removal prepare and schema-032 ordered receipt", 
     sourceManifestSha256: S,
     g12TransitionReceiptSha256: S,
     productionBackupEvidenceSha256: S,
+    executionAttemptRelativePath: `schema032-production-attempt-schema-migration-generation-0001-${S}.json`,
+    executionAttemptSha256: S,
     advisoryLockKey: 320032500 as const,
     databaseSessionIdentitySha256: S,
     lockAcquiredAt: T0,
     lockReleasedAt: T1,
+    preparedSettlementRelativePath: `schema032-production-settlement-prepared-${S}.json`,
+    preparedSettlementSha256: S,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
     result: "applied_and_verified" as const,
     completedStages,
@@ -273,4 +279,24 @@ it("validates byte-exact lease-removal prepare and schema-032 ordered receipt", 
   expect(() => validateSchema032ProductionExecutionReceiptV2({
     ...schema, completedStages: [...completedStages].reverse()
   })).toThrow(/stage|order/i);
+  const { lockReleasedAt: _released, preparedSettlementRelativePath: _preparedPath,
+    preparedSettlementSha256: _preparedSha, ...executionReceiptCore } = schema;
+  expect(validatePreparedSchema032ProductionSettlementV2({
+    version: "prepared-schema-032-production-settlement-v2",
+    preparedAt: T1,
+    executionReceiptCore
+  }).executionReceiptCore).toEqual(executionReceiptCore);
+  const attempt = {
+    version: "schema-032-production-execution-attempt-v2" as const,
+    generationId: "schema-migration-generation-0001",
+    candidateSha: C,
+    authorityConsumptionSha256: S,
+    attemptOrdinal: 2,
+    previousAttemptSha256: S,
+    advisoryLockKey: 320032500 as const,
+    databaseSessionIdentitySha256: S,
+    lockAcquiredAt: T0
+  };
+  expect(validateSchema032ProductionExecutionAttemptV2(attempt)).toEqual(attempt);
+  expect(() => validateSchema032ProductionExecutionAttemptV2({ ...attempt, attemptOrdinal: 0 })).toThrow(/attempt/i);
 });

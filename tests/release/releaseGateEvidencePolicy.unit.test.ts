@@ -255,6 +255,18 @@ it("accepts a G12 standalone consumption chain and rejects a forged progress cla
     .toThrow(/backup_artifact_binding/i);
 });
 
+it("accepts bounded-memory descriptors for large G12 binary artifacts", () => {
+  const items = validG12Items();
+  const payloads = new Map(items.map((item) => [item.ref.relativePath, item.content] as const));
+  for (const index of [5, 6]) {
+    const item = items[index]!;
+    payloads.set(item.ref.relativePath, { byteLength: item.content.length, sha256: item.ref.sha256 } as any);
+  }
+  const validGate = { ...gate("G12_PRODUCTION_BACKUP", items),
+    redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.production_backup };
+  expect(validateGateEvidenceBytesV2(validGate as any, payloads, expected())).toHaveLength(8);
+});
+
 it.each([
   ["Task0B hash", { task0bReleaseFreezeSha256: "f".repeat(64) }],
   ["production DB identity", { productionDatabaseIdentityFingerprintSha256: "f".repeat(64) }]
@@ -288,27 +300,59 @@ function validG13Items() {
   const authorityValue = JSON.parse(authority.content.toString("utf8"));
   const consumption = ref("production_migration_consumption",
     `schema032-production-authority-consumed-${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}.json`, {
-      version: "schema-032-production-authority-consumption-v1",
+      version: "schema-032-production-authority-consumption-v2",
       generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId, authoritySha256: authority.ref.sha256,
+      operationalAttestationSha256: attestation.ref.sha256,
+      operationalAttestationIssuerReceiptSha256: "8".repeat(64),
       candidateSha: CANDIDATE_SHA,
       databaseIdentityFingerprintSha256: authorityValue.databaseIdentityFingerprintSha256,
       claimedAt: STARTED, resumeExpiresAt: authorityValue.expiresAt
     });
-  const receipt = ref("production_migration_sequence", "schema032-production-execution-receipt-v2.json", {
+  const receiptCore = {
     version: "schema-032-production-execution-receipt-v2", candidateSha: CANDIDATE_SHA,
-    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256, operationalAttestationSha256: authority.ref.sha256,
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256, operationalAttestationSha256: attestation.ref.sha256,
+    operationalAttestationIssuerReceiptSha256: "8".repeat(64),
     authorityConsumptionSha256: consumption.ref.sha256, sourceManifestSha256: SOURCE,
     g12TransitionReceiptSha256: "5".repeat(64),
     productionBackupEvidenceSha256: authorityValue.backupEvidenceSha256, advisoryLockKey: 320032500,
-    databaseSessionIdentitySha256: "6".repeat(64), lockAcquiredAt: STARTED, lockReleasedAt: FINISHED,
+    executionAttemptRelativePath: "",
+    executionAttemptSha256: "",
+    databaseSessionIdentitySha256: "6".repeat(64), lockAcquiredAt: STARTED,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
     result: "applied_and_verified",
     completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
       .map((step) => ({ step, receiptSha256: SHA })),
     receiptChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
     postconditionsSha256: "7".repeat(64)
+  };
+  const attempt = ref("production_migration_attempt",
+    "schema032-production-attempt-placeholder.json", {
+      version: "schema-032-production-execution-attempt-v2",
+      generationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+      candidateSha: CANDIDATE_SHA,
+      authorityConsumptionSha256: consumption.ref.sha256,
+      attemptOrdinal: 1,
+      previousAttemptSha256: null,
+      advisoryLockKey: 320032500,
+      databaseSessionIdentitySha256: receiptCore.databaseSessionIdentitySha256,
+      lockAcquiredAt: receiptCore.lockAcquiredAt
+    });
+  attempt.ref.relativePath = `schema032-production-attempt-${RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId}-${attempt.ref.sha256}.json`;
+  receiptCore.executionAttemptRelativePath = attempt.ref.relativePath;
+  receiptCore.executionAttemptSha256 = attempt.ref.sha256;
+  const prepared = ref("production_migration_prepared_settlement",
+    "schema032-production-settlement-prepared-placeholder.json", {
+      version: "prepared-schema-032-production-settlement-v2", preparedAt: STARTED,
+      executionReceiptCore: receiptCore
+    });
+  prepared.ref.relativePath = `schema032-production-settlement-prepared-${prepared.ref.sha256}.json`;
+  const receipt = ref("production_migration_sequence", "schema032-production-execution-receipt-v2.json", {
+    ...receiptCore,
+    lockReleasedAt: FINISHED,
+    preparedSettlementRelativePath: prepared.ref.relativePath,
+    preparedSettlementSha256: prepared.ref.sha256
   });
-  return [attestation, authority, consumption, receipt];
+  return [attestation, authority, consumption, attempt, prepared, receipt];
 }
 
 it("accepts a G13 standalone authority chain and rejects a swapped consumption authority", () => {
@@ -316,11 +360,11 @@ it("accepts a G13 standalone authority chain and rejects a swapped consumption a
   const validGate = { ...gate("G13_PRODUCTION_MIGRATION", items),
     redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.production_migration };
   expect(validateGateEvidenceBytesV2(validGate as any,
-    new Map(items.map((item) => [item.ref.relativePath, item.content])), expected())).toHaveLength(4);
+    new Map(items.map((item) => [item.ref.relativePath, item.content])), expected())).toHaveLength(6);
   const forged = JSON.parse(items[2]!.content.toString("utf8"));
   forged.authoritySha256 = "f".repeat(64);
   const forgedItem = ref(items[2]!.ref.kind, items[2]!.ref.relativePath, forged);
-  const forgedItems = [items[0]!, items[1]!, forgedItem, items[3]!];
+  const forgedItems = [items[0]!, items[1]!, forgedItem, items[3]!, items[4]!, items[5]!];
   expect(() => validateGateEvidenceBytesV2({ ...validGate,
     evidence: forgedItems.map((item) => item.ref) } as any,
   new Map(forgedItems.map((item) => [item.ref.relativePath, item.content])), expected()))

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { promisify } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -36,7 +37,8 @@ import {
 } from "../src/release/releaseManifestStoreV2";
 import {
   deriveTask0BProductionGateBindingV2,
-  validateGateEvidenceBytesV2
+  validateGateEvidenceBytesV2,
+  type GateEvidencePayloadV2
 } from "../src/release/releaseGateEvidencePolicy";
 import { RELEASE_TRANSITION_EVIDENCE_POLICY_V2 } from "../src/release/releaseTransitionEvidencePolicy";
 
@@ -94,6 +96,41 @@ function readStableFile(path: string): Buffer {
       throw new Error("manifest_advance_input_identity_changed");
     }
     return bytes;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function readStableGateEvidence(path: string, kind: string): GateEvidencePayloadV2 {
+  if (kind !== "production_backup_dump" && kind !== "production_backup_restore_list") {
+    return readStableFile(path);
+  }
+  const maxBytes = kind === "production_backup_dump" ? 1024 ** 4 : 100 * 1024 * 1024;
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.size <= 0 || before.size > maxBytes) {
+    throw new Error("gate_evidence_bytes_invalid");
+  }
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || !sameIdentity(before, opened) || opened.size !== before.size) {
+      throw new Error("gate_evidence_bytes_invalid");
+    }
+    const digest = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    while (position < opened.size) {
+      const bytesRead = readSync(descriptor, chunk, 0, Math.min(chunk.length, opened.size - position), position);
+      if (bytesRead <= 0) throw new Error("gate_evidence_bytes_invalid");
+      digest.update(chunk.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    const after = fstatSync(descriptor);
+    if (!sameIdentity(opened, after) || after.size !== opened.size
+        || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
+      throw new Error("gate_evidence_bytes_invalid");
+    }
+    return { byteLength: opened.size, sha256: digest.digest("hex") };
   } finally {
     closeSync(descriptor);
   }
@@ -224,9 +261,9 @@ export async function runAdvanceRemediationReleaseManifest(
   }
   for (const gate of verifiedInput.verifiedGateOutputs) {
     if (gate.state !== "passed" && gate.state !== "failed") continue;
-    const evidenceBytes = new Map<string, Buffer>();
+    const evidenceBytes = new Map<string, GateEvidencePayloadV2>();
     for (const ref of gate.evidence) evidenceBytes.set(ref.relativePath,
-      readStableFile(safeArtifactRelativePath(root, ref.relativePath)));
+      readStableGateEvidence(safeArtifactRelativePath(root, ref.relativePath), ref.kind));
     validateGateEvidenceBytesV2(gate, evidenceBytes, {
       releaseGenerationId: freeze.releaseGenerationId,
       artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,

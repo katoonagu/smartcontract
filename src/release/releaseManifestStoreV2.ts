@@ -1,4 +1,6 @@
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync,
+  readSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, relative, resolve } from "node:path";
@@ -38,6 +40,7 @@ import {
   validateReleaseFreezeMaterializationReceiptV2,
   validateReleaseFreezeIdentityV2,
   validateReleaseGateV2,
+  validateSchema032ProductionExecutionAttemptV2,
   validateReleaseRootWriterLeaseV2,
   validateRemediationReleaseManifestV2,
   verifyRemediationReleaseArtifactsSyncV2,
@@ -61,11 +64,13 @@ import {
   type FrozenRootWriterLeaseV2,
   type PreparedBootstrapRootWriterLeaseTakeoverV2,
   type PreparedFrozenRootWriterLeaseTakeoverV2,
-  type RemediationReleaseManifestV2
+  type RemediationReleaseManifestV2,
+  type ExecutedReleaseGateV2
 } from "./remediationReleaseManifestV2";
 import {
   deriveTask0BProductionGateBindingV2,
-  validateGateEvidenceBytesV2
+  validateGateEvidenceBytesV2,
+  type GateEvidencePayloadV2
 } from "./releaseGateEvidencePolicy";
 import {
   ROOT_WRITER_LEASE_FILE,
@@ -83,7 +88,76 @@ import {
 } from "./releaseRootWriterStore";
 
 const FREEZE_FILE = "release-freeze-identity-v2.json";
+const MAX_PRODUCTION_BACKUP_BYTES_V2 = 1024 ** 4;
+const MAX_PRODUCTION_RESTORE_LIST_BYTES_V2 = 100 * 1024 * 1024;
 type ManifestArtifactPathResolverV2 = (root: string, relativePath: string) => string;
+
+function readGateEvidencePayloadV2(path: string, kind: string): GateEvidencePayloadV2 {
+  if (kind !== "production_backup_dump" && kind !== "production_backup_restore_list") {
+    return readFileSync(path);
+  }
+  const maxBytes = kind === "production_backup_dump"
+    ? MAX_PRODUCTION_BACKUP_BYTES_V2 : MAX_PRODUCTION_RESTORE_LIST_BYTES_V2;
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.size <= 0 || before.size > maxBytes) {
+    throw new Error("gate_evidence_bytes_invalid");
+  }
+  const descriptor = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new Error("gate_evidence_bytes_invalid");
+    }
+    const digest = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    while (position < opened.size) {
+      const bytesRead = readSync(descriptor, chunk, 0, Math.min(chunk.length, opened.size - position), position);
+      if (bytesRead <= 0) throw new Error("gate_evidence_bytes_invalid");
+      digest.update(chunk.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    const after = fstatSync(descriptor);
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
+        || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
+      throw new Error("gate_evidence_bytes_invalid");
+    }
+    return { byteLength: opened.size, sha256: digest.digest("hex") };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function verifySchema032AttemptLineageAtRootV2(
+  root: string,
+  gate: ExecutedReleaseGateV2,
+  generationId: string
+): void {
+  const currentRef = gate.evidence.find((ref) => ref.kind === "production_migration_attempt");
+  if (!currentRef) throw new Error("schema032_production_attempt_missing");
+  let expectedSha256: string | null = currentRef.sha256;
+  let expectedOrdinal: number | null = null;
+  let expectedConsumptionSha256: string | null = null;
+  while (expectedSha256 !== null) {
+    const relativePath = `schema032-production-attempt-${generationId}-${expectedSha256}.json`;
+    const bytes = readFileSync(safeArtifactRelativePath(root, relativePath));
+    if (releaseSha256V2(bytes) !== expectedSha256
+        || !canonicalBytesV2(JSON.parse(bytes.toString("utf8"))).equals(bytes)) {
+      throw new Error("schema032_production_attempt_lineage_invalid");
+    }
+    const attempt = validateSchema032ProductionExecutionAttemptV2(JSON.parse(bytes.toString("utf8")));
+    expectedOrdinal ??= attempt.attemptOrdinal;
+    expectedConsumptionSha256 ??= attempt.authorityConsumptionSha256;
+    if (attempt.generationId !== generationId || attempt.candidateSha !== gate.candidateSha
+        || attempt.authorityConsumptionSha256 !== expectedConsumptionSha256
+        || attempt.attemptOrdinal !== expectedOrdinal) {
+      throw new Error("schema032_production_attempt_lineage_invalid");
+    }
+    expectedOrdinal -= 1;
+    expectedSha256 = attempt.previousAttemptSha256;
+  }
+  if (expectedOrdinal !== 0) throw new Error("schema032_production_attempt_lineage_invalid");
+}
 
 function defaultManifestArtifactPathV2(root: string, relativePath: string): string {
   return relativePath.includes("/")
@@ -1757,10 +1831,10 @@ function consumedAuthorityHashForTransitionV2(
     if (gate.id !== standaloneGateId || (gate.state !== "passed" && gate.state !== "failed")) {
       throw new Error("standalone_production_gate_output_invalid");
     }
-    const bytesByRelativePath = new Map<string, Buffer>();
+    const bytesByRelativePath = new Map<string, GateEvidencePayloadV2>();
     for (const ref of gate.evidence) {
       bytesByRelativePath.set(ref.relativePath,
-        readFileSync(safeArtifactRelativePath(root, ref.relativePath)));
+        readGateEvidencePayloadV2(safeArtifactRelativePath(root, ref.relativePath), ref.kind));
     }
     const task0bBinding = deriveTask0BProductionGateBindingV2(
       readFileSync(safeArtifactPath(root, "task0b-release-freeze.json")),
@@ -1775,6 +1849,9 @@ function consumedAuthorityHashForTransitionV2(
       requireStandaloneAuthorityBinding: true,
       ...task0bBinding
     });
+    if (standaloneGateId === "G13_PRODUCTION_MIGRATION") {
+      verifySchema032AttemptLineageAtRootV2(root, gate, freeze.releaseGenerationId);
+    }
     const attestation = gate.evidence.find((ref) => ref.kind === "operational_attestation");
     if (!attestation || attestation.sha256 !== hash) {
       throw new Error("standalone_production_authority_binding_invalid");
@@ -2147,6 +2224,9 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
   const currentManifestBeforeClaim = currentHeadBeforeClaim.manifest;
   const currentManifestShaBeforeClaim = releaseSha256V2(currentHeadBeforeClaim.bytes);
   const sourceIsCurrentHead = currentManifestShaBeforeClaim === sourceShaForKey;
+  // ponytail: readiness is the frozen pre-production aggregation boundary; every production selector,
+  // mutator, and later transition performs full semantic verification before any claim or effect. Tighten
+  // this only with a Task 8B.1 contract revision that materializes all pre-release evidence bytes.
   const requiresSemanticSourceVerification = input.transition.transitionId !== "readiness";
   if (sourceIsCurrentHead && requiresSemanticSourceVerification) {
     validateCanonicalManifestChainHeadV2(root, freeze, currentHeadBeforeClaim);
@@ -3113,7 +3193,7 @@ function verifyReleaseManifestSemanticsAtCanonicalRootV2(
   const evidencePath = artifactPath === trustedRootManifestArtifactPathV2
     ? trustedRootManifestArtifactPathV2
     : (semanticRoot: string, relativePath: string) => safeArtifactRelativePath(semanticRoot, relativePath);
-  const artifacts = new Map<string, Buffer>([
+  const artifacts = new Map<string, GateEvidencePayloadV2>([
     [MANIFEST_FILE, manifestBytes],
     [FREEZE_FILE, readFileSync(artifactPath(root, FREEZE_FILE))],
     ["task0b-release-freeze.json", readFileSync(artifactPath(root, "task0b-release-freeze.json"))]
@@ -3121,7 +3201,8 @@ function verifyReleaseManifestSemanticsAtCanonicalRootV2(
   for (const gate of manifest.gates) {
     if (gate.state !== "passed" && gate.state !== "failed") continue;
     for (const ref of gate.evidence) {
-      artifacts.set(ref.relativePath, readFileSync(evidencePath(root, ref.relativePath)));
+      artifacts.set(ref.relativePath,
+        readGateEvidencePayloadV2(evidencePath(root, ref.relativePath), ref.kind));
     }
   }
   for (const ref of manifest.transitionEvidence) {
@@ -3135,6 +3216,11 @@ function verifyReleaseManifestSemanticsAtCanonicalRootV2(
     source = validateRemediationReleaseManifestV2(JSON.parse(bytes.toString("utf8")));
   }
   verifyRemediationReleaseArtifactsSyncV2(artifacts);
+  for (const gate of manifest.gates) {
+    if (gate.id === "G13_PRODUCTION_MIGRATION" && (gate.state === "passed" || gate.state === "failed")) {
+      verifySchema032AttemptLineageAtRootV2(root, gate, freeze.releaseGenerationId);
+    }
+  }
   for (const gate of manifest.gates) {
     if ((gate.id !== "G12_PRODUCTION_BACKUP" && gate.id !== "G13_PRODUCTION_MIGRATION")
         || (gate.state !== "passed" && gate.state !== "failed")) continue;

@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import {
   deriveTask0BProductionGateBindingV2,
   validateGateEvidenceBytesV2,
-  type GateEvidenceBindingContextV2
+  type GateEvidenceBindingContextV2,
+  type GateEvidencePayloadV2
 } from "./releaseGateEvidencePolicy";
 
 export const RELEASE_GATE_IDS_V2 = [
@@ -44,8 +45,8 @@ export const GATE_EVIDENCE_KINDS_V2 = [
   "production_backup_authority", "production_backup_consumption", "production_backup_dump_progress",
   "production_backup_list_progress", "production_backup_dump",
   "production_backup_restore_list", "production_backup_evidence",
-  "production_migration_authority", "production_migration_consumption",
-  "production_migration_sequence", "production_operation_claim",
+  "production_migration_authority", "production_migration_consumption", "production_migration_attempt",
+  "production_migration_prepared_settlement", "production_migration_sequence", "production_operation_claim",
   "production_operation_settlement", "production_operation_lease_removal_prepared",
   "production_operation_lease_removal", "production_operation_cleanup",
   "production_rollout_manager", "production_rollout_queries",
@@ -642,10 +643,14 @@ export type Schema032ProductionExecutionReceiptCommonV2 = {
   sourceManifestSha256: string;
   g12TransitionReceiptSha256: string;
   productionBackupEvidenceSha256: string;
+  executionAttemptRelativePath: string;
+  executionAttemptSha256: string;
   advisoryLockKey: 320032500;
   databaseSessionIdentitySha256: string;
   lockAcquiredAt: string;
   lockReleasedAt: string;
+  preparedSettlementRelativePath: string;
+  preparedSettlementSha256: string;
   migrationBytesChecksumSha256: string;
 };
 export type Schema032ProductionExecutionSuccessV2 = Schema032ProductionExecutionReceiptCommonV2 & {
@@ -686,6 +691,24 @@ export type Schema032ProductionExecutionFailureV2 = Schema032ProductionExecution
 );
 export type Schema032ProductionExecutionReceiptV2 =
   | Schema032ProductionExecutionSuccessV2 | Schema032ProductionExecutionFailureV2;
+
+export type PreparedSchema032ProductionSettlementV2 = {
+  version: "prepared-schema-032-production-settlement-v2";
+  preparedAt: string;
+  executionReceiptCore: Record<string, unknown>;
+};
+
+export type Schema032ProductionExecutionAttemptV2 = {
+  version: "schema-032-production-execution-attempt-v2";
+  generationId: string;
+  candidateSha: string;
+  authorityConsumptionSha256: string;
+  attemptOrdinal: number;
+  previousAttemptSha256: string | null;
+  advisoryLockKey: 320032500;
+  databaseSessionIdentitySha256: string;
+  lockAcquiredAt: string;
+};
 
 export type ProductionRolloutStepIdV2 =
   | "verify_g13" | "verify_schema" | "verify_previous_runtime_identity" | "verify_singleton_precondition"
@@ -2595,7 +2618,7 @@ export function reduceRemediationReleaseManifestV2(
 
 export function validateManifestGateEvidenceV2(
   manifestValue: unknown,
-  bytesByRelativePath: ReadonlyMap<string, Buffer>,
+  bytesByRelativePath: ReadonlyMap<string, GateEvidencePayloadV2>,
   expected: GateEvidenceBindingContextV2 = {}
 ): RemediationReleaseManifestV2 {
   const manifest = validateRemediationReleaseManifestV2(manifestValue);
@@ -2614,7 +2637,7 @@ export function validateManifestGateEvidenceV2(
 
 export function deriveProductionGateSourceManifestBindingsV2(
   head: RemediationReleaseManifestV2,
-  artifacts: ReadonlyMap<string, Buffer>
+  artifacts: ReadonlyMap<string, GateEvidencePayloadV2>
 ): Readonly<Partial<Record<ProductionGateIdV2, string>>> {
   const result: Partial<Record<ProductionGateIdV2, string>> = {};
   let target = head;
@@ -2624,7 +2647,7 @@ export function deriveProductionGateSourceManifestBindingsV2(
     }
     const sourcePath = `manifest-snapshots/release-manifest-r${target.revision - 1}-${target.previousManifestSha256}.json`;
     const sourceBytes = artifacts.get(sourcePath);
-    if (!sourceBytes || releaseSha256V2(sourceBytes) !== target.previousManifestSha256) {
+    if (!Buffer.isBuffer(sourceBytes) || releaseSha256V2(sourceBytes) !== target.previousManifestSha256) {
       throw new Error("release_manifest_source_snapshot_missing");
     }
     let sourceValue: unknown;
@@ -2661,15 +2684,15 @@ export function deriveProductionGateSourceManifestBindingsV2(
 }
 
 export function verifyRemediationReleaseArtifactsSyncV2(
-  artifacts: ReadonlyMap<string, Buffer>
+  artifacts: ReadonlyMap<string, GateEvidencePayloadV2>
 ): RemediationReleaseManifestV2 {
   const manifestBytes = artifacts.get("release-manifest.json");
-  if (!manifestBytes) throw new Error("release_manifest_v2_missing");
+  if (!Buffer.isBuffer(manifestBytes)) throw new Error("release_manifest_v2_missing");
   let value: unknown;
   try { value = JSON.parse(manifestBytes.toString("utf8")); }
   catch { throw new Error("release_manifest_v2_json_invalid"); }
   const freezeBytes = artifacts.get("release-freeze-identity-v2.json");
-  if (!freezeBytes) throw new Error("release_freeze_identity_v2_missing");
+  if (!Buffer.isBuffer(freezeBytes)) throw new Error("release_freeze_identity_v2_missing");
   let freezeValue: unknown;
   try { freezeValue = JSON.parse(freezeBytes.toString("utf8")); }
   catch { throw new Error("release_freeze_identity_v2_json_invalid"); }
@@ -2679,7 +2702,7 @@ export function verifyRemediationReleaseArtifactsSyncV2(
   }
   const parsedManifest = validateRemediationReleaseManifestV2(value);
   const task0bBytes = artifacts.get("task0b-release-freeze.json");
-  if (!task0bBytes) throw new Error("task0b_release_freeze_missing");
+  if (!Buffer.isBuffer(task0bBytes)) throw new Error("task0b_release_freeze_missing");
   const task0bBinding = deriveTask0BProductionGateBindingV2(
     task0bBytes,
     freeze.candidateSha,
@@ -2702,7 +2725,7 @@ export function verifyRemediationReleaseArtifactsSyncV2(
   let failure: ProductionFailureEvidenceV2 | null = null;
   for (const ref of manifest.transitionEvidence) {
     const bytes = artifacts.get(ref.relativePath);
-    if (!bytes || releaseSha256V2(bytes) !== ref.sha256) {
+    if (!Buffer.isBuffer(bytes) || releaseSha256V2(bytes) !== ref.sha256) {
       throw new Error("release_transition_evidence_bytes_invalid");
     }
     let evidence: unknown;
@@ -2730,7 +2753,7 @@ export function verifyRemediationReleaseArtifactsSyncV2(
 }
 
 export async function verifyRemediationReleaseArtifactsV2(
-  artifacts: ReadonlyMap<string, Buffer>
+  artifacts: ReadonlyMap<string, GateEvidencePayloadV2>
 ): Promise<RemediationReleaseManifestV2> {
   return verifyRemediationReleaseArtifactsSyncV2(artifacts);
 }
@@ -3269,17 +3292,21 @@ function validateSchemaStages(value: unknown, expected: readonly Schema032Stage[
   });
 }
 
-export function validateSchema032ProductionExecutionReceiptV2(
-  value: unknown
-): Schema032ProductionExecutionReceiptV2 {
+function validateSchema032ProductionExecutionReceiptFieldsV2(
+  value: unknown,
+  requirePreparedSettlement: boolean
+): Record<string, unknown> {
   assertNoSecrets(value);
   const input = record(value, "schema032_production_execution_receipt");
   const common = ["version", "candidateSha", "releaseFreezeIdentitySha256", "operationalAttestationSha256",
     ...(Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
       ? ["operationalAttestationIssuerReceiptSha256"] : []),
     "authorityConsumptionSha256", "sourceManifestSha256", "g12TransitionReceiptSha256",
-    "productionBackupEvidenceSha256", "advisoryLockKey", "databaseSessionIdentitySha256",
-    "lockAcquiredAt", "lockReleasedAt", "migrationBytesChecksumSha256", "result", "completedStages"];
+    "productionBackupEvidenceSha256", "executionAttemptRelativePath", "executionAttemptSha256",
+    "advisoryLockKey", "databaseSessionIdentitySha256",
+    "lockAcquiredAt", "lockReleasedAt",
+    ...(requirePreparedSettlement ? ["preparedSettlementRelativePath", "preparedSettlementSha256"] : []),
+    "migrationBytesChecksumSha256", "result", "completedStages"];
   exactKeys(input, input.result === "applied_and_verified"
     ? [...common, "receiptChecksumSha256", "postconditionsSha256"]
     : [...common, "failedStep", "failureArtifact"], "schema032_production_execution_receipt");
@@ -3290,7 +3317,21 @@ export function validateSchema032ProductionExecutionReceiptV2(
     ...(Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
       ? ["operationalAttestationIssuerReceiptSha256"] : []),
     "sourceManifestSha256", "g12TransitionReceiptSha256", "productionBackupEvidenceSha256",
-    "databaseSessionIdentitySha256"]) sha(input[key], SHA256, key);
+    "executionAttemptSha256",
+    "databaseSessionIdentitySha256",
+    ...(requirePreparedSettlement ? ["preparedSettlementSha256"] : [])]) sha(input[key], SHA256, key);
+  if (requirePreparedSettlement && (typeof input.preparedSettlementRelativePath !== "string"
+      || !/^schema032-production-settlement-prepared-[0-9a-f]{64}\.json$/u.test(input.preparedSettlementRelativePath)
+      || input.preparedSettlementRelativePath
+        !== `schema032-production-settlement-prepared-${String(input.preparedSettlementSha256)}.json`)) {
+    throw new Error("schema032_prepared_settlement_ref_invalid");
+  }
+  if (typeof input.executionAttemptRelativePath !== "string"
+      || !/^schema032-production-attempt-[a-z0-9][a-z0-9-]{15,63}-[0-9a-f]{64}\.json$/u
+        .test(input.executionAttemptRelativePath)
+      || !input.executionAttemptRelativePath.endsWith(`-${String(input.executionAttemptSha256)}.json`)) {
+    throw new Error("schema032_execution_attempt_ref_invalid");
+  }
   const acquired = iso(input.lockAcquiredAt, "schema032_lock_acquired");
   const released = iso(input.lockReleasedAt, "schema032_lock_released");
   if (Date.parse(released) < Date.parse(acquired)) throw new Error("schema032_lock_order_invalid");
@@ -3307,7 +3348,56 @@ export function validateSchema032ProductionExecutionReceiptV2(
         || artifact.relativePath !== SCHEMA032_FAILURE_PATHS_V2[failedStep]) throw new Error("schema032_failure_artifact_binding_invalid");
     sha(artifact.evidenceSha256, SHA256, "schema032_failure_evidence");
   } else throw new Error("schema032_production_result_invalid");
-  return input as Schema032ProductionExecutionReceiptV2;
+  return input;
+}
+
+export function validatePreparedSchema032ProductionSettlementV2(
+  value: unknown
+): PreparedSchema032ProductionSettlementV2 {
+  assertNoSecrets(value);
+  const prepared = record(value, "schema032_prepared_settlement");
+  exactKeys(prepared, ["version", "preparedAt", "executionReceiptCore"], "schema032_prepared_settlement");
+  if (prepared.version !== "prepared-schema-032-production-settlement-v2") {
+    throw new Error("schema032_prepared_settlement_literal_invalid");
+  }
+  const preparedAt = iso(prepared.preparedAt, "schema032_prepared_at");
+  const core = record(prepared.executionReceiptCore, "schema032_prepared_settlement_core");
+  validateSchema032ProductionExecutionReceiptFieldsV2({ ...core, lockReleasedAt: preparedAt }, false);
+  if (Date.parse(preparedAt) < Date.parse(String(core.lockAcquiredAt))) {
+    throw new Error("schema032_prepared_settlement_order_invalid");
+  }
+  return prepared as PreparedSchema032ProductionSettlementV2;
+}
+
+export function validateSchema032ProductionExecutionAttemptV2(
+  value: unknown
+): Schema032ProductionExecutionAttemptV2 {
+  assertNoSecrets(value);
+  const attempt = record(value, "schema032_production_execution_attempt");
+  exactKeys(attempt, ["version", "generationId", "candidateSha", "authorityConsumptionSha256",
+    "attemptOrdinal", "previousAttemptSha256", "advisoryLockKey", "databaseSessionIdentitySha256",
+    "lockAcquiredAt"], "schema032_production_execution_attempt");
+  if (attempt.version !== "schema-032-production-execution-attempt-v2"
+      || typeof attempt.generationId !== "string"
+      || !/^[a-z0-9][a-z0-9-]{15,63}$/u.test(attempt.generationId)
+      || !Number.isSafeInteger(attempt.attemptOrdinal) || Number(attempt.attemptOrdinal) < 1
+      || attempt.advisoryLockKey !== 320032500) {
+    throw new Error("schema032_production_execution_attempt_literal_invalid");
+  }
+  sha(attempt.candidateSha, SHA40, "schema032_attempt_candidate");
+  sha(attempt.authorityConsumptionSha256, SHA256, "schema032_attempt_consumption");
+  sha(attempt.databaseSessionIdentitySha256, SHA256, "schema032_attempt_session");
+  if (attempt.previousAttemptSha256 !== null) {
+    sha(attempt.previousAttemptSha256, SHA256, "schema032_attempt_previous");
+  }
+  iso(attempt.lockAcquiredAt, "schema032_attempt_lock_acquired");
+  return attempt as Schema032ProductionExecutionAttemptV2;
+}
+
+export function validateSchema032ProductionExecutionReceiptV2(
+  value: unknown
+): Schema032ProductionExecutionReceiptV2 {
+  return validateSchema032ProductionExecutionReceiptFieldsV2(value, true) as Schema032ProductionExecutionReceiptV2;
 }
 
 const ROLLOUT_STEPS_V2 = ["verify_g13", "verify_schema", "verify_previous_runtime_identity",

@@ -1051,22 +1051,16 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes the exact bounded production c
     operationalAttestationIssuerReceiptSha256: "e".repeat(64),
     candidateSha: "c".repeat(40),
     databaseIdentityFingerprintSha256: "d".repeat(64),
-    advisoryLockKey: 320032500,
-    databaseSessionIdentitySha256: "f".repeat(64),
-    lockAcquiredAt: "2026-07-18T09:04:59.000Z",
     resumeExpiresAt: "2026-07-18T09:10:00.000Z"
   };
   const existing = {
-    version: "schema-032-production-authority-consumption-v1",
+    version: "schema-032-production-authority-consumption-v2",
     generationId: expected.generationId,
     authoritySha256: expected.authoritySha256,
     operationalAttestationSha256: expected.operationalAttestationSha256,
     operationalAttestationIssuerReceiptSha256: expected.operationalAttestationIssuerReceiptSha256,
     candidateSha: expected.candidateSha,
     databaseIdentityFingerprintSha256: expected.databaseIdentityFingerprintSha256,
-    advisoryLockKey: expected.advisoryLockKey,
-    databaseSessionIdentitySha256: expected.databaseSessionIdentitySha256,
-    lockAcquiredAt: expected.lockAcquiredAt,
     claimedAt: "2026-07-18T09:05:00.000Z",
     resumeExpiresAt: expected.resumeExpiresAt
   };

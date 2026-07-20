@@ -260,6 +260,17 @@ of these decisions, update this file in the same work.
   claim, lease, progress, dump, restore-list, and evidence artifacts without
   mutating the manifest. The verifier/aggregator, not the producer, marks
   `G12`.
+- `G12` verification treats the dump (up to 1 TiB) and restore list (up to
+  100 MiB) as bounded streaming hash/size evidence; JSON evidence remains
+  size-bounded and fully parsed. Verifiers must not load the production dump
+  into memory or apply the JSON artifact limit to either binary artifact.
+- `G13` production migration executes on the same PostgreSQL session that owns
+  advisory lock `320032500`. Its v2 authority consumption is a stable,
+  resume-bounded operation claim; every execution session writes an append-only
+  attempt record with exact backend-session and lock-acquisition identity.
+  Terminal success/failure is prepared durably while the lock is owned, then
+  the gate-eligible execution receipt is published only after successful unlock
+  and is bound to both the attempt and prepared-settlement hashes.
 - Sanitized runtime and rollback rehearsal use only
   `tron_watch_plan5_runtime_sanitized` with recording-only Telegram transport.
   The real manual sender is restricted to guarded Task 9, a dedicated test bot,

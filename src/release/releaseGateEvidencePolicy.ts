@@ -11,6 +11,8 @@ import {
   validateProductionOperationTerminalCleanupV2,
   validateProductionOrchestrationReceiptV2,
   validateProductionRolloutEvidenceV2,
+  validatePreparedSchema032ProductionSettlementV2,
+  validateSchema032ProductionExecutionAttemptV2,
   validateSchema032ProductionExecutionReceiptV2
 } from "./remediationReleaseManifestV2";
 import type {
@@ -27,6 +29,11 @@ export type GateEvidencePolicyV2 = Readonly<{
   allowedKinds: readonly GateEvidenceKindV2[];
   requiredKinds: readonly GateEvidenceKindV2[];
   production: boolean;
+}>;
+
+export type GateEvidencePayloadV2 = Buffer | Readonly<{
+  byteLength: number;
+  sha256: string;
 }>;
 
 export type Task0BProductionGateBindingV2 = Readonly<{
@@ -105,7 +112,7 @@ export const PRODUCTION_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G13_PRODUCTION_MIGRATION: policy("G13_PRODUCTION_MIGRATION", [
     "schema032-production-execution-receipt-v2.json"
   ], ["operational_attestation", "production_migration_authority", "production_migration_consumption",
-    "production_migration_sequence"], true),
+    "production_migration_attempt", "production_migration_prepared_settlement", "production_migration_sequence"], true),
   G14_PRODUCTION_ROLLOUT: policy("G14_PRODUCTION_ROLLOUT", ["production-rollout-evidence-v2.json"],
     ["operational_attestation", "production_operation_claim", "production_operation_settlement",
       "production_operation_lease_removal_prepared", "production_operation_lease_removal",
@@ -315,24 +322,14 @@ function validateProductionMigrationAuthority(value: unknown): Record<string, un
 function validateProductionMigrationConsumption(value: unknown): Record<string, unknown> {
   const code = "schema_032_sequence_production_consumption_invalid";
   const input = evidenceRecord(value, code);
-  const bindsV2 = Object.hasOwn(input, "operationalAttestationSha256")
-    || Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
-    || Object.hasOwn(input, "advisoryLockKey") || Object.hasOwn(input, "databaseSessionIdentitySha256")
-    || Object.hasOwn(input, "lockAcquiredAt");
   exactEvidenceKeys(input, ["version", "generationId", "authoritySha256", "candidateSha",
-    ...(bindsV2 ? ["operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
-      "advisoryLockKey", "databaseSessionIdentitySha256", "lockAcquiredAt"] : []),
+    "operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
     "databaseIdentityFingerprintSha256", "claimedAt", "resumeExpiresAt"], code);
-  if (input.version !== "schema-032-production-authority-consumption-v1"
+  if (input.version !== "schema-032-production-authority-consumption-v2"
       || typeof input.generationId !== "string" || !GENERATION.test(input.generationId)) throw new Error(code);
   evidenceSha(input.authoritySha256, code);
-  if (bindsV2) {
-    evidenceSha(input.operationalAttestationSha256, code);
-    evidenceSha(input.operationalAttestationIssuerReceiptSha256, code);
-    if (input.advisoryLockKey !== 320032500) throw new Error(code);
-    evidenceSha(input.databaseSessionIdentitySha256, code);
-    evidenceIso(input.lockAcquiredAt, code);
-  }
+  evidenceSha(input.operationalAttestationSha256, code);
+  evidenceSha(input.operationalAttestationIssuerReceiptSha256, code);
   evidenceCandidate(input.candidateSha, code);
   evidenceSha(input.databaseIdentityFingerprintSha256, code);
   const claimedAt = evidenceIso(input.claimedAt, code);
@@ -487,6 +484,15 @@ function validateProductionEvidencePath(
     production_migration_consumption: `schema032-production-authority-consumed-${generation}.json`
   };
   const wanted = fixed[ref.kind] ?? derived[ref.kind];
+  if (ref.kind === "production_migration_attempt" || ref.kind === "production_migration_prepared_settlement") {
+    const valid = ref.kind === "production_migration_attempt"
+      ? /^schema032-production-attempt-[a-z0-9][a-z0-9-]{15,63}-[0-9a-f]{64}\.json$/u.test(ref.relativePath)
+      : /^schema032-production-settlement-prepared-[0-9a-f]{64}\.json$/u.test(ref.relativePath);
+    if (!valid) {
+      throw new Error(`gate_evidence_path_binding_invalid:${ref.kind}`);
+    }
+    return;
+  }
   if (wanted !== undefined && ref.relativePath !== wanted) {
     throw new Error(`gate_evidence_path_binding_invalid:${ref.kind}`);
   }
@@ -559,11 +565,16 @@ export function validateProductionNestedGateEvidenceV2(input: Readonly<{
   }
 }
 
-function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): Record<string, unknown> | null {
+function validateTypedEvidence(
+  ref: GateEvidenceRefV2,
+  bytes: Buffer | null,
+  byteLength: number
+): Record<string, unknown> | null {
   if (ref.kind === "production_backup_dump" || ref.kind === "production_backup_restore_list") {
-    if (bytes.length === 0) throw new Error("gate_evidence_empty");
+    if (byteLength === 0) throw new Error("gate_evidence_empty");
     return null;
   }
+  if (bytes === null) throw new Error("gate_evidence_bytes_invalid");
   const value = parseCanonicalEvidenceJson(bytes, ref);
   if (ref.kind === "operational_attestation") validateOperationalAttestationV2(value);
   else if (ref.kind === "production_backup_authority") validateProductionBackupAuthority(value);
@@ -573,6 +584,10 @@ function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): Record<st
   else if (ref.kind === "production_backup_evidence") validateProductionBackupEvidence(value);
   else if (ref.kind === "production_migration_authority") validateProductionMigrationAuthority(value);
   else if (ref.kind === "production_migration_consumption") validateProductionMigrationConsumption(value);
+  else if (ref.kind === "production_migration_attempt") validateSchema032ProductionExecutionAttemptV2(value);
+  else if (ref.kind === "production_migration_prepared_settlement") {
+    validatePreparedSchema032ProductionSettlementV2(value);
+  }
   else if (ref.kind === "production_migration_sequence") validateSchema032ProductionExecutionReceiptV2(value);
   else if (ref.kind === "production_operation_claim") validateProductionOperationClaimV2(value);
   else if (ref.kind === "production_operation_settlement") validateProductionOperationSettlementV2(value);
@@ -594,7 +609,7 @@ function validateTypedEvidence(ref: GateEvidenceRefV2, bytes: Buffer): Record<st
 
 type ParsedGateArtifact = Readonly<{
   ref: GateEvidenceRefV2;
-  bytes: Buffer;
+  byteLength: number;
   value: Record<string, unknown> | null;
 }>;
 
@@ -700,16 +715,16 @@ function validateG12Bindings(
       || listProgress.value.claimSha256 !== consumption.ref.sha256
       || listProgress.value.operationId !== dumpProgress.value.operationId
       || listProgress.value.dumpProgressSha256 !== dumpProgress.ref.sha256
-      || dumpProgress.value.backupBytes !== dump.bytes.length
+      || dumpProgress.value.backupBytes !== dump.byteLength
       || dumpProgress.value.backupSha256 !== dump.ref.sha256
-      || listProgress.value.restoreListBytes !== restoreList.bytes.length
+      || listProgress.value.restoreListBytes !== restoreList.byteLength
       || listProgress.value.restoreListSha256 !== restoreList.ref.sha256
       || evidence.value.candidateSha !== gate.candidateSha
       || evidence.value.redactedTemplateSha256 !== attestation.value.redactedTemplateSha256
       || evidence.value.databaseIdentityFingerprintSha256 !== consumption.value.databaseIdentityFingerprintSha256
-      || evidence.value.backupBytes !== dump.bytes.length || evidence.value.backupSha256 !== dump.ref.sha256
+      || evidence.value.backupBytes !== dump.byteLength || evidence.value.backupSha256 !== dump.ref.sha256
       || evidence.value.backupPathFingerprintSha256 !== dumpProgress.value.backupPathFingerprintSha256
-      || evidence.value.restoreListBytes !== restoreList.bytes.length
+      || evidence.value.restoreListBytes !== restoreList.byteLength
       || evidence.value.restoreListSha256 !== restoreList.ref.sha256
       || evidence.value.restoreListEntryCount !== listProgress.value.restoreListEntryCount
       || (expected.requireStandaloneAuthorityBinding === true
@@ -737,7 +752,13 @@ function validateG13Bindings(
   const attestation = requireJsonArtifact(artifacts, "operational_attestation");
   const authority = requireJsonArtifact(artifacts, "production_migration_authority");
   const consumption = requireJsonArtifact(artifacts, "production_migration_consumption");
+  const attempt = requireJsonArtifact(artifacts, "production_migration_attempt");
+  const prepared = requireJsonArtifact(artifacts, "production_migration_prepared_settlement");
   const receipt = requireJsonArtifact(artifacts, "production_migration_sequence");
+  const finalCore = { ...receipt.value };
+  delete finalCore.lockReleasedAt;
+  delete finalCore.preparedSettlementRelativePath;
+  delete finalCore.preparedSettlementSha256;
   validateOperationalGateAttestation(gate, attestation, expected);
   if (authority.value.generationId !== expected.releaseGenerationId
       || authority.value.candidateSha !== gate.candidateSha
@@ -753,21 +774,29 @@ function validateG13Bindings(
       || consumption.value.resumeExpiresAt !== authority.value.expiresAt
       || receipt.value.candidateSha !== gate.candidateSha
       || receipt.value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
-      || receipt.value.operationalAttestationSha256
-        !== (expected.requireStandaloneAuthorityBinding === true ? attestation.ref.sha256 : authority.ref.sha256)
+      || receipt.value.operationalAttestationSha256 !== attestation.ref.sha256
       || receipt.value.authorityConsumptionSha256 !== consumption.ref.sha256
       || receipt.value.sourceManifestSha256 !== expected.sourceManifestSha256
       || receipt.value.productionBackupEvidenceSha256 !== authority.value.backupEvidenceSha256
+      || attempt.value.generationId !== authority.value.generationId
+      || attempt.value.candidateSha !== gate.candidateSha
+      || attempt.value.authorityConsumptionSha256 !== consumption.ref.sha256
+      || receipt.value.executionAttemptRelativePath !== attempt.ref.relativePath
+      || receipt.value.executionAttemptSha256 !== attempt.ref.sha256
+      || receipt.value.databaseSessionIdentitySha256 !== attempt.value.databaseSessionIdentitySha256
+      || receipt.value.lockAcquiredAt !== attempt.value.lockAcquiredAt
+      || receipt.value.preparedSettlementRelativePath !== prepared.ref.relativePath
+      || receipt.value.preparedSettlementSha256 !== prepared.ref.sha256
+      || canonicalBytesV2(prepared.value.executionReceiptCore)
+        .equals(canonicalBytesV2(finalCore)) === false
+      || Date.parse(String(prepared.value.preparedAt)) > Date.parse(String(receipt.value.lockReleasedAt))
       || (expected.requireStandaloneAuthorityBinding === true
         && (consumption.value.operationalAttestationSha256 !== attestation.ref.sha256
           || typeof consumption.value.operationalAttestationIssuerReceiptSha256 !== "string"
           || !SHA256.test(consumption.value.operationalAttestationIssuerReceiptSha256)
           || receipt.value.operationalAttestationIssuerReceiptSha256
             !== consumption.value.operationalAttestationIssuerReceiptSha256
-          || consumption.value.advisoryLockKey !== 320032500
-          || receipt.value.advisoryLockKey !== consumption.value.advisoryLockKey
-          || receipt.value.databaseSessionIdentitySha256 !== consumption.value.databaseSessionIdentitySha256
-          || receipt.value.lockAcquiredAt !== consumption.value.lockAcquiredAt))) {
+          || receipt.value.advisoryLockKey !== 320032500))) {
     throw new Error("production_migration_artifact_binding_invalid");
   }
 }
@@ -841,7 +870,7 @@ function validateProductionGateBindings(
 
 export function validateGateEvidenceBytesV2(
   gate: ExecutedReleaseGateV2,
-  bytesByRelativePath: ReadonlyMap<string, Buffer>,
+  bytesByRelativePath: ReadonlyMap<string, GateEvidencePayloadV2>,
   expected: GateEvidenceBindingContextV2 = {}
 ): readonly GateEvidenceRefV2[] {
   const gatePolicy = RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id];
@@ -861,15 +890,21 @@ export function validateGateEvidenceBytesV2(
     if (ref.candidateSha !== gate.candidateSha || !gatePolicy.allowedKinds.includes(ref.kind)) {
       throw new Error("gate_evidence_policy_binding_invalid");
     }
-    const bytes = bytesByRelativePath.get(ref.relativePath);
-    if (!bytes || createHash("sha256").update(bytes).digest("hex") !== ref.sha256) {
+    const payload = bytesByRelativePath.get(ref.relativePath);
+    const isBinary = ref.kind === "production_backup_dump" || ref.kind === "production_backup_restore_list";
+    const bytes = Buffer.isBuffer(payload) ? payload : null;
+    const descriptor = bytes === null ? payload as Exclude<GateEvidencePayloadV2, Buffer> | undefined : undefined;
+    const byteLength = bytes?.length ?? descriptor?.byteLength ?? 0;
+    const actualSha256 = bytes === null ? descriptor?.sha256 : createHash("sha256").update(bytes).digest("hex");
+    if (!payload || actualSha256 !== ref.sha256 || !Number.isSafeInteger(byteLength) || byteLength <= 0
+        || (bytes === null && !isBinary)) {
       throw new Error("gate_evidence_bytes_invalid");
     }
-    const value = validateTypedEvidence(ref, bytes);
-    artifacts.set(ref.kind, { ref, bytes, value });
+    const value = validateTypedEvidence(ref, bytes, byteLength);
+    artifacts.set(ref.kind, { ref, byteLength, value });
     if (gatePolicy.production) validateProductionEvidencePath(ref, expected);
     if (ref.kind !== "production_backup_dump" && ref.kind !== "production_backup_restore_list") {
-      validateEvidenceBindings(parseCanonicalEvidenceJson(bytes, ref), ref, expected);
+      validateEvidenceBindings(parseCanonicalEvidenceJson(bytes!, ref), ref, expected);
     }
   }
   for (const required of gatePolicy.primaryPaths) {
