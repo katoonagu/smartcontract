@@ -220,6 +220,20 @@ function parseIso(value: unknown, code: string): Date {
   return parsed;
 }
 
+function assertSchema032StageFailureAttemptInterval(
+  observedAt: unknown,
+  lockAcquiredAt: string,
+  lockReleasedAt?: string
+): void {
+  const observed = parseIso(observedAt, "schema_032_sequence_stage_failure_invalid").getTime();
+  const acquired = parseIso(lockAcquiredAt, "schema_032_sequence_stage_failure_invalid").getTime();
+  const released = lockReleasedAt === undefined ? null
+    : parseIso(lockReleasedAt, "schema_032_sequence_stage_failure_invalid").getTime();
+  if (observed < acquired || (released !== null && observed > released)) {
+    fail("schema_032_sequence_stage_failure_invalid");
+  }
+}
+
 function normalizedEndpoint(databaseUrl: string): { endpoint: string; hostname: string; port: number; databaseName: string } {
   let parsed: URL;
   try { parsed = new URL(databaseUrl); } catch { fail("schema_032_sequence_database_url_invalid"); }
@@ -1651,11 +1665,12 @@ async function replaySchema032ProductionTerminalReceiptV2(input: {
   if (stageFailure.version !== "schema032-stage-failure-v2"
       || stageFailure.candidateSha !== receipt.candidateSha || stageFailure.failedStep !== receipt.failedStep
       || typeof stageFailure.failureCode !== "string"
-      || !/^schema_032_[a-z0-9_:.-]+$/u.test(stageFailure.failureCode)
-      || Date.parse(parseIso(stageFailure.observedAt, "schema_032_sequence_stage_failure_invalid").toISOString())
-        > Date.parse(receipt.lockReleasedAt)) {
+      || !/^schema_032_[a-z0-9_:.-]+$/u.test(stageFailure.failureCode)) {
     fail("schema_032_sequence_stage_failure_invalid");
   }
+  assertSchema032StageFailureAttemptInterval(
+    stageFailure.observedAt, receipt.lockAcquiredAt, receipt.lockReleasedAt
+  );
   const failureEvidence = validateProductionFailureEvidenceV2({
     version: "production-failure-evidence-v2",
     candidateSha: receipt.candidateSha,
@@ -1773,6 +1788,7 @@ export async function runSchema032ReleaseSequence(
   let pendingSettlement: Awaited<ReturnType<typeof prepareSchema032ProductionSettlementV2>> | null = null;
   let pendingExecutionReceiptCore: Record<string, unknown> | null = null;
   let pendingFailureCode: string | null = null;
+  let pendingStageFailureObservedAt: string | null = null;
   let completedEvidence: Schema032ReleaseEvidenceV1 | null = null;
   let sessionIdentitySha256: string | null = null;
   let caughtError: unknown = null;
@@ -1930,7 +1946,8 @@ export async function runSchema032ReleaseSequence(
             || stageFailure.failureCode !== pendingFailureCode) {
           fail("schema_032_sequence_stage_failure_invalid");
         }
-        parseIso(stageFailure.observedAt, "schema_032_sequence_stage_failure_invalid");
+        assertSchema032StageFailureAttemptInterval(stageFailure.observedAt, lockAcquiredAt);
+        pendingStageFailureObservedAt = String(stageFailure.observedAt);
         const stageFailureBytes = canonicalBytesV2(stageFailure);
         if (existingStageFailure === null) await writeArtifactExclusive(artifactRoot, failurePath, stageFailure);
         else if (!Buffer.from(existingStageFailure, "utf8").equals(stageFailureBytes)) {
@@ -1989,6 +2006,10 @@ export async function runSchema032ReleaseSequence(
       await persistSchema032ProductionExecutionReceiptV2(artifactRoot, finalReceipt);
     } else {
       if (pendingFailureCode === null) fail("schema_032_sequence_failure_code_invalid");
+      if (pendingStageFailureObservedAt === null) fail("schema_032_sequence_stage_failure_invalid");
+      assertSchema032StageFailureAttemptInterval(
+        pendingStageFailureObservedAt, finalReceipt.lockAcquiredAt, finalReceipt.lockReleasedAt
+      );
       const executionReceiptBytes = canonicalBytesV2(finalReceipt);
       const failureEvidence = validateProductionFailureEvidenceV2({
         version: "production-failure-evidence-v2",

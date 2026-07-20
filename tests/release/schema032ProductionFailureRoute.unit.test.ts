@@ -399,6 +399,33 @@ describe("schema 032 production failure route", () => {
       expect(readFileSync(receiptPath)).toEqual(originalReceiptBytes);
       expect(readdirSync(root).filter((name) => name.startsWith("schema032-production-attempt-")).length)
         .toBe(attemptCount);
+      rmSync(failurePath, { force: true });
+      const staleStageFailure = { ...stageFailure, observedAt: "2026-07-18T10:05:59.999Z" };
+      writeFileSync(join(root, failureArtifact.relativePath), canonicalBytesV2(staleStageFailure));
+      const staleFailureArtifact = {
+        ...failureArtifact,
+        evidenceSha256: sha256(canonicalBytesV2(staleStageFailure))
+      };
+      const staleReceiptCore = { ...receiptCore, failureArtifact: staleFailureArtifact };
+      const stalePrepared = {
+        ...preparedValue,
+        executionReceiptCore: staleReceiptCore
+      };
+      const stalePreparedSha256 = sha256(canonicalBytesV2(stalePrepared));
+      const stalePreparedPath = `schema032-production-settlement-prepared-${stalePreparedSha256}.json`;
+      writeEvidence(root, "production_migration_prepared_settlement", stalePreparedPath,
+        stalePrepared, exactCandidateSha);
+      writeFileSync(receiptPath, canonicalBytesV2({
+        ...staleReceiptCore,
+        lockReleasedAt,
+        preparedSettlementRelativePath: stalePreparedPath,
+        preparedSettlementSha256: stalePreparedSha256
+      }));
+      await expect(runSchema032ReleaseSequence(options, testDependencies))
+        .rejects.toThrow("schema_032_sequence_stage_failure_invalid");
+      expect(dbSessionStarted).not.toHaveBeenCalled();
+      expect(readdirSync(root).filter((name) => name.startsWith("schema032-production-attempt-")).length)
+        .toBe(attemptCount);
     } finally {
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = previousNodeEnv;
