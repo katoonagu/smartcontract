@@ -215,7 +215,13 @@ describe("extractGasFreeSettlement", () => {
     expect(extractGasFreeSettlement(input)).not.toBeNull();
   });
 
-  it.each([true, 0, "0", "SUCCESS", "CONFIRMED"])("accepts successful status form %s", (status) => {
+  it.each([
+    { label: "boolean true", status: true },
+    { label: "number zero", status: 0 },
+    { label: "string zero", status: "0" },
+    { label: "SUCCESS", status: "SUCCESS" },
+    { label: "CONFIRMED", status: "CONFIRMED" }
+  ])("accepts successful status form $label", ({ status }) => {
     expect(extractGasFreeSettlement({
       ...transaction([row(RECEIVER, "97000000")]),
       status
