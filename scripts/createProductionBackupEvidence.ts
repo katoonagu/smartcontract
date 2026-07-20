@@ -38,6 +38,10 @@ const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_BACKUP_BYTES = 1024 ** 4;
 const MAX_LIST_BYTES = 100 * 1024 * 1024;
 const CHILD_TIMEOUT_MS = 3_600_000;
+const RESTORE_LIST_TIMEOUT_MS = 120_000;
+const G12_SETTLEMENT_MARGIN_MS = 3 * 60_000;
+const MINIMUM_G12_CLAIM_VALIDITY_MS = CHILD_TIMEOUT_MS
+  + RESTORE_LIST_TIMEOUT_MS + G12_SETTLEMENT_MARGIN_MS;
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const BACKUP_FILENAME = "production-backup.dump";
 const LIST_FILENAME = "production-backup-restore-list.txt";
@@ -205,7 +209,7 @@ export function validateProductionBackupAuthority(
       || typeof authority.generationId !== "string" || !GENERATION.test(authority.generationId)
       || authority.commandId !== "production_backup"
       || authority.commandTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256.production_backup
-      || issuedAt > expiresAt || expiresAt.getTime() - issuedAt.getTime() > 60 * 60_000
+      || issuedAt > expiresAt || expiresAt.getTime() - issuedAt.getTime() > 70 * 60_000
       || !SHA40.test(String(authority.candidateSha)) || authority.databaseRole !== "production"
       || !SHA256.test(String(authority.databaseIdentityFingerprintSha256))
       || authority.task0bEvidencePath !== "task0b-release-freeze.json" || !SHA256.test(String(authority.task0bEvidenceSha256))
@@ -1108,7 +1112,9 @@ export async function writeProductionRestoreList(
 ): Promise<void> {
   if (operationId !== undefined && !OPERATION_ID.test(operationId)) throw new Error("production_backup_operation_id_invalid");
   const invocation = buildProductionPgRestoreListInvocation(root, tools, containerName);
-  const raw = await runProductionDockerBuffer(invocation.args, MAX_LIST_BYTES, 120_000, invocation.containerName);
+  const raw = await runProductionDockerBuffer(
+    invocation.args, MAX_LIST_BYTES, RESTORE_LIST_TIMEOUT_MS, invocation.containerName
+  );
   await writeExclusive(root, LIST_FILENAME, normalizeProductionRestoreList(raw).bytes,
     operationId ? `.production-backup-${operationId}.list.tmp` : undefined);
 }
@@ -1271,7 +1277,7 @@ export async function runProductionBackupCommand(
     action: "g12_backup_passed",
     expectedSourceManifestSha256: rootOnlyVerified.manifestSha256,
     evaluatedAt: initialEvaluatedAt,
-    minimumRemainingValidityMs: 0
+    minimumRemainingValidityMs: MINIMUM_G12_CLAIM_VALIDITY_MS
   });
   if (rootOnlyVerified !== null && (!rootOnlyVerified.manifestBytes.equals(manifestBytes)
       || rootOnlyVerified.manifest.transitionId !== "readiness"
@@ -1496,7 +1502,12 @@ export async function runProductionBackupCommand(
       },
       revalidateBeforeClaim: () => revalidateExactBindings(false),
       claim: async () => {
-        const result = await claimProductionBackupAuthority(artifactRoot, expectedConsumption, now());
+        const claimedAt = now();
+        if (!legacyTestAuthority && Date.parse(preflight.authority.expiresAt) - Date.parse(claimedAt)
+            < MINIMUM_G12_CLAIM_VALIDITY_MS) {
+          throw new Error("production_backup_authority_insufficient_claim_validity");
+        }
+        const result = await claimProductionBackupAuthority(artifactRoot, expectedConsumption, claimedAt);
         if (result !== "claimed") throw new Error("production_backup_consumption_concurrent");
         await materializeDerivedAuthority();
       },

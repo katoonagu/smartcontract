@@ -274,6 +274,12 @@ of these decisions, update this file in the same work.
   own claim/lease or bound-session protocol. Both revalidate strict authority
   expiry before every external leaf and settlement. Only G14/G15/recovery/
   actual rollback also carry the immutable production-operation deadline.
+- An expired never-claimed authority is terminalized by allowlisted transition
+  plus protected root; no operator-selected attestation file is accepted. G13
+  terminalization additionally binds the frozen production DB identity and
+  holds the schema-032 advisory lock through terminal publication. G12 issues
+  for at most 70 minutes and requires 65 minutes at claim; G13 issues for at
+  most 30 minutes and requires 25 minutes at claim.
 - `release:manifest:advance` is the sole manifest/gate writer. The first
   `pre_manual` transition uses source token `absent`; every later transition
   uses the lowercase hash of the exact current manifest bytes. One fixed

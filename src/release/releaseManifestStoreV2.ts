@@ -1271,7 +1271,7 @@ function verifiedTerminalLineageForAuthorityV2(root: string, record: CommittedAu
 type OperationalAttestationActionV2 = keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2;
 
 const OPERATIONAL_ATTESTATION_TTL_MS_V2: Readonly<Record<OperationalAttestationActionV2, number>> = Object.freeze({
-  g12_backup_passed: 60 * 60_000,
+  g12_backup_passed: 70 * 60_000,
   g13_migration_passed: 30 * 60_000,
   g14_rollout_passed: 15 * 60_000,
   g15_canary_released: 40 * 60_000,
@@ -1940,7 +1940,7 @@ function consumedAuthorityHashForTransitionV2(
   return hash;
 }
 
-export async function terminalizeExpiredOperationalAttestationV2(input: {
+async function terminalizeExpiredOperationalAttestationInternalV2(input: {
   artifactRoot: string;
   authority: unknown;
   evaluatedAt: string;
@@ -1959,9 +1959,6 @@ export async function terminalizeExpiredOperationalAttestationV2(input: {
   if (!record || !readFileSync(lifecyclePath(root,
     exactAuthorityRelativePath("attestation", authority, hash))).equals(canonicalBytesV2(authority))) {
     throw new Error("authority_not_issued");
-  }
-  if (authority.action === "g13_migration_passed") {
-    throw new Error("g13_terminalization_database_absence_unverified");
   }
   let receipt = validateAuthorityTerminalReceiptV2({
     version: "authority-terminal-receipt-v2",
@@ -2013,6 +2010,16 @@ export async function terminalizeExpiredOperationalAttestationV2(input: {
   const lease = acquireOrResumeFrozenLease(root, leasePayload,
     lifecycleArtifactExists(root, preparedName));
   try {
+    const currentTip = committedAuthorityRecordsForActionV2(root, freeze, authority.action).at(-1);
+    const currentManifestBytes = readFileSync(safeArtifactPath(root, MANIFEST_FILE));
+    const currentManifest = validateRemediationReleaseManifestV2(
+      JSON.parse(currentManifestBytes.toString("utf8"))
+    );
+    if (currentTip?.attestationSha256 !== hash
+        || !currentManifestBytes.equals(canonicalBytesV2(currentManifest))
+        || currentTip.authority.sourceManifestSha256 !== releaseSha256V2(currentManifestBytes)) {
+      throw new Error("expired_authority_chain_tip_changed");
+    }
     if (authorityUseArtifactPresentV2(root, record)) {
       throw new Error("authority_has_effect_or_claim_artifact");
     }
@@ -2028,6 +2035,56 @@ export async function terminalizeExpiredOperationalAttestationV2(input: {
     if (!lifecycleArtifactExists(root, preparedName) && existsSync(lease.path)) lease.release();
     throw error;
   }
+}
+
+type G13AbsenceGuardFactoryV2 = (input: Readonly<{
+  databaseIdentityFingerprintSha256: string;
+}>) => Promise<{ release(): Promise<void> }>;
+
+export async function terminalizeExpiredOperationalAttestationV2(input: {
+  artifactRoot: string;
+  authority: unknown;
+  evaluatedAt: string;
+  observedArtifacts?: string[];
+  acquireG13AbsenceGuard?: G13AbsenceGuardFactoryV2;
+}) {
+  const root = assertTrustedArtifactRootPathV2(input.artifactRoot);
+  const freeze = currentVerifiedFreeze(root);
+  const authority = validateOperationalAttestationV2(input.authority, freeze);
+  if (Date.parse(input.evaluatedAt) < Date.parse(authority.expiresAt)) throw new Error("authority_not_expired");
+  if (authority.action === "g13_migration_passed" && input.acquireG13AbsenceGuard === undefined) {
+    throw new Error("g13_terminalization_database_absence_unverified");
+  }
+  const guard = authority.action === "g13_migration_passed"
+    ? await input.acquireG13AbsenceGuard!({
+      databaseIdentityFingerprintSha256: freeze.productionDatabaseIdentityFingerprintSha256
+    }) : null;
+  try {
+    return await terminalizeExpiredOperationalAttestationInternalV2(input);
+  } finally {
+    await guard?.release();
+  }
+}
+
+export async function terminalizeExpiredOperationalAttestationTipV2(input: {
+  artifactRoot: string;
+  action: keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2;
+  evaluatedAt: string;
+  acquireG13AbsenceGuard?: G13AbsenceGuardFactoryV2;
+}) {
+  const root = assertTrustedArtifactRootPathV2(input.artifactRoot);
+  const freeze = currentVerifiedFreeze(root);
+  const verified = verifyCurrentReleaseManifestChainV2(root);
+  const tip = committedAuthorityRecordsForActionV2(root, freeze, input.action).at(-1);
+  if (tip === undefined || tip.authority.sourceManifestSha256 !== verified.manifestSha256) {
+    throw new Error("expired_authority_chain_tip_missing_or_incompatible");
+  }
+  return terminalizeExpiredOperationalAttestationV2({
+    artifactRoot: root,
+    authority: tip.authority,
+    evaluatedAt: input.evaluatedAt,
+    ...(input.acquireG13AbsenceGuard ? { acquireG13AbsenceGuard: input.acquireG13AbsenceGuard } : {})
+  });
 }
 
 export function normalizeTrustedPrincipalPolicyV2(input: { platform: string; principals: string[] }) {

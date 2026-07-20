@@ -216,6 +216,18 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     } finally { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
   }, 45_000);
 
+  it("rejects a G12 tip that cannot cover the bounded backup plus settlement margin", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-v2-short-authority-");
+    try {
+      const { freeze, issued } = await materializeReadinessV2Root(root);
+      await expect(api.runProductionBackupCommand([root], {}, {
+        now: () => new Date(Date.parse(issued.issuedAt) + 5 * 60_000 + 1).toISOString(),
+        currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true })
+      })).rejects.toThrow("operational_authority_tip_ambiguous");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 45_000);
+
   it("requires a fresh exact one-shot GO bound to Task0B ready manifest database and protected root", async () => {
     const api = await loadProducer();
     const root = mkdtempSync(join(tmpdir(), "plan5-g12-authority-"));
@@ -237,7 +249,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         (value) => { value.authority.commandTemplateSha256 = "f".repeat(64); },
         (value) => { value.authority.databaseRole = "staging"; },
         (value) => { value.authority.issuedAt = "2026-07-18T09:06:00.000Z"; },
-        (value) => { value.authority.expiresAt = "2026-07-18T10:04:00.001Z"; },
+        (value) => { value.authority.expiresAt = "2026-07-18T10:14:00.001Z"; },
         (value) => { value.authority.expiresAt = "2026-07-18T09:04:59.000Z"; },
         (value) => { value.authority.candidateSha = "f".repeat(40); },
         (value) => { value.authority.task0bEvidenceSha256 = "f".repeat(64); },

@@ -186,6 +186,18 @@ cleanup-only takeover commands, strict bounds, and terminal receipt order are
 defined in the Plan 5 release README. Direct production leaf stop/start/query,
 SQL, reconciliation, health, or capture commands are forbidden.
 
+An expired never-claimed tip is closed by transition, never by operator-chosen
+JSON path. For G13 the terminalizer uses the protected production URL only from
+`TASK0B_PRODUCTION_DATABASE_URL`, verifies the frozen DB fingerprint, and holds
+the schema-032 advisory lock until the exact terminal receipt is published:
+
+```powershell
+npm run release:authority:terminalize -- <transition> <protected-artifact-root>
+```
+
+G12 claim requires 65 minutes of its 70-minute authority window remaining;
+G13 claim requires 25 minutes of its 30-minute window remaining.
+
 ## Verify The Unreleased Plan 3 Candidate
 
 Use only the disposable database named exactly `tron_watch_plan3`. Do not point

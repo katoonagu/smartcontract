@@ -285,12 +285,12 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-ISSUER] appends content-addressed attestation
   await initializeManifestRoot(api, r);
   const first = await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" });
   await api.terminalizeExpiredOperationalAttestationV2({
-    artifactRoot: r, authority: authorityValue(first), evaluatedAt: "2026-07-18T11:01:00.000Z"
+    artifactRoot: r, authority: authorityValue(first), evaluatedAt: "2026-07-18T11:11:00.000Z"
   });
   const terminalRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
     name.startsWith(`authority-terminal-receipts/g12_backup_passed/${freezeFor(r).releaseGenerationId}/`))!;
   const terminalSha256 = createHash("sha256").update(await readFile(join(r, terminalRelativePath))).digest("hex");
-  vi.setSystemTime(new Date("2026-07-18T11:02:00.000Z"));
+  vi.setSystemTime(new Date("2026-07-18T11:12:00.000Z"));
   const second = await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" });
   expect(second.previousAttestationSha256).toBe(first.attestationSha256);
   expect(second.attestationSha256).not.toBe(first.attestationSha256);
@@ -320,7 +320,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-SOLE-ISSUER] derives source policy time expir
     commandId: "production_backup",
     redactedTemplateSha256: COMMAND_TEMPLATE_SHA256.production_backup,
     issuedAt: "2026-07-18T10:00:00.000Z",
-    expiresAt: "2026-07-18T11:00:00.000Z",
+    expiresAt: "2026-07-18T11:10:00.000Z",
     previousAttestationSha256: null,
     priorTerminalLineageSha256: null
   });
@@ -336,7 +336,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-PREPARED-RESUME] resumes one unresolved prepa
   vi.setSystemTime(new Date("2026-07-18T10:30:00.000Z"));
   const resumed = await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" });
   expect(resumed.issuedAt).toBe("2026-07-18T10:00:00.000Z");
-  expect(resumed.expiresAt).toBe("2026-07-18T11:00:00.000Z");
+  expect(resumed.expiresAt).toBe("2026-07-18T11:10:00.000Z");
   expect(await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" }))
     .toEqual(resumed);
 }, 30_000);
@@ -471,13 +471,13 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-RECOVERY] issues fresh recovery authority onl
     name === `operational-attestations/g12_backup_passed/${freezeFor(r).releaseGenerationId}/${issued.attestationSha256}.json`)!;
   const original = await readFile(join(r, authorityRelativePath));
   await api.terminalizeExpiredOperationalAttestationV2({
-    artifactRoot: r, authority: authorityValue(issued), evaluatedAt: "2026-07-18T11:01:00.000Z"
+    artifactRoot: r, authority: authorityValue(issued), evaluatedAt: "2026-07-18T11:11:00.000Z"
   });
   const terminalReceiptRelativePath = (await recursiveRelativeFiles(r)).find((name) =>
     name.startsWith(`authority-terminal-receipts/g12_backup_passed/${freezeFor(r).releaseGenerationId}/`))!;
   const terminalReceiptPath = join(r, terminalReceiptRelativePath);
   const terminalReceiptSha256 = createHash("sha256").update(await readFile(terminalReceiptPath)).digest("hex");
-  vi.setSystemTime(new Date("2026-07-18T11:02:00.000Z"));
+  vi.setSystemTime(new Date("2026-07-18T11:12:00.000Z"));
   const recovery = await api.issueOperationalAttestationV2({ artifactRoot: r, action: "g12_backup_passed" });
   expect(recovery.priorTerminalLineageSha256).toBe(terminalReceiptSha256);
   expect(await readFile(join(r, authorityRelativePath))).toEqual(original);
@@ -491,11 +491,11 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalizat
   const authority = authorityValue(issued);
   const unissuedRoot = await root(); await initializeManifestRoot(api, unissuedRoot);
   await expect(api.terminalizeExpiredOperationalAttestationV2({
-    artifactRoot: unissuedRoot, authority, evaluatedAt: "2026-07-18T11:01:00.000Z"
+    artifactRoot: unissuedRoot, authority, evaluatedAt: "2026-07-18T11:11:00.000Z"
   })).rejects.toThrow();
   await expect(api.terminalizeExpiredOperationalAttestationV2({ artifactRoot: r, authority, evaluatedAt: "2026-07-18T10:00:30.000Z" })).rejects.toThrow();
   const terminal = await api.terminalizeExpiredOperationalAttestationV2({
-    artifactRoot: r, authority, evaluatedAt: "2026-07-18T11:01:00.000Z", observedArtifacts: []
+    artifactRoot: r, authority, evaluatedAt: "2026-07-18T11:11:00.000Z", observedArtifacts: []
   });
   expect(terminal.reason).toBe("expired_unclaimed");
   for (const artifact of ["preclaim", "claim", "consumption", "action_lease", "g13_session", "advisory_lock", "operation", "effect"]) {
@@ -514,7 +514,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalizat
       candidateSha: freezeFor(conflictRoot).candidateSha
     })}\n`, { flag: "wx" });
     await expect(api.terminalizeExpiredOperationalAttestationV2({
-      artifactRoot: conflictRoot, authority: conflictAuthority, evaluatedAt: "2026-07-18T11:01:00.000Z"
+      artifactRoot: conflictRoot, authority: conflictAuthority, evaluatedAt: "2026-07-18T11:11:00.000Z"
     })).rejects.toThrow();
     await rm(conflictPath, { force: true });
   }
@@ -757,7 +757,7 @@ it("[REQ-38][AUTHORITY-USE-ARTIFACT-FAIL-CLOSED] rejects malformed production ar
   await expect(api.terminalizeExpiredOperationalAttestationV2({
     artifactRoot: r,
     authority: authorityValue(issued),
-    evaluatedAt: "2026-07-18T11:01:00.000Z"
+    evaluatedAt: "2026-07-18T11:11:00.000Z"
   })).rejects.toThrow(/artifact|schema|json|unverifiable/i);
 }, 30_000);
 

@@ -27,6 +27,7 @@ import {
   persistSchema032ProductionFailureRouteV2,
   runSchema032ReleaseSequence
 } from "../../scripts/runSchema032ReleaseSequence";
+import { runTerminalizeExpiredUnclaimedAuthority } from "../../scripts/terminalizeExpiredUnclaimedAuthority";
 
 const dbSessionStarted = vi.hoisted(() => vi.fn());
 vi.mock("pg", () => ({
@@ -216,6 +217,63 @@ async function materializeG12Source(root: string, exactCandidateSha: string) {
 }
 
 describe("schema 032 production failure route", () => {
+  it("terminalizes the exact expired G13 chain tip by transition while holding a database absence guard", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const root = protectedRoot();
+    const release = vi.fn(async () => undefined);
+    try {
+      const exactCandidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const context = await materializeG12Source(root, exactCandidateSha);
+      const evaluatedAt = new Date(Date.parse(context.selectedG13.authority.expiresAt)).toISOString();
+      const acquireG13AbsenceGuard = vi.fn(async () => ({ release }));
+      await expect(runTerminalizeExpiredUnclaimedAuthority([
+        `operational-attestations/g13_migration_passed/${context.selectedG13.attestationSha256}.json`, root
+      ], { now: () => evaluatedAt, acquireG13AbsenceGuard })).rejects.toThrow(
+        "usage: release:authority:terminalize <transition> <protected-artifact-root>"
+      );
+      expect(acquireG13AbsenceGuard).not.toHaveBeenCalled();
+      await expect(runTerminalizeExpiredUnclaimedAuthority([
+        "g13_migration_passed", root
+      ], { now: () => evaluatedAt, acquireG13AbsenceGuard })).resolves.toMatchObject({
+        action: "g13_migration_passed",
+        reason: "expired_unclaimed",
+        attestationSha256: context.selectedG13.attestationSha256
+      });
+      expect(acquireG13AbsenceGuard).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("rejects a G13 tip that cannot cover the bounded migration plus settlement margin before DB session", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    dbSessionStarted.mockClear();
+    const root = protectedRoot();
+    try {
+      const exactCandidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const context = await materializeG12Source(root, exactCandidateSha);
+      vi.setSystemTime(new Date(Date.parse(context.selectedG13.authority.expiresAt) - 25 * 60_000 + 1));
+      await expect(runSchema032ReleaseSequence({
+        databaseUrlEnvName: "TASK0B_PRODUCTION_DATABASE_URL",
+        databaseUrl: "postgresql://test:test@127.0.0.1:55998/tron_watch",
+        expectedEndpoint: "127.0.0.1:55998",
+        expectedSystemIdentifier: "12345678901234567890",
+        artifactRoot: root,
+        offline: false,
+        candidateSha: exactCandidateSha
+      }, { observeCandidateRepositoryState: async () => ({
+        headSha: exactCandidateSha, status: "",
+        migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+      }) })).rejects.toThrow("operational_authority_tip_ambiguous");
+      expect(dbSessionStarted).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("rejects a root-only orphan compatibility authority before creating a production DB session", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-18T10:00:00.000Z"));

@@ -72,6 +72,9 @@ const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
 const MAX_BACKUP_BYTES = 1024 ** 4;
 const MAX_RESTORE_LIST_BYTES = 100 * 1024 * 1024;
 const MIGRATION_TIMEOUT_MS = 120_000;
+const MAXIMUM_G13_SEQUENCE_MS = 20 * 60_000;
+const G13_SETTLEMENT_MARGIN_MS = 5 * 60_000;
+const MINIMUM_G13_CLAIM_VALIDITY_MS = MAXIMUM_G13_SEQUENCE_MS + G13_SETTLEMENT_MARGIN_MS;
 export const SCHEMA_032_PRODUCER_ADVISORY_LOCK = 320_032_500;
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
@@ -1277,7 +1280,7 @@ async function prepareProductionMutationAuthorization(input: {
     action: "g13_migration_passed",
     expectedSourceManifestSha256: rootOnlyVerified.manifestSha256,
     evaluatedAt: initialEvaluatedAt,
-    minimumRemainingValidityMs: 0
+    minimumRemainingValidityMs: MINIMUM_G13_CLAIM_VALIDITY_MS
   });
   if (rootOnlyVerified.manifest.transitionId !== "g12_backup_passed"
       || rootOnlyVerified.manifest.overall !== "not_ready") {
@@ -1403,6 +1406,10 @@ async function authorizeProductionMutation(input: {
   }
   const consumptionName = `schema032-production-authority-consumed-${authority.generationId}.json`;
   const existing = await readOptionalArtifact(artifactRoot, consumptionName);
+  if (existing === null && Date.parse(authority.expiresAt) - Date.parse(claimedAt)
+      < MINIMUM_G13_CLAIM_VALIDITY_MS) {
+    fail("schema_032_sequence_production_authority_insufficient_claim_validity");
+  }
   const expectedConsumption = {
     generationId: authority.generationId,
     authoritySha256: hash(authorityBytes),

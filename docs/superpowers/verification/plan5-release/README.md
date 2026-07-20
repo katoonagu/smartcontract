@@ -107,16 +107,19 @@ npm run release:manifest:takeover -- <expected-old-lease-sha256> <protected-arti
 The issuer appends content-addressed attestation, previous-hash issuer receipt,
 and committed marker under the same frozen lease. A crash replays the exact
 prepared bytes and timestamp; it cannot reread the clock or branch the issuer
-chain. An expired authority that was never claimed is closed only by its exact
-authority JSON path, then a replacement may be issued:
+chain. An expired authority that was never claimed is closed only by its
+allowlisted transition token; the terminalizer selects the exact current chain
+tip from the protected root, then a replacement may be issued:
 
 ```powershell
-npm run release:authority:terminalize -- <operational-attestation-json> <protected-artifact-root>
+npm run release:authority:terminalize -- <transition> <protected-artifact-root>
 npm run release:authority:issue -- <allowlisted-transition> <protected-artifact-root>
 ```
 
 Terminalization rejects early expiry and any preclaim, claim, consumption,
 action lease, G13 bound session/advisory lock, operation, or effect artifact.
+For G13 it verifies the frozen production database identity and holds the exact
+schema-032 advisory lock as an absence guard until terminal publication ends.
 
 ## Allowlisted gate identities
 
@@ -385,7 +388,8 @@ The backup producer alone owns pinned `pg_dump --format=custom` and
 `pg_restore --list`, exact database identity, claim/lease, progress, bounded
 resume, and final evidence. It never writes the manifest. Only the manifest
 advance marks G12 passed and deliberately returns `overall=not_ready` with
-G13-G15 pending.
+G13-G15 pending. Issuance is bounded to 70 minutes; claim requires at least 65
+minutes remaining for the one-hour child bound plus settlement margin.
 
 G13 keeps its same-session advisory-lock claim protocol and also accepts only
 the protected root, never a raw authority path:
@@ -406,7 +410,9 @@ npm run release:verify -- --phase g13 --artifact-root <protected-artifact-root>
 The sequence owns migration 032, checksum/receipt/postcondition verification,
 the second `already_verified` no-op, and final verification. G12/G13 revalidate
 their consumed authority as strictly unexpired before each database/tool leaf
-and settlement; they do not use the Task 12 immutable operation deadline.
+and settlement; they do not use the Task 12 immutable operation deadline. G13
+issuance is bounded to 30 minutes and claim requires at least 25 minutes
+remaining for the bounded sequence plus settlement margin.
 
 ### G14, G15, takeover, and terminal order
 
