@@ -2427,8 +2427,16 @@ function exactRuntimeEvidenceForOperationStep(
     if (receipt !== undefined) assertRuntimeStartReceiptProofBindingV2(receipt.receipt, manager.sha256);
     return manager;
   }
-  if (receipt === undefined) return null;
   const relativePath = `production-runtime-effect-reconciliations/${operationId}/${intent.value.sequence}-${stepId}-${intent.sha256}-v2.json`;
+  let reconciliationPresent = false;
+  try { reconciliationPresent = existsSync(safeArtifactRelativePath(root, relativePath)); }
+  catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("artifact_parent_missing")) throw error;
+  }
+  if (!reconciliationPresent) {
+    if (receipt === undefined) return null;
+    throw new Error("production_failed_runtime_reconciliation_missing");
+  }
   const reconciliation = readCanonical(root, relativePath, validateRuntimeEffectReconciliationEvidenceV2);
   validateRuntimeEffectReconciliationEvidenceV2(reconciliation.value, {
     operationKind: "rollout", operationId, operationClaimSha256,
@@ -2445,7 +2453,7 @@ function exactRuntimeEvidenceForOperationStep(
     effectNotBefore: intent.value.preparedAt, observedPostState: "target_absent",
     observedAt: reconciliation.value.observedAt
   });
-  assertRuntimeStartReceiptProofBindingV2(receipt.receipt, reconciliation.sha256);
+  if (receipt !== undefined) assertRuntimeStartReceiptProofBindingV2(receipt.receipt, reconciliation.sha256);
   return { sha256: reconciliation.sha256 };
 }
 
@@ -2481,6 +2489,34 @@ function failedOperationBinding(root: string, failure: ReturnType<typeof validat
     throw new Error("production_failed_operation_capture_binding_invalid");
   }
   return { operationId: match.value.operationId, operationClaimSha256: match.value.operationClaimSha256 };
+}
+
+function assertRetainedAfterAbandonedStopPreviousV2(
+  root: string,
+  failure: ReturnType<typeof validateProductionFailureEvidenceV2>,
+  topologyObservedAt: string
+): void {
+  if (failure.evidenceKind !== "abandoned_operation_recovery"
+      || failure.failedGateId !== "G14_PRODUCTION_ROLLOUT") {
+    throw new Error("production_rollback_retained_uncertain_stop_binding_invalid");
+  }
+  const failed = failedOperationBinding(root, failure);
+  const recovery = loadRecoverySource(root);
+  const uncertain = recovery.uncertainStepMarker;
+  if (uncertain === null) throw new Error("production_rollback_retained_uncertain_stop_binding_invalid");
+  const intent = readCanonical(root, uncertain.stepIntentRelativePath,
+    validateProductionOrchestrationStepIntentV2);
+  const stopEvidence = exactRuntimeEvidenceForOperationStep(root, failure, "stop_previous");
+  assertAbandonedStopPreviousRetainedReconciliationV2({
+    failedOperationId: failed.operationId,
+    failedOperationClaimSha256: failed.operationClaimSha256,
+    recoveryOperationId: recovery.priorOperationId,
+    uncertainStepMarker: uncertain,
+    intent: intent.value,
+    intentSha256: intent.sha256,
+    topologyObservedAt,
+    exactStopEvidenceSha256: stopEvidence?.sha256 ?? null
+  });
 }
 
 type PriorAbandonedRollbackAttemptV2 = Readonly<{
@@ -2981,7 +3017,8 @@ async function deriveRollbackContext(root: string, operationId: string) {
       || freeze.value.releaseGenerationId !== before.lease.releaseGenerationId) {
     throw new Error("production_rollback_failure_operation_binding_invalid");
   }
-  const failedBinding = failedOperationBinding(root, failure.value);
+  const attemptedExternalEffect = "attemptedExternalEffect" in failure.value
+    ? failure.value.attemptedExternalEffect : failure.value.priorAttemptedExternalEffect;
   const candidateStartHistory = (): { sha256: string } | null => {
     if (failure.value.failedGateId === "G15_PRODUCTION_CANARY") {
       const proof = boundRuntimeStartProof(root, completedRolloutStartBinding(root));
@@ -3003,6 +3040,9 @@ async function deriveRollbackContext(root: string, operationId: string) {
     assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2(existing.value, before);
     if (existing.value.selectedWindow.kind === "previous_runtime_retained") {
       assertFrozenPreviousRuntimeSingletonV2(existing.value.topology, task0b.previousRuntimeIdentity);
+      if (attemptedExternalEffect) {
+        assertRetainedAfterAbandonedStopPreviousV2(root, failure.value, existing.value.topology.observedAt);
+      }
     }
     return { window: existing.value.selectedWindow, failureEvidenceSha256: failure.sha256,
       previousRuntimeIdentitySha256: shaFromTask0B(root, "previousRuntimeIdentity"),
@@ -3018,8 +3058,6 @@ async function deriveRollbackContext(root: string, operationId: string) {
   if (topologyState === null) throw new Error("production_rollback_topology_ambiguous");
   const snapshotSha256 = releaseSha256V2(canonicalBytesV2(topology));
   let window: ProtectedRollbackWindowV2;
-  const attemptedExternalEffect = "attemptedExternalEffect" in failure.value
-    ? failure.value.attemptedExternalEffect : failure.value.priorAttemptedExternalEffect;
   const priorRollback = loadPriorAbandonedRollbackHistory(root, {
     failureEvidenceSha256: failure.sha256,
     releaseFreezeIdentitySha256: freeze.sha256,
@@ -3031,22 +3069,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
   if (attemptedExternalEffect && topologyState === "previous_singleton"
       && failure.value.evidenceKind === "abandoned_operation_recovery"
       && failure.value.failedGateId === "G14_PRODUCTION_ROLLOUT") {
-    const recovery = loadRecoverySource(root);
-    const uncertain = recovery.uncertainStepMarker;
-    if (uncertain === null) throw new Error("production_rollback_retained_uncertain_stop_binding_invalid");
-    const intent = readCanonical(root, uncertain.stepIntentRelativePath,
-      validateProductionOrchestrationStepIntentV2);
-    const stopEvidence = exactRuntimeEvidenceForOperationStep(root, failure.value, "stop_previous");
-    assertAbandonedStopPreviousRetainedReconciliationV2({
-      failedOperationId: failedBinding.operationId,
-      failedOperationClaimSha256: failedBinding.operationClaimSha256,
-      recoveryOperationId: recovery.priorOperationId,
-      uncertainStepMarker: uncertain,
-      intent: intent.value,
-      intentSha256: intent.sha256,
-      topologyObservedAt: topology.observedAt,
-      exactStopEvidenceSha256: stopEvidence?.sha256 ?? null
-    });
+    assertRetainedAfterAbandonedStopPreviousV2(root, failure.value, topology.observedAt);
     assertFrozenPreviousRuntimeSingletonV2(topology, task0b.previousRuntimeIdentity);
     retainedAfterUnresolvedStop = true;
   }
@@ -3307,6 +3330,11 @@ export function verifySettledRollbackHistoricalProofsV2(
     }
     assertFrozenPreviousRuntimeSingletonV2(topology.value.topology,
       loadFrozenTask0B(root).previousRuntimeIdentity);
+    const attemptedExternalEffect = "attemptedExternalEffect" in failure.value
+      ? failure.value.attemptedExternalEffect : failure.value.priorAttemptedExternalEffect;
+    if (attemptedExternalEffect) {
+      assertRetainedAfterAbandonedStopPreviousV2(root, failure.value, topology.value.topology.observedAt);
+    }
     const terminalReceipt = receipts.find((entry) => entry.value.stepId === "prove_no_candidate_start");
     if (terminalReceipt === undefined) {
       throw new Error("production_settled_retained_runtime_terminal_receipt_missing");

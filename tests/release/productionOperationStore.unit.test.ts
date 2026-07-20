@@ -553,6 +553,18 @@ it.each([
       expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
         .toThrow(/committed|issuance|parent_missing|ENOENT/i);
       await writeFile(committedAuthorityPath, committedAuthorityBytes);
+      const task0bPath = join(root, "task0b-release-freeze.json");
+      const task0bBytes = readFileSync(task0bPath);
+      const task0b = JSON.parse(task0bBytes.toString("utf8"));
+      const candidateAdminUrl = "http://127.0.0.1:18788/";
+      task0b.runtimeManager.candidateAdminUrl = candidateAdminUrl;
+      task0b.runtimeManager.candidateAdminUrlFingerprintSha256 = releaseSha256V2(candidateAdminUrl);
+      task0b.candidatePort.port = 18788;
+      task0b.candidatePort.adminUrlFingerprintSha256 = releaseSha256V2(candidateAdminUrl);
+      await writeFile(task0bPath, canonicalBytes(task0b));
+      expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+        .toThrow(/task0b.*freeze.*binding/i);
+      await writeFile(task0bPath, task0bBytes);
     }
     const resumesDeadSettledOwner = faultAt === "after_settlement" || faultAt === "after_removal_prepare";
     await expect(runWithRootWriterProcessRuntimeForTestsV2({

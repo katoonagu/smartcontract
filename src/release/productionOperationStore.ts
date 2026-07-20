@@ -52,9 +52,11 @@ import {
   type ProductionOrchestrationReceiptV2,
   type ProductionPreclaimLeaseLineageV2
 } from "./remediationReleaseManifestV2";
+import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
 import {
   assertCommittedOperationalAuthorityRecordV2,
   currentRootWriterOwnerIdentityV2,
+  deriveReleaseFreezeIdentityV2,
   isLeaseOwnerProcessAliveV2,
   selectOperationalAttestationFromStoreV2
 } from "./releaseManifestStoreV2";
@@ -1912,6 +1914,12 @@ export class ProductionOperationStoreV2 {
     }
     const freeze = readCanonical(this.#path("release-freeze-identity-v2.json"), validateReleaseFreezeIdentityV2,
       "production_terminal_bundle_freeze");
+    const task0b = readCanonical(this.#path("task0b-release-freeze.json"),
+      validateTask0BReleaseFreezeEvidence, "production_terminal_bundle_task0b");
+    if (canonicalReleaseJsonV2(deriveReleaseFreezeIdentityV2(task0b.value))
+        !== canonicalReleaseJsonV2(freeze.value)) {
+      throw new Error("production_terminal_bundle_task0b_freeze_binding_invalid");
+    }
     const action = OPERATION_ACTION[state.operationKind];
     const attestation = readCanonical(safeArtifactRelativePath(this.#root,
       `operational-attestations/${action}/${state.releaseGenerationId}/${claim.value.operationalAttestationSha256}.json`),

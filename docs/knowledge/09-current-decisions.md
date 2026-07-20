@@ -300,6 +300,10 @@ of these decisions, update this file in the same work.
   `previous_runtime_retained` only when a later exact frozen-singleton topology
   proves the stop did not occur and no exact manager/reconciliation stop proof
   exists; a completed stop instead follows the restart-required rollback path.
+  These checks are replay invariants: pre-begin settlement replay reopens the
+  complete Task 0B freeze binding, and both persisted rollback topology and
+  terminal settlement replay recheck the orphan intent plus absence of an exact
+  manager or durable reconciliation stop proof.
   After an abandoned rollback restarted the previous runtime, later
   rollback checks use the latest matching operation/claim/intent-bound start
   receipt and manager/reconciliation proof rather than the frozen pre-restart
