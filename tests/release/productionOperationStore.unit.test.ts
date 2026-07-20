@@ -19,6 +19,7 @@ import {
   validateProductionOperationLeaseV2
 } from "../../src/release/remediationReleaseManifestV2";
 import {
+  advanceReleaseManifestV2,
   initializeReleaseManifestV2,
   issueOperationalAttestationV2,
   materializeReleaseFreezeV2,
@@ -324,7 +325,7 @@ it("revalidates current manifest receipt lineage before every owned production o
     .toThrow(/manifest|receipt|canonical|hash/i);
 }, 45_000);
 
-it("rejects changed executed gate evidence before creating a production lease or claim", async () => {
+it("rejects changed executed gate evidence before creating a production lease, claim, or manifest transition", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(T0));
   const root = await trustedRoot();
@@ -353,6 +354,18 @@ it("rejects changed executed gate evidence before creating a production lease or
     .rejects.toThrow(/gate_evidence|evidence.*bytes|canonical/i);
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
   expect(readdirSync(root).filter((name) => name.startsWith("production-operation-claim-"))).toEqual([]);
+  const transitionArtifactsBefore = readdirSync(root).filter((name) =>
+    name.startsWith("manifest-transition-claim-") || name.startsWith("manifest-transition-prepared-"));
+  await expect(advanceReleaseManifestV2({
+    artifactRoot: root,
+    sourceManifest: JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8")),
+    transition: { transitionId: "g12_backup_passed" },
+    verifiedGateOutputs: [],
+    verifiedTransitionEvidence: {}
+  } as never)).rejects.toThrow(/gate_evidence|evidence.*bytes|canonical/i);
+  expect(readdirSync(root).filter((name) =>
+    name.startsWith("manifest-transition-claim-") || name.startsWith("manifest-transition-prepared-")))
+    .toEqual(transitionArtifactsBefore);
 }, 45_000);
 
 it("rejects a replacement tip when an expired terminal authority later gains a use artifact", async () => {
@@ -373,6 +386,15 @@ it("rejects a replacement tip when an expired terminal authority later gains a u
   });
   vi.setSystemTime(new Date("2026-07-18T10:16:01.000Z"));
   const replacement = await issueOperationalAttestationV2({ artifactRoot: root, action: "g14_rollout_passed" });
+  await writeFile(join(root, "production-backup.dump"), Buffer.from("PGDMP normal binary artifact"));
+  await writeFile(join(root, "production-backup-restore-list.txt"), Buffer.from("1; TABLE public normal\n"));
+  expect(selectOperationalAttestationFromStoreV2({
+    artifactRoot: root,
+    action: "g14_rollout_passed",
+    expectedSourceManifestSha256: replacement.sourceManifestSha256,
+    evaluatedAt: "2026-07-18T10:16:01.001Z",
+    minimumRemainingValidityMs: 0
+  }).attestationSha256).toBe(replacement.attestationSha256);
   await writeFile(join(root, `production-claim-conflict-${first.attestationSha256}.json`), canonicalBytes({
     version: "production-claim-conflict-v2",
     operationalAttestationSha256: first.attestationSha256,
@@ -384,7 +406,7 @@ it("rejects a replacement tip when an expired terminal authority later gains a u
     artifactRoot: root,
     action: "g14_rollout_passed",
     expectedSourceManifestSha256: replacement.sourceManifestSha256,
-    evaluatedAt: "2026-07-18T10:16:01.001Z",
+    evaluatedAt: "2026-07-18T10:16:01.002Z",
     minimumRemainingValidityMs: 0
   })).toThrow("authority_terminal_use_artifact_conflict");
 }, 45_000);

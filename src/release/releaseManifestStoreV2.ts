@@ -1027,44 +1027,49 @@ function committedAuthorityChainThroughReceiptV2(
   return chain;
 }
 
+function committedAuthorityRecordsForActionV2(
+  root: string,
+  freeze: ReleaseFreezeIdentityV2,
+  action: OperationalAttestationV2["action"]
+): CommittedAuthorityRecordV2[] {
+  const records: CommittedAuthorityRecordV2[] = [];
+  const probeAuthority = { action, generationId: freeze.releaseGenerationId } as OperationalAttestationV2;
+  let directory: string;
+  try {
+    directory = dirname(lifecyclePath(root,
+      exactAuthorityRelativePath("committed", probeAuthority, "0".repeat(64))));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT"
+        || (error as Error).message === "artifact_parent_missing") return records;
+    throw error;
+  }
+  for (const filename of readdirSync(directory).sort()) {
+    if (!/^[0-9a-f]{64}\.json$/u.test(filename)) throw new Error("authority_committed_filename_invalid");
+    records.push(exactCommittedAuthorityRecordV2(root, freeze, action, filename.slice(0, 64)));
+  }
+  records.sort((left, right) => Number(left.issuerReceipt.sequence) - Number(right.issuerReceipt.sequence));
+  records.forEach((record, index) => {
+    if (record.issuerReceipt.sequence !== index + 1
+        || record.issuerReceipt.previousIssuerReceiptSha256
+          !== (index === 0 ? null : records[index - 1]!.issuerReceiptSha256)
+        || record.authority.previousAttestationSha256
+          !== (index === 0 ? null : records[index - 1]!.attestationSha256)) {
+      throw new Error("authority_chain_not_linear");
+    }
+  });
+  return records;
+}
+
 function committedAuthorityRecordsV2(
   root: string,
   freeze: ReleaseFreezeIdentityV2
 ): CommittedAuthorityRecordV2[] {
-  const records: CommittedAuthorityRecordV2[] = [];
-  for (const action of [
+  return [
     "pre_manual", "readiness", "g12_backup_passed", "g13_migration_passed",
     "g14_rollout_passed", "g15_canary_released", "production_failed", "rollback_rolled_back"
-  ] as const) {
-    const probeAuthority = { action, generationId: freeze.releaseGenerationId } as OperationalAttestationV2;
-    let directory: string;
-    try {
-      directory = dirname(lifecyclePath(root,
-        exactAuthorityRelativePath("committed", probeAuthority, "0".repeat(64))));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT"
-          || (error as Error).message === "artifact_parent_missing") continue;
-      throw error;
-    }
-    for (const filename of readdirSync(directory).sort()) {
-      if (!/^[0-9a-f]{64}\.json$/u.test(filename)) throw new Error("authority_committed_filename_invalid");
-      const issuerReceiptSha256 = filename.slice(0, 64);
-      records.push(exactCommittedAuthorityRecordV2(root, freeze, action, issuerReceiptSha256));
-    }
-  }
-  records.sort((left, right) => left.authority.action.localeCompare(right.authority.action)
-    || Number(left.issuerReceipt.sequence) - Number(right.issuerReceipt.sequence));
-  for (const action of new Set(records.map((record) => record.authority.action))) {
-    const chain = records.filter((record) => record.authority.action === action);
-    chain.forEach((record, index) => {
-      if (record.issuerReceipt.sequence !== index + 1
-          || record.issuerReceipt.previousIssuerReceiptSha256 !== (index === 0 ? null : chain[index - 1]!.issuerReceiptSha256)
-          || record.authority.previousAttestationSha256 !== (index === 0 ? null : chain[index - 1]!.attestationSha256)) {
-        throw new Error("authority_chain_not_linear");
-      }
-    });
-  }
-  return records;
+  ].flatMap((action) => committedAuthorityRecordsForActionV2(
+    root, freeze, action as OperationalAttestationV2["action"]
+  ));
 }
 
 export function assertCommittedOperationalAuthorityRecordV2(
@@ -1131,14 +1136,28 @@ function authorityUseArtifactPresentV2(root: string, record: CommittedAuthorityR
     `operational-attestation-consumption-${record.attestationSha256}.json`);
   if (existsSync(exactConsumption)) return true;
   return readdirSync(root, { recursive: true, withFileTypes: true }).some((entry) => {
-    if (!entry.isFile()) return false;
+    if (!entry.isFile() || !entry.name.endsWith(".json")) return false;
     const parent = "parentPath" in entry ? String(entry.parentPath) : "";
     const parentRelative = parent ? relative(root, parent).replace(/\\/gu, "/") : "";
     const artifactRelativePath = parentRelative && parentRelative !== "."
       ? `${parentRelative}/${entry.name}` : entry.name;
-    if (!artifactRelativePath.split("/").some((segment) => segment.startsWith("production-"))) return false;
+    if (!artifactRelativePath.split("/").some((segment) =>
+      segment.startsWith("production-") || segment.startsWith("schema032-"))) return false;
     let parsed: unknown;
-    try { parsed = readJson(lifecyclePath(root, artifactRelativePath)); }
+    try {
+      // ponytail: the root ACL and recursive no-symlink Dirent walk are the trust boundary;
+      // move to handle-relative no-follow reads if same-principal writers enter scope.
+      const path = resolve(root, ...artifactRelativePath.split("/"));
+      const relativePath = relative(root, path);
+      if (relativePath.startsWith("..") || resolve(root, relativePath) !== path) {
+        throw new Error("authority_use_artifact_path_invalid");
+      }
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > 4 * 1024 * 1024) {
+        throw new Error("authority_use_artifact_size_invalid");
+      }
+      parsed = readJson(path);
+    }
     catch (error) {
       throw new Error("authority_use_artifact_unverifiable", { cause: error });
     }
@@ -1280,8 +1299,7 @@ function publishPreparedOperationalAttestationV2(
   const lease = acquireOrResumeFrozenLease(root, preparedAuthorityLeasePayloadV2(root, freeze, prepared),
     lifecycleArtifactExists(root, preparedName));
   try {
-    const lockedActionRecords = committedAuthorityRecordsV2(root, freeze)
-      .filter((record) => record.authority.action === authority.action);
+    const lockedActionRecords = committedAuthorityRecordsForActionV2(root, freeze, authority.action);
     if (lockedActionRecords.length !== expectedChain.length
         || (lockedActionRecords.at(-1)?.issuerReceiptSha256 ?? null) !== expectedChain.lastIssuerReceiptSha256) {
       throw new Error("authority_chain_changed_before_prepare");
@@ -1314,8 +1332,7 @@ export async function issueOperationalAttestationV2(input: {
   const root = assertTrustedArtifactRootPathV2(exactInput.artifactRoot);
   const freeze = currentVerifiedFreeze(root);
   const { bytes: currentManifestBytes } = validateCanonicalCurrentManifestChainV2(root, freeze);
-  const records = committedAuthorityRecordsV2(root, freeze);
-  const actionRecords = records.filter((record) => record.authority.action === exactInput.action);
+  const actionRecords = committedAuthorityRecordsForActionV2(root, freeze, exactInput.action);
   const sourceManifestSha256 = releaseSha256V2(currentManifestBytes);
   const unresolved = unresolvedPreparedAuthorityV2(
     root, freeze, exactInput.action, sourceManifestSha256, actionRecords
@@ -1860,7 +1877,7 @@ export async function terminalizeExpiredOperationalAttestationV2(input: {
     throw new Error("caller_supplied_authority_observation_forbidden");
   }
   const hash = authorityHash(authority);
-  const records = committedAuthorityRecordsV2(root, freeze);
+  const records = committedAuthorityRecordsForActionV2(root, freeze, authority.action);
   const record = records.find((item) => item.attestationSha256 === hash);
   if (!record || !readFileSync(lifecyclePath(root,
     exactAuthorityRelativePath("attestation", authority, hash))).equals(canonicalBytesV2(authority))) {
@@ -2129,6 +2146,14 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
   const currentHeadBeforeClaim = readCanonicalManifestHeadV2(root, freeze);
   const currentManifestBeforeClaim = currentHeadBeforeClaim.manifest;
   const currentManifestShaBeforeClaim = releaseSha256V2(currentHeadBeforeClaim.bytes);
+  const sourceIsCurrentHead = currentManifestShaBeforeClaim === sourceShaForKey;
+  const requiresSemanticSourceVerification = input.transition.transitionId !== "readiness";
+  if (sourceIsCurrentHead && requiresSemanticSourceVerification) {
+    validateCanonicalManifestChainHeadV2(root, freeze, currentHeadBeforeClaim);
+    verifyReleaseManifestSemanticsAtCanonicalRootV2(
+      root, freeze, source, currentHeadBeforeClaim.bytes
+    );
+  }
   const operationalAuthoritySha256 = consumedAuthorityHashForTransitionV2(
     root, freeze, sourceShaForKey, input.transition, input.verifiedTransitionEvidence,
     input.verifiedGateOutputs);
@@ -2143,8 +2168,9 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
   const leasePayload = ownerPayload({ evaluatedAt: input.evaluatedAt ?? input.transition.evaluatedAt },
     "manifest_transition", root, freeze, transitionKey, transitionKey);
 
-  if (currentManifestShaBeforeClaim === sourceShaForKey) {
-    validateCanonicalManifestChainHeadV2(root, freeze, currentHeadBeforeClaim);
+  let sourceBytesForSemanticVerification: Buffer | null = null;
+  if (sourceIsCurrentHead) {
+    sourceBytesForSemanticVerification = currentHeadBeforeClaim.bytes;
   } else if (existsSync(preparedPath)) {
     const sourceSnapshotPath = lifecyclePath(root,
       `manifest-snapshots/release-manifest-r${source.revision}-${sourceShaForKey}.json`);
@@ -2156,6 +2182,13 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
       manifest: source,
       bytes: sourceSnapshotBytes
     });
+    sourceBytesForSemanticVerification = sourceSnapshotBytes;
+  }
+  if (requiresSemanticSourceVerification
+      && sourceBytesForSemanticVerification !== null && !sourceIsCurrentHead) {
+    verifyReleaseManifestSemanticsAtCanonicalRootV2(
+      root, freeze, source, sourceBytesForSemanticVerification
+    );
   }
 
   if (existsSync(preparedPath)) {
@@ -2170,7 +2203,8 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
     if (existsSync(manifestPath) && existsSync(completedReceiptPath)
         && currentManifestShaBeforeClaim === releaseSha256V2(built.targetBytes)
         && readFileSync(completedReceiptPath).equals(built.receiptBytes)) {
-      validateCanonicalCurrentManifestChainV2(root, freeze);
+      if (requiresSemanticSourceVerification) verifyCurrentReleaseManifestChainAtCanonicalRootV2(root);
+      else validateCanonicalCurrentManifestChainV2(root, freeze);
       releaseCompletedReplayLeaseIfOwned(root, leasePayload,
         input.evaluatedAt ?? input.transition.evaluatedAt ?? new Date().toISOString());
       return { manifest: built.target, receipt: built.receipt };
@@ -2213,6 +2247,11 @@ export async function advanceReleaseManifestV2(input: AdvanceInput) {
     const targetHash = releaseSha256V2(canonicalBytesV2(built.target));
     if (currentSource && currentHash !== built.prepared.sourceManifestSha256 && currentHash !== targetHash) {
       throw new Error("manifest_source_cas_conflict");
+    }
+    if (requiresSemanticSourceVerification && currentHead !== null) {
+      verifyReleaseManifestSemanticsAtCanonicalRootV2(
+        root, freeze, currentHead.manifest, currentHead.bytes
+      );
     }
     const targetBytes = built.targetBytes;
     if (!existsSync(manifestPath)) writeExclusiveDurable(manifestPath, targetBytes);
@@ -3064,18 +3103,13 @@ export async function initializeReleaseManifestV2(input: {
   }
 }
 
-function verifyCurrentReleaseManifestChainAtCanonicalRootV2(
+function verifyReleaseManifestSemanticsAtCanonicalRootV2(
   root: string,
+  freeze: ReleaseFreezeIdentityV2,
+  manifest: RemediationReleaseManifestV2,
+  manifestBytes: Buffer,
   artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
-): {
-  freeze: ReleaseFreezeIdentityV2;
-  manifest: RemediationReleaseManifestV2;
-  manifestBytes: Buffer;
-  manifestSha256: string;
-} {
-  const freeze = currentVerifiedFreeze(root, artifactPath);
-  const { manifest, bytes: manifestBytes } = validateCanonicalCurrentManifestChainV2(
-    root, freeze, artifactPath);
+): void {
   const evidencePath = artifactPath === trustedRootManifestArtifactPathV2
     ? trustedRootManifestArtifactPathV2
     : (semanticRoot: string, relativePath: string) => safeArtifactRelativePath(semanticRoot, relativePath);
@@ -3128,6 +3162,23 @@ function verifyCurrentReleaseManifestChainAtCanonicalRootV2(
       throw new Error("standalone_production_authority_binding_invalid");
     }
   }
+}
+
+function verifyCurrentReleaseManifestChainAtCanonicalRootV2(
+  root: string,
+  artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
+): {
+  freeze: ReleaseFreezeIdentityV2;
+  manifest: RemediationReleaseManifestV2;
+  manifestBytes: Buffer;
+  manifestSha256: string;
+} {
+  const freeze = currentVerifiedFreeze(root, artifactPath);
+  const { manifest, bytes: manifestBytes } = validateCanonicalCurrentManifestChainV2(
+    root, freeze, artifactPath);
+  verifyReleaseManifestSemanticsAtCanonicalRootV2(
+    root, freeze, manifest, manifestBytes, artifactPath
+  );
   return { freeze, manifest, manifestBytes, manifestSha256: releaseSha256V2(manifestBytes) };
 }
 

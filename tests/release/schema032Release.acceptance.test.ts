@@ -904,6 +904,8 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
     gateId: "G12_PRODUCTION_BACKUP",
     commandId: "production_backup",
     redactedTemplateSha256: producer.SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256,
+    operationalAttestationSha256: "a".repeat(64),
+    operationalAttestationIssuerReceiptSha256: "e".repeat(64),
     databaseIdentityFingerprintSha256: TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
     backupFilename: "production-backup.dump",
     backupBytes: 12,
@@ -952,6 +954,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] requires fresh one-shot production GO 
     { authority: { ...authority, candidateSha: "f".repeat(40) } },
     { authority: { ...authority, backupEvidenceSha256: "f".repeat(64) } },
     { backupBytes: Buffer.from(JSON.stringify({ ...backup, state: "failed" })) },
+    { backupBytes: Buffer.from(JSON.stringify({ ...backup, operationalAttestationSha256: "f" })) },
     { observedDatabaseIdentityFingerprintSha256: "f".repeat(64) },
     { manifestBytes: Buffer.from(JSON.stringify({
       ...currentManifest,

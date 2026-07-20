@@ -142,6 +142,8 @@ type ProductionBackupEvidenceV1 = {
   gateId: "G12_PRODUCTION_BACKUP";
   commandId: "production_backup";
   redactedTemplateSha256: string;
+  operationalAttestationSha256: string;
+  operationalAttestationIssuerReceiptSha256: string;
   databaseIdentityFingerprintSha256: string;
   backupFilename: "production-backup.dump";
   backupBytes: number;
@@ -1001,6 +1003,7 @@ function parseProductionBackupEvidence(value: unknown, input: {
   assertNoSecretLikeArtifactValues(backup);
   exactKeys(backup, [
     "version", "candidateSha", "gateId", "commandId", "redactedTemplateSha256",
+    "operationalAttestationSha256", "operationalAttestationIssuerReceiptSha256",
     "databaseIdentityFingerprintSha256", "backupFilename", "backupBytes", "backupSha256",
     "backupPathFingerprintSha256", "restoreListFilename", "restoreListBytes", "restoreListSha256",
     "restoreListEntryCount", "state"
@@ -1008,6 +1011,8 @@ function parseProductionBackupEvidence(value: unknown, input: {
   if (backup.version !== "production-backup-evidence-v1" || backup.candidateSha !== input.candidateSha
       || backup.gateId !== "G12_PRODUCTION_BACKUP" || backup.commandId !== "production_backup"
       || backup.redactedTemplateSha256 !== SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256
+      || !SHA256.test(String(backup.operationalAttestationSha256))
+      || !SHA256.test(String(backup.operationalAttestationIssuerReceiptSha256))
       || backup.databaseIdentityFingerprintSha256 !== input.observedDatabaseIdentityFingerprintSha256
       || backup.backupFilename !== PRODUCTION_BACKUP_FILENAME
       || !Number.isSafeInteger(backup.backupBytes) || Number(backup.backupBytes) <= 0
