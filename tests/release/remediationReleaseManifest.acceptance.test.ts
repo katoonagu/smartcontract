@@ -394,7 +394,11 @@ it("[REQ-38][SUITE-ENVIRONMENT] strips production providers and Telegram while r
     PATH: "test-path",
     DATABASE_URL: "postgresql://prod:secret@127.0.0.1/tron_watch",
     TELEGRAM_BOT_TOKEN: "123456789:AAExampleTokenValue",
+    SERVICE_ADMIN_TG_IDS: "123456789",
     TRONSCAN_API_KEY: "secret-provider-key",
+    TRON_FULLNODE_BASE_URL: "https://production-fullnode.example",
+    RANGE_BASE_URL: "https://production-range.example",
+    EVM_EXPLORER_BASE_URL: "https://production-evm.example",
     PLAN5_TELEGRAM_BOT_TOKEN: "123456789:AAExampleTokenValue",
     TEST_TRONSCAN_API_KEY: "secret-provider-key",
     PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL: "postgresql://test:test@127.0.0.1/tron_watch_plan5_runtime_sanitized",
@@ -404,7 +408,11 @@ it("[REQ-38][SUITE-ENVIRONMENT] strips production providers and Telegram while r
   expect(env.PATH).toBe("test-path");
   expect(env.DATABASE_URL).toBeUndefined();
   expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+  expect(env.SERVICE_ADMIN_TG_IDS).toBeUndefined();
   expect(env.TRONSCAN_API_KEY).toBeUndefined();
+  expect(env.TRON_FULLNODE_BASE_URL).toBeUndefined();
+  expect(env.RANGE_BASE_URL).toBeUndefined();
+  expect(env.EVM_EXPLORER_BASE_URL).toBeUndefined();
   expect(env.PLAN5_TELEGRAM_BOT_TOKEN).toBeUndefined();
   expect(env.TEST_TRONSCAN_API_KEY).toBeUndefined();
   expect(env.PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL).toContain("tron_watch_plan5_runtime_sanitized");
