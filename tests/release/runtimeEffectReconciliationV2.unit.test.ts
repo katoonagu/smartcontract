@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
+import { validateTask0BReleaseFreezeEvidence } from "../../src/release/remediationReleaseManifest";
+import { deriveReleaseFreezeIdentityV2 } from "../../src/release/releaseManifestStoreV2";
+import { buildTask0BReleaseFreezeEvidence } from "../fixtures/release/remediationReleaseFixtures";
 import {
   classifyRuntimeRollbackTopologyV2,
   createRuntimeRollbackTopologyEvidenceV2,
@@ -12,7 +15,7 @@ import {
   type RuntimeTopologyCandidateV2
 } from "../../src/release/runtimeEffectReconciliationV2";
 import { assertFrozenPreviousRuntimeSingletonV2, assertRollbackTopologyEvidenceAgainstCurrentAuthorityV2,
-  assertTask0BPreviousIdentityFreezeBindingV2 } from
+  assertTask0BFreezeBindingV2, assertTask0BPreviousIdentityFreezeBindingV2 } from
   "../../src/release/productionOperationAdaptersV2";
 
 const SHA40 = "a".repeat(40);
@@ -144,6 +147,23 @@ describe("runtime effect crash reconciliation", () => {
     expect(() => assertTask0BPreviousIdentityFreezeBindingV2(frozen, frozenSha256)).not.toThrow();
     expect(() => assertTask0BPreviousIdentityFreezeBindingV2({ ...frozen, processId: 4243 }, frozenSha256))
       .toThrow(/previous.identity.freeze.binding/i);
+  });
+
+  it("rejects a same-principal replacement of any other frozen Task0B field", () => {
+    const task0b = validateTask0BReleaseFreezeEvidence(buildTask0BReleaseFreezeEvidence());
+    const freeze = deriveReleaseFreezeIdentityV2(task0b);
+    expect(() => assertTask0BFreezeBindingV2(task0b, freeze)).not.toThrow();
+    const candidateAdminUrl = "http://127.0.0.1:18788/";
+    const replaced = validateTask0BReleaseFreezeEvidence({
+      ...task0b,
+      runtimeManager: { ...task0b.runtimeManager, candidateAdminUrl,
+        candidateAdminUrlFingerprintSha256: releaseSha256V2(candidateAdminUrl) },
+      candidatePort: { ...task0b.candidatePort, port: 18788,
+        adminUrlFingerprintSha256: releaseSha256V2(candidateAdminUrl) }
+    });
+    expect(replaced.previousRuntimeIdentity).toEqual(task0b.previousRuntimeIdentity);
+    expect(() => assertTask0BFreezeBindingV2(replaced, freeze))
+      .toThrow(/task0b.freeze.binding/i);
   });
 
   it("binds rollback topology evidence to the claimed operation, exact snapshot, identities and compatible window", () => {

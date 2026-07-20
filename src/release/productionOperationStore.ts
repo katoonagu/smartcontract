@@ -1912,6 +1912,34 @@ export class ProductionOperationStoreV2 {
     }
     const freeze = readCanonical(this.#path("release-freeze-identity-v2.json"), validateReleaseFreezeIdentityV2,
       "production_terminal_bundle_freeze");
+    const action = OPERATION_ACTION[state.operationKind];
+    const attestation = readCanonical(safeArtifactRelativePath(this.#root,
+      `operational-attestations/${action}/${state.releaseGenerationId}/${claim.value.operationalAttestationSha256}.json`),
+    validateOperationalAttestationV2, "production_terminal_bundle_attestation");
+    const issuerReceipt = readCanonical(safeArtifactRelativePath(this.#root,
+      `operational-attestation-issuer-receipts/${action}/${state.releaseGenerationId}/${claim.value.operationalAttestationIssuerReceiptSha256}.json`),
+    validateOperationalAttestationIssuerReceiptV2, "production_terminal_bundle_issuer_receipt");
+    if (freeze.value.releaseGenerationId !== state.releaseGenerationId
+        || freeze.value.candidateSha !== state.candidateSha
+        || freeze.value.artifactRootFingerprintSha256 !== claim.value.artifactRootFingerprintSha256
+        || attestation.sha256 !== claim.value.operationalAttestationSha256
+        || attestation.value.action !== action
+        || attestation.value.generationId !== state.releaseGenerationId
+        || attestation.value.candidateSha !== state.candidateSha
+        || attestation.value.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze.value)
+        || attestation.value.sourceManifestSha256 !== state.sourceManifestSha256
+        || attestation.value.artifactRootFingerprintSha256 !== claim.value.artifactRootFingerprintSha256
+        || attestation.value.commandId !== claim.value.authorityConsumption.commandId
+        || attestation.value.redactedTemplateSha256 !== claim.value.authorityConsumption.redactedTemplateSha256
+        || issuerReceipt.sha256 !== claim.value.operationalAttestationIssuerReceiptSha256
+        || issuerReceipt.value.attestationSha256 !== attestation.sha256
+        || issuerReceipt.value.action !== action
+        || issuerReceipt.value.generationId !== state.releaseGenerationId) {
+      throw new Error("production_terminal_bundle_authority_binding_invalid");
+    }
+    assertCommittedOperationalAuthorityRecordV2(this.#root, freeze.value, {
+      attestationSha256: attestation.sha256, issuerReceiptSha256: issuerReceipt.sha256
+    });
     let orchestration: Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null = null;
     if (state.orchestrationReceiptSha256 !== null) {
       orchestration = artifact(`${state.operationKind}_orchestration`, validateProductionOrchestrationReceiptV2,

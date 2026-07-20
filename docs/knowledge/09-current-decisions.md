@@ -290,9 +290,16 @@ of these decisions, update this file in the same work.
   complete PID/start-time, command, executable, worktree and entrypoint identity
   to remain equal to frozen Task 0B at selection and terminal re-observation;
   the terminal topology is persisted with operation/claim/lease/time bindings
-  and reopened during settlement replay. Every production runtime decision binds
-  the current Task 0B previous-identity hash to the immutable release freeze
-  before authority issuance, observation, effect execution or recovery.
+  and reopened during settlement replay. Every production runtime decision
+  recomputes the release freeze from the complete canonical Task 0B artifact,
+  not only its previous-runtime identity, before authority issuance,
+  observation, effect execution or recovery. Settlement replay also requires
+  the exact attestation/issuer pair to remain a member of the committed
+  append-only authority issuance chain before publication or lease removal.
+  An abandoned rollout with a durable orphan `stop_previous` intent may select
+  `previous_runtime_retained` only when a later exact frozen-singleton topology
+  proves the stop did not occur and no exact manager/reconciliation stop proof
+  exists; a completed stop instead follows the restart-required rollback path.
   After an abandoned rollback restarted the previous runtime, later
   rollback checks use the latest matching operation/claim/intent-bound start
   receipt and manager/reconciliation proof rather than the frozen pre-restart

@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadRecoverySource } from "../../src/release/productionOperationAdaptersV2";
+import { assertAbandonedStopPreviousRetainedReconciliationV2,
+  loadRecoverySource } from "../../src/release/productionOperationAdaptersV2";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 import {
   canonicalReleaseJsonV2,
@@ -303,13 +304,28 @@ function fixture(options: { orphanSequence?: 5 | 7; includeSecondOrphan?: boolea
 describe("abandoned production recovery source integrity", () => {
   it("accepts one exact contiguous receipt prefix and one exact next uncertain intent", () => {
     const value = fixture({ orphanSequence: 5 });
-    expect(loadRecoverySource(value.root)).toMatchObject({
+    const recovery = loadRecoverySource(value.root);
+    expect(recovery).toMatchObject({
       priorOperationId: OPERATION_ID,
       completedStepReceiptPrefix: value.refs.map(({ receipt, sha256 }) => ({
         sequence: receipt.sequence, stepId: receipt.stepId, receiptSha256: sha256
       })),
       uncertainStepMarker: { sequence: 5, stepId: "stop_previous" }
     });
+    const binding = {
+      failedOperationId: OPERATION_ID,
+      failedOperationClaimSha256: releaseSha256V2(canonicalBytesV2(value.claim)),
+      recoveryOperationId: recovery.priorOperationId,
+      uncertainStepMarker: recovery.uncertainStepMarker,
+      intent: value.orphanRecord!.intent,
+      intentSha256: recovery.uncertainStepMarker!.stepIntentSha256,
+      topologyObservedAt: "2026-07-19T00:00:01.000Z",
+      exactStopEvidenceSha256: null
+    };
+    expect(() => assertAbandonedStopPreviousRetainedReconciliationV2(binding)).not.toThrow();
+    expect(() => assertAbandonedStopPreviousRetainedReconciliationV2({
+      ...binding, exactStopEvidenceSha256: "f".repeat(64)
+    })).toThrow(/retained_uncertain_stop_binding/i);
   });
 
   it.each(["forged_claim", "foreign_receipt_lease", "foreign_intent_lease", "cleanup_lease",

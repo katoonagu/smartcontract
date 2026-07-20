@@ -545,6 +545,14 @@ it.each([
       expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
         .toThrow(/parent_missing|ENOENT|authority|attestation/i);
       await writeFile(attestationPath, attestationBytes);
+      const committedAuthorityPath = join(root, "operational-attestation-issuance-committed",
+        "g14_rollout_passed", claim.releaseGenerationId,
+        `${claim.operationalAttestationIssuerReceiptSha256}.json`);
+      const committedAuthorityBytes = readFileSync(committedAuthorityPath);
+      await unlink(committedAuthorityPath);
+      expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+        .toThrow(/committed|issuance|parent_missing|ENOENT/i);
+      await writeFile(committedAuthorityPath, committedAuthorityBytes);
     }
     const resumesDeadSettledOwner = faultAt === "after_settlement" || faultAt === "after_removal_prepare";
     await expect(runWithRootWriterProcessRuntimeForTestsV2({

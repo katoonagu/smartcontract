@@ -74,6 +74,7 @@ import {
   ProductionOperationStoreV2,
   type SettledRollbackHistoricalProofVerifierV2
 } from "./productionOperationStore";
+import { deriveReleaseFreezeIdentityV2 } from "./releaseManifestStoreV2";
 import {
   RUNTIME_CYCLE_NAMES,
   type RuntimeCycleName,
@@ -569,11 +570,60 @@ export function assertTask0BPreviousIdentityFreezeBindingV2(
   }
 }
 
+export function assertTask0BFreezeBindingV2(
+  task0b: ReturnType<typeof validateTask0BReleaseFreezeEvidence>,
+  freeze: ReturnType<typeof validateReleaseFreezeIdentityV2>
+): void {
+  if (canonicalReleaseJsonV2(deriveReleaseFreezeIdentityV2(task0b))
+      !== canonicalReleaseJsonV2(freeze)) {
+    throw new Error("production_task0b_freeze_binding_invalid");
+  }
+}
+
+export function assertAbandonedStopPreviousRetainedReconciliationV2(input: Readonly<{
+  failedOperationId: string;
+  failedOperationClaimSha256: string;
+  recoveryOperationId: string;
+  uncertainStepMarker: Readonly<{
+    stepId: string;
+    stepIntentRelativePath: string;
+    stepIntentSha256: string;
+    externalEffectMayHaveStarted: boolean;
+    observedOutcome: string;
+  }> | null;
+  intent: Readonly<{
+    operationId: string;
+    operationClaimSha256: string;
+    stepId: string;
+    relativePath: string;
+    preparedAt: string;
+  }>;
+  intentSha256: string;
+  topologyObservedAt: string;
+  exactStopEvidenceSha256: string | null;
+}>): void {
+  const uncertain = input.uncertainStepMarker;
+  const topologyObservedAt = Date.parse(input.topologyObservedAt);
+  const intentPreparedAt = Date.parse(input.intent.preparedAt);
+  if (input.recoveryOperationId !== input.failedOperationId
+      || uncertain === null || uncertain.stepId !== "stop_previous"
+      || uncertain.externalEffectMayHaveStarted !== true || uncertain.observedOutcome !== "unknown"
+      || input.intent.operationId !== input.failedOperationId
+      || input.intent.operationClaimSha256 !== input.failedOperationClaimSha256
+      || input.intent.stepId !== "stop_previous"
+      || input.intent.relativePath !== uncertain.stepIntentRelativePath
+      || input.intentSha256 !== uncertain.stepIntentSha256
+      || !Number.isFinite(topologyObservedAt) || !Number.isFinite(intentPreparedAt)
+      || topologyObservedAt < intentPreparedAt
+      || input.exactStopEvidenceSha256 !== null) {
+    throw new Error("production_rollback_retained_uncertain_stop_binding_invalid");
+  }
+}
+
 function loadFrozenTask0B(root: string, evaluatedAt?: string) {
   const task0b = loadTask0B(root, evaluatedAt);
   const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
-  assertTask0BPreviousIdentityFreezeBindingV2(task0b.previousRuntimeIdentity,
-    freeze.value.previousRuntimeDiscoverySha256);
+  assertTask0BFreezeBindingV2(task0b, freeze.value);
   return task0b;
 }
 
@@ -2236,11 +2286,15 @@ function nestedArtifactDirectory(root: string, relativeDirectory: string): strin
 
 function exactRuntimeEvidenceForOperationStep(
   root: string,
-  operationId: string,
-  operationClaimSha256: string,
+  failure: ReturnType<typeof validateProductionFailureEvidenceV2>,
   stepId: "stop_previous" | "start_candidate"
 ) {
-  const settled = settledOperationStartBinding(root, operationId, operationClaimSha256);
+  const failed = failedOperationBinding(root, failure);
+  const settled = failure.evidenceKind === "abandoned_operation_recovery"
+    ? abandonedRolloutStartBinding(root, failure)
+    : settledOperationStartBinding(root, failed.operationId, failed.operationClaimSha256);
+  const operationId = settled.operationId;
+  const operationClaimSha256 = settled.operationClaimSha256;
   if (stepId === "start_candidate") {
     const proof = boundRuntimeStartProof(root, settled);
     return proof === null ? null : { sha256: proof.proofSha256 };
@@ -2933,8 +2987,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
       const proof = boundRuntimeStartProof(root, completedRolloutStartBinding(root));
       return proof === null ? null : { sha256: proof.proofSha256 };
     }
-    return exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
-      failedBinding.operationClaimSha256, "start_candidate");
+    return exactRuntimeEvidenceForOperationStep(root, failure.value, "start_candidate");
   };
   const existingPlanNames = readdirSync(root).filter((name) =>
     name.startsWith(`production-rollback-topology-${operationId}-`) && name.endsWith(".json"));
@@ -2974,7 +3027,30 @@ async function deriveRollbackContext(root: string, operationId: string) {
     releaseGenerationId: before.lease.releaseGenerationId,
     sourceManifestSha256: before.lease.sourceManifestSha256
   });
-  if (!attemptedExternalEffect) {
+  let retainedAfterUnresolvedStop = false;
+  if (attemptedExternalEffect && topologyState === "previous_singleton"
+      && failure.value.evidenceKind === "abandoned_operation_recovery"
+      && failure.value.failedGateId === "G14_PRODUCTION_ROLLOUT") {
+    const recovery = loadRecoverySource(root);
+    const uncertain = recovery.uncertainStepMarker;
+    if (uncertain === null) throw new Error("production_rollback_retained_uncertain_stop_binding_invalid");
+    const intent = readCanonical(root, uncertain.stepIntentRelativePath,
+      validateProductionOrchestrationStepIntentV2);
+    const stopEvidence = exactRuntimeEvidenceForOperationStep(root, failure.value, "stop_previous");
+    assertAbandonedStopPreviousRetainedReconciliationV2({
+      failedOperationId: failedBinding.operationId,
+      failedOperationClaimSha256: failedBinding.operationClaimSha256,
+      recoveryOperationId: recovery.priorOperationId,
+      uncertainStepMarker: uncertain,
+      intent: intent.value,
+      intentSha256: intent.sha256,
+      topologyObservedAt: topology.observedAt,
+      exactStopEvidenceSha256: stopEvidence?.sha256 ?? null
+    });
+    assertFrozenPreviousRuntimeSingletonV2(topology, task0b.previousRuntimeIdentity);
+    retainedAfterUnresolvedStop = true;
+  }
+  if (!attemptedExternalEffect || retainedAfterUnresolvedStop) {
     if (topologyState !== "previous_singleton" || failure.value.failedGateId === "G15_PRODUCTION_CANARY") {
       throw new Error("production_rollback_history_topology_conflict");
     }
@@ -3001,8 +3077,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
         candidateStartEvidenceSha256: candidateStart.sha256,
         candidateStopEvidenceSha256: candidateStopSha256 };
     } else {
-      const previousStop = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
-        failedBinding.operationClaimSha256, "stop_previous");
+      const previousStop = exactRuntimeEvidenceForOperationStep(root, failure.value, "stop_previous");
       if (!previousStop || failure.value.failedGateId !== "G14_PRODUCTION_ROLLOUT") {
         throw new Error("production_rollback_previous_stop_history_missing");
       }
@@ -3027,8 +3102,7 @@ async function deriveRollbackContext(root: string, operationId: string) {
         previousStartEvidenceSha256: previousStartSha256 };
     } else if (priorRollback?.completedStepIds.has("restart_previous")
         && failure.value.failedGateId === "G14_PRODUCTION_ROLLOUT") {
-      const previousStop = exactRuntimeEvidenceForOperationStep(root, failedBinding.operationId,
-        failedBinding.operationClaimSha256, "stop_previous");
+      const previousStop = exactRuntimeEvidenceForOperationStep(root, failure.value, "stop_previous");
       const previousStartSha256 = priorRollback.runtimeStartProof?.()?.proofSha256 ?? null;
       if (!previousStop || previousStartSha256 === null) {
         throw new Error("production_rollback_completed_history_missing");
@@ -3193,9 +3267,8 @@ export function verifySettledRollbackHistoricalProofsV2(
   if (window.failedGateId !== input.outcome.failedGateId) {
     throw new Error("production_settled_rollback_window_outcome_binding_invalid");
   }
-  const failed = failedOperationBinding(root, failure.value);
-  const previousStop = () => exactRuntimeEvidenceForOperationStep(root, failed.operationId,
-    failed.operationClaimSha256, "stop_previous")?.sha256 ?? null;
+  const previousStop = () => exactRuntimeEvidenceForOperationStep(root, failure.value,
+    "stop_previous")?.sha256 ?? null;
   const candidateStart = () => rollbackCandidateStartProof(root, failure.value)?.proofSha256 ?? null;
   const prior = () => loadPriorAbandonedRollbackHistory(root, {
     failureEvidenceSha256: failure.sha256, releaseFreezeIdentitySha256: freeze.sha256,
