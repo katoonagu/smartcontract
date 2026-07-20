@@ -355,12 +355,16 @@ function exactTerminalVerifiedChecks(
   terminalStepId: string,
   checks: readonly string[] | undefined
 ): void {
-  const expected = operationKind === "recovery" ? undefined : VERIFIED_TERMINAL_CHECKS[operationKind];
+  if (operationKind === "recovery") {
+    if (checks !== undefined) throw new Error("production_recovery_verified_checks_forbidden");
+    return;
+  }
+  const expected = VERIFIED_TERMINAL_CHECKS[operationKind];
   if (stepId !== terminalStepId) {
     if (checks !== undefined) throw new Error("production_verified_checks_nonterminal_forbidden");
     return;
   }
-  if (expected === undefined || checks === undefined
+  if (checks === undefined
       || checks.length !== expected.length
       || checks.some((check, index) => check !== expected[index])) {
     throw new Error("production_terminal_verified_checks_invalid");
@@ -594,12 +598,19 @@ export async function executeProtectedProductionOperationV2(
     uncertainStepMarker: recoveryContext.uncertainStepMarker,
     uncertainStepMarkerSha256: recoveryContext.uncertainStepMarkerSha256,
     recoveryOperationalAttestationSha256: begun.selectedAuthoritySha256,
-    recoveryProductionLeaseSha256: begun.leaseSha256,
+    recoveryProductionLeaseSha256: begun.claim.authorityConsumption.leaseSha256AtConsumption,
     recoveryAuthorityPreclaimSha256: begun.preclaimSha256,
     recoveryOperationClaimSha256: begun.claimSha256,
     recoveryAuthorityConsumptionSha256: begun.claim.authorityConsumptionSha256,
-    verifiedAt: adapters.now()
+    verifiedAt: begun.claim.claimedAt
   });
+  if (recoveryInput !== null) {
+    const recoveryInputRecord = store.persistExclusive("production_recovery_input",
+      "production-recovery-input-v2.json", recoveryInput);
+    if (recoveryInputRecord.sha256 !== protectedHash(recoveryInput)) {
+      throw new Error("production_recovery_input_persistence_invalid");
+    }
+  }
   const stepIds = input.operationKind === "rollback"
     ? rollbackSteps(rollbackContext!.window)
     : PROTECTED_STEPS[input.operationKind];
@@ -945,7 +956,7 @@ export async function executeProtectedProductionOperationV2(
       completedStepReceiptPrefixSha256: recoveryInput!.completedStepReceiptPrefixSha256,
       uncertainStepMarkerSha256: recoveryInput!.uncertainStepMarkerSha256,
       recoveryOperationalAttestationSha256: begun.selectedAuthoritySha256,
-      recoveryProductionLeaseSha256: final.leaseSha256,
+      recoveryProductionLeaseSha256: recoveryInput!.recoveryProductionLeaseSha256,
       recoveryAuthorityPreclaimSha256: begun.preclaimSha256,
       recoveryOperationClaimSha256: final.claimSha256,
       recoveryAuthorityConsumptionSha256: final.claim.authorityConsumptionSha256,

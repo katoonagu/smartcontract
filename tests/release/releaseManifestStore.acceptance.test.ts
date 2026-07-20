@@ -799,12 +799,13 @@ it("[REQ-38][ROOT-WRITER-TAKEOVER-CANONICAL-OLD-LEASE] rejects a hash-matching b
   }
 });
 
-it("[REQ-38][PRODUCTION-RECOVERY-CANONICAL-BINDINGS] binds every recovery evidence hash to its canonical artifact", async () => {
+it("[REQ-38][PRODUCTION-RECOVERY-CANONICAL-BINDINGS][SETTLEMENT-REPLAY-SOURCE] binds every recovery evidence hash to its canonical artifact", async () => {
   const api = await loadStoreApi(); const r = await root();
   await api.materializeReleaseFreezeV2(materializeInput(r));
   const freeze = freezeFor(r); const sourceManifestSha256 = "a".repeat(64);
   const attestationSha256 = "b".repeat(64); const issuerSha256 = "c".repeat(64);
-  const recoveryLeaseSha256 = "d".repeat(64); const priorOperationId = "rollout-operation-1";
+  const recoveryLeaseSha256 = "d".repeat(64); const finalRecoveryLeaseSha256 = "e".repeat(64);
+  const priorOperationId = "rollout-operation-1";
   const operationId = "recovery-operation-1"; const t0 = "2026-07-18T10:00:00.000Z";
   const t1 = "2026-07-18T10:10:00.000Z";
   const canonicalBytes = (value: unknown) => Buffer.from(`${canonicalReleaseJsonV2(value)}\n`, "utf8");
@@ -926,7 +927,7 @@ it("[REQ-38][PRODUCTION-RECOVERY-CANONICAL-BINDINGS] binds every recovery eviden
     version: "production-orchestration-receipt-v2" as const,
     candidateSha: freeze.candidateSha, releaseGenerationId: freeze.releaseGenerationId,
     sourceManifestSha256, operationId, operationClaimSha256: claimSha256,
-    finalOperationLeaseSha256: recoveryLeaseSha256, finalOperationLeaseEpoch: 1,
+    finalOperationLeaseSha256: finalRecoveryLeaseSha256, finalOperationLeaseEpoch: 2,
     operationDeadlineAt: t1, operationLeaseTakeoverChainSha256: "c".repeat(64),
     operationalAttestationConsumptionSha256: consumptionSha256,
     redactedTemplateSha256: preclaim.redactedTemplateSha256, result: "completed" as const,
@@ -953,10 +954,37 @@ it("[REQ-38][PRODUCTION-RECOVERY-CANONICAL-BINDINGS] binds every recovery eviden
     recoveryAuthorityConsumptionSha256: consumptionSha256,
     failureCode: "authority_expired_after_claim" as const
   };
+  await save(`production-operation-settlement-${operationId}.json`, {
+    version: "production-operation-settlement-v2" as const,
+    operationKind: "recovery" as const, operationId,
+    candidateSha: freeze.candidateSha, releaseGenerationId: freeze.releaseGenerationId,
+    sourceManifestSha256, claimSha256, authorityConsumptionSha256: consumptionSha256,
+    finalLeaseSha256: finalRecoveryLeaseSha256, finalLeaseEpoch: 2,
+    operationDeadlineAt: t1, terminalEvidenceSha256: sha(evidence),
+    authorityRevalidatedAt: t0, deadlineRevalidatedAt: t0, settledAt: t0,
+    capability: "recovery_only" as const, result: "failed" as const,
+    orchestrationReceiptSha256: orchestrationSha256,
+    recoveryAttemptedExternalEffect: false as const, priorAttemptedExternalEffect: false
+  });
   const bindingInput = { root: r, freeze, sourceManifestSha256, evidence,
     consumption, consumptionBytes, claim, claimBytes };
   expect(() => api.assertRecoveryFailureArtifactBindingsV2(bindingInput)).not.toThrow();
   expect(() => api.assertRecoveryFailureArtifactBindingsV2({
     ...bindingInput, evidence: { ...evidence, recoveryInputSha256: "f".repeat(64) }
   })).toThrow(/recovery.*binding|canonical/i);
+  const recoveryInputPath = join(r, "production-recovery-input-v2.json");
+  const recoveryInputBytes = await readFile(recoveryInputPath);
+  await writeFile(recoveryInputPath, canonicalBytes({
+    ...recoveryInput, priorTerminalCleanupSha256: "f".repeat(64)
+  }));
+  expect(() => api.assertRecoveryFailureArtifactBindingsV2(bindingInput))
+    .toThrow(/recovery.*input|canonical|hash/i);
+  await writeFile(recoveryInputPath, recoveryInputBytes);
+  const settlementPath = join(r, `production-operation-settlement-${operationId}.json`);
+  const settlementBytes = await readFile(settlementPath);
+  const settlement = JSON.parse(settlementBytes.toString("utf8"));
+  await writeFile(settlementPath, canonicalBytes({ ...settlement, finalLeaseEpoch: 3 }));
+  expect(() => api.assertRecoveryFailureArtifactBindingsV2(bindingInput))
+    .toThrow(/recovery.*settlement|orchestration.*binding/i);
+  await writeFile(settlementPath, settlementBytes);
 }, 30_000);

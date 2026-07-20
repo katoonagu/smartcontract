@@ -304,6 +304,11 @@ of these decisions, update this file in the same work.
   complete Task 0B freeze binding, and both persisted rollback topology and
   terminal settlement replay recheck the orphan intent plus absence of an exact
   manager or durable reconciliation stop proof.
+  Recovery settlement replay additionally reopens the canonical recovery input,
+  prior abandoned/cleanup pair, completed receipt prefix, uncertain intent, and
+  recovery orchestration receipts before terminal publication or lease removal.
+  The input is fsynced before recovery validation and binds the immutable lease
+  consumed by the claim, so heartbeat/takeover lineage cannot rewrite it.
   After an abandoned rollback restarted the previous runtime, later
   rollback checks use the latest matching operation/claim/intent-bound start
   receipt and manager/reconciliation proof rather than the frozen pre-restart

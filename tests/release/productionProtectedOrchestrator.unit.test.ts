@@ -51,13 +51,18 @@ function begun(kind: "rollout" | "canary" | "rollback" | "recovery") {
     preclaimSha256: "3".repeat(64),
     lineage: {},
     lineageSha256: "4".repeat(64),
-    claim: { authorityConsumptionSha256: "5".repeat(64) },
+    claim: {
+      authorityConsumptionSha256: "5".repeat(64),
+      authorityConsumption: { leaseSha256AtConsumption: "2".repeat(64) },
+      claimedAt: STARTED
+    },
     claimSha256: "6".repeat(64)
   } as any;
 }
 
 function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
   const events: string[] = [];
+  const persisted: Array<{ kind: string; path: string; value: any }> = [];
   const unresolvedIntents = new Set<string>();
   const current = begun(kind);
   const store: ProtectedProductionOperationStoreV2 = {
@@ -77,7 +82,9 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
     hasUnresolvedStepIntent(value) {
       return unresolvedIntents.has(`${value.operationId}:${value.sequence}:${value.stepId}`);
     },
-    persistExclusive(kindValue, path, value) { events.push(`persist:${kindValue}`); return { kind: kindValue, relativePath: path, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
+    persistExclusive(kindValue, path, value) { events.push(`persist:${kindValue}`);
+      persisted.push({ kind: kindValue, path, value });
+      return { kind: kindValue, relativePath: path, sha256: releaseSha256V2(canonicalBytesV2(value)), created: true }; },
     persistSettlement() { events.push("settlement"); return { kind: "settlement", relativePath: "settlement.json", sha256: SHA, created: true }; },
     completeTerminal() { events.push("terminal"); return { prepared: {}, receipt: {}, cleanup: {} } as any; }
   };
@@ -92,7 +99,7 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
       outputSha256: "d".repeat(64), observedStateSha256: "e".repeat(64) }; },
     async reconcileEffect(input) { events.push(`reconcile:${input.stepId}`); return null; }
   };
-  return { events, store, adapters };
+  return { events, persisted, store, adapters };
 }
 
 describe("protected production orchestrator", () => {
@@ -136,6 +143,39 @@ describe("protected production orchestrator", () => {
     expect(events.indexOf("intent:start_candidate")).toBeLessThan(events.indexOf("effect:start_candidate"));
     expect(events.filter((value) => value === "bound")).toHaveLength(22);
     expect(events.slice(-2)).toEqual(["settlement", "terminal"]);
+  });
+
+  it("persists the immutable recovery source input before deriving terminal failure evidence", async () => {
+    const { persisted, store, adapters } = harness("recovery");
+    const prefixSha256 = releaseSha256V2(canonicalBytesV2([]));
+    const recoveryAdapters: ProtectedProductionOperationAdaptersV2 = {
+      ...adapters,
+      async loadRecoveryContext() {
+        return {
+          priorOperationKind: "rollout",
+          priorOperationId: `production-rollout-${"f".repeat(64)}`,
+          priorTerminalAbandonedSha256: "1".repeat(64),
+          priorTerminalCleanupSha256: "2".repeat(64),
+          completedStepReceiptPrefix: [],
+          completedStepReceiptPrefixSha256: prefixSha256,
+          uncertainStepMarker: null,
+          uncertainStepMarkerSha256: null,
+          failedGateId: "G14_PRODUCTION_ROLLOUT",
+          failureCode: "operation_deadline_reached",
+          priorAttemptedExternalEffect: false
+        };
+      }
+    };
+    await executeProtectedProductionOperationV2({
+      artifactRoot: mkdtempSync(join(tmpdir(), "plan5-protected-recovery-input-")),
+      operationKind: "recovery"
+    }, { store, adapters: recoveryAdapters });
+
+    const recoveryInput = persisted.find((entry) => entry.kind === "production_recovery_input");
+    expect(recoveryInput).toMatchObject({ path: "production-recovery-input-v2.json",
+      value: { recoveryProductionLeaseSha256: "2".repeat(64), verifiedAt: STARTED } });
+    expect(persisted.find((entry) => entry.kind === "production_failure_evidence")?.value)
+      .toMatchObject({ recoveryInputSha256: releaseSha256V2(canonicalBytesV2(recoveryInput!.value)) });
   });
 
   it("renews the operation lease at most every ten seconds during a long validation leaf", async () => {

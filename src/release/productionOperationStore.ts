@@ -54,6 +54,7 @@ import {
 } from "./remediationReleaseManifestV2";
 import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
 import {
+  assertRecoveryFailureArtifactBindingsV2,
   assertCommittedOperationalAuthorityRecordV2,
   currentRootWriterOwnerIdentityV2,
   deriveReleaseFreezeIdentityV2,
@@ -1784,7 +1785,7 @@ export class ProductionOperationStoreV2 {
 
   #verifySettlementTerminalBundle(
     settlement: Readonly<{ value: ProductionOperationSettlementV2; sha256: string }>,
-    claim: Readonly<{ value: ProductionOperationClaimV2; sha256: string }>,
+    claim: Readonly<{ value: ProductionOperationClaimV2; bytes: Buffer; sha256: string }>,
     takeover: Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }>,
     verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2
   ): Readonly<{
@@ -2144,7 +2145,8 @@ export class ProductionOperationStoreV2 {
           || evidence.value.failedExecutionEvidenceSha256 !== orchestration.sha256
           || evidence.value.recoveryOrchestrationReceiptSha256 !== orchestration.sha256
           || evidence.value.recoveryOperationalAttestationSha256 !== claim.value.operationalAttestationSha256
-          || evidence.value.recoveryProductionLeaseSha256 !== state.finalLeaseSha256
+          || evidence.value.recoveryProductionLeaseSha256
+            !== claim.value.authorityConsumption.leaseSha256AtConsumption
           || evidence.value.recoveryOperationClaimSha256 !== claim.sha256
           || evidence.value.recoveryAuthorityConsumptionSha256 !== claim.value.authorityConsumptionSha256
           || evidence.value.recoveryAttemptedExternalEffect !== false
@@ -2152,6 +2154,16 @@ export class ProductionOperationStoreV2 {
           || evidence.value.priorAttemptedExternalEffect !== state.priorAttemptedExternalEffect) {
         throw new Error("production_terminal_bundle_recovery_evidence_binding_invalid");
       }
+      assertRecoveryFailureArtifactBindingsV2({
+        root: this.#root,
+        freeze: freeze.value,
+        sourceManifestSha256: state.sourceManifestSha256,
+        evidence: evidence.value,
+        consumption: claim.value.authorityConsumption,
+        consumptionBytes: canonicalBytesV2(claim.value.authorityConsumption),
+        claim: claim.value,
+        claimBytes: claim.bytes
+      });
     }
     return { orchestration, completedStepReceipts };
   }

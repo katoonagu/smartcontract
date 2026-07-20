@@ -42,6 +42,7 @@ import {
   validateRemediationReleaseManifestV2,
   validateProductionAuthorityPreclaimValidationV2,
   validateProductionOperationClaimV2,
+  validateProductionOperationSettlementV2,
   validateProductionOperationTerminalAbandonedV2,
   validateProductionOperationTerminalCleanupV2,
   validateProductionOrchestrationReceiptV2,
@@ -1466,6 +1467,7 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
       || recoveryInput.recoveryAuthorityPreclaimSha256 !== evidence.recoveryAuthorityPreclaimSha256
       || recoveryInput.recoveryOperationClaimSha256 !== evidence.recoveryOperationClaimSha256
       || recoveryInput.recoveryAuthorityConsumptionSha256 !== evidence.recoveryAuthorityConsumptionSha256
+      || recoveryInput.recoveryProductionLeaseSha256 !== consumption.leaseSha256AtConsumption
       || recoveryInput.priorTerminalAbandonedSha256 !== evidence.priorTerminalAbandonedSha256
       || recoveryInput.priorTerminalCleanupSha256 !== evidence.priorTerminalCleanupSha256
       || recoveryInput.completedStepReceiptPrefixSha256 !== evidence.completedStepReceiptPrefixSha256
@@ -1529,13 +1531,32 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
     evidence.recoveryOrchestrationReceiptSha256,
     validateProductionOrchestrationReceiptV2,
     "production_recovery_orchestration_receipt").value;
+  const settlementPath = lifecyclePath(root,
+    `production-operation-settlement-${claim.operationId}.json`);
+  const settlementBytes = readFileSync(settlementPath);
+  const settlement = validateProductionOperationSettlementV2(JSON.parse(settlementBytes.toString("utf8")));
+  if (!settlementBytes.equals(canonicalBytesV2(settlement))
+      || settlement.capability !== "recovery_only"
+      || settlement.operationKind !== "recovery" || settlement.operationId !== claim.operationId
+      || settlement.candidateSha !== freeze.candidateSha
+      || settlement.releaseGenerationId !== freeze.releaseGenerationId
+      || settlement.sourceManifestSha256 !== sourceManifestSha256
+      || settlement.claimSha256 !== claimSha256
+      || settlement.authorityConsumptionSha256 !== consumptionSha256
+      || settlement.terminalEvidenceSha256 !== releaseSha256V2(canonicalBytesV2(evidence))
+      || settlement.orchestrationReceiptSha256 !== evidence.recoveryOrchestrationReceiptSha256
+      || settlement.recoveryAttemptedExternalEffect !== false
+      || settlement.priorAttemptedExternalEffect !== evidence.priorAttemptedExternalEffect) {
+    throw new Error("production_recovery_settlement_binding_invalid");
+  }
   if (evidence.failedExecutionEvidenceSha256 !== evidence.recoveryOrchestrationReceiptSha256
       || recoveryReceipt.orchestration !== "recovery"
       || recoveryReceipt.operationId !== claim.operationId
       || recoveryReceipt.operationClaimSha256 !== claimSha256
       || recoveryReceipt.operationalAttestationConsumptionSha256 !== consumptionSha256
       || recoveryReceipt.recoveryInputSha256 !== evidence.recoveryInputSha256
-      || recoveryReceipt.finalOperationLeaseSha256 !== evidence.recoveryProductionLeaseSha256
+      || recoveryReceipt.finalOperationLeaseSha256 !== settlement.finalLeaseSha256
+      || recoveryReceipt.finalOperationLeaseEpoch !== settlement.finalLeaseEpoch
       || recoveryReceipt.priorAttemptedExternalEffect !== evidence.priorAttemptedExternalEffect
       || recoveryReceipt.priorCompletedStepReceiptPrefixSha256 !== evidence.completedStepReceiptPrefixSha256
       || recoveryReceipt.priorUncertainStepMarkerSha256 !== evidence.uncertainStepMarkerSha256) {
