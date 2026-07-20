@@ -5,18 +5,11 @@ The machine manifest is still `not_ready`, not `ready_for_release`: fresh Task
 0B operational preflight, guarded Task 9, and the manual `G05_TELEGRAM`
 evidence are pending. Nothing in this runbook records a production deployment.
 
-Tasks 0A and 1-8 are complete. Task 8 is this candidate-only documentation
-handoff. The controlled schema producer corrections in
-`4d674590`, `87218388`, `9c13bfbf`, and `16af807a` are part of the candidate
-behavior. The release SHA is always the clean checked-out `HEAD` used to
-produce the evidence; do not substitute one of those ancestor SHAs.
-
-Backup implementation commit `359e83ca1534dc06481ba9bc724ee803744f55f9`
-added the controlled `release:production:backup` producer, and its local
-acceptance tests pass. The release candidate SHA remains the dynamically
-observed current clean `HEAD`; the implementation commit is not a frozen
-candidate identity. The producer has not been run against production and
-`G12_PRODUCTION_BACKUP` is still pending.
+Tasks 0A and 1-8 are implemented by the candidate. This is the candidate-only
+Task 8 handoff, not Task 9 execution or production GO. The release SHA is
+always the clean checked-out `HEAD` that produced the evidence; an ancestor
+implementation SHA is never a substitute. No production command described
+below has been executed, and `G12_PRODUCTION_BACKUP` remains pending.
 
 ## Current production observation and external block
 
@@ -59,6 +52,7 @@ runbook, shell history, manifest, or JSON evidence:
 <loopback-host:port>         expected PostgreSQL endpoint, without credentials
 <system-identifier>          exact pg_control_system() identifier
 <authority-file>             protected one-shot authority filename, not contents
+<source-manifest-sha256>     lowercase SHA-256 of the exact current manifest bytes
 ```
 
 Only these database names are accepted by the schema producer:
@@ -80,6 +74,49 @@ role-specific environment variable, and derived fingerprint must all agree.
 migration 032. Only `npm run schema:release:sequence` owns the controlled
 first migration, first verification, second no-op migration, and final
 verification sequence.
+
+## Manifest V2 and fixed root-writer lifecycle
+
+`release:manifest:advance` is the only manifest/gate writer. Never create or
+edit `release-manifest.json`, `gates/*`, snapshots, prepared transitions, or
+transition receipts manually. The first transition alone uses source token
+`absent`; every later transition uses the lowercase SHA-256 of the exact
+current `release-manifest.json` bytes. A stale, skipped, or substituted source
+SHA fails the CAS transition.
+
+`release:verify` manifest mode is byte-identical and read-only for the entire
+artifact root: it validates the canonical manifest, its hash-chained receipts,
+snapshots, freeze, gate artifacts, and requested phase, but writes, repairs,
+or aggregates nothing. Producer subcommands such as `release:verify:non-vitest`
+are separate commands and run before manifest verification.
+
+The fixed `manifest-transition-root.lease.json` has two discriminated states.
+Before the freeze it is a bootstrap lease used only by
+`release:freeze:materialize`; after the immutable freeze it is a frozen,
+generation-bound lease used by manifest transitions, prepared authority
+issuance, and expired-unclaimed terminalization. A dead bootstrap owner before
+freeze prepare seals that protected root and requires a new root. If exact
+prepared freeze bytes exist, takeover resumes those bytes byte-for-byte. Both
+successful freeze paths remove the fixed root-writer lease before success.
+After freeze, takeover is explicit and preserves the prepared operation:
+
+```powershell
+npm run release:manifest:takeover -- <expected-old-lease-sha256> <protected-artifact-root>
+```
+
+The issuer appends content-addressed attestation, previous-hash issuer receipt,
+and committed marker under the same frozen lease. A crash replays the exact
+prepared bytes and timestamp; it cannot reread the clock or branch the issuer
+chain. An expired authority that was never claimed is closed only by its exact
+authority JSON path, then a replacement may be issued:
+
+```powershell
+npm run release:authority:terminalize -- <operational-attestation-json> <protected-artifact-root>
+npm run release:authority:issue -- <allowlisted-transition> <protected-artifact-root>
+```
+
+Terminalization rejects early expiry and any preclaim, claim, consumption,
+action lease, G13 bound session/advisory lock, operation, or effect artifact.
 
 ## Allowlisted gate identities
 
@@ -139,6 +176,7 @@ order is producer-first, strict-verifier-last.
 
    ```powershell
    npm run release:task0b:preflight -- <artifact-root>
+   npm run release:freeze:materialize -- <artifact-root>
    ```
 
    The capture must record zero runtime stops/starts, zero database migrations,
@@ -249,11 +287,13 @@ order is producer-first, strict-verifier-last.
    `recording_disabled`, and `progress_json.telegramDelivery` is forbidden for
    these jobs.
 
-8. Build the manifest from the automated producer evidence, then run only the
+8. Create the first manifest transition from the automated producer evidence,
+   using the only legal initial source token, then run the read-only
    `pre-manual` verifier while `G05_TELEGRAM` is still pending:
 
    ```powershell
-   npm run release:verify -- pre-manual <artifact-root>
+   npm run release:manifest:advance -- pre_manual absent <artifact-root>
+   npm run release:verify -- --phase pre-manual --artifact-root <artifact-root>
    ```
 
    `pre-manual` requires all automated `G00`-`G11` gates passed except
@@ -289,17 +329,20 @@ order is producer-first, strict-verifier-last.
    protected root. `G05_TELEGRAM` stays `pending` until all 15/19/11 evidence is
    present and finalized. No real Telegram send occurs before guarded Task 9.
 
-11. Update the manifest from the finalized manual evidence, then run the strict
-    `readiness` verifier:
+11. Hash the exact current manifest, advance from that source, then run the
+    strict read-only `readiness` verifier:
 
     ```powershell
-    npm run release:verify -- readiness <artifact-root>
+    $source = (Get-FileHash -Algorithm SHA256 `
+      (Join-Path '<artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+    npm run release:manifest:advance -- readiness $source <artifact-root>
+    npm run release:verify -- --phase readiness --artifact-root <artifact-root>
     ```
 
     `readiness` is valid only after every `G00`-`G11` gate passes and production
     gates remain pending; only then may the manifest say `ready_for_release`.
 
-After merging to `master`, compare the merge SHA to the finalized candidate
+After a separately authorized merge to `master`, compare the merge SHA to the finalized candidate
 SHA. A fast-forward that preserves the exact SHA also preserves the finalized
 15 scenario summaries, 19 message records, and 11 golden comparisons. Rerun
 only the automated producers/gates and strict verifier for that same SHA; never
@@ -316,95 +359,170 @@ the exact-SHA rerun, and obtains explicit release GO; Task 11 owns
 `G14_PRODUCTION_ROLLOUT` and `G15_PRODUCTION_CANARY`. They are listed so the
 rollback and evidence boundaries are fixed; none has been executed now.
 
-1. Obtain explicit user release GO and fresh, narrowly scoped, protected
-   one-shot authorities. Revalidate Task 0B, exact merge SHA, runtime label,
-   production database fingerprint, Telegram identity, and the ready manifest
-   immediately before each controlled mutation.
-2. Supply the production database URL only through the protected process
-   environment as `TASK0B_PRODUCTION_DATABASE_URL`; never put it in argv, the
-   authority, logs, or artifacts. Then run the controlled producer with the
-   protected root and authority filename only:
+Obtain explicit user release GO first. Revalidate the exact clean release SHA,
+immutable freeze, current manifest, Task 0B, runtime/Telegram identities,
+production database fingerprint, rollback rehearsal, and terminal legacy
+snapshot before every action. Supply the production URL only as protected
+environment variable `TASK0B_PRODUCTION_DATABASE_URL`; never place it in argv
+or evidence.
 
-   ```powershell
-   npm run release:production:backup -- <protected-artifact-root> <production-backup-authority-...json>
-   ```
+### G12 and G13 exact order
 
-   The fresh authority is a single-use explicit GO valid for at most ten
-   minutes. It is bound byte-for-byte to Task 0B, the `ready_for_release`
-   manifest, exact clean candidate SHA, protected-root fingerprint, production
-   database identity, command ID, and template hash. The producer uses only the
-   Task 0B-attested immutable Docker image: pinned `pg_dump --format=custom`
-   receives the password through stdin, and pinned `pg_restore --list` runs
-   with `--network none`, `--pull never`, and a read-only artifact mount.
+G12 keeps its dedicated backup claim/lease/progress protocol. The sole issuer
+and producer select the unique compatible V2 authority from the protected root;
+the operator never supplies an authority filename:
 
-   Before the exclusive claim, before the first dump, and immediately before
-   atomically linking final evidence, the producer revalidates the exact
-   authority, Task 0B, manifest, candidate, root, database identity, and active
-   operation ownership. A generation-bound consumption claim, exclusive
-   operation lease, dump progress receipt, and restore-list progress receipt
-   serialize retries and prove ownership. A new operation must claim and start
-   while the authority is fresh. A lease acquired while fresh may finish after
-   GO expiry only within its bounded one-hour child timeout. After expiry,
-   resume is allowed only from the exact owned dump progress receipt and never
-   invokes a second dump; a claim without that receipt fails closed.
+```powershell
+npm run release:authority:issue -- g12_backup_passed <protected-artifact-root>
+npm run release:production:backup -- <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g12_backup_passed $source <protected-artifact-root>
+npm run release:verify -- --phase g12 --artifact-root <protected-artifact-root>
+```
 
-   Successful output consists of the stable custom-format
-   `production-backup.dump`, `production-backup-restore-list.txt`, and
-   `production-backup-evidence.json`, with actual sizes, hashes, restore-list
-   entry count, database identity, and path fingerprint. The producer does not
-   mutate `release-manifest.json`.
-3. Run the verifier/aggregator over the completed evidence; only it may mark
-   `G12_PRODUCTION_BACKUP=passed`. At that point the manifest must deliberately
-   return to `overall=not_ready`: `G00`-`G12` passed and `G13`-`G15` pending.
-   This is the required mutation interlock, not a failure or an invented
-   pending-reason enum.
-4. Issue a fresh production migration authority named
-   `schema032-production-authority-<generation>.json`, valid for at most ten
-   minutes and bound to that protected Task 0B, current `not_ready` manifest,
-   backup hash, database fingerprint, exact candidate, `explicitGo=true`, and
-   command ID `production_migration`. The schema producer rechecks the
-   authority and protected backup again immediately before consuming it.
-5. Run the controlled production sequence without `--offline` and only with
-   the authority filename:
+The backup producer alone owns pinned `pg_dump --format=custom` and
+`pg_restore --list`, exact database identity, claim/lease, progress, bounded
+resume, and final evidence. It never writes the manifest. Only the manifest
+advance marks G12 passed and deliberately returns `overall=not_ready` with
+G13-G15 pending.
 
-   ```powershell
-   npm run schema:release:sequence -- `
-     --database-url-env TASK0B_PRODUCTION_DATABASE_URL `
-     --expected-endpoint <loopback-host:port> `
-     --expected-system-identifier <system-identifier> `
-     --artifact-root <artifact-root> `
-     --production-authority-file <authority-file>
-   ```
+G13 keeps its same-session advisory-lock claim protocol and also accepts only
+the protected root, never a raw authority path:
 
-   The producer owns child database role/identity binding and the advisory
-   lock. It runs migration 032 once, verifies the full checksum/receipt and all
-   postconditions, runs the second migration as `already_verified`, and
-   performs final verification. `schema:verify` alone cannot satisfy G13.
-6. Mark `G13_PRODUCTION_MIGRATION=passed`, then use fresh runtime-manager
-   authorities to stop the exact previous managed runtime and start the exact
-   candidate. Never use a generic process kill or an unmarked-process guess.
-   Mark G14 only after one candidate process/worker schedule is observed,
-   `/version` reports the merge SHA, candidate label, policy/result/narrative
-   versions and schema 032 checksum, and Admin returns 200.
-7. Canary the actual candidate: Where, Incoming, targeted-index, reconciler,
-   delivery and allowance-refresh cycles alive; stranded all-ready resume once;
-   sent fingerprint not resent; retry attempts bounded; normal navigation
-   cache-only; explicit refresh live; stale allowance not called active; no raw
-   secrets/actors in logs. Mark `G15_PRODUCTION_CANARY=passed` only after these
-   observations. The strict `released` phase is valid only when G00-G15 all
-   pass.
+```powershell
+npm run release:authority:issue -- g13_migration_passed <protected-artifact-root>
+npm run schema:release:sequence -- `
+  --database-url-env TASK0B_PRODUCTION_DATABASE_URL `
+  --expected-endpoint <loopback-host:port> `
+  --expected-system-identifier <system-identifier> `
+  --artifact-root <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g13_migration_passed $source <protected-artifact-root>
+npm run release:verify -- --phase g13 --artifact-root <protected-artifact-root>
+```
 
-## Rollback
+The sequence owns migration 032, checksum/receipt/postcondition verification,
+the second `already_verified` no-op, and final verification. G12/G13 revalidate
+their consumed authority as strictly unexpired before each database/tool leaf
+and settlement; they do not use the Task 12 immutable operation deadline.
 
-Any migration, rollout, or canary mismatch stops forward progress. Use a fresh
-one-shot `runtime_manager_stop_candidate` authority to stop the exact managed
-candidate, then `runtime_manager_rollback_previous` to start the exact
-Task 0B-bound previous SHA/label. Repeat `/version`, Admin 200, singleton
-process/workers, database compatibility, and Telegram transport checks. The
-additive schema 032 migration remains in place; do not destructively roll it
-back. Sent delivery fingerprints stay sent, completed jobs are not rescored,
-and the terminal legacy snapshot must remain unchanged. Record the manifest as
-`rolled_back` only through its validated rollback state.
+### G14, G15, takeover, and terminal order
+
+For G14, G15, recovery, and actual rollback the only claim order is: select the
+unique active compatible issuer-chain tip → acquire the original production
+lease → persist an immutable preclaim bound to that original lease hash, epoch,
+owner, operation, freeze, source manifest, and authority → resolve the exact
+linear committed takeover lineage/current tip → atomically create claim and
+consumption. A branch, gap, swapped or foreign receipt/lease/lineage, stale tip,
+conflicting extension, or orphan preclaim fails closed. Takeover never rewrites
+the original preclaim.
+
+Before every external stop/start effect, the orchestrator fsyncs its exact
+claim/consumption-bound step intent. It then fsyncs the receipt and terminal
+evidence. Success or typed failure always closes in this order: durable
+settlement → canonical prepared lease removal → removal of the exact owned
+current lease → publication of the prepared byte-exact removal receipt →
+terminal cleanup binding. Crash recovery resumes the first missing durable
+boundary and never regenerates removal time or repeats an uncertain effect.
+
+Every G14/G15/recovery/actual-rollback leaf, reconciliation, query, settlement,
+and normal takeover requires both `now < consumedAuthority.expiresAt` and
+`now < immutable operationDeadlineAt`; equality fails closed and neither bound
+is extended. Normal dead-owner takeover preserves the original bounds and then
+automatically resumes the same orchestrator:
+
+```powershell
+npm run release:production:lease:takeover -- `
+  <expected-old-lease-sha256> <protected-artifact-root>
+```
+
+After either bound, a proven-dead expired lease permits cleanup only:
+
+```powershell
+npm run release:production:lease:cleanup-only-takeover -- `
+  <expected-old-lease-sha256> <protected-artifact-root>
+```
+
+Cleanup-only may publish abandonment and the removal/cleanup chain. It cannot
+query production, run an effect, settle a gate, emit gate evidence, or advance
+the manifest.
+
+G14 is one orchestrator command; direct runtime-manager stop/start, health,
+SQL, reconciliation, and capture leaf commands are forbidden:
+
+```powershell
+npm run release:authority:issue -- g14_rollout_passed <protected-artifact-root>
+npm run release:production:rollout:execute -- <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g14_rollout_passed $source <protected-artifact-root>
+npm run release:verify -- --phase g14 --artifact-root <protected-artifact-root>
+```
+
+A typed G14 pre-effect schema/runtime-identity/singleton failure records only
+local validation, has `attemptedExternalEffect:false`, selects
+`previous_runtime_retained`, and emits no invented stop/start/candidate
+capture. Any typed production failure advances only `production_failed`:
+
+```powershell
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- production_failed $source <protected-artifact-root>
+npm run release:verify -- --phase manifest --artifact-root <protected-artifact-root>
+```
+
+G15 likewise exposes only its orchestrator:
+
+```powershell
+npm run release:authority:issue -- g15_canary_released <protected-artifact-root>
+npm run release:production:canary:execute -- <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g15_canary_released $source <protected-artifact-root>
+npm run release:verify -- --phase released --artifact-root <protected-artifact-root>
+```
+
+### Recovery-only and actual rollback
+
+After cleanup-only abandonment, recovery uses a separate fresh authority and
+new lease/claim. It validates the exact abandonment+cleanup chain, contiguous
+completed receipt prefix, and at most one uncertain marker backed by the actual
+fsynced unmatched step-intent path/hash. It emits typed local-validation step
+receipts and an overall recovery receipt before failure evidence references
+them, emits no normal gate evidence, and never observes, reconciles, or replays
+the uncertain effect:
+
+```powershell
+npm run release:authority:issue -- production_failed <protected-artifact-root>
+npm run release:production:recovery:execute -- <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- production_failed $source <protected-artifact-root>
+npm run release:verify -- --phase manifest --artifact-root <protected-artifact-root>
+```
+
+Any migration, rollout, or canary mismatch stops forward progress. Actual
+rollback begins only from the exact current `production_failed` lineage and is
+also a sole orchestrator; direct leaf commands are forbidden:
+
+```powershell
+npm run release:authority:issue -- rollback_rolled_back <protected-artifact-root>
+npm run release:production:rollback:execute -- <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- rollback_rolled_back $source <protected-artifact-root>
+npm run release:verify -- --phase rolled-back --artifact-root <protected-artifact-root>
+```
+
+Rollback selects only its typed observed branch, keeps additive schema 032,
+and rechecks Admin, singleton, `/version`, queues, conservative allowance,
+sent delivery, and immutable completed results. No production backup,
+migration, rollout, canary, recovery, rollback, takeover, runtime, database, or
+Telegram command in this section has been executed. The unmarked live runtime
+block before Task 9 remains unresolved and must not be adopted, stopped,
+restarted, or replaced implicitly.
 
 ## Honest residual limits and forbidden scope
 

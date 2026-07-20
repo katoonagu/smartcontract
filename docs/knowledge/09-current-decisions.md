@@ -232,11 +232,10 @@ of these decisions, update this file in the same work.
   1-8 are complete, but fresh Task 0B operational preflight, guarded Task 9,
   and the exact 15 scenarios / 19 messages / 11 golden comparisons for manual
   Telegram acceptance are pending.
-- The candidate includes controlled schema producer corrections from
-  `4d674590`, `87218388`, `9c13bfbf`, and `16af807a`. `release:verify` only
-  verifies/aggregates existing gate artifacts; suite, non-Vitest, trace,
-  schema, sanitized runtime, terminal legacy, rollback, and manual Telegram
-  producers run first.
+- Manifest-mode `release:verify` is byte-identical/read-only for the protected
+  root. It verifies the canonical V2 store and phase but writes, repairs, or
+  aggregates nothing. Suite, non-Vitest, trace, schema, sanitized runtime,
+  terminal legacy, rollback, and manual Telegram producers run first.
 - Task 0A observed previous runtime
   `0172978845ec74373bd245098ee8c075e0c39acf`, label `master-01729788`, Admin
   HTTP 200 and Telegram long polling against loopback `tron_watch:55999` at
@@ -250,16 +249,14 @@ of these decisions, update this file in the same work.
   controlled migration. After protected `G12` backup, the manifest returns to
   `not_ready` with `G00`-`G12` passed and `G13`-`G15` pending before the fresh
   one-shot migration authority can be consumed.
-- Backup implementation commit
-  `359e83ca1534dc06481ba9bc724ee803744f55f9` added the guarded
-  `release:production:backup` producer and its local acceptance tests pass, but
-  no production backup was run. The release candidate SHA remains the
-  dynamically observed current clean `HEAD`. The producer requires one-shot
-  explicit GO and exact Task 0B, ready-manifest, candidate, protected-root, and
-  production-DB bindings; uses pinned Docker `pg_dump`/`pg_restore`; and writes
-  claim, lease, progress, dump, restore-list, and evidence artifacts without
-  mutating the manifest. The verifier/aggregator, not the producer, marks
-  `G12`.
+- The guarded `release:production:backup` producer is implemented and locally
+  tested, but no production backup was run. It accepts only the protected root,
+  selects the unique compatible unconsumed G12 issuer-chain tip, binds exact
+  Task 0B/current manifest/candidate/root/production DB, uses pinned Docker
+  `pg_dump`/`pg_restore`, and writes claim, lease, progress, dump, restore-list,
+  and evidence without mutating the manifest. Only
+  `release:manifest:advance g12_backup_passed <exact-current-source-sha> <root>`
+  marks G12.
 - `G12` verification treats the dump (up to 1 TiB) and restore list (up to
   100 MiB) as bounded streaming hash/size evidence; JSON evidence remains
   size-bounded and fully parsed. Verifiers must not load the production dump
@@ -271,6 +268,35 @@ of these decisions, update this file in the same work.
   Terminal success/failure is prepared durably while the lock is owned, then
   the gate-eligible execution receipt is published only after successful unlock
   and is bound to both the attempt and prepared-settlement hashes.
+- G12 and G13 production entrypoints accept the protected root, not an operator-
+  selected authority path. Their sole issuer appends the action-specific V2
+  authority; each producer resolves the exact committed unique tip and uses its
+  own claim/lease or bound-session protocol. Both revalidate strict authority
+  expiry before every external leaf and settlement. Only G14/G15/recovery/
+  actual rollback also carry the immutable production-operation deadline.
+- `release:manifest:advance` is the sole manifest/gate writer. The first
+  `pre_manual` transition uses source token `absent`; every later transition
+  uses the lowercase hash of the exact current manifest bytes. One fixed
+  discriminated bootstrap/frozen root-writer lease serializes freeze,
+  transition, prepared issuer, and expired-unclaimed terminalization. A dead
+  bootstrap before freeze prepare seals the root; exact prepared freeze and
+  issuer crashes replay byte-for-byte, and successful freeze removes the fixed
+  lease.
+- G14/G15/recovery/actual rollback authority consumption is fixed as unique-tip
+  selection → original production lease → immutable original-lease preclaim →
+  exact committed takeover-lineage/current-tip resolution → atomic claim and
+  consumption. Branch/gap/swapped/foreign lineage and orphan preclaims fail
+  closed. Every external effect has a durable intent first. Terminal order is
+  settlement → prepared removal → exact lease removal → byte-exact prepared
+  receipt → cleanup. Direct production stop/start/query/reconciliation/capture
+  leaf commands are forbidden; only the four `release:production:*:execute`
+  orchestrators may own them.
+- Recovery-only accepts exact abandonment+cleanup, completed receipt prefix,
+  and at most one actual-intent-backed uncertain marker. It writes only typed
+  local receipts plus the overall receipt before `production_failed` evidence,
+  emits no normal gate evidence, and never observes, reconciles, or replays the
+  uncertain effect. G14 pre-effect failure has no invented runtime evidence and
+  records `attemptedExternalEffect=false` with `previous_runtime_retained`.
 - Sanitized runtime and rollback rehearsal use only
   `tron_watch_plan5_runtime_sanitized` with recording-only Telegram transport.
   The real manual sender is restricted to guarded Task 9, a dedicated test bot,

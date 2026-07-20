@@ -104,13 +104,18 @@ manifest remains `not_ready`. The complete protected-artifact, database guard,
 manual Telegram, backup/migration, rollout, canary, and rollback procedure is in
 `docs/superpowers/verification/plan5-release/README.md`.
 
-`release:verify` is verifier-only: it does not execute the gate producers.
-Run focused suite groups, non-Vitest checks, trace capture, controlled schema
-producer, sanitized runtime/rollback rehearsal, terminal legacy snapshot, and
-manual evidence first. Then run the strict verifier:
+`release:manifest:advance` is the only manifest/gate writer. Manifest-mode
+`release:verify` is byte-identical and read-only for the artifact root: it does
+not execute producers, write evidence, repair artifacts, or mutate the
+manifest. Run focused suite groups, non-Vitest checks, trace capture,
+controlled schema producer, sanitized runtime/rollback rehearsal, terminal
+legacy snapshot, and manual evidence first. Materialize the freeze, advance
+with the exact source token, then verify:
 
 ```powershell
 $env:RELEASE_SHA = (git rev-parse HEAD).Trim()
+npm run release:task0b:preflight -- <protected-artifact-root>
+npm run release:freeze:materialize -- <protected-artifact-root>
 node --import tsx scripts/verifyRemediationRelease.ts --suite-group plan1 <protected-artifact-root>
 npm run release:verify:non-vitest -- <protected-artifact-root>
 npm run release:trace:capture -- <protected-artifact-root>
@@ -122,7 +127,8 @@ npm run schema:release:sequence -- --offline `
 npm run release:runtime:rehearse -- <protected-artifact-root>
 npm run release:legacy:snapshot -- <exact-guarded-arguments-from-plan5-runbook>
 npm run release:telegram:manual -- <protected-artifact-root>
-npm run release:verify -- pre-manual <protected-artifact-root>
+npm run release:manifest:advance -- pre_manual absent <protected-artifact-root>
+npm run release:verify -- --phase pre-manual --artifact-root <protected-artifact-root>
 ```
 
 The focused-suite line is repeated for `plan2`, `plan3`, `plan4`, `plan5`, and
@@ -131,28 +137,54 @@ protected sequence roots for exact databases `tron_watch_plan5_clean` and
 `tron_watch_plan5_runtime_sanitized`; all disposable targets are loopback and
 offline. `schema:verify` is read-only and cannot replace the producer.
 
+After manual evidence finalization, and after every later transition, hash the
+exact current manifest bytes. Never reuse a prior source SHA or edit the store:
+
+```powershell
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- readiness $source <protected-artifact-root>
+npm run release:verify -- --phase readiness --artifact-root <protected-artifact-root>
+```
+
 The currently observed production runtime is unmarked by the new runtime
 manager, so operational preflight is externally blocked before Task 9. Do not
 adopt, stop, restart, migrate, or send Telegram from this command index. A
 separate user-approved adoption/restart or plan amendment plus fresh Task 0B is
 required before any guarded production step.
 
-Backup implementation commit `359e83ca1534dc06481ba9bc724ee803744f55f9`
-added the future guarded G12 producer and its local acceptance tests pass. The
-release candidate SHA remains the dynamically observed current clean `HEAD`;
-no production backup has run:
+No production command has run. After complete G00-G11, exact-SHA merge rerun,
+pre-GO report, explicit user GO, and fresh action authority, the exact future
+G12/G13 order is:
 
 ```powershell
-npm run release:production:backup -- <protected-artifact-root> <production-backup-authority-...json>
+npm run release:authority:issue -- g12_backup_passed <protected-artifact-root>
+npm run release:production:backup -- <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g12_backup_passed $source <protected-artifact-root>
+npm run release:verify -- --phase g12 --artifact-root <protected-artifact-root>
+
+npm run release:authority:issue -- g13_migration_passed <protected-artifact-root>
+npm run schema:release:sequence -- `
+  --database-url-env TASK0B_PRODUCTION_DATABASE_URL `
+  --expected-endpoint <loopback-host:port> `
+  --expected-system-identifier <system-identifier> `
+  --artifact-root <protected-artifact-root>
+$source = (Get-FileHash -Algorithm SHA256 `
+  (Join-Path '<protected-artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+npm run release:manifest:advance -- g13_migration_passed $source <protected-artifact-root>
+npm run release:verify -- --phase g13 --artifact-root <protected-artifact-root>
 ```
 
 `TASK0B_PRODUCTION_DATABASE_URL` is supplied only as a protected process
-environment secret outside argv and artifacts. The one-shot explicit-GO
-authority binds Task 0B, the ready manifest, candidate, protected root, and
-production database; the producer uses pinned Docker `pg_dump`/`pg_restore`
-and writes the dump, restore list, evidence, claim, lease, and progress
-receipts. It never edits the manifest. The verifier/aggregator marks `G12`.
-See the Plan 5 release README for TTL, resume, and revalidation rules.
+environment secret outside argv and artifacts. Neither producer accepts a raw
+authority path; each selects the exact issuer-chain tip from the protected
+root. The fixed bootstrap/frozen root-writer lifecycle, expired-unclaimed
+terminalizer, G14/G15/recovery/rollback sole orchestrators, normal and
+cleanup-only takeover commands, strict bounds, and terminal receipt order are
+defined in the Plan 5 release README. Direct production leaf stop/start/query,
+SQL, reconciliation, health, or capture commands are forbidden.
 
 ## Verify The Unreleased Plan 3 Candidate
 
