@@ -585,6 +585,101 @@ it.each([
     expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
 }, 60_000);
 
+it("replays a dead-owner recovery settlement from operation-qualified receipts before publication", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const rollout = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  const prior = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
+  }, () => store.takeoverCleanupOnly({ expectedOldLeaseSha256: rollout.leaseSha256,
+    evaluatedAt: "2026-07-18T10:10:00.000Z" }));
+  const priorAbandonedSha256 = releaseSha256V2(canonicalBytes(prior.abandoned));
+  const priorCleanupSha256 = releaseSha256V2(canonicalBytes(prior.cleanup));
+  const recoveryAt = "2026-07-18T10:11:00.000Z";
+  vi.setSystemTime(new Date(recoveryAt));
+  await issueOperationalAttestationV2({ artifactRoot: root, action: "production_failed" });
+  const recoveryContext = {
+    priorOperationKind: "rollout" as const,
+    priorOperationId: prior.abandoned.operationId,
+    priorTerminalAbandonedSha256: priorAbandonedSha256,
+    priorTerminalCleanupSha256: priorCleanupSha256,
+    completedStepReceiptPrefix: [],
+    completedStepReceiptPrefixSha256: prior.abandoned.completedStepReceiptSetSha256,
+    uncertainStepMarker: null,
+    uncertainStepMarkerSha256: null,
+    failedGateId: "G14_PRODUCTION_ROLLOUT" as const,
+    failureCode: prior.abandoned.reason,
+    priorAttemptedExternalEffect: prior.abandoned.attemptedExternalEffect
+  };
+  const adapters = {
+    now: () => recoveryAt,
+    async loadReleaseContext() { return { releaseFreezeIdentitySha256:
+      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
+    async loadRecoveryContext() { return recoveryContext; },
+    async validateStep(input: any) {
+      return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
+        observedStateSha256: "2".repeat(64) };
+    },
+    async prepareEffect() { throw new Error("recovery_effect_forbidden"); },
+    async executeEffect() { throw new Error("recovery_effect_forbidden"); },
+    async reconcileEffect() { throw new Error("recovery_effect_forbidden"); }
+  } as any;
+
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "recovery",
+    faultAt: "after_settlement" }, { store: store as any, adapters })))
+    .rejects.toThrow("injected_operation_fault:after_settlement");
+  const settlementName = readdirSync(root).find((name) =>
+    name.startsWith("production-operation-settlement-production-recovery-"))!;
+  const operationId = settlementName
+    .replace(/^production-operation-settlement-/u, "").replace(/\.json$/u, "");
+  const canonicalReceiptPath = join(root, "production-recovery-orchestration-receipt-v2.json");
+  const canonicalEvidencePath = join(root, "production-failure-evidence-v2.json");
+  expect(existsSync(canonicalReceiptPath)).toBe(false);
+  expect(existsSync(canonicalEvidencePath)).toBe(false);
+
+  const operationReceiptPath = join(root, "production-operation-terminal-artifacts", operationId,
+    "production-recovery-orchestration-receipt-v2.json");
+  const operationReceiptBytes = readFileSync(operationReceiptPath);
+  const operationReceipt = JSON.parse(operationReceiptBytes.toString("utf8"));
+  await writeFile(operationReceiptPath, canonicalBytes({ ...operationReceipt,
+    priorAttemptedExternalEffect: !operationReceipt.priorAttemptedExternalEffect }));
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => CLEANUP_REPLAY_OWNER, isOwnerAlive: () => false
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "recovery" },
+    { store: store as any, adapters }))).rejects.toThrow(/terminal_bundle.*(?:artifact|hash)|binding/i);
+  expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(true);
+  expect(existsSync(canonicalReceiptPath)).toBe(false);
+  await writeFile(operationReceiptPath, operationReceiptBytes);
+
+  const recoveryInputPath = join(root, "production-recovery-input-v2.json");
+  const recoveryInputBytes = readFileSync(recoveryInputPath);
+  const recoveryInput = JSON.parse(recoveryInputBytes.toString("utf8"));
+  await writeFile(recoveryInputPath, canonicalBytes({ ...recoveryInput,
+    priorTerminalCleanupSha256: "f".repeat(64) }));
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => CLEANUP_REPLAY_OWNER, isOwnerAlive: () => false
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "recovery" },
+    { store: store as any, adapters }))).rejects.toThrow(/recovery.*input|canonical|hash/i);
+  expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(true);
+  expect(existsSync(canonicalReceiptPath)).toBe(false);
+  expect(existsSync(canonicalEvidencePath)).toBe(false);
+  await writeFile(recoveryInputPath, recoveryInputBytes);
+
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => CLEANUP_REPLAY_OWNER, isOwnerAlive: () => false
+  }, () => executeProtectedProductionOperationV2({ artifactRoot: root, operationKind: "recovery" },
+    { store: store as any, adapters }))).resolves.toMatchObject({ operationId });
+  expect(existsSync(canonicalReceiptPath)).toBe(true);
+  expect(existsSync(canonicalEvidencePath)).toBe(true);
+  expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+}, 120_000);
+
 it("publishes later same-kind terminal artifacts through a durable per-kind pointer", async () => {
   const root = await trustedRoot();
   const store = new ProductionOperationStoreV2(root);

@@ -1430,8 +1430,10 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
   consumptionBytes: Buffer;
   claim: ProductionOperationClaimV2;
   claimBytes: Buffer;
+  recoveryOrchestrationReceiptBytes?: Buffer;
 }): void {
-  const { root, freeze, sourceManifestSha256, evidence, consumption, consumptionBytes, claim, claimBytes } = input;
+  const { root, freeze, sourceManifestSha256, evidence, consumption, consumptionBytes, claim, claimBytes,
+    recoveryOrchestrationReceiptBytes } = input;
   const freezeSha256 = releaseFreezeIdentitySha256V2(freeze);
   const consumptionSha256 = releaseSha256V2(consumptionBytes);
   const claimSha256 = releaseSha256V2(claimBytes);
@@ -1526,11 +1528,22 @@ export function assertRecoveryFailureArtifactBindingsV2(input: {
     }
   }
 
-  const recoveryReceipt = readCanonicalLifecycleArtifactV2(root,
-    "production-recovery-orchestration-receipt-v2.json",
-    evidence.recoveryOrchestrationReceiptSha256,
-    validateProductionOrchestrationReceiptV2,
-    "production_recovery_orchestration_receipt").value;
+  const recoveryReceipt = recoveryOrchestrationReceiptBytes === undefined
+    ? readCanonicalLifecycleArtifactV2(root,
+      "production-recovery-orchestration-receipt-v2.json",
+      evidence.recoveryOrchestrationReceiptSha256,
+      validateProductionOrchestrationReceiptV2,
+      "production_recovery_orchestration_receipt").value
+    : (() => {
+      const value = validateProductionOrchestrationReceiptV2(
+        JSON.parse(recoveryOrchestrationReceiptBytes.toString("utf8")));
+      if (!recoveryOrchestrationReceiptBytes.equals(canonicalBytesV2(value))
+          || releaseSha256V2(recoveryOrchestrationReceiptBytes)
+            !== evidence.recoveryOrchestrationReceiptSha256) {
+        throw new Error("production_recovery_orchestration_receipt_binding_invalid");
+      }
+      return value;
+    })();
   const settlementPath = lifecyclePath(root,
     `production-operation-settlement-${claim.operationId}.json`);
   const settlementBytes = readFileSync(settlementPath);

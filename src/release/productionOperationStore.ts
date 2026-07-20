@@ -1789,7 +1789,7 @@ export class ProductionOperationStoreV2 {
     takeover: Readonly<{ sha256: string; leaseTips: readonly Readonly<{ sha256: string; epoch: number }>[] }>,
     verifySettledRollbackHistoricalProofs?: SettledRollbackHistoricalProofVerifierV2
   ): Readonly<{
-    orchestration: Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null;
+    orchestration: Readonly<{ value: ProductionOrchestrationReceiptV2; bytes: Buffer; sha256: string }> | null;
     completedStepReceipts: readonly Readonly<{
       relativePath: string; sha256: string; receipt: ProductionOrchestrationStepReceiptV2;
     }>[];
@@ -1949,7 +1949,9 @@ export class ProductionOperationStoreV2 {
     assertCommittedOperationalAuthorityRecordV2(this.#root, freeze.value, {
       attestationSha256: attestation.sha256, issuerReceiptSha256: issuerReceipt.sha256
     });
-    let orchestration: Readonly<{ value: ProductionOrchestrationReceiptV2; sha256: string }> | null = null;
+    let orchestration: Readonly<{
+      value: ProductionOrchestrationReceiptV2; bytes: Buffer; sha256: string;
+    }> | null = null;
     if (state.orchestrationReceiptSha256 !== null) {
       orchestration = artifact(`${state.operationKind}_orchestration`, validateProductionOrchestrationReceiptV2,
         "production_terminal_bundle_orchestration");
@@ -2162,7 +2164,8 @@ export class ProductionOperationStoreV2 {
         consumption: claim.value.authorityConsumption,
         consumptionBytes: canonicalBytesV2(claim.value.authorityConsumption),
         claim: claim.value,
-        claimBytes: claim.bytes
+        claimBytes: claim.bytes,
+        recoveryOrchestrationReceiptBytes: orchestration.bytes
       });
     }
     return { orchestration, completedStepReceipts };
