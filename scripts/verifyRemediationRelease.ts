@@ -177,7 +177,7 @@ function assertExactDisposableDatabaseUrl(value: string, envName: string, expect
   }
   const database = decodeURIComponent(parsed.pathname.slice(1));
   if ((parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") || parsed.search || parsed.hash
-      || !new Set(["127.0.0.1", "localhost", "::1"]).has(parsed.hostname)
+      || !new Set(["127.0.0.1", "localhost", "::1", "[::1]"]).has(parsed.hostname)
       || database !== expectedDatabase) throw new Error(`${envName} is not the exact disposable Plan 5 database`);
 }
 

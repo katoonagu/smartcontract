@@ -434,6 +434,9 @@ it("[REQ-38][SUITE-ENVIRONMENT] strips production providers and Telegram while r
   expect(() => runner.buildReleaseSuiteEnvironment({
     PLAN5_TASK0B_TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1:56001/tron_watch_plan5_runtime_sanitized"
   })).toThrow(/disposable|database/i);
+  expect(runner.buildReleaseSuiteEnvironment({
+    PLAN5_TASK0B_TEST_DATABASE_URL: "postgresql://test:test@[::1]:56001/tron_watch"
+  }).PLAN5_TASK0B_TEST_DATABASE_URL).toContain("[::1]:56001/tron_watch");
 });
 
 it("[REQ-38][TASK0-BASELINE] parses typed baseline evidence and rejects nested secrets before hash acceptance", async () => {
