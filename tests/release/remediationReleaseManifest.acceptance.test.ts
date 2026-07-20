@@ -11,6 +11,7 @@ import {
   REMEDIATION_COMMAND_TEMPLATE_SHA256,
   REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256
 } from "../../src/release/remediationReleaseManifest";
+import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import { formatRuntimeVersion } from "../../src/runtime/runtimeVersion";
 import {
   CANDIDATE_SHA,
@@ -921,6 +922,7 @@ it("[REQ-38][TASK0B-CAPTURE] produces secret-free direct evidence without runtim
     const stableEvidence = buildCompleteTask0BPreflight();
     await producer.writeTask0BReleaseFreezeEvidenceExclusive(artifactRoot, stableEvidence);
     const firstBytes = await readFile(join(artifactRoot, "task0b-release-freeze.json"));
+    expect(firstBytes).toEqual(Buffer.from(`${canonicalReleaseJsonV2(stableEvidence)}\n`, "utf8"));
     await expect(producer.writeTask0BReleaseFreezeEvidenceExclusive(artifactRoot, stableEvidence)).rejects.toThrow();
     expect(await readFile(join(artifactRoot, "task0b-release-freeze.json"))).toEqual(firstBytes);
 

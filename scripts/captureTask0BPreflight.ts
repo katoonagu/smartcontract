@@ -25,6 +25,7 @@ import {
   validateRuntimeTopologySnapshotV2,
   type RuntimeTopologySnapshotV2
 } from "../src/release/runtimeEffectReconciliationV2";
+import { canonicalReleaseJsonV2 } from "../src/release/remediationReleaseManifestV2";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -1338,7 +1339,7 @@ export async function writeTask0BReleaseFreezeEvidenceExclusive(
   const artifactRoot = await inspectRealDirectory(root, true);
   const path = join(artifactRoot, EVIDENCE_FILENAME);
   const temporaryPath = join(artifactRoot, `.task0b-evidence-${process.pid}-${randomBytes(8).toString("hex")}`);
-  const bytes = Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8");
+  const bytes = Buffer.from(`${canonicalReleaseJsonV2(evidence)}\n`, "utf8");
   const handle = await open(
     temporaryPath,
     fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0)
@@ -1382,7 +1383,7 @@ async function main(): Promise<void> {
   process.stdout.write(`${JSON.stringify({
     status: "passed",
     candidateSha: evidence.candidateSha,
-    evidenceSha256: hash(Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8"))
+    evidenceSha256: hash(Buffer.from(`${canonicalReleaseJsonV2(evidence)}\n`, "utf8"))
   })}\n`);
 }
 
