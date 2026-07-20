@@ -55,13 +55,14 @@ runbook, shell history, manifest, or JSON evidence:
 <source-manifest-sha256>     lowercase SHA-256 of the exact current manifest bytes
 ```
 
-Only these database names are accepted by the schema producer:
+Only these database bindings are accepted by the release producers:
 
 | Role | Environment variable | Exact database name | Rule |
 |---|---|---|---|
 | clean rehearsal | `PLAN5_SCHEMA_CLEAN_DATABASE_URL` | `tron_watch_plan5_clean` | loopback and `--offline` |
 | production-clone rehearsal | `PLAN5_SCHEMA_CLONE_DATABASE_URL` | `tron_watch_plan5_clone` | restored clone only, loopback and `--offline` |
 | sanitized runtime rehearsal | `PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL` | `tron_watch_plan5_runtime_sanitized` | loopback and `--offline` |
+| Task 0B PostgreSQL acceptance | `PLAN5_TASK0B_TEST_DATABASE_URL` | `tron_watch` | isolated disposable cluster; never production port `55999` |
 | production | `TASK0B_PRODUCTION_DATABASE_URL` | `tron_watch` | never `--offline`; fresh protected authority required |
 
 For every offline run, `DATABASE_URL` must be absent and no production runtime,
@@ -188,6 +189,13 @@ order is producer-first, strict-verifier-last.
 
 2. Set the exact candidate identity and run each focused suite producer. Each
    PostgreSQL acceptance suite must execute rather than skip:
+
+   Before `plan1` through `plan4`, set `TEST_DATABASE_URL` to that group's
+   exact disposable database and remove it before `plan5` or
+   `addressPoisoningRegression`. For `plan5`, set
+   `PLAN5_TASK0B_TEST_DATABASE_URL` to database `tron_watch` on the isolated
+   disposable cluster; production port `55999` is rejected before the suite
+   starts.
 
    ```powershell
    $env:RELEASE_SHA = (git rev-parse HEAD).Trim()

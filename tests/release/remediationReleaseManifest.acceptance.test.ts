@@ -398,6 +398,7 @@ it("[REQ-38][SUITE-ENVIRONMENT] strips production providers and Telegram while r
     PLAN5_TELEGRAM_BOT_TOKEN: "123456789:AAExampleTokenValue",
     TEST_TRONSCAN_API_KEY: "secret-provider-key",
     PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL: "postgresql://test:test@127.0.0.1/tron_watch_plan5_runtime_sanitized",
+    PLAN5_TASK0B_TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1:56001/tron_watch",
     REQUIRE_PLAN5_POSTGRES: "1"
   });
   expect(env.PATH).toBe("test-path");
@@ -407,6 +408,7 @@ it("[REQ-38][SUITE-ENVIRONMENT] strips production providers and Telegram while r
   expect(env.PLAN5_TELEGRAM_BOT_TOKEN).toBeUndefined();
   expect(env.TEST_TRONSCAN_API_KEY).toBeUndefined();
   expect(env.PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL).toContain("tron_watch_plan5_runtime_sanitized");
+  expect(env.PLAN5_TASK0B_TEST_DATABASE_URL).toContain("127.0.0.1:56001/tron_watch");
   expect(env.REQUIRE_PLAN5_POSTGRES).toBe("1");
   expect(env.DOTENV_CONFIG_PATH).toContain("plan5-no-dotenv");
   expect(() => runner.buildReleaseSuiteEnvironment({
@@ -418,6 +420,12 @@ it("[REQ-38][SUITE-ENVIRONMENT] strips production providers and Telegram while r
   expect(runner.buildReleaseSuiteEnvironment({
     TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1/tron_watch_plan1"
   }, { expectedTestDatabase: "tron_watch_plan1" }).TEST_DATABASE_URL).toContain("tron_watch_plan1");
+  expect(() => runner.buildReleaseSuiteEnvironment({
+    PLAN5_TASK0B_TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1:55999/tron_watch"
+  })).toThrow(/disposable|database/i);
+  expect(() => runner.buildReleaseSuiteEnvironment({
+    PLAN5_TASK0B_TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1:56001/tron_watch_plan5_runtime_sanitized"
+  })).toThrow(/disposable|database/i);
 });
 
 it("[REQ-38][TASK0-BASELINE] parses typed baseline evidence and rejects nested secrets before hash acceptance", async () => {

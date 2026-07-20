@@ -135,7 +135,12 @@ The focused-suite line is repeated for `plan2`, `plan3`, `plan4`, `plan5`, and
 `addressPoisoningRegression`. The schema producer also runs in separate
 protected sequence roots for exact databases `tron_watch_plan5_clean` and
 `tron_watch_plan5_runtime_sanitized`; all disposable targets are loopback and
-offline. `schema:verify` is read-only and cannot replace the producer.
+offline. Set `TEST_DATABASE_URL` to the matching `tron_watch_plan1` through
+`tron_watch_plan4` database only while its suite runs. The forced Plan 5
+PostgreSQL suite additionally requires `PLAN5_TASK0B_TEST_DATABASE_URL` bound
+to an isolated disposable `tron_watch` database; production port `55999` is
+rejected. Remove both suite-only variables outside their exact group.
+`schema:verify` is read-only and cannot replace the producer.
 
 After manual evidence finalization, and after every later transition, hash the
 exact current manifest bytes. Never reuse a prior source SHA or edit the store:

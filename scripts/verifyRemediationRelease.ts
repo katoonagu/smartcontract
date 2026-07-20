@@ -186,7 +186,7 @@ export function buildReleaseSuiteEnvironment(
   options: { expectedTestDatabase?: string } = {}
 ): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {};
-  const allowedSensitive = /^(?:TEST_DATABASE_URL|REQUIRE_PLAN[1-5]_POSTGRES|PLAN[1-4]_TEST_DATABASE_URL|PLAN5_SCHEMA_(?:CLEAN|CLONE|RUNTIME_SANITIZED)_DATABASE_URL|PLAN5_SCHEMA_EXPECTED_(?:ENDPOINT|SYSTEM_IDENTIFIER))$/;
+  const allowedSensitive = /^(?:TEST_DATABASE_URL|REQUIRE_PLAN[1-5]_POSTGRES|PLAN[1-4]_TEST_DATABASE_URL|PLAN5_SCHEMA_(?:CLEAN|CLONE|RUNTIME_SANITIZED)_DATABASE_URL|PLAN5_SCHEMA_EXPECTED_(?:ENDPOINT|SYSTEM_IDENTIFIER)|PLAN5_TASK0B_TEST_DATABASE_URL)$/;
   const sensitive = /(?:DATABASE_URL|TELEGRAM|BOT(?:_|$)|TRONSCAN|TRONGRID|DEEPSEEK|OPENAI|ANTHROPIC|LLM|TOKEN|API_KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|PROVIDER)/i;
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined || key === "NODE_OPTIONS") continue;
@@ -194,6 +194,11 @@ export function buildReleaseSuiteEnvironment(
     if (key === "TEST_DATABASE_URL") {
       if (!options.expectedTestDatabase) throw new Error("TEST_DATABASE_URL has no disposable suite database binding");
       assertExactDisposableDatabaseUrl(value, key, options.expectedTestDatabase);
+    } else if (key === "PLAN5_TASK0B_TEST_DATABASE_URL") {
+      assertExactDisposableDatabaseUrl(value, key, "tron_watch");
+      if (Number(new URL(value).port || 5432) === 55_999) {
+        throw new Error(`${key} is not the exact disposable Plan 5 database`);
+      }
     } else if (Object.hasOwn(PLAN5_CLEANUP_DATABASES, key)) {
       assertExactDisposableDatabaseUrl(
         value,
