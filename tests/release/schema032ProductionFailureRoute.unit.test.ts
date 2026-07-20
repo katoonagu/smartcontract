@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -22,7 +22,7 @@ describe("schema 032 production failure route", () => {
     try {
       const completedStages = stages.slice(0, stages.indexOf(failedStep))
         .map((step, index) => ({ step, receiptSha256: digest(String(index + 1)) }));
-      const result = await persistSchema032ProductionFailureRouteV2(root, {
+      const input = {
         executionReceipt: {
           version: "schema-032-production-execution-receipt-v2",
           candidateSha,
@@ -46,7 +46,13 @@ describe("schema 032 production failure route", () => {
           completedStages
         },
         failureCode: "schema_032_migration_command_failed"
-      });
+      } as const;
+      await expect(persistSchema032ProductionFailureRouteV2(root, {
+        ...input, faultAt: "after_execution_receipt"
+      })).rejects.toThrow("schema_032_test_fault_after_execution_receipt");
+      expect(existsSync(join(root, "schema032-production-execution-receipt-v2.json"))).toBe(true);
+      expect(existsSync(join(root, "production-failure-evidence-v2.json"))).toBe(false);
+      const result = await persistSchema032ProductionFailureRouteV2(root, input);
 
       const stageFailureBytes = readFileSync(join(root, result.executionReceipt.failureArtifact.relativePath));
       const executionReceiptBytes = readFileSync(join(root, "schema032-production-execution-receipt-v2.json"));
