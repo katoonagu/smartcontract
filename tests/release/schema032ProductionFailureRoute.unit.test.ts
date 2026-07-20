@@ -216,6 +216,38 @@ async function materializeG12Source(root: string, exactCandidateSha: string) {
 }
 
 describe("schema 032 production failure route", () => {
+  it("rejects a root-only orphan compatibility authority before creating a production DB session", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-18T10:00:00.000Z"));
+    dbSessionStarted.mockClear();
+    const root = protectedRoot();
+    const previousNodeEnv = process.env.NODE_ENV;
+    try {
+      const exactCandidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const context = await materializeG12Source(root, exactCandidateSha);
+      writeFileSync(join(root, `schema032-production-authority-${context.freeze.releaseGenerationId}.json`),
+        "{}\n", { flag: "wx" });
+      process.env.NODE_ENV = "test";
+      await expect(runSchema032ReleaseSequence({
+        databaseUrlEnvName: "TASK0B_PRODUCTION_DATABASE_URL",
+        databaseUrl: "postgresql://test:test@127.0.0.1:55998/tron_watch",
+        expectedEndpoint: "127.0.0.1:55998",
+        expectedSystemIdentifier: "12345678901234567890",
+        artifactRoot: root,
+        offline: false,
+        candidateSha: exactCandidateSha
+      }, { observeCandidateRepositoryState: async () => ({
+        headSha: exactCandidateSha, status: "",
+        migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+      }) })).rejects.toThrow("schema_032_sequence_production_orphan_authority_alias");
+      expect(dbSessionStarted).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it.each(stages)("persists %s as exact typed G13 failure evidence bound to immutable bytes", async (failedStep) => {
     const root = mkdtempSync(join(tmpdir(), "plan5-g13-failure-route-"));
     try {
@@ -292,7 +324,8 @@ describe("schema 032 production failure route", () => {
         source: "operator_protected_one_shot_production_go", generationId: context.freeze.releaseGenerationId,
         commandId: "production_migration",
         commandTemplateSha256: SCHEMA_032_PRODUCTION_MIGRATION_TEMPLATE_SHA256,
-        issuedAt: "2026-07-18T10:05:00.000Z", expiresAt: "2026-07-18T10:14:00.000Z",
+        issuedAt: context.selectedG13.authority.issuedAt,
+        expiresAt: context.selectedG13.authority.expiresAt,
         candidateSha: exactCandidateSha, databaseRole: "production",
         databaseIdentityFingerprintSha256: context.freeze.productionDatabaseIdentityFingerprintSha256,
         task0bEvidenceSha256: sha256(context.task0bBytes), releaseManifestPath: "release-manifest.json",
@@ -377,8 +410,7 @@ describe("schema 032 production failure route", () => {
         expectedSystemIdentifier: "12345678901234567890",
         artifactRoot: root,
         offline: false,
-        candidateSha: exactCandidateSha,
-        productionAuthorityFile: authorityName
+        candidateSha: exactCandidateSha
       };
       const testDependencies = { observeCandidateRepositoryState: async () => ({
         headSha: exactCandidateSha, status: "",

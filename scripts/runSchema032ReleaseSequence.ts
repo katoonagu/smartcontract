@@ -114,7 +114,6 @@ export type Schema032SequenceCliOptions = {
   artifactRoot: string;
   offline: boolean;
   candidateSha: string;
-  productionAuthorityFile?: string;
 };
 
 type SequenceState = {
@@ -271,12 +270,6 @@ export function validateSchema032ReleaseSequenceTarget(
   if (ROLE_ENV[classified.databaseRole] !== options.databaseUrlEnvName) {
     fail("schema_032_sequence_database_env_role_mismatch");
   }
-  if (classified.databaseRole === "production" && options.productionAuthorityFile === undefined) {
-    fail("schema_032_sequence_production_authority_required");
-  }
-  if (classified.databaseRole !== "production" && options.productionAuthorityFile !== undefined) {
-    fail("schema_032_sequence_production_authority_forbidden");
-  }
   return { ...options, databaseRole: classified.databaseRole, databaseName: classified.databaseName };
 }
 
@@ -289,7 +282,6 @@ export function parseSchema032ReleaseSequenceArgs(
   let expectedEndpoint: string | undefined;
   let expectedSystemIdentifier: string | undefined;
   let artifactRoot: string | undefined;
-  let productionAuthorityFile: string | undefined;
   let offline = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -300,7 +292,6 @@ export function parseSchema032ReleaseSequenceArgs(
     else if (arg === "--expected-endpoint" && expectedEndpoint === undefined) expectedEndpoint = value;
     else if (arg === "--expected-system-identifier" && expectedSystemIdentifier === undefined) expectedSystemIdentifier = value;
     else if (arg === "--artifact-root" && artifactRoot === undefined) artifactRoot = value;
-    else if (arg === "--production-authority-file" && productionAuthorityFile === undefined) productionAuthorityFile = value;
     else fail("schema_032_sequence_cli_argument_invalid");
     index += 1;
   }
@@ -316,8 +307,7 @@ export function parseSchema032ReleaseSequenceArgs(
     expectedSystemIdentifier,
     artifactRoot: resolve(artifactRoot),
     offline,
-    candidateSha,
-    productionAuthorityFile
+    candidateSha
   };
 }
 
@@ -1068,7 +1058,7 @@ function validateProductionAuthority(value: unknown, evaluatedAt: string): Produ
       || typeof authority.generationId !== "string" || !GENERATION.test(authority.generationId)
       || authority.commandId !== "production_migration"
       || authority.commandTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256.production_migration
-      || issuedAt > now || expiresAt <= now || expiresAt.getTime() - issuedAt.getTime() > 10 * 60_000
+      || issuedAt > now || expiresAt <= now || expiresAt.getTime() - issuedAt.getTime() > 30 * 60_000
       || !SHA40.test(String(authority.candidateSha)) || authority.databaseRole !== "production"
       || !SHA256.test(String(authority.databaseIdentityFingerprintSha256))
       || !SHA256.test(String(authority.task0bEvidenceSha256))
@@ -1273,22 +1263,57 @@ type PreparedSchema032ProductionAuthorizationV2 = Awaited<ReturnType<typeof prep
 
 async function prepareProductionMutationAuthorization(input: {
   artifactRoot: string;
-  authorityFilename: string;
   candidateSha: string;
   evaluatedAt?: string;
 }) {
-  if (!/^schema032-production-authority-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(input.authorityFilename)) {
-    fail("schema_032_sequence_production_authority_filename_invalid");
-  }
   const initialEvaluatedAt = input.evaluatedAt ?? new Date().toISOString();
-  const [authorityBytes, task0bBytes, backupBytes] = await Promise.all([
-    readProtectedRegularFile(input.artifactRoot, input.authorityFilename, MAX_ARTIFACT_BYTES),
+  const [task0bBytes, backupBytes] = await Promise.all([
     readProtectedRegularFile(input.artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(input.artifactRoot, "production-backup-evidence.json", MAX_ARTIFACT_BYTES)
   ]);
-  const authorityValue = parseJson(authorityBytes.toString("utf8"),
-    "schema_032_sequence_production_authority_invalid");
+  const rootOnlyVerified = verifyCurrentReleaseManifestChainV2(input.artifactRoot);
+  const rootOnlySelected = selectOperationalAttestationFromStoreV2({
+    artifactRoot: input.artifactRoot,
+    action: "g13_migration_passed",
+    expectedSourceManifestSha256: rootOnlyVerified.manifestSha256,
+    evaluatedAt: initialEvaluatedAt,
+    minimumRemainingValidityMs: 0
+  });
+  if (rootOnlyVerified.manifest.transitionId !== "g12_backup_passed"
+      || rootOnlyVerified.manifest.overall !== "not_ready") {
+    fail("schema_032_sequence_production_v2_manifest_authority_unverified");
+  }
+  const authorityValue = {
+    version: "schema-032-production-authority-v1" as const,
+    scope: "schema_032_production_migration" as const,
+    source: "operator_protected_one_shot_production_go" as const,
+    generationId: rootOnlyVerified.freeze.releaseGenerationId,
+    commandId: "production_migration" as const,
+    commandTemplateSha256: rootOnlySelected.authority.redactedTemplateSha256,
+    issuedAt: rootOnlySelected.authority.issuedAt,
+    expiresAt: rootOnlySelected.authority.expiresAt,
+    candidateSha: rootOnlyVerified.freeze.candidateSha,
+    databaseRole: "production" as const,
+    databaseIdentityFingerprintSha256: rootOnlyVerified.freeze.productionDatabaseIdentityFingerprintSha256,
+    task0bEvidenceSha256: hash(task0bBytes),
+    releaseManifestPath: "release-manifest.json" as const,
+    releaseManifestSha256: rootOnlyVerified.manifestSha256,
+    releaseManifestOverall: "not_ready" as const,
+    backupEvidencePath: "production-backup-evidence.json" as const,
+    backupEvidenceSha256: hash(backupBytes),
+    explicitGo: true as const
+  };
+  const authorityBytes = canonicalBytesV2(authorityValue);
   let authority = validateProductionAuthority(authorityValue, initialEvaluatedAt);
+  const authorityFilename = `schema032-production-authority-${authority.generationId}.json`;
+  const consumptionFilename = `schema032-production-authority-consumed-${authority.generationId}.json`;
+  const [existingAuthorityAlias, existingConsumption] = await Promise.all([
+    readOptionalArtifact(input.artifactRoot, authorityFilename),
+    readOptionalArtifact(input.artifactRoot, consumptionFilename)
+  ]);
+  if (existingAuthorityAlias !== null && existingConsumption === null) {
+    fail("schema_032_sequence_production_orphan_authority_alias");
+  }
   const task0b = validateTask0BReleaseFreezeEvidence(
     parseJson(task0bBytes.toString("utf8"), "schema_032_sequence_task0b_invalid"),
     input.candidateSha,
@@ -1305,14 +1330,9 @@ async function prepareProductionMutationAuthorization(input: {
       !== authority.databaseIdentityFingerprintSha256) {
     fail("schema_032_sequence_production_database_binding_unverified");
   }
-  const initialV2 = verifySchema032ProductionManifestAuthorityV2({
-    artifactRoot: input.artifactRoot,
-    authority: authorityValue,
-    task0bBytes,
-    backupBytes,
-    evaluatedAt: initialEvaluatedAt
-  });
-  return { ...input, authorityBytes, task0bBytes, backupBytes, authorityValue, authority, task0b, backup, initialV2 };
+  const initialV2 = { ...rootOnlyVerified, selected: rootOnlySelected };
+  return { ...input, authorityFilename, authorityBytes, task0bBytes, backupBytes, authorityValue, authority,
+    task0b, backup, initialV2 };
 }
 
 async function readValidatedSchema032AttemptLineage(input: {
@@ -1420,6 +1440,7 @@ async function authorizeProductionMutation(input: {
       claimedAt
     );
   }
+  await writeArtifactExactReplay(artifactRoot, authorityFilename, authorityValue);
   const consumptionBytes = canonicalBytesV2(actualConsumption);
   const attemptPrefix = `schema032-production-attempt-${authority.generationId}-`;
   const priorAttempts = await readValidatedSchema032AttemptLineage({
@@ -1461,7 +1482,8 @@ async function authorizeProductionMutation(input: {
       const evaluatedAt = new Date().toISOString();
       const [currentAuthorityBytes, currentTask0bBytes, currentBackupBytes, currentConsumption,
         currentExecutionAttempt] = await Promise.all([
-        readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES),
+        readOptionalArtifact(artifactRoot, authorityFilename)
+          .then((value) => Buffer.from(value ?? authorityBytes.toString("utf8"), "utf8")),
         readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
         readProtectedRegularFile(artifactRoot, "production-backup-evidence.json", MAX_ARTIFACT_BYTES),
         readProtectedRegularFile(artifactRoot, consumptionName, MAX_ARTIFACT_BYTES),
@@ -1766,7 +1788,6 @@ export async function runSchema032ReleaseSequence(
   const preparedProduction = validated.databaseRole === "production"
     ? await prepareProductionMutationAuthorization({
       artifactRoot,
-      authorityFilename: validated.productionAuthorityFile!,
       candidateSha: validated.candidateSha,
       evaluatedAt: existingProductionReceipt?.lockAcquiredAt
     })

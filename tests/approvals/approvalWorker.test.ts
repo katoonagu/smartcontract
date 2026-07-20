@@ -2118,7 +2118,7 @@ describe("runSingleApprovalPollingCycle", () => {
           release: async () => { events.push(`unlock:${target.watchedWalletId}`); }
         })
       }
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({ selected: 2, locked: 2, attempted: 2, completed: 2 });
 
     expect(events).toEqual([
       `provider:${spenderAddress}`,

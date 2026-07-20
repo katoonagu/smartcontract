@@ -728,6 +728,25 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] allows only an explicit bound target a
     offline: true,
     candidateSha: "c".repeat(40)
   })).toThrow("schema_032_sequence_database_env_role_mismatch");
+
+  const production = producer.parseSchema032ReleaseSequenceArgs([
+    "--database-url-env", "TASK0B_PRODUCTION_DATABASE_URL",
+    "--expected-endpoint", "127.0.0.1:55999",
+    "--expected-system-identifier", "1234567890123456789",
+    "--artifact-root", resolve("artifacts/schema032-production")
+  ], {
+    TASK0B_PRODUCTION_DATABASE_URL: "postgresql://db:secret@127.0.0.1:55999/tron_watch"
+  });
+  expect(() => producer.validateSchema032ReleaseSequenceTarget(production)).not.toThrow();
+  expect(() => producer.parseSchema032ReleaseSequenceArgs([
+    "--database-url-env", "TASK0B_PRODUCTION_DATABASE_URL",
+    "--expected-endpoint", "127.0.0.1:55999",
+    "--expected-system-identifier", "1234567890123456789",
+    "--artifact-root", resolve("artifacts/schema032-production"),
+    "--production-authority-file", "schema032-production-authority-forbidden.json"
+  ], {
+    TASK0B_PRODUCTION_DATABASE_URL: "postgresql://db:secret@127.0.0.1:55999/tron_watch"
+  })).toThrow("schema_032_sequence_cli_argument_invalid");
 });
 
 it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and a completed rerun is a verified no-op", async () => {

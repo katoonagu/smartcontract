@@ -192,22 +192,8 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     vi.setSystemTime(new Date("2026-07-18T10:01:01.000Z"));
     try {
       const { task0b, freeze, issued } = await materializeReadinessV2Root(root);
-      const manifestBytes = readFileSync(join(root, "release-manifest.json"));
-      const authority = {
-        ...fixture(root).authority,
-        generationId: freeze.releaseGenerationId,
-        issuedAt: issued.issuedAt,
-        expiresAt: new Date(Date.parse(issued.issuedAt) + 5 * 60_000).toISOString(),
-        candidateSha: freeze.candidateSha,
-        databaseIdentityFingerprintSha256: freeze.productionDatabaseIdentityFingerprintSha256,
-        task0bEvidenceSha256: sha256(Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`)),
-        releaseManifestSha256: sha256(manifestBytes),
-        artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256
-      };
-      const authorityName = `production-backup-authority-${authority.generationId}.json`;
-      writeFileSync(join(root, authorityName), Buffer.from(`${JSON.stringify(authority)}\n`), { flag: "wx" });
       const sideEffects: string[] = [];
-      await expect(api.runProductionBackupCommand([root, authorityName], {}, {
+      await expect(api.runProductionBackupCommand([root], {}, {
         now: () => issued.issuedAt,
         currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true }),
         observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("unexpected_database"); },
@@ -215,6 +201,18 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         stdout: () => { sideEffects.push("stdout"); }
       })).rejects.toThrow("production_backup_database_url_missing");
       expect(sideEffects).toEqual([]);
+      writeFileSync(join(root, `production-backup-authority-${freeze.releaseGenerationId}.json`), "{}\n", { flag: "wx" });
+      await expect(api.runProductionBackupCommand([root], {
+        TASK0B_PRODUCTION_DATABASE_URL: "postgresql://release:not-used@127.0.0.1:55999/tron_watch"
+      }, {
+        now: () => issued.issuedAt,
+        currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true }),
+        observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("unexpected_database"); }
+      })).rejects.toThrow("production_backup_orphan_authority_alias");
+      expect(sideEffects).toEqual([]);
+      await expect(api.runProductionBackupCommand([
+        root, `production-backup-authority-${freeze.releaseGenerationId}.json`
+      ], {}, {})).rejects.toThrow("production_backup_arguments_invalid");
     } finally { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
   }, 45_000);
 
@@ -239,7 +237,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         (value) => { value.authority.commandTemplateSha256 = "f".repeat(64); },
         (value) => { value.authority.databaseRole = "staging"; },
         (value) => { value.authority.issuedAt = "2026-07-18T09:06:00.000Z"; },
-        (value) => { value.authority.expiresAt = "2026-07-18T09:15:00.001Z"; },
+        (value) => { value.authority.expiresAt = "2026-07-18T10:04:00.001Z"; },
         (value) => { value.authority.expiresAt = "2026-07-18T09:04:59.000Z"; },
         (value) => { value.authority.candidateSha = "f".repeat(40); },
         (value) => { value.authority.task0bEvidenceSha256 = "f".repeat(64); },

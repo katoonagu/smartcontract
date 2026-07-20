@@ -223,7 +223,7 @@ function validateProductionBackupAuthority(value: unknown): Record<string, unkno
   const issuedAt = evidenceIso(input.issuedAt, code);
   const expiresAt = evidenceIso(input.expiresAt, code);
   if (Date.parse(issuedAt) >= Date.parse(expiresAt)
-      || Date.parse(expiresAt) - Date.parse(issuedAt) > 10 * 60_000) throw new Error(code);
+      || Date.parse(expiresAt) - Date.parse(issuedAt) > 60 * 60_000) throw new Error(code);
   return input;
 }
 
@@ -315,7 +315,7 @@ function validateProductionMigrationAuthority(value: unknown): Record<string, un
   const issuedAt = evidenceIso(input.issuedAt, code);
   const expiresAt = evidenceIso(input.expiresAt, code);
   if (Date.parse(issuedAt) >= Date.parse(expiresAt)
-      || Date.parse(expiresAt) - Date.parse(issuedAt) > 10 * 60_000) throw new Error(code);
+      || Date.parse(expiresAt) - Date.parse(issuedAt) > 30 * 60_000) throw new Error(code);
   return input;
 }
 

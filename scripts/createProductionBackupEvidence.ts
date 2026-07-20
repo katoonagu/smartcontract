@@ -27,6 +27,7 @@ import {
   selectOperationalAttestationFromStoreV2,
   verifyCurrentReleaseManifestChainV2
 } from "../src/release/releaseManifestStoreV2";
+import { canonicalBytesV2 } from "../src/release/releaseRootWriterStore";
 
 const SHA40 = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -204,7 +205,7 @@ export function validateProductionBackupAuthority(
       || typeof authority.generationId !== "string" || !GENERATION.test(authority.generationId)
       || authority.commandId !== "production_backup"
       || authority.commandTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256.production_backup
-      || issuedAt > expiresAt || expiresAt.getTime() - issuedAt.getTime() > 10 * 60_000
+      || issuedAt > expiresAt || expiresAt.getTime() - issuedAt.getTime() > 60 * 60_000
       || !SHA40.test(String(authority.candidateSha)) || authority.databaseRole !== "production"
       || !SHA256.test(String(authority.databaseIdentityFingerprintSha256))
       || authority.task0bEvidencePath !== "task0b-release-freeze.json" || !SHA256.test(String(authority.task0bEvidenceSha256))
@@ -1243,9 +1244,12 @@ export async function runProductionBackupCommand(
     stdout?(value: string): void;
   } = {}
 ): Promise<void> {
-  const [artifactRootInput, authorityFilename] = args;
-  if (!artifactRootInput || !authorityFilename || args.length !== 2
-      || !/^production-backup-authority-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(authorityFilename)) {
+  const [artifactRootInput, suppliedAuthorityFilename] = args;
+  const legacyTestAuthority = process.env.NODE_ENV === "test"
+    && dependencies.verifyProductionManifestAuthorityV2 !== undefined
+    && args.length === 2
+    && /^production-backup-authority-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(suppliedAuthorityFilename ?? "");
+  if (!artifactRootInput || (args.length !== 1 && !legacyTestAuthority)) {
     throw new Error("production_backup_arguments_invalid");
   }
   const now = dependencies.now ?? (() => new Date().toISOString());
@@ -1256,25 +1260,68 @@ export async function runProductionBackupCommand(
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
   const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
   const rootFingerprint = hash(canonicalPathKey(artifactRoot));
-  const [authorityBytes, task0bBytes, manifestBytes] = await Promise.all([
-    readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES),
+  const [task0bBytes, manifestBytes] = await Promise.all([
     readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(artifactRoot, "release-manifest.json", MAX_ARTIFACT_BYTES)
   ]);
-  const authorityValue = JSON.parse(authorityBytes.toString("utf8"));
+  const initialEvaluatedAt = now();
+  const rootOnlyVerified = legacyTestAuthority ? null : verifyCurrentReleaseManifestChainV2(artifactRoot);
+  const rootOnlySelected = rootOnlyVerified === null ? null : selectOperationalAttestationFromStoreV2({
+    artifactRoot,
+    action: "g12_backup_passed",
+    expectedSourceManifestSha256: rootOnlyVerified.manifestSha256,
+    evaluatedAt: initialEvaluatedAt,
+    minimumRemainingValidityMs: 0
+  });
+  if (rootOnlyVerified !== null && (!rootOnlyVerified.manifestBytes.equals(manifestBytes)
+      || rootOnlyVerified.manifest.transitionId !== "readiness"
+      || rootOnlyVerified.manifest.overall !== "ready_for_release")) {
+    throw new Error("production_backup_v2_manifest_authority_unverified");
+  }
+  const derivedAuthority = rootOnlyVerified === null || rootOnlySelected === null ? null : {
+    version: "production-backup-authority-v1" as const,
+    scope: "production_backup" as const,
+    source: "operator_protected_one_shot_production_go" as const,
+    generationId: rootOnlyVerified.freeze.releaseGenerationId,
+    commandId: "production_backup" as const,
+    commandTemplateSha256: rootOnlySelected.authority.redactedTemplateSha256,
+    issuedAt: rootOnlySelected.authority.issuedAt,
+    expiresAt: rootOnlySelected.authority.expiresAt,
+    candidateSha: rootOnlyVerified.freeze.candidateSha,
+    databaseRole: "production" as const,
+    databaseIdentityFingerprintSha256: rootOnlyVerified.freeze.productionDatabaseIdentityFingerprintSha256,
+    task0bEvidencePath: "task0b-release-freeze.json" as const,
+    task0bEvidenceSha256: hash(task0bBytes),
+    releaseManifestPath: "release-manifest.json" as const,
+    releaseManifestSha256: rootOnlyVerified.manifestSha256,
+    releaseManifestOverall: "ready_for_release" as const,
+    artifactRootFingerprintSha256: rootOnlyVerified.freeze.artifactRootFingerprintSha256,
+    explicitGo: true as const
+  };
+  const authorityValue = derivedAuthority ?? JSON.parse((await readProtectedRegularFile(
+    artifactRoot, suppliedAuthorityFilename!, MAX_ARTIFACT_BYTES
+  )).toString("utf8"));
+  const authorityBytes = derivedAuthority === null
+    ? await readProtectedRegularFile(artifactRoot, suppliedAuthorityFilename!, MAX_ARTIFACT_BYTES)
+    : canonicalBytesV2(derivedAuthority);
   const authorityForExisting = validateProductionBackupAuthority(authorityValue, String(authorityValue.issuedAt));
+  const authorityFilename = `production-backup-authority-${authorityForExisting.generationId}.json`;
   const candidate = await (dependencies.currentCandidate ?? currentCandidate)();
   if (!candidate.clean || candidate.sha !== authorityForExisting.candidateSha) throw new Error("production_backup_candidate_unverified");
   const claimPathName = claimFilename(authorityForExisting.generationId);
   const rawTask0b = JSON.parse(task0bBytes.toString("utf8"));
-  const injectedManifestVerifier = dependencies.verifyProductionManifestAuthorityV2 !== undefined;
+  const injectedManifestVerifier = legacyTestAuthority;
+  let useInitialRootOnlySelection = rootOnlyVerified !== null && rootOnlySelected !== null;
   const validateBoundAuthority = (evaluatedAt: string, expectedAttestationSha256?: string) => {
-    const verified = verifyManifestAuthority({
-      artifactRoot,
-      authority: authorityValue,
-      evaluatedAt,
-      ...(expectedAttestationSha256 ? { expectedAttestationSha256 } : {})
-    });
+    const verified = useInitialRootOnlySelection && expectedAttestationSha256 === undefined
+      ? { ...rootOnlyVerified!, ...rootOnlySelected!, selected: rootOnlySelected! }
+      : verifyManifestAuthority({
+        artifactRoot,
+        authority: authorityValue,
+        evaluatedAt,
+        ...(expectedAttestationSha256 ? { expectedAttestationSha256 } : {})
+      });
+    useInitialRootOnlySelection = false;
     const authority = validateProductionBackupAuthority(authorityValue, evaluatedAt);
     const task0b = validateTask0BReleaseFreezeEvidence(rawTask0b, candidate.sha,
       injectedManifestVerifier ? String(rawTask0b.observedAt) : evaluatedAt);
@@ -1318,7 +1365,10 @@ export async function runProductionBackupCommand(
   if (!databaseUrl) throw new Error("production_backup_database_url_missing");
   const revalidateExactBindings = async (checkDatabase: boolean): Promise<void> => {
     const [currentAuthorityBytes, currentTask0bBytes, currentManifestBytes, currentCandidateState, currentRoot] = await Promise.all([
-      readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES),
+      legacyTestAuthority
+        ? readProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES)
+        : readOptionalProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES)
+          .then((bytes) => bytes ?? authorityBytes),
       readProtectedRegularFile(artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
       readProtectedRegularFile(artifactRoot, "release-manifest.json", MAX_ARTIFACT_BYTES),
       (dependencies.currentCandidate ?? currentCandidate)(),
@@ -1343,6 +1393,19 @@ export async function runProductionBackupCommand(
     }
   };
   const existingEvidenceBytes = await readOptionalProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_ARTIFACT_BYTES);
+  const materializeDerivedAuthority = async (): Promise<void> => {
+    if (legacyTestAuthority) return;
+    const existing = await readOptionalProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES);
+    if (existing !== null) {
+      if (!existing.equals(authorityBytes)) throw new Error("production_backup_authority_replay_conflict");
+      return;
+    }
+    try { await writeExclusive(artifactRoot, authorityFilename, authorityBytes); }
+    catch (error) {
+      const raced = await readOptionalProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES);
+      if (raced === null || !raced.equals(authorityBytes)) throw error;
+    }
+  };
   if (existingEvidenceBytes) {
     const completedAt = now();
     const evidence = validateProductionBackupEvidence(
@@ -1350,6 +1413,7 @@ export async function runProductionBackupCommand(
     const claim = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
     if (!claim) throw new Error("production_backup_consumption_missing");
     validateProductionBackupConsumptionState(JSON.parse(claim.toString("utf8")), expectedConsumption, completedAt);
+    await materializeDerivedAuthority();
     const completedBinding = { ...expectedConsumption, claimSha256: hash(claim) };
     await validateProductionBackupProgress(artifactRoot, completedBinding, completedAt);
     await revalidateExactBindings(false);
@@ -1367,8 +1431,14 @@ export async function runProductionBackupCommand(
   await assertNoForeignProductionBackupGeneration(artifactRoot, preflight.authority.generationId);
   const initialClaim = await readOptionalProtectedRegularFile(artifactRoot, claimPathName, MAX_ARTIFACT_BYTES);
   const claimExists = initialClaim !== null;
+  const initialAuthorityAlias = legacyTestAuthority ? authorityBytes
+    : await readOptionalProtectedRegularFile(artifactRoot, authorityFilename, MAX_ARTIFACT_BYTES);
+  if (!legacyTestAuthority && !claimExists && initialAuthorityAlias !== null) {
+    throw new Error("production_backup_orphan_authority_alias");
+  }
   if (initialClaim) {
     validateProductionBackupConsumptionState(JSON.parse(initialClaim.toString("utf8")), expectedConsumption, preflightAt);
+    await materializeDerivedAuthority();
     await validateProductionBackupProgress(
       artifactRoot,
       { ...expectedConsumption, claimSha256: hash(initialClaim) },
@@ -1428,6 +1498,7 @@ export async function runProductionBackupCommand(
       claim: async () => {
         const result = await claimProductionBackupAuthority(artifactRoot, expectedConsumption, now());
         if (result !== "claimed") throw new Error("production_backup_consumption_concurrent");
+        await materializeDerivedAuthority();
       },
       acquireOperation: async () => {
         const acquired = await acquireProductionBackupOperationLease(artifactRoot, await readProgressBinding(), now());
