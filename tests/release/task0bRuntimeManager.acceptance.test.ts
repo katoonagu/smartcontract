@@ -70,6 +70,29 @@ function actionManifest(commandId: RuntimeCommandId) {
   });
 }
 
+it("[REQ-38][PRODUCTION-MUTATOR-V2][PHASE] accepts only exact read-only V2 release verification phases", async () => {
+  const verifier = await import("../../scripts/verifyRemediationRelease");
+  const gateIds = buildReleaseManifestV2Fixture().gates.map(({ id }) => id);
+  const result = (transitionId: string, overall: string, passedThrough: number) => ({
+    version: "remediation-release-manifest-v2",
+    transitionId,
+    overall,
+    gates: gateIds.map((id, index) => ({ id, state: index <= passedThrough ? "passed" : "pending" }))
+  });
+  const cases = [
+    ["readiness", result("readiness", "ready_for_release", 11)],
+    ["g12", result("g12_backup_passed", "not_ready", 12)],
+    ["g13", result("g13_migration_passed", "not_ready", 13)],
+    ["g14", result("g14_rollout_passed", "not_ready", 14)],
+    ["released", result("g15_canary_released", "released", 15)]
+  ] as const;
+  for (const [phase, value] of cases) {
+    expect(() => (verifier as any).assertReleaseVerificationPhaseV2(value, phase)).not.toThrow();
+    expect(() => (verifier as any).assertReleaseVerificationPhaseV2(value, phase === "g12" ? "g13" : "g12"))
+      .toThrow(/phase|gate|transition|overall/i);
+  }
+});
+
 function productionAuthority(overrides: Record<string, unknown> = {}) {
   const manifest = actionManifest("runtime_manager_start_candidate");
   const bytes = manifestBytes(manifest);

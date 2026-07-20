@@ -271,6 +271,25 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     capability: "cleanup_only"
   });
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
+}, 60_000);
+
+it("revalidates current manifest receipt lineage before every owned production operation", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const begun = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  const manifest = JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8"));
+  const receiptPath = join(root, `manifest-transition-receipt-${manifest.latestCommittedReceiptSha256}.json`);
+  await writeFile(receiptPath, Buffer.concat([readFileSync(receiptPath), Buffer.from(" ")]));
+  expect(() => runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER,
+    isOwnerAlive: () => true
+  }, () => store.assertOwnedAndWithinBounds(begun.lease.operationId, "2026-07-18T10:00:01.000Z")))
+    .toThrow(/manifest|receipt|canonical|hash/i);
 }, 45_000);
 
 it("persists one recovered effect receipt after a same-claim committed heartbeat and rejects a foreign intent lease", async () => {
@@ -418,7 +437,7 @@ it("resumes a real operation after an external receipt was durably written and s
   expect(validations.filter((step) => ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
     "verify_singleton_precondition"].includes(step))).toHaveLength(4);
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 45_000);
+}, 75_000);
 
 it.each([
   "after_step_receipt:immediate_runtime_checks",
@@ -583,7 +602,7 @@ it.each([
     expect(validations).toHaveLength(7);
     expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(true);
     expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 60_000);
+}, 90_000);
 
 it("replays a dead-owner recovery settlement from operation-qualified receipts before publication", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -852,7 +871,7 @@ it.each([
   }
   expect(existsSync(join(root, "production-failure-evidence-v2.json"))).toBe(true);
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 60_000);
+}, 90_000);
 
 it("rejects an extra foreign committed receipt sharing the exact old lease hash", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });

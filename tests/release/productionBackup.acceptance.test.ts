@@ -6,11 +6,15 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
+import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   CANDIDATE_SHA,
   COMMAND_TEMPLATE_SHA256,
   TASK0B_EXPECTED_PRODUCTION_DATABASE_FINGERPRINT,
+  buildExecutedReleaseGateV2Fixture,
+  buildReleaseFreezeIdentityV2Fixture,
   buildReleaseManifest,
+  buildReleaseManifestV2Fixture,
   buildTask0BReleaseFreezeEvidence,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
@@ -82,7 +86,76 @@ function commandFixture(root: string, generationId = "production-backup-generati
   return value;
 }
 
+function verifiedV2AuthorityStub() {
+  return {
+    authority: {},
+    attestationSha256: "a".repeat(64),
+    issuerReceiptSha256: "b".repeat(64)
+  };
+}
+
 describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
+  it("rejects a production manifest authority whose committed transition receipt bytes changed", async () => {
+    const api = await loadProducer();
+    const store = await import("../../src/release/releaseManifestStoreV2");
+    const root = await makeProtectedTempDir("plan5-g12-v2-manifest-authority-");
+    try {
+      const rootKey = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
+      const task0b = buildTask0BReleaseFreezeEvidence({
+        observedAt: "2026-07-18T10:00:00.000Z",
+        artifactRootFingerprintSha256: sha256(rootKey)
+      });
+      const freeze = buildReleaseFreezeIdentityV2Fixture(task0b);
+      writeFileSync(join(root, "task0b-release-freeze.json"), `${canonicalReleaseJsonV2(task0b)}\n`, { flag: "wx" });
+      await store.materializeReleaseFreezeV2({
+        artifactRoot: root,
+        freezeIdentity: freeze,
+        task0BPreflightEvidence: task0b,
+        producerId: "release_freeze_materialize",
+        evaluatedAt: "2026-07-18T10:00:00.000Z"
+      });
+      const initialized = await store.initializeReleaseManifestV2({
+        artifactRoot: root,
+        evaluatedAt: "2026-07-18T10:00:00.000Z",
+        verifiedGateOutputs: buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed")
+      });
+      const readiness = await store.advanceReleaseManifestV2({
+        artifactRoot: root,
+        sourceManifest: initialized.manifest,
+        transition: { transitionId: "readiness" },
+        verifiedGateOutputs: [buildExecutedReleaseGateV2Fixture("G05_TELEGRAM")],
+        verifiedTransitionEvidence: { refs: [], actualRollbackOutcome: null },
+        evaluatedAt: "2026-07-18T10:01:00.000Z"
+      });
+      const issued = await store.issueOperationalAttestationV2({ artifactRoot: root, action: "g12_backup_passed" });
+      const manifestBytes = readFileSync(join(root, "release-manifest.json"));
+      const authority = {
+        ...fixture(root).authority,
+        generationId: freeze.releaseGenerationId,
+        issuedAt: issued.issuedAt,
+        expiresAt: new Date(Date.parse(issued.issuedAt) + 5 * 60_000).toISOString(),
+        candidateSha: freeze.candidateSha,
+        databaseIdentityFingerprintSha256: freeze.productionDatabaseIdentityFingerprintSha256,
+        task0bEvidenceSha256: sha256(Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`)),
+        releaseManifestSha256: sha256(manifestBytes),
+        artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256
+      };
+      expect(api.verifyProductionBackupManifestAuthorityV2({
+        artifactRoot: root,
+        authority,
+        evaluatedAt: issued.issuedAt
+      })).toMatchObject({ attestationSha256: issued.attestationSha256 });
+      const receiptPath = join(root, `manifest-transition-receipt-${readiness.manifest.latestCommittedReceiptSha256}.json`);
+      writeFileSync(receiptPath, Buffer.concat([readFileSync(receiptPath), Buffer.from(" ")]));
+      expect(() => api.verifyProductionBackupManifestAuthorityV2({
+        artifactRoot: root,
+        authority,
+        evaluatedAt: issued.issuedAt,
+        expectedAttestationSha256: issued.attestationSha256
+      })).toThrow(/manifest|receipt|canonical|hash/i);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+
   it("requires a fresh exact one-shot GO bound to Task0B ready manifest database and protected root", async () => {
     const api = await loadProducer();
     const root = mkdtempSync(join(tmpdir(), "plan5-g12-authority-"));
@@ -203,7 +276,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       expect(() => api.validateProductionBackupConsumptionState(claim, expected, "2026-07-18T09:10:00.001Z"))
         .toThrow(/expired/);
       expect(() => api.validateProductionBackupConsumptionState(claim, expected, "2026-07-18T09:10:00.001Z", false))
-        .not.toThrow();
+        .toThrow(/expired/);
       const partialDump = Buffer.from("PGDMP-owned-partial");
       const sideEffects: string[] = [];
       await expect(api.executeProductionBackupStateMachine(authority, {
@@ -282,7 +355,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("lets an exact lease acquired fresh finish after GO expiry within the child timeout", { timeout: 15_000 }, async () => {
+  it("rejects every remaining backup operation when consumed authority reaches expiry", { timeout: 15_000 }, async () => {
     const api = await loadProducer();
     const root = await makeProtectedTempDir("plan5-g12-cross-expiry-");
     const value = fixture(root);
@@ -301,7 +374,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       await api.claimProductionBackupAuthority(root, expected, now);
       const claim = readFileSync(join(root, `production-backup-authority-consumed-${expected.generationId}.json`));
       const binding = { ...expected, claimSha256: sha256(claim) };
-      await api.executeProductionBackupStateMachine(value.authority, {
+      await expect(api.executeProductionBackupStateMachine(value.authority, {
         now: () => now,
         readCompletedEvidence: async () => null,
         hasClaim: async () => true,
@@ -323,15 +396,19 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         },
         recordListProgress: (operationId: string) => api.recordProductionBackupListProgress(root, binding, operationId, now),
         attest: async () => { await api.validateProductionBackupProgress(root, binding, now); },
-        validateOperation: async () => undefined,
+        validateOperation: async () => {
+          api.validateProductionBackupConsumptionState(
+            JSON.parse(claim.toString("utf8")), expected, now
+          );
+        },
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => { calls.push("evidence"); }
-      });
-      expect(calls).toEqual(["dump", "list", "evidence"]);
+      })).rejects.toThrow(/expired/);
+      expect(calls).toEqual(["dump"]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("resumes an expired exact dump receipt without invoking pg_dump again", async () => {
+  it("rejects an expired exact dump receipt without invoking another backup operation", async () => {
     const api = await loadProducer();
     const root = await makeProtectedTempDir("plan5-g12-expired-resume-");
     const value = fixture(root);
@@ -358,13 +435,12 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       await api.recordProductionBackupDumpProgress(root, binding, original.operationId, freshAt);
       await original.release();
 
-      await api.executeProductionBackupStateMachine(value.authority, {
+      await expect(api.executeProductionBackupStateMachine(value.authority, {
         now: () => expiredAt,
         readCompletedEvidence: async () => null,
         hasClaim: async () => true,
         claim: async () => undefined,
         acquireOperation: async () => api.acquireProductionBackupOperationLease(root, binding, expiredAt, {
-          allowExpiredResume: true,
           removeContainer: async () => undefined
         }),
         inspectPartial: () => api.inspectProductionBackupPartialState(root),
@@ -379,7 +455,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         validateOperation: async () => undefined,
         buildEvidence: async () => Buffer.from("evidence"),
         writeEvidence: async () => undefined
-      });
+      })).rejects.toThrow(/expired/);
       expect(dumpCalls).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 30_000);
@@ -530,8 +606,8 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         writeEvidence: async () => { calls.push("write"); }
       })).rejects.toThrow(new RegExp(`operation_${failure}`));
       expect(calls).toEqual(failure === "deadline"
-        ? ["attest", "validate-1", "release"]
-        : ["attest", "validate-1", "build", "validate-2", "release"]);
+        ? ["validate-1", "validate-2", "validate-3", "validate-4", "attest", "validate-5", "release"]
+        : ["validate-1", "validate-2", "validate-3", "validate-4", "attest", "validate-5", "build", "validate-6", "release"]);
       expect(calls).not.toContain("write");
     }
   });
@@ -694,6 +770,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
       observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("must not observe database"); },
       attestProductionPostgresTools: async () => { sideEffects.push("docker"); },
+      verifyProductionManifestAuthorityV2: verifiedV2AuthorityStub,
       stdout: (_value: string) => { sideEffects.push("stdout"); }
     };
     try {
@@ -759,6 +836,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         }, {
           now: () => evaluatedAt,
           currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+          verifyProductionManifestAuthorityV2: verifiedV2AuthorityStub,
           observeProductionDatabase: async () => observation() as any,
           attestProductionPostgresTools: async () => {
             if (mutated) return;
@@ -907,6 +985,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       const commandDependencies = {
         now: () => evaluatedAt,
         currentCandidate: async () => ({ sha: CANDIDATE_SHA, clean: true }),
+        verifyProductionManifestAuthorityV2: verifiedV2AuthorityStub,
         stdout: (line: string) => { output.push(line); }
       };
       await api.runProductionBackupCommand([root, authorityName], {

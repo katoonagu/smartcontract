@@ -59,7 +59,8 @@ import {
   currentRootWriterOwnerIdentityV2,
   deriveReleaseFreezeIdentityV2,
   isLeaseOwnerProcessAliveV2,
-  selectOperationalAttestationFromStoreV2
+  selectOperationalAttestationFromStoreV2,
+  verifyCurrentReleaseManifestChainAtTrustedRootV2
 } from "./releaseManifestStoreV2";
 import {
   ROOT_WRITER_LEASE_FILE,
@@ -431,7 +432,6 @@ export function deriveProductionOperationIdV2(input: {
 
 export class ProductionOperationStoreV2 {
   readonly #root: string;
-
   constructor(root: string, options: ProductionOperationStoreOptionsV2 = {}) {
     this.#root = assertTrustedArtifactRootPathV2(root);
     assertArtifactRootOutsideRepository(this.#root, resolve(options.repositoryRoot ?? process.cwd()));
@@ -483,20 +483,21 @@ export class ProductionOperationStoreV2 {
     artifactRootFingerprintSha256: string;
     sourceManifestSha256: string;
   } {
-    const freeze = readCanonical(this.#path("release-freeze-identity-v2.json"),
-      validateReleaseFreezeIdentityV2, "release_freeze_identity").value;
-    const manifest = readCanonical(this.#path("release-manifest.json"),
-      validateRemediationReleaseManifestV2, "release_manifest");
-    if (manifest.value.candidateSha !== freeze.candidateSha
-        || manifest.value.artifactRootFingerprintSha256 !== freeze.artifactRootFingerprintSha256
-        || manifest.value.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256V2(freeze)) {
-      throw new Error("production_operation_manifest_freeze_binding_invalid");
+    let verified: ReturnType<typeof verifyCurrentReleaseManifestChainAtTrustedRootV2>;
+    try {
+      verified = verifyCurrentReleaseManifestChainAtTrustedRootV2(this.#root);
+    } catch (error) {
+      if ((error as Error).message === "release_freeze_materialization_preflight_binding_invalid") {
+        throw new Error("production_operation_task0b_release_freeze_binding_invalid", { cause: error });
+      }
+      throw error;
     }
+    const freeze = verified.freeze;
     return {
       candidateSha: freeze.candidateSha,
       releaseGenerationId: freeze.releaseGenerationId,
       artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
-      sourceManifestSha256: manifest.sha256
+      sourceManifestSha256: verified.manifestSha256
     };
   }
 
@@ -1440,8 +1441,15 @@ export class ProductionOperationStoreV2 {
     exactOperationId(operationId);
     const evaluatedAtMs = parseIso(evaluatedAt, "production_operation_evaluated_at");
     this.#assertManifestWriterAbsent();
+    const identity = this.#readFreezeAndManifest();
     const lease = this.#readLease();
     if (lease.value.operationId !== operationId) throw new Error("production_operation_lineage_operation_invalid");
+    if (lease.value.candidateSha !== identity.candidateSha
+        || lease.value.releaseGenerationId !== identity.releaseGenerationId
+        || lease.value.sourceManifestSha256 !== identity.sourceManifestSha256
+        || lease.value.artifactRootFingerprintSha256 !== identity.artifactRootFingerprintSha256) {
+      throw new Error("production_operation_manifest_lineage_changed");
+    }
     if (existsSync(this.#path(`production-operation-settlement-${operationId}.json`))
         || existsSync(this.#path(`production-operation-terminal-abandoned-${operationId}.json`))) {
       throw new Error("production_operation_already_terminal");

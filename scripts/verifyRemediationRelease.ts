@@ -42,6 +42,7 @@ import {
   validateRemediationReleaseManifestV2,
   type RemediationReleaseManifestV2
 } from "../src/release/remediationReleaseManifestV2";
+import { verifyCurrentReleaseManifestChainV2 } from "../src/release/releaseManifestStoreV2";
 
 export type RemediationSuiteGroupId = keyof typeof REMEDIATION_REQUIRED_SUITE_GROUPS;
 
@@ -59,9 +60,19 @@ export type ReleaseSuiteGroupEvidenceV1 = {
 export const REMEDIATION_RELEASE_MANIFEST_FILE = "release-manifest.json";
 export const REMEDIATION_ACCEPTANCE_TRACE_FILE = "acceptance-trace.json";
 
-export type RemediationReleaseVerificationPhase = "manifest" | "pre-manual" | "readiness" | "released" | "rolled-back";
+export type RemediationReleaseVerificationPhase =
+  | "manifest"
+  | "pre-manual"
+  | "readiness"
+  | "g12"
+  | "g13"
+  | "g14"
+  | "released"
+  | "rolled-back";
 
 type SanitizedVerificationResult = {
+  version: "remediation-release-manifest-v2";
+  transitionId: RemediationReleaseManifestV2["transitionId"];
   overall: string;
   gates: Array<{ id: ReleaseGateId; state: ReleaseGateState }>;
 };
@@ -934,7 +945,13 @@ function requireGateState(
   if (ids.some((id) => !allowed.has(states.get(id)!))) throw new Error("required release gate is invalid for this phase");
 }
 
-function assertPhase(result: SanitizedVerificationResult, phase: RemediationReleaseVerificationPhase): void {
+export function assertReleaseVerificationPhaseV2(
+  result: SanitizedVerificationResult,
+  phase: RemediationReleaseVerificationPhase
+): void {
+  if (result.version !== "remediation-release-manifest-v2") {
+    throw new Error("release verification requires manifest V2");
+  }
   if (phase === "manifest") return;
   const states = gateStates(result);
   if (phase === "pre-manual") {
@@ -942,21 +959,41 @@ function assertPhase(result: SanitizedVerificationResult, phase: RemediationRele
     requireGateState(states, automated, new Set(["passed"]));
     requireGateState(states, ["G05_TELEGRAM"], new Set(["pending"]));
     requireGateState(states, REMEDIATION_PRODUCTION_GATE_IDS, new Set(["pending"]));
-    if (result.overall !== "not_ready") throw new Error("pre-manual manifest must remain not_ready");
+    if (result.transitionId !== "pre_manual" || result.overall !== "not_ready") {
+      throw new Error("pre-manual manifest phase is invalid");
+    }
     return;
   }
   if (phase === "readiness") {
     requireGateState(states, REMEDIATION_PRE_RELEASE_GATE_IDS, new Set(["passed"]));
     requireGateState(states, REMEDIATION_PRODUCTION_GATE_IDS, new Set(["pending"]));
-    if (result.overall !== "ready_for_release") throw new Error("readiness phase is not ready_for_release");
+    if (result.transitionId !== "readiness" || result.overall !== "ready_for_release") {
+      throw new Error("readiness phase is invalid");
+    }
+    return;
+  }
+  if (phase === "g12" || phase === "g13" || phase === "g14") {
+    const passedProductionCount = phase === "g12" ? 1 : phase === "g13" ? 2 : 3;
+    requireGateState(states, REMEDIATION_PRE_RELEASE_GATE_IDS, new Set(["passed"]));
+    requireGateState(states, REMEDIATION_PRODUCTION_GATE_IDS.slice(0, passedProductionCount), new Set(["passed"]));
+    requireGateState(states, REMEDIATION_PRODUCTION_GATE_IDS.slice(passedProductionCount), new Set(["pending"]));
+    const transition = phase === "g12" ? "g12_backup_passed"
+      : phase === "g13" ? "g13_migration_passed" : "g14_rollout_passed";
+    if (result.transitionId !== transition || result.overall !== "not_ready") {
+      throw new Error(`${phase} release phase is invalid`);
+    }
     return;
   }
   if (phase === "released") {
     requireGateState(states, [...REMEDIATION_PRE_RELEASE_GATE_IDS, ...REMEDIATION_PRODUCTION_GATE_IDS], new Set(["passed"]));
-    if (result.overall !== "released") throw new Error("released phase is not released");
+    if (result.transitionId !== "g15_canary_released" || result.overall !== "released") {
+      throw new Error("released phase is invalid");
+    }
     return;
   }
-  if (result.overall !== "rolled_back") throw new Error("rolled-back phase is not rolled_back");
+  if (result.transitionId !== "rollback_rolled_back" || result.overall !== "rolled_back") {
+    throw new Error("rolled-back phase is invalid");
+  }
 }
 
 export async function verifyRemediationReleaseArtifacts(
@@ -967,6 +1004,10 @@ export async function verifyRemediationReleaseArtifacts(
   const manifestBytes = await readSafeArtifactFile(root, REMEDIATION_RELEASE_MANIFEST_FILE);
   const parsedManifest = parseJson(manifestBytes);
   if ((parsedManifest as { version?: unknown }).version === "remediation-release-manifest-v2") {
+    const verifiedStore = verifyCurrentReleaseManifestChainV2(root);
+    if (!verifiedStore.manifestBytes.equals(manifestBytes)) {
+      throw new Error("release manifest V2 store head changed");
+    }
     const manifestV2 = validateRemediationReleaseManifestV2(parsedManifest);
     const freezeIdentityPath = "release-freeze-identity-v2.json";
     const artifacts = new Map<string, Buffer>([
@@ -993,26 +1034,15 @@ export async function verifyRemediationReleaseArtifacts(
       await readSafeArtifactFile(root, ref.relativePath));
     const verified = await verifyRemediationReleaseArtifactsV2(artifacts);
     const result: SanitizedVerificationResult = {
+      version: verified.version,
+      transitionId: verified.transitionId,
       overall: verified.overall,
       gates: verified.gates.map(({ id, state }) => ({ id, state }))
-    } as SanitizedVerificationResult;
-    assertPhase(result, phase);
+    };
+    assertReleaseVerificationPhaseV2(result, phase);
     return result;
   }
-  const traceBytes = await readSafeArtifactFile(root, REMEDIATION_ACCEPTANCE_TRACE_FILE);
-  const manifest = validateRemediationReleaseManifest(parsedManifest);
-  const trace = validateAcceptanceTraceSet(parseJson(traceBytes), { isAncestor: isVerifiedGitAncestor });
-  if (manifest.candidateSha !== trace.candidateSha) throw new Error("release manifest and trace candidate SHAs differ");
-  if (phase !== "manifest") {
-    assertTraceExecutionsCoveredBySuiteReports(trace, await readRequiredSuiteExecutions(root, manifest.candidateSha));
-    await verifyConcreteArtifactBindings(root, manifest, traceBytes);
-  }
-  const result: SanitizedVerificationResult = {
-    overall: manifest.overall,
-    gates: manifest.gates.map(({ id, state }) => ({ id, state }))
-  };
-  assertPhase(result, phase);
-  return result;
+  throw new Error("release verification requires manifest V2");
 }
 
 function parseCliArgs(argv: readonly string[]): { artifactRoot: string; phase: RemediationReleaseVerificationPhase } {
@@ -1020,6 +1050,9 @@ function parseCliArgs(argv: readonly string[]): { artifactRoot: string; phase: R
     "manifest",
     "pre-manual",
     "readiness",
+    "g12",
+    "g13",
+    "g14",
     "released",
     "rolled-back"
   ];

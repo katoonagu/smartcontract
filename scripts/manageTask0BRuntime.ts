@@ -38,7 +38,9 @@ import {
 } from "../src/release/remediationReleaseManifestV2";
 import { PRODUCTION_OPERATION_LEASE_FILE_V2 } from "../src/release/productionOperationStore";
 import { ProductionOperationStoreV2 } from "../src/release/productionOperationStore";
-import { observedProcessStartFingerprintSha256V2 } from "../src/release/releaseManifestStoreV2";
+import {
+  observedProcessStartFingerprintSha256V2
+} from "../src/release/releaseManifestStoreV2";
 import { canonicalBytesV2 } from "../src/release/releaseRootWriterStore";
 import {
   runtimeCandidateFromReconciledStartV2,
@@ -1014,7 +1016,8 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
     const lineage = new ProductionOperationStoreV2(artifactRoot)
       .verifyImmutableAuthorityLineage(authority.operationId, new Date().toISOString());
     if (lineage.leaseSha256 !== releaseSha256V2(leaseBytes)
-        || lineage.claimSha256 !== releaseSha256V2(claimBytes)) {
+        || lineage.claimSha256 !== releaseSha256V2(claimBytes)
+        || lineage.lease.sourceManifestSha256 !== authority.sourceManifestSha256) {
       throw new Error("repo_runtime_authority_takeover_lineage_binding_invalid");
     }
     const parentFingerprint = observedProcessStartFingerprintSha256V2(process.ppid);

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, relative, resolve } from "node:path";
@@ -70,6 +70,7 @@ import {
   ROOT_WRITER_LEASE_FILE,
   acquireRootWriterLeaseV2,
   assertTrustedArtifactRootPathV2,
+  assertSafeArtifactRootPath,
   canonicalBytesV2,
   moveNoOverwriteDurable,
   replaceDurable,
@@ -81,6 +82,38 @@ import {
 } from "./releaseRootWriterStore";
 
 const FREEZE_FILE = "release-freeze-identity-v2.json";
+type ManifestArtifactPathResolverV2 = (root: string, relativePath: string) => string;
+
+function defaultManifestArtifactPathV2(root: string, relativePath: string): string {
+  return relativePath.includes("/")
+    ? lifecyclePath(root, relativePath)
+    : safeArtifactPath(root, relativePath);
+}
+
+function trustedRootManifestArtifactPathV2(root: string, relativePath: string): string {
+  const segments = relativePath.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === ".."
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(segment))) {
+    throw new Error("artifact_relative_path_invalid");
+  }
+  let current = root;
+  for (const [index, segment] of segments.entries()) {
+    const next = resolve(current, segment);
+    if (existsSync(next)) {
+      const stat = lstatSync(next);
+      if (stat.isSymbolicLink()) throw new Error("artifact_path_reparse_point");
+      if (index < segments.length - 1) {
+        if (!stat.isDirectory()) throw new Error("artifact_parent_not_directory");
+      } else if (!stat.isFile()) {
+        throw new Error("artifact_path_not_regular");
+      }
+    } else if (index < segments.length - 1) {
+      throw new Error("artifact_parent_missing");
+    }
+    current = next;
+  }
+  return current;
+}
 const FREEZE_PREPARED_FILE = "release-freeze-materialization-prepared-v2.json";
 const FREEZE_RECEIPT_FILE = "release-freeze-materialization-receipt-v2.json";
 const MANIFEST_FILE = "release-manifest.json";
@@ -245,11 +278,14 @@ function currentArtifactRootFingerprintSha256V2(root: string): string {
   return releaseSha256V2(canonicalPathKey);
 }
 
-function currentVerifiedFreeze(root: string): ReleaseFreezeIdentityV2 {
-  const preflightPath = safeArtifactPath(root, "task0b-release-freeze.json");
-  const preparedPath = safeArtifactPath(root, FREEZE_PREPARED_FILE);
-  const receiptPath = safeArtifactPath(root, FREEZE_RECEIPT_FILE);
-  const freezePath = safeArtifactPath(root, FREEZE_FILE);
+function currentVerifiedFreeze(
+  root: string,
+  artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
+): ReleaseFreezeIdentityV2 {
+  const preflightPath = artifactPath(root, "task0b-release-freeze.json");
+  const preparedPath = artifactPath(root, FREEZE_PREPARED_FILE);
+  const receiptPath = artifactPath(root, FREEZE_RECEIPT_FILE);
+  const freezePath = artifactPath(root, FREEZE_FILE);
   for (const [path, label] of [
     [preflightPath, "preflight"],
     [preparedPath, "prepared"],
@@ -331,7 +367,7 @@ function currentVerifiedFreeze(root: string): ReleaseFreezeIdentityV2 {
     throw new Error("release_freeze_materialization_bundle_binding_invalid");
   }
 
-  const leasePath = safeArtifactPath(root, ROOT_WRITER_LEASE_FILE);
+  const leasePath = artifactPath(root, ROOT_WRITER_LEASE_FILE);
   if (existsSync(leasePath)) {
     const leaseBytes = readFileSync(leasePath);
     const lease = validateBoundedRootWriterLeaseV2(JSON.parse(leaseBytes.toString("utf8")));
@@ -748,9 +784,10 @@ function authorityHash(authority: OperationalAttestationV2): string {
 
 function readCanonicalManifestHeadV2(
   root: string,
-  freeze: ReleaseFreezeIdentityV2
+  freeze: ReleaseFreezeIdentityV2,
+  artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
 ): { manifest: RemediationReleaseManifestV2; bytes: Buffer } {
-  const manifestPath = safeArtifactPath(root, MANIFEST_FILE);
+  const manifestPath = artifactPath(root, MANIFEST_FILE);
   if (!existsSync(manifestPath)) throw new Error("release_manifest_missing");
   const currentBytes = readFileSync(manifestPath);
   const current = validateRemediationReleaseManifestV2(JSON.parse(currentBytes.toString("utf8")));
@@ -770,11 +807,12 @@ function readCanonicalManifestHeadV2(
 function validateCanonicalManifestChainHeadV2(
   root: string,
   freeze: ReleaseFreezeIdentityV2,
-  head: { manifest: RemediationReleaseManifestV2; bytes: Buffer }
+  head: { manifest: RemediationReleaseManifestV2; bytes: Buffer },
+  artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
 ): void {
   let manifest = head.manifest;
   while (true) {
-    const receiptPath = safeArtifactPath(root,
+    const receiptPath = artifactPath(root,
       `manifest-transition-receipt-${manifest.latestCommittedReceiptSha256}.json`);
     const receiptBytes = readFileSync(receiptPath);
     if (releaseSha256V2(receiptBytes) !== manifest.latestCommittedReceiptSha256) {
@@ -785,7 +823,7 @@ function validateCanonicalManifestChainHeadV2(
     if (!receiptBytes.equals(canonicalBytesV2(receipt))) {
       throw new Error("release_manifest_receipt_noncanonical");
     }
-    const preparedPath = safeArtifactPath(root,
+    const preparedPath = artifactPath(root,
       `manifest-transition-prepared-${receipt.transitionKeySha256}.json`);
     const preparedBytes = readFileSync(preparedPath);
     const prepared = validatePreparedManifestTransitionV2(
@@ -803,12 +841,12 @@ function validateCanonicalManifestChainHeadV2(
         || !embeddedReceiptBytes.equals(receiptBytes)) {
       throw new Error("release_manifest_prepared_receipt_binding_invalid");
     }
-    const targetSnapshotBytes = readFileSync(lifecyclePath(
+    const targetSnapshotBytes = readFileSync(artifactPath(
       root, prepared.targetSnapshotRelativePath));
     if (!targetSnapshotBytes.equals(manifestBytes)) {
       throw new Error("release_manifest_prepared_target_snapshot_binding_invalid");
     }
-    const claimPath = safeArtifactPath(root,
+    const claimPath = artifactPath(root,
       `manifest-transition-claim-${receipt.transitionKeySha256}.json`);
     const claimBytes = readFileSync(claimPath);
     const claim = validateManifestTransitionClaimV2(JSON.parse(claimBytes.toString("utf8")));
@@ -820,7 +858,7 @@ function validateCanonicalManifestChainHeadV2(
     }
     let source: RemediationReleaseManifestV2 | undefined;
     if (manifest.revision > 1) {
-      const sourcePath = lifecyclePath(root,
+      const sourcePath = artifactPath(root,
         `manifest-snapshots/release-manifest-r${manifest.revision - 1}-${manifest.previousManifestSha256}.json`);
       const sourceBytes = readFileSync(sourcePath);
       if (releaseSha256V2(sourceBytes) !== manifest.previousManifestSha256) {
@@ -839,10 +877,11 @@ function validateCanonicalManifestChainHeadV2(
 
 function validateCanonicalCurrentManifestChainV2(
   root: string,
-  freeze: ReleaseFreezeIdentityV2
+  freeze: ReleaseFreezeIdentityV2,
+  artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
 ): { manifest: RemediationReleaseManifestV2; bytes: Buffer } {
-  const head = readCanonicalManifestHeadV2(root, freeze);
-  validateCanonicalManifestChainHeadV2(root, freeze, head);
+  const head = readCanonicalManifestHeadV2(root, freeze, artifactPath);
+  validateCanonicalManifestChainHeadV2(root, freeze, head, artifactPath);
   return head;
 }
 
@@ -2950,10 +2989,54 @@ export async function initializeReleaseManifestV2(input: {
   }
 }
 
+function verifyCurrentReleaseManifestChainAtCanonicalRootV2(
+  root: string,
+  artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
+): {
+  freeze: ReleaseFreezeIdentityV2;
+  manifest: RemediationReleaseManifestV2;
+  manifestBytes: Buffer;
+  manifestSha256: string;
+} {
+  const freeze = currentVerifiedFreeze(root, artifactPath);
+  const { manifest, bytes: manifestBytes } = validateCanonicalCurrentManifestChainV2(
+    root, freeze, artifactPath);
+  return { freeze, manifest, manifestBytes, manifestSha256: releaseSha256V2(manifestBytes) };
+}
+
+export function verifyCurrentReleaseManifestChainAtTrustedRootV2(rootInput: string): {
+  freeze: ReleaseFreezeIdentityV2;
+  manifest: RemediationReleaseManifestV2;
+  manifestBytes: Buffer;
+  manifestSha256: string;
+} {
+  // ponytail: callers establish the Windows ACL trust boundary once per store lifetime;
+  // same-principal ACL races stay out of scope until handle-based no-follow reads exist.
+  // Every operation still rechecks root identity, freeze materialization, and the full chain.
+  return verifyCurrentReleaseManifestChainAtCanonicalRootV2(
+    assertSafeArtifactRootPath(rootInput), trustedRootManifestArtifactPathV2);
+}
+
+export function verifyCurrentReleaseManifestChainV2(rootInput: string): {
+  freeze: ReleaseFreezeIdentityV2;
+  manifest: RemediationReleaseManifestV2;
+  manifestBytes: Buffer;
+  manifestSha256: string;
+} {
+  return verifyCurrentReleaseManifestChainAtCanonicalRootV2(
+    assertTrustedArtifactRootPathV2(rootInput)
+  );
+}
+
 export async function verifyReleaseManifestStoreV2(root: string) {
-  const freeze = currentVerifiedFreeze(root);
+  const verified = verifyCurrentReleaseManifestChainV2(root);
   const files = readdirSync(root).sort();
-  return { releaseGenerationId: freeze.releaseGenerationId, files };
+  return {
+    releaseGenerationId: verified.freeze.releaseGenerationId,
+    manifestRevision: verified.manifest.revision,
+    manifestSha256: verified.manifestSha256,
+    files
+  };
 }
 
 export async function persistPostgresManifestTransitionV2(

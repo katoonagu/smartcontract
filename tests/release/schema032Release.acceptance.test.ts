@@ -1066,6 +1066,9 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes the exact bounded production c
   expect(() => producer.validateSchema032ProductionConsumptionState(
     existing, expected, "2026-07-18T09:10:00.001Z"
   )).toThrow("schema_032_sequence_production_consumption_expired");
+  expect(() => producer.validateSchema032ProductionConsumptionState(
+    existing, expected, "2026-07-18T09:10:00.000Z"
+  )).toThrow("schema_032_sequence_production_consumption_expired");
 });
 
 it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] binds database user session role and owner into the migration child identity", async () => {
