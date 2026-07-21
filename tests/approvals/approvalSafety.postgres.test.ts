@@ -24,7 +24,7 @@ if (required && (connectionString !== PLAN2_DATABASE_URL
     || plan2Url.hostname !== "127.0.0.1"
     || plan2Url.pathname !== "/tron_watch_plan2"
     || plan2Url.port === "55999")) {
-  throw new Error(`PLAN2 PostgreSQL acceptance requires TEST_DATABASE_URL=${PLAN2_DATABASE_URL}`);
+  throw new Error("Plan 2 PostgreSQL acceptance database binding is invalid");
 }
 const postgresDescribe = required ? describe : describe.skip;
 const MAX_UINT256_RAW = activeAllowance().confirmedAllowanceRaw!;

@@ -15,7 +15,7 @@ if (required && (connectionString !== PLAN3_DATABASE_URL
     || plan3Url.hostname !== "127.0.0.1"
     || plan3Url.pathname !== "/tron_watch_plan3"
     || plan3Url.port === "55999")) {
-  throw new Error(`Plan 3 PostgreSQL acceptance requires TEST_DATABASE_URL=${PLAN3_DATABASE_URL}`);
+  throw new Error("Plan 3 PostgreSQL acceptance database binding is invalid");
 }
 const postgresDescribe = required ? describe : describe.skip;
 const databaseUrl = connectionString ?? PLAN3_DATABASE_URL;
