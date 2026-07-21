@@ -1920,9 +1920,7 @@ if (requirePlan3Postgres && (plan3RepositoryDatabaseUrl !== PLAN3_REPOSITORY_DAT
     || plan3RepositoryUrl.hostname !== "127.0.0.1"
     || plan3RepositoryUrl.pathname !== "/tron_watch_plan3"
     || plan3RepositoryUrl.port === "55999")) {
-  throw new Error(
-    `Plan 3 repository tests require TEST_DATABASE_URL=${PLAN3_REPOSITORY_DATABASE_URL}`
-  );
+  throw new Error("Plan 3 repository test database binding is invalid");
 }
 const plan3PostgresDescribe = requirePlan3Postgres ? describe : describe.skip;
 const PLAN3_RECONCILIATION_NOW = new Date("2026-07-15T12:00:00.000Z");
