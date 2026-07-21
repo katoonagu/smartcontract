@@ -135,7 +135,9 @@ The focused-suite line is repeated for `plan2`, `plan3`, `plan4`, `plan5`, and
 `addressPoisoningRegression`. The schema producer also runs in separate
 protected sequence roots for exact databases `tron_watch_plan5_clean` and
 `tron_watch_plan5_runtime_sanitized`; all disposable targets are loopback and
-offline. Set `TEST_DATABASE_URL` to the matching `tron_watch_plan1` through
+offline. The suite producer serializes test files and applies bounded 120-second
+test and hook timeouts so database-backed files cannot race shared disposable
+state. Set `TEST_DATABASE_URL` to the matching `tron_watch_plan1` through
 `tron_watch_plan4` database only while its suite runs. The forced Plan 5
 PostgreSQL suite additionally requires `PLAN5_TASK0B_TEST_DATABASE_URL` bound
 to an isolated disposable `tron_watch` database; production port `55999` is

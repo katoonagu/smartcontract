@@ -207,6 +207,10 @@ order is producer-first, strict-verifier-last.
    node --import tsx scripts/verifyRemediationRelease.ts --suite-group addressPoisoningRegression <artifact-root>
    ```
 
+   The suite producer runs test files serially and bounds every test and hook at
+   120 seconds; this prevents database-backed files from racing the shared
+   disposable databases while preserving a finite producer timeout.
+
 3. Produce the non-Vitest full-regression evidence, then capture the acceptance
    trace from its protected capture spec and the actual executions:
 

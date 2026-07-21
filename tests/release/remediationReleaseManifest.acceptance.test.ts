@@ -1396,6 +1396,13 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
 
 it("[AC-41][SUITE-RUNNER] rejects missing skipped filtered failed or nonzero group execution", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
+  const suiteArgs = runner.buildReleaseSuiteGroupInvocation(
+    "plan5",
+    resolve(tmpdir(), "plan5-suite-report.json")
+  ).args;
+  expect(suiteArgs).toContain("--no-file-parallelism");
+  expect(suiteArgs).toContain("--testTimeout=120000");
+  expect(suiteArgs).toContain("--hookTimeout=120000");
   const files = REQUIRED_SUITE_GROUPS.addressPoisoningRegression;
   const report = {
     success: true,

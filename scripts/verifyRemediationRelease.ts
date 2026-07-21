@@ -506,6 +506,9 @@ export function buildReleaseSuiteGroupInvocation(
       resolve(repositoryRoot, "node_modules/vitest/vitest.mjs"),
       "run",
       "--configLoader", "bundle",
+      "--no-file-parallelism",
+      "--testTimeout=120000",
+      "--hookTimeout=120000",
       ...REMEDIATION_REQUIRED_SUITE_GROUPS[groupId],
       "--reporter=json",
       `--outputFile=${reportOutputPath}`

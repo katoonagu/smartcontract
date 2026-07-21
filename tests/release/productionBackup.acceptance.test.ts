@@ -1113,6 +1113,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       const dumpBeforeRetry = readFileSync(join(root, "production-backup.dump"));
       const authorityBytes = readFileSync(join(root, authorityName));
       const claimName = `production-backup-authority-consumed-${value.authority.generationId}.json`;
+      const operationalAuthority = verifiedV2AuthorityStub();
       const binding = {
         generationId: value.authority.generationId,
         authoritySha256: sha256(authorityBytes),
@@ -1120,6 +1121,8 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         databaseIdentityFingerprintSha256: value.authority.databaseIdentityFingerprintSha256,
         artifactRootFingerprintSha256: value.authority.artifactRootFingerprintSha256,
         expiresAt: value.authority.expiresAt,
+        operationalAttestationSha256: operationalAuthority.attestationSha256,
+        operationalAttestationIssuerReceiptSha256: operationalAuthority.issuerReceiptSha256,
         claimSha256: sha256(readFileSync(join(root, claimName)))
       };
       const abandoned = await api.acquireProductionBackupOperationLease(root, binding, evaluatedAt, {

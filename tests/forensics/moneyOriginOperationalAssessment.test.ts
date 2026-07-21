@@ -1464,7 +1464,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
   });
 
   it.each(["source_materiality", "source_policy"] as const)(
-    "locks exact hard evidence before $s interpretation",
+    "locks exact hard evidence before %s interpretation",
     (phase) => {
       const input = assessmentInput({
         originPaths: [reviewPath({
