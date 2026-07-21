@@ -138,7 +138,9 @@ Do not recapture or rematerialize Task 0B after the freeze exists. Its
 `release:task0b:revalidate` receipt against the same immutable generation. Run
 that command at Task 9 entry and again immediately before runtime rehearsal,
 terminal-legacy snapshot, manual Telegram prepare/finalize, or strict release
-verification when the latest receipt has expired. The controlled runtime
+verification when the latest receipt has expired. G12 backup entry and G13
+migration entry always read a currently fresh receipt and reject the original
+freeze TTL as a substitute. The controlled runtime
 rehearsal writes candidate/previous start evidence after successful execution;
 operators do not precreate those files.
 
@@ -180,6 +182,7 @@ pre-GO report, explicit user GO, and fresh action authority, the exact future
 G12/G13 order is:
 
 ```powershell
+npm run release:task0b:revalidate -- <protected-artifact-root>
 npm run release:authority:issue -- g12_backup_passed <protected-artifact-root>
 npm run release:production:backup -- <protected-artifact-root>
 $source = (Get-FileHash -Algorithm SHA256 `
@@ -187,6 +190,7 @@ $source = (Get-FileHash -Algorithm SHA256 `
 npm run release:manifest:advance -- g12_backup_passed $source <protected-artifact-root>
 npm run release:verify -- --phase g12 --artifact-root <protected-artifact-root>
 
+npm run release:task0b:revalidate -- <protected-artifact-root>
 npm run release:authority:issue -- g13_migration_passed <protected-artifact-root>
 npm run schema:release:sequence -- `
   --database-url-env TASK0B_PRODUCTION_DATABASE_URL `

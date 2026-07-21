@@ -60,7 +60,11 @@
 > Vitest JSON reports; it does not infer RED from source text. Controlled
 > runtime start evidence is emitted by the rehearsal runner only after the
 > corresponding real start/observe/stop sequence succeeds; preauthored start
-> fixtures are forbidden.
+> fixtures are forbidden. Acceptance trace requirement and owner-plan lineage
+> is an explicit reviewed per-AC table, never an index/range formula. G12 and
+> G13 production entry each require a fresh Task 0B revalidation receipt bound
+> byte-for-byte to the immutable preflight and release freeze; their own
+> authority/lease or authority/session guards govern the already-started action.
 >
 > **Draft baseline:** локальный `master`
 > `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`, содержащий реализованные Plans
@@ -2684,8 +2688,9 @@ npm run release:task0b:revalidate -- <protected-artifact-root>
 
 This appends a canonical content-addressed receipt under
 `task0b-revalidations/`. Run it at Task 9 entry and again immediately before a
-liveness-sensitive runtime, terminal-legacy, manual-Telegram, or strict
-verification consumer whenever the latest receipt is no longer fresh. A
+liveness-sensitive runtime, terminal-legacy, manual-Telegram, strict
+verification, G12 backup-entry, or G13 migration-entry consumer whenever the
+latest receipt is no longer fresh. A
 missing, stale, malformed, ambiguous, foreign-generation, or operationally
 different receipt fails closed. Revalidation is read-only apart from its own
 exclusive evidence write; it cannot modify the preflight, materialized freeze,
@@ -4394,6 +4399,56 @@ runs every owner RED batch, rejects infrastructure failures, and writes the
 content-addressed RED reports/patches plus the reconstructed Task 0A baseline.
 `release:trace:capture` then binds those artifacts to the already-produced
 candidate GREEN reports. Neither command changes product code or semantics.
+
+The reviewed primary trace map is exact; order and membership of every REQ
+list are evidence semantics. AC-39 deliberately uses the selected Plan 4 real
+Incoming-formatter regression as its primary trace (the Plan 2 isolation test
+remains regression coverage):
+
+| AC | exact REQ IDs | owner plan |
+|---|---|---:|
+| AC-01 | REQ-15, REQ-16 | 2 |
+| AC-02 | REQ-15, REQ-16, REQ-17 | 2 |
+| AC-03 | REQ-28, REQ-29 | 2 |
+| AC-04 | REQ-28, REQ-29 | 2 |
+| AC-05 | REQ-28, REQ-29 | 2 |
+| AC-06 | REQ-28, REQ-29 | 2 |
+| AC-07 | REQ-06, REQ-09, REQ-15, REQ-32 | 4 |
+| AC-08 | REQ-05, REQ-08, REQ-32 | 4 |
+| AC-09 | REQ-32, REQ-33 | 4 |
+| AC-10 | REQ-30 | 1 |
+| AC-11 | REQ-02, REQ-30 | 1 |
+| AC-12 | REQ-03, REQ-04, REQ-07, REQ-12, REQ-13, REQ-14, REQ-34 | 4 |
+| AC-13 | REQ-03, REQ-04, REQ-10, REQ-11, REQ-19, REQ-31 | 4 |
+| AC-14 | REQ-35 | 3 |
+| AC-15 | REQ-35 | 3 |
+| AC-16 | REQ-03, REQ-05, REQ-36 | 3 |
+| AC-17 | REQ-37 | 3 |
+| AC-18 | REQ-37 | 3 |
+| AC-19 | REQ-18, REQ-19, REQ-20 | 2 |
+| AC-20 | REQ-08, REQ-18, REQ-20 | 4 |
+| AC-21 | REQ-20 | 4 |
+| AC-22 | REQ-20 | 2 |
+| AC-23 | REQ-19, REQ-20 | 2 |
+| AC-24 | REQ-18, REQ-19, REQ-20 | 4 |
+| AC-25 | REQ-18, REQ-21 | 2 |
+| AC-26 | REQ-21 | 2 |
+| AC-27 | REQ-18, REQ-22 | 4 |
+| AC-28 | REQ-22 | 2 |
+| AC-29 | REQ-23, REQ-24, REQ-27 | 2 |
+| AC-30 | REQ-01, REQ-23, REQ-24, REQ-27 | 2 |
+| AC-31 | REQ-18, REQ-21, REQ-24 | 2 |
+| AC-32 | REQ-18, REQ-21, REQ-24 | 2 |
+| AC-33 | REQ-20, REQ-23, REQ-25, REQ-27 | 2 |
+| AC-34 | REQ-23, REQ-25, REQ-26, REQ-27 | 2 |
+| AC-35 | REQ-23, REQ-25, REQ-26, REQ-27 | 2 |
+| AC-36 | REQ-25, REQ-26, REQ-27 | 2 |
+| AC-37 | REQ-23, REQ-25, REQ-26, REQ-27 | 2 |
+| AC-38 | REQ-23, REQ-25, REQ-26 | 2 |
+| AC-39 | REQ-05, REQ-06, REQ-07, REQ-14, REQ-25, REQ-27, REQ-32 | 4 |
+| AC-40 | REQ-23, REQ-24, REQ-25, REQ-27 | 2 |
+| AC-41 | REQ-38 | 5 |
+
 8. cleanup and forbidden-scope audit.
 
 At this point `G05_TELEGRAM` is a V2 pending record without execution fields.
@@ -4549,7 +4604,8 @@ recovery or a new protected root.
 
 G12 controlled backup:
 
-1. Revalidate the exact clean `RELEASE_SHA`, explicit production GO, immutable
+1. Append/read a fresh `release:task0b:revalidate` receipt, then revalidate the
+   exact clean `RELEASE_SHA`, explicit production GO, immutable
    chain-bound `ReleaseFreezeIdentityV2`, `ready_for_release` manifest,
    production DB/root fingerprints, rollback rehearsal, receipt-032 pre-state
    and terminal legacy snapshot. Invoke the sole issuer for one sufficiently
@@ -4593,7 +4649,8 @@ G12 controlled backup:
 
 G13 controlled migration:
 
-1. Revalidate the same immutable `ReleaseFreezeIdentityV2`, then invoke
+1. Append/read a new fresh `release:task0b:revalidate` receipt, revalidate the
+   same immutable `ReleaseFreezeIdentityV2`, then invoke
    `release:authority:issue -- g13_migration_passed <protected-root>` to append
    one sufficiently long-lived G13 `OperationalAttestationV2` bound to the
    current `not_ready` manifest, same

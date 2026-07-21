@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
-import { buildAcceptanceTraceSet, cloneFixture } from "../fixtures/release/remediationReleaseFixtures";
+import {
+  EXPECTED_ACCEPTANCE_OWNER_PLAN,
+  EXPECTED_ACCEPTANCE_REQUIREMENT_IDS,
+  buildAcceptanceTraceSet,
+  cloneFixture
+} from "../fixtures/release/remediationReleaseFixtures";
 
 type ParsedExecution = {
   testFile: string;
@@ -72,6 +77,33 @@ it("[AC-41][TRACEABILITY] requires every REQ-01 through REQ-38 and AC-01 through
     const trace: any = cloneFixture(buildAcceptanceTraceSet());
     mutate(trace);
     expect(() => validate(trace, fixtureAncestry)).toThrow();
+  }
+});
+
+it("[AC-41][TRACE-LINEAGE] enforces the exact semantic AC requirement and owner-plan table", async () => {
+  const { validateAcceptanceTraceSet: validate } = await loadTraceApi();
+  const fixture = buildAcceptanceTraceSet();
+  const byId = new Map(fixture.traces.map((trace) => [trace.acceptanceId, trace]));
+  expect(byId.get("AC-01")?.requirementIds).toEqual(["REQ-15", "REQ-16"]);
+  expect(byId.get("AC-10")?.ownerPlan).toBe(1);
+  expect(byId.get("AC-20")?.ownerPlan).toBe(4);
+  expect(byId.get("AC-34")?.ownerPlan).toBe(2);
+  expect(byId.get("AC-41")?.requirementIds).toEqual(["REQ-38"]);
+  expect(Object.keys(EXPECTED_ACCEPTANCE_OWNER_PLAN)).toHaveLength(41);
+  expect(Object.keys(EXPECTED_ACCEPTANCE_REQUIREMENT_IDS)).toHaveLength(41);
+
+  const invalid = [
+    (trace: any) => { trace.traces[0].requirementIds = ["REQ-01"]; },
+    (trace: any) => { trace.traces[11].requirementIds = [...trace.traces[11].requirementIds].reverse(); },
+    (trace: any) => { trace.traces[9].ownerPlan = 4; },
+    (trace: any) => { trace.traces[19].ownerPlan = 2; },
+    (trace: any) => { trace.traces[33].ownerPlan = 4; },
+    (trace: any) => { trace.traces[40].ownerPlan = 2; }
+  ];
+  for (const mutate of invalid) {
+    const trace: any = cloneFixture(fixture);
+    mutate(trace);
+    expect(() => validate(trace, fixtureAncestry)).toThrow(/requirement IDs|ownerPlan/);
   }
 });
 

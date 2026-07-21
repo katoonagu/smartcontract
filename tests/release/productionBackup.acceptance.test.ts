@@ -195,6 +195,9 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
       const sideEffects: string[] = [];
       await expect(api.runProductionBackupCommand([root], {}, {
         now: () => issued.issuedAt,
+        readCurrentTask0BReleaseRevalidation: async () => ({
+          frozenBytes: Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`), freeze
+        }),
         currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true }),
         observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("unexpected_database"); },
         attestProductionPostgresTools: async () => { sideEffects.push("docker"); },
@@ -206,6 +209,9 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         TASK0B_PRODUCTION_DATABASE_URL: "postgresql://release:not-used@127.0.0.1:55999/tron_watch"
       }, {
         now: () => issued.issuedAt,
+        readCurrentTask0BReleaseRevalidation: async () => ({
+          frozenBytes: Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`), freeze
+        }),
         currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true }),
         observeProductionDatabase: async () => { sideEffects.push("database"); throw new Error("unexpected_database"); }
       })).rejects.toThrow("production_backup_orphan_authority_alias");
@@ -220,11 +226,32 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
     const api = await loadProducer();
     const root = await makeProtectedTempDir("plan5-g12-v2-short-authority-");
     try {
-      const { freeze, issued } = await materializeReadinessV2Root(root);
+      const { task0b, freeze, issued } = await materializeReadinessV2Root(root);
       await expect(api.runProductionBackupCommand([root], {}, {
         now: () => new Date(Date.parse(issued.issuedAt) + 5 * 60_000 + 1).toISOString(),
+        readCurrentTask0BReleaseRevalidation: async () => ({
+          frozenBytes: Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`), freeze
+        }),
         currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true })
       })).rejects.toThrow("operational_authority_tip_ambiguous");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 45_000);
+
+  it("requires a fresh Task0B revalidation receipt at G12 action entry", async () => {
+    const api = await loadProducer();
+    const root = await makeProtectedTempDir("plan5-g12-current-task0b-");
+    try {
+      const { freeze, issued } = await materializeReadinessV2Root(root);
+      const seen: string[] = [];
+      await expect(api.runProductionBackupCommand([root], {}, {
+        now: () => issued.issuedAt,
+        readCurrentTask0BReleaseRevalidation: async (_root: string, evaluated: string) => {
+          seen.push(evaluated);
+          throw new Error("task0b_revalidation_stale");
+        },
+        currentCandidate: async () => ({ sha: freeze.candidateSha, clean: true })
+      })).rejects.toThrow("task0b_revalidation_stale");
+      expect(seen).toEqual([issued.issuedAt]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 45_000);
 

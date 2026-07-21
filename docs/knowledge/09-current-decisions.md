@@ -388,6 +388,14 @@ of these decisions, update this file in the same work.
   controlled rehearsal derives the exact allowlisted command identity, runs
   the real start/observe/stop sequence, and writes that evidence only after the
   sequence succeeds.
+- Acceptance trace lineage uses the reviewed explicit AC-to-REQ and AC-to-owner
+  table in Plan 5. Index cycling and contiguous-range inference are invalid;
+  validators reject wrong membership, order or owner plan for every trace.
+- G12 backup entry and G13 migration entry each require a fresh 15-minute Task
+  0B revalidation receipt whose frozen bytes and current release-freeze identity
+  exactly match the immutable root. Once entry succeeds, G12 authority/lease
+  and G13 authority/bound-session/advisory-lock checks govern the bounded action;
+  the original Task 0B TTL is not reused as a long-operation deadline.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 

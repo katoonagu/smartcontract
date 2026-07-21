@@ -14,6 +14,7 @@ import {
 import {
   buildTask0BProductionDatabaseIdentityFingerprint,
   inspectRealDirectory,
+  readCurrentTask0BReleaseRevalidation,
   readProtectedRegularFile
 } from "./captureTask0BPreflight";
 import {
@@ -1268,12 +1269,20 @@ async function prepareProductionMutationAuthorization(input: {
   artifactRoot: string;
   candidateSha: string;
   evaluatedAt?: string;
+  revalidationEvaluatedAt?: string;
+  readCurrentTask0BReleaseRevalidation?: typeof readCurrentTask0BReleaseRevalidation;
 }) {
   const initialEvaluatedAt = input.evaluatedAt ?? new Date().toISOString();
+  const revalidationEvaluatedAt = input.revalidationEvaluatedAt ?? new Date().toISOString();
   const [task0bBytes, backupBytes] = await Promise.all([
     readProtectedRegularFile(input.artifactRoot, "task0b-release-freeze.json", MAX_ARTIFACT_BYTES),
     readProtectedRegularFile(input.artifactRoot, "production-backup-evidence.json", MAX_ARTIFACT_BYTES)
   ]);
+  const currentTask0B = await (input.readCurrentTask0BReleaseRevalidation
+    ?? readCurrentTask0BReleaseRevalidation)(input.artifactRoot, revalidationEvaluatedAt);
+  if (!currentTask0B.frozenBytes.equals(task0bBytes)) {
+    fail("schema_032_sequence_task0b_revalidation_binding_changed");
+  }
   const rootOnlyVerified = verifyCurrentReleaseManifestChainV2(input.artifactRoot);
   const rootOnlySelected = selectOperationalAttestationFromStoreV2({
     artifactRoot: input.artifactRoot,
@@ -1282,7 +1291,8 @@ async function prepareProductionMutationAuthorization(input: {
     evaluatedAt: initialEvaluatedAt,
     minimumRemainingValidityMs: MINIMUM_G13_CLAIM_VALIDITY_MS
   });
-  if (rootOnlyVerified.manifest.transitionId !== "g12_backup_passed"
+  if (!canonicalBytesV2(rootOnlyVerified.freeze).equals(canonicalBytesV2(currentTask0B.freeze))
+      || rootOnlyVerified.manifest.transitionId !== "g12_backup_passed"
       || rootOnlyVerified.manifest.overall !== "not_ready") {
     fail("schema_032_sequence_production_v2_manifest_authority_unverified");
   }
@@ -1319,8 +1329,7 @@ async function prepareProductionMutationAuthorization(input: {
   }
   const task0b = validateTask0BReleaseFreezeEvidence(
     parseJson(task0bBytes.toString("utf8"), "schema_032_sequence_task0b_invalid"),
-    input.candidateSha,
-    initialEvaluatedAt
+    input.candidateSha
   );
   const backup = parseProductionBackupEvidence(
     parseJson(backupBytes.toString("utf8"), "schema_032_sequence_production_backup_invalid"),
@@ -1764,6 +1773,7 @@ export async function runSchema032ReleaseSequence(
   options: Schema032SequenceCliOptions,
   testDependencies?: {
     observeCandidateRepositoryState(): Promise<{ headSha: string; status: string; migrationFiles: string[] }>;
+    readCurrentTask0BReleaseRevalidation?: typeof readCurrentTask0BReleaseRevalidation;
   }
 ): Promise<Schema032ReleaseEvidenceV1> {
   if (testDependencies !== undefined && process.env.NODE_ENV !== "test") {
@@ -1796,7 +1806,9 @@ export async function runSchema032ReleaseSequence(
     ? await prepareProductionMutationAuthorization({
       artifactRoot,
       candidateSha: validated.candidateSha,
-      evaluatedAt: existingProductionReceipt?.lockAcquiredAt
+      evaluatedAt: existingProductionReceipt?.lockAcquiredAt,
+      revalidationEvaluatedAt: new Date().toISOString(),
+      readCurrentTask0BReleaseRevalidation: testDependencies?.readCurrentTask0BReleaseRevalidation
     })
     : null;
   if (preparedProduction !== null && existingProductionReceiptBytes !== null) {

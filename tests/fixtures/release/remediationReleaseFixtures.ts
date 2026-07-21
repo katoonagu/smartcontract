@@ -736,6 +736,63 @@ export const PRIMARY_AC_TEST_FILES = [
   "tests/release/remediationReleaseManifest.acceptance.test.ts"
 ];
 
+export const EXPECTED_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
+  "AC-01": 2, "AC-02": 2, "AC-03": 2, "AC-04": 2, "AC-05": 2, "AC-06": 2,
+  "AC-07": 4, "AC-08": 4, "AC-09": 4,
+  "AC-10": 1, "AC-11": 1,
+  "AC-12": 4, "AC-13": 4,
+  "AC-14": 3, "AC-15": 3, "AC-16": 3, "AC-17": 3, "AC-18": 3,
+  "AC-19": 2, "AC-20": 4, "AC-21": 4, "AC-22": 2, "AC-23": 2, "AC-24": 4,
+  "AC-25": 2, "AC-26": 2, "AC-27": 4, "AC-28": 2, "AC-29": 2, "AC-30": 2,
+  "AC-31": 2, "AC-32": 2, "AC-33": 2, "AC-34": 2, "AC-35": 2, "AC-36": 2,
+  "AC-37": 2, "AC-38": 2, "AC-39": 4, "AC-40": 2,
+  "AC-41": 5
+};
+
+export const EXPECTED_ACCEPTANCE_REQUIREMENT_IDS: Readonly<Record<string, readonly string[]>> = {
+  "AC-01": ["REQ-15", "REQ-16"],
+  "AC-02": ["REQ-15", "REQ-16", "REQ-17"],
+  "AC-03": ["REQ-28", "REQ-29"],
+  "AC-04": ["REQ-28", "REQ-29"],
+  "AC-05": ["REQ-28", "REQ-29"],
+  "AC-06": ["REQ-28", "REQ-29"],
+  "AC-07": ["REQ-06", "REQ-09", "REQ-15", "REQ-32"],
+  "AC-08": ["REQ-05", "REQ-08", "REQ-32"],
+  "AC-09": ["REQ-32", "REQ-33"],
+  "AC-10": ["REQ-30"],
+  "AC-11": ["REQ-02", "REQ-30"],
+  "AC-12": ["REQ-03", "REQ-04", "REQ-07", "REQ-12", "REQ-13", "REQ-14", "REQ-34"],
+  "AC-13": ["REQ-03", "REQ-04", "REQ-10", "REQ-11", "REQ-19", "REQ-31"],
+  "AC-14": ["REQ-35"],
+  "AC-15": ["REQ-35"],
+  "AC-16": ["REQ-03", "REQ-05", "REQ-36"],
+  "AC-17": ["REQ-37"],
+  "AC-18": ["REQ-37"],
+  "AC-19": ["REQ-18", "REQ-19", "REQ-20"],
+  "AC-20": ["REQ-08", "REQ-18", "REQ-20"],
+  "AC-21": ["REQ-20"],
+  "AC-22": ["REQ-20"],
+  "AC-23": ["REQ-19", "REQ-20"],
+  "AC-24": ["REQ-18", "REQ-19", "REQ-20"],
+  "AC-25": ["REQ-18", "REQ-21"],
+  "AC-26": ["REQ-21"],
+  "AC-27": ["REQ-18", "REQ-22"],
+  "AC-28": ["REQ-22"],
+  "AC-29": ["REQ-23", "REQ-24", "REQ-27"],
+  "AC-30": ["REQ-01", "REQ-23", "REQ-24", "REQ-27"],
+  "AC-31": ["REQ-18", "REQ-21", "REQ-24"],
+  "AC-32": ["REQ-18", "REQ-21", "REQ-24"],
+  "AC-33": ["REQ-20", "REQ-23", "REQ-25", "REQ-27"],
+  "AC-34": ["REQ-23", "REQ-25", "REQ-26", "REQ-27"],
+  "AC-35": ["REQ-23", "REQ-25", "REQ-26", "REQ-27"],
+  "AC-36": ["REQ-25", "REQ-26", "REQ-27"],
+  "AC-37": ["REQ-23", "REQ-25", "REQ-26", "REQ-27"],
+  "AC-38": ["REQ-23", "REQ-25", "REQ-26"],
+  "AC-39": ["REQ-05", "REQ-06", "REQ-07", "REQ-14", "REQ-25", "REQ-27", "REQ-32"],
+  "AC-40": ["REQ-23", "REQ-24", "REQ-25", "REQ-27"],
+  "AC-41": ["REQ-38"]
+};
+
 export type AcceptanceTraceV1 = {
   acceptanceId: string;
   requirementIds: string[];
@@ -776,11 +833,11 @@ export type AcceptanceTraceSetV1 = {
 
 export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
   const traces = REQUIRED_ACCEPTANCE_IDS.map((acceptanceId, index): AcceptanceTraceV1 => {
-    const ownerPlan = (index === 40 ? 5 : index < 6 ? 2 : index < 13 ? 4 : index < 18 ? 3 : index < 33 ? 2 : 4) as 1 | 2 | 3 | 4 | 5;
+    const ownerPlan = EXPECTED_ACCEPTANCE_OWNER_PLAN[acceptanceId]!;
     const ownerCommitSha = String(ownerPlan).repeat(40);
     return {
       acceptanceId,
-      requirementIds: [REQUIRED_REQUIREMENT_IDS[index % REQUIRED_REQUIREMENT_IDS.length]],
+      requirementIds: [...EXPECTED_ACCEPTANCE_REQUIREMENT_IDS[acceptanceId]!],
       ownerPlan,
       ownerCommitSha,
       testFile: PRIMARY_AC_TEST_FILES[index],

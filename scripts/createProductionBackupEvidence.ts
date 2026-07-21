@@ -17,6 +17,7 @@ import {
 import {
   buildTask0BProductionDatabaseIdentityFingerprint,
   inspectRealDirectory,
+  readCurrentTask0BReleaseRevalidation,
   readProtectedRegularFile
 } from "./captureTask0BPreflight";
 import {
@@ -1247,6 +1248,7 @@ export async function runProductionBackupCommand(
     observeProductionDatabase?: typeof observeProductionDatabase;
     attestProductionPostgresTools?: typeof attestProductionPostgresTools;
     verifyProductionManifestAuthorityV2?: typeof verifyProductionBackupManifestAuthorityV2;
+    readCurrentTask0BReleaseRevalidation?: typeof readCurrentTask0BReleaseRevalidation;
     stdout?(value: string): void;
   } = {}
 ): Promise<void> {
@@ -1263,6 +1265,8 @@ export async function runProductionBackupCommand(
   const attestTools = dependencies.attestProductionPostgresTools ?? attestProductionPostgresTools;
   const verifyManifestAuthority = dependencies.verifyProductionManifestAuthorityV2
     ?? verifyProductionBackupManifestAuthorityV2;
+  const readCurrentTask0B = dependencies.readCurrentTask0BReleaseRevalidation
+    ?? readCurrentTask0BReleaseRevalidation;
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
   const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
   const rootFingerprint = hash(canonicalPathKey(artifactRoot));
@@ -1271,6 +1275,10 @@ export async function runProductionBackupCommand(
     readProtectedRegularFile(artifactRoot, "release-manifest.json", MAX_ARTIFACT_BYTES)
   ]);
   const initialEvaluatedAt = now();
+  const currentTask0B = legacyTestAuthority ? null : await readCurrentTask0B(artifactRoot, initialEvaluatedAt);
+  if (currentTask0B !== null && !currentTask0B.frozenBytes.equals(task0bBytes)) {
+    throw new Error("production_backup_task0b_revalidation_binding_changed");
+  }
   const rootOnlyVerified = legacyTestAuthority ? null : verifyCurrentReleaseManifestChainV2(artifactRoot);
   const rootOnlySelected = rootOnlyVerified === null ? null : selectOperationalAttestationFromStoreV2({
     artifactRoot,
@@ -1280,6 +1288,7 @@ export async function runProductionBackupCommand(
     minimumRemainingValidityMs: MINIMUM_G12_CLAIM_VALIDITY_MS
   });
   if (rootOnlyVerified !== null && (!rootOnlyVerified.manifestBytes.equals(manifestBytes)
+      || !canonicalBytesV2(rootOnlyVerified.freeze).equals(canonicalBytesV2(currentTask0B!.freeze))
       || rootOnlyVerified.manifest.transitionId !== "readiness"
       || rootOnlyVerified.manifest.overall !== "ready_for_release")) {
     throw new Error("production_backup_v2_manifest_authority_unverified");
@@ -1329,8 +1338,11 @@ export async function runProductionBackupCommand(
       });
     useInitialRootOnlySelection = false;
     const authority = validateProductionBackupAuthority(authorityValue, evaluatedAt);
-    const task0b = validateTask0BReleaseFreezeEvidence(rawTask0b, candidate.sha,
-      injectedManifestVerifier ? String(rawTask0b.observedAt) : evaluatedAt);
+    const task0b = validateTask0BReleaseFreezeEvidence(
+      rawTask0b,
+      candidate.sha,
+      injectedManifestVerifier ? String(rawTask0b.observedAt) : undefined
+    );
     if (injectedManifestVerifier) {
       validateProductionBackupAuthorization({
         authority: authorityValue, task0bBytes, manifestBytes, candidateSha: candidate.sha,

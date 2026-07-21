@@ -15,6 +15,8 @@ import {
   behavioralFailureFingerprint,
   normalizeAcceptanceTestFile,
   parseAcceptanceExecutionReport,
+  REMEDIATION_ACCEPTANCE_OWNER_PLAN,
+  REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS,
   requireExactExecution,
   validateAcceptanceTraceSet,
   type AcceptanceTraceSetV1,
@@ -420,10 +422,6 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
   }
 }
 
-function ownerPlanForAcceptanceIndex(index: number): 1 | 2 | 3 | 4 | 5 {
-  return (index === 40 ? 5 : index < 6 ? 2 : index < 13 ? 4 : index < 18 ? 3 : index < 33 ? 2 : 4);
-}
-
 function redGroupForTrace(testFile: string, acceptanceId: string, secondary = false): string {
   if (secondary) return "plan2-llm-dampening";
   if (acceptanceId === "AC-10" || acceptanceId === "AC-11") return "plan1-renamed";
@@ -667,8 +665,8 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
     const acceptanceId = `AC-${String(index + 1).padStart(2, "0")}`;
     await addTrace({
       acceptanceId,
-      requirementIds: [`REQ-${String((index % 38) + 1).padStart(2, "0")}`],
-      ownerPlan: ownerPlanForAcceptanceIndex(index),
+      requirementIds: [...REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS[acceptanceId]!],
+      ownerPlan: REMEDIATION_ACCEPTANCE_OWNER_PLAN[acceptanceId]!,
       testFile: PRIMARY_AC_TEST_FILES[index]!,
       fullName: PRIMARY_AC_FULL_NAMES[index]!,
       primary: true
@@ -676,7 +674,7 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
   }
   await addTrace({
     acceptanceId: "AC-33",
-    requirementIds: ["REQ-35", "REQ-38"],
+    requirementIds: [...REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS["AC-33"]!],
     ownerPlan: 2,
     testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
     fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof",

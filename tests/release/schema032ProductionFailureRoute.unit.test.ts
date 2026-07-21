@@ -263,10 +263,15 @@ describe("schema 032 production failure route", () => {
         artifactRoot: root,
         offline: false,
         candidateSha: exactCandidateSha
-      }, { observeCandidateRepositoryState: async () => ({
-        headSha: exactCandidateSha, status: "",
-        migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
-      }) })).rejects.toThrow("operational_authority_tip_ambiguous");
+      }, {
+        observeCandidateRepositoryState: async () => ({
+          headSha: exactCandidateSha, status: "",
+          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+        }),
+        readCurrentTask0BReleaseRevalidation: async () => ({
+          frozenBytes: context.task0bBytes, freeze: context.freeze
+        } as any)
+      })).rejects.toThrow("operational_authority_tip_ambiguous");
       expect(dbSessionStarted).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -294,13 +299,53 @@ describe("schema 032 production failure route", () => {
         artifactRoot: root,
         offline: false,
         candidateSha: exactCandidateSha
-      }, { observeCandidateRepositoryState: async () => ({
-        headSha: exactCandidateSha, status: "",
-        migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
-      }) })).rejects.toThrow("schema_032_sequence_production_orphan_authority_alias");
+      }, {
+        observeCandidateRepositoryState: async () => ({
+          headSha: exactCandidateSha, status: "",
+          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+        }),
+        readCurrentTask0BReleaseRevalidation: async () => ({
+          frozenBytes: context.task0bBytes, freeze: context.freeze
+        } as any)
+      })).rejects.toThrow("schema_032_sequence_production_orphan_authority_alias");
       expect(dbSessionStarted).not.toHaveBeenCalled();
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("requires a fresh Task0B revalidation receipt at G13 action entry before a DB session", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-18T10:00:00.000Z"));
+    dbSessionStarted.mockClear();
+    const root = protectedRoot();
+    try {
+      const exactCandidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      await materializeG12Source(root, exactCandidateSha);
+      const seen: string[] = [];
+      await expect(runSchema032ReleaseSequence({
+        databaseUrlEnvName: "TASK0B_PRODUCTION_DATABASE_URL",
+        databaseUrl: "postgresql://test:test@127.0.0.1:55998/tron_watch",
+        expectedEndpoint: "127.0.0.1:55998",
+        expectedSystemIdentifier: "12345678901234567890",
+        artifactRoot: root,
+        offline: false,
+        candidateSha: exactCandidateSha
+      }, {
+        observeCandidateRepositoryState: async () => ({
+          headSha: exactCandidateSha, status: "",
+          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+        }),
+        readCurrentTask0BReleaseRevalidation: async (_root, evaluatedAt) => {
+          seen.push(String(evaluatedAt));
+          throw new Error("task0b_revalidation_stale");
+        }
+      })).rejects.toThrow("task0b_revalidation_stale");
+      expect(seen).toHaveLength(1);
+      expect(dbSessionStarted).not.toHaveBeenCalled();
+    } finally {
       vi.useRealTimers();
       rmSync(root, { recursive: true, force: true });
     }
@@ -470,10 +515,15 @@ describe("schema 032 production failure route", () => {
         offline: false,
         candidateSha: exactCandidateSha
       };
-      const testDependencies = { observeCandidateRepositoryState: async () => ({
-        headSha: exactCandidateSha, status: "",
-        migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
-      }) };
+      const testDependencies = {
+        observeCandidateRepositoryState: async () => ({
+          headSha: exactCandidateSha, status: "",
+          migrationFiles: readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()
+        }),
+        readCurrentTask0BReleaseRevalidation: async () => ({
+          frozenBytes: context.task0bBytes, freeze: context.freeze
+        } as any)
+      };
       await expect(runSchema032ReleaseSequence(options, testDependencies))
         .rejects.toThrow(stageFailure.failureCode);
       expect(dbSessionStarted).not.toHaveBeenCalled();

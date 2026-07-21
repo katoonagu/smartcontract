@@ -70,12 +70,62 @@ const TEST_FILE = /^tests\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.test\.ts$/;
 const BEHAVIORAL_FINGERPRINT = /^expected_behavioral_assertion_ac-\d{2}(?:_[a-z0-9-]+)*$/;
 const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory)/i;
 
-const EXPECTED_OWNER_PLAN = new Map<string, 1 | 2 | 3 | 4 | 5>(
-  REMEDIATION_REQUIRED_ACCEPTANCE_IDS.map((acceptanceId, index) => [
-    acceptanceId,
-    (index === 40 ? 5 : index < 6 ? 2 : index < 13 ? 4 : index < 18 ? 3 : index < 33 ? 2 : 4) as 1 | 2 | 3 | 4 | 5
-  ])
-);
+export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
+  "AC-01": 2, "AC-02": 2, "AC-03": 2, "AC-04": 2, "AC-05": 2, "AC-06": 2,
+  "AC-07": 4, "AC-08": 4, "AC-09": 4,
+  "AC-10": 1, "AC-11": 1,
+  "AC-12": 4, "AC-13": 4,
+  "AC-14": 3, "AC-15": 3, "AC-16": 3, "AC-17": 3, "AC-18": 3,
+  "AC-19": 2, "AC-20": 4, "AC-21": 4, "AC-22": 2, "AC-23": 2, "AC-24": 4,
+  "AC-25": 2, "AC-26": 2, "AC-27": 4, "AC-28": 2, "AC-29": 2, "AC-30": 2,
+  "AC-31": 2, "AC-32": 2, "AC-33": 2, "AC-34": 2, "AC-35": 2, "AC-36": 2,
+  "AC-37": 2, "AC-38": 2, "AC-39": 4, "AC-40": 2,
+  "AC-41": 5
+};
+
+export const REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS: Readonly<Record<string, readonly string[]>> = {
+  "AC-01": ["REQ-15", "REQ-16"],
+  "AC-02": ["REQ-15", "REQ-16", "REQ-17"],
+  "AC-03": ["REQ-28", "REQ-29"],
+  "AC-04": ["REQ-28", "REQ-29"],
+  "AC-05": ["REQ-28", "REQ-29"],
+  "AC-06": ["REQ-28", "REQ-29"],
+  "AC-07": ["REQ-06", "REQ-09", "REQ-15", "REQ-32"],
+  "AC-08": ["REQ-05", "REQ-08", "REQ-32"],
+  "AC-09": ["REQ-32", "REQ-33"],
+  "AC-10": ["REQ-30"],
+  "AC-11": ["REQ-02", "REQ-30"],
+  "AC-12": ["REQ-03", "REQ-04", "REQ-07", "REQ-12", "REQ-13", "REQ-14", "REQ-34"],
+  "AC-13": ["REQ-03", "REQ-04", "REQ-10", "REQ-11", "REQ-19", "REQ-31"],
+  "AC-14": ["REQ-35"],
+  "AC-15": ["REQ-35"],
+  "AC-16": ["REQ-03", "REQ-05", "REQ-36"],
+  "AC-17": ["REQ-37"],
+  "AC-18": ["REQ-37"],
+  "AC-19": ["REQ-18", "REQ-19", "REQ-20"],
+  "AC-20": ["REQ-08", "REQ-18", "REQ-20"],
+  "AC-21": ["REQ-20"],
+  "AC-22": ["REQ-20"],
+  "AC-23": ["REQ-19", "REQ-20"],
+  "AC-24": ["REQ-18", "REQ-19", "REQ-20"],
+  "AC-25": ["REQ-18", "REQ-21"],
+  "AC-26": ["REQ-21"],
+  "AC-27": ["REQ-18", "REQ-22"],
+  "AC-28": ["REQ-22"],
+  "AC-29": ["REQ-23", "REQ-24", "REQ-27"],
+  "AC-30": ["REQ-01", "REQ-23", "REQ-24", "REQ-27"],
+  "AC-31": ["REQ-18", "REQ-21", "REQ-24"],
+  "AC-32": ["REQ-18", "REQ-21", "REQ-24"],
+  "AC-33": ["REQ-20", "REQ-23", "REQ-25", "REQ-27"],
+  "AC-34": ["REQ-23", "REQ-25", "REQ-26", "REQ-27"],
+  "AC-35": ["REQ-23", "REQ-25", "REQ-26", "REQ-27"],
+  "AC-36": ["REQ-25", "REQ-26", "REQ-27"],
+  "AC-37": ["REQ-23", "REQ-25", "REQ-26", "REQ-27"],
+  "AC-38": ["REQ-23", "REQ-25", "REQ-26"],
+  "AC-39": ["REQ-05", "REQ-06", "REQ-07", "REQ-14", "REQ-25", "REQ-27", "REQ-32"],
+  "AC-40": ["REQ-23", "REQ-24", "REQ-25", "REQ-27"],
+  "AC-41": ["REQ-38"]
+};
 
 function expectRecord(value: unknown, label: string): JsonRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -142,15 +192,18 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
     throw new Error(`${acceptanceId} is not an approved acceptance ID`);
   }
   const requirementIds = expectStringArray(trace.requirementIds, `traces[${index}].requirementIds`);
-  if (requirementIds.length === 0 || new Set(requirementIds).size !== requirementIds.length
-      || requirementIds.some((id) => !REMEDIATION_REQUIRED_REQUIREMENT_IDS.includes(id))) {
-    throw new Error(`${acceptanceId} requirement IDs are invalid`);
+  const expectedRequirementIds = REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS[acceptanceId];
+  if (!expectedRequirementIds || requirementIds.length !== expectedRequirementIds.length
+      || requirementIds.some((id, requirementIndex) => id !== expectedRequirementIds[requirementIndex])) {
+    throw new Error(`${acceptanceId} requirement IDs are incorrect`);
   }
   if (!Number.isInteger(trace.ownerPlan) || ![1, 2, 3, 4, 5].includes(trace.ownerPlan as number)) {
     throw new Error(`${acceptanceId} ownerPlan is invalid`);
   }
   const ownerPlan = trace.ownerPlan as 1 | 2 | 3 | 4 | 5;
-  if (ownerPlan !== EXPECTED_OWNER_PLAN.get(acceptanceId)) throw new Error(`${acceptanceId} ownerPlan is incorrect`);
+  if (ownerPlan !== REMEDIATION_ACCEPTANCE_OWNER_PLAN[acceptanceId]) {
+    throw new Error(`${acceptanceId} ownerPlan is incorrect`);
+  }
   const ownerCommitSha = expectSha40(trace.ownerCommitSha, `${acceptanceId}.ownerCommitSha`);
   if (!ancestorCommitShas.has(ownerCommitSha) || ownerCommitSha === candidateSha) {
     throw new Error(`${acceptanceId} owner commit is not a recorded candidate ancestor`);
