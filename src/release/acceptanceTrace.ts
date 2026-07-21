@@ -10,6 +10,7 @@ import {
 type AcceptanceTraceRedCommonV1 = {
   baseSha: string;
   testCommitSha: string;
+  redExecutionCommitSha: string;
   testPatchSha256: string;
   vitestReportSha256: string;
   expectedFailureFingerprint: string;
@@ -259,10 +260,10 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
     throw new Error(`${acceptanceId} RED kind is invalid`);
   }
   expectExactKeys(red, redKind === "behavioral_assertion" ? [
-    "kind", "baseSha", "testCommitSha", "testPatchSha256", "vitestReportSha256",
+    "kind", "baseSha", "testCommitSha", "redExecutionCommitSha", "testPatchSha256", "vitestReportSha256",
     "expectedFailureFingerprint", "status"
   ] : [
-    "kind", "baseSha", "testCommitSha", "testPatchSha256", "vitestReportSha256",
+    "kind", "baseSha", "testCommitSha", "redExecutionCommitSha", "testPatchSha256", "vitestReportSha256",
     "expectedFailureFingerprint", "missingProductModulePath", "status"
   ], `${acceptanceId}.red`);
   const baseSha = expectSha40(red.baseSha, `${acceptanceId}.red.baseSha`);
@@ -270,6 +271,13 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
   const testCommitSha = expectSha40(red.testCommitSha, `${acceptanceId}.red.testCommitSha`);
   if (testCommitSha === candidateSha || testCommitSha === ownerCommitSha) {
     throw new Error(`${acceptanceId} frozen test commit must precede owner and candidate commits`);
+  }
+  const redExecutionCommitSha = expectSha40(
+    red.redExecutionCommitSha,
+    `${acceptanceId}.red.redExecutionCommitSha`
+  );
+  if (redExecutionCommitSha === candidateSha || redExecutionCommitSha === ownerCommitSha) {
+    throw new Error(`${acceptanceId} RED execution commit must precede owner and candidate commits`);
   }
   const testPatchSha256 = expectSha256(red.testPatchSha256, `${acceptanceId}.red.testPatchSha256`);
   const redReportSha256 = expectSha256(red.vitestReportSha256, `${acceptanceId}.red.vitestReportSha256`);
@@ -293,6 +301,9 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
     }
     if (testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA) {
       throw new Error(`${acceptanceId} local product module RED must use the exact frozen Plan 4 test commit`);
+    }
+    if (redExecutionCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA) {
+      throw new Error(`${acceptanceId} local product module RED must execute at the exact frozen Plan 4 test commit`);
     }
   }
   const missingProductModulePath = redKind === "local_product_module_absent"
@@ -322,6 +333,7 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
       kind: "behavioral_assertion",
       baseSha,
       testCommitSha,
+      redExecutionCommitSha,
       testPatchSha256,
       vitestReportSha256: redReportSha256,
       expectedFailureFingerprint,
@@ -330,6 +342,7 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
       kind: "local_product_module_absent",
       baseSha,
       testCommitSha,
+      redExecutionCommitSha,
       testPatchSha256,
       vitestReportSha256: redReportSha256,
       expectedFailureFingerprint,
@@ -406,14 +419,23 @@ export function validateAcceptanceTraceSet(
     if (!isAncestor) throw new Error("owner commit is not a verified Git ancestor of the candidate");
   }
   for (const trace of traces) {
-    let testPrecedesOwner = false;
+    let testPrecedesExecution = false;
+    let executionPrecedesOwner = false;
     try {
-      testPrecedesOwner = dependencies.isAncestor(trace.red.testCommitSha, trace.ownerCommitSha);
+      testPrecedesExecution = dependencies.isAncestor(
+        trace.red.testCommitSha,
+        trace.red.redExecutionCommitSha
+      );
+      executionPrecedesOwner = dependencies.isAncestor(trace.red.redExecutionCommitSha, trace.ownerCommitSha);
     } catch {
-      testPrecedesOwner = false;
+      testPrecedesExecution = false;
+      executionPrecedesOwner = false;
     }
-    if (!testPrecedesOwner) {
-      throw new Error(`${trace.acceptanceId} test commit is not a verified Git ancestor of owner commit`);
+    if (!testPrecedesExecution) {
+      throw new Error(`${trace.acceptanceId} test commit is not a verified Git ancestor of RED execution commit`);
+    }
+    if (!executionPrecedesOwner) {
+      throw new Error(`${trace.acceptanceId} RED execution commit is not a verified Git ancestor of owner commit`);
     }
     if (trace.red.kind !== "local_product_module_absent") continue;
     if (typeof dependencies.pathExistsAtCommit !== "function") {

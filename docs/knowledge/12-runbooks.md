@@ -172,6 +172,11 @@ absence at the test commit, and module presence at owner plus candidate.
 External dependencies and generic import/no-test/environment failures fail
 closed.
 
+AC-20/21/24 remain behavioral RED. Their exact original Plan 4 test patch is
+bound to `20ee8a75…`; the archived RED execution is `a0f74b3b…`, where the
+Telegram modules load and all three exact assertions fail behaviorally. The
+validator requires test-commit → RED-execution → owner → candidate ancestry.
+
 After manual evidence finalization, and after every later transition, hash the
 exact current manifest bytes. Never reuse a prior source SHA or edit the store:
 

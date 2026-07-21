@@ -796,6 +796,7 @@ export const EXPECTED_ACCEPTANCE_REQUIREMENT_IDS: Readonly<Record<string, readon
 type AcceptanceTraceRedCommonV1 = {
   baseSha: string;
   testCommitSha: string;
+  redExecutionCommitSha: string;
   testPatchSha256: string;
   vitestReportSha256: string;
   expectedFailureFingerprint: string;
@@ -857,6 +858,7 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
         kind: "behavioral_assertion",
         baseSha: PLAN_BASE_SHA,
         testCommitSha: "a".repeat(40),
+        redExecutionCommitSha: "a".repeat(40),
         testPatchSha256: (index + 201).toString(16).padStart(64, "0"),
         vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
         expectedFailureFingerprint: `expected_behavioral_assertion_${acceptanceId.toLowerCase()}`,

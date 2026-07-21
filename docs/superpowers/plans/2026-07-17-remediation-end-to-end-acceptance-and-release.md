@@ -1542,6 +1542,7 @@ type AcceptanceTraceV1 = {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
     testCommitSha: string;
+    redExecutionCommitSha: string;
     testPatchSha256: string;
     vitestReportSha256: string;
     expectedFailureFingerprint: string;
@@ -1577,6 +1578,12 @@ Rules:
   with state `passed`; missing, skipped, todo, duplicate or filtered-out tests
   fail closed;
 - source search may lint IDs, but cannot create trace evidence.
+
+AC-20/21/24 remain behavioral: their exact original test patch is frozen at
+`20ee8a75…`, and their RED execution commit is `a0f74b3b…`, where local product
+modules load and the three exact assertions fail for behavior. Validators bind
+test commit → RED execution commit → owner commit → candidate; they never route
+these ACs through `local_product_module_absent`.
 
 The AC-10/11 title corrections and the new AC-33 LLM-dampening regression are
 recorded as exact test-only patches and replayed against their owner bases so
@@ -4416,6 +4423,8 @@ AC-07/08/09/12/13/27/39, and writes the content-addressed RED reports/patches
 plus the reconstructed Task 0A baseline. That typed evidence requires exact
 frozen test commit, test patch, local `src/*` path, owner commit and candidate
 bindings; generic import/no-test/environment failures remain invalid.
+AC-20/21/24 use a separate archived behavioral run at `a0f74b3b…` with the
+original `20ee8a75…` test patch and explicit RED-execution lineage.
 `release:trace:capture` then binds those artifacts to the already-produced
 candidate GREEN reports. Neither command changes product code or semantics.
 

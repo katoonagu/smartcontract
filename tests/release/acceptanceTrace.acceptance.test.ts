@@ -72,6 +72,7 @@ async function loadTraceApi(): Promise<TraceApi> {
 
 const fixtureAncestry: TraceDependencies = {
   isAncestor: (ancestorCommitSha, descendantCommitSha) => {
+    if (ancestorCommitSha === descendantCommitSha) return true;
     const fixture = buildAcceptanceTraceSet();
     if (descendantCommitSha === fixture.candidateSha) {
       return fixture.ancestorCommitShas.includes(ancestorCommitSha)
@@ -213,6 +214,7 @@ it("[AC-41][RED-PROVENANCE] requires owner commit expected RED and candidate GRE
     (trace: any) => { trace.traces[0].red.kind = "environment_failure"; },
     (trace: any) => { trace.traces[0].red.baseSha = "bad"; },
     (trace: any) => { trace.traces[0].red.testCommitSha = "bad"; },
+    (trace: any) => { trace.traces[0].red.redExecutionCommitSha = "bad"; },
     (trace: any) => { trace.traces[0].red.testPatchSha256 = "bad"; },
     (trace: any) => { trace.traces[0].red.vitestReportSha256 = "bad"; },
     (trace: any) => { trace.traces[0].red.expectedFailureFingerprint = "fixture import error"; },
@@ -353,6 +355,7 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   };
   target.red.kind = "local_product_module_absent";
   target.red.testCommitSha = PLAN4_FROZEN_TEST_SHA;
+  target.red.redExecutionCommitSha = PLAN4_FROZEN_TEST_SHA;
   target.red.missingProductModulePath = path;
   target.red.expectedFailureFingerprint = (await loadTraceApi())
     .localProductModuleAbsenceFingerprint(target.acceptanceId, evidence);
@@ -383,6 +386,9 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   const wrongFrozenCommit: any = cloneFixture(fixture);
   wrongFrozenCommit.traces[6].red.testCommitSha = "a".repeat(40);
   expect(() => validate(wrongFrozenCommit, dependency())).toThrow(/exact frozen Plan 4 test commit/);
+  const wrongLocalExecutionCommit: any = cloneFixture(fixture);
+  wrongLocalExecutionCommit.traces[6].red.redExecutionCommitSha = "a".repeat(40);
+  expect(() => validate(wrongLocalExecutionCommit, dependency())).toThrow(/execute at the exact frozen Plan 4 test commit/);
   const unauthorized: any = cloneFixture(fixture);
   const unauthorizedTarget = unauthorized.traces[0];
   const unauthorizedEvidence: ParsedLocalProductModuleAbsence = {
@@ -391,6 +397,7 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
     failureMessage: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${unauthorizedTarget.testFile}`
   };
   unauthorizedTarget.red.kind = "local_product_module_absent";
+  unauthorizedTarget.red.redExecutionCommitSha = PLAN4_FROZEN_TEST_SHA;
   unauthorizedTarget.red.missingProductModulePath = path;
   unauthorizedTarget.red.expectedFailureFingerprint = (await loadTraceApi())
     .localProductModuleAbsenceFingerprint(unauthorizedTarget.acceptanceId, unauthorizedEvidence);
@@ -402,5 +409,18 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
         ? false
         : dependency().isAncestor(ancestorCommitSha, descendantCommitSha)
     )
-  })).toThrow(/test commit is not a verified Git ancestor/);
+  })).toThrow(/RED execution commit is not a verified Git ancestor/);
+
+  const behavioralExecution: any = cloneFixture(buildAcceptanceTraceSet());
+  behavioralExecution.traces[19].red.redExecutionCommitSha = "b".repeat(40);
+  expect(() => validate(behavioralExecution, {
+    ...fixtureAncestry,
+    isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
+      ancestorCommitSha === "a".repeat(40) && descendantCommitSha === "b".repeat(40)
+        ? true
+        : ancestorCommitSha === "b".repeat(40) && descendantCommitSha === behavioralExecution.traces[19].ownerCommitSha
+          ? false
+          : fixtureAncestry.isAncestor(ancestorCommitSha, descendantCommitSha)
+    )
+  })).toThrow(/RED execution commit is not a verified Git ancestor/);
 });

@@ -238,6 +238,12 @@ order is producer-first, strict-verifier-last.
    dependency, fixture, environment, timeout, or synthetic failures remain
    rejected.
 
+   AC-20/21/24 are not part of that exception. Preparation replays their exact
+   original test patch from frozen commit `20ee8a75…` and runs their behavioral
+   RED at `a0f74b3b…`, where local modules load but those exact assertions fail.
+   Evidence binds test commit, RED execution commit, owner and candidate as one
+   verified ancestry chain.
+
 4. Rehearse schema 032 on the clean database and the offline production clone.
    Use a separate protected sequence directory per database because the
    producer writes an exclusive four-file sequence. Preserve/promote each

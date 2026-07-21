@@ -390,6 +390,11 @@ of these decisions, update this file in the same work.
   module absent there but present at both owner commit and candidate. Generic
   import/no-test, dependency, fixture, environment and inferred failures remain
   invalid evidence.
+- AC-20/21/24 do not use that exception. Their original Plan 4 test patch is
+  bound to frozen test commit `20ee8a75…`, while behavioral RED executes at
+  historical commit `a0f74b3b…`, after the local modules existed and before
+  those three behaviors passed. Trace lineage records test commit, RED
+  execution commit, owner commit and candidate separately.
 - Sanitized candidate/previous start evidence is not an operator fixture. The
   controlled rehearsal derives the exact allowlisted command identity, runs
   the real start/observe/stop sequence, and writes that evidence only after the

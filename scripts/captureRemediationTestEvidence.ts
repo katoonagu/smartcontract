@@ -56,6 +56,7 @@ type CaptureTraceSpec = {
     kind: "behavioral_assertion";
     baseSha: string;
     testCommitSha: string;
+    redExecutionCommitSha: string;
     testPatchSha256: string;
     testPatchFile: string;
     reportFile: string;
@@ -63,6 +64,7 @@ type CaptureTraceSpec = {
     kind: "local_product_module_absent";
     baseSha: string;
     testCommitSha: string;
+    redExecutionCommitSha: string;
     testPatchSha256: string;
     testPatchFile: string;
     reportFile: string;
@@ -91,6 +93,7 @@ const PLAN1_TEST_SHA = "bded31a8c8cfee0dda7cf8a831ca7a62567e139f";
 const PLAN2_TEST_SHA = "01a29fefb51c245c3fe8f97f0da53929047740c7";
 const PLAN3_TEST_SHA = "e37b37edf44d892eda721ab1cbdd362385f446c4";
 const PLAN5_TEST_SHA = "a2efb1cf6a840ef3c0dcda0fb6ae980e2c1eed24";
+const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
 const CANONICAL_IDENTITY_SHA = "db5d49a944c0de489f13567d87400cb32c4eedb0";
 const OWNER_COMMITS = Object.freeze({
   1: "31f5c2dd3619bdaf16ecea4ac127d5232b8c1019",
@@ -157,9 +160,9 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
     throw new Error(`traces[${index}].red.kind is invalid`);
   }
   expectExactKeys(red, redKind === "behavioral_assertion" ? [
-    "kind", "baseSha", "testCommitSha", "testPatchSha256", "testPatchFile", "reportFile"
+    "kind", "baseSha", "testCommitSha", "redExecutionCommitSha", "testPatchSha256", "testPatchFile", "reportFile"
   ] : [
-    "kind", "baseSha", "testCommitSha", "testPatchSha256", "testPatchFile", "reportFile",
+    "kind", "baseSha", "testCommitSha", "redExecutionCommitSha", "testPatchSha256", "testPatchFile", "reportFile",
     "missingProductModulePath"
   ], `traces[${index}].red`);
   const green = expectRecord(trace.green, `traces[${index}].green`);
@@ -170,9 +173,14 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
   if (typeof trace.primary !== "boolean") throw new Error(`traces[${index}].primary must be boolean`);
   const acceptanceId = expectString(trace.acceptanceId, `traces[${index}].acceptanceId`);
   const testCommitSha = expectString(red.testCommitSha, `traces[${index}].red.testCommitSha`);
+  const redExecutionCommitSha = expectString(
+    red.redExecutionCommitSha,
+    `traces[${index}].red.redExecutionCommitSha`
+  );
   if (redKind === "local_product_module_absent"
       && (!REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)
-        || testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA)) {
+        || testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA
+        || redExecutionCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA)) {
     throw new Error(`traces[${index}] local product module RED is outside the approved Plan 4 set`);
   }
   return {
@@ -191,6 +199,7 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
       kind: "behavioral_assertion",
       baseSha: expectString(red.baseSha, `traces[${index}].red.baseSha`),
       testCommitSha,
+      redExecutionCommitSha,
       testPatchSha256: expectString(red.testPatchSha256, `traces[${index}].red.testPatchSha256`),
       testPatchFile: expectRelativeArtifactPath(red.testPatchFile, `traces[${index}].red.testPatchFile`),
       reportFile: expectRelativeArtifactPath(red.reportFile, `traces[${index}].red.reportFile`)
@@ -198,6 +207,7 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
       kind: "local_product_module_absent",
       baseSha: expectString(red.baseSha, `traces[${index}].red.baseSha`),
       testCommitSha,
+      redExecutionCommitSha,
       testPatchSha256: expectString(red.testPatchSha256, `traces[${index}].red.testPatchSha256`),
       testPatchFile: expectRelativeArtifactPath(red.testPatchFile, `traces[${index}].red.testPatchFile`),
       reportFile: expectRelativeArtifactPath(red.reportFile, `traces[${index}].red.reportFile`),
@@ -346,8 +356,15 @@ async function ensureTraceDirectory(root: string, relativePath: string): Promise
 type RedGroup = {
   id: string;
   commitSha: string;
+  testCommitSha?: string;
   testFiles: string[];
-  applyPatch?: { baseSha: string; headSha: string; testFile: string };
+  testPatch?: {
+    baseSha: string;
+    headSha: string;
+    testFile: string;
+    recordedBaseSha: string;
+    applyToSnapshot: boolean;
+  };
 };
 
 const RED_GROUPS: readonly RedGroup[] = Object.freeze([
@@ -381,6 +398,19 @@ const RED_GROUPS: readonly RedGroup[] = Object.freeze([
     ]
   },
   {
+    id: "plan4-alert-behavioral",
+    commitSha: PLAN4_BEHAVIORAL_RED_SHA,
+    testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA,
+    testFiles: ["tests/alerts/unifiedTelegramAlerts.acceptance.test.ts"],
+    testPatch: {
+      baseSha: "d18067f6c49fd632bafa47a90f69f1e7bf8b1802",
+      headSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA,
+      testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts",
+      recordedBaseSha: "d18067f6c49fd632bafa47a90f69f1e7bf8b1802",
+      applyToSnapshot: false
+    }
+  },
+  {
     id: "plan5",
     commitSha: PLAN5_TEST_SHA,
     testFiles: ["tests/release/remediationReleaseManifest.acceptance.test.ts"]
@@ -389,20 +419,24 @@ const RED_GROUPS: readonly RedGroup[] = Object.freeze([
     id: "plan1-renamed",
     commitSha: PLAN1_TEST_SHA,
     testFiles: ["tests/forensics/recentFlowProvenanceSelection.test.ts"],
-    applyPatch: {
+    testPatch: {
       baseSha: `${CANONICAL_IDENTITY_SHA}^`,
       headSha: CANONICAL_IDENTITY_SHA,
-      testFile: "tests/forensics/recentFlowProvenanceSelection.test.ts"
+      testFile: "tests/forensics/recentFlowProvenanceSelection.test.ts",
+      recordedBaseSha: PLAN1_TEST_SHA,
+      applyToSnapshot: true
     }
   },
   {
     id: "plan2-llm-dampening",
     commitSha: PLAN2_TEST_SHA,
     testFiles: ["tests/check/contractDecisionV2.acceptance.test.ts"],
-    applyPatch: {
+    testPatch: {
       baseSha: `${CANONICAL_IDENTITY_SHA}^`,
       headSha: CANONICAL_IDENTITY_SHA,
-      testFile: "tests/check/contractDecisionV2.acceptance.test.ts"
+      testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
+      recordedBaseSha: PLAN2_TEST_SHA,
+      applyToSnapshot: true
     }
   }
 ]);
@@ -427,11 +461,11 @@ async function createRedSnapshot(group: RedGroup): Promise<{ root: string; clean
     });
     await execFileAsync("tar", ["-xf", archivePath, "-C", temporary], { windowsHide: true });
     await symlink(join(repositoryRoot, "node_modules"), join(temporary, "node_modules"), "junction");
-    if (group.applyPatch) {
+    if (group.testPatch?.applyToSnapshot) {
       const patchPath = join(temporary, ".plan5-red.patch");
       await writeFile(
         patchPath,
-        await gitPatch(group.applyPatch.baseSha, group.applyPatch.headSha, group.applyPatch.testFile),
+        await gitPatch(group.testPatch.baseSha, group.testPatch.headSha, group.testPatch.testFile),
         { flag: "wx" }
       );
       await execFileAsync("git", ["apply", "--check", "--whitespace=nowarn", patchPath], {
@@ -519,6 +553,7 @@ function redGroupForTrace(testFile: string, acceptanceId: string, secondary = fa
   if (secondary) return "plan2-llm-dampening";
   if (acceptanceId === "AC-10" || acceptanceId === "AC-11") return "plan1-renamed";
   if (acceptanceId === "AC-41") return "plan5";
+  if (["AC-20", "AC-21", "AC-24"].includes(acceptanceId)) return "plan4-alert-behavioral";
   if (testFile.startsWith("tests/runtime/")) return "plan3";
   if (testFile.startsWith("tests/telegram/") || testFile.startsWith("tests/alerts/")
       || testFile === "tests/storage/unifiedTelegramCoverage.postgres.test.ts") return "plan4";
@@ -725,12 +760,20 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
     );
     requireExactExecution(greenExecutions, input.testFile, input.fullName, "passed");
     const standardBase = await gitOutput(["rev-parse", `${redGroup.commitSha}^`]);
-    const patchBinding = redGroup.applyPatch ?? {
+    const patchBinding = redGroup.testPatch ?? {
       baseSha: standardBase,
       headSha: redGroup.commitSha,
-      testFile: input.testFile
+      testFile: input.testFile,
+      recordedBaseSha: standardBase,
+      applyToSnapshot: false
     };
-    const redBaseSha = redGroup.applyPatch ? redGroup.commitSha : standardBase;
+    const redBaseSha = patchBinding.recordedBaseSha;
+    const testCommitSha = redGroup.testCommitSha ?? redGroup.commitSha;
+    if (!await isAncestor(testCommitSha, redGroup.commitSha)
+        || !await isAncestor(redGroup.commitSha, OWNER_COMMITS[input.ownerPlan])
+        || !await isAncestor(OWNER_COMMITS[input.ownerPlan], candidateSha)) {
+      throw new Error(`${input.acceptanceId} RED test/execution/owner/candidate lineage is invalid`);
+    }
     const patch = await writeTracePatch(root, patchCache, {
       ...patchBinding,
       id: `${input.acceptanceId.toLowerCase()}-${input.primary ? "primary" : "secondary"}`
@@ -757,7 +800,8 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
       red = {
         kind: "behavioral_assertion",
         baseSha: redBaseSha,
-        testCommitSha: redGroup.commitSha,
+        testCommitSha,
+        redExecutionCommitSha: redGroup.commitSha,
         testPatchSha256: sha256(patch.bytes),
         testPatchFile: patch.relativePath,
         reportFile: redReport.reportRelativePath
@@ -779,24 +823,27 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
         testPatchSha256: sha256(patch.bytes)
       });
       await assertLocalProductModuleLineage({
-        testCommitSha: redGroup.commitSha,
+        testCommitSha,
+        redExecutionCommitSha: redGroup.commitSha,
         ownerCommitSha: OWNER_COMMITS[input.ownerPlan],
         candidateSha,
         missingProductModulePath: evidence.missingProductModulePath
       });
-      const exactTestPatch = await gitPatch(redBaseSha, redGroup.commitSha, input.testFile);
-      if (!exactTestPatch.equals(patch.bytes)) {
-        throw new Error(`${input.acceptanceId} local product module RED patch is not the exact frozen test patch`);
-      }
       red = {
         kind: "local_product_module_absent",
         baseSha: redBaseSha,
-        testCommitSha: redGroup.commitSha,
+        testCommitSha,
         testPatchSha256: sha256(patch.bytes),
         testPatchFile: patch.relativePath,
         reportFile: redReport.reportRelativePath,
         missingProductModulePath: evidence.missingProductModulePath
       };
+    }
+    if (redBaseSha !== testCommitSha) {
+      const exactTestPatch = await gitPatch(redBaseSha, testCommitSha, input.testFile);
+      if (!exactTestPatch.equals(patch.bytes)) {
+        throw new Error(`${input.acceptanceId} RED patch is not the exact frozen test patch`);
+      }
     }
     traces.push({
       acceptanceId: input.acceptanceId,
@@ -890,16 +937,21 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
     await Promise.all([
       assertCommit(item.ownerCommitSha),
       assertCommit(item.red.baseSha),
-      assertCommit(item.red.testCommitSha)
+      assertCommit(item.red.testCommitSha),
+      assertCommit(item.red.redExecutionCommitSha)
     ]);
     if (!await isAncestor(item.ownerCommitSha, spec.candidateSha)) {
       throw new Error(`${item.acceptanceId} owner commit is not an ancestor of candidate`);
     }
     verifiedAncestry.add(`${item.ownerCommitSha}\u0000${spec.candidateSha}`);
-    if (!await isAncestor(item.red.testCommitSha, item.ownerCommitSha)) {
-      throw new Error(`${item.acceptanceId} test commit is not an ancestor of owner commit`);
+    if (!await isAncestor(item.red.testCommitSha, item.red.redExecutionCommitSha)) {
+      throw new Error(`${item.acceptanceId} test commit is not an ancestor of RED execution commit`);
     }
-    verifiedAncestry.add(`${item.red.testCommitSha}\u0000${item.ownerCommitSha}`);
+    verifiedAncestry.add(`${item.red.testCommitSha}\u0000${item.red.redExecutionCommitSha}`);
+    if (!await isAncestor(item.red.redExecutionCommitSha, item.ownerCommitSha)) {
+      throw new Error(`${item.acceptanceId} RED execution commit is not an ancestor of owner commit`);
+    }
+    verifiedAncestry.add(`${item.red.redExecutionCommitSha}\u0000${item.ownerCommitSha}`);
     if (!await isAncestor(item.red.baseSha, item.ownerCommitSha)) {
       throw new Error(`${item.acceptanceId} RED base is not an ancestor of owner commit`);
     }
@@ -948,12 +1000,14 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
       verifiedPathStates.set(`${item.red.testCommitSha}\u0000${item.red.missingProductModulePath}`, false);
       verifiedPathStates.set(`${item.ownerCommitSha}\u0000${item.red.missingProductModulePath}`, true);
       verifiedPathStates.set(`${spec.candidateSha}\u0000${item.red.missingProductModulePath}`, true);
-      const exactTestPatch = await gitPatch(item.red.baseSha, item.red.testCommitSha, item.testFile);
-      if (!exactTestPatch.equals(patchBytes)) {
-        throw new Error(`${item.acceptanceId} local product module RED patch is not the exact frozen test patch`);
-      }
     }
     await assertPatchAppliesToBase(item.red.baseSha, patchBytes);
+    if (item.red.baseSha !== item.red.testCommitSha) {
+      const exactTestPatch = await gitPatch(item.red.baseSha, item.red.testCommitSha, item.testFile);
+      if (!exactTestPatch.equals(patchBytes)) {
+        throw new Error(`${item.acceptanceId} RED patch is not the exact frozen test patch`);
+      }
+    }
     requireExactExecution(greenReport.executions, item.testFile, item.fullName, "passed");
     traces.push({
       acceptanceId: item.acceptanceId,
@@ -967,6 +1021,7 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
         kind: "behavioral_assertion",
         baseSha: item.red.baseSha,
         testCommitSha: item.red.testCommitSha,
+        redExecutionCommitSha: item.red.redExecutionCommitSha,
         testPatchSha256: sha256(patchBytes),
         vitestReportSha256: sha256(redReport.bytes),
         expectedFailureFingerprint: item.expectedFailureFingerprint,
@@ -975,6 +1030,7 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
         kind: "local_product_module_absent",
         baseSha: item.red.baseSha,
         testCommitSha: item.red.testCommitSha,
+        redExecutionCommitSha: item.red.redExecutionCommitSha,
         testPatchSha256: sha256(patchBytes),
         vitestReportSha256: sha256(redReport.bytes),
         expectedFailureFingerprint: item.expectedFailureFingerprint,
