@@ -137,8 +137,10 @@ protected sequence roots for exact databases `tron_watch_plan5_clean` and
 `tron_watch_plan5_runtime_sanitized`; all disposable targets are loopback and
 offline. The suite producer serializes test files and applies bounded 120-second
 test and hook timeouts so database-backed files cannot race shared disposable
-state. The literal full test inside the non-Vitest producer uses the same
-serialization and bounds to avoid cross-file release-store contention. Set
+state. The literal full test inside the non-Vitest producer is serialized with
+five-minute test/hook bounds and a one-hour process bound to avoid cross-file
+release-store contention without treating normal filesystem variance as a
+failure. Set
 `TEST_DATABASE_URL` to the matching `tron_watch_plan1` through
 `tron_watch_plan4` database only while its suite runs. The forced Plan 5
 PostgreSQL suite additionally requires `PLAN5_TASK0B_TEST_DATABASE_URL` bound

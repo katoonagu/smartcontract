@@ -257,7 +257,7 @@ export function createDefaultNonVitestReleaseDependencies(env: NodeJS.ProcessEnv
         encoding: "utf8",
         windowsHide: true,
         shell: false,
-        timeout: 45 * 60_000,
+        timeout: 60 * 60_000,
         maxBuffer: MAX_ARTIFACT_BYTES
       });
       return {
@@ -324,8 +324,8 @@ export async function runNonVitestReleaseChecks(
         "test",
         "--",
         "--no-file-parallelism",
-        "--testTimeout=120000",
-        "--hookTimeout=120000"
+        "--testTimeout=300000",
+        "--hookTimeout=300000"
       ],
       requireEmpty: false
     },

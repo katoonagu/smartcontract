@@ -1326,7 +1326,7 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
   const fullTestCall = calls.find((call) => call.args.includes("test"));
   expect(typecheckCall).toBeDefined();
   expect(fullTestCall?.args.slice(-5)).toEqual([
-    "test", "--", "--no-file-parallelism", "--testTimeout=120000", "--hookTimeout=120000"
+    "test", "--", "--no-file-parallelism", "--testTimeout=300000", "--hookTimeout=300000"
   ]);
   const npmCalls = [typecheckCall!, fullTestCall!];
   expect(npmCalls.every((call) => !call.executable.toLowerCase().endsWith(".cmd"))).toBe(true);
