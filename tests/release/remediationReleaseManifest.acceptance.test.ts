@@ -1423,6 +1423,7 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
     "run", "--configLoader", "bundle", "--no-file-parallelism",
     "--testTimeout=300000", "--hookTimeout=300000"
   ]);
+  expect(calls.indexOf(typecheckCall!)).toBeLessThan(calls.indexOf(fullTestCall!));
   expect(calls.some((call) => call.args.includes("test"))).toBe(false);
   const npmCalls = [typecheckCall!];
   expect(npmCalls.every((call) => !call.executable.toLowerCase().endsWith(".cmd"))).toBe(true);
@@ -1440,6 +1441,7 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
     args: ["merge-base", "--is-ancestor", PLAN_BASE_SHA, CANDIDATE_SHA]
   });
   expect(valid.checks).toHaveLength(5);
+  expect(valid.redactedTemplateSha256).toBe(COMMAND_TEMPLATE_SHA256.full_regression);
   expect(() => runner.validateNonVitestReleaseEvidence(valid, {
     candidateSha: CANDIDATE_SHA,
     planBaseSha: PLAN_BASE_SHA

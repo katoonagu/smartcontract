@@ -137,7 +137,7 @@ rejected if the gate, command ID, or template hash differs.
 | `G04_RUNTIME` | `plan3_focused` | `release:suite plan3 <artifact-root>` |
 | Telegram fixture support | `plan4_focused` | `release:suite plan4 <artifact-root>` |
 | `G05_TELEGRAM` | `manual_telegram_acceptance` | `release:telegram:manual <artifact-root>` |
-| `G06_FULL` | `full_regression` | `node <repo>/node_modules/vitest/vitest.mjs run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000 && npm run typecheck && git diff --check && release:scope-audit && release:postgres-cleanup` |
+| `G06_FULL` | `full_regression` | `npm run typecheck && node <repo>/node_modules/vitest/vitest.mjs run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000 && git diff --check && release:scope-audit && release:postgres-cleanup` |
 | clean schema support | `schema_clean_rehearsal` | `release:schema clean <database-fingerprint>` |
 | `G07_SCHEMA_OFFLINE` | `schema_production_clone_rehearsal` | `release:schema production_clone <database-fingerprint>` |
 | `G08_VERSION_SANITIZED` | `runtime_sanitized_rehearsal` | `release:runtime runtime_sanitized recording_disabled` |
