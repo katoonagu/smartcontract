@@ -356,8 +356,8 @@ export async function runBoundedReleaseProcess(
 ): Promise<ReleaseProcessResult> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("release check timeout is invalid");
   return await new Promise<ReleaseProcessResult>((resolveDone) => {
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let outputBytes = 0;
     let terminalError: Error | undefined;
     let closed = false;
@@ -378,7 +378,13 @@ export async function runBoundedReleaseProcess(
       if (settled || !closed || (terminating && !terminationComplete)) return;
       settled = true;
       clearTimeout(timeout);
-      resolveDone({ status, stdout, stderr, signal, error: terminalError });
+      resolveDone({
+        status,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        signal,
+        error: terminalError
+      });
     };
     const terminate = async (error: Error) => {
       if (terminating || closed) return;
@@ -395,14 +401,14 @@ export async function runBoundedReleaseProcess(
     };
     const append = (target: "stdout" | "stderr", chunk: Buffer | string) => {
       if (terminating) return;
-      const text = chunk.toString();
-      outputBytes += Buffer.byteLength(text);
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      outputBytes += bytes.length;
       if (outputBytes > MAX_ARTIFACT_BYTES) {
         void terminate(new Error("release check output exceeded limit"));
         return;
       }
-      if (target === "stdout") stdout += text;
-      else stderr += text;
+      if (target === "stdout") stdoutChunks.push(bytes);
+      else stderrChunks.push(bytes);
     };
     child.stdout?.on("data", (chunk: Buffer | string) => append("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer | string) => append("stderr", chunk));

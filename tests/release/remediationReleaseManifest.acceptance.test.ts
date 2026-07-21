@@ -1542,6 +1542,19 @@ it("[AC-41][NON-VITEST-TIMEOUT] terminates the full descendant process tree", { 
   }
 });
 
+it("[AC-41][NON-VITEST-UTF8] preserves split multibyte output bytes for evidence hashing", async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease");
+  const result = await runner.runBoundedReleaseProcess(
+    process.execPath,
+    ["-e", "process.stdout.write(Buffer.from([0xe2])); setTimeout(() => process.stdout.write(Buffer.from([0x82, 0xac])), 100)"],
+    process.env,
+    5_000
+  );
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe("€");
+});
+
 it("[AC-41][SUITE-RUNNER] rejects missing skipped filtered failed or nonzero group execution", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
   const suiteArgs = runner.buildReleaseSuiteGroupInvocation(
