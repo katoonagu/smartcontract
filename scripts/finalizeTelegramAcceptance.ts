@@ -19,8 +19,10 @@ import {
 } from "../src/forensics/telegramDelivery";
 import {
   assertNoSecretLikeArtifactValues,
-  validateTask0BReleaseFreezeEvidence
+  validateTask0BReleaseFreezeEvidence,
+  validateTask0BReleaseRevalidationEvidence
 } from "../src/release/remediationReleaseManifest";
+import { readCurrentTask0BReleaseRevalidation } from "./captureTask0BPreflight";
 import {
   claimNextForensicCheckJob,
   completeForensicCheckJob,
@@ -925,13 +927,42 @@ export async function finalizeManualTelegramAcceptance(
   return parsed;
 }
 
+type ManualTask0BVerificationInput = {
+  task0bEvidence: unknown;
+  candidateStartEvidence: unknown;
+  evaluatedAt: string;
+  databaseUrl: string;
+  currentTask0B?: { evidence: unknown; freeze: unknown };
+};
+
+function validateManualTask0B(
+  input: ManualTask0BVerificationInput,
+  candidateSha: string,
+  evaluatedAt: string
+) {
+  const task0b = validateTask0BReleaseFreezeEvidence(
+    input.task0bEvidence,
+    candidateSha,
+    input.currentTask0B ? undefined : evaluatedAt
+  );
+  if (input.currentTask0B) {
+    validateTask0BReleaseRevalidationEvidence(
+      input.currentTask0B.evidence,
+      task0b,
+      input.currentTask0B.freeze,
+      evaluatedAt
+    );
+  }
+  return task0b;
+}
+
 export async function seedManualTelegramCandidateJobs(
   db: DbLike,
   draft: ManualTelegramCandidateDraftV1,
-  input: { task0bEvidence: unknown; candidateStartEvidence: unknown; evaluatedAt: string; databaseUrl: string }
+  input: ManualTask0BVerificationInput
 ): Promise<ManualTelegramCandidateRunV1> {
   const evaluatedAt = iso(input.evaluatedAt, "manual evaluatedAt");
-  const task0b = validateTask0BReleaseFreezeEvidence(input.task0bEvidence, draft.candidateSha, evaluatedAt);
+  const task0b = validateManualTask0B(input, draft.candidateSha, evaluatedAt);
   validateManualCandidateStartEvidence(input.candidateStartEvidence, draft, task0b);
   await verifyManualDatabaseIdentity(db, input.databaseUrl, task0b);
   const migrationBytes = await readFile(new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url));
@@ -1062,10 +1093,10 @@ async function verifyManualDatabaseIdentity(db: DbLike, databaseUrlValue: string
 export async function verifyManualTelegramCandidateJobs(
   db: DbLike,
   run: ManualTelegramCandidateRunV1,
-  input: { task0bEvidence: unknown; candidateStartEvidence: unknown; evaluatedAt: string; databaseUrl: string }
+  input: ManualTask0BVerificationInput
 ): Promise<void> {
   const evaluatedAt = iso(input.evaluatedAt, "manual verification evaluatedAt");
-  const task0b = validateTask0BReleaseFreezeEvidence(input.task0bEvidence, run.candidateSha, evaluatedAt);
+  const task0b = validateManualTask0B(input, run.candidateSha, evaluatedAt);
   validateManualCandidateStartEvidence(input.candidateStartEvidence, run, task0b);
   await verifyManualDatabaseIdentity(db, input.databaseUrl, task0b);
   const migrationBytes = await readFile(new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url));
@@ -1255,7 +1286,7 @@ async function manualCandidateIdentity(root: string): Promise<{
 async function recoverManualTelegramCandidateRun(
   db: DbLike,
   draft: ManualTelegramCandidateDraftV1,
-  input: { task0bEvidence: unknown; candidateStartEvidence: unknown; evaluatedAt: string; databaseUrl: string }
+  input: ManualTask0BVerificationInput
 ): Promise<ManualTelegramCandidateRunV1 | null> {
   const existing = await db.query(`select id, created_at, progress_json
     from forensic_check_jobs where requested_by = $1 order by id`, [REQUESTED_BY]);
@@ -1292,11 +1323,16 @@ async function prepareManualTelegramCommand(
   );
   const draft = await buildManualTelegramCandidateDraft(identity);
   const evaluatedAt = new Date().toISOString();
+  const currentTask0B = await readCurrentTask0BReleaseRevalidation(root, evaluatedAt);
+  if (canonicalizeJson(task0bEvidence) !== canonicalizeJson(currentTask0B.frozen)) {
+    throw new Error("manual Task0B artifact differs from current immutable freeze binding");
+  }
   const verification = {
     task0bEvidence,
     candidateStartEvidence: identity.candidateStartEvidence,
     evaluatedAt,
-    databaseUrl
+    databaseUrl,
+    currentTask0B
   };
   const db = new Client({ connectionString: databaseUrl });
   await db.connect();
@@ -1333,6 +1369,10 @@ async function sendManualTelegramCommand(
 ): Promise<void> {
   const root = await resolveExternalArtifactRoot(artifactRoot);
   const run = await loadManualTelegramRun(root);
+  const currentTask0B = await readCurrentTask0BReleaseRevalidation(root, new Date().toISOString());
+  if (currentTask0B.frozen.candidateSha !== run.candidateSha) {
+    throw new Error("manual send candidate differs from current immutable freeze binding");
+  }
   await sendManualTelegramCandidateRunOnce(run, {
     artifactRoot: root,
     allowSend: env.PLAN4_TELEGRAM_ALLOW_SEND,
@@ -1363,11 +1403,17 @@ async function finalizeManualTelegramAtRoot(
   const db = new Client({ connectionString: databaseUrl });
   await db.connect();
   try {
+    const evaluatedAt = new Date().toISOString();
+    const currentTask0B = await readCurrentTask0BReleaseRevalidation(root, evaluatedAt);
+    if (canonicalizeJson(task0bEvidence) !== canonicalizeJson(currentTask0B.frozen)) {
+      throw new Error("manual Task0B artifact differs from current immutable freeze binding");
+    }
     await verifyManualTelegramCandidateJobs(db, run, {
       task0bEvidence,
       candidateStartEvidence,
-      evaluatedAt: new Date().toISOString(),
-      databaseUrl
+      evaluatedAt,
+      databaseUrl,
+      currentTask0B
     });
   } finally {
     await db.end().catch(() => undefined);

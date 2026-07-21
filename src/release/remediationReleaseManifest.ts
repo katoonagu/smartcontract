@@ -385,6 +385,21 @@ export type Task0BReleaseFreezeEvidenceV1 = {
   };
 };
 
+type Task0BCurrentOperationalObservationV1 = Omit<Task0BReleaseFreezeEvidenceV1,
+  "version" | "candidateSha" | "observedAt" | "freezeCutoff" | "expiresAt" | "source" | "operatorConfig">;
+
+export type Task0BReleaseRevalidationEvidenceV1 = {
+  version: "task0b-release-revalidation-v1";
+  candidateSha: string;
+  observedAt: string;
+  expiresAt: string;
+  source: "task0b_direct_post_freeze_revalidation";
+  task0BPreflightEvidenceSha256: string;
+  releaseGenerationId: string;
+  releaseFreezeIdentitySha256: string;
+  current: Task0BCurrentOperationalObservationV1;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -461,6 +476,10 @@ export const TASK0B_READ_ONLY_OPERATION_IDS = Object.freeze([
   "candidate_state_read_after",
   "previous_runtime_read_after"
 ] as const);
+
+export const TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS = Object.freeze(
+  TASK0B_READ_ONLY_OPERATION_IDS.filter((operationId) => operationId !== "operator_config_read")
+);
 
 function numberedIds(prefix: "REQ" | "AC", count: number): string[] {
   return Array.from({ length: count }, (_, index) => `${prefix}-${String(index + 1).padStart(2, "0")}`);
@@ -560,6 +579,23 @@ function expectRuntimeLabel(value: unknown, sha: string, label: string): string 
     throw new Error(`${label} does not bind its runtime SHA`);
   }
   return runtimeLabel;
+}
+
+function canonicalReleaseJsonForBinding(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalReleaseJsonForBinding).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => (
+    `${JSON.stringify(key)}:${canonicalReleaseJsonForBinding(object[key])}`
+  )).join(",")}}`;
+}
+
+function canonicalBindingBytes(value: unknown): Buffer {
+  return Buffer.from(`${canonicalReleaseJsonForBinding(value)}\n`, "utf8");
+}
+
+function bindingSha256(value: unknown): string {
+  return createHash("sha256").update(canonicalBindingBytes(value)).digest("hex");
 }
 
 export function validateTask0BaselineEvidence(
@@ -999,6 +1035,118 @@ export function validateTask0BReleaseFreezeEvidence(
     throw new Error("Task0B preflight caused or reported a forbidden side effect");
   }
   return evidence as Task0BReleaseFreezeEvidenceV1;
+}
+
+export function validateTask0BReleaseRevalidationEvidence(
+  value: unknown,
+  frozenValue: unknown,
+  freezeValue: unknown,
+  evaluatedAt = new Date().toISOString()
+): Task0BReleaseRevalidationEvidenceV1 {
+  assertNoSecretLikeArtifactValues(value);
+  const frozen = validateTask0BReleaseFreezeEvidence(frozenValue);
+  const freeze = expectRecord(freezeValue, "Task0B immutable release freeze");
+  expectExactKeys(freeze, [
+    "version", "releaseGenerationId", "candidateSha", "planBaseSha",
+    "artifactRootFingerprintSha256", "artifactRootTrustBoundaryEvidenceSha256",
+    "productionDatabaseIdentityFingerprintSha256", "postgresToolIdentitySha256",
+    "previousRuntimeDiscoverySha256", "rollbackWorktreeIdentitySha256", "createdAt"
+  ], "Task0B immutable release freeze");
+  const preflightSha256 = bindingSha256(frozen);
+  const generationDigest = createHash("sha256").update(canonicalReleaseJsonForBinding([
+    "release-freeze-generation-v2",
+    frozen.candidateSha,
+    frozen.artifactRoot.rootFingerprintSha256,
+    preflightSha256
+  ]), "utf8").digest("hex");
+  if (freeze.version !== "release-freeze-identity-v2"
+      || freeze.releaseGenerationId !== `release-generation-${generationDigest.slice(0, 32)}`
+      || freeze.candidateSha !== frozen.candidateSha || freeze.planBaseSha !== PLAN5_APPROVED_BASE_SHA
+      || freeze.artifactRootFingerprintSha256 !== frozen.artifactRoot.rootFingerprintSha256
+      || freeze.artifactRootTrustBoundaryEvidenceSha256 !== bindingSha256(frozen.artifactRoot)
+      || freeze.productionDatabaseIdentityFingerprintSha256
+        !== frozen.productionDatabase.approvedIdentityFingerprintSha256
+      || freeze.postgresToolIdentitySha256 !== bindingSha256(frozen.postgresTools)
+      || freeze.previousRuntimeDiscoverySha256 !== bindingSha256(frozen.previousRuntimeIdentity)
+      || freeze.rollbackWorktreeIdentitySha256 !== bindingSha256(frozen.rollbackWorktree)
+      || freeze.createdAt !== frozen.freezeCutoff) {
+    throw new Error("Task0B immutable release freeze binding is invalid");
+  }
+  expectSha256(freeze.artifactRootFingerprintSha256, "Task0B immutable root fingerprint");
+  const releaseFreezeIdentitySha256 = bindingSha256(freeze);
+
+  const evidence = expectRecord(value, "Task0B release revalidation evidence");
+  expectExactKeys(evidence, [
+    "version", "candidateSha", "observedAt", "expiresAt", "source",
+    "task0BPreflightEvidenceSha256", "releaseGenerationId", "releaseFreezeIdentitySha256", "current"
+  ], "Task0B release revalidation evidence");
+  const observedAt = expectIsoTime(evidence.observedAt, "Task0B revalidation observedAt");
+  const expiresAt = expectIsoTime(evidence.expiresAt, "Task0B revalidation expiresAt");
+  const evaluated = expectIsoTime(evaluatedAt, "Task0B revalidation evaluatedAt");
+  if (Date.parse(expiresAt) - Date.parse(observedAt) !== 15 * 60_000
+      || Date.parse(evaluated) < Date.parse(observedAt) || Date.parse(evaluated) > Date.parse(expiresAt)) {
+    throw new Error("Task0B release revalidation is stale");
+  }
+  if (evidence.version !== "task0b-release-revalidation-v1"
+      || evidence.source !== "task0b_direct_post_freeze_revalidation"
+      || evidence.candidateSha !== frozen.candidateSha
+      || evidence.task0BPreflightEvidenceSha256 !== preflightSha256
+      || evidence.releaseGenerationId !== freeze.releaseGenerationId
+      || evidence.releaseFreezeIdentitySha256 !== releaseFreezeIdentitySha256) {
+    throw new Error("Task0B release revalidation binding is invalid");
+  }
+  const current = expectRecord(evidence.current, "Task0B current operational observation");
+  const currentKeys = [
+    "previousRuntimeSha", "previousRuntimeLabel", "candidateWorktree", "previousRuntimeSource",
+    "previousRuntimeVerified", "previousRuntimeIdentity", "databaseRole", "databaseName",
+    "databaseFingerprintSha256", "operationalConfigPath", "operationalConfigSha256",
+    "candidateStartCommandId", "candidateStartTemplateSha256", "candidateStopCommandId",
+    "candidateStopTemplateSha256", "previousStartCommandId", "previousStartTemplateSha256",
+    "previousStopCommandId", "previousStopTemplateSha256", "runtimeManager", "productionDatabase",
+    "rollbackWorktree", "postgresTools", "artifactRoot", "candidatePort", "observedEffects"
+  ] as const;
+  expectExactKeys(current, currentKeys, "Task0B current operational observation");
+  validateTask0BReleaseFreezeEvidence({
+    version: frozen.version,
+    candidateSha: frozen.candidateSha,
+    observedAt: frozen.observedAt,
+    freezeCutoff: frozen.freezeCutoff,
+    expiresAt: frozen.expiresAt,
+    source: frozen.source,
+    operatorConfig: frozen.operatorConfig,
+    ...current,
+    observedEffects: frozen.observedEffects
+  });
+
+  const expectedCurrent = Object.fromEntries(currentKeys.map((key) => [key, frozen[key]])) as JsonRecord;
+  const currentRoot = expectRecord(current.artifactRoot, "Task0B current artifact root");
+  const frozenRoot = frozen.artifactRoot;
+  const normalizedCurrent = {
+    ...current,
+    artifactRoot: {
+      ...currentRoot,
+      exclusiveWriteFingerprintSha256: frozenRoot.exclusiveWriteFingerprintSha256
+    },
+    observedEffects: frozen.observedEffects
+  };
+  if (canonicalReleaseJsonForBinding(normalizedCurrent)
+      !== canonicalReleaseJsonForBinding(expectedCurrent)) {
+    throw new Error("Task0B release revalidation operational binding changed");
+  }
+  expectSha256(currentRoot.exclusiveWriteFingerprintSha256, "Task0B revalidation exclusive-write fingerprint");
+  const effects = expectRecord(current.observedEffects, "Task0B revalidation observed effects");
+  const operationIds = [...TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS];
+  if (effects.runtimeStopCount !== 0 || effects.runtimeStartCount !== 0
+      || effects.databaseMigrationCount !== 0 || effects.telegramSendCount !== 0
+      || effects.readOnlyOperationCount !== operationIds.length
+      || effects.source !== "instrumented_read_only_operation_ledger"
+      || !Array.isArray(effects.operationIds)
+      || canonicalReleaseJsonForBinding(effects.operationIds) !== canonicalReleaseJsonForBinding(operationIds)
+      || effects.operationSequenceSha256 !== createHash("sha256")
+        .update(JSON.stringify(operationIds), "utf8").digest("hex")) {
+    throw new Error("Task0B release revalidation reported a forbidden side effect");
+  }
+  return evidence as unknown as Task0BReleaseRevalidationEvidenceV1;
 }
 
 export function assertExactIdSet(value: unknown, expected: readonly string[], label: string): string[] {

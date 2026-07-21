@@ -14,6 +14,7 @@ import {
   assertNoSecretLikeArtifactValues,
   validateTask0BaselineEvidence,
   validateTask0BReleaseFreezeEvidence,
+  validateTask0BReleaseRevalidationEvidence,
   type ReleaseArtifactV1,
   type ReleaseGateId,
   type ReleaseGateState,
@@ -84,7 +85,10 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, "..");
 
 export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
+  "docs/knowledge/09-current-decisions.md",
+  "docs/knowledge/12-runbooks.md",
   "docs/superpowers/plans/2026-07-17-remediation-end-to-end-acceptance-and-release.md",
+  "docs/superpowers/verification/plan5-release/README.md",
   "package.json",
   "scripts/captureTask0BPreflight.ts",
   "scripts/createProductionBackupEvidence.ts",
@@ -853,13 +857,26 @@ function requiredStringField(value: unknown, field: string): string {
 export function validateRuntimeArtifactSet(
   candidateSha: string,
   bytes: RuntimeArtifactSetBytes,
-  evaluatedAt: string = new Date().toISOString()
+  evaluatedAt: string = new Date().toISOString(),
+  currentTask0B?: { evidence: unknown; freeze: unknown }
 ): void {
   const runtimeSchema = parseJson(bytes.runtimeSchema);
   const productionCloneSchema = parseJson(bytes.productionCloneSchema);
   const candidateStart = parseJson(bytes.candidateStart);
   const previousStart = parseJson(bytes.previousStart);
-  const task0b = validateTask0BReleaseFreezeEvidence(parseJson(bytes.task0b), candidateSha, evaluatedAt);
+  const task0b = validateTask0BReleaseFreezeEvidence(
+    parseJson(bytes.task0b),
+    candidateSha,
+    currentTask0B ? undefined : evaluatedAt
+  );
+  if (currentTask0B) {
+    validateTask0BReleaseRevalidationEvidence(
+      currentTask0B.evidence,
+      task0b,
+      currentTask0B.freeze,
+      evaluatedAt
+    );
+  }
   validateControlledRuntimeOperationalConfig(bytes.operationalConfig, task0b);
   if (requiredStringField(previousStart, "runtimeSha") !== task0b.previousRuntimeSha
       || requiredStringField(previousStart, "runtimeLabel") !== task0b.previousRuntimeLabel
@@ -991,7 +1008,13 @@ async function verifyConcreteArtifactBindings(
       operationalQueryCaptures: await readSafeArtifactFile(root, "runtime-query-captures.json"),
       operationalConfig: await readSafeArtifactFile(root, "runtime-operational-config.json")
     };
-    validateRuntimeArtifactSet(manifest.candidateSha, runtimeArtifacts);
+    const { readCurrentTask0BReleaseRevalidation } = await import("./captureTask0BPreflight");
+    const evaluatedAt = new Date().toISOString();
+    const currentTask0B = await readCurrentTask0BReleaseRevalidation(root, evaluatedAt);
+    if (!runtimeArtifacts.task0b.equals(currentTask0B.frozenBytes)) {
+      throw new Error("runtime Task0B artifact differs from current immutable freeze binding");
+    }
+    validateRuntimeArtifactSet(manifest.candidateSha, runtimeArtifacts, evaluatedAt, currentTask0B);
     const support: Array<[ReleaseGateId, Buffer[]]> = [
       ["G08_VERSION_SANITIZED", [runtimeArtifacts.runtime, runtimeArtifacts.runtimeSchema, runtimeArtifacts.productionCloneSchema, runtimeArtifacts.candidateStart, runtimeArtifacts.previousStart, runtimeArtifacts.task0b, runtimeArtifacts.operationalObservation, runtimeArtifacts.operationalSubprocessCaptures, runtimeArtifacts.operationalQueryCaptures, runtimeArtifacts.operationalConfig]],
       ["G09_LEGACY_TERMINAL", [runtimeArtifacts.terminal, runtimeArtifacts.task0b]],

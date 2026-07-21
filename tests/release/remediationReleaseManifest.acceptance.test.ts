@@ -1050,6 +1050,82 @@ it("[REQ-38][TASK0B-CAPTURE] produces secret-free direct evidence without runtim
   }
 });
 
+it("[REQ-38][TASK0B-REVALIDATION] accepts a fresh immutable-freeze-bound recheck after the original preflight expires", async () => {
+  const manifest: any = await import("../../src/release/remediationReleaseManifest");
+  const producer: any = await import("../../scripts/captureTask0BPreflight");
+  const store: any = await import("../../src/release/releaseManifestStoreV2");
+  const frozen = buildCompleteTask0BPreflight();
+  const freeze = store.deriveReleaseFreezeIdentityV2(frozen);
+  const sanitized = {
+    databaseRole: frozen.databaseRole,
+    databaseName: frozen.databaseName,
+    databaseFingerprintSha256: frozen.databaseFingerprintSha256,
+    operationalConfigPath: frozen.operationalConfigPath,
+    operationalConfigSha256: frozen.operationalConfigSha256,
+    candidateStartCommandId: frozen.candidateStartCommandId,
+    candidateStartTemplateSha256: frozen.candidateStartTemplateSha256,
+    candidateStopCommandId: frozen.candidateStopCommandId,
+    candidateStopTemplateSha256: frozen.candidateStopTemplateSha256,
+    previousStartCommandId: frozen.previousStartCommandId,
+    previousStartTemplateSha256: frozen.previousStartTemplateSha256,
+    previousStopCommandId: frozen.previousStopCommandId,
+    previousStopTemplateSha256: frozen.previousStopTemplateSha256
+  };
+  const currentRoot = {
+    ...frozen.artifactRoot,
+    exclusiveWriteFingerprintSha256: "9".repeat(64)
+  };
+  const evidence = await producer.captureTask0BReleaseRevalidationEvidence(frozen, freeze, {
+    now: () => new Date("2026-07-18T10:00:00.000Z"),
+    readCandidateState: async () => ({
+      sha: CANDIDATE_SHA,
+      clean: true,
+      worktreePathFingerprintSha256: frozen.candidateWorktree.worktreePathFingerprintSha256,
+      source: "git_direct_read"
+    }),
+    readPreviousRuntime: async () => ({
+      sha: PREVIOUS_RUNTIME_SHA,
+      label: PREVIOUS_RUNTIME_LABEL,
+      source: "runtime_manager_attestation_and_process_direct_read",
+      verified: true,
+      identity: frozen.previousRuntimeIdentity
+    }),
+    readSanitizedRehearsalBinding: async () => sanitized,
+    readRuntimeManager: async () => frozen.runtimeManager,
+    readProductionDatabase: async () => frozen.productionDatabase,
+    readRollbackWorktree: async () => frozen.rollbackWorktree,
+    readPostgresTools: async () => frozen.postgresTools,
+    inspectArtifactRoot: async () => currentRoot,
+    probeCandidatePort: async () => frozen.candidatePort
+  });
+
+  expect(() => manifest.validateTask0BReleaseFreezeEvidence(
+    frozen,
+    CANDIDATE_SHA,
+    evidence.observedAt
+  )).toThrow(/stale/i);
+  expect(() => manifest.validateTask0BReleaseRevalidationEvidence(
+    evidence,
+    frozen,
+    freeze,
+    "2026-07-18T10:10:00.000Z"
+  )).not.toThrow();
+  const mismatchedDatabase = structuredClone(evidence);
+  mismatchedDatabase.current.productionDatabase.clusterFingerprintSha256 = "f".repeat(64);
+  expect(() => manifest.validateTask0BReleaseRevalidationEvidence(
+    mismatchedDatabase,
+    frozen,
+    freeze,
+    "2026-07-18T10:10:00.000Z"
+  )).toThrow(/binding|database|revalidation/i);
+  expect(() => manifest.validateTask0BReleaseRevalidationEvidence(
+    evidence,
+    frozen,
+    freeze,
+    "2026-07-18T10:15:00.001Z"
+  )).toThrow(/stale/i);
+});
+
 dockerIt("[REQ-38][TASK0B-TOOLS] attests pg tools from an existing pinned image without pull or network", async () => {
   const producer: any = await import("../../scripts/captureTask0BPreflight");
   const artifactRoot = await makeProtectedTempDir("task0b-tools-");

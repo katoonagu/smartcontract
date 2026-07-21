@@ -14,7 +14,7 @@ import {
 } from "../src/release/remediationReleaseManifest";
 import {
   assertTerminalLegacyPopulationUnchanged,
-  deriveTerminalLegacyFreezeBinding,
+  deriveTerminalLegacyFreezeBindingFromCurrentRevalidation,
   snapshotTerminalLegacyPopulation,
   type TerminalLegacyFreezeBinding,
   type TerminalLegacyPopulationV1
@@ -727,10 +727,34 @@ export async function runControlledRuntimeRehearsalCli(
     evidenceExpected: RuntimeRehearsalExpected;
   },
   dependencies: ControlledRuntimeRehearsalDependencies,
-  writeArtifact: (filename: string, bytes: Buffer) => Promise<void>
+  writeArtifact: (filename: string, bytes: Buffer) => Promise<void>,
+  startEvidence: {
+    candidateStartEvidenceBytes: Buffer;
+    previousStartEvidenceBytes: Buffer;
+  }
 ): Promise<ControlledRuntimeRehearsalProvenanceV1> {
+  validateRuntimeStartCommandEvidenceBytes(
+    startEvidence.candidateStartEvidenceBytes,
+    input.candidateSha,
+    input.candidateRuntimeLabel,
+    "runtime_sanitized_rehearsal"
+  );
+  validateRuntimeStartCommandEvidenceBytes(
+    startEvidence.previousStartEvidenceBytes,
+    input.previousRuntimeSha,
+    input.previousRuntimeLabel,
+    "rollback_rehearsal"
+  );
+  if (createHash("sha256").update(startEvidence.candidateStartEvidenceBytes).digest("hex")
+        !== input.evidenceExpected.candidateStartEvidenceSha256
+      || createHash("sha256").update(startEvidence.previousStartEvidenceBytes).digest("hex")
+        !== input.evidenceExpected.previousStartEvidenceSha256) {
+    fail("controlled_runtime_start_evidence_binding_invalid");
+  }
   const result = await executeControlledRuntimeRehearsal(input, dependencies);
   const provenanceBytes = Buffer.from(JSON.stringify(result.provenance), "utf8");
+  await writeArtifact("runtime-candidate-start-evidence.json", startEvidence.candidateStartEvidenceBytes);
+  await writeArtifact("runtime-previous-start-evidence.json", startEvidence.previousStartEvidenceBytes);
   await writeArtifact("runtime-subprocess-captures.json", result.subprocessCaptureBytes);
   await writeArtifact("runtime-query-captures.json", result.queryCaptureBytes);
   await writeArtifact("runtime-operational-observation.json", provenanceBytes);
@@ -1492,25 +1516,18 @@ export function buildRuntimeRehearsalExpectedFromArtifactBytes(input: {
     databaseRole: "runtime_sanitized",
     databaseFingerprintSha256: input.sanitizedDatabaseFingerprintSha256
   });
-  const validateStartCapture = (
-    bytes: Buffer,
-    sha: string,
-    label: string | undefined,
-    commandId: "runtime_sanitized_rehearsal" | "rollback_rehearsal"
-  ): void => {
-    if (!label) fail("runtime_start_label_required");
-    const capture = record(JSON.parse(bytes.toString("utf8")) as unknown, "runtime_start_evidence_invalid");
-    assertNoSecretLikeArtifactValues(capture);
-    exactKeys(capture, [
-      "version", "runtimeSha", "runtimeLabel", "commandId", "redactedTemplateSha256", "exitCode"
-    ], "runtime_start_evidence_shape_invalid");
-    if (capture.version !== "runtime-start-command-evidence-v1" || capture.runtimeSha !== sha
-        || capture.runtimeLabel !== label || capture.commandId !== commandId
-        || capture.redactedTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256[commandId]
-        || capture.exitCode !== 0) fail("runtime_start_evidence_mismatch");
-  };
-  validateStartCapture(input.candidateStartEvidenceBytes, input.candidateSha, input.candidateRuntimeLabel, "runtime_sanitized_rehearsal");
-  validateStartCapture(input.previousStartEvidenceBytes, input.previousRuntimeSha, input.previousRuntimeLabel, "rollback_rehearsal");
+  validateRuntimeStartCommandEvidenceBytes(
+    input.candidateStartEvidenceBytes,
+    input.candidateSha,
+    input.candidateRuntimeLabel,
+    "runtime_sanitized_rehearsal"
+  );
+  validateRuntimeStartCommandEvidenceBytes(
+    input.previousStartEvidenceBytes,
+    input.previousRuntimeSha,
+    input.previousRuntimeLabel,
+    "rollback_rehearsal"
+  );
   return {
     candidateSha: input.candidateSha,
     previousRuntimeSha: input.previousRuntimeSha,
@@ -1522,6 +1539,42 @@ export function buildRuntimeRehearsalExpectedFromArtifactBytes(input: {
     candidateRuntimeLabel: input.candidateRuntimeLabel,
     previousRuntimeLabel: input.previousRuntimeLabel
   };
+}
+
+function validateRuntimeStartCommandEvidenceBytes(
+  bytes: Buffer,
+  sha: string,
+  label: string | undefined,
+  commandId: "runtime_sanitized_rehearsal" | "rollback_rehearsal"
+): void {
+  if (!label) fail("runtime_start_label_required");
+  const capture = record(JSON.parse(bytes.toString("utf8")) as unknown, "runtime_start_evidence_invalid");
+  assertNoSecretLikeArtifactValues(capture);
+  exactKeys(capture, [
+    "version", "runtimeSha", "runtimeLabel", "commandId", "redactedTemplateSha256", "exitCode"
+  ], "runtime_start_evidence_shape_invalid");
+  if (capture.version !== "runtime-start-command-evidence-v1" || capture.runtimeSha !== sha
+      || capture.runtimeLabel !== label || capture.commandId !== commandId
+      || capture.redactedTemplateSha256 !== REMEDIATION_COMMAND_TEMPLATE_SHA256[commandId]
+      || capture.exitCode !== 0) fail("runtime_start_evidence_mismatch");
+}
+
+export function buildRuntimeStartCommandEvidenceBytes(
+  runtimeSha: string,
+  runtimeLabel: string,
+  commandId: "runtime_sanitized_rehearsal" | "rollback_rehearsal"
+): Buffer {
+  if (!SHA40.test(runtimeSha) || !labelIncludesSha(runtimeLabel, runtimeSha)) {
+    fail("runtime_start_identity_invalid");
+  }
+  return Buffer.from(JSON.stringify({
+    version: "runtime-start-command-evidence-v1",
+    runtimeSha,
+    runtimeLabel,
+    commandId,
+    redactedTemplateSha256: REMEDIATION_COMMAND_TEMPLATE_SHA256[commandId],
+    exitCode: 0
+  }), "utf8");
 }
 
 function isOutside(parent: string, child: string): boolean {
@@ -1565,13 +1618,13 @@ async function main(): Promise<void> {
   const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   if (!artifactRootMetadata.isDirectory() || artifactRootMetadata.isSymbolicLink()
       || !isOutside(repositoryRoot, artifactRoot)) fail("controlled_runtime_artifact_root_invalid");
-  const task0bPath = resolve(artifactRoot, "task0b-release-freeze.json");
-  const task0bBytes = await readStableOperationalArtifact(task0bPath);
   const evaluatedAt = new Date().toISOString();
+  const { readCurrentTask0BReleaseRevalidation } = await import("./captureTask0BPreflight");
+  const currentTask0B = await readCurrentTask0BReleaseRevalidation(artifactRoot, evaluatedAt);
+  const task0bBytes = currentTask0B.frozenBytes;
   const task0b = validateTask0BReleaseFreezeEvidence(
     JSON.parse(task0bBytes.toString("utf8")) as unknown,
-    candidateSha,
-    evaluatedAt
+    candidateSha
   );
   const operationalConfigBytes = await readStableOperationalArtifact(resolve(artifactRoot, task0b.operationalConfigPath));
   const operationalConfig = validateControlledRuntimeOperationalConfig(operationalConfigBytes, task0b);
@@ -1585,11 +1638,9 @@ async function main(): Promise<void> {
   if (!new Set(["127.0.0.1", "localhost", "::1"]).has(databaseTarget.hostname)
       || decodeURIComponent(databaseTarget.pathname.slice(1)) !== "tron_watch_plan5_runtime_sanitized"
       || databaseTarget.search || databaseTarget.hash) fail("controlled_runtime_database_target_invalid");
-  const [runtimeSchemaBytes, productionCloneSchemaBytes, candidateStartEvidenceBytes, previousStartEvidenceBytes] = await Promise.all([
+  const [runtimeSchemaBytes, productionCloneSchemaBytes] = await Promise.all([
     readStableOperationalArtifact(resolve(artifactRoot, "schema-runtime-sanitized-evidence.json")),
-    readStableOperationalArtifact(resolve(artifactRoot, "schema-production-clone-evidence.json")),
-    readStableOperationalArtifact(resolve(artifactRoot, "runtime-candidate-start-evidence.json")),
-    readStableOperationalArtifact(resolve(artifactRoot, "runtime-previous-start-evidence.json"))
+    readStableOperationalArtifact(resolve(artifactRoot, "schema-production-clone-evidence.json"))
   ]);
   const productionCloneSchema = record(
     JSON.parse(productionCloneSchemaBytes.toString("utf8")) as unknown,
@@ -1599,6 +1650,16 @@ async function main(): Promise<void> {
     fail("controlled_runtime_production_clone_schema_invalid");
   }
   const productionCloneFingerprint = productionCloneSchema.databaseFingerprintSha256;
+  const candidateStartEvidenceBytes = buildRuntimeStartCommandEvidenceBytes(
+    candidateSha,
+    candidateRuntimeLabel,
+    "runtime_sanitized_rehearsal"
+  );
+  const previousStartEvidenceBytes = buildRuntimeStartCommandEvidenceBytes(
+    task0b.previousRuntimeSha,
+    task0b.previousRuntimeLabel,
+    "rollback_rehearsal"
+  );
   const evidenceExpected = buildRuntimeRehearsalExpectedFromArtifactBytes({
     candidateSha,
     previousRuntimeSha: task0b.previousRuntimeSha,
@@ -1617,7 +1678,13 @@ async function main(): Promise<void> {
     candidateRuntimeLabel,
     previousRuntimeLabel: task0b.previousRuntimeLabel,
     databaseUrl,
-    terminalLegacyBinding: deriveTerminalLegacyFreezeBinding(task0bBytes, candidateSha, evaluatedAt)
+    terminalLegacyBinding: deriveTerminalLegacyFreezeBindingFromCurrentRevalidation(
+      task0bBytes,
+      candidateSha,
+      currentTask0B.evidence,
+      currentTask0B.freeze,
+      evaluatedAt
+    )
   });
   const provenance = await runControlledRuntimeRehearsalCli({
     candidateSha,
@@ -1628,6 +1695,9 @@ async function main(): Promise<void> {
     evidenceExpected
   }, dependencies, async (filename, bytes) => {
     await writeFile(resolve(artifactRoot, filename), bytes, { flag: "wx" });
+  }, {
+    candidateStartEvidenceBytes,
+    previousStartEvidenceBytes
   });
   process.stdout.write(`${JSON.stringify({
     status: "captured",

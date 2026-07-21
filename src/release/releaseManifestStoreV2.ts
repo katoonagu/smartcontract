@@ -353,7 +353,7 @@ function currentArtifactRootFingerprintSha256V2(root: string): string {
   return releaseSha256V2(canonicalPathKey);
 }
 
-function currentVerifiedFreeze(
+export function readCurrentVerifiedReleaseFreezeV2(
   root: string,
   artifactPath: ManifestArtifactPathResolverV2 = defaultManifestArtifactPathV2
 ): ReleaseFreezeIdentityV2 {
@@ -461,6 +461,8 @@ function currentVerifiedFreeze(
   }
   return freeze;
 }
+
+const currentVerifiedFreeze = readCurrentVerifiedReleaseFreezeV2;
 
 export function deriveReleaseFreezeIdentityV2(
   preflight: Task0BReleaseFreezeEvidenceV1

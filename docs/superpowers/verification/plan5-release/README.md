@@ -181,6 +181,7 @@ order is producer-first, strict-verifier-last.
    ```powershell
    npm run release:task0b:preflight -- <artifact-root>
    npm run release:freeze:materialize -- <artifact-root>
+   npm run release:task0b:revalidate -- <artifact-root>
    ```
 
    The capture must record zero runtime stops/starts, zero database migrations,
@@ -211,18 +212,24 @@ order is producer-first, strict-verifier-last.
    120 seconds; this prevents database-backed files from racing the shared
    disposable databases while preserving a finite producer timeout.
 
-3. Produce the non-Vitest full-regression evidence, then capture the acceptance
-   trace from its protected capture spec and the actual executions:
+3. Produce the non-Vitest full-regression evidence, reconstruct the exact
+   owner RED runs and missing Task 0A baseline, then capture the acceptance
+   trace from the protected capture spec and actual executions:
 
    ```powershell
    $env:PLAN5_BASE_SHA = '4761e1453ea03a96845b68039e6d6f4812aae540'
    npm run release:verify:non-vitest -- <artifact-root>
+   npm run release:trace:prepare -- <artifact-root>
    npm run release:trace:capture -- <artifact-root>
    ```
 
    Its literal full Vitest run is serialized with five-minute test/hook bounds
    and a one-hour process bound. This retains finite failure handling while
    protecting the whole-repository run from shared filesystem variance.
+   Trace preparation uses immutable Git archives for the approved test-only
+   commits, applies only the canonical AC-10/11 and AC-33 title patches, and
+   requires actual behavioral failures in Vitest JSON. Syntax, import, fixture,
+   environment, timeout, or missing-test failures are rejected.
 
 4. Rehearse schema 032 on the clean database and the offline production clone.
    Use a separate protected sequence directory per database because the
@@ -266,6 +273,7 @@ order is producer-first, strict-verifier-last.
      --artifact-root <protected-runtime-sequence-root>
 
    $env:PLAN5_CANDIDATE_RUNTIME_LABEL = '<candidate-runtime-label>'
+   npm run release:task0b:revalidate -- <artifact-root>
    npm run release:runtime:rehearse -- <artifact-root>
    ```
 
@@ -275,6 +283,9 @@ order is producer-first, strict-verifier-last.
    show `/version`, Admin 200, one process/worker schedule, schema 032 verified,
    candidate stop, previous-runtime rollback start, and rollback stop. `G10`
    must pass before production GO, not after rollout has already failed.
+   Candidate/previous start evidence is generated and written by this
+   controlled runner after successful execution; no start-evidence fixture is
+   created in advance.
 
 6. Snapshot the terminal legacy population in a read-only transaction. The
    cutoff is exactly Task 0B `freezeCutoff`; it is not the command start time or
@@ -285,6 +296,7 @@ order is producer-first, strict-verifier-last.
    rollback.
 
    ```powershell
+   npm run release:task0b:revalidate -- <artifact-root>
    npm run release:legacy:snapshot -- `
      --offline `
      --database-url-env PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL `
@@ -293,6 +305,14 @@ order is producer-first, strict-verifier-last.
      --artifact-root <artifact-root> `
      --task0b-evidence task0b-release-freeze.json
    ```
+
+The canonical Task 0B preflight and materialized freeze never change in this
+root. Re-run only `release:task0b:revalidate` at Task 9 entry and immediately
+before each liveness-sensitive runtime, terminal-legacy, manual-Telegram, or
+strict verification consumer if the latest 15-minute receipt has expired. The
+receipt is append-only and content-addressed; any mismatch from the frozen
+operational tuple, other than the fresh exclusive-write probe, blocks the
+release.
 
 7. Prepare manual Telegram evidence with no network send:
 

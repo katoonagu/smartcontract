@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { link, lstat, open, readFile, realpath, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, readdir, realpath, unlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,9 +11,12 @@ import {
   REMEDIATION_RUNTIME_CONTROL_TEMPLATE_SHA256,
   TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256,
   TASK0B_READ_ONLY_OPERATION_IDS,
+  TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS,
   assertNoSecretLikeArtifactValues,
   validateTask0BReleaseFreezeEvidence,
-  type Task0BReleaseFreezeEvidenceV1
+  validateTask0BReleaseRevalidationEvidence,
+  type Task0BReleaseFreezeEvidenceV1,
+  type Task0BReleaseRevalidationEvidenceV1
 } from "../src/release/remediationReleaseManifest";
 import { validateControlledRuntimeOperationalConfig } from "./rehearseRemediationRuntime";
 import {
@@ -26,12 +29,14 @@ import {
   type RuntimeTopologySnapshotV2
 } from "../src/release/runtimeEffectReconciliationV2";
 import { canonicalReleaseJsonV2 } from "../src/release/remediationReleaseManifestV2";
+import { readCurrentVerifiedReleaseFreezeV2 } from "../src/release/releaseManifestStoreV2";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
 const CONFIG_FILENAME = "task0b-preflight-config.json";
 const EVIDENCE_FILENAME = "task0b-release-freeze.json";
+const REVALIDATION_DIRECTORY = "task0b-revalidations";
 const MAX_CONFIG_BYTES = 64 * 1024;
 export const TASK0B_RUNTIME_ENTRYPOINT_PROCESS_PATTERN_V2 = "src[\\\\/]index\\.ts";
 const LEGACY_031_WALLET_APPROVAL_COLUMNS = [
@@ -113,6 +118,8 @@ export type Task0BReadOnlyCaptureDependencies = {
   inspectArtifactRoot(): Promise<Task0BReleaseFreezeEvidenceV1["artifactRoot"]>;
   probeCandidatePort(): Promise<Task0BReleaseFreezeEvidenceV1["candidatePort"]>;
 };
+
+export type Task0BRevalidationDependencies = Omit<Task0BReadOnlyCaptureDependencies, "readOperatorConfigBinding">;
 
 function hash(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -417,6 +424,111 @@ export async function captureTask0BReleaseFreezeEvidence(
   return evidence;
 }
 
+export async function captureTask0BReleaseRevalidationEvidence(
+  frozenValue: unknown,
+  freezeValue: unknown,
+  dependencies: Task0BRevalidationDependencies
+): Promise<Task0BReleaseRevalidationEvidenceV1> {
+  const frozen = validateTask0BReleaseFreezeEvidence(frozenValue);
+  const operationIds: string[] = [];
+  const observedAt = dependencies.now().toISOString();
+  operationIds.push("candidate_state_read_before");
+  const candidateBefore = await dependencies.readCandidateState();
+  if (candidateBefore.sha !== frozen.candidateSha || candidateBefore.clean !== true
+      || candidateBefore.worktreePathFingerprintSha256 !== frozen.candidateWorktree.worktreePathFingerprintSha256
+      || candidateBefore.source !== "git_direct_read") {
+    throw new Error("task0b_revalidation_candidate_worktree_unverified");
+  }
+  operationIds.push("previous_runtime_read_before");
+  const previous = await dependencies.readPreviousRuntime();
+  if (previous.sha !== frozen.previousRuntimeSha || previous.label !== frozen.previousRuntimeLabel
+      || previous.source !== "runtime_manager_attestation_and_process_direct_read" || previous.verified !== true
+      || canonicalReleaseJsonV2(previous.identity) !== canonicalReleaseJsonV2(frozen.previousRuntimeIdentity)) {
+    throw new Error("task0b_revalidation_previous_runtime_unverified");
+  }
+  operationIds.push("sanitized_runtime_binding_read");
+  const sanitized = assertSanitizedBinding(await dependencies.readSanitizedRehearsalBinding());
+  operationIds.push("runtime_manager_registry_read");
+  const runtimeManager = await dependencies.readRuntimeManager();
+  operationIds.push("production_database_read_only");
+  const productionDatabase = await dependencies.readProductionDatabase();
+  operationIds.push("rollback_worktree_read");
+  const rollbackWorktree = await dependencies.readRollbackWorktree();
+  operationIds.push("postgres_tools_read_only");
+  const postgresTools = await dependencies.readPostgresTools();
+  operationIds.push("artifact_root_probe");
+  const artifactRoot = await dependencies.inspectArtifactRoot();
+  operationIds.push("candidate_port_probe");
+  const candidatePort = await dependencies.probeCandidatePort();
+  operationIds.push("candidate_state_read_after");
+  const candidateAfter = await dependencies.readCandidateState();
+  if (canonicalReleaseJsonV2(candidateAfter) !== canonicalReleaseJsonV2(candidateBefore)) {
+    throw new Error("task0b_revalidation_candidate_worktree_changed");
+  }
+  operationIds.push("previous_runtime_read_after");
+  const previousAfter = await dependencies.readPreviousRuntime();
+  if (canonicalReleaseJsonV2(previousAfter) !== canonicalReleaseJsonV2(previous)) {
+    throw new Error("task0b_revalidation_previous_runtime_changed");
+  }
+  if (operationIds.length !== TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS.length
+      || operationIds.some((operationId, index) => operationId !== TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS[index])) {
+    throw new Error("task0b_revalidation_operation_ledger_incomplete");
+  }
+  const observedEffects = {
+    runtimeStopCount: 0 as const,
+    runtimeStartCount: 0 as const,
+    databaseMigrationCount: 0 as const,
+    telegramSendCount: 0 as const,
+    readOnlyOperationCount: operationIds.length,
+    operationIds,
+    operationSequenceSha256: hash(JSON.stringify(operationIds)),
+    source: "instrumented_read_only_operation_ledger" as const
+  };
+  const evidence = {
+    version: "task0b-release-revalidation-v1" as const,
+    candidateSha: frozen.candidateSha,
+    observedAt,
+    expiresAt: new Date(Date.parse(observedAt) + 15 * 60_000).toISOString(),
+    source: "task0b_direct_post_freeze_revalidation" as const,
+    task0BPreflightEvidenceSha256: hash(Buffer.from(`${canonicalReleaseJsonV2(frozen)}\n`, "utf8")),
+    releaseGenerationId: String((freezeValue as Record<string, unknown>)?.releaseGenerationId ?? ""),
+    releaseFreezeIdentitySha256: hash(Buffer.from(`${canonicalReleaseJsonV2(freezeValue)}\n`, "utf8")),
+    current: {
+      previousRuntimeSha: previous.sha,
+      previousRuntimeLabel: previous.label,
+      candidateWorktree: {
+        headBeforeSha: candidateBefore.sha,
+        headAfterSha: candidateAfter.sha,
+        worktreePathFingerprintSha256: candidateBefore.worktreePathFingerprintSha256,
+        cleanBefore: true as const,
+        cleanAfter: true as const,
+        source: "git_direct_read_before_and_after" as const,
+        verified: true as const
+      },
+      previousRuntimeSource: previous.source,
+      previousRuntimeVerified: true as const,
+      previousRuntimeIdentity: previous.identity,
+      ...sanitized,
+      runtimeManager,
+      productionDatabase,
+      rollbackWorktree,
+      postgresTools,
+      artifactRoot,
+      candidatePort,
+      observedEffects
+    }
+  };
+  if (dependencies.now().getTime() > Date.parse(evidence.expiresAt)) {
+    throw new Error("task0b_revalidation_capture_stale");
+  }
+  return validateTask0BReleaseRevalidationEvidence(
+    evidence,
+    frozen,
+    freezeValue,
+    evidence.observedAt
+  );
+}
+
 function run(
   executable: string,
   args: readonly string[],
@@ -613,6 +725,24 @@ export async function readExternalConfig(artifactRoot: string): Promise<{
       verified: true
     }
   };
+}
+
+async function readFrozenExternalConfig(
+  artifactRoot: string,
+  frozen: Task0BReleaseFreezeEvidenceV1
+): Promise<Task0BPreflightConfigV1> {
+  const root = await inspectRealDirectory(artifactRoot, true);
+  const snapshot = await readProtectedRegularFileSnapshot(root, CONFIG_FILENAME, MAX_CONFIG_BYTES);
+  const config = validateTask0BPreflightConfig(
+    JSON.parse(snapshot.bytes.toString("utf8")),
+    frozen.observedAt
+  );
+  if (hash(snapshot.bytes) !== frozen.operatorConfig.contentSha256
+      || snapshot.fileIdentitySha256 !== frozen.operatorConfig.fileIdentitySha256
+      || config.expiresAt !== frozen.operatorConfig.configExpiresAt) {
+    throw new Error("task0b_revalidation_operator_config_binding_changed");
+  }
+  return config;
 }
 
 async function observeRollbackWorktree(config: Task0BPreflightConfigV1): Promise<Task0BReleaseFreezeEvidenceV1["rollbackWorktree"]> {
@@ -1374,8 +1504,148 @@ export async function captureTask0BPreflightFromArtifactRoot(artifactRootInput: 
   return { artifactRoot, evidence };
 }
 
+async function readFrozenTask0BPair(artifactRoot: string): Promise<{
+  frozen: Task0BReleaseFreezeEvidenceV1;
+  frozenBytes: Buffer;
+  freeze: ReturnType<typeof readCurrentVerifiedReleaseFreezeV2>;
+}> {
+  const frozenBytes = await readProtectedRegularFile(artifactRoot, EVIDENCE_FILENAME, MAX_CONFIG_BYTES);
+  const frozen = validateTask0BReleaseFreezeEvidence(JSON.parse(frozenBytes.toString("utf8")));
+  if (!frozenBytes.equals(Buffer.from(`${canonicalReleaseJsonV2(frozen)}\n`, "utf8"))) {
+    throw new Error("task0b_revalidation_preflight_noncanonical");
+  }
+  const freeze = readCurrentVerifiedReleaseFreezeV2(artifactRoot);
+  return { frozen, frozenBytes, freeze };
+}
+
+async function revalidationDirectory(artifactRoot: string, create: boolean): Promise<string> {
+  const path = join(artifactRoot, REVALIDATION_DIRECTORY);
+  if (create) {
+    try {
+      await mkdir(path, { recursive: false, mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  return inspectRealDirectory(path, true);
+}
+
+export async function writeTask0BReleaseRevalidationEvidenceExclusive(
+  artifactRoot: string,
+  frozen: Task0BReleaseFreezeEvidenceV1,
+  freeze: unknown,
+  evidence: Task0BReleaseRevalidationEvidenceV1
+): Promise<{ relativePath: string; sha256: string }> {
+  validateTask0BReleaseRevalidationEvidence(evidence, frozen, freeze, evidence.observedAt);
+  const directory = await revalidationDirectory(artifactRoot, true);
+  const bytes = Buffer.from(`${canonicalReleaseJsonV2(evidence)}\n`, "utf8");
+  const evidenceSha256 = hash(bytes);
+  const filename = `${evidenceSha256}.json`;
+  const output = join(directory, filename);
+  const temporary = join(directory, `.task0b-revalidation-${process.pid}-${randomBytes(8).toString("hex")}`);
+  const handle = await open(
+    temporary,
+    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600
+  );
+  try {
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(temporary, output);
+  } finally {
+    await unlink(temporary);
+  }
+  return { relativePath: `${REVALIDATION_DIRECTORY}/${filename}`, sha256: evidenceSha256 };
+}
+
+export async function captureTask0BRevalidationFromArtifactRoot(artifactRootInput: string): Promise<{
+  artifactRoot: string;
+  evidence: Task0BReleaseRevalidationEvidenceV1;
+  relativePath: string;
+  sha256: string;
+}> {
+  const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
+  const { frozen, freeze } = await readFrozenTask0BPair(artifactRoot);
+  const config = await readFrozenExternalConfig(artifactRoot, frozen);
+  if (!sameCanonicalPath(config.artifactRoot, artifactRoot)) {
+    throw new Error("task0b_revalidation_artifact_root_mismatch");
+  }
+  const { readOperatorConfigBinding: _unused, ...dependencies } = createTask0BDirectDependencies(config);
+  const evidence = await captureTask0BReleaseRevalidationEvidence(frozen, freeze, dependencies);
+  const written = await writeTask0BReleaseRevalidationEvidenceExclusive(
+    artifactRoot,
+    frozen,
+    freeze,
+    evidence
+  );
+  return { artifactRoot, evidence, ...written };
+}
+
+export async function readCurrentTask0BReleaseRevalidation(
+  artifactRootInput: string,
+  evaluatedAt = new Date().toISOString()
+): Promise<{
+  frozen: Task0BReleaseFreezeEvidenceV1;
+  frozenBytes: Buffer;
+  freeze: ReturnType<typeof readCurrentVerifiedReleaseFreezeV2>;
+  evidence: Task0BReleaseRevalidationEvidenceV1;
+  evidenceBytes: Buffer;
+  relativePath: string;
+}> {
+  const artifactRoot = await inspectRealDirectory(artifactRootInput, true);
+  const { frozen, frozenBytes, freeze } = await readFrozenTask0BPair(artifactRoot);
+  const directory = await revalidationDirectory(artifactRoot, false);
+  const filenames = (await readdir(directory)).sort();
+  if (filenames.length === 0) throw new Error("task0b_revalidation_missing");
+  const valid: Array<{
+    evidence: Task0BReleaseRevalidationEvidenceV1;
+    evidenceBytes: Buffer;
+    relativePath: string;
+  }> = [];
+  for (const filename of filenames) {
+    if (!/^[0-9a-f]{64}\.json$/u.test(filename)) throw new Error("task0b_revalidation_filename_invalid");
+    const evidenceBytes = await readProtectedRegularFile(directory, filename, MAX_CONFIG_BYTES);
+    if (hash(evidenceBytes) !== filename.slice(0, 64)) throw new Error("task0b_revalidation_content_address_invalid");
+    const parsed = JSON.parse(evidenceBytes.toString("utf8")) as unknown;
+    const observedAt = String((parsed as Record<string, unknown>)?.observedAt ?? "");
+    const evidence = validateTask0BReleaseRevalidationEvidence(parsed, frozen, freeze, observedAt);
+    if (!evidenceBytes.equals(Buffer.from(`${canonicalReleaseJsonV2(evidence)}\n`, "utf8"))) {
+      throw new Error("task0b_revalidation_noncanonical");
+    }
+    if (Date.parse(evaluatedAt) >= Date.parse(evidence.observedAt)
+        && Date.parse(evaluatedAt) <= Date.parse(evidence.expiresAt)) {
+      valid.push({
+        evidence,
+        evidenceBytes,
+        relativePath: `${REVALIDATION_DIRECTORY}/${filename}`
+      });
+    }
+  }
+  valid.sort((left, right) => right.evidence.observedAt.localeCompare(left.evidence.observedAt));
+  if (valid.length === 0) throw new Error("task0b_revalidation_stale");
+  if (valid.length > 1 && valid[0]!.evidence.observedAt === valid[1]!.evidence.observedAt) {
+    throw new Error("task0b_revalidation_ambiguous_tip");
+  }
+  return { frozen, frozenBytes, freeze, ...valid[0]! };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args[0] === "--revalidate") {
+    if (!args[1] || args.length !== 2) throw new Error("task0b_revalidation_artifact_root_required");
+    const result = await captureTask0BRevalidationFromArtifactRoot(args[1]);
+    process.stdout.write(`${JSON.stringify({
+      status: "passed",
+      candidateSha: result.evidence.candidateSha,
+      relativePath: result.relativePath,
+      evidenceSha256: result.sha256
+    })}\n`);
+    return;
+  }
   const [artifactRootInput] = args;
   if (!artifactRootInput || args.length !== 1) throw new Error("task0b_artifact_root_required");
   const { artifactRoot, evidence } = await captureTask0BPreflightFromArtifactRoot(artifactRootInput);

@@ -300,18 +300,41 @@ it("[REQ-35][CONTROLLED-RUNTIME-EXECUTOR] invokes allowlisted start observe stop
     previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL
   })).toThrow(/capture/i);
   const artifacts = new Map<string, Buffer>();
-  await api.runControlledRuntimeRehearsalCli(executeInput, dependencies, async (filename: string, bytes: Buffer) => {
+  const candidateStartEvidenceBytes = api.buildRuntimeStartCommandEvidenceBytes(
+    CANDIDATE_SHA,
+    RUNTIME_LABEL,
+    "runtime_sanitized_rehearsal"
+  );
+  const previousStartEvidenceBytes = api.buildRuntimeStartCommandEvidenceBytes(
+    PREVIOUS_RUNTIME_SHA,
+    PREVIOUS_RUNTIME_LABEL,
+    "rollback_rehearsal"
+  );
+  const cliInput = {
+    ...executeInput,
+    evidenceExpected: {
+      ...executeInput.evidenceExpected,
+      candidateStartEvidenceSha256: createHash("sha256").update(candidateStartEvidenceBytes).digest("hex"),
+      previousStartEvidenceSha256: createHash("sha256").update(previousStartEvidenceBytes).digest("hex")
+    }
+  };
+  await api.runControlledRuntimeRehearsalCli(cliInput, dependencies, async (filename: string, bytes: Buffer) => {
     artifacts.set(filename, bytes);
+  }, {
+    candidateStartEvidenceBytes,
+    previousStartEvidenceBytes
   });
   expect([...artifacts.keys()]).toEqual([
+    "runtime-candidate-start-evidence.json",
+    "runtime-previous-start-evidence.json",
     "runtime-subprocess-captures.json",
     "runtime-query-captures.json",
     "runtime-operational-observation.json",
     "runtime-rehearsal.json",
     "rollback-rehearsal.json"
   ]);
-  expect(artifacts.get("runtime-rehearsal.json")).toEqual(result.runtimeEvidenceBytes);
-  expect(artifacts.get("rollback-rehearsal.json")).toEqual(result.rollbackEvidenceBytes);
+  expect(artifacts.get("runtime-candidate-start-evidence.json")).toEqual(candidateStartEvidenceBytes);
+  expect(artifacts.get("runtime-previous-start-evidence.json")).toEqual(previousStartEvidenceBytes);
   expect(() => api.validateControlledRuntimeRehearsalProvenance(result.provenance, {
     candidateSha: CANDIDATE_SHA,
     previousRuntimeSha: PREVIOUS_RUNTIME_SHA,

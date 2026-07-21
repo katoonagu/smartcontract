@@ -94,7 +94,9 @@ it("[AC-41][EXECUTION] requires every exact AC fullName to execute and pass with
 
   const target = buildAcceptanceTraceSet().traces[0];
   const passedAssertion = {
-    fullName: target.fullName,
+    ancestorTitles: ["nested suite"],
+    fullName: `nested suite ${target.fullName}`,
+    title: target.fullName,
     status: "passed",
     failureMessages: []
   };
@@ -104,7 +106,12 @@ it("[AC-41][EXECUTION] requires every exact AC fullName to execute and pass with
     numFailedTests: 0,
     testResults: [{ name: target.testFile, assertionResults: [passedAssertion] }]
   };
-  expect(api.parseVitestJsonReport(validJson)).toHaveLength(1);
+  expect(api.parseVitestJsonReport(validJson)).toEqual([{
+    testFile: target.testFile,
+    fullName: target.fullName,
+    status: "passed",
+    failureMessages: []
+  }]);
   const executionGaps: string[] = [];
   try {
     api.parseVitestJsonReport({

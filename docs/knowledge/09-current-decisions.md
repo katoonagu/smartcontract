@@ -366,6 +366,29 @@ of these decisions, update this file in the same work.
   promise unlimited history. Address Poisoning is forbidden release scope.
   Separate `APC-01` closeout starts only after `released` or `rolled_back`.
 
+## 2026-07-21 Plan 5 Task 9 evidence correction
+
+- Task 0B canonical preflight bytes and `ReleaseFreezeIdentityV2` are immutable
+  for a protected release root. Their original 15-minute observation window is
+  not extended or ignored. Current liveness is supplied by append-only,
+  content-addressed `task0b-release-revalidation-v1` receipts, each fresh for
+  exactly 15 minutes and bound to the same preflight, generation and freeze.
+- A revalidation repeats the candidate, previous runtime, sanitized binding,
+  runtime manager, production database, rollback worktree, PostgreSQL tools,
+  protected-root and candidate-port observations. Every value must equal the
+  frozen tuple except the new exclusive-write probe. It records zero runtime
+  stops/starts, migrations and Telegram sends. Missing, stale, ambiguous,
+  malformed or changed evidence fails closed.
+- The missing Task 0A/trace producer is reconstructed only from immutable Git
+  history and actual Vitest JSON. Approved test-only commits are archived into
+  ephemeral worktrees; the two canonical title patches are replayed exactly;
+  behavioral RED and candidate GREEN executions are both required. Source
+  search, inferred failures and infrastructure failures are not evidence.
+- Sanitized candidate/previous start evidence is not an operator fixture. The
+  controlled rehearsal derives the exact allowlisted command identity, runs
+  the real start/observe/stop sequence, and writes that evidence only after the
+  sequence succeeds.
+
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 
 - The first release warns watched-wallet owners after a fresh small incoming

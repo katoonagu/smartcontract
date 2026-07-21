@@ -48,6 +48,20 @@
 > leaf-команд запрещены. Tasks 8B.0–8B.8 ниже являются частью утверждённого
 > Plan 5 и не разрешают production mutation.
 >
+> **Approved corrective amendment (2026-07-21, Task 9 evidence):** canonical
+> Task 0B evidence and `ReleaseFreezeIdentityV2` remain immutable. A pipeline
+> longer than the original 15-minute observation window uses append-only,
+> content-addressed `task0b-release-revalidation-v1` receipts. Each receipt is
+> valid for 15 minutes, binds the exact generation/freeze/preflight, repeats
+> every operational observation read-only, and must equal the frozen tuple
+> except for its fresh exclusive-write probe. It never recreates or refreshes
+> the freeze. The approved corrective producer also reconstructs the missing
+> Task 0A and exact RED/GREEN trace inputs from immutable Git commits and actual
+> Vitest JSON reports; it does not infer RED from source text. Controlled
+> runtime start evidence is emitted by the rehearsal runner only after the
+> corresponding real start/observe/stop sequence succeeds; preauthored start
+> fixtures are forbidden.
+>
 > **Draft baseline:** локальный `master`
 > `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`, содержащий реализованные Plans
 > 1–4. После утверждения и отдельного commit только этого документа исполнитель
@@ -2661,6 +2675,22 @@ stale, guessed or unverified input blocks Task 9 and prevents a valid
 later Task 9 step and cannot be satisfied from the earlier Task 0A snapshot
 alone.
 
+The original preflight remains canonical evidence after its 15-minute
+observation window expires. Current liveness is proven only by:
+
+```powershell
+npm run release:task0b:revalidate -- <protected-artifact-root>
+```
+
+This appends a canonical content-addressed receipt under
+`task0b-revalidations/`. Run it at Task 9 entry and again immediately before a
+liveness-sensitive runtime, terminal-legacy, manual-Telegram, or strict
+verification consumer whenever the latest receipt is no longer fresh. A
+missing, stale, malformed, ambiguous, foreign-generation, or operationally
+different receipt fails closed. Revalidation is read-only apart from its own
+exclusive evidence write; it cannot modify the preflight, materialized freeze,
+manifest, runtime, database, or Telegram.
+
 `captureTask0BPreflight.ts` writes only the verified preflight evidence; it is
 not a freeze producer and cannot claim producer identity. The separate sole
 `release:freeze:materialize` producer validates that evidence, precommits
@@ -4323,6 +4353,10 @@ port. If any field is absent, stale or unverified, Task 9 stops before setting
 impossible. It also requires the fixed root-writer lease absent, no unresolved
 prepared authority issuance/terminalization, and every committed authority
 chain artifact byte-valid; Task 9 never repairs or publishes those artifacts.
+The 15-minute receipt is renewable only by another complete read-only
+`release:task0b:revalidate` observation against the same immutable generation.
+Long test runs therefore do not weaken TTL validation and do not force a new
+release root.
 
 Set:
 
@@ -4353,6 +4387,13 @@ The producer phase supplies the automated evidence for `G00…G11`, including:
 6. exact 11 automated golden comparisons and generation of the 19 candidate
    payloads for the 15 manual scenarios;
 7. Address Poisoning regression only;
+
+Before trace capture, run `release:trace:prepare`. It archives the exact
+approved test-only commits, applies only the two canonical test-title patches,
+runs every owner RED batch, rejects infrastructure failures, and writes the
+content-addressed RED reports/patches plus the reconstructed Task 0A baseline.
+`release:trace:capture` then binds those artifacts to the already-produced
+candidate GREEN reports. Neither command changes product code or semantics.
 8. cleanup and forbidden-scope audit.
 
 At this point `G05_TELEGRAM` is a V2 pending record without execution fields.

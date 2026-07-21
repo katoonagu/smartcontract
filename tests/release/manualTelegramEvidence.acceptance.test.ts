@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import pg from "pg";
 import { expect, it } from "vitest";
 import { remediationTelegramUxCase } from "../fixtures/telegram/remediationTelegramUxCases";
@@ -127,10 +128,23 @@ function hash(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function task0bEvidence(evaluatedAt: string, databaseFingerprintSha256 = "e".repeat(64)) {
+function task0bEvidence(
+  evaluatedAt: string,
+  databaseFingerprintSha256 = "e".repeat(64),
+  artifactRootFingerprintSha256?: string
+) {
   const evaluatedAtMs = Date.parse(evaluatedAt);
   const observedAt = new Date(evaluatedAtMs - 60_000).toISOString();
-  return buildTask0BReleaseFreezeEvidence({ observedAt, databaseFingerprintSha256 });
+  return buildTask0BReleaseFreezeEvidence({
+    observedAt,
+    databaseFingerprintSha256,
+    ...(artifactRootFingerprintSha256 ? { artifactRootFingerprintSha256 } : {})
+  });
+}
+
+function artifactRootFingerprint(root: string): string {
+  const absolute = resolve(root);
+  return hash(process.platform === "win32" ? absolute.toLowerCase() : absolute);
 }
 
 function candidateStartEvidence() {
@@ -156,7 +170,15 @@ async function strictEvidence(api: ManualApi, suppliedRun?: any) {
     jobId: `synthetic-job-${String(index + 1).padStart(2, "0")}`,
     createdAt: "2026-07-18T12:00:00.000Z"
   })));
-  const artifactRoot = await mkdtemp(join(tmpdir(), "plan5-telegram-evidence-"));
+  const artifactRoot = await mkdtemp(join(homedir(), "plan5-telegram-evidence-"));
+  if (process.platform === "win32") {
+    const sid = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf8" }).trim();
+    execFileSync("icacls.exe", [artifactRoot, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`,
+      "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]);
+  } else {
+    await chmod(artifactRoot, 0o700);
+  }
   const messageRecords: any[] = [];
   for (const [index, message] of candidateRun.messages.entries()) {
     const screenshot = MINIMAL_PNG;
@@ -195,6 +217,69 @@ async function strictEvidence(api: ManualApi, suppliedRun?: any) {
     messageRecords,
     scenarioSummaries
   } };
+}
+
+async function materializeCurrentTask0B(root: string, frozen: any, evaluatedAt: string): Promise<void> {
+  const store: any = await import("../../src/release/releaseManifestStoreV2");
+  const producer: any = await import("../../scripts/captureTask0BPreflight");
+  const manifest: any = await import("../../src/release/remediationReleaseManifest");
+  const { canonicalReleaseJsonV2 } = await import("../../src/release/remediationReleaseManifestV2");
+  await writeFile(join(root, "task0b-release-freeze.json"), `${canonicalReleaseJsonV2(frozen)}\n`, { flag: "wx" });
+  await store.materializeReleaseFreezeV2({
+    artifactRoot: root,
+    task0BPreflightEvidence: frozen,
+    evaluatedAt,
+    producerId: "release_freeze_materialize"
+  });
+  const freeze = store.deriveReleaseFreezeIdentityV2(frozen);
+  const sanitized = {
+    databaseRole: frozen.databaseRole,
+    databaseName: frozen.databaseName,
+    databaseFingerprintSha256: frozen.databaseFingerprintSha256,
+    operationalConfigPath: frozen.operationalConfigPath,
+    operationalConfigSha256: frozen.operationalConfigSha256,
+    candidateStartCommandId: frozen.candidateStartCommandId,
+    candidateStartTemplateSha256: frozen.candidateStartTemplateSha256,
+    candidateStopCommandId: frozen.candidateStopCommandId,
+    candidateStopTemplateSha256: frozen.candidateStopTemplateSha256,
+    previousStartCommandId: frozen.previousStartCommandId,
+    previousStartTemplateSha256: frozen.previousStartTemplateSha256,
+    previousStopCommandId: frozen.previousStopCommandId,
+    previousStopTemplateSha256: frozen.previousStopTemplateSha256
+  };
+  const evidence = await producer.captureTask0BReleaseRevalidationEvidence(frozen, freeze, {
+    now: () => new Date(evaluatedAt),
+    readCandidateState: async () => ({
+      sha: frozen.candidateSha,
+      clean: true,
+      worktreePathFingerprintSha256: frozen.candidateWorktree.worktreePathFingerprintSha256,
+      source: "git_direct_read"
+    }),
+    readPreviousRuntime: async () => ({
+      sha: frozen.previousRuntimeSha,
+      label: frozen.previousRuntimeLabel,
+      source: "runtime_manager_attestation_and_process_direct_read",
+      verified: true,
+      identity: frozen.previousRuntimeIdentity
+    }),
+    readSanitizedRehearsalBinding: async () => sanitized,
+    readRuntimeManager: async () => frozen.runtimeManager,
+    readProductionDatabase: async () => frozen.productionDatabase,
+    readRollbackWorktree: async () => frozen.rollbackWorktree,
+    readPostgresTools: async () => frozen.postgresTools,
+    inspectArtifactRoot: async () => ({
+      ...frozen.artifactRoot,
+      exclusiveWriteFingerprintSha256: "9".repeat(64)
+    }),
+    probeCandidatePort: async () => frozen.candidatePort
+  });
+  expect(manifest.validateTask0BReleaseRevalidationEvidence(
+    evidence,
+    frozen,
+    freeze,
+    evaluatedAt
+  )).toEqual(evidence);
+  await producer.writeTask0BReleaseRevalidationEvidenceExclusive(root, frozen, freeze, evidence);
 }
 
 it("[REQ-32][PLAN5-MANUAL-BINDING] binds the exact 15 artifacts 19 production-path payloads and 11 goldens", async () => {
@@ -535,7 +620,12 @@ postgresIt("[REQ-32][PLAN5-MANUAL-POSTGRES] persists 19 terminal synthetic jobs 
       databaseUrl
     })).rejects.toThrow(/runtime/i);
     built = await strictEvidence(api, run);
-    await writeFile(join(built.artifactRoot, "task0b-release-freeze.json"), `${JSON.stringify(freeze)}\n`);
+    const currentFreeze = task0bEvidence(
+      evaluatedAt,
+      databaseFingerprintSha256,
+      artifactRootFingerprint(built.artifactRoot)
+    );
+    await materializeCurrentTask0B(built.artifactRoot, currentFreeze, evaluatedAt);
     await writeFile(join(built.artifactRoot, "runtime-candidate-start-evidence.json"), `${JSON.stringify(start)}\n`);
     await expect(api.runManualTelegramCommand([built.artifactRoot], {
       PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL: databaseUrl

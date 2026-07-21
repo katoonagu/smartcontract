@@ -347,7 +347,19 @@ export function parseVitestJsonReport(
     if (!Array.isArray(result.assertionResults)) throw new Error("Vitest test result has no assertionResults array");
     for (const [assertionIndex, assertionValue] of result.assertionResults.entries()) {
       const assertion = expectRecord(assertionValue, `assertionResults[${assertionIndex}]`);
-      const fullName = expectString(assertion.fullName, `assertionResults[${assertionIndex}].fullName`);
+      const reportFullName = expectString(assertion.fullName, `assertionResults[${assertionIndex}].fullName`);
+      let fullName = reportFullName;
+      if (assertion.title !== undefined || assertion.ancestorTitles !== undefined) {
+        const title = expectString(assertion.title, `assertionResults[${assertionIndex}].title`);
+        const ancestorTitles = expectStringArray(
+          assertion.ancestorTitles,
+          `assertionResults[${assertionIndex}].ancestorTitles`
+        );
+        if ([...ancestorTitles, title].join(" ") !== reportFullName) {
+          throw new Error("Vitest assertion title lineage does not match fullName");
+        }
+        fullName = title;
+      }
       const failureMessages = assertion.failureMessages === undefined
         ? []
         : expectStringArray(assertion.failureMessages, `assertionResults[${assertionIndex}].failureMessages`);

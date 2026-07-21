@@ -709,7 +709,7 @@ export const PRIMARY_AC_FULL_NAMES = [
   "[AC-41] validates the release regression manifest and required suite set"
 ] as const;
 
-const PRIMARY_AC_TEST_FILES = [
+export const PRIMARY_AC_TEST_FILES = [
   ...Array(6).fill("tests/risk/collectorUsddRemediation.acceptance.test.ts"),
   ...Array(3).fill("tests/telegram/unifiedForensicRenderer.acceptance.test.ts"),
   ...Array(2).fill("tests/forensics/recentFlowProvenanceSelection.test.ts"),

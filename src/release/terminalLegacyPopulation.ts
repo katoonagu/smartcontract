@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
+import {
+  validateTask0BReleaseFreezeEvidence,
+  validateTask0BReleaseRevalidationEvidence
+} from "./remediationReleaseManifest";
 
 export type TerminalLegacyPopulationV1 = {
   candidateSha: string;
@@ -204,6 +207,32 @@ export function deriveTerminalLegacyFreezeBinding(
 ): TerminalLegacyFreezeBinding {
   const parsed = JSON.parse(task0bEvidenceBytes.toString("utf8")) as unknown;
   const evidence = validateTask0BReleaseFreezeEvidence(parsed, expectedCandidateSha, evaluatedAt);
+  return {
+    candidateSha: evidence.candidateSha,
+    cutoff: evidence.freezeCutoff,
+    cutoffSource: "task0b_release_freeze",
+    task0bEvidenceSha256: createHash("sha256").update(task0bEvidenceBytes).digest("hex"),
+    databaseRole: evidence.databaseRole,
+    databaseName: evidence.databaseName,
+    databaseFingerprintSha256: evidence.databaseFingerprintSha256
+  };
+}
+
+export function deriveTerminalLegacyFreezeBindingFromCurrentRevalidation(
+  task0bEvidenceBytes: Buffer,
+  expectedCandidateSha: string,
+  revalidationEvidence: unknown,
+  releaseFreezeIdentity: unknown,
+  evaluatedAt: string
+): TerminalLegacyFreezeBinding {
+  const parsed = JSON.parse(task0bEvidenceBytes.toString("utf8")) as unknown;
+  const evidence = validateTask0BReleaseFreezeEvidence(parsed, expectedCandidateSha);
+  validateTask0BReleaseRevalidationEvidence(
+    revalidationEvidence,
+    evidence,
+    releaseFreezeIdentity,
+    evaluatedAt
+  );
   return {
     candidateSha: evidence.candidateSha,
     cutoff: evidence.freezeCutoff,

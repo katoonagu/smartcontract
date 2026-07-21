@@ -116,8 +116,10 @@ with the exact source token, then verify:
 $env:RELEASE_SHA = (git rev-parse HEAD).Trim()
 npm run release:task0b:preflight -- <protected-artifact-root>
 npm run release:freeze:materialize -- <protected-artifact-root>
+npm run release:task0b:revalidate -- <protected-artifact-root>
 node --import tsx scripts/verifyRemediationRelease.ts --suite-group plan1 <protected-artifact-root>
 npm run release:verify:non-vitest -- <protected-artifact-root>
+npm run release:trace:prepare -- <protected-artifact-root>
 npm run release:trace:capture -- <protected-artifact-root>
 npm run schema:release:sequence -- --offline `
   --database-url-env PLAN5_SCHEMA_CLONE_DATABASE_URL `
@@ -130,6 +132,15 @@ npm run release:telegram:manual -- <protected-artifact-root>
 npm run release:manifest:advance -- pre_manual absent <protected-artifact-root>
 npm run release:verify -- --phase pre-manual --artifact-root <protected-artifact-root>
 ```
+
+Do not recapture or rematerialize Task 0B after the freeze exists. Its
+15-minute live observation is renewed only by another complete read-only
+`release:task0b:revalidate` receipt against the same immutable generation. Run
+that command at Task 9 entry and again immediately before runtime rehearsal,
+terminal-legacy snapshot, manual Telegram prepare/finalize, or strict release
+verification when the latest receipt has expired. The controlled runtime
+rehearsal writes candidate/previous start evidence after successful execution;
+operators do not precreate those files.
 
 The focused-suite line is repeated for `plan2`, `plan3`, `plan4`, `plan5`, and
 `addressPoisoningRegression`. The schema producer also runs in separate

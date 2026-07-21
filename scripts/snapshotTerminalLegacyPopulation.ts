@@ -5,9 +5,10 @@ import { buildSchema032ClientConfig } from "./verifySchema032";
 import { buildSchema032DatabaseFingerprint } from "./verifySchema032";
 import { readSafeArtifactFile, resolveExternalArtifactRoot } from "./verifyRemediationRelease";
 import {
-  deriveTerminalLegacyFreezeBinding,
+  deriveTerminalLegacyFreezeBindingFromCurrentRevalidation,
   snapshotTerminalLegacyPopulation
 } from "../src/release/terminalLegacyPopulation";
+import { readCurrentTask0BReleaseRevalidation } from "./captureTask0BPreflight";
 
 const SYSTEM_IDENTIFIER = /^\d{10,30}$/;
 const SAFE_ENV = /^[A-Z][A-Z0-9_]*$/;
@@ -51,7 +52,16 @@ async function main(): Promise<void> {
   const artifactRoot = await resolveExternalArtifactRoot(input.artifactRoot);
   const task0bBytes = await readSafeArtifactFile(artifactRoot, input.task0bEvidence);
   const releaseSha = process.env.RELEASE_SHA ?? "";
-  const freezeBinding = deriveTerminalLegacyFreezeBinding(task0bBytes, releaseSha, new Date().toISOString());
+  const evaluatedAt = new Date().toISOString();
+  const currentTask0B = await readCurrentTask0BReleaseRevalidation(artifactRoot, evaluatedAt);
+  if (!task0bBytes.equals(currentTask0B.frozenBytes)) fail("terminal_legacy_task0b_binding_mismatch");
+  const freezeBinding = deriveTerminalLegacyFreezeBindingFromCurrentRevalidation(
+    task0bBytes,
+    releaseSha,
+    currentTask0B.evidence,
+    currentTask0B.freeze,
+    evaluatedAt
+  );
   const databaseUrl = process.env[input.databaseUrlEnv];
   if (!databaseUrl) fail("terminal_legacy_database_url_missing");
   const parsed = new URL(databaseUrl);
