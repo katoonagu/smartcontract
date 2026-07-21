@@ -395,6 +395,14 @@ of these decisions, update this file in the same work.
   historical commit `a0f74b3b…`, after the local modules existed and before
   those three behaviors passed. Trace lineage records test commit, RED
   execution commit, owner commit and candidate separately.
+- Exact Plan 4 test-patch SHA-256 pins are: alerts
+  `544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2`,
+  renderer
+  `c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5`,
+  and PostgreSQL coverage
+  `27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771`.
+  A merely ancestrally valid substitute base, test commit, RED execution
+  commit, file, kind, missing path or patch hash fails closed.
 - Sanitized candidate/previous start evidence is not an operator fixture. The
   controlled rehearsal derives the exact allowlisted command identity, runs
   the real start/observe/stop sequence, and writes that evidence only after the

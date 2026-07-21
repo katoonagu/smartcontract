@@ -244,6 +244,13 @@ order is producer-first, strict-verifier-last.
    Evidence binds test commit, RED execution commit, owner and candidate as one
    verified ancestry chain.
 
+   Exact patch SHA-256 pins: alerts
+   `544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2`,
+   renderer
+   `c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5`,
+   coverage
+   `27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771`.
+
 4. Rehearse schema 032 on the clean database and the offline production clone.
    Use a separate protected sequence directory per database because the
    producer writes an exclusive four-file sequence. Preserve/promote each

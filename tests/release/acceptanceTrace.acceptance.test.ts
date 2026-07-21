@@ -16,6 +16,10 @@ type ParsedExecution = {
 
 type TraceDependencies = { isAncestor(ownerCommitSha: string, candidateSha: string): boolean };
 const PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
+const PLAN4_TEST_BASE_SHA = "d18067f6c49fd632bafa47a90f69f1e7bf8b1802";
+const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
+const PLAN4_ALERT_TEST_PATCH_SHA256 = "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2";
+const PLAN4_RENDERER_TEST_PATCH_SHA256 = "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
 
 type ParsedLocalProductModuleAbsence = {
   testFile: string;
@@ -51,6 +55,20 @@ type TraceApi = {
   }): void;
 };
 
+type CaptureApi = {
+  redGroupForTrace(testFile: string, acceptanceId: string, secondary?: boolean): string;
+  buildCaptureRedSpec(input: {
+    kind: "behavioral_assertion" | "local_product_module_absent";
+    baseSha: string;
+    testCommitSha: string;
+    redExecutionCommitSha: string;
+    testPatchSha256: string;
+    testPatchFile: string;
+    reportFile: string;
+    missingProductModulePath?: string;
+  }): Record<string, unknown>;
+};
+
 async function loadTraceApi(): Promise<TraceApi> {
   const modulePath: string = "../../src/release/acceptanceTrace";
   try {
@@ -70,6 +88,15 @@ async function loadTraceApi(): Promise<TraceApi> {
   }
 }
 
+async function loadCaptureApi(): Promise<CaptureApi> {
+  const modulePath: string = "../../scripts/captureRemediationTestEvidence";
+  const loaded = await import(/* @vite-ignore */ modulePath) as Partial<CaptureApi>;
+  if (typeof loaded.redGroupForTrace !== "function" || typeof loaded.buildCaptureRedSpec !== "function") {
+    throw new Error("Plan 5 feature missing: trace producer RED routing");
+  }
+  return loaded as CaptureApi;
+}
+
 const fixtureAncestry: TraceDependencies = {
   isAncestor: (ancestorCommitSha, descendantCommitSha) => {
     if (ancestorCommitSha === descendantCommitSha) return true;
@@ -79,7 +106,10 @@ const fixtureAncestry: TraceDependencies = {
         || fixture.traces.some((trace) => trace.red.testCommitSha === ancestorCommitSha);
     }
     return fixture.traces.some((trace) => (
-      trace.red.testCommitSha === ancestorCommitSha && trace.ownerCommitSha === descendantCommitSha
+      (trace.red.testCommitSha === ancestorCommitSha
+        && trace.red.redExecutionCommitSha === descendantCommitSha)
+      || (trace.red.redExecutionCommitSha === ancestorCommitSha
+        && trace.ownerCommitSha === descendantCommitSha)
     ));
   }
 };
@@ -354,8 +384,10 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
     failureMessage: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${target.testFile}`
   };
   target.red.kind = "local_product_module_absent";
+  target.red.baseSha = PLAN4_TEST_BASE_SHA;
   target.red.testCommitSha = PLAN4_FROZEN_TEST_SHA;
   target.red.redExecutionCommitSha = PLAN4_FROZEN_TEST_SHA;
+  target.red.testPatchSha256 = PLAN4_RENDERER_TEST_PATCH_SHA256;
   target.red.missingProductModulePath = path;
   target.red.expectedFailureFingerprint = (await loadTraceApi())
     .localProductModuleAbsenceFingerprint(target.acceptanceId, evidence);
@@ -389,6 +421,12 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   const wrongLocalExecutionCommit: any = cloneFixture(fixture);
   wrongLocalExecutionCommit.traces[6].red.redExecutionCommitSha = "a".repeat(40);
   expect(() => validate(wrongLocalExecutionCommit, dependency())).toThrow(/execute at the exact frozen Plan 4 test commit/);
+  const wrongLocalBase: any = cloneFixture(fixture);
+  wrongLocalBase.traces[6].red.baseSha = "b".repeat(40);
+  expect(() => validate(wrongLocalBase, dependency())).toThrow(/exact approved RED lineage/);
+  const wrongLocalPatch: any = cloneFixture(fixture);
+  wrongLocalPatch.traces[6].red.testPatchSha256 = "0".repeat(64);
+  expect(() => validate(wrongLocalPatch, dependency())).toThrow(/exact approved RED lineage/);
   const unauthorized: any = cloneFixture(fixture);
   const unauthorizedTarget = unauthorized.traces[0];
   const unauthorizedEvidence: ParsedLocalProductModuleAbsence = {
@@ -411,16 +449,57 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
     )
   })).toThrow(/RED execution commit is not a verified Git ancestor/);
 
-  const behavioralExecution: any = cloneFixture(buildAcceptanceTraceSet());
-  behavioralExecution.traces[19].red.redExecutionCommitSha = "b".repeat(40);
-  expect(() => validate(behavioralExecution, {
-    ...fixtureAncestry,
-    isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
-      ancestorCommitSha === "a".repeat(40) && descendantCommitSha === "b".repeat(40)
-        ? true
-        : ancestorCommitSha === "b".repeat(40) && descendantCommitSha === behavioralExecution.traces[19].ownerCommitSha
-          ? false
-          : fixtureAncestry.isAncestor(ancestorCommitSha, descendantCommitSha)
-    )
-  })).toThrow(/RED execution commit is not a verified Git ancestor/);
+  for (const acceptanceNumber of [20, 21, 24]) {
+    const behavioral: any = cloneFixture(buildAcceptanceTraceSet());
+    const behavioralTarget = behavioral.traces[acceptanceNumber - 1];
+    behavioralTarget.red.baseSha = PLAN4_TEST_BASE_SHA;
+    behavioralTarget.red.testCommitSha = PLAN4_FROZEN_TEST_SHA;
+    behavioralTarget.red.redExecutionCommitSha = PLAN4_BEHAVIORAL_RED_SHA;
+    behavioralTarget.red.testPatchSha256 = PLAN4_ALERT_TEST_PATCH_SHA256;
+    const behavioralDependency = {
+      isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
+        ancestorCommitSha === PLAN4_FROZEN_TEST_SHA && descendantCommitSha === PLAN4_BEHAVIORAL_RED_SHA
+      ) || (
+        ancestorCommitSha === PLAN4_BEHAVIORAL_RED_SHA && descendantCommitSha === behavioralTarget.ownerCommitSha
+      ) || fixtureAncestry.isAncestor(ancestorCommitSha, descendantCommitSha)
+    };
+    expect(() => validate(behavioral, behavioralDependency)).not.toThrow();
+    const wrongBehavioralExecution: any = cloneFixture(behavioral);
+    wrongBehavioralExecution.traces[acceptanceNumber - 1].red.redExecutionCommitSha = "b".repeat(40);
+    expect(() => validate(wrongBehavioralExecution, behavioralDependency)).toThrow(/exact approved RED lineage/);
+    const wrongBehavioralPatch: any = cloneFixture(behavioral);
+    wrongBehavioralPatch.traces[acceptanceNumber - 1].red.testPatchSha256 = "0".repeat(64);
+    expect(() => validate(wrongBehavioralPatch, behavioralDependency)).toThrow(/exact approved RED lineage/);
+  }
+});
+
+it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits complete local capture records", async () => {
+  const api = await loadCaptureApi();
+  const alerts = "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts";
+  for (const acceptanceId of ["AC-20", "AC-21", "AC-24"]) {
+    expect(api.redGroupForTrace(alerts, acceptanceId)).toBe("plan4-alert-behavioral");
+  }
+  for (const acceptanceId of ["AC-27", "AC-39"]) {
+    expect(api.redGroupForTrace(alerts, acceptanceId)).toBe("plan4");
+  }
+  const local = api.buildCaptureRedSpec({
+    kind: "local_product_module_absent",
+    baseSha: PLAN4_TEST_BASE_SHA,
+    testCommitSha: PLAN4_FROZEN_TEST_SHA,
+    redExecutionCommitSha: PLAN4_FROZEN_TEST_SHA,
+    testPatchSha256: PLAN4_RENDERER_TEST_PATCH_SHA256,
+    testPatchFile: "trace/patches/ac-07.patch",
+    reportFile: "trace/red/plan4.vitest.json",
+    missingProductModulePath: "src/telegram/forensicPresentation"
+  });
+  expect(local).toEqual({
+    kind: "local_product_module_absent",
+    baseSha: PLAN4_TEST_BASE_SHA,
+    testCommitSha: PLAN4_FROZEN_TEST_SHA,
+    redExecutionCommitSha: PLAN4_FROZEN_TEST_SHA,
+    testPatchSha256: PLAN4_RENDERER_TEST_PATCH_SHA256,
+    testPatchFile: "trace/patches/ac-07.patch",
+    reportFile: "trace/red/plan4.vitest.json",
+    missingProductModulePath: "src/telegram/forensicPresentation"
+  });
 });

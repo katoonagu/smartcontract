@@ -97,6 +97,32 @@ export const REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS = Object.fre
   "AC-07", "AC-08", "AC-09", "AC-12", "AC-13", "AC-27", "AC-39"
 ]);
 export const REMEDIATION_PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
+const PLAN4_TEST_BASE_SHA = "d18067f6c49fd632bafa47a90f69f1e7bf8b1802";
+const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
+const PLAN4_ALERT_TEST_PATCH_SHA256 = "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2";
+const PLAN4_RENDERER_TEST_PATCH_SHA256 = "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
+const PLAN4_STORAGE_TEST_PATCH_SHA256 = "27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771";
+
+const EXACT_PLAN4_RED_LINEAGE: Readonly<Record<string, {
+  kind: AcceptanceTraceRedV1["kind"];
+  testFile: string;
+  baseSha: string;
+  testCommitSha: string;
+  redExecutionCommitSha: string;
+  testPatchSha256: string;
+  missingProductModulePath?: string;
+}>> = Object.freeze({
+  "AC-07": { kind: "local_product_module_absent", testFile: "tests/telegram/unifiedForensicRenderer.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_RENDERER_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentation" },
+  "AC-08": { kind: "local_product_module_absent", testFile: "tests/telegram/unifiedForensicRenderer.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_RENDERER_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentation" },
+  "AC-09": { kind: "local_product_module_absent", testFile: "tests/telegram/unifiedForensicRenderer.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_RENDERER_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentation" },
+  "AC-12": { kind: "local_product_module_absent", testFile: "tests/telegram/unifiedForensicRenderer.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_RENDERER_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentation" },
+  "AC-13": { kind: "local_product_module_absent", testFile: "tests/storage/unifiedTelegramCoverage.postgres.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_STORAGE_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentationAdapters" },
+  "AC-20": { kind: "behavioral_assertion", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: PLAN4_BEHAVIORAL_RED_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256 },
+  "AC-21": { kind: "behavioral_assertion", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: PLAN4_BEHAVIORAL_RED_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256 },
+  "AC-24": { kind: "behavioral_assertion", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: PLAN4_BEHAVIORAL_RED_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256 },
+  "AC-27": { kind: "local_product_module_absent", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentationAdapters" },
+  "AC-39": { kind: "local_product_module_absent", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentationAdapters" }
+});
 const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory)/i;
 
 export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
@@ -312,6 +338,20 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
         `${acceptanceId}.red.missingProductModulePath`
       ))
     : undefined;
+  const exactPlan4Lineage = EXACT_PLAN4_RED_LINEAGE[acceptanceId];
+  const exactPlan4LineageRequired = exactPlan4Lineage
+    && (exactPlan4Lineage.kind === "behavioral_assertion" || redKind === "local_product_module_absent");
+  if (exactPlan4LineageRequired && (
+    redKind !== exactPlan4Lineage.kind
+      || testFile !== exactPlan4Lineage.testFile
+      || baseSha !== exactPlan4Lineage.baseSha
+      || testCommitSha !== exactPlan4Lineage.testCommitSha
+      || redExecutionCommitSha !== exactPlan4Lineage.redExecutionCommitSha
+      || testPatchSha256 !== exactPlan4Lineage.testPatchSha256
+      || missingProductModulePath !== exactPlan4Lineage.missingProductModulePath
+  )) {
+    throw new Error(`${acceptanceId} RED evidence does not match its exact approved RED lineage`);
+  }
   if (red.status !== "failed_as_expected") throw new Error(`${acceptanceId} RED status is invalid`);
 
   const green = expectRecord(trace.green, `${acceptanceId}.green`);

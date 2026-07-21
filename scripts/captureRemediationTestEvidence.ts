@@ -81,6 +81,12 @@ type CaptureSpecV1 = {
   traces: CaptureTraceSpec[];
 };
 
+type CaptureRedSpecInput = Omit<Extract<CaptureTraceSpec["red"], { kind: "behavioral_assertion" }>, "kind"> & {
+  kind: "behavioral_assertion";
+} | Omit<Extract<CaptureTraceSpec["red"], { kind: "local_product_module_absent" }>, "kind"> & {
+  kind: "local_product_module_absent";
+};
+
 type JsonRecord = Record<string, unknown>;
 
 const execFileAsync = promisify(execFile);
@@ -239,6 +245,24 @@ function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+export function buildCaptureRedSpec(input: CaptureRedSpecInput): CaptureTraceSpec["red"] {
+  const common = {
+    baseSha: input.baseSha,
+    testCommitSha: input.testCommitSha,
+    redExecutionCommitSha: input.redExecutionCommitSha,
+    testPatchSha256: input.testPatchSha256,
+    testPatchFile: input.testPatchFile,
+    reportFile: input.reportFile
+  };
+  return input.kind === "behavioral_assertion"
+    ? { kind: "behavioral_assertion", ...common }
+    : {
+        kind: "local_product_module_absent",
+        ...common,
+        missingProductModulePath: input.missingProductModulePath
+      };
+}
+
 async function gitOutput(args: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", [...args], { cwd: repositoryRoot, windowsHide: true });
   return stdout.trim();
@@ -280,10 +304,14 @@ async function productModuleBlobAtCommit(commitSha: string, productModulePath: s
 
 async function assertLocalProductModuleLineage(input: {
   testCommitSha: string;
+  redExecutionCommitSha: string;
   ownerCommitSha: string;
   candidateSha: string;
   missingProductModulePath: string;
 }): Promise<void> {
+  if (input.redExecutionCommitSha !== input.testCommitSha) {
+    throw new Error("local product module RED must execute at its exact frozen test commit");
+  }
   if (!await isAncestor(input.testCommitSha, input.ownerCommitSha)) {
     throw new Error("frozen test commit is not an ancestor of owner commit");
   }
@@ -549,7 +577,7 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
   }
 }
 
-function redGroupForTrace(testFile: string, acceptanceId: string, secondary = false): string {
+export function redGroupForTrace(testFile: string, acceptanceId: string, secondary = false): string {
   if (secondary) return "plan2-llm-dampening";
   if (acceptanceId === "AC-10" || acceptanceId === "AC-11") return "plan1-renamed";
   if (acceptanceId === "AC-41") return "plan5";
@@ -797,7 +825,7 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
         patchText: patch.bytes.toString("utf8"),
         testPatchSha256: sha256(patch.bytes)
       });
-      red = {
+      red = buildCaptureRedSpec({
         kind: "behavioral_assertion",
         baseSha: redBaseSha,
         testCommitSha,
@@ -805,7 +833,7 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
         testPatchSha256: sha256(patch.bytes),
         testPatchFile: patch.relativePath,
         reportFile: redReport.reportRelativePath
-      };
+      });
     } else {
       if (redExecutions.length !== 0 || localAbsences.length !== 1
           || !REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(input.acceptanceId)) {
@@ -829,15 +857,16 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
         candidateSha,
         missingProductModulePath: evidence.missingProductModulePath
       });
-      red = {
+      red = buildCaptureRedSpec({
         kind: "local_product_module_absent",
         baseSha: redBaseSha,
         testCommitSha,
+        redExecutionCommitSha: redGroup.commitSha,
         testPatchSha256: sha256(patch.bytes),
         testPatchFile: patch.relativePath,
         reportFile: redReport.reportRelativePath,
         missingProductModulePath: evidence.missingProductModulePath
-      };
+      });
     }
     if (redBaseSha !== testCommitSha) {
       const exactTestPatch = await gitPatch(redBaseSha, testCommitSha, input.testFile);
@@ -975,9 +1004,10 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
       if (!REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(item.acceptanceId)) {
         throw new Error(`${item.acceptanceId} is not approved for local product module RED`);
       }
+      const missingProductModulePath = item.red.missingProductModulePath;
       const localEvidence = redReport.localProductModuleAbsences.filter((evidence) => (
         evidence.testFile === item.testFile
-          && evidence.missingProductModulePath === item.red.missingProductModulePath
+          && evidence.missingProductModulePath === missingProductModulePath
       ));
       if (localEvidence.length !== 1) {
         throw new Error(`${item.acceptanceId} local product module RED is not exact and unique`);
@@ -987,19 +1017,20 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
         testFile: item.testFile,
         fullName: item.fullName,
         expectedFailureFingerprint: item.expectedFailureFingerprint,
-        missingProductModulePath: item.red.missingProductModulePath,
+        missingProductModulePath,
         patchText,
         testPatchSha256: item.red.testPatchSha256
       });
       await assertLocalProductModuleLineage({
         testCommitSha: item.red.testCommitSha,
+        redExecutionCommitSha: item.red.redExecutionCommitSha,
         ownerCommitSha: item.ownerCommitSha,
         candidateSha: spec.candidateSha,
-        missingProductModulePath: item.red.missingProductModulePath
+        missingProductModulePath
       });
-      verifiedPathStates.set(`${item.red.testCommitSha}\u0000${item.red.missingProductModulePath}`, false);
-      verifiedPathStates.set(`${item.ownerCommitSha}\u0000${item.red.missingProductModulePath}`, true);
-      verifiedPathStates.set(`${spec.candidateSha}\u0000${item.red.missingProductModulePath}`, true);
+      verifiedPathStates.set(`${item.red.testCommitSha}\u0000${missingProductModulePath}`, false);
+      verifiedPathStates.set(`${item.ownerCommitSha}\u0000${missingProductModulePath}`, true);
+      verifiedPathStates.set(`${spec.candidateSha}\u0000${missingProductModulePath}`, true);
     }
     await assertPatchAppliesToBase(item.red.baseSha, patchBytes);
     if (item.red.baseSha !== item.red.testCommitSha) {

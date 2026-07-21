@@ -1585,6 +1585,15 @@ modules load and the three exact assertions fail for behavior. Validators bind
 test commit → RED execution commit → owner commit → candidate; they never route
 these ACs through `local_product_module_absent`.
 
+The exact Plan 4 test-patch SHA-256 pins are alerts
+`544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2`,
+renderer
+`c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5`,
+and PostgreSQL coverage
+`27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771`.
+Exact kind, file, base, test commit, RED execution commit and local missing path
+are pinned with the applicable hash.
+
 The AC-10/11 title corrections and the new AC-33 LLM-dampening regression are
 recorded as exact test-only patches and replayed against their owner bases so
 their RED provenance is auditable without changing product semantics.

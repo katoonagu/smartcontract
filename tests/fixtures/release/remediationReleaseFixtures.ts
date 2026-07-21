@@ -846,6 +846,7 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
   const traces = REQUIRED_ACCEPTANCE_IDS.map((acceptanceId, index): AcceptanceTraceV1 => {
     const ownerPlan = EXPECTED_ACCEPTANCE_OWNER_PLAN[acceptanceId]!;
     const ownerCommitSha = String(ownerPlan).repeat(40);
+    const behavioralPlan4 = ["AC-20", "AC-21", "AC-24"].includes(acceptanceId);
     return {
       acceptanceId,
       requirementIds: [...EXPECTED_ACCEPTANCE_REQUIREMENT_IDS[acceptanceId]!],
@@ -856,10 +857,12 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
       primary: true,
       red: {
         kind: "behavioral_assertion",
-        baseSha: PLAN_BASE_SHA,
-        testCommitSha: "a".repeat(40),
-        redExecutionCommitSha: "a".repeat(40),
-        testPatchSha256: (index + 201).toString(16).padStart(64, "0"),
+        baseSha: behavioralPlan4 ? "d18067f6c49fd632bafa47a90f69f1e7bf8b1802" : PLAN_BASE_SHA,
+        testCommitSha: behavioralPlan4 ? "20ee8a759e482c2c3037d72e561e68e289cf87b5" : "a".repeat(40),
+        redExecutionCommitSha: behavioralPlan4 ? "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72" : "a".repeat(40),
+        testPatchSha256: behavioralPlan4
+          ? "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2"
+          : (index + 201).toString(16).padStart(64, "0"),
         vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
         expectedFailureFingerprint: `expected_behavioral_assertion_${acceptanceId.toLowerCase()}`,
         status: "failed_as_expected"
