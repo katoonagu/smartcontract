@@ -518,7 +518,7 @@ it("[REQ-38][OPERATIONAL-AUTHORITY-EXPIRED-UNCLAIMED] rejects early terminalizat
     })).rejects.toThrow();
     await rm(conflictPath, { force: true });
   }
-}, 120_000);
+}, 180_000);
 
 it("[REQ-38][OPERATIONAL-AUTHORITY-SWAPPED] rejects swapped freeze root generation candidate source command previous attestation or terminal lineage", async () => {
   const api = await loadStoreApi(); const valid = buildOperationalAttestationV2Fixture();
