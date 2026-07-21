@@ -197,8 +197,10 @@ runtime/DB health и отдельный closeout document после прове�
    санитизированного output. Literal command, argv, env и DB URL не сохраняются.
    Release validator не доверяет свободной строке `PASS`.
 4. `AC-41` требует все 41 ID, required suite set, typed per-AC trace и
-   фактический полный `npm test`. Source search/meta-test не заменяет
-   machine-readable Vitest JSON/JUnit evidence.
+   фактический полный Vitest run через repository-local `vitest.mjs` с
+   утверждёнными serialization/test/hook bounds. npm indirection не является
+   command evidence: source search/meta-test не заменяет machine-readable
+   Vitest JSON/JUnit evidence.
 5. Для `AC-01…AC-40` release manifest принимает только exact tests Plans 1–4:
    fullName, file, owner commit, ожидаемый RED и candidate GREEN. Один ID в
    comment/string, skipped/todo test или старый regression без ID не закрывает
@@ -3096,8 +3098,9 @@ tests/alerts/addressPoisoningAlert.test.ts
 ```
 
 The runner additionally executes Plan 5 tests, `npm run typecheck`, the literal
-full `npm test`, `git diff --check`, forbidden-scope audit and PostgreSQL schema
-cleanup for exact prefixes `plan1_%…plan5_%` in the exact disposable DBs.
+full repository-local Vitest CLI with approved serialization/test/hook bounds,
+`git diff --check`, forbidden-scope audit and PostgreSQL schema cleanup for exact
+prefixes `plan1_%…plan5_%` in the exact disposable DBs.
 
 **Commit:** `test: make remediation release gates executable`
 
@@ -4318,7 +4321,7 @@ npx vitest run --configLoader bundle `
   tests/release/schema032Release.acceptance.test.ts `
   tests/release/task0bRuntimeManager.acceptance.test.ts
 npm run typecheck
-npm test
+node node_modules/vitest/vitest.mjs run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000
 npx vitest run --configLoader bundle `
   tests/monitor/addressPoisoning.test.ts `
   tests/monitor/addressPoisoningWorker.test.ts `

@@ -150,8 +150,10 @@ protected sequence roots for exact databases `tron_watch_plan5_clean` and
 `tron_watch_plan5_runtime_sanitized`; all disposable targets are loopback and
 offline. The suite producer serializes test files and applies bounded 120-second
 test and hook timeouts so database-backed files cannot race shared disposable
-state. The literal full test inside the non-Vitest producer is serialized with
-five-minute test/hook bounds and a one-hour process bound to avoid cross-file
+state. The literal full test inside the non-Vitest producer invokes the
+repository-local `node_modules/vitest/vitest.mjs` directly, is serialized with
+five-minute test/hook bounds, and has a one-hour whole-process-tree bound. This
+avoids npm argv rewriting, orphan workers after timeout, and cross-file
 release-store contention without treating normal filesystem variance as a
 failure. Set
 `TEST_DATABASE_URL` to the matching `tron_watch_plan1` through

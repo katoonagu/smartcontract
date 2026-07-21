@@ -396,6 +396,11 @@ of these decisions, update this file in the same work.
   exactly match the immutable root. Once entry succeeds, G12 authority/lease
   and G13 authority/bound-session/advisory-lock checks govern the bounded action;
   the original Task 0B TTL is not reused as a long-operation deadline.
+- Task 9 full regression evidence invokes the repository-local Vitest CLI
+  directly with exact serialization and five-minute test/hook bounds. npm
+  indirection is not accepted because it may rewrite or discard Vitest argv.
+  The one-hour outer timeout terminates and awaits the complete worker process
+  tree before a retry or cleanup audit.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 

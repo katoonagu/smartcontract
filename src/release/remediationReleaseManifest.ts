@@ -419,7 +419,7 @@ const REDACTED_COMMAND_TEMPLATES: Record<ReleaseCommandId, string> = {
   plan2_focused: "release:suite plan2 <artifact-root>",
   plan3_focused: "release:suite plan3 <artifact-root>",
   plan4_focused: "release:suite plan4 <artifact-root>",
-  full_regression: "npm test && npm run typecheck && git diff --check && release:scope-audit && release:postgres-cleanup",
+  full_regression: "node <repo>/node_modules/vitest/vitest.mjs run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000 && npm run typecheck && git diff --check && release:scope-audit && release:postgres-cleanup",
   schema_clean_rehearsal: "release:schema clean <database-fingerprint>",
   schema_production_clone_rehearsal: "release:schema production_clone <database-fingerprint>",
   runtime_sanitized_rehearsal: "release:runtime runtime_sanitized recording_disabled",

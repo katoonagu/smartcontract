@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath, writeFile } from "node:fs/promises";
@@ -302,7 +302,7 @@ export type NonVitestReleaseEvidenceV1 = {
   }>;
 };
 
-type ReleaseProcessResult = {
+export type ReleaseProcessResult = {
   status: number | null;
   stdout: string;
   stderr: string;
@@ -311,9 +311,119 @@ type ReleaseProcessResult = {
 };
 
 export type NonVitestReleaseDependencies = {
-  run(executable: string, args: readonly string[], env: NodeJS.ProcessEnv): ReleaseProcessResult;
+  run(executable: string, args: readonly string[], env: NodeJS.ProcessEnv): ReleaseProcessResult | Promise<ReleaseProcessResult>;
   postgresCleanup(): Promise<Record<string, string[]>>;
 };
+
+async function terminateReleaseChildTree(child: ChildProcess): Promise<Error | undefined> {
+  if (!child.pid) return undefined;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+      return undefined;
+    } catch (error) {
+      try { child.kill("SIGKILL"); } catch { /* report original process-group failure */ }
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  return await new Promise<Error | undefined>((resolveDone) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killerTimeout);
+      resolveDone(error);
+    };
+    const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+      shell: false
+    });
+    const killerTimeout = setTimeout(() => {
+      try { killer.kill("SIGKILL"); } catch { /* best effort */ }
+      finish(new Error("taskkill timed out"));
+    }, 10_000);
+    killer.once("error", (error) => finish(error));
+    killer.once("close", (status) => finish(status === 0 ? undefined : new Error(`taskkill exited ${status}`)));
+  });
+}
+
+export async function runBoundedReleaseProcess(
+  executable: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 60 * 60_000
+): Promise<ReleaseProcessResult> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("release check timeout is invalid");
+  return await new Promise<ReleaseProcessResult>((resolveDone) => {
+    let stdout = "";
+    let stderr = "";
+    let outputBytes = 0;
+    let terminalError: Error | undefined;
+    let closed = false;
+    let terminating = false;
+    let terminationComplete = false;
+    let settled = false;
+    let status: number | null = null;
+    let signal: NodeJS.Signals | null = null;
+    const child = spawn(executable, [...args], {
+      cwd: repositoryRoot,
+      env,
+      windowsHide: true,
+      shell: false,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const finish = () => {
+      if (settled || !closed || (terminating && !terminationComplete)) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveDone({ status, stdout, stderr, signal, error: terminalError });
+    };
+    const terminate = async (error: Error) => {
+      if (terminating || closed) return;
+      terminating = true;
+      terminalError = error;
+      clearTimeout(timeout);
+      const treeError = await terminateReleaseChildTree(child);
+      if (treeError) {
+        terminalError = new Error(`${error.message}; process tree termination failed: ${treeError.message}`);
+        try { child.kill("SIGKILL"); } catch { /* result remains failed */ }
+      }
+      terminationComplete = true;
+      finish();
+    };
+    const append = (target: "stdout" | "stderr", chunk: Buffer | string) => {
+      if (terminating) return;
+      const text = chunk.toString();
+      outputBytes += Buffer.byteLength(text);
+      if (outputBytes > MAX_ARTIFACT_BYTES) {
+        void terminate(new Error("release check output exceeded limit"));
+        return;
+      }
+      if (target === "stdout") stdout += text;
+      else stderr += text;
+    };
+    child.stdout?.on("data", (chunk: Buffer | string) => append("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer | string) => append("stderr", chunk));
+    child.once("error", (error) => {
+      terminalError = error;
+      if (!child.pid) {
+        closed = true;
+        finish();
+      }
+    });
+    child.once("close", (exitStatus, exitSignal) => {
+      status = exitStatus;
+      signal = exitSignal;
+      closed = true;
+      finish();
+    });
+    const timeout = setTimeout(() => {
+      void terminate(new Error("release check timed out"));
+    }, timeoutMs);
+  });
+}
 
 function requireDisposableDatabaseUrl(env: NodeJS.ProcessEnv, envName: keyof typeof PLAN5_CLEANUP_DATABASES): string {
   const value = env[envName];
@@ -325,23 +435,8 @@ function requireDisposableDatabaseUrl(env: NodeJS.ProcessEnv, envName: keyof typ
 
 export function createDefaultNonVitestReleaseDependencies(env: NodeJS.ProcessEnv): NonVitestReleaseDependencies {
   return {
-    run(executable, args, childEnv) {
-      const result = spawnSync(executable, [...args], {
-        cwd: repositoryRoot,
-        env: childEnv,
-        encoding: "utf8",
-        windowsHide: true,
-        shell: false,
-        timeout: 60 * 60_000,
-        maxBuffer: MAX_ARTIFACT_BYTES
-      });
-      return {
-        status: result.status,
-        stdout: result.stdout ?? "",
-        stderr: result.stderr ?? "",
-        signal: result.signal,
-        error: result.error
-      };
+    async run(executable, args, childEnv) {
+      return await runBoundedReleaseProcess(executable, args, childEnv);
     },
     async postgresCleanup() {
       const cleanup: Record<string, string[]> = {};
@@ -383,7 +478,7 @@ export async function runNonVitestReleaseChecks(
     throw new Error("non-Vitest release base or candidate SHA is invalid");
   }
   const environment = buildReleaseSuiteEnvironment(input.env);
-  const ancestry = dependencies.run("git", ["merge-base", "--is-ancestor", PLAN5_APPROVED_BASE_SHA, input.candidateSha], environment);
+  const ancestry = await dependencies.run("git", ["merge-base", "--is-ancestor", PLAN5_APPROVED_BASE_SHA, input.candidateSha], environment);
   if (ancestry.error || ancestry.signal || ancestry.status !== 0) throw new Error("approved Plan 5 base is not a candidate ancestor");
   const npmExecutable = process.platform === "win32" ? process.execPath : "npm";
   const npmArgs = process.platform === "win32"
@@ -415,7 +510,7 @@ export async function runNonVitestReleaseChecks(
   ];
   const checks: NonVitestReleaseEvidenceV1["checks"] = [];
   for (const command of commands) {
-    const result = dependencies.run(command.executable, command.args, environment);
+    const result = await dependencies.run(command.executable, command.args, environment);
     if (result.error || result.signal || result.status !== 0) throw new Error(`${command.checkId} failed`);
     assertNoSecretLikeArtifactValues({ stdout: result.stdout, stderr: result.stderr });
     if (command.checkId === "forbidden_scope") validatePlan5CandidateScope(result.stdout);

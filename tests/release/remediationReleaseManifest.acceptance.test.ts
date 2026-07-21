@@ -1384,7 +1384,7 @@ it("[REQ-38][G07-SCHEMA-BINDING] requires distinct semantic clean and production
   expect(() => runner.validateOfflineSchemaArtifactSet(CANDIDATE_SHA, clean, Buffer.from(JSON.stringify({ ...base, databaseRole: "production_clone" })))).toThrow();
 });
 
-it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope and PostgreSQL cleanup fail closed", async () => {
+it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope and PostgreSQL cleanup fail closed", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
   const calls: Array<{ executable: string; args: string[] }> = [];
   const valid = await runner.runNonVitestReleaseChecks({
@@ -1502,6 +1502,42 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
       return Object.fromEntries(Object.values(runner.PLAN5_CLEANUP_DATABASES).map((database: string) => [database, []]));
     }
   })).rejects.toThrow(/base/i);
+});
+
+it("[AC-41][NON-VITEST-TIMEOUT] terminates the full descendant process tree", { timeout: 15_000 }, async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease");
+  const root = await mkdtemp(join(tmpdir(), "plan5-non-vitest-timeout-"));
+  const descendantPidPath = join(root, "descendant.pid");
+  let descendantPid: number | undefined;
+  try {
+    const script = [
+      'const { spawn } = require("node:child_process");',
+      'const { writeFileSync } = require("node:fs");',
+      'const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });',
+      'writeFileSync(process.argv[1], String(child.pid));',
+      'setInterval(() => {}, 1000);'
+    ].join("");
+    const result = await runner.runBoundedReleaseProcess(
+      process.execPath,
+      ["-e", script, descendantPidPath],
+      process.env,
+      1_000
+    );
+    expect(result.error?.message).toMatch(/timed out/i);
+    descendantPid = Number((await readFile(descendantPidPath, "utf8")).trim());
+    expect(Number.isSafeInteger(descendantPid) && descendantPid > 0).toBe(true);
+    let alive = true;
+    for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
+      try { process.kill(descendantPid, 0); } catch { alive = false; }
+      if (alive) await new Promise((resolveDone) => setTimeout(resolveDone, 100));
+    }
+    expect(alive).toBe(false);
+  } finally {
+    if (descendantPid) {
+      try { process.kill(descendantPid, "SIGKILL"); } catch { /* already terminated */ }
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("[AC-41][SUITE-RUNNER] rejects missing skipped filtered failed or nonzero group execution", async () => {
