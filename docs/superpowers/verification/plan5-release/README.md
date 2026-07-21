@@ -220,6 +220,10 @@ order is producer-first, strict-verifier-last.
    npm run release:trace:capture -- <artifact-root>
    ```
 
+   Its literal full Vitest run is serialized with bounded 120-second test and
+   hook timeouts, matching the focused producer's protection against shared
+   release-store contention.
+
 4. Rehearse schema 032 on the clean database and the offline production clone.
    Use a separate protected sequence directory per database because the
    producer writes an exclusive four-file sequence. Preserve/promote each

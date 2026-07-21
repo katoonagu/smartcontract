@@ -316,7 +316,19 @@ export async function runNonVitestReleaseChecks(
     : [];
   const commands: Array<{ checkId: Exclude<NonVitestReleaseCheckId, "postgres_cleanup">; executable: string; args: string[]; requireEmpty: boolean }> = [
     { checkId: "typecheck", executable: npmExecutable, args: [...npmArgs, "run", "typecheck"], requireEmpty: false },
-    { checkId: "full_test", executable: npmExecutable, args: [...npmArgs, "test"], requireEmpty: false },
+    {
+      checkId: "full_test",
+      executable: npmExecutable,
+      args: [
+        ...npmArgs,
+        "test",
+        "--",
+        "--no-file-parallelism",
+        "--testTimeout=120000",
+        "--hookTimeout=120000"
+      ],
+      requireEmpty: false
+    },
     { checkId: "diff_check", executable: "git", args: ["diff", "--check", `${input.planBaseSha}..${input.candidateSha}`], requireEmpty: true },
     {
       checkId: "forbidden_scope",

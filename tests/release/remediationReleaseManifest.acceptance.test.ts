@@ -1322,9 +1322,13 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
       };
     }
   });
-  const npmCalls = calls.filter((call) => call.args.slice(-1).join(" ") === "test"
-    || call.args.slice(-2).join(" ") === "run typecheck");
-  expect(npmCalls).toHaveLength(2);
+  const typecheckCall = calls.find((call) => call.args.slice(-2).join(" ") === "run typecheck");
+  const fullTestCall = calls.find((call) => call.args.includes("test"));
+  expect(typecheckCall).toBeDefined();
+  expect(fullTestCall?.args.slice(-5)).toEqual([
+    "test", "--", "--no-file-parallelism", "--testTimeout=120000", "--hookTimeout=120000"
+  ]);
+  const npmCalls = [typecheckCall!, fullTestCall!];
   expect(npmCalls.every((call) => !call.executable.toLowerCase().endsWith(".cmd"))).toBe(true);
   if (process.platform === "win32") {
     expect(npmCalls.every((call) => call.executable === process.execPath)).toBe(true);
@@ -1369,7 +1373,7 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
     env: {}
   }, {
     run(_executable, args) {
-      return args.at(-1) === "test"
+      return args.includes("test")
         ? { status: 1, stdout: "", stderr: "failed", signal: null }
         : { status: 0, stdout: "", stderr: "", signal: null };
     },
