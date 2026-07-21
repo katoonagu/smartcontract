@@ -163,6 +163,15 @@ to an isolated disposable `tron_watch` database; production port `55999` is
 rejected. Remove both suite-only variables outside their exact group.
 `schema:verify` is read-only and cannot replace the producer.
 
+Trace preparation normally requires an exact behavioral assertion failure.
+Only AC-07/08/09/12/13/27/39 may use the corrective typed
+`local_product_module_absent` form: zero tests executed in the exact failed
+file, one relative missing `src/*` product import whose importer is that file,
+the exact frozen test patch, test-commit-to-owner-to-candidate ancestry, module
+absence at the test commit, and module presence at owner plus candidate.
+External dependencies and generic import/no-test/environment failures fail
+closed.
+
 After manual evidence finalization, and after every later transition, hash the
 exact current manifest bytes. Never reuse a prior source SHA or edit the store:
 

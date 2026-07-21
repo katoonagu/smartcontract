@@ -1,10 +1,27 @@
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import {
   REMEDIATION_REQUIRED_ACCEPTANCE_IDS,
   REMEDIATION_REQUIRED_REQUIREMENT_IDS,
   assertExactIdSet,
   assertNoSecretLikeArtifactValues
 } from "./remediationReleaseManifest";
+
+type AcceptanceTraceRedCommonV1 = {
+  baseSha: string;
+  testCommitSha: string;
+  testPatchSha256: string;
+  vitestReportSha256: string;
+  expectedFailureFingerprint: string;
+  status: "failed_as_expected";
+};
+
+export type AcceptanceTraceRedV1 =
+  | (AcceptanceTraceRedCommonV1 & { kind: "behavioral_assertion" })
+  | (AcceptanceTraceRedCommonV1 & {
+      kind: "local_product_module_absent";
+      missingProductModulePath: string;
+    });
 
 export type AcceptanceTraceV1 = {
   acceptanceId: string;
@@ -14,13 +31,7 @@ export type AcceptanceTraceV1 = {
   testFile: string;
   fullName: string;
   primary: boolean;
-  red: {
-    baseSha: string;
-    testPatchSha256: string;
-    vitestReportSha256: string;
-    expectedFailureFingerprint: string;
-    status: "failed_as_expected";
-  };
+  red: AcceptanceTraceRedV1;
   green: {
     candidateSha: string;
     vitestReportSha256: string;
@@ -50,7 +61,8 @@ export type ParsedAcceptanceExecution = AcceptanceExecutionV1 & { failureMessage
 export type AcceptanceReportOutcome = "passed" | "failed";
 
 export type AcceptanceTraceDependencies = {
-  isAncestor(ownerCommitSha: string, candidateSha: string): boolean;
+  isAncestor(ancestorCommitSha: string, descendantCommitSha: string): boolean;
+  pathExistsAtCommit?(commitSha: string, productModulePath: string): boolean;
 };
 
 export type AcceptanceRedEvidenceBinding = {
@@ -62,12 +74,28 @@ export type AcceptanceRedEvidenceBinding = {
   testPatchSha256: string;
 };
 
+export type ParsedLocalProductModuleAbsence = {
+  testFile: string;
+  missingProductModulePath: string;
+  failureMessage: string;
+};
+
+export type AcceptanceLocalProductModuleRedEvidenceBinding = AcceptanceRedEvidenceBinding & {
+  missingProductModulePath: string;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const TEST_FILE = /^tests\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.test\.ts$/;
 const BEHAVIORAL_FINGERPRINT = /^expected_behavioral_assertion_ac-\d{2}(?:_[a-z0-9-]+)*$/;
+const LOCAL_PRODUCT_MODULE_FINGERPRINT = /^expected_local_product_module_absent_ac-\d{2}_[0-9a-f]{64}$/;
+const LOCAL_PRODUCT_MODULE = /^src\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/;
+export const REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS = Object.freeze([
+  "AC-07", "AC-08", "AC-09", "AC-12", "AC-13", "AC-27", "AC-39"
+]);
+export const REMEDIATION_PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
 const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory)/i;
 
 export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
@@ -174,6 +202,16 @@ export function normalizeAcceptanceTestFile(value: string): string {
   return relative;
 }
 
+export function normalizeLocalProductModulePath(value: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!LOCAL_PRODUCT_MODULE.test(normalized)
+      || normalized.split("/").some((segment) => segment === "." || segment === "..")
+      || /[?#\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new Error("missing path is not a local product module under src");
+  }
+  return normalized;
+}
+
 function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: ReadonlySet<string>, index: number): AcceptanceTraceV1 {
   const trace = expectRecord(value, `traces[${index}]`);
   expectExactKeys(trace, [
@@ -216,26 +254,53 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
   if (typeof trace.primary !== "boolean") throw new Error(`${acceptanceId} primary must be boolean`);
 
   const red = expectRecord(trace.red, `${acceptanceId}.red`);
-  expectExactKeys(red, [
-    "baseSha",
-    "testPatchSha256",
-    "vitestReportSha256",
-    "expectedFailureFingerprint",
-    "status"
+  const redKind = expectString(red.kind, `${acceptanceId}.red.kind`);
+  if (redKind !== "behavioral_assertion" && redKind !== "local_product_module_absent") {
+    throw new Error(`${acceptanceId} RED kind is invalid`);
+  }
+  expectExactKeys(red, redKind === "behavioral_assertion" ? [
+    "kind", "baseSha", "testCommitSha", "testPatchSha256", "vitestReportSha256",
+    "expectedFailureFingerprint", "status"
+  ] : [
+    "kind", "baseSha", "testCommitSha", "testPatchSha256", "vitestReportSha256",
+    "expectedFailureFingerprint", "missingProductModulePath", "status"
   ], `${acceptanceId}.red`);
   const baseSha = expectSha40(red.baseSha, `${acceptanceId}.red.baseSha`);
   if (baseSha === candidateSha) throw new Error(`${acceptanceId} RED base cannot be the candidate`);
+  const testCommitSha = expectSha40(red.testCommitSha, `${acceptanceId}.red.testCommitSha`);
+  if (testCommitSha === candidateSha || testCommitSha === ownerCommitSha) {
+    throw new Error(`${acceptanceId} frozen test commit must precede owner and candidate commits`);
+  }
   const testPatchSha256 = expectSha256(red.testPatchSha256, `${acceptanceId}.red.testPatchSha256`);
   const redReportSha256 = expectSha256(red.vitestReportSha256, `${acceptanceId}.red.vitestReportSha256`);
   const expectedFailureFingerprint = expectString(
     red.expectedFailureFingerprint,
     `${acceptanceId}.red.expectedFailureFingerprint`
   );
-  if (!BEHAVIORAL_FINGERPRINT.test(expectedFailureFingerprint)
-      || !expectedFailureFingerprint.includes(acceptanceId.toLowerCase())
-      || INFRASTRUCTURE_FAILURE.test(expectedFailureFingerprint)) {
-    throw new Error(`${acceptanceId} RED fingerprint is not an expected behavioral assertion`);
+  if (redKind === "behavioral_assertion") {
+    if (!BEHAVIORAL_FINGERPRINT.test(expectedFailureFingerprint)
+        || !expectedFailureFingerprint.includes(acceptanceId.toLowerCase())
+        || INFRASTRUCTURE_FAILURE.test(expectedFailureFingerprint)) {
+      throw new Error(`${acceptanceId} RED fingerprint is not an expected behavioral assertion`);
+    }
+  } else {
+    if (!REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)) {
+      throw new Error(`${acceptanceId} is not approved for local product module RED`);
+    }
+    if (!LOCAL_PRODUCT_MODULE_FINGERPRINT.test(expectedFailureFingerprint)
+        || !expectedFailureFingerprint.includes(acceptanceId.toLowerCase())) {
+      throw new Error(`${acceptanceId} RED fingerprint is not an exact local product module absence`);
+    }
+    if (testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA) {
+      throw new Error(`${acceptanceId} local product module RED must use the exact frozen Plan 4 test commit`);
+    }
   }
+  const missingProductModulePath = redKind === "local_product_module_absent"
+    ? normalizeLocalProductModulePath(expectString(
+        red.missingProductModulePath,
+        `${acceptanceId}.red.missingProductModulePath`
+      ))
+    : undefined;
   if (red.status !== "failed_as_expected") throw new Error(`${acceptanceId} RED status is invalid`);
 
   const green = expectRecord(trace.green, `${acceptanceId}.green`);
@@ -253,11 +318,22 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
     testFile,
     fullName,
     primary: trace.primary,
-    red: {
+    red: redKind === "behavioral_assertion" ? {
+      kind: "behavioral_assertion",
       baseSha,
+      testCommitSha,
       testPatchSha256,
       vitestReportSha256: redReportSha256,
       expectedFailureFingerprint,
+      status: "failed_as_expected"
+    } : {
+      kind: "local_product_module_absent",
+      baseSha,
+      testCommitSha,
+      testPatchSha256,
+      vitestReportSha256: redReportSha256,
+      expectedFailureFingerprint,
+      missingProductModulePath: missingProductModulePath!,
       status: "failed_as_expected"
     },
     green: {
@@ -328,6 +404,34 @@ export function validateAcceptanceTraceSet(
       isAncestor = false;
     }
     if (!isAncestor) throw new Error("owner commit is not a verified Git ancestor of the candidate");
+  }
+  for (const trace of traces) {
+    let testPrecedesOwner = false;
+    try {
+      testPrecedesOwner = dependencies.isAncestor(trace.red.testCommitSha, trace.ownerCommitSha);
+    } catch {
+      testPrecedesOwner = false;
+    }
+    if (!testPrecedesOwner) {
+      throw new Error(`${trace.acceptanceId} test commit is not a verified Git ancestor of owner commit`);
+    }
+    if (trace.red.kind !== "local_product_module_absent") continue;
+    if (typeof dependencies.pathExistsAtCommit !== "function") {
+      throw new Error("local product module lineage requires a trusted Git path verifier");
+    }
+    let existsAtTest: boolean;
+    let existsAtOwner: boolean;
+    let existsAtCandidate: boolean;
+    try {
+      existsAtTest = dependencies.pathExistsAtCommit(trace.red.testCommitSha, trace.red.missingProductModulePath);
+      existsAtOwner = dependencies.pathExistsAtCommit(trace.ownerCommitSha, trace.red.missingProductModulePath);
+      existsAtCandidate = dependencies.pathExistsAtCommit(candidateSha, trace.red.missingProductModulePath);
+    } catch {
+      throw new Error(`${trace.acceptanceId} local product module lineage could not be verified`);
+    }
+    if (existsAtTest) throw new Error(`${trace.acceptanceId} local product module must be absent at the frozen test commit`);
+    if (!existsAtOwner) throw new Error(`${trace.acceptanceId} local product module is absent at owner commit`);
+    if (!existsAtCandidate) throw new Error(`${trace.acceptanceId} local product module is absent at candidate`);
   }
   const traceNames = traces.map((trace) => trace.fullName);
   if (new Set(traceNames).size !== traceNames.length) throw new Error("trace fullName values must be unique");
@@ -426,6 +530,44 @@ export function parseVitestJsonReport(
   }
   if (executions.length === 0) throw new Error("Vitest JSON report contains no executed tests");
   return executions;
+}
+
+export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLocalProductModuleAbsence[] {
+  const report = expectRecord(value, "Vitest JSON report");
+  if (report.success !== false) throw new Error("local product module RED report must fail");
+  const failedSuites = expectNonnegativeCount(report.numFailedTestSuites, "numFailedTestSuites");
+  const failedTests = expectNonnegativeCount(report.numFailedTests, "numFailedTests");
+  if (failedSuites === 0 || failedTests !== 0) {
+    throw new Error("local product module RED must be a file-load failure before test execution");
+  }
+  if (!Array.isArray(report.testResults) || report.testResults.length === 0) {
+    throw new Error("local product module RED report has no failed test files");
+  }
+  const evidence: ParsedLocalProductModuleAbsence[] = [];
+  for (const [index, value] of report.testResults.entries()) {
+    const result = expectRecord(value, `testResults[${index}]`);
+    const testFile = normalizeAcceptanceTestFile(expectString(result.name, `testResults[${index}].name`));
+    if (result.status !== "failed" || !Array.isArray(result.assertionResults) || result.assertionResults.length !== 0) {
+      throw new Error("local product module RED must contain only failed files with zero test executions");
+    }
+    const failureMessage = expectString(result.message, `testResults[${index}].message`);
+    const match = /^Cannot find module (['"])([^'"\r\n]+)\1 imported from (['"]?)([^'"\r\n]+)\3$/.exec(failureMessage);
+    if (!match) throw new Error("RED evidence is not an exact local product module absence");
+    const specifier = match[2].replace(/\\/g, "/");
+    if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+      throw new Error("missing module specifier is not a relative local product import");
+    }
+    const importer = normalizeAcceptanceTestFile(match[4]);
+    if (importer !== testFile) throw new Error("missing module importer does not match the failed test file");
+    const missingProductModulePath = normalizeLocalProductModulePath(
+      posix.normalize(posix.join(posix.dirname(testFile), specifier))
+    );
+    evidence.push({ testFile, missingProductModulePath, failureMessage });
+  }
+  if (evidence.length !== failedSuites) {
+    throw new Error("local product module RED failed-suite count does not match exact file evidence");
+  }
+  return evidence;
 }
 
 function decodeXml(value: string): string {
@@ -534,6 +676,19 @@ export function behavioralFailureFingerprint(
   return `expected_behavioral_assertion_${acceptanceId.toLowerCase()}_${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
+export function localProductModuleAbsenceFingerprint(
+  acceptanceId: string,
+  evidence: ParsedLocalProductModuleAbsence
+): string {
+  if (!REMEDIATION_REQUIRED_ACCEPTANCE_IDS.includes(acceptanceId)) throw new Error("acceptance ID is not approved");
+  const canonical = JSON.stringify({
+    testFile: normalizeAcceptanceTestFile(evidence.testFile),
+    missingProductModulePath: normalizeLocalProductModulePath(evidence.missingProductModulePath),
+    failureMessage: evidence.failureMessage.replace(/\\/g, "/").replace(/\s+/g, " ").trim()
+  });
+  return `expected_local_product_module_absent_${acceptanceId.toLowerCase()}_${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -585,5 +740,22 @@ export function assertExpectedBehavioralRed(
   assertAcceptancePatchBinding(binding);
   if (behavioralFailureFingerprint(binding.acceptanceId, execution) !== binding.expectedFailureFingerprint) {
     throw new Error("RED failure fingerprint does not match the exact behavioral assertion");
+  }
+}
+
+export function assertExpectedLocalProductModuleAbsentRed(
+  evidence: ParsedLocalProductModuleAbsence,
+  binding?: AcceptanceLocalProductModuleRedEvidenceBinding
+): void {
+  if (!binding) throw new Error("local product module RED requires patch, path, and fingerprint binding");
+  if (normalizeAcceptanceTestFile(evidence.testFile) !== normalizeAcceptanceTestFile(binding.testFile)) {
+    throw new Error("local product module RED does not match the declared test file");
+  }
+  const evidencePath = normalizeLocalProductModulePath(evidence.missingProductModulePath);
+  const bindingPath = normalizeLocalProductModulePath(binding.missingProductModulePath);
+  if (evidencePath !== bindingPath) throw new Error("local product module RED path does not match binding");
+  assertAcceptancePatchBinding(binding);
+  if (localProductModuleAbsenceFingerprint(binding.acceptanceId, evidence) !== binding.expectedFailureFingerprint) {
+    throw new Error("local product module RED fingerprint does not match exact evidence");
   }
 }

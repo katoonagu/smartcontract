@@ -228,8 +228,15 @@ order is producer-first, strict-verifier-last.
    protecting the whole-repository run from shared filesystem variance.
    Trace preparation uses immutable Git archives for the approved test-only
    commits, applies only the canonical AC-10/11 and AC-33 title patches, and
-   requires actual behavioral failures in Vitest JSON. Syntax, import, fixture,
-   environment, timeout, or missing-test failures are rejected.
+   requires actual behavioral failures in Vitest JSON. Corrective exception:
+   AC-07/08/09/12/13/27/39 accept only typed
+   `local_product_module_absent` evidence from their exact frozen Plan 4 test
+   commit. The report must contain zero test executions and an exact relative
+   `src/*` missing-module error imported by the declared test file; Git must
+   prove the module absent at the test commit and present at owner plus current
+   candidate, with exact patch and ancestry bindings. Generic import/no-test,
+   dependency, fixture, environment, timeout, or synthetic failures remain
+   rejected.
 
 4. Rehearse schema 032 on the clean database and the offline production clone.
    Use a separate protected sequence directory per database because the

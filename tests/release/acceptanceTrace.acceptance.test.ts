@@ -15,11 +15,32 @@ type ParsedExecution = {
 };
 
 type TraceDependencies = { isAncestor(ownerCommitSha: string, candidateSha: string): boolean };
+const PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
+
+type ParsedLocalProductModuleAbsence = {
+  testFile: string;
+  missingProductModulePath: string;
+  failureMessage: string;
+};
 
 type TraceApi = {
   validateAcceptanceTraceSet(value: unknown, dependencies: TraceDependencies): unknown;
   parseVitestJsonReport(value: unknown): Array<{ status: string }>;
   parseJUnitReport(value: string): Array<{ status: string }>;
+  parseLocalProductModuleAbsenceReport(value: unknown): ParsedLocalProductModuleAbsence[];
+  localProductModuleAbsenceFingerprint(
+    acceptanceId: string,
+    evidence: ParsedLocalProductModuleAbsence
+  ): string;
+  assertExpectedLocalProductModuleAbsentRed(evidence: ParsedLocalProductModuleAbsence, binding: {
+    acceptanceId: string;
+    testFile: string;
+    fullName: string;
+    expectedFailureFingerprint: string;
+    missingProductModulePath: string;
+    patchText: string;
+    testPatchSha256: string;
+  }): void;
   assertExpectedBehavioralRed(execution: ParsedExecution, binding: {
     acceptanceId: string;
     testFile: string;
@@ -37,6 +58,9 @@ async function loadTraceApi(): Promise<TraceApi> {
     if (typeof loaded.validateAcceptanceTraceSet !== "function"
         || typeof loaded.parseVitestJsonReport !== "function"
         || typeof loaded.parseJUnitReport !== "function"
+        || typeof loaded.parseLocalProductModuleAbsenceReport !== "function"
+        || typeof loaded.localProductModuleAbsenceFingerprint !== "function"
+        || typeof loaded.assertExpectedLocalProductModuleAbsentRed !== "function"
         || typeof loaded.assertExpectedBehavioralRed !== "function") {
       throw new Error("validator export missing");
     }
@@ -47,9 +71,15 @@ async function loadTraceApi(): Promise<TraceApi> {
 }
 
 const fixtureAncestry: TraceDependencies = {
-  isAncestor: (ownerCommitSha, candidateSha) => {
+  isAncestor: (ancestorCommitSha, descendantCommitSha) => {
     const fixture = buildAcceptanceTraceSet();
-    return candidateSha === fixture.candidateSha && fixture.ancestorCommitShas.includes(ownerCommitSha);
+    if (descendantCommitSha === fixture.candidateSha) {
+      return fixture.ancestorCommitShas.includes(ancestorCommitSha)
+        || fixture.traces.some((trace) => trace.red.testCommitSha === ancestorCommitSha);
+    }
+    return fixture.traces.some((trace) => (
+      trace.red.testCommitSha === ancestorCommitSha && trace.ownerCommitSha === descendantCommitSha
+    ));
   }
 };
 
@@ -180,7 +210,9 @@ it("[AC-41][RED-PROVENANCE] requires owner commit expected RED and candidate GRE
   const { validateAcceptanceTraceSet: validate } = api;
   const invalid = [
     (trace: any) => { trace.traces[0].ownerCommitSha = "f".repeat(40); },
+    (trace: any) => { trace.traces[0].red.kind = "environment_failure"; },
     (trace: any) => { trace.traces[0].red.baseSha = "bad"; },
+    (trace: any) => { trace.traces[0].red.testCommitSha = "bad"; },
     (trace: any) => { trace.traces[0].red.testPatchSha256 = "bad"; },
     (trace: any) => { trace.traces[0].red.vitestReportSha256 = "bad"; },
     (trace: any) => { trace.traces[0].red.expectedFailureFingerprint = "fixture import error"; },
@@ -250,4 +282,125 @@ it("[AC-41][RED-PROVENANCE] requires owner commit expected RED and candidate GRE
     gaps.push("unrelated RED assertion was accepted");
   } catch {}
   expect(gaps, gaps.join("; ")).toEqual([]);
+});
+
+it("[AC-41][RED-PROVENANCE] accepts only exact local src module absence evidence", async () => {
+  const api = await loadTraceApi();
+  const trace = buildAcceptanceTraceSet().traces[6];
+  const missingProductModulePath = "src/telegram/forensicPresentation";
+  const failureMessage = `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${trace.testFile}`;
+  const report = {
+    success: false,
+    numFailedTestSuites: 1,
+    numFailedTests: 0,
+    testResults: [{
+      name: `C:/frozen/${trace.testFile}`,
+      status: "failed",
+      message: failureMessage,
+      assertionResults: []
+    }]
+  };
+  const evidence = api.parseLocalProductModuleAbsenceReport(report)[0];
+  expect(evidence).toEqual({ testFile: trace.testFile, missingProductModulePath, failureMessage });
+  const fingerprint = api.localProductModuleAbsenceFingerprint(trace.acceptanceId, evidence);
+  const patchText = [
+    `diff --git a/${trace.testFile} b/${trace.testFile}`,
+    `--- a/${trace.testFile}`,
+    `+++ b/${trace.testFile}`,
+    "@@ -1,0 +1,1 @@",
+    `+it("${trace.fullName}", () => expect(render()).toBeDefined());`
+  ].join("\n");
+  const binding = {
+    acceptanceId: trace.acceptanceId,
+    testFile: trace.testFile,
+    fullName: trace.fullName,
+    expectedFailureFingerprint: fingerprint,
+    missingProductModulePath,
+    patchText,
+    testPatchSha256: createHash("sha256").update(patchText).digest("hex")
+  };
+  expect(() => api.assertExpectedLocalProductModuleAbsentRed(evidence, binding)).not.toThrow();
+
+  const invalidReports = [
+    { ...report, testResults: [{ ...report.testResults[0], message: "Cannot find package 'vitest' imported from C:/frozen/tests/release/example.test.ts" }] },
+    { ...report, testResults: [{ ...report.testResults[0], message: `Cannot find module '../../../package.json' imported from C:/frozen/${trace.testFile}` }] },
+    { ...report, testResults: [{ ...report.testResults[0], message: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/tests/release/foreign.test.ts` }] },
+    { ...report, testResults: [{ ...report.testResults[0], message: "Error: test environment unavailable" }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ status: "failed" }] }] }
+  ];
+  for (const invalid of invalidReports) {
+    expect(() => api.parseLocalProductModuleAbsenceReport(invalid)).toThrow();
+  }
+  expect(() => api.assertExpectedLocalProductModuleAbsentRed(evidence, {
+    ...binding,
+    missingProductModulePath: "src/telegram/forensicPresentationAdapters"
+  })).toThrow();
+  expect(() => api.assertExpectedLocalProductModuleAbsentRed(evidence, {
+    ...binding,
+    expectedFailureFingerprint: `expected_local_product_module_absent_${trace.acceptanceId.toLowerCase()}_${"0".repeat(64)}`
+  })).toThrow();
+});
+
+it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidate commits", async () => {
+  const { validateAcceptanceTraceSet: validate } = await loadTraceApi();
+  const fixture: any = cloneFixture(buildAcceptanceTraceSet());
+  const target = fixture.traces[6];
+  const path = "src/telegram/forensicPresentation";
+  const evidence: ParsedLocalProductModuleAbsence = {
+    testFile: target.testFile,
+    missingProductModulePath: path,
+    failureMessage: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${target.testFile}`
+  };
+  target.red.kind = "local_product_module_absent";
+  target.red.testCommitSha = PLAN4_FROZEN_TEST_SHA;
+  target.red.missingProductModulePath = path;
+  target.red.expectedFailureFingerprint = (await loadTraceApi())
+    .localProductModuleAbsenceFingerprint(target.acceptanceId, evidence);
+
+  const dependency = (override?: (commitSha: string, productPath: string) => boolean) => ({
+    isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
+      ancestorCommitSha === PLAN4_FROZEN_TEST_SHA
+        && (descendantCommitSha === target.ownerCommitSha || descendantCommitSha === fixture.candidateSha)
+    ) || fixtureAncestry.isAncestor(ancestorCommitSha, descendantCommitSha),
+    pathExistsAtCommit: override ?? ((commitSha: string, productPath: string) => (
+      productPath === path && commitSha !== target.red.testCommitSha
+    ))
+  });
+  expect(() => validate(fixture, dependency())).not.toThrow();
+  expect(() => validate(fixture, dependency((commitSha, productPath) => (
+    productPath === path && [target.red.testCommitSha, target.ownerCommitSha, fixture.candidateSha].includes(commitSha)
+  )))).toThrow(/absent at the frozen test commit/);
+  expect(() => validate(fixture, dependency((commitSha, productPath) => (
+    productPath === path && commitSha === fixture.candidateSha
+  )))).toThrow(/owner commit/);
+  expect(() => validate(fixture, dependency((commitSha, productPath) => (
+    productPath === path && commitSha === target.ownerCommitSha
+  )))).toThrow(/candidate/);
+
+  const foreign: any = cloneFixture(fixture);
+  foreign.traces[6].red.missingProductModulePath = "node_modules/vitest";
+  expect(() => validate(foreign, dependency())).toThrow(/local product module/);
+  const wrongFrozenCommit: any = cloneFixture(fixture);
+  wrongFrozenCommit.traces[6].red.testCommitSha = "a".repeat(40);
+  expect(() => validate(wrongFrozenCommit, dependency())).toThrow(/exact frozen Plan 4 test commit/);
+  const unauthorized: any = cloneFixture(fixture);
+  const unauthorizedTarget = unauthorized.traces[0];
+  const unauthorizedEvidence: ParsedLocalProductModuleAbsence = {
+    testFile: unauthorizedTarget.testFile,
+    missingProductModulePath: path,
+    failureMessage: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${unauthorizedTarget.testFile}`
+  };
+  unauthorizedTarget.red.kind = "local_product_module_absent";
+  unauthorizedTarget.red.missingProductModulePath = path;
+  unauthorizedTarget.red.expectedFailureFingerprint = (await loadTraceApi())
+    .localProductModuleAbsenceFingerprint(unauthorizedTarget.acceptanceId, unauthorizedEvidence);
+  expect(() => validate(unauthorized, dependency())).toThrow(/not approved for local product module RED/);
+  expect(() => validate(fixture, {
+    ...dependency(),
+    isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
+      descendantCommitSha === target.ownerCommitSha && ancestorCommitSha === target.red.testCommitSha
+        ? false
+        : dependency().isAncestor(ancestorCommitSha, descendantCommitSha)
+    )
+  })).toThrow(/test commit is not a verified Git ancestor/);
 });

@@ -1539,10 +1539,13 @@ type AcceptanceTraceV1 = {
   fullName: string;
   primary: boolean;
   red: {
+    kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
+    testCommitSha: string;
     testPatchSha256: string;
     vitestReportSha256: string;
     expectedFailureFingerprint: string;
+    missingProductModulePath?: string;
     status: "failed_as_expected";
   };
   green: {
@@ -1562,8 +1565,14 @@ Rules:
 - owner commit is an ancestor of candidate and names the owner-plan change;
 - RED comes from the original frozen test-only commit, or from an exact
   test-only patch replayed on the recorded owner base in an ephemeral worktree;
-- RED is valid only for the expected behavioral assertion. Syntax, import,
-  type, fixture or environment failure is rejected;
+- RED is valid for the expected behavioral assertion. Corrective exception:
+  AC-07/08/09/12/13/27/39 may use discriminated
+  `local_product_module_absent` only for a zero-execution file-load failure on
+  the exact frozen test commit, with one relative `src/*` missing path imported
+  by the declared test file, exact test patch, test/owner/candidate ancestry,
+  absence at test commit and presence at owner plus candidate. Generic import,
+  no-test, dependency, type, fixture, environment or synthetic failure is
+  rejected;
 - GREEN is read from Vitest JSON/JUnit and must contain the exact file/fullName
   with state `passed`; missing, skipped, todo, duplicate or filtered-out tests
   fail closed;
@@ -2867,7 +2876,10 @@ Trace capture consumes Vitest JSON/JUnit. It binds every exact test fullName to
 file, owner plan/commit, expected RED evidence and candidate GREEN evidence.
 It rejects source-only IDs, comments/strings, missing tests, skip/todo/filter,
 duplicates, foreign candidate, non-ancestor owner commit and RED caused by
-syntax/import/type/fixture/environment failure.
+syntax/import/type/fixture/environment failure. The sole corrective import
+exception is typed `local_product_module_absent` for
+AC-07/08/09/12/13/27/39 under the exact path/patch/Git-lineage constraints in
+section 2.3; it does not admit generic import or no-test evidence.
 
 **GREEN:** Task 2 manifest/traceability tests. Then `npm run typecheck`.
 
@@ -4398,8 +4410,12 @@ The producer phase supplies the automated evidence for `G00…G11`, including:
 
 Before trace capture, run `release:trace:prepare`. It archives the exact
 approved test-only commits, applies only the two canonical test-title patches,
-runs every owner RED batch, rejects infrastructure failures, and writes the
-content-addressed RED reports/patches plus the reconstructed Task 0A baseline.
+runs every owner RED batch, rejects infrastructure failures except the narrow
+typed `local_product_module_absent` evidence for
+AC-07/08/09/12/13/27/39, and writes the content-addressed RED reports/patches
+plus the reconstructed Task 0A baseline. That typed evidence requires exact
+frozen test commit, test patch, local `src/*` path, owner commit and candidate
+bindings; generic import/no-test/environment failures remain invalid.
 `release:trace:capture` then binds those artifacts to the already-produced
 candidate GREEN reports. Neither command changes product code or semantics.
 

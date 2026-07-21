@@ -793,6 +793,22 @@ export const EXPECTED_ACCEPTANCE_REQUIREMENT_IDS: Readonly<Record<string, readon
   "AC-41": ["REQ-38"]
 };
 
+type AcceptanceTraceRedCommonV1 = {
+  baseSha: string;
+  testCommitSha: string;
+  testPatchSha256: string;
+  vitestReportSha256: string;
+  expectedFailureFingerprint: string;
+  status: "failed_as_expected";
+};
+
+type AcceptanceTraceRedV1 =
+  | (AcceptanceTraceRedCommonV1 & { kind: "behavioral_assertion" })
+  | (AcceptanceTraceRedCommonV1 & {
+      kind: "local_product_module_absent";
+      missingProductModulePath: string;
+    });
+
 export type AcceptanceTraceV1 = {
   acceptanceId: string;
   requirementIds: string[];
@@ -801,13 +817,7 @@ export type AcceptanceTraceV1 = {
   testFile: string;
   fullName: string;
   primary: boolean;
-  red: {
-    baseSha: string;
-    testPatchSha256: string;
-    vitestReportSha256: string;
-    expectedFailureFingerprint: string;
-    status: "failed_as_expected";
-  };
+  red: AcceptanceTraceRedV1;
   green: {
     candidateSha: string;
     vitestReportSha256: string;
@@ -844,7 +854,9 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
       fullName: PRIMARY_AC_FULL_NAMES[index],
       primary: true,
       red: {
+        kind: "behavioral_assertion",
         baseSha: PLAN_BASE_SHA,
+        testCommitSha: "a".repeat(40),
         testPatchSha256: (index + 201).toString(16).padStart(64, "0"),
         vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
         expectedFailureFingerprint: `expected_behavioral_assertion_${acceptanceId.toLowerCase()}`,

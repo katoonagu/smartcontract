@@ -11,16 +11,23 @@ import {
   assertNoSecretLikeArtifactValues
 } from "../src/release/remediationReleaseManifest";
 import {
+  assertExpectedLocalProductModuleAbsentRed,
   assertExpectedBehavioralRed,
   behavioralFailureFingerprint,
+  localProductModuleAbsenceFingerprint,
   normalizeAcceptanceTestFile,
+  normalizeLocalProductModulePath,
   parseAcceptanceExecutionReport,
+  parseLocalProductModuleAbsenceReport,
   REMEDIATION_ACCEPTANCE_OWNER_PLAN,
   REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS,
+  REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS,
+  REMEDIATION_PLAN4_FROZEN_TEST_SHA,
   requireExactExecution,
   validateAcceptanceTraceSet,
   type AcceptanceTraceSetV1,
   type AcceptanceTraceV1,
+  type ParsedLocalProductModuleAbsence,
   type ParsedAcceptanceExecution
 } from "../src/release/acceptanceTrace";
 import { canonicalReleaseJsonV2 } from "../src/release/remediationReleaseManifestV2";
@@ -46,10 +53,20 @@ type CaptureTraceSpec = {
   primary: boolean;
   expectedFailureFingerprint: string;
   red: {
+    kind: "behavioral_assertion";
     baseSha: string;
+    testCommitSha: string;
     testPatchSha256: string;
     testPatchFile: string;
     reportFile: string;
+  } | {
+    kind: "local_product_module_absent";
+    baseSha: string;
+    testCommitSha: string;
+    testPatchSha256: string;
+    testPatchFile: string;
+    reportFile: string;
+    missingProductModulePath: string;
   };
   green: {
     reportFile: string;
@@ -73,7 +90,6 @@ const PLAN5_BASE_SHA = "4761e1453ea03a96845b68039e6d6f4812aae540";
 const PLAN1_TEST_SHA = "bded31a8c8cfee0dda7cf8a831ca7a62567e139f";
 const PLAN2_TEST_SHA = "01a29fefb51c245c3fe8f97f0da53929047740c7";
 const PLAN3_TEST_SHA = "e37b37edf44d892eda721ab1cbdd362385f446c4";
-const PLAN4_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
 const PLAN5_TEST_SHA = "a2efb1cf6a840ef3c0dcda0fb6ae980e2c1eed24";
 const CANONICAL_IDENTITY_SHA = "db5d49a944c0de489f13567d87400cb32c4eedb0";
 const OWNER_COMMITS = Object.freeze({
@@ -87,7 +103,7 @@ const OWNER_PLAN_TRIPLES = Object.freeze([
   { plan: 1, base: "4b9adedec39c368e0a0ab5738069c7771efe5695", test: PLAN1_TEST_SHA, implementation: OWNER_COMMITS[1], acceptance: "Plan 1 remediation data acceptance" },
   { plan: 2, base: "5f6209af82e23a065bd036c6a37eabe4888a5cfe", test: PLAN2_TEST_SHA, implementation: OWNER_COMMITS[2], acceptance: "Plan 2 scoring and contract acceptance" },
   { plan: 3, base: "bd631a6c846c3daa6e2aaf528429c8864c67b849", test: PLAN3_TEST_SHA, implementation: OWNER_COMMITS[3], acceptance: "Plan 3 runtime and delivery acceptance" },
-  { plan: 4, base: "d18067f6c49fd632bafa47a90f69f1e7bf8b1802", test: PLAN4_TEST_SHA, implementation: OWNER_COMMITS[4], acceptance: "Plan 4 unified Telegram acceptance" }
+  { plan: 4, base: "d18067f6c49fd632bafa47a90f69f1e7bf8b1802", test: REMEDIATION_PLAN4_FROZEN_TEST_SHA, implementation: OWNER_COMMITS[4], acceptance: "Plan 4 unified Telegram acceptance" }
 ] as const);
 
 function expectRecord(value: unknown, label: string): JsonRecord {
@@ -136,15 +152,31 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
     "green"
   ], `traces[${index}]`);
   const red = expectRecord(trace.red, `traces[${index}].red`);
-  expectExactKeys(red, ["baseSha", "testPatchSha256", "testPatchFile", "reportFile"], `traces[${index}].red`);
+  const redKind = expectString(red.kind, `traces[${index}].red.kind`);
+  if (redKind !== "behavioral_assertion" && redKind !== "local_product_module_absent") {
+    throw new Error(`traces[${index}].red.kind is invalid`);
+  }
+  expectExactKeys(red, redKind === "behavioral_assertion" ? [
+    "kind", "baseSha", "testCommitSha", "testPatchSha256", "testPatchFile", "reportFile"
+  ] : [
+    "kind", "baseSha", "testCommitSha", "testPatchSha256", "testPatchFile", "reportFile",
+    "missingProductModulePath"
+  ], `traces[${index}].red`);
   const green = expectRecord(trace.green, `traces[${index}].green`);
   expectExactKeys(green, ["reportFile"], `traces[${index}].green`);
   if (!Number.isInteger(trace.ownerPlan) || ![1, 2, 3, 4, 5].includes(trace.ownerPlan as number)) {
     throw new Error(`traces[${index}].ownerPlan is invalid`);
   }
   if (typeof trace.primary !== "boolean") throw new Error(`traces[${index}].primary must be boolean`);
+  const acceptanceId = expectString(trace.acceptanceId, `traces[${index}].acceptanceId`);
+  const testCommitSha = expectString(red.testCommitSha, `traces[${index}].red.testCommitSha`);
+  if (redKind === "local_product_module_absent"
+      && (!REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)
+        || testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA)) {
+    throw new Error(`traces[${index}] local product module RED is outside the approved Plan 4 set`);
+  }
   return {
-    acceptanceId: expectString(trace.acceptanceId, `traces[${index}].acceptanceId`),
+    acceptanceId,
     requirementIds: expectStringArray(trace.requirementIds, `traces[${index}].requirementIds`),
     ownerPlan: trace.ownerPlan as 1 | 2 | 3 | 4 | 5,
     ownerCommitSha: expectString(trace.ownerCommitSha, `traces[${index}].ownerCommitSha`),
@@ -155,11 +187,24 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
       trace.expectedFailureFingerprint,
       `traces[${index}].expectedFailureFingerprint`
     ),
-    red: {
+    red: redKind === "behavioral_assertion" ? {
+      kind: "behavioral_assertion",
       baseSha: expectString(red.baseSha, `traces[${index}].red.baseSha`),
+      testCommitSha,
       testPatchSha256: expectString(red.testPatchSha256, `traces[${index}].red.testPatchSha256`),
       testPatchFile: expectRelativeArtifactPath(red.testPatchFile, `traces[${index}].red.testPatchFile`),
       reportFile: expectRelativeArtifactPath(red.reportFile, `traces[${index}].red.reportFile`)
+    } : {
+      kind: "local_product_module_absent",
+      baseSha: expectString(red.baseSha, `traces[${index}].red.baseSha`),
+      testCommitSha,
+      testPatchSha256: expectString(red.testPatchSha256, `traces[${index}].red.testPatchSha256`),
+      testPatchFile: expectRelativeArtifactPath(red.testPatchFile, `traces[${index}].red.testPatchFile`),
+      reportFile: expectRelativeArtifactPath(red.reportFile, `traces[${index}].red.reportFile`),
+      missingProductModulePath: normalizeLocalProductModulePath(expectString(
+        red.missingProductModulePath,
+        `traces[${index}].red.missingProductModulePath`
+      ))
     },
     green: {
       reportFile: expectRelativeArtifactPath(green.reportFile, `traces[${index}].green.reportFile`)
@@ -204,6 +249,46 @@ async function isAncestor(ancestor: string, candidate: string): Promise<boolean>
   } catch {
     return false;
   }
+}
+
+async function productModuleBlobAtCommit(commitSha: string, productModulePath: string): Promise<string | null> {
+  const normalized = normalizeLocalProductModulePath(productModulePath);
+  const candidates = /\.[A-Za-z0-9]+$/.test(normalized) ? [normalized] : [
+    `${normalized}.ts`, `${normalized}.tsx`, `${normalized}.js`, `${normalized}.mjs`, `${normalized}.cjs`,
+    `${normalized}/index.ts`, `${normalized}/index.tsx`, `${normalized}/index.js`
+  ];
+  const matches: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      const type = await gitOutput(["cat-file", "-t", `${commitSha}:${candidate}`]);
+      if (type === "blob") matches.push(candidate);
+    } catch {}
+  }
+  if (matches.length > 1) throw new Error("local product module path resolves to multiple Git blobs");
+  return matches[0] ?? null;
+}
+
+async function assertLocalProductModuleLineage(input: {
+  testCommitSha: string;
+  ownerCommitSha: string;
+  candidateSha: string;
+  missingProductModulePath: string;
+}): Promise<void> {
+  if (!await isAncestor(input.testCommitSha, input.ownerCommitSha)) {
+    throw new Error("frozen test commit is not an ancestor of owner commit");
+  }
+  if (!await isAncestor(input.ownerCommitSha, input.candidateSha)) {
+    throw new Error("owner commit is not an ancestor of candidate");
+  }
+  const [atTest, atOwner, atCandidate] = await Promise.all([
+    productModuleBlobAtCommit(input.testCommitSha, input.missingProductModulePath),
+    productModuleBlobAtCommit(input.ownerCommitSha, input.missingProductModulePath),
+    productModuleBlobAtCommit(input.candidateSha, input.missingProductModulePath)
+  ]);
+  if (atTest !== null) throw new Error("local product module exists at frozen test commit");
+  if (atOwner === null) throw new Error("local product module is absent at owner commit");
+  if (atCandidate === null) throw new Error("local product module is absent at candidate");
+  if (atOwner !== atCandidate) throw new Error("local product module resolves to different owner and candidate paths");
 }
 
 async function assertPatchAppliesToBase(baseSha: string, patchBytes: Buffer): Promise<void> {
@@ -288,7 +373,7 @@ const RED_GROUPS: readonly RedGroup[] = Object.freeze([
   },
   {
     id: "plan4",
-    commitSha: PLAN4_TEST_SHA,
+    commitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA,
     testFiles: [
       "tests/telegram/unifiedForensicRenderer.acceptance.test.ts",
       "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts",
@@ -375,6 +460,7 @@ async function createRedSnapshot(group: RedGroup): Promise<{ root: string; clean
 async function runRedGroup(root: string, group: RedGroup): Promise<{
   reportRelativePath: string;
   executions: ParsedAcceptanceExecution[];
+  localProductModuleAbsences: ParsedLocalProductModuleAbsence[];
 }> {
   const snapshot = await createRedSnapshot(group);
   const reportPath = join(snapshot.root, ".plan5-red-report.json");
@@ -412,11 +498,18 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
   try {
     if (!failedAsExpected) throw new Error(`RED group did not fail behaviorally: ${group.id}`);
     const reportBytes = await readFile(reportPath);
-    assertNoSecretLikeArtifactValues(JSON.parse(reportBytes.toString("utf8")) as unknown);
-    const executions = parseAcceptanceExecutionReport(reportBytes.toString("utf8"), "failed");
+    const report = JSON.parse(reportBytes.toString("utf8")) as unknown;
+    assertNoSecretLikeArtifactValues(report);
+    let executions: ParsedAcceptanceExecution[] = [];
+    let localProductModuleAbsences: ParsedLocalProductModuleAbsence[] = [];
+    try {
+      executions = parseAcceptanceExecutionReport(report, "failed");
+    } catch {
+      localProductModuleAbsences = parseLocalProductModuleAbsenceReport(report);
+    }
     const reportRelativePath = `trace/red/${group.id}.vitest.json`;
     await writeFile(join(root, reportRelativePath), reportBytes, { flag: "wx" });
-    return { reportRelativePath, executions };
+    return { reportRelativePath, executions, localProductModuleAbsences };
   } finally {
     await snapshot.cleanup();
   }
@@ -630,7 +723,6 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
       (await readSafeArtifactFile(root, greenReportFile)).toString("utf8"),
       "passed"
     );
-    const redExecution = requireExactExecution(redReport.executions, input.testFile, input.fullName, "failed");
     requireExactExecution(greenExecutions, input.testFile, input.fullName, "passed");
     const standardBase = await gitOutput(["rev-parse", `${redGroup.commitSha}^`]);
     const patchBinding = redGroup.applyPatch ?? {
@@ -643,6 +735,69 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
       ...patchBinding,
       id: `${input.acceptanceId.toLowerCase()}-${input.primary ? "primary" : "secondary"}`
     });
+    const redExecutions = redReport.executions.filter((execution) => (
+      execution.testFile === input.testFile && execution.fullName === input.fullName
+    ));
+    const localAbsences = redReport.localProductModuleAbsences.filter((evidence) => (
+      evidence.testFile === input.testFile
+    ));
+    let red: CaptureTraceSpec["red"];
+    let expectedFailureFingerprint: string;
+    if (redExecutions.length === 1) {
+      const redExecution = requireExactExecution(redReport.executions, input.testFile, input.fullName, "failed");
+      expectedFailureFingerprint = behavioralFailureFingerprint(input.acceptanceId, redExecution);
+      assertExpectedBehavioralRed(redExecution, {
+        acceptanceId: input.acceptanceId,
+        testFile: input.testFile,
+        fullName: input.fullName,
+        expectedFailureFingerprint,
+        patchText: patch.bytes.toString("utf8"),
+        testPatchSha256: sha256(patch.bytes)
+      });
+      red = {
+        kind: "behavioral_assertion",
+        baseSha: redBaseSha,
+        testCommitSha: redGroup.commitSha,
+        testPatchSha256: sha256(patch.bytes),
+        testPatchFile: patch.relativePath,
+        reportFile: redReport.reportRelativePath
+      };
+    } else {
+      if (redExecutions.length !== 0 || localAbsences.length !== 1
+          || !REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(input.acceptanceId)) {
+        throw new Error(`${input.acceptanceId} has no approved exact RED evidence`);
+      }
+      const evidence = localAbsences[0];
+      expectedFailureFingerprint = localProductModuleAbsenceFingerprint(input.acceptanceId, evidence);
+      assertExpectedLocalProductModuleAbsentRed(evidence, {
+        acceptanceId: input.acceptanceId,
+        testFile: input.testFile,
+        fullName: input.fullName,
+        expectedFailureFingerprint,
+        missingProductModulePath: evidence.missingProductModulePath,
+        patchText: patch.bytes.toString("utf8"),
+        testPatchSha256: sha256(patch.bytes)
+      });
+      await assertLocalProductModuleLineage({
+        testCommitSha: redGroup.commitSha,
+        ownerCommitSha: OWNER_COMMITS[input.ownerPlan],
+        candidateSha,
+        missingProductModulePath: evidence.missingProductModulePath
+      });
+      const exactTestPatch = await gitPatch(redBaseSha, redGroup.commitSha, input.testFile);
+      if (!exactTestPatch.equals(patch.bytes)) {
+        throw new Error(`${input.acceptanceId} local product module RED patch is not the exact frozen test patch`);
+      }
+      red = {
+        kind: "local_product_module_absent",
+        baseSha: redBaseSha,
+        testCommitSha: redGroup.commitSha,
+        testPatchSha256: sha256(patch.bytes),
+        testPatchFile: patch.relativePath,
+        reportFile: redReport.reportRelativePath,
+        missingProductModulePath: evidence.missingProductModulePath
+      };
+    }
     traces.push({
       acceptanceId: input.acceptanceId,
       requirementIds: input.requirementIds,
@@ -651,13 +806,8 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
       testFile: input.testFile,
       fullName: input.fullName,
       primary: input.primary,
-      expectedFailureFingerprint: behavioralFailureFingerprint(input.acceptanceId, redExecution),
-      red: {
-        baseSha: redBaseSha,
-        testPatchSha256: sha256(patch.bytes),
-        testPatchFile: patch.relativePath,
-        reportFile: redReport.reportRelativePath
-      },
+      expectedFailureFingerprint,
+      red,
       green: { reportFile: greenReportFile }
     });
   };
@@ -699,17 +849,35 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
   if (spec.candidateSha !== headSha) throw new Error("capture candidate SHA is not the checked-out HEAD");
   await assertCommit(spec.candidateSha);
 
-  const reportCache = new Map<string, { bytes: Buffer; executions: ParsedAcceptanceExecution[] }>();
+  const reportCache = new Map<string, {
+    bytes: Buffer;
+    executions: ParsedAcceptanceExecution[];
+    localProductModuleAbsences: ParsedLocalProductModuleAbsence[];
+  }>();
   const readReport = async (
     path: string,
-    expectedOutcome: "passed" | "failed"
-  ): Promise<{ bytes: Buffer; executions: ParsedAcceptanceExecution[] }> => {
-    const cacheKey = `${expectedOutcome}\u0000${path}`;
+    expectedOutcome: "passed" | "failed",
+    redKind?: CaptureTraceSpec["red"]["kind"]
+  ): Promise<{
+    bytes: Buffer;
+    executions: ParsedAcceptanceExecution[];
+    localProductModuleAbsences: ParsedLocalProductModuleAbsence[];
+  }> => {
+    const cacheKey = `${expectedOutcome}\u0000${redKind ?? "green"}\u0000${path}`;
     const cached = reportCache.get(cacheKey);
     if (cached) return cached;
     const bytes = await readSafeArtifactFile(root, path);
-    assertNoSecretLikeArtifactValues(JSON.parse(bytes.toString("utf8")) as unknown);
-    const parsed = { bytes, executions: parseAcceptanceExecutionReport(bytes.toString("utf8"), expectedOutcome) };
+    const report = JSON.parse(bytes.toString("utf8")) as unknown;
+    assertNoSecretLikeArtifactValues(report);
+    const parsed = redKind === "local_product_module_absent" ? {
+      bytes,
+      executions: [],
+      localProductModuleAbsences: parseLocalProductModuleAbsenceReport(report)
+    } : {
+      bytes,
+      executions: parseAcceptanceExecutionReport(report, expectedOutcome),
+      localProductModuleAbsences: []
+    };
     reportCache.set(cacheKey, parsed);
     return parsed;
   };
@@ -717,30 +885,74 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
   const traces: AcceptanceTraceV1[] = [];
   const executions = [] as AcceptanceTraceSetV1["executions"];
   const verifiedAncestry = new Set<string>();
+  const verifiedPathStates = new Map<string, boolean>();
   for (const item of spec.traces) {
-    await Promise.all([assertCommit(item.ownerCommitSha), assertCommit(item.red.baseSha)]);
+    await Promise.all([
+      assertCommit(item.ownerCommitSha),
+      assertCommit(item.red.baseSha),
+      assertCommit(item.red.testCommitSha)
+    ]);
     if (!await isAncestor(item.ownerCommitSha, spec.candidateSha)) {
       throw new Error(`${item.acceptanceId} owner commit is not an ancestor of candidate`);
     }
     verifiedAncestry.add(`${item.ownerCommitSha}\u0000${spec.candidateSha}`);
+    if (!await isAncestor(item.red.testCommitSha, item.ownerCommitSha)) {
+      throw new Error(`${item.acceptanceId} test commit is not an ancestor of owner commit`);
+    }
+    verifiedAncestry.add(`${item.red.testCommitSha}\u0000${item.ownerCommitSha}`);
     if (!await isAncestor(item.red.baseSha, item.ownerCommitSha)) {
       throw new Error(`${item.acceptanceId} RED base is not an ancestor of owner commit`);
     }
     const [patchBytes, redReport, greenReport] = await Promise.all([
       readSafeArtifactFile(root, item.red.testPatchFile),
-      readReport(item.red.reportFile, "failed"),
+      readReport(item.red.reportFile, "failed", item.red.kind),
       readReport(item.green.reportFile, "passed")
     ]);
-    const redExecution = requireExactExecution(redReport.executions, item.testFile, item.fullName, "failed");
     const patchText = patchBytes.toString("utf8");
-    assertExpectedBehavioralRed(redExecution, {
-      acceptanceId: item.acceptanceId,
-      testFile: item.testFile,
-      fullName: item.fullName,
-      expectedFailureFingerprint: item.expectedFailureFingerprint,
-      patchText,
-      testPatchSha256: item.red.testPatchSha256
-    });
+    if (item.red.kind === "behavioral_assertion") {
+      const redExecution = requireExactExecution(redReport.executions, item.testFile, item.fullName, "failed");
+      assertExpectedBehavioralRed(redExecution, {
+        acceptanceId: item.acceptanceId,
+        testFile: item.testFile,
+        fullName: item.fullName,
+        expectedFailureFingerprint: item.expectedFailureFingerprint,
+        patchText,
+        testPatchSha256: item.red.testPatchSha256
+      });
+    } else {
+      if (!REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(item.acceptanceId)) {
+        throw new Error(`${item.acceptanceId} is not approved for local product module RED`);
+      }
+      const localEvidence = redReport.localProductModuleAbsences.filter((evidence) => (
+        evidence.testFile === item.testFile
+          && evidence.missingProductModulePath === item.red.missingProductModulePath
+      ));
+      if (localEvidence.length !== 1) {
+        throw new Error(`${item.acceptanceId} local product module RED is not exact and unique`);
+      }
+      assertExpectedLocalProductModuleAbsentRed(localEvidence[0], {
+        acceptanceId: item.acceptanceId,
+        testFile: item.testFile,
+        fullName: item.fullName,
+        expectedFailureFingerprint: item.expectedFailureFingerprint,
+        missingProductModulePath: item.red.missingProductModulePath,
+        patchText,
+        testPatchSha256: item.red.testPatchSha256
+      });
+      await assertLocalProductModuleLineage({
+        testCommitSha: item.red.testCommitSha,
+        ownerCommitSha: item.ownerCommitSha,
+        candidateSha: spec.candidateSha,
+        missingProductModulePath: item.red.missingProductModulePath
+      });
+      verifiedPathStates.set(`${item.red.testCommitSha}\u0000${item.red.missingProductModulePath}`, false);
+      verifiedPathStates.set(`${item.ownerCommitSha}\u0000${item.red.missingProductModulePath}`, true);
+      verifiedPathStates.set(`${spec.candidateSha}\u0000${item.red.missingProductModulePath}`, true);
+      const exactTestPatch = await gitPatch(item.red.baseSha, item.red.testCommitSha, item.testFile);
+      if (!exactTestPatch.equals(patchBytes)) {
+        throw new Error(`${item.acceptanceId} local product module RED patch is not the exact frozen test patch`);
+      }
+    }
     await assertPatchAppliesToBase(item.red.baseSha, patchBytes);
     requireExactExecution(greenReport.executions, item.testFile, item.fullName, "passed");
     traces.push({
@@ -751,11 +963,22 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
       testFile: item.testFile,
       fullName: item.fullName,
       primary: item.primary,
-      red: {
+      red: item.red.kind === "behavioral_assertion" ? {
+        kind: "behavioral_assertion",
         baseSha: item.red.baseSha,
+        testCommitSha: item.red.testCommitSha,
         testPatchSha256: sha256(patchBytes),
         vitestReportSha256: sha256(redReport.bytes),
         expectedFailureFingerprint: item.expectedFailureFingerprint,
+        status: "failed_as_expected"
+      } : {
+        kind: "local_product_module_absent",
+        baseSha: item.red.baseSha,
+        testCommitSha: item.red.testCommitSha,
+        testPatchSha256: sha256(patchBytes),
+        vitestReportSha256: sha256(redReport.bytes),
+        expectedFailureFingerprint: item.expectedFailureFingerprint,
+        missingProductModulePath: item.red.missingProductModulePath,
         status: "failed_as_expected"
       },
       green: {
@@ -776,7 +999,14 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
     executions,
     ancestorCommitShas: [...new Set(traces.map((trace) => trace.ownerCommitSha))]
   }, {
-    isAncestor: (ownerCommitSha, candidateSha) => verifiedAncestry.has(`${ownerCommitSha}\u0000${candidateSha}`)
+    isAncestor: (ancestorCommitSha, descendantCommitSha) => (
+      verifiedAncestry.has(`${ancestorCommitSha}\u0000${descendantCommitSha}`)
+    ),
+    pathExistsAtCommit: (commitSha, productModulePath) => {
+      const key = `${commitSha}\u0000${productModulePath}`;
+      if (!verifiedPathStates.has(key)) throw new Error("unverified product module path state");
+      return verifiedPathStates.get(key)!;
+    }
   });
   await safeWriteTrace(root, traceSet);
   return traceSet;

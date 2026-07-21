@@ -382,8 +382,14 @@ of these decisions, update this file in the same work.
 - The missing Task 0A/trace producer is reconstructed only from immutable Git
   history and actual Vitest JSON. Approved test-only commits are archived into
   ephemeral worktrees; the two canonical title patches are replayed exactly;
-  behavioral RED and candidate GREEN executions are both required. Source
-  search, inferred failures and infrastructure failures are not evidence.
+  behavioral RED and candidate GREEN executions are both required. Narrow
+  exception: AC-07/08/09/12/13/27/39 may use typed
+  `local_product_module_absent` RED when an exact zero-execution Vitest file
+  failure names a relative `src/*` import from the declared test file, the
+  exact test patch is bound to the frozen test commit, and Git proves that
+  module absent there but present at both owner commit and candidate. Generic
+  import/no-test, dependency, fixture, environment and inferred failures remain
+  invalid evidence.
 - Sanitized candidate/previous start evidence is not an operator fixture. The
   controlled rehearsal derives the exact allowlisted command identity, runs
   the real start/observe/stop sequence, and writes that evidence only after the
