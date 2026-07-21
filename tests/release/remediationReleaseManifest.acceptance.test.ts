@@ -1195,8 +1195,12 @@ postgresIt("[REQ-38][TASK0B-DATABASE] reads production identity and schema pre-s
   }
 });
 
-it("[REQ-38][CANDIDATE-SCOPE] accepts only approved Plan5 Task0-8 files and rejects AP or unknown paths", async () => {
+it("[REQ-38][CANDIDATE-SCOPE] accepts exact approved Plan5 candidate scope and rejects AP or unknown paths", async () => {
   const runner: any = await import("../../scripts/verifyRemediationRelease");
+  const { stdout: candidateScope } = await execFileAsync("git", [
+    "diff", "--name-only", `${PLAN_BASE_SHA}..HEAD`
+  ]);
+  expect(() => runner.validatePlan5CandidateScope(candidateScope)).not.toThrow();
   expect(() => runner.validatePlan5CandidateScope([
     "src/release/remediationReleaseManifest.ts",
     "scripts/captureTask0BPreflight.ts",
