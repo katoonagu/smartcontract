@@ -21,6 +21,7 @@ type TraceDependencies = {
 const PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
 const PLAN4_TEST_BASE_SHA = "d18067f6c49fd632bafa47a90f69f1e7bf8b1802";
 const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
+const PLAN4_OWNER_SHA = "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17";
 const PLAN4_ALERT_TEST_PATCH_SHA256 = "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2";
 const PLAN4_RENDERER_TEST_PATCH_SHA256 = "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
 
@@ -443,6 +444,21 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   behavioralSubstitution.traces[6].red.expectedFailureFingerprint = "expected_behavioral_assertion_ac-07";
   delete behavioralSubstitution.traces[6].red.missingProductModulePath;
   expect(() => validate(behavioralSubstitution, dependency())).toThrow(/exact approved RED lineage/);
+  expect(target.ownerCommitSha).toBe(PLAN4_OWNER_SHA);
+  const ownerSubstitution: any = cloneFixture(fixture);
+  const forgedOwner = "e".repeat(40);
+  ownerSubstitution.traces[6].ownerCommitSha = forgedOwner;
+  ownerSubstitution.ancestorCommitShas.push(forgedOwner);
+  expect(() => validate(ownerSubstitution, {
+    isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
+      (ancestorCommitSha === forgedOwner && descendantCommitSha === fixture.candidateSha)
+      || (ancestorCommitSha === PLAN4_FROZEN_TEST_SHA && descendantCommitSha === forgedOwner)
+      || dependency().isAncestor(ancestorCommitSha, descendantCommitSha)
+    ),
+    pathExistsAtCommit: (commitSha: string, productPath: string) => productPath === path
+      ? commitSha !== PLAN4_FROZEN_TEST_SHA
+      : fixtureAncestry.pathExistsAtCommit!(commitSha, productPath)
+  })).toThrow(/exact approved RED lineage/);
   const unauthorized: any = cloneFixture(fixture);
   const unauthorizedTarget = unauthorized.traces[0];
   const unauthorizedEvidence: ParsedLocalProductModuleAbsence = {

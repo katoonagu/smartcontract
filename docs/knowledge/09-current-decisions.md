@@ -402,7 +402,8 @@ of these decisions, update this file in the same work.
   and PostgreSQL coverage
   `27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771`.
   A merely ancestrally valid substitute base, test commit, RED execution
-  commit, file, kind, missing path or patch hash fails closed.
+  commit, file, kind, missing path, patch hash or exact Plan 4 owner commit
+  `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17` fails closed.
 - Sanitized candidate/previous start evidence is not an operator fixture. The
   controlled rehearsal derives the exact allowlisted command identity, runs
   the real start/observe/stop sequence, and writes that evidence only after the

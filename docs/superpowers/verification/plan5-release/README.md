@@ -234,7 +234,9 @@ order is producer-first, strict-verifier-last.
    commit. The report must contain zero test executions and an exact relative
    `src/*` missing-module error imported by the declared test file; Git must
    prove the module absent at the test commit and present at owner plus current
-   candidate, with exact patch and ancestry bindings. Generic import/no-test,
+   candidate, with exact patch and ancestry bindings. The owner is pinned to
+   `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`; an arbitrary intermediate
+   ancestor is not an owner substitute. Generic import/no-test,
    dependency, fixture, environment, timeout, or synthetic failures remain
    rejected.
 

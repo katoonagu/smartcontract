@@ -845,7 +845,9 @@ export type AcceptanceTraceSetV1 = {
 export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
   const traces = REQUIRED_ACCEPTANCE_IDS.map((acceptanceId, index): AcceptanceTraceV1 => {
     const ownerPlan = EXPECTED_ACCEPTANCE_OWNER_PLAN[acceptanceId]!;
-    const ownerCommitSha = String(ownerPlan).repeat(40);
+    const ownerCommitSha = ownerPlan === 4
+      ? "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17"
+      : String(ownerPlan).repeat(40);
     const behavioralPlan4 = ["AC-20", "AC-21", "AC-24"].includes(acceptanceId);
     const localPlan4 = ["AC-07", "AC-08", "AC-09", "AC-12", "AC-13", "AC-27", "AC-39"].includes(acceptanceId);
     const localPath = acceptanceId === "AC-13" || acceptanceId === "AC-27" || acceptanceId === "AC-39"
