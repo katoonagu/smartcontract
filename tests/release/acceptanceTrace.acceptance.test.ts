@@ -61,6 +61,7 @@ type TraceApi = {
 
 type CaptureApi = {
   redGroupForTrace(testFile: string, acceptanceId: string, secondary?: boolean): string;
+  redPatchApplicationArgs(redGroupId: string): string[];
   buildCaptureRedSpec(input: {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
@@ -95,7 +96,9 @@ async function loadTraceApi(): Promise<TraceApi> {
 async function loadCaptureApi(): Promise<CaptureApi> {
   const modulePath: string = "../../scripts/captureRemediationTestEvidence";
   const loaded = await import(/* @vite-ignore */ modulePath) as Partial<CaptureApi>;
-  if (typeof loaded.redGroupForTrace !== "function" || typeof loaded.buildCaptureRedSpec !== "function") {
+  if (typeof loaded.redGroupForTrace !== "function"
+      || typeof loaded.redPatchApplicationArgs !== "function"
+      || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
   }
   return loaded as CaptureApi;
@@ -514,6 +517,12 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   }
   for (const acceptanceId of ["AC-27", "AC-39"]) {
     expect(api.redGroupForTrace(alerts, acceptanceId)).toBe("plan4");
+  }
+  expect(api.redPatchApplicationArgs("plan1-renamed")).toEqual(["-C0"]);
+  for (const redGroupId of [
+    "plan1", "plan2", "plan3", "plan4", "plan4-alert-behavioral", "plan5", "plan2-llm-dampening"
+  ]) {
+    expect(api.redPatchApplicationArgs(redGroupId)).toEqual([]);
   }
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",

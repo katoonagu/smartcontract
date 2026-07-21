@@ -329,7 +329,11 @@ async function assertLocalProductModuleLineage(input: {
   if (atOwner !== atCandidate) throw new Error("local product module resolves to different owner and candidate paths");
 }
 
-async function assertPatchAppliesToBase(baseSha: string, patchBytes: Buffer): Promise<void> {
+export function redPatchApplicationArgs(redGroupId: string): string[] {
+  return redGroupId === "plan1-renamed" ? ["-C0"] : [];
+}
+
+async function assertPatchAppliesToBase(baseSha: string, patchBytes: Buffer, redGroupId: string): Promise<void> {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "remediation-trace-"));
   const temporaryIndex = join(temporaryDirectory, "index");
   const temporaryPatch = join(temporaryDirectory, "test.patch");
@@ -337,7 +341,9 @@ async function assertPatchAppliesToBase(baseSha: string, patchBytes: Buffer): Pr
   try {
     await writeFile(temporaryPatch, patchBytes, { flag: "wx" });
     await execFileAsync("git", ["read-tree", baseSha], { cwd: repositoryRoot, env, windowsHide: true });
-    await execFileAsync("git", ["apply", "--check", "--cached", "--whitespace=nowarn", temporaryPatch], {
+    await execFileAsync("git", [
+      "apply", "--check", "--cached", "--whitespace=nowarn", ...redPatchApplicationArgs(redGroupId), temporaryPatch
+    ], {
       cwd: repositoryRoot,
       env,
       windowsHide: true
@@ -496,11 +502,15 @@ async function createRedSnapshot(group: RedGroup): Promise<{ root: string; clean
         await gitPatch(group.testPatch.baseSha, group.testPatch.headSha, group.testPatch.testFile),
         { flag: "wx" }
       );
-      await execFileAsync("git", ["apply", "--check", "--whitespace=nowarn", patchPath], {
+      await execFileAsync("git", [
+        "apply", "--check", "--whitespace=nowarn", ...redPatchApplicationArgs(group.id), patchPath
+      ], {
         cwd: temporary,
         windowsHide: true
       });
-      await execFileAsync("git", ["apply", "--whitespace=nowarn", patchPath], {
+      await execFileAsync("git", [
+        "apply", "--whitespace=nowarn", ...redPatchApplicationArgs(group.id), patchPath
+      ], {
         cwd: temporary,
         windowsHide: true
       });
@@ -1032,7 +1042,11 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
       verifiedPathStates.set(`${item.ownerCommitSha}\u0000${missingProductModulePath}`, true);
       verifiedPathStates.set(`${spec.candidateSha}\u0000${missingProductModulePath}`, true);
     }
-    await assertPatchAppliesToBase(item.red.baseSha, patchBytes);
+    await assertPatchAppliesToBase(
+      item.red.baseSha,
+      patchBytes,
+      redGroupForTrace(item.testFile, item.acceptanceId, !item.primary)
+    );
     if (item.red.baseSha !== item.red.testCommitSha) {
       const exactTestPatch = await gitPatch(item.red.baseSha, item.red.testCommitSha, item.testFile);
       if (!exactTestPatch.equals(patchBytes)) {
