@@ -310,10 +310,13 @@ export async function runNonVitestReleaseChecks(
   const environment = buildReleaseSuiteEnvironment(input.env);
   const ancestry = dependencies.run("git", ["merge-base", "--is-ancestor", PLAN5_APPROVED_BASE_SHA, input.candidateSha], environment);
   if (ancestry.error || ancestry.signal || ancestry.status !== 0) throw new Error("approved Plan 5 base is not a candidate ancestor");
-  const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npmExecutable = process.platform === "win32" ? process.execPath : "npm";
+  const npmArgs = process.platform === "win32"
+    ? [resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
+    : [];
   const commands: Array<{ checkId: Exclude<NonVitestReleaseCheckId, "postgres_cleanup">; executable: string; args: string[]; requireEmpty: boolean }> = [
-    { checkId: "typecheck", executable: npmExecutable, args: ["run", "typecheck"], requireEmpty: false },
-    { checkId: "full_test", executable: npmExecutable, args: ["test"], requireEmpty: false },
+    { checkId: "typecheck", executable: npmExecutable, args: [...npmArgs, "run", "typecheck"], requireEmpty: false },
+    { checkId: "full_test", executable: npmExecutable, args: [...npmArgs, "test"], requireEmpty: false },
     { checkId: "diff_check", executable: "git", args: ["diff", "--check", `${input.planBaseSha}..${input.candidateSha}`], requireEmpty: true },
     {
       checkId: "forbidden_scope",

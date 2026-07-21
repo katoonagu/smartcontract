@@ -1322,8 +1322,14 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
       };
     }
   });
-  expect(calls.some((call) => call.args.join(" ") === "test")).toBe(true);
-  expect(calls.some((call) => call.args.join(" ") === "run typecheck")).toBe(true);
+  const npmCalls = calls.filter((call) => call.args.slice(-1).join(" ") === "test"
+    || call.args.slice(-2).join(" ") === "run typecheck");
+  expect(npmCalls).toHaveLength(2);
+  expect(npmCalls.every((call) => !call.executable.toLowerCase().endsWith(".cmd"))).toBe(true);
+  if (process.platform === "win32") {
+    expect(npmCalls.every((call) => call.executable === process.execPath)).toBe(true);
+    expect(npmCalls.every((call) => call.args[0]?.replaceAll("\\", "/").endsWith("/npm/bin/npm-cli.js"))).toBe(true);
+  }
   expect(calls.filter((call) => call.args[0] === "diff")).toHaveLength(2);
   expect(calls).toContainEqual({
     executable: "git",
@@ -1363,7 +1369,7 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
     env: {}
   }, {
     run(_executable, args) {
-      return args[0] === "test"
+      return args.at(-1) === "test"
         ? { status: 1, stdout: "", stderr: "failed", signal: null }
         : { status: 0, stdout: "", stderr: "", signal: null };
     },
