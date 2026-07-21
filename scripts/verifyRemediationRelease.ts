@@ -211,7 +211,10 @@ const ADDRESS_POISONING_PROTECTED_PATHS = new Set([
 ]);
 
 export function validatePlan5CandidateScope(output: string): string[] {
-  const paths = output.split(/\r?\n/u).map((value) => value.trim().replaceAll("\\", "/")).filter(Boolean);
+  if (!output) return [];
+  if (!output.endsWith("\0")) throw new Error("Plan 5 candidate path framing is invalid");
+  const paths = output.slice(0, -1).split("\0");
+  if (paths.some((path) => !path)) throw new Error("Plan 5 candidate path framing is invalid");
   for (const path of paths) {
     if (ADDRESS_POISONING_PROTECTED_PATHS.has(path)) throw new Error(`Address Poisoning path changed: ${path}`);
     if (!PLAN5_CANDIDATE_ALLOWED_PATHS.has(path)) throw new Error(`unapproved Plan 5 candidate path: ${path}`);
@@ -401,7 +404,7 @@ export async function runNonVitestReleaseChecks(
     {
       checkId: "forbidden_scope",
       executable: "git",
-      args: ["diff", "--name-only", `${input.planBaseSha}..${input.candidateSha}`],
+      args: ["diff", "--name-only", "--no-renames", "-z", `${input.planBaseSha}..${input.candidateSha}`],
       requireEmpty: false
     }
   ];

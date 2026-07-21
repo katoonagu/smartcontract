@@ -1198,7 +1198,7 @@ postgresIt("[REQ-38][TASK0B-DATABASE] reads production identity and schema pre-s
 it("[REQ-38][CANDIDATE-SCOPE] accepts exact approved Plan5 candidate scope and rejects AP or unknown paths", async () => {
   const runner: any = await import("../../scripts/verifyRemediationRelease");
   const { stdout: candidateScope } = await execFileAsync("git", [
-    "diff", "--name-only", `${PLAN_BASE_SHA}..HEAD`
+    "diff", "--name-only", "--no-renames", "-z", `${PLAN_BASE_SHA}..HEAD`
   ]);
   expect(() => runner.validatePlan5CandidateScope(candidateScope)).not.toThrow();
   expect(() => runner.validatePlan5CandidateScope([
@@ -1220,10 +1220,16 @@ it("[REQ-38][CANDIDATE-SCOPE] accepts exact approved Plan5 candidate scope and r
     "docs/knowledge/12-runbooks.md",
     "docs/knowledge/13-agent-observations.md",
     "docs/superpowers/verification/plan5-release/README.md"
-  ].join("\n"))).not.toThrow();
-  expect(() => runner.validatePlan5CandidateScope("docs/knowledge/03-job-lifecycle-and-async-checks.md\n")).toThrow();
-  expect(() => runner.validatePlan5CandidateScope("src/monitor/addressPoisoning.ts\n")).toThrow();
-  expect(() => runner.validatePlan5CandidateScope("src/unapproved.ts\n")).toThrow();
+  ].join("\0") + "\0")).not.toThrow();
+  expect(() => runner.validatePlan5CandidateScope("docs/knowledge/03-job-lifecycle-and-async-checks.md\0")).toThrow();
+  expect(() => runner.validatePlan5CandidateScope("src/monitor/addressPoisoning.ts\0")).toThrow();
+  expect(() => runner.validatePlan5CandidateScope("src/unapproved.ts\0")).toThrow();
+  expect(() => runner.validatePlan5CandidateScope(
+    "src/monitor/addressPoisoning.ts\0src/release/remediationReleaseManifest.ts\0"
+  )).toThrow();
+  expect(() => runner.validatePlan5CandidateScope(" src/release/remediationReleaseManifest.ts\0")).toThrow();
+  expect(() => runner.validatePlan5CandidateScope("src\\release\\remediationReleaseManifest.ts\0")).toThrow();
+  expect(() => runner.validatePlan5CandidateScope("src/release/remediationReleaseManifest.ts\n")).toThrow();
   expect(Object.values(runner.PLAN5_CLEANUP_DATABASES)).toEqual([
     "tron_watch_plan1", "tron_watch_plan2", "tron_watch_plan3", "tron_watch_plan4",
     "tron_watch_plan5_clean", "tron_watch_plan5_clone", "tron_watch_plan5_runtime_sanitized"
@@ -1339,6 +1345,10 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
     expect(npmCalls.every((call) => call.args[0]?.replaceAll("\\", "/").endsWith("/npm/bin/npm-cli.js"))).toBe(true);
   }
   expect(calls.filter((call) => call.args[0] === "diff")).toHaveLength(2);
+  expect(calls).toContainEqual({
+    executable: "git",
+    args: ["diff", "--name-only", "--no-renames", "-z", `${PLAN_BASE_SHA}..${CANDIDATE_SHA}`]
+  });
   expect(calls).toContainEqual({
     executable: "git",
     args: ["merge-base", "--is-ancestor", PLAN_BASE_SHA, CANDIDATE_SHA]
