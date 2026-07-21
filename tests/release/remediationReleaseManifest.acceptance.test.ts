@@ -1409,12 +1409,22 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
     }
   });
   const typecheckCall = calls.find((call) => call.args.slice(-2).join(" ") === "run typecheck");
-  const fullTestCall = calls.find((call) => call.args.includes("test"));
+  const fullTestCall = calls.find((call) => call.args[0]?.replaceAll("\\", "/").endsWith("/vitest/vitest.mjs"));
   expect(typecheckCall).toBeDefined();
-  expect(fullTestCall?.args.slice(-5)).toEqual([
-    "test", "--", "--no-file-parallelism", "--testTimeout=300000", "--hookTimeout=300000"
+  expect(fullTestCall).toEqual({
+    executable: process.execPath,
+    args: expect.arrayContaining([
+      expect.stringMatching(/[\\/]vitest[\\/]vitest\.mjs$/),
+      "run", "--configLoader", "bundle", "--no-file-parallelism",
+      "--testTimeout=300000", "--hookTimeout=300000"
+    ])
+  });
+  expect(fullTestCall?.args.slice(1)).toEqual([
+    "run", "--configLoader", "bundle", "--no-file-parallelism",
+    "--testTimeout=300000", "--hookTimeout=300000"
   ]);
-  const npmCalls = [typecheckCall!, fullTestCall!];
+  expect(calls.some((call) => call.args.includes("test"))).toBe(false);
+  const npmCalls = [typecheckCall!];
   expect(npmCalls.every((call) => !call.executable.toLowerCase().endsWith(".cmd"))).toBe(true);
   if (process.platform === "win32") {
     expect(npmCalls.every((call) => call.executable === process.execPath)).toBe(true);
@@ -1463,7 +1473,7 @@ it("[AC-41][NON-VITEST-GATES] executes literal full test typecheck diff scope an
     env: {}
   }, {
     run(_executable, args) {
-      return args.includes("test")
+      return args[0]?.replaceAll("\\", "/").endsWith("/vitest/vitest.mjs") && args[1] === "run"
         ? { status: 1, stdout: "", stderr: "failed", signal: null }
         : { status: 0, stdout: "", stderr: "", signal: null };
     },

@@ -393,11 +393,12 @@ export async function runNonVitestReleaseChecks(
     { checkId: "typecheck", executable: npmExecutable, args: [...npmArgs, "run", "typecheck"], requireEmpty: false },
     {
       checkId: "full_test",
-      executable: npmExecutable,
+      executable: process.execPath,
       args: [
-        ...npmArgs,
-        "test",
-        "--",
+        resolve(repositoryRoot, "node_modules/vitest/vitest.mjs"),
+        "run",
+        "--configLoader",
+        "bundle",
         "--no-file-parallelism",
         "--testTimeout=300000",
         "--hookTimeout=300000"
