@@ -339,9 +339,7 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
       ))
     : undefined;
   const exactPlan4Lineage = EXACT_PLAN4_RED_LINEAGE[acceptanceId];
-  const exactPlan4LineageRequired = exactPlan4Lineage
-    && (exactPlan4Lineage.kind === "behavioral_assertion" || redKind === "local_product_module_absent");
-  if (exactPlan4LineageRequired && (
+  if (exactPlan4Lineage && (
     redKind !== exactPlan4Lineage.kind
       || testFile !== exactPlan4Lineage.testFile
       || baseSha !== exactPlan4Lineage.baseSha

@@ -847,6 +847,37 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
     const ownerPlan = EXPECTED_ACCEPTANCE_OWNER_PLAN[acceptanceId]!;
     const ownerCommitSha = String(ownerPlan).repeat(40);
     const behavioralPlan4 = ["AC-20", "AC-21", "AC-24"].includes(acceptanceId);
+    const localPlan4 = ["AC-07", "AC-08", "AC-09", "AC-12", "AC-13", "AC-27", "AC-39"].includes(acceptanceId);
+    const localPath = acceptanceId === "AC-13" || acceptanceId === "AC-27" || acceptanceId === "AC-39"
+      ? "src/telegram/forensicPresentationAdapters"
+      : "src/telegram/forensicPresentation";
+    const localPatchSha256 = acceptanceId === "AC-13"
+      ? "27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771"
+      : acceptanceId === "AC-27" || acceptanceId === "AC-39"
+        ? "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2"
+        : "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
+    const red: AcceptanceTraceRedV1 = localPlan4 ? {
+      kind: "local_product_module_absent",
+      baseSha: "d18067f6c49fd632bafa47a90f69f1e7bf8b1802",
+      testCommitSha: "20ee8a759e482c2c3037d72e561e68e289cf87b5",
+      redExecutionCommitSha: "20ee8a759e482c2c3037d72e561e68e289cf87b5",
+      testPatchSha256: localPatchSha256,
+      vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
+      expectedFailureFingerprint: `expected_local_product_module_absent_${acceptanceId.toLowerCase()}_${(index + 501).toString(16).padStart(64, "0")}`,
+      missingProductModulePath: localPath,
+      status: "failed_as_expected"
+    } : {
+      kind: "behavioral_assertion",
+      baseSha: behavioralPlan4 ? "d18067f6c49fd632bafa47a90f69f1e7bf8b1802" : PLAN_BASE_SHA,
+      testCommitSha: behavioralPlan4 ? "20ee8a759e482c2c3037d72e561e68e289cf87b5" : "a".repeat(40),
+      redExecutionCommitSha: behavioralPlan4 ? "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72" : "a".repeat(40),
+      testPatchSha256: behavioralPlan4
+        ? "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2"
+        : (index + 201).toString(16).padStart(64, "0"),
+      vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
+      expectedFailureFingerprint: `expected_behavioral_assertion_${acceptanceId.toLowerCase()}`,
+      status: "failed_as_expected"
+    };
     return {
       acceptanceId,
       requirementIds: [...EXPECTED_ACCEPTANCE_REQUIREMENT_IDS[acceptanceId]!],
@@ -855,18 +886,7 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
       testFile: PRIMARY_AC_TEST_FILES[index],
       fullName: PRIMARY_AC_FULL_NAMES[index],
       primary: true,
-      red: {
-        kind: "behavioral_assertion",
-        baseSha: behavioralPlan4 ? "d18067f6c49fd632bafa47a90f69f1e7bf8b1802" : PLAN_BASE_SHA,
-        testCommitSha: behavioralPlan4 ? "20ee8a759e482c2c3037d72e561e68e289cf87b5" : "a".repeat(40),
-        redExecutionCommitSha: behavioralPlan4 ? "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72" : "a".repeat(40),
-        testPatchSha256: behavioralPlan4
-          ? "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2"
-          : (index + 201).toString(16).padStart(64, "0"),
-        vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
-        expectedFailureFingerprint: `expected_behavioral_assertion_${acceptanceId.toLowerCase()}`,
-        status: "failed_as_expected"
-      },
+      red,
       green: {
         candidateSha: CANDIDATE_SHA,
         vitestReportSha256: (index + 401).toString(16).padStart(64, "0"),

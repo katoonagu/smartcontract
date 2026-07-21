@@ -14,7 +14,10 @@ type ParsedExecution = {
   failureMessages: string[];
 };
 
-type TraceDependencies = { isAncestor(ownerCommitSha: string, candidateSha: string): boolean };
+type TraceDependencies = {
+  isAncestor(ownerCommitSha: string, candidateSha: string): boolean;
+  pathExistsAtCommit?(commitSha: string, productModulePath: string): boolean;
+};
 const PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
 const PLAN4_TEST_BASE_SHA = "d18067f6c49fd632bafa47a90f69f1e7bf8b1802";
 const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
@@ -111,6 +114,12 @@ const fixtureAncestry: TraceDependencies = {
       || (trace.red.redExecutionCommitSha === ancestorCommitSha
         && trace.ownerCommitSha === descendantCommitSha)
     ));
+  },
+  pathExistsAtCommit: (commitSha, productModulePath) => {
+    const fixture = buildAcceptanceTraceSet();
+    return fixture.traces.some((trace) => trace.red.kind === "local_product_module_absent"
+      && trace.red.missingProductModulePath === productModulePath
+      && (commitSha === trace.ownerCommitSha || commitSha === fixture.candidateSha));
   }
 };
 
@@ -397,9 +406,11 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
       ancestorCommitSha === PLAN4_FROZEN_TEST_SHA
         && (descendantCommitSha === target.ownerCommitSha || descendantCommitSha === fixture.candidateSha)
     ) || fixtureAncestry.isAncestor(ancestorCommitSha, descendantCommitSha),
-    pathExistsAtCommit: override ?? ((commitSha: string, productPath: string) => (
-      productPath === path && commitSha !== target.red.testCommitSha
-    ))
+    pathExistsAtCommit: (commitSha: string, productPath: string) => (
+      override && productPath === path
+        ? override(commitSha, productPath)
+        : fixtureAncestry.pathExistsAtCommit!(commitSha, productPath)
+    )
   });
   expect(() => validate(fixture, dependency())).not.toThrow();
   expect(() => validate(fixture, dependency((commitSha, productPath) => (
@@ -427,6 +438,11 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   const wrongLocalPatch: any = cloneFixture(fixture);
   wrongLocalPatch.traces[6].red.testPatchSha256 = "0".repeat(64);
   expect(() => validate(wrongLocalPatch, dependency())).toThrow(/exact approved RED lineage/);
+  const behavioralSubstitution: any = cloneFixture(fixture);
+  behavioralSubstitution.traces[6].red.kind = "behavioral_assertion";
+  behavioralSubstitution.traces[6].red.expectedFailureFingerprint = "expected_behavioral_assertion_ac-07";
+  delete behavioralSubstitution.traces[6].red.missingProductModulePath;
+  expect(() => validate(behavioralSubstitution, dependency())).toThrow(/exact approved RED lineage/);
   const unauthorized: any = cloneFixture(fixture);
   const unauthorizedTarget = unauthorized.traces[0];
   const unauthorizedEvidence: ParsedLocalProductModuleAbsence = {
@@ -457,6 +473,7 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
     behavioralTarget.red.redExecutionCommitSha = PLAN4_BEHAVIORAL_RED_SHA;
     behavioralTarget.red.testPatchSha256 = PLAN4_ALERT_TEST_PATCH_SHA256;
     const behavioralDependency = {
+      pathExistsAtCommit: fixtureAncestry.pathExistsAtCommit,
       isAncestor: (ancestorCommitSha: string, descendantCommitSha: string) => (
         ancestorCommitSha === PLAN4_FROZEN_TEST_SHA && descendantCommitSha === PLAN4_BEHAVIORAL_RED_SHA
       ) || (
