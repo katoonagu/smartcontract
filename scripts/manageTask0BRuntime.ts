@@ -138,6 +138,8 @@ type RuntimeIdentity = {
 type PreparedStartRuntime = {
   worktree: string;
   physicalEntrypoint: string;
+  entrypointSha256: string;
+  entrypointFileIdentitySha256: string;
 };
 
 type PreparedStopRuntime = {
@@ -1126,16 +1128,63 @@ async function terminateSpawnedChildAndVerify(processId: number): Promise<void> 
   if (exists()) throw new Error("task0b_runtime_manager_failed_child_survived");
 }
 
-async function prepareStartRuntime(authority: Task0BProductionRuntimeAuthorityV1): Promise<PreparedStartRuntime> {
-  if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
+export async function attestTask0BStartWorktree(authority: Pick<Task0BProductionRuntimeAuthorityV1,
+  "targetWorktreePath" | "targetRuntimeSha" | "targetWorktreeFingerprintSha256">): Promise<PreparedStartRuntime> {
   const worktree = await attestTask0BActionWorktree(authority);
   const entrypoint = resolve(worktree, "src", "index.ts");
   const physicalEntrypoint = resolve(await realpath(entrypoint));
   if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_runtime_manager_entrypoint_unverified");
-  return { worktree, physicalEntrypoint };
+  const handle = await open(physicalEntrypoint, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const before = await handle.stat({ bigint: true });
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const identity = (value: typeof before) => canonicalReleaseJsonV2({
+      path: process.platform === "win32" ? physicalEntrypoint.toLowerCase() : physicalEntrypoint,
+      dev: value.dev.toString(),
+      ino: value.ino.toString(),
+      mode: value.mode.toString(),
+      size: value.size.toString(),
+      birthtimeNs: value.birthtimeNs.toString(),
+      ctimeNs: value.ctimeNs.toString(),
+      mtimeNs: value.mtimeNs.toString()
+    });
+    if (!before.isFile() || identity(before) !== identity(after)) {
+      throw new Error("task0b_runtime_manager_entrypoint_changed_during_read");
+    }
+    return {
+      worktree,
+      physicalEntrypoint,
+      entrypointSha256: hash(bytes),
+      entrypointFileIdentitySha256: hash(identity(after))
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
-async function recheckStartRuntime(): Promise<void> {
+export async function revalidateTask0BStartWorktree(
+  authority: Pick<Task0BProductionRuntimeAuthorityV1,
+    "targetWorktreePath" | "targetRuntimeSha" | "targetWorktreeFingerprintSha256">,
+  prepared: PreparedStartRuntime
+): Promise<void> {
+  const current = await attestTask0BStartWorktree(authority);
+  if (!canonicalBytesV2(current).equals(canonicalBytesV2(prepared))) {
+    throw new Error("task0b_runtime_manager_entrypoint_or_worktree_changed");
+  }
+}
+
+async function prepareStartRuntime(authority: Task0BProductionRuntimeAuthorityV1): Promise<PreparedStartRuntime> {
+  if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
+  return attestTask0BStartWorktree(authority);
+}
+
+async function recheckStartRuntime(
+  authority: Task0BProductionRuntimeAuthorityV1,
+  prepared: PreparedStartRuntime
+): Promise<void> {
+  if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
+  await revalidateTask0BStartWorktree(authority, prepared);
   if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
 }
 
@@ -1167,6 +1216,7 @@ async function startRuntime(
       stderrPath: diagnosticPaths.stderr,
       createdAt: new Date().toISOString()
     });
+    await revalidateTask0BStartWorktree(authority, prepared);
     child = spawn(process.execPath, [
       "--import", "tsx", prepared.physicalEntrypoint,
       "--task0b-manager-producer=task0b_repo_runtime_manager_v1",
@@ -1194,6 +1244,12 @@ async function startRuntime(
     if (observation) await terminateExactAndVerify(observation, "graceful_then_force");
     else await terminateSpawnedChildAndVerify(child.pid);
     throw new Error("task0b_runtime_manager_start_unobserved");
+  }
+  try {
+    await revalidateTask0BStartWorktree(authority, prepared);
+  } catch (error) {
+    await terminateExactAndVerify(observation, "graceful_then_force");
+    throw error;
   }
   const runtimeEvidence = createTask0BRuntimeManagerStartEvidence({
     generationId: authority.generationId,
@@ -1439,7 +1495,7 @@ async function main(): Promise<void> {
       },
       revalidateBeforeConsumption,
       consumeAuthority,
-      recheckLive: recheckStartRuntime,
+      recheckLive: (prepared) => recheckStartRuntime(authority, prepared),
       revalidateImmediatelyBeforeMutation: revalidateBeforeConsumption,
       mutateRuntime: (prepared) => startRuntime(artifactRoot, authority, prepared, hash(authorityBytes))
     })

@@ -266,7 +266,9 @@ of these decisions, update this file in the same work.
   candidate, repository blob, start evidence, PID and live process;
   the current guarded manager is independently hashed from the clean candidate.
   Task 0B lineage and action-time worktree Git proof both disable replace
-  objects and inherited Git overrides. Capture and
+  objects and inherited Git overrides. Start actions also bind exact entrypoint
+  bytes plus stable file identity and re-attest immediately before spawn and
+  again before publishing start evidence. Capture and
   every revalidation reproduce both lineages. A later stop uses the frozen
   launcher only for old-process proof while action authority remains current-
   manager-bound. Missing origin bytes, non-ancestry, a changed process, or any

@@ -2782,7 +2782,10 @@ prepared/receipt materialization bundle with separately pinned hashes and a
 timestamp inside the archived Task 0B window, owner candidate, repository manager-
 blob hash, original start evidence and live PID identity. The current guarded action
 manager is independently hashed. Task 0B lineage and action-time worktree Git
-proof both disable replace objects and inherited Git overrides. Capture and every revalidation reproduce both lineages,
+proof both disable replace objects and inherited Git overrides. A start pins
+exact entrypoint bytes and stable file identity, repeats attestation immediately
+before spawn and before evidence publication, and terminates a drifted child.
+Capture and every revalidation reproduce both lineages,
 owner ancestry/blob content and the live process; a later stop uses the frozen
 launcher only for old-process proof while action authority remains current-
 manager-bound; any missing origin,

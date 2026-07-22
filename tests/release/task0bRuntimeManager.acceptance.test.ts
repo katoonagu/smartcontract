@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -59,6 +59,34 @@ it("[REQ-38][TASK0B-MANAGER-GIT-ATTESTATION] ignores hostile ambient Git overrid
         else process.env[key] = value;
       }
     }
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
+
+it("[REQ-38][TASK0B-MANAGER-START-RACE] reattests immutable entrypoint bytes immediately before spawn", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const repository = await mkdtemp(join(tmpdir(), "task0b-start-race-"));
+  const git = (args: string[]) => execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
+  try {
+    git(["init"]);
+    git(["config", "core.autocrlf", "false"]);
+    await mkdir(join(repository, "src"));
+    const entrypoint = join(repository, "src", "index.ts");
+    await writeFile(entrypoint, "export const exact = true;\n");
+    git(["add", "src/index.ts"]);
+    git(["-c", "user.name=Plan5", "-c", "user.email=plan5@example.invalid", "commit", "-m", "fixture"]);
+    const physical = await realpath(repository);
+    const binding = {
+      targetWorktreePath: physical,
+      targetRuntimeSha: git(["rev-parse", "HEAD"]),
+      targetWorktreeFingerprintSha256: createHash("sha256")
+        .update(process.platform === "win32" ? physical.toLowerCase() : physical).digest("hex")
+    };
+    const prepared = await api.attestTask0BStartWorktree(binding);
+    await writeFile(entrypoint, "export const exact = false;\n");
+    await expect(api.revalidateTask0BStartWorktree(binding, prepared))
+      .rejects.toThrow(/entrypoint|worktree|changed|unverified/i);
   } finally {
     await rm(repository, { recursive: true, force: true });
   }

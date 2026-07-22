@@ -214,7 +214,10 @@ rechecks the live process. A later stop uses the frozen launcher only for old-
 process proof; the current manager remains the action authority. Never copy the
 old manager hash into the current-manager field or regenerate a start attestation.
 The action manager applies the same sanitized/no-replace Git policy when it
-attests the candidate or rollback worktree immediately before an action.
+attests the candidate or rollback worktree. Before a start it pins exact
+`src/index.ts` bytes and stable file identity, re-attests immediately before
+spawn, then re-attests again before publishing start evidence; drift terminates
+the just-started process and fails closed.
 
 No production command has run. After complete G00-G11, exact-SHA merge rerun,
 pre-GO report, explicit user GO, and fresh action authority, the exact future
