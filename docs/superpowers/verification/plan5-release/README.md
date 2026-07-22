@@ -228,17 +228,28 @@ order is producer-first, strict-verifier-last.
    protecting the whole-repository run from shared filesystem variance.
    Trace preparation uses immutable Git archives for the approved test-only
    commits, applies only the canonical AC-10/11 and AC-33 title patches, and
-   requires actual behavioral failures in Vitest JSON. Corrective exception:
-   AC-07/08/09/12/13/27/39 accept only typed
-   `local_product_module_absent` evidence from their exact frozen Plan 4 test
-   commit. The report must contain zero test executions and an exact relative
-   `src/*` missing-module error imported by the declared test file; Git must
-   prove the module absent at the test commit and present at owner plus current
-   candidate, with exact patch and ancestry bindings. The owner is pinned to
-   `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`; an arbitrary intermediate
-   ancestor is not an owner substitute. Generic import/no-test,
-   dependency, fixture, environment, timeout, or synthetic failures remain
-   rejected.
+   requires actual behavioral failures in Vitest JSON. Corrective exceptions
+   are closed allowlists, not generic import evidence. AC-07/08/09/12/13/27/39
+   accept typed zero-execution `local_product_module_absent` from exact frozen
+   Plan 4 commit `20ee8a75…`. The 17 exact Plan 2 primary traces
+   AC-03/04/05/06/19/22/23/25/26/28/29/30/31/32/33/36/37 accept assertion-bound
+   `local_product_module_absent` from frozen commit `01a29fef…` only. Each Plan 2
+   record binds its exact test `fullName`, one and only one exact `src/*`
+   module-absence message, exact test patch, owner `83f0cb96…`, and current
+   candidate. AC-29/30 may retain their other behavioral assertion messages;
+   only the single exact module-absence line is classified as local evidence.
+   Git must prove every named module absent at the frozen test commit and present
+   at owner plus candidate. Generic/no-test/dependency/fixture/environment/
+   timeout/synthetic failures, a foreign importer, or multiple local-absence
+   messages fail closed.
+
+   Plan 3 RED preparation always sets `REQUIRE_PLAN3_POSTGRES=1` and binds both
+   `PLAN3_TEST_DATABASE_URL` and `TEST_DATABASE_URL` to the exact disposable
+   `tron_watch_plan3` database. AC-14/15 must execute; skipped PostgreSQL tests
+   are invalid trace evidence. Because the immutable Plan 3 test pins legacy
+   loopback port `55432`, the producer recreates that endpoint only inside the
+   pinned `node:22-bookworm` image on the disposable PostgreSQL container
+   network; it never binds or proxies the production endpoint.
 
    AC-20/21/24 are not part of that exception. Preparation replays their exact
    original test patch from frozen commit `20ee8a75…` and runs their behavioral

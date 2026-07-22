@@ -22,6 +22,9 @@ import {
   REMEDIATION_ACCEPTANCE_OWNER_PLAN,
   REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS,
   REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS,
+  REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS,
+  REMEDIATION_PLAN2_FROZEN_TEST_SHA,
+  REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS,
   REMEDIATION_PLAN4_FROZEN_TEST_SHA,
   requireExactExecution,
   validateAcceptanceTraceSet,
@@ -100,6 +103,9 @@ const PLAN2_TEST_SHA = "01a29fefb51c245c3fe8f97f0da53929047740c7";
 const PLAN3_TEST_SHA = "e37b37edf44d892eda721ab1cbdd362385f446c4";
 const PLAN5_TEST_SHA = "a2efb1cf6a840ef3c0dcda0fb6ae980e2c1eed24";
 const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
+const PLAN3_FROZEN_DATABASE_URL = "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3";
+const PLAN3_RED_NODE_IMAGE = "node@sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37";
+const PLAN3_RED_NODE_IMAGE_ID = "sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37";
 const CANONICAL_IDENTITY_SHA = "db5d49a944c0de489f13567d87400cb32c4eedb0";
 const OWNER_COMMITS = Object.freeze({
   1: "31f5c2dd3619bdaf16ecea4ac127d5232b8c1019",
@@ -183,11 +189,15 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
     red.redExecutionCommitSha,
     `traces[${index}].red.redExecutionCommitSha`
   );
-  if (redKind === "local_product_module_absent"
-      && (!REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)
-        || testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA
-        || redExecutionCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA)) {
-    throw new Error(`traces[${index}] local product module RED is outside the approved Plan 4 set`);
+  if (redKind === "local_product_module_absent") {
+    const frozenTestSha = REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)
+      ? REMEDIATION_PLAN4_FROZEN_TEST_SHA
+      : REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)
+        ? REMEDIATION_PLAN2_FROZEN_TEST_SHA
+        : null;
+    if (!frozenTestSha || testCommitSha !== frozenTestSha || redExecutionCommitSha !== frozenTestSha) {
+      throw new Error(`traces[${index}] local product module RED is outside the exact approved frozen set`);
+    }
   }
   return {
     acceptanceId,
@@ -265,6 +275,11 @@ export function buildCaptureRedSpec(input: CaptureRedSpecInput): CaptureTraceSpe
 
 async function gitOutput(args: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", [...args], { cwd: repositoryRoot, windowsHide: true });
+  return stdout.trim();
+}
+
+async function dockerOutput(args: readonly string[]): Promise<string> {
+  const { stdout } = await execFileAsync("docker", [...args], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   return stdout.trim();
 }
 
@@ -494,7 +509,9 @@ async function createRedSnapshot(group: RedGroup): Promise<{ root: string; clean
       maxBuffer: 16 * 1024 * 1024
     });
     await execFileAsync("tar", ["-xf", archivePath, "-C", temporary], { windowsHide: true });
-    await symlink(join(repositoryRoot, "node_modules"), join(temporary, "node_modules"), "junction");
+    if (group.id !== "plan3") {
+      await symlink(join(repositoryRoot, "node_modules"), join(temporary, "node_modules"), "junction");
+    }
     if (group.testPatch?.applyToSnapshot) {
       const patchPath = join(temporary, ".plan5-red.patch");
       await writeFile(
@@ -529,40 +546,94 @@ async function createRedSnapshot(group: RedGroup): Promise<{ root: string; clean
   }
 }
 
+async function runPlan3FrozenRedInContainer(
+  snapshotRoot: string,
+  group: RedGroup,
+  env: NodeJS.ProcessEnv
+): Promise<void> {
+  const directUrl = env.PLAN3_TEST_DATABASE_URL;
+  if (!directUrl) throw new Error("Plan 3 RED evidence requires PLAN3_TEST_DATABASE_URL");
+  const target = new URL(directUrl);
+  const targetPort = Number(target.port || 5432);
+  if (targetPort === 55_999) throw new Error("Plan 3 RED evidence cannot use the production database port");
+  const containerIds = (await dockerOutput([
+    "ps", "--filter", `publish=${targetPort}`, "--format", "{{.ID}}"
+  ])).split(/\r?\n/).filter(Boolean);
+  if (containerIds.length !== 1) throw new Error("Plan 3 RED database endpoint does not resolve to one disposable container");
+  const inspected = JSON.parse(await dockerOutput(["inspect", containerIds[0]])) as unknown;
+  if (!Array.isArray(inspected) || inspected.length !== 1) throw new Error("Plan 3 RED database container inspection is invalid");
+  const container = expectRecord(inspected[0], "Plan 3 RED database container");
+  const networkSettings = expectRecord(container.NetworkSettings, "Plan 3 RED database NetworkSettings");
+  const networks = expectRecord(networkSettings.Networks, "Plan 3 RED database networks");
+  const networkEntries = Object.entries(networks);
+  if (networkEntries.length !== 1) throw new Error("Plan 3 RED database network is ambiguous");
+  const [networkName, networkValue] = networkEntries[0];
+  const databaseNetwork = expectRecord(networkValue, "Plan 3 RED database network");
+  const databaseIp = expectString(databaseNetwork.IPAddress, "Plan 3 RED database IPAddress");
+  if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(databaseIp)) throw new Error("Plan 3 RED database IP is invalid");
+  if (await dockerOutput(["image", "inspect", PLAN3_RED_NODE_IMAGE, "--format", "{{.Id}}"])
+      !== PLAN3_RED_NODE_IMAGE_ID) {
+    throw new Error("Plan 3 RED Node image identity is invalid");
+  }
+  const proxyCode = `const net=require("node:net");net.createServer(c=>{const u=net.connect(5432,"${databaseIp}");c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u).pipe(c)}).listen(55432,"127.0.0.1")`;
+  // ponytail: immutable Plan 3 pins Windows-reserved 55432; isolate that legacy endpoint in the pinned Node container.
+  const command = [
+    "set -u",
+    "npm ci --no-audit --no-fund >/dev/null 2>&1 || exit 90",
+    `node -e '${proxyCode}' & proxy_pid=$!`,
+    `node node_modules/vitest/vitest.mjs run ${group.testFiles.join(" ")} --configLoader bundle --reporter=json --outputFile=/work/.plan5-red-report.json --testTimeout=120000 --hookTimeout=120000 --no-file-parallelism`,
+    "code=$?",
+    "kill $proxy_pid",
+    "wait $proxy_pid 2>/dev/null || true",
+    "exit $code"
+  ].join("; ");
+  await execFileAsync("docker", [
+    "run", "--rm", "--network", networkName,
+    "--env", "REQUIRE_PLAN3_POSTGRES=1",
+    "--env", `PLAN3_TEST_DATABASE_URL=postgresql://tron:tron@${databaseIp}:5432/tron_watch_plan3`,
+    "--env", `TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
+    "--volume", `${snapshotRoot}:/work`,
+    "--workdir", "/work",
+    PLAN3_RED_NODE_IMAGE,
+    "bash", "-lc", command
+  ], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 20 * 60_000,
+    maxBuffer: 16 * 1024 * 1024
+  });
+}
+
 async function runRedGroup(root: string, group: RedGroup): Promise<{
   reportRelativePath: string;
   executions: ParsedAcceptanceExecution[];
   localProductModuleAbsences: ParsedLocalProductModuleAbsence[];
 }> {
+  const env = buildRedGroupEnvironment(group.id, process.env);
   const snapshot = await createRedSnapshot(group);
   const reportPath = join(snapshot.root, ".plan5-red-report.json");
-  const env = buildReleaseSuiteEnvironment(process.env);
-  if (group.id === "plan4") {
-    const databaseUrl = env.PLAN4_TEST_DATABASE_URL;
-    if (!databaseUrl) throw new Error("Plan 4 RED evidence requires PLAN4_TEST_DATABASE_URL");
-    env.TEST_DATABASE_URL = databaseUrl;
-    env.REQUIRE_PLAN4_POSTGRES = "1";
-  }
   let failedAsExpected = false;
   try {
-    await execFileAsync(process.execPath, [
-      join(snapshot.root, "node_modules/vitest/vitest.mjs"),
-      "run",
-      ...group.testFiles,
-      "--configLoader", "bundle",
-      "--reporter=json",
-      `--outputFile=${reportPath}`,
-      "--testTimeout=120000",
-      "--hookTimeout=120000",
-      "--no-file-parallelism"
-    ], {
-      cwd: snapshot.root,
-      env,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 20 * 60_000,
-      maxBuffer: 16 * 1024 * 1024
-    });
+    if (group.id === "plan3") {
+      await runPlan3FrozenRedInContainer(snapshot.root, group, env);
+    } else await execFileAsync(process.execPath, [
+        join(snapshot.root, "node_modules/vitest/vitest.mjs"),
+        "run",
+        ...group.testFiles,
+        "--configLoader", "bundle",
+        "--reporter=json",
+        `--outputFile=${reportPath}`,
+        "--testTimeout=120000",
+        "--hookTimeout=120000",
+        "--no-file-parallelism"
+      ], {
+        cwd: snapshot.root,
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 20 * 60_000,
+        maxBuffer: 16 * 1024 * 1024
+      });
   } catch (error) {
     const failure = error as Error & { code?: number | string };
     failedAsExpected = Number(failure.code) === 1;
@@ -573,11 +644,14 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
     const report = JSON.parse(reportBytes.toString("utf8")) as unknown;
     assertNoSecretLikeArtifactValues(report);
     let executions: ParsedAcceptanceExecution[] = [];
-    let localProductModuleAbsences: ParsedLocalProductModuleAbsence[] = [];
     try {
       executions = parseAcceptanceExecutionReport(report, "failed");
-    } catch {
-      localProductModuleAbsences = parseLocalProductModuleAbsenceReport(report);
+    } catch {}
+    const localProductModuleAbsences = ["plan2", "plan2-llm-dampening", "plan4"].includes(group.id)
+      ? parseLocalProductModuleAbsenceReport(report)
+      : [];
+    if (executions.length === 0 && localProductModuleAbsences.length === 0) {
+      throw new Error(`RED group has no exact behavioral or local product evidence: ${group.id}`);
     }
     const reportRelativePath = `trace/red/${group.id}.vitest.json`;
     await writeFile(join(root, reportRelativePath), reportBytes, { flag: "wx" });
@@ -585,6 +659,38 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
   } finally {
     await snapshot.cleanup();
   }
+}
+
+export async function preflightRemediationRedGroup(groupId: string): Promise<{
+  groupId: string;
+  executions: number;
+  localProductModuleAbsences: number;
+}> {
+  const group = RED_GROUPS.find((candidate) => candidate.id === groupId);
+  if (!group) throw new Error("RED preflight group is not approved");
+  const temporary = await mkdtemp(join(tmpdir(), `plan5-red-preflight-${groupId}-`));
+  try {
+    await mkdir(join(temporary, "trace/red"), { recursive: true });
+    const result = await runRedGroup(temporary, group);
+    return {
+      groupId,
+      executions: result.executions.length,
+      localProductModuleAbsences: result.localProductModuleAbsences.length
+    };
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+export function buildRedGroupEnvironment(groupId: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = buildReleaseSuiteEnvironment(source);
+  const databasePlan = groupId === "plan3" ? 3 : groupId === "plan4" ? 4 : null;
+  if (databasePlan === null) return env;
+  const databaseUrl = env[`PLAN${databasePlan}_TEST_DATABASE_URL`];
+  if (!databaseUrl) throw new Error(`Plan ${databasePlan} RED evidence requires PLAN${databasePlan}_TEST_DATABASE_URL`);
+  env.TEST_DATABASE_URL = databasePlan === 3 ? PLAN3_FROZEN_DATABASE_URL : databaseUrl;
+  env[`REQUIRE_PLAN${databasePlan}_POSTGRES`] = "1";
+  return env;
 }
 
 export function redGroupForTrace(testFile: string, acceptanceId: string, secondary = false): string {
@@ -821,34 +927,15 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
     ));
     const localAbsences = redReport.localProductModuleAbsences.filter((evidence) => (
       evidence.testFile === input.testFile
+        && (evidence.fullName === input.fullName || evidence.fullName === null)
     ));
+    const approvedAssertionLocal = REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS
+      .includes(input.acceptanceId) && localAbsences.every((evidence) => evidence.fullName === input.fullName);
+    const approvedFileLoadLocal = REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS
+      .includes(input.acceptanceId) && localAbsences.every((evidence) => evidence.fullName === null);
     let red: CaptureTraceSpec["red"];
     let expectedFailureFingerprint: string;
-    if (redExecutions.length === 1) {
-      const redExecution = requireExactExecution(redReport.executions, input.testFile, input.fullName, "failed");
-      expectedFailureFingerprint = behavioralFailureFingerprint(input.acceptanceId, redExecution);
-      assertExpectedBehavioralRed(redExecution, {
-        acceptanceId: input.acceptanceId,
-        testFile: input.testFile,
-        fullName: input.fullName,
-        expectedFailureFingerprint,
-        patchText: patch.bytes.toString("utf8"),
-        testPatchSha256: sha256(patch.bytes)
-      });
-      red = buildCaptureRedSpec({
-        kind: "behavioral_assertion",
-        baseSha: redBaseSha,
-        testCommitSha,
-        redExecutionCommitSha: redGroup.commitSha,
-        testPatchSha256: sha256(patch.bytes),
-        testPatchFile: patch.relativePath,
-        reportFile: redReport.reportRelativePath
-      });
-    } else {
-      if (redExecutions.length !== 0 || localAbsences.length !== 1
-          || !REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(input.acceptanceId)) {
-        throw new Error(`${input.acceptanceId} has no approved exact RED evidence`);
-      }
+    if (localAbsences.length === 1 && (approvedAssertionLocal || approvedFileLoadLocal)) {
       const evidence = localAbsences[0];
       expectedFailureFingerprint = localProductModuleAbsenceFingerprint(input.acceptanceId, evidence);
       assertExpectedLocalProductModuleAbsentRed(evidence, {
@@ -877,7 +964,27 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
         reportFile: redReport.reportRelativePath,
         missingProductModulePath: evidence.missingProductModulePath
       });
-    }
+    } else if (redExecutions.length === 1) {
+      const redExecution = requireExactExecution(redReport.executions, input.testFile, input.fullName, "failed");
+      expectedFailureFingerprint = behavioralFailureFingerprint(input.acceptanceId, redExecution);
+      assertExpectedBehavioralRed(redExecution, {
+        acceptanceId: input.acceptanceId,
+        testFile: input.testFile,
+        fullName: input.fullName,
+        expectedFailureFingerprint,
+        patchText: patch.bytes.toString("utf8"),
+        testPatchSha256: sha256(patch.bytes)
+      });
+      red = buildCaptureRedSpec({
+        kind: "behavioral_assertion",
+        baseSha: redBaseSha,
+        testCommitSha,
+        redExecutionCommitSha: redGroup.commitSha,
+        testPatchSha256: sha256(patch.bytes),
+        testPatchFile: patch.relativePath,
+        reportFile: redReport.reportRelativePath
+      });
+    } else throw new Error(`${input.acceptanceId} has no approved exact RED evidence`);
     if (redBaseSha !== testCommitSha) {
       const exactTestPatch = await gitPatch(redBaseSha, testCommitSha, input.testFile);
       if (!exactTestPatch.equals(patch.bytes)) {
@@ -1018,6 +1125,10 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
       const localEvidence = redReport.localProductModuleAbsences.filter((evidence) => (
         evidence.testFile === item.testFile
           && evidence.missingProductModulePath === missingProductModulePath
+          && (evidence.fullName === item.fullName || (
+            evidence.fullName === null
+              && REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(item.acceptanceId)
+          ))
       ));
       if (localEvidence.length !== 1) {
         throw new Error(`${item.acceptanceId} local product module RED is not exact and unique`);

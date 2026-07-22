@@ -66,6 +66,21 @@
 > byte-for-byte to the immutable preflight and release freeze; their own
 > authority/lease or authority/session guards govern the already-started action.
 >
+> **Approved consolidated corrective amendment (2026-07-22, RED trace):** the
+> exact Plan 2 primary traces AC-03/04/05/06/19/22/23/25/26/28/29/30/31/32/
+> 33/36/37 may use assertion-bound `local_product_module_absent` only at frozen
+> test commit `01a29fef…`. Evidence binds exact test `fullName`, one exact
+> module-absence line under `src/*`, exact test patch, owner `83f0cb96…`, and
+> final candidate SHA; Git proves absence at test and presence at owner plus
+> candidate. AC-29/30 retain their other behavioral assertion messages, but
+> only the single exact module-absence line is typed local evidence. Generic,
+> synthetic, foreign-importer, dependency, fixture, environment, no-test and
+> multiple-absence evidence remains fail closed. Plan 3 RED execution binds
+> `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to the exact disposable
+> `tron_watch_plan3` database and requires `REQUIRE_PLAN3_POSTGRES=1`; AC-14/15
+> may not be skipped. This amendment changes release evidence only, not product,
+> scoring, security, runtime or production state.
+>
 > **Draft baseline:** локальный `master`
 > `547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17`, содержащий реализованные Plans
 > 1–4. После утверждения и отдельного commit только этого документа исполнитель
@@ -1566,18 +1581,26 @@ Rules:
 - owner commit is an ancestor of candidate and names the owner-plan change;
 - RED comes from the original frozen test-only commit, or from an exact
   test-only patch replayed on the recorded owner base in an ephemeral worktree;
-- RED is valid for the expected behavioral assertion. Corrective exception:
-  AC-07/08/09/12/13/27/39 may use discriminated
+- RED is valid for the expected behavioral assertion. Corrective closed
+  allowlists permit AC-07/08/09/12/13/27/39 to use discriminated
   `local_product_module_absent` only for a zero-execution file-load failure on
-  the exact frozen test commit, with one relative `src/*` missing path imported
-  by the declared test file, exact test patch, test/owner/candidate ancestry,
-  absence at test commit and presence at owner plus candidate. Generic import,
-  no-test, dependency, type, fixture, environment or synthetic failure is
-  rejected;
+  exact frozen Plan 4, and permit exactly the 17 Plan 2 primary traces
+  AC-03/04/05/06/19/22/23/25/26/28/29/30/31/32/33/36/37 to use assertion-bound
+  local absence on frozen commit `01a29fef…`. A Plan 2 record requires its exact
+  test `fullName`, exactly one `src/*` absence line, exact test patch, owner
+  `83f0cb96…`, candidate binding, test/owner/candidate ancestry, absence at test
+  commit and presence at owner plus candidate. AC-29/30 preserve other
+  behavioral messages without reclassifying them. Generic import, no-test,
+  dependency, type, fixture, environment, foreign importer, multiple absence
+  messages or synthetic failure is rejected;
 - GREEN is read from Vitest JSON/JUnit and must contain the exact file/fullName
   with state `passed`; missing, skipped, todo, duplicate or filtered-out tests
   fail closed;
 - source search may lint IDs, but cannot create trace evidence.
+
+Plan 3 RED evidence sets `REQUIRE_PLAN3_POSTGRES=1` and binds
+`PLAN3_TEST_DATABASE_URL` plus `TEST_DATABASE_URL` to exact disposable
+`tron_watch_plan3`; AC-14/15 must execute rather than appear skipped.
 
 AC-20/21/24 remain behavioral: their exact original test patch is frozen at
 `20ee8a75…`, and their RED execution commit is `a0f74b3b…`, where local product
@@ -1593,6 +1616,15 @@ and PostgreSQL coverage
 `27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771`.
 Exact kind, file, base, test commit, RED execution commit and local missing path
 are pinned with the applicable hash.
+
+The exact Plan 2 test-patch SHA-256 pins are USDD
+`51f0f59bacf095a8bba8620e9236064fcaec503205c2ebf295907009dbe89c93`,
+approval
+`af99e8ed72dc377166dd8b88e58ba5a885eb73a0bf7784cf961478357a49210b`,
+contract decision
+`57057592adcd5c0eaf340398a815cec92d9d945905c44101c62bb335c427c238`,
+and contract LLM isolation
+`56efcdd404eebdaca3bce66e23639a2fe04f31bcb6808ff5cb0ecd6b6eec0c98`.
 
 The AC-10/11 title corrections and the new AC-33 LLM-dampening regression are
 recorded as exact test-only patches and replayed against their owner bases so

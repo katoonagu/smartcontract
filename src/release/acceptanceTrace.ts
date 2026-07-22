@@ -77,6 +77,7 @@ export type AcceptanceRedEvidenceBinding = {
 
 export type ParsedLocalProductModuleAbsence = {
   testFile: string;
+  fullName: string | null;
   missingProductModulePath: string;
   failureMessage: string;
 };
@@ -93,10 +94,26 @@ const TEST_FILE = /^tests\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.test\.ts$/;
 const BEHAVIORAL_FINGERPRINT = /^expected_behavioral_assertion_ac-\d{2}(?:_[a-z0-9-]+)*$/;
 const LOCAL_PRODUCT_MODULE_FINGERPRINT = /^expected_local_product_module_absent_ac-\d{2}_[0-9a-f]{64}$/;
 const LOCAL_PRODUCT_MODULE = /^src\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/;
-export const REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS = Object.freeze([
+export const REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS = Object.freeze([
   "AC-07", "AC-08", "AC-09", "AC-12", "AC-13", "AC-27", "AC-39"
 ]);
+export const REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS = Object.freeze([
+  "AC-03", "AC-04", "AC-05", "AC-06",
+  "AC-19", "AC-22", "AC-23", "AC-25", "AC-26", "AC-28",
+  "AC-29", "AC-30", "AC-31", "AC-32", "AC-33", "AC-36", "AC-37"
+]);
+export const REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS = Object.freeze([
+  ...REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS,
+  ...REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS
+]);
+export const REMEDIATION_PLAN2_FROZEN_TEST_SHA = "01a29fefb51c245c3fe8f97f0da53929047740c7";
 export const REMEDIATION_PLAN4_FROZEN_TEST_SHA = "20ee8a759e482c2c3037d72e561e68e289cf87b5";
+const PLAN2_TEST_BASE_SHA = "5f6209af82e23a065bd036c6a37eabe4888a5cfe";
+const PLAN2_OWNER_SHA = "83f0cb967f61b814896e5d1a4cf01cecb1c56b59";
+const PLAN2_USDD_TEST_PATCH_SHA256 = "51f0f59bacf095a8bba8620e9236064fcaec503205c2ebf295907009dbe89c93";
+const PLAN2_APPROVAL_TEST_PATCH_SHA256 = "af99e8ed72dc377166dd8b88e58ba5a885eb73a0bf7784cf961478357a49210b";
+const PLAN2_CONTRACT_TEST_PATCH_SHA256 = "57057592adcd5c0eaf340398a815cec92d9d945905c44101c62bb335c427c238";
+const PLAN2_LLM_TEST_PATCH_SHA256 = "56efcdd404eebdaca3bce66e23639a2fe04f31bcb6808ff5cb0ecd6b6eec0c98";
 const PLAN4_TEST_BASE_SHA = "d18067f6c49fd632bafa47a90f69f1e7bf8b1802";
 const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
 const PLAN4_OWNER_SHA = "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17";
@@ -124,6 +141,37 @@ const EXACT_PLAN4_RED_LINEAGE: Readonly<Record<string, {
   "AC-24": { kind: "behavioral_assertion", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: PLAN4_BEHAVIORAL_RED_SHA, ownerCommitSha: PLAN4_OWNER_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256 },
   "AC-27": { kind: "local_product_module_absent", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, ownerCommitSha: PLAN4_OWNER_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentationAdapters" },
   "AC-39": { kind: "local_product_module_absent", testFile: "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts", baseSha: PLAN4_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN4_FROZEN_TEST_SHA, ownerCommitSha: PLAN4_OWNER_SHA, testPatchSha256: PLAN4_ALERT_TEST_PATCH_SHA256, missingProductModulePath: "src/telegram/forensicPresentationAdapters" }
+});
+type ExactAssertionLocalRedLineage = {
+  testFile: string;
+  fullName: string;
+  primary: true;
+  baseSha: string;
+  testCommitSha: string;
+  redExecutionCommitSha: string;
+  ownerCommitSha: string;
+  testPatchSha256: string;
+  missingProductModulePath: string;
+};
+
+const EXACT_PLAN2_ASSERTION_LOCAL_RED_LINEAGE: Readonly<Record<string, ExactAssertionLocalRedLineage>> = Object.freeze({
+  "AC-03": { testFile: "tests/risk/collectorUsddRemediation.acceptance.test.ts", fullName: "[AC-03] scores 2 percent outbound USDD PSM with direction adjustment", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_USDD_TEST_PATCH_SHA256, missingProductModulePath: "src/risk/usddPsmExposure" },
+  "AC-04": { testFile: "tests/risk/collectorUsddRemediation.acceptance.test.ts", fullName: "[AC-04] scores 83 percent direct inbound USDD PSM at top tier", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_USDD_TEST_PATCH_SHA256, missingProductModulePath: "src/risk/usddPsmExposure" },
+  "AC-05": { testFile: "tests/risk/collectorUsddRemediation.acceptance.test.ts", fullName: "[AC-05] halves historical Deep USDD PSM and caps modifier at 12", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_USDD_TEST_PATCH_SHA256, missingProductModulePath: "src/risk/usddPsmExposure" },
+  "AC-06": { testFile: "tests/risk/collectorUsddRemediation.acceptance.test.ts", fullName: "[AC-06] keeps label-only or discontinuous USDD PSM unscored", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_USDD_TEST_PATCH_SHA256, missingProductModulePath: "src/risk/usddPsmExposure" },
+  "AC-19": { testFile: "tests/approvals/approvalSafetyV2.acceptance.test.ts", fullName: "[AC-19] scores confirmed unlimited Verify20 approval at CRITICAL 90", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_APPROVAL_TEST_PATCH_SHA256, missingProductModulePath: "src/approvals/approvalSafetyAssessment" },
+  "AC-22": { testFile: "tests/approvals/approvalSafetyV2.acceptance.test.ts", fullName: "[AC-22] caps one selector or provider name at review context", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_APPROVAL_TEST_PATCH_SHA256, missingProductModulePath: "src/approvals/approvalSafetyAssessment" },
+  "AC-23": { testFile: "tests/approvals/approvalSafetyV2.acceptance.test.ts", fullName: "[AC-23] removes active threat after confirmed zero allowance", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_APPROVAL_TEST_PATCH_SHA256, missingProductModulePath: "src/approvals/approvalSafetyAssessment" },
+  "AC-25": { testFile: "tests/approvals/approvalSafetyV2.acceptance.test.ts", fullName: "[AC-25] recognizes exact Bridgers 66-second 91.103009 session as LOW 10", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_APPROVAL_TEST_PATCH_SHA256, missingProductModulePath: "src/approvals/approvalSafetyAssessment" },
+  "AC-26": { testFile: "tests/approvals/approvalSafetyV2.acceptance.test.ts", fullName: "[AC-26] refuses service-session dampener for tag-only evidence", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_APPROVAL_TEST_PATCH_SHA256, missingProductModulePath: "src/approvals/approvalSafetyAssessment" },
+  "AC-28": { testFile: "tests/approvals/approvalSafetyV2.acceptance.test.ts", fullName: "[AC-28] removes transaction expiration from approval risk", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_APPROVAL_TEST_PATCH_SHA256, missingProductModulePath: "src/approvals/approvalSafetyAssessment" },
+  "AC-29": { testFile: "tests/check/contractDecisionV2.acceptance.test.ts", fullName: "[AC-29] resolves official TRON USDT at LOW 0 without LLM", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_CONTRACT_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
+  "AC-30": { testFile: "tests/check/contractDecisionV2.acceptance.test.ts", fullName: "[AC-30] resolves GasFree Account at LOW 10 without LLM and keeps flows eligible", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_CONTRACT_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
+  "AC-31": { testFile: "tests/check/contractDecisionV2.acceptance.test.ts", fullName: "[AC-31] keeps exact Bridgers approval session LOW instead of decline", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_CONTRACT_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
+  "AC-32": { testFile: "tests/check/contractDecisionV2.acceptance.test.ts", fullName: "[AC-32] keeps known-service unlimited approval without session at REVIEW 45", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_CONTRACT_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
+  "AC-33": { testFile: "tests/check/contractDecisionV2.acceptance.test.ts", fullName: "[AC-33] prevents service-context dampening of provider risk Verify20 or debit proof", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_CONTRACT_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
+  "AC-36": { testFile: "tests/forensics/contractLlmIsolation.acceptance.test.ts", fullName: "[AC-36][LLM-LEGACY] keeps cached citations as audit-only payload", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_LLM_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
+  "AC-37": { testFile: "tests/forensics/contractLlmIsolation.acceptance.test.ts", fullName: "[AC-37][LLM-DISABLED] keeps risky or uncited legacy verdict out of fresh decisions", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_LLM_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" }
 });
 const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory)/i;
 
@@ -327,11 +375,14 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
         || !expectedFailureFingerprint.includes(acceptanceId.toLowerCase())) {
       throw new Error(`${acceptanceId} RED fingerprint is not an exact local product module absence`);
     }
-    if (testCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA) {
-      throw new Error(`${acceptanceId} local product module RED must use the exact frozen Plan 4 test commit`);
+    const frozenTestSha = REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(acceptanceId)
+      ? REMEDIATION_PLAN4_FROZEN_TEST_SHA
+      : REMEDIATION_PLAN2_FROZEN_TEST_SHA;
+    if (testCommitSha !== frozenTestSha) {
+      throw new Error(`${acceptanceId} local product module RED must use its exact approved frozen test commit`);
     }
-    if (redExecutionCommitSha !== REMEDIATION_PLAN4_FROZEN_TEST_SHA) {
-      throw new Error(`${acceptanceId} local product module RED must execute at the exact frozen Plan 4 test commit`);
+    if (redExecutionCommitSha !== frozenTestSha) {
+      throw new Error(`${acceptanceId} local product module RED must execute at its exact approved frozen test commit`);
     }
   }
   const missingProductModulePath = redKind === "local_product_module_absent"
@@ -352,6 +403,21 @@ function parseTrace(value: unknown, candidateSha: string, ancestorCommitShas: Re
       || missingProductModulePath !== exactPlan4Lineage.missingProductModulePath
   )) {
     throw new Error(`${acceptanceId} RED evidence does not match its exact approved RED lineage`);
+  }
+  const exactPlan2Lineage = EXACT_PLAN2_ASSERTION_LOCAL_RED_LINEAGE[acceptanceId];
+  if (exactPlan2Lineage && (
+    ownerCommitSha !== exactPlan2Lineage.ownerCommitSha
+      || redKind !== "local_product_module_absent"
+      || testFile !== exactPlan2Lineage.testFile
+      || fullName !== exactPlan2Lineage.fullName
+      || trace.primary !== exactPlan2Lineage.primary
+      || baseSha !== exactPlan2Lineage.baseSha
+      || testCommitSha !== exactPlan2Lineage.testCommitSha
+      || redExecutionCommitSha !== exactPlan2Lineage.redExecutionCommitSha
+      || testPatchSha256 !== exactPlan2Lineage.testPatchSha256
+      || missingProductModulePath !== exactPlan2Lineage.missingProductModulePath
+  )) {
+    throw new Error(`${acceptanceId} RED evidence does not match its exact approved Plan 2 assertion lineage`);
   }
   if (red.status !== "failed_as_expected") throw new Error(`${acceptanceId} RED status is invalid`);
 
@@ -600,36 +666,84 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
   if (report.success !== false) throw new Error("local product module RED report must fail");
   const failedSuites = expectNonnegativeCount(report.numFailedTestSuites, "numFailedTestSuites");
   const failedTests = expectNonnegativeCount(report.numFailedTests, "numFailedTests");
-  if (failedSuites === 0 || failedTests !== 0) {
-    throw new Error("local product module RED must be a file-load failure before test execution");
-  }
+  if (failedSuites === 0) throw new Error("local product module RED report has no failed suites");
   if (!Array.isArray(report.testResults) || report.testResults.length === 0) {
     throw new Error("local product module RED report has no failed test files");
   }
   const evidence: ParsedLocalProductModuleAbsence[] = [];
-  for (const [index, value] of report.testResults.entries()) {
-    const result = expectRecord(value, `testResults[${index}]`);
-    const testFile = normalizeAcceptanceTestFile(expectString(result.name, `testResults[${index}].name`));
-    if (result.status !== "failed" || !Array.isArray(result.assertionResults) || result.assertionResults.length !== 0) {
-      throw new Error("local product module RED must contain only failed files with zero test executions");
+  const parseFailureMessage = (failureMessage: string, testFile: string) => {
+    const matches = [...failureMessage.matchAll(
+      /(?:^|\n)(?:Error:\s*)?Cannot find module (['"])([^'"\r\n]+)\1 imported from (['"]?)([^'"\r\n]+)\3(?=\r?$)/gm
+    )];
+    if (matches.length !== 1) {
+      if (matches.length > 1) throw new Error("RED evidence contains more than one local module-absence message");
+      return null;
     }
-    const failureMessage = expectString(result.message, `testResults[${index}].message`);
-    const match = /^Cannot find module (['"])([^'"\r\n]+)\1 imported from (['"]?)([^'"\r\n]+)\3$/.exec(failureMessage);
-    if (!match) throw new Error("RED evidence is not an exact local product module absence");
-    const specifier = match[2].replace(/\\/g, "/");
-    if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
-      throw new Error("missing module specifier is not a relative local product import");
+    const remainder = failureMessage.replace(matches[0][0], "");
+    if (INFRASTRUCTURE_FAILURE.test(remainder)) {
+      throw new Error("RED evidence contains an additional generic import, dependency, or environment failure");
     }
-    const importer = normalizeAcceptanceTestFile(match[4]);
+    const specifier = matches[0][2].replace(/\\/g, "/");
+    const importer = normalizeAcceptanceTestFile(matches[0][4]);
     if (importer !== testFile) throw new Error("missing module importer does not match the failed test file");
-    const missingProductModulePath = normalizeLocalProductModulePath(
-      posix.normalize(posix.join(posix.dirname(testFile), specifier))
-    );
-    evidence.push({ testFile, missingProductModulePath, failureMessage });
+    const missingProductModulePath = normalizeLocalProductModulePath(specifier.startsWith("/src/")
+      ? specifier.slice(1)
+      : posix.normalize(posix.join(posix.dirname(testFile), specifier)));
+    if (!specifier.startsWith("/src/") && !specifier.startsWith("./") && !specifier.startsWith("../")) {
+      throw new Error("missing module specifier is not an exact local product import");
+    }
+    return {
+      missingProductModulePath,
+      failureMessage: matches[0][0].replace(/^\n/, "").trim()
+    };
+  };
+  const fileLoadMode = failedTests === 0;
+  for (const [resultIndex, value] of report.testResults.entries()) {
+    const result = expectRecord(value, `testResults[${resultIndex}]`);
+    const testFile = normalizeAcceptanceTestFile(expectString(result.name, `testResults[${resultIndex}].name`));
+    if (!Array.isArray(result.assertionResults)) throw new Error("local product module RED has no assertionResults array");
+    if (fileLoadMode) {
+      if (result.status !== "failed" || result.assertionResults.length !== 0) {
+        throw new Error("file-load local product module RED must contain only failed files with zero test executions");
+      }
+      const failureMessage = expectString(result.message, `testResults[${resultIndex}].message`);
+      const parsed = parseFailureMessage(failureMessage, testFile);
+      if (!parsed) throw new Error("RED evidence is not an exact local product module absence");
+      evidence.push({ testFile, fullName: null, ...parsed });
+      continue;
+    }
+    for (const [assertionIndex, assertionValue] of result.assertionResults.entries()) {
+      const assertion = expectRecord(assertionValue, `assertionResults[${assertionIndex}]`);
+      if (assertion.status !== "failed") continue;
+      const reportFullName = expectString(assertion.fullName, `assertionResults[${assertionIndex}].fullName`);
+      const title = expectString(assertion.title, `assertionResults[${assertionIndex}].title`);
+      const ancestorTitles = expectStringArray(
+        assertion.ancestorTitles,
+        `assertionResults[${assertionIndex}].ancestorTitles`
+      );
+      if ([...ancestorTitles, title].join(" ") !== reportFullName) {
+        throw new Error("Vitest assertion title lineage does not match fullName");
+      }
+      const failureMessages = expectStringArray(
+        assertion.failureMessages,
+        `assertionResults[${assertionIndex}].failureMessages`
+      );
+      const local = [] as Array<{ missingProductModulePath: string; failureMessage: string }>;
+      for (const failureMessage of failureMessages) {
+        const parsed = parseFailureMessage(failureMessage, testFile);
+        if (parsed) local.push(parsed);
+        else if (INFRASTRUCTURE_FAILURE.test(failureMessage)) {
+          throw new Error("RED evidence contains a generic import, dependency, or environment failure");
+        }
+      }
+      if (local.length > 1) throw new Error("assertion contains more than one local module-absence message");
+      if (local.length === 1) evidence.push({ testFile, fullName: title, ...local[0] });
+    }
   }
-  if (evidence.length !== failedSuites) {
+  if (fileLoadMode && evidence.length !== failedSuites) {
     throw new Error("local product module RED failed-suite count does not match exact file evidence");
   }
+  if (evidence.length === 0) throw new Error("RED report contains no exact local product module absence");
   return evidence;
 }
 
@@ -746,6 +860,7 @@ export function localProductModuleAbsenceFingerprint(
   if (!REMEDIATION_REQUIRED_ACCEPTANCE_IDS.includes(acceptanceId)) throw new Error("acceptance ID is not approved");
   const canonical = JSON.stringify({
     testFile: normalizeAcceptanceTestFile(evidence.testFile),
+    fullName: evidence.fullName,
     missingProductModulePath: normalizeLocalProductModulePath(evidence.missingProductModulePath),
     failureMessage: evidence.failureMessage.replace(/\\/g, "/").replace(/\s+/g, " ").trim()
   });
@@ -813,6 +928,15 @@ export function assertExpectedLocalProductModuleAbsentRed(
   if (!binding) throw new Error("local product module RED requires patch, path, and fingerprint binding");
   if (normalizeAcceptanceTestFile(evidence.testFile) !== normalizeAcceptanceTestFile(binding.testFile)) {
     throw new Error("local product module RED does not match the declared test file");
+  }
+  if (REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(binding.acceptanceId)) {
+    if (evidence.fullName !== binding.fullName) {
+      throw new Error("assertion-bound local product module RED fullName does not match binding");
+    }
+  } else if (REMEDIATION_PLAN4_FILE_LOAD_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(binding.acceptanceId)) {
+    if (evidence.fullName !== null) throw new Error("file-load local product module RED cannot claim an assertion fullName");
+  } else {
+    throw new Error("acceptance ID is not approved for local product module RED");
   }
   const evidencePath = normalizeLocalProductModulePath(evidence.missingProductModulePath);
   const bindingPath = normalizeLocalProductModulePath(binding.missingProductModulePath);

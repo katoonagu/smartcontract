@@ -390,6 +390,23 @@ of these decisions, update this file in the same work.
   module absent there but present at both owner commit and candidate. Generic
   import/no-test, dependency, fixture, environment and inferred failures remain
   invalid evidence.
+- Consolidated Plan 2 corrective exception: exactly the 17 primary traces
+  AC-03/04/05/06/19/22/23/25/26/28/29/30/31/32/33/36/37 may use
+  assertion-bound `local_product_module_absent` at frozen commit `01a29fef…`.
+  Each record binds exact test `fullName`, exactly one local `src/*` absence
+  line, exact test patch, owner `83f0cb96…`, and final candidate; Git proves the
+  module absent at test and present at owner plus candidate. For AC-29/30 other
+  assertion messages remain behavioral and are not classified as
+  infrastructure. Generic/synthetic, foreign-importer, dependency, fixture,
+  environment, no-test and multiple-absence evidence remains invalid.
+- Plan 3 RED trace execution is mandatory PostgreSQL execution, not an optional
+  suite: the producer sets `REQUIRE_PLAN3_POSTGRES=1` and binds
+  `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to exact disposable
+  `tron_watch_plan3`. The frozen test's legacy `55432` endpoint exists only
+  inside a pinned Node container on the disposable PostgreSQL network; no
+  production endpoint is proxied. Skipped AC-14/15 evidence fails closed. This
+  affects only release evidence; product/runtime/scoring semantics and
+  production state do not change.
 - AC-20/21/24 do not use that exception. Their original Plan 4 test patch is
   bound to frozen test commit `20ee8a75…`, while behavioral RED executes at
   historical commit `a0f74b3b…`, after the local modules existed and before

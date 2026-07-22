@@ -24,9 +24,14 @@ const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
 const PLAN4_OWNER_SHA = "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17";
 const PLAN4_ALERT_TEST_PATCH_SHA256 = "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2";
 const PLAN4_RENDERER_TEST_PATCH_SHA256 = "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
+const PLAN2_FROZEN_TEST_SHA = "01a29fefb51c245c3fe8f97f0da53929047740c7";
+const PLAN2_TEST_BASE_SHA = "5f6209af82e23a065bd036c6a37eabe4888a5cfe";
+const PLAN2_OWNER_SHA = "83f0cb967f61b814896e5d1a4cf01cecb1c56b59";
+const PLAN2_USDD_TEST_PATCH_SHA256 = "51f0f59bacf095a8bba8620e9236064fcaec503205c2ebf295907009dbe89c93";
 
 type ParsedLocalProductModuleAbsence = {
   testFile: string;
+  fullName: string | null;
   missingProductModulePath: string;
   failureMessage: string;
 };
@@ -62,6 +67,7 @@ type TraceApi = {
 type CaptureApi = {
   redGroupForTrace(testFile: string, acceptanceId: string, secondary?: boolean): string;
   redPatchApplicationArgs(redGroupId: string): string[];
+  buildRedGroupEnvironment(groupId: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   buildCaptureRedSpec(input: {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
@@ -98,6 +104,7 @@ async function loadCaptureApi(): Promise<CaptureApi> {
   const loaded = await import(/* @vite-ignore */ modulePath) as Partial<CaptureApi>;
   if (typeof loaded.redGroupForTrace !== "function"
       || typeof loaded.redPatchApplicationArgs !== "function"
+      || typeof loaded.buildRedGroupEnvironment !== "function"
       || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
   }
@@ -346,7 +353,7 @@ it("[AC-41][RED-PROVENANCE] accepts only exact local src module absence evidence
     }]
   };
   const evidence = api.parseLocalProductModuleAbsenceReport(report)[0];
-  expect(evidence).toEqual({ testFile: trace.testFile, missingProductModulePath, failureMessage });
+  expect(evidence).toEqual({ testFile: trace.testFile, fullName: null, missingProductModulePath, failureMessage });
   const fingerprint = api.localProductModuleAbsenceFingerprint(trace.acceptanceId, evidence);
   const patchText = [
     `diff --git a/${trace.testFile} b/${trace.testFile}`,
@@ -386,6 +393,133 @@ it("[AC-41][RED-PROVENANCE] accepts only exact local src module absence evidence
   })).toThrow();
 });
 
+it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local src product module", async () => {
+  const api = await loadTraceApi();
+  const trace = buildAcceptanceTraceSet().traces[2];
+  const missingProductModulePath = "src/risk/usddPsmExposure";
+  const failureMessage = `Cannot find module '/src/risk/usddPsmExposure' imported from C:/frozen/${trace.testFile}`;
+  const assertion = {
+    ancestorTitles: ["USDD PSM remediation acceptance contract"],
+    fullName: `USDD PSM remediation acceptance contract ${trace.fullName}`,
+    title: trace.fullName,
+    status: "failed",
+    failureMessages: [failureMessage]
+  };
+  const report = {
+    success: false,
+    numFailedTestSuites: 1,
+    numFailedTests: 1,
+    testResults: [{
+      name: `C:/frozen/${trace.testFile}`,
+      status: "failed",
+      message: "",
+      assertionResults: [assertion]
+    }]
+  };
+  const evidence = api.parseLocalProductModuleAbsenceReport(report)[0];
+  expect(evidence).toEqual({
+    testFile: trace.testFile,
+    fullName: trace.fullName,
+    missingProductModulePath,
+    failureMessage
+  });
+  const patchText = [
+    `diff --git a/${trace.testFile} b/${trace.testFile}`,
+    `--- a/${trace.testFile}`,
+    `+++ b/${trace.testFile}`,
+    "@@ -1,0 +1,1 @@",
+    `+it("${trace.fullName}", () => expect(score()).toBe(55));`
+  ].join("\n");
+  const binding = {
+    acceptanceId: trace.acceptanceId,
+    testFile: trace.testFile,
+    fullName: trace.fullName,
+    expectedFailureFingerprint: api.localProductModuleAbsenceFingerprint(trace.acceptanceId, evidence),
+    missingProductModulePath,
+    patchText,
+    testPatchSha256: createHash("sha256").update(patchText).digest("hex")
+  };
+  expect(() => api.assertExpectedLocalProductModuleAbsentRed(evidence, binding)).not.toThrow();
+  expect(() => api.assertExpectedLocalProductModuleAbsentRed(evidence, {
+    ...binding,
+    fullName: "[AC-03] unrelated assertion"
+  })).toThrow(/fullName/);
+  const mixedBehavioralMessages = {
+    ...report,
+    testResults: [{
+      ...report.testResults[0],
+      assertionResults: [{
+        ...assertion,
+        failureMessages: [
+          "AssertionError: expected provider calls to be zero",
+          failureMessage,
+          "AssertionError: expected deterministic result"
+        ]
+      }]
+    }]
+  };
+  expect(api.parseLocalProductModuleAbsenceReport(mixedBehavioralMessages)).toEqual([evidence]);
+
+  const invalidReports = [
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: ["Cannot find package 'vitest' imported from C:/frozen/tests/release/example.test.ts"] }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [`Cannot find module '/package.json' imported from C:/frozen/${trace.testFile}`] }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [`Cannot find module '/src/risk/usddPsmExposure' imported from C:/frozen/tests/release/foreign.test.ts`] }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [failureMessage, failureMessage] }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, fullName: trace.fullName }] }] }
+  ];
+  for (const invalid of invalidReports) {
+    expect(() => api.parseLocalProductModuleAbsenceReport(invalid)).toThrow();
+  }
+});
+
+it("[AC-41][RED-PLAN2-LINEAGE] pins all 17 assertion-bound absences to their exact frozen lineage", async () => {
+  const { validateAcceptanceTraceSet: validate } = await loadTraceApi();
+  const fixture: any = cloneFixture(buildAcceptanceTraceSet());
+  const localPlan2 = fixture.traces.filter((trace: any) => (
+    trace.ownerPlan === 2 && trace.red.kind === "local_product_module_absent"
+  ));
+  expect(localPlan2.map((trace: any) => trace.acceptanceId)).toEqual([
+    "AC-03", "AC-04", "AC-05", "AC-06", "AC-19", "AC-22", "AC-23", "AC-25", "AC-26", "AC-28",
+    "AC-29", "AC-30", "AC-31", "AC-32", "AC-33", "AC-36", "AC-37"
+  ]);
+  expect(() => validate(fixture, fixtureAncestry)).not.toThrow();
+  const target = fixture.traces[2];
+  expect(target).toMatchObject({
+    acceptanceId: "AC-03",
+    ownerCommitSha: PLAN2_OWNER_SHA,
+    testFile: "tests/risk/collectorUsddRemediation.acceptance.test.ts",
+    fullName: "[AC-03] scores 2 percent outbound USDD PSM with direction adjustment",
+    primary: true,
+    red: {
+      kind: "local_product_module_absent",
+      baseSha: PLAN2_TEST_BASE_SHA,
+      testCommitSha: PLAN2_FROZEN_TEST_SHA,
+      redExecutionCommitSha: PLAN2_FROZEN_TEST_SHA,
+      testPatchSha256: PLAN2_USDD_TEST_PATCH_SHA256,
+      missingProductModulePath: "src/risk/usddPsmExposure"
+    }
+  });
+  const mutations = [
+    (trace: any) => { trace.traces[2].fullName = "[AC-03] foreign assertion"; },
+    (trace: any) => { trace.traces[2].primary = false; },
+    (trace: any) => { trace.traces[2].red.baseSha = "b".repeat(40); },
+    (trace: any) => { trace.traces[2].red.testCommitSha = "a".repeat(40); },
+    (trace: any) => { trace.traces[2].red.redExecutionCommitSha = "a".repeat(40); },
+    (trace: any) => { trace.traces[2].red.testPatchSha256 = "0".repeat(64); },
+    (trace: any) => { trace.traces[2].red.missingProductModulePath = "src/risk/foreignModule"; },
+    (trace: any) => {
+      trace.traces[2].red.kind = "behavioral_assertion";
+      trace.traces[2].red.expectedFailureFingerprint = "expected_behavioral_assertion_ac-03";
+      delete trace.traces[2].red.missingProductModulePath;
+    }
+  ];
+  for (const mutate of mutations) {
+    const invalid: any = cloneFixture(fixture);
+    mutate(invalid);
+    expect(() => validate(invalid, fixtureAncestry)).toThrow();
+  }
+});
+
 it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidate commits", async () => {
   const { validateAcceptanceTraceSet: validate } = await loadTraceApi();
   const fixture: any = cloneFixture(buildAcceptanceTraceSet());
@@ -393,6 +527,7 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   const path = "src/telegram/forensicPresentation";
   const evidence: ParsedLocalProductModuleAbsence = {
     testFile: target.testFile,
+    fullName: null,
     missingProductModulePath: path,
     failureMessage: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${target.testFile}`
   };
@@ -432,10 +567,10 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   expect(() => validate(foreign, dependency())).toThrow(/local product module/);
   const wrongFrozenCommit: any = cloneFixture(fixture);
   wrongFrozenCommit.traces[6].red.testCommitSha = "a".repeat(40);
-  expect(() => validate(wrongFrozenCommit, dependency())).toThrow(/exact frozen Plan 4 test commit/);
+  expect(() => validate(wrongFrozenCommit, dependency())).toThrow(/exact approved frozen test commit/);
   const wrongLocalExecutionCommit: any = cloneFixture(fixture);
   wrongLocalExecutionCommit.traces[6].red.redExecutionCommitSha = "a".repeat(40);
-  expect(() => validate(wrongLocalExecutionCommit, dependency())).toThrow(/execute at the exact frozen Plan 4 test commit/);
+  expect(() => validate(wrongLocalExecutionCommit, dependency())).toThrow(/execute at its exact approved frozen test commit/);
   const wrongLocalBase: any = cloneFixture(fixture);
   wrongLocalBase.traces[6].red.baseSha = "b".repeat(40);
   expect(() => validate(wrongLocalBase, dependency())).toThrow(/exact approved RED lineage/);
@@ -466,6 +601,7 @@ it("[AC-41][RED-LINEAGE] binds local module absence to test, owner, and candidat
   const unauthorizedTarget = unauthorized.traces[0];
   const unauthorizedEvidence: ParsedLocalProductModuleAbsence = {
     testFile: unauthorizedTarget.testFile,
+    fullName: null,
     missingProductModulePath: path,
     failureMessage: `Cannot find module '../../src/telegram/forensicPresentation' imported from C:/frozen/${unauthorizedTarget.testFile}`
   };
@@ -524,6 +660,14 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   ]) {
     expect(api.redPatchApplicationArgs(redGroupId)).toEqual([]);
   }
+  const plan3DatabaseUrl = "postgresql://release:redacted@127.0.0.1:56001/tron_watch_plan3";
+  const plan3Environment = api.buildRedGroupEnvironment("plan3", {
+    PLAN3_TEST_DATABASE_URL: plan3DatabaseUrl
+  });
+  expect(plan3Environment.PLAN3_TEST_DATABASE_URL).toBe(plan3DatabaseUrl);
+  expect(plan3Environment.TEST_DATABASE_URL).toBe("postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3");
+  expect(plan3Environment.REQUIRE_PLAN3_POSTGRES).toBe("1");
+  expect(() => api.buildRedGroupEnvironment("plan3", {})).toThrow(/PLAN3_TEST_DATABASE_URL/);
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",
     baseSha: PLAN4_TEST_BASE_SHA,

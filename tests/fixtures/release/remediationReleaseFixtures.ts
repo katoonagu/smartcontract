@@ -847,22 +847,42 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
     const ownerPlan = EXPECTED_ACCEPTANCE_OWNER_PLAN[acceptanceId]!;
     const ownerCommitSha = ownerPlan === 4
       ? "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17"
+      : ownerPlan === 2
+        ? "83f0cb967f61b814896e5d1a4cf01cecb1c56b59"
       : String(ownerPlan).repeat(40);
     const behavioralPlan4 = ["AC-20", "AC-21", "AC-24"].includes(acceptanceId);
     const localPlan4 = ["AC-07", "AC-08", "AC-09", "AC-12", "AC-13", "AC-27", "AC-39"].includes(acceptanceId);
-    const localPath = acceptanceId === "AC-13" || acceptanceId === "AC-27" || acceptanceId === "AC-39"
-      ? "src/telegram/forensicPresentationAdapters"
-      : "src/telegram/forensicPresentation";
-    const localPatchSha256 = acceptanceId === "AC-13"
-      ? "27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771"
-      : acceptanceId === "AC-27" || acceptanceId === "AC-39"
-        ? "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2"
-        : "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
-    const red: AcceptanceTraceRedV1 = localPlan4 ? {
+    const localPlan2 = [
+      "AC-03", "AC-04", "AC-05", "AC-06", "AC-19", "AC-22", "AC-23", "AC-25", "AC-26", "AC-28",
+      "AC-29", "AC-30", "AC-31", "AC-32", "AC-33", "AC-36", "AC-37"
+    ].includes(acceptanceId);
+    const localPath = localPlan2
+      ? ["AC-03", "AC-04", "AC-05", "AC-06"].includes(acceptanceId)
+        ? "src/risk/usddPsmExposure"
+        : ["AC-19", "AC-22", "AC-23", "AC-25", "AC-26", "AC-28"].includes(acceptanceId)
+          ? "src/approvals/approvalSafetyAssessment"
+          : "src/forensics/contractDecision"
+      : acceptanceId === "AC-13" || acceptanceId === "AC-27" || acceptanceId === "AC-39"
+        ? "src/telegram/forensicPresentationAdapters"
+        : "src/telegram/forensicPresentation";
+    const localPatchSha256 = localPlan2
+      ? ["AC-03", "AC-04", "AC-05", "AC-06"].includes(acceptanceId)
+        ? "51f0f59bacf095a8bba8620e9236064fcaec503205c2ebf295907009dbe89c93"
+        : ["AC-19", "AC-22", "AC-23", "AC-25", "AC-26", "AC-28"].includes(acceptanceId)
+          ? "af99e8ed72dc377166dd8b88e58ba5a885eb73a0bf7784cf961478357a49210b"
+          : ["AC-36", "AC-37"].includes(acceptanceId)
+            ? "56efcdd404eebdaca3bce66e23639a2fe04f31bcb6808ff5cb0ecd6b6eec0c98"
+            : "57057592adcd5c0eaf340398a815cec92d9d945905c44101c62bb335c427c238"
+      : acceptanceId === "AC-13"
+        ? "27aa2e5102bee4d1cbba5009f70c2cd2719ceab35c46e4764ab89a0c422ee771"
+        : acceptanceId === "AC-27" || acceptanceId === "AC-39"
+          ? "544fc122c2012bb27452659a795dadbbadcedc4930d54194442558d85737e2b2"
+          : "c9a755269b1e3935bf8c6d71797e17493a57d4e55e6aa26b63c63c36494118e5";
+    const red: AcceptanceTraceRedV1 = localPlan4 || localPlan2 ? {
       kind: "local_product_module_absent",
-      baseSha: "d18067f6c49fd632bafa47a90f69f1e7bf8b1802",
-      testCommitSha: "20ee8a759e482c2c3037d72e561e68e289cf87b5",
-      redExecutionCommitSha: "20ee8a759e482c2c3037d72e561e68e289cf87b5",
+      baseSha: localPlan2 ? "5f6209af82e23a065bd036c6a37eabe4888a5cfe" : "d18067f6c49fd632bafa47a90f69f1e7bf8b1802",
+      testCommitSha: localPlan2 ? "01a29fefb51c245c3fe8f97f0da53929047740c7" : "20ee8a759e482c2c3037d72e561e68e289cf87b5",
+      redExecutionCommitSha: localPlan2 ? "01a29fefb51c245c3fe8f97f0da53929047740c7" : "20ee8a759e482c2c3037d72e561e68e289cf87b5",
       testPatchSha256: localPatchSha256,
       vitestReportSha256: (index + 301).toString(16).padStart(64, "0"),
       expectedFailureFingerprint: `expected_local_product_module_absent_${acceptanceId.toLowerCase()}_${(index + 501).toString(16).padStart(64, "0")}`,
