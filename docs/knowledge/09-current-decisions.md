@@ -253,8 +253,9 @@ of these decisions, update this file in the same work.
   DB/schema identity, and read-only Telegram `getMe`/`getWebhookInfo` identity.
   It is never manager-owned evidence. Any drift, disappearance, ambiguity, or
   unexpected webhook fails closed. The current amendment authorizes evidence
-  reads only: all candidate/previous start, stop, adoption, and rollback action
-  authorities reject this kind until complete pre-release gates, merge,
+  reads only: all protected production operation/resume, normal or cleanup-only
+  lease takeover, candidate/previous start, stop, adoption, and rollback paths
+  reject this kind before any write until complete pre-release gates, merge,
   explicit production GO, and a separate action-specific amendment/authority.
 - Production remains unchanged until Task 9, complete `G00`-`G11`, merge to
   `master`, producer/verifier rerun for the merge SHA, and explicit release GO.

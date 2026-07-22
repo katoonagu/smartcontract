@@ -29,9 +29,10 @@ PID/start time, executable, command line, entrypoint, clean worktree SHA/label,
 loopback Admin runtime proof, production DB/schema identity, and Telegram bot
 identity plus empty webhook. Any change, disappearance, second candidate, or
 ambiguity fails closed. This narrow contract permits pre-release evidence only:
-it does not adopt the process and all production start/stop/rollback authority
-paths reject the legacy kind until full G00-G11, merge, explicit production GO,
-and a separate action-specific amendment/authority.
+it does not adopt the process: protected operation resume, normal and cleanup-
+only lease takeover, and every production start/stop/rollback authority path
+reject the legacy kind before any write until full G00-G11, merge, explicit
+production GO, and a separate action-specific amendment/authority.
 
 Production database, runtime, and Telegram remain unchanged until all of the
 following are true: Task 9 is authorized and completed, `G00` through `G11`

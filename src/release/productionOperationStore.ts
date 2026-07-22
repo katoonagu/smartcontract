@@ -52,7 +52,10 @@ import {
   type ProductionOrchestrationReceiptV2,
   type ProductionPreclaimLeaseLineageV2
 } from "./remediationReleaseManifestV2";
-import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
+import {
+  assertTask0BPreviousRuntimeActionAuthorized,
+  validateTask0BReleaseFreezeEvidence
+} from "./remediationReleaseManifest";
 import {
   assertRecoveryFailureArtifactBindingsV2,
   assertCommittedOperationalAuthorityRecordV2,
@@ -2790,6 +2793,8 @@ export class ProductionOperationStoreV2 {
   async takeoverEffectCapable(input: {
     expectedOldLeaseSha256: string; evaluatedAt: string; faultAt?: string;
   }): Promise<CommittedProductionOperationLeaseTakeoverV2> {
+    assertTask0BPreviousRuntimeActionAuthorized(readCanonical(this.#path("task0b-release-freeze.json"),
+      validateTask0BReleaseFreezeEvidence, "production_takeover_task0b").value.previousRuntimeIdentity);
     const expectedOldLeaseSha256 = exactSha(input.expectedOldLeaseSha256,
       "production_operation_expected_old_lease_sha");
     const replay = this.#committedTakeoverForOld(expectedOldLeaseSha256);
@@ -2975,6 +2980,8 @@ export class ProductionOperationStoreV2 {
     abandoned: ProductionOperationTerminalAbandonedV2;
     cleanup: ProductionOperationTerminalCleanupV2;
   }> {
+    assertTask0BPreviousRuntimeActionAuthorized(readCanonical(this.#path("task0b-release-freeze.json"),
+      validateTask0BReleaseFreezeEvidence, "production_cleanup_takeover_task0b").value.previousRuntimeIdentity);
     const expectedOldLeaseSha256 = exactSha(input.expectedOldLeaseSha256,
       "production_operation_expected_old_lease_sha");
     this.#assertManifestWriterAbsent();

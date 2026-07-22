@@ -195,9 +195,10 @@ clean exact-SHA worktree, loopback Admin runtime proof, production DB/schema,
 and Telegram `getMe` plus empty `getWebhookInfo.url`; secrets stay in the two
 fixed read-only-auth environment variables and never enter evidence. Any drift,
 missing process, second runtime candidate, unexpected webhook, or identity
-mismatch fails closed. This is not adoption: production start/stop/rollback
-remains rejected for the legacy kind pending full G00-G11, merge, explicit GO,
-and separate action-specific authority/amendment.
+mismatch fails closed. This is not adoption: protected production operation
+resume, normal and cleanup-only lease takeover, and production start/stop/
+rollback all reject the legacy kind before any write pending full G00-G11,
+merge, explicit GO, and separate action-specific authority/amendment.
 
 No production command has run. After complete G00-G11, exact-SHA merge rerun,
 pre-GO report, explicit user GO, and fresh action authority, the exact future

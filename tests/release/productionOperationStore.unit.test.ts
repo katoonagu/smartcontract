@@ -86,6 +86,58 @@ async function initializedAuthorityRoot(): Promise<string> {
   return root;
 }
 
+async function installLegacyTask0BIdentity(root: string): Promise<void> {
+  const path = join(root, "task0b-release-freeze.json");
+  const task0b = JSON.parse(readFileSync(path, "utf8"));
+  task0b.previousRuntimeSource = "legacy_unmanaged_process_admin_database_telegram_read_only";
+  task0b.previousRuntimeIdentity = {
+    kind: "legacy_unmanaged_previous_runtime",
+    runtimeSha: task0b.previousRuntimeSha,
+    runtimeLabel: task0b.previousRuntimeLabel,
+    processId: 11088,
+    processStartedAt: "2026-07-17T19:39:12.000Z",
+    commandLineSha256: "a".repeat(64),
+    executablePathSha256: "b".repeat(64),
+    workingDirectoryFingerprintSha256: "3".repeat(64),
+    entrypointPathFingerprintSha256: "c".repeat(64),
+    adminObservation: {
+      endpointFingerprintSha256: "4".repeat(64), httpStatus: 200,
+      runtimeVersionSha256: "5".repeat(64), observedRuntimeSha: task0b.previousRuntimeSha,
+      observedRuntimeLabel: task0b.previousRuntimeLabel,
+      source: "loopback_admin_runtime_proof_read_only", verified: true
+    },
+    productionDatabaseObservation: {
+      approvedIdentityFingerprintSha256: task0b.productionDatabase.approvedIdentityFingerprintSha256,
+      schemaState: task0b.productionDatabase.schemaState,
+      schemaReceiptSetSha256: task0b.productionDatabase.schemaReceiptSet.aggregateSha256,
+      source: "task0b_production_database_read_only_binding", verified: true
+    },
+    telegramObservation: {
+      mode: "long_polling", botIdentitySha256: "8".repeat(64),
+      webhookUrlSha256: createHash("sha256").update("").digest("hex"),
+      source: "telegram_getme_and_getwebhookinfo_read_only", verified: true
+    },
+    actionPolicy: {
+      managerOwned: false, stopStartRollbackAuthorized: false,
+      requiresPassedPreReleaseGates: true, requiresMergedCandidate: true,
+      requiresExplicitProductionGo: true, requiresActionSpecificAuthority: true
+    },
+    source: "legacy_unmanaged_process_admin_database_telegram_read_only", verified: true
+  };
+  await writeFile(path, canonicalBytes(task0b));
+}
+
+function artifactTreeSnapshot(root: string, relative = ""): string[] {
+  return readdirSync(join(root, relative), { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      return entry.isDirectory()
+        ? [`${child}/`, ...artifactTreeSnapshot(root, child)]
+        : [`${child}:${releaseSha256V2(readFileSync(join(root, child)))}`];
+    });
+}
+
 async function materializeInitialGateEvidence(root: string, candidateSha: string) {
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
   for (const gate of gates) {
@@ -1067,6 +1119,32 @@ it.each(["after_prepare", "after_tombstone", "after_new_lease", "after_committed
     expect(cleanupTerminal.cleanup.removedLeaseSha256).toBe(cleanupTerminal.abandoned!.finalLeaseSha256);
     expect(existsSync(join(cleanupRoot, "production-operation-root.lease.json"))).toBe(false);
 }, 90_000);
+
+it("rejects normal and cleanup-only takeover before any write for a legacy unmanaged previous runtime", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0));
+  const root = await initializedAuthorityRoot();
+  const store = new ProductionOperationStoreV2(root);
+  const begun = await runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
+  await installLegacyTask0BIdentity(root);
+  const before = artifactTreeSnapshot(root);
+
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => TAKEOVER_OWNER, isOwnerAlive: () => false
+  }, () => store.takeoverEffectCapable({ expectedOldLeaseSha256: begun.leaseSha256,
+    evaluatedAt: "2026-07-18T10:01:00.000Z" })))
+    .rejects.toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+  expect(artifactTreeSnapshot(root)).toEqual(before);
+
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
+  }, () => store.takeoverCleanupOnly({ expectedOldLeaseSha256: begun.leaseSha256,
+    evaluatedAt: "2026-07-18T10:11:00.000Z" })))
+    .rejects.toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+  expect(artifactTreeSnapshot(root)).toEqual(before);
+}, 75_000);
 
 it("rejects a multi-hop takeover identity switch even when the final lease switches back", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
