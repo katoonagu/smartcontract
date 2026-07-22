@@ -249,7 +249,12 @@ order is producer-first, strict-verifier-last.
    are invalid trace evidence. Because the immutable Plan 3 test pins legacy
    loopback port `55432`, the producer recreates that endpoint only inside the
    pinned `node:22-bookworm` image on the disposable PostgreSQL container
-   network; it never binds or proxies the production endpoint.
+   network; it never binds or proxies the production endpoint. The producer
+   first verifies the exact loopback publish binding, pinned running PostgreSQL
+   container/image and live database/system identity. It creates the frozen
+   test-only `tron` login only on that verified disposable database and removes
+   it after execution; identity, authentication, connection, transport, setup
+   or cleanup drift fails closed.
 
    AC-20/21/24 are not part of that exception. Preparation replays their exact
    original test patch from frozen commit `20ee8a75…` and runs their behavioral

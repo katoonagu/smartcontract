@@ -78,7 +78,11 @@
 > multiple-absence evidence remains fail closed. Plan 3 RED execution binds
 > `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to the exact disposable
 > `tron_watch_plan3` database and requires `REQUIRE_PLAN3_POSTGRES=1`; AC-14/15
-> may not be skipped. This amendment changes release evidence only, not product,
+> may not be skipped. The runner verifies the exact loopback publish binding,
+> pinned running PostgreSQL container/image and live database/system identity,
+> then creates and removes the frozen test-only `tron` login on that disposable
+> database. Setup/cleanup drift and database/transport failures fail closed.
+> This amendment changes release evidence only, not product,
 > scoring, security, runtime or production state.
 >
 > **Draft baseline:** локальный `master`
@@ -1600,7 +1604,11 @@ Rules:
 
 Plan 3 RED evidence sets `REQUIRE_PLAN3_POSTGRES=1` and binds
 `PLAN3_TEST_DATABASE_URL` plus `TEST_DATABASE_URL` to exact disposable
-`tron_watch_plan3`; AC-14/15 must execute rather than appear skipped.
+`tron_watch_plan3`; AC-14/15 must execute rather than appear skipped. The RED
+runner verifies the loopback publish binding, pinned running PostgreSQL
+container/image and live database/system identity before creating the frozen
+test-only login, and proves that login removed afterward. Authentication,
+connection, transport, identity and cleanup failures are invalid RED evidence.
 
 AC-20/21/24 remain behavioral: their exact original test patch is frozen at
 `20ee8a75…`, and their RED execution commit is `a0f74b3b…`, where local product

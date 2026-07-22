@@ -173,7 +173,7 @@ const EXACT_PLAN2_ASSERTION_LOCAL_RED_LINEAGE: Readonly<Record<string, ExactAsse
   "AC-36": { testFile: "tests/forensics/contractLlmIsolation.acceptance.test.ts", fullName: "[AC-36][LLM-LEGACY] keeps cached citations as audit-only payload", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_LLM_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" },
   "AC-37": { testFile: "tests/forensics/contractLlmIsolation.acceptance.test.ts", fullName: "[AC-37][LLM-DISABLED] keeps risky or uncited legacy verdict out of fresh decisions", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_LLM_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" }
 });
-const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory)/i;
+const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory|password authentication failed|role .+ does not exist|database .+ does not exist|no pg_hba\.conf entry|\beconn(?:refused|reset|aborted)\b|\betimedout\b|connection refused|connect etimedout|server closed the connection unexpectedly|terminating connection|connection terminated unexpectedly|connection reset by peer|socket hang up)/i;
 
 export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
   "AC-01": 2, "AC-02": 2, "AC-03": 2, "AC-04": 2, "AC-05": 2, "AC-06": 2,
@@ -900,17 +900,21 @@ export function assertAcceptancePatchBinding(binding: AcceptanceRedEvidenceBindi
   }
 }
 
+export function assertBehavioralRedExecution(execution: ParsedAcceptanceExecution): void {
+  if (execution.status !== "failed" || execution.failureMessages.length === 0) {
+    throw new Error("RED evidence must be a failed execution with a failure message");
+  }
+  if (execution.failureMessages.some((message) => INFRASTRUCTURE_FAILURE.test(message))) {
+    throw new Error("RED evidence is an infrastructure or environment failure");
+  }
+}
+
 export function assertExpectedBehavioralRed(
   execution: ParsedAcceptanceExecution,
   binding?: AcceptanceRedEvidenceBinding
 ): void {
   if (!binding) throw new Error("RED evidence requires patch and fingerprint binding");
-  if (execution.status !== "failed" || execution.failureMessages.length === 0) {
-    throw new Error("RED evidence must be a failed execution with a failure message");
-  }
-  if (execution.failureMessages.some((message) => INFRASTRUCTURE_FAILURE.test(message))) {
-    throw new Error("RED evidence is an import, syntax, type, fixture, or environment failure");
-  }
+  assertBehavioralRedExecution(execution);
   if (normalizeAcceptanceTestFile(execution.testFile) !== normalizeAcceptanceTestFile(binding.testFile)
       || execution.fullName !== binding.fullName) {
     throw new Error("RED execution does not match the declared exact file/fullName");

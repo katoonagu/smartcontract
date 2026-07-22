@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { Client } from "pg";
 import {
   REMEDIATION_REQUIRED_ACCEPTANCE_IDS,
   REMEDIATION_REQUIRED_REQUIREMENT_IDS,
@@ -13,6 +14,7 @@ import {
 import {
   assertExpectedLocalProductModuleAbsentRed,
   assertExpectedBehavioralRed,
+  assertBehavioralRedExecution,
   behavioralFailureFingerprint,
   localProductModuleAbsenceFingerprint,
   normalizeAcceptanceTestFile,
@@ -106,6 +108,8 @@ const PLAN4_BEHAVIORAL_RED_SHA = "a0f74b3bd079d05bbfc9c35476daf9bac07e7d72";
 const PLAN3_FROZEN_DATABASE_URL = "postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3";
 const PLAN3_RED_NODE_IMAGE = "node@sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37";
 const PLAN3_RED_NODE_IMAGE_ID = "sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37";
+const PLAN3_RED_POSTGRES_IMAGE = "postgres:16-alpine";
+const PLAN3_RED_POSTGRES_IMAGE_ID = "sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50";
 const CANONICAL_IDENTITY_SHA = "db5d49a944c0de489f13567d87400cb32c4eedb0";
 const OWNER_COMMITS = Object.freeze({
   1: "31f5c2dd3619bdaf16ecea4ac127d5232b8c1019",
@@ -546,16 +550,22 @@ async function createRedSnapshot(group: RedGroup): Promise<{ root: string; clean
   }
 }
 
-async function runPlan3FrozenRedInContainer(
-  snapshotRoot: string,
-  group: RedGroup,
-  env: NodeJS.ProcessEnv
-): Promise<void> {
-  const directUrl = env.PLAN3_TEST_DATABASE_URL;
-  if (!directUrl) throw new Error("Plan 3 RED evidence requires PLAN3_TEST_DATABASE_URL");
+type Plan3DisposableDatabaseBinding = {
+  directUrl: string;
+  databaseIp: string;
+  networkName: string;
+};
+
+async function inspectPlan3DisposableDatabase(directUrl: string): Promise<Plan3DisposableDatabaseBinding> {
   const target = new URL(directUrl);
   const targetPort = Number(target.port || 5432);
-  if (targetPort === 55_999) throw new Error("Plan 3 RED evidence cannot use the production database port");
+  const database = decodeURIComponent(target.pathname.slice(1));
+  if ((target.protocol !== "postgres:" && target.protocol !== "postgresql:")
+      || target.hostname !== "127.0.0.1" || target.search || target.hash
+      || database !== "tron_watch_plan3" || !target.username || !target.password
+      || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65_535 || targetPort === 55_999) {
+    throw new Error("Plan 3 RED evidence requires the exact disposable database endpoint");
+  }
   const containerIds = (await dockerOutput([
     "ps", "--filter", `publish=${targetPort}`, "--format", "{{.ID}}"
   ])).split(/\r?\n/).filter(Boolean);
@@ -563,6 +573,24 @@ async function runPlan3FrozenRedInContainer(
   const inspected = JSON.parse(await dockerOutput(["inspect", containerIds[0]])) as unknown;
   if (!Array.isArray(inspected) || inspected.length !== 1) throw new Error("Plan 3 RED database container inspection is invalid");
   const container = expectRecord(inspected[0], "Plan 3 RED database container");
+  const state = expectRecord(container.State, "Plan 3 RED database state");
+  const config = expectRecord(container.Config, "Plan 3 RED database config");
+  const hostConfig = expectRecord(container.HostConfig, "Plan 3 RED database HostConfig");
+  const portBindings = expectRecord(hostConfig.PortBindings, "Plan 3 RED database port bindings");
+  const postgresBindings = portBindings["5432/tcp"];
+  if (state.Status !== "running" || config.Image !== PLAN3_RED_POSTGRES_IMAGE
+      || container.Image !== PLAN3_RED_POSTGRES_IMAGE_ID
+      || !Array.isArray(postgresBindings) || postgresBindings.length !== 1) {
+    throw new Error("Plan 3 RED database container identity is invalid");
+  }
+  const published = expectRecord(postgresBindings[0], "Plan 3 RED database published endpoint");
+  if (published.HostIp !== "127.0.0.1" || published.HostPort !== String(targetPort)) {
+    throw new Error("Plan 3 RED database published endpoint does not match PLAN3_TEST_DATABASE_URL");
+  }
+  if (await dockerOutput(["image", "inspect", PLAN3_RED_POSTGRES_IMAGE, "--format", "{{.Id}}"])
+      !== PLAN3_RED_POSTGRES_IMAGE_ID) {
+    throw new Error("Plan 3 RED PostgreSQL image identity is invalid");
+  }
   const networkSettings = expectRecord(container.NetworkSettings, "Plan 3 RED database NetworkSettings");
   const networks = expectRecord(networkSettings.Networks, "Plan 3 RED database networks");
   const networkEntries = Object.entries(networks);
@@ -571,37 +599,154 @@ async function runPlan3FrozenRedInContainer(
   const databaseNetwork = expectRecord(networkValue, "Plan 3 RED database network");
   const databaseIp = expectString(databaseNetwork.IPAddress, "Plan 3 RED database IPAddress");
   if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(databaseIp)) throw new Error("Plan 3 RED database IP is invalid");
+  return { directUrl, databaseIp, networkName };
+}
+
+async function runPlan3FrozenRedInContainer(
+  snapshotRoot: string,
+  group: RedGroup,
+  env: NodeJS.ProcessEnv
+): Promise<void> {
+  const directUrl = env.PLAN3_TEST_DATABASE_URL;
+  if (!directUrl) throw new Error("Plan 3 RED evidence requires PLAN3_TEST_DATABASE_URL");
+  const binding = await inspectPlan3DisposableDatabase(directUrl);
   if (await dockerOutput(["image", "inspect", PLAN3_RED_NODE_IMAGE, "--format", "{{.Id}}"])
       !== PLAN3_RED_NODE_IMAGE_ID) {
     throw new Error("Plan 3 RED Node image identity is invalid");
   }
-  const proxyCode = `const net=require("node:net");net.createServer(c=>{const u=net.connect(5432,"${databaseIp}");c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u).pipe(c)}).listen(55432,"127.0.0.1")`;
-  // ponytail: immutable Plan 3 pins Windows-reserved 55432; isolate that legacy endpoint in the pinned Node container.
-  const command = [
-    "set -u",
-    "npm ci --no-audit --no-fund >/dev/null 2>&1 || exit 90",
-    `node -e '${proxyCode}' & proxy_pid=$!`,
-    `node node_modules/vitest/vitest.mjs run ${group.testFiles.join(" ")} --configLoader bundle --reporter=json --outputFile=/work/.plan5-red-report.json --testTimeout=120000 --hookTimeout=120000 --no-file-parallelism`,
-    "code=$?",
-    "kill $proxy_pid",
-    "wait $proxy_pid 2>/dev/null || true",
-    "exit $code"
-  ].join("; ");
-  await execFileAsync("docker", [
-    "run", "--rm", "--network", networkName,
-    "--env", "REQUIRE_PLAN3_POSTGRES=1",
-    "--env", `PLAN3_TEST_DATABASE_URL=postgresql://tron:tron@${databaseIp}:5432/tron_watch_plan3`,
-    "--env", `TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
-    "--volume", `${snapshotRoot}:/work`,
-    "--workdir", "/work",
-    PLAN3_RED_NODE_IMAGE,
-    "bash", "-lc", command
-  ], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20 * 60_000,
-    maxBuffer: 16 * 1024 * 1024
-  });
+  const admin = new Client({ connectionString: binding.directUrl, connectionTimeoutMillis: 5_000, query_timeout: 5_000 });
+  let connected = false;
+  let roleCreated = false;
+  let primaryError: unknown;
+  const cleanupErrors: unknown[] = [];
+  try {
+    await admin.connect();
+    connected = true;
+    const identity = await admin.query<{
+      database_name: string;
+      actor: string;
+      server_address: string;
+      server_port: string;
+      superuser: boolean;
+      system_identifier: string;
+    }>(`
+      select current_database() as database_name,
+             current_user as actor,
+             host(inet_server_addr()) as server_address,
+             current_setting('port') as server_port,
+             (select rolsuper from pg_roles where rolname = current_user) as superuser,
+             (select system_identifier::text from pg_control_system()) as system_identifier
+    `);
+    const row = identity.rows[0];
+    const identityMismatches = !row ? ["missing-row"] : [
+      row.database_name === "tron_watch_plan3" ? null : "database",
+      row.actor === decodeURIComponent(new URL(binding.directUrl).username) ? null : "actor",
+      row.server_address === binding.databaseIp ? null : "server-address",
+      row.server_port === "5432" ? null : "server-port",
+      row.superuser === true ? null : "superuser",
+      /^\d+$/.test(row.system_identifier) ? null : "system-identifier"
+    ].filter((value): value is string => value !== null);
+    if (identityMismatches.length > 0) {
+      throw new Error(`Plan 3 RED database runtime identity is invalid: ${identityMismatches.join(",")}`);
+    }
+    const frozenRole = await admin.query("select rolname from pg_roles where rolname = 'tron'");
+    if (frozenRole.rowCount !== 0) throw new Error("Plan 3 RED frozen test role already exists");
+    await admin.query("create role tron login password 'tron' nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls");
+    roleCreated = true;
+    await admin.query("grant create on database tron_watch_plan3 to tron");
+
+    const proxyCode = `const net=require("node:net");net.createServer(c=>{const u=net.connect(5432,"${binding.databaseIp}");c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u).pipe(c)}).listen(55432,"127.0.0.1")`;
+    // ponytail: immutable Plan 3 pins Windows-reserved 55432; isolate that legacy endpoint in the pinned Node container.
+    const command = [
+      "set -u",
+      "npm ci --no-audit --no-fund >/dev/null 2>&1 || exit 90",
+      `node -e '${proxyCode}' & proxy_pid=$!`,
+      `node node_modules/vitest/vitest.mjs run ${group.testFiles.join(" ")} --configLoader bundle --reporter=json --outputFile=/work/.plan5-red-report.json --testTimeout=120000 --hookTimeout=120000 --no-file-parallelism`,
+      "code=$?",
+      "kill $proxy_pid",
+      "wait $proxy_pid 2>/dev/null || true",
+      "exit $code"
+    ].join("; ");
+    await execFileAsync("docker", [
+      "run", "--rm", "--network", binding.networkName,
+      "--env", "REQUIRE_PLAN3_POSTGRES=1",
+      "--env", `PLAN3_TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
+      "--env", `TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
+      "--volume", `${snapshotRoot}:/work`,
+      "--workdir", "/work",
+      PLAN3_RED_NODE_IMAGE,
+      "bash", "-lc", command
+    ], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 20 * 60_000,
+      maxBuffer: 16 * 1024 * 1024
+    });
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    if (connected && roleCreated) {
+      try {
+        await admin.query("revoke create on database tron_watch_plan3 from tron");
+        await admin.query("drop role tron");
+        const remaining = await admin.query("select rolname from pg_roles where rolname = 'tron'");
+        if (remaining.rowCount !== 0) throw new Error("Plan 3 RED frozen test role cleanup failed");
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (connected) {
+      try {
+        await admin.end();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+  }
+  if (primaryError && cleanupErrors.length > 0) {
+    throw new AggregateError([primaryError, ...cleanupErrors], "Plan 3 RED execution and disposable role cleanup failed");
+  }
+  if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "Plan 3 RED disposable role cleanup failed");
+  if (primaryError) throw primaryError;
+}
+
+export function assertPlan3FrozenRedExecutions(executions: readonly ParsedAcceptanceExecution[]): void {
+  const failedExecutions = executions.filter((execution) => execution.status === "failed");
+  if (failedExecutions.length === 0) throw new Error("Plan 3 RED report has no failed executions");
+  for (const execution of failedExecutions) {
+    try {
+      assertBehavioralRedExecution(execution);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown RED classification failure";
+      throw new Error(`Plan 3 RED execution is not behavioral: ${reason}; ${execution.testFile} :: ${execution.fullName}`, {
+        cause: error
+      });
+    }
+  }
+  for (const acceptanceId of ["AC-14", "AC-15"] as const) {
+    const index = Number(acceptanceId.slice(3)) - 1;
+    requireExactExecution(
+      executions,
+      PRIMARY_AC_TEST_FILES[index]!,
+      PRIMARY_AC_FULL_NAMES[index]!,
+      "failed"
+    );
+  }
+}
+
+function assertPlan3SuiteFailuresAreBehavioral(report: unknown): void {
+  const root = expectRecord(report, "Plan 3 RED report");
+  if (!Array.isArray(root.testResults)) throw new Error("Plan 3 RED report testResults are invalid");
+  for (const [index, resultValue] of root.testResults.entries()) {
+    const result = expectRecord(resultValue, `Plan 3 RED testResults[${index}]`);
+    if (typeof result.message !== "string" || result.message.trim().length === 0) continue;
+    assertBehavioralRedExecution({
+      testFile: expectString(result.name, `Plan 3 RED testResults[${index}].name`),
+      fullName: `[PLAN3-SUITE-${index}]`,
+      status: "failed",
+      failureMessages: [result.message]
+    });
+  }
 }
 
 async function runRedGroup(root: string, group: RedGroup): Promise<{
@@ -637,6 +782,7 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
   } catch (error) {
     const failure = error as Error & { code?: number | string };
     failedAsExpected = Number(failure.code) === 1;
+    if (!failedAsExpected) throw error;
   }
   try {
     if (!failedAsExpected) throw new Error(`RED group did not fail behaviorally: ${group.id}`);
@@ -647,6 +793,10 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
     try {
       executions = parseAcceptanceExecutionReport(report, "failed");
     } catch {}
+    if (group.id === "plan3") {
+      assertPlan3FrozenRedExecutions(executions);
+      assertPlan3SuiteFailuresAreBehavioral(report);
+    }
     const localProductModuleAbsences = ["plan2", "plan2-llm-dampening", "plan4"].includes(group.id)
       ? parseLocalProductModuleAbsenceReport(report)
       : [];

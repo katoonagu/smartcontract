@@ -62,12 +62,14 @@ type TraceApi = {
     patchText: string;
     testPatchSha256: string;
   }): void;
+  assertBehavioralRedExecution(execution: ParsedExecution): void;
 };
 
 type CaptureApi = {
   redGroupForTrace(testFile: string, acceptanceId: string, secondary?: boolean): string;
   redPatchApplicationArgs(redGroupId: string): string[];
   buildRedGroupEnvironment(groupId: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+  assertPlan3FrozenRedExecutions(executions: readonly ParsedExecution[]): void;
   buildCaptureRedSpec(input: {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
@@ -90,7 +92,8 @@ async function loadTraceApi(): Promise<TraceApi> {
         || typeof loaded.parseLocalProductModuleAbsenceReport !== "function"
         || typeof loaded.localProductModuleAbsenceFingerprint !== "function"
         || typeof loaded.assertExpectedLocalProductModuleAbsentRed !== "function"
-        || typeof loaded.assertExpectedBehavioralRed !== "function") {
+        || typeof loaded.assertExpectedBehavioralRed !== "function"
+        || typeof loaded.assertBehavioralRedExecution !== "function") {
       throw new Error("validator export missing");
     }
     return loaded as TraceApi;
@@ -105,6 +108,7 @@ async function loadCaptureApi(): Promise<CaptureApi> {
   if (typeof loaded.redGroupForTrace !== "function"
       || typeof loaded.redPatchApplicationArgs !== "function"
       || typeof loaded.buildRedGroupEnvironment !== "function"
+      || typeof loaded.assertPlan3FrozenRedExecutions !== "function"
       || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
   }
@@ -334,6 +338,21 @@ it("[AC-41][RED-PROVENANCE] requires owner commit expected RED and candidate GRE
     gaps.push("unrelated RED assertion was accepted");
   } catch {}
   expect(gaps, gaps.join("; ")).toEqual([]);
+});
+
+it("[AC-41][RED-PROVENANCE] rejects database and transport failures as behavioral RED", async () => {
+  const api = await loadTraceApi();
+  const execution: ParsedExecution = {
+    testFile: "tests/runtime/waitReconciliation.acceptance.test.ts",
+    fullName: "[AC-14] reconciles and claims an all-ready parent exactly once",
+    status: "failed",
+    failureMessages: ["error: password authentication failed for user tron"]
+  };
+  expect(() => api.assertBehavioralRedExecution(execution)).toThrow(/infrastructure|environment/i);
+  expect(() => api.assertBehavioralRedExecution({
+    ...execution,
+    failureMessages: ["AssertionError: expected resume_ready to be unchanged"]
+  })).not.toThrow();
 });
 
 it("[AC-41][RED-PROVENANCE] accepts only exact local src module absence evidence", async () => {
@@ -668,6 +687,33 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   expect(plan3Environment.TEST_DATABASE_URL).toBe("postgresql://tron:tron@127.0.0.1:55432/tron_watch_plan3");
   expect(plan3Environment.REQUIRE_PLAN3_POSTGRES).toBe("1");
   expect(() => api.buildRedGroupEnvironment("plan3", {})).toThrow(/PLAN3_TEST_DATABASE_URL/);
+  expect(() => api.buildRedGroupEnvironment("plan3", {
+    PLAN3_TEST_DATABASE_URL: "postgresql://release:redacted@db.example:56001/tron_watch_plan3"
+  })).toThrow(/exact disposable/i);
+  expect(() => api.buildRedGroupEnvironment("plan3", {
+    PLAN3_TEST_DATABASE_URL: "postgresql://release:redacted@127.0.0.1:56001/tron_watch"
+  })).toThrow(/exact disposable/i);
+  const plan3Execution = {
+    testFile: "tests/runtime/waitReconciliation.acceptance.test.ts",
+    fullName: "[AC-14] reconciles and claims an all-ready parent exactly once",
+    status: "failed" as const,
+    failureMessages: ["AssertionError: expected resume_ready to be unchanged"]
+  };
+  expect(() => api.assertPlan3FrozenRedExecutions([
+    plan3Execution,
+    {
+      ...plan3Execution,
+      fullName: "[AC-15] resumes mixed ready-terminal waits through technical path"
+    }
+  ])).not.toThrow();
+  expect(() => api.assertPlan3FrozenRedExecutions([
+    plan3Execution,
+    {
+      ...plan3Execution,
+      fullName: "[AC-15] resumes mixed ready-terminal waits through technical path",
+      failureMessages: ["connect ECONNREFUSED 172.17.0.3:5432"]
+    }
+  ])).toThrow(/infrastructure|environment/i);
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",
     baseSha: PLAN4_TEST_BASE_SHA,

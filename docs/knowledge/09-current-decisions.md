@@ -404,7 +404,12 @@ of these decisions, update this file in the same work.
   `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to exact disposable
   `tron_watch_plan3`. The frozen test's legacy `55432` endpoint exists only
   inside a pinned Node container on the disposable PostgreSQL network; no
-  production endpoint is proxied. Skipped AC-14/15 evidence fails closed. This
+  production endpoint is proxied. Before execution the producer verifies the
+  loopback publish binding, running pinned PostgreSQL container/image and live
+  database/system identity. It creates the frozen test's least-privileged
+  `tron` login only on that verified disposable database, removes it after the
+  run, and fails closed on setup or cleanup drift. Skipped AC-14/15 and any
+  authentication, connection or transport failure evidence fail closed. This
   affects only release evidence; product/runtime/scoring semantics and
   production state do not change.
 - AC-20/21/24 do not use that exception. Their original Plan 4 test patch is
