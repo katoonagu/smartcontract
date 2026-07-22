@@ -139,6 +139,7 @@ type PreparedStartRuntime = {
   worktree: string;
   physicalEntrypoint: string;
   entrypointSha256: string;
+  entrypointCommitBlobSha256: string;
   entrypointFileIdentitySha256: string;
 };
 
@@ -989,16 +990,31 @@ async function runActionManagerGit(args: readonly string[], cwd: string): Promis
   return stdout.trim();
 }
 
+async function runActionManagerGitBytes(args: readonly string[], cwd: string): Promise<Buffer> {
+  const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+    cwd,
+    env: task0BSanitizedGitEnvironment(),
+    encoding: "buffer",
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024
+  });
+  return Buffer.from(stdout);
+}
+
 export async function attestTask0BActionWorktree(authority: Pick<Task0BProductionRuntimeAuthorityV1,
   "targetWorktreePath" | "targetRuntimeSha" | "targetWorktreeFingerprintSha256">): Promise<string> {
   const worktree = await inspectRealDirectory(authority.targetWorktreePath, false);
-  const [head, status, topLevel] = await Promise.all([
+  const [head, status, topLevel, indexFlags] = await Promise.all([
     runActionManagerGit(["rev-parse", "HEAD"], worktree),
     runActionManagerGit(["status", "--porcelain=v1", "--untracked-files=all"], worktree),
-    runActionManagerGit(["rev-parse", "--show-toplevel"], worktree)
+    runActionManagerGit(["rev-parse", "--show-toplevel"], worktree),
+    runActionManagerGitBytes(["ls-files", "-v", "-z"], worktree)
   ]);
+  const indexEntries = indexFlags.subarray(0, indexFlags.length - (indexFlags.at(-1) === 0 ? 1 : 0))
+    .toString("utf8").split("\0");
   const physical = resolve(await realpath(topLevel));
   if (head !== authority.targetRuntimeSha || status !== "" || !sameCanonicalPath(physical, worktree)
+      || indexEntries.length === 0 || indexEntries.some((entry) => !entry.startsWith("H "))
       || hash(process.platform === "win32" ? physical.toLowerCase() : physical) !== authority.targetWorktreeFingerprintSha256) {
     throw new Error("task0b_runtime_manager_worktree_unverified");
   }
@@ -1149,13 +1165,19 @@ export async function attestTask0BStartWorktree(authority: Pick<Task0BProduction
       ctimeNs: value.ctimeNs.toString(),
       mtimeNs: value.mtimeNs.toString()
     });
-    if (!before.isFile() || identity(before) !== identity(after)) {
+    const commitBlob = await runActionManagerGitBytes(
+      ["show", `${authority.targetRuntimeSha}:src/index.ts`], worktree
+    );
+    const normalizedEntrypoint = Buffer.from(bytes.toString("utf8").replace(/\r\n/gu, "\n"), "utf8");
+    if (!before.isFile() || bytes.includes(0) || normalizedEntrypoint.includes(13)
+        || !normalizedEntrypoint.equals(commitBlob) || identity(before) !== identity(after)) {
       throw new Error("task0b_runtime_manager_entrypoint_changed_during_read");
     }
     return {
       worktree,
       physicalEntrypoint,
       entrypointSha256: hash(bytes),
+      entrypointCommitBlobSha256: hash(commitBlob),
       entrypointFileIdentitySha256: hash(identity(after))
     };
   } finally {

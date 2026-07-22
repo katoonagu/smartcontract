@@ -83,6 +83,12 @@ it("[REQ-38][TASK0B-MANAGER-START-RACE] reattests immutable entrypoint bytes imm
       targetWorktreeFingerprintSha256: createHash("sha256")
         .update(process.platform === "win32" ? physical.toLowerCase() : physical).digest("hex")
     };
+    git(["update-index", "--assume-unchanged", "src/index.ts"]);
+    await writeFile(entrypoint, "export const hidden = true;\n");
+    await expect(api.attestTask0BStartWorktree(binding))
+      .rejects.toThrow(/index|entrypoint|worktree|unverified/i);
+    git(["update-index", "--no-assume-unchanged", "src/index.ts"]);
+    await writeFile(entrypoint, "export const exact = true;\n");
     const prepared = await api.attestTask0BStartWorktree(binding);
     await writeFile(entrypoint, "export const exact = false;\n");
     await expect(api.revalidateTask0BStartWorktree(binding, prepared))

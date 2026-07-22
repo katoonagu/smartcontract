@@ -46,8 +46,9 @@ executor hash. Capture and every revalidation reread the complete protected
 origin bundle, repeat owner→candidate ancestry and Git-blob proof with replace
 objects and inherited Git overrides disabled, and reproduce the live process.
 A future action applies the same sanitized/no-replace policy when attesting its
-candidate or rollback worktree. Start also pins exact entrypoint bytes and
-stable file identity, repeats the attestation immediately before spawn and
+candidate or rollback worktree. Start rejects `assume-unchanged`, `skip-worktree`
+and other non-normal index flags, pins entrypoint bytes to the exact authorized
+commit blob plus stable file identity, repeats the attestation immediately before spawn and
 before evidence publication, and terminates the child if post-spawn drift is
 observed.
 A later stop uses the frozen launcher only for old-process proof; the current
