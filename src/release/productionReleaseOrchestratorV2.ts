@@ -540,6 +540,10 @@ export async function executeProtectedProductionOperationV2(
 ): Promise<{ operationId: string; leaseEpoch: number; receiptSha256: string; completedSteps: readonly string[] }> {
   const adapters = dependencies.adapters;
   const store = dependencies.store ?? new ProductionOperationStoreV2(input.artifactRoot);
+  const releaseContext = await adapters.loadReleaseContext(input.artifactRoot);
+  if (releaseContext.previousRuntimeKind !== "manager_owned_previous_runtime") {
+    throw new Error("legacy_unmanaged_previous_runtime_action_forbidden");
+  }
   const preBeginSettlement = store.resumeCompletedSettlementBeforeBegin?.(
     input.operationKind, adapters.now(), adapters.verifySettledRollbackHistoricalProofs) ?? null;
   if (preBeginSettlement !== null) {
@@ -553,10 +557,6 @@ export async function executeProtectedProductionOperationV2(
       receiptSha256: preBeginSettlement.orchestrationReceiptSha256,
       completedSteps: preBeginSettlement.orchestrationReceipt.completedStepReceipts
         .map((record) => record.receipt.stepId) };
-  }
-  const releaseContext = await adapters.loadReleaseContext(input.artifactRoot);
-  if (releaseContext.previousRuntimeKind !== "manager_owned_previous_runtime") {
-    throw new Error("legacy_unmanaged_previous_runtime_action_forbidden");
   }
   let recoveryContext: Awaited<ReturnType<NonNullable<typeof adapters.loadRecoveryContext>>> | null = null;
   let rollbackContext: Awaited<ReturnType<NonNullable<typeof adapters.resolveRollbackContext>>> | null = null;

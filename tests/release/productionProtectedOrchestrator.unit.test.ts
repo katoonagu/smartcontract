@@ -110,6 +110,12 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
 describe("protected production orchestrator", () => {
   it("rejects legacy unmanaged runtime before claiming production authority", async () => {
     const { events, store, adapters } = harness("rollout");
+    const guardedStore = {
+      ...store,
+      resumeCompletedSettlementBeforeBegin() { events.push("resume-before-begin"); return null; },
+      publishTerminalArtifacts() { events.push("publish"); },
+      completeTerminal() { events.push("terminal"); return { prepared: {}, receipt: {}, cleanup: {} }; }
+    } as any;
     const legacyAdapters = {
       ...adapters,
       async loadReleaseContext() {
@@ -123,8 +129,12 @@ describe("protected production orchestrator", () => {
     await expect(executeProtectedProductionOperationV2({
       artifactRoot: mkdtempSync(join(tmpdir(), "plan5-protected-legacy-runtime-")),
       operationKind: "rollout"
-    }, { store, adapters: legacyAdapters })).rejects.toThrow(/legacy_unmanaged_previous_runtime_action_forbidden/);
+    }, { store: guardedStore, adapters: legacyAdapters }))
+      .rejects.toThrow(/legacy_unmanaged_previous_runtime_action_forbidden/);
+    expect(events).not.toContain("resume-before-begin");
     expect(events).not.toContain("begin");
+    expect(events).not.toContain("publish");
+    expect(events).not.toContain("terminal");
   });
 
   it("continues a normal takeover in the same owner process instead of stranding its lease", async () => {

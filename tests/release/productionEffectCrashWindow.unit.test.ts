@@ -198,7 +198,14 @@ describe("production effect crash windows", () => {
           orchestrationReceiptSha256: "8".repeat(64) };
       }
     } as any;
-    const adapters = { now: () => NOW, verifySettledRollbackHistoricalProofs } as any;
+    const adapters = {
+      now: () => NOW,
+      async loadReleaseContext() {
+        return { releaseFreezeIdentitySha256: "0".repeat(64),
+          previousRuntimeKind: "manager_owned_previous_runtime" as const };
+      },
+      verifySettledRollbackHistoricalProofs
+    } as any;
     await expect(executeProtectedProductionOperationV2({ artifactRoot: "C:/protected",
       operationKind: "rollback" }, { store, adapters })).resolves.toMatchObject({ completedSteps: [] });
     expect(verifySettledRollbackHistoricalProofs).toHaveBeenCalledOnce();
