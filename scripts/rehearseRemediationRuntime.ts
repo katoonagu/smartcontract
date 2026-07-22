@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath, writeFile } from "node:fs/promises";
@@ -322,14 +322,17 @@ function validateOperationalObservation(
           shortChecksum: APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)
         }
       } as RuntimeVersionV1, "ru")
-    : [
-        "<b>Статус runtime</b>",
-        "",
-        `<b>Инстанс</b>: <code>${label}</code>`,
-        "<b>Режим</b>: <code>marked</code>",
-        "По этой строке можно понять, какая версия runtime ответила в Telegram."
-      ].join("\n");
+    : formatPreviousRuntimeRehearsalResponse(label);
   if (value.versionResponseText !== expectedText) fail("controlled_runtime_version_response_mismatch");
+}
+
+export function formatPreviousRuntimeRehearsalResponse(label: string): string {
+  return [
+    "<b>Статус runtime</b>",
+    `<b>Инстанс</b>: <code>${label}</code>`,
+    "<b>Режим</b>: <code>marked</code>",
+    "По этой строке можно понять, какая версия runtime ответила в Telegram."
+  ].join("\n\n");
 }
 
 export function validateControlledRuntimeProcessTermination(value: {
@@ -773,6 +776,7 @@ type ControlledRuntimeCliOperations = {
   attestWorktree(worktree: string, expectedSha: string): void;
   initializeRecorder(path: string, target: "candidate" | "previous"): Promise<void>;
   spawnRuntime: typeof spawn;
+  generateAdminToken?(): string;
 };
 
 export function controlledRuntimeRecorderPath(
@@ -1101,6 +1105,24 @@ async function queryControlledRuntimeState(
   }
 }
 
+export async function fetchControlledRuntimeAdminHealth(
+  input: { adminUrl: string; token: string },
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch
+): Promise<200> {
+  let response: Response;
+  try {
+    response = await fetchImpl(new URL("/admin/api/forensic-jobs", input.adminUrl), {
+      headers: { authorization: `Bearer ${input.token}` },
+      signal
+    });
+  } catch {
+    fail("controlled_runtime_admin_request_failed");
+  }
+  if (response.status !== 200) fail("controlled_runtime_admin_health_failed");
+  return 200;
+}
+
 export function createControlledRuntimeCliDependencies(
   config: ControlledRuntimeOperationalConfigV1,
   context: ControlledRuntimeCliContext,
@@ -1111,6 +1133,15 @@ export function createControlledRuntimeCliDependencies(
     spawnRuntime: spawn
   }
 ): ControlledRuntimeRehearsalDependencies {
+  let rehearsalAdminToken: string;
+  try {
+    rehearsalAdminToken = (operations.generateAdminToken ?? (() => randomBytes(32).toString("base64url")))();
+    if (!/^[A-Za-z0-9_-]{32,256}$/u.test(rehearsalAdminToken)) {
+      fail("controlled_runtime_admin_token_generation_failed");
+    }
+  } catch {
+    fail("controlled_runtime_admin_token_generation_failed");
+  }
   const processes = new Map<"candidate" | "previous", ManagedRuntimeProcess>();
   const forceCleanedTargets = new Set<"candidate" | "previous">();
   const runtimePreloadPath = resolve(config.candidateWorktree, "scripts/rehearseRemediationRuntimePreload.ts");
@@ -1148,36 +1179,42 @@ export function createControlledRuntimeCliDependencies(
       const targetRecorderPath = recorderPath(target);
       await operations.initializeRecorder(targetRecorderPath, target);
       if (operation.signal.aborted) fail("controlled_runtime_start_aborted");
-      const child = operations.spawnRuntime(process.execPath, [
-        "--import", "tsx",
-        "--import", pathToFileURL(runtimePreloadPath).href,
-        resolve(worktree, "src/index.ts")
-      ], {
-        cwd: worktree,
-        env: {
-          ...scrubbedBaseEnv,
-          BOT_TOKEN: "000000000:PLAN5_RUNTIME_REHEARSAL_ONLY",
-          DATABASE_URL: context.databaseUrl,
-          RUNTIME_GIT_SHA: runtimeSha,
-          RUNTIME_INSTANCE_LABEL: runtimeLabel,
-          ADMIN_DASHBOARD_ENABLED: "true",
-          ADMIN_DASHBOARD_HOST: adminUrl.hostname.replace(/^\[|\]$/gu, ""),
-          ADMIN_DASHBOARD_PORT: adminUrl.port,
-          POLL_START_DELAY_MS: "86400000",
-          FORENSIC_WHERE_START_DELAY_MS: "86400000",
-          FORENSIC_INCOMING_START_DELAY_MS: "86400000",
-          FORENSIC_DEEP_START_DELAY_MS: "86400000",
-          LLM_ENABLED: "false",
-          PLAN5_RUNTIME_REHEARSAL_PRELOAD: "1",
-          PLAN5_RUNTIME_REHEARSAL_TARGET: target,
-          PLAN5_RUNTIME_REHEARSAL_RECORDER: targetRecorderPath,
-          PLAN5_RUNTIME_REHEARSAL_WORKTREE: worktree,
-          DOTENV_CONFIG_PATH: resolve(context.artifactRoot, "plan5-no-dotenv")
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        shell: false
-      }) as ChildProcessWithoutNullStreams;
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        child = operations.spawnRuntime(process.execPath, [
+          "--import", "tsx",
+          "--import", pathToFileURL(runtimePreloadPath).href,
+          resolve(worktree, "src/index.ts")
+        ], {
+          cwd: worktree,
+          env: {
+            ...scrubbedBaseEnv,
+            BOT_TOKEN: "000000000:PLAN5_RUNTIME_REHEARSAL_ONLY",
+            DATABASE_URL: context.databaseUrl,
+            RUNTIME_GIT_SHA: runtimeSha,
+            RUNTIME_INSTANCE_LABEL: runtimeLabel,
+            ADMIN_DASHBOARD_ENABLED: "true",
+            ADMIN_DASHBOARD_TOKEN: rehearsalAdminToken,
+            ADMIN_DASHBOARD_HOST: adminUrl.hostname.replace(/^\[|\]$/gu, ""),
+            ADMIN_DASHBOARD_PORT: adminUrl.port,
+            POLL_START_DELAY_MS: "86400000",
+            FORENSIC_WHERE_START_DELAY_MS: "86400000",
+            FORENSIC_INCOMING_START_DELAY_MS: "86400000",
+            FORENSIC_DEEP_START_DELAY_MS: "86400000",
+            LLM_ENABLED: "false",
+            PLAN5_RUNTIME_REHEARSAL_PRELOAD: "1",
+            PLAN5_RUNTIME_REHEARSAL_TARGET: target,
+            PLAN5_RUNTIME_REHEARSAL_RECORDER: targetRecorderPath,
+            PLAN5_RUNTIME_REHEARSAL_WORKTREE: worktree,
+            DOTENV_CONFIG_PATH: resolve(context.artifactRoot, "plan5-no-dotenv")
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          shell: false
+        }) as ChildProcessWithoutNullStreams;
+      } catch {
+        fail("controlled_runtime_spawn_failed");
+      }
       const managed: ManagedRuntimeProcess = { child, stdout: [], stderr: [] };
       child.stdout.on("data", (chunk: Buffer) => appendBounded(managed.stdout, chunk));
       child.stderr.on("data", (chunk: Buffer) => appendBounded(managed.stderr, chunk));
@@ -1232,8 +1269,11 @@ export function createControlledRuntimeCliDependencies(
           if (managed.child.exitCode !== null || managed.child.signalCode !== null) {
             fail("controlled_runtime_process_exited_before_observation");
           }
-          const [admin, state, recorder] = await Promise.all([
-            fetch(adminUrl, { signal }),
+          const [adminHealthStatus, state, recorder] = await Promise.all([
+            fetchControlledRuntimeAdminHealth({
+              adminUrl,
+              token: rehearsalAdminToken
+            }, signal),
             queryControlledRuntimeState(context.databaseUrl, context.terminalLegacyBinding),
             readRuntimeRehearsalRecorder(recorderPath(target), target)
           ]);
@@ -1248,9 +1288,9 @@ export function createControlledRuntimeCliDependencies(
             preloadPath: runtimePreloadPath,
             expectedPid: childPid
           });
-          if (admin.status !== 200 || workerScheduleCount !== 1 || runtimeInstanceCount !== 1) fail("controlled_runtime_observation_not_ready");
+          if (workerScheduleCount !== 1 || runtimeInstanceCount !== 1) fail("controlled_runtime_observation_not_ready");
           return {
-            adminHealthStatus: admin.status,
+            adminHealthStatus,
             observedSha: runtimeSha,
             observedLabel: runtimeLabel,
             versionResponseText: recorder.versionResponseText,
@@ -1292,12 +1332,17 @@ export function createControlledRuntimeCliDependencies(
         }, Math.min(5_000, operation.timeoutMs));
         const exited = await waitForManagedRuntimeExit(child);
         terminal = true;
+        const stdout = Buffer.concat(managed.stdout).toString("utf8");
+        const stderr = Buffer.concat(managed.stderr).toString("utf8");
+        if (stdout.includes(rehearsalAdminToken) || stderr.includes(rehearsalAdminToken)) {
+          fail("controlled_runtime_admin_token_exposure_detected");
+        }
         return {
           exitCode: exited.code,
           signal: exited.signal,
           forced,
-          stdout: Buffer.concat(managed.stdout).toString("utf8"),
-          stderr: Buffer.concat(managed.stderr).toString("utf8"),
+          stdout,
+          stderr,
           timedOut: operation.signal.aborted
         };
       } finally {

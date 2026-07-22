@@ -353,11 +353,10 @@ it("[REQ-35][REQ-38][RUNTIME-ARTIFACT-SEMANTICS] rejects hashable but false runt
   const candidateVersionResponseText = formatRuntimeVersion(candidateRuntimeVersion as any, "ru");
   const previousVersionResponseText = [
     "<b>Статус runtime</b>",
-    "",
     `<b>Инстанс</b>: <code>${PREVIOUS_RUNTIME_LABEL}</code>`,
     "<b>Режим</b>: <code>marked</code>",
     "По этой строке можно понять, какая версия runtime ответила в Telegram."
-  ].join("\n");
+  ].join("\n\n");
   const subprocessCaptures = Buffer.from(JSON.stringify({
     version: "controlled-runtime-subprocess-captures-v1",
     candidateProcess: processCapture,

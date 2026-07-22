@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,6 +31,35 @@ type RollbackApi = {
     sanitizedDatabaseFingerprintSha256: string;
   }): unknown;
 };
+
+function controlledRuntimeCliTestInput() {
+  const population = buildTerminalLegacyPopulation();
+  return [{
+    version: "controlled-runtime-operational-config-v1",
+    candidateWorktree: resolve("C:/release/candidate"),
+    previousWorktree: resolve("C:/release/previous"),
+    candidateAdminUrl: "http://127.0.0.1:18787/",
+    previousAdminUrl: "http://127.0.0.1:18788/",
+    databaseUrlEnv: "PLAN5_SCHEMA_RUNTIME_SANITIZED_DATABASE_URL",
+    telegramRecorderPath: "runtime-telegram-recorder.json"
+  }, {
+    artifactRoot: resolve("C:/release/artifacts"),
+    candidateSha: CANDIDATE_SHA,
+    previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
+    candidateRuntimeLabel: RUNTIME_LABEL,
+    previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
+    databaseUrl: "postgresql://disabled:disabled@127.0.0.1:1/tron_watch_plan5_runtime_sanitized",
+    terminalLegacyBinding: {
+      candidateSha: population.candidateSha,
+      cutoff: population.cutoff,
+      cutoffSource: population.cutoffSource,
+      task0bEvidenceSha256: population.task0bEvidenceSha256,
+      databaseRole: population.databaseRole,
+      databaseName: population.databaseName,
+      databaseFingerprintSha256: population.databaseFingerprintSha256
+    }
+  }] as const;
+}
 
 it("[REQ-35][REQ-38][ROLLBACK-REHEARSAL] requires the exact previous SHA to run safely on migrated sanitized schema 032", async () => {
   const modulePath: string = "../../scripts/rehearseRemediationRuntime";
@@ -240,11 +269,10 @@ it("[REQ-35][CONTROLLED-RUNTIME-EXECUTOR] invokes allowlisted start observe stop
         ? formatRuntimeVersion(version as any, "ru")
         : [
             "<b>Статус runtime</b>",
-            "",
             `<b>Инстанс</b>: <code>${PREVIOUS_RUNTIME_LABEL}</code>`,
             "<b>Режим</b>: <code>marked</code>",
             "По этой строке можно понять, какая версия runtime ответила в Telegram."
-          ].join("\n");
+          ].join("\n\n");
       return {
         adminHealthStatus: 200,
         observedSha: target === "candidate" ? CANDIDATE_SHA : PREVIOUS_RUNTIME_SHA,
@@ -286,6 +314,21 @@ it("[REQ-35][CONTROLLED-RUNTIME-EXECUTOR] invokes allowlisted start observe stop
     conservativeAllowanceMirrorsVerified: true,
     remainingProcessCount: 0
   });
+  const exactPreviousRecorderText = [
+    "<b>Статус runtime</b>",
+    `<b>Инстанс</b>: <code>master-01729788</code>`,
+    "<b>Режим</b>: <code>marked</code>",
+    "По этой строке можно понять, какая версия runtime ответила в Telegram."
+  ].join("\n\n");
+  const previousObservation = JSON.parse(result.queryCaptureBytes.toString("utf8")).previousObservation;
+  const fixturePreviousRecorderText = api.formatPreviousRuntimeRehearsalResponse(PREVIOUS_RUNTIME_LABEL);
+  expect(Buffer.from(previousObservation.versionResponseText, "utf8")).toEqual(Buffer.from(fixturePreviousRecorderText, "utf8"));
+  expect(previousObservation.versionResponseSha256)
+    .toBe(createHash("sha256").update(fixturePreviousRecorderText, "utf8").digest("hex"));
+  expect(Buffer.from(api.formatPreviousRuntimeRehearsalResponse("master-01729788"), "utf8"))
+    .toEqual(Buffer.from(exactPreviousRecorderText, "utf8"));
+  expect(createHash("sha256").update(exactPreviousRecorderText, "utf8").digest("hex"))
+    .toBe("9fa0a033b1bc3224312e39704eeab7f188a924b2eedb67ad3cc1033248cf9a35");
   const subprocessCapture = JSON.parse(result.subprocessCaptureBytes.toString("utf8"));
   expect(subprocessCapture.candidateProcess.processIdentitySha256).toBe(
     createHash("sha256").update("candidate-process-42").digest("hex")
@@ -504,6 +547,179 @@ it("[REQ-35][CONTROLLED-RUNTIME-CLI] accepts only Task0B-bound data configuratio
     operationalConfigSha256: "f".repeat(64)
   })).toThrow(/hash/i);
   expect(api.createControlledRuntimeCliDependencies).toBeTypeOf("function");
+});
+
+it("[REQ-35][CONTROLLED-RUNTIME-ADMIN-TOKEN] gives both sanitized children one generated token without inheriting the parent token", async () => {
+  const api: any = await import("../../scripts/rehearseRemediationRuntime");
+  const [config, context] = controlledRuntimeCliTestInput();
+  const parentToken = "parent-production-token-must-not-be-used";
+  const previousParentToken = process.env.ADMIN_DASHBOARD_TOKEN;
+  const spawnedEnvironments: NodeJS.ProcessEnv[] = [];
+  process.env.ADMIN_DASHBOARD_TOKEN = parentToken;
+  try {
+    const dependencies = api.createControlledRuntimeCliDependencies(config, context, () => [], {
+      attestWorktree: () => undefined,
+      initializeRecorder: async () => undefined,
+      spawnRuntime: ((_file: string, _args: readonly string[], options: any) => {
+        spawnedEnvironments.push(options.env);
+        return spawn(process.execPath, ["--eval", "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)"], {
+          cwd: resolve("."),
+          env: options.env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          shell: false
+        });
+      }) as any
+    });
+    for (const target of ["candidate", "previous"] as const) {
+      await dependencies.start(target, {
+        commandId: target === "candidate" ? "runtime_sanitized_rehearsal" : "rollback_rehearsal",
+        templateSha256: "a".repeat(64),
+        timeoutMs: 5_000,
+        signal: new AbortController().signal
+      });
+      await dependencies.stop(target, {
+        commandId: target === "candidate" ? "runtime_sanitized_stop" : "rollback_stop",
+        templateSha256: "b".repeat(64),
+        timeoutMs: 5_000,
+        signal: new AbortController().signal
+      });
+    }
+    expect(spawnedEnvironments).toHaveLength(2);
+    const tokens = spawnedEnvironments.map((env) => env.ADMIN_DASHBOARD_TOKEN);
+    expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{32,}$/u);
+    expect(tokens[1]).toBe(tokens[0]);
+    expect(tokens).not.toContain(parentToken);
+    expect(spawnedEnvironments.every((env) => env.ADMIN_DASHBOARD_ENABLED === "true")).toBe(true);
+    await expect(dependencies.forceCleanup("candidate", new AbortController().signal)).resolves.toEqual({
+      managedChildCount: 0,
+      runtimeProcessCount: 0
+    });
+    await expect(dependencies.forceCleanup("previous", new AbortController().signal)).resolves.toEqual({
+      managedChildCount: 0,
+      runtimeProcessCount: 0
+    });
+  } finally {
+    if (previousParentToken === undefined) delete process.env.ADMIN_DASHBOARD_TOKEN;
+    else process.env.ADMIN_DASHBOARD_TOKEN = previousParentToken;
+  }
+});
+
+it("[REQ-35][CONTROLLED-RUNTIME-ADMIN-AUTH] authenticates candidate and previous Admin health without serializing the token", async () => {
+  const api: any = await import("../../scripts/rehearseRemediationRuntime");
+  const token = "rehearsal-only-admin-token-1234567890";
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const fetchHealth = async (input: any, init?: RequestInit) => {
+    const url = String(input);
+    requests.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+    return new Response(JSON.stringify({ jobs: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const candidate = await api.fetchControlledRuntimeAdminHealth({
+    adminUrl: "http://127.0.0.1:18787/",
+    token
+  }, new AbortController().signal, fetchHealth);
+  const previous = await api.fetchControlledRuntimeAdminHealth({
+    adminUrl: "http://127.0.0.1:18788/",
+    token
+  }, new AbortController().signal, fetchHealth);
+  expect(requests).toEqual([
+    { url: "http://127.0.0.1:18787/admin/api/forensic-jobs", authorization: `Bearer ${token}` },
+    { url: "http://127.0.0.1:18788/admin/api/forensic-jobs", authorization: `Bearer ${token}` }
+  ]);
+  expect(candidate).toBe(200);
+  expect(previous).toBe(200);
+  expect(JSON.stringify({ candidate, previous })).not.toContain(token);
+
+  const failure = await api.fetchControlledRuntimeAdminHealth({
+    adminUrl: "http://127.0.0.1:18787/",
+    token
+  }, new AbortController().signal, async () => {
+    throw new Error(`transport exposed ${token}`);
+  }).then(() => null, (error: Error) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure.message).not.toContain(token);
+  await expect(api.fetchControlledRuntimeAdminHealth({
+    adminUrl: "http://127.0.0.1:18787/",
+    token
+  }, new AbortController().signal, async () => new Response(null, { status: 401 })))
+    .rejects.toThrow("controlled_runtime_admin_health_failed");
+});
+
+it("[REQ-35][CONTROLLED-RUNTIME-ADMIN-FAIL-CLOSED] rejects token generation failure without creating a child or exposing the error", async () => {
+  const api: any = await import("../../scripts/rehearseRemediationRuntime");
+  const [config, context] = controlledRuntimeCliTestInput();
+  let spawnCount = 0;
+  const create = (generateAdminToken: () => string) => api.createControlledRuntimeCliDependencies(config, context, () => [], {
+    attestWorktree: () => undefined,
+    initializeRecorder: async () => undefined,
+    spawnRuntime: (() => { spawnCount += 1; throw new Error("must_not_spawn"); }) as any,
+    generateAdminToken
+  });
+  expect(() => create(() => "")).toThrow("controlled_runtime_admin_token_generation_failed");
+  const secret = "generator-secret-must-not-escape";
+  const failure = (() => {
+    try {
+      create(() => { throw new Error(secret); });
+      return null;
+    } catch (error) {
+      return error as Error;
+    }
+  })();
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure?.message).toBe("controlled_runtime_admin_token_generation_failed");
+  expect(failure?.message).not.toContain(secret);
+  expect(spawnCount).toBe(0);
+});
+
+it("[REQ-35][CONTROLLED-RUNTIME-ADMIN-NONDISCLOSURE] fails closed after child cleanup if captured output contains the token", async () => {
+  const api: any = await import("../../scripts/rehearseRemediationRuntime");
+  const [config, context] = controlledRuntimeCliTestInput();
+  const token = "rehearsal-token-that-must-never-escape-1234";
+  let child: ReturnType<typeof spawn> | undefined;
+  let resolveTokenObserved: (() => void) | undefined;
+  const tokenObserved = new Promise<void>((resolveObserved) => { resolveTokenObserved = resolveObserved; });
+  const dependencies = api.createControlledRuntimeCliDependencies(config, context, () => [], {
+    attestWorktree: () => undefined,
+    initializeRecorder: async () => undefined,
+    generateAdminToken: () => token,
+    spawnRuntime: ((_file: string, _args: readonly string[], options: any) => {
+      child = spawn(process.execPath, [
+        "--eval",
+        "process.stderr.write(process.env.ADMIN_DASHBOARD_TOKEN);process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)"
+      ], {
+        cwd: resolve("."),
+        env: options.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        shell: false
+      });
+      child.stderr!.once("data", () => resolveTokenObserved?.());
+      return child;
+    }) as any
+  });
+  await dependencies.start("candidate", {
+    commandId: "runtime_sanitized_rehearsal",
+    templateSha256: "a".repeat(64),
+    timeoutMs: 5_000,
+    signal: new AbortController().signal
+  });
+  await tokenObserved;
+  const failure = await dependencies.stop("candidate", {
+    commandId: "runtime_sanitized_stop",
+    templateSha256: "b".repeat(64),
+    timeoutMs: 5_000,
+    signal: new AbortController().signal
+  }).then(() => null, (error: Error) => error);
+  expect(failure?.message).toBe("controlled_runtime_admin_token_exposure_detected");
+  expect(failure?.message).not.toContain(token);
+  expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+  await expect(dependencies.forceCleanup("candidate", new AbortController().signal)).resolves.toEqual({
+    managedChildCount: 0,
+    runtimeProcessCount: 0
+  });
 });
 
 it("[REQ-35][CONTROLLED-RUNTIME-WORKTREE] rejects a wrong or dirty exact runtime worktree", async () => {
