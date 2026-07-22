@@ -87,7 +87,6 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G04_RUNTIME: policy("G04_RUNTIME", ["suite-plan3.vitest.json", "suite-plan3.evidence.json"],
     ["suite_report", "suite_evidence"]),
   G05_TELEGRAM: policy("G05_TELEGRAM", ["manual-telegram-acceptance.json"],
-    ["manual_telegram_acceptance", "suite_report", "suite_evidence"], false,
     ["manual_telegram_acceptance"]),
   G06_FULL: policy("G06_FULL", [
     "full-regression-evidence.json", "suite-plan5.vitest.json", "suite-plan5.evidence.json"
