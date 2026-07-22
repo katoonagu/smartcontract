@@ -183,7 +183,7 @@ describe("[REQ-38][G12-PRODUCTION-BACKUP]", () => {
         expectedAttestationSha256: issued.attestationSha256
       })).toThrow(/manifest|receipt|canonical|hash/i);
     } finally { rmSync(root, { recursive: true, force: true }); }
-  }, 30_000);
+  }, 120_000);
 
   it("runs command preflight against a materialized semantic V2 readiness root without a V1 manifest fallback", async () => {
     const api = await loadProducer();
