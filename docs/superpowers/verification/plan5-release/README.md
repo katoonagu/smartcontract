@@ -45,6 +45,8 @@ blob hash, start-evidence hash and live PID identity. The clean candidate's guar
 executor hash. Capture and every revalidation reread the complete protected
 origin bundle, repeat owner→candidate ancestry and Git-blob proof with replace
 objects and inherited Git overrides disabled, and reproduce the live process.
+A future action applies the same sanitized/no-replace policy when attesting its
+candidate or rollback worktree.
 A later stop uses the frozen launcher only for old-process proof; the current
 manager remains the action authority. Never substitute one manager hash for the
 other, recreate start evidence, or use the historical launcher for action authority.

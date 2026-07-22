@@ -1,4 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import {
   CANDIDATE_SHA,
@@ -22,6 +26,43 @@ const STOP_TEMPLATE = createHash("sha256")
   .update("release:task0b:runtime-manager stop <artifact-root> <production-go-authority-file>").digest("hex");
 const PREVIOUS_IDENTITY_TEMPLATE = createHash("sha256")
   .update("task0b_repo_runtime_manager_v1 start-attestation <pid> <process-started-at> <absolute-entrypoint> <worktree-fingerprint> <sha> <label>").digest("hex");
+
+it("[REQ-38][TASK0B-MANAGER-GIT-ATTESTATION] ignores hostile ambient Git overrides at action time", async () => {
+  const api = await import("../../scripts/manageTask0BRuntime");
+  const repository = await mkdtemp(join(tmpdir(), "task0b-action-git-"));
+  const git = (args: string[]) => execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
+  try {
+    git(["init"]);
+    await writeFile(join(repository, "marker.txt"), "exact\n");
+    git(["add", "marker.txt"]);
+    git(["-c", "user.name=Plan5", "-c", "user.email=plan5@example.invalid", "commit", "-m", "fixture"]);
+    const physical = await realpath(repository);
+    const head = git(["rev-parse", "HEAD"]);
+    const previous = {
+      GIT_DIR: process.env.GIT_DIR,
+      GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+      GIT_OBJECT_DIRECTORY: process.env.GIT_OBJECT_DIRECTORY
+    };
+    process.env.GIT_DIR = join(repository, "missing-forged-git-dir");
+    process.env.GIT_WORK_TREE = join(repository, "missing-forged-worktree");
+    process.env.GIT_OBJECT_DIRECTORY = join(repository, "missing-forged-objects");
+    try {
+      await expect(api.attestTask0BActionWorktree({
+        targetWorktreePath: physical,
+        targetRuntimeSha: head,
+        targetWorktreeFingerprintSha256: createHash("sha256")
+          .update(process.platform === "win32" ? physical.toLowerCase() : physical).digest("hex")
+      })).resolves.toBe(physical);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
 
 const ACTION_PHASES = {
   runtime_manager_stop_previous: "post_migration_rollout",

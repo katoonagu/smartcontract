@@ -15,6 +15,7 @@ import {
   readExternalConfig,
   readProtectedRegularFile,
   sameCanonicalPath,
+  task0BSanitizedGitEnvironment,
   validateTask0BPreflightConfig,
   validateTask0BPreviousRuntimeIdentity
 } from "./captureTask0BPreflight";
@@ -976,17 +977,23 @@ async function readProtectedRelativeRegularFile(
   return bytes;
 }
 
-async function run(command: string, args: readonly string[], cwd?: string): Promise<string> {
-  const { stdout } = await execFileAsync(command, [...args], { cwd, windowsHide: true, maxBuffer: 1024 * 1024 });
+async function runActionManagerGit(args: readonly string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+    cwd,
+    env: task0BSanitizedGitEnvironment(),
+    windowsHide: true,
+    maxBuffer: 1024 * 1024
+  });
   return stdout.trim();
 }
 
-async function attestWorktree(authority: Task0BProductionRuntimeAuthorityV1): Promise<string> {
+export async function attestTask0BActionWorktree(authority: Pick<Task0BProductionRuntimeAuthorityV1,
+  "targetWorktreePath" | "targetRuntimeSha" | "targetWorktreeFingerprintSha256">): Promise<string> {
   const worktree = await inspectRealDirectory(authority.targetWorktreePath, false);
   const [head, status, topLevel] = await Promise.all([
-    run("git", ["rev-parse", "HEAD"], worktree),
-    run("git", ["status", "--porcelain=v1", "--untracked-files=all"], worktree),
-    run("git", ["rev-parse", "--show-toplevel"], worktree)
+    runActionManagerGit(["rev-parse", "HEAD"], worktree),
+    runActionManagerGit(["status", "--porcelain=v1", "--untracked-files=all"], worktree),
+    runActionManagerGit(["rev-parse", "--show-toplevel"], worktree)
   ]);
   const physical = resolve(await realpath(topLevel));
   if (head !== authority.targetRuntimeSha || status !== "" || !sameCanonicalPath(physical, worktree)
@@ -1121,7 +1128,7 @@ async function terminateSpawnedChildAndVerify(processId: number): Promise<void> 
 
 async function prepareStartRuntime(authority: Task0BProductionRuntimeAuthorityV1): Promise<PreparedStartRuntime> {
   if (await countTask0BRuntimeCandidates() !== 0) throw new Error("task0b_runtime_manager_overlap_detected");
-  const worktree = await attestWorktree(authority);
+  const worktree = await attestTask0BActionWorktree(authority);
   const entrypoint = resolve(worktree, "src", "index.ts");
   const physicalEntrypoint = resolve(await realpath(entrypoint));
   if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_runtime_manager_entrypoint_unverified");
