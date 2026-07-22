@@ -97,6 +97,10 @@ it("binds every focused suite report and sidecar to exactly one pre-release gate
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G05_TELEGRAM.allowedKinds).toEqual([
     "manual_telegram_acceptance"
   ]);
+  expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G11_POISONING_REGRESSION.primaryPaths).toEqual([
+    "suite-addressPoisoningRegression.vitest.json",
+    "suite-addressPoisoningRegression.evidence.json"
+  ]);
   const foreignSuite = ref("suite_report", "suite-plan4.vitest.json", Buffer.from("{}"));
   expect(() => validateGateEvidenceBytesV2(
     gate("G05_TELEGRAM", [foreignSuite]) as any,

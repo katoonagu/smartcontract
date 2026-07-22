@@ -1,4 +1,4 @@
-import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
@@ -736,6 +736,22 @@ export function buildReleaseSuiteGroupInvocation(
   };
 }
 
+export async function runReleaseSuiteInvocation(
+  invocation: Readonly<{ executable: string; args: readonly string[] }>,
+  executionRoot: string,
+  environment: NodeJS.ProcessEnv,
+  timeoutMs = 30 * 60_000
+): Promise<number> {
+  const result = await runBoundedReleaseProcess(
+    invocation.executable, invocation.args, environment, timeoutMs, executionRoot
+  );
+  if (result.error || result.signal || result.status === null) {
+    throw new Error(result.error?.message ?? "suite process did not terminate normally");
+  }
+  assertNoSecretLikeArtifactValues({ stdout: result.stdout, stderr: result.stderr });
+  return result.status;
+}
+
 export function assertTraceExecutionsCoveredBySuiteReports(
   traceSet: Pick<AcceptanceTraceSetV1, "traces" | "auxiliaryGreen">,
   suiteExecutions: readonly ParsedAcceptanceExecution[]
@@ -907,17 +923,7 @@ export async function executeReleaseSuiteGroup(options: {
       ...suiteEnvironment,
       DOTENV_CONFIG_PATH: resolve(snapshot.root, "tests/fixtures/release/plan5-no-dotenv")
     };
-    const child = spawnSync(invocation.executable, invocation.args, {
-      cwd: snapshot.root,
-      env: executionEnvironment,
-      encoding: "utf8",
-      windowsHide: true,
-      shell: false,
-      timeout: 30 * 60_000,
-      maxBuffer: MAX_ARTIFACT_BYTES
-    });
-    if (child.error || child.signal || child.status === null) throw new Error("suite process did not terminate normally");
-    exitCode = child.status;
+    exitCode = await runReleaseSuiteInvocation(invocation, snapshot.root, executionEnvironment);
   } finally {
     await snapshot.dispose();
     assertReleaseCandidateWorkspaceClean(options.candidateSha);

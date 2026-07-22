@@ -102,7 +102,7 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G10_ROLLBACK_REHEARSAL: policy("G10_ROLLBACK_REHEARSAL", ["rollback-rehearsal.json"],
     ["rollback_rehearsal"]),
   G11_POISONING_REGRESSION: policy("G11_POISONING_REGRESSION",
-    ["suite-address-poisoning-regression.vitest.json", "suite-address-poisoning-regression.evidence.json"],
+    ["suite-addressPoisoningRegression.vitest.json", "suite-addressPoisoningRegression.evidence.json"],
     ["suite_report", "suite_evidence"])
 } satisfies Record<Exclude<ReleaseGateIdV2, ProductionGateIdV2>, GateEvidencePolicyV2>);
 

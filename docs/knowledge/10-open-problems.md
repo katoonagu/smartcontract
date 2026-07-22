@@ -376,6 +376,16 @@ targets, requires a 15-minute attempt floor, and leaves failed reads
   transfers, and detector policy version are ready to be reused, but the
   precheck product surface is not implemented in this release.
 
+## Release tooling
+
+- The Plan 3 frozen RED Docker runner removes only a CID whose invocation
+  label, name and image match. A narrow daemon failure after container creation
+  but before the protected CID file is written can leave a stopped disposable
+  container. A future cleanup hardening may resolve the cryptographically
+  random name only after failed creation, verify the same label/name/image
+  tuple, derive the CID, and still remove only by CID. This is cleanup
+  robustness; it must never reintroduce name-only deletion.
+
 ## Planned Behavior
 
 - Ordinary Where/Incoming resumable indexing to full main-path coverage.

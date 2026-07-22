@@ -1689,6 +1689,18 @@ it("[AC-41][NON-VITEST-TIMEOUT] terminates the full descendant process tree", { 
   }
 });
 
+it("[AC-41][SUITE-TIMEOUT] routes focused suites through tree-safe bounded execution", async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease");
+  await expect(runner.runReleaseSuiteInvocation({
+    executable: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"]
+  }, tmpdir(), process.env, 100)).rejects.toThrow(/timed out|terminate normally/i);
+  await expect(runner.runReleaseSuiteInvocation({
+    executable: process.execPath,
+    args: ["-e", "process.exit(0)"]
+  }, tmpdir(), process.env, 5_000)).resolves.toBe(0);
+});
+
 it("[AC-41][NON-VITEST-UTF8] preserves split multibyte output bytes for evidence hashing", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
   const result = await runner.runBoundedReleaseProcess(
