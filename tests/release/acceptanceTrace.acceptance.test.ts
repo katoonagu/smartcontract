@@ -888,6 +888,12 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   expect(() => api.assertRedGroupEnvironmentRequirements({
     PLAN3_TEST_DATABASE_URL: plan3DatabaseUrl
   })).toThrow(/PLAN4_TEST_DATABASE_URL/);
+  for (const groupId of ["plan3", "plan4"]) {
+    expect(() => api.buildRedGroupEnvironment(groupId, {
+      [`PLAN${groupId.slice(-1)}_TEST_DATABASE_URL`]:
+        `postgresql://release:redacted@127.0.0.1:55999/tron_watch_${groupId}`
+    })).toThrow(/exact disposable/i);
+  }
   expect(() => api.assertRedGroupEnvironmentRequirements({
     PLAN3_TEST_DATABASE_URL: plan3DatabaseUrl,
     PLAN4_TEST_DATABASE_URL: "postgresql://release:redacted@127.0.0.1:56001/tron_watch_plan4"

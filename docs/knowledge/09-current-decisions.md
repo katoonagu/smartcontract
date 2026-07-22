@@ -483,8 +483,10 @@ of these decisions, update this file in the same work.
   inspection; a name collision or failed create never authorizes name-based
   deletion. Every success, failure, or timeout verifies that exact container
   absent before role cleanup completes.
-- Trace preparation validates the exact disposable Plan 3 and Plan 4 database
-  bindings before creating trace directories or RED reports. Missing or unsafe
+- Trace preparation rejects the production port for every disposable URL,
+  validates the exact Plan 3 and Plan 4 database bindings, and replays the
+  pinned Plan 3 container/image/live database identity check read-only before
+  creating trace directories or RED reports. Missing, unsafe, or non-pinned
   bindings are operator/preflight failures and leave the protected root
   untouched; they never become RED evidence.
   Frozen RED runs select only exact `[AC-NN]` tests, so

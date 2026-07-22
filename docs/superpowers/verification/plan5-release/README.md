@@ -295,9 +295,11 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    at owner plus candidate. Generic/no-test/dependency/fixture/environment/
    timeout/synthetic failures, a foreign importer, or multiple local-absence
    messages fail closed.
-   Before creating any trace directory or RED report, preparation validates
-   both exact disposable Plan 3 and Plan 4 database bindings; a missing or
-   non-disposable binding therefore leaves the protected root untouched.
+   Before creating any trace directory or RED report, preparation rejects the
+   production port for every disposable binding, validates both exact Plan 3
+   and Plan 4 URLs, and replays the pinned Plan 3 container/image/live database
+   identity check read-only. A missing, unsafe, or non-pinned binding therefore
+   leaves the protected root untouched.
 
    The separate secondary `[AC-33][LLM-DAMPENING]` regression is the only
    `candidate_green_only` auxiliary proof. It is not another AC, adds no RED

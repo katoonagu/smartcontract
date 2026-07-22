@@ -796,6 +796,21 @@ async function readPlan3DatabaseRuntimeIdentity(client: Client): Promise<Plan3Da
   return identity.rows[0];
 }
 
+async function assertPlan3RedDatabaseRequirement(source: NodeJS.ProcessEnv): Promise<void> {
+  const directUrl = buildRedGroupEnvironment("plan3", source).PLAN3_TEST_DATABASE_URL;
+  if (!directUrl) throw new Error("Plan 3 RED evidence requires PLAN3_TEST_DATABASE_URL");
+  const binding = await inspectPlan3DisposableDatabase(directUrl);
+  const client = new Client({ connectionString: directUrl, connectionTimeoutMillis: 5_000, query_timeout: 5_000 });
+  let connected = false;
+  try {
+    await client.connect();
+    connected = true;
+    assertPlan3DatabaseRuntimeIdentity(binding, await readPlan3DatabaseRuntimeIdentity(client));
+  } finally {
+    if (connected) await client.end();
+  }
+}
+
 function assertPlan3DatabaseRuntimeIdentity(
   binding: Plan3DisposableDatabaseBinding,
   row: Plan3DatabaseRuntimeIdentity
@@ -1328,6 +1343,7 @@ async function prepareRemediationTestEvidenceInternal(
     throw new Error("trace prepare candidate worktree is dirty");
   }
   assertRedGroupEnvironmentRequirements(process.env);
+  await assertPlan3RedDatabaseRequirement(process.env);
   await ensureTraceDirectory(root, "trace");
   await ensureTraceDirectory(root, "trace/red");
   await ensureTraceDirectory(root, "trace/patches");

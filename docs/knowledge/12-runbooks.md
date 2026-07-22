@@ -135,9 +135,11 @@ npm run release:manifest:advance -- pre_manual absent <protected-artifact-root>
 npm run release:verify -- --phase pre-manual --artifact-root <protected-artifact-root>
 ```
 
-`release:trace:prepare` validates both disposable database bindings before it
-creates trace directories or RED reports. A missing or non-disposable binding
-is an operator/preflight failure and must not be converted into RED evidence.
+`release:trace:prepare` rejects the production port for every disposable URL,
+validates both database bindings, and replays the pinned Plan 3
+container/image/live database identity check read-only before it creates trace
+directories or RED reports. A missing, unsafe, or non-pinned binding is an
+operator/preflight failure and must not be converted into RED evidence.
 
 Do not recapture or rematerialize Task 0B after the freeze exists. Its
 15-minute live observation is renewed only by another complete read-only
