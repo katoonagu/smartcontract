@@ -35,13 +35,18 @@ function historicalManagerEvidence() {
     originArtifactRootFingerprintSha256: SHA256("3"),
     originTask0BEvidenceSha256: SHA256("4"),
     originReleaseFreezeIdentitySha256: SHA256("5"),
+    originPreparedFreezeMaterializationSha256: SHA256("6"),
+    originFreezeMaterializationReceiptSha256: SHA256("7"),
     source: "protected_origin_freeze_and_git_blob_read_only",
     verified: true
   };
   return evidence;
 }
 
-function completeArchivedOriginBundle(current = historicalManagerEvidence()) {
+function completeArchivedOriginBundle(
+  current = historicalManagerEvidence(),
+  options: { leaseHash?: string; materializedAt?: string } = {}
+) {
   const launcher = (current.previousRuntimeIdentity as any).historicalLauncher!;
   const rootFingerprint = launcher.originArtifactRootFingerprintSha256 as string;
   const task0b: any = buildTask0BReleaseFreezeEvidence({
@@ -63,7 +68,7 @@ function completeArchivedOriginBundle(current = historicalManagerEvidence()) {
     Buffer.from(`${canonicalReleaseJsonV2(task0b.previousRuntimeIdentity)}\n`)
   );
   const redactedTemplateSha256 = releaseSha256V2("release:freeze:materialize <protected-artifact-root>");
-  const materializedAt = task0b.freezeCutoff;
+  const materializedAt = options.materializedAt ?? task0b.freezeCutoff;
   const receipt = {
     version: "release-freeze-materialization-receipt-v2",
     commandId: "release_freeze_materialize",
@@ -72,7 +77,7 @@ function completeArchivedOriginBundle(current = historicalManagerEvidence()) {
     protectedRootFingerprintSha256: rootFingerprint,
     candidateSha: task0b.candidateSha,
     runtimeIdentitySha256,
-    bootstrapLeaseSha256: SHA256("a"),
+    bootstrapLeaseSha256: options.leaseHash ?? SHA256("a"),
     bootstrapLeaseEpoch: 1,
     canonicalFreezeIdentity: freeze,
     canonicalFreezeIdentityUtf8Base64: freezeBytes.toString("base64"),
@@ -104,7 +109,9 @@ function completeArchivedOriginBundle(current = historicalManagerEvidence()) {
     task0bBytes,
     freezeBytes,
     preparedBytes: Buffer.from(`${canonicalReleaseJsonV2(prepared)}\n`),
-    receiptBytes
+    receiptBytes,
+    observedAt: task0b.observedAt,
+    expiresAt: task0b.expiresAt
   };
 }
 
@@ -221,7 +228,9 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER-MATERIALIZATION] accepts only the complet
     originArtifactRoot: "C:\\protected\\origin",
     originArtifactRootFingerprintSha256: launcher.originArtifactRootFingerprintSha256,
     originTask0BEvidenceSha256: releaseSha256V2(bundle.task0bBytes),
-    originReleaseFreezeIdentitySha256: releaseSha256V2(bundle.freezeBytes)
+    originReleaseFreezeIdentitySha256: releaseSha256V2(bundle.freezeBytes),
+    originPreparedFreezeMaterializationSha256: releaseSha256V2(bundle.preparedBytes),
+    originFreezeMaterializationReceiptSha256: releaseSha256V2(bundle.receiptBytes)
   };
   const input = {
     candidateSha: CANDIDATE_SHA,
@@ -243,7 +252,9 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER-MATERIALIZATION] accepts only the complet
     ...launcher,
     sourceBlobSha256: binding.sourceBlobSha256,
     originTask0BEvidenceSha256: binding.originTask0BEvidenceSha256,
-    originReleaseFreezeIdentitySha256: binding.originReleaseFreezeIdentitySha256
+    originReleaseFreezeIdentitySha256: binding.originReleaseFreezeIdentitySha256,
+    originPreparedFreezeMaterializationSha256: binding.originPreparedFreezeMaterializationSha256,
+    originFreezeMaterializationReceiptSha256: binding.originFreezeMaterializationReceiptSha256
   });
   const forgedPrepared = JSON.parse(bundle.preparedBytes.toString("utf8"));
   forgedPrepared.bootstrapLeaseSha256 = SHA256("f");
@@ -251,6 +262,23 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER-MATERIALIZATION] accepts only the complet
     ...input,
     originPreparedFreezeMaterializationBytes: Buffer.from(`${canonicalReleaseJsonV2(forgedPrepared)}\n`)
   })).toThrow(/historical|origin|materialization|bundle|binding/i);
+  const replacement = completeArchivedOriginBundle(current, { leaseHash: SHA256("e") });
+  expect(() => api.validateTask0BHistoricalManagerLineage({
+    ...input,
+    originPreparedFreezeMaterializationBytes: replacement.preparedBytes,
+    originFreezeMaterializationReceiptBytes: replacement.receiptBytes
+  })).toThrow(/historical|origin|materialization|hash|binding/i);
+  const late = completeArchivedOriginBundle(current, { materializedAt: "2026-07-18T09:15:00.001Z" });
+  expect(() => api.validateTask0BHistoricalManagerLineage({
+    ...input,
+    binding: {
+      ...binding,
+      originPreparedFreezeMaterializationSha256: releaseSha256V2(late.preparedBytes),
+      originFreezeMaterializationReceiptSha256: releaseSha256V2(late.receiptBytes)
+    },
+    originPreparedFreezeMaterializationBytes: late.preparedBytes,
+    originFreezeMaterializationReceiptBytes: late.receiptBytes
+  })).toThrow(/historical|origin|materialization|window|time|binding/i);
 });
 
 it("[REQ-38][TASK0B-HISTORICAL-MANAGER-CAPTURE] keeps the historical launcher and current action manager as separate revalidated identities", async () => {
@@ -320,7 +348,9 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER-CONFIG] accepts only an exact protected h
         originArtifactRoot: "C:\\protected\\origin",
         originArtifactRootFingerprintSha256: SHA256("3"),
         originTask0BEvidenceSha256: SHA256("4"),
-        originReleaseFreezeIdentitySha256: SHA256("5")
+        originReleaseFreezeIdentitySha256: SHA256("5"),
+        originPreparedFreezeMaterializationSha256: SHA256("6"),
+        originFreezeMaterializationReceiptSha256: SHA256("7")
       }
     },
     databaseConnectionEnvName: "TASK0B_PRODUCTION_DATABASE_URL",
@@ -355,6 +385,51 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER-CONFIG] accepts only an exact protected h
     mutate(forged);
     expect(() => api.validateTask0BPreflightConfig(forged, issuedAt)).toThrow(/historical|manager|unverified/i);
   }
+});
+
+it("[REQ-38][TASK0B-HISTORICAL-GIT] strips Git overrides and disables replacement objects", async () => {
+  const api: any = await import("../../scripts/captureTask0BPreflight");
+  const env = api.task0BSanitizedGitEnvironment({
+    PATH: "safe",
+    SystemRoot: "C:\\Windows",
+    GIT_DIR: "C:\\forged",
+    git_object_directory: "C:\\objects",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.replaceRefs",
+    GIT_CONFIG_VALUE_0: "true"
+  });
+  expect(env.PATH).toBe("safe");
+  expect(env.SystemRoot).toBe("C:\\Windows");
+  expect(env.GIT_DIR).toBeUndefined();
+  expect(env.git_object_directory).toBeUndefined();
+  expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+  expect(env.GIT_NO_REPLACE_OBJECTS).toBe("1");
+  expect(env.GIT_CONFIG_NOSYSTEM).toBe("1");
+  expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+});
+
+it("[REQ-38][TASK0B-HISTORICAL-STOP-PREVIOUS] uses frozen launcher proof but keeps current manager as action authority", async () => {
+  const api: any = await import("../../scripts/manageTask0BRuntime");
+  const task0b = historicalManagerEvidence();
+  const currentManagerSha256 = task0b.runtimeManager.executorSha256;
+  expect(api.resolveStopRuntimeIdentityManagerSha256({
+    commandId: "runtime_manager_stop_previous",
+    currentManagerSha256,
+    authorityStartEvidenceSha256: task0b.previousRuntimeIdentity.startEvidenceSha256,
+    frozenPreviousRuntimeIdentity: task0b.previousRuntimeIdentity
+  })).toBe(task0b.previousRuntimeIdentity.managerExecutableSha256);
+  expect(api.resolveStopRuntimeIdentityManagerSha256({
+    commandId: "runtime_manager_stop_candidate",
+    currentManagerSha256,
+    authorityStartEvidenceSha256: SHA256("8"),
+    frozenPreviousRuntimeIdentity: task0b.previousRuntimeIdentity
+  })).toBe(currentManagerSha256);
+  expect(() => api.resolveStopRuntimeIdentityManagerSha256({
+    commandId: "runtime_manager_stop_previous",
+    currentManagerSha256,
+    authorityStartEvidenceSha256: SHA256("9"),
+    frozenPreviousRuntimeIdentity: task0b.previousRuntimeIdentity
+  })).toThrow(/historical|previous|start|binding/i);
 });
 
 it("[REQ-38][TASK0B-HISTORICAL-MANAGER-REOPEN] reattaches only the frozen verified launcher lineage to reopened start evidence", async () => {

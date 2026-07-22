@@ -204,12 +204,15 @@ For a manager-marked previous process launched by an older verified manager,
 keep the kind `manager_owned_previous_runtime` and configure the historical
 launcher binding. It pins the protected origin root fingerprint, full archived
 Task 0B schema, exactly derived freeze, complete prepared/receipt
-materialization bundle, exact owner candidate and manager Git-blob hash,
+materialization bundle with separately pinned hashes and a timestamp inside the
+archived Task 0B window, exact owner candidate and manager Git-blob hash,
 original start-evidence hash, and live process identity. The current candidate manager
 is hashed separately and remains the only future action manager. Every Task 0B
 revalidation rereads the complete protected origin bundle, repeats Git ancestry/
-blob proof, and rechecks the live process. Never copy the old manager hash into the
-current-manager field or regenerate a start attestation.
+blob proof with replace objects and inherited Git overrides disabled, and
+rechecks the live process. A later stop uses the frozen launcher only for old-
+process proof; the current manager remains the action authority. Never copy the
+old manager hash into the current-manager field or regenerate a start attestation.
 
 No production command has run. After complete G00-G11, exact-SHA merge rerun,
 pre-GO report, explicit user GO, and fresh action authority, the exact future

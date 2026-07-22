@@ -229,6 +229,8 @@ export type Task0BManagedPreviousRuntimeIdentityV1 = {
     originArtifactRootFingerprintSha256: string;
     originTask0BEvidenceSha256: string;
     originReleaseFreezeIdentitySha256: string;
+    originPreparedFreezeMaterializationSha256: string;
+    originFreezeMaterializationReceiptSha256: string;
     source: "protected_origin_freeze_and_git_blob_read_only";
     verified: true;
   };
@@ -911,6 +913,7 @@ export function validateTask0BReleaseFreezeEvidence(
       const lineage = expectRecord(historicalLauncher, "Task0B historical runtime manager launcher");
       expectExactKeys(lineage, ["ownerCandidateSha", "executorPath", "executorSha256", "sourceBlobSha256",
         "originArtifactRootFingerprintSha256", "originTask0BEvidenceSha256", "originReleaseFreezeIdentitySha256",
+        "originPreparedFreezeMaterializationSha256", "originFreezeMaterializationReceiptSha256",
         "source", "verified"], "Task0B historical runtime manager launcher");
       if (expectSha40(lineage.ownerCandidateSha, "Task0B historical manager owner candidate") === observedCandidateSha
           || lineage.executorPath !== "scripts/manageTask0BRuntime.ts"
@@ -920,7 +923,8 @@ export function validateTask0BReleaseFreezeEvidence(
       }
       for (const field of [lineage.executorSha256, lineage.sourceBlobSha256,
         lineage.originArtifactRootFingerprintSha256, lineage.originTask0BEvidenceSha256,
-        lineage.originReleaseFreezeIdentitySha256]) {
+        lineage.originReleaseFreezeIdentitySha256, lineage.originPreparedFreezeMaterializationSha256,
+        lineage.originFreezeMaterializationReceiptSha256]) {
         expectSha256(field, "Task0B historical runtime manager launcher binding");
       }
     }

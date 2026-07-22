@@ -80,6 +80,8 @@ type HistoricalManagerLauncherBinding = {
   originArtifactRootFingerprintSha256: string;
   originTask0BEvidenceSha256: string;
   originReleaseFreezeIdentitySha256: string;
+  originPreparedFreezeMaterializationSha256: string;
+  originFreezeMaterializationReceiptSha256: string;
 };
 
 type HistoricalManagerLauncherEvidence = NonNullable<Extract<
@@ -192,7 +194,8 @@ export function validateTask0BHistoricalManagerLineage(input: {
   const binding = record(input.binding, "task0b_historical_manager_binding");
   exactKeys(binding, ["ownerCandidateSha", "executorPath", "executorSha256", "sourceBlobSha256",
     "originArtifactRoot", "originArtifactRootFingerprintSha256", "originTask0BEvidenceSha256",
-    "originReleaseFreezeIdentitySha256"], "task0b_historical_manager_binding");
+    "originReleaseFreezeIdentitySha256", "originPreparedFreezeMaterializationSha256",
+    "originFreezeMaterializationReceiptSha256"], "task0b_historical_manager_binding");
   const ownerCandidateSha = sha(binding.ownerCandidateSha, SHA40, "task0b_historical_manager_owner");
   if (!SHA40.test(input.candidateSha) || ownerCandidateSha === input.candidateSha || input.ownerIsAncestor !== true
       || binding.executorPath !== "scripts/manageTask0BRuntime.ts"
@@ -203,12 +206,17 @@ export function validateTask0BHistoricalManagerLineage(input: {
   }
   for (const value of [binding.executorSha256, binding.sourceBlobSha256,
     binding.originArtifactRootFingerprintSha256, binding.originTask0BEvidenceSha256,
-    binding.originReleaseFreezeIdentitySha256, input.startEvidenceSha256]) {
+    binding.originReleaseFreezeIdentitySha256, binding.originPreparedFreezeMaterializationSha256,
+    binding.originFreezeMaterializationReceiptSha256, input.startEvidenceSha256]) {
     if (!SHA256.test(String(value))) throw new Error("task0b_historical_manager_lineage_unverified");
   }
   if (hash(input.ownerManagerSourceBytes) !== binding.sourceBlobSha256
       || hash(input.originTask0BEvidenceBytes) !== binding.originTask0BEvidenceSha256
-      || hash(input.originReleaseFreezeIdentityBytes) !== binding.originReleaseFreezeIdentitySha256) {
+      || hash(input.originReleaseFreezeIdentityBytes) !== binding.originReleaseFreezeIdentitySha256
+      || hash(input.originPreparedFreezeMaterializationBytes)
+        !== binding.originPreparedFreezeMaterializationSha256
+      || hash(input.originFreezeMaterializationReceiptBytes)
+        !== binding.originFreezeMaterializationReceiptSha256) {
     throw new Error("task0b_historical_manager_origin_hash_mismatch");
   }
   const parseCanonical = (bytes: Uint8Array, label: string): Record<string, unknown> => {
@@ -268,6 +276,11 @@ export function validateTask0BHistoricalManagerLineage(input: {
   );
   const embeddedFreezeBytes = Buffer.from(prepared.canonicalFreezeIdentityUtf8Base64, "base64");
   const embeddedReceiptBytes = Buffer.from(prepared.canonicalMaterializationReceiptUtf8Base64, "base64");
+  const materializedAtMs = Date.parse(receipt.materializedAt);
+  if (!Number.isFinite(materializedAtMs) || materializedAtMs < Date.parse(archivedOrigin.observedAt)
+      || materializedAtMs > Date.parse(archivedOrigin.expiresAt)) {
+    throw new Error("task0b_historical_manager_origin_materialization_window_mismatch");
+  }
   if (prepared.commandId !== "release_freeze_materialize" || receipt.commandId !== "release_freeze_materialize"
       || prepared.redactedTemplateSha256 !== materializerTemplateSha256
       || receipt.redactedTemplateSha256 !== materializerTemplateSha256
@@ -307,6 +320,8 @@ export function validateTask0BHistoricalManagerLineage(input: {
     originArtifactRootFingerprintSha256: binding.originArtifactRootFingerprintSha256 as string,
     originTask0BEvidenceSha256: binding.originTask0BEvidenceSha256 as string,
     originReleaseFreezeIdentitySha256: binding.originReleaseFreezeIdentitySha256 as string,
+    originPreparedFreezeMaterializationSha256: binding.originPreparedFreezeMaterializationSha256 as string,
+    originFreezeMaterializationReceiptSha256: binding.originFreezeMaterializationReceiptSha256 as string,
     source: "protected_origin_freeze_and_git_blob_read_only",
     verified: true
   };
@@ -461,11 +476,14 @@ function assertPreviousRuntimeIdentityConfig(
       const lineage = record(historicalLauncher, "task0b_config_historical_manager_launcher");
       exactKeys(lineage, ["ownerCandidateSha", "executorPath", "executorSha256", "sourceBlobSha256",
         "originArtifactRoot", "originArtifactRootFingerprintSha256", "originTask0BEvidenceSha256",
-        "originReleaseFreezeIdentitySha256"], "task0b_config_historical_manager_launcher");
+        "originReleaseFreezeIdentitySha256", "originPreparedFreezeMaterializationSha256",
+        "originFreezeMaterializationReceiptSha256"], "task0b_config_historical_manager_launcher");
       if (!SHA40.test(String(lineage.ownerCandidateSha)) || lineage.executorPath !== "scripts/manageTask0BRuntime.ts"
           || !isAbsolute(string(lineage.originArtifactRoot, "task0b_config_historical_manager_origin_root"))
           || [lineage.executorSha256, lineage.sourceBlobSha256, lineage.originArtifactRootFingerprintSha256,
-            lineage.originTask0BEvidenceSha256, lineage.originReleaseFreezeIdentitySha256]
+            lineage.originTask0BEvidenceSha256, lineage.originReleaseFreezeIdentitySha256,
+            lineage.originPreparedFreezeMaterializationSha256,
+            lineage.originFreezeMaterializationReceiptSha256]
             .some((item) => !SHA256.test(String(item)))) {
         throw new Error("task0b_config_historical_manager_launcher_unverified");
       }
@@ -784,12 +802,13 @@ function run(
   args: readonly string[],
   cwd?: string,
   extraEnv?: NodeJS.ProcessEnv,
-  timeoutMs = 10_000
+  timeoutMs = 10_000,
+  exactEnvironment = false
 ): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(executable, [...args], {
       cwd,
-      env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+      env: extraEnv ? (exactEnvironment ? extraEnv : { ...process.env, ...extraEnv }) : process.env,
       encoding: "utf8",
       windowsHide: true,
       timeout: timeoutMs
@@ -800,11 +819,17 @@ function run(
   });
 }
 
-function runBytes(executable: string, args: readonly string[], cwd?: string, timeoutMs = 10_000): Promise<Buffer> {
+function runBytes(
+  executable: string,
+  args: readonly string[],
+  cwd?: string,
+  timeoutMs = 10_000,
+  exactEnvironment?: NodeJS.ProcessEnv
+): Promise<Buffer> {
   return new Promise((resolvePromise, reject) => {
     execFile(executable, [...args], {
       cwd,
-      env: process.env,
+      env: exactEnvironment ?? process.env,
       encoding: "buffer",
       windowsHide: true,
       timeout: timeoutMs,
@@ -814,6 +839,29 @@ function runBytes(executable: string, args: readonly string[], cwd?: string, tim
       else resolvePromise(stdout);
     });
   });
+}
+
+export function task0BSanitizedGitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const sanitized = Object.fromEntries(Object.entries(source)
+    .filter(([key, value]) => value !== undefined && !/^GIT_/iu.test(key) && !/^GCM_/iu.test(key)));
+  return {
+    ...sanitized,
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "never"
+  };
+}
+
+function runGit(args: readonly string[], cwd?: string, timeoutMs = 10_000): Promise<string> {
+  return run("git", ["--no-replace-objects", ...args], cwd,
+    task0BSanitizedGitEnvironment(), timeoutMs, true);
+}
+
+function runGitBytes(args: readonly string[], cwd?: string, timeoutMs = 10_000): Promise<Buffer> {
+  return runBytes("git", ["--no-replace-objects", ...args], cwd, timeoutMs,
+    task0BSanitizedGitEnvironment());
 }
 
 export type Task0BBoundedProbeOptions = Readonly<{
@@ -1014,16 +1062,16 @@ async function readFrozenExternalConfig(
 async function observeRollbackWorktree(config: Task0BPreflightConfigV1): Promise<Task0BReleaseFreezeEvidenceV1["rollbackWorktree"]> {
   const worktree = await inspectRealDirectory(config.rollbackWorktreePath, false);
   const [headSha, topLevel, worktreeCommonDir, repositoryCommonDir] = await Promise.all([
-    run("git", ["rev-parse", "HEAD"], worktree),
-    run("git", ["rev-parse", "--show-toplevel"], worktree),
-    run("git", ["rev-parse", "--git-common-dir"], worktree),
-    run("git", ["rev-parse", "--git-common-dir"], repositoryRoot)
+    runGit(["rev-parse", "HEAD"], worktree),
+    runGit(["rev-parse", "--show-toplevel"], worktree),
+    runGit(["rev-parse", "--git-common-dir"], worktree),
+    runGit(["rev-parse", "--git-common-dir"], repositoryRoot)
   ]);
-  const status = await run("git", ["status", "--porcelain=v1", "--untracked-files=all"], worktree);
+  const status = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], worktree);
   const physicalTopLevel = resolve(await realpath(resolve(topLevel)));
   const physicalWorktreeCommon = resolve(await realpath(resolve(worktree, worktreeCommonDir)));
   const physicalRepositoryCommon = resolve(await realpath(resolve(repositoryRoot, repositoryCommonDir)));
-  await run("git", ["merge-base", "--is-ancestor", config.previousRuntimeSha, config.candidateSha], worktree);
+  await runGit(["merge-base", "--is-ancestor", config.previousRuntimeSha, config.candidateSha], worktree);
   if (!sameCanonicalPath(physicalTopLevel, worktree)
       || !sameCanonicalPath(physicalWorktreeCommon, physicalRepositoryCommon)
       || headSha !== config.previousRuntimeSha || status !== "") throw new Error("task0b_rollback_worktree_unverified");
@@ -1044,9 +1092,9 @@ async function observeCandidateState(): Promise<{
   source: "git_direct_read";
 }> {
   const [shaValue, status, topLevel] = await Promise.all([
-    run("git", ["rev-parse", "HEAD"], repositoryRoot),
-    run("git", ["status", "--porcelain=v1", "--untracked-files=all"], repositoryRoot),
-    run("git", ["rev-parse", "--show-toplevel"], repositoryRoot)
+    runGit(["rev-parse", "HEAD"], repositoryRoot),
+    runGit(["status", "--porcelain=v1", "--untracked-files=all"], repositoryRoot),
+    runGit(["rev-parse", "--show-toplevel"], repositoryRoot)
   ]);
   const physicalTopLevel = resolve(await realpath(resolve(topLevel)));
   if (!SHA40.test(shaValue) || !sameCanonicalPath(physicalTopLevel, repositoryRoot)) {
@@ -1268,9 +1316,9 @@ export async function observeWindowsRuntimeProcess(
   if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_previous_runtime_entrypoint_unverified");
   const worktree = dirname(dirname(physicalEntrypoint));
   const [gitTopLevel, gitHead, gitStatus] = await Promise.all([
-    run("git", ["rev-parse", "--show-toplevel"], worktree, undefined, task0BProbeTimeout(bounded)),
-    run("git", ["rev-parse", "HEAD"], worktree, undefined, task0BProbeTimeout(bounded)),
-    run("git", ["status", "--porcelain"], worktree, undefined, task0BProbeTimeout(bounded))
+    runGit(["rev-parse", "--show-toplevel"], worktree, task0BProbeTimeout(bounded)),
+    runGit(["rev-parse", "HEAD"], worktree, task0BProbeTimeout(bounded)),
+    runGit(["status", "--porcelain"], worktree, task0BProbeTimeout(bounded))
   ]);
   const physicalTopLevel = resolve(await realpath(gitTopLevel));
   if (!sameCanonicalPath(physicalTopLevel, worktree) || gitHead !== runtimeSha || gitStatus !== "") {
@@ -1316,9 +1364,9 @@ export async function observeTask0BRuntimeTopologySnapshotV2(
     if (!sameCanonicalPath(entrypoint, physicalEntrypoint)) throw new Error("task0b_runtime_topology_entrypoint_invalid");
     const worktree = dirname(dirname(physicalEntrypoint));
     const [gitTopLevel, gitHead, gitStatus] = await Promise.all([
-      run("git", ["rev-parse", "--show-toplevel"], worktree, undefined, task0BProbeTimeout(bounded)),
-      run("git", ["rev-parse", "HEAD"], worktree, undefined, task0BProbeTimeout(bounded)),
-      run("git", ["status", "--porcelain"], worktree, undefined, task0BProbeTimeout(bounded))
+      runGit(["rev-parse", "--show-toplevel"], worktree, task0BProbeTimeout(bounded)),
+      runGit(["rev-parse", "HEAD"], worktree, task0BProbeTimeout(bounded)),
+      runGit(["status", "--porcelain"], worktree, task0BProbeTimeout(bounded))
     ]);
     const physicalTopLevel = resolve(await realpath(gitTopLevel));
     if (!sameCanonicalPath(physicalTopLevel, worktree) || gitHead !== parsed.runtimeSha || gitStatus !== "") {
@@ -1413,9 +1461,9 @@ async function observeLegacyUnmanagedRuntime(
   }
   const worktree = dirname(dirname(physicalEntrypoint));
   const [gitTopLevel, gitHead, gitStatus] = await Promise.all([
-    run("git", ["rev-parse", "--show-toplevel"], worktree, undefined, 10_000),
-    run("git", ["rev-parse", "HEAD"], worktree, undefined, 10_000),
-    run("git", ["status", "--porcelain"], worktree, undefined, 10_000)
+    runGit(["rev-parse", "--show-toplevel"], worktree, 10_000),
+    runGit(["rev-parse", "HEAD"], worktree, 10_000),
+    runGit(["status", "--porcelain"], worktree, 10_000)
   ]);
   const physicalTopLevel = resolve(await realpath(gitTopLevel));
   const processBinding = {
@@ -1568,19 +1616,18 @@ async function observeCurrentRuntime(config: Task0BPreflightConfigV1): Promise<{
       readProtectedRegularFile(originRoot, "release-freeze-identity-v2.json", MAX_CONFIG_BYTES),
       readProtectedRegularFile(originRoot, "release-freeze-materialization-prepared-v2.json", MAX_CONFIG_BYTES),
       readProtectedRegularFile(originRoot, "release-freeze-materialization-receipt-v2.json", MAX_CONFIG_BYTES),
-      run("git", ["rev-parse", "--verify", `${historicalLauncher.ownerCandidateSha}^{commit}`], repositoryRoot)
+      runGit(["rev-parse", "--verify", `${historicalLauncher.ownerCandidateSha}^{commit}`], repositoryRoot)
     ]);
     let ownerIsAncestor = true;
     try {
-      await run("git", ["merge-base", "--is-ancestor", historicalLauncher.ownerCandidateSha, config.candidateSha], repositoryRoot);
+      await runGit(["merge-base", "--is-ancestor", historicalLauncher.ownerCandidateSha, config.candidateSha], repositoryRoot);
     } catch {
       ownerIsAncestor = false;
     }
     if (resolvedOwnerSha !== historicalLauncher.ownerCandidateSha) {
       throw new Error("task0b_historical_manager_owner_commit_unverified");
     }
-    const ownerManagerSourceBytes = await runBytes(
-      "git",
+    const ownerManagerSourceBytes = await runGitBytes(
       ["show", `${historicalLauncher.ownerCandidateSha}:${historicalLauncher.executorPath}`],
       repositoryRoot
     );

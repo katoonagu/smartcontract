@@ -39,12 +39,15 @@ candidate manager, it remains `manager_owned_previous_runtime`. Configure its
 historical launcher separately: exact protected origin root fingerprint,
 origin `task0b-release-freeze.json` and `release-freeze-identity-v2.json`
 hashes, full archived schemas and exact derivation, the complete canonical
-prepared/receipt materialization bundle, owner candidate, repository manager-
+prepared/receipt materialization bundle with separately pinned hashes and a
+timestamp inside the archived Task 0B window, owner candidate, repository manager-
 blob hash, start-evidence hash and live PID identity. The clean candidate's guarded manager has its own current
 executor hash. Capture and every revalidation reread the complete protected
-origin bundle, repeat owner→candidate ancestry and Git-blob proof, and reproduce the
-live process. Never substitute one manager hash for the other, recreate start
-evidence, or use the historical launcher for a future action.
+origin bundle, repeat owner→candidate ancestry and Git-blob proof with replace
+objects and inherited Git overrides disabled, and reproduce the live process.
+A later stop uses the frozen launcher only for old-process proof; the current
+manager remains the action authority. Never substitute one manager hash for the
+other, recreate start evidence, or use the historical launcher for action authority.
 
 Production database, runtime, and Telegram remain unchanged until all of the
 following are true: Task 9 is authorized and completed, `G00` through `G11`

@@ -117,7 +117,9 @@ export function bindTask0BHistoricalManagerIdentity(
       || historicalLauncher.executorSha256 !== reopened.managerExecutableSha256
       || [historicalLauncher.executorSha256, historicalLauncher.sourceBlobSha256,
         historicalLauncher.originArtifactRootFingerprintSha256, historicalLauncher.originTask0BEvidenceSha256,
-        historicalLauncher.originReleaseFreezeIdentitySha256].some((value) => !sha256.test(value))) {
+        historicalLauncher.originReleaseFreezeIdentitySha256,
+        historicalLauncher.originPreparedFreezeMaterializationSha256,
+        historicalLauncher.originFreezeMaterializationReceiptSha256].some((value) => !sha256.test(value))) {
     throw new Error("task0b_historical_manager_launcher_binding_invalid");
   }
   return { ...reopened, historicalLauncher };

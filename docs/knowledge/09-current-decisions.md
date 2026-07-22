@@ -261,11 +261,15 @@ of these decisions, update this file in the same work.
   `manager_owned_previous_runtime`, but Task 0B must not pretend that the old
   launcher bytes equal the current action-manager bytes. Its historical
   launcher is bound separately to the exact protected origin Task 0B, derived
-  freeze, complete prepared/receipt materialization bundle, owner candidate,
-  repository blob, start evidence, PID and live process;
+  freeze, complete prepared/receipt materialization bundle with separately
+  pinned hashes and a timestamp inside the archived Task 0B window, owner
+  candidate, repository blob, start evidence, PID and live process;
   the current guarded manager is independently hashed from the clean candidate.
-  Capture and every revalidation reproduce both lineages. Missing origin bytes,
-  non-ancestry, a changed process, or either hash mismatch fails closed.
+  Git proof disables replace objects and inherited Git overrides. Capture and
+  every revalidation reproduce both lineages. A later stop uses the frozen
+  launcher only for old-process proof while action authority remains current-
+  manager-bound. Missing origin bytes, non-ancestry, a changed process, or any
+  hash mismatch fails closed.
 - Production remains unchanged until Task 9, complete `G00`-`G11`, merge to
   `master`, producer/verifier rerun for the merge SHA, and explicit release GO.
   `schema:verify` remains read-only; only `schema:release:sequence` owns

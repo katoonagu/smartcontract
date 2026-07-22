@@ -2778,10 +2778,14 @@ the exact manager attestation. If a later exact candidate security update
 changes the manager bytes, the process remains manager-owned only through a
 separate historical-launcher lineage: exact protected origin-root fingerprint,
 full archived Task 0B schema, exact derived freeze and complete canonical
-prepared/receipt materialization bundle, owner candidate, repository manager-
+prepared/receipt materialization bundle with separately pinned hashes and a
+timestamp inside the archived Task 0B window, owner candidate, repository manager-
 blob hash, original start evidence and live PID identity. The current guarded action
-manager is independently hashed. Capture and every revalidation reproduce both
-lineages, owner ancestry/blob content and the live process; any missing origin,
+manager is independently hashed. Git proof disables replace objects and
+inherited Git overrides. Capture and every revalidation reproduce both lineages,
+owner ancestry/blob content and the live process; a later stop uses the frozen
+launcher only for old-process proof while action authority remains current-
+manager-bound; any missing origin,
 non-ancestry or mismatch fails closed, and the historical launcher is never a
 future action manager. A process without that attestation may use only
 `legacy_unmanaged_previous_runtime`: one exact PID/start time, executable and

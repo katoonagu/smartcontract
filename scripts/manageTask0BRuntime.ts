@@ -156,6 +156,26 @@ function hash(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function resolveStopRuntimeIdentityManagerSha256(input: Readonly<{
+  commandId: "runtime_manager_stop_candidate" | "runtime_manager_stop_previous";
+  currentManagerSha256: string;
+  authorityStartEvidenceSha256: string;
+  frozenPreviousRuntimeIdentity: Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"];
+}>): string {
+  if (!SHA256.test(input.currentManagerSha256) || !SHA256.test(input.authorityStartEvidenceSha256)) {
+    throw new Error("task0b_runtime_stop_manager_binding_invalid");
+  }
+  if (input.commandId === "runtime_manager_stop_candidate") return input.currentManagerSha256;
+  assertTask0BPreviousRuntimeActionAuthorized(input.frozenPreviousRuntimeIdentity);
+  const previous = input.frozenPreviousRuntimeIdentity;
+  if (previous.kind !== "manager_owned_previous_runtime"
+      || previous.startEvidenceSha256 !== input.authorityStartEvidenceSha256
+      || !SHA256.test(previous.managerExecutableSha256)) {
+    throw new Error("task0b_runtime_historical_previous_start_binding_invalid");
+  }
+  return previous.managerExecutableSha256;
+}
+
 function record(value: unknown, code: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(code);
   return value as Record<string, unknown>;
@@ -980,6 +1000,7 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
   authority: Task0BProductionRuntimeAuthorityV1;
   authorityBytes: Buffer;
   task0bBytes: Buffer;
+  task0b: ReturnType<typeof validateTask0BReleaseFreezeEvidence>;
   revalidateBeforeConsumption(): Promise<void>;
 }> {
   const evaluatedAt = new Date().toISOString();
@@ -1050,6 +1071,7 @@ async function loadAndVerifyAuthority(artifactRoot: string, filename: string): P
     authority,
     authorityBytes,
     task0bBytes,
+    task0b,
     async revalidateBeforeConsumption() {
       const freshNow = new Date().toISOString();
       validateTask0BProductionGoEvidence(
@@ -1204,7 +1226,8 @@ async function startRuntime(
 
 async function prepareStopRuntime(
   artifactRoot: string,
-  authority: Task0BProductionRuntimeAuthorityV1
+  authority: Task0BProductionRuntimeAuthorityV1,
+  task0b: ReturnType<typeof validateTask0BReleaseFreezeEvidence>
 ): Promise<PreparedStopRuntime> {
   if (!authority.startEvidencePath || !authority.startEvidenceSha256) throw new Error("task0b_runtime_stop_evidence_missing");
   const evidenceBytes = await readProtectedRegularFile(artifactRoot, authority.startEvidencePath, MAX_ARTIFACT_BYTES);
@@ -1266,7 +1289,12 @@ async function prepareStopRuntime(
     throw new Error("task0b_runtime_stop_identity_invalid");
   }
   const observation = await observeWindowsRuntimeProcess(processId);
-  const managerExecutableSha256 = hash(await readFile(MANAGER_PATH));
+  const managerExecutableSha256 = resolveStopRuntimeIdentityManagerSha256({
+    commandId: authority.commandId as "runtime_manager_stop_candidate" | "runtime_manager_stop_previous",
+    currentManagerSha256: hash(await readFile(MANAGER_PATH)),
+    authorityStartEvidenceSha256: authority.startEvidenceSha256,
+    frozenPreviousRuntimeIdentity: task0b.previousRuntimeIdentity
+  });
   if (reconciledIdentity === null) {
     validateTask0BPreviousRuntimeIdentity(evidence, observation, {
       sha: authority.targetRuntimeSha,
@@ -1368,6 +1396,7 @@ async function main(): Promise<void> {
   const {
     authority,
     authorityBytes,
+    task0b,
     revalidateBeforeConsumption
   } = await loadAndVerifyAuthority(artifactRoot, authorityFilename);
   const commandMatches = action === "start"
@@ -1410,7 +1439,7 @@ async function main(): Promise<void> {
     : await executeTask0BAuthorizedAction({
       async prepare() {
         assertTask0BProductionTelegramBinding(authority, process.env.BOT_TOKEN);
-        return prepareStopRuntime(artifactRoot, authority);
+        return prepareStopRuntime(artifactRoot, authority, task0b);
       },
       revalidateBeforeConsumption,
       consumeAuthority,
