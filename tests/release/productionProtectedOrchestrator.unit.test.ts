@@ -90,7 +90,12 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
   };
   const adapters: ProtectedProductionOperationAdaptersV2 = {
     now: vi.fn(() => STARTED),
-    async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+    async loadReleaseContext() {
+      return {
+        releaseFreezeIdentitySha256: "0".repeat(64),
+        previousRuntimeKind: "manager_owned_previous_runtime"
+      };
+    },
     async validateStep(input) { events.push(`validate:${input.stepId}`); return { inputSha256: input.inputSha256,
       outputSha256: "b".repeat(64), observedStateSha256: "c".repeat(64),
       verifiedChecks: TERMINAL_CHECKS[input.stepId as keyof typeof TERMINAL_CHECKS] }; },
@@ -103,6 +108,25 @@ function harness(kind: "rollout" | "canary" | "rollback" | "recovery") {
 }
 
 describe("protected production orchestrator", () => {
+  it("rejects legacy unmanaged runtime before claiming production authority", async () => {
+    const { events, store, adapters } = harness("rollout");
+    const legacyAdapters = {
+      ...adapters,
+      async loadReleaseContext() {
+        return {
+          releaseFreezeIdentitySha256: "0".repeat(64),
+          previousRuntimeKind: "legacy_unmanaged_previous_runtime"
+        };
+      }
+    } as any;
+
+    await expect(executeProtectedProductionOperationV2({
+      artifactRoot: mkdtempSync(join(tmpdir(), "plan5-protected-legacy-runtime-")),
+      operationKind: "rollout"
+    }, { store, adapters: legacyAdapters })).rejects.toThrow(/legacy_unmanaged_previous_runtime_action_forbidden/);
+    expect(events).not.toContain("begin");
+  });
+
   it("continues a normal takeover in the same owner process instead of stranding its lease", async () => {
     const root = mkdtempSync(join(tmpdir(), "plan5-protected-takeover-resume-"));
     const execute = vi.fn(async () => ({ operationId: "operation", leaseEpoch: 2,

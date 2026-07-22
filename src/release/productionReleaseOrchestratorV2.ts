@@ -123,7 +123,10 @@ export type ProtectedRollbackWindowV2 =
 
 export type ProtectedProductionOperationAdaptersV2 = Readonly<{
   now(): string;
-  loadReleaseContext(artifactRoot: string): Promise<{ releaseFreezeIdentitySha256: string }>;
+  loadReleaseContext(artifactRoot: string): Promise<{
+    releaseFreezeIdentitySha256: string;
+    previousRuntimeKind: "manager_owned_previous_runtime" | "legacy_unmanaged_previous_runtime";
+  }>;
   validateStep(input: ProtectedProductionLeafInputV2): Promise<ProtectedProductionLeafResultV2>;
   prepareEffect(input: ProtectedProductionEffectPreparationInputV2): Promise<string>;
   executeEffect(input: ProtectedProductionEffectExecutionInputV2): Promise<ProtectedProductionLeafResultV2>;
@@ -552,6 +555,9 @@ export async function executeProtectedProductionOperationV2(
         .map((record) => record.receipt.stepId) };
   }
   const releaseContext = await adapters.loadReleaseContext(input.artifactRoot);
+  if (releaseContext.previousRuntimeKind !== "manager_owned_previous_runtime") {
+    throw new Error("legacy_unmanaged_previous_runtime_action_forbidden");
+  }
   let recoveryContext: Awaited<ReturnType<NonNullable<typeof adapters.loadRecoveryContext>>> | null = null;
   let rollbackContext: Awaited<ReturnType<NonNullable<typeof adapters.resolveRollbackContext>>> | null = null;
   if (input.operationKind === "recovery") {

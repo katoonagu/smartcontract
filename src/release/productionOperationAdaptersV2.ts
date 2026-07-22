@@ -3596,7 +3596,11 @@ export function createProtectedProductionOperationAdaptersV2(artifactRootInput: 
     async loadReleaseContext(root) {
       if (root !== artifactRoot) throw new Error("production_artifact_root_changed");
       const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
-      return { releaseFreezeIdentitySha256: freeze.sha256 };
+      const task0b = loadFrozenTask0B(root);
+      return {
+        releaseFreezeIdentitySha256: freeze.sha256,
+        previousRuntimeKind: task0b.previousRuntimeIdentity.kind
+      };
     },
     async validateStep(input) {
       if (input.artifactRoot !== artifactRoot) throw new Error("production_artifact_root_changed");

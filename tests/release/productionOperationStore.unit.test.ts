@@ -510,7 +510,8 @@ it("resumes a real operation after an external receipt was durably written and s
   const adapters = {
     now: () => T0,
     async loadReleaseContext() { return { releaseFreezeIdentitySha256:
-      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
+      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))),
+      previousRuntimeKind: "manager_owned_previous_runtime" as const }; },
     async validateStep(input: any) {
       validations.push(input.stepId);
       return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
@@ -581,7 +582,8 @@ it.each([
     const adapters = {
       now: () => T0,
       async loadReleaseContext() { return { releaseFreezeIdentitySha256:
-        releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
+        releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))),
+        previousRuntimeKind: "manager_owned_previous_runtime" as const }; },
       async validateStep(input: any) {
         validations.push(input.stepId);
         return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
@@ -756,7 +758,8 @@ it("replays a dead-owner recovery settlement from operation-qualified receipts b
   const adapters = {
     now: () => recoveryAt,
     async loadReleaseContext() { return { releaseFreezeIdentitySha256:
-      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
+      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))),
+      previousRuntimeKind: "manager_owned_previous_runtime" as const }; },
     async loadRecoveryContext() { return recoveryContext; },
     async validateStep(input: any) {
       return { inputSha256: input.inputSha256, outputSha256: "1".repeat(64),
@@ -915,7 +918,8 @@ it.each([
   const adapters = {
     now: () => T0,
     async loadReleaseContext() { return { releaseFreezeIdentitySha256:
-      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))) }; },
+      releaseSha256V2(readFileSync(join(root, "release-freeze-identity-v2.json"))),
+      previousRuntimeKind: "manager_owned_previous_runtime" as const }; },
     async validateStep(input: any) {
       validations.push(input.stepId);
       if (input.stepId === "verify_schema") throw new Error("schema verification failed");

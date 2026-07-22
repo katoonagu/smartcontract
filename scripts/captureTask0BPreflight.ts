@@ -1173,6 +1173,20 @@ export function parseTask0BLegacyEntrypoint(commandLine: string): string {
   return entrypoint;
 }
 
+export async function fingerprintTask0BLegacyExecutablePath(value: unknown): Promise<string> {
+  if (typeof value !== "string" || value.length === 0 || !isAbsolute(value)) {
+    throw new Error("task0b_legacy_runtime_executable_unverified");
+  }
+  const executable = resolve(value);
+  let physicalExecutable: string;
+  try { physicalExecutable = resolve(await realpath(executable)); }
+  catch { throw new Error("task0b_legacy_runtime_executable_unverified"); }
+  if (!sameCanonicalPath(executable, physicalExecutable)) {
+    throw new Error("task0b_legacy_runtime_executable_unverified");
+  }
+  return hash(canonicalPathKey(physicalExecutable));
+}
+
 async function observeLegacyUnmanagedRuntime(
   config: Task0BPreflightConfigV1,
   binding: Extract<Task0BPreflightConfigV1["previousRuntimeIdentity"], { kind: "legacy_unmanaged_previous_runtime" }>
@@ -1208,7 +1222,7 @@ async function observeLegacyUnmanagedRuntime(
     processId: Number(observed.processId),
     processStartedAt: startedAt.toISOString(),
     commandLineSha256: hash(observed.commandLine),
-    executablePathSha256: hash(observed.executablePath.toLowerCase()),
+    executablePathSha256: await fingerprintTask0BLegacyExecutablePath(observed.executablePath),
     workingDirectoryFingerprintSha256: hash(canonicalPathKey(physicalTopLevel)),
     entrypointPathFingerprintSha256: hash(canonicalPathKey(physicalEntrypoint))
   };

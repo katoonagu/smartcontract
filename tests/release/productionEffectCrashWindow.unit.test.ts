@@ -117,7 +117,9 @@ function crashHarness(input: {
   };
   const adapters: ProtectedProductionOperationAdaptersV2 = {
     now: vi.fn(() => NOW),
-    async loadReleaseContext() { return { releaseFreezeIdentitySha256: "0".repeat(64) }; },
+    async loadReleaseContext() {
+      return { releaseFreezeIdentitySha256: "0".repeat(64), previousRuntimeKind: "manager_owned_previous_runtime" };
+    },
     async validateStep(leaf) {
       events.push(`validate:${leaf.stepId}`);
       return { inputSha256: leaf.inputSha256, outputSha256: "b".repeat(64),
@@ -234,7 +236,9 @@ describe("production effect crash windows", () => {
     } as any;
     const adapters = {
       now: () => NOW,
-      async loadReleaseContext() { return { releaseFreezeIdentitySha256: SHA256 }; },
+      async loadReleaseContext() {
+        return { releaseFreezeIdentitySha256: SHA256, previousRuntimeKind: "manager_owned_previous_runtime" };
+      },
       async resolveRollbackContext(input: any) {
         events.push(`resolve:${input.operationId}`);
         throw new Error("stop_after_bound_topology_query");
@@ -256,7 +260,9 @@ describe("production effect crash windows", () => {
       assertOwnedAndWithinBounds() { throw new Error("production_operation_authority_bound_reached"); }
     } as any;
     const adapters = { now: () => NOW,
-      async loadReleaseContext() { return { releaseFreezeIdentitySha256: SHA256 }; },
+      async loadReleaseContext() {
+        return { releaseFreezeIdentitySha256: SHA256, previousRuntimeKind: "manager_owned_previous_runtime" };
+      },
       resolveRollbackContext: resolver } as any;
     await expect(executeProtectedProductionOperationV2({ artifactRoot: "C:/protected", operationKind: "rollback" },
       { store, adapters })).rejects.toThrow(/claim_unavailable|bound_reached/);

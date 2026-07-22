@@ -843,6 +843,20 @@ it("[REQ-38][TASK0B-LEGACY-RUNTIME] accepts only a fully bound read-only unmanag
   expect(producer.parseTask0BLegacyEntrypoint(
     '"C:\\Program Files\\nodejs\\node.exe" --import tsx "C:\\runtime\\src\\index.ts"'
   )).toBe("C:\\runtime\\src\\index.ts");
+  expect(typeof producer.fingerprintTask0BLegacyExecutablePath).toBe("function");
+  for (const executablePath of [null, "", "node.exe"]) {
+    await expect(producer.fingerprintTask0BLegacyExecutablePath(executablePath))
+      .rejects.toThrow(/legacy.*executable/i);
+  }
+  const executableRoot = await mkdtemp(join(tmpdir(), "task0b-legacy-executable-"));
+  try {
+    const executablePath = join(executableRoot, "node.exe");
+    await writeFile(executablePath, "test-only executable identity", "utf8");
+    await expect(producer.fingerprintTask0BLegacyExecutablePath(executablePath))
+      .resolves.toMatch(/^[0-9a-f]{64}$/);
+  } finally {
+    await rm(executableRoot, { recursive: true, force: true });
+  }
   for (const commandLine of [
     'node C:\\runtime\\src\\index.ts --task0b-manager-producer=task0b_repo_runtime_manager_v1',
     'node C:\\one\\src\\index.ts C:\\two\\src\\index.ts',
