@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import {
+  PRE_RELEASE_GATE_EVIDENCE_POLICY_V2,
   deriveTask0BProductionGateBindingV2,
   validateGateEvidenceBytesV2,
   validateProductionNestedGateEvidenceV2
@@ -74,6 +75,26 @@ function expected() {
     productionDatabaseIdentityFingerprintSha256: PRODUCTION_DATABASE_IDENTITY_SHA256
   };
 }
+
+it("binds every focused suite report and sidecar to exactly one pre-release gate", () => {
+  expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G01_TRACE.primaryPaths).toEqual([
+    "acceptance-trace.json",
+    "task8b-red-evidence-v1.json",
+    "suite-plan4.vitest.json",
+    "suite-plan4.evidence.json"
+  ]);
+  expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G01_TRACE.requiredKinds).toEqual([
+    "acceptance_trace", "task8b_red", "suite_report", "suite_evidence"
+  ]);
+  expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G06_FULL.primaryPaths).toEqual([
+    "full-regression-evidence.json",
+    "suite-plan5.vitest.json",
+    "suite-plan5.evidence.json"
+  ]);
+  expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G06_FULL.requiredKinds).toEqual([
+    "full_regression", "suite_report", "suite_evidence"
+  ]);
+});
 
 it("derives Task0B production binding only from canonical bytes and the approved database identity", () => {
   expect(deriveTask0BProductionGateBindingV2(

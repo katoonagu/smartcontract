@@ -80,7 +80,12 @@ type CaptureApi = {
   plan3FrozenRoleCleanupStatements(): readonly string[];
   redAcceptanceTestNamePattern(): string;
   buildPlan3RedContainerName(entropyHex: string): string;
-  cleanupPlan3RedContainer(containerName: string, dependencies: {
+  productModuleBlobAtCommit(commitSha: string, productModulePath: string): Promise<string | null>;
+  cleanupPlan3RedContainer(identity: {
+    containerId: string;
+    containerName: string;
+    invocationLabel: string;
+  }, dependencies: {
     docker(args: readonly string[]): Promise<string>;
   }): Promise<void>;
   buildCaptureRedSpec(input: {
@@ -127,6 +132,7 @@ async function loadCaptureApi(): Promise<CaptureApi> {
       || typeof loaded.plan3FrozenRoleCleanupStatements !== "function"
       || typeof loaded.redAcceptanceTestNamePattern !== "function"
       || typeof loaded.buildPlan3RedContainerName !== "function"
+      || typeof loaded.productModuleBlobAtCommit !== "function"
       || typeof loaded.cleanupPlan3RedContainer !== "function"
       || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
@@ -969,21 +975,51 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   const containerName = api.buildPlan3RedContainerName("ab".repeat(16));
   expect(containerName).toBe(`plan5-red-plan3-${"ab".repeat(16)}`);
   expect(() => api.buildPlan3RedContainerName("predictable")).toThrow(/entropy/i);
+  await expect(api.productModuleBlobAtCommit(PLAN2_OWNER_SHA, "src/risk/usddPsmExposure"))
+    .resolves.toBe("src/risk/usddPsmExposure.ts");
+  await expect(api.productModuleBlobAtCommit(PLAN2_FROZEN_TEST_SHA, "src/risk/usddPsmExposure"))
+    .resolves.toBeNull();
+  const containerIdentity = {
+    containerId: "c".repeat(64),
+    containerName,
+    invocationLabel: `plan5-red-plan3-${"cd".repeat(16)}`
+  };
   const cleanupCalls: string[][] = [];
-  await expect(api.cleanupPlan3RedContainer(containerName, {
+  let cleanupProbe = 0;
+  await expect(api.cleanupPlan3RedContainer(containerIdentity, {
     docker: async (args) => {
       cleanupCalls.push([...args]);
-      if (args[0] === "rm") throw new Error("No such container");
+      if (args[0] === "ps") return cleanupProbe++ === 0 ? containerIdentity.containerId : "";
+      if (args[0] === "inspect") return JSON.stringify({
+        Id: containerIdentity.containerId,
+        Name: `/${containerName}`,
+        Image: "sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37",
+        Config: { Labels: { "plan5.release.invocation": containerIdentity.invocationLabel } }
+      });
       return "";
     }
   })).resolves.toBeUndefined();
   expect(cleanupCalls).toEqual([
-    ["rm", "--force", containerName],
-    ["ps", "-a", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"]
+    ["ps", "-a", "--no-trunc", "--filter", `id=${containerIdentity.containerId}`, "--format", "{{.ID}}"],
+    ["inspect", containerIdentity.containerId, "--format", "{{json .}}"],
+    ["rm", "--force", containerIdentity.containerId],
+    ["ps", "-a", "--no-trunc", "--filter", `id=${containerIdentity.containerId}`, "--format", "{{.ID}}"]
   ]);
-  await expect(api.cleanupPlan3RedContainer(containerName, {
-    docker: async (args) => args[0] === "rm" ? "" : containerName
-  })).rejects.toThrow(/still exists/i);
+  const collisionCalls: string[][] = [];
+  await expect(api.cleanupPlan3RedContainer(containerIdentity, {
+    docker: async (args) => {
+      collisionCalls.push([...args]);
+      if (args[0] === "ps") return containerIdentity.containerId;
+      if (args[0] === "inspect") return JSON.stringify({
+        Id: containerIdentity.containerId,
+        Name: `/${containerName}`,
+        Image: "sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37",
+        Config: { Labels: { "plan5.release.invocation": "foreign" } }
+      });
+      return "";
+    }
+  })).rejects.toThrow(/identity/i);
+  expect(collisionCalls.some((args) => args[0] === "rm")).toBe(false);
   expect(api.redAcceptanceTestNamePattern()).toBe("\\[AC-\\d{2}\\]");
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",

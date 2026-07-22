@@ -76,8 +76,10 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
     "artifact-root-trust-boundary-evidence-v1.json", "release-freeze-materialization-receipt-v2.json",
     "release-freeze-identity-v2.json"], ["task0_baseline", "trusted_os_principal_policy",
     "release_freeze_materialization"]),
-  G01_TRACE: policy("G01_TRACE", ["acceptance-trace.json", "task8b-red-evidence-v1.json"],
-    ["acceptance_trace", "task8b_red"]),
+  G01_TRACE: policy("G01_TRACE", [
+    "acceptance-trace.json", "task8b-red-evidence-v1.json",
+    "suite-plan4.vitest.json", "suite-plan4.evidence.json"
+  ], ["acceptance_trace", "task8b_red", "suite_report", "suite_evidence"]),
   G02_DATA: policy("G02_DATA", ["suite-plan1.vitest.json", "suite-plan1.evidence.json"],
     ["suite_report", "suite_evidence"]),
   G03_SCORING: policy("G03_SCORING", ["suite-plan2.vitest.json", "suite-plan2.evidence.json"],
@@ -87,7 +89,9 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G05_TELEGRAM: policy("G05_TELEGRAM", ["manual-telegram-acceptance.json"],
     ["manual_telegram_acceptance", "suite_report", "suite_evidence"], false,
     ["manual_telegram_acceptance"]),
-  G06_FULL: policy("G06_FULL", ["full-regression-evidence.json"], ["full_regression", "suite_report"]),
+  G06_FULL: policy("G06_FULL", [
+    "full-regression-evidence.json", "suite-plan5.vitest.json", "suite-plan5.evidence.json"
+  ], ["full_regression", "suite_report", "suite_evidence"]),
   G07_SCHEMA_OFFLINE: policy("G07_SCHEMA_OFFLINE", [
     "schema-clean/schema032-release-evidence.json",
     "schema-production-clone/schema032-release-evidence.json"
@@ -883,7 +887,8 @@ export function validateGateEvidenceBytesV2(
       throw new Error("gate_evidence_path_invalid");
     }
     seen.add(ref.relativePath);
-    if (gatePolicy.production && seenKinds.has(ref.kind)) {
+    if (seenKinds.has(ref.kind) && (gatePolicy.production
+        || ref.kind === "suite_report" || ref.kind === "suite_evidence")) {
       throw new Error(`gate_evidence_duplicate_kind:${ref.kind}`);
     }
     seenKinds.add(ref.kind);

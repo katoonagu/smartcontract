@@ -2527,12 +2527,12 @@ is blocked.
 | Gate | Exact `GateEvidencePolicy` roots | Transition | Failure action |
 |---|---|---|---|
 | `G00_BASE` | `task0-baseline.json`, `trusted-os-principal-policy-v2.json`, `artifact-root-trust-boundary-evidence-v1.json`, `release-freeze-materialization-receipt-v2.json`, `release-freeze-identity-v2.json` | `pre_manual` | block |
-| `G01_TRACE` | `acceptance-trace.json`, exact AC-41 execution trace and `task8b-red-evidence-v1.json` with PostgreSQL execution/cleanup proof | `pre_manual` | return Plan 5 Task 2 |
+| `G01_TRACE` | `acceptance-trace.json`, exact AC-41 execution trace, `task8b-red-evidence-v1.json` with PostgreSQL execution/cleanup proof, and exact `suite-plan4.vitest.json` plus `suite-plan4.evidence.json` | `pre_manual` | return Plan 5 Task 2 |
 | `G02_DATA` | `suite-plan1.vitest.json`, `suite-plan1.evidence.json` | `pre_manual` | return Plan 1 |
 | `G03_SCORING` | `suite-plan2.vitest.json`, `suite-plan2.evidence.json` | `pre_manual` | return Plan 2 |
 | `G04_RUNTIME` | `suite-plan3.vitest.json`, `suite-plan3.evidence.json` | `pre_manual` | return Plan 3 |
-| `G05_TELEGRAM` | Plan 4 suite at pre-manual; finalized `manual-telegram-acceptance.json` with exact 15/19/11 at readiness | `readiness` | return Plan 4 |
-| `G06_FULL` | Plan 5 suite plus `full-regression-evidence.json` | `pre_manual` | return owning plan |
+| `G05_TELEGRAM` | finalized `manual-telegram-acceptance.json` with exact 15/19/11 at readiness | `readiness` | return Plan 4 |
+| `G06_FULL` | exact `suite-plan5.vitest.json` plus `suite-plan5.evidence.json` and `full-regression-evidence.json` | `pre_manual` | return owning plan |
 | `G07_SCHEMA_OFFLINE` | distinct clean and production-clone `schema032-release-evidence.json` snapshots | `pre_manual` | block migration/release |
 | `G08_VERSION_SANITIZED` | sanitized schema, manager/subprocess/query captures and `runtime-rehearsal.json` | `pre_manual` | block startup/release |
 | `G09_LEGACY_TERMINAL` | `terminal-legacy-population.json` and exact Task 0B cutoff | `pre_manual` | return owner/block |

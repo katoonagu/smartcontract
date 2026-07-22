@@ -373,35 +373,52 @@ export function buildPlan3RedContainerName(entropyHex: string): string {
   return `plan5-red-plan3-${entropyHex}`;
 }
 
+type Plan3RedContainerIdentity = Readonly<{
+  containerId: string;
+  containerName: string;
+  invocationLabel: string;
+}>;
+
 export async function cleanupPlan3RedContainer(
-  containerName: string,
+  identity: Plan3RedContainerIdentity,
   dependencies: { docker(args: readonly string[]): Promise<string> } = { docker: dockerOutput }
 ): Promise<void> {
-  if (!/^plan5-red-plan3-[0-9a-f]{32}$/.test(containerName)) {
-    throw new Error("Plan 3 RED container name is invalid");
+  if (!/^[0-9a-f]{64}$/.test(identity.containerId)
+      || !/^plan5-red-plan3-[0-9a-f]{32}$/.test(identity.containerName)
+      || !/^plan5-red-plan3-[0-9a-f]{32}$/.test(identity.invocationLabel)) {
+    throw new Error("Plan 3 RED container identity is invalid");
   }
-  let removalError: unknown;
+  const probeArgs = [
+    "ps", "-a", "--no-trunc", "--filter", `id=${identity.containerId}`, "--format", "{{.ID}}"
+  ] as const;
+  const existing = (await dependencies.docker(probeArgs)).trim();
+  if (existing === "") return;
+  if (existing !== identity.containerId) throw new Error("Plan 3 RED container identity probe is ambiguous");
+  let inspected: unknown;
   try {
-    await dependencies.docker(["rm", "--force", containerName]);
-  } catch (error) {
-    removalError = error;
+    inspected = JSON.parse(await dependencies.docker([
+      "inspect", identity.containerId, "--format", "{{json .}}"
+    ])) as unknown;
+  } catch {
+    throw new Error("Plan 3 RED container identity could not be verified");
   }
-  let remaining: string;
-  try {
-    remaining = await dependencies.docker([
-      "ps", "-a", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"
-    ]);
-  } catch (error) {
-    throw new AggregateError(
-      removalError === undefined ? [error] : [removalError, error],
-      "Plan 3 RED container removal could not be verified"
-    );
+  if (inspected === null || typeof inspected !== "object" || Array.isArray(inspected)) {
+    throw new Error("Plan 3 RED container identity is invalid");
   }
-  if (remaining.trim() !== "") {
-    throw new AggregateError(
-      removalError === undefined ? [] : [removalError],
-      "Plan 3 RED container still exists after cleanup"
-    );
+  const record = inspected as {
+    Id?: unknown;
+    Name?: unknown;
+    Image?: unknown;
+    Config?: { Labels?: Record<string, unknown> };
+  };
+  if (record.Id !== identity.containerId || record.Name !== `/${identity.containerName}`
+      || record.Image !== PLAN3_RED_NODE_IMAGE_ID
+      || record.Config?.Labels?.["plan5.release.invocation"] !== identity.invocationLabel) {
+    throw new Error("Plan 3 RED container identity does not match this invocation");
+  }
+  await dependencies.docker(["rm", "--force", identity.containerId]);
+  if ((await dependencies.docker(probeArgs)).trim() !== "") {
+    throw new Error("Plan 3 RED container still exists after cleanup");
   }
 }
 
@@ -422,7 +439,7 @@ async function isAncestor(ancestor: string, candidate: string): Promise<boolean>
   }
 }
 
-async function productModuleBlobAtCommit(commitSha: string, productModulePath: string): Promise<string | null> {
+export async function productModuleBlobAtCommit(commitSha: string, productModulePath: string): Promise<string | null> {
   const normalized = normalizeLocalProductModulePath(productModulePath);
   const candidates = /\.[A-Za-z0-9]+$/.test(normalized) ? [normalized] : [
     `${normalized}.ts`, `${normalized}.tsx`, `${normalized}.js`, `${normalized}.mjs`, `${normalized}.cjs`,
@@ -877,6 +894,9 @@ async function runPlan3FrozenRedInContainer(
   }
   const admin = new Client({ connectionString: binding.directUrl, connectionTimeoutMillis: 5_000, query_timeout: 5_000 });
   const containerName = buildPlan3RedContainerName(randomBytes(16).toString("hex"));
+  const invocationLabel = buildPlan3RedContainerName(randomBytes(16).toString("hex"));
+  const containerControlDirectory = await mkdtemp(join(tmpdir(), "plan5-red-container-"));
+  const cidFile = join(containerControlDirectory, "container.cid");
   let connected = false;
   let roleCreated = false;
   let primaryError: unknown;
@@ -909,7 +929,8 @@ async function runPlan3FrozenRedInContainer(
       "exit $code"
     ].join("; ");
     await execFileAsync("docker", [
-      "run", "--rm", "--name", containerName, "--network", binding.networkName,
+      "run", "--rm", "--cidfile", cidFile, "--name", containerName,
+      "--label", `plan5.release.invocation=${invocationLabel}`, "--network", binding.networkName,
       "--env", "REQUIRE_PLAN3_POSTGRES=1",
       "--env", `PLAN3_TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
       "--env", `TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
@@ -927,9 +948,27 @@ async function runPlan3FrozenRedInContainer(
     primaryError = error;
   } finally {
     try {
-      await cleanupPlan3RedContainer(containerName);
+      let containerId: string | undefined;
+      try {
+        containerId = (await readFile(cidFile, "utf8")).trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (containerId !== undefined) {
+        await cleanupPlan3RedContainer({ containerId, containerName, invocationLabel });
+      }
     } catch (error) {
       cleanupErrors.push(error);
+    } finally {
+      try {
+        const boundary = relative(tmpdir(), containerControlDirectory);
+        if (!boundary || boundary.startsWith("..") || isAbsolute(boundary)) {
+          throw new Error("Plan 3 RED container control directory is outside the temporary root");
+        }
+        await rm(containerControlDirectory, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
     }
     if (connected) {
       try {
@@ -1542,11 +1581,18 @@ export async function preflightRemediationTestEvidence(): Promise<{
   }
 }
 
-export async function captureRemediationTestEvidence(artifactRoot: string): Promise<AcceptanceTraceSetV1> {
+export async function buildRemediationTestEvidence(
+  artifactRoot: string,
+  expectedCandidateSha?: string
+): Promise<AcceptanceTraceSetV1> {
   const root = await resolveExternalArtifactRoot(artifactRoot);
   const spec = parseCaptureSpec(JSON.parse((await readSafeArtifactFile(root, CAPTURE_SPEC_FILE)).toString("utf8")) as unknown);
-  const headSha = await gitOutput(["rev-parse", "HEAD"]);
-  if (spec.candidateSha !== headSha) throw new Error("capture candidate SHA is not the checked-out HEAD");
+  const candidateSha = expectedCandidateSha ?? await gitOutput(["rev-parse", "HEAD"]);
+  if (spec.candidateSha !== candidateSha) {
+    throw new Error(expectedCandidateSha === undefined
+      ? "capture candidate SHA is not the checked-out HEAD"
+      : "capture candidate SHA does not match the verified release candidate");
+  }
   await assertCommit(spec.candidateSha);
 
   const reportCache = new Map<string, {
@@ -1767,6 +1813,12 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
       return verifiedPathStates.get(key)!;
     }
   });
+  return traceSet;
+}
+
+export async function captureRemediationTestEvidence(artifactRoot: string): Promise<AcceptanceTraceSetV1> {
+  const root = await resolveExternalArtifactRoot(artifactRoot);
+  const traceSet = await buildRemediationTestEvidence(root);
   await safeWriteTrace(root, traceSet);
   return traceSet;
 }

@@ -430,6 +430,12 @@ of these decisions, update this file in the same work.
   auxiliary is the only secondary record, and its report hash must equal the
   primary AC-33 full Plan 2 GREEN report hash. Any extra non-primary trace or
   independently hashed auxiliary report fails closed.
+- Strict V2 release verification does not trust the materialized trace object
+  by itself. It re-reads `acceptance-trace-capture.json`, every exact RED/GREEN
+  Vitest report and every frozen test patch, repeats Git ancestry, patch and
+  extension-aware `src/*` module-lineage checks, rebuilds the 41-primary plus
+  one-auxiliary trace, and requires byte-identical output. Ambiguous module
+  resolution fails closed.
 - Plan 3 RED trace execution is mandatory PostgreSQL execution, not an optional
   suite: the producer sets `REQUIRE_PLAN3_POSTGRES=1` and binds
   `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to exact disposable
@@ -446,8 +452,11 @@ of these decisions, update this file in the same work.
   Cleanup disables login, terminates test-role sessions, revokes the grant,
   drops only objects owned by that fresh disposable role, drops the role, and
   verifies absence. The pinned Node runner uses a cryptographically unique
-  tracked container name; every success, failure, or timeout removes that exact
-  container in `finally` and verifies it absent before role cleanup completes.
+  tracked container name plus a private Docker CID file and invocation label.
+  Cleanup may remove only the exact CID after name, immutable image and label
+  inspection; a name collision or failed create never authorizes name-based
+  deletion. Every success, failure, or timeout verifies that exact container
+  absent before role cleanup completes.
   Frozen RED runs select only exact `[AC-NN]` tests, so
   unrelated REQ guards cannot become trace evidence. Skipped AC-14/15 and any
   authentication, connection or transport failure evidence fail closed.
@@ -456,6 +465,17 @@ of these decisions, update this file in the same work.
   `reconcileWaitingForensicCheckJobs` failure and frozen stack location. This
   affects only release evidence; product/runtime/scoring semantics and
   production state do not change.
+- Task 8B RED evidence is accepted only for the exact four frozen release test
+  files. Every file must execute, every failure must be an exact
+  `Plan 5 feature missing` behavioral failure, suite-level/no-test/skip/todo,
+  generic import/environment/dependency and foreign companion failures are
+  rejected, and the exact PostgreSQL assertion remains mandatory.
+- Release suite and full-regression execution uses an ephemeral detached local
+  Git clone at the exact candidate SHA followed by lockfile-enforced `npm ci`; candidate
+  tests, typecheck and Vitest never execute from mutable ignored `node_modules`
+  or skip-worktree content in the release worktree. All six suite report and
+  sidecar pairs have one manifest owner: Plan 4 is bound to `G01_TRACE`, Plan 5
+  to `G06_FULL`, and Plan 1/2/3/Address Poisoning to G02/G03/G04/G11.
 - AC-20/21/24 do not use that exception. Their original Plan 4 test patch is
   bound to frozen test commit `20ee8a75…`, while behavioral RED executes at
   historical commit `a0f74b3b…`, after the local modules existed and before

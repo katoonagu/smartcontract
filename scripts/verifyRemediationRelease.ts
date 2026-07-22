@@ -1,7 +1,8 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "pg";
@@ -20,8 +21,12 @@ import {
   type ReleaseGateState,
   validateRemediationReleaseManifest
 } from "../src/release/remediationReleaseManifest";
-import { validateAcceptanceTraceSet } from "../src/release/acceptanceTrace";
-import { parseVitestJsonReport } from "../src/release/acceptanceTrace";
+import {
+  assertBehavioralRedExecution,
+  normalizeAcceptanceTestFile,
+  parseVitestJsonReport,
+  validateAcceptanceTraceSet
+} from "../src/release/acceptanceTrace";
 import type {
   AcceptanceTraceDependencies,
   AcceptanceTraceSetV1,
@@ -317,7 +322,12 @@ export type ReleaseProcessResult = {
 };
 
 export type NonVitestReleaseDependencies = {
-  run(executable: string, args: readonly string[], env: NodeJS.ProcessEnv): ReleaseProcessResult | Promise<ReleaseProcessResult>;
+  run(
+    executable: string,
+    args: readonly string[],
+    env: NodeJS.ProcessEnv,
+    cwd: string
+  ): ReleaseProcessResult | Promise<ReleaseProcessResult>;
   postgresCleanup(): Promise<Record<string, string[]>>;
 };
 
@@ -358,7 +368,8 @@ export async function runBoundedReleaseProcess(
   executable: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-  timeoutMs = 60 * 60_000
+  timeoutMs = 60 * 60_000,
+  cwd = repositoryRoot
 ): Promise<ReleaseProcessResult> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("release check timeout is invalid");
   return await new Promise<ReleaseProcessResult>((resolveDone) => {
@@ -373,7 +384,7 @@ export async function runBoundedReleaseProcess(
     let status: number | null = null;
     let signal: NodeJS.Signals | null = null;
     const child = spawn(executable, [...args], {
-      cwd: repositoryRoot,
+      cwd,
       env,
       windowsHide: true,
       shell: false,
@@ -447,8 +458,8 @@ function requireDisposableDatabaseUrl(env: NodeJS.ProcessEnv, envName: keyof typ
 
 export function createDefaultNonVitestReleaseDependencies(env: NodeJS.ProcessEnv): NonVitestReleaseDependencies {
   return {
-    async run(executable, args, childEnv) {
-      return await runBoundedReleaseProcess(executable, args, childEnv);
+    async run(executable, args, childEnv, cwd) {
+      return await runBoundedReleaseProcess(executable, args, childEnv, 60 * 60_000, cwd);
     },
     async postgresCleanup() {
       const cleanup: Record<string, string[]> = {};
@@ -483,14 +494,21 @@ export function createDefaultNonVitestReleaseDependencies(env: NodeJS.ProcessEnv
 }
 
 export async function runNonVitestReleaseChecks(
-  input: { candidateSha: string; planBaseSha: string; env: NodeJS.ProcessEnv },
+  input: { candidateSha: string; planBaseSha: string; env: NodeJS.ProcessEnv; executionRoot: string },
   dependencies: NonVitestReleaseDependencies = createDefaultNonVitestReleaseDependencies(input.env)
 ): Promise<NonVitestReleaseEvidenceV1> {
   if (!SHA40.test(input.candidateSha) || input.planBaseSha !== PLAN5_APPROVED_BASE_SHA || input.candidateSha === input.planBaseSha) {
     throw new Error("non-Vitest release base or candidate SHA is invalid");
   }
+  if (!isAbsolute(input.executionRoot)) throw new Error("non-Vitest candidate snapshot root is invalid");
   const environment = buildReleaseSuiteEnvironment(input.env);
-  const ancestry = await dependencies.run("git", ["merge-base", "--is-ancestor", PLAN5_APPROVED_BASE_SHA, input.candidateSha], environment);
+  environment.DOTENV_CONFIG_PATH = resolve(input.executionRoot, "tests/fixtures/release/plan5-no-dotenv");
+  const ancestry = await dependencies.run(
+    "git",
+    ["merge-base", "--is-ancestor", PLAN5_APPROVED_BASE_SHA, input.candidateSha],
+    environment,
+    repositoryRoot
+  );
   if (ancestry.error || ancestry.signal || ancestry.status !== 0) throw new Error("approved Plan 5 base is not a candidate ancestor");
   const npmExecutable = process.platform === "win32" ? process.execPath : "npm";
   const npmArgs = process.platform === "win32"
@@ -502,7 +520,7 @@ export async function runNonVitestReleaseChecks(
       checkId: "full_test",
       executable: process.execPath,
       args: [
-        resolve(repositoryRoot, "node_modules/vitest/vitest.mjs"),
+        resolve(input.executionRoot, "node_modules/vitest/vitest.mjs"),
         "run",
         "--configLoader",
         "bundle",
@@ -522,7 +540,10 @@ export async function runNonVitestReleaseChecks(
   ];
   const checks: NonVitestReleaseEvidenceV1["checks"] = [];
   for (const command of commands) {
-    const result = await dependencies.run(command.executable, command.args, environment);
+    const cwd = command.checkId === "typecheck" || command.checkId === "full_test"
+      ? input.executionRoot
+      : repositoryRoot;
+    const result = await dependencies.run(command.executable, command.args, environment, cwd);
     if (result.error || result.signal || result.status !== 0) throw new Error(`${command.checkId} failed`);
     assertNoSecretLikeArtifactValues({ stdout: result.stdout, stderr: result.stderr });
     if (command.checkId === "forbidden_scope") validatePlan5CandidateScope(result.stdout);
@@ -694,14 +715,15 @@ export function validateReleaseGateOutput(bytes: Buffer, gate: ReleaseArtifactV1
 
 export function buildReleaseSuiteGroupInvocation(
   groupId: RemediationSuiteGroupId,
-  reportOutputPath: string
+  reportOutputPath: string,
+  executionRoot = repositoryRoot
 ): { executable: string; args: string[] } {
   if (!Object.hasOwn(REMEDIATION_REQUIRED_SUITE_GROUPS, groupId)) throw new Error("suite group is not allowlisted");
   if (!isAbsolute(reportOutputPath)) throw new Error("suite report output path must be absolute");
   return {
     executable: process.execPath,
     args: [
-      resolve(repositoryRoot, "node_modules/vitest/vitest.mjs"),
+      resolve(executionRoot, "node_modules/vitest/vitest.mjs"),
       "run",
       "--configLoader", "bundle",
       "--no-file-parallelism",
@@ -775,6 +797,68 @@ export function assertReleaseCandidateWorkspaceClean(
   }
 }
 
+type ImmutableCandidateExecutionSnapshot = Readonly<{
+  root: string;
+  dispose(): Promise<void>;
+}>;
+
+async function createImmutableCandidateExecutionSnapshot(
+  candidateSha: string,
+  environment: NodeJS.ProcessEnv
+): Promise<ImmutableCandidateExecutionSnapshot> {
+  if (!SHA40.test(candidateSha)) throw new Error("candidate snapshot SHA is invalid");
+  const controlRoot = await mkdtemp(join(tmpdir(), "plan5-candidate-snapshot-"));
+  const snapshotRoot = join(controlRoot, "worktree");
+  const requireSuccess = (result: ReleaseProcessResult, label: string): void => {
+    if (result.error || result.signal || result.status !== 0) throw new Error(`${label} failed`);
+  };
+  try {
+    requireSuccess(await runBoundedReleaseProcess(
+      "git", ["clone", "--no-checkout", "--local", "--no-hardlinks", repositoryRoot, snapshotRoot],
+      environment, 10 * 60_000, repositoryRoot
+    ), "candidate snapshot clone");
+    requireSuccess(await runBoundedReleaseProcess(
+      "git", ["checkout", "--detach", candidateSha],
+      environment, 5 * 60_000, snapshotRoot
+    ), "candidate snapshot checkout");
+    const snapshotHead = await runBoundedReleaseProcess(
+      "git", ["rev-parse", "HEAD"], environment, 60_000, snapshotRoot
+    );
+    requireSuccess(snapshotHead, "candidate snapshot identity");
+    if (snapshotHead.stdout.trim() !== candidateSha) throw new Error("candidate snapshot SHA mismatch");
+    const assertSnapshotClean = async (): Promise<void> => {
+      const status = await runBoundedReleaseProcess(
+        "git", ["status", "--porcelain=v1", "--untracked-files=all"], environment, 60_000, snapshotRoot
+      );
+      requireSuccess(status, "candidate snapshot status");
+      if (status.stdout.trim() !== "") throw new Error("candidate snapshot is not exact and clean");
+    };
+    await assertSnapshotClean();
+    const npmExecutable = process.platform === "win32" ? process.execPath : "npm";
+    const npmArgs = process.platform === "win32"
+      ? [resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
+      : [];
+    requireSuccess(await runBoundedReleaseProcess(
+      npmExecutable, [...npmArgs, "ci", "--no-audit", "--no-fund"],
+      environment, 30 * 60_000, snapshotRoot
+    ), "candidate dependency installation");
+    await assertSnapshotClean();
+    return {
+      root: snapshotRoot,
+      async dispose() {
+        const boundary = relative(tmpdir(), controlRoot);
+        if (!boundary || boundary.startsWith("..") || isAbsolute(boundary)) {
+          throw new Error("candidate snapshot is outside the temporary root");
+        }
+        await rm(controlRoot, { recursive: true, force: true });
+      }
+    };
+  } catch (error) {
+    await rm(controlRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 type ValidatedSuiteGroup = Readonly<{
   reportSha256: string;
   executions: ParsedAcceptanceExecution[];
@@ -811,28 +895,39 @@ export async function executeReleaseSuiteGroup(options: {
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const invocation = buildReleaseSuiteGroupInvocation(options.groupId, reportPath);
   const suiteEnvironment = buildReleaseSuiteEnvironment(process.env, {
     expectedTestDatabase: SUITE_TEST_DATABASES[options.groupId]
   });
   assertReleaseCandidateWorkspaceClean(options.candidateSha);
-  const child = spawnSync(invocation.executable, invocation.args, {
-    cwd: repositoryRoot,
-    env: suiteEnvironment,
-    encoding: "utf8",
-    windowsHide: true,
-    shell: false,
-    timeout: 30 * 60_000,
-    maxBuffer: MAX_ARTIFACT_BYTES
-  });
-  if (child.error || child.signal || child.status === null) throw new Error("suite process did not terminate normally");
-  assertReleaseCandidateWorkspaceClean(options.candidateSha);
+  const snapshot = await createImmutableCandidateExecutionSnapshot(options.candidateSha, suiteEnvironment);
+  let exitCode: number;
+  try {
+    const invocation = buildReleaseSuiteGroupInvocation(options.groupId, reportPath, snapshot.root);
+    const executionEnvironment = {
+      ...suiteEnvironment,
+      DOTENV_CONFIG_PATH: resolve(snapshot.root, "tests/fixtures/release/plan5-no-dotenv")
+    };
+    const child = spawnSync(invocation.executable, invocation.args, {
+      cwd: snapshot.root,
+      env: executionEnvironment,
+      encoding: "utf8",
+      windowsHide: true,
+      shell: false,
+      timeout: 30 * 60_000,
+      maxBuffer: MAX_ARTIFACT_BYTES
+    });
+    if (child.error || child.signal || child.status === null) throw new Error("suite process did not terminate normally");
+    exitCode = child.status;
+  } finally {
+    await snapshot.dispose();
+    assertReleaseCandidateWorkspaceClean(options.candidateSha);
+  }
   const reportBytes = await readSafeArtifactFile(root, `suite-${options.groupId}.vitest.json`);
   const report = parseJson(reportBytes);
   const evidence = buildReleaseSuiteGroupEvidence({
     groupId: options.groupId,
     candidateSha: options.candidateSha,
-    exitCode: child.status,
+    exitCode,
     report,
     reportBytes
   });
@@ -1190,10 +1285,10 @@ async function verifyConcreteArtifactBindings(
   }
 
   const suiteGates: Array<[ReleaseGateId, RemediationSuiteGroupId]> = [
+    ["G01_TRACE", "plan4"],
     ["G02_DATA", "plan1"],
     ["G03_SCORING", "plan2"],
     ["G04_RUNTIME", "plan3"],
-    ["G05_TELEGRAM", "plan4"],
     ["G06_FULL", "plan5"],
     ["G11_POISONING_REGRESSION", "addressPoisoningRegression"]
   ];
@@ -1260,19 +1355,6 @@ function isVerifiedGitAncestor(ownerCommitSha: string, candidateSha: string): bo
   }
 }
 
-function pathExistsAtVerifiedCommit(commitSha: string, productModulePath: string): boolean {
-  try {
-    execFileSync("git", ["cat-file", "-e", `${commitSha}:${productModulePath}`], {
-      cwd: repositoryRoot,
-      stdio: "ignore",
-      windowsHide: true
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function gateExecuted(manifest: Pick<RemediationReleaseManifestV2, "gates">, gateId: ReleaseGateIdV2): boolean {
   const gate = manifest.gates.find((item) => item.id === gateId);
   return gate?.state === "passed" || gate?.state === "failed";
@@ -1294,8 +1376,12 @@ async function readGateEvidenceByKind(
   return readSafeArtifactFile(root, matches[0]!.relativePath);
 }
 
-function validateTask8BRedEvidence(value: unknown, report: unknown, reportBytes: Buffer, candidateSha: string): void {
+export function validateTask8BRedEvidence(value: unknown, report: unknown, reportBytes: Buffer, candidateSha: string): void {
   assertNoSecretLikeArtifactValues(value);
+  assertNoSecretLikeArtifactValues(report);
+  if (stableJson(parseJson(reportBytes)) !== stableJson(report)) {
+    throw new Error("Task 8B RED report bytes do not match the parsed report");
+  }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Task 8B RED evidence is invalid");
   }
@@ -1319,6 +1405,42 @@ function validateTask8BRedEvidence(value: unknown, report: unknown, reportBytes:
     throw new Error("Task 8B RED evidence identity or cleanup binding is invalid");
   }
   const executions = parseVitestJsonReport(report, "failed");
+  const requiredFiles = [
+    "tests/release/releaseManifestLifecycle.acceptance.test.ts",
+    "tests/release/releaseManifestStore.acceptance.test.ts",
+    "tests/release/productionReleaseEvidence.acceptance.test.ts",
+    "tests/release/productionReleaseEvidence.postgres.test.ts"
+  ];
+  if (report === null || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error("Task 8B RED report is invalid");
+  }
+  const rawReport = report as Record<string, unknown>;
+  if (!Array.isArray(rawReport.testResults) || rawReport.testResults.length !== requiredFiles.length
+      || rawReport.numTotalTests !== executions.length || rawReport.numPendingTests !== 0
+      || rawReport.numTodoTests !== 0
+      || rawReport.numFailedTests !== executions.filter((execution) => execution.status === "failed").length) {
+    throw new Error("Task 8B exact four-file RED report counts are invalid");
+  }
+  const rawFiles: string[] = [];
+  for (const result of rawReport.testResults) {
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+      throw new Error("Task 8B exact four-file RED result is invalid");
+    }
+    const item = result as Record<string, unknown>;
+    if (typeof item.name !== "string" || typeof item.message !== "string" || item.message.trim() !== ""
+        || !Array.isArray(item.assertionResults) || item.assertionResults.length === 0) {
+      throw new Error("Task 8B RED report contains an unclassified suite-level failure");
+    }
+    rawFiles.push(normalizeAcceptanceTestFile(item.name));
+  }
+  if (new Set(rawFiles).size !== requiredFiles.length
+      || [...requiredFiles].sort().join("|") !== [...rawFiles].sort().join("|")) {
+    throw new Error("Task 8B RED report does not contain the exact four-file set");
+  }
+  if (executions.some((execution) => execution.status === "skipped" || execution.status === "todo"
+      || (execution.status !== "failed" && execution.failureMessages.length !== 0))) {
+    throw new Error("Task 8B RED report contains skipped, todo, or inconsistent executions");
+  }
   const postgresFile = "tests/release/productionReleaseEvidence.postgres.test.ts";
   const postgresExecutions = executions.filter((execution) => execution.testFile === postgresFile);
   if (postgresExecutions.length !== evidence.postgresAssertionsExecuted
@@ -1328,13 +1450,18 @@ function validateTask8BRedEvidence(value: unknown, report: unknown, reportBytes:
   const exactFullName = "[REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an exact disposable non-production database with required execution report hash and cleanup";
   const required = postgresExecutions.filter((execution) => execution.fullName === exactFullName);
   if (required.length !== 1 || required[0]!.status !== "failed"
-      || required[0]!.failureMessages.length === 0
-      || required[0]!.failureMessages.some((message) => !message.includes("Plan 5 feature missing"))) {
+      || required[0]!.failureMessages.length !== 1
+      || !/^(?:AssertionError|Error): Plan 5 feature missing:/.test(required[0]!.failureMessages[0]!)) {
     throw new Error("Task 8B exact PostgreSQL behavioral RED is invalid");
   }
   for (const execution of executions.filter((item) => item.status === "failed")) {
-    if (execution.failureMessages.length === 0
-        || execution.failureMessages.some((message) => !message.includes("Plan 5 feature missing"))) {
+    try {
+      assertBehavioralRedExecution(execution);
+    } catch {
+      throw new Error("Task 8B RED report contains an unclassified failure");
+    }
+    if (execution.failureMessages.length !== 1
+        || !/^(?:AssertionError|Error): Plan 5 feature missing:/.test(execution.failureMessages[0]!)) {
       throw new Error("Task 8B RED report contains an unclassified failure");
     }
   }
@@ -1371,15 +1498,30 @@ export async function verifyPreReleaseConcreteEvidenceV2(
 ): Promise<void> {
   let traceSet: AcceptanceTraceSetV1 | null = null;
   if (gateExecuted(manifest, "G01_TRACE")) {
-    const traceBytes = await readSafeArtifactFile(root, REMEDIATION_ACCEPTANCE_TRACE_FILE);
-    traceSet = validateAcceptanceTraceSet(parseJson(traceBytes), {
-      isAncestor: isVerifiedGitAncestor,
-      pathExistsAtCommit: pathExistsAtVerifiedCommit
-    });
+    const traceBytes = await readGateEvidenceByKind(
+      root, manifest, "G01_TRACE", "acceptance_trace", REMEDIATION_ACCEPTANCE_TRACE_FILE
+    );
+    const { buildRemediationTestEvidence } = await import("./captureRemediationTestEvidence");
+    traceSet = await buildRemediationTestEvidence(root, manifest.candidateSha);
+    if (!traceBytes.equals(Buffer.from(`${JSON.stringify(traceSet, null, 2)}\n`, "utf8"))) {
+      throw new Error("acceptance trace differs from its concrete capture reports and patches");
+    }
     if (traceSet.candidateSha !== manifest.candidateSha) throw new Error("acceptance trace candidate SHA mismatch");
-    const task8bBytes = await readSafeArtifactFile(root, "task8b-red-evidence-v1.json");
+    const task8bBytes = await readGateEvidenceByKind(
+      root, manifest, "G01_TRACE", "task8b_red", "task8b-red-evidence-v1.json"
+    );
     const task8bReportBytes = await readSafeArtifactFile(root, "task8b-red.vitest.json");
     validateTask8BRedEvidence(parseJson(task8bBytes), parseJson(task8bReportBytes), task8bReportBytes, manifest.candidateSha);
+    const plan4ReportBytes = await readGateEvidenceByKind(
+      root, manifest, "G01_TRACE", "suite_report", "suite-plan4.vitest.json"
+    );
+    const plan4Report = parseJson(plan4ReportBytes);
+    validateReleaseSuiteGroupEvidence(
+      parseJson(await readGateEvidenceByKind(
+        root, manifest, "G01_TRACE", "suite_evidence", "suite-plan4.evidence.json"
+      )),
+      { groupId: "plan4", candidateSha: manifest.candidateSha, report: plan4Report, reportBytes: plan4ReportBytes }
+    );
   }
 
   if (gateExecuted(manifest, "G00_BASE")) {
@@ -1401,6 +1543,7 @@ export async function verifyPreReleaseConcreteEvidenceV2(
       await readGateEvidenceByKind(root, manifest, gateId, "suite_evidence", `suite-${groupId}.evidence.json`);
     }
     await readGateEvidenceByKind(root, manifest, "G06_FULL", "suite_report", "suite-plan5.vitest.json");
+    await readGateEvidenceByKind(root, manifest, "G06_FULL", "suite_evidence", "suite-plan5.evidence.json");
     const groups = await readRequiredSuiteGroups(root, manifest.candidateSha);
     if (traceSet === null) throw new Error("full release evidence requires the semantic acceptance trace");
     assertTraceReportBindings(traceSet, groups);
@@ -1631,7 +1774,19 @@ async function main(): Promise<void> {
       if (planBaseSha !== PLAN5_APPROVED_BASE_SHA) throw new Error("non-Vitest runner Plan 5 base is not approved");
       assertReleaseCandidateWorkspaceClean(candidateSha);
       const root = await resolveExternalArtifactRoot(artifactRoot);
-      const evidence = await runNonVitestReleaseChecks({ candidateSha, planBaseSha, env: process.env });
+      const environment = buildReleaseSuiteEnvironment(process.env);
+      const snapshot = await createImmutableCandidateExecutionSnapshot(candidateSha, environment);
+      let evidence: NonVitestReleaseEvidenceV1;
+      try {
+        evidence = await runNonVitestReleaseChecks({
+          candidateSha,
+          planBaseSha,
+          env: process.env,
+          executionRoot: snapshot.root
+        });
+      } finally {
+        await snapshot.dispose();
+      }
       assertReleaseCandidateWorkspaceClean(candidateSha);
       const bytes = Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8");
       await writeFile(join(root, "full-regression-evidence.json"), bytes, { flag: "wx" });

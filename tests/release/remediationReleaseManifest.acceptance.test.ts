@@ -1459,14 +1459,16 @@ it("[REQ-38][G07-SCHEMA-BINDING] requires distinct semantic clean and production
 
 it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope and PostgreSQL cleanup fail closed", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
-  const calls: Array<{ executable: string; args: string[] }> = [];
+  const executionRoot = resolve(tmpdir(), "plan5-exact-candidate-snapshot");
+  const calls: Array<{ executable: string; args: string[]; cwd: string }> = [];
   const valid = await runner.runNonVitestReleaseChecks({
     candidateSha: CANDIDATE_SHA,
     planBaseSha: PLAN_BASE_SHA,
-    env: {}
+    env: {},
+    executionRoot
   }, {
-    run(executable, args) {
-      calls.push({ executable, args: [...args] });
+    run(executable, args, _env, cwd) {
+      calls.push({ executable, args: [...args], cwd });
       return { status: 0, stdout: "", stderr: "", signal: null };
     },
     async postgresCleanup() {
@@ -1490,8 +1492,11 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
       expect.stringMatching(/[\\/]vitest[\\/]vitest\.mjs$/),
       "run", "--configLoader", "bundle", "--no-file-parallelism",
       "--testTimeout=300000", "--hookTimeout=300000"
-    ])
+    ]),
+    cwd: executionRoot
   });
+  expect(fullTestCall?.args[0]).toBe(resolve(executionRoot, "node_modules/vitest/vitest.mjs"));
+  expect(typecheckCall?.cwd).toBe(executionRoot);
   expect(fullTestCall?.args.slice(1)).toEqual([
     "run", "--configLoader", "bundle", "--no-file-parallelism",
     "--testTimeout=300000", "--hookTimeout=300000"
@@ -1507,11 +1512,13 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
   expect(calls.filter((call) => call.args[0] === "diff")).toHaveLength(2);
   expect(calls).toContainEqual({
     executable: "git",
-    args: ["diff", "--name-only", "--no-renames", "-z", `${PLAN_BASE_SHA}..${CANDIDATE_SHA}`]
+    args: ["diff", "--name-only", "--no-renames", "-z", `${PLAN_BASE_SHA}..${CANDIDATE_SHA}`],
+    cwd: expect.not.stringMatching(/plan5-exact-candidate-snapshot/)
   });
   expect(calls).toContainEqual({
     executable: "git",
-    args: ["merge-base", "--is-ancestor", PLAN_BASE_SHA, CANDIDATE_SHA]
+    args: ["merge-base", "--is-ancestor", PLAN_BASE_SHA, CANDIDATE_SHA],
+    cwd: expect.not.stringMatching(/plan5-exact-candidate-snapshot/)
   });
   expect(valid.checks).toHaveLength(5);
   expect(valid.redactedTemplateSha256).toBe(COMMAND_TEMPLATE_SHA256.full_regression);
@@ -1530,7 +1537,8 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
   await expect(runner.runNonVitestReleaseChecks({
     candidateSha: CANDIDATE_SHA,
     planBaseSha: PLAN_BASE_SHA,
-    env: { PLAN1_TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1/tron_watch" }
+    env: { PLAN1_TEST_DATABASE_URL: "postgresql://test:test@127.0.0.1/tron_watch" },
+    executionRoot
   }, {
     run() {
       invalidDatabaseSpawnCount += 1;
@@ -1545,7 +1553,8 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
   await expect(runner.runNonVitestReleaseChecks({
     candidateSha: CANDIDATE_SHA,
     planBaseSha: PLAN_BASE_SHA,
-    env: {}
+    env: {},
+    executionRoot
   }, {
     run(_executable, args) {
       return args[0]?.replaceAll("\\", "/").endsWith("/vitest/vitest.mjs") && args[1] === "run"
@@ -1568,7 +1577,8 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
   await expect(runner.runNonVitestReleaseChecks({
     candidateSha: CANDIDATE_SHA,
     planBaseSha: "b".repeat(40),
-    env: {}
+    env: {},
+    executionRoot
   }, {
     run() {
       return { status: 0, stdout: "", stderr: "", signal: null };
@@ -1577,6 +1587,70 @@ it("[AC-41][NON-VITEST-GATES] executes direct full Vitest typecheck diff scope a
       return Object.fromEntries(Object.values(runner.PLAN5_CLEANUP_DATABASES).map((database: string) => [database, []]));
     }
   })).rejects.toThrow(/base/i);
+});
+
+it("[REQ-38][TASK8B-RED-BATCH] requires the exact four-file behavioral RED batch and rejects suite failures", async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease");
+  const requiredFullName = "[REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an exact disposable non-production database with required execution report hash and cleanup";
+  const files = [
+    "tests/release/releaseManifestLifecycle.acceptance.test.ts",
+    "tests/release/releaseManifestStore.acceptance.test.ts",
+    "tests/release/productionReleaseEvidence.acceptance.test.ts",
+    "tests/release/productionReleaseEvidence.postgres.test.ts"
+  ];
+  const report = {
+    success: false,
+    numFailedTestSuites: 1,
+    numFailedTests: 1,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    numTotalTests: 4,
+    testResults: files.map((name) => ({
+      name,
+      message: "",
+      assertionResults: [{
+        fullName: name.endsWith(".postgres.test.ts") ? requiredFullName : `[REQ-38] ${name}`,
+        status: name.endsWith(".postgres.test.ts") ? "failed" : "passed",
+        failureMessages: name.endsWith(".postgres.test.ts")
+          ? ["AssertionError: Plan 5 feature missing: exact PostgreSQL release evidence"]
+          : []
+      }]
+    }))
+  };
+  const reportBytes = Buffer.from(JSON.stringify(report));
+  const evidence = {
+    version: "task8b-red-evidence-v1",
+    candidateSha: CANDIDATE_SHA,
+    databaseName: "tron_watch_plan5_task8b_red",
+    databasePort: 56002,
+    requirePlan5Postgres: true,
+    postgresAssertionsExecuted: 1,
+    skippedPostgresAssertions: 0,
+    vitestReportSha256: createHash("sha256").update(reportBytes).digest("hex"),
+    cleanupDatabaseCount: 0
+  };
+  expect(() => runner.validateTask8BRedEvidence(evidence, report, reportBytes, CANDIDATE_SHA)).not.toThrow();
+  const validateMutation = (mutated: typeof report) => {
+    const bytes = Buffer.from(JSON.stringify(mutated));
+    runner.validateTask8BRedEvidence({
+      ...evidence,
+      vitestReportSha256: createHash("sha256").update(bytes).digest("hex")
+    }, mutated, bytes, CANDIDATE_SHA);
+  };
+  const extraFile = cloneFixture(report);
+  extraFile.testResults.push(cloneFixture(extraFile.testResults[0]));
+  expect(() => validateMutation(extraFile)).toThrow(/four-file|file set/i);
+  const suiteFailure = cloneFixture(report);
+  suiteFailure.testResults[0].message = "Error: module loader crashed";
+  expect(() => validateMutation(suiteFailure)).toThrow(/suite-level|unclassified/i);
+  const foreignFailure = cloneFixture(report);
+  foreignFailure.testResults[0].assertionResults[0] = {
+    fullName: "[REQ-38] foreign failure",
+    status: "failed",
+    failureMessages: ["AssertionError: expected true to be false"]
+  };
+  foreignFailure.numFailedTests = 2;
+  expect(() => validateMutation(foreignFailure)).toThrow(/unclassified/i);
 });
 
 it("[AC-41][NON-VITEST-TIMEOUT] terminates the full descendant process tree", { timeout: 15_000 }, async () => {
@@ -1630,10 +1704,13 @@ it("[AC-41][NON-VITEST-UTF8] preserves split multibyte output bytes for evidence
 
 it("[AC-41][SUITE-RUNNER] rejects missing skipped filtered failed or nonzero group execution", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
+  const executionRoot = resolve(tmpdir(), "plan5-suite-exact-candidate-snapshot");
   const suiteArgs = runner.buildReleaseSuiteGroupInvocation(
     "plan5",
-    resolve(tmpdir(), "plan5-suite-report.json")
+    resolve(tmpdir(), "plan5-suite-report.json"),
+    executionRoot
   ).args;
+  expect(suiteArgs[0]).toBe(resolve(executionRoot, "node_modules/vitest/vitest.mjs"));
   expect(suiteArgs).toContain("--no-file-parallelism");
   expect(suiteArgs).toContain("--testTimeout=120000");
   expect(suiteArgs).toContain("--hookTimeout=120000");

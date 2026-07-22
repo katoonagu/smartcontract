@@ -135,9 +135,9 @@ rejected if the gate, command ID, or template hash differs.
 | `G02_DATA` | `plan1_focused` | `release:suite plan1 <artifact-root>` |
 | `G03_SCORING` | `plan2_focused` | `release:suite plan2 <artifact-root>` |
 | `G04_RUNTIME` | `plan3_focused` | `release:suite plan3 <artifact-root>` |
-| Telegram fixture support | `plan4_focused` | `release:suite plan4 <artifact-root>` |
+| `G01_TRACE` Plan 4 suite support | `plan4_focused` | `release:suite plan4 <artifact-root>` |
 | `G05_TELEGRAM` | `manual_telegram_acceptance` | `release:telegram:manual <artifact-root>` |
-| `G06_FULL` | `full_regression` | `npm run typecheck && node <repo>/node_modules/vitest/vitest.mjs run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000 && git diff --check && release:scope-audit && release:postgres-cleanup` |
+| `G06_FULL` | `full_regression` | `git clone --no-checkout <repo> <snapshot> && git checkout --detach <candidate-sha> && npm ci && npm run typecheck && node <snapshot>/node_modules/vitest/vitest.mjs run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000 && git diff --check && release:scope-audit && release:postgres-cleanup` |
 | clean schema support | `schema_clean_rehearsal` | `release:schema clean <database-fingerprint>` |
 | `G07_SCHEMA_OFFLINE` | `schema_production_clone_rehearsal` | `release:schema production_clone <database-fingerprint>` |
 | `G08_VERSION_SANITIZED` | `runtime_sanitized_rehearsal` | `release:runtime runtime_sanitized recording_disabled` |
@@ -218,7 +218,13 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    disposable databases while preserving a finite producer timeout. It rejects
    any staged, unstaged, or untracked candidate change both immediately before
    execution and immediately before publishing its sidecar. The non-Vitest
-   producer applies the same clean-`HEAD` checks around its full run.
+   producer applies the same clean-`HEAD` checks around its full run. Each suite
+   and the full non-Vitest run executes from a fresh ephemeral detached local
+   Git clone at the exact candidate SHA with lockfile-enforced `npm ci`; ignored worktree
+   dependencies and skip-worktree content cannot influence release evidence.
+   Plan 4 report/sidecar are owned by `G01_TRACE`; Plan 5 report/sidecar and the
+   non-Vitest evidence are owned by `G06_FULL`. The other four suite pairs are
+   owned by G02/G03/G04/G11, and every kind/path must occur exactly once.
 
 3. Produce the non-Vitest full-regression evidence, reconstruct the exact
    owner RED runs and missing Task 0A baseline, then capture the acceptance
@@ -270,6 +276,12 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    additional non-primary trace or auxiliary record, RED substitution, or
    changed binding fails closed.
 
+   Strict release verification replays the trace producer read-only: it reads
+   the capture spec plus all concrete RED/GREEN reports and patch bytes, repeats
+   exact Git lineage and extension-aware module resolution, rebuilds the trace,
+   and requires byte identity with `acceptance-trace.json`. A structurally valid
+   trace whose underlying reports or patches are missing or changed is invalid.
+
    Plan 3 RED preparation always sets `REQUIRE_PLAN3_POSTGRES=1` and binds both
    `PLAN3_TEST_DATABASE_URL` and `TEST_DATABASE_URL` to the exact disposable
    `tron_watch_plan3` database. AC-14/15 must execute; skipped PostgreSQL tests
@@ -287,7 +299,11 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    `7664744009044738089`. Failed executions must match the positive frozen
    behavioral allowlist; AC-14/15 specifically require the exact
    `reconcileWaitingForensicCheckJobs` failure and frozen stack location. RED
-   execution selects only `[AC-NN]` tests. Cleanup uses a fresh identity-verified
+   execution selects only `[AC-NN]` tests. The Node runner records its exact CID
+   in a private control file and carries a cryptographically unique invocation
+   label. Cleanup inspects CID, name, pinned image and label before removing by
+   CID; it never deletes by name after a collision or failed create. Cleanup
+   uses a fresh identity-verified
    admin connection to disable the frozen login, terminate its sessions, revoke
    its grant, drop only objects owned by that new disposable role, drop the role,
    and verify absence even after a failed test run. Its pinned Node container
