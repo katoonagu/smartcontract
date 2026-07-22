@@ -69,6 +69,7 @@ type CaptureApi = {
   redGroupForTrace(testFile: string, acceptanceId: string, secondary?: boolean): string;
   redPatchApplicationArgs(redGroupId: string): string[];
   buildRedGroupEnvironment(groupId: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+  assertRedGroupEnvironmentRequirements(source: NodeJS.ProcessEnv): void;
   assertPlan3FrozenRedExecutions(executions: readonly ParsedExecution[]): void;
   assertPlan3PinnedDatabaseIdentity(input: {
     containerId: string;
@@ -126,6 +127,7 @@ async function loadCaptureApi(): Promise<CaptureApi> {
   if (typeof loaded.redGroupForTrace !== "function"
       || typeof loaded.redPatchApplicationArgs !== "function"
       || typeof loaded.buildRedGroupEnvironment !== "function"
+      || typeof loaded.assertRedGroupEnvironmentRequirements !== "function"
       || typeof loaded.assertPlan3FrozenRedExecutions !== "function"
       || typeof loaded.assertPlan3PinnedDatabaseIdentity !== "function"
       || typeof loaded.assertPlan3SuiteFailuresAreBehavioral !== "function"
@@ -883,6 +885,13 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   expect(() => api.buildRedGroupEnvironment("plan3", {
     PLAN3_TEST_DATABASE_URL: "postgresql://release:redacted@127.0.0.1:56001/tron_watch"
   })).toThrow(/exact disposable/i);
+  expect(() => api.assertRedGroupEnvironmentRequirements({
+    PLAN3_TEST_DATABASE_URL: plan3DatabaseUrl
+  })).toThrow(/PLAN4_TEST_DATABASE_URL/);
+  expect(() => api.assertRedGroupEnvironmentRequirements({
+    PLAN3_TEST_DATABASE_URL: plan3DatabaseUrl,
+    PLAN4_TEST_DATABASE_URL: "postgresql://release:redacted@127.0.0.1:56001/tron_watch_plan4"
+  })).not.toThrow();
   const plan3Execution = {
     testFile: "tests/runtime/waitReconciliation.acceptance.test.ts",
     fullName: "[AC-14] reconciles and claims an all-ready parent exactly once",

@@ -262,6 +262,8 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
 
    ```powershell
    $env:PLAN5_BASE_SHA = '4761e1453ea03a96845b68039e6d6f4812aae540'
+   $env:PLAN3_TEST_DATABASE_URL = '<exact-disposable-tron_watch_plan3-url>'
+   $env:PLAN4_TEST_DATABASE_URL = '<exact-disposable-tron_watch_plan4-url>'
    npm run release:verify:non-vitest -- <artifact-root>
    npm run release:trace:prepare -- <artifact-root>
    npm run release:trace:capture -- <artifact-root>
@@ -293,6 +295,9 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    at owner plus candidate. Generic/no-test/dependency/fixture/environment/
    timeout/synthetic failures, a foreign importer, or multiple local-absence
    messages fail closed.
+   Before creating any trace directory or RED report, preparation validates
+   both exact disposable Plan 3 and Plan 4 database bindings; a missing or
+   non-disposable binding therefore leaves the protected root untouched.
 
    The separate secondary `[AC-33][LLM-DAMPENING]` regression is the only
    `candidate_green_only` auxiliary proof. It is not another AC, adds no RED

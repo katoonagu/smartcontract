@@ -114,6 +114,8 @@ with the exact source token, then verify:
 
 ```powershell
 $env:RELEASE_SHA = (git rev-parse HEAD).Trim()
+$env:PLAN3_TEST_DATABASE_URL = '<exact-disposable-tron_watch_plan3-url>'
+$env:PLAN4_TEST_DATABASE_URL = '<exact-disposable-tron_watch_plan4-url>'
 npm run release:task0b:preflight -- <protected-artifact-root>
 npm run release:freeze:materialize -- <protected-artifact-root>
 npm run release:task0b:revalidate -- <protected-artifact-root>
@@ -132,6 +134,10 @@ npm run release:telegram:manual -- <protected-artifact-root>
 npm run release:manifest:advance -- pre_manual absent <protected-artifact-root>
 npm run release:verify -- --phase pre-manual --artifact-root <protected-artifact-root>
 ```
+
+`release:trace:prepare` validates both disposable database bindings before it
+creates trace directories or RED reports. A missing or non-disposable binding
+is an operator/preflight failure and must not be converted into RED evidence.
 
 Do not recapture or rematerialize Task 0B after the freeze exists. Its
 15-minute live observation is renewed only by another complete read-only

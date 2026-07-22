@@ -1134,6 +1134,10 @@ export function buildRedGroupEnvironment(groupId: string, source: NodeJS.Process
   return env;
 }
 
+export function assertRedGroupEnvironmentRequirements(source: NodeJS.ProcessEnv): void {
+  for (const group of RED_GROUPS) buildRedGroupEnvironment(group.id, source);
+}
+
 export function redGroupForTrace(testFile: string, acceptanceId: string, secondary = false): string {
   if (secondary) throw new Error("secondary AC-33 is candidate-GREEN-only and has no RED group");
   if (acceptanceId === "AC-10" || acceptanceId === "AC-11") return "plan1-renamed";
@@ -1323,6 +1327,7 @@ async function prepareRemediationTestEvidenceInternal(
   if (candidateStatus !== "" && !options.allowDirtyManagedPreflight) {
     throw new Error("trace prepare candidate worktree is dirty");
   }
+  assertRedGroupEnvironmentRequirements(process.env);
   await ensureTraceDirectory(root, "trace");
   await ensureTraceDirectory(root, "trace/red");
   await ensureTraceDirectory(root, "trace/patches");
