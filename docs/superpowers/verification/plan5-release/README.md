@@ -22,12 +22,16 @@ Task 0A observed the previous runtime without changing it:
 - Admin HTTP 200;
 - Telegram long polling.
 
-The live process was not started by the new repository runtime manager and is
-therefore unmarked by its `runtime_manager_previous_identity` attestation.
-Operational preflight is externally blocked before Task 9. Do not adopt,
-restart, stop, or replace that process under this documentation task. Task 9
-requires separate user approval for controlled adoption/restart (or a plan
-amendment), followed by a fresh Task 0B capture.
+If the live process has no repository-manager start attestation, Task 0B must
+classify it as `legacy_unmanaged_previous_runtime`, never as manager-owned.
+The read-only capture binds and every revalidation reproduces its exact
+PID/start time, executable, command line, entrypoint, clean worktree SHA/label,
+loopback Admin runtime proof, production DB/schema identity, and Telegram bot
+identity plus empty webhook. Any change, disappearance, second candidate, or
+ambiguity fails closed. This narrow contract permits pre-release evidence only:
+it does not adopt the process and all production start/stop/rollback authority
+paths reject the legacy kind until full G00-G11, merge, explicit production GO,
+and a separate action-specific amendment/authority.
 
 Production database, runtime, and Telegram remain unchanged until all of the
 following are true: Task 9 is authorized and completed, `G00` through `G11`
@@ -179,9 +183,10 @@ schema, sanitized runtime, terminal legacy, rollback, and manual Telegram
 artifacts. Every trace GREEN hash and exact file/fullName must resolve in its
 owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
 
-1. After the separately approved adoption/restart decision or plan amendment
-   required before Task 9, capture a fresh read-only Task 0B against the
-   protected configuration:
+1. Capture a fresh read-only Task 0B against the protected configuration. A
+   manager-owned previous runtime uses its exact protected start evidence; an
+   unmarked one uses only the strict `legacy_unmanaged_previous_runtime`
+   branch described above:
 
    ```powershell
    npm run release:task0b:preflight -- <artifact-root>
@@ -190,8 +195,8 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    ```
 
    The capture must record zero runtime stops/starts, zero database migrations,
-   and zero Telegram sends. Until the current unmarked-runtime block is
-   resolved, do not run the manager to force this step through.
+   and zero Telegram sends. Never run the manager to manufacture identity or
+   force this step through.
 
 2. Set the exact candidate identity and run each focused suite producer. Each
    PostgreSQL acceptance suite must execute rather than skip:
@@ -654,9 +659,10 @@ Rollback selects only its typed observed branch, keeps additive schema 032,
 and rechecks Admin, singleton, `/version`, queues, conservative allowance,
 sent delivery, and immutable completed results. No production backup,
 migration, rollout, canary, recovery, rollback, takeover, runtime, database, or
-Telegram command in this section has been executed. The unmarked live runtime
-block before Task 9 remains unresolved and must not be adopted, stopped,
-restarted, or replaced implicitly.
+Telegram command in this section has been executed. A live runtime without
+manager start evidence may be observed only through the strict read-only
+legacy-unmanaged Task 0B contract; it must not be adopted, stopped, restarted,
+or replaced implicitly.
 
 ## Honest residual limits and forbidden scope
 

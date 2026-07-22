@@ -8,8 +8,8 @@
 
 > **Status:** утверждён. Этот документ коммитится отдельно до начала Task 0;
 > код и production на момент утверждения не изменены.
-> Task 8 остаётся незавершённым до полного GREEN Task 8B; Task 9 заблокирован
-> одновременно manifest-lifecycle gap и отдельным unmarked-runtime preflight.
+> Task 8 остаётся незавершённым до полного GREEN Task 8B; Task 9 требует
+> закрытого manifest lifecycle и exact read-only previous-runtime preflight.
 >
 > **Approved narrow amendment:** Task 0 разделён на локальный baseline gate и
 > operational/release preflight. Локальная реализация Tasks 1–8B не зависит от
@@ -268,8 +268,10 @@ runtime/DB health и отдельный closeout document после прове�
     manifest SHA, hash-chained transition receipt, artifact-root/Task0B binding
     и полную semantic verification всех gates текущей фазы.
 18. Task 9 начинается только после GREEN Tasks 8B.1–8B.8 и отдельного fresh
-    Task 0B. Текущий unmarked production runtime остаётся вторым независимым
-    блокером; Task 8B не разрешает его adopt/restart/stop.
+    Task 0B. Unmarked runtime допускается только как read-only discriminated
+    `legacy_unmanaged_previous_runtime` с полным process/Admin/DB/Telegram
+    rebinding при каждой revalidation; это не adoption и не разрешение
+    start/stop/rollback.
 
 ---
 
@@ -2771,6 +2773,16 @@ Regenerate evidence from the then-current runtime and require all of:
 7. isolated candidate port and proof that discovery did not stop/start runtime,
    migrate DB or send Telegram messages.
 
+The previous-runtime identity is discriminated. A manager-started process uses
+the exact manager attestation. A process without that attestation may use only
+`legacy_unmanaged_previous_runtime`: one exact PID/start time, executable and
+command-line hashes, absolute entrypoint and clean worktree fingerprints,
+exact SHA/label, loopback Admin runtime-proof hash, production DB/schema
+identity, and read-only Telegram bot identity with an empty webhook. Capture
+and every revalidation reproduce all fields; disappearance, ambiguity, or any
+drift fails closed. The legacy kind is evidence-only and is rejected by all
+runtime start/stop/rollback authority consumption paths.
+
 After capture verification, materialize the freeze only through:
 
 ```powershell
@@ -4417,8 +4429,8 @@ referencing failure evidence to `production_failed`, emits no normal gate
 evidence and never observes,
 reconciles or replays the uncertain effect. Also document the G14
 pre-effect failure path;
-state that no production command was executed. Keep the unmarked runtime
-blocker explicit.
+  state that no production command was executed. Keep the evidence-only legacy
+  unmanaged runtime boundary explicit.
 
 Focused and full GREEN:
 
@@ -4450,9 +4462,10 @@ worktree clean, and main 13 dirty paths/four stash hashes unchanged.
 After the commit run whole-plan spec-review and independent operational/
 security code-quality review. Task 8 becomes complete only when both reviews
 PASS and every Task 8B focused/full check is GREEN. Task 9 still requires a
-current operational-preflight revalidation against the existing immutable
-`ReleaseFreezeIdentityV2` and separate resolution of the unmarked-runtime
-blocker. It must not recreate the freeze; G12-G15 later consume their own fresh
+  current operational-preflight revalidation against the existing immutable
+  `ReleaseFreezeIdentityV2`; an unmarked runtime must use the strict read-only
+  legacy-unmanaged identity and cannot authorize an action. Revalidation must
+  not recreate the freeze; G12-G15 later consume their own fresh
 action-specific `OperationalAttestationV2` only after sole-issuer append and
 unique-compatible-tip selection.
 
@@ -5556,8 +5569,9 @@ hashes, not secrets or full raw logs.
   subagent-driven development;
 - Task 9 не начинать до завершения Tasks 0–8B, revalidation существующего
   immutable `ReleaseFreezeIdentityV2` и current operational-preflight evidence,
-  отдельного подтверждения release-candidate evidence и разрешения
-  unmarked-runtime blocker; freeze не пересоздаётся, а G12–G15 и actual rollback
+  отдельного подтверждения release-candidate evidence и exact revalidation
+  manager-owned либо read-only legacy-unmanaged runtime identity; freeze не
+  пересоздаётся, а G12–G15 и actual rollback
   позже получают через sole append-only issuer отдельные action-specific
   `OperationalAttestationV2` той же frozen generation, выбранные как unique
   compatible unconsumed tip и атомарно consumed только в bound claim; G12/G13

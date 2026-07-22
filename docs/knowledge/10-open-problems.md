@@ -378,6 +378,11 @@ targets, requires a 15-minute attempt floor, and leaves failed reads
 
 ## Release tooling
 
+- After Plan 5, archive or simplify the one-release control plane instead of
+  extending it for future releases. Preserve the audit artifacts and security
+  lessons, but replace the release-specific state machine with a smaller
+  maintained workflow before reuse. This is a safe P2 follow-up and does not
+  change or broaden the current release.
 - The Plan 3 frozen RED Docker runner removes only a CID whose invocation
   label, name and image match. A narrow daemon failure after container creation
   but before the protected CID file is written can leave a stopped disposable

@@ -72,8 +72,22 @@ export type Task0BPreflightConfigV1 = {
   previousRuntimeSha: string;
   previousRuntimeLabel: string;
   previousRuntimeIdentity: {
+    kind: "manager_owned_previous_runtime";
     evidencePath: string;
     evidenceSha256: string;
+  } | {
+    kind: "legacy_unmanaged_previous_runtime";
+    processId: number;
+    processStartedAt: string;
+    commandLineSha256: string;
+    executablePathSha256: string;
+    workingDirectoryFingerprintSha256: string;
+    entrypointPathFingerprintSha256: string;
+    adminUrl: string;
+    adminReadOnlyAuthEnvName: "TASK0B_PREVIOUS_RUNTIME_ADMIN_READ_ONLY_AUTH";
+    expectedRuntimeVersionSha256: string;
+    telegramReadOnlyAuthEnvName: "TASK0B_PREVIOUS_RUNTIME_TELEGRAM_READ_ONLY_AUTH";
+    expectedTelegramBotIdentitySha256: string;
   };
   databaseConnectionEnvName: "TASK0B_PRODUCTION_DATABASE_URL";
   productionDatabaseExpected: {
@@ -106,7 +120,7 @@ export type Task0BReadOnlyCaptureDependencies = {
   readPreviousRuntime(): Promise<{
     sha: string;
     label: string;
-    source: "runtime_manager_attestation_and_process_direct_read";
+    source: Task0BReleaseFreezeEvidenceV1["previousRuntimeSource"];
     verified: boolean;
     identity: Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"];
   }>;
@@ -120,6 +134,16 @@ export type Task0BReadOnlyCaptureDependencies = {
 };
 
 export type Task0BRevalidationDependencies = Omit<Task0BReadOnlyCaptureDependencies, "readOperatorConfigBinding">;
+
+function previousRuntimeSourceMatchesIdentity(
+  source: Task0BReleaseFreezeEvidenceV1["previousRuntimeSource"],
+  identity: Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"] | undefined
+): boolean {
+  return identity !== undefined && ((identity.kind === "manager_owned_previous_runtime"
+      && source === "runtime_manager_attestation_and_process_direct_read")
+    || (identity.kind === "legacy_unmanaged_previous_runtime"
+      && source === "legacy_unmanaged_process_admin_database_telegram_read_only"));
+}
 
 function hash(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -261,10 +285,34 @@ function assertPreviousRuntimeIdentityConfig(
   value: unknown
 ): Task0BPreflightConfigV1["previousRuntimeIdentity"] {
   const identity = record(value, "task0b_config_previous_runtime_identity");
-  exactKeys(identity, ["evidencePath", "evidenceSha256"], "task0b_config_previous_runtime_identity");
-  if (typeof identity.evidencePath !== "string"
-      || !/^runtime-start-evidence-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(identity.evidencePath)
-      || !SHA256.test(String(identity.evidenceSha256))) {
+  if (identity.kind === "manager_owned_previous_runtime") {
+    exactKeys(identity, ["kind", "evidencePath", "evidenceSha256"], "task0b_config_previous_runtime_identity");
+    if (typeof identity.evidencePath !== "string"
+        || !/^runtime-start-evidence-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(identity.evidencePath)
+        || !SHA256.test(String(identity.evidenceSha256))) {
+      throw new Error("task0b_config_previous_runtime_identity_unverified");
+    }
+  } else if (identity.kind === "legacy_unmanaged_previous_runtime") {
+    exactKeys(identity, ["kind", "processId", "processStartedAt", "commandLineSha256", "executablePathSha256",
+      "workingDirectoryFingerprintSha256", "entrypointPathFingerprintSha256", "adminUrl", "adminReadOnlyAuthEnvName",
+      "expectedRuntimeVersionSha256", "telegramReadOnlyAuthEnvName", "expectedTelegramBotIdentitySha256"
+    ], "task0b_config_previous_runtime_identity");
+    const startedAt = new Date(String(identity.processStartedAt));
+    let adminUrl: URL;
+    try { adminUrl = new URL(String(identity.adminUrl)); }
+    catch { throw new Error("task0b_config_legacy_admin_url_unverified"); }
+    if (!Number.isSafeInteger(identity.processId) || Number(identity.processId) < 1
+        || !Number.isFinite(startedAt.getTime()) || startedAt.toISOString() !== identity.processStartedAt
+        || adminUrl.protocol !== "http:" || adminUrl.hostname !== "127.0.0.1" || !adminUrl.port
+        || adminUrl.pathname !== "/" || adminUrl.search || adminUrl.hash || adminUrl.username || adminUrl.password
+        || identity.adminReadOnlyAuthEnvName !== "TASK0B_PREVIOUS_RUNTIME_ADMIN_READ_ONLY_AUTH"
+        || identity.telegramReadOnlyAuthEnvName !== "TASK0B_PREVIOUS_RUNTIME_TELEGRAM_READ_ONLY_AUTH"
+        || [identity.commandLineSha256, identity.executablePathSha256, identity.workingDirectoryFingerprintSha256,
+          identity.entrypointPathFingerprintSha256, identity.expectedRuntimeVersionSha256,
+          identity.expectedTelegramBotIdentitySha256].some((item) => !SHA256.test(String(item)))) {
+      throw new Error("task0b_config_previous_runtime_identity_unverified");
+    }
+  } else {
     throw new Error("task0b_config_previous_runtime_identity_unverified");
   }
   return identity as Task0BPreflightConfigV1["previousRuntimeIdentity"];
@@ -331,7 +379,7 @@ export async function captureTask0BReleaseFreezeEvidence(
   const candidateSha = candidateBefore.sha;
   operationIds.push("previous_runtime_read_before");
   const previous = await dependencies.readPreviousRuntime();
-  if (previous.source !== "runtime_manager_attestation_and_process_direct_read" || previous.verified !== true
+  if (!previousRuntimeSourceMatchesIdentity(previous.source, previous.identity) || previous.verified !== true
       || !previous.identity || previous.identity.runtimeSha !== previous.sha || previous.identity.runtimeLabel !== previous.label) {
     throw new Error("task0b_previous_runtime_source_unverified");
   }
@@ -358,12 +406,19 @@ export async function captureTask0BReleaseFreezeEvidence(
   }
   operationIds.push("previous_runtime_read_after");
   const previousAfter = await dependencies.readPreviousRuntime();
-  if (previousAfter.source !== "runtime_manager_attestation_and_process_direct_read" || previousAfter.verified !== true
+  if (!previousRuntimeSourceMatchesIdentity(previousAfter.source, previousAfter.identity) || previousAfter.verified !== true
       || hash(JSON.stringify(previousAfter)) !== hash(JSON.stringify(previous))) {
     throw new Error("task0b_previous_runtime_changed");
   }
   if (previous.identity.workingDirectoryFingerprintSha256 !== rollbackWorktree.worktreePathFingerprintSha256
-      || previous.identity.managerExecutableSha256 !== runtimeManager.executorSha256) {
+      || (previous.identity.kind === "manager_owned_previous_runtime"
+        && previous.identity.managerExecutableSha256 !== runtimeManager.executorSha256)
+      || (previous.identity.kind === "legacy_unmanaged_previous_runtime"
+        && (previous.identity.productionDatabaseObservation.approvedIdentityFingerprintSha256
+            !== productionDatabase.approvedIdentityFingerprintSha256
+          || previous.identity.productionDatabaseObservation.schemaState !== productionDatabase.schemaState
+          || previous.identity.productionDatabaseObservation.schemaReceiptSetSha256
+            !== productionDatabase.schemaReceiptSet.aggregateSha256))) {
     throw new Error("task0b_previous_runtime_binding_mismatch");
   }
   if (operationIds.length !== TASK0B_READ_ONLY_OPERATION_IDS.length
@@ -442,7 +497,7 @@ export async function captureTask0BReleaseRevalidationEvidence(
   operationIds.push("previous_runtime_read_before");
   const previous = await dependencies.readPreviousRuntime();
   if (previous.sha !== frozen.previousRuntimeSha || previous.label !== frozen.previousRuntimeLabel
-      || previous.source !== "runtime_manager_attestation_and_process_direct_read" || previous.verified !== true
+      || !previousRuntimeSourceMatchesIdentity(previous.source, previous.identity) || previous.verified !== true
       || canonicalReleaseJsonV2(previous.identity) !== canonicalReleaseJsonV2(frozen.previousRuntimeIdentity)) {
     throw new Error("task0b_revalidation_previous_runtime_unverified");
   }
@@ -469,6 +524,17 @@ export async function captureTask0BReleaseRevalidationEvidence(
   const previousAfter = await dependencies.readPreviousRuntime();
   if (canonicalReleaseJsonV2(previousAfter) !== canonicalReleaseJsonV2(previous)) {
     throw new Error("task0b_revalidation_previous_runtime_changed");
+  }
+  if (previous.identity.workingDirectoryFingerprintSha256 !== rollbackWorktree.worktreePathFingerprintSha256
+      || (previous.identity.kind === "manager_owned_previous_runtime"
+        && previous.identity.managerExecutableSha256 !== runtimeManager.executorSha256)
+      || (previous.identity.kind === "legacy_unmanaged_previous_runtime"
+        && (previous.identity.productionDatabaseObservation.approvedIdentityFingerprintSha256
+            !== productionDatabase.approvedIdentityFingerprintSha256
+          || previous.identity.productionDatabaseObservation.schemaState !== productionDatabase.schemaState
+          || previous.identity.productionDatabaseObservation.schemaReceiptSetSha256
+            !== productionDatabase.schemaReceiptSet.aggregateSha256))) {
+    throw new Error("task0b_revalidation_previous_runtime_binding_mismatch");
   }
   if (operationIds.length !== TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS.length
       || operationIds.some((operationId, index) => operationId !== TASK0B_REVALIDATION_READ_ONLY_OPERATION_IDS[index])) {
@@ -957,6 +1023,7 @@ export function validateTask0BPreviousRuntimeIdentity(
     evidence.managerExecutableSha256
   ]) if (!SHA256.test(String(field))) throw new Error("task0b_previous_runtime_identity_unverified");
   return {
+    kind: "manager_owned_previous_runtime",
     generationId: evidence.generationId as string,
     runtimeSha: evidence.runtimeSha as string,
     runtimeLabel: evidence.runtimeLabel as string,
@@ -1084,15 +1151,179 @@ export async function countTask0BRuntimeCandidates(bounded?: Task0BBoundedProbeO
   return count;
 }
 
+async function fetchTask0BReadOnlyJson(url: URL, init: RequestInit, code: string): Promise<{ status: number; value: unknown }> {
+  try {
+    const response = await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(10_000) });
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_CONFIG_BYTES) throw new Error(`${code}_too_large`);
+    try { return { status: response.status, value: JSON.parse(text) as unknown }; }
+    catch { throw new Error(`${code}_json_invalid`); }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(code)) throw error;
+    throw new Error(`${code}_failed`);
+  }
+}
+
+export function parseTask0BLegacyEntrypoint(commandLine: string): string {
+  if (commandLine.includes("--task0b-manager-producer=")) throw new Error("task0b_legacy_runtime_is_manager_owned");
+  const matches = [...commandLine.matchAll(/(?:^|\s)(?:"([^"]*src[\\/]index\.ts)"|(\S*src[\\/]index\.ts))(?=\s|$)/giu)];
+  if (matches.length !== 1) throw new Error("task0b_legacy_runtime_entrypoint_ambiguous");
+  const entrypoint = matches[0]?.[1] ?? matches[0]?.[2];
+  if (!entrypoint || !isAbsolute(entrypoint)) throw new Error("task0b_legacy_runtime_entrypoint_unverified");
+  return entrypoint;
+}
+
+async function observeLegacyUnmanagedRuntime(
+  config: Task0BPreflightConfigV1,
+  binding: Extract<Task0BPreflightConfigV1["previousRuntimeIdentity"], { kind: "legacy_unmanaged_previous_runtime" }>
+): Promise<Extract<Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"], { kind: "legacy_unmanaged_previous_runtime" }>> {
+  if (process.platform !== "win32") throw new Error("task0b_runtime_process_probe_unsupported");
+  const processJson = await run("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    `$items = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match '${TASK0B_RUNTIME_ENTRYPOINT_PROCESS_PATTERN_V2}' } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; processStartedAt = $_.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$_.CommandLine; executablePath = [string]$_.ExecutablePath } }); ConvertTo-Json -Compress -InputObject $items`
+  ], undefined, undefined, 10_000);
+  let processes: unknown;
+  try { processes = JSON.parse(processJson); }
+  catch { throw new Error("task0b_legacy_runtime_process_json_invalid"); }
+  if (!Array.isArray(processes) || processes.length !== 1) throw new Error("task0b_legacy_runtime_process_ambiguous");
+  const observed = record(processes[0], "task0b_legacy_runtime_process_unverified");
+  if (observed.processId !== binding.processId || typeof observed.processStartedAt !== "string"
+      || typeof observed.commandLine !== "string" || typeof observed.executablePath !== "string") {
+    throw new Error("task0b_legacy_runtime_process_unverified");
+  }
+  const startedAt = new Date(observed.processStartedAt);
+  const entrypoint = resolve(parseTask0BLegacyEntrypoint(observed.commandLine));
+  const physicalEntrypoint = resolve(await realpath(entrypoint));
+  if (!Number.isFinite(startedAt.getTime()) || !sameCanonicalPath(entrypoint, physicalEntrypoint)) {
+    throw new Error("task0b_legacy_runtime_process_unverified");
+  }
+  const worktree = dirname(dirname(physicalEntrypoint));
+  const [gitTopLevel, gitHead, gitStatus] = await Promise.all([
+    run("git", ["rev-parse", "--show-toplevel"], worktree, undefined, 10_000),
+    run("git", ["rev-parse", "HEAD"], worktree, undefined, 10_000),
+    run("git", ["status", "--porcelain"], worktree, undefined, 10_000)
+  ]);
+  const physicalTopLevel = resolve(await realpath(gitTopLevel));
+  const processBinding = {
+    processId: Number(observed.processId),
+    processStartedAt: startedAt.toISOString(),
+    commandLineSha256: hash(observed.commandLine),
+    executablePathSha256: hash(observed.executablePath.toLowerCase()),
+    workingDirectoryFingerprintSha256: hash(canonicalPathKey(physicalTopLevel)),
+    entrypointPathFingerprintSha256: hash(canonicalPathKey(physicalEntrypoint))
+  };
+  if (!sameCanonicalPath(physicalTopLevel, worktree) || gitHead !== config.previousRuntimeSha || gitStatus !== ""
+      || canonicalReleaseJsonV2(processBinding) !== canonicalReleaseJsonV2({
+        processId: binding.processId,
+        processStartedAt: binding.processStartedAt,
+        commandLineSha256: binding.commandLineSha256,
+        executablePathSha256: binding.executablePathSha256,
+        workingDirectoryFingerprintSha256: binding.workingDirectoryFingerprintSha256,
+        entrypointPathFingerprintSha256: binding.entrypointPathFingerprintSha256
+      })) throw new Error("task0b_legacy_runtime_process_binding_mismatch");
+
+  const adminAuth = process.env[binding.adminReadOnlyAuthEnvName];
+  const telegramAuth = process.env[binding.telegramReadOnlyAuthEnvName];
+  if (!adminAuth || adminAuth !== adminAuth.trim() || !telegramAuth || telegramAuth !== telegramAuth.trim()) {
+    throw new Error("task0b_legacy_runtime_read_only_auth_missing");
+  }
+  const adminBase = new URL(binding.adminUrl);
+  const adminUrl = new URL("admin/api/runtime-proof", adminBase);
+  const adminResponse = await fetchTask0BReadOnlyJson(adminUrl, {
+    method: "GET", headers: { authorization: `Bearer ${adminAuth}` }
+  }, "task0b_legacy_admin_observation");
+  const adminProof = record(adminResponse.value, "task0b_legacy_admin_proof_invalid");
+  const runtimeVersion = record(adminProof.runtimeVersion, "task0b_legacy_admin_runtime_version_invalid");
+  const runtimeVersionSha256 = hash(JSON.stringify(runtimeVersion));
+  if (adminResponse.status !== 200 || adminProof.version !== "runtime-proof-v1"
+      || adminProof.runtimeVersionSha256 !== runtimeVersionSha256
+      || runtimeVersionSha256 !== binding.expectedRuntimeVersionSha256
+      || runtimeVersion.gitCommitSha !== config.previousRuntimeSha
+      || runtimeVersion.runtimeInstanceLabel !== config.previousRuntimeLabel) {
+    throw new Error("task0b_legacy_admin_observation_unverified");
+  }
+
+  const telegramBase = new URL(`https://api.telegram.org/bot${encodeURIComponent(telegramAuth)}/`);
+  const [telegramMeResponse, telegramWebhookResponse] = await Promise.all([
+    fetchTask0BReadOnlyJson(new URL("getMe", telegramBase), { method: "GET" }, "task0b_legacy_telegram_getme"),
+    fetchTask0BReadOnlyJson(new URL("getWebhookInfo", telegramBase), { method: "GET" }, "task0b_legacy_telegram_webhook")
+  ]);
+  const telegramMe = record(telegramMeResponse.value, "task0b_legacy_telegram_getme_invalid");
+  const telegramBot = record(telegramMe.result, "task0b_legacy_telegram_bot_invalid");
+  const telegramWebhook = record(telegramWebhookResponse.value, "task0b_legacy_telegram_webhook_invalid");
+  const webhook = record(telegramWebhook.result, "task0b_legacy_telegram_webhook_result_invalid");
+  const botIdentitySha256 = hash(canonicalReleaseJsonV2({
+    id: telegramBot.id,
+    isBot: telegramBot.is_bot,
+    username: telegramBot.username
+  }));
+  if (telegramMeResponse.status !== 200 || telegramWebhookResponse.status !== 200
+      || telegramMe.ok !== true || telegramWebhook.ok !== true
+      || !Number.isSafeInteger(telegramBot.id) || telegramBot.is_bot !== true
+      || typeof telegramBot.username !== "string" || !/^[A-Za-z0-9_]{5,32}$/.test(telegramBot.username)
+      || webhook.url !== "" || botIdentitySha256 !== binding.expectedTelegramBotIdentitySha256) {
+    throw new Error("task0b_legacy_telegram_observation_unverified");
+  }
+  const database = await observeTask0BProductionDatabase(config);
+  return {
+    kind: "legacy_unmanaged_previous_runtime",
+    runtimeSha: config.previousRuntimeSha,
+    runtimeLabel: config.previousRuntimeLabel,
+    ...processBinding,
+    adminObservation: {
+      endpointFingerprintSha256: hash(adminUrl.toString()),
+      httpStatus: 200,
+      runtimeVersionSha256,
+      observedRuntimeSha: runtimeVersion.gitCommitSha as string,
+      observedRuntimeLabel: runtimeVersion.runtimeInstanceLabel as string,
+      source: "loopback_admin_runtime_proof_read_only",
+      verified: true
+    },
+    productionDatabaseObservation: {
+      approvedIdentityFingerprintSha256: database.approvedIdentityFingerprintSha256,
+      schemaState: database.schemaState,
+      schemaReceiptSetSha256: database.schemaReceiptSet.aggregateSha256,
+      source: "task0b_production_database_read_only_binding",
+      verified: true
+    },
+    telegramObservation: {
+      mode: "long_polling",
+      botIdentitySha256,
+      webhookUrlSha256: hash(""),
+      source: "telegram_getme_and_getwebhookinfo_read_only",
+      verified: true
+    },
+    actionPolicy: {
+      managerOwned: false,
+      stopStartRollbackAuthorized: false,
+      requiresPassedPreReleaseGates: true,
+      requiresMergedCandidate: true,
+      requiresExplicitProductionGo: true,
+      requiresActionSpecificAuthority: true
+    },
+    source: "legacy_unmanaged_process_admin_database_telegram_read_only",
+    verified: true
+  };
+}
+
 async function observeCurrentRuntime(config: Task0BPreflightConfigV1): Promise<{
   sha: string;
   label: string;
-  source: "runtime_manager_attestation_and_process_direct_read";
+  source: Task0BReleaseFreezeEvidenceV1["previousRuntimeSource"];
   verified: true;
   identity: Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"];
 }> {
   const root = await inspectRealDirectory(config.artifactRoot, true);
   const binding = assertPreviousRuntimeIdentityConfig(config.previousRuntimeIdentity);
+  if (binding.kind === "legacy_unmanaged_previous_runtime") {
+    return {
+      sha: config.previousRuntimeSha,
+      label: config.previousRuntimeLabel,
+      source: "legacy_unmanaged_process_admin_database_telegram_read_only",
+      verified: true,
+      identity: await observeLegacyUnmanagedRuntime(config, binding)
+    };
+  }
   const manager = assertAllowedRuntimeManager(config.runtimeManager);
   const evidenceBytes = await readProtectedRegularFile(root, binding.evidencePath, MAX_CONFIG_BYTES);
   if (hash(evidenceBytes) !== binding.evidenceSha256) throw new Error("task0b_previous_runtime_evidence_hash_mismatch");

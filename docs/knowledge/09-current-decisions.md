@@ -245,10 +245,17 @@ of these decisions, update this file in the same work.
 - Task 0A observed previous runtime
   `0172978845ec74373bd245098ee8c075e0c39acf`, label `master-01729788`, Admin
   HTTP 200 and Telegram long polling against loopback `tron_watch:55999` at
-  legacy schema 031 with no receipt 032. That live process is unmarked by the
-  new runtime manager, so Task 9 is externally blocked pending a separate
-  user-approved controlled adoption/restart or plan amendment and a fresh
-  Task 0B. It must not be adopted, stopped, restarted, or replaced implicitly.
+  legacy schema 031 with no receipt 032. Task 0B may represent a process that
+  lacks repository-manager start evidence only as discriminated
+  `legacy_unmanaged_previous_runtime`. Every capture/revalidation must
+  independently reproduce the exact PID/start time, executable, command line,
+  entrypoint/worktree/SHA/label, loopback Admin runtime proof, production
+  DB/schema identity, and read-only Telegram `getMe`/`getWebhookInfo` identity.
+  It is never manager-owned evidence. Any drift, disappearance, ambiguity, or
+  unexpected webhook fails closed. The current amendment authorizes evidence
+  reads only: all candidate/previous start, stop, adoption, and rollback action
+  authorities reject this kind until complete pre-release gates, merge,
+  explicit production GO, and a separate action-specific amendment/authority.
 - Production remains unchanged until Task 9, complete `G00`-`G11`, merge to
   `master`, producer/verifier rerun for the merge SHA, and explicit release GO.
   `schema:verify` remains read-only; only `schema:release:sequence` owns

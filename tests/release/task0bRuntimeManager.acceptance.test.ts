@@ -566,6 +566,43 @@ it("[REQ-38][TASK0B-MANAGER-FRESHNESS] rejects a fresh GO over expired Task0B or
   expect(() => api.validateTask0BProductionGoEvidence(
     authority, task0b, task0b.operatorConfig, "2026-07-18T09:05:00.000Z"
   )).not.toThrow();
+  const legacy: any = structuredClone(task0b);
+  legacy.previousRuntimeSource = "legacy_unmanaged_process_admin_database_telegram_read_only";
+  legacy.previousRuntimeIdentity = {
+    kind: "legacy_unmanaged_previous_runtime",
+    runtimeSha: PREVIOUS_RUNTIME_SHA,
+    runtimeLabel: PREVIOUS_RUNTIME_LABEL,
+    processId: 11088,
+    processStartedAt: "2026-07-17T19:39:12.000Z",
+    commandLineSha256: "a".repeat(64),
+    executablePathSha256: "b".repeat(64),
+    workingDirectoryFingerprintSha256: legacy.rollbackWorktree.worktreePathFingerprintSha256,
+    entrypointPathFingerprintSha256: "c".repeat(64),
+    adminObservation: {
+      endpointFingerprintSha256: "4".repeat(64), httpStatus: 200, runtimeVersionSha256: "5".repeat(64),
+      observedRuntimeSha: PREVIOUS_RUNTIME_SHA, observedRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
+      source: "loopback_admin_runtime_proof_read_only", verified: true
+    },
+    productionDatabaseObservation: {
+      approvedIdentityFingerprintSha256: legacy.productionDatabase.approvedIdentityFingerprintSha256,
+      schemaState: legacy.productionDatabase.schemaState,
+      schemaReceiptSetSha256: legacy.productionDatabase.schemaReceiptSet.aggregateSha256,
+      source: "task0b_production_database_read_only_binding", verified: true
+    },
+    telegramObservation: {
+      mode: "long_polling", botIdentitySha256: "8".repeat(64),
+      webhookUrlSha256: createHash("sha256").update("").digest("hex"),
+      source: "telegram_getme_and_getwebhookinfo_read_only", verified: true
+    },
+    actionPolicy: {
+      managerOwned: false, stopStartRollbackAuthorized: false, requiresPassedPreReleaseGates: true,
+      requiresMergedCandidate: true, requiresExplicitProductionGo: true, requiresActionSpecificAuthority: true
+    },
+    source: "legacy_unmanaged_process_admin_database_telegram_read_only", verified: true
+  };
+  expect(() => api.validateTask0BProductionGoEvidence(
+    authority, legacy, legacy.operatorConfig, "2026-07-18T09:05:00.000Z"
+  )).toThrow(/legacy_unmanaged_previous_runtime_action_forbidden/);
   const freshGo = {
     ...authority,
     issuedAt: "2026-07-18T09:15:30.000Z",

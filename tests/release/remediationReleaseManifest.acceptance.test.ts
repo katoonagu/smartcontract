@@ -111,6 +111,7 @@ function buildTask0BPreflightConfig(artifactRoot: string, rollbackWorktreePath =
     previousRuntimeSha: PREVIOUS_RUNTIME_SHA,
     previousRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
     previousRuntimeIdentity: {
+      kind: "manager_owned_previous_runtime",
       evidencePath: "runtime-start-evidence-previous-runtime-generation-0001.json",
       evidenceSha256: evidence.previousRuntimeIdentity.startEvidenceSha256
     },
@@ -658,7 +659,6 @@ it("[REQ-38][TASK0B-PREFLIGHT] rejects every missing stale or unverified operati
     CANDIDATE_SHA,
     "2026-07-18T09:10:00.000Z"
   )).not.toThrow();
-
   const invalid: Array<(value: any) => void> = [
     (value) => { value.operatorConfig.contentSha256 = "not-a-hash"; },
     (value) => { value.operatorConfig.configExpiresAt = "2026-07-18T08:59:59.000Z"; },
@@ -748,6 +748,165 @@ it("[REQ-38][TASK0B-PREFLIGHT] rejects every missing stale or unverified operati
     ...complete,
     nested: { databaseUrl: "postgresql://release:secret@127.0.0.1/tron_watch" }
   }, CANDIDATE_SHA, "2026-07-18T09:10:00.000Z")).toThrow(/secret/i);
+});
+
+it("[REQ-38][TASK0B-LEGACY-RUNTIME] accepts only a fully bound read-only unmanaged previous runtime", async () => {
+  const api: any = await import("../../src/release/remediationReleaseManifest");
+  const managed = buildCompleteTask0BPreflight();
+  const legacy: any = structuredClone(managed);
+  legacy.previousRuntimeSource = "legacy_unmanaged_process_admin_database_telegram_read_only";
+  legacy.previousRuntimeIdentity = {
+    kind: "legacy_unmanaged_previous_runtime",
+    runtimeSha: PREVIOUS_RUNTIME_SHA,
+    runtimeLabel: PREVIOUS_RUNTIME_LABEL,
+    processId: 11088,
+    processStartedAt: "2026-07-17T19:39:12.000Z",
+    commandLineSha256: "a".repeat(64),
+    executablePathSha256: "b".repeat(64),
+    workingDirectoryFingerprintSha256: "3".repeat(64),
+    entrypointPathFingerprintSha256: "c".repeat(64),
+    adminObservation: {
+      endpointFingerprintSha256: "4".repeat(64),
+      httpStatus: 200,
+      runtimeVersionSha256: "5".repeat(64),
+      observedRuntimeSha: PREVIOUS_RUNTIME_SHA,
+      observedRuntimeLabel: PREVIOUS_RUNTIME_LABEL,
+      source: "loopback_admin_runtime_proof_read_only",
+      verified: true
+    },
+    productionDatabaseObservation: {
+      approvedIdentityFingerprintSha256: managed.productionDatabase.approvedIdentityFingerprintSha256,
+      schemaState: managed.productionDatabase.schemaState,
+      schemaReceiptSetSha256: managed.productionDatabase.schemaReceiptSet.aggregateSha256,
+      source: "task0b_production_database_read_only_binding",
+      verified: true
+    },
+    telegramObservation: {
+      mode: "long_polling",
+      botIdentitySha256: "8".repeat(64),
+      webhookUrlSha256: createHash("sha256").update("").digest("hex"),
+      source: "telegram_getme_and_getwebhookinfo_read_only",
+      verified: true
+    },
+    actionPolicy: {
+      managerOwned: false,
+      stopStartRollbackAuthorized: false,
+      requiresPassedPreReleaseGates: true,
+      requiresMergedCandidate: true,
+      requiresExplicitProductionGo: true,
+      requiresActionSpecificAuthority: true
+    },
+    source: "legacy_unmanaged_process_admin_database_telegram_read_only",
+    verified: true
+  };
+  expect(() => api.validateTask0BReleaseFreezeEvidence(
+    legacy,
+    CANDIDATE_SHA,
+    "2026-07-18T09:10:00.000Z"
+  )).not.toThrow();
+  expect(() => api.assertTask0BPreviousRuntimeActionAuthorized(legacy.previousRuntimeIdentity))
+    .toThrow(/legacy_unmanaged_previous_runtime_action_forbidden/);
+
+  for (const mutate of [
+    (value: any) => { value.previousRuntimeIdentity.adminObservation.observedRuntimeSha = "f".repeat(40); },
+    (value: any) => { value.previousRuntimeIdentity.productionDatabaseObservation.schemaState = "schema_032_verified"; },
+    (value: any) => { value.previousRuntimeIdentity.telegramObservation.mode = "webhook"; },
+    (value: any) => { value.previousRuntimeIdentity.actionPolicy.managerOwned = true; },
+    (value: any) => { value.previousRuntimeIdentity.managerExecutableSha256 = "6".repeat(64); }
+  ]) {
+    const changed = structuredClone(legacy);
+    mutate(changed);
+    expect(() => api.validateTask0BReleaseFreezeEvidence(
+      changed,
+      CANDIDATE_SHA,
+      "2026-07-18T09:10:00.000Z"
+    )).toThrow();
+  }
+
+  const producer: any = await import("../../scripts/captureTask0BPreflight");
+  const legacyConfig: any = buildTask0BPreflightConfig(resolve(tmpdir(), "task0b-legacy-config"));
+  legacyConfig.previousRuntimeIdentity = {
+    kind: "legacy_unmanaged_previous_runtime",
+    processId: legacy.previousRuntimeIdentity.processId,
+    processStartedAt: legacy.previousRuntimeIdentity.processStartedAt,
+    commandLineSha256: legacy.previousRuntimeIdentity.commandLineSha256,
+    executablePathSha256: legacy.previousRuntimeIdentity.executablePathSha256,
+    workingDirectoryFingerprintSha256: legacy.previousRuntimeIdentity.workingDirectoryFingerprintSha256,
+    entrypointPathFingerprintSha256: legacy.previousRuntimeIdentity.entrypointPathFingerprintSha256,
+    adminUrl: "http://127.0.0.1:18080/",
+    adminReadOnlyAuthEnvName: "TASK0B_PREVIOUS_RUNTIME_ADMIN_READ_ONLY_AUTH",
+    expectedRuntimeVersionSha256: legacy.previousRuntimeIdentity.adminObservation.runtimeVersionSha256,
+    telegramReadOnlyAuthEnvName: "TASK0B_PREVIOUS_RUNTIME_TELEGRAM_READ_ONLY_AUTH",
+    expectedTelegramBotIdentitySha256: legacy.previousRuntimeIdentity.telegramObservation.botIdentitySha256
+  };
+  expect(() => producer.validateTask0BPreflightConfig(legacyConfig, legacyConfig.issuedAt)).not.toThrow();
+  expect(producer.parseTask0BLegacyEntrypoint(
+    '"C:\\Program Files\\nodejs\\node.exe" --import tsx "C:\\runtime\\src\\index.ts"'
+  )).toBe("C:\\runtime\\src\\index.ts");
+  for (const commandLine of [
+    'node C:\\runtime\\src\\index.ts --task0b-manager-producer=task0b_repo_runtime_manager_v1',
+    'node C:\\one\\src\\index.ts C:\\two\\src\\index.ts',
+    'node src\\index.ts'
+  ]) expect(() => producer.parseTask0BLegacyEntrypoint(commandLine)).toThrow();
+  for (const [field, value] of [
+    ["adminReadOnlyAuthEnvName", "ADMIN_TOKEN"],
+    ["telegramReadOnlyAuthEnvName", "BOT_TOKEN"]
+  ]) {
+    const changed = structuredClone(legacyConfig);
+    changed.previousRuntimeIdentity[field] = value;
+    expect(() => producer.validateTask0BPreflightConfig(changed, changed.issuedAt)).toThrow();
+  }
+  const store: any = await import("../../src/release/releaseManifestStoreV2");
+  const sanitized = Object.fromEntries([
+    "databaseRole", "databaseName", "databaseFingerprintSha256", "operationalConfigPath", "operationalConfigSha256",
+    "candidateStartCommandId", "candidateStartTemplateSha256", "candidateStopCommandId", "candidateStopTemplateSha256",
+    "previousStartCommandId", "previousStartTemplateSha256", "previousStopCommandId", "previousStopTemplateSha256"
+  ].map((key) => [key, legacy[key]]));
+  const readPreviousRuntime = async () => ({
+    sha: PREVIOUS_RUNTIME_SHA,
+    label: PREVIOUS_RUNTIME_LABEL,
+    source: "legacy_unmanaged_process_admin_database_telegram_read_only",
+    verified: true,
+    identity: structuredClone(legacy.previousRuntimeIdentity)
+  });
+  const commonDependencies = {
+    readCandidateState: async () => ({
+      sha: CANDIDATE_SHA,
+      clean: true,
+      worktreePathFingerprintSha256: legacy.candidateWorktree.worktreePathFingerprintSha256,
+      source: "git_direct_read"
+    }),
+    readPreviousRuntime,
+    readSanitizedRehearsalBinding: async () => sanitized,
+    readRuntimeManager: async () => legacy.runtimeManager,
+    readProductionDatabase: async () => legacy.productionDatabase,
+    readRollbackWorktree: async () => legacy.rollbackWorktree,
+    readPostgresTools: async () => legacy.postgresTools,
+    inspectArtifactRoot: async () => legacy.artifactRoot,
+    probeCandidatePort: async () => legacy.candidatePort
+  };
+  const captured = await producer.captureTask0BReleaseFreezeEvidence({
+    now: () => new Date("2026-07-18T09:00:00.000Z"),
+    readOperatorConfigBinding: async () => legacy.operatorConfig,
+    ...commonDependencies
+  });
+  expect(captured.previousRuntimeIdentity.kind).toBe("legacy_unmanaged_previous_runtime");
+  const freeze = store.deriveReleaseFreezeIdentityV2(captured);
+  await expect(producer.captureTask0BReleaseRevalidationEvidence(captured, freeze, {
+    now: () => new Date("2026-07-18T09:10:00.000Z"),
+    ...commonDependencies
+  })).resolves.toMatchObject({
+    current: { previousRuntimeIdentity: { kind: "legacy_unmanaged_previous_runtime", processId: 11088 } }
+  });
+  await expect(producer.captureTask0BReleaseRevalidationEvidence(captured, freeze, {
+    now: () => new Date("2026-07-18T09:10:00.000Z"),
+    ...commonDependencies,
+    readPreviousRuntime: async () => {
+      const current = await readPreviousRuntime();
+      current.identity.processId += 1;
+      return current;
+    }
+  })).rejects.toThrow(/runtime|revalidation/i);
 });
 
 it("[REQ-38][TASK0B-CAPTURE] produces secret-free direct evidence without runtime DB migration or Telegram mutation", { timeout: 15_000 }, async () => {

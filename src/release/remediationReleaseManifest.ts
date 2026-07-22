@@ -209,6 +209,86 @@ export type Task0BaselineAncestry = {
   isAncestor(ancestorSha: string, candidateSha: string): boolean;
 };
 
+export type Task0BManagedPreviousRuntimeIdentityV1 = {
+  kind: "manager_owned_previous_runtime";
+  generationId: string;
+  runtimeSha: string;
+  runtimeLabel: string;
+  processId: number;
+  processStartedAt: string;
+  commandLineSha256: string;
+  executablePathSha256: string;
+  workingDirectoryFingerprintSha256: string;
+  entrypointPathFingerprintSha256: string;
+  managerExecutableSha256: string;
+  attestedAt: string;
+  producerId: "task0b_repo_runtime_manager_v1";
+  liveRecheckSha256: string;
+  startEvidenceSha256: string;
+  commandId: "runtime_manager_previous_identity";
+  templateSha256: string;
+  exitCode: 0;
+  source: "repo_runtime_manager_start_evidence_and_process_direct_read";
+  verified: true;
+};
+
+export type Task0BLegacyUnmanagedPreviousRuntimeIdentityV1 = {
+  kind: "legacy_unmanaged_previous_runtime";
+  runtimeSha: string;
+  runtimeLabel: string;
+  processId: number;
+  processStartedAt: string;
+  commandLineSha256: string;
+  executablePathSha256: string;
+  workingDirectoryFingerprintSha256: string;
+  entrypointPathFingerprintSha256: string;
+  adminObservation: {
+    endpointFingerprintSha256: string;
+    httpStatus: 200;
+    runtimeVersionSha256: string;
+    observedRuntimeSha: string;
+    observedRuntimeLabel: string;
+    source: "loopback_admin_runtime_proof_read_only";
+    verified: true;
+  };
+  productionDatabaseObservation: {
+    approvedIdentityFingerprintSha256: string;
+    schemaState: "legacy_031" | "schema_032_verified";
+    schemaReceiptSetSha256: string;
+    source: "task0b_production_database_read_only_binding";
+    verified: true;
+  };
+  telegramObservation: {
+    mode: "long_polling";
+    botIdentitySha256: string;
+    webhookUrlSha256: string;
+    source: "telegram_getme_and_getwebhookinfo_read_only";
+    verified: true;
+  };
+  actionPolicy: {
+    managerOwned: false;
+    stopStartRollbackAuthorized: false;
+    requiresPassedPreReleaseGates: true;
+    requiresMergedCandidate: true;
+    requiresExplicitProductionGo: true;
+    requiresActionSpecificAuthority: true;
+  };
+  source: "legacy_unmanaged_process_admin_database_telegram_read_only";
+  verified: true;
+};
+
+export type Task0BPreviousRuntimeIdentityV1 =
+  | Task0BManagedPreviousRuntimeIdentityV1
+  | Task0BLegacyUnmanagedPreviousRuntimeIdentityV1;
+
+export function assertTask0BPreviousRuntimeActionAuthorized(
+  identity: Task0BPreviousRuntimeIdentityV1
+): asserts identity is Task0BManagedPreviousRuntimeIdentityV1 {
+  if (identity.kind !== "manager_owned_previous_runtime") {
+    throw new Error("legacy_unmanaged_previous_runtime_action_forbidden");
+  }
+}
+
 export type Task0BReleaseFreezeEvidenceV1 = {
   version: "task0b-release-freeze-evidence-v1";
   candidateSha: string;
@@ -235,29 +315,11 @@ export type Task0BReleaseFreezeEvidenceV1 = {
   };
   previousRuntimeSha: string;
   previousRuntimeLabel: string;
-  previousRuntimeSource: "runtime_manager_attestation_and_process_direct_read";
+  previousRuntimeSource:
+    | "runtime_manager_attestation_and_process_direct_read"
+    | "legacy_unmanaged_process_admin_database_telegram_read_only";
   previousRuntimeVerified: true;
-  previousRuntimeIdentity: {
-    generationId: string;
-    runtimeSha: string;
-    runtimeLabel: string;
-    processId: number;
-    processStartedAt: string;
-    commandLineSha256: string;
-    executablePathSha256: string;
-    workingDirectoryFingerprintSha256: string;
-    entrypointPathFingerprintSha256: string;
-    managerExecutableSha256: string;
-    attestedAt: string;
-    producerId: "task0b_repo_runtime_manager_v1";
-    liveRecheckSha256: string;
-    startEvidenceSha256: string;
-    commandId: "runtime_manager_previous_identity";
-    templateSha256: string;
-    exitCode: 0;
-    source: "repo_runtime_manager_start_evidence_and_process_direct_read";
-    verified: true;
-  };
+  previousRuntimeIdentity: Task0BPreviousRuntimeIdentityV1;
   databaseRole: "runtime_sanitized";
   databaseName: "tron_watch_plan5_runtime_sanitized";
   databaseFingerprintSha256: string;
@@ -765,7 +827,8 @@ export function validateTask0BReleaseFreezeEvidence(
   }
   if (evidence.version !== "task0b-release-freeze-evidence-v1"
       || evidence.source !== "task0b_direct_operational_preflight"
-      || evidence.previousRuntimeSource !== "runtime_manager_attestation_and_process_direct_read"
+      || !["runtime_manager_attestation_and_process_direct_read",
+        "legacy_unmanaged_process_admin_database_telegram_read_only"].includes(String(evidence.previousRuntimeSource))
       || evidence.previousRuntimeVerified !== true) {
     throw new Error("Task0B direct source is missing or unverified");
   }
@@ -793,39 +856,90 @@ export function validateTask0BReleaseFreezeEvidence(
   expectSha256(candidateWorktree.worktreePathFingerprintSha256, "Task0B candidate worktree fingerprint");
 
   const runtimeIdentity = expectRecord(evidence.previousRuntimeIdentity, "Task0B previous runtime identity");
-  expectExactKeys(runtimeIdentity, [
-    "generationId", "runtimeSha", "runtimeLabel", "processId", "processStartedAt", "commandLineSha256", "executablePathSha256", "workingDirectoryFingerprintSha256",
-    "entrypointPathFingerprintSha256", "managerExecutableSha256", "attestedAt", "producerId", "liveRecheckSha256",
-    "startEvidenceSha256", "commandId", "templateSha256", "exitCode", "source", "verified"
-  ], "Task0B previous runtime identity");
-  if (typeof runtimeIdentity.generationId !== "string" || !/^[a-z0-9][a-z0-9-]{15,63}$/u.test(runtimeIdentity.generationId)
-      || expectSha40(runtimeIdentity.runtimeSha, "Task0B previous runtime identity SHA") !== previousSha
+  let legacyDatabaseObservation: JsonRecord | undefined;
+  const commonRuntimeKeys = [
+    "kind", "runtimeSha", "runtimeLabel", "processId", "processStartedAt", "commandLineSha256", "executablePathSha256",
+    "workingDirectoryFingerprintSha256", "entrypointPathFingerprintSha256"
+  ];
+  if (expectSha40(runtimeIdentity.runtimeSha, "Task0B previous runtime identity SHA") !== previousSha
       || runtimeIdentity.runtimeLabel !== evidence.previousRuntimeLabel
-      || !Number.isSafeInteger(runtimeIdentity.processId) || (runtimeIdentity.processId as number) < 1
-      || runtimeIdentity.commandId !== "runtime_manager_previous_identity"
-      || runtimeIdentity.templateSha256 !== TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256.runtime_manager_previous_identity
-      || runtimeIdentity.producerId !== "task0b_repo_runtime_manager_v1"
-      || runtimeIdentity.exitCode !== 0
-      || runtimeIdentity.source !== "repo_runtime_manager_start_evidence_and_process_direct_read"
-      || runtimeIdentity.verified !== true) {
+      || !Number.isSafeInteger(runtimeIdentity.processId) || (runtimeIdentity.processId as number) < 1) {
     throw new Error("Task0B previous runtime identity is unverified");
   }
   expectIsoTime(runtimeIdentity.processStartedAt, "Task0B previous runtime processStartedAt");
-  const runtimeAttestedAt = expectIsoTime(runtimeIdentity.attestedAt, "Task0B previous runtime attestedAt");
-  if (Date.parse(runtimeAttestedAt) < Date.parse(runtimeIdentity.processStartedAt as string)
-      || Date.parse(runtimeAttestedAt) - Date.parse(runtimeIdentity.processStartedAt as string) > 2 * 60_000) {
-    throw new Error("Task0B previous runtime attestation was not created by the start wrapper");
-  }
   for (const [field, label] of [
     [runtimeIdentity.commandLineSha256, "command line"],
     [runtimeIdentity.executablePathSha256, "executable path"],
     [runtimeIdentity.workingDirectoryFingerprintSha256, "working directory"],
-    [runtimeIdentity.entrypointPathFingerprintSha256, "entrypoint path"],
-    [runtimeIdentity.managerExecutableSha256, "manager executable"],
-    [runtimeIdentity.liveRecheckSha256, "live recheck"],
-    [runtimeIdentity.startEvidenceSha256, "start evidence"],
-    [runtimeIdentity.templateSha256, "identity template"]
+    [runtimeIdentity.entrypointPathFingerprintSha256, "entrypoint path"]
   ] as const) expectSha256(field, `Task0B previous runtime ${label}`);
+  if (runtimeIdentity.kind === "manager_owned_previous_runtime") {
+    expectExactKeys(runtimeIdentity, [...commonRuntimeKeys,
+      "generationId", "managerExecutableSha256", "attestedAt", "producerId", "liveRecheckSha256",
+      "startEvidenceSha256", "commandId", "templateSha256", "exitCode", "source", "verified"
+    ], "Task0B previous runtime identity");
+    if (evidence.previousRuntimeSource !== "runtime_manager_attestation_and_process_direct_read"
+        || typeof runtimeIdentity.generationId !== "string" || !/^[a-z0-9][a-z0-9-]{15,63}$/u.test(runtimeIdentity.generationId)
+        || runtimeIdentity.commandId !== "runtime_manager_previous_identity"
+        || runtimeIdentity.templateSha256 !== TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256.runtime_manager_previous_identity
+        || runtimeIdentity.producerId !== "task0b_repo_runtime_manager_v1" || runtimeIdentity.exitCode !== 0
+        || runtimeIdentity.source !== "repo_runtime_manager_start_evidence_and_process_direct_read"
+        || runtimeIdentity.verified !== true) throw new Error("Task0B previous runtime identity is unverified");
+    const runtimeAttestedAt = expectIsoTime(runtimeIdentity.attestedAt, "Task0B previous runtime attestedAt");
+    if (Date.parse(runtimeAttestedAt) < Date.parse(runtimeIdentity.processStartedAt as string)
+        || Date.parse(runtimeAttestedAt) - Date.parse(runtimeIdentity.processStartedAt as string) > 2 * 60_000) {
+      throw new Error("Task0B previous runtime attestation was not created by the start wrapper");
+    }
+    for (const field of [runtimeIdentity.managerExecutableSha256, runtimeIdentity.liveRecheckSha256,
+      runtimeIdentity.startEvidenceSha256, runtimeIdentity.templateSha256]) {
+      expectSha256(field, "Task0B managed previous runtime binding");
+    }
+  } else if (runtimeIdentity.kind === "legacy_unmanaged_previous_runtime") {
+    expectExactKeys(runtimeIdentity, [...commonRuntimeKeys, "adminObservation", "productionDatabaseObservation",
+      "telegramObservation", "actionPolicy", "source", "verified"
+    ], "Task0B legacy unmanaged previous runtime identity");
+    if (evidence.previousRuntimeSource !== "legacy_unmanaged_process_admin_database_telegram_read_only"
+        || runtimeIdentity.source !== "legacy_unmanaged_process_admin_database_telegram_read_only"
+        || runtimeIdentity.verified !== true) throw new Error("Task0B legacy unmanaged previous runtime identity is unverified");
+    const admin = expectRecord(runtimeIdentity.adminObservation, "Task0B legacy Admin observation");
+    expectExactKeys(admin, ["endpointFingerprintSha256", "httpStatus", "runtimeVersionSha256", "observedRuntimeSha",
+      "observedRuntimeLabel", "source", "verified"], "Task0B legacy Admin observation");
+    if (admin.httpStatus !== 200 || admin.observedRuntimeSha !== previousSha
+        || admin.observedRuntimeLabel !== evidence.previousRuntimeLabel
+        || admin.source !== "loopback_admin_runtime_proof_read_only" || admin.verified !== true) {
+      throw new Error("Task0B legacy Admin observation is unverified");
+    }
+    expectSha256(admin.endpointFingerprintSha256, "Task0B legacy Admin endpoint");
+    expectSha256(admin.runtimeVersionSha256, "Task0B legacy Admin runtime version");
+    const database = expectRecord(runtimeIdentity.productionDatabaseObservation, "Task0B legacy database observation");
+    legacyDatabaseObservation = database;
+    expectExactKeys(database, ["approvedIdentityFingerprintSha256", "schemaState", "schemaReceiptSetSha256", "source", "verified"],
+      "Task0B legacy database observation");
+    if (!["legacy_031", "schema_032_verified"].includes(String(database.schemaState))
+        || database.source !== "task0b_production_database_read_only_binding" || database.verified !== true) {
+      throw new Error("Task0B legacy database observation is unverified");
+    }
+    expectSha256(database.approvedIdentityFingerprintSha256, "Task0B legacy database identity");
+    expectSha256(database.schemaReceiptSetSha256, "Task0B legacy schema receipt set");
+    const telegram = expectRecord(runtimeIdentity.telegramObservation, "Task0B legacy Telegram observation");
+    expectExactKeys(telegram, ["mode", "botIdentitySha256", "webhookUrlSha256", "source", "verified"],
+      "Task0B legacy Telegram observation");
+    if (telegram.mode !== "long_polling" || telegram.webhookUrlSha256 !== createHash("sha256").update("", "utf8").digest("hex")
+        || telegram.source !== "telegram_getme_and_getwebhookinfo_read_only" || telegram.verified !== true) {
+      throw new Error("Task0B legacy Telegram observation is unverified");
+    }
+    expectSha256(telegram.botIdentitySha256, "Task0B legacy Telegram bot identity");
+    const policy = expectRecord(runtimeIdentity.actionPolicy, "Task0B legacy action policy");
+    expectExactKeys(policy, ["managerOwned", "stopStartRollbackAuthorized", "requiresPassedPreReleaseGates", "requiresMergedCandidate",
+      "requiresExplicitProductionGo", "requiresActionSpecificAuthority"], "Task0B legacy action policy");
+    if (policy.managerOwned !== false || policy.stopStartRollbackAuthorized !== false
+        || policy.requiresPassedPreReleaseGates !== true || policy.requiresMergedCandidate !== true
+        || policy.requiresExplicitProductionGo !== true || policy.requiresActionSpecificAuthority !== true) {
+      throw new Error("Task0B legacy action policy is unsafe");
+    }
+  } else {
+    throw new Error("Task0B previous runtime kind is invalid");
+  }
   if (evidence.databaseRole !== "runtime_sanitized"
       || evidence.databaseName !== "tron_watch_plan5_runtime_sanitized"
       || evidence.operationalConfigPath !== "runtime-operational-config.json"
@@ -851,7 +965,6 @@ export function validateTask0BReleaseFreezeEvidence(
   if (runtimeManager.source !== "repo_owned_runtime_manager_registry_verified" || runtimeManager.verified !== true
       || runtimeManager.executorPath !== "scripts/manageTask0BRuntime.ts"
       || runtimeManager.producerId !== "task0b_repo_runtime_manager_v1"
-      || expectSha256(runtimeManager.executorSha256, "Task0B runtime manager executable") !== runtimeIdentity.managerExecutableSha256
       || typeof runtimeManager.candidateAdminUrl !== "string"
       || expectSha256(runtimeManager.candidateAdminUrlFingerprintSha256, "Task0B runtime manager candidate Admin URL")
         !== createHash("sha256").update(runtimeManager.candidateAdminUrl, "utf8").digest("hex")
@@ -864,6 +977,11 @@ export function validateTask0BReleaseFreezeEvidence(
       || runtimeManager.rollbackPreviousCommandId !== "runtime_manager_rollback_previous"
       || runtimeManager.rollbackPreviousTemplateSha256 !== TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256.runtime_manager_rollback_previous) {
     throw new Error("Task0B runtime manager is not the verified allowlisted configuration");
+  }
+  expectSha256(runtimeManager.executorSha256, "Task0B runtime manager executable");
+  if (runtimeIdentity.kind === "manager_owned_previous_runtime"
+      && runtimeManager.executorSha256 !== runtimeIdentity.managerExecutableSha256) {
+    throw new Error("Task0B managed previous runtime executor binding is invalid");
   }
   let runtimeManagerAdminUrl: URL;
   try {
@@ -919,6 +1037,12 @@ export function validateTask0BReleaseFreezeEvidence(
       || (productionDatabase.schemaState === "schema_032_verified" && receiptSet.count === 1
         && receiptSet.maxVersion === 32 && receiptSet.aggregateSha256 === schema032ReceiptSetSha256))) {
     throw new Error("Task0B complete schema receipt set is invalid");
+  }
+  if (legacyDatabaseObservation !== undefined
+      && (legacyDatabaseObservation.approvedIdentityFingerprintSha256 !== productionDatabase.approvedIdentityFingerprintSha256
+        || legacyDatabaseObservation.schemaState !== productionDatabase.schemaState
+        || legacyDatabaseObservation.schemaReceiptSetSha256 !== receiptSet.aggregateSha256)) {
+    throw new Error("Task0B legacy production database binding is invalid");
   }
   expectSha256(productionDatabase.endpointFingerprintSha256, "Task0B production endpoint fingerprint");
   expectSha256(productionDatabase.connectedServerAddressFingerprintSha256, "Task0B connected server address fingerprint");

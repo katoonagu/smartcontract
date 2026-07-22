@@ -42,6 +42,7 @@ import {
 import {
   TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256,
   assertNoSecretLikeArtifactValues,
+  assertTask0BPreviousRuntimeActionAuthorized,
   validateTask0BReleaseFreezeEvidence
 } from "./remediationReleaseManifest";
 import {
@@ -1692,9 +1693,13 @@ async function issueRuntimeAuthority(
   const now = new Date();
   const task0bBytes = readFileSync(safeArtifactPath(root, "task0b-release-freeze.json"));
   const task0b = loadFrozenTask0B(root, now.toISOString());
+  assertTask0BPreviousRuntimeActionAuthorized(task0b.previousRuntimeIdentity);
   const freeze = readCanonical(root, "release-freeze-identity-v2.json", validateReleaseFreezeIdentityV2);
   const manifest = readCanonical(root, "release-manifest.json", validateRemediationReleaseManifestV2);
   const external = await readExternalConfig(root);
+  if (external.config.previousRuntimeIdentity.kind !== "manager_owned_previous_runtime") {
+    throw new Error("legacy_unmanaged_previous_runtime_action_forbidden");
+  }
   const store = new ProductionOperationStoreV2(root);
   const owned = store.assertOwnedAndWithinBounds(input.operationId, now.toISOString());
   const intent = validateProductionOrchestrationStepIntentV2(input.intent);
@@ -1890,6 +1895,7 @@ function runtimeReconciliationTarget(
   input: ProtectedProductionEffectExecutionInputV2
 ): RuntimeEffectReconciliationInputV2["target"] {
   const task0b = loadFrozenTask0B(root);
+  assertTask0BPreviousRuntimeActionAuthorized(task0b.previousRuntimeIdentity);
   if (input.stepId === "stop_previous") {
     return {
       runtimeSha: task0b.previousRuntimeSha,
@@ -2345,6 +2351,7 @@ function exactRuntimeEvidenceForOperationStep(
   });
   if (authority === null) return null;
   const task0b = loadFrozenTask0B(root);
+  assertTask0BPreviousRuntimeActionAuthorized(task0b.previousRuntimeIdentity);
   const target: RuntimeEffectReconciliationInputV2["target"] = {
     runtimeSha: task0b.previousRuntimeSha,
     runtimeLabel: task0b.previousRuntimeLabel,

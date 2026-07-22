@@ -320,6 +320,7 @@ export function buildTask0BReleaseFreezeEvidence(input: {
     previousRuntimeSource: "runtime_manager_attestation_and_process_direct_read",
     previousRuntimeVerified: true,
     previousRuntimeIdentity: {
+      kind: "manager_owned_previous_runtime",
       generationId: "previous-runtime-generation-0001",
       runtimeSha: previousRuntimeSha,
       runtimeLabel: previousRuntimeLabel,

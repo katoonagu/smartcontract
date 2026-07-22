@@ -20,6 +20,7 @@ import {
 } from "./captureTask0BPreflight";
 import {
   TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256,
+  assertTask0BPreviousRuntimeActionAuthorized,
   validateTask0BReleaseFreezeEvidence
 } from "../src/release/remediationReleaseManifest";
 import {
@@ -807,6 +808,7 @@ export function validateTask0BProductionGoEvidence(
 } {
   const authority = validateTask0BProductionRuntimeAuthority(authorityValue, evaluatedAt);
   const task0b = validateTask0BReleaseFreezeEvidence(task0bValue, authority.candidateSha, evaluatedAt);
+  assertTask0BPreviousRuntimeActionAuthorized(task0b.previousRuntimeIdentity);
   const binding = record(operatorConfigBindingValue, "task0b_runtime_operator_config_binding_invalid");
   const expected = task0b.operatorConfig;
   exactKeys(binding, ["filename", "contentSha256", "fileIdentitySha256", "configExpiresAt", "source", "verified"],

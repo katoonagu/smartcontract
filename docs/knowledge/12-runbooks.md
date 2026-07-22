@@ -187,11 +187,17 @@ npm run release:manifest:advance -- readiness $source <protected-artifact-root>
 npm run release:verify -- --phase readiness --artifact-root <protected-artifact-root>
 ```
 
-The currently observed production runtime is unmarked by the new runtime
-manager, so operational preflight is externally blocked before Task 9. Do not
-adopt, stop, restart, migrate, or send Telegram from this command index. A
-separate user-approved adoption/restart or plan amendment plus fresh Task 0B is
-required before any guarded production step.
+An unmarked previous process no longer blocks the read-only Task 0B evidence
+phase by itself. Configure it only as `legacy_unmanaged_previous_runtime` and
+provide the exact protected PID/start/process/path/Admin/Telegram bindings.
+Each Task 0B capture and revalidation re-reads the single matching process,
+clean exact-SHA worktree, loopback Admin runtime proof, production DB/schema,
+and Telegram `getMe` plus empty `getWebhookInfo.url`; secrets stay in the two
+fixed read-only-auth environment variables and never enter evidence. Any drift,
+missing process, second runtime candidate, unexpected webhook, or identity
+mismatch fails closed. This is not adoption: production start/stop/rollback
+remains rejected for the legacy kind pending full G00-G11, merge, explicit GO,
+and separate action-specific authority/amendment.
 
 No production command has run. After complete G00-G11, exact-SHA merge rerun,
 pre-GO report, explicit user GO, and fresh action authority, the exact future
