@@ -981,7 +981,8 @@ async function readProtectedRelativeRegularFile(
 }
 
 async function runActionManagerGit(args: readonly string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+  const { stdout } = await execFileAsync("git", ["--no-replace-objects",
+    "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args], {
     cwd,
     env: task0BSanitizedGitEnvironment(),
     windowsHide: true,
@@ -991,6 +992,18 @@ async function runActionManagerGit(args: readonly string[], cwd: string): Promis
 }
 
 async function runActionManagerGitBytes(args: readonly string[], cwd: string): Promise<Buffer> {
+  const { stdout } = await execFileAsync("git", ["--no-replace-objects",
+    "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args], {
+    cwd,
+    env: task0BSanitizedGitEnvironment(),
+    encoding: "buffer",
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024
+  });
+  return Buffer.from(stdout);
+}
+
+async function readActionManagerGitIndexFlags(args: readonly string[], cwd: string): Promise<Buffer> {
   const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
     cwd,
     env: task0BSanitizedGitEnvironment(),
@@ -1004,17 +1017,25 @@ async function runActionManagerGitBytes(args: readonly string[], cwd: string): P
 export async function attestTask0BActionWorktree(authority: Pick<Task0BProductionRuntimeAuthorityV1,
   "targetWorktreePath" | "targetRuntimeSha" | "targetWorktreeFingerprintSha256">): Promise<string> {
   const worktree = await inspectRealDirectory(authority.targetWorktreePath, false);
-  const [head, status, topLevel, indexFlags] = await Promise.all([
+  const [assumeOrSkipFlags, fsmonitorFlags] = await Promise.all([
+    readActionManagerGitIndexFlags(["ls-files", "--cached", "-v", "-z"], worktree),
+    readActionManagerGitIndexFlags(["ls-files", "--cached", "-f", "-z"], worktree)
+  ]);
+  const indexEntriesAreNormal = (flags: Buffer): boolean => {
+    if (flags.length === 0 || flags.at(-1) !== 0) return false;
+    const entries = flags.subarray(0, flags.length - 1).toString("utf8").split("\0");
+    return entries.length > 0 && entries.every((entry) => entry.startsWith("H "));
+  };
+  if (!indexEntriesAreNormal(assumeOrSkipFlags) || !indexEntriesAreNormal(fsmonitorFlags)) {
+    throw new Error("task0b_runtime_manager_index_flags_unverified");
+  }
+  const [head, status, topLevel] = await Promise.all([
     runActionManagerGit(["rev-parse", "HEAD"], worktree),
     runActionManagerGit(["status", "--porcelain=v1", "--untracked-files=all"], worktree),
-    runActionManagerGit(["rev-parse", "--show-toplevel"], worktree),
-    runActionManagerGitBytes(["ls-files", "-v", "-z"], worktree)
+    runActionManagerGit(["rev-parse", "--show-toplevel"], worktree)
   ]);
-  const indexEntries = indexFlags.subarray(0, indexFlags.length - (indexFlags.at(-1) === 0 ? 1 : 0))
-    .toString("utf8").split("\0");
   const physical = resolve(await realpath(topLevel));
   if (head !== authority.targetRuntimeSha || status !== "" || !sameCanonicalPath(physical, worktree)
-      || indexEntries.length === 0 || indexEntries.some((entry) => !entry.startsWith("H "))
       || hash(process.platform === "win32" ? physical.toLowerCase() : physical) !== authority.targetWorktreeFingerprintSha256) {
     throw new Error("task0b_runtime_manager_worktree_unverified");
   }

@@ -89,6 +89,18 @@ it("[REQ-38][TASK0B-MANAGER-START-RACE] reattests immutable entrypoint bytes imm
       .rejects.toThrow(/index|entrypoint|worktree|unverified/i);
     git(["update-index", "--no-assume-unchanged", "src/index.ts"]);
     await writeFile(entrypoint, "export const exact = true;\n");
+    git(["config", "core.fsmonitor", "true"]);
+    git(["update-index", "--fsmonitor-valid", "src/index.ts"]);
+    await expect(api.attestTask0BStartWorktree(binding))
+      .rejects.toThrow(/index|entrypoint|worktree|unverified/i);
+    git(["update-index", "--no-fsmonitor-valid", "src/index.ts"]);
+    git(["config", "--unset", "core.fsmonitor"]);
+    git(["update-index", "--skip-worktree", "src/index.ts"]);
+    await writeFile(entrypoint, "export const hiddenSkip = true;\n");
+    await expect(api.attestTask0BStartWorktree(binding))
+      .rejects.toThrow(/index|entrypoint|worktree|unverified/i);
+    git(["update-index", "--no-skip-worktree", "src/index.ts"]);
+    await writeFile(entrypoint, "export const exact = true;\n");
     const prepared = await api.attestTask0BStartWorktree(binding);
     await writeFile(entrypoint, "export const exact = false;\n");
     await expect(api.revalidateTask0BStartWorktree(binding, prepared))

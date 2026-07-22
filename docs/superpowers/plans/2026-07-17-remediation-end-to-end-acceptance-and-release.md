@@ -2782,8 +2782,10 @@ prepared/receipt materialization bundle with separately pinned hashes and a
 timestamp inside the archived Task 0B window, owner candidate, repository manager-
 blob hash, original start evidence and live PID identity. The current guarded action
 manager is independently hashed. Task 0B lineage and action-time worktree Git
-proof both disable replace objects and inherited Git overrides. A start rejects
-non-normal index flags, pins entrypoint bytes to the exact authorized commit
+proof both disable replace objects and inherited Git overrides. A start checks
+both `ls-files -v/-f`, rejects assume-unchanged, skip-worktree, fsmonitor-valid
+and every other non-normal index flag before disabling fsmonitor/untracked-cache
+use, then pins entrypoint bytes to the exact authorized commit
 blob plus stable file identity, repeats attestation immediately
 before spawn and before evidence publication, and terminates a drifted child.
 Capture and every revalidation reproduce both lineages,

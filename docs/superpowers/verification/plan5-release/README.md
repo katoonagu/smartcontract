@@ -46,8 +46,9 @@ executor hash. Capture and every revalidation reread the complete protected
 origin bundle, repeat owner→candidate ancestry and Git-blob proof with replace
 objects and inherited Git overrides disabled, and reproduce the live process.
 A future action applies the same sanitized/no-replace policy when attesting its
-candidate or rollback worktree. Start rejects `assume-unchanged`, `skip-worktree`
-and other non-normal index flags, pins entrypoint bytes to the exact authorized
+candidate or rollback worktree. Start checks both `ls-files -v` and `-f`, rejects
+`assume-unchanged`, `skip-worktree`, `fsmonitor-valid` and other non-normal index
+flags before disabling fsmonitor/untracked-cache use, and pins entrypoint bytes to the exact authorized
 commit blob plus stable file identity, repeats the attestation immediately before spawn and
 before evidence publication, and terminates the child if post-spawn drift is
 observed.

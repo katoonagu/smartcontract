@@ -855,12 +855,14 @@ export function task0BSanitizedGitEnvironment(source: NodeJS.ProcessEnv = proces
 }
 
 function runGit(args: readonly string[], cwd?: string, timeoutMs = 10_000): Promise<string> {
-  return run("git", ["--no-replace-objects", ...args], cwd,
+  return run("git", ["--no-replace-objects", "-c", "core.fsmonitor=false",
+    "-c", "core.untrackedCache=false", ...args], cwd,
     task0BSanitizedGitEnvironment(), timeoutMs, true);
 }
 
 function runGitBytes(args: readonly string[], cwd?: string, timeoutMs = 10_000): Promise<Buffer> {
-  return runBytes("git", ["--no-replace-objects", ...args], cwd, timeoutMs,
+  return runBytes("git", ["--no-replace-objects", "-c", "core.fsmonitor=false",
+    "-c", "core.untrackedCache=false", ...args], cwd, timeoutMs,
     task0BSanitizedGitEnvironment());
 }
 
