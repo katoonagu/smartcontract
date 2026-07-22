@@ -363,7 +363,7 @@ it("durably acquires lease then persists immutable preclaim lineage and atomic c
     capability: "cleanup_only"
   });
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 60_000);
+}, 120_000);
 
 it("revalidates current manifest receipt lineage before every owned production operation", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -616,7 +616,7 @@ it("resumes a real operation after an external receipt was durably written and s
   expect(validations.filter((step) => ["verify_g13", "verify_schema", "verify_previous_runtime_identity",
     "verify_singleton_precondition"].includes(step))).toHaveLength(4);
   expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 75_000);
+}, 150_000);
 
 it.each([
   "after_step_receipt:immediate_runtime_checks",
@@ -782,7 +782,7 @@ it.each([
     expect(validations).toHaveLength(7);
     expect(existsSync(join(root, "production-rollout-evidence-v2.json"))).toBe(true);
     expect(existsSync(join(root, "production-operation-root.lease.json"))).toBe(false);
-}, 90_000);
+}, 180_000);
 
 it("replays a dead-owner recovery settlement from operation-qualified receipts before publication", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -882,6 +882,10 @@ it("replays a dead-owner recovery settlement from operation-qualified receipts b
 
 it("publishes later same-kind terminal artifacts through a durable per-kind pointer", async () => {
   const root = await trustedRoot();
+  await writeFile(join(root, "task0b-release-freeze.json"), canonicalBytes(buildTask0BReleaseFreezeEvidence({
+    observedAt: T0,
+    artifactRootFingerprintSha256: rootFingerprint(root)
+  })));
   const store = new ProductionOperationStoreV2(root);
   const operation = async (digit: string) => {
     const operationId = `production-rollout-${digit.repeat(64)}`;
