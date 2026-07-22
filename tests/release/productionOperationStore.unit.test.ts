@@ -64,12 +64,18 @@ async function trustedRoot(): Promise<string> {
   return root;
 }
 
-async function initializedAuthorityRoot(): Promise<string> {
+async function initializedAuthorityRoot(
+  previousRuntimeKind: "manager_owned_previous_runtime" | "legacy_unmanaged_previous_runtime"
+    = "manager_owned_previous_runtime"
+): Promise<string> {
   const root = await trustedRoot();
-  const task0BPreflightEvidence = buildTask0BReleaseFreezeEvidence({
+  const managedTask0B = buildTask0BReleaseFreezeEvidence({
     observedAt: T0,
     artifactRootFingerprintSha256: rootFingerprint(root)
   });
+  const task0BPreflightEvidence = previousRuntimeKind === "legacy_unmanaged_previous_runtime"
+    ? legacyTask0BEvidence(managedTask0B)
+    : managedTask0B;
   await writeFile(join(root, "task0b-release-freeze.json"), canonicalBytes(task0BPreflightEvidence));
   await materializeReleaseFreezeV2({
     artifactRoot: root,
@@ -86,9 +92,8 @@ async function initializedAuthorityRoot(): Promise<string> {
   return root;
 }
 
-async function installLegacyTask0BIdentity(root: string): Promise<void> {
-  const path = join(root, "task0b-release-freeze.json");
-  const task0b = JSON.parse(readFileSync(path, "utf8"));
+function legacyTask0BEvidence(managed: any): any {
+  const task0b = structuredClone(managed);
   task0b.previousRuntimeSource = "legacy_unmanaged_process_admin_database_telegram_read_only";
   task0b.previousRuntimeIdentity = {
     kind: "legacy_unmanaged_previous_runtime",
@@ -124,7 +129,7 @@ async function installLegacyTask0BIdentity(root: string): Promise<void> {
     },
     source: "legacy_unmanaged_process_admin_database_telegram_read_only", verified: true
   };
-  await writeFile(path, canonicalBytes(task0b));
+  return task0b;
 }
 
 function artifactTreeSnapshot(root: string, relative = ""): string[] {
@@ -1123,24 +1128,32 @@ it.each(["after_prepare", "after_tombstone", "after_new_lease", "after_committed
 it("rejects normal and cleanup-only takeover before any write for a legacy unmanaged previous runtime", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(T0));
-  const root = await initializedAuthorityRoot();
+  const root = await initializedAuthorityRoot("legacy_unmanaged_previous_runtime");
   const store = new ProductionOperationStoreV2(root);
-  const begun = await runWithRootWriterProcessRuntimeForTestsV2({
-    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
-  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 }));
-  await installLegacyTask0BIdentity(root);
   const before = artifactTreeSnapshot(root);
 
   await expect(runWithRootWriterProcessRuntimeForTestsV2({
+    currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
+  }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 })))
+    .rejects.toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+  expect(artifactTreeSnapshot(root)).toEqual(before);
+  expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
+    .toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+  expect(artifactTreeSnapshot(root)).toEqual(before);
+  expect(() => store.resumeCompletedSettlement(`production-rollout-${"e".repeat(64)}`, T0))
+    .toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+  expect(artifactTreeSnapshot(root)).toEqual(before);
+
+  await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => TAKEOVER_OWNER, isOwnerAlive: () => false
-  }, () => store.takeoverEffectCapable({ expectedOldLeaseSha256: begun.leaseSha256,
+  }, () => store.takeoverEffectCapable({ expectedOldLeaseSha256: "2".repeat(64),
     evaluatedAt: "2026-07-18T10:01:00.000Z" })))
     .rejects.toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
   expect(artifactTreeSnapshot(root)).toEqual(before);
 
   await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => CLEANUP_OWNER, isOwnerAlive: () => false
-  }, () => store.takeoverCleanupOnly({ expectedOldLeaseSha256: begun.leaseSha256,
+  }, () => store.takeoverCleanupOnly({ expectedOldLeaseSha256: "2".repeat(64),
     evaluatedAt: "2026-07-18T10:11:00.000Z" })))
     .rejects.toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
   expect(artifactTreeSnapshot(root)).toEqual(before);
