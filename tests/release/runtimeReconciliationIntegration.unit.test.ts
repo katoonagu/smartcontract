@@ -1,10 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ProductionOperationStoreV2 } from "../../src/release/productionOperationStore";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
+import { buildTask0BReleaseFreezeEvidence } from "../fixtures/release/remediationReleaseFixtures";
 import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
 import {
   assertExactManagerRuntimeReconciliationBindingV2,
@@ -22,6 +23,8 @@ function protectedRoot(): string {
     execFileSync("icacls.exe", [root, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`,
       "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]);
   }
+  writeFileSync(join(root, "task0b-release-freeze.json"),
+    canonicalBytesV2(buildTask0BReleaseFreezeEvidence()));
   return root;
 }
 

@@ -511,6 +511,7 @@ export class ProductionOperationStoreV2 {
   }
 
   persistExclusive(kind: string, relativePath: string, value: unknown): ProductionOperationStoreRecordV2 {
+    this.#assertPreviousRuntimeActionAuthorized();
     if (!kind) throw new Error("production_operation_artifact_kind_invalid");
     const path = this.#path(relativePath, true);
     const bytes = canonicalBytesV2(value);
@@ -521,6 +522,7 @@ export class ProductionOperationStoreV2 {
 
   loadOrPersistFailureDraft(input: Omit<ProductionFailureDraftV2, "version" | "observedAt">,
     evaluatedAt: string): Readonly<{ value: ProductionFailureDraftV2; sha256: string }> {
+    this.#assertPreviousRuntimeActionAuthorized();
     const current = this.assertOwnedAndWithinBounds(input.operationId, evaluatedAt);
     if (input.operationKind !== current.lease.operationKind
         || input.operationClaimSha256 !== current.claimSha256) {
@@ -564,6 +566,7 @@ export class ProductionOperationStoreV2 {
   }
 
   persistTerminalArtifactIndex(value: unknown, evaluatedAt: string): ProductionOperationStoreRecordV2 {
+    this.#assertPreviousRuntimeActionAuthorized();
     const index = validateTerminalArtifactIndex(value);
     const current = this.assertOwnedAndWithinBounds(index.operationId, evaluatedAt);
     if (index.operationKind !== current.lease.operationKind
@@ -582,6 +585,7 @@ export class ProductionOperationStoreV2 {
   }
 
   publishTerminalArtifacts(operationId: string): void {
+    this.#assertPreviousRuntimeActionAuthorized();
     exactOperationId(operationId);
     const index = readCanonical(this.#path(`production-terminal-artifact-index-${operationId}.json`),
       validateTerminalArtifactIndex, "production_terminal_artifact_index");
@@ -679,6 +683,7 @@ export class ProductionOperationStoreV2 {
   }
 
   acquireLease(value: unknown): ProductionOperationStoreRecordV2 {
+    this.#assertPreviousRuntimeActionAuthorized();
     const lease = validateProductionOperationLeaseV2(value);
     const owner = currentRootWriterOwnerIdentityV2();
     if (lease.ownerPid !== owner.pid
@@ -702,6 +707,7 @@ export class ProductionOperationStoreV2 {
   }
 
   releaseLease(expectedSha256: string): void {
+    this.#assertPreviousRuntimeActionAuthorized();
     const path = this.#path(PRODUCTION_OPERATION_LEASE_FILE_V2);
     if (!existsSync(path)) throw new Error("production_operation_lease_missing");
     const lease = this.#readLease();
@@ -1502,6 +1508,7 @@ export class ProductionOperationStoreV2 {
   heartbeat(operationId: string, evaluatedAt: string): {
     lease: ProductionOperationLeaseV2; leaseSha256: string;
   } {
+    this.#assertPreviousRuntimeActionAuthorized();
     exactOperationId(operationId);
     const evaluatedAtMs = parseIso(evaluatedAt, "production_operation_heartbeat_at");
     const oldLease = this.#readLease();
@@ -1579,6 +1586,7 @@ export class ProductionOperationStoreV2 {
   }
 
   persistStepIntent(value: unknown): ProductionOperationStoreRecordV2 {
+    this.#assertPreviousRuntimeActionAuthorized();
     const intent = validateProductionOrchestrationStepIntentV2(value);
     const current = this.assertOwnedAndWithinBounds(intent.operationId, intent.preparedAt);
     if (current.lease.capability !== "effect_capable"
@@ -1751,6 +1759,7 @@ export class ProductionOperationStoreV2 {
   }
 
   persistStepReceipt(value: unknown): ProductionOperationStoreRecordV2 {
+    this.#assertPreviousRuntimeActionAuthorized();
     const receipt = validateProductionOrchestrationStepReceiptV2(value);
     const current = this.assertOwnedAndWithinBounds(receipt.operationId, receipt.finishedAt);
     if (current.claimSha256 !== receipt.operationClaimSha256
@@ -1782,6 +1791,7 @@ export class ProductionOperationStoreV2 {
   }
 
   persistSettlement(value: unknown): ProductionOperationStoreRecordV2 {
+    this.#assertPreviousRuntimeActionAuthorized();
     const settlement = validateProductionOperationSettlementV2(value);
     const current = this.assertOwnedAndWithinBounds(settlement.operationId, settlement.settledAt);
     if (settlement.candidateSha !== current.lease.candidateSha
@@ -2543,6 +2553,7 @@ export class ProductionOperationStoreV2 {
     receipt: ProductionOperationLeaseRemovalReceiptV2;
     cleanup: ProductionOperationTerminalCleanupV2;
   } {
+    this.#assertPreviousRuntimeActionAuthorized();
     exactOperationId(input.operationId);
     parseIso(input.evaluatedAt, "production_operation_terminal_evaluated_at");
     const terminalState = this.#terminalState(input);

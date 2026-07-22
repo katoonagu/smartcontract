@@ -88,7 +88,9 @@ async function initializedAuthorityRoot(
     evaluatedAt: T0,
     verifiedGateOutputs: await materializeInitialGateEvidence(root, task0BPreflightEvidence.candidateSha)
   });
-  await issueOperationalAttestationV2({ artifactRoot: root, action: "g14_rollout_passed" });
+  if (previousRuntimeKind === "manager_owned_previous_runtime") {
+    await issueOperationalAttestationV2({ artifactRoot: root, action: "g14_rollout_passed" });
+  }
   return root;
 }
 
@@ -1132,6 +1134,30 @@ it("rejects normal and cleanup-only takeover before any write for a legacy unman
   const store = new ProductionOperationStoreV2(root);
   const before = artifactTreeSnapshot(root);
 
+  for (const action of ["g14_rollout_passed", "g15_canary_released", "production_failed",
+    "rollback_rolled_back"] as const) {
+    await expect(issueOperationalAttestationV2({ artifactRoot: root, action }))
+      .rejects.toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+    expect(artifactTreeSnapshot(root)).toEqual(before);
+  }
+  const operationId = `production-rollout-${"e".repeat(64)}`;
+  for (const mutate of [
+    () => store.persistExclusive("legacy_test", "legacy-write.json", { forbidden: true }),
+    () => store.loadOrPersistFailureDraft({} as any, T0),
+    () => store.persistTerminalArtifactIndex({}, T0),
+    () => store.publishTerminalArtifacts(operationId),
+    () => store.acquireLease({}),
+    () => store.releaseLease("2".repeat(64)),
+    () => store.heartbeat(operationId, T0),
+    () => store.persistStepIntent({}),
+    () => store.persistStepReceipt({}),
+    () => store.persistSettlement({}),
+    () => store.completeTerminal({ operationId, terminalStateKind: "settlement",
+      terminalStateSha256: "2".repeat(64), evaluatedAt: T0 })
+  ]) {
+    expect(mutate).toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
+    expect(artifactTreeSnapshot(root)).toEqual(before);
+  }
   await expect(runWithRootWriterProcessRuntimeForTestsV2({
     currentOwnerIdentity: () => OWNER, isOwnerAlive: () => false
   }, () => store.beginOperation({ operationKind: "rollout", evaluatedAt: T0 })))
@@ -1140,7 +1166,7 @@ it("rejects normal and cleanup-only takeover before any write for a legacy unman
   expect(() => store.resumeCompletedSettlementBeforeBegin("rollout", T0))
     .toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
   expect(artifactTreeSnapshot(root)).toEqual(before);
-  expect(() => store.resumeCompletedSettlement(`production-rollout-${"e".repeat(64)}`, T0))
+  expect(() => store.resumeCompletedSettlement(operationId, T0))
     .toThrow("legacy_unmanaged_previous_runtime_action_forbidden");
   expect(artifactTreeSnapshot(root)).toEqual(before);
 

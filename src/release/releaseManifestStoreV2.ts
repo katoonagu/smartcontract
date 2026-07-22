@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, relative, resolve } from "node:path";
 import type { ClientBase } from "pg";
 import {
+  assertTask0BPreviousRuntimeActionAuthorized,
   PLAN5_APPROVED_BASE_SHA,
   validateTask0BReleaseFreezeEvidence,
   type Task0BReleaseFreezeEvidenceV1
@@ -1271,6 +1272,20 @@ function verifiedTerminalLineageForAuthorityV2(root: string, record: CommittedAu
 }
 
 type OperationalAttestationActionV2 = keyof typeof OPERATIONAL_ATTESTATION_POLICY_V2;
+const PRODUCTION_OPERATION_AUTHORITY_ACTIONS_V2 = new Set<OperationalAttestationActionV2>([
+  "g14_rollout_passed", "g15_canary_released", "production_failed", "rollback_rolled_back"
+]);
+
+function assertOperationalAttestationRuntimeAuthorizedV2(
+  root: string,
+  action: OperationalAttestationActionV2
+): void {
+  if (!PRODUCTION_OPERATION_AUTHORITY_ACTIONS_V2.has(action)) return;
+  const bytes = readFileSync(safeArtifactPath(root, "task0b-release-freeze.json"));
+  const task0b = validateTask0BReleaseFreezeEvidence(JSON.parse(bytes.toString("utf8")));
+  if (!bytes.equals(canonicalBytesV2(task0b))) throw new Error("task0b_preflight_artifact_noncanonical");
+  assertTask0BPreviousRuntimeActionAuthorized(task0b.previousRuntimeIdentity);
+}
 
 const OPERATIONAL_ATTESTATION_TTL_MS_V2: Readonly<Record<OperationalAttestationActionV2, number>> = Object.freeze({
   g12_backup_passed: 70 * 60_000,
@@ -1406,6 +1421,7 @@ export async function issueOperationalAttestationV2(input: {
 }) {
   const exactInput = exactIssuerInputV2(input);
   const root = assertTrustedArtifactRootPathV2(exactInput.artifactRoot);
+  assertOperationalAttestationRuntimeAuthorizedV2(root, exactInput.action);
   const freeze = currentVerifiedFreeze(root);
   const { bytes: currentManifestBytes } = validateCanonicalCurrentManifestChainV2(root, freeze);
   const actionRecords = committedAuthorityRecordsForActionV2(root, freeze, exactInput.action);
