@@ -79,6 +79,10 @@ type CaptureApi = {
   assertPlan3SuiteFailuresAreBehavioral(report: unknown): void;
   plan3FrozenRoleCleanupStatements(): readonly string[];
   redAcceptanceTestNamePattern(): string;
+  buildPlan3RedContainerName(entropyHex: string): string;
+  cleanupPlan3RedContainer(containerName: string, dependencies: {
+    docker(args: readonly string[]): Promise<string>;
+  }): Promise<void>;
   buildCaptureRedSpec(input: {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
@@ -122,6 +126,8 @@ async function loadCaptureApi(): Promise<CaptureApi> {
       || typeof loaded.assertPlan3SuiteFailuresAreBehavioral !== "function"
       || typeof loaded.plan3FrozenRoleCleanupStatements !== "function"
       || typeof loaded.redAcceptanceTestNamePattern !== "function"
+      || typeof loaded.buildPlan3RedContainerName !== "function"
+      || typeof loaded.cleanupPlan3RedContainer !== "function"
       || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
   }
@@ -960,6 +966,24 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
     "drop owned by tron cascade",
     "drop role tron"
   ]);
+  const containerName = api.buildPlan3RedContainerName("ab".repeat(16));
+  expect(containerName).toBe(`plan5-red-plan3-${"ab".repeat(16)}`);
+  expect(() => api.buildPlan3RedContainerName("predictable")).toThrow(/entropy/i);
+  const cleanupCalls: string[][] = [];
+  await expect(api.cleanupPlan3RedContainer(containerName, {
+    docker: async (args) => {
+      cleanupCalls.push([...args]);
+      if (args[0] === "rm") throw new Error("No such container");
+      return "";
+    }
+  })).resolves.toBeUndefined();
+  expect(cleanupCalls).toEqual([
+    ["rm", "--force", containerName],
+    ["ps", "-a", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"]
+  ]);
+  await expect(api.cleanupPlan3RedContainer(containerName, {
+    docker: async (args) => args[0] === "rm" ? "" : containerName
+  })).rejects.toThrow(/still exists/i);
   expect(api.redAcceptanceTestNamePattern()).toBe("\\[AC-\\d{2}\\]");
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",

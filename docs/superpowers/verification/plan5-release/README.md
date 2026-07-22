@@ -172,7 +172,12 @@ identities. A start or stop is never inferred from a verifier result.
 
 `release:verify` is verifier-only: it validates and aggregates artifacts that
 already exist. It does not execute the `G00`-`G11` producers. The required
-order is producer-first, strict-verifier-last.
+order is producer-first, strict-verifier-last. The V2 verifier does not accept
+hashable arbitrary JSON: it runs concrete semantic validation for the trace,
+all six exact suite reports and sidecars, Task 8B RED cleanup, non-Vitest,
+schema, sanitized runtime, terminal legacy, rollback, and manual Telegram
+artifacts. Every trace GREEN hash and exact file/fullName must resolve in its
+owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
 
 1. After the separately approved adoption/restart decision or plan amendment
    required before Task 9, capture a fresh read-only Task 0B against the
@@ -210,7 +215,10 @@ order is producer-first, strict-verifier-last.
 
    The suite producer runs test files serially and bounds every test and hook at
    120 seconds; this prevents database-backed files from racing the shared
-   disposable databases while preserving a finite producer timeout.
+   disposable databases while preserving a finite producer timeout. It rejects
+   any staged, unstaged, or untracked candidate change both immediately before
+   execution and immediately before publishing its sidecar. The non-Vitest
+   producer applies the same clean-`HEAD` checks around its full run.
 
 3. Produce the non-Vitest full-regression evidence, reconstruct the exact
    owner RED runs and missing Task 0A baseline, then capture the acceptance
@@ -282,7 +290,9 @@ order is producer-first, strict-verifier-last.
    execution selects only `[AC-NN]` tests. Cleanup uses a fresh identity-verified
    admin connection to disable the frozen login, terminate its sessions, revoke
    its grant, drop only objects owned by that new disposable role, drop the role,
-   and verify absence even after a failed test run.
+   and verify absence even after a failed test run. Its pinned Node container
+   has a cryptographically unique tracked name; `finally` force-removes that
+   exact container and verifies it absent after success, failure, or timeout.
 
    AC-20/21/24 are not part of that exception. Preparation replays their exact
    original test patch from frozen commit `20ee8a75…` and runs their behavioral

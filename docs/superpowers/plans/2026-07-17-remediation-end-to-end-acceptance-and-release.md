@@ -1636,7 +1636,10 @@ positive frozen behavioral allowlist; AC-14/15 require the exact
 `reconcileWaitingForensicCheckJobs` message and stack location. RED runs filter
 to `[AC-NN]` tests. Fresh cleanup revalidates the database, disables and
 terminates the frozen role, removes only that role's disposable objects, drops
-the role, and verifies absence. Local-module assertion reports reconcile
+the role, and verifies absence. The pinned Node runner uses a cryptographically
+unique tracked container name; `finally` force-removes that exact container and
+verifies it absent after success, failure, or timeout. Local-module assertion
+reports reconcile
 aggregate counts exactly, reject suite-level failure messages, and accept
 companions only for the exact frozen AC-29/30 `AssertionError` multiset. Every
 approved behavioral failure binds SHA-256 of its complete normalized Vitest
@@ -2651,7 +2654,11 @@ Created only after deployment/closeout:
 - `src/release/remediationReleaseManifest.ts` — V1 compatibility parser only;
   no Task 9 or production authority.
 - `scripts/verifyRemediationRelease.ts` — V2 semantic read-only verifier;
-  byte-identical artifact-root invariant.
+  byte-identical artifact-root invariant; concrete trace, exact suite
+  report/sidecar, Task 8B RED, non-Vitest, schema, runtime, terminal, rollback
+  and manual-artifact validation before phase acceptance. Suite and non-Vitest
+  producers require exact clean candidate `HEAD` before execution and evidence
+  publication.
 - `scripts/createProductionBackupEvidence.ts`,
   `scripts/runSchema032ReleaseSequence.ts`, `scripts/manageTask0BRuntime.ts` —
   require a fully verified V2 transition receipt/current manifest/root binding,

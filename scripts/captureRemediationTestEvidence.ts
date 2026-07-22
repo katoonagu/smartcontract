@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -360,8 +360,49 @@ async function gitOutput(args: readonly string[]): Promise<string> {
 }
 
 async function dockerOutput(args: readonly string[]): Promise<string> {
-  const { stdout } = await execFileAsync("docker", [...args], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await execFileAsync("docker", [...args], {
+    windowsHide: true,
+    timeout: 30_000,
+    maxBuffer: 16 * 1024 * 1024
+  });
   return stdout.trim();
+}
+
+export function buildPlan3RedContainerName(entropyHex: string): string {
+  if (!/^[0-9a-f]{32}$/.test(entropyHex)) throw new Error("Plan 3 RED container entropy is invalid");
+  return `plan5-red-plan3-${entropyHex}`;
+}
+
+export async function cleanupPlan3RedContainer(
+  containerName: string,
+  dependencies: { docker(args: readonly string[]): Promise<string> } = { docker: dockerOutput }
+): Promise<void> {
+  if (!/^plan5-red-plan3-[0-9a-f]{32}$/.test(containerName)) {
+    throw new Error("Plan 3 RED container name is invalid");
+  }
+  let removalError: unknown;
+  try {
+    await dependencies.docker(["rm", "--force", containerName]);
+  } catch (error) {
+    removalError = error;
+  }
+  let remaining: string;
+  try {
+    remaining = await dependencies.docker([
+      "ps", "-a", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"
+    ]);
+  } catch (error) {
+    throw new AggregateError(
+      removalError === undefined ? [error] : [removalError, error],
+      "Plan 3 RED container removal could not be verified"
+    );
+  }
+  if (remaining.trim() !== "") {
+    throw new AggregateError(
+      removalError === undefined ? [] : [removalError],
+      "Plan 3 RED container still exists after cleanup"
+    );
+  }
 }
 
 async function assertCommit(sha: string): Promise<void> {
@@ -835,6 +876,7 @@ async function runPlan3FrozenRedInContainer(
     throw new Error("Plan 3 RED Node image identity is invalid");
   }
   const admin = new Client({ connectionString: binding.directUrl, connectionTimeoutMillis: 5_000, query_timeout: 5_000 });
+  const containerName = buildPlan3RedContainerName(randomBytes(16).toString("hex"));
   let connected = false;
   let roleCreated = false;
   let primaryError: unknown;
@@ -849,6 +891,11 @@ async function runPlan3FrozenRedInContainer(
     roleCreated = true;
     await admin.query("grant create on database tron_watch_plan3 to tron");
 
+    const existingContainer = await dockerOutput([
+      "ps", "-a", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"
+    ]);
+    if (existingContainer !== "") throw new Error("Plan 3 RED container name collision");
+
     const proxyCode = `const net=require("node:net");net.createServer(c=>{const u=net.connect(5432,"${binding.databaseIp}");c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u).pipe(c)}).listen(55432,"127.0.0.1")`;
     // ponytail: immutable Plan 3 pins Windows-reserved 55432; isolate that legacy endpoint in the pinned Node container.
     const command = [
@@ -862,7 +909,7 @@ async function runPlan3FrozenRedInContainer(
       "exit $code"
     ].join("; ");
     await execFileAsync("docker", [
-      "run", "--rm", "--network", binding.networkName,
+      "run", "--rm", "--name", containerName, "--network", binding.networkName,
       "--env", "REQUIRE_PLAN3_POSTGRES=1",
       "--env", `PLAN3_TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
       "--env", `TEST_DATABASE_URL=${PLAN3_FROZEN_DATABASE_URL}`,
@@ -879,6 +926,11 @@ async function runPlan3FrozenRedInContainer(
   } catch (error) {
     primaryError = error;
   } finally {
+    try {
+      await cleanupPlan3RedContainer(containerName);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     if (connected) {
       try {
         await admin.end();

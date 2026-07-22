@@ -22,7 +22,11 @@ import {
 } from "../src/release/remediationReleaseManifest";
 import { validateAcceptanceTraceSet } from "../src/release/acceptanceTrace";
 import { parseVitestJsonReport } from "../src/release/acceptanceTrace";
-import type { AcceptanceTraceSetV1, ParsedAcceptanceExecution } from "../src/release/acceptanceTrace";
+import type {
+  AcceptanceTraceDependencies,
+  AcceptanceTraceSetV1,
+  ParsedAcceptanceExecution
+} from "../src/release/acceptanceTrace";
 import {
   buildRuntimeRehearsalExpectedFromArtifactBytes,
   deriveControlledRuntimeEvidence,
@@ -41,6 +45,8 @@ import { MANUAL_TELEGRAM_ACCEPTANCE_CASES } from "./renderTelegramUxAcceptance";
 import {
   verifyRemediationReleaseArtifactsV2,
   validateRemediationReleaseManifestV2,
+  type GateEvidenceKindV2,
+  type ReleaseGateIdV2,
   type RemediationReleaseManifestV2
 } from "../src/release/remediationReleaseManifestV2";
 import type { GateEvidencePayloadV2 } from "../src/release/releaseGateEvidencePolicy";
@@ -709,7 +715,7 @@ export function buildReleaseSuiteGroupInvocation(
 }
 
 export function assertTraceExecutionsCoveredBySuiteReports(
-  traceSet: Pick<AcceptanceTraceSetV1, "traces">,
+  traceSet: Pick<AcceptanceTraceSetV1, "traces" | "auxiliaryGreen">,
   suiteExecutions: readonly ParsedAcceptanceExecution[]
 ): void {
   const statusByKey = new Map<string, Set<string>>();
@@ -719,24 +725,77 @@ export function assertTraceExecutionsCoveredBySuiteReports(
     statuses.add(execution.status);
     statusByKey.set(key, statuses);
   }
-  for (const trace of traceSet.traces) {
+  const required = [
+    ...traceSet.traces.map((trace) => ({ label: trace.acceptanceId, testFile: trace.testFile, fullName: trace.fullName })),
+    ...traceSet.auxiliaryGreen.map((trace) => ({ label: "AC-33 auxiliary", testFile: trace.testFile, fullName: trace.fullName }))
+  ];
+  for (const trace of required) {
     const statuses = statusByKey.get(`${trace.testFile}\0${trace.fullName}`);
     if (!statuses || statuses.size !== 1 || !statuses.has("passed")) {
-      throw new Error(`${trace.acceptanceId} exact file/fullName was not observed passed in executed suite reports`);
+      throw new Error(`${trace.label} exact file/fullName was not observed passed in executed suite reports`);
     }
   }
 }
 
-async function readRequiredSuiteExecutions(root: string, candidateSha: string): Promise<ParsedAcceptanceExecution[]> {
-  const executions: ParsedAcceptanceExecution[] = [];
+export function validateAcceptanceTraceEvidenceBundle(
+  value: unknown,
+  candidateSha: string,
+  suiteExecutions: readonly ParsedAcceptanceExecution[],
+  dependencies: AcceptanceTraceDependencies
+): AcceptanceTraceSetV1 {
+  const traceSet = validateAcceptanceTraceSet(value, dependencies);
+  if (traceSet.candidateSha !== candidateSha) throw new Error("acceptance trace candidate SHA mismatch");
+  assertTraceExecutionsCoveredBySuiteReports(traceSet, suiteExecutions);
+  return traceSet;
+}
+
+export type ReleaseCandidateWorkspaceDependencies = Readonly<{
+  readHead(): string;
+  readStatus(): string;
+}>;
+
+const defaultReleaseCandidateWorkspaceDependencies: ReleaseCandidateWorkspaceDependencies = {
+  readHead: () => execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repositoryRoot, encoding: "utf8", windowsHide: true
+  }).trim(),
+  readStatus: () => execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+    cwd: repositoryRoot, encoding: "utf8", windowsHide: true
+  })
+};
+
+export function assertReleaseCandidateWorkspaceClean(
+  candidateSha: string,
+  dependencies: ReleaseCandidateWorkspaceDependencies = defaultReleaseCandidateWorkspaceDependencies
+): void {
+  if (!SHA40.test(candidateSha) || dependencies.readHead().trim() !== candidateSha) {
+    throw new Error("release candidate SHA is not the checked-out HEAD");
+  }
+  if (dependencies.readStatus().trim() !== "") {
+    throw new Error("release evidence execution requires an exact clean worktree");
+  }
+}
+
+type ValidatedSuiteGroup = Readonly<{
+  reportSha256: string;
+  executions: ParsedAcceptanceExecution[];
+}>;
+
+async function readRequiredSuiteGroups(
+  root: string,
+  candidateSha: string
+): Promise<ReadonlyMap<RemediationSuiteGroupId, ValidatedSuiteGroup>> {
+  const groups = new Map<RemediationSuiteGroupId, ValidatedSuiteGroup>();
   for (const groupId of Object.keys(REMEDIATION_REQUIRED_SUITE_GROUPS) as RemediationSuiteGroupId[]) {
     const reportBytes = await readSafeArtifactFile(root, `suite-${groupId}.vitest.json`);
     const report = parseJson(reportBytes);
     const evidenceBytes = await readSafeArtifactFile(root, `suite-${groupId}.evidence.json`);
     validateReleaseSuiteGroupEvidence(parseJson(evidenceBytes), { groupId, candidateSha, report, reportBytes });
-    executions.push(...parseVitestJsonReport(report, "passed"));
+    groups.set(groupId, {
+      reportSha256: createHash("sha256").update(reportBytes).digest("hex"),
+      executions: parseVitestJsonReport(report, "passed")
+    });
   }
-  return executions;
+  return groups;
 }
 
 export async function executeReleaseSuiteGroup(options: {
@@ -756,6 +815,7 @@ export async function executeReleaseSuiteGroup(options: {
   const suiteEnvironment = buildReleaseSuiteEnvironment(process.env, {
     expectedTestDatabase: SUITE_TEST_DATABASES[options.groupId]
   });
+  assertReleaseCandidateWorkspaceClean(options.candidateSha);
   const child = spawnSync(invocation.executable, invocation.args, {
     cwd: repositoryRoot,
     env: suiteEnvironment,
@@ -766,6 +826,7 @@ export async function executeReleaseSuiteGroup(options: {
     maxBuffer: MAX_ARTIFACT_BYTES
   });
   if (child.error || child.signal || child.status === null) throw new Error("suite process did not terminate normally");
+  assertReleaseCandidateWorkspaceClean(options.candidateSha);
   const reportBytes = await readSafeArtifactFile(root, `suite-${options.groupId}.vitest.json`);
   const report = parseJson(reportBytes);
   const evidence = buildReleaseSuiteGroupEvidence({
@@ -1199,6 +1260,202 @@ function isVerifiedGitAncestor(ownerCommitSha: string, candidateSha: string): bo
   }
 }
 
+function pathExistsAtVerifiedCommit(commitSha: string, productModulePath: string): boolean {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${commitSha}:${productModulePath}`], {
+      cwd: repositoryRoot,
+      stdio: "ignore",
+      windowsHide: true
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gateExecuted(manifest: Pick<RemediationReleaseManifestV2, "gates">, gateId: ReleaseGateIdV2): boolean {
+  const gate = manifest.gates.find((item) => item.id === gateId);
+  return gate?.state === "passed" || gate?.state === "failed";
+}
+
+async function readGateEvidenceByKind(
+  root: string,
+  manifest: Pick<RemediationReleaseManifestV2, "gates">,
+  gateId: ReleaseGateIdV2,
+  kind: GateEvidenceKindV2,
+  expectedRelativePath?: string
+): Promise<Buffer> {
+  const gate = manifest.gates.find((item) => item.id === gateId);
+  const matches = gate && "evidence" in gate ? gate.evidence.filter((ref) => ref.kind === kind) : [];
+  if (matches.length !== 1 || (expectedRelativePath !== undefined
+      && matches[0]!.relativePath !== expectedRelativePath)) {
+    throw new Error(`${gateId} must bind exactly one exact ${kind} artifact`);
+  }
+  return readSafeArtifactFile(root, matches[0]!.relativePath);
+}
+
+function validateTask8BRedEvidence(value: unknown, report: unknown, reportBytes: Buffer, candidateSha: string): void {
+  assertNoSecretLikeArtifactValues(value);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Task 8B RED evidence is invalid");
+  }
+  const evidence = value as Record<string, unknown>;
+  const expectedKeys = [
+    "version", "candidateSha", "databaseName", "databasePort", "requirePlan5Postgres",
+    "postgresAssertionsExecuted", "skippedPostgresAssertions", "vitestReportSha256", "cleanupDatabaseCount"
+  ].sort();
+  if (Object.keys(evidence).sort().join("|") !== expectedKeys.join("|")
+      || evidence.version !== "task8b-red-evidence-v1"
+      || evidence.candidateSha !== candidateSha
+      || evidence.databaseName !== "tron_watch_plan5_task8b_red"
+      || !Number.isSafeInteger(evidence.databasePort) || Number(evidence.databasePort) <= 0
+      || evidence.databasePort === 55999
+      || evidence.requirePlan5Postgres !== true
+      || !Number.isSafeInteger(evidence.postgresAssertionsExecuted)
+      || Number(evidence.postgresAssertionsExecuted) <= 0
+      || evidence.skippedPostgresAssertions !== 0
+      || evidence.cleanupDatabaseCount !== 0
+      || evidence.vitestReportSha256 !== createHash("sha256").update(reportBytes).digest("hex")) {
+    throw new Error("Task 8B RED evidence identity or cleanup binding is invalid");
+  }
+  const executions = parseVitestJsonReport(report, "failed");
+  const postgresFile = "tests/release/productionReleaseEvidence.postgres.test.ts";
+  const postgresExecutions = executions.filter((execution) => execution.testFile === postgresFile);
+  if (postgresExecutions.length !== evidence.postgresAssertionsExecuted
+      || postgresExecutions.some((execution) => execution.status === "skipped" || execution.status === "todo")) {
+    throw new Error("Task 8B PostgreSQL RED execution count or status is invalid");
+  }
+  const exactFullName = "[REQ-38][TASK8B-PG-RED] runs the frozen PostgreSQL RED case on an exact disposable non-production database with required execution report hash and cleanup";
+  const required = postgresExecutions.filter((execution) => execution.fullName === exactFullName);
+  if (required.length !== 1 || required[0]!.status !== "failed"
+      || required[0]!.failureMessages.length === 0
+      || required[0]!.failureMessages.some((message) => !message.includes("Plan 5 feature missing"))) {
+    throw new Error("Task 8B exact PostgreSQL behavioral RED is invalid");
+  }
+  for (const execution of executions.filter((item) => item.status === "failed")) {
+    if (execution.failureMessages.length === 0
+        || execution.failureMessages.some((message) => !message.includes("Plan 5 feature missing"))) {
+      throw new Error("Task 8B RED report contains an unclassified failure");
+    }
+  }
+}
+
+function assertTraceReportBindings(
+  traceSet: AcceptanceTraceSetV1,
+  groups: ReadonlyMap<RemediationSuiteGroupId, ValidatedSuiteGroup>
+): void {
+  const allExecutions = [...groups.values()].flatMap((group) => group.executions);
+  assertTraceExecutionsCoveredBySuiteReports(traceSet, allExecutions);
+  for (const trace of traceSet.traces) {
+    const group = groups.get(`plan${trace.ownerPlan}` as RemediationSuiteGroupId);
+    if (!group || trace.green.vitestReportSha256 !== group.reportSha256) {
+      throw new Error(`${trace.acceptanceId} GREEN report hash is not bound to its exact owner-plan suite`);
+    }
+    const exact = group.executions.filter((execution) => (
+      execution.testFile === trace.testFile && execution.fullName === trace.fullName && execution.status === "passed"
+    ));
+    if (exact.length !== 1) throw new Error(`${trace.acceptanceId} exact GREEN execution is invalid`);
+  }
+  const auxiliary = traceSet.auxiliaryGreen[0]!;
+  const plan2 = groups.get("plan2");
+  if (!plan2 || auxiliary.vitestReportSha256 !== plan2.reportSha256
+      || plan2.executions.filter((execution) => execution.testFile === auxiliary.testFile
+        && execution.fullName === auxiliary.fullName && execution.status === "passed").length !== 1) {
+    throw new Error("AC-33 auxiliary GREEN is not bound to the exact Plan 2 suite report");
+  }
+}
+
+export async function verifyPreReleaseConcreteEvidenceV2(
+  root: string,
+  manifest: Pick<RemediationReleaseManifestV2, "candidateSha" | "planBaseSha" | "gates">
+): Promise<void> {
+  let traceSet: AcceptanceTraceSetV1 | null = null;
+  if (gateExecuted(manifest, "G01_TRACE")) {
+    const traceBytes = await readSafeArtifactFile(root, REMEDIATION_ACCEPTANCE_TRACE_FILE);
+    traceSet = validateAcceptanceTraceSet(parseJson(traceBytes), {
+      isAncestor: isVerifiedGitAncestor,
+      pathExistsAtCommit: pathExistsAtVerifiedCommit
+    });
+    if (traceSet.candidateSha !== manifest.candidateSha) throw new Error("acceptance trace candidate SHA mismatch");
+    const task8bBytes = await readSafeArtifactFile(root, "task8b-red-evidence-v1.json");
+    const task8bReportBytes = await readSafeArtifactFile(root, "task8b-red.vitest.json");
+    validateTask8BRedEvidence(parseJson(task8bBytes), parseJson(task8bReportBytes), task8bReportBytes, manifest.candidateSha);
+  }
+
+  if (gateExecuted(manifest, "G00_BASE")) {
+    validateTask0BaselineEvidence(
+      parseJson(await readGateEvidenceByKind(root, manifest, "G00_BASE", "task0_baseline", "task0-baseline.json")),
+      manifest.candidateSha,
+      { isAncestor: isVerifiedGitAncestor }
+    );
+  }
+
+  if (gateExecuted(manifest, "G06_FULL")) {
+    for (const [gateId, groupId] of [
+      ["G02_DATA", "plan1"],
+      ["G03_SCORING", "plan2"],
+      ["G04_RUNTIME", "plan3"],
+      ["G11_POISONING_REGRESSION", "addressPoisoningRegression"]
+    ] as const) {
+      await readGateEvidenceByKind(root, manifest, gateId, "suite_report", `suite-${groupId}.vitest.json`);
+      await readGateEvidenceByKind(root, manifest, gateId, "suite_evidence", `suite-${groupId}.evidence.json`);
+    }
+    await readGateEvidenceByKind(root, manifest, "G06_FULL", "suite_report", "suite-plan5.vitest.json");
+    const groups = await readRequiredSuiteGroups(root, manifest.candidateSha);
+    if (traceSet === null) throw new Error("full release evidence requires the semantic acceptance trace");
+    assertTraceReportBindings(traceSet, groups);
+    validateNonVitestReleaseEvidence(
+      parseJson(await readGateEvidenceByKind(root, manifest, "G06_FULL", "full_regression", "full-regression-evidence.json")),
+      { candidateSha: manifest.candidateSha, planBaseSha: manifest.planBaseSha }
+    );
+  }
+
+  if (gateExecuted(manifest, "G07_SCHEMA_OFFLINE")) {
+    validateOfflineSchemaArtifactSet(
+      manifest.candidateSha,
+      await readGateEvidenceByKind(root, manifest, "G07_SCHEMA_OFFLINE", "schema_clean",
+        "schema-clean/schema032-release-evidence.json"),
+      await readGateEvidenceByKind(root, manifest, "G07_SCHEMA_OFFLINE", "schema_production_clone",
+        "schema-production-clone/schema032-release-evidence.json")
+    );
+  }
+
+  const runtimeBundleComplete = ["G08_VERSION_SANITIZED", "G09_LEGACY_TERMINAL", "G10_ROLLBACK_REHEARSAL"]
+    .every((gateId) => gateExecuted(manifest, gateId as ReleaseGateIdV2));
+  if (runtimeBundleComplete) {
+    const runtimeArtifacts: RuntimeArtifactSetBytes = {
+      runtime: await readGateEvidenceByKind(root, manifest,
+        "G08_VERSION_SANITIZED", "runtime_rehearsal", "runtime-rehearsal.json"),
+      rollback: await readGateEvidenceByKind(root, manifest,
+        "G10_ROLLBACK_REHEARSAL", "rollback_rehearsal", "rollback-rehearsal.json"),
+      terminal: await readGateEvidenceByKind(root, manifest,
+        "G09_LEGACY_TERMINAL", "terminal_legacy_population", "terminal-legacy-population.json"),
+      runtimeSchema: await readGateEvidenceByKind(root, manifest,
+        "G08_VERSION_SANITIZED", "schema_runtime_sanitized", "schema-runtime-sanitized-evidence.json"),
+      productionCloneSchema: await readGateEvidenceByKind(root, manifest,
+        "G07_SCHEMA_OFFLINE", "schema_production_clone", "schema-production-clone/schema032-release-evidence.json"),
+      candidateStart: await readSafeArtifactFile(root, "runtime-candidate-start-evidence.json"),
+      previousStart: await readSafeArtifactFile(root, "runtime-previous-start-evidence.json"),
+      task0b: await readSafeArtifactFile(root, "task0b-release-freeze.json"),
+      operationalObservation: await readSafeArtifactFile(root, "runtime-operational-observation.json"),
+      operationalSubprocessCaptures: await readSafeArtifactFile(root, "runtime-subprocess-captures.json"),
+      operationalQueryCaptures: await readSafeArtifactFile(root, "runtime-query-captures.json"),
+      operationalConfig: await readSafeArtifactFile(root, "runtime-operational-config.json")
+    };
+    const { readCurrentTask0BReleaseRevalidation } = await import("./captureTask0BPreflight");
+    const evaluatedAt = new Date().toISOString();
+    const currentTask0B = await readCurrentTask0BReleaseRevalidation(root, evaluatedAt);
+    if (!runtimeArtifacts.task0b.equals(currentTask0B.frozenBytes)) {
+      throw new Error("runtime Task0B artifact differs from current immutable freeze binding");
+    }
+    validateRuntimeArtifactSet(manifest.candidateSha, runtimeArtifacts, evaluatedAt, currentTask0B);
+  }
+
+  if (gateExecuted(manifest, "G05_TELEGRAM")) {
+    await validateManualTelegramArtifactForRelease(root, manifest.candidateSha);
+  }
+}
+
 function gateStates(result: SanitizedVerificationResult): Map<ReleaseGateId, ReleaseGateState> {
   return new Map(result.gates.map((gate) => [gate.id, gate.state]));
 }
@@ -1299,6 +1556,7 @@ export async function verifyRemediationReleaseArtifacts(
     for (const ref of manifestV2.transitionEvidence) artifacts.set(ref.relativePath,
       await readSafeArtifactFile(root, ref.relativePath));
     const verified = await verifyRemediationReleaseArtifactsV2(artifacts);
+    await verifyPreReleaseConcreteEvidenceV2(root, verified);
     const result: SanitizedVerificationResult = {
       version: verified.version,
       transitionId: verified.transitionId,
@@ -1371,10 +1629,10 @@ async function main(): Promise<void> {
         throw new Error("non-Vitest runner requires artifact root, RELEASE_SHA, and PLAN5_BASE_SHA");
       }
       if (planBaseSha !== PLAN5_APPROVED_BASE_SHA) throw new Error("non-Vitest runner Plan 5 base is not approved");
-      const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", windowsHide: true }).trim();
-      if (candidateSha !== head) throw new Error("non-Vitest candidate SHA is not the checked-out HEAD");
+      assertReleaseCandidateWorkspaceClean(candidateSha);
       const root = await resolveExternalArtifactRoot(artifactRoot);
       const evidence = await runNonVitestReleaseChecks({ candidateSha, planBaseSha, env: process.env });
+      assertReleaseCandidateWorkspaceClean(candidateSha);
       const bytes = Buffer.from(`${JSON.stringify(evidence)}\n`, "utf8");
       await writeFile(join(root, "full-regression-evidence.json"), bytes, { flag: "wx" });
       process.stdout.write(`${JSON.stringify({

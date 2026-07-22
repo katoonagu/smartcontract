@@ -186,12 +186,85 @@ it("[REQ-38][GATE-ARTIFACT-BINDING] recomputes the concrete sanitized output has
 it("[AC-41][SUITE-TRACE-BINDING] resolves every exact AC file and fullName in executed reports", async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
   const trace = buildAcceptanceTraceSet();
-  const executions = trace.executions.map((execution) => ({ ...execution, failureMessages: [] }));
+  const executions = [
+    ...trace.executions,
+    ...trace.auxiliaryGreen.map(({ testFile, fullName }) => ({ testFile, fullName, status: "passed" as const }))
+  ].map((execution) => ({ ...execution, failureMessages: [] }));
   expect(() => runner.assertTraceExecutionsCoveredBySuiteReports(trace, executions)).not.toThrow();
   expect(() => runner.assertTraceExecutionsCoveredBySuiteReports(trace, executions.slice(1))).toThrow();
   const skipped = cloneFixture(executions);
   skipped[0].status = "skipped";
   expect(() => runner.assertTraceExecutionsCoveredBySuiteReports(trace, skipped)).toThrow();
+});
+
+it("[REQ-38][STRICT-RELEASE-EVIDENCE] rejects dirty candidate execution and semantically validates trace coverage", async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease") as any;
+  expect(typeof runner.assertReleaseCandidateWorkspaceClean).toBe("function");
+  expect(typeof runner.validateAcceptanceTraceEvidenceBundle).toBe("function");
+  expect(() => runner.assertReleaseCandidateWorkspaceClean(CANDIDATE_SHA, {
+    readHead: () => CANDIDATE_SHA,
+    readStatus: () => ""
+  })).not.toThrow();
+  expect(() => runner.assertReleaseCandidateWorkspaceClean(CANDIDATE_SHA, {
+    readHead: () => CANDIDATE_SHA,
+    readStatus: () => " M src/index.ts"
+  })).toThrow(/clean worktree/i);
+  expect(() => runner.assertReleaseCandidateWorkspaceClean(CANDIDATE_SHA, {
+    readHead: () => "f".repeat(40),
+    readStatus: () => ""
+  })).toThrow(/checked-out HEAD/i);
+
+  const trace = buildAcceptanceTraceSet();
+  const executions = [
+    ...trace.executions,
+    ...trace.auxiliaryGreen.map(({ testFile, fullName }) => ({ testFile, fullName, status: "passed" as const }))
+  ].map((execution) => ({ ...execution, failureMessages: [] }));
+  const localAbsenceTestCommits = new Set(trace.traces
+    .filter((item) => item.red.kind === "local_product_module_absent")
+    .map((item) => item.red.testCommitSha));
+  expect(() => runner.validateAcceptanceTraceEvidenceBundle(
+    trace,
+    CANDIDATE_SHA,
+    executions,
+    {
+      isAncestor: () => true,
+      pathExistsAtCommit: (sha: string) => !localAbsenceTestCommits.has(sha)
+    }
+  )).not.toThrow();
+  expect(() => runner.validateAcceptanceTraceEvidenceBundle(
+    trace,
+    CANDIDATE_SHA,
+    executions.slice(1),
+    {
+      isAncestor: () => true,
+      pathExistsAtCommit: (sha: string) => !localAbsenceTestCommits.has(sha)
+    }
+  )).toThrow(/observed passed/i);
+  expect(() => runner.validateAcceptanceTraceEvidenceBundle(
+    { version: "acceptance-trace-v1" },
+    CANDIDATE_SHA,
+    executions,
+    { isAncestor: () => true, pathExistsAtCommit: () => false }
+  )).toThrow(/trace|acceptance|required/i);
+});
+
+it("[REQ-38][STRICT-RELEASE-EVIDENCE] reaches semantic trace validation from the V2 concrete verifier", async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease") as any;
+  expect(typeof runner.verifyPreReleaseConcreteEvidenceV2).toBe("function");
+  const root = await mkdtemp(join(tmpdir(), "plan5-semantic-verifier-"));
+  try {
+    await writeFile(join(root, "acceptance-trace.json"), JSON.stringify({
+      version: "acceptance-trace-set-v1",
+      candidateSha: CANDIDATE_SHA
+    }));
+    await expect(runner.verifyPreReleaseConcreteEvidenceV2(root, {
+      candidateSha: CANDIDATE_SHA,
+      planBaseSha: PLAN_BASE_SHA,
+      gates: [{ id: "G01_TRACE", state: "passed" }]
+    })).rejects.toThrow(/trace|required|acceptance/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("[REQ-35][REQ-38][RUNTIME-ARTIFACT-SEMANTICS] rejects hashable but false runtime rollback or legacy evidence", async () => {

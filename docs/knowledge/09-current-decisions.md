@@ -234,8 +234,14 @@ of these decisions, update this file in the same work.
   Telegram acceptance are pending.
 - Manifest-mode `release:verify` is byte-identical/read-only for the protected
   root. It verifies the canonical V2 store and phase but writes, repairs, or
-  aggregates nothing. Suite, non-Vitest, trace, schema, sanitized runtime,
-  terminal legacy, rollback, and manual Telegram producers run first.
+  aggregates nothing. Before accepting a phase it also runs the concrete
+  semantic validators for the acceptance trace, exact suite reports and
+  sidecars, Task 8B RED cleanup proof, non-Vitest regression, schema, sanitized
+  runtime, terminal legacy, rollback, and manual Telegram evidence. Trace
+  GREEN hashes and exact file/fullName executions must resolve in their owner
+  plan reports, including the AC-33 auxiliary proof. Suite and non-Vitest
+  producers require the candidate worktree to be exact clean `HEAD` both before
+  execution and immediately before evidence publication.
 - Task 0A observed previous runtime
   `0172978845ec74373bd245098ee8c075e0c39acf`, label `master-01729788`, Admin
   HTTP 200 and Telegram long polling against loopback `tron_watch:55999` at
@@ -439,7 +445,10 @@ of these decisions, update this file in the same work.
   fresh verified admin connection, and fails closed on setup or cleanup drift.
   Cleanup disables login, terminates test-role sessions, revokes the grant,
   drops only objects owned by that fresh disposable role, drops the role, and
-  verifies absence. Frozen RED runs select only exact `[AC-NN]` tests, so
+  verifies absence. The pinned Node runner uses a cryptographically unique
+  tracked container name; every success, failure, or timeout removes that exact
+  container in `finally` and verifies it absent before role cleanup completes.
+  Frozen RED runs select only exact `[AC-NN]` tests, so
   unrelated REQ guards cannot become trace evidence. Skipped AC-14/15 and any
   authentication, connection or transport failure evidence fail closed.
   Failed Plan 3 executions accept only assertion failures or the exact frozen
