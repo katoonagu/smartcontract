@@ -221,6 +221,17 @@ export type Task0BManagedPreviousRuntimeIdentityV1 = {
   workingDirectoryFingerprintSha256: string;
   entrypointPathFingerprintSha256: string;
   managerExecutableSha256: string;
+  historicalLauncher?: {
+    ownerCandidateSha: string;
+    executorPath: "scripts/manageTask0BRuntime.ts";
+    executorSha256: string;
+    sourceBlobSha256: string;
+    originArtifactRootFingerprintSha256: string;
+    originTask0BEvidenceSha256: string;
+    originReleaseFreezeIdentitySha256: string;
+    source: "protected_origin_freeze_and_git_blob_read_only";
+    verified: true;
+  };
   attestedAt: string;
   producerId: "task0b_repo_runtime_manager_v1";
   liveRecheckSha256: string;
@@ -874,9 +885,11 @@ export function validateTask0BReleaseFreezeEvidence(
     [runtimeIdentity.entrypointPathFingerprintSha256, "entrypoint path"]
   ] as const) expectSha256(field, `Task0B previous runtime ${label}`);
   if (runtimeIdentity.kind === "manager_owned_previous_runtime") {
+    const historicalLauncher = runtimeIdentity.historicalLauncher;
     expectExactKeys(runtimeIdentity, [...commonRuntimeKeys,
       "generationId", "managerExecutableSha256", "attestedAt", "producerId", "liveRecheckSha256",
-      "startEvidenceSha256", "commandId", "templateSha256", "exitCode", "source", "verified"
+      "startEvidenceSha256", "commandId", "templateSha256", "exitCode", "source", "verified",
+      ...(historicalLauncher === undefined ? [] : ["historicalLauncher"])
     ], "Task0B previous runtime identity");
     if (evidence.previousRuntimeSource !== "runtime_manager_attestation_and_process_direct_read"
         || typeof runtimeIdentity.generationId !== "string" || !/^[a-z0-9][a-z0-9-]{15,63}$/u.test(runtimeIdentity.generationId)
@@ -893,6 +906,23 @@ export function validateTask0BReleaseFreezeEvidence(
     for (const field of [runtimeIdentity.managerExecutableSha256, runtimeIdentity.liveRecheckSha256,
       runtimeIdentity.startEvidenceSha256, runtimeIdentity.templateSha256]) {
       expectSha256(field, "Task0B managed previous runtime binding");
+    }
+    if (historicalLauncher !== undefined) {
+      const lineage = expectRecord(historicalLauncher, "Task0B historical runtime manager launcher");
+      expectExactKeys(lineage, ["ownerCandidateSha", "executorPath", "executorSha256", "sourceBlobSha256",
+        "originArtifactRootFingerprintSha256", "originTask0BEvidenceSha256", "originReleaseFreezeIdentitySha256",
+        "source", "verified"], "Task0B historical runtime manager launcher");
+      if (expectSha40(lineage.ownerCandidateSha, "Task0B historical manager owner candidate") === observedCandidateSha
+          || lineage.executorPath !== "scripts/manageTask0BRuntime.ts"
+          || lineage.executorSha256 !== runtimeIdentity.managerExecutableSha256
+          || lineage.source !== "protected_origin_freeze_and_git_blob_read_only" || lineage.verified !== true) {
+        throw new Error("Task0B historical runtime manager launcher binding is invalid");
+      }
+      for (const field of [lineage.executorSha256, lineage.sourceBlobSha256,
+        lineage.originArtifactRootFingerprintSha256, lineage.originTask0BEvidenceSha256,
+        lineage.originReleaseFreezeIdentitySha256]) {
+        expectSha256(field, "Task0B historical runtime manager launcher binding");
+      }
     }
   } else if (runtimeIdentity.kind === "legacy_unmanaged_previous_runtime") {
     expectExactKeys(runtimeIdentity, [...commonRuntimeKeys, "adminObservation", "productionDatabaseObservation",
@@ -979,9 +1009,15 @@ export function validateTask0BReleaseFreezeEvidence(
     throw new Error("Task0B runtime manager is not the verified allowlisted configuration");
   }
   expectSha256(runtimeManager.executorSha256, "Task0B runtime manager executable");
-  if (runtimeIdentity.kind === "manager_owned_previous_runtime"
-      && runtimeManager.executorSha256 !== runtimeIdentity.managerExecutableSha256) {
-    throw new Error("Task0B managed previous runtime executor binding is invalid");
+  if (runtimeIdentity.kind === "manager_owned_previous_runtime") {
+    if (runtimeIdentity.historicalLauncher === undefined
+        && runtimeManager.executorSha256 !== runtimeIdentity.managerExecutableSha256) {
+      throw new Error("Task0B managed previous runtime executor binding is invalid");
+    }
+    if (runtimeIdentity.historicalLauncher !== undefined
+        && runtimeManager.executorSha256 === runtimeIdentity.managerExecutableSha256) {
+      throw new Error("Task0B historical runtime manager launcher is unnecessary");
+    }
   }
   let runtimeManagerAdminUrl: URL;
   try {

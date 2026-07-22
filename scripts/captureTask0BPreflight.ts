@@ -63,6 +63,22 @@ type SanitizedBinding = Pick<Task0BReleaseFreezeEvidenceV1,
   | "previousStartCommandId" | "previousStartTemplateSha256"
   | "previousStopCommandId" | "previousStopTemplateSha256">;
 
+type HistoricalManagerLauncherBinding = {
+  ownerCandidateSha: string;
+  executorPath: "scripts/manageTask0BRuntime.ts";
+  executorSha256: string;
+  sourceBlobSha256: string;
+  originArtifactRoot: string;
+  originArtifactRootFingerprintSha256: string;
+  originTask0BEvidenceSha256: string;
+  originReleaseFreezeIdentitySha256: string;
+};
+
+type HistoricalManagerLauncherEvidence = NonNullable<Extract<
+  Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"],
+  { kind: "manager_owned_previous_runtime" }
+>["historicalLauncher"]>;
+
 export type Task0BPreflightConfigV1 = {
   version: "task0b-preflight-config-v1";
   source: "operator_approved_external_preflight_config";
@@ -75,6 +91,7 @@ export type Task0BPreflightConfigV1 = {
     kind: "manager_owned_previous_runtime";
     evidencePath: string;
     evidenceSha256: string;
+    historicalLauncher?: HistoricalManagerLauncherBinding;
   } | {
     kind: "legacy_unmanaged_previous_runtime";
     processId: number;
@@ -147,6 +164,85 @@ function previousRuntimeSourceMatchesIdentity(
 
 function hash(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function validateTask0BHistoricalManagerLineage(input: {
+  candidateSha: string;
+  previousRuntimeSha: string;
+  previousRuntimeLabel: string;
+  managerExecutableSha256: string;
+  startEvidenceSha256: string;
+  binding: HistoricalManagerLauncherBinding;
+  observedOriginArtifactRootFingerprintSha256: string;
+  originTask0BEvidenceBytes: Uint8Array;
+  originReleaseFreezeIdentityBytes: Uint8Array;
+  ownerManagerSourceBytes: Uint8Array;
+  ownerIsAncestor: boolean;
+}): HistoricalManagerLauncherEvidence {
+  const binding = record(input.binding, "task0b_historical_manager_binding");
+  exactKeys(binding, ["ownerCandidateSha", "executorPath", "executorSha256", "sourceBlobSha256",
+    "originArtifactRoot", "originArtifactRootFingerprintSha256", "originTask0BEvidenceSha256",
+    "originReleaseFreezeIdentitySha256"], "task0b_historical_manager_binding");
+  const ownerCandidateSha = sha(binding.ownerCandidateSha, SHA40, "task0b_historical_manager_owner");
+  if (!SHA40.test(input.candidateSha) || ownerCandidateSha === input.candidateSha || input.ownerIsAncestor !== true
+      || binding.executorPath !== "scripts/manageTask0BRuntime.ts"
+      || binding.executorSha256 !== input.managerExecutableSha256
+      || !isAbsolute(string(binding.originArtifactRoot, "task0b_historical_manager_origin_root"))
+      || binding.originArtifactRootFingerprintSha256 !== input.observedOriginArtifactRootFingerprintSha256) {
+    throw new Error("task0b_historical_manager_lineage_unverified");
+  }
+  for (const value of [binding.executorSha256, binding.sourceBlobSha256,
+    binding.originArtifactRootFingerprintSha256, binding.originTask0BEvidenceSha256,
+    binding.originReleaseFreezeIdentitySha256, input.startEvidenceSha256]) {
+    if (!SHA256.test(String(value))) throw new Error("task0b_historical_manager_lineage_unverified");
+  }
+  if (hash(input.ownerManagerSourceBytes) !== binding.sourceBlobSha256
+      || hash(input.originTask0BEvidenceBytes) !== binding.originTask0BEvidenceSha256
+      || hash(input.originReleaseFreezeIdentityBytes) !== binding.originReleaseFreezeIdentitySha256) {
+    throw new Error("task0b_historical_manager_origin_hash_mismatch");
+  }
+  const parseCanonical = (bytes: Uint8Array, label: string): Record<string, unknown> => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")); }
+    catch { throw new Error(`task0b_historical_manager_${label}_invalid`); }
+    assertNoSecretLikeArtifactValues(parsed);
+    if (!Buffer.from(bytes).equals(Buffer.from(`${canonicalReleaseJsonV2(parsed)}\n`, "utf8"))) {
+      throw new Error(`task0b_historical_manager_${label}_noncanonical`);
+    }
+    return record(parsed, `task0b_historical_manager_${label}`);
+  };
+  const origin = parseCanonical(input.originTask0BEvidenceBytes, "origin_task0b");
+  const originPrevious = record(origin.previousRuntimeIdentity, "task0b_historical_manager_origin_previous_runtime");
+  const originManager = record(origin.runtimeManager, "task0b_historical_manager_origin_runtime_manager");
+  const originRoot = record(origin.artifactRoot, "task0b_historical_manager_origin_artifact_root");
+  if (origin.version !== "task0b-release-freeze-evidence-v1" || origin.candidateSha !== ownerCandidateSha
+      || origin.previousRuntimeSha !== input.previousRuntimeSha || origin.previousRuntimeLabel !== input.previousRuntimeLabel
+      || originPrevious.managerExecutableSha256 !== input.managerExecutableSha256
+      || originPrevious.startEvidenceSha256 !== input.startEvidenceSha256
+      || originManager.executorPath !== binding.executorPath || originManager.executorSha256 !== binding.executorSha256
+      || originManager.producerId !== "task0b_repo_runtime_manager_v1" || originManager.verified !== true
+      || originRoot.rootFingerprintSha256 !== binding.originArtifactRootFingerprintSha256
+      || originRoot.restrictiveAccessVerified !== true || originRoot.noSymlink !== true || originRoot.verified !== true) {
+    throw new Error("task0b_historical_manager_origin_task0b_binding_mismatch");
+  }
+  const freeze = parseCanonical(input.originReleaseFreezeIdentityBytes, "origin_freeze");
+  if (freeze.version !== "release-freeze-identity-v2" || freeze.candidateSha !== ownerCandidateSha
+      || freeze.artifactRootFingerprintSha256 !== binding.originArtifactRootFingerprintSha256
+      || freeze.previousRuntimeDiscoverySha256 !== hash(Buffer.from(`${canonicalReleaseJsonV2(originPrevious)}\n`, "utf8"))
+      || freeze.createdAt !== origin.freezeCutoff) {
+    throw new Error("task0b_historical_manager_origin_freeze_binding_mismatch");
+  }
+  return {
+    ownerCandidateSha,
+    executorPath: "scripts/manageTask0BRuntime.ts",
+    executorSha256: input.managerExecutableSha256,
+    sourceBlobSha256: binding.sourceBlobSha256 as string,
+    originArtifactRootFingerprintSha256: binding.originArtifactRootFingerprintSha256 as string,
+    originTask0BEvidenceSha256: binding.originTask0BEvidenceSha256 as string,
+    originReleaseFreezeIdentitySha256: binding.originReleaseFreezeIdentitySha256 as string,
+    source: "protected_origin_freeze_and_git_blob_read_only",
+    verified: true
+  };
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -286,11 +382,26 @@ function assertPreviousRuntimeIdentityConfig(
 ): Task0BPreflightConfigV1["previousRuntimeIdentity"] {
   const identity = record(value, "task0b_config_previous_runtime_identity");
   if (identity.kind === "manager_owned_previous_runtime") {
-    exactKeys(identity, ["kind", "evidencePath", "evidenceSha256"], "task0b_config_previous_runtime_identity");
+    const historicalLauncher = identity.historicalLauncher;
+    exactKeys(identity, ["kind", "evidencePath", "evidenceSha256",
+      ...(historicalLauncher === undefined ? [] : ["historicalLauncher"])], "task0b_config_previous_runtime_identity");
     if (typeof identity.evidencePath !== "string"
         || !/^runtime-start-evidence-[a-z0-9][a-z0-9-]{15,63}\.json$/u.test(identity.evidencePath)
         || !SHA256.test(String(identity.evidenceSha256))) {
       throw new Error("task0b_config_previous_runtime_identity_unverified");
+    }
+    if (historicalLauncher !== undefined) {
+      const lineage = record(historicalLauncher, "task0b_config_historical_manager_launcher");
+      exactKeys(lineage, ["ownerCandidateSha", "executorPath", "executorSha256", "sourceBlobSha256",
+        "originArtifactRoot", "originArtifactRootFingerprintSha256", "originTask0BEvidenceSha256",
+        "originReleaseFreezeIdentitySha256"], "task0b_config_historical_manager_launcher");
+      if (!SHA40.test(String(lineage.ownerCandidateSha)) || lineage.executorPath !== "scripts/manageTask0BRuntime.ts"
+          || !isAbsolute(string(lineage.originArtifactRoot, "task0b_config_historical_manager_origin_root"))
+          || [lineage.executorSha256, lineage.sourceBlobSha256, lineage.originArtifactRootFingerprintSha256,
+            lineage.originTask0BEvidenceSha256, lineage.originReleaseFreezeIdentitySha256]
+            .some((item) => !SHA256.test(String(item)))) {
+        throw new Error("task0b_config_historical_manager_launcher_unverified");
+      }
     }
   } else if (identity.kind === "legacy_unmanaged_previous_runtime") {
     exactKeys(identity, ["kind", "processId", "processStartedAt", "commandLineSha256", "executablePathSha256",
@@ -352,7 +463,11 @@ export function validateTask0BPreflightConfig(value: unknown, evaluatedAt = new 
   if (Number(new URL(runtimeManager.candidateAdminUrl).port) !== candidatePort.port) {
     throw new Error("task0b_config_candidate_admin_port_mismatch");
   }
-  assertPreviousRuntimeIdentityConfig(config.previousRuntimeIdentity);
+  const previousRuntimeIdentity = assertPreviousRuntimeIdentityConfig(config.previousRuntimeIdentity);
+  if (previousRuntimeIdentity.kind === "manager_owned_previous_runtime"
+      && previousRuntimeIdentity.historicalLauncher?.ownerCandidateSha === candidateSha) {
+    throw new Error("task0b_config_historical_manager_owner_unverified");
+  }
   assertExpectedProductionDatabase(config.productionDatabaseExpected);
   assertPostgresToolProvider(config.postgresToolProvider);
   assertSanitizedBinding(config.sanitizedRehearsal);
@@ -412,6 +527,7 @@ export async function captureTask0BReleaseFreezeEvidence(
   }
   if (previous.identity.workingDirectoryFingerprintSha256 !== rollbackWorktree.worktreePathFingerprintSha256
       || (previous.identity.kind === "manager_owned_previous_runtime"
+        && previous.identity.historicalLauncher === undefined
         && previous.identity.managerExecutableSha256 !== runtimeManager.executorSha256)
       || (previous.identity.kind === "legacy_unmanaged_previous_runtime"
         && (previous.identity.productionDatabaseObservation.approvedIdentityFingerprintSha256
@@ -527,6 +643,7 @@ export async function captureTask0BReleaseRevalidationEvidence(
   }
   if (previous.identity.workingDirectoryFingerprintSha256 !== rollbackWorktree.worktreePathFingerprintSha256
       || (previous.identity.kind === "manager_owned_previous_runtime"
+        && previous.identity.historicalLauncher === undefined
         && previous.identity.managerExecutableSha256 !== runtimeManager.executorSha256)
       || (previous.identity.kind === "legacy_unmanaged_previous_runtime"
         && (previous.identity.productionDatabaseObservation.approvedIdentityFingerprintSha256
@@ -612,6 +729,22 @@ function run(
     }, (error, stdout) => {
       if (error) reject(new Error("task0b_direct_probe_failed"));
       else resolvePromise(stdout.trim());
+    });
+  });
+}
+
+function runBytes(executable: string, args: readonly string[], cwd?: string, timeoutMs = 10_000): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(executable, [...args], {
+      cwd,
+      env: process.env,
+      encoding: "buffer",
+      windowsHide: true,
+      timeout: timeoutMs,
+      maxBuffer: 4 * 1024 * 1024
+    }, (error, stdout) => {
+      if (error || !Buffer.isBuffer(stdout)) reject(new Error("task0b_direct_probe_failed"));
+      else resolvePromise(stdout);
     });
   });
 }
@@ -981,7 +1114,7 @@ export function validateTask0BPreviousRuntimeIdentity(
   processObservation: Task0BDirectRuntimeProcessObservation,
   expected: { sha: string; label: string; managerExecutableSha256: string },
   startEvidenceSha256: string
-): Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"] {
+): Extract<Task0BReleaseFreezeEvidenceV1["previousRuntimeIdentity"], { kind: "manager_owned_previous_runtime" }> {
   assertNoSecretLikeArtifactValues(value);
   const evidence = record(value, "task0b_previous_runtime_start_evidence");
   exactKeys(evidence, [
@@ -1345,21 +1478,61 @@ async function observeCurrentRuntime(config: Task0BPreflightConfigV1): Promise<{
   const processId = rawEvidence.processId;
   if (!Number.isSafeInteger(processId) || (processId as number) < 1) throw new Error("task0b_previous_runtime_process_unverified");
   const processObservation = await observeWindowsRuntimeProcess(processId as number);
+  const historicalLauncher = binding.historicalLauncher;
+  const expectedManagerExecutableSha256 = historicalLauncher?.executorSha256 ?? manager.executorSha256;
+  const identity = validateTask0BPreviousRuntimeIdentity(
+    rawEvidence,
+    processObservation,
+    {
+      sha: config.previousRuntimeSha,
+      label: config.previousRuntimeLabel,
+      managerExecutableSha256: expectedManagerExecutableSha256
+    },
+    binding.evidenceSha256
+  );
+  let historicalLauncherEvidence: HistoricalManagerLauncherEvidence | undefined;
+  if (historicalLauncher !== undefined) {
+    const originRoot = await inspectRealDirectory(historicalLauncher.originArtifactRoot, true);
+    if (sameCanonicalPath(originRoot, root)) throw new Error("task0b_historical_manager_origin_root_invalid");
+    const [originTask0BEvidenceBytes, originReleaseFreezeIdentityBytes, resolvedOwnerSha] = await Promise.all([
+      readProtectedRegularFile(originRoot, "task0b-release-freeze.json", MAX_CONFIG_BYTES),
+      readProtectedRegularFile(originRoot, "release-freeze-identity-v2.json", MAX_CONFIG_BYTES),
+      run("git", ["rev-parse", "--verify", `${historicalLauncher.ownerCandidateSha}^{commit}`], repositoryRoot)
+    ]);
+    let ownerIsAncestor = true;
+    try {
+      await run("git", ["merge-base", "--is-ancestor", historicalLauncher.ownerCandidateSha, config.candidateSha], repositoryRoot);
+    } catch {
+      ownerIsAncestor = false;
+    }
+    if (resolvedOwnerSha !== historicalLauncher.ownerCandidateSha) {
+      throw new Error("task0b_historical_manager_owner_commit_unverified");
+    }
+    const ownerManagerSourceBytes = await runBytes(
+      "git",
+      ["show", `${historicalLauncher.ownerCandidateSha}:${historicalLauncher.executorPath}`],
+      repositoryRoot
+    );
+    historicalLauncherEvidence = validateTask0BHistoricalManagerLineage({
+      candidateSha: config.candidateSha,
+      previousRuntimeSha: config.previousRuntimeSha,
+      previousRuntimeLabel: config.previousRuntimeLabel,
+      managerExecutableSha256: identity.managerExecutableSha256,
+      startEvidenceSha256: binding.evidenceSha256,
+      binding: historicalLauncher,
+      observedOriginArtifactRootFingerprintSha256: hash(canonicalPathKey(originRoot)),
+      originTask0BEvidenceBytes,
+      originReleaseFreezeIdentityBytes,
+      ownerManagerSourceBytes,
+      ownerIsAncestor
+    });
+  }
   return {
     sha: config.previousRuntimeSha,
     label: config.previousRuntimeLabel,
     source: "runtime_manager_attestation_and_process_direct_read",
     verified: true,
-    identity: validateTask0BPreviousRuntimeIdentity(
-      rawEvidence,
-      processObservation,
-      {
-        sha: config.previousRuntimeSha,
-        label: config.previousRuntimeLabel,
-        managerExecutableSha256: manager.executorSha256
-      },
-      binding.evidenceSha256
-    )
+    identity: historicalLauncherEvidence === undefined ? identity : { ...identity, historicalLauncher: historicalLauncherEvidence }
   };
 }
 

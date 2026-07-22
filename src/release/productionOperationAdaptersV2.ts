@@ -43,7 +43,8 @@ import {
   TASK0B_OPERATIONAL_COMMAND_TEMPLATE_SHA256,
   assertNoSecretLikeArtifactValues,
   assertTask0BPreviousRuntimeActionAuthorized,
-  validateTask0BReleaseFreezeEvidence
+  validateTask0BReleaseFreezeEvidence,
+  type Task0BManagedPreviousRuntimeIdentityV1
 } from "./remediationReleaseManifest";
 import {
   assertTerminalLegacyPopulationUnchanged,
@@ -83,6 +84,7 @@ import {
   type RuntimeProofV1
 } from "../runtime/runtimeLiveProof";
 import { formatRuntimeVersion, validateRuntimeVersion } from "../runtime/runtimeVersion";
+
 import {
   classifyRuntimeRollbackTopologyV2,
   createRuntimeRollbackTopologyEvidenceV2,
@@ -95,6 +97,31 @@ import {
   type RuntimeTopologyCandidateV2,
   type RuntimeRollbackTopologyEvidenceV2
 } from "./runtimeEffectReconciliationV2";
+
+export function bindTask0BHistoricalManagerIdentity(
+  reopened: Task0BManagedPreviousRuntimeIdentityV1,
+  frozen: Task0BManagedPreviousRuntimeIdentityV1
+): Task0BManagedPreviousRuntimeIdentityV1 {
+  if (reopened.kind !== "manager_owned_previous_runtime" || frozen.kind !== "manager_owned_previous_runtime") {
+    throw new Error("task0b_historical_manager_runtime_kind_invalid");
+  }
+  const { historicalLauncher, ...frozenStartIdentity } = frozen;
+  if (!canonicalBytesV2(reopened).equals(canonicalBytesV2(frozenStartIdentity))) {
+    throw new Error("task0b_historical_manager_start_identity_mismatch");
+  }
+  if (historicalLauncher === undefined) return reopened;
+  const sha256 = /^[0-9a-f]{64}$/u;
+  if (historicalLauncher.source !== "protected_origin_freeze_and_git_blob_read_only"
+      || historicalLauncher.verified !== true
+      || historicalLauncher.executorPath !== "scripts/manageTask0BRuntime.ts"
+      || historicalLauncher.executorSha256 !== reopened.managerExecutableSha256
+      || [historicalLauncher.executorSha256, historicalLauncher.sourceBlobSha256,
+        historicalLauncher.originArtifactRootFingerprintSha256, historicalLauncher.originTask0BEvidenceSha256,
+        historicalLauncher.originReleaseFreezeIdentitySha256].some((value) => !sha256.test(value))) {
+    throw new Error("task0b_historical_manager_launcher_binding_invalid");
+  }
+  return { ...reopened, historicalLauncher };
+}
 
 const execFileAsync = promisify(execFile);
 const MAX_CAPTURE_BYTES = 1024 * 1024;
@@ -2410,7 +2437,8 @@ function exactRuntimeEvidenceForOperationStep(
       runtimeProcessCount: 1
     }, { sha: task0b.previousRuntimeSha, label: task0b.previousRuntimeLabel,
       managerExecutableSha256: task0b.previousRuntimeIdentity.managerExecutableSha256 }, hash(startBytes));
-    if (!canonicalBytesV2(reopened).equals(canonicalBytesV2(task0b.previousRuntimeIdentity))) {
+    const rebound = bindTask0BHistoricalManagerIdentity(reopened, task0b.previousRuntimeIdentity);
+    if (!canonicalBytesV2(rebound).equals(canonicalBytesV2(task0b.previousRuntimeIdentity))) {
       throw new Error("production_failed_runtime_previous_start_identity_invalid");
     }
     const startProof: Pick<BoundRuntimeStartProofV2, "candidate" | "proofSha256"> = {

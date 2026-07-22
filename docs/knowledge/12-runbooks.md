@@ -200,6 +200,16 @@ resume, normal and cleanup-only lease takeover, and production start/stop/
 rollback all reject the legacy kind before any write pending full G00-G11,
 merge, explicit GO, and separate action-specific authority/amendment.
 
+For a manager-marked previous process launched by an older verified manager,
+keep the kind `manager_owned_previous_runtime` and configure the historical
+launcher binding. It pins the protected origin root fingerprint, origin Task 0B
+and freeze hashes, exact owner candidate and manager Git-blob hash, original
+start-evidence hash, and live process identity. The current candidate manager
+is hashed separately and remains the only future action manager. Every Task 0B
+revalidation rereads both protected origin files, repeats Git ancestry/blob
+proof, and rechecks the live process. Never copy the old manager hash into the
+current-manager field or regenerate a start attestation.
+
 No production command has run. After complete G00-G11, exact-SHA merge rerun,
 pre-GO report, explicit user GO, and fresh action authority, the exact future
 G12/G13 order is:

@@ -30,9 +30,20 @@ loopback Admin runtime proof, production DB/schema identity, and Telegram bot
 identity plus empty webhook. Any change, disappearance, second candidate, or
 ambiguity fails closed. This narrow contract permits pre-release evidence only:
 it does not adopt the process: protected operation resume, normal and cleanup-
-only lease takeover, and every production start/stop/rollback authority path
-reject the legacy kind before any write until full G00-G11, merge, explicit
-production GO, and a separate action-specific amendment/authority.
+   only lease takeover, and every production start/stop/rollback authority path
+   reject the legacy kind before any write until full G00-G11, merge, explicit
+   production GO, and a separate action-specific amendment/authority.
+
+If the process is manager-marked but its verified launcher predates the current
+candidate manager, it remains `manager_owned_previous_runtime`. Configure its
+historical launcher separately: exact protected origin root fingerprint,
+origin `task0b-release-freeze.json` and `release-freeze-identity-v2.json`
+hashes, owner candidate, repository manager-blob hash, start-evidence hash and
+live PID identity. The clean candidate's guarded manager has its own current
+executor hash. Capture and every revalidation reread both protected origin
+files, repeat owner→candidate ancestry and Git-blob proof, and reproduce the
+live process. Never substitute one manager hash for the other, recreate start
+evidence, or use the historical launcher for a future action.
 
 Production database, runtime, and Telegram remain unchanged until all of the
 following are true: Task 9 is authorized and completed, `G00` through `G11`
@@ -185,7 +196,9 @@ artifacts. Every trace GREEN hash and exact file/fullName must resolve in its
 owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
 
 1. Capture a fresh read-only Task 0B against the protected configuration. A
-   manager-owned previous runtime uses its exact protected start evidence; an
+   manager-owned previous runtime uses its exact protected start evidence. If
+   its launcher differs from the current guarded manager, it also requires the
+   historical protected-origin and Git lineage described above. An
    unmarked one uses only the strict `legacy_unmanaged_previous_runtime`
    branch described above:
 

@@ -257,6 +257,14 @@ of these decisions, update this file in the same work.
   lease takeover, candidate/previous start, stop, adoption, and rollback paths
   reject this kind before any write until complete pre-release gates, merge,
   explicit production GO, and a separate action-specific amendment/authority.
+  A manager-marked process whose launcher predates a security update remains
+  `manager_owned_previous_runtime`, but Task 0B must not pretend that the old
+  launcher bytes equal the current action-manager bytes. Its historical
+  launcher is bound separately to the exact protected origin Task 0B/freeze,
+  owner candidate, repository blob, start evidence, PID and live process;
+  the current guarded manager is independently hashed from the clean candidate.
+  Capture and every revalidation reproduce both lineages. Missing origin bytes,
+  non-ancestry, a changed process, or either hash mismatch fails closed.
 - Production remains unchanged until Task 9, complete `G00`-`G11`, merge to
   `master`, producer/verifier rerun for the merge SHA, and explicit release GO.
   `schema:verify` remains read-only; only `schema:release:sequence` owns
