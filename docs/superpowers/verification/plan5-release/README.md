@@ -38,10 +38,11 @@ If the process is manager-marked but its verified launcher predates the current
 candidate manager, it remains `manager_owned_previous_runtime`. Configure its
 historical launcher separately: exact protected origin root fingerprint,
 origin `task0b-release-freeze.json` and `release-freeze-identity-v2.json`
-hashes, owner candidate, repository manager-blob hash, start-evidence hash and
-live PID identity. The clean candidate's guarded manager has its own current
-executor hash. Capture and every revalidation reread both protected origin
-files, repeat owner→candidate ancestry and Git-blob proof, and reproduce the
+hashes, full archived schemas and exact derivation, the complete canonical
+prepared/receipt materialization bundle, owner candidate, repository manager-
+blob hash, start-evidence hash and live PID identity. The clean candidate's guarded manager has its own current
+executor hash. Capture and every revalidation reread the complete protected
+origin bundle, repeat owner→candidate ancestry and Git-blob proof, and reproduce the
 live process. Never substitute one manager hash for the other, recreate start
 evidence, or use the historical launcher for a future action.
 

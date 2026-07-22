@@ -2777,8 +2777,9 @@ The previous-runtime identity is discriminated. A manager-started process uses
 the exact manager attestation. If a later exact candidate security update
 changes the manager bytes, the process remains manager-owned only through a
 separate historical-launcher lineage: exact protected origin-root fingerprint,
-origin Task 0B/freeze hashes, owner candidate, repository manager-blob hash,
-original start evidence and live PID identity. The current guarded action
+full archived Task 0B schema, exact derived freeze and complete canonical
+prepared/receipt materialization bundle, owner candidate, repository manager-
+blob hash, original start evidence and live PID identity. The current guarded action
 manager is independently hashed. Capture and every revalidation reproduce both
 lineages, owner ancestry/blob content and the live process; any missing origin,
 non-ancestry or mismatch fails closed, and the historical launcher is never a

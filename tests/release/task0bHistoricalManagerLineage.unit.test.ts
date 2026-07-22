@@ -9,9 +9,15 @@ import {
   buildTask0BReleaseFreezeEvidence
 } from "../fixtures/release/remediationReleaseFixtures";
 import {
-  validateTask0BReleaseFreezeEvidence
+  validateTask0BReleaseFreezeEvidence,
+  type Task0BReleaseFreezeEvidenceV1
 } from "../../src/release/remediationReleaseManifest";
-import { canonicalReleaseJsonV2 } from "../../src/release/remediationReleaseManifestV2";
+import {
+  canonicalReleaseJsonV2,
+  canonicalReleaseFreezeIdentityUtf8V2,
+  releaseSha256V2
+} from "../../src/release/remediationReleaseManifestV2";
+import { deriveReleaseFreezeIdentityV2 } from "../../src/release/releaseManifestStoreV2";
 
 const SHA256 = (value: string) => value.repeat(64);
 
@@ -33,6 +39,73 @@ function historicalManagerEvidence() {
     verified: true
   };
   return evidence;
+}
+
+function completeArchivedOriginBundle(current = historicalManagerEvidence()) {
+  const launcher = (current.previousRuntimeIdentity as any).historicalLauncher!;
+  const rootFingerprint = launcher.originArtifactRootFingerprintSha256 as string;
+  const task0b: any = buildTask0BReleaseFreezeEvidence({
+    candidateSha: launcher.ownerCandidateSha,
+    previousRuntimeSha: current.previousRuntimeSha,
+    previousRuntimeLabel: current.previousRuntimeLabel,
+    artifactRootFingerprintSha256: rootFingerprint
+  });
+  delete task0b.previousRuntimeIdentity.kind;
+  task0b.previousRuntimeIdentity.managerExecutableSha256 = launcher.executorSha256;
+  task0b.previousRuntimeIdentity.startEvidenceSha256 = current.previousRuntimeIdentity.startEvidenceSha256;
+  task0b.runtimeManager.executorSha256 = launcher.executorSha256;
+  const task0bBytes = Buffer.from(`${canonicalReleaseJsonV2(task0b)}\n`);
+  const freeze = deriveReleaseFreezeIdentityV2(task0b as Task0BReleaseFreezeEvidenceV1);
+  const freezeBytes = canonicalReleaseFreezeIdentityUtf8V2(freeze);
+  const freezeSha256 = releaseSha256V2(freezeBytes);
+  const task0bSha256 = releaseSha256V2(task0bBytes);
+  const runtimeIdentitySha256 = releaseSha256V2(
+    Buffer.from(`${canonicalReleaseJsonV2(task0b.previousRuntimeIdentity)}\n`)
+  );
+  const redactedTemplateSha256 = releaseSha256V2("release:freeze:materialize <protected-artifact-root>");
+  const materializedAt = task0b.freezeCutoff;
+  const receipt = {
+    version: "release-freeze-materialization-receipt-v2",
+    commandId: "release_freeze_materialize",
+    redactedTemplateSha256,
+    task0BPreflightEvidenceSha256: task0bSha256,
+    protectedRootFingerprintSha256: rootFingerprint,
+    candidateSha: task0b.candidateSha,
+    runtimeIdentitySha256,
+    bootstrapLeaseSha256: SHA256("a"),
+    bootstrapLeaseEpoch: 1,
+    canonicalFreezeIdentity: freeze,
+    canonicalFreezeIdentityUtf8Base64: freezeBytes.toString("base64"),
+    canonicalFreezeIdentitySha256: freezeSha256,
+    materializedAt
+  };
+  const receiptBytes = Buffer.from(`${canonicalReleaseJsonV2(receipt)}\n`);
+  const prepared = {
+    version: "prepared-release-freeze-materialization-v2",
+    commandId: "release_freeze_materialize",
+    redactedTemplateSha256,
+    protectedRootFingerprintSha256: rootFingerprint,
+    task0BPreflightEvidenceSha256: task0bSha256,
+    candidateSha: task0b.candidateSha,
+    runtimeIdentitySha256,
+    bootstrapLeaseSha256: receipt.bootstrapLeaseSha256,
+    bootstrapLeaseEpoch: 1,
+    canonicalFreezeIdentity: freeze,
+    canonicalFreezeIdentityUtf8Base64: freezeBytes.toString("base64"),
+    canonicalFreezeIdentitySha256: freezeSha256,
+    canonicalFreezeIdentityRelativePath: "release-freeze-identity-v2.json",
+    canonicalMaterializationReceipt: receipt,
+    canonicalMaterializationReceiptUtf8Base64: receiptBytes.toString("base64"),
+    canonicalMaterializationReceiptSha256: releaseSha256V2(receiptBytes),
+    canonicalMaterializationReceiptRelativePath: "release-freeze-materialization-receipt-v2.json",
+    preparedAt: materializedAt
+  };
+  return {
+    task0bBytes,
+    freezeBytes,
+    preparedBytes: Buffer.from(`${canonicalReleaseJsonV2(prepared)}\n`),
+    receiptBytes
+  };
 }
 
 it("[REQ-38][TASK0B-HISTORICAL-MANAGER] binds an exact historical launcher separately from the current guarded action manager", () => {
@@ -60,7 +133,7 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER] binds an exact historical launcher separ
   }
 });
 
-it("[REQ-38][TASK0B-HISTORICAL-MANAGER-LINEAGE] derives historical launcher evidence only from exact origin freeze and Git bytes", async () => {
+it("[REQ-38][TASK0B-HISTORICAL-MANAGER-LINEAGE] rejects truncated synthetic origin artifacts", async () => {
   const api: any = await import("../../scripts/captureTask0BPreflight");
   const current = historicalManagerEvidence();
   const launcher = (current.previousRuntimeIdentity as any).historicalLauncher!;
@@ -124,18 +197,60 @@ it("[REQ-38][TASK0B-HISTORICAL-MANAGER-LINEAGE] derives historical launcher evid
     ownerIsAncestor: true
   };
 
-  expect(api.validateTask0BHistoricalManagerLineage(input)).toEqual({
-    ...launcher,
-    sourceBlobSha256: binding.sourceBlobSha256,
-    originTask0BEvidenceSha256: binding.originTask0BEvidenceSha256,
-    originReleaseFreezeIdentitySha256: binding.originReleaseFreezeIdentitySha256
-  });
+  expect(() => api.validateTask0BHistoricalManagerLineage(input))
+    .toThrow(/historical|origin|lineage|manager/i);
   for (const forged of [
     { ...input, ownerIsAncestor: false },
     { ...input, ownerManagerSourceBytes: Buffer.from("foreign source\n") },
     { ...input, observedOriginArtifactRootFingerprintSha256: SHA256("9") },
     { ...input, originReleaseFreezeIdentityBytes: Buffer.from("{}\n") }
   ]) expect(() => api.validateTask0BHistoricalManagerLineage(forged)).toThrow(/historical|origin|lineage|manager/i);
+});
+
+it("[REQ-38][TASK0B-HISTORICAL-MANAGER-MATERIALIZATION] accepts only the complete archived origin bundle", async () => {
+  const api: any = await import("../../scripts/captureTask0BPreflight");
+  const current = historicalManagerEvidence();
+  const launcher = (current.previousRuntimeIdentity as any).historicalLauncher!;
+  const bundle = completeArchivedOriginBundle(current);
+  const ownerManagerSourceBytes = Buffer.from("exact historical manager source bytes\n");
+  const binding = {
+    ownerCandidateSha: launcher.ownerCandidateSha,
+    executorPath: launcher.executorPath,
+    executorSha256: launcher.executorSha256,
+    sourceBlobSha256: releaseSha256V2(ownerManagerSourceBytes),
+    originArtifactRoot: "C:\\protected\\origin",
+    originArtifactRootFingerprintSha256: launcher.originArtifactRootFingerprintSha256,
+    originTask0BEvidenceSha256: releaseSha256V2(bundle.task0bBytes),
+    originReleaseFreezeIdentitySha256: releaseSha256V2(bundle.freezeBytes)
+  };
+  const input = {
+    candidateSha: CANDIDATE_SHA,
+    previousRuntimeSha: current.previousRuntimeSha,
+    previousRuntimeLabel: current.previousRuntimeLabel,
+    managerExecutableSha256: launcher.executorSha256,
+    startEvidenceSha256: current.previousRuntimeIdentity.startEvidenceSha256,
+    binding,
+    observedOriginArtifactRootFingerprintSha256: launcher.originArtifactRootFingerprintSha256,
+    originTask0BEvidenceBytes: bundle.task0bBytes,
+    originReleaseFreezeIdentityBytes: bundle.freezeBytes,
+    originPreparedFreezeMaterializationBytes: bundle.preparedBytes,
+    originFreezeMaterializationReceiptBytes: bundle.receiptBytes,
+    ownerManagerSourceBytes,
+    ownerIsAncestor: true
+  };
+
+  expect(api.validateTask0BHistoricalManagerLineage(input)).toEqual({
+    ...launcher,
+    sourceBlobSha256: binding.sourceBlobSha256,
+    originTask0BEvidenceSha256: binding.originTask0BEvidenceSha256,
+    originReleaseFreezeIdentitySha256: binding.originReleaseFreezeIdentitySha256
+  });
+  const forgedPrepared = JSON.parse(bundle.preparedBytes.toString("utf8"));
+  forgedPrepared.bootstrapLeaseSha256 = SHA256("f");
+  expect(() => api.validateTask0BHistoricalManagerLineage({
+    ...input,
+    originPreparedFreezeMaterializationBytes: Buffer.from(`${canonicalReleaseJsonV2(forgedPrepared)}\n`)
+  })).toThrow(/historical|origin|materialization|bundle|binding/i);
 });
 
 it("[REQ-38][TASK0B-HISTORICAL-MANAGER-CAPTURE] keeps the historical launcher and current action manager as separate revalidated identities", async () => {

@@ -260,8 +260,9 @@ of these decisions, update this file in the same work.
   A manager-marked process whose launcher predates a security update remains
   `manager_owned_previous_runtime`, but Task 0B must not pretend that the old
   launcher bytes equal the current action-manager bytes. Its historical
-  launcher is bound separately to the exact protected origin Task 0B/freeze,
-  owner candidate, repository blob, start evidence, PID and live process;
+  launcher is bound separately to the exact protected origin Task 0B, derived
+  freeze, complete prepared/receipt materialization bundle, owner candidate,
+  repository blob, start evidence, PID and live process;
   the current guarded manager is independently hashed from the clean candidate.
   Capture and every revalidation reproduce both lineages. Missing origin bytes,
   non-ancestry, a changed process, or either hash mismatch fails closed.

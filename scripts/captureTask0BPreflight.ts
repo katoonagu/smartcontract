@@ -28,8 +28,16 @@ import {
   validateRuntimeTopologySnapshotV2,
   type RuntimeTopologySnapshotV2
 } from "../src/release/runtimeEffectReconciliationV2";
-import { canonicalReleaseJsonV2 } from "../src/release/remediationReleaseManifestV2";
-import { readCurrentVerifiedReleaseFreezeV2 } from "../src/release/releaseManifestStoreV2";
+import {
+  canonicalReleaseJsonV2,
+  validatePreparedReleaseFreezeMaterializationV2,
+  validateReleaseFreezeIdentityV2,
+  validateReleaseFreezeMaterializationReceiptV2
+} from "../src/release/remediationReleaseManifestV2";
+import {
+  deriveReleaseFreezeIdentityV2,
+  readCurrentVerifiedReleaseFreezeV2
+} from "../src/release/releaseManifestStoreV2";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -176,6 +184,8 @@ export function validateTask0BHistoricalManagerLineage(input: {
   observedOriginArtifactRootFingerprintSha256: string;
   originTask0BEvidenceBytes: Uint8Array;
   originReleaseFreezeIdentityBytes: Uint8Array;
+  originPreparedFreezeMaterializationBytes: Uint8Array;
+  originFreezeMaterializationReceiptBytes: Uint8Array;
   ownerManagerSourceBytes: Uint8Array;
   ownerIsAncestor: boolean;
 }): HistoricalManagerLauncherEvidence {
@@ -213,6 +223,13 @@ export function validateTask0BHistoricalManagerLineage(input: {
   };
   const origin = parseCanonical(input.originTask0BEvidenceBytes, "origin_task0b");
   const originPrevious = record(origin.previousRuntimeIdentity, "task0b_historical_manager_origin_previous_runtime");
+  if (Object.hasOwn(originPrevious, "kind") || Object.hasOwn(originPrevious, "historicalLauncher")) {
+    throw new Error("task0b_historical_manager_origin_task0b_schema_mismatch");
+  }
+  const archivedOrigin = validateTask0BReleaseFreezeEvidence({
+    ...origin,
+    previousRuntimeIdentity: { kind: "manager_owned_previous_runtime", ...originPrevious }
+  }, ownerCandidateSha, string(origin.observedAt, "task0b_historical_manager_origin_observed_at"));
   const originManager = record(origin.runtimeManager, "task0b_historical_manager_origin_runtime_manager");
   const originRoot = record(origin.artifactRoot, "task0b_historical_manager_origin_artifact_root");
   if (origin.version !== "task0b-release-freeze-evidence-v1" || origin.candidateSha !== ownerCandidateSha
@@ -225,7 +242,57 @@ export function validateTask0BHistoricalManagerLineage(input: {
       || originRoot.restrictiveAccessVerified !== true || originRoot.noSymlink !== true || originRoot.verified !== true) {
     throw new Error("task0b_historical_manager_origin_task0b_binding_mismatch");
   }
-  const freeze = parseCanonical(input.originReleaseFreezeIdentityBytes, "origin_freeze");
+  const freeze = validateReleaseFreezeIdentityV2(
+    parseCanonical(input.originReleaseFreezeIdentityBytes, "origin_freeze")
+  );
+  const derivedArchivedFreeze = deriveReleaseFreezeIdentityV2(
+    origin as unknown as Task0BReleaseFreezeEvidenceV1
+  );
+  if (canonicalReleaseJsonV2(freeze) !== canonicalReleaseJsonV2(derivedArchivedFreeze)
+      || archivedOrigin.candidateSha !== ownerCandidateSha) {
+    throw new Error("task0b_historical_manager_origin_freeze_derivation_mismatch");
+  }
+  if (!(input.originPreparedFreezeMaterializationBytes instanceof Uint8Array)
+      || !(input.originFreezeMaterializationReceiptBytes instanceof Uint8Array)) {
+    throw new Error("task0b_historical_manager_origin_materialization_missing");
+  }
+  const prepared = validatePreparedReleaseFreezeMaterializationV2(
+    parseCanonical(input.originPreparedFreezeMaterializationBytes, "origin_freeze_prepared")
+  );
+  const receipt = validateReleaseFreezeMaterializationReceiptV2(
+    parseCanonical(input.originFreezeMaterializationReceiptBytes, "origin_freeze_receipt")
+  );
+  const materializerTemplateSha256 = hash("release:freeze:materialize <protected-artifact-root>");
+  const archivedRuntimeIdentitySha256 = hash(
+    Buffer.from(`${canonicalReleaseJsonV2(originPrevious)}\n`, "utf8")
+  );
+  const embeddedFreezeBytes = Buffer.from(prepared.canonicalFreezeIdentityUtf8Base64, "base64");
+  const embeddedReceiptBytes = Buffer.from(prepared.canonicalMaterializationReceiptUtf8Base64, "base64");
+  if (prepared.commandId !== "release_freeze_materialize" || receipt.commandId !== "release_freeze_materialize"
+      || prepared.redactedTemplateSha256 !== materializerTemplateSha256
+      || receipt.redactedTemplateSha256 !== materializerTemplateSha256
+      || prepared.task0BPreflightEvidenceSha256 !== binding.originTask0BEvidenceSha256
+      || receipt.task0BPreflightEvidenceSha256 !== binding.originTask0BEvidenceSha256
+      || prepared.protectedRootFingerprintSha256 !== binding.originArtifactRootFingerprintSha256
+      || receipt.protectedRootFingerprintSha256 !== binding.originArtifactRootFingerprintSha256
+      || prepared.candidateSha !== ownerCandidateSha || receipt.candidateSha !== ownerCandidateSha
+      || prepared.runtimeIdentitySha256 !== archivedRuntimeIdentitySha256
+      || receipt.runtimeIdentitySha256 !== archivedRuntimeIdentitySha256
+      || prepared.bootstrapLeaseEpoch !== 1 || receipt.bootstrapLeaseEpoch !== 1
+      || prepared.bootstrapLeaseSha256 !== receipt.bootstrapLeaseSha256
+      || prepared.preparedAt !== receipt.materializedAt
+      || prepared.canonicalFreezeIdentitySha256 !== binding.originReleaseFreezeIdentitySha256
+      || receipt.canonicalFreezeIdentitySha256 !== binding.originReleaseFreezeIdentitySha256
+      || prepared.canonicalMaterializationReceiptSha256
+        !== hash(input.originFreezeMaterializationReceiptBytes)
+      || !embeddedFreezeBytes.equals(Buffer.from(input.originReleaseFreezeIdentityBytes))
+      || !embeddedReceiptBytes.equals(Buffer.from(input.originFreezeMaterializationReceiptBytes))
+      || canonicalReleaseJsonV2(prepared.canonicalFreezeIdentity) !== canonicalReleaseJsonV2(freeze)
+      || canonicalReleaseJsonV2(receipt.canonicalFreezeIdentity) !== canonicalReleaseJsonV2(freeze)
+      || canonicalReleaseJsonV2(prepared.canonicalMaterializationReceipt)
+        !== canonicalReleaseJsonV2(receipt)) {
+    throw new Error("task0b_historical_manager_origin_materialization_bundle_mismatch");
+  }
   if (freeze.version !== "release-freeze-identity-v2" || freeze.candidateSha !== ownerCandidateSha
       || freeze.artifactRootFingerprintSha256 !== binding.originArtifactRootFingerprintSha256
       || freeze.previousRuntimeDiscoverySha256 !== hash(Buffer.from(`${canonicalReleaseJsonV2(originPrevious)}\n`, "utf8"))
@@ -1494,9 +1561,13 @@ async function observeCurrentRuntime(config: Task0BPreflightConfigV1): Promise<{
   if (historicalLauncher !== undefined) {
     const originRoot = await inspectRealDirectory(historicalLauncher.originArtifactRoot, true);
     if (sameCanonicalPath(originRoot, root)) throw new Error("task0b_historical_manager_origin_root_invalid");
-    const [originTask0BEvidenceBytes, originReleaseFreezeIdentityBytes, resolvedOwnerSha] = await Promise.all([
+    const [originTask0BEvidenceBytes, originReleaseFreezeIdentityBytes,
+      originPreparedFreezeMaterializationBytes, originFreezeMaterializationReceiptBytes,
+      resolvedOwnerSha] = await Promise.all([
       readProtectedRegularFile(originRoot, "task0b-release-freeze.json", MAX_CONFIG_BYTES),
       readProtectedRegularFile(originRoot, "release-freeze-identity-v2.json", MAX_CONFIG_BYTES),
+      readProtectedRegularFile(originRoot, "release-freeze-materialization-prepared-v2.json", MAX_CONFIG_BYTES),
+      readProtectedRegularFile(originRoot, "release-freeze-materialization-receipt-v2.json", MAX_CONFIG_BYTES),
       run("git", ["rev-parse", "--verify", `${historicalLauncher.ownerCandidateSha}^{commit}`], repositoryRoot)
     ]);
     let ownerIsAncestor = true;
@@ -1523,6 +1594,8 @@ async function observeCurrentRuntime(config: Task0BPreflightConfigV1): Promise<{
       observedOriginArtifactRootFingerprintSha256: hash(canonicalPathKey(originRoot)),
       originTask0BEvidenceBytes,
       originReleaseFreezeIdentityBytes,
+      originPreparedFreezeMaterializationBytes,
+      originFreezeMaterializationReceiptBytes,
       ownerManagerSourceBytes,
       ownerIsAncestor
     });

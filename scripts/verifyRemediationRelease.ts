@@ -195,6 +195,7 @@ export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
   "tests/release/runtimeReconciliationIntegration.unit.test.ts",
   "tests/release/runtimeTopologyObserver.unit.test.ts",
   "tests/release/schema032ProductionFailureRoute.unit.test.ts",
+  "tests/release/task0bHistoricalManagerLineage.unit.test.ts",
   "tests/runtime/allowanceRefresh.acceptance.test.ts",
   "tests/runtime/runtimeCycleSummaries.test.ts",
   "tests/runtime/runtimeLiveProof.test.ts",
