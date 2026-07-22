@@ -72,6 +72,7 @@ export type ReleaseSuiteGroupEvidenceV1 = {
 
 export const REMEDIATION_RELEASE_MANIFEST_FILE = "release-manifest.json";
 export const REMEDIATION_ACCEPTANCE_TRACE_FILE = "acceptance-trace.json";
+export const NON_VITEST_RELEASE_PROCESS_TIMEOUT_MS = 90 * 60_000;
 
 export type RemediationReleaseVerificationPhase =
   | "manifest"
@@ -460,7 +461,7 @@ function requireDisposableDatabaseUrl(env: NodeJS.ProcessEnv, envName: keyof typ
 export function createDefaultNonVitestReleaseDependencies(env: NodeJS.ProcessEnv): NonVitestReleaseDependencies {
   return {
     async run(executable, args, childEnv, cwd) {
-      return await runBoundedReleaseProcess(executable, args, childEnv, 60 * 60_000, cwd);
+      return await runBoundedReleaseProcess(executable, args, childEnv, NON_VITEST_RELEASE_PROCESS_TIMEOUT_MS, cwd);
     },
     async postgresCleanup() {
       const cleanup: Record<string, string[]> = {};

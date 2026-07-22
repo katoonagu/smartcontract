@@ -1826,6 +1826,11 @@ it("[REQ-38][TASK8B-RED-BATCH] requires the exact four-file behavioral RED batch
   expect(() => validateMutation(foreignFailure)).toThrow(/unclassified/i);
 });
 
+it("[REQ-38][G06-BOUNDED-RUNTIME] keeps the full regression bounded with Windows execution headroom", async () => {
+  const runner = await import("../../scripts/verifyRemediationRelease");
+  expect(runner.NON_VITEST_RELEASE_PROCESS_TIMEOUT_MS).toBe(90 * 60_000);
+});
+
 it("[AC-41][NON-VITEST-TIMEOUT] terminates the full descendant process tree", { timeout: 15_000 }, async () => {
   const runner = await import("../../scripts/verifyRemediationRelease");
   const root = await mkdtemp(join(tmpdir(), "plan5-non-vitest-timeout-"));

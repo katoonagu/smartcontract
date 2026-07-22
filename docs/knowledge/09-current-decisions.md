@@ -531,8 +531,9 @@ of these decisions, update this file in the same work.
 - Task 9 full regression evidence invokes the repository-local Vitest CLI
   directly with exact serialization and five-minute test/hook bounds. npm
   indirection is not accepted because it may rewrite or discard Vitest argv.
-  The one-hour outer timeout terminates and awaits the complete worker process
-  tree before a retry or cleanup audit.
+  The 90-minute outer timeout terminates and awaits the complete worker process
+  tree before a retry or cleanup audit. This preserves a finite bound while
+  covering the serialized Windows release matrix observed to exceed 60 minutes.
 
 ## 2026-07-12 Realtime USDT Address-Poisoning Protection
 

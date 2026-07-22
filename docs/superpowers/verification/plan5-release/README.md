@@ -268,7 +268,7 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    ```
 
    Its literal full Vitest run is serialized with five-minute test/hook bounds
-   and a one-hour process bound. This retains finite failure handling while
+   and a 90-minute process bound. This retains finite failure handling while
    protecting the whole-repository run from shared filesystem variance.
    Trace preparation uses immutable Git archives for the approved test-only
    commits, applies only the canonical AC-10/11 and AC-33 title patches, and

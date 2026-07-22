@@ -152,7 +152,7 @@ offline. The suite producer serializes test files and applies bounded 120-second
 test and hook timeouts so database-backed files cannot race shared disposable
 state. The literal full test inside the non-Vitest producer invokes the
 repository-local `node_modules/vitest/vitest.mjs` directly, is serialized with
-five-minute test/hook bounds, and has a one-hour whole-process-tree bound. This
+five-minute test/hook bounds, and has a 90-minute whole-process-tree bound. This
 avoids npm argv rewriting, orphan workers after timeout, and cross-file
 release-store contention without treating normal filesystem variance as a
 failure. Set
