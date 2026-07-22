@@ -838,6 +838,19 @@ export type AcceptanceTraceSetV1 = {
   requiredRequirementIds: string[];
   requiredAcceptanceIds: string[];
   traces: AcceptanceTraceV1[];
+  auxiliaryGreen: Array<{
+    kind: "candidate_green_only";
+    acceptanceId: "AC-33";
+    testFile: "tests/check/contractDecisionV2.acceptance.test.ts";
+    fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof";
+    primary: false;
+    testCommitSha: string;
+    testPatchSha256: string;
+    ownerCommitSha: string;
+    candidateSha: string;
+    vitestReportSha256: string;
+    status: "passed";
+  }>;
   executions: AcceptanceExecutionV1[];
   ancestorCommitShas: string[];
 };
@@ -922,8 +935,24 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
     requiredRequirementIds: [...REQUIRED_REQUIREMENT_IDS],
     requiredAcceptanceIds: [...REQUIRED_ACCEPTANCE_IDS],
     traces,
+    auxiliaryGreen: [{
+      kind: "candidate_green_only",
+      acceptanceId: "AC-33",
+      testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
+      fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof",
+      primary: false,
+      testCommitSha: "db5d49a944c0de489f13567d87400cb32c4eedb0",
+      testPatchSha256: "ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132",
+      ownerCommitSha: "83f0cb967f61b814896e5d1a4cf01cecb1c56b59",
+      candidateSha: CANDIDATE_SHA,
+      vitestReportSha256: "f".repeat(64),
+      status: "passed"
+    }],
     executions: traces.map(({ testFile, fullName }) => ({ testFile, fullName, status: "passed" })),
-    ancestorCommitShas: [...new Set(traces.map((trace) => trace.ownerCommitSha))]
+    ancestorCommitShas: [
+      ...new Set(traces.map((trace) => trace.ownerCommitSha)),
+      "db5d49a944c0de489f13567d87400cb32c4eedb0"
+    ]
   };
 }
 

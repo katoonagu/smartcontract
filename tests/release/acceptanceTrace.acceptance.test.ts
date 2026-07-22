@@ -132,6 +132,9 @@ const fixtureAncestry: TraceDependencies = {
   isAncestor: (ancestorCommitSha, descendantCommitSha) => {
     if (ancestorCommitSha === descendantCommitSha) return true;
     const fixture = buildAcceptanceTraceSet();
+    const auxiliary = fixture.auxiliaryGreen[0];
+    if (auxiliary && ancestorCommitSha === auxiliary.ownerCommitSha
+        && descendantCommitSha === auxiliary.testCommitSha) return true;
     if (descendantCommitSha === fixture.candidateSha) {
       return fixture.ancestorCommitShas.includes(ancestorCommitSha)
         || fixture.traces.some((trace) => trace.red.testCommitSha === ancestorCommitSha);
@@ -540,6 +543,52 @@ it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local s
       }]
     }]
   })).toThrow(/companion/i);
+  expect(() => api.parseLocalProductModuleAbsenceReport({
+    ...ac29Report,
+    testResults: [{
+      ...ac29Report.testResults[0],
+      assertionResults: [{
+        ...ac29Report.testResults[0].assertionResults[0],
+        failureMessages: [ac29Absence]
+      }]
+    }]
+  })).toThrow(/companion/i);
+
+  const unrelatedFailure = {
+    ancestorTitles: ["contract decision v2"],
+    fullName: "contract decision v2 [AC-99] unrelated frozen failure",
+    title: "[AC-99] unrelated frozen failure",
+    status: "failed",
+    failureMessages: ["AssertionError: unrelated frozen failure"]
+  };
+  expect(() => api.parseLocalProductModuleAbsenceReport({
+    ...ac29Report,
+    numFailedTests: 2,
+    testResults: [{
+      ...ac29Report.testResults[0],
+      assertionResults: [ac29Report.testResults[0].assertionResults[0], unrelatedFailure]
+    }]
+  })).toThrow(/approved frozen classification/i);
+  expect(() => api.parseLocalProductModuleAbsenceReport({
+    ...ac29Report,
+    testResults: [{
+      ...ac29Report.testResults[0],
+      assertionResults: [
+        ac29Report.testResults[0].assertionResults[0],
+        { ...unrelatedFailure, status: "passed" }
+      ]
+    }]
+  })).toThrow(/non-failed assertion.*failure message/i);
+  expect(() => api.parseLocalProductModuleAbsenceReport({
+    ...report,
+    testResults: [{
+      ...report.testResults[0],
+      assertionResults: [{
+        ...assertion,
+        failureMessages: [`${failureMessage}\nplain synthetic companion`]
+      }]
+    }]
+  })).toThrow(/stack/i);
 
   const invalidReports = [
     { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: ["Cannot find package 'vitest' imported from C:/frozen/tests/release/example.test.ts"] }] }] },
@@ -603,6 +652,44 @@ it("[AC-41][RED-PLAN2-LINEAGE] pins all 17 assertion-bound absences to their exa
     const invalid: any = cloneFixture(fixture);
     mutate(invalid);
     expect(() => validate(invalid, fixtureAncestry)).toThrow();
+  }
+});
+
+it("[AC-33][AUXILIARY-GREEN] requires the one exact LLM-dampening candidate proof without adding RED coverage", async () => {
+  const { validateAcceptanceTraceSet: validate } = await loadTraceApi();
+  const fixture: any = cloneFixture(buildAcceptanceTraceSet());
+  expect(fixture.traces).toHaveLength(41);
+  expect(fixture.traces.filter((trace: any) => trace.acceptanceId === "AC-33")).toHaveLength(1);
+  expect(fixture.auxiliaryGreen).toEqual([{
+    kind: "candidate_green_only",
+    acceptanceId: "AC-33",
+    testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
+    fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof",
+    primary: false,
+    testCommitSha: "db5d49a944c0de489f13567d87400cb32c4eedb0",
+    testPatchSha256: "ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132",
+    ownerCommitSha: PLAN2_OWNER_SHA,
+    candidateSha: fixture.candidateSha,
+    vitestReportSha256: "f".repeat(64),
+    status: "passed"
+  }]);
+  expect(() => validate(fixture, fixtureAncestry)).not.toThrow();
+  for (const mutate of [
+    (value: any) => { value.auxiliaryGreen = []; },
+    (value: any) => { value.auxiliaryGreen[0].acceptanceId = "AC-34"; },
+    (value: any) => { value.auxiliaryGreen[0].fullName = "[AC-33] synthetic"; },
+    (value: any) => { value.auxiliaryGreen[0].primary = true; },
+    (value: any) => { value.auxiliaryGreen[0].testCommitSha = "a".repeat(40); },
+    (value: any) => { value.auxiliaryGreen[0].testPatchSha256 = "a".repeat(64); },
+    (value: any) => { value.auxiliaryGreen[0].ownerCommitSha = "a".repeat(40); },
+    (value: any) => { value.auxiliaryGreen[0].candidateSha = "a".repeat(40); },
+    (value: any) => { value.auxiliaryGreen[0].vitestReportSha256 = "not-a-hash"; },
+    (value: any) => { value.auxiliaryGreen[0].status = "failed"; },
+    (value: any) => { value.auxiliaryGreen.push(cloneFixture(value.auxiliaryGreen[0])); }
+  ]) {
+    const invalid: any = cloneFixture(fixture);
+    mutate(invalid);
+    expect(() => validate(invalid, fixtureAncestry)).toThrow(/auxiliary|exact/i);
   }
 });
 
@@ -742,10 +829,15 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   }
   expect(api.redPatchApplicationArgs("plan1-renamed")).toEqual(["-C0"]);
   for (const redGroupId of [
-    "plan1", "plan2", "plan3", "plan4", "plan4-alert-behavioral", "plan5", "plan2-llm-dampening"
+    "plan1", "plan2", "plan3", "plan4", "plan4-alert-behavioral", "plan5"
   ]) {
     expect(api.redPatchApplicationArgs(redGroupId)).toEqual([]);
   }
+  expect(() => api.redGroupForTrace(
+    "tests/check/contractDecisionV2.acceptance.test.ts",
+    "AC-33",
+    true
+  )).toThrow(/candidate-GREEN-only/);
   const plan3DatabaseUrl = "postgresql://release:redacted@127.0.0.1:56001/tron_watch_plan3";
   const plan3Environment = api.buildRedGroupEnvironment("plan3", {
     PLAN3_TEST_DATABASE_URL: plan3DatabaseUrl

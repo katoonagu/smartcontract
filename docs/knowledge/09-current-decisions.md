@@ -404,6 +404,20 @@ of these decisions, update this file in the same work.
   the complete report.
   Generic/synthetic, foreign-importer, dependency, fixture,
   environment, no-test and multiple-absence evidence remains invalid.
+- Final narrow AC-33 evidence amendment: the separate secondary
+  `[AC-33][LLM-DAMPENING]` regression is mandatory exact
+  `candidate_green_only` auxiliary evidence and is not a second AC or a RED
+  trace. Primary AC-33 keeps its approved assertion-bound RED, and the
+  auxiliary proof cannot replace it or increase RED coverage. The one allowed
+  auxiliary record binds fullName
+  `[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof`,
+  test commit `db5d49a944c0de489f13567d87400cb32c4eedb0`, exact test patch SHA-256
+  `ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132`,
+  owner `83f0cb967f61b814896e5d1a4cf01cecb1c56b59`, final candidate SHA, and
+  SHA-256 of the complete candidate GREEN Vitest report. No separate RED is
+  permitted: at the frozen Plan 2 boundary the test can fail only because the
+  same `src/forensics/contractDecision` module is absent, while the exact test
+  is already GREEN from the first commit where that product module exists.
 - Plan 3 RED trace execution is mandatory PostgreSQL execution, not an optional
   suite: the producer sets `REQUIRE_PLAN3_POSTGRES=1` and binds
   `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to exact disposable

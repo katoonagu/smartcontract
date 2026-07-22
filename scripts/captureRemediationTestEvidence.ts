@@ -21,6 +21,7 @@ import {
   normalizeLocalProductModulePath,
   parseAcceptanceExecutionReport,
   parseLocalProductModuleAbsenceReport,
+  REMEDIATION_AC33_AUXILIARY_GREEN,
   REMEDIATION_ACCEPTANCE_OWNER_PLAN,
   REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS,
   REMEDIATION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS,
@@ -32,6 +33,7 @@ import {
   validateAcceptanceTraceSet,
   type AcceptanceTraceSetV1,
   type AcceptanceTraceV1,
+  type AcceptanceAuxiliaryGreenV1,
   type ParsedLocalProductModuleAbsence,
   type ParsedAcceptanceExecution
 } from "../src/release/acceptanceTrace";
@@ -84,6 +86,10 @@ type CaptureSpecV1 = {
   version: "acceptance-trace-capture-v1";
   candidateSha: string;
   traces: CaptureTraceSpec[];
+  auxiliaryGreen: Array<Omit<AcceptanceAuxiliaryGreenV1, "candidateSha" | "vitestReportSha256"> & {
+    testPatchFile: string;
+    green: { reportFile: string };
+  }>;
 };
 
 type CaptureRedSpecInput = Omit<Extract<CaptureTraceSpec["red"], { kind: "behavioral_assertion" }>, "kind"> & {
@@ -91,6 +97,7 @@ type CaptureRedSpecInput = Omit<Extract<CaptureTraceSpec["red"], { kind: "behavi
 } | Omit<Extract<CaptureTraceSpec["red"], { kind: "local_product_module_absent" }>, "kind"> & {
   kind: "local_product_module_absent";
 };
+type CaptureAuxiliaryGreenSpec = CaptureSpecV1["auxiliaryGreen"][number];
 
 type JsonRecord = Record<string, unknown>;
 
@@ -267,16 +274,61 @@ function parseCaptureTrace(value: unknown, index: number): CaptureTraceSpec {
   };
 }
 
+function parseCaptureAuxiliaryGreen(value: unknown): CaptureAuxiliaryGreenSpec {
+  const auxiliary = expectRecord(value, "capture spec auxiliaryGreen[0]");
+  expectExactKeys(auxiliary, [
+    "kind",
+    "acceptanceId",
+    "testFile",
+    "fullName",
+    "primary",
+    "testCommitSha",
+    "testPatchSha256",
+    "ownerCommitSha",
+    "status",
+    "testPatchFile",
+    "green"
+  ], "capture spec auxiliaryGreen[0]");
+  const exact = REMEDIATION_AC33_AUXILIARY_GREEN;
+  if (auxiliary.kind !== exact.kind
+      || auxiliary.acceptanceId !== exact.acceptanceId
+      || auxiliary.testFile !== exact.testFile
+      || auxiliary.fullName !== exact.fullName
+      || auxiliary.primary !== exact.primary
+      || auxiliary.testCommitSha !== exact.testCommitSha
+      || auxiliary.testPatchSha256 !== exact.testPatchSha256
+      || auxiliary.ownerCommitSha !== exact.ownerCommitSha
+      || auxiliary.status !== exact.status) {
+    throw new Error("capture spec auxiliary GREEN is not the exact secondary AC-33 contract");
+  }
+  const green = expectRecord(auxiliary.green, "capture spec auxiliaryGreen[0].green");
+  expectExactKeys(green, ["reportFile"], "capture spec auxiliaryGreen[0].green");
+  return {
+    ...exact,
+    testPatchFile: expectRelativeArtifactPath(
+      auxiliary.testPatchFile,
+      "capture spec auxiliaryGreen[0].testPatchFile"
+    ),
+    green: {
+      reportFile: expectRelativeArtifactPath(green.reportFile, "capture spec auxiliaryGreen[0].green.reportFile")
+    }
+  };
+}
+
 function parseCaptureSpec(value: unknown): CaptureSpecV1 {
   assertNoSecretLikeArtifactValues(value);
   const spec = expectRecord(value, "capture spec");
-  expectExactKeys(spec, ["version", "candidateSha", "traces"], "capture spec");
+  expectExactKeys(spec, ["version", "candidateSha", "traces", "auxiliaryGreen"], "capture spec");
   if (spec.version !== "acceptance-trace-capture-v1") throw new Error("capture spec version is invalid");
   if (!Array.isArray(spec.traces)) throw new Error("capture spec traces must be an array");
+  if (!Array.isArray(spec.auxiliaryGreen) || spec.auxiliaryGreen.length !== 1) {
+    throw new Error("capture spec requires exactly one auxiliary GREEN proof");
+  }
   return {
     version: "acceptance-trace-capture-v1",
     candidateSha: expectString(spec.candidateSha, "candidateSha"),
-    traces: spec.traces.map(parseCaptureTrace)
+    traces: spec.traces.map(parseCaptureTrace),
+    auxiliaryGreen: [parseCaptureAuxiliaryGreen(spec.auxiliaryGreen[0])]
   };
 }
 
@@ -504,20 +556,30 @@ const RED_GROUPS: readonly RedGroup[] = Object.freeze([
       recordedBaseSha: PLAN1_TEST_SHA,
       applyToSnapshot: true
     }
-  },
-  {
-    id: "plan2-llm-dampening",
-    commitSha: PLAN2_TEST_SHA,
-    testFiles: ["tests/check/contractDecisionV2.acceptance.test.ts"],
-    testPatch: {
-      baseSha: `${CANONICAL_IDENTITY_SHA}^`,
-      headSha: CANONICAL_IDENTITY_SHA,
-      testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
-      recordedBaseSha: PLAN2_TEST_SHA,
-      applyToSnapshot: true
-    }
   }
 ]);
+
+const TRACE_GREEN_TEST_FILES = Object.freeze({
+  plan1: ["tests/forensics/recentFlowProvenanceSelection.test.ts"],
+  plan2: [
+    "tests/risk/collectorUsddRemediation.acceptance.test.ts",
+    "tests/approvals/approvalSafetyV2.acceptance.test.ts",
+    "tests/check/contractDecisionV2.acceptance.test.ts",
+    "tests/forensics/contractLlmIsolation.acceptance.test.ts"
+  ],
+  plan3: [
+    "tests/runtime/waitReconciliation.acceptance.test.ts",
+    "tests/runtime/telegramDelivery.acceptance.test.ts",
+    "tests/runtime/walletNavigation.acceptance.test.ts",
+    "tests/runtime/checkCallbacks.acceptance.test.ts"
+  ],
+  plan4: [
+    "tests/telegram/unifiedForensicRenderer.acceptance.test.ts",
+    "tests/alerts/unifiedTelegramAlerts.acceptance.test.ts",
+    "tests/storage/unifiedTelegramCoverage.postgres.test.ts"
+  ],
+  plan5: ["tests/release/remediationReleaseManifest.acceptance.test.ts"]
+} as const);
 
 async function gitPatch(baseSha: string, headSha: string, testFile: string): Promise<Buffer> {
   const { stdout } = await execFileAsync("git", [
@@ -935,7 +997,7 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
       assertPlan3FrozenRedExecutions(executions);
       assertPlan3SuiteFailuresAreBehavioral(report);
     }
-    const localProductModuleAbsences = ["plan2", "plan2-llm-dampening", "plan4"].includes(group.id)
+    const localProductModuleAbsences = ["plan2", "plan4"].includes(group.id)
       ? parseLocalProductModuleAbsenceReport(report)
       : [];
     if (executions.length === 0 && localProductModuleAbsences.length === 0) {
@@ -982,7 +1044,7 @@ export function buildRedGroupEnvironment(groupId: string, source: NodeJS.Process
 }
 
 export function redGroupForTrace(testFile: string, acceptanceId: string, secondary = false): string {
-  if (secondary) return "plan2-llm-dampening";
+  if (secondary) throw new Error("secondary AC-33 is candidate-GREEN-only and has no RED group");
   if (acceptanceId === "AC-10" || acceptanceId === "AC-11") return "plan1-renamed";
   if (acceptanceId === "AC-41") return "plan5";
   if (["AC-20", "AC-21", "AC-24"].includes(acceptanceId)) return "plan4-alert-behavioral";
@@ -1158,13 +1220,18 @@ async function createTask0Baseline(root: string, candidateSha: string): Promise<
   await writeFile(join(root, TASK0_BASELINE_FILE), Buffer.from(`${canonicalReleaseJsonV2(baseline)}\n`, "utf8"), { flag: "wx" });
 }
 
-export async function prepareRemediationTestEvidence(artifactRoot: string): Promise<CaptureSpecV1> {
+async function prepareRemediationTestEvidenceInternal(
+  artifactRoot: string,
+  options: { allowDirtyManagedPreflight: boolean }
+): Promise<CaptureSpecV1> {
   const root = await resolveExternalArtifactRoot(artifactRoot);
   const candidateSha = await gitOutput(["rev-parse", "HEAD"]);
   const candidateStatus = (await execFileAsync("git", [
     "status", "--porcelain=v1", "--untracked-files=all"
   ], { cwd: repositoryRoot, encoding: "utf8", windowsHide: true })).stdout.trim();
-  if (candidateStatus !== "") throw new Error("trace prepare candidate worktree is dirty");
+  if (candidateStatus !== "" && !options.allowDirtyManagedPreflight) {
+    throw new Error("trace prepare candidate worktree is dirty");
+  }
   await ensureTraceDirectory(root, "trace");
   await ensureTraceDirectory(root, "trace/red");
   await ensureTraceDirectory(root, "trace/patches");
@@ -1303,24 +1370,124 @@ export async function prepareRemediationTestEvidence(artifactRoot: string): Prom
       primary: true
     });
   }
-  await addTrace({
-    acceptanceId: "AC-33",
-    requirementIds: [...REMEDIATION_ACCEPTANCE_REQUIREMENT_IDS["AC-33"]!],
-    ownerPlan: 2,
-    testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
-    fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof",
-    primary: false,
-    secondary: true
+  const auxiliaryPatch = await writeTracePatch(root, patchCache, {
+    baseSha: `${REMEDIATION_AC33_AUXILIARY_GREEN.testCommitSha}^`,
+    headSha: REMEDIATION_AC33_AUXILIARY_GREEN.testCommitSha,
+    testFile: REMEDIATION_AC33_AUXILIARY_GREEN.testFile,
+    id: "ac-33-llm-dampening-auxiliary-green"
   });
+  if (sha256(auxiliaryPatch.bytes) !== REMEDIATION_AC33_AUXILIARY_GREEN.testPatchSha256) {
+    throw new Error("secondary AC-33 auxiliary GREEN patch is not exact");
+  }
+  if (!await isAncestor(REMEDIATION_AC33_AUXILIARY_GREEN.ownerCommitSha, REMEDIATION_AC33_AUXILIARY_GREEN.testCommitSha)
+      || !await isAncestor(REMEDIATION_AC33_AUXILIARY_GREEN.testCommitSha, candidateSha)) {
+    throw new Error("secondary AC-33 auxiliary GREEN commit lineage is invalid");
+  }
+  const auxiliaryGreenReportFile = "suite-plan2.vitest.json";
+  const auxiliaryGreenExecutions = parseAcceptanceExecutionReport(
+    (await readSafeArtifactFile(root, auxiliaryGreenReportFile)).toString("utf8"),
+    "passed"
+  );
+  requireExactExecution(
+    auxiliaryGreenExecutions,
+    REMEDIATION_AC33_AUXILIARY_GREEN.testFile,
+    REMEDIATION_AC33_AUXILIARY_GREEN.fullName,
+    "passed"
+  );
   const spec: CaptureSpecV1 = {
     version: "acceptance-trace-capture-v1",
     candidateSha,
-    traces
+    traces,
+    auxiliaryGreen: [{
+      ...REMEDIATION_AC33_AUXILIARY_GREEN,
+      testPatchFile: auxiliaryPatch.relativePath,
+      green: { reportFile: auxiliaryGreenReportFile }
+    }]
   };
   parseCaptureSpec(spec);
-  await createTask0Baseline(root, candidateSha);
+  if (!options.allowDirtyManagedPreflight) await createTask0Baseline(root, candidateSha);
   await writeFile(join(root, CAPTURE_SPEC_FILE), Buffer.from(`${canonicalReleaseJsonV2(spec)}\n`, "utf8"), { flag: "wx" });
   return spec;
+}
+
+export async function prepareRemediationTestEvidence(artifactRoot: string): Promise<CaptureSpecV1> {
+  return prepareRemediationTestEvidenceInternal(artifactRoot, { allowDirtyManagedPreflight: false });
+}
+
+async function runManagedTraceGreenGroup(
+  root: string,
+  groupId: keyof typeof TRACE_GREEN_TEST_FILES
+): Promise<void> {
+  const reportPath = join(root, `suite-${groupId}.vitest.json`);
+  const databaseName = groupId === "plan5" ? undefined : `tron_watch_${groupId}`;
+  const environment = buildReleaseSuiteEnvironment(process.env, {
+    expectedTestDatabase: databaseName
+  });
+  await execFileAsync(process.execPath, [
+    resolve(repositoryRoot, "node_modules/vitest/vitest.mjs"),
+    "run",
+    "--configLoader", "bundle",
+    "--no-file-parallelism",
+    "--testTimeout=120000",
+    "--hookTimeout=120000",
+    ...TRACE_GREEN_TEST_FILES[groupId],
+    "--testNamePattern", RED_ACCEPTANCE_TEST_NAME_PATTERN,
+    "--reporter=json",
+    `--outputFile=${reportPath}`
+  ], {
+    cwd: repositoryRoot,
+    env: environment,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 20 * 60_000,
+    maxBuffer: 16 * 1024 * 1024
+  });
+  const executions = parseAcceptanceExecutionReport(await readFile(reportPath, "utf8"), "passed");
+  for (let index = 0; index < PRIMARY_AC_FULL_NAMES.length; index += 1) {
+    const acceptanceId = `AC-${String(index + 1).padStart(2, "0")}`;
+    const testFile = PRIMARY_AC_TEST_FILES[index]!;
+    if (greenGroupForTrace(testFile, acceptanceId) !== groupId) continue;
+    requireExactExecution(executions, testFile, PRIMARY_AC_FULL_NAMES[index]!, "passed");
+  }
+  if (groupId === "plan2") {
+    requireExactExecution(
+      executions,
+      REMEDIATION_AC33_AUXILIARY_GREEN.testFile,
+      REMEDIATION_AC33_AUXILIARY_GREEN.fullName,
+      "passed"
+    );
+  }
+}
+
+export async function preflightRemediationTestEvidence(): Promise<{
+  candidateSha: string;
+  traceCount: number;
+  auxiliaryGreenCount: number;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "plan5-trace-preflight-"));
+  const candidateSha = await gitOutput(["rev-parse", "HEAD"]);
+  const previousTestDatabaseUrl = process.env.TEST_DATABASE_URL;
+  try {
+    for (const groupId of ["plan1", "plan2", "plan3", "plan4", "plan5"] as const) {
+      const suiteDatabaseUrl = groupId === "plan5"
+        ? undefined
+        : process.env[`PLAN${groupId.slice(-1)}_TEST_DATABASE_URL`];
+      if (suiteDatabaseUrl) process.env.TEST_DATABASE_URL = suiteDatabaseUrl;
+      else delete process.env.TEST_DATABASE_URL;
+      await runManagedTraceGreenGroup(root, groupId);
+    }
+    await prepareRemediationTestEvidenceInternal(root, { allowDirtyManagedPreflight: true });
+    const traceSet = await captureRemediationTestEvidence(root);
+    return {
+      candidateSha,
+      traceCount: traceSet.traces.length,
+      auxiliaryGreenCount: traceSet.auxiliaryGreen.length
+    };
+  } finally {
+    if (previousTestDatabaseUrl === undefined) delete process.env.TEST_DATABASE_URL;
+    else process.env.TEST_DATABASE_URL = previousTestDatabaseUrl;
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 export async function captureRemediationTestEvidence(artifactRoot: string): Promise<AcceptanceTraceSetV1> {
@@ -1490,14 +1657,54 @@ export async function captureRemediationTestEvidence(artifactRoot: string): Prom
     executions.push({ testFile: item.testFile, fullName: item.fullName, status: "passed" });
   }
 
+  const auxiliarySpec = spec.auxiliaryGreen[0]!;
+  await Promise.all([
+    assertCommit(auxiliarySpec.ownerCommitSha),
+    assertCommit(auxiliarySpec.testCommitSha)
+  ]);
+  if (!await isAncestor(auxiliarySpec.ownerCommitSha, auxiliarySpec.testCommitSha)
+      || !await isAncestor(auxiliarySpec.testCommitSha, spec.candidateSha)) {
+    throw new Error("secondary AC-33 auxiliary GREEN commit lineage is invalid");
+  }
+  verifiedAncestry.add(`${auxiliarySpec.ownerCommitSha}\u0000${auxiliarySpec.testCommitSha}`);
+  verifiedAncestry.add(`${auxiliarySpec.testCommitSha}\u0000${spec.candidateSha}`);
+  const [auxiliaryPatchBytes, auxiliaryGreenReport] = await Promise.all([
+    readSafeArtifactFile(root, auxiliarySpec.testPatchFile),
+    readReport(auxiliarySpec.green.reportFile, "passed")
+  ]);
+  const exactAuxiliaryPatch = await gitPatch(
+    `${auxiliarySpec.testCommitSha}^`,
+    auxiliarySpec.testCommitSha,
+    auxiliarySpec.testFile
+  );
+  if (!exactAuxiliaryPatch.equals(auxiliaryPatchBytes)
+      || sha256(auxiliaryPatchBytes) !== REMEDIATION_AC33_AUXILIARY_GREEN.testPatchSha256) {
+    throw new Error("secondary AC-33 auxiliary GREEN patch is not exact");
+  }
+  requireExactExecution(
+    auxiliaryGreenReport.executions,
+    auxiliarySpec.testFile,
+    auxiliarySpec.fullName,
+    "passed"
+  );
+  const auxiliaryGreen: AcceptanceAuxiliaryGreenV1[] = [{
+    ...REMEDIATION_AC33_AUXILIARY_GREEN,
+    candidateSha: spec.candidateSha,
+    vitestReportSha256: sha256(auxiliaryGreenReport.bytes)
+  }];
+
   const traceSet = validateAcceptanceTraceSet({
     version: "acceptance-trace-set-v1",
     candidateSha: spec.candidateSha,
     requiredRequirementIds: [...REMEDIATION_REQUIRED_REQUIREMENT_IDS],
     requiredAcceptanceIds: [...REMEDIATION_REQUIRED_ACCEPTANCE_IDS],
     traces,
+    auxiliaryGreen,
     executions,
-    ancestorCommitShas: [...new Set(traces.map((trace) => trace.ownerCommitSha))]
+    ancestorCommitShas: [
+      ...new Set(traces.map((trace) => trace.ownerCommitSha)),
+      auxiliarySpec.testCommitSha
+    ]
   }, {
     isAncestor: (ancestorCommitSha, descendantCommitSha) => (
       verifiedAncestry.has(`${ancestorCommitSha}\u0000${descendantCommitSha}`)

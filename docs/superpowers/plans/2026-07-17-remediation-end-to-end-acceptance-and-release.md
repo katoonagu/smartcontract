@@ -1609,6 +1609,11 @@ Rules:
   behavioral messages without reclassifying them. Generic import, no-test,
   dependency, type, fixture, environment, foreign importer, multiple absence
   messages or synthetic failure is rejected;
+- the separate `[AC-33][LLM-DAMPENING]` regression is the only mandatory
+  `candidate_green_only` auxiliary record. It is not another AC, adds no RED
+  coverage and cannot replace primary AC-33 RED. It binds exact fullName, test
+  commit `db5d49a9…`, test patch SHA-256 `ae069e6d…`, owner `83f0cb96…`, final
+  candidate and the complete candidate GREEN Vitest report SHA-256;
 - GREEN is read from Vitest JSON/JUnit and must contain the exact file/fullName
   with state `passed`; missing, skipped, todo, duplicate or filtered-out tests
   fail closed;
@@ -2865,11 +2870,15 @@ Changes are test-only:
    decision, authority and evidence IDs with zero provider calls. Service
    dampening remains covered by the existing primary AC-33 test.
 3. In an ephemeral owner-base worktree, apply only the exact test patch and run
-   the three fullNames. AC-10/11 must fail on `PLAN1_BASE_SHA` and AC-33
-   LLM-dampening must fail on `PLAN2_BASE_SHA` for the expected missing/wrong
-   behavior, never for syntax/import/fixture reasons.
+   the three fullNames. AC-10/11 must fail on `PLAN1_BASE_SHA`. The separate
+   AC-33 LLM-dampening test has no independent RED: primary AC-33 supplies the
+   owner RED, while the secondary test is mandatory exact candidate-GREEN-only
+   auxiliary evidence because the frozen boundary lacks the same local product
+   module and the test is already GREEN once that module exists.
 4. Save sanitized Vitest JSON/JUnit RED evidence and patch SHA-256 outside the
-   repo, then run the same fullNames on candidate and require GREEN.
+   repo, then require candidate GREEN for all three names. Bind the secondary
+   AC-33 proof to exact fullName, `db5d49a9…`, patch SHA-256 `ae069e6d…`, owner
+   `83f0cb96…`, candidate SHA and full GREEN report SHA-256.
 
 **RED command shape:**
 
@@ -5153,7 +5162,7 @@ never used as a test database.
 | AC-30 | G01, G03, G05 | GasFree Account LOW 10, endpoint negative, principal eligible |
 | AC-31 | G01, G03 | exact Bridgers LOW 10 not decline |
 | AC-32 | G01, G03 | known service unlimited without exact session REVIEW 45 |
-| AC-33 | G01, G03 | primary service-dampening test plus separate `[AC-33][LLM-DAMPENING]` exact regression; both executed GREEN with owner RED evidence |
+| AC-33 | G01, G03 | primary service-dampening trace keeps owner RED; separate `[AC-33][LLM-DAMPENING]` is exact candidate-GREEN-only auxiliary evidence |
 | AC-34 | G01, G03 | fresh LLM score payload ignored, no call |
 | AC-35 | G01, G03 | verdict/recommendation payload ignored, no call |
 | AC-36 | G01, G03 | legacy citations audit-only |

@@ -48,12 +48,27 @@ export type AcceptanceExecutionV1 = {
   status: AcceptanceExecutionStatus;
 };
 
+export type AcceptanceAuxiliaryGreenV1 = {
+  kind: "candidate_green_only";
+  acceptanceId: "AC-33";
+  testFile: "tests/check/contractDecisionV2.acceptance.test.ts";
+  fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof";
+  primary: false;
+  testCommitSha: string;
+  testPatchSha256: string;
+  ownerCommitSha: string;
+  candidateSha: string;
+  vitestReportSha256: string;
+  status: "passed";
+};
+
 export type AcceptanceTraceSetV1 = {
   version: "acceptance-trace-set-v1";
   candidateSha: string;
   requiredRequirementIds: string[];
   requiredAcceptanceIds: string[];
   traces: AcceptanceTraceV1[];
+  auxiliaryGreen: AcceptanceAuxiliaryGreenV1[];
   executions: AcceptanceExecutionV1[];
   ancestorCommitShas: string[];
 };
@@ -180,6 +195,32 @@ const PLAN2_MIXED_LOCAL_BEHAVIORAL_FULL_NAMES = new Set([
 ]);
 const PLAN2_MIXED_SPY_FAILURE = "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times";
 const PLAN2_MIXED_DECISION_FAILURE = "AssertionError: expected { …(15) } to match object { contractDecisionV2: { …(3) } }";
+export const REMEDIATION_AC33_AUXILIARY_GREEN = Object.freeze({
+  kind: "candidate_green_only",
+  acceptanceId: "AC-33",
+  testFile: "tests/check/contractDecisionV2.acceptance.test.ts",
+  fullName: "[AC-33][LLM-DAMPENING] prevents legacy LLM context from lowering provider risk Verify20 or exact debit proof",
+  primary: false,
+  testCommitSha: "db5d49a944c0de489f13567d87400cb32c4eedb0",
+  testPatchSha256: "ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132",
+  ownerCommitSha: PLAN2_OWNER_SHA,
+  status: "passed"
+} as const);
+const PLAN2_FROZEN_BEHAVIORAL_ASSERTIONS: Readonly<Record<string, { failureCount: number; firstLinesSha256: string }>> = Object.freeze({
+  "tests/check/contractDecisionV2.acceptance.test.ts\u0000[AC-40] bypasses Flash and Pro for every fresh contract case": { failureCount: 12, firstLinesSha256: "8c2aa381b82d482c2914d892859303e152ea1cf86cb5c73e270389f9b12a5ff1" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-34][LLM-DISABLED] ignores every fresh LLM score payload": { failureCount: 23, firstLinesSha256: "f4412d0d89f0a369ba4def3a7deed05f53e101d8677ea760debc4d41f29912ee" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-35][LLM-DISABLED] ignores every verdict and recommendation payload": { failureCount: 25, firstLinesSha256: "31cb81cde8d4ae4f1e7b9d8563c84c32b1482d6d7472153ef4feca95a747373c" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-38][LLM-NOCALL] makes zero provider calls for timeout JSON and schema scenarios": { failureCount: 9, firstLinesSha256: "b8065efc525c56c953e61c20c341052d84e94f4b6941699356ac06e3915f5981" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-39][REQ-25][LLM-LEGACY][TELEGRAM] removes model output from Bot and Alert formatting": { failureCount: 7, firstLinesSha256: "6ffd62aa2f570e5bbe7c4cdfa7f48442b3dc1183e8d3dda883cb7365a64a28ac" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-40][LLM-NOCALL] bypasses Flash and Pro for unknown and ambiguous contracts": { failureCount: 7, firstLinesSha256: "2b0d219632a8675f3421979758fc4f64787d9d8456769b372ace963fbe4de640" },
+  "tests/risk/collectorUsddRemediation.acceptance.test.ts\u0000[AC-01] caps collector-only evidence at REVIEW 35": { failureCount: 1, firstLinesSha256: "0e3599c73f1f43b712638c210614cc01775dcf1dbaeab10d05cd13a0182c86ef" },
+  "tests/risk/collectorUsddRemediation.acceptance.test.ts\u0000[AC-02] allows collector 55 only with an independent eligible AML signal": { failureCount: 1, firstLinesSha256: "4b3f52a5d38eeaa00d9e0ab462dd967bb081696cbb61eafcd195824591297c02" }
+});
+const PLAN2_FROZEN_NON_TRACE_LOCAL_ASSERTIONS: Readonly<Record<string, string>> = Object.freeze({
+  "tests/approvals/approvalSafetyV2.acceptance.test.ts\u0000[AC-31] keeps exact Bridgers approval session LOW instead of decline": "src/approvals/approvalSafetyAssessment",
+  "tests/approvals/approvalSafetyV2.acceptance.test.ts\u0000[AC-32] keeps known-service unlimited approval without session at REVIEW 45": "src/approvals/approvalSafetyAssessment",
+  "tests/approvals/approvalSafetyV2.acceptance.test.ts\u0000[AC-33] prevents service dampening of provider risk Verify20 or debit proof": "src/approvals/approvalSafetyAssessment"
+});
 
 export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
   "AC-01": 2, "AC-02": 2, "AC-03": 2, "AC-04": 2, "AC-05": 2, "AC-06": 2,
@@ -480,6 +521,43 @@ function parseExecution(value: unknown, index: number): AcceptanceExecutionV1 {
   return { testFile, fullName, status };
 }
 
+function parseAuxiliaryGreen(value: unknown, candidateSha: string): AcceptanceAuxiliaryGreenV1 {
+  const auxiliary = expectRecord(value, "auxiliaryGreen[0]");
+  expectExactKeys(auxiliary, [
+    "kind",
+    "acceptanceId",
+    "testFile",
+    "fullName",
+    "primary",
+    "testCommitSha",
+    "testPatchSha256",
+    "ownerCommitSha",
+    "candidateSha",
+    "vitestReportSha256",
+    "status"
+  ], "auxiliaryGreen[0]");
+  const exact = REMEDIATION_AC33_AUXILIARY_GREEN;
+  if (auxiliary.kind !== exact.kind
+      || auxiliary.acceptanceId !== exact.acceptanceId
+      || normalizeAcceptanceTestFile(expectString(auxiliary.testFile, "auxiliaryGreen[0].testFile")) !== exact.testFile
+      || auxiliary.fullName !== exact.fullName
+      || auxiliary.primary !== exact.primary
+      || auxiliary.testCommitSha !== exact.testCommitSha
+      || auxiliary.testPatchSha256 !== exact.testPatchSha256
+      || auxiliary.ownerCommitSha !== exact.ownerCommitSha
+      || auxiliary.candidateSha !== candidateSha
+      || auxiliary.status !== exact.status) {
+    throw new Error("auxiliary GREEN does not match the exact secondary AC-33 contract");
+  }
+  expectSha40(auxiliary.testCommitSha, "auxiliaryGreen[0].testCommitSha");
+  expectSha40(auxiliary.ownerCommitSha, "auxiliaryGreen[0].ownerCommitSha");
+  const vitestReportSha256 = expectSha256(
+    auxiliary.vitestReportSha256,
+    "auxiliaryGreen[0].vitestReportSha256"
+  );
+  return { ...exact, candidateSha, vitestReportSha256 };
+}
+
 function executionKey(execution: Pick<AcceptanceExecutionV1, "testFile" | "fullName">): string {
   return `${execution.testFile}\u0000${execution.fullName}`;
 }
@@ -499,6 +577,7 @@ export function validateAcceptanceTraceSet(
     "requiredRequirementIds",
     "requiredAcceptanceIds",
     "traces",
+    "auxiliaryGreen",
     "executions",
     "ancestorCommitShas"
   ], "acceptance trace set");
@@ -571,11 +650,33 @@ export function validateAcceptanceTraceSet(
   const traceNames = traces.map((trace) => trace.fullName);
   if (new Set(traceNames).size !== traceNames.length) throw new Error("trace fullName values must be unique");
 
+  if (!Array.isArray(traceSet.auxiliaryGreen) || traceSet.auxiliaryGreen.length !== 1) {
+    throw new Error("auxiliary GREEN must contain exactly one secondary AC-33 proof");
+  }
+  const auxiliaryGreen = [parseAuxiliaryGreen(traceSet.auxiliaryGreen[0], candidateSha)];
+  const auxiliary = auxiliaryGreen[0]!;
+  let ownerPrecedesTest = false;
+  let testPrecedesCandidate = false;
+  try {
+    ownerPrecedesTest = dependencies.isAncestor(auxiliary.ownerCommitSha, auxiliary.testCommitSha);
+    testPrecedesCandidate = dependencies.isAncestor(auxiliary.testCommitSha, candidateSha);
+  } catch {
+    ownerPrecedesTest = false;
+    testPrecedesCandidate = false;
+  }
+  if (!ownerPrecedesTest || !testPrecedesCandidate) {
+    throw new Error("auxiliary GREEN commit lineage is not exact");
+  }
+
   for (const acceptanceId of REMEDIATION_REQUIRED_ACCEPTANCE_IDS) {
     const matching = traces.filter((trace) => trace.acceptanceId === acceptanceId);
     if (matching.filter((trace) => trace.primary).length !== 1) {
       throw new Error(`${acceptanceId} must have exactly one primary trace`);
     }
+  }
+  const primaryAc33 = traces.find((trace) => trace.acceptanceId === "AC-33" && trace.primary);
+  if (!primaryAc33 || primaryAc33.red.kind !== "local_product_module_absent") {
+    throw new Error("auxiliary GREEN cannot replace the primary AC-33 RED trace");
   }
   const coveredRequirements = new Set(traces.flatMap((trace) => trace.requirementIds));
   if (REMEDIATION_REQUIRED_REQUIREMENT_IDS.some((id) => !coveredRequirements.has(id))) {
@@ -600,6 +701,7 @@ export function validateAcceptanceTraceSet(
     requiredRequirementIds,
     requiredAcceptanceIds,
     traces,
+    auxiliaryGreen,
     executions,
     ancestorCommitShas
   };
@@ -701,8 +803,19 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
     if (INFRASTRUCTURE_FAILURE.test(remainder)) {
       throw new Error("RED evidence contains an additional generic import, dependency, or environment failure");
     }
-    if (remainder.split(/\r?\n/).some((line) => /^(?:AssertionError|Error):/.test(line.trim()))) {
-      throw new Error("RED evidence contains an additional unclassified companion failure");
+    const stackLines = remainder.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const normalizedStackLines = stackLines.map((line) => line.replace(/\\/g, "/"));
+    const invalidStackLine = normalizedStackLines.find((line) => (
+      line !== "at async Promise.all (index 0)"
+        && (!/^at (?:(?:[^()]+ )?\((?:file:\/\/\/)?(?:[A-Za-z]:\/|node:)[^()]+:\d+:\d+\)|(?:file:\/\/\/)?[A-Za-z]:\/[^()]+:\d+:\d+)$/.test(line)
+          || (!line.includes("/node_modules/vite/")
+            && !line.includes("/node_modules/vitest/")
+            && !line.includes("/node_modules/@vitest/")
+            && !line.includes("node:internal/")
+            && !line.includes(`/${testFile}:`)))
+    ));
+    if (invalidStackLine) {
+      throw new Error(`RED evidence contains an additional unclassified non-Vitest stack line: ${invalidStackLine}`);
     }
     const specifier = matches[0][2].replace(/\\/g, "/");
     const importer = normalizeAcceptanceTestFile(matches[0][4]);
@@ -743,9 +856,6 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
     let resultFailedTests = 0;
     for (const [assertionIndex, assertionValue] of result.assertionResults.entries()) {
       const assertion = expectRecord(assertionValue, `assertionResults[${assertionIndex}]`);
-      if (assertion.status !== "failed") continue;
-      observedFailedTests += 1;
-      resultFailedTests += 1;
       const reportFullName = expectString(assertion.fullName, `assertionResults[${assertionIndex}].fullName`);
       const title = expectString(assertion.title, `assertionResults[${assertionIndex}].title`);
       const ancestorTitles = expectStringArray(
@@ -755,11 +865,19 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
       if ([...ancestorTitles, title].join(" ") !== reportFullName) {
         throw new Error("Vitest assertion title lineage does not match fullName");
       }
+      const status = reportStatus(assertion.status);
+      const failureMessages = assertion.failureMessages === undefined
+        ? []
+        : expectStringArray(assertion.failureMessages, `assertionResults[${assertionIndex}].failureMessages`);
+      if (status !== "failed") {
+        if (failureMessages.length > 0) {
+          throw new Error("local product module RED contains a non-failed assertion with a failure message");
+        }
+        continue;
+      }
+      observedFailedTests += 1;
+      resultFailedTests += 1;
       observedFailedAncestorPaths.add(`${testFile}\u0000${ancestorTitles.join("\u0000")}`);
-      const failureMessages = expectStringArray(
-        assertion.failureMessages,
-        `assertionResults[${assertionIndex}].failureMessages`
-      );
       if (failureMessages.length === 0) {
         throw new Error("local product module RED contains a failed assertion without classified failure messages");
       }
@@ -777,15 +895,40 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
         }
       }
       if (local.length > 1) throw new Error("assertion contains more than one local module-absence message");
-      if (local.length === 1 && behavioralFirstLines.length > 0) {
-        const spyFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_SPY_FAILURE).length;
-        const decisionFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_DECISION_FAILURE).length;
-        if (!PLAN2_MIXED_LOCAL_BEHAVIORAL_FULL_NAMES.has(title)
-            || behavioralFirstLines.length !== 4 || spyFailures !== 3 || decisionFailures !== 1) {
+      const assertionKey = `${testFile}\u0000${title}`;
+      if (local.length === 1) {
+        const exactLineage = Object.values(EXACT_PLAN2_ASSERTION_LOCAL_RED_LINEAGE).find((lineage) => (
+          lineage.testFile === testFile && lineage.fullName === title
+        ));
+        const nonTraceLocalPath = PLAN2_FROZEN_NON_TRACE_LOCAL_ASSERTIONS[assertionKey];
+        if (!exactLineage && !nonTraceLocalPath) {
+          throw new Error(`failed assertion has no approved frozen classification: ${testFile} :: ${title}`);
+        }
+        const expectedPath = exactLineage?.missingProductModulePath ?? nonTraceLocalPath;
+        if (local[0]!.missingProductModulePath !== expectedPath) {
+          throw new Error("failed assertion local product module does not match its approved frozen classification");
+        }
+        if (PLAN2_MIXED_LOCAL_BEHAVIORAL_FULL_NAMES.has(title)) {
+          const spyFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_SPY_FAILURE).length;
+          const decisionFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_DECISION_FAILURE).length;
+          if (behavioralFirstLines.length !== 4 || spyFailures !== 3 || decisionFailures !== 1) {
+            throw new Error("local product module RED contains unapproved behavioral companion failures");
+          }
+        } else if (behavioralFirstLines.length !== 0) {
           throw new Error("local product module RED contains unapproved behavioral companion failures");
         }
+        if (exactLineage) evidence.push({ testFile, fullName: title, ...local[0] });
+      } else {
+        const expectedBehavioral = PLAN2_FROZEN_BEHAVIORAL_ASSERTIONS[assertionKey];
+        const firstLinesSha256 = createHash("sha256")
+          .update(JSON.stringify(behavioralFirstLines))
+          .digest("hex");
+        if (!expectedBehavioral
+            || behavioralFirstLines.length !== expectedBehavioral.failureCount
+            || firstLinesSha256 !== expectedBehavioral.firstLinesSha256) {
+          throw new Error(`failed assertion has no approved frozen classification: ${testFile} :: ${title}`);
+        }
       }
-      if (local.length === 1) evidence.push({ testFile, fullName: title, ...local[0] });
     }
     if (result.status === "failed") observedFailedResults += 1;
     if (resultFailedTests > 0 && result.status !== "failed") {
@@ -931,7 +1074,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function assertAcceptancePatchBinding(binding: AcceptanceRedEvidenceBinding): void {
+function assertAcceptancePatchFileBinding(binding: AcceptanceRedEvidenceBinding): string[] {
   const testFile = normalizeAcceptanceTestFile(binding.testFile);
   if (!binding.fullName.startsWith(`[${binding.acceptanceId}]`)) {
     throw new Error("patch fullName is not bound to its acceptance ID");
@@ -954,7 +1097,11 @@ export function assertAcceptancePatchBinding(binding: AcceptanceRedEvidenceBindi
   if (fileMarkers.length < 2 || fileMarkers.some((marker) => !allowedMarkers.has(marker))) {
     throw new Error("test patch file markers are not bound to the declared test file");
   }
-  const addedLines = binding.patchText.split(/\r?\n/).filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+  return binding.patchText.split(/\r?\n/).filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+}
+
+export function assertAcceptancePatchBinding(binding: AcceptanceRedEvidenceBinding): void {
+  const addedLines = assertAcceptancePatchFileBinding(binding);
   if (!addedLines.some((line) => line.includes(binding.fullName))) {
     throw new Error("test patch does not add the declared exact fullName");
   }
@@ -1005,7 +1152,12 @@ export function assertExpectedLocalProductModuleAbsentRed(
   const evidencePath = normalizeLocalProductModulePath(evidence.missingProductModulePath);
   const bindingPath = normalizeLocalProductModulePath(binding.missingProductModulePath);
   if (evidencePath !== bindingPath) throw new Error("local product module RED path does not match binding");
-  assertAcceptancePatchBinding(binding);
+  if (REMEDIATION_PLAN2_ASSERTION_LOCAL_PRODUCT_MODULE_ABSENT_ACCEPTANCE_IDS.includes(binding.acceptanceId)) {
+    assertAcceptancePatchBinding(binding);
+  } else {
+    // ponytail: file-load RED has no executed assertion fullName; exact frozen patch SHA and file scope are its ceiling.
+    assertAcceptancePatchFileBinding(binding);
+  }
   if (localProductModuleAbsenceFingerprint(binding.acceptanceId, evidence) !== binding.expectedFailureFingerprint) {
     throw new Error("local product module RED fingerprint does not match exact evidence");
   }

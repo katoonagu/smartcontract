@@ -247,6 +247,15 @@ order is producer-first, strict-verifier-last.
    timeout/synthetic failures, a foreign importer, or multiple local-absence
    messages fail closed.
 
+   The separate secondary `[AC-33][LLM-DAMPENING]` regression is the only
+   `candidate_green_only` auxiliary proof. It is not another AC, adds no RED
+   coverage, and cannot replace primary AC-33 or its approved RED. Capture
+   requires exact fullName, test commit `db5d49a9…`, test patch SHA-256
+   `ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132`,
+   owner `83f0cb96…`, final candidate SHA, `passed`, and SHA-256 of the complete
+   `suite-plan2.vitest.json` candidate report. Any additional auxiliary record,
+   any RED substitution, or any changed binding fails closed.
+
    Plan 3 RED preparation always sets `REQUIRE_PLAN3_POSTGRES=1` and binds both
    `PLAN3_TEST_DATABASE_URL` and `TEST_DATABASE_URL` to the exact disposable
    `tron_watch_plan3` database. AC-14/15 must execute; skipped PostgreSQL tests
