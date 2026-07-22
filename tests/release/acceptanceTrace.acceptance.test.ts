@@ -172,6 +172,13 @@ it("[AC-41][TRACEABILITY] requires every REQ-01 through REQ-38 and AC-01 through
     (trace: any) => { trace.requiredAcceptanceIds.pop(); },
     (trace: any) => { trace.traces.pop(); },
     (trace: any) => { trace.traces.push(cloneFixture(trace.traces[0])); },
+    (trace: any) => {
+      const extra = cloneFixture(trace.traces[13]);
+      extra.fullName = "[AC-14][SYNTHETIC-SECONDARY] extra RED trace";
+      extra.primary = false;
+      trace.traces.push(extra);
+      trace.executions.push({ testFile: extra.testFile, fullName: extra.fullName, status: "passed" });
+    },
     (trace: any) => { trace.traces[0].acceptanceId = "AC-99"; }
   ];
   for (const mutate of invalid) {
@@ -525,12 +532,7 @@ it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local s
       }]
     }]
   };
-  expect(api.parseLocalProductModuleAbsenceReport(ac29Report)).toEqual([{
-    testFile: ac29File,
-    fullName: ac29Name,
-    missingProductModulePath: "src/forensics/contractDecision",
-    failureMessage: ac29Absence
-  }]);
+  expect(() => api.parseLocalProductModuleAbsenceReport(ac29Report)).toThrow(/companion bytes/i);
   expect(() => api.parseLocalProductModuleAbsenceReport({
     ...ac29Report,
     testResults: [{
@@ -543,6 +545,22 @@ it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local s
       }]
     }]
   })).toThrow(/companion/i);
+  expect(() => api.parseLocalProductModuleAbsenceReport({
+    ...ac29Report,
+    testResults: [{
+      ...ac29Report.testResults[0],
+      assertionResults: [{
+        ...ac29Report.testResults[0].assertionResults[0],
+        failureMessages: [
+          `${ac29SpyFailure}\nplain synthetic companion`,
+          ac29SpyFailure,
+          ac29SpyFailure,
+          ac29DecisionFailure,
+          ac29Absence
+        ]
+      }]
+    }]
+  })).toThrow(/companion bytes/i);
   expect(() => api.parseLocalProductModuleAbsenceReport({
     ...ac29Report,
     testResults: [{
@@ -562,19 +580,19 @@ it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local s
     failureMessages: ["AssertionError: unrelated frozen failure"]
   };
   expect(() => api.parseLocalProductModuleAbsenceReport({
-    ...ac29Report,
+    ...report,
     numFailedTests: 2,
     testResults: [{
-      ...ac29Report.testResults[0],
-      assertionResults: [ac29Report.testResults[0].assertionResults[0], unrelatedFailure]
+      ...report.testResults[0],
+      assertionResults: [assertion, unrelatedFailure]
     }]
   })).toThrow(/approved frozen classification/i);
   expect(() => api.parseLocalProductModuleAbsenceReport({
-    ...ac29Report,
+    ...report,
     testResults: [{
-      ...ac29Report.testResults[0],
+      ...report.testResults[0],
       assertionResults: [
-        ac29Report.testResults[0].assertionResults[0],
+        assertion,
         { ...unrelatedFailure, status: "passed" }
       ]
     }]
@@ -670,7 +688,7 @@ it("[AC-33][AUXILIARY-GREEN] requires the one exact LLM-dampening candidate proo
     testPatchSha256: "ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132",
     ownerCommitSha: PLAN2_OWNER_SHA,
     candidateSha: fixture.candidateSha,
-    vitestReportSha256: "f".repeat(64),
+    vitestReportSha256: fixture.traces.find((trace: any) => trace.acceptanceId === "AC-33").green.vitestReportSha256,
     status: "passed"
   }]);
   expect(() => validate(fixture, fixtureAncestry)).not.toThrow();
@@ -684,6 +702,7 @@ it("[AC-33][AUXILIARY-GREEN] requires the one exact LLM-dampening candidate proo
     (value: any) => { value.auxiliaryGreen[0].ownerCommitSha = "a".repeat(40); },
     (value: any) => { value.auxiliaryGreen[0].candidateSha = "a".repeat(40); },
     (value: any) => { value.auxiliaryGreen[0].vitestReportSha256 = "not-a-hash"; },
+    (value: any) => { value.auxiliaryGreen[0].vitestReportSha256 = "a".repeat(64); },
     (value: any) => { value.auxiliaryGreen[0].status = "failed"; },
     (value: any) => { value.auxiliaryGreen.push(cloneFixture(value.auxiliaryGreen[0])); }
   ]) {

@@ -945,7 +945,7 @@ export function buildAcceptanceTraceSet(): AcceptanceTraceSetV1 {
       testPatchSha256: "ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132",
       ownerCommitSha: "83f0cb967f61b814896e5d1a4cf01cecb1c56b59",
       candidateSha: CANDIDATE_SHA,
-      vitestReportSha256: "f".repeat(64),
+      vitestReportSha256: traces[32]!.green.vitestReportSha256,
       status: "passed"
     }],
     executions: traces.map(({ testFile, fullName }) => ({ testFile, fullName, status: "passed" })),

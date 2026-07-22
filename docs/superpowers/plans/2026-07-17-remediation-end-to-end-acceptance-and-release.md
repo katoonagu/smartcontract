@@ -1590,8 +1590,8 @@ type AcceptanceTraceV1 = {
 
 Rules:
 
-- exactly `AC-01…AC-41`; additional mandatory subtests may share an AC, but
-  exactly one trace per AC is `primary=true`;
+- exactly 41 RED/GREEN traces, one `primary=true` trace for each
+  `AC-01…AC-41`; no non-primary RED/GREEN trace is permitted;
 - every `fullName` starts with its own `[AC-XX]` token and is unique inside the
   required suite;
 - owner commit is an ancestor of candidate and names the owner-plan change;
@@ -1614,6 +1614,8 @@ Rules:
   coverage and cannot replace primary AC-33 RED. It binds exact fullName, test
   commit `db5d49a9…`, test patch SHA-256 `ae069e6d…`, owner `83f0cb96…`, final
   candidate and the complete candidate GREEN Vitest report SHA-256;
+- the auxiliary report SHA-256 equals the primary AC-33 full Plan 2 GREEN
+  report SHA-256; it is the only permitted secondary record;
 - GREEN is read from Vitest JSON/JUnit and must contain the exact file/fullName
   with state `passed`; missing, skipped, todo, duplicate or filtered-out tests
   fail closed;
@@ -1636,7 +1638,10 @@ to `[AC-NN]` tests. Fresh cleanup revalidates the database, disables and
 terminates the frozen role, removes only that role's disposable objects, drops
 the role, and verifies absence. Local-module assertion reports reconcile
 aggregate counts exactly, reject suite-level failure messages, and accept
-companions only for the exact frozen AC-29/30 `AssertionError` multiset.
+companions only for the exact frozen AC-29/30 `AssertionError` multiset. Every
+approved behavioral failure binds SHA-256 of its complete normalized Vitest
+message bytes, not only its first line; normalization removes only absolute
+runtime and snapshot path roots.
 
 AC-20/21/24 remain behavioral: their exact original test patch is frozen at
 `20ee8a75…`, and their RED execution commit is `a0f74b3b…`, where local product

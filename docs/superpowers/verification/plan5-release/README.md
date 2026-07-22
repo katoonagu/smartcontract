@@ -241,7 +241,10 @@ order is producer-first, strict-verifier-last.
    Their behavioral companions must equal the exact frozen multiset of three
    no-call plus one decision-object `AssertionError`; all other local assertions
    allow no companions. Assertion-mode suite messages are forbidden, and
-   aggregate failed-test/failed-suite counts must reconcile exactly.
+   aggregate failed-test/failed-suite counts must reconcile exactly. Every
+   approved behavioral failure binds SHA-256 of its complete normalized Vitest
+   message bytes, not only its first line; normalization removes only absolute
+   runtime and snapshot path roots.
    Git must prove every named module absent at the frozen test commit and present
    at owner plus candidate. Generic/no-test/dependency/fixture/environment/
    timeout/synthetic failures, a foreign importer, or multiple local-absence
@@ -253,8 +256,11 @@ order is producer-first, strict-verifier-last.
    requires exact fullName, test commit `db5d49a9…`, test patch SHA-256
    `ae069e6d00158fe1a5e05bfe463ee4814257c3f3c3e3f0648f110679df4c9132`,
    owner `83f0cb96…`, final candidate SHA, `passed`, and SHA-256 of the complete
-   `suite-plan2.vitest.json` candidate report. Any additional auxiliary record,
-   any RED substitution, or any changed binding fails closed.
+   `suite-plan2.vitest.json` candidate report. That hash must equal primary
+   AC-33's full Plan 2 GREEN report hash. The trace set contains exactly 41
+   primary RED/GREEN records; this auxiliary is the only secondary record. Any
+   additional non-primary trace or auxiliary record, RED substitution, or
+   changed binding fails closed.
 
    Plan 3 RED preparation always sets `REQUIRE_PLAN3_POSTGRES=1` and binds both
    `PLAN3_TEST_DATABASE_URL` and `TEST_DATABASE_URL` to the exact disposable

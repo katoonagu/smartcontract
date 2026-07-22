@@ -401,7 +401,9 @@ of these decisions, update this file in the same work.
   object `AssertionError`. They are not classified as infrastructure.
   Assertion-mode suite messages are forbidden and aggregate failed-test plus
   failed-suite counts are reconciled exactly; any other companion invalidates
-  the complete report.
+  the complete report. Every approved behavioral failure is bound by SHA-256
+  of its complete normalized Vitest message bytes, not only its first line;
+  normalization removes only absolute runtime and snapshot path roots.
   Generic/synthetic, foreign-importer, dependency, fixture,
   environment, no-test and multiple-absence evidence remains invalid.
 - Final narrow AC-33 evidence amendment: the separate secondary
@@ -418,6 +420,10 @@ of these decisions, update this file in the same work.
   permitted: at the frozen Plan 2 boundary the test can fail only because the
   same `src/forensics/contractDecision` module is absent, while the exact test
   is already GREEN from the first commit where that product module exists.
+  The complete trace set contains exactly 41 primary RED/GREEN records; this
+  auxiliary is the only secondary record, and its report hash must equal the
+  primary AC-33 full Plan 2 GREEN report hash. Any extra non-primary trace or
+  independently hashed auxiliary report fails closed.
 - Plan 3 RED trace execution is mandatory PostgreSQL execution, not an optional
   suite: the producer sets `REQUIRE_PLAN3_POSTGRES=1` and binds
   `PLAN3_TEST_DATABASE_URL`/`TEST_DATABASE_URL` to exact disposable

@@ -206,21 +206,34 @@ export const REMEDIATION_AC33_AUXILIARY_GREEN = Object.freeze({
   ownerCommitSha: PLAN2_OWNER_SHA,
   status: "passed"
 } as const);
-const PLAN2_FROZEN_BEHAVIORAL_ASSERTIONS: Readonly<Record<string, { failureCount: number; firstLinesSha256: string }>> = Object.freeze({
-  "tests/check/contractDecisionV2.acceptance.test.ts\u0000[AC-40] bypasses Flash and Pro for every fresh contract case": { failureCount: 12, firstLinesSha256: "8c2aa381b82d482c2914d892859303e152ea1cf86cb5c73e270389f9b12a5ff1" },
-  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-34][LLM-DISABLED] ignores every fresh LLM score payload": { failureCount: 23, firstLinesSha256: "f4412d0d89f0a369ba4def3a7deed05f53e101d8677ea760debc4d41f29912ee" },
-  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-35][LLM-DISABLED] ignores every verdict and recommendation payload": { failureCount: 25, firstLinesSha256: "31cb81cde8d4ae4f1e7b9d8563c84c32b1482d6d7472153ef4feca95a747373c" },
-  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-38][LLM-NOCALL] makes zero provider calls for timeout JSON and schema scenarios": { failureCount: 9, firstLinesSha256: "b8065efc525c56c953e61c20c341052d84e94f4b6941699356ac06e3915f5981" },
-  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-39][REQ-25][LLM-LEGACY][TELEGRAM] removes model output from Bot and Alert formatting": { failureCount: 7, firstLinesSha256: "6ffd62aa2f570e5bbe7c4cdfa7f48442b3dc1183e8d3dda883cb7365a64a28ac" },
-  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-40][LLM-NOCALL] bypasses Flash and Pro for unknown and ambiguous contracts": { failureCount: 7, firstLinesSha256: "2b0d219632a8675f3421979758fc4f64787d9d8456769b372ace963fbe4de640" },
-  "tests/risk/collectorUsddRemediation.acceptance.test.ts\u0000[AC-01] caps collector-only evidence at REVIEW 35": { failureCount: 1, firstLinesSha256: "0e3599c73f1f43b712638c210614cc01775dcf1dbaeab10d05cd13a0182c86ef" },
-  "tests/risk/collectorUsddRemediation.acceptance.test.ts\u0000[AC-02] allows collector 55 only with an independent eligible AML signal": { failureCount: 1, firstLinesSha256: "4b3f52a5d38eeaa00d9e0ab462dd967bb081696cbb61eafcd195824591297c02" }
+const PLAN2_FROZEN_BEHAVIORAL_ASSERTIONS: Readonly<Record<string, { failureCount: number; messagesSha256: string }>> = Object.freeze({
+  "tests/check/contractDecisionV2.acceptance.test.ts\u0000[AC-40] bypasses Flash and Pro for every fresh contract case": { failureCount: 12, messagesSha256: "4083e694a8e8873a502ed75c753a3628afff079cdef4a8cf384c5b797ec14ca5" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-34][LLM-DISABLED] ignores every fresh LLM score payload": { failureCount: 23, messagesSha256: "ed0b3dcbd423f2ea78632e29cfdfd3016a39a1dcd535b33d8c32e12d932704f2" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-35][LLM-DISABLED] ignores every verdict and recommendation payload": { failureCount: 25, messagesSha256: "a6d60cc3cc6a5ef6e28e016ddbbb80de5c52f508b9c5dc9a5eee1ebd8c0fa661" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-38][LLM-NOCALL] makes zero provider calls for timeout JSON and schema scenarios": { failureCount: 9, messagesSha256: "edf04ca1cd625fdf6778c15d70a35e61a7465d471dd9a3e14a291f406b578a5f" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-39][REQ-25][LLM-LEGACY][TELEGRAM] removes model output from Bot and Alert formatting": { failureCount: 7, messagesSha256: "2f29020485e1bae14dc7df8513f8b8b689f3202ec3087a7c8466da349637dfb3" },
+  "tests/forensics/contractLlmIsolation.acceptance.test.ts\u0000[AC-40][LLM-NOCALL] bypasses Flash and Pro for unknown and ambiguous contracts": { failureCount: 7, messagesSha256: "babb97fc24f511df2c58b6fc8b064386aa07ffc24ca42a957b42a8bd9c48a41d" },
+  "tests/risk/collectorUsddRemediation.acceptance.test.ts\u0000[AC-01] caps collector-only evidence at REVIEW 35": { failureCount: 1, messagesSha256: "9149ec612742ea88f04893054d599255a3b0f22c2e90c6757c050187fe13cd8a" },
+  "tests/risk/collectorUsddRemediation.acceptance.test.ts\u0000[AC-02] allows collector 55 only with an independent eligible AML signal": { failureCount: 1, messagesSha256: "07b4897430cdb20f156bdce53a0b1fc8d872316ea33c889f079003b9b3bdb21d" }
+});
+const PLAN2_MIXED_BEHAVIORAL_MESSAGE_SHA256: Readonly<Record<string, string>> = Object.freeze({
+  "[AC-29] resolves official TRON USDT at LOW 0 without LLM": "60cd99a497f8f7e2966905e53e5bf9396f57fbf8febec7825ce8b679dc3e83b2",
+  "[AC-30] resolves GasFree Account at LOW 10 without LLM and keeps flows eligible": "31174e40fdbc7f24e4665a8aeee19400ac70b07626990519381647fc90a847de"
 });
 const PLAN2_FROZEN_NON_TRACE_LOCAL_ASSERTIONS: Readonly<Record<string, string>> = Object.freeze({
   "tests/approvals/approvalSafetyV2.acceptance.test.ts\u0000[AC-31] keeps exact Bridgers approval session LOW instead of decline": "src/approvals/approvalSafetyAssessment",
   "tests/approvals/approvalSafetyV2.acceptance.test.ts\u0000[AC-32] keeps known-service unlimited approval without session at REVIEW 45": "src/approvals/approvalSafetyAssessment",
   "tests/approvals/approvalSafetyV2.acceptance.test.ts\u0000[AC-33] prevents service dampening of provider risk Verify20 or debit proof": "src/approvals/approvalSafetyAssessment"
 });
+
+function canonicalFrozenBehavioralFailureMessage(value: string): string {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\\/g, "/")
+    .replace(/(?:file:\/\/\/)?[A-Za-z]:\/[^\n()]*\/node_modules\//g, "<runtime>/node_modules/")
+    .replace(/[A-Za-z]:\/[^\n()]*\/tests\//g, "<snapshot>/tests/")
+    .trimEnd();
+}
 
 export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
   "AC-01": 2, "AC-02": 2, "AC-03": 2, "AC-04": 2, "AC-05": 2, "AC-06": 2,
@@ -601,6 +614,9 @@ export function validateAcceptanceTraceSet(
   if (!Array.isArray(traceSet.traces)) throw new Error("traces must be an array");
   const ancestorSet = new Set(ancestorCommitShas);
   const traces = traceSet.traces.map((trace, index) => parseTrace(trace, candidateSha, ancestorSet, index));
+  if (traces.length !== REMEDIATION_REQUIRED_ACCEPTANCE_IDS.length || traces.some((trace) => !trace.primary)) {
+    throw new Error("trace set must contain exactly 41 primary traces; auxiliary GREEN is the only secondary record");
+  }
   for (const ownerCommitSha of new Set(traces.map((trace) => trace.ownerCommitSha))) {
     let isAncestor = false;
     try {
@@ -677,6 +693,9 @@ export function validateAcceptanceTraceSet(
   const primaryAc33 = traces.find((trace) => trace.acceptanceId === "AC-33" && trace.primary);
   if (!primaryAc33 || primaryAc33.red.kind !== "local_product_module_absent") {
     throw new Error("auxiliary GREEN cannot replace the primary AC-33 RED trace");
+  }
+  if (auxiliary.vitestReportSha256 !== primaryAc33.green.vitestReportSha256) {
+    throw new Error("auxiliary GREEN must bind the same full Plan 2 Vitest report as primary AC-33");
   }
   const coveredRequirements = new Set(traces.flatMap((trace) => trace.requirementIds));
   if (REMEDIATION_REQUIRED_REQUIREMENT_IDS.some((id) => !coveredRequirements.has(id))) {
@@ -882,6 +901,7 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
         throw new Error("local product module RED contains a failed assertion without classified failure messages");
       }
       const local = [] as Array<{ missingProductModulePath: string; failureMessage: string }>;
+      const behavioralMessages: string[] = [];
       const behavioralFirstLines: string[] = [];
       for (const failureMessage of failureMessages) {
         const parsed = parseFailureMessage(failureMessage, testFile);
@@ -891,6 +911,7 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
             failureMessage,
             `${testFile} :: ${title} failureMessages`
           );
+          behavioralMessages.push(canonicalFrozenBehavioralFailureMessage(failureMessage));
           behavioralFirstLines.push(failureMessage.split(/\r?\n/, 1)[0]!.trim());
         }
       }
@@ -911,8 +932,12 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
         if (PLAN2_MIXED_LOCAL_BEHAVIORAL_FULL_NAMES.has(title)) {
           const spyFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_SPY_FAILURE).length;
           const decisionFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_DECISION_FAILURE).length;
+          const messagesSha256 = createHash("sha256").update(JSON.stringify(behavioralMessages)).digest("hex");
           if (behavioralFirstLines.length !== 4 || spyFailures !== 3 || decisionFailures !== 1) {
             throw new Error("local product module RED contains unapproved behavioral companion failures");
+          }
+          if (messagesSha256 !== PLAN2_MIXED_BEHAVIORAL_MESSAGE_SHA256[title]) {
+            throw new Error("local product module RED behavioral companion bytes do not match frozen evidence");
           }
         } else if (behavioralFirstLines.length !== 0) {
           throw new Error("local product module RED contains unapproved behavioral companion failures");
@@ -920,12 +945,12 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
         if (exactLineage) evidence.push({ testFile, fullName: title, ...local[0] });
       } else {
         const expectedBehavioral = PLAN2_FROZEN_BEHAVIORAL_ASSERTIONS[assertionKey];
-        const firstLinesSha256 = createHash("sha256")
-          .update(JSON.stringify(behavioralFirstLines))
+        const messagesSha256 = createHash("sha256")
+          .update(JSON.stringify(behavioralMessages))
           .digest("hex");
         if (!expectedBehavioral
             || behavioralFirstLines.length !== expectedBehavioral.failureCount
-            || firstLinesSha256 !== expectedBehavioral.firstLinesSha256) {
+            || messagesSha256 !== expectedBehavioral.messagesSha256) {
           throw new Error(`failed assertion has no approved frozen classification: ${testFile} :: ${title}`);
         }
       }
