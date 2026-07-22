@@ -81,7 +81,12 @@
 > may not be skipped. The runner verifies the exact loopback publish binding,
 > pinned running PostgreSQL container/image and live database/system identity,
 > then creates and removes the frozen test-only `tron` login on that disposable
-> database. Setup/cleanup drift and database/transport failures fail closed.
+> database. The exact pins are container
+> `fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e`,
+> name `/plan5-release-pg-f97549bc`, and system identifier
+> `7664744009044738089`. Setup/cleanup drift and database/transport failures
+> fail closed. RED classification is a positive allowlist; AC-14/15 require the
+> exact frozen `reconcileWaitingForensicCheckJobs` failure and stack binding.
 > This amendment changes release evidence only, not product,
 > scoring, security, runtime or production state.
 >
@@ -1609,6 +1614,12 @@ runner verifies the loopback publish binding, pinned running PostgreSQL
 container/image and live database/system identity before creating the frozen
 test-only login, and proves that login removed afterward. Authentication,
 connection, transport, identity and cleanup failures are invalid RED evidence.
+Container ID
+`fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e`,
+container name `/plan5-release-pg-f97549bc`, and system identifier
+`7664744009044738089` are exact pins. Plan 3 failed executions must match the
+positive frozen behavioral allowlist; AC-14/15 require the exact
+`reconcileWaitingForensicCheckJobs` message and stack location.
 
 AC-20/21/24 remain behavioral: their exact original test patch is frozen at
 `20ee8a75…`, and their RED execution commit is `a0f74b3b…`, where local product

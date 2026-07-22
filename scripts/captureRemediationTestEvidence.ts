@@ -110,6 +110,15 @@ const PLAN3_RED_NODE_IMAGE = "node@sha256:5647be709086c696ff32edaaf1c70cd26d1da6
 const PLAN3_RED_NODE_IMAGE_ID = "sha256:5647be709086c696ff32edaaf1c70cd26d1da6ab2b39c32f3c7b4c4a31957e37";
 const PLAN3_RED_POSTGRES_IMAGE = "postgres:16-alpine";
 const PLAN3_RED_POSTGRES_IMAGE_ID = "sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50";
+const PLAN3_RED_POSTGRES_CONTAINER_ID = "fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e";
+const PLAN3_RED_POSTGRES_CONTAINER_NAME = "/plan5-release-pg-f97549bc";
+const PLAN3_RED_POSTGRES_SYSTEM_IDENTIFIER = "7664744009044738089";
+const PLAN3_WAIT_BEHAVIORAL_FAILURE = "Error: Plan 3 feature missing: reconcileWaitingForensicCheckJobs";
+const PLAN3_APPROVED_BEHAVIORAL_FAILURE_LINES = new Set([
+  PLAN3_WAIT_BEHAVIORAL_FAILURE,
+  "Error: Plan 3 feature missing: ../../src/forensics/telegramDelivery",
+  "Error: Plan 3 feature missing: createForensicRuntimeOrchestration"
+]);
 const CANONICAL_IDENTITY_SHA = "db5d49a944c0de489f13567d87400cb32c4eedb0";
 const OWNER_COMMITS = Object.freeze({
   1: "31f5c2dd3619bdaf16ecea4ac127d5232b8c1019",
@@ -554,7 +563,24 @@ type Plan3DisposableDatabaseBinding = {
   directUrl: string;
   databaseIp: string;
   networkName: string;
+  containerId: string;
+  containerName: string;
+  imageId: string;
 };
+
+export function assertPlan3PinnedDatabaseIdentity(input: {
+  containerId: string;
+  containerName: string;
+  imageId: string;
+  systemIdentifier: string;
+}): void {
+  if (input.containerId !== PLAN3_RED_POSTGRES_CONTAINER_ID
+      || input.containerName !== PLAN3_RED_POSTGRES_CONTAINER_NAME
+      || input.imageId !== PLAN3_RED_POSTGRES_IMAGE_ID
+      || input.systemIdentifier !== PLAN3_RED_POSTGRES_SYSTEM_IDENTIFIER) {
+    throw new Error("Plan 3 RED database is not the exact pinned disposable database");
+  }
+}
 
 async function inspectPlan3DisposableDatabase(directUrl: string): Promise<Plan3DisposableDatabaseBinding> {
   const target = new URL(directUrl);
@@ -573,13 +599,16 @@ async function inspectPlan3DisposableDatabase(directUrl: string): Promise<Plan3D
   const inspected = JSON.parse(await dockerOutput(["inspect", containerIds[0]])) as unknown;
   if (!Array.isArray(inspected) || inspected.length !== 1) throw new Error("Plan 3 RED database container inspection is invalid");
   const container = expectRecord(inspected[0], "Plan 3 RED database container");
+  const containerId = expectString(container.Id, "Plan 3 RED database container Id");
+  const containerName = expectString(container.Name, "Plan 3 RED database container Name");
+  const imageId = expectString(container.Image, "Plan 3 RED database container image Id");
   const state = expectRecord(container.State, "Plan 3 RED database state");
   const config = expectRecord(container.Config, "Plan 3 RED database config");
   const hostConfig = expectRecord(container.HostConfig, "Plan 3 RED database HostConfig");
   const portBindings = expectRecord(hostConfig.PortBindings, "Plan 3 RED database port bindings");
   const postgresBindings = portBindings["5432/tcp"];
   if (state.Status !== "running" || config.Image !== PLAN3_RED_POSTGRES_IMAGE
-      || container.Image !== PLAN3_RED_POSTGRES_IMAGE_ID
+      || imageId !== PLAN3_RED_POSTGRES_IMAGE_ID
       || !Array.isArray(postgresBindings) || postgresBindings.length !== 1) {
     throw new Error("Plan 3 RED database container identity is invalid");
   }
@@ -599,7 +628,7 @@ async function inspectPlan3DisposableDatabase(directUrl: string): Promise<Plan3D
   const databaseNetwork = expectRecord(networkValue, "Plan 3 RED database network");
   const databaseIp = expectString(databaseNetwork.IPAddress, "Plan 3 RED database IPAddress");
   if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(databaseIp)) throw new Error("Plan 3 RED database IP is invalid");
-  return { directUrl, databaseIp, networkName };
+  return { directUrl, databaseIp, networkName, containerId, containerName, imageId };
 }
 
 async function runPlan3FrozenRedInContainer(
@@ -649,6 +678,12 @@ async function runPlan3FrozenRedInContainer(
     if (identityMismatches.length > 0) {
       throw new Error(`Plan 3 RED database runtime identity is invalid: ${identityMismatches.join(",")}`);
     }
+    assertPlan3PinnedDatabaseIdentity({
+      containerId: binding.containerId,
+      containerName: binding.containerName,
+      imageId: binding.imageId,
+      systemIdentifier: row!.system_identifier
+    });
     const frozenRole = await admin.query("select rolname from pg_roles where rolname = 'tron'");
     if (frozenRole.rowCount !== 0) throw new Error("Plan 3 RED frozen test role already exists");
     await admin.query("create role tron login password 'tron' nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls");
@@ -722,15 +757,27 @@ export function assertPlan3FrozenRedExecutions(executions: readonly ParsedAccept
         cause: error
       });
     }
+    if (execution.failureMessages.length !== 1) {
+      throw new Error(`Plan 3 RED execution has unclassified failure cardinality: ${execution.testFile} :: ${execution.fullName}`);
+    }
+    const firstLine = execution.failureMessages[0]!.split(/\r?\n/, 1)[0]!.trim();
+    if (!firstLine.startsWith("AssertionError:") && !PLAN3_APPROVED_BEHAVIORAL_FAILURE_LINES.has(firstLine)) {
+      throw new Error(`Plan 3 RED execution has an unclassified failure: ${execution.testFile} :: ${execution.fullName}`);
+    }
   }
   for (const acceptanceId of ["AC-14", "AC-15"] as const) {
     const index = Number(acceptanceId.slice(3)) - 1;
-    requireExactExecution(
+    const execution = requireExactExecution(
       executions,
       PRIMARY_AC_TEST_FILES[index]!,
       PRIMARY_AC_FULL_NAMES[index]!,
       "failed"
     );
+    const message = execution.failureMessages[0] ?? "";
+    if (message.split(/\r?\n/, 1)[0]!.trim() !== PLAN3_WAIT_BEHAVIORAL_FAILURE
+        || !message.includes("at loadPlan3WaitRepository (/work/tests/runtime/waitReconciliation.acceptance.test.ts:46:11)")) {
+      throw new Error(`${acceptanceId} RED does not match its exact frozen behavioral failure`);
+    }
   }
 }
 

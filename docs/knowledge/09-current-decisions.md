@@ -406,10 +406,16 @@ of these decisions, update this file in the same work.
   inside a pinned Node container on the disposable PostgreSQL network; no
   production endpoint is proxied. Before execution the producer verifies the
   loopback publish binding, running pinned PostgreSQL container/image and live
-  database/system identity. It creates the frozen test's least-privileged
+  database/system identity: container
+  `fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e`,
+  name `/plan5-release-pg-f97549bc`, and PostgreSQL system identifier
+  `7664744009044738089`. It creates the frozen test's least-privileged
   `tron` login only on that verified disposable database, removes it after the
   run, and fails closed on setup or cleanup drift. Skipped AC-14/15 and any
-  authentication, connection or transport failure evidence fail closed. This
+  authentication, connection or transport failure evidence fail closed.
+  Failed Plan 3 executions accept only assertion failures or the exact frozen
+  Plan 3 feature-missing messages; AC-14/15 additionally require the exact
+  `reconcileWaitingForensicCheckJobs` failure and frozen stack location. This
   affects only release evidence; product/runtime/scoring semantics and
   production state do not change.
 - AC-20/21/24 do not use that exception. Their original Plan 4 test patch is

@@ -70,6 +70,12 @@ type CaptureApi = {
   redPatchApplicationArgs(redGroupId: string): string[];
   buildRedGroupEnvironment(groupId: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   assertPlan3FrozenRedExecutions(executions: readonly ParsedExecution[]): void;
+  assertPlan3PinnedDatabaseIdentity(input: {
+    containerId: string;
+    containerName: string;
+    imageId: string;
+    systemIdentifier: string;
+  }): void;
   buildCaptureRedSpec(input: {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
@@ -109,6 +115,7 @@ async function loadCaptureApi(): Promise<CaptureApi> {
       || typeof loaded.redPatchApplicationArgs !== "function"
       || typeof loaded.buildRedGroupEnvironment !== "function"
       || typeof loaded.assertPlan3FrozenRedExecutions !== "function"
+      || typeof loaded.assertPlan3PinnedDatabaseIdentity !== "function"
       || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
   }
@@ -353,6 +360,14 @@ it("[AC-41][RED-PROVENANCE] rejects database and transport failures as behaviora
     ...execution,
     failureMessages: ["AssertionError: expected resume_ready to be unchanged"]
   })).not.toThrow();
+  for (const message of [
+    "getaddrinfo ENOTFOUND disposable-db",
+    "connect EHOSTUNREACH 172.17.0.3:5432",
+    "error: permission denied for schema plan3_wait_probe"
+  ]) {
+    expect(() => api.assertBehavioralRedExecution({ ...execution, failureMessages: [message] }))
+      .toThrow(/infrastructure|environment/i);
+  }
 });
 
 it("[AC-41][RED-PROVENANCE] accepts only exact local src module absence evidence", async () => {
@@ -697,7 +712,10 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
     testFile: "tests/runtime/waitReconciliation.acceptance.test.ts",
     fullName: "[AC-14] reconciles and claims an all-ready parent exactly once",
     status: "failed" as const,
-    failureMessages: ["AssertionError: expected resume_ready to be unchanged"]
+    failureMessages: [
+      "Error: Plan 3 feature missing: reconcileWaitingForensicCheckJobs\n"
+      + "    at loadPlan3WaitRepository (/work/tests/runtime/waitReconciliation.acceptance.test.ts:46:11)"
+    ]
   };
   expect(() => api.assertPlan3FrozenRedExecutions([
     plan3Execution,
@@ -714,6 +732,46 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
       failureMessages: ["connect ECONNREFUSED 172.17.0.3:5432"]
     }
   ])).toThrow(/infrastructure|environment/i);
+  expect(() => api.assertPlan3FrozenRedExecutions([
+    { ...plan3Execution, failureMessages: ["AssertionError: expected 1 to be 2"] },
+    {
+      ...plan3Execution,
+      fullName: "[AC-15] resumes mixed ready-terminal waits through technical path"
+    }
+  ])).toThrow(/exact frozen behavioral failure/i);
+  for (const message of [
+    "getaddrinfo ENOTFOUND disposable-db",
+    "connect EHOSTUNREACH 172.17.0.3:5432",
+    "error: permission denied for schema plan3_wait_probe"
+  ]) {
+    expect(() => api.assertPlan3FrozenRedExecutions([
+      plan3Execution,
+      {
+        testFile: "tests/runtime/checkCallbacks.acceptance.test.ts",
+        fullName: "[REQ-37][CALLBACK-ACK] acknowledges non-poison callbacks before database work",
+        status: "failed",
+        failureMessages: [message]
+      },
+      {
+        ...plan3Execution,
+        fullName: "[AC-15] resumes mixed ready-terminal waits through technical path"
+      }
+    ])).toThrow(/infrastructure|environment|unclassified/i);
+  }
+  const pinnedDatabase = {
+    containerId: "fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e",
+    containerName: "/plan5-release-pg-f97549bc",
+    imageId: "sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50",
+    systemIdentifier: "7664744009044738089"
+  };
+  expect(() => api.assertPlan3PinnedDatabaseIdentity(pinnedDatabase)).not.toThrow();
+  for (const replacement of [
+    { ...pinnedDatabase, containerId: "0".repeat(64) },
+    { ...pinnedDatabase, containerName: "/replacement-plan3-postgres" },
+    { ...pinnedDatabase, systemIdentifier: "7664744009044738090" }
+  ]) {
+    expect(() => api.assertPlan3PinnedDatabaseIdentity(replacement)).toThrow(/exact pinned disposable database/i);
+  }
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",
     baseSha: PLAN4_TEST_BASE_SHA,

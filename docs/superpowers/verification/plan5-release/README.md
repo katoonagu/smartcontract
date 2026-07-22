@@ -254,7 +254,12 @@ order is producer-first, strict-verifier-last.
    container/image and live database/system identity. It creates the frozen
    test-only `tron` login only on that verified disposable database and removes
    it after execution; identity, authentication, connection, transport, setup
-   or cleanup drift fails closed.
+   or cleanup drift fails closed. Exact identity pins are container
+   `fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e`,
+   name `/plan5-release-pg-f97549bc`, and system identifier
+   `7664744009044738089`. Failed executions must match the positive frozen
+   behavioral allowlist; AC-14/15 specifically require the exact
+   `reconcileWaitingForensicCheckJobs` failure and frozen stack location.
 
    AC-20/21/24 are not part of that exception. Preparation replays their exact
    original test patch from frozen commit `20ee8a75…` and runs their behavioral
