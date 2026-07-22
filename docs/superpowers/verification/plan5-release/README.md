@@ -238,6 +238,10 @@ order is producer-first, strict-verifier-last.
    module-absence message, exact test patch, owner `83f0cb96…`, and current
    candidate. AC-29/30 may retain their other behavioral assertion messages;
    only the single exact module-absence line is classified as local evidence.
+   Their behavioral companions must equal the exact frozen multiset of three
+   no-call plus one decision-object `AssertionError`; all other local assertions
+   allow no companions. Assertion-mode suite messages are forbidden, and
+   aggregate failed-test/failed-suite counts must reconcile exactly.
    Git must prove every named module absent at the frozen test commit and present
    at owner plus candidate. Generic/no-test/dependency/fixture/environment/
    timeout/synthetic failures, a foreign importer, or multiple local-absence
@@ -259,7 +263,11 @@ order is producer-first, strict-verifier-last.
    name `/plan5-release-pg-f97549bc`, and system identifier
    `7664744009044738089`. Failed executions must match the positive frozen
    behavioral allowlist; AC-14/15 specifically require the exact
-   `reconcileWaitingForensicCheckJobs` failure and frozen stack location.
+   `reconcileWaitingForensicCheckJobs` failure and frozen stack location. RED
+   execution selects only `[AC-NN]` tests. Cleanup uses a fresh identity-verified
+   admin connection to disable the frozen login, terminate its sessions, revoke
+   its grant, drop only objects owned by that new disposable role, drop the role,
+   and verify absence even after a failed test run.
 
    AC-20/21/24 are not part of that exception. Preparation replays their exact
    original test patch from frozen commit `20ee8a75…` and runs their behavioral

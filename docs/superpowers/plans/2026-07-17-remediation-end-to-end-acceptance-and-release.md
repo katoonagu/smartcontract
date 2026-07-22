@@ -87,6 +87,13 @@
 > `7664744009044738089`. Setup/cleanup drift and database/transport failures
 > fail closed. RED classification is a positive allowlist; AC-14/15 require the
 > exact frozen `reconcileWaitingForensicCheckJobs` failure and stack binding.
+> RED execution selects only `[AC-NN]` tests. The fresh cleanup connection
+> revalidates identity, disables the test login, terminates its sessions, drops
+> only its disposable owned objects, drops the role, and verifies absence.
+> Assertion-bound local-module reports reject suite-level failure messages and
+> exactly reconcile aggregate counts. Only AC-29/30 may retain companions, and
+> only their exact frozen three no-call plus one decision-object
+> `AssertionError` multiset remains behavioral.
 > This amendment changes release evidence only, not product,
 > scoring, security, runtime or production state.
 >
@@ -1619,7 +1626,12 @@ Container ID
 container name `/plan5-release-pg-f97549bc`, and system identifier
 `7664744009044738089` are exact pins. Plan 3 failed executions must match the
 positive frozen behavioral allowlist; AC-14/15 require the exact
-`reconcileWaitingForensicCheckJobs` message and stack location.
+`reconcileWaitingForensicCheckJobs` message and stack location. RED runs filter
+to `[AC-NN]` tests. Fresh cleanup revalidates the database, disables and
+terminates the frozen role, removes only that role's disposable objects, drops
+the role, and verifies absence. Local-module assertion reports reconcile
+aggregate counts exactly, reject suite-level failure messages, and accept
+companions only for the exact frozen AC-29/30 `AssertionError` multiset.
 
 AC-20/21/24 remain behavioral: their exact original test patch is frozen at
 `20ee8a75…`, and their RED execution commit is `a0f74b3b…`, where local product

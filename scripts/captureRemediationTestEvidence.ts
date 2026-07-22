@@ -119,6 +119,14 @@ const PLAN3_APPROVED_BEHAVIORAL_FAILURE_LINES = new Set([
   "Error: Plan 3 feature missing: ../../src/forensics/telegramDelivery",
   "Error: Plan 3 feature missing: createForensicRuntimeOrchestration"
 ]);
+const PLAN3_FROZEN_ROLE_CLEANUP_SQL = Object.freeze([
+  "alter role tron nologin",
+  "select pg_terminate_backend(pid) from pg_stat_activity where usename = 'tron' and pid <> pg_backend_pid()",
+  "revoke create on database tron_watch_plan3 from tron",
+  "drop owned by tron cascade",
+  "drop role tron"
+] as const);
+const RED_ACCEPTANCE_TEST_NAME_PATTERN = "\\[AC-\\d{2}\\]";
 const CANONICAL_IDENTITY_SHA = "db5d49a944c0de489f13567d87400cb32c4eedb0";
 const OWNER_COMMITS = Object.freeze({
   1: "31f5c2dd3619bdaf16ecea4ac127d5232b8c1019",
@@ -127,6 +135,14 @@ const OWNER_COMMITS = Object.freeze({
   4: "547d86cd6c478ca56e5b85d2ccb31cdbce2ddc17",
   5: "6ad305123838b666c643ac44f0c3d031bf21d2dd"
 } as const);
+
+export function plan3FrozenRoleCleanupStatements(): readonly string[] {
+  return [...PLAN3_FROZEN_ROLE_CLEANUP_SQL];
+}
+
+export function redAcceptanceTestNamePattern(): string {
+  return RED_ACCEPTANCE_TEST_NAME_PATTERN;
+}
 const OWNER_PLAN_TRIPLES = Object.freeze([
   { plan: 1, base: "4b9adedec39c368e0a0ab5738069c7771efe5695", test: PLAN1_TEST_SHA, implementation: OWNER_COMMITS[1], acceptance: "Plan 1 remediation data acceptance" },
   { plan: 2, base: "5f6209af82e23a065bd036c6a37eabe4888a5cfe", test: PLAN2_TEST_SHA, implementation: OWNER_COMMITS[2], acceptance: "Plan 2 scoring and contract acceptance" },
@@ -582,6 +598,13 @@ export function assertPlan3PinnedDatabaseIdentity(input: {
   }
 }
 
+function assertPlan3ApprovedFailureMessage(message: string, label: string): void {
+  const firstLine = message.split(/\r?\n/, 1)[0]!.trim();
+  if (!firstLine.startsWith("AssertionError:") && !PLAN3_APPROVED_BEHAVIORAL_FAILURE_LINES.has(firstLine)) {
+    throw new Error(`${label} has an unclassified failure`);
+  }
+}
+
 async function inspectPlan3DisposableDatabase(directUrl: string): Promise<Plan3DisposableDatabaseBinding> {
   const target = new URL(directUrl);
   const targetPort = Number(target.port || 5432);
@@ -631,6 +654,112 @@ async function inspectPlan3DisposableDatabase(directUrl: string): Promise<Plan3D
   return { directUrl, databaseIp, networkName, containerId, containerName, imageId };
 }
 
+type Plan3DatabaseRuntimeIdentity = {
+  database_name: string;
+  actor: string;
+  server_address: string;
+  server_port: string;
+  superuser: boolean;
+  system_identifier: string;
+};
+
+async function readPlan3DatabaseRuntimeIdentity(client: Client): Promise<Plan3DatabaseRuntimeIdentity> {
+  const identity = await client.query<Plan3DatabaseRuntimeIdentity>(`
+    select current_database() as database_name,
+           current_user as actor,
+           host(inet_server_addr()) as server_address,
+           current_setting('port') as server_port,
+           (select rolsuper from pg_roles where rolname = current_user) as superuser,
+           (select system_identifier::text from pg_control_system()) as system_identifier
+  `);
+  if (!identity.rows[0]) throw new Error("Plan 3 RED database runtime identity is missing");
+  return identity.rows[0];
+}
+
+function assertPlan3DatabaseRuntimeIdentity(
+  binding: Plan3DisposableDatabaseBinding,
+  row: Plan3DatabaseRuntimeIdentity
+): void {
+  const identityMismatches = [
+    row.database_name === "tron_watch_plan3" ? null : "database",
+    row.actor === decodeURIComponent(new URL(binding.directUrl).username) ? null : "actor",
+    row.server_address === binding.databaseIp ? null : "server-address",
+    row.server_port === "5432" ? null : "server-port",
+    row.superuser === true ? null : "superuser",
+    /^\d+$/.test(row.system_identifier) ? null : "system-identifier"
+  ].filter((value): value is string => value !== null);
+  if (identityMismatches.length > 0) {
+    throw new Error(`Plan 3 RED database runtime identity is invalid: ${identityMismatches.join(",")}`);
+  }
+  assertPlan3PinnedDatabaseIdentity({
+    containerId: binding.containerId,
+    containerName: binding.containerName,
+    imageId: binding.imageId,
+    systemIdentifier: row.system_identifier
+  });
+}
+
+async function cleanupPlan3FrozenRole(binding: Plan3DisposableDatabaseBinding): Promise<void> {
+  const cleanup = new Client({
+    connectionString: binding.directUrl,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 10_000
+  });
+  const errors: unknown[] = [];
+  let connected = false;
+  let identityVerified = false;
+  try {
+    await cleanup.connect();
+    connected = true;
+    try {
+      assertPlan3DatabaseRuntimeIdentity(binding, await readPlan3DatabaseRuntimeIdentity(cleanup));
+      identityVerified = true;
+    } catch (error) {
+      errors.push(error);
+    }
+    if (identityVerified) {
+      for (const statement of PLAN3_FROZEN_ROLE_CLEANUP_SQL) {
+        try {
+          const result = await cleanup.query(statement);
+          if (statement.startsWith("select pg_terminate_backend")
+              && result.rows.some((row) => row.pg_terminate_backend !== true)) {
+            throw new Error("Plan 3 RED frozen test session termination failed");
+          }
+        } catch (error) {
+          errors.push(error);
+        }
+        if (statement.startsWith("select pg_terminate_backend")) {
+          try {
+            const active = await cleanup.query<{ count: number }>(
+              "select count(*)::integer as count from pg_stat_activity where usename = 'tron'"
+            );
+            if (active.rows[0]?.count !== 0) throw new Error("Plan 3 RED frozen test sessions remain active");
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
+      try {
+        const remaining = await cleanup.query("select rolname from pg_roles where rolname = 'tron'");
+        if (remaining.rowCount !== 0) throw new Error("Plan 3 RED frozen test role cleanup failed");
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  } catch (error) {
+    errors.push(error);
+  } finally {
+    if (connected) {
+      try {
+        await cleanup.end();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, "Plan 3 RED disposable role cleanup failed");
+}
+
 async function runPlan3FrozenRedInContainer(
   snapshotRoot: string,
   group: RedGroup,
@@ -651,39 +780,7 @@ async function runPlan3FrozenRedInContainer(
   try {
     await admin.connect();
     connected = true;
-    const identity = await admin.query<{
-      database_name: string;
-      actor: string;
-      server_address: string;
-      server_port: string;
-      superuser: boolean;
-      system_identifier: string;
-    }>(`
-      select current_database() as database_name,
-             current_user as actor,
-             host(inet_server_addr()) as server_address,
-             current_setting('port') as server_port,
-             (select rolsuper from pg_roles where rolname = current_user) as superuser,
-             (select system_identifier::text from pg_control_system()) as system_identifier
-    `);
-    const row = identity.rows[0];
-    const identityMismatches = !row ? ["missing-row"] : [
-      row.database_name === "tron_watch_plan3" ? null : "database",
-      row.actor === decodeURIComponent(new URL(binding.directUrl).username) ? null : "actor",
-      row.server_address === binding.databaseIp ? null : "server-address",
-      row.server_port === "5432" ? null : "server-port",
-      row.superuser === true ? null : "superuser",
-      /^\d+$/.test(row.system_identifier) ? null : "system-identifier"
-    ].filter((value): value is string => value !== null);
-    if (identityMismatches.length > 0) {
-      throw new Error(`Plan 3 RED database runtime identity is invalid: ${identityMismatches.join(",")}`);
-    }
-    assertPlan3PinnedDatabaseIdentity({
-      containerId: binding.containerId,
-      containerName: binding.containerName,
-      imageId: binding.imageId,
-      systemIdentifier: row!.system_identifier
-    });
+    assertPlan3DatabaseRuntimeIdentity(binding, await readPlan3DatabaseRuntimeIdentity(admin));
     const frozenRole = await admin.query("select rolname from pg_roles where rolname = 'tron'");
     if (frozenRole.rowCount !== 0) throw new Error("Plan 3 RED frozen test role already exists");
     await admin.query("create role tron login password 'tron' nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls");
@@ -696,7 +793,7 @@ async function runPlan3FrozenRedInContainer(
       "set -u",
       "npm ci --no-audit --no-fund >/dev/null 2>&1 || exit 90",
       `node -e '${proxyCode}' & proxy_pid=$!`,
-      `node node_modules/vitest/vitest.mjs run ${group.testFiles.join(" ")} --configLoader bundle --reporter=json --outputFile=/work/.plan5-red-report.json --testTimeout=120000 --hookTimeout=120000 --no-file-parallelism`,
+      `node node_modules/vitest/vitest.mjs run ${group.testFiles.join(" ")} --configLoader bundle --reporter=json --outputFile=/work/.plan5-red-report.json --testNamePattern '${RED_ACCEPTANCE_TEST_NAME_PATTERN}' --testTimeout=120000 --hookTimeout=120000 --no-file-parallelism`,
       "code=$?",
       "kill $proxy_pid",
       "wait $proxy_pid 2>/dev/null || true",
@@ -720,19 +817,16 @@ async function runPlan3FrozenRedInContainer(
   } catch (error) {
     primaryError = error;
   } finally {
-    if (connected && roleCreated) {
+    if (connected) {
       try {
-        await admin.query("revoke create on database tron_watch_plan3 from tron");
-        await admin.query("drop role tron");
-        const remaining = await admin.query("select rolname from pg_roles where rolname = 'tron'");
-        if (remaining.rowCount !== 0) throw new Error("Plan 3 RED frozen test role cleanup failed");
+        await admin.end();
       } catch (error) {
         cleanupErrors.push(error);
       }
     }
-    if (connected) {
+    if (roleCreated) {
       try {
-        await admin.end();
+        await cleanupPlan3FrozenRole(binding);
       } catch (error) {
         cleanupErrors.push(error);
       }
@@ -760,10 +854,10 @@ export function assertPlan3FrozenRedExecutions(executions: readonly ParsedAccept
     if (execution.failureMessages.length !== 1) {
       throw new Error(`Plan 3 RED execution has unclassified failure cardinality: ${execution.testFile} :: ${execution.fullName}`);
     }
-    const firstLine = execution.failureMessages[0]!.split(/\r?\n/, 1)[0]!.trim();
-    if (!firstLine.startsWith("AssertionError:") && !PLAN3_APPROVED_BEHAVIORAL_FAILURE_LINES.has(firstLine)) {
-      throw new Error(`Plan 3 RED execution has an unclassified failure: ${execution.testFile} :: ${execution.fullName}`);
-    }
+    assertPlan3ApprovedFailureMessage(
+      execution.failureMessages[0]!,
+      `Plan 3 RED execution ${execution.testFile} :: ${execution.fullName}`
+    );
   }
   for (const acceptanceId of ["AC-14", "AC-15"] as const) {
     const index = Number(acceptanceId.slice(3)) - 1;
@@ -781,18 +875,14 @@ export function assertPlan3FrozenRedExecutions(executions: readonly ParsedAccept
   }
 }
 
-function assertPlan3SuiteFailuresAreBehavioral(report: unknown): void {
+export function assertPlan3SuiteFailuresAreBehavioral(report: unknown): void {
   const root = expectRecord(report, "Plan 3 RED report");
   if (!Array.isArray(root.testResults)) throw new Error("Plan 3 RED report testResults are invalid");
   for (const [index, resultValue] of root.testResults.entries()) {
     const result = expectRecord(resultValue, `Plan 3 RED testResults[${index}]`);
     if (typeof result.message !== "string" || result.message.trim().length === 0) continue;
-    assertBehavioralRedExecution({
-      testFile: expectString(result.name, `Plan 3 RED testResults[${index}].name`),
-      fullName: `[PLAN3-SUITE-${index}]`,
-      status: "failed",
-      failureMessages: [result.message]
-    });
+    expectString(result.name, `Plan 3 RED testResults[${index}].name`);
+    throw new Error(`Plan 3 RED testResults[${index}].message is an unclassified suite failure`);
   }
 }
 
@@ -815,6 +905,7 @@ async function runRedGroup(root: string, group: RedGroup): Promise<{
         "--configLoader", "bundle",
         "--reporter=json",
         `--outputFile=${reportPath}`,
+        "--testNamePattern", RED_ACCEPTANCE_TEST_NAME_PATTERN,
         "--testTimeout=120000",
         "--hookTimeout=120000",
         "--no-file-parallelism"

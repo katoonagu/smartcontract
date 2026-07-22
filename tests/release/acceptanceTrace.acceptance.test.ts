@@ -76,6 +76,9 @@ type CaptureApi = {
     imageId: string;
     systemIdentifier: string;
   }): void;
+  assertPlan3SuiteFailuresAreBehavioral(report: unknown): void;
+  plan3FrozenRoleCleanupStatements(): readonly string[];
+  redAcceptanceTestNamePattern(): string;
   buildCaptureRedSpec(input: {
     kind: "behavioral_assertion" | "local_product_module_absent";
     baseSha: string;
@@ -116,6 +119,9 @@ async function loadCaptureApi(): Promise<CaptureApi> {
       || typeof loaded.buildRedGroupEnvironment !== "function"
       || typeof loaded.assertPlan3FrozenRedExecutions !== "function"
       || typeof loaded.assertPlan3PinnedDatabaseIdentity !== "function"
+      || typeof loaded.assertPlan3SuiteFailuresAreBehavioral !== "function"
+      || typeof loaded.plan3FrozenRoleCleanupStatements !== "function"
+      || typeof loaded.redAcceptanceTestNamePattern !== "function"
       || typeof loaded.buildCaptureRedSpec !== "function") {
     throw new Error("Plan 5 feature missing: trace producer RED routing");
   }
@@ -441,7 +447,7 @@ it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local s
   };
   const report = {
     success: false,
-    numFailedTestSuites: 1,
+    numFailedTestSuites: 2,
     numFailedTests: 1,
     testResults: [{
       name: `C:/frozen/${trace.testFile}`,
@@ -492,14 +498,60 @@ it("[AC-41][RED-PLAN2] accepts only assertion-bound absence of the exact local s
       }]
     }]
   };
-  expect(api.parseLocalProductModuleAbsenceReport(mixedBehavioralMessages)).toEqual([evidence]);
+  expect(() => api.parseLocalProductModuleAbsenceReport(mixedBehavioralMessages)).toThrow(/companion/i);
+
+  const ac29File = "tests/check/contractDecisionV2.acceptance.test.ts";
+  const ac29Name = "[AC-29] resolves official TRON USDT at LOW 0 without LLM";
+  const ac29Absence = `Cannot find module '../../src/forensics/contractDecision' imported from C:/frozen/${ac29File}`;
+  const ac29SpyFailure = "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times";
+  const ac29DecisionFailure = "AssertionError: expected { …(15) } to match object { contractDecisionV2: { …(3) } }";
+  const ac29Report = {
+    success: false,
+    numFailedTestSuites: 2,
+    numFailedTests: 1,
+    testResults: [{
+      name: `C:/frozen/${ac29File}`,
+      status: "failed",
+      message: "",
+      assertionResults: [{
+        ancestorTitles: ["contract decision v2"],
+        fullName: `contract decision v2 ${ac29Name}`,
+        title: ac29Name,
+        status: "failed",
+        failureMessages: [ac29SpyFailure, ac29SpyFailure, ac29SpyFailure, ac29DecisionFailure, ac29Absence]
+      }]
+    }]
+  };
+  expect(api.parseLocalProductModuleAbsenceReport(ac29Report)).toEqual([{
+    testFile: ac29File,
+    fullName: ac29Name,
+    missingProductModulePath: "src/forensics/contractDecision",
+    failureMessage: ac29Absence
+  }]);
+  expect(() => api.parseLocalProductModuleAbsenceReport({
+    ...ac29Report,
+    testResults: [{
+      ...ac29Report.testResults[0],
+      assertionResults: [{
+        ...ac29Report.testResults[0].assertionResults[0],
+        failureMessages: [
+          ac29SpyFailure, ac29SpyFailure, "AssertionError: synthetic companion", ac29DecisionFailure, ac29Absence
+        ]
+      }]
+    }]
+  })).toThrow(/companion/i);
 
   const invalidReports = [
     { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: ["Cannot find package 'vitest' imported from C:/frozen/tests/release/example.test.ts"] }] }] },
     { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [`Cannot find module '/package.json' imported from C:/frozen/${trace.testFile}`] }] }] },
     { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [`Cannot find module '/src/risk/usddPsmExposure' imported from C:/frozen/tests/release/foreign.test.ts`] }] }] },
     { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [failureMessage, failureMessage] }] }] },
-    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, fullName: trace.fullName }] }] }
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, fullName: trace.fullName }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [failureMessage, "Error: synthetic assertion crash"] }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], assertionResults: [{ ...assertion, failureMessages: [`${failureMessage}\nError: synthetic companion crash`] }] }] },
+    { ...report, testResults: [{ ...report.testResults[0], message: "Error: synthetic suite crash" }] },
+    { ...report, testResults: [{ ...report.testResults[0], message: "AssertionError: synthetic suite crash" }] },
+    { ...report, numFailedTests: 2 }
   ];
   for (const invalid of invalidReports) {
     expect(() => api.parseLocalProductModuleAbsenceReport(invalid)).toThrow();
@@ -772,6 +824,32 @@ it("[AC-41][RED-PRODUCER] routes behavioral Plan 4 RED separately and emits comp
   ]) {
     expect(() => api.assertPlan3PinnedDatabaseIdentity(replacement)).toThrow(/exact pinned disposable database/i);
   }
+  expect(() => api.assertPlan3SuiteFailuresAreBehavioral({
+    testResults: [{
+      name: "/work/tests/runtime/waitReconciliation.acceptance.test.ts",
+      message: ""
+    }]
+  })).not.toThrow();
+  expect(() => api.assertPlan3SuiteFailuresAreBehavioral({
+    testResults: [{
+      name: "/work/tests/runtime/waitReconciliation.acceptance.test.ts",
+      message: "AssertionError: expected resume_ready to be unchanged"
+    }]
+  })).toThrow(/unclassified/i);
+  expect(() => api.assertPlan3SuiteFailuresAreBehavioral({
+    testResults: [{
+      name: "/work/tests/runtime/waitReconciliation.acceptance.test.ts",
+      message: "Error: synthetic suite crash"
+    }]
+  })).toThrow(/unclassified/i);
+  expect(api.plan3FrozenRoleCleanupStatements()).toEqual([
+    "alter role tron nologin",
+    "select pg_terminate_backend(pid) from pg_stat_activity where usename = 'tron' and pid <> pg_backend_pid()",
+    "revoke create on database tron_watch_plan3 from tron",
+    "drop owned by tron cascade",
+    "drop role tron"
+  ]);
+  expect(api.redAcceptanceTestNamePattern()).toBe("\\[AC-\\d{2}\\]");
   const local = api.buildCaptureRedSpec({
     kind: "local_product_module_absent",
     baseSha: PLAN4_TEST_BASE_SHA,

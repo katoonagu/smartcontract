@@ -396,8 +396,13 @@ of these decisions, update this file in the same work.
   Each record binds exact test `fullName`, exactly one local `src/*` absence
   line, exact test patch, owner `83f0cb96…`, and final candidate; Git proves the
   module absent at test and present at owner plus candidate. For AC-29/30 other
-  assertion messages remain behavioral and are not classified as
-  infrastructure. Generic/synthetic, foreign-importer, dependency, fixture,
+  assertion messages remain behavioral only when their exact frozen four-line
+  multiset is present: three no-call `AssertionError` messages and one decision
+  object `AssertionError`. They are not classified as infrastructure.
+  Assertion-mode suite messages are forbidden and aggregate failed-test plus
+  failed-suite counts are reconciled exactly; any other companion invalidates
+  the complete report.
+  Generic/synthetic, foreign-importer, dependency, fixture,
   environment, no-test and multiple-absence evidence remains invalid.
 - Plan 3 RED trace execution is mandatory PostgreSQL execution, not an optional
   suite: the producer sets `REQUIRE_PLAN3_POSTGRES=1` and binds
@@ -410,8 +415,12 @@ of these decisions, update this file in the same work.
   `fbb25bec0cfa79a35efddb287f3ae9ba1921fb645558b0b48dfce8b45d60d39e`,
   name `/plan5-release-pg-f97549bc`, and PostgreSQL system identifier
   `7664744009044738089`. It creates the frozen test's least-privileged
-  `tron` login only on that verified disposable database, removes it after the
-  run, and fails closed on setup or cleanup drift. Skipped AC-14/15 and any
+  `tron` login only on that verified disposable database, removes it through a
+  fresh verified admin connection, and fails closed on setup or cleanup drift.
+  Cleanup disables login, terminates test-role sessions, revokes the grant,
+  drops only objects owned by that fresh disposable role, drops the role, and
+  verifies absence. Frozen RED runs select only exact `[AC-NN]` tests, so
+  unrelated REQ guards cannot become trace evidence. Skipped AC-14/15 and any
   authentication, connection or transport failure evidence fail closed.
   Failed Plan 3 executions accept only assertion failures or the exact frozen
   Plan 3 feature-missing messages; AC-14/15 additionally require the exact

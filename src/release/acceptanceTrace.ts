@@ -174,6 +174,12 @@ const EXACT_PLAN2_ASSERTION_LOCAL_RED_LINEAGE: Readonly<Record<string, ExactAsse
   "AC-37": { testFile: "tests/forensics/contractLlmIsolation.acceptance.test.ts", fullName: "[AC-37][LLM-DISABLED] keeps risky or uncited legacy verdict out of fresh decisions", primary: true, baseSha: PLAN2_TEST_BASE_SHA, testCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, redExecutionCommitSha: REMEDIATION_PLAN2_FROZEN_TEST_SHA, ownerCommitSha: PLAN2_OWNER_SHA, testPatchSha256: PLAN2_LLM_TEST_PATCH_SHA256, missingProductModulePath: "src/forensics/contractDecision" }
 });
 const INFRASTRUCTURE_FAILURE = /(?:syntaxerror|failed to load|cannot find (?:module|package)|module not found|import error|failed to resolve import|typescript|typecheck|\bts\d{4}\b|fixture|environment|test environment|setup file|config(?:uration)? error|worker exited|out of memory|password authentication failed|role .+ does not exist|database .+ does not exist|no pg_hba\.conf entry|\b(?:econn(?:refused|reset|aborted)|etimedout|enotfound|ehostunreach|enetunreach|eai_again)\b|getaddrinfo|connection refused|connect etimedout|could not connect to server|server closed the connection unexpectedly|terminating connection|connection terminated unexpectedly|connection reset by peer|socket hang up|permission denied for (?:database|schema|relation)|must be owner of|remaining connection slots|too many clients|database system is (?:starting up|shutting down|in recovery mode))/i;
+const PLAN2_MIXED_LOCAL_BEHAVIORAL_FULL_NAMES = new Set([
+  "[AC-29] resolves official TRON USDT at LOW 0 without LLM",
+  "[AC-30] resolves GasFree Account at LOW 10 without LLM and keeps flows eligible"
+]);
+const PLAN2_MIXED_SPY_FAILURE = "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times";
+const PLAN2_MIXED_DECISION_FAILURE = "AssertionError: expected { …(15) } to match object { contractDecisionV2: { …(3) } }";
 
 export const REMEDIATION_ACCEPTANCE_OWNER_PLAN: Readonly<Record<string, 1 | 2 | 3 | 4 | 5>> = {
   "AC-01": 2, "AC-02": 2, "AC-03": 2, "AC-04": 2, "AC-05": 2, "AC-06": 2,
@@ -671,6 +677,18 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
     throw new Error("local product module RED report has no failed test files");
   }
   const evidence: ParsedLocalProductModuleAbsence[] = [];
+  const assertBehavioralAssertionMessage = (failureMessage: string, label: string) => {
+    if (INFRASTRUCTURE_FAILURE.test(failureMessage)) {
+      throw new Error(`${label} is a generic import, dependency, or environment failure`);
+    }
+    const lines = failureMessage.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const errorHeaders = lines.filter((line) => /^(?:AssertionError|Error):/.test(line));
+    if (!lines[0]?.startsWith("AssertionError:")
+        || errorHeaders.length === 0
+        || errorHeaders.some((line) => !line.startsWith("AssertionError:"))) {
+      throw new Error(`${label} is not a positively classified behavioral assertion: ${lines[0] ?? "empty"}`);
+    }
+  };
   const parseFailureMessage = (failureMessage: string, testFile: string) => {
     const matches = [...failureMessage.matchAll(
       /(?:^|\n)(?:Error:\s*)?Cannot find module (['"])([^'"\r\n]+)\1 imported from (['"]?)([^'"\r\n]+)\3(?=\r?$)/gm
@@ -682,6 +700,9 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
     const remainder = failureMessage.replace(matches[0][0], "");
     if (INFRASTRUCTURE_FAILURE.test(remainder)) {
       throw new Error("RED evidence contains an additional generic import, dependency, or environment failure");
+    }
+    if (remainder.split(/\r?\n/).some((line) => /^(?:AssertionError|Error):/.test(line.trim()))) {
+      throw new Error("RED evidence contains an additional unclassified companion failure");
     }
     const specifier = matches[0][2].replace(/\\/g, "/");
     const importer = normalizeAcceptanceTestFile(matches[0][4]);
@@ -698,6 +719,9 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
     };
   };
   const fileLoadMode = failedTests === 0;
+  let observedFailedTests = 0;
+  let observedFailedResults = 0;
+  const observedFailedAncestorPaths = new Set<string>();
   for (const [resultIndex, value] of report.testResults.entries()) {
     const result = expectRecord(value, `testResults[${resultIndex}]`);
     const testFile = normalizeAcceptanceTestFile(expectString(result.name, `testResults[${resultIndex}].name`));
@@ -712,9 +736,16 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
       evidence.push({ testFile, fullName: null, ...parsed });
       continue;
     }
+    const suiteMessage = typeof result.message === "string" ? result.message.trim() : "";
+    if (suiteMessage) {
+      throw new Error("assertion-mode local product module RED cannot contain a suite-level failure message");
+    }
+    let resultFailedTests = 0;
     for (const [assertionIndex, assertionValue] of result.assertionResults.entries()) {
       const assertion = expectRecord(assertionValue, `assertionResults[${assertionIndex}]`);
       if (assertion.status !== "failed") continue;
+      observedFailedTests += 1;
+      resultFailedTests += 1;
       const reportFullName = expectString(assertion.fullName, `assertionResults[${assertionIndex}].fullName`);
       const title = expectString(assertion.title, `assertionResults[${assertionIndex}].title`);
       const ancestorTitles = expectStringArray(
@@ -724,24 +755,53 @@ export function parseLocalProductModuleAbsenceReport(value: unknown): ParsedLoca
       if ([...ancestorTitles, title].join(" ") !== reportFullName) {
         throw new Error("Vitest assertion title lineage does not match fullName");
       }
+      observedFailedAncestorPaths.add(`${testFile}\u0000${ancestorTitles.join("\u0000")}`);
       const failureMessages = expectStringArray(
         assertion.failureMessages,
         `assertionResults[${assertionIndex}].failureMessages`
       );
+      if (failureMessages.length === 0) {
+        throw new Error("local product module RED contains a failed assertion without classified failure messages");
+      }
       const local = [] as Array<{ missingProductModulePath: string; failureMessage: string }>;
+      const behavioralFirstLines: string[] = [];
       for (const failureMessage of failureMessages) {
         const parsed = parseFailureMessage(failureMessage, testFile);
         if (parsed) local.push(parsed);
-        else if (INFRASTRUCTURE_FAILURE.test(failureMessage)) {
-          throw new Error("RED evidence contains a generic import, dependency, or environment failure");
+        else {
+          assertBehavioralAssertionMessage(
+            failureMessage,
+            `${testFile} :: ${title} failureMessages`
+          );
+          behavioralFirstLines.push(failureMessage.split(/\r?\n/, 1)[0]!.trim());
         }
       }
       if (local.length > 1) throw new Error("assertion contains more than one local module-absence message");
+      if (local.length === 1 && behavioralFirstLines.length > 0) {
+        const spyFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_SPY_FAILURE).length;
+        const decisionFailures = behavioralFirstLines.filter((line) => line === PLAN2_MIXED_DECISION_FAILURE).length;
+        if (!PLAN2_MIXED_LOCAL_BEHAVIORAL_FULL_NAMES.has(title)
+            || behavioralFirstLines.length !== 4 || spyFailures !== 3 || decisionFailures !== 1) {
+          throw new Error("local product module RED contains unapproved behavioral companion failures");
+        }
+      }
       if (local.length === 1) evidence.push({ testFile, fullName: title, ...local[0] });
+    }
+    if (result.status === "failed") observedFailedResults += 1;
+    if (resultFailedTests > 0 && result.status !== "failed") {
+      throw new Error("local product module RED failed assertions require a failed test result");
+    }
+    if (result.status === "failed" && resultFailedTests === 0 && !suiteMessage) {
+      throw new Error("local product module RED contains an unclassified failed test result");
     }
   }
   if (fileLoadMode && evidence.length !== failedSuites) {
     throw new Error("local product module RED failed-suite count does not match exact file evidence");
+  }
+  if (!fileLoadMode && (observedFailedTests !== failedTests
+      || observedFailedResults === 0
+      || observedFailedResults + observedFailedAncestorPaths.size !== failedSuites)) {
+    throw new Error("local product module RED aggregate failure counts do not match report contents");
   }
   if (evidence.length === 0) throw new Error("RED report contains no exact local product module absence");
   return evidence;
