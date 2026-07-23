@@ -1,4 +1,5 @@
 import { createPendingForensicTelegramDelivery } from "../forensics/telegramDelivery";
+import { randomUUID } from "node:crypto";
 import {
   runSingleForensicTelegramDeliveryCycle,
   type ForensicTelegramDeliveryRepository
@@ -21,6 +22,11 @@ import type {
   WaitReconciliationResultV1
 } from "../types";
 import type { RuntimeCycleWorkSummary } from "./runtimeLiveProof";
+import {
+  createPostgresUnifiedDeliveryRepository,
+  runUnifiedDeliveryCycle,
+  type UnifiedTelegramSendResult
+} from "../unifiedCheck/delivery";
 
 export type ForensicRuntimeOrchestration = {
   runVerifiedStartup(): Promise<void>;
@@ -29,6 +35,7 @@ export type ForensicRuntimeOrchestration = {
   runAfterTargetedIndexCompletion(): Promise<RuntimeCycleWorkSummary>;
   runForensicCycle(): Promise<void>;
   runDeliveryCycle(): Promise<void>;
+  runUnifiedDeliveryCycle(): Promise<void>;
 };
 
 type ScenarioCompletion = {
@@ -62,6 +69,11 @@ type ForensicRuntimeOrchestrationInput = {
     payload: TelegramMessagePayloadV1,
     signal: AbortSignal
   ): Promise<{ telegramMessageId: string } | void>;
+  sendUnifiedTelegram?(input: {
+    chatId: string;
+    messageThreadId: string;
+    payload: { text: string; parseMode: "HTML" };
+  }): Promise<UnifiedTelegramSendResult>;
 };
 
 const deliveryRepository: ForensicTelegramDeliveryRepository<Db> = {
@@ -166,11 +178,24 @@ export function createForensicRuntimeOrchestration(
     });
   };
 
+  const runUnifiedWalletDeliveryCycle = async (): Promise<void> => {
+    if (!input.db || !input.sendUnifiedTelegram) return;
+    await runUnifiedDeliveryCycle({
+      repository: createPostgresUnifiedDeliveryRepository(input.db),
+      now: input.now ?? (() => new Date()),
+      leaseToken: randomUUID,
+      leaseMs: 30_000,
+      limit: positiveLimit(input.deliveryLimit, 1, 10),
+      sendTelegram: input.sendUnifiedTelegram
+    });
+  };
+
   return {
     runVerifiedStartup: async () => {
       if (input.verifyStartupSchema) await input.verifyStartupSchema();
       await reconcile();
       await runDeliveryCycle();
+      await runUnifiedWalletDeliveryCycle();
       if (input.runApprovalAllowanceRefreshCycle) {
         await input.runApprovalAllowanceRefreshCycle();
       }
@@ -179,6 +204,7 @@ export function createForensicRuntimeOrchestration(
     runBeforeIncomingPoll: reconcile,
     runAfterTargetedIndexCompletion: reconcile,
     runForensicCycle: runScenarioForensicCycle,
-    runDeliveryCycle
+    runDeliveryCycle,
+    runUnifiedDeliveryCycle: runUnifiedWalletDeliveryCycle
   };
 }

@@ -122,6 +122,7 @@ create table unified_check_deliveries (
   status text not null,
   lease_token text,
   lease_expires_at timestamptz,
+  next_attempt_at timestamptz,
   attempt_count integer not null default 0,
   last_error text,
   telegram_message_id text,
@@ -184,7 +185,7 @@ create index unified_check_tasks_claim_idx
   where status in ('QUEUED','WAITING_RETRY');
 
 create index unified_check_deliveries_claim_idx
-  on unified_check_deliveries(status, updated_at)
+  on unified_check_deliveries(status, next_attempt_at, updated_at)
   where status in ('PENDING','RETRYABLE');
 
 create function unified_reject_immutable_mutation()

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fingerprintCanonicalJson } from "../../src/forensics/canonicalJson";
 import {
+  buildMinimalUnifiedCheckCandidate,
   completeMinimalUnifiedCheck,
   type MinimalBranchResult
 } from "../../src/unifiedCheck/orchestrator";
@@ -119,5 +120,16 @@ describe("Unified Check B0 vertical slice", () => {
     expect(result.artifacts.has(result.evidence.analysisManifestHash)).toBe(true);
     expect(result.artifacts.has(result.scoring.evidenceBundleHash)).toBe(true);
     expect(result.artifacts.has(result.report.scoringBundleHash)).toBe(true);
+  });
+
+  it("rejects the delivery-free slice outside isolated synthetic runs", () => {
+    expect(() => buildMinimalUnifiedCheckCandidate({
+      run: {
+        ...run,
+        runPurpose: "user_check",
+        sideEffectPolicy: "authoritative"
+      },
+      branches
+    })).toThrow("unified_minimal_slice_must_be_isolated_synthetic");
   });
 });

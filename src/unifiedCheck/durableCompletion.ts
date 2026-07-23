@@ -1,10 +1,13 @@
 import {
   buildMinimalUnifiedCheckCandidate,
   type MinimalBranchResult,
-  type CompletedSlice
+  type CompletedSlice,
+  type UnifiedPresentedCompletionCandidateV1
 } from "./orchestrator";
 import {
+  finalizeUnifiedRun,
   insertUnifiedArtifact,
+  persistUnifiedPresentationDelivery,
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
 } from "./repository";
@@ -68,6 +71,12 @@ export async function commitMinimalUnifiedCheck(input: {
   branches: readonly MinimalBranchResult[];
   candidate: CompletedSlice;
 }): Promise<void> {
+  if (
+    input.run.runPurpose !== "synthetic_test" ||
+    input.run.sideEffectPolicy !== "isolated"
+  ) {
+    throw new Error("unified_minimal_slice_must_be_isolated_synthetic");
+  }
   await input.db.transaction(async (client) => {
     const candidate = buildMinimalUnifiedCheckCandidate({
       run: input.run,
@@ -95,6 +104,12 @@ export async function commitMinimalUnifiedCheck(input: {
       String(runRow.analysis_manifest_sha256) !== input.run.analysisManifestSha256
     ) {
       throw new Error("unified_completion_run_binding_mismatch");
+    }
+    if (
+      runRow.run_purpose !== "synthetic_test" ||
+      runRow.side_effect_policy !== "isolated"
+    ) {
+      throw new Error("unified_minimal_slice_must_be_isolated_synthetic");
     }
     if (runRow.status === "COMPLETED") {
       if (
@@ -178,6 +193,92 @@ export async function commitMinimalUnifiedCheck(input: {
     );
     if (Number(deliveries.count) !== 0) {
       throw new Error("unified_minimal_slice_must_not_deliver");
+    }
+  });
+}
+
+export async function commitUnifiedPresentedCompletion(input: {
+  readonly db: UnifiedTransactionalQueryable;
+  readonly runId: string;
+  readonly candidate: UnifiedPresentedCompletionCandidateV1;
+}): Promise<void> {
+  await input.db.transaction(async (client) => {
+    const run = one(
+      await client.query(
+        "select * from unified_check_runs where id = $1 for update",
+        [input.runId]
+      ),
+      "unified_run_missing"
+    );
+    if (
+      run.status !== "FINALIZING" ||
+      Number(run.final_score ?? input.candidate.report.score) !==
+        input.candidate.report.score
+    ) {
+      throw new Error("unified_presented_run_not_finalizing");
+    }
+    if (
+      input.candidate.reportHash !==
+        input.candidate.deliveries[0]?.presentation.manifest.reportHash
+    ) {
+      throw new Error("unified_presented_report_binding_invalid");
+    }
+    const requestRows = (await client.query(
+      `select id, locale
+         from unified_check_requests
+        where run_id = $1 and status = 'ATTACHED'
+          and side_effect_policy = 'authoritative'
+        order by id`,
+      [input.runId]
+    )).rows;
+    const expectedRequests = input.candidate.deliveries.map((item) => ({
+      id: item.requestId,
+      locale: item.presentation.manifest.locale
+    })).sort((left, right) => left.id.localeCompare(right.id));
+    const actualRequests = requestRows.map((row) => ({
+      id: String(row.id),
+      locale: String(row.locale)
+    }));
+    if (JSON.stringify(actualRequests) !== JSON.stringify(expectedRequests)) {
+      throw new Error("unified_presented_recipient_set_mismatch");
+    }
+    await insertUnifiedArtifact(client, {
+      sha256: input.candidate.reportHash,
+      createdByRunId: input.runId,
+      kind: "unified_wallet_report",
+      schemaVersion: "1",
+      artifact: input.candidate.report
+    });
+    await insertUnifiedArtifact(client, {
+      sha256: input.candidate.report.factInventoryHash,
+      createdByRunId: input.runId,
+      kind: "report_fact_inventory",
+      schemaVersion: "1",
+      artifact: input.candidate.report.factInventory
+    });
+    for (const delivery of input.candidate.deliveries) {
+      await persistUnifiedPresentationDelivery(client, {
+        runId: input.runId,
+        requestId: delivery.requestId,
+        deliveryId: delivery.deliveryId,
+        presentation: delivery.presentation
+      });
+    }
+    const transactionHost: UnifiedTransactionalQueryable = {
+      query: (sql, values) => client.query(sql, values),
+      transaction: (work) => work(client)
+    };
+    const completed = await finalizeUnifiedRun(transactionHost, {
+      runId: input.runId,
+      finalScore: input.candidate.report.score,
+      finalDecision: input.candidate.report.decision,
+      evidenceBundleSha256: input.candidate.report.evidenceBundleHash,
+      traversalClosureSha256: input.candidate.report.traversalClosureHash,
+      scoringBundleSha256: input.candidate.report.scoringBundleHash,
+      reportSha256: input.candidate.reportHash
+    });
+    if (completed === null) {
+      throw new Error("unified_presented_completion_conflict");
     }
   });
 }

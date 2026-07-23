@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
@@ -167,12 +168,26 @@ import type { TelegramMessagePayloadV1 } from "./types";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
 import type { ContractDecisionEvidenceV1, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
+import {
+  buildManualUnifiedResend
+} from "./unifiedCheck/delivery";
+import {
+  buildManualResendWarningPresentation
+} from "./unifiedCheck/presentation";
+import {
+  applyUnifiedRecoveryAction,
+  createUnifiedPoolTransactionHost,
+  listUnifiedWatchdogRuns,
+  loadUnifiedUnknownDeliveryPresentation,
+  persistManualUnifiedResend
+} from "./unifiedCheck/repository";
 
 const config = loadConfig();
 const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMaxRaw(
   config.addressPoisoningSmallTransferMaxUsdt
 );
 const db = createDb(config.databaseUrl);
+const unifiedTransactionHost = createUnifiedPoolTransactionHost(db);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
 try {
@@ -341,6 +356,48 @@ const adminDashboard = await maybeStartAdminDashboard({
   config,
   startAdminServer: (adminDeps) => startAdminServer({
     ...adminDeps,
+    listUnifiedRuns: () => listUnifiedWatchdogRuns(db),
+    applyUnifiedRecoveryAction: async (input) => {
+      if (input.action !== "manual-delivery") {
+        return applyUnifiedRecoveryAction(unifiedTransactionHost, {
+          ...input,
+          action: input.action
+        });
+      }
+      if (input.targetId === null) {
+        return { ok: false, code: "manual_delivery_target_required" };
+      }
+      try {
+        const original = await loadUnifiedUnknownDeliveryPresentation(db, {
+          runId: input.runId,
+          deliveryId: input.targetId
+        });
+        const warningPresentation =
+          buildManualResendWarningPresentation(original.presentation);
+        const operation = buildManualUnifiedResend({
+          operationId: randomUUID(),
+          actorId: input.actorId,
+          requestedAt: new Date().toISOString(),
+          originalDeliveryId: input.targetId,
+          originalStatus: original.originalStatus,
+          originalPresentationHash: original.originalPresentationHash,
+          warningPresentationHash: warningPresentation.presentationHash
+        });
+        await persistManualUnifiedResend(unifiedTransactionHost, {
+          operation,
+          deliveryId: randomUUID(),
+          warningPresentation
+        });
+        return { ok: true, code: "manual_delivery_created" };
+      } catch (error) {
+        return {
+          ok: false,
+          code: error instanceof Error
+            ? error.message
+            : "manual_delivery_failed"
+        };
+      }
+    },
     refreshDeepCheckSecondLayer: (jobId) => refreshDeepCheckSecondLayerJob(jobId),
     listWalletIntelligenceAddressSummaries: (input) => listWalletIntelligenceAddressSummaries(db, input),
     getWalletIntelligenceAddressDetail: (address) => getWalletIntelligenceAddressDetail(db, address),

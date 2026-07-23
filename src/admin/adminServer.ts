@@ -4,7 +4,13 @@ import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
 import { adminConsoleHtml } from "./adminConsole";
-import { projectForensicJobGraph, type AdminForensicsGraph, type AdminForensicsHumanSummary, type AdminForensicsNode } from "./forensicsGraph";
+import {
+  projectForensicJobGraph,
+  projectUnifiedRunDag,
+  type AdminForensicsGraph,
+  type AdminForensicsHumanSummary,
+  type AdminForensicsNode
+} from "./forensicsGraph";
 import {
   normalizePersistedDeepFirstHopEvidence,
   type DeepAddressForensicReport
@@ -46,6 +52,10 @@ import type {
 } from "../storage/repositories";
 import type { IndexedTronUsdtTransfer, RiskLevel, RiskReport, WhereIsMoneyReport } from "../types";
 import type { RuntimeNavigationProbeV1, RuntimeProofV1 } from "../runtime/runtimeLiveProof";
+import {
+  inspectUnifiedRuns,
+  type UnifiedWatchdogRunV1
+} from "../unifiedCheck/watchdog";
 
 export type AdminServerConfig = {
   host: string;
@@ -71,6 +81,18 @@ export type AdminServerDeps = {
   getWalletIntelligenceAddressDetail?(address: string): Promise<WalletIntelligenceAddressDetail | null>;
   getRuntimeProof?(): RuntimeProofV1;
   runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
+  listUnifiedRuns?(): Promise<UnifiedWatchdogRunV1[]>;
+  applyUnifiedRecoveryAction?(input: {
+    runId: string;
+    action:
+      | "resume"
+      | "fail-technical"
+      | "retry-task"
+      | "manual-delivery";
+    actorId: string;
+    reason: string;
+    targetId: string | null;
+  }): Promise<{ ok: boolean; code: string }>;
 };
 
 export type RunningAdminServer = {
@@ -192,6 +214,7 @@ function adminShellHtml(pathname = "/admin/forensics"): string {
   const shell = html.includes("/admin/theft-reports")
     ? html
     : html.replace(navNeedle, `${navNeedle}\n${theftReportsNav}`);
+  void pathname;
   return shell;
 }
 
@@ -1426,6 +1449,105 @@ async function handleApiRequest(
     return;
   }
 
+  if (url.pathname === "/admin/api/unified-checks") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.listUnifiedRuns) {
+      writeJson(response, 501, { error: "Unified Check Admin is not configured." });
+      return;
+    }
+    const runs = inspectUnifiedRuns(await deps.listUnifiedRuns(), {
+      now: new Date(),
+      staleHeartbeatMs: 120_000
+    });
+    writeJson(response, 200, { runs });
+    return;
+  }
+
+  const unifiedActionMatch =
+    /^\/admin\/api\/unified-checks\/([^/]+)\/actions\/(resume|fail-technical|retry-task|manual-delivery)$/u
+      .exec(url.pathname);
+  if (unifiedActionMatch) {
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.applyUnifiedRecoveryAction) {
+      writeJson(response, 501, { error: "Unified recovery is not configured." });
+      return;
+    }
+    const runId = safeDecodeUriComponent(
+      unifiedActionMatch[1]!,
+      "Invalid Unified run id."
+    );
+    if (!runId.ok) {
+      writeJson(response, 400, { error: runId.message });
+      return;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      writeJson(response, 400, { error: "Invalid JSON body." });
+      return;
+    }
+    const actorId = stringField(body.actorId);
+    const reason = stringField(body.reason);
+    const targetId = body.targetId === undefined
+      ? null
+      : stringField(body.targetId);
+    if (!actorId || !reason || (body.targetId !== undefined && !targetId)) {
+      writeJson(response, 400, { error: "Invalid Unified recovery audit fields." });
+      return;
+    }
+    const result = await deps.applyUnifiedRecoveryAction({
+      runId: runId.value,
+      action: unifiedActionMatch[2] as
+        | "resume"
+        | "fail-technical"
+        | "retry-task"
+        | "manual-delivery",
+      actorId,
+      reason,
+      targetId
+    });
+    writeJson(response, result.ok ? 200 : 409, { result });
+    return;
+  }
+
+  const unifiedDetailMatch =
+    /^\/admin\/api\/unified-checks\/([^/]+)$/u.exec(url.pathname);
+  if (unifiedDetailMatch) {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.listUnifiedRuns) {
+      writeJson(response, 501, { error: "Unified Check Admin is not configured." });
+      return;
+    }
+    const runId = safeDecodeUriComponent(
+      unifiedDetailMatch[1]!,
+      "Invalid Unified run id."
+    );
+    if (!runId.ok) {
+      writeJson(response, 400, { error: runId.message });
+      return;
+    }
+    const run = inspectUnifiedRuns(await deps.listUnifiedRuns(), {
+      now: new Date(),
+      staleHeartbeatMs: 120_000
+    }).find((candidate) => candidate.id === runId.value);
+    if (!run) {
+      writeJson(response, 404, { error: "Unified run not found." });
+      return;
+    }
+    writeJson(response, 200, { run, dag: projectUnifiedRunDag(run) });
+    return;
+  }
+
   if (url.pathname === "/admin/api/runtime-proof" || url.pathname === "/admin/api/runtime-navigation-probe") {
     const remoteAddress = request.socket.remoteAddress ?? "";
     if (remoteAddress !== "127.0.0.1" && remoteAddress !== "::1" && remoteAddress !== "::ffff:127.0.0.1") {
@@ -1742,7 +1864,12 @@ async function handleRequest(
     return;
   }
 
-  if (url.pathname === "/admin/forensics" || url.pathname === "/admin/wallet-intelligence" || url.pathname === "/admin/theft-reports") {
+  if (
+    url.pathname === "/admin/forensics" ||
+    url.pathname === "/admin/wallet-intelligence" ||
+    url.pathname === "/admin/theft-reports" ||
+    url.pathname === "/admin/unified-checks"
+  ) {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;

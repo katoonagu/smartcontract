@@ -14,6 +14,11 @@ import {
   buildUnifiedBranchInput,
   type AnalysisRunRecord
 } from "./requestService";
+import type { UnifiedWalletDossierV1 } from "./report";
+import {
+  renderRequiredUnifiedPresentations,
+  type UnifiedPresentationResultV1
+} from "./presentation";
 
 export type MinimalBranchResult = {
   readonly branchId: "fast" | "deep" | "where";
@@ -42,6 +47,22 @@ export type CompletedSlice = {
   };
   readonly delivery: null;
   readonly fingerprint: typeof fingerprintCanonicalArtifact;
+};
+
+export type UnifiedInitialRecipientV1 = {
+  readonly requestId: string;
+  readonly deliveryId: string;
+  readonly locale: "ru" | "en";
+};
+
+export type UnifiedPresentedCompletionCandidateV1 = {
+  readonly report: UnifiedWalletDossierV1;
+  readonly reportHash: string;
+  readonly deliveries: readonly {
+    readonly requestId: string;
+    readonly deliveryId: string;
+    readonly presentation: UnifiedPresentationResultV1;
+  }[];
 };
 
 function add(
@@ -73,6 +94,12 @@ export function buildMinimalUnifiedCheckCandidate(input: {
   branches: readonly MinimalBranchResult[];
 }): CompletedSlice {
   if (input.run.status !== "RUNNING") throw new Error("unified_run_not_running");
+  if (
+    input.run.runPurpose !== "synthetic_test" ||
+    input.run.sideEffectPolicy !== "isolated"
+  ) {
+    throw new Error("unified_minimal_slice_must_be_isolated_synthetic");
+  }
   if (fingerprintCanonicalArtifact(input.run.analysisManifest) !== input.run.analysisManifestSha256) {
     throw new Error("unified_analysis_manifest_hash_mismatch");
   }
@@ -276,6 +303,68 @@ export async function completeMinimalUnifiedCheck(input: {
   commit: (candidate: CompletedSlice) => Promise<void>;
 }): Promise<CompletedSlice> {
   const candidate = buildMinimalUnifiedCheckCandidate(input);
+  await input.commit(candidate);
+  return candidate;
+}
+
+export function buildUnifiedPresentedCompletionCandidate(input: {
+  readonly report: UnifiedWalletDossierV1;
+  readonly recipients: readonly UnifiedInitialRecipientV1[];
+}): UnifiedPresentedCompletionCandidateV1 {
+  const recipients = [...input.recipients].sort((left, right) =>
+    left.requestId.localeCompare(right.requestId)
+  );
+  if (
+    recipients.length === 0 ||
+    new Set(recipients.map((item) => item.requestId)).size !==
+      recipients.length ||
+    new Set(recipients.map((item) => item.deliveryId)).size !==
+      recipients.length ||
+    recipients.some((item) =>
+      item.requestId.trim().length === 0 ||
+      item.deliveryId.trim().length === 0
+    )
+  ) {
+    throw new Error("unified_initial_recipients_invalid");
+  }
+  const presentations = renderRequiredUnifiedPresentations({
+    report: input.report,
+    locales: recipients.map((item) => item.locale)
+  });
+  const byLocale = new Map(
+    presentations.map((presentation) => [
+      presentation.manifest.locale,
+      presentation
+    ])
+  );
+  const reportHash = fingerprintCanonicalArtifact(input.report);
+  const deliveries = recipients.map((recipient) => {
+    const presentation = byLocale.get(recipient.locale);
+    if (
+      presentation === undefined ||
+      presentation.manifest.reportHash !== reportHash ||
+      presentation.receipt.presentationHash !==
+        presentation.presentationHash
+    ) {
+      throw new Error("unified_initial_presentation_invalid");
+    }
+    return {
+      requestId: recipient.requestId,
+      deliveryId: recipient.deliveryId,
+      presentation
+    };
+  });
+  return { report: input.report, reportHash, deliveries };
+}
+
+export async function completeUnifiedPresentedCheck(input: {
+  readonly report: UnifiedWalletDossierV1;
+  readonly recipients: readonly UnifiedInitialRecipientV1[];
+  readonly commit: (
+    candidate: UnifiedPresentedCompletionCandidateV1
+  ) => Promise<void>;
+}): Promise<UnifiedPresentedCompletionCandidateV1> {
+  const candidate = buildUnifiedPresentedCompletionCandidate(input);
   await input.commit(candidate);
   return candidate;
 }

@@ -153,3 +153,15 @@ export type DeliveryIntentV1 = {
   readonly payloadHash: Hash;
   readonly sideEffectPolicy: UnifiedSideEffectPolicy;
 };
+
+export type ManualUnifiedResendV1 = {
+  readonly version: "manual-unified-resend-v1";
+  readonly schemaVersion: 1;
+  readonly operationId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly originalDeliveryId: string;
+  readonly originalPresentationHash: Hash;
+  readonly warningPresentationHash: Hash;
+  readonly warningCode: "manual_resend_after_delivery_unknown";
+};

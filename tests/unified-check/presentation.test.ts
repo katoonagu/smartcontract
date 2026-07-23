@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TELEGRAM_MESSAGE_LIMIT } from "../../src/alerts/telegramHtml";
 import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
 import {
+  buildManualResendWarningPresentation,
   buildPresentationManifest,
   ensurePresentationForRequest,
   renderRequiredUnifiedPresentations,
@@ -11,6 +12,9 @@ import type {
   UnifiedWalletDossierV1,
   UnifiedWalletReportSection
 } from "../../src/unifiedCheck/report";
+import {
+  completeUnifiedPresentedCheck
+} from "../../src/unifiedCheck/orchestrator";
 
 const address = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const serviceAddress = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
@@ -157,7 +161,15 @@ function report(): UnifiedWalletDossierV1 {
           : section.kind === "behavior_connections"
             ? ["fact-behavior"]
             : [],
-      collapsedFactCount: section.kind === "behavior_connections" ? 3 : 0
+      collapsedFactCount: section.kind === "score_drivers" ||
+        section.kind === "behavior_connections"
+        ? section.rows.reduce(
+            (sum, row) => sum + row.collapsedFactCount,
+            0
+          )
+        : "rows" in section
+          ? section.rows.length
+          : 0
     }))
   };
   return {
@@ -207,6 +219,18 @@ describe("Unified Telegram presentation", () => {
     expect(first.artifact.html).not.toContain("truncated");
     expect(first.receipt.omittedCanonicalFactIds).toEqual([]);
     expect(first.receipt.presentationHash).toBe(first.presentationHash);
+    const {
+      presentationHash: _presentationHash,
+      ...receiptBody
+    } = first.receipt;
+    expect(fingerprintCanonicalArtifact(receiptBody))
+      .toBe(first.receiptBodyHash);
+    expect(first.presentationHash).toBe(fingerprintCanonicalArtifact({
+      version: "unified-presentation-envelope-v1",
+      manifest: first.manifest,
+      artifact: first.artifact,
+      receiptBodyHash: first.receiptBodyHash
+    }));
     expect(first.receipt.sections.map((section) => section.sectionId))
       .toEqual(dossier.sections.map((section) => section.kind));
     expect(en.manifest.reportHash).toBe(first.manifest.reportHash);
@@ -231,21 +255,32 @@ describe("Unified Telegram presentation", () => {
       section.kind === "behavior_connections"
     );
     if (behavior?.kind !== "behavior_connections") throw new Error("fixture");
+    const largeSections = dossier.sections.map((section) =>
+      section.kind === "behavior_connections"
+        ? {
+            ...section,
+            rows: Array.from({ length: 180 }, (_, index) => ({
+              code: `context_${index}_${"x".repeat(80)}`,
+              role: "context",
+              factIds: ["fact-behavior"],
+              collapsedFactCount: 1
+            }))
+          }
+        : section
+    );
+    const largeInventory = {
+      ...dossier.factInventory,
+      sections: dossier.factInventory.sections.map((entry) =>
+        entry.sectionId === "behavior_connections"
+          ? { ...entry, collapsedFactCount: 180 }
+          : entry
+      )
+    };
     const large = {
       ...dossier,
-      sections: dossier.sections.map((section) =>
-        section.kind === "behavior_connections"
-          ? {
-              ...section,
-              rows: Array.from({ length: 180 }, (_, index) => ({
-                code: `context_${index}_${"x".repeat(80)}`,
-                role: "context",
-                factIds: ["fact-behavior"],
-                collapsedFactCount: 1
-              }))
-            }
-          : section
-      )
+      sections: largeSections,
+      factInventory: largeInventory,
+      factInventoryHash: fingerprintCanonicalArtifact(largeInventory)
     } as UnifiedWalletDossierV1;
     const result = renderUnifiedWalletPresentation({
       report: large,
@@ -254,31 +289,94 @@ describe("Unified Telegram presentation", () => {
     expect(result.artifact.html.length).toBeLessThanOrEqual(
       TELEGRAM_MESSAGE_LIMIT
     );
-    expect(result.artifact.html).toContain("180 facts");
+    expect(result.artifact.html).toContain("180 collapsed facts");
+    expect(result.receipt.sections.find((entry) =>
+      entry.sectionId === "behavior_connections"
+    )).toMatchObject({
+      collapsedFactCount: 180,
+      aggregateCount: 1
+    });
     expect(result.receipt.omittedCanonicalFactIds).toEqual([]);
   });
 
   it("fails closed instead of slicing an impossible essential presentation", () => {
     const dossier = report();
+    const rows = Array.from({ length: 500 }, (_, index) => ({
+      code: `hard_driver_${index}_${"x".repeat(100)}`,
+      factIds: ["fact-driver"],
+      collapsedFactCount: 1
+    }));
+    const sections = dossier.sections.map((section) =>
+      section.kind === "score_drivers"
+        ? { ...section, rows }
+        : section
+    );
+    const inventory = {
+      ...dossier.factInventory,
+      sections: dossier.factInventory.sections.map((entry) =>
+        entry.sectionId === "score_drivers"
+          ? {
+              ...entry,
+              factIds: ["fact-driver"],
+              collapsedFactCount: rows.length
+            }
+          : entry
+      )
+    };
     const impossible = {
       ...dossier,
-      sections: dossier.sections.map((section) =>
-        section.kind === "score_drivers"
-          ? {
-              ...section,
-              rows: Array.from({ length: 500 }, (_, index) => ({
-                code: `hard_driver_${index}_${"x".repeat(100)}`,
-                factIds: ["fact-driver"],
-                collapsedFactCount: 1
-              }))
-            }
-          : section
-      )
+      sections,
+      factInventory: inventory,
+      factInventoryHash: fingerprintCanonicalArtifact(inventory)
     } as UnifiedWalletDossierV1;
     expect(() => renderUnifiedWalletPresentation({
       report: impossible,
       manifest: buildPresentationManifest(impossible, "ru")
     })).toThrow("presentation_contract_failed");
+  });
+
+  it("keeps aggregate approval amounts and counterparty counts through compaction", () => {
+    const dossier = report();
+    const contractRows = Array.from({ length: 50 }, (_, index) => ({
+      code: "dangerous_approval",
+      counterparty: `${serviceAddress.slice(0, -2)}${String(index).padStart(2, "0")}`,
+      amountRaw: "1000000",
+      factIds: ["fact-driver"]
+    }));
+    const sections = dossier.sections.map((entry) =>
+      entry.kind === "contracts_approvals"
+        ? { ...entry, rows: contractRows }
+        : entry
+    );
+    const inventory = {
+      ...dossier.factInventory,
+      sections: dossier.factInventory.sections.map((entry) =>
+        entry.sectionId === "contracts_approvals"
+          ? {
+              ...entry,
+              factIds: ["fact-driver"],
+              collapsedFactCount: contractRows.length
+            }
+          : entry
+      )
+    };
+    const expanded = {
+      ...dossier,
+      sections,
+      factInventory: inventory,
+      factInventoryHash: fingerprintCanonicalArtifact(inventory)
+    } as UnifiedWalletDossierV1;
+    const result = renderUnifiedWalletPresentation({
+      report: expanded,
+      manifest: buildPresentationManifest(expanded, "en")
+    });
+    expect(result.artifact.html).toContain("50 USDT (50 amount fact(s))");
+    expect(result.artifact.html).toContain("50 counterparties");
+    expect(result.receipt.sections.find((entry) =>
+      entry.sectionId === "contracts_approvals"
+    )?.scopes[0]).toMatchObject({
+      totalAmountRaw: "50000000"
+    });
   });
 
   it("fails closed when the report inventory leaves a canonical fact unbound", () => {
@@ -330,5 +428,37 @@ describe("Unified Telegram presentation", () => {
     expect(created.reused).toBe(false);
     expect(created.presentation.manifest.reportHash)
       .toBe(required[0]!.manifest.reportHash);
+  });
+
+  it("builds all initial request presentations before invoking the completion commit", async () => {
+    const commit = vi.fn(async () => undefined);
+    const completed = await completeUnifiedPresentedCheck({
+      report: report(),
+      recipients: [
+        { requestId: "request-ru", deliveryId: "delivery-ru", locale: "ru" },
+        { requestId: "request-en", deliveryId: "delivery-en", locale: "en" }
+      ],
+      commit
+    });
+    expect(commit).toHaveBeenCalledOnce();
+    expect(completed.deliveries.map((item) =>
+      item.presentation.manifest.locale
+    ).sort()).toEqual(["en", "ru"]);
+    expect(new Set(completed.deliveries.map((item) =>
+      item.presentation.manifest.reportHash
+    )).size).toBe(1);
+  });
+
+  it("makes manual resend an explicit warning presentation with a new hash", () => {
+    const dossier = report();
+    const original = renderUnifiedWalletPresentation({
+      report: dossier,
+      manifest: buildPresentationManifest(dossier, "ru")
+    });
+    const warning = buildManualResendWarningPresentation(original);
+    expect(warning.artifact.html).toContain("⚠️ Ручная повторная отправка");
+    expect(warning.presentationHash).not.toBe(original.presentationHash);
+    expect(warning.manifest.reportHash).toBe(original.manifest.reportHash);
+    expect(warning.receiptBodyHash).toBe(original.receiptBodyHash);
   });
 });

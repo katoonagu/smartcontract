@@ -362,7 +362,7 @@ export function adminConsoleHtml(): string {
     .wallet-intel-ego-node circle { fill: var(--surface-panel); stroke: var(--accent); stroke-width: 1.5; }
     .wallet-intel-ego-node.selected circle { fill: rgba(127, 169, 221, .16); stroke: var(--accent); }
     .wallet-intel-ego-node text { fill: var(--text-primary); font-size: 10px; text-anchor: middle; }
-    .theft-reports-workspace {
+    .theft-reports-workspace, .unified-checks-workspace {
       height: calc(100dvh - 56px);
       min-height: 0;
       overflow: hidden;
@@ -372,6 +372,50 @@ export function adminConsoleHtml(): string {
       padding: 12px;
       background: var(--surface-canvas);
     }
+    .unified-checks-workspace {
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .unified-checks-head, .unified-checks-list, .unified-check-detail {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .unified-checks-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+    }
+    .unified-checks-head h2 { margin: 0; font-size: 16px; }
+    .unified-checks-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      gap: 12px;
+    }
+    .unified-checks-list, .unified-check-detail { min-height: 0; overflow: auto; }
+    .unified-run-row {
+      display: grid;
+      gap: 5px;
+      width: 100%;
+      padding: 10px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .unified-run-row:hover, .unified-run-row.active { background: rgba(122, 162, 247, .08); }
+    .unified-detail-card { display: grid; gap: 12px; padding: 12px; }
+    .unified-dag-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .unified-dag-node { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+    .unified-dag-edges { display: grid; gap: 4px; margin-top: 8px; }
+    .unified-dag-edge { padding: 5px 7px; border-left: 2px solid var(--accent); background: var(--panel-2); overflow-wrap: anywhere; }
+    .unified-recovery { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+    .unified-recovery-fields { display: grid; grid-template-columns: minmax(140px, .5fr) minmax(220px, 1fr); gap: 8px; }
+    .unified-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .theft-reports-head {
       display: grid;
       gap: 10px;
@@ -1444,6 +1488,7 @@ export function adminConsoleHtml(): string {
         <h1>Admin Forensics Console</h1>
         <nav class="top-nav" aria-label="Admin workspaces">
           <a href="/admin/forensics" data-workspace-link>Forensics</a>
+          <a href="/admin/unified-checks" data-workspace-link>Unified Checks</a>
           <a href="/admin/wallet-intelligence" data-workspace-link>Пересечения</a>
           <a href="/admin/theft-reports" data-workspace-link>Заявки о краже</a>
         </nav>
@@ -1752,6 +1797,21 @@ export function adminConsoleHtml(): string {
           </aside>
         </div>
       </section>
+      <section id="unifiedChecksWorkspace" class="unified-checks-workspace" data-unified-checks-workspace hidden>
+        <div class="unified-checks-head">
+          <div>
+            <h2>Unified Wallet Checks</h2>
+            <div class="hint" id="unifiedChecksStatus">Parent, child attempts, immutable artifacts and delivery state.</div>
+          </div>
+          <button id="unifiedChecksReload" type="button">Refresh</button>
+        </div>
+        <div class="unified-checks-body">
+          <div id="unifiedChecksList" class="unified-checks-list"></div>
+          <aside id="unifiedCheckDetail" class="unified-check-detail">
+            <div class="empty">Select a Unified run to inspect its DAG and explicit recovery actions.</div>
+          </aside>
+        </div>
+      </section>
     </section>
   </main>
   <script>
@@ -1812,7 +1872,8 @@ export function adminConsoleHtml(): string {
       crossRunAddressDetailByAddress: new Map(),
       crossRunAddressDetailLoading: new Set(),
       pendingHighlightAddress: null,
-      theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null, listRequestSeq: 0, detailRequestSeq: 0 }
+      theftReports: { reports: [], activeId: null, detail: null, loading: false, error: null, savePending: false, searchTimer: null, listRequestSeq: 0, detailRequestSeq: 0 },
+      unifiedChecks: { runs: [], activeId: null, detail: null, loading: false, error: null }
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
@@ -2076,9 +2137,13 @@ export function adminConsoleHtml(): string {
     function theftReportsActive() {
       return window.location.pathname === "/admin/theft-reports";
     }
+    function unifiedChecksActive() {
+      return window.location.pathname === "/admin/unified-checks";
+    }
     function activeWorkspacePath() {
       if (walletIntelligenceActive()) return "/admin/wallet-intelligence";
       if (theftReportsActive()) return "/admin/theft-reports";
+      if (unifiedChecksActive()) return "/admin/unified-checks";
       return "/admin/forensics";
     }
     function syncWorkspaceVisibility() {
@@ -2087,15 +2152,201 @@ export function adminConsoleHtml(): string {
       const graphShell = document.querySelector("[data-workbench-shell]");
       const walletShell = document.querySelector("[data-wallet-intelligence-workspace]");
       const theftShell = document.querySelector("[data-theft-reports-workspace]");
-      if (graphShell) graphShell.hidden = walletActive || theftActive;
+      const unifiedActive = unifiedChecksActive();
+      const unifiedShell = document.querySelector("[data-unified-checks-workspace]");
+      if (graphShell) graphShell.hidden = walletActive || theftActive || unifiedActive;
       if (walletShell) walletShell.hidden = !walletActive;
       if (theftShell) theftShell.hidden = !theftActive;
+      if (unifiedShell) unifiedShell.hidden = !unifiedActive;
       document.querySelectorAll("[data-workspace-link]").forEach((link) => {
         const active = link.getAttribute("href") === activeWorkspacePath();
         link.classList.toggle("active", active);
         if (active) link.setAttribute("aria-current", "page");
         else link.removeAttribute("aria-current");
       });
+    }
+    function renderUnifiedChecksList() {
+      const root = el("unifiedChecksList");
+      if (state.unifiedChecks.loading && state.unifiedChecks.runs.length === 0) {
+        root.innerHTML = '<div class="empty">Loading Unified runs...</div>';
+        return;
+      }
+      if (state.unifiedChecks.error) {
+        root.innerHTML = '<div class="empty">' + escapeHtml(state.unifiedChecks.error) + '</div>';
+        return;
+      }
+      if (state.unifiedChecks.runs.length === 0) {
+        root.innerHTML = '<div class="empty">No Unified runs found.</div>';
+        return;
+      }
+      root.innerHTML = state.unifiedChecks.runs.map((run) =>
+        '<button type="button" class="unified-run-row' +
+          (run.id === state.unifiedChecks.activeId ? ' active' : '') +
+          '" data-unified-run-id="' + escapeHtml(run.id) + '">' +
+          '<strong>' + escapeHtml(short(run.subjectAddress, 8)) + '</strong>' +
+          '<span><span class="' + classifyStatus(run.status) + '">' +
+            escapeHtml(run.status) + '</span> · ' + escapeHtml(run.finding) + '</span>' +
+          '<span class="muted">' + escapeHtml(run.runPurpose) + ' · ' +
+            escapeHtml(run.sideEffectPolicy) + ' · ' + escapeHtml(iso(run.updatedAt)) + '</span>' +
+        '</button>'
+      ).join('');
+    }
+    function unifiedDagNodeHtml(node) {
+      const metadata = node?.metadata && typeof node.metadata === "object"
+        ? node.metadata
+        : {};
+      const metadataLines = Object.entries(metadata)
+        .filter(([, value]) => value !== null && value !== undefined)
+        .slice(0, 12)
+        .map(([key, value]) =>
+          '<div><span class="muted">' + escapeHtml(key) + ':</span> ' +
+            escapeHtml(typeof value === "object" ? JSON.stringify(value) : value) + '</div>'
+        ).join('');
+      return '<div class="unified-dag-node">' +
+        '<strong>' + escapeHtml(node?.kind) + ' · ' + escapeHtml(node?.label) + '</strong>' +
+        '<div><span class="' + classifyStatus(node?.status) + '">' +
+          escapeHtml(node?.status) + '</span></div>' + metadataLines + '</div>';
+    }
+    function unifiedDagEdgeHtml(edge) {
+      return '<div class="unified-dag-edge">' +
+        '<strong>' + escapeHtml(edge?.relation || "unknown_relation") + '</strong> · ' +
+        '<span data-dag-edge-from>' + escapeHtml(edge?.from || "unknown_source") + '</span>' +
+        ' → <span data-dag-edge-to>' + escapeHtml(edge?.to || "unknown_target") + '</span>' +
+        '</div>';
+    }
+    function renderUnifiedCheckDetail() {
+      const root = el("unifiedCheckDetail");
+      const detail = state.unifiedChecks.detail;
+      if (!detail?.run || !detail?.dag) {
+        root.innerHTML = '<div class="empty">Select a Unified run to inspect its DAG and explicit recovery actions.</div>';
+        return;
+      }
+      const run = detail.run;
+      const hashes = run.hashes || {};
+      const versions = run.versions || {};
+      const traversal = run.traversal || {};
+      const generation = run.generation || {};
+      const hashLines = Object.entries(hashes).map(([key, value]) =>
+        '<div><span class="muted">' + escapeHtml(key) + ':</span> ' +
+          escapeHtml(value ? short(value, 10) : 'n/a') + '</div>'
+      ).join('');
+      const retryButtons = asArray(run.tasks)
+        .filter((task) => task.status === "BLOCKED_ADMIN" || task.status === "FAILED_TECHNICAL")
+        .map((task) =>
+          '<button type="button" data-unified-action="retry-task" data-unified-target="' +
+            escapeHtml(task.id) + '">Retry ' + escapeHtml(task.kind) + '</button>'
+        ).join('');
+      const deliveryButtons = asArray(run.deliveries)
+        .filter((delivery) => delivery.status === "DELIVERY_UNKNOWN")
+        .map((delivery) =>
+          '<button type="button" data-unified-action="manual-delivery" data-unified-target="' +
+            escapeHtml(delivery.id) + '">Manual resend ' + escapeHtml(short(delivery.id, 6)) + '</button>'
+        ).join('');
+      const parentActions =
+        (run.status === "BLOCKED_ADMIN"
+          ? '<button type="button" data-unified-action="resume">Resume parent</button>'
+          : '') +
+        (!["COMPLETED", "FAILED_TECHNICAL"].includes(run.status)
+          ? '<button type="button" data-unified-action="fail-technical">Mark technical failure</button>'
+          : '');
+      root.innerHTML = '<div class="unified-detail-card">' +
+        '<section><h3>' + escapeHtml(run.subjectAddress) + '</h3>' +
+          '<div><span class="' + classifyStatus(run.status) + '">' + escapeHtml(run.status) +
+          '</span> · ' + escapeHtml(run.finding) + '</div>' +
+          '<div class="muted">' + escapeHtml(run.statusReason || 'No status reason') + '</div></section>' +
+        '<section><h3>Runtime contract</h3>' +
+          '<div>generation: ' + escapeHtml(JSON.stringify(generation)) + '</div>' +
+          '<div>versions: ' + escapeHtml(JSON.stringify(versions)) + '</div>' +
+          '<div>traversal: ' + escapeHtml(JSON.stringify(traversal)) + '</div>' +
+          '<div>' + hashLines + '</div></section>' +
+        '<section><h3>Unified DAG</h3><div class="unified-dag-grid">' +
+          asArray(detail.dag.nodes).map(unifiedDagNodeHtml).join('') +
+          '</div><div class="unified-dag-edges">' +
+          asArray(detail.dag.edges).map(unifiedDagEdgeHtml).join('') +
+          '</div><div class="muted">' + escapeHtml(asArray(detail.dag.edges).length) +
+          ' immutable DAG edges</div></section>' +
+        '<section class="unified-recovery"><h3>Explicit recovery</h3>' +
+          '<div class="unified-recovery-fields">' +
+            '<input id="unifiedRecoveryActor" placeholder="Actor id">' +
+            '<input id="unifiedRecoveryReason" placeholder="Evidence-backed reason">' +
+          '</div><div class="unified-recovery-actions">' +
+            parentActions + retryButtons + deliveryButtons +
+          '</div><div class="hint" id="unifiedRecoveryStatus">Actions are audited. Unknown delivery is never resent automatically.</div>' +
+        '</section></div>';
+    }
+    async function loadUnifiedCheckDetail(runId) {
+      state.unifiedChecks.activeId = runId;
+      renderUnifiedChecksList();
+      el("unifiedCheckDetail").innerHTML = '<div class="empty">Loading DAG...</div>';
+      try {
+        state.unifiedChecks.detail = await api(
+          "/admin/api/unified-checks/" + encodeURIComponent(runId)
+        );
+        renderUnifiedCheckDetail();
+      } catch (error) {
+        state.unifiedChecks.detail = null;
+        el("unifiedCheckDetail").innerHTML = '<div class="empty">' +
+          escapeHtml(error instanceof Error ? error.message : "Unified detail failed") +
+          '</div>';
+      }
+    }
+    async function loadUnifiedChecks() {
+      state.unifiedChecks.loading = true;
+      state.unifiedChecks.error = null;
+      renderUnifiedChecksList();
+      try {
+        const body = await api("/admin/api/unified-checks");
+        state.unifiedChecks.runs = asArray(body.runs);
+        const activeStillExists = state.unifiedChecks.runs.some((run) =>
+          run.id === state.unifiedChecks.activeId
+        );
+        if (!activeStillExists) {
+          state.unifiedChecks.activeId = state.unifiedChecks.runs[0]?.id || null;
+        }
+        el("unifiedChecksStatus").textContent =
+          state.unifiedChecks.runs.length + " Unified run(s). Score is visible only for COMPLETED.";
+        renderUnifiedChecksList();
+        if (state.unifiedChecks.activeId) {
+          await loadUnifiedCheckDetail(state.unifiedChecks.activeId);
+        } else {
+          state.unifiedChecks.detail = null;
+          renderUnifiedCheckDetail();
+        }
+      } catch (error) {
+        state.unifiedChecks.error = error instanceof Error
+          ? error.message
+          : "Unified list failed";
+        renderUnifiedChecksList();
+      } finally {
+        state.unifiedChecks.loading = false;
+      }
+    }
+    async function applyUnifiedRecovery(action, targetId) {
+      const runId = state.unifiedChecks.activeId;
+      const actorId = el("unifiedRecoveryActor")?.value.trim() || "";
+      const reason = el("unifiedRecoveryReason")?.value.trim() || "";
+      const status = el("unifiedRecoveryStatus");
+      if (!runId || !actorId || !reason) {
+        if (status) status.textContent = "Actor id and an evidence-backed reason are required.";
+        return;
+      }
+      if (status) status.textContent = "Applying audited action...";
+      try {
+        const body = await api(
+          "/admin/api/unified-checks/" + encodeURIComponent(runId) +
+            "/actions/" + encodeURIComponent(action),
+          {
+            method: "POST",
+            body: JSON.stringify({ actorId, reason, targetId: targetId || undefined })
+          }
+        );
+        if (status) status.textContent = "Result: " + String(body?.result?.code || "ok");
+        await loadUnifiedChecks();
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error
+          ? error.message
+          : "Recovery failed";
+      }
     }
     function setWalletIntelligenceStatus(message) {
       el("walletIntelStatus").textContent = message;
@@ -9547,7 +9798,26 @@ export function adminConsoleHtml(): string {
       syncWorkspaceVisibility();
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
       else if (theftReportsActive()) loadTheftReports();
+      else if (unifiedChecksActive()) loadUnifiedChecks();
       else loadJobs();
+    });
+    el("unifiedChecksReload").addEventListener("click", loadUnifiedChecks);
+    el("unifiedChecksList").addEventListener("click", (event) => {
+      const row = event.target instanceof Element
+        ? event.target.closest("[data-unified-run-id]")
+        : null;
+      if (!row) return;
+      loadUnifiedCheckDetail(row.getAttribute("data-unified-run-id") || "");
+    });
+    el("unifiedCheckDetail").addEventListener("click", (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest("[data-unified-action]")
+        : null;
+      if (!button) return;
+      applyUnifiedRecovery(
+        button.getAttribute("data-unified-action") || "",
+        button.getAttribute("data-unified-target")
+      );
     });
     el("walletIntelReload").addEventListener("click", loadWalletIntelligenceAddresses);
     document.querySelectorAll("[data-wallet-intel-preset]").forEach((button) => {
@@ -9726,11 +9996,14 @@ export function adminConsoleHtml(): string {
     renderWalletIntelligenceDrawer();
     renderTheftReportsList();
     renderTheftReportDetail();
+    renderUnifiedChecksList();
+    renderUnifiedCheckDetail();
     el("sessionState").textContent = state.token ? "session active" : "token missing";
     applyInitialUrlFilters();
     if (state.token) {
       if (walletIntelligenceActive()) loadWalletIntelligenceAddresses();
       else if (theftReportsActive()) loadTheftReports();
+      else if (unifiedChecksActive()) loadUnifiedChecks();
       else loadJobs();
     }
   </script>

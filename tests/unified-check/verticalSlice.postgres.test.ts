@@ -6,16 +6,23 @@ import {
   fingerprintCanonicalArtifact,
   fingerprintCanonicalJson
 } from "../../src/forensics/canonicalJson";
-import { commitMinimalUnifiedCheck } from "../../src/unifiedCheck/durableCompletion";
 import {
+  commitMinimalUnifiedCheck,
+  commitUnifiedPresentedCompletion
+} from "../../src/unifiedCheck/durableCompletion";
+import {
+  buildUnifiedPresentedCompletionCandidate,
   completeMinimalUnifiedCheck,
   type MinimalBranchResult
 } from "../../src/unifiedCheck/orchestrator";
+import { buildUnifiedWalletReport } from "../../src/unifiedCheck/report";
 import type {
   UnifiedQueryable,
   UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository";
 import {
+  applyUnifiedRecoveryAction,
+  claimUnifiedTask,
   finalizeUnifiedRun,
   insertUnifiedArtifact
 } from "../../src/unifiedCheck/repository";
@@ -252,6 +259,144 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         scoringBundleSha256: completed.hashes.scoring,
         reportSha256: completed.hashes.report
       })).rejects.toThrow(/unified_final_(accepted_attempt_mismatch|tasks_not_finalized)/u);
+
+      await client.query(
+        `update unified_check_tasks
+            set status = 'COMPLETED', accepted_attempt_id = $2
+          where run_id = $1 and kind = 'where'`,
+        [run.id, "attempt-where"]
+      );
+      await client.query(
+        `update unified_check_runs
+            set status = 'FINALIZING', run_purpose = 'user_check',
+                side_effect_policy = 'authoritative'
+          where id = $1`,
+        [run.id]
+      );
+      await client.query(
+        `insert into unified_check_requests (
+          id, request_correlation_id, run_id, subject_address, chat_id,
+          message_thread_id, locale, run_purpose, side_effect_policy, status,
+          accepted_at
+        ) values (
+          'request-presented', 'correlation-presented', $1, $2, 'chat-1',
+          '', 'ru', 'user_check', 'authoritative', 'ATTACHED',
+          '2026-07-23T13:05:00.000Z'
+        )`,
+        [run.id, run.subjectAddress]
+      );
+      const neutralFactId = completed.evidence.canonicalFactIds[0]!;
+      const dossier = buildUnifiedWalletReport({
+        manifest: completed.manifest,
+        evidence: completed.evidence,
+        closure: completed.closure,
+        scoring: completed.scoring,
+        selectedAttributionPolicy: "proportional",
+        walletMetrics: {
+          version: "unified-wallet-metrics-v1",
+          asOfBlock: completed.manifest.confirmedBlockNumber,
+          observedAt: completed.manifest.confirmedBlockTimestamp,
+          consistency: "snapshot_exact",
+          profile: {
+            createdAt: null,
+            firstUsdtActivityAt: null,
+            lastUsdtActivityAt: null,
+            incomingUsdtTransferCount: 0,
+            outgoingUsdtTransferCount: 0,
+            snapshotUsdtBalanceRaw: "0",
+            snapshotTrxBalanceSun: "0",
+            liveBalanceObservation: null
+          },
+          scoreDrivers: [{
+            code: "neutral_no_observed_risk",
+            factIds: [neutralFactId],
+            collapsedFactCount: 1
+          }],
+          currentBalanceAttribution: {
+            scope: "current_balance_attribution",
+            denominatorRaw: "0",
+            rows: []
+          },
+          outgoingMovement: {
+            scope: "all_direct_outgoing_to_snapshot",
+            denominatorRaw: "0",
+            rows: []
+          },
+          serviceLinks: [],
+          contractsAndApprovals: [],
+          behaviorAndConnections: [],
+          coverage: [],
+          principalInboundEvents: [],
+          negativeFacts: []
+        }
+      });
+      const presented = buildUnifiedPresentedCompletionCandidate({
+        report: dossier,
+        recipients: [{
+          requestId: "request-presented",
+          deliveryId: "delivery-presented",
+          locale: "ru"
+        }]
+      });
+      await commitUnifiedPresentedCompletion({
+        db,
+        runId: run.id,
+        candidate: presented
+      });
+      expect(
+        (await client.query(
+          `select count(*)::int as count from unified_check_artifacts
+            where sha256 = $1 and kind = 'report_fact_inventory'`,
+          [dossier.factInventoryHash]
+        )).rows[0]?.count
+      ).toBe(1);
+      expect(
+        (await client.query(
+          "select status from unified_check_runs where id = $1",
+          [run.id]
+        )).rows[0]?.status
+      ).toBe("COMPLETED");
+      expect(
+        (await client.query(
+          "select status from unified_check_deliveries where id = 'delivery-presented'"
+        )).rows[0]?.status
+      ).toBe("PENDING");
+
+      await client.query(
+        `insert into unified_check_runs (
+          id, analysis_key_sha256, subject_address, status, run_purpose,
+          side_effect_policy, analysis_manifest_sha256
+        ) values (
+          'run-failed-admin', $1, $2, 'RUNNING', 'admin_diagnostic',
+          'isolated', $3
+        )`,
+        ["9".repeat(64), run.subjectAddress, "8".repeat(64)]
+      );
+      await client.query(
+        `insert into unified_check_tasks (
+          id, run_id, kind, status, priority_lane, logical_key
+        ) values (
+          'task-failed-admin', 'run-failed-admin', 'deep', 'QUEUED',
+          'repair', 'main'
+        )`
+      );
+      await expect(applyUnifiedRecoveryAction(db, {
+        runId: "run-failed-admin",
+        action: "fail-technical",
+        actorId: "admin-1",
+        reason: "proven permanent provider failure",
+        targetId: null
+      })).resolves.toEqual({ ok: true, code: "fail-technical" });
+      expect(
+        (await client.query(
+          "select status from unified_check_tasks where id = 'task-failed-admin'"
+        )).rows[0]?.status
+      ).toBe("CANCELLED");
+      await expect(claimUnifiedTask(queryable, {
+        workerId: "worker-after-terminal",
+        leaseToken: "lease-after-terminal",
+        leaseMs: 30_000
+      })).resolves.toBeNull();
     } finally {
       await client.query("reset search_path");
       await client.query(`drop schema if exists "${schema}" cascade`);

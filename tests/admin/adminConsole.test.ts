@@ -186,6 +186,42 @@ describe("adminConsoleHtml", () => {
     expect(() => new Function(script)).not.toThrow();
   });
 
+  it("renders a separate Unified DAG workspace with explicit audited recovery", () => {
+    const html = adminConsoleHtml();
+    expect(html).toContain('href="/admin/unified-checks"');
+    expect(html).toContain("data-unified-checks-workspace");
+    expect(html).toContain('api("/admin/api/unified-checks")');
+    expect(html).toContain('data-unified-action="manual-delivery"');
+    expect(html).toContain("Unknown delivery is never resent automatically.");
+  });
+
+  it("renders escaped Unified DAG edge relations with both endpoints", () => {
+    const html = adminConsoleHtml();
+    const start = html.indexOf("function unifiedDagEdgeHtml(edge)");
+    const end = html.indexOf("function renderUnifiedCheckDetail()", start);
+    const helper = html.slice(start, end);
+    const escapeHtml = (value: unknown) =>
+      String(value ?? "").replace(/[&<>"']/g, (char) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char
+      );
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const render = new Function(
+      "escapeHtml",
+      `${helper}\nreturn unifiedDagEdgeHtml;`
+    )(escapeHtml) as (edge: Record<string, unknown>) => string;
+    const rendered = render({
+      from: "task:<fast>",
+      to: "attempt:&1",
+      relation: "has_attempt"
+    });
+    expect(rendered).toContain("has_attempt");
+    expect(rendered).toContain("task:&lt;fast&gt;");
+    expect(rendered).toContain("attempt:&amp;1");
+    expect(rendered).toContain("data-dag-edge-from");
+    expect(rendered).toContain("data-dag-edge-to");
+  });
+
   it("renders escaped Russian human risk summary sections", () => {
     const helpers = adminHumanSummaryHelpers();
 

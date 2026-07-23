@@ -11,6 +11,128 @@ import {
   type WhereFundingCandidateGroup,
   type WhereFundingCandidateItem
 } from "./whereFundingCandidateVisibility";
+import type { UnifiedWatchdogProjectionV1 } from "../unifiedCheck/watchdog";
+
+export type AdminUnifiedDagV1 = {
+  readonly version: "admin-unified-dag-v1";
+  readonly runId: string;
+  readonly nodes: readonly {
+    readonly id: string;
+    readonly kind: "run" | "task" | "attempt" | "artifact" | "delivery";
+    readonly label: string;
+    readonly status: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+  }[];
+  readonly edges: readonly {
+    readonly from: string;
+    readonly to: string;
+    readonly relation:
+      | "owns_task"
+      | "has_attempt"
+      | "binds_artifact"
+      | "has_delivery";
+  }[];
+};
+
+export function projectUnifiedRunDag(
+  run: UnifiedWatchdogProjectionV1
+): AdminUnifiedDagV1 {
+  const runNodeId = `run:${run.id}`;
+  const nodes: AdminUnifiedDagV1["nodes"][number][] = [{
+    id: runNodeId,
+    kind: "run",
+    label: `${run.runPurpose} · ${run.subjectAddress}`,
+    status: run.status,
+    metadata: {
+      finding: run.finding,
+      reason: run.statusReason,
+      score: run.score,
+      decision: run.decision,
+      sideEffectPolicy: run.sideEffectPolicy,
+      versions: run.versions,
+      traversal: run.traversal,
+      generation: run.generation,
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      completedAt: run.completedAt
+    }
+  }];
+  const edges: AdminUnifiedDagV1["edges"][number][] = [];
+  for (const task of run.tasks) {
+    const taskNodeId = `task:${task.id}`;
+    nodes.push({
+      id: taskNodeId,
+      kind: "task",
+      label: task.kind,
+      status: task.status,
+      metadata: {
+        priorityLane: task.priorityLane,
+        readyAt: task.readyAt,
+        leaseExpiresAt: task.leaseExpiresAt,
+        heartbeatAt: task.heartbeatAt,
+        providerState: task.providerState,
+        checkpoint: task.checkpoint,
+        cancellationRequestedAt: task.cancellationRequestedAt,
+        durationsMs: task.durationsMs
+      }
+    });
+    edges.push({ from: runNodeId, to: taskNodeId, relation: "owns_task" });
+    for (const attempt of task.attempts) {
+      const attemptNodeId = `attempt:${attempt.id}`;
+      nodes.push({
+        id: attemptNodeId,
+        kind: "attempt",
+        label: `attempt ${attempt.attempt}`,
+        status: attempt.completedAt === null ? "OPEN" : "IMMUTABLE",
+        metadata: {
+          artifactSha256: attempt.artifactSha256,
+          completedAt: attempt.completedAt
+        }
+      });
+      edges.push({
+        from: taskNodeId,
+        to: attemptNodeId,
+        relation: "has_attempt"
+      });
+    }
+  }
+  for (const [kind, sha256] of Object.entries(run.hashes)) {
+    if (sha256 === null) continue;
+    const artifactNodeId = `artifact:${sha256}`;
+    nodes.push({
+      id: artifactNodeId,
+      kind: "artifact",
+      label: kind,
+      status: "IMMUTABLE",
+      metadata: { sha256 }
+    });
+    edges.push({
+      from: runNodeId,
+      to: artifactNodeId,
+      relation: "binds_artifact"
+    });
+  }
+  for (const delivery of run.deliveries) {
+    const deliveryNodeId = `delivery:${delivery.id}`;
+    nodes.push({
+      id: deliveryNodeId,
+      kind: "delivery",
+      label: delivery.presentationSha256,
+      status: delivery.status,
+      metadata: {
+        attemptCount: delivery.attemptCount,
+        lastError: delivery.lastError,
+        telegramMessageId: delivery.telegramMessageId
+      }
+    });
+    edges.push({
+      from: runNodeId,
+      to: deliveryNodeId,
+      relation: "has_delivery"
+    });
+  }
+  return { version: "admin-unified-dag-v1", runId: run.id, nodes, edges };
+}
 
 export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION" | "UNKNOWN";
 export type AdminForensicsRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";

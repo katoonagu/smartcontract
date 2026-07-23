@@ -6,6 +6,7 @@ import type { ForensicCheckJob, TheftReport } from "../../src/storage/repositori
 import { SHADOW_SCORING_POLICY_VERSION } from "../../src/risk/shadowScoring";
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../../src/risk/scoringSignalMatrix";
 import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
+import type { UnifiedWatchdogRunV1 } from "../../src/unifiedCheck/watchdog";
 
 const servers: Array<{ close(): Promise<void> }> = [];
 const subjectAddress = "TRivmRsLwVRZETXqPdv98raFPHMkwuMnxP";
@@ -410,6 +411,51 @@ function deps(): AdminServerDeps {
   };
 }
 
+function unifiedRun(): UnifiedWatchdogRunV1 {
+  return {
+    id: "unified-run-1",
+    subjectAddress,
+    status: "BLOCKED_ADMIN",
+    statusReason: "manual review",
+    runPurpose: "user_check",
+    sideEffectPolicy: "authoritative",
+    createdAt: "2026-07-23T17:00:00.000Z",
+    updatedAt: "2026-07-23T17:01:00.000Z",
+    completedAt: null,
+    canaryDeadlineAt: null,
+    finalScore: null,
+    finalDecision: null,
+    hashes: {
+      snapshot: "1".repeat(64),
+      analysisManifest: "2".repeat(64),
+      evidence: null,
+      closure: null,
+      scoring: null,
+      report: null
+    },
+    versions: {
+      scoringPolicy: "scoring-signal-matrix-v4",
+      attributionPolicy: "selected-attribution-policy-v1",
+      traversalPolicy: "snapshot-closure-v1",
+      runtimeCommit: "candidate",
+      databaseSchema: 33
+    },
+    traversal: {
+      closed: null,
+      visitedCount: null,
+      frontierCount: null
+    },
+    generation: {
+      analysis: "unified",
+      deliveryAuthority: "shadow",
+      fenceId: null,
+      activatedAt: null
+    },
+    tasks: [],
+    deliveries: []
+  };
+}
+
 async function start(dependencies: AdminServerDeps = deps()) {
   const server = await startAdminServer(dependencies);
   servers.push(server);
@@ -423,6 +469,85 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
+  it("exposes authenticated Unified run/DAG reads and audited recovery actions", async () => {
+    const actions: unknown[] = [];
+    const server = await start({
+      ...deps(),
+      listUnifiedRuns: async () => [unifiedRun()],
+      applyUnifiedRecoveryAction: async (input) => {
+        actions.push(input);
+        return { ok: true, code: "resumed" };
+      }
+    });
+    const unauthorized = await fetch(
+      `${server.url}/admin/api/unified-checks`
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const headers = {
+      authorization: "Bearer secret-token",
+      "content-type": "application/json"
+    };
+    const list = await fetch(`${server.url}/admin/api/unified-checks`, {
+      headers
+    });
+    expect(list.status).toBe(200);
+    expect(await list.json()).toMatchObject({
+      runs: [{ id: "unified-run-1", finding: "blocked_admin_review", score: null }]
+    });
+
+    const detail = await fetch(
+      `${server.url}/admin/api/unified-checks/unified-run-1`,
+      { headers }
+    );
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      dag: { version: "admin-unified-dag-v1", runId: "unified-run-1" }
+    });
+
+    const page = await fetch(`${server.url}/admin/unified-checks`, { headers });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("data-unified-checks-workspace");
+
+    const recovery = await fetch(
+      `${server.url}/admin/api/unified-checks/unified-run-1/actions/resume`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          actorId: "admin-1",
+          reason: "provider recovered"
+        })
+      }
+    );
+    expect(recovery.status).toBe(200);
+    expect(actions).toEqual([expect.objectContaining({
+      runId: "unified-run-1",
+      action: "resume",
+      actorId: "admin-1",
+      reason: "provider recovered"
+    })]);
+
+    const manual = await fetch(
+      `${server.url}/admin/api/unified-checks/unified-run-1/actions/manual-delivery`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          actorId: "admin-1",
+          reason: "operator confirmed no Telegram receipt",
+          targetId: "delivery-unknown-1"
+        })
+      }
+    );
+    expect(manual.status).toBe(200);
+    expect(actions[1]).toMatchObject({
+      runId: "unified-run-1",
+      action: "manual-delivery",
+      targetId: "delivery-unknown-1"
+    });
+  });
+
   it("extracts validated persisted first-hop evidence for Admin without dropping timeline fields", () => {
     const extractor = (adminServerModule as unknown as Record<string, unknown>).extractDeepForensicReportFromAdminJob;
     expect(extractor).toBeTypeOf("function");
