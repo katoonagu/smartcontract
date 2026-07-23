@@ -45,7 +45,7 @@
     {
       "caseId": "blind-wallet-scope",
       "group": "blind_review",
-      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "subjectAddress": "TYXN5ZiJLuzUyAY2dxdzdNjbwnUkSGB1it",
       "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-wallet-scope.json",
       "requiredProperties": [
         "scope_wallet"
@@ -54,7 +54,7 @@
     {
       "caseId": "blind-selected-amount-scope",
       "group": "blind_review",
-      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKT76qbH",
+      "subjectAddress": "TV6bBsrCXz2sDSBMZhvc7vHqDwjc65ALZX",
       "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-selected-amount-scope.json",
       "requiredProperties": [
         "scope_selected_amount"
@@ -63,7 +63,7 @@
     {
       "caseId": "blind-incoming-deposit-scope",
       "group": "blind_review",
-      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKawPyGg",
+      "subjectAddress": "TSv32fr41xwv3dh99PmtdxkhWguMEEuoVh",
       "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-incoming-deposit-scope.json",
       "requiredProperties": [
         "scope_incoming_deposit"
@@ -72,7 +72,7 @@
     {
       "caseId": "blind-route-scope",
       "group": "blind_review",
-      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKi6mJHp",
+      "subjectAddress": "TRddZMs7MJmbpQFuBpFxK4BDt5tA4LLPDu",
       "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-route-scope.json",
       "requiredProperties": [
         "scope_route"
@@ -81,7 +81,7 @@
     {
       "caseId": "blind-history-scope",
       "group": "blind_review",
-      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
+      "subjectAddress": "TEognYE7Sy6jiKxkDt2EbFgkUYUfsp9U2j",
       "sourceArtifact": "artifacts/golden-v2-2026-07/source/blind-history-scope.json",
       "requiredProperties": [
         "scope_history"
