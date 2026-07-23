@@ -23,6 +23,7 @@
     "golden:v2:verify": "node --import tsx scripts/tronUsdtGoldenPilotV2.ts verify",
     "golden:v2:capture": "node --import tsx scripts/captureTronUsdtGoldenV2.ts",
     "unified:generate-golden-bindings": "node --import tsx scripts/generateUnifiedGoldenBindings.ts",
+    "unified:golden:compare": "node --import tsx scripts/compareUnifiedWalletGolden.ts",
     "admin:snapshot": "node --import tsx scripts/exportAdminSnapshot.ts",
     "wallet-intelligence:backfill": "node --import tsx scripts/backfillWalletIntelligence.ts",
     "release:verify": "node --import tsx scripts/verifyRemediationRelease.ts",
