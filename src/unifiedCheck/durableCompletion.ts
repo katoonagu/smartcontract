@@ -1,4 +1,8 @@
-import type { MinimalBranchResult, CompletedSlice } from "./orchestrator";
+import {
+  buildMinimalUnifiedCheckCandidate,
+  type MinimalBranchResult,
+  type CompletedSlice
+} from "./orchestrator";
 import {
   insertUnifiedArtifact,
   type UnifiedQueryable,
@@ -65,6 +69,17 @@ export async function commitMinimalUnifiedCheck(input: {
   candidate: CompletedSlice;
 }): Promise<void> {
   await input.db.transaction(async (client) => {
+    const candidate = buildMinimalUnifiedCheckCandidate({
+      run: input.run,
+      branches: input.branches
+    });
+    if (
+      JSON.stringify(candidate.hashes) !== JSON.stringify(input.candidate.hashes) ||
+      candidate.artifacts.size !== input.candidate.artifacts.size ||
+      [...candidate.artifacts.keys()].some((hash) => !input.candidate.artifacts.has(hash))
+    ) {
+      throw new Error("unified_completion_candidate_mismatch");
+    }
     const runRow = one(
       await client.query(
         "select * from unified_check_runs where id = $1 for update",
@@ -72,28 +87,37 @@ export async function commitMinimalUnifiedCheck(input: {
       ),
       "unified_run_missing"
     );
+    if (
+      String(runRow.analysis_key_sha256) !== input.run.analysisKeySha256 ||
+      String(runRow.subject_address) !== input.run.subjectAddress ||
+      String(runRow.run_purpose) !== input.run.runPurpose ||
+      String(runRow.side_effect_policy) !== input.run.sideEffectPolicy ||
+      String(runRow.analysis_manifest_sha256) !== input.run.analysisManifestSha256
+    ) {
+      throw new Error("unified_completion_run_binding_mismatch");
+    }
     if (runRow.status === "COMPLETED") {
       if (
-        String(runRow.evidence_bundle_sha256) === input.candidate.hashes.evidence &&
-        String(runRow.traversal_closure_sha256) === input.candidate.hashes.closure &&
-        String(runRow.scoring_bundle_sha256) === input.candidate.hashes.scoring &&
-        String(runRow.report_sha256) === input.candidate.hashes.report
+        String(runRow.evidence_bundle_sha256) === candidate.hashes.evidence &&
+        String(runRow.traversal_closure_sha256) === candidate.hashes.closure &&
+        String(runRow.scoring_bundle_sha256) === candidate.hashes.scoring &&
+        String(runRow.report_sha256) === candidate.hashes.report
       ) return;
       throw new Error("unified_completed_run_conflict");
     }
     if (runRow.status !== "RUNNING") throw new Error("unified_run_not_running");
 
-    for (const [sha256, artifact] of input.candidate.artifacts) {
+    for (const [sha256, artifact] of candidate.artifacts) {
       await insertUnifiedArtifact(client, {
         sha256,
         createdByRunId: input.run.id,
-        kind: input.candidate.artifactKinds.get(sha256) ?? "unknown",
+        kind: candidate.artifactKinds.get(sha256) ?? "unknown",
         schemaVersion: "1",
         artifact
       });
     }
     for (const branch of input.branches) {
-      await persistBranch(client, input.run, branch, input.candidate);
+      await persistBranch(client, input.run, branch, candidate);
     }
 
     one(
@@ -132,12 +156,12 @@ export async function commitMinimalUnifiedCheck(input: {
           returning *`,
         [
           input.run.id,
-          input.candidate.report.score,
-          input.candidate.report.decision,
-          input.candidate.hashes.evidence,
-          input.candidate.hashes.closure,
-          input.candidate.hashes.scoring,
-          input.candidate.hashes.report
+          candidate.report.score,
+          candidate.report.decision,
+          candidate.hashes.evidence,
+          candidate.hashes.closure,
+          candidate.hashes.scoring,
+          candidate.hashes.report
         ]
       ),
       "unified_run_complete_failed"

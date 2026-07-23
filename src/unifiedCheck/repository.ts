@@ -16,22 +16,37 @@ export type UnifiedTransactionalQueryable = UnifiedQueryable & {
 };
 
 export function createUnifiedPoolTransactionHost(pool: UnifiedQueryable & {
-  connect(): Promise<UnifiedQueryable & { release(): void }>;
+  connect(): Promise<UnifiedQueryable & { release(error?: Error): void }>;
 }): UnifiedTransactionalQueryable {
   return {
     query: (sql, values) => pool.query(sql, values),
     async transaction(work) {
       const client = await pool.connect();
-      await client.query("begin");
+      let began = false;
+      let releaseError: Error | undefined;
       try {
+        await client.query("begin");
+        began = true;
         const result = await work(client);
         await client.query("commit");
         return result;
       } catch (error) {
-        await client.query("rollback").catch(() => undefined);
+        if (began) {
+          try {
+            await client.query("rollback");
+          } catch (rollbackError) {
+            releaseError = rollbackError instanceof Error
+              ? rollbackError
+              : new Error("unified_transaction_rollback_failed");
+          }
+        } else {
+          releaseError = error instanceof Error
+            ? error
+            : new Error("unified_transaction_begin_failed");
+        }
         throw error;
       } finally {
-        client.release();
+        client.release(releaseError);
       }
     }
   };
@@ -118,16 +133,24 @@ export async function createOrGetCheckRequest(
       input.sideEffectPolicy
     ]
   );
-  return (
-    inserted.rows[0] ??
-    requiredRow(
-      await db.query(
-        "select * from unified_check_requests where request_correlation_id = $1",
-        [input.requestCorrelationId]
-      ),
-      "unified_request_reuse_failed"
-    )
+  const row = inserted.rows[0] ?? requiredRow(
+    await db.query(
+      "select * from unified_check_requests where request_correlation_id = $1",
+      [input.requestCorrelationId]
+    ),
+    "unified_request_reuse_failed"
   );
+  if (
+    String(row.subject_address) !== input.subjectAddress ||
+    String(row.chat_id) !== input.chatId ||
+    String(row.message_thread_id) !== input.messageThreadId ||
+    String(row.locale) !== input.locale ||
+    String(row.run_purpose) !== input.runPurpose ||
+    String(row.side_effect_policy) !== input.sideEffectPolicy
+  ) {
+    throw new Error("unified_request_correlation_conflict");
+  }
+  return row;
 }
 
 export async function insertUnifiedArtifact(
@@ -272,14 +295,24 @@ export async function heartbeatUnifiedTask(
 
 export async function checkpointUnifiedTask(
   db: UnifiedQueryable,
-  input: { taskId: string; leaseToken: string; checkpoint: unknown }
+  input: {
+    taskId: string;
+    leaseToken: string;
+    attempt: number;
+    checkpoint: unknown;
+  }
 ) {
   const result = await db.query(
     `update unified_check_tasks
         set checkpoint_json = $3::jsonb, updated_at = statement_timestamp()
-      where id = $1 and status = 'LEASED' and lease_token = $2
+      where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $4
       returning *`,
-    [input.taskId, input.leaseToken, JSON.stringify(input.checkpoint)]
+    [
+      input.taskId,
+      input.leaseToken,
+      JSON.stringify(input.checkpoint),
+      input.attempt
+    ]
   );
   return result.rows[0] ?? null;
 }
@@ -289,6 +322,7 @@ export async function completeUnifiedTaskAttempt(
   input: {
     taskId: string;
     leaseToken: string;
+    attempt: number;
     attemptId: string;
     artifactSha256: string;
   }
@@ -297,9 +331,9 @@ export async function completeUnifiedTaskAttempt(
     const task = requiredRow(
       await client.query(
         `select * from unified_check_tasks
-          where id = $1 and status = 'LEASED' and lease_token = $2
+          where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
           for update`,
-        [input.taskId, input.leaseToken]
+        [input.taskId, input.leaseToken, input.attempt]
       ),
       "unified_task_lease_lost"
     );
@@ -314,11 +348,101 @@ export async function completeUnifiedTaskAttempt(
           set status = 'COMPLETED', lease_owner = null, lease_token = null,
               lease_expires_at = null, heartbeat_at = null,
               updated_at = statement_timestamp()
-        where id = $1 and status = 'LEASED' and lease_token = $2
+        where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
         returning *`,
-      [input.taskId, input.leaseToken]
+      [input.taskId, input.leaseToken, input.attempt]
     );
     return requiredRow(result, "unified_task_lease_lost");
+  });
+}
+
+export async function settleUnifiedTaskLease(
+  db: UnifiedQueryable,
+  input: {
+    taskId: string;
+    leaseToken: string;
+    attempt: number;
+    status: "WAITING_RETRY" | "BLOCKED_ADMIN" | "FAILED_TECHNICAL" | "CANCELLED";
+    readyAt?: string;
+    checkpoint?: unknown;
+    lastError?: string | null;
+  }
+) {
+  const result = await db.query(
+    `update unified_check_tasks
+        set status = $4,
+            ready_at = coalesce($5::timestamptz, ready_at),
+            checkpoint_json = coalesce($6::jsonb, checkpoint_json),
+            last_error = $7,
+            lease_owner = null, lease_token = null,
+            lease_expires_at = null, heartbeat_at = null,
+            updated_at = statement_timestamp()
+      where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
+      returning *`,
+    [
+      input.taskId,
+      input.leaseToken,
+      input.attempt,
+      input.status,
+      input.readyAt ?? null,
+      input.checkpoint === undefined ? null : JSON.stringify(input.checkpoint),
+      input.lastError ?? null
+    ]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function recordUnifiedTaskAttemptAndWait(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    taskId: string;
+    leaseToken: string;
+    attempt: number;
+    attemptId: string;
+    artifactSha256: string;
+    readyAt: string;
+    checkpoint?: unknown;
+    lastError?: string | null;
+  }
+) {
+  return db.transaction(async (client) => {
+    requiredRow(
+      await client.query(
+        `select id from unified_check_tasks
+          where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
+          for update`,
+        [input.taskId, input.leaseToken, input.attempt]
+      ),
+      "unified_task_lease_lost"
+    );
+    await client.query(
+      `insert into unified_check_attempts (
+        id, task_id, attempt, artifact_sha256, completed_at
+      ) values ($1,$2,$3,$4,statement_timestamp())`,
+      [input.attemptId, input.taskId, input.attempt, input.artifactSha256]
+    );
+    return requiredRow(
+      await client.query(
+        `update unified_check_tasks
+            set status = 'WAITING_RETRY', ready_at = $4,
+                checkpoint_json = coalesce($5::jsonb, checkpoint_json),
+                last_error = $6,
+                lease_owner = null, lease_token = null,
+                lease_expires_at = null, heartbeat_at = null,
+                updated_at = statement_timestamp()
+          where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
+          returning *`,
+        [
+          input.taskId,
+          input.leaseToken,
+          input.attempt,
+          input.readyAt,
+          input.checkpoint === undefined ? null : JSON.stringify(input.checkpoint),
+          input.lastError ?? null
+        ]
+      ),
+      "unified_task_lease_lost"
+    );
   });
 }
 
@@ -363,11 +487,13 @@ export async function finalizeUnifiedRun(
       "unified_run_not_finalizing"
     );
     const references = [
+      ["analysis_manifest", String(run.analysis_manifest_sha256)],
       ["evidence_bundle", input.evidenceBundleSha256],
       ["traversal_closure", input.traversalClosureSha256],
       ["scoring_bundle", input.scoringBundleSha256],
       ["unified_wallet_report", input.reportSha256]
     ] as const;
+    const artifacts = new Map<string, Record<string, unknown>>();
     for (const [kind, sha256] of references) {
       const artifact = requiredRow(
         await client.query(
@@ -384,13 +510,86 @@ export async function finalizeUnifiedRun(
       ) {
         throw new Error(`unified_final_artifact_mismatch:${kind}`);
       }
+      if (
+        typeof artifact.artifact_json !== "object" ||
+        artifact.artifact_json === null ||
+        Array.isArray(artifact.artifact_json)
+      ) {
+        throw new Error(`unified_final_artifact_shape:${kind}`);
+      }
+      artifacts.set(kind, artifact.artifact_json as Record<string, unknown>);
+    }
+    const manifest = artifacts.get("analysis_manifest")!;
+    const evidence = artifacts.get("evidence_bundle")!;
+    const closure = artifacts.get("traversal_closure")!;
+    const scoring = artifacts.get("scoring_bundle")!;
+    const report = artifacts.get("unified_wallet_report")!;
+    if (
+      evidence.analysisManifestHash !== run.analysis_manifest_sha256 ||
+      closure.analysisManifestHash !== run.analysis_manifest_sha256 ||
+      closure.snapshotHash !== manifest.snapshotHash ||
+      scoring.evidenceBundleHash !== input.evidenceBundleSha256 ||
+      scoring.traversalClosureHash !== input.traversalClosureSha256 ||
+      report.analysisManifestHash !== run.analysis_manifest_sha256 ||
+      report.evidenceBundleHash !== input.evidenceBundleSha256 ||
+      report.traversalClosureHash !== input.traversalClosureSha256 ||
+      report.scoringBundleHash !== input.scoringBundleSha256 ||
+      Number(scoring.score) !== input.finalScore ||
+      scoring.decision !== input.finalDecision ||
+      Number(report.score) !== input.finalScore ||
+      report.decision !== input.finalDecision
+    ) {
+      throw new Error("unified_final_artifact_chain_mismatch");
+    }
+    const acceptedAttemptHashes = evidence.acceptedChildAttemptHashes;
+    if (
+      typeof acceptedAttemptHashes !== "object" ||
+      acceptedAttemptHashes === null ||
+      Array.isArray(acceptedAttemptHashes) ||
+      Object.keys(acceptedAttemptHashes).sort().join(",") !== "deep,fast,where"
+    ) {
+      throw new Error("unified_final_attempt_chain_mismatch");
+    }
+    for (const branchId of ["fast", "deep", "where"] as const) {
+      const attemptHash = String(
+        (acceptedAttemptHashes as Record<string, unknown>)[branchId] ?? ""
+      );
+      const attempt = requiredRow(
+        await client.query(
+          `select artifact_json from unified_check_artifacts
+            where sha256 = $1 and created_by_run_id = $2 and kind = 'child_attempt'`,
+          [attemptHash, input.runId]
+        ),
+        `unified_final_attempt_missing:${branchId}`
+      );
+      const artifact = attempt.artifact_json as Record<string, unknown>;
+      if (
+        fingerprintCanonicalArtifact(artifact) !== attemptHash ||
+        artifact.runId !== input.runId ||
+        artifact.branchId !== branchId ||
+        !["COMPLETED", "NOT_APPLICABLE"].includes(String(artifact.status))
+      ) {
+        throw new Error(`unified_final_attempt_mismatch:${branchId}`);
+      }
+      const accepted = await client.query(
+        `select task.id
+           from unified_check_tasks task
+           join unified_check_attempts attempt
+             on attempt.id = task.accepted_attempt_id
+          where task.run_id = $1 and task.kind = $2
+            and task.status = 'COMPLETED'
+            and attempt.artifact_sha256 = $3`,
+        [input.runId, branchId, attemptHash]
+      );
+      if (accepted.rows.length !== 1) {
+        throw new Error(`unified_final_accepted_attempt_mismatch:${branchId}`);
+      }
     }
     const unfinished = requiredRow(
       await client.query(
         `select count(*)::int as count from unified_check_tasks
           where run_id = $1
-            and (status not in ('COMPLETED','CANCELLED') or
-              (status = 'COMPLETED' and accepted_attempt_id is null))`,
+            and (status <> 'COMPLETED' or accepted_attempt_id is null)`,
         [input.runId]
       ),
       "unified_task_gate_failed"

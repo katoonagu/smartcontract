@@ -120,6 +120,7 @@ export function transitionRun(
     scoringBundleHash: string | null;
   }
 ): UnifiedRunStatus {
+  const hash = /^[0-9a-f]{64}$/u;
   if (
     event === "commit_completed" &&
     (completion === undefined ||
@@ -127,10 +128,10 @@ export function transitionRun(
       (completion.finalScore as number) < 0 ||
       (completion.finalScore as number) > 100 ||
       !completion.finalDecision ||
-      !completion.evidenceBundleHash ||
-      !completion.reportHash ||
-      !completion.traversalClosureHash ||
-      !completion.scoringBundleHash)
+      !hash.test(completion.evidenceBundleHash ?? "") ||
+      !hash.test(completion.reportHash ?? "") ||
+      !hash.test(completion.traversalClosureHash ?? "") ||
+      !hash.test(completion.scoringBundleHash ?? ""))
   ) {
     throw new Error("unified_completion_contract_invalid");
   }

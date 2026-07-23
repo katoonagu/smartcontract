@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
-import { fingerprintCanonicalJson } from "../../src/forensics/canonicalJson";
+import {
+  fingerprintCanonicalArtifact,
+  fingerprintCanonicalJson
+} from "../../src/forensics/canonicalJson";
 import { commitMinimalUnifiedCheck } from "../../src/unifiedCheck/durableCompletion";
 import {
   completeMinimalUnifiedCheck,
@@ -11,6 +14,10 @@ import {
 import type {
   UnifiedQueryable,
   UnifiedTransactionalQueryable
+} from "../../src/unifiedCheck/repository";
+import {
+  finalizeUnifiedRun,
+  insertUnifiedArtifact
 } from "../../src/unifiedCheck/repository";
 import type { AnalysisRunRecord } from "../../src/unifiedCheck/requestService";
 
@@ -153,6 +160,49 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         (await client.query("select count(*)::int as count from unified_check_deliveries"))
           .rows[0]?.count
       ).toBe(0);
+
+      const mismatchedEvidence = {
+        ...completed.evidence,
+        analysisManifestHash: "f".repeat(64)
+      };
+      const mismatchedEvidenceHash =
+        fingerprintCanonicalArtifact(mismatchedEvidence);
+      await insertUnifiedArtifact(queryable, {
+        sha256: mismatchedEvidenceHash,
+        createdByRunId: run.id,
+        kind: "evidence_bundle",
+        schemaVersion: "1",
+        artifact: mismatchedEvidence
+      });
+      await client.query(
+        "update unified_check_runs set status = 'FINALIZING' where id = $1",
+        [run.id]
+      );
+      await expect(finalizeUnifiedRun(db, {
+        runId: run.id,
+        finalScore: 0,
+        finalDecision: "ACCEPTABLE",
+        evidenceBundleSha256: mismatchedEvidenceHash,
+        traversalClosureSha256: completed.hashes.closure,
+        scoringBundleSha256: completed.hashes.scoring,
+        reportSha256: completed.hashes.report
+      })).rejects.toThrow("unified_final_artifact_chain_mismatch");
+
+      await client.query(
+        `update unified_check_tasks
+            set status = 'CANCELLED', accepted_attempt_id = null
+          where run_id = $1 and kind = 'where'`,
+        [run.id]
+      );
+      await expect(finalizeUnifiedRun(db, {
+        runId: run.id,
+        finalScore: 0,
+        finalDecision: "ACCEPTABLE",
+        evidenceBundleSha256: completed.hashes.evidence,
+        traversalClosureSha256: completed.hashes.closure,
+        scoringBundleSha256: completed.hashes.scoring,
+        reportSha256: completed.hashes.report
+      })).rejects.toThrow(/unified_final_(accepted_attempt_mismatch|tasks_not_finalized)/u);
     } finally {
       await client.query("reset search_path");
       await client.query(`drop schema if exists "${schema}" cascade`);

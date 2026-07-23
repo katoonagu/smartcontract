@@ -67,6 +67,16 @@ postgresDescribe("Unified Check repository", () => {
         sideEffectPolicy: "isolated"
       });
       expect(requestAgain.id).toBe(request.id);
+      await expect(createOrGetCheckRequest(scoped, {
+        id: "request-c",
+        requestCorrelationId: "correlation-a",
+        subjectAddress: "TDifferent",
+        chatId: "chat",
+        messageThreadId: "",
+        locale: "ru",
+        runPurpose: "synthetic_test",
+        sideEffectPolicy: "isolated"
+      })).rejects.toThrow("unified_request_correlation_conflict");
 
       const artifact = { stable: true };
       await insertUnifiedArtifact(scoped, {

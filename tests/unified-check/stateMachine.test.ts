@@ -29,6 +29,14 @@ describe("Unified Check lifecycle", () => {
     expect(() => transitionRun("FINALIZING", "commit_completed")).toThrow(
       "unified_completion_contract_invalid"
     );
+    expect(() => transitionRun("FINALIZING", "commit_completed", {
+      finalScore: 0,
+      finalDecision: "ACCEPTABLE",
+      evidenceBundleHash: "x",
+      reportHash: "x",
+      traversalClosureHash: "x",
+      scoringBundleHash: "x"
+    })).toThrow("unified_completion_contract_invalid");
   });
 
   it("rejects a completed run without the final artifact set", () => {
