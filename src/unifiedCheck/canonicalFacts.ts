@@ -9,7 +9,31 @@ export type CanonicalFactRole =
   | "receiver"
   | "sender"
   | "approval_owner"
-  | "operational_wallet";
+  | "operational_wallet"
+  | "recipient"
+  | "transit_sender"
+  | "high_volume_transit_wallet"
+  | "high_volume_recipient"
+  | "high_volume_sender"
+  | "route_sender"
+  | "route_recipient"
+  | "selected_amount_sender"
+  | "selected_amount_recipient"
+  | "fan_out_funder_recipient"
+  | "fan_out_sender"
+  | "collector_sender"
+  | "collector_recipient"
+  | "fan_in_fan_out_subject"
+  | "history_subject"
+  | "delivery_subject"
+  | "attempt_subject"
+  | "branch_subject"
+  | "coverage_subject"
+  | "dust_recipient"
+  | "new_wallet_subject"
+  | "cex_subject"
+  | "cex_self_transfer"
+  | "self_sender_recipient";
 
 type CommonFactInput = {
   readonly factType: string;
@@ -68,6 +92,14 @@ export type CanonicalFactV1 = {
   readonly payload: unknown;
 };
 
+export type AdjudicatedFactV4 = {
+  readonly canonicalFactId: string;
+  readonly lane: CanonicalFactLane;
+  readonly role: CanonicalFactRole;
+  readonly directness: CanonicalFactV1["directness"];
+  readonly timing: CanonicalFactV1["timing"];
+};
+
 type TypedAbsent = {
   readonly kind: "absent";
   readonly valueType: "tron_address" | "token_contract" | "timestamp";
@@ -84,13 +116,88 @@ function validateCommon(fact: CanonicalFactInput): void {
   if (
     fact.factType.trim().length === 0 ||
     fact.subject.trim().length === 0 ||
-    fact.sourceBranch.trim().length === 0 ||
+    !["hard", "pattern", "context", "neutral"].includes(fact.lane) ||
+    !["exact", "corroborated", "contextual"].includes(fact.strength) ||
+    !["fast", "where", "deep"].includes(fact.sourceBranch) ||
     !["direct", "indirect"].includes(fact.directness) ||
     !["at_event", "later", "current", "unknown"].includes(fact.timing) ||
     (fact.negative === true && fact.scopeStatus !== "COMPLETED")
   ) {
     throw new TypeError("unified_canonical_fact_invalid");
   }
+}
+
+function adjudicatedFactType(fact: AdjudicatedFactV4): string {
+  if (fact.lane === "hard" && fact.role === "victim") {
+    return "confirmed_victim_debit";
+  }
+  if (fact.lane === "hard" && fact.role === "recipient") {
+    return "blacklisted_at_transfer";
+  }
+  if (fact.lane === "pattern") {
+    if (fact.role === "approval_owner") return "dangerous_unlimited_approval";
+    if (fact.role === "fan_in_fan_out_subject") return "dense_fan_in_fan_out";
+    if (fact.role.startsWith("high_volume_")) return "high_volume_transit";
+    if (fact.role.startsWith("collector_")) return "collector_transit_pattern";
+    if (fact.role.startsWith("route_")) return "route_transit_pattern";
+    if (fact.role.startsWith("selected_amount_")) return "selected_amount_forwarded";
+    if (fact.role.startsWith("fan_out_")) return "fan_out_pattern";
+    if (fact.role === "transit_sender") return "rapid_forwarding";
+  }
+  if (fact.lane === "neutral" && fact.role === "operational_wallet") {
+    return "old_active_operational_wallet";
+  }
+  if (fact.lane === "neutral" && fact.role === "new_wallet_subject") {
+    return "no_usdt_activity";
+  }
+  if (fact.lane === "neutral" && fact.role === "cex_subject") {
+    return "clean_confirmed_context";
+  }
+  if (
+    fact.lane === "context" &&
+    fact.role === "recipient" &&
+    fact.timing === "later"
+  ) {
+    return "counterparty_later_frozen";
+  }
+  return `adjudicated_${fact.lane}_${fact.role}`;
+}
+
+export function canonicalizeAdjudicatedFactsV4(input: {
+  readonly subjectAddress: string;
+  readonly facts: readonly AdjudicatedFactV4[];
+}): CanonicalFactV1[] {
+  if (input.subjectAddress.trim().length === 0) {
+    throw new TypeError("unified_adjudicated_subject_missing");
+  }
+  const facts: CanonicalStateFactInput[] = input.facts.map((fact) => {
+    if (fact.canonicalFactId.trim().length === 0) {
+      throw new TypeError("unified_adjudicated_fact_id_missing");
+    }
+    return {
+      profile: "state",
+      chain: "tron",
+      factType: adjudicatedFactType(fact),
+      subject: input.subjectAddress,
+      counterpartyOrObject: null,
+      subjectRole: fact.role,
+      effectiveAt: null,
+      snapshotBlock: fact.canonicalFactId,
+      lane: fact.lane,
+      strength: fact.lane === "hard"
+        ? "exact"
+        : fact.lane === "pattern"
+          ? "corroborated"
+          : fact.lane === "context"
+            ? "contextual"
+            : "exact",
+      sourceBranch: "deep",
+      directness: fact.directness,
+      timing: fact.timing,
+      payload: { adjudicatedFactId: fact.canonicalFactId }
+    };
+  });
+  return [...canonicalizeEvidenceFacts({ facts }).inventory.facts];
 }
 
 export function canonicalFactId(fact: CanonicalFactInput): string {

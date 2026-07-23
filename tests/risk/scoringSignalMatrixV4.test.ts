@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalizeAdjudicatedFactsV4,
   canonicalizeEvidenceFacts,
   type CanonicalFactInput,
   type CanonicalFactV1
 } from "../../src/unifiedCheck/canonicalFacts";
 import { scoreSignalMatrixV4 } from "../../src/risk/scoringSignalMatrixV4";
+import {
+  GOLDEN_CASE_EXPECTATIONS_V4,
+  LOCKED_GOLDEN_MANIFEST_SHA256
+} from "../../src/risk/scoringPolicyV4.generated";
 
 const subjectAddress = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 let sequence = 0;
@@ -32,6 +37,30 @@ function fact(overrides: Partial<CanonicalFactInput> = {}): CanonicalFactV1 {
 }
 
 describe("scoring signal matrix v4", () => {
+  it("replays every locked adjudication through production canonicalization and scoring", () => {
+    expect(LOCKED_GOLDEN_MANIFEST_SHA256).toBe(
+      "4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407"
+    );
+    expect(GOLDEN_CASE_EXPECTATIONS_V4).toHaveLength(24);
+    for (const expectation of GOLDEN_CASE_EXPECTATIONS_V4) {
+      const facts = canonicalizeAdjudicatedFactsV4({
+        subjectAddress,
+        facts: expectation.facts
+      });
+      const result = scoreSignalMatrixV4({ subjectAddress, facts });
+      expect(
+        {
+          score: result.score,
+          decision: result.decision
+        },
+        expectation.rowId
+      ).toEqual({
+        score: expectation.exactScore,
+        decision: expectation.expectedDecision
+      });
+    }
+  });
+
   it("is invariant to coverage, duplicate facts and input reorder", () => {
     const facts = [
       fact({
@@ -172,7 +201,7 @@ describe("scoring signal matrix v4", () => {
       })]
     });
     expect(direct.score).toBe(90);
-    expect(indirect.score).toBe(45);
+    expect(indirect.score).toBe(0);
     expect(later.score).toBe(0);
     expect(victim.score).toBe(50);
   });

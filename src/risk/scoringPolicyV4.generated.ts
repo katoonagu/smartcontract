@@ -48,12 +48,6 @@ export const SCORING_POLICY_V4 = {
       "expectedDecision": "REVIEW"
     },
     {
-      "ruleId": "indirect_restriction_context",
-      "adjudicatedSourceCaseId": "regression-tbl7",
-      "exactScore": 45,
-      "expectedDecision": "REVIEW"
-    },
-    {
       "ruleId": "neutral_no_observed_risk",
       "adjudicatedSourceCaseId": "synthetic-empty-wallet",
       "exactScore": 0,

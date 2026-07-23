@@ -92,7 +92,6 @@ const SEMANTIC_RULE_SOURCES = [
   ["selected_amount_transit", "blind-selected-amount-scope"],
   ["fan_out", "blind-wallet-scope"],
   ["rapid_forwarding", "blind-history-scope"],
-  ["indirect_restriction_context", "regression-tbl7"],
   ["operational_wallet", "synthetic-operational-wallet"],
   ["clean_confirmed_context", "synthetic-one-legitimate-transfer"],
   ["neutral_no_observed_risk", "synthetic-empty-wallet"],

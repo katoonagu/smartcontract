@@ -53,7 +53,7 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "direct_blacklist_at_event",
     factTypes: ["blacklisted_at_transfer", "direct_blacklist_relation"],
-    roles: ["receiver", "drainer"],
+    roles: ["receiver", "recipient", "drainer"],
     lane: "hard",
     strengths: ["exact"],
     directness: "direct",
@@ -80,7 +80,7 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "correlated_dense_transit",
     factTypes: ["unknown_with_correlated_pattern", "dense_fan_in_fan_out"],
-    roles: ["subject"],
+    roles: ["subject", "fan_in_fan_out_subject"],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
@@ -89,7 +89,12 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "high_volume_transit",
     factTypes: ["high_volume_transit", "high_volume_inbound_outbound"],
-    roles: ["subject"],
+    roles: [
+      "subject",
+      "high_volume_transit_wallet",
+      "high_volume_recipient",
+      "high_volume_sender"
+    ],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
@@ -98,7 +103,13 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "collector_transit",
     factTypes: ["collector_transit_pattern", "collector_pattern"],
-    roles: ["subject", "sender", "receiver"],
+    roles: [
+      "subject",
+      "sender",
+      "receiver",
+      "collector_sender",
+      "collector_recipient"
+    ],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
@@ -107,7 +118,7 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "route_transit",
     factTypes: ["route_transit_pattern"],
-    roles: ["subject", "sender", "receiver"],
+    roles: ["subject", "sender", "receiver", "route_sender", "route_recipient"],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
@@ -116,7 +127,13 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "selected_amount_transit",
     factTypes: ["selected_amount_forwarded"],
-    roles: ["subject", "sender", "receiver"],
+    roles: [
+      "subject",
+      "sender",
+      "receiver",
+      "selected_amount_sender",
+      "selected_amount_recipient"
+    ],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
@@ -125,7 +142,7 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "fan_out",
     factTypes: ["fan_out_pattern"],
-    roles: ["subject"],
+    roles: ["subject", "fan_out_funder_recipient", "fan_out_sender"],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
@@ -134,20 +151,11 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
   {
     ruleId: "rapid_forwarding",
     factTypes: ["rapid_forwarding"],
-    roles: ["subject", "sender"],
+    roles: ["subject", "sender", "transit_sender"],
     lane: "pattern",
     strengths: ["corroborated"],
     directness: "direct",
     timings: ["current", "at_event"]
-  },
-  {
-    ruleId: "indirect_restriction_context",
-    factTypes: ["indirect_blacklist_relation"],
-    roles: ["receiver", "sender", "subject"],
-    lane: "context",
-    strengths: ["exact", "corroborated"],
-    directness: "indirect",
-    timings: ["at_event", "current"]
   },
   {
     ruleId: "operational_wallet",
@@ -156,7 +164,7 @@ const SEMANTIC_RULES: readonly SemanticRule[] = [
     lane: "neutral",
     strengths: ["exact"],
     directness: "direct",
-    timings: ["current"]
+    timings: ["current", "at_event"]
   }
 ];
 
