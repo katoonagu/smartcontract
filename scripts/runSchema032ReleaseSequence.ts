@@ -32,8 +32,14 @@ import {
   type Schema032MigrationTargetBinding,
   type Schema032ReleaseEvidenceV1
 } from "./verifySchema032";
-import { SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME, SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION, applyVerifiedTrackedMigration,
-  checksumMigrationBytes } from "../src/storage/schemaMigrations";
+import {
+  REQUIRED_SCHEMA_FILENAME as RELEASE_SCHEMA_FILENAME,
+  REQUIRED_SCHEMA_VERSION as RELEASE_SCHEMA_VERSION,
+  SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
+  SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
+  applyVerifiedTrackedMigration,
+  checksumMigrationBytes
+} from "../src/storage/schemaMigrations";
 import {
   buildSchema032MigrationSessionIdentitySha256,
   observeSchema032MigrationSessionIdentity,
@@ -77,6 +83,8 @@ const MAXIMUM_G13_SEQUENCE_MS = 20 * 60_000;
 const G13_SETTLEMENT_MARGIN_MS = 5 * 60_000;
 const MINIMUM_G13_CLAIM_VALIDITY_MS = MAXIMUM_G13_SEQUENCE_MS + G13_SETTLEMENT_MARGIN_MS;
 export const SCHEMA_032_PRODUCER_ADVISORY_LOCK = 320_032_500;
+export const APPROVED_SCHEMA_033_CHECKSUM =
+  "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
 export const SCHEMA_032_SEQUENCE_FILES = Object.freeze({
@@ -327,8 +335,10 @@ export function validateSchema032CandidateRepositoryState(input: {
   if (!SHA40.test(input.candidateSha) || input.headSha !== input.candidateSha || input.status !== ""
       || !validNames || sorted.join("|") !== input.migrationFiles.join("|")
       || sorted.filter((name) => name === REQUIRED_SCHEMA_FILENAME).length !== 1
-      || Math.max(...versions) !== 32 || versions.some((version) => version > 32)
-      || sorted.at(-1) !== REQUIRED_SCHEMA_FILENAME) {
+      || sorted.filter((name) => name === RELEASE_SCHEMA_FILENAME).length !== 1
+      || Math.max(...versions) !== RELEASE_SCHEMA_VERSION
+      || versions.some((version) => version > RELEASE_SCHEMA_VERSION)
+      || sorted.at(-1) !== RELEASE_SCHEMA_FILENAME) {
     fail("schema_032_sequence_candidate_repository_unverified");
   }
 }
@@ -342,17 +352,27 @@ export function validateControlledMigrationOutput(
     fail("schema_032_sequence_migration_output_invalid");
   }
   const lines = stdout.endsWith("\n") ? stdout.slice(0, -1).split(/\r?\n/u) : [];
-  const expected = migrationFiles.map((name) => {
-    if (name !== REQUIRED_SCHEMA_FILENAME) return `Migration applied: migrations/${name}`;
-    const action = sequence === "first" ? "applied and verified" : "already verified";
-    return `Migration ${action}: migrations/${name} (schema 32 ${APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)})`;
+  const invalidLine = lines.some((line, index) => {
+    const name = migrationFiles[index];
+    if (name === undefined) return true;
+    const version = Number.parseInt(name.slice(0, 3), 10);
+    if (version < REQUIRED_SCHEMA_VERSION) {
+      return line !== `Migration applied: migrations/${name}`;
+    }
+    const checksum = name === REQUIRED_SCHEMA_FILENAME
+      ? APPROVED_SCHEMA_032_CHECKSUM
+      : name === RELEASE_SCHEMA_FILENAME
+        ? APPROVED_SCHEMA_033_CHECKSUM
+        : null;
+    if (checksum === null) return true;
+    const actions = sequence === "first"
+      ? ["applied and verified", "already verified"]
+      : ["already verified"];
+    return !actions.some((action) =>
+      line === `Migration ${action}: migrations/${name} (schema ${version} ${checksum.slice(0, 12)})`
+    );
   });
-  const firstAlreadyVerified = `Migration already verified: migrations/${REQUIRED_SCHEMA_FILENAME} (schema 32 ${APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)})`;
-  if (lines.length !== expected.length || lines.some((line, index) => (
-    sequence === "first" && index === expected.length - 1
-      ? line !== expected[index] && line !== firstAlreadyVerified
-      : line !== expected[index]
-  ))) {
+  if (lines.length !== migrationFiles.length || invalidLine) {
     fail("schema_032_sequence_migration_output_invalid");
   }
 }
@@ -968,6 +988,11 @@ async function runFixedMigrationInOwnedSession(
         requiredSchema032Checksum
       });
       if (version === REQUIRED_SCHEMA_VERSION) requiredSchema032Checksum = verification.checksumSha256;
+      if (version === RELEASE_SCHEMA_VERSION
+          && (migrationFile !== RELEASE_SCHEMA_FILENAME
+            || verification.checksumSha256 !== APPROVED_SCHEMA_033_CHECKSUM)) {
+        fail("schema_033_checksum_mismatch");
+      }
       const action = verification.status === "applied" ? "applied and verified" : "already verified";
       lines.push(`Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`);
     }

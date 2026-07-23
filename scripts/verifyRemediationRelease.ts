@@ -218,6 +218,60 @@ export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
   "docs/knowledge/13-agent-observations.md"
 ]);
 
+const UNIFIED_WALLET_CANDIDATE_ALLOWED_PREFIXES = Object.freeze([
+  "docs/audit/2026-07-system-audit/golden-v2/",
+  "src/unifiedCheck/",
+  "tests/fixtures/golden-v2/",
+  "tests/fixtures/unified-check/",
+  "tests/golden-v2/",
+  "tests/unified-check/",
+  "tools/golden-capture-v2/",
+  "tools/golden-pilot-v2/"
+]);
+
+const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
+  "docs/knowledge/02-check-modes.md",
+  "docs/knowledge/04-data-sources-tronscan-indexing.md",
+  "docs/knowledge/11-glossary.md",
+  "docs/superpowers/plans/2026-07-23-tron-usdt-golden-pilot-v2.md",
+  "docs/superpowers/plans/2026-07-23-unified-wallet-check.md",
+  "docs/superpowers/specs/2026-07-23-unified-wallet-check-golden-pilot-v2-design.md",
+  "migrations/033_unified_wallet_check.sql",
+  "scripts/adjudicateTronUsdtGoldenV2.ts",
+  "scripts/captureTronUsdtGoldenV2.ts",
+  "scripts/compareUnifiedWalletGolden.ts",
+  "scripts/generateUnifiedGoldenBindings.ts",
+  "scripts/runUnifiedWalletCanary.ts",
+  "scripts/tronUsdtGoldenPilotV2.ts",
+  "src/admin/adminConsole.ts",
+  "src/admin/forensicsGraph.ts",
+  "src/forensics/canonicalJson.ts",
+  "src/forensics/telegramDelivery.ts",
+  "src/forensics/tronAddressAllTimeIndex.ts",
+  "src/risk/scoreAnchorV3.ts",
+  "src/risk/scoringPolicyV4.generated.ts",
+  "src/risk/scoringSignalMatrixV4.ts",
+  "src/runtime/startupSchedule.ts",
+  "src/runtime/startupSchemaGate.ts",
+  "src/storage/repositories.ts",
+  "src/storage/schemaMigrations.ts",
+  "src/tron/tronscanScheduler.ts",
+  "src/wallet/metrics.ts",
+  "tests/admin/adminConsole.test.ts",
+  "tests/admin/adminServer.test.ts",
+  "tests/forensics/canonicalJson.test.ts",
+  "tests/risk/scoreAnchorV3.test.ts",
+  "tests/risk/scoringSignalMatrixV4.test.ts",
+  "tests/runtime/runtimeVersion033.test.ts",
+  "tests/runtime/startupSchedule.test.ts",
+  "tests/runtime/startupSchemaGate.test.ts",
+  "tests/storage/migration032.postgres.test.ts",
+  "tests/storage/migration033.postgres.test.ts",
+  "tests/storage/schemaMigrations.test.ts",
+  "tests/storage/unifiedCheck.postgres.test.ts",
+  "tests/wallet/metrics.test.ts"
+]);
+
 const ADDRESS_POISONING_PROTECTED_PATHS = new Set([
   "src/monitor/addressPoisoning.ts", "src/monitor/addressPoisoningWorker.ts", "src/alerts/addressPoisoningAlert.ts",
   "migrations/031_address_poisoning_monitor.sql", "tests/monitor/addressPoisoning.test.ts",
@@ -234,7 +288,17 @@ export function validatePlan5CandidateScope(output: string): string[] {
   if (paths.some((path) => !path)) throw new Error("Plan 5 candidate path framing is invalid");
   for (const path of paths) {
     if (ADDRESS_POISONING_PROTECTED_PATHS.has(path)) throw new Error(`Address Poisoning path changed: ${path}`);
-    if (!PLAN5_CANDIDATE_ALLOWED_PATHS.has(path)) throw new Error(`unapproved Plan 5 candidate path: ${path}`);
+    const unifiedPath = /^[A-Za-z0-9._/-]+$/u.test(path)
+      && !/(?:^|\/)\.\.(?:\/|$)/u.test(path)
+      && (
+        UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS.has(path)
+        || UNIFIED_WALLET_CANDIDATE_ALLOWED_PREFIXES.some((prefix) =>
+          path.startsWith(prefix)
+        )
+      );
+    if (!PLAN5_CANDIDATE_ALLOWED_PATHS.has(path) && !unifiedPath) {
+      throw new Error(`unapproved Plan 5 candidate path: ${path}`);
+    }
   }
   return paths;
 }

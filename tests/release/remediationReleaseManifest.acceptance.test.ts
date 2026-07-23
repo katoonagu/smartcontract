@@ -540,7 +540,7 @@ it("[REQ-38][TASK0-BASELINE] parses typed baseline evidence and rejects nested s
       file: "032_telegram_runtime_forensics_data_contracts.sql",
       sha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
       approvedMatch: true,
-      migration033OrLater: [],
+      migration033OrLater: ["migrations/033_unified_wallet_check.sql"],
       uncommittedMigrationChanges: []
     },
     disposableDatabases: ["tron_watch_plan5_clean", "tron_watch_plan5_clone", "tron_watch_plan5_runtime_sanitized"],
@@ -644,6 +644,15 @@ it("[REQ-38][TASK0-BASELINE] parses typed baseline evidence and rejects nested s
     CANDIDATE_SHA,
     { isAncestor: () => true }
   )).toThrow(/owner plan/i);
+  const unexpectedMigration = structuredClone(baseline);
+  unexpectedMigration.migration.migration033OrLater.push(
+    "migrations/034_unreviewed.sql"
+  );
+  expect(() => api.validateTask0BaselineEvidence(
+    unexpectedMigration,
+    CANDIDATE_SHA,
+    { isAncestor: () => true }
+  )).toThrow(/migration/i);
   expect(() => api.validateTask0BaselineEvidence({
     ...baseline,
     nested: { telegramBotToken: "123456789:AAExampleTokenValue" }
@@ -1545,6 +1554,9 @@ it("[REQ-38][CANDIDATE-SCOPE] accepts exact approved Plan5 candidate scope and r
   expect(() => runner.validatePlan5CandidateScope("docs/knowledge/03-job-lifecycle-and-async-checks.md\0")).toThrow();
   expect(() => runner.validatePlan5CandidateScope("src/monitor/addressPoisoning.ts\0")).toThrow();
   expect(() => runner.validatePlan5CandidateScope("src/unapproved.ts\0")).toThrow();
+  expect(() => runner.validatePlan5CandidateScope(
+    "docs/audit/2026-07-system-audit/golden-v2/../unapproved.json\0"
+  )).toThrow();
   expect(() => runner.validatePlan5CandidateScope(
     "src/monitor/addressPoisoning.ts\0src/release/remediationReleaseManifest.ts\0"
   )).toThrow();

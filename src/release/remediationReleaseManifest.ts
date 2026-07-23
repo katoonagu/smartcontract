@@ -724,7 +724,10 @@ export function validateTask0BaselineEvidence(
   if (migration.file !== "032_telegram_runtime_forensics_data_contracts.sql"
       || migration.sha256 !== "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d"
       || migration.approvedMatch !== true || !Array.isArray(migration.migration033OrLater)
-      || migration.migration033OrLater.length !== 0 || !Array.isArray(migration.uncommittedMigrationChanges)
+      || JSON.stringify(migration.migration033OrLater) !== JSON.stringify([
+        "migrations/033_unified_wallet_check.sql"
+      ])
+      || !Array.isArray(migration.uncommittedMigrationChanges)
       || migration.uncommittedMigrationChanges.length !== 0) throw new Error("Task0 migration is invalid");
   if (JSON.stringify(evidence.disposableDatabases) !== JSON.stringify([
     "tron_watch_plan5_clean", "tron_watch_plan5_clone", "tron_watch_plan5_runtime_sanitized"

@@ -146,6 +146,70 @@ function artifactTreeSnapshot(root: string, relative = ""): string[] {
 }
 
 async function materializeInitialGateEvidence(root: string, candidateSha: string) {
+  const task0bBytes = readFileSync(join(root, "task0b-release-freeze.json"));
+  const task0b = JSON.parse(task0bBytes.toString("utf8"));
+  const freezeBytes = readFileSync(join(root, "release-freeze-identity-v2.json"));
+  const freeze = JSON.parse(freezeBytes.toString("utf8"));
+  const platform = task0b.artifactRoot.accessControlSource ===
+      "windows_acl_direct_read"
+    ? "windows"
+    : "posix";
+  const trustedPolicy = {
+    version: "trusted-os-principal-policy-v2",
+    policyId: platform === "windows"
+      ? "windows-configured-canonical-set-v1"
+      : "posix-owner-only-v1",
+    platform,
+    normalizedTrustedPrincipalSetSha256: releaseSha256V2(
+      canonicalReleaseJsonV2(["test-principal"])
+    ),
+    trustedPrincipalCount: 1,
+    candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: releaseSha256V2(freezeBytes),
+    task0BPreflightEvidenceSha256: releaseSha256V2(task0bBytes),
+    ownerIdentityFingerprintSha256:
+      task0b.artifactRoot.ownerIdentityFingerprintSha256,
+    accessControlFingerprintSha256:
+      task0b.artifactRoot.accessControlFingerprintSha256,
+    authoritativePolicySource: "task0b_allowlisted_writer_principals_v2",
+    observedAt: T0,
+    source: "task0b_acl_policy_read_only",
+    verified: true
+  };
+  const trustedPolicyBytes = canonicalBytes(trustedPolicy);
+  const trustBoundary = {
+    version: "artifact-root-trust-boundary-evidence-v1",
+    candidateSha,
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: releaseSha256V2(freezeBytes),
+    task0BPreflightEvidenceSha256: releaseSha256V2(task0bBytes),
+    artifactRootObservationSha256:
+      freeze.artifactRootTrustBoundaryEvidenceSha256,
+    trustedOsPrincipalPolicySha256: releaseSha256V2(trustedPolicyBytes),
+    ownerIdentityFingerprintSha256:
+      task0b.artifactRoot.ownerIdentityFingerprintSha256,
+    accessControlFingerprintSha256:
+      task0b.artifactRoot.accessControlFingerprintSha256,
+    accessControlSource: task0b.artifactRoot.accessControlSource,
+    outsideRepository: true,
+    noSymlink: true,
+    restrictiveAccessVerified: true,
+    exclusiveWriteVerified: true,
+    observedAt: T0,
+    source: "task0b_protected_root_acl_read_only",
+    verified: true
+  };
+  await writeFile(
+    join(root, "trusted-os-principal-policy-v2.json"),
+    trustedPolicyBytes
+  );
+  await writeFile(
+    join(root, "artifact-root-trust-boundary-evidence-v1.json"),
+    canonicalBytes(trustBoundary)
+  );
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
   for (const gate of gates) {
     const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id as keyof typeof PRE_RELEASE_GATE_EVIDENCE_POLICY_V2];
@@ -163,8 +227,15 @@ async function materializeInitialGateEvidence(root: string, candidateSha: string
       }
       const bytes = readFileSync(path);
       const parsed = JSON.parse(bytes.toString("utf8"));
+      const g00Kind = relativePath === "trusted-os-principal-policy-v2.json"
+        ? "trusted_os_principal_policy"
+        : relativePath === "task0-baseline.json"
+          ? "task0_baseline"
+          : "release_freeze_materialization";
       gate.evidence.push({
-        kind: policy.requiredKinds[index] ?? policy.allowedKinds[0],
+        kind: gate.id === "G00_BASE"
+          ? g00Kind
+          : policy.requiredKinds[index] ?? policy.allowedKinds[0],
         relativePath,
         sha256: releaseSha256V2(bytes),
         schemaVersion: parsed.version,
