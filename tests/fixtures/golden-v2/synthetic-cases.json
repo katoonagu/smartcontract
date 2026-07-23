@@ -1,0 +1,124 @@
+{
+  "version": "golden-synthetic-cases-v2",
+  "cases": [
+    {
+      "caseId": "synthetic-empty-wallet",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "amountRaw": "0",
+      "timestamp": "2026-07-23T00:00:00.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "caseId": "synthetic-new-no-usdt",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKT76qbH",
+      "amountRaw": "0",
+      "timestamp": "2026-07-23T00:00:01.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    {
+      "caseId": "synthetic-one-legitimate-transfer",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKawPyGg",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:02.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000003"
+    },
+    {
+      "caseId": "synthetic-unknown-no-pattern",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKi6mJHp",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:03.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000004"
+    },
+    {
+      "caseId": "synthetic-direct-blacklist-1pct",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
+      "amountRaw": "10000",
+      "timestamp": "2026-07-23T00:00:04.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000005"
+    },
+    {
+      "caseId": "synthetic-bybit-plus-hard-evidence",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKv2TRTS",
+      "amountRaw": "99000000",
+      "timestamp": "2026-07-23T00:00:05.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000006"
+    },
+    {
+      "caseId": "synthetic-dangerous-approval-no-debit",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL2ynyg7",
+      "amountRaw": "1000000000",
+      "timestamp": "2026-07-23T00:00:06.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000007"
+    },
+    {
+      "caseId": "synthetic-victim-debit",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL9GFcbh",
+      "amountRaw": "50000000",
+      "timestamp": "2026-07-23T00:00:07.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000008"
+    },
+    {
+      "caseId": "synthetic-operational-wallet",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "amountRaw": "500000000",
+      "timestamp": "2026-07-23T00:00:08.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000009"
+    },
+    {
+      "caseId": "synthetic-dust-spam",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKT76qbH",
+      "amountRaw": "1",
+      "timestamp": "2026-07-23T00:00:09.000Z",
+      "txHash": "000000000000000000000000000000000000000000000000000000000000000a"
+    },
+    {
+      "caseId": "synthetic-dense-wallet",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKawPyGg",
+      "amountRaw": "1000000000000",
+      "timestamp": "2026-07-23T00:00:10.000Z",
+      "txHash": "000000000000000000000000000000000000000000000000000000000000000b"
+    },
+    {
+      "caseId": "synthetic-500-pages",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKi6mJHp",
+      "amountRaw": "500000000",
+      "timestamp": "2026-07-23T00:00:11.000Z",
+      "txHash": "000000000000000000000000000000000000000000000000000000000000000c"
+    },
+    {
+      "caseId": "synthetic-duplicates",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:12.000Z",
+      "txHash": "000000000000000000000000000000000000000000000000000000000000000d"
+    },
+    {
+      "caseId": "synthetic-reorder",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKv2TRTS",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:13.000Z",
+      "txHash": "000000000000000000000000000000000000000000000000000000000000000e"
+    },
+    {
+      "caseId": "synthetic-restart",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL2ynyg7",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:14.000Z",
+      "txHash": "000000000000000000000000000000000000000000000000000000000000000f"
+    },
+    {
+      "caseId": "synthetic-key-exhaustion",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkL9GFcbh",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:15.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000010"
+    },
+    {
+      "caseId": "synthetic-ambiguous-delivery",
+      "subjectAddress": "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+      "amountRaw": "1000000",
+      "timestamp": "2026-07-23T00:00:16.000Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000011"
+    }
+  ]
+}
