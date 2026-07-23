@@ -8,6 +8,18 @@ export type StartupWorkLabel =
   | "address_index"
   | "address_poisoning";
 
+export const UNIFIED_RESOURCE_WORK_LABELS = [
+  "unified_provider_io",
+  "unified_indexing",
+  "unified_cpu_aggregation",
+  "unified_scoring_rendering",
+  "unified_delivery",
+  "unified_watchdog"
+] as const;
+
+export type UnifiedResourceWorkLabel =
+  typeof UNIFIED_RESOURCE_WORK_LABELS[number];
+
 export type StartupDelayConfig = {
   pollStartDelayMs: number;
   forensicWhereStartDelayMs: number;
@@ -47,6 +59,26 @@ export type StartStartupWorkScheduleOptions = {
   clearIntervalFn?: typeof clearInterval;
 };
 
+export type StartUnifiedResourceWorkScheduleOptions = {
+  schedule: Array<{ label: UnifiedResourceWorkLabel; delayMs: number }>;
+  startupWork: Record<UnifiedResourceWorkLabel, () => Promise<void>>;
+  intervalByLabel: Record<UnifiedResourceWorkLabel, number>;
+  onError: (eventName: string, error: unknown, label: UnifiedResourceWorkLabel) => void;
+  setTimeoutFn?: typeof setTimeout;
+  setIntervalFn?: typeof setInterval;
+  clearTimeoutFn?: typeof clearTimeout;
+  clearIntervalFn?: typeof clearInterval;
+};
+
+export function buildUnifiedResourceWorkSchedule(
+  startDelayMs: Partial<Record<UnifiedResourceWorkLabel, number>> = {}
+): Array<{ label: UnifiedResourceWorkLabel; delayMs: number }> {
+  return UNIFIED_RESOURCE_WORK_LABELS.map((label) => ({
+    label,
+    delayMs: startDelayMs[label] ?? 0
+  }));
+}
+
 export function buildStartupWorkSchedule(config: StartupDelayConfig): StartupWorkScheduleItem[] {
   return [
     { label: "poll", delayMs: config.pollStartDelayMs },
@@ -84,7 +116,18 @@ export function createNonOverlappingStartupWork(
   };
 }
 
-export function startStartupWorkSchedule(options: StartStartupWorkScheduleOptions): StartupWorkScheduleController {
+function startWorkSchedule<Label extends string>(options: {
+  schedule: Array<{ label: Label; delayMs: number }>;
+  startupWork: Record<Label, () => Promise<void>>;
+  intervalByLabel: Record<Label, number>;
+  onError: (eventName: string, error: unknown, label: Label) => void;
+  initialErrorEventByLabel?: Partial<Record<Label, string>>;
+  intervalErrorEventByLabel?: Partial<Record<Label, string>>;
+  setTimeoutFn?: typeof setTimeout;
+  setIntervalFn?: typeof setInterval;
+  clearTimeoutFn?: typeof clearTimeout;
+  clearIntervalFn?: typeof clearInterval;
+}): StartupWorkScheduleController {
   const setTimeoutFn = options.setTimeoutFn ?? setTimeout;
   const setIntervalFn = options.setIntervalFn ?? setInterval;
   const clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
@@ -121,6 +164,38 @@ export function startStartupWorkSchedule(options: StartStartupWorkScheduleOption
       for (const startupInterval of startupIntervals) {
         clearIntervalFn(startupInterval);
       }
+    }
+  };
+}
+
+export function startStartupWorkSchedule(
+  options: StartStartupWorkScheduleOptions
+): StartupWorkScheduleController {
+  return startWorkSchedule(options);
+}
+
+export function startUnifiedResourceWorkSchedule(
+  options: StartUnifiedResourceWorkScheduleOptions
+): StartupWorkScheduleController {
+  const stopped = { value: false };
+  const guarded = Object.fromEntries(
+    UNIFIED_RESOURCE_WORK_LABELS.map((label) => [
+      label,
+      createNonOverlappingStartupWork(
+        options.startupWork[label],
+        () => stopped.value
+      ).run
+    ])
+  ) as Record<UnifiedResourceWorkLabel, () => Promise<void>>;
+  const controller = startWorkSchedule({
+    ...options,
+    startupWork: guarded
+  });
+  return {
+    ...controller,
+    stop() {
+      stopped.value = true;
+      controller.stop();
     }
   };
 }

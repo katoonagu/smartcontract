@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADDRESS_POISONING_INTERVAL_MS,
+  UNIFIED_RESOURCE_WORK_LABELS,
   buildStartupWorkSchedule,
+  buildUnifiedResourceWorkSchedule,
   createNonOverlappingStartupWork,
   startStartupWorkSchedule,
+  startUnifiedResourceWorkSchedule,
   type StartupWorkLabel
 } from "../../src/runtime/startupSchedule";
 
@@ -43,6 +46,45 @@ describe("startup work schedule", () => {
       { label: "address_poisoning", delayMs: 5_000 }
     ]);
     expect(ADDRESS_POISONING_INTERVAL_MS).toBe(30_000);
+  });
+
+  it("schedules one guarded cycle per Unified resource, not per check mode", async () => {
+    vi.useFakeTimers();
+    const schedule = buildUnifiedResourceWorkSchedule({
+      unified_provider_io: 10,
+      unified_delivery: 20
+    });
+    expect(schedule.map(({ label }) => label)).toEqual(UNIFIED_RESOURCE_WORK_LABELS);
+    expect(schedule.map(({ label }) => label)).not.toContain("fast");
+    expect(schedule.map(({ label }) => label)).not.toContain("deep");
+    expect(schedule.map(({ label }) => label)).not.toContain("where");
+    const releaseByLabel = new Map<string, () => void>();
+    const work = Object.fromEntries(
+      UNIFIED_RESOURCE_WORK_LABELS.map((label) => [
+        label,
+        vi.fn(() => new Promise<void>((resolve) => {
+          releaseByLabel.set(label, resolve);
+        }))
+      ])
+    ) as unknown as Record<
+      typeof UNIFIED_RESOURCE_WORK_LABELS[number],
+      () => Promise<void>
+    >;
+    const controller = startUnifiedResourceWorkSchedule({
+      schedule,
+      startupWork: work,
+      intervalByLabel: Object.fromEntries(
+        UNIFIED_RESOURCE_WORK_LABELS.map((label) => [label, 5])
+      ) as Record<typeof UNIFIED_RESOURCE_WORK_LABELS[number], number>,
+      onError: vi.fn()
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    for (const label of UNIFIED_RESOURCE_WORK_LABELS) {
+      expect(work[label]).toHaveBeenCalledTimes(1);
+      releaseByLabel.get(label)?.();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    controller.stop();
   });
 
   it("does not run workers before their configured start delays", async () => {
