@@ -73,6 +73,59 @@
 - `src/wallet/metrics.ts`;
 - `src/forensics/addressBehavior.ts`.
 
+### 2.1 Baseline live-canary на восьми последних адресах
+
+23 июля 2026 года текущий pipeline был дополнительно проверен на восьми
+последних уникальных TRON-адресах из `forensic_check_jobs`, исключая TBL7 и
+TQr. Selection timestamp и запуск зафиксированы run ID
+`recent-wallet-canary-2026-07-23T07-14-17-612Z`.
+
+Проверка использовала текущий `/check` entrypoint и production Fast/Where/Deep
+jobs. Все jobs имели `chat_id=null`, `requested_by=null` и
+`deliveryMode=none`; Telegram API не вызывался.
+
+Состояние на 35-минутном canary deadline:
+
+| Адрес | Fast | Preliminary score | Deep | Where | Final report |
+|---|---:|---:|---:|---:|---:|
+| `TYXN5ZiJLuzUyAY2dxdzdNjbwnUkSGB1it` | partial | 15 | completed | queued | нет |
+| `TV6bBsrCXz2sDSBMZhvc7vHqDwjc65ALZX` | partial | 25 | completed | queued | нет |
+| `TSv32fr41xwv3dh99PmtdxkhWguMEEuoVh` | partial | 38 | running | queued | нет |
+| `TRddZMs7MJmbpQFuBpFxK4BDt5tA4LLPDu` | partial | 35 | completed | queued | нет |
+| `TEognYE7Sy6jiKxkDt2EbFgkUYUfsp9U2j` | partial | 20 | completed | queued | нет |
+| `TFWGukC9eWTfg4DYtQAzwuAK5XV85rVYJr` | partial | 35 | completed | queued | нет |
+| `TXcNjPjdWzv96kwN8r13tAYNMgsVUSXVhd` | partial | 20 | completed | queued | нет |
+| `TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV` | partial | 20 | completed | queued | нет |
+
+`Preliminary score` в таблице — сохранённый internal Fast result, а не
+пользовательский final score.
+
+Canary подтвердил сразу несколько проблем baseline:
+
+- Fast завершил все восемь запусков примерно за минуту общего wall-clock, но
+  каждый result получил `partial` из-за enrichment/missing-check diagnostics.
+- Семь Deep jobs завершились. Они сохранили от 2 до 34 direct counterparties,
+  от 152 до 1 622 transfer edges, service, behavior и boundary profiles.
+- Несмотря на эти данные, текущий Deep renderer для всех семи показал только:
+  `Контекст поведения готов` и
+  `Итоговый риск покажем после анализа происхождения средств`.
+- Ни один canary Where job не начал выполнение. Во время наблюдения один
+  старый Where job занимал последовательный worker больше трёх часов, а более
+  новые jobs оставались за ним.
+- Поэтому ни один из восьми адресов не получил final report или final score.
+- Ни один canary job не создал Telegram delivery payload/intent.
+
+После deadline восемь ещё не начатых canary Where jobs были переведены в
+`cancelled` с причиной
+`canary_execution_blocked: deadline_35m_where_queue_not_started`, чтобы
+диагностический запуск не занимал живую очередь. Уже выполненные artifacts
+сохранены; запущенный Deep job не прерывался небезопасным изменением статуса.
+
+Это observational baseline, а не Golden result и не scoring calibration.
+Результат подтверждает необходимость parent orchestration, fair scheduling,
+одного terminal contract и dossier renderer, который публикует уже найденные
+существенные факты.
+
 ## 3. Главные продуктовые инварианты
 
 ### 3.1 Один пользовательский результат
@@ -954,6 +1007,46 @@ Live TBL7, TQr и dense-wallet runs не являются Golden.
 - no mutation golden expected;
 - сравнение только с invariant ranges и completion properties.
 
+Кроме именованных regression-адресов, перед release выполняется
+`recent-wallet canary` на восьми последних уникальных TRON-адресах из рабочей
+БД. Выборка фиксируется один раз перед запуском:
+
+1. источник — `forensic_check_jobs.subject_address`;
+2. для каждого адреса берётся `max(created_at)`;
+3. TBL7 и TQr исключаются;
+4. невалидные TRON-адреса исключаются;
+5. порядок — `latest_created_at desc, subject_address asc`;
+6. первые восемь адресов и timestamp выборки записываются в immutable canary
+   manifest.
+
+Каждый выбранный адрес проходит тот же полный production analysis и renderer,
+которые использует Unified Check, но в `no-delivery` режиме: Telegram API не
+вызывается, а точный HTML, score, decision, manifests, hashes, child attempts и
+runtime metrics сохраняются как canary artifacts.
+
+Для одного адреса устанавливается 35-минутный наблюдательный deadline. Это
+ограничение live-canary harness, а не coverage/page/time gate пользовательского
+анализа. По достижении deadline проверка классифицируется как
+`canary_execution_blocked`, сохраняются последняя фаза, heartbeat, provider
+state, queue age и логи. Harness не превращает этот исход в risk decision, не
+публикует частичный Telegram-отчёт и не запускает адрес повторно без новой
+диагностической гипотезы либо изменения кода, данных или конфигурации.
+
+Canary report для каждого адреса показывает:
+
+- итог `COMPLETED`, `FAILED_TECHNICAL` или `canary_execution_blocked`;
+- длительности parent run и каждой child attempt;
+- queue wait и provider wait отдельно от compute time;
+- numeric score/decision только для `COMPLETED`;
+- exact Telegram HTML и его hash только для `COMPLETED`;
+- основные доказательные агрегаты и причины score;
+- invariant violations и конкретный blocker;
+- подтверждение, что Telegram delivery не создавалась.
+
+Live-chain результаты не становятся Golden expected и не калибруют scoring
+автоматически. Они используются для UX review, проверки завершения реальных
+кошельков и обнаружения scheduler/provider regressions.
+
 ### 13.3 Neutral evidence export
 
 Каждый export имеет:
@@ -1087,6 +1180,18 @@ Comparator, импортирующий production, принадлежит Plan B
 - Double request не создаёт duplicate delivery.
 - HTML valid, links не дублируются, сообщение не truncated.
 
+### 15.7 Live canary
+
+- Детерминированная выборка последних восьми уникальных адресов зафиксирована
+  до запуска; TBL7/TQr в неё не входят.
+- Каждый адрес запущен ровно один раз в `no-delivery` режиме.
+- На каждый адрес существует terminal canary artifact либо конкретный
+  `canary_execution_blocked` artifact после 35-минутного deadline.
+- Для `COMPLETED` сохранены exact HTML/hash, score, decision и runtime metrics.
+- Ни один canary не создаёт Telegram delivery intent.
+- Повторный запуск разрешён только после зафиксированного изменения или новой
+  диагностической гипотезы.
+
 ## 16. Migration и compatibility
 
 - Legacy results не пересчитываются.
@@ -1132,7 +1237,63 @@ exactly-once.
 Golden regression использует frozen bundles. Live behavior проверяется canary
 и не меняет locked expected.
 
-## 18. Переход к implementation planning
+## 18. Защита от зацикливания выполнения
+
+Эти правила относятся к разработке, тестам и review-процессу. Они не
+ограничивают полноту анализа пользовательских кошельков.
+
+Каждый этап имеет заранее определённые входы, результат и условие завершения.
+Завершённый этап не открывается повторно, если его контракт не изменился или не
+найдено доказанное нарушение.
+
+Повтор одной и той же проверки без изменения кода, данных, конфигурации или
+диагностической гипотезы запрещён. Одинаковое падение второй раз переводится в
+отдельный blocker для анализа причины, а не запускается снова.
+
+После изменения выполняются только относящиеся к нему targeted tests. Полный
+test suite, Golden comparator, replay и Telegram acceptance запускаются один
+раз на соответствующем milestone и один раз перед release.
+
+Ошибка возвращает на доработку только затронутый artifact или модуль. Она не
+возвращает весь план к первому этапу и не требует повторять уже подтверждённые
+независимые проверки.
+
+Review проводится одним основным проходом. После исправления P0/P1-замечаний
+повторно проверяются только изменённые места и связанные с ними контракты.
+Новые необязательные улучшения записываются отдельно и не расширяют текущую
+реализацию.
+
+Список обязательных release gates фиксируется до начала реализации. Добавление
+нового блокирующего gate требует отдельного обоснования и явного решения;
+диагностические проверки не становятся блокирующими автоматически.
+
+Долгая команда должна иметь ожидаемую длительность и признак прогресса. Если
+прогресса нет, команда останавливается, её логи сохраняются, а причина
+оформляется как конкретный blocker. Полный процесс после этого не начинается
+заново.
+
+Глобальная заморозка кода, ветки или проекта не используется. Неизменяемыми
+становятся только уже утверждённые Golden-артефакты и завершённые результаты.
+Разработка остальных частей продолжается независимо.
+
+Зависимости этапов образуют направленный граф без циклов. Ни один этап не
+должен одновременно ждать результат следующего этапа и являться его
+обязательным входом.
+
+Сначала реализуется минимальный сквозной путь от входа до результата.
+Масштабирование, плотные графы, дополнительные оптимизации и расширенные
+проверки добавляются после того, как этот путь работает и имеет небольшой
+runnable check.
+
+Любой повторный запуск обязан отвечать на конкретный вопрос и давать новую
+информацию. Запуски «на всякий случай», повторные полные review и проверки без
+изменившихся условий не выполняются.
+
+Работа считается завершённой, когда выполнены заранее зафиксированные
+acceptance criteria. Отсутствие новых идей или замечаний не является условием
+завершения; необязательные улучшения переходят в отдельный follow-up.
+
+## 19. Переход к implementation planning
 
 После review этого design spec создаются два отдельных подробных плана:
 
