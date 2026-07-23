@@ -78,6 +78,9 @@ describe("Unified production direct history", () => {
     )).toBe(true);
     expect(isRetryableUnifiedProviderError(new Error("HTTP 429"))).toBe(true);
     expect(isRetryableUnifiedProviderError(
+      new Error("unified_direct_history_provider_metadata_inconsistent")
+    )).toBe(true);
+    expect(isRetryableUnifiedProviderError(
       new Error("unified_direct_history_cached_page_invalid")
     )).toBe(false);
   });

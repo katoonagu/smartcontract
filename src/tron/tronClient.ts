@@ -125,6 +125,7 @@ type FetchJsonOptions = {
 const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
 const TRONGRID_TRANSFER_FALLBACK_MAX_PAGES = 10;
 const TRONSCAN_TRANSFER_PAGE_LIMIT = 50;
+const TRONSCAN_RANGE_TOTAL_CAP = 10_000;
 const TRONSCAN_BLACKLIST_MIN_PAGE_LIMIT = 20;
 const TRONSCAN_BLACKLIST_MAX_PAGE_LIMIT = 100;
 
@@ -909,6 +910,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     let total: number | null | undefined;
     let rangeTotal: number | null | undefined;
     let metadataConsistent = true;
+    let cappedRootWindowComplete = false;
 
     for (
       let subrequest = 0;
@@ -943,15 +945,21 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       transfers.push(...consumedTransfers);
 
       const nextOffset = start + transfers.length;
+      cappedRootWindowComplete =
+        pageStart === 0 &&
+        (page.rangeTotal ?? 0) >= TRONSCAN_RANGE_TOTAL_CAP &&
+        consumedTransfers.length < pageLimit;
       if (rangeTotal !== null && rangeTotal !== undefined && nextOffset > rangeTotal) {
         metadataConsistent = false;
       }
       if (
         consumedTransfers.length < pageLimit
+        && !cappedRootWindowComplete
         && (rangeTotal === null || rangeTotal === undefined || nextOffset < rangeTotal)
       ) {
         metadataConsistent = false;
       }
+      if (cappedRootWindowComplete) break;
       if (consumedTransfers.length === 0) break;
       if (rangeTotal !== null && rangeTotal !== undefined && nextOffset >= rangeTotal) break;
     }
@@ -967,9 +975,13 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       nextOffset,
       total: total ?? null,
       rangeTotal: authoritativeRangeTotal,
-      complete: metadataConsistent
-        && authoritativeRangeTotal !== null
-        && nextOffset >= authoritativeRangeTotal,
+      complete: metadataConsistent && (
+        cappedRootWindowComplete ||
+        (
+          authoritativeRangeTotal !== null &&
+          nextOffset >= authoritativeRangeTotal
+        )
+      ),
       metadataConsistent,
       rawResponseHashes,
       canonicalTransferHashes

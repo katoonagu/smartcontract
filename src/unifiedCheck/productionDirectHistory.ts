@@ -15,6 +15,9 @@ const HASH = /^[0-9a-f]{64}$/u;
 
 export function isRetryableUnifiedProviderError(error: unknown): boolean {
   const reason = error instanceof Error ? error.message : String(error);
+  if (reason === "unified_direct_history_provider_metadata_inconsistent") {
+    return true;
+  }
   return /(?:\b429\b|rate.?limit|timeout|timed.?out|fetch failed|econnreset|etimedout|eai_again|temporar(?:y|ily))/iu
     .test(reason);
 }

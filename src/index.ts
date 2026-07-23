@@ -456,6 +456,11 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
                 )
               }
             );
+          if (loaded.metadataConsistent !== true) {
+            throw new Error(
+              "unified_direct_history_provider_metadata_inconsistent"
+            );
+          }
           return {
             payload: {
               provider: loaded.provider,
