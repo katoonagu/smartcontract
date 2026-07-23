@@ -145,7 +145,7 @@ Telegram-сообщение после полного завершения Unifi
 Fast, Where и Deep сохраняются как внутренние evidence producers. Они не
 сливаются в один алгоритм и не теряют свои предметные обязанности.
 
-### 3.2 Score всегда существует только у completed run
+### 3.2 Authoritative score существует только у completed run
 
 Успешно завершённый Unified Check публикует:
 
@@ -155,15 +155,19 @@ Fast, Where и Deep сохраняются как внутренние evidence 
 
 Coverage не блокирует и не увеличивает score.
 
-Технически заблокированный run не получает выдуманный risk decision:
+Технически незавершённый run не получает выдуманный risk decision. Parent
+lifecycle использует состояния из §5.1, а не отдельный второй enum:
 
-- `WAITING_RETRY`;
-- `PROVIDER_COOLDOWN`;
-- `BLOCKED_SOURCE_UNAVAILABLE`;
-- `BLOCKED_ADMIN_REVIEW`;
-- `FAILED_TECHNICAL`.
+- `WAITING_FOR_PROVIDER` с reason `waiting_retry` или `provider_cooldown`;
+- `BLOCKED_ADMIN` с reason `source_unavailable` или `admin_review`;
+- terminal `FAILED_TECHNICAL`.
 
-Эти состояния не являются новым названием `NO_FINAL_DECISION`.
+Reason code не является состоянием. Retriable provider failure остаётся
+`WAITING_FOR_PROVIDER`; доказанная постоянная недоступность требует
+`BLOCKED_ADMIN` и явного решения watchdog/Admin, после которого run либо
+продолжается, либо завершается `FAILED_TECHNICAL`.
+
+Эти состояния и reason codes не являются новым названием `NO_FINAL_DECISION`.
 `NO_FINAL_DECISION` остаётся только в legacy v3 и старых контрактах.
 
 ### 3.3 Нет продуктовых coverage/time/page gates
@@ -247,6 +251,7 @@ Golden package не зависит от production. Production-кандидат 
 
 ```text
 Валидация адреса
+→ CheckRequest с request correlation ID
 → создание или переиспользование UnifiedCheckRun
 → фиксация AnalysisManifest
 → общий индекс прямой истории
@@ -271,6 +276,13 @@ Golden package не зависит от production. Production-кандидат 
 - `COMPLETED`;
 - `FAILED_TECHNICAL`.
 
+`COMPLETED` и `FAILED_TECHNICAL` — terminal states. `RUNNING`,
+`WAITING_FOR_PROVIDER`, `BLOCKED_ADMIN` и `FINALIZING` — non-terminal states:
+watchdog/Admin обязан либо вернуть их в runnable состояние, либо зафиксировать
+terminal technical outcome. Во время `FINALIZING` уже может существовать
+внутренний scoring candidate, но ни одно non-terminal состояние не получает
+authoritative published score или Telegram report.
+
 ### 5.2 Состояния веток
 
 - `RUNNING`;
@@ -280,9 +292,11 @@ Golden package не зависит от production. Production-кандидат 
 - `BLOCKED_ADMIN`;
 - `FAILED_TECHNICAL`.
 
-`NOT_APPLICABLE` является нормальным terminal state. Например, отсутствие
-USDT-активности не заставляет Unified Check ждать Where бесконечно, а создаёт
-кандидат `no_usdt_activity`.
+`NOT_APPLICABLE` является нормальным terminal state конкретной ветки. Например,
+отсутствие USDT transfer activity не заставляет Unified Check ждать provenance
+ветку бесконечно, а создаёт кандидат `no_usdt_activity`. Это не отключает
+approval/contract/security ветки: опасное разрешение может существовать и без
+USDT transfer.
 
 ### 5.3 Общий DAG
 
@@ -307,13 +321,23 @@ Fast, Where и Deep не должны независимо трижды загр
 
 ### 5.4 Повторные запросы
 
-- Повтор одного Telegram update продолжает тот же request.
+- `requestCorrelationId` идентифицирует логическое пользовательское действие,
+  а не просто transport attempt: retry одного update и повторный tap той же
+  UI-action продолжают тот же `CheckRequest`.
+- Новая осознанная команда или новая UI-action получает новый
+  `requestCorrelationId` и создаёт новый `CheckRequest`, даже если analysis
+  разрешено переиспользовать.
 - Один `address + analysis snapshot + manifest versions` может переиспользовать
-  активный анализ.
+  активный или immutable completed analysis.
 - Разные chats могут подписаться на один run.
-- Новый явный запрос после изменения snapshot создаёт новый run.
+- Каждый новый `CheckRequest` фиксирует latest confirmed block на момент
+  acceptance. Analysis переиспользуется только при точном совпадении snapshot и
+  manifest versions; иначе создаётся новый run. Новый блок после уже
+  зафиксированного cutoff никогда не расширяет существующий run.
 - Restart worker продолжает сохранённый checkpoint.
-- Двойное нажатие одного пользователя не создаёт две доставки.
+- Один `CheckRequest` создаёт не более одной автоматической доставки. Новый
+  явный request получает собственный delivery outcome, даже если использует тот
+  же immutable analysis и presentation.
 
 ## 6. Telegram dossier
 
@@ -421,8 +445,17 @@ Renderer формирует компактные aggregates до отправк�
 
 - повторяющиеся rows объединяются;
 - малые однотипные rows сворачиваются в проверенный aggregate;
-- критические exceptions сохраняются;
+- критические exceptions группируются по canonical risk type, роли и temporal
+  semantics; точные count/amount сохраняются, а примеры добавляются только при
+  наличии места;
 - reconciled totals должны совпадать с evidence.
+
+Каждый нормативный раздел обязан оставить category total, scope/denominator и
+число свёрнутых фактов. `PresentationCompletenessReceipt` подтверждает, что все
+существенные категории представлены и totals reconciled. Если deterministic
+compression всё равно не создаёт одно валидное Telegram-сообщение, run не
+переходит из `FINALIZING` в `COMPLETED`: фиксируется техническая ошибка
+presentation, но truncated или частичное сообщение не отправляется.
 
 ## 7. Wallet profile и денежные scope
 
@@ -520,6 +553,17 @@ UI selection:
 
 `UnifiedCheckRun` — database state machine, а не один физический процесс.
 
+Parent orchestration metadata обязательно содержит:
+
+- `runPurpose`: `user_check`, `admin_diagnostic`, `release_canary`,
+  `synthetic_test` или `maintenance`;
+- `sideEffectPolicy`: `authoritative` или `isolated`;
+- `analysisManifestHash`;
+- исходные `CheckRequest` references.
+
+Child tasks наследуют эти поля immutably. `isolated` запрещает authoritative
+derived writes независимо от того, какой worker продолжил task.
+
 Stateless worker:
 
 1. claim task по lease;
@@ -563,7 +607,16 @@ keys. Оно не завершает анализ.
 Canonical page request:
 
 ```text
-address + token + blockRange + cursor
+chain
++ provider family
++ endpoint/API schema version
++ address
++ token
++ block range
++ direction/order/page size
++ cursor
++ snapshot block/hash
++ confirmation policy
 ```
 
 Одновременный запрос Fast, Where и Deep:
@@ -572,6 +625,11 @@ address + token + blockRange + cursor
 - имеет coalesced waiters;
 - сохраняет page в local index;
 - переиспользуется для того же snapshot.
+
+Coalescing разрешён только при точном совпадении canonical request identity.
+Credential/key slot не входит в semantic identity и может быть заменён
+scheduler; разные provider contracts, sort/pagination semantics или snapshot
+boundaries никогда не coalesce.
 
 ### 8.4 Fair scheduling
 
@@ -616,6 +674,20 @@ Analysis snapshot фиксирует:
 - runtime/commit;
 - pagination end boundary.
 
+Cutoff block/hash фиксируется до запуска evidence branches. Все child artifacts
+обязаны отфильтровать события после cutoff; появление новых блоков не удлиняет и
+не изменяет выполняющийся run. Labels используются из dataset hash,
+зафиксированного в manifest, включая temporal status на момент проверяемого
+event.
+
+Balance сохраняет source и собственный `asOfBlock`/`observedAt`. Только
+snapshot-compatible или доказательно reconstructed balance может влиять на
+attribution/scoring. Live balance, полученный после cutoff и не привязанный к
+block, не подменяет snapshot balance: он либо показывается как отдельно
+датированная profile metric без scoring authority, либо соответствующая
+обязательная ветка получает технический blocker по заранее определённому
+contract.
+
 Overlap provider pages дедуплицируется по:
 
 ```text
@@ -629,10 +701,12 @@ txHash + eventIndex + tokenContract
 - без semantic page cap;
 - resumable по cursor;
 - с immutable saved pages;
-- до provider exhaustion/account creation.
+- до authoritative empty range, доказательно достигающего account creation.
 
-Постоянно недоступная история переводит run в technical blocked state, а не
-создаёт аналитическую границу.
+Rate limit, key quota или временное provider exhaustion переводят run в
+`WAITING_FOR_PROVIDER` и не считаются концом истории. Постоянно недоступная
+история переводит run в technical blocked state, а не создаёт аналитическую
+границу.
 
 ### 9.3 Два направления
 
@@ -689,7 +763,42 @@ Dense collector может агрегировать сотни rows, но не �
 Semantic `maxDepth` удаляется. Depth остаётся metric. Checkpoint хранит frontier
 cursor, pages и processed states.
 
-### 9.7 Многомерный coverage
+### 9.7 Доказательство конечности и завершения traversal
+
+Полнота не означает бесконечный или экспоненциально раздувающийся обход.
+Конечность задаётся immutable snapshot и конечным множеством ledger events до
+cutoff. Worker расширяет только canonical states, прошедшие temporal/amount
+continuity predicate.
+
+Правила convergence:
+
+- повторный canonical edge/state не расширяется второй раз;
+- allocated value одного event/direction/funding episode объединяется до
+  expansion; отдельные path narratives не создают cartesian product states;
+- семантически эквивалентные states детерминированно объединяются с сохранением
+  amount conservation, evidence IDs и ролей;
+- каждый state заканчивается как `processed`, `terminal` или `superseded`;
+- terminal reason содержит canonical evidence и версию predicate; queue
+  pressure, depth, отсутствие label или размер графа не являются причиной
+  terminal;
+- traversal завершён только при пустом frontier и отсутствии unclassified или
+  dropped states.
+
+Перед `FINALIZING` создаётся immutable `TraversalClosureCertificate`:
+
+- snapshot/manifest hash;
+- hashes processed, terminal и superseded state sets;
+- количество states/edges по outcome;
+- подтверждение structural bound: число expanded states не превышает
+  `eligible events × directions × funding episodes` для зафиксированной policy;
+- `frontierCount=0`;
+- amount-conservation reconciliation;
+- `unclassifiedCount=0` и `droppedCount=0`.
+
+Aggregation уменьшает число эквивалентных вычислений и presentation rows, но не
+может удалять value или существенный fact.
+
+### 9.8 Многомерный coverage
 
 Для backward и forward отдельно:
 
@@ -744,7 +853,9 @@ V3 и старые anchors остаются воспроизводимыми. An
 Event fact key:
 
 ```text
-chain
+fact schema/version
++ event scope
++ chain
 + tokenContract
 + txHash
 + eventIndex
@@ -754,7 +865,26 @@ chain
 + subjectRole
 ```
 
+`eventIndex` — canonical on-chain log/event index, а не позиция во входном
+массиве. Все optional components кодируются явными typed sentinels, а не
+пропуском полей.
+
+State facts без transaction event используют отдельный key profile:
+
+```text
+fact schema/version
++ state/relationship scope
++ chain
++ factType
++ subject
++ counterparty/object
++ subjectRole
++ effectiveAt block/time
++ snapshot block
+```
+
 Path fact key использует ordered event-key hash, fact type, subject и role.
+Разные key profiles не могут collision-merge друг с другом.
 
 Разные source `evidenceIds` могут ссылаться на один canonical fact. Он входит
 в score один раз.
@@ -824,6 +954,7 @@ UnifiedCheckRun
 ├── mutable OrchestrationState
 ├── immutable ChildAttemptArtifacts
 ├── immutable EvidenceBundle
+├── immutable TraversalClosureCertificate
 ├── immutable ScoringBundle
 ├── immutable UnifiedWalletReport
 ├── immutable PresentationArtifacts
@@ -853,6 +984,11 @@ Renderer и locale сюда не входят.
 
 Один report может иметь несколько presentation artifacts. Новый renderer не
 изменяет старый HTML и не перезапускает analysis.
+
+Каждый `PresentationArtifact` содержит exact Telegram payload и canonical
+`PresentationCompletenessReceipt`: inventory нормативных sections/risk classes,
+их aggregate keys, scopes, totals и число свёрнутых facts. Receipt входит в
+presentation hash; он не утверждает наличие каждой raw row в Telegram.
 
 ### 11.3 Canonical hashing
 
@@ -888,6 +1024,7 @@ Evidence bundle перечисляет hashes всех accepted child artifacts.
 AnalysisManifest hash
 → accepted child artifact hashes
 → EvidenceBundle hash
+→ TraversalClosureCertificate hash
 → ScoringBundle hash
 → UnifiedWalletReport hash
 → PresentationArtifact hash
@@ -904,12 +1041,14 @@ Recipient metadata не входит в forensic hash chain.
 - нет waiting/source-blocked branches;
 - manifest hashes совпадают;
 - evidence canonically deduplicated;
+- traversal closure certificate valid;
 - money/attribution aggregates reconcile;
 - final score numeric;
 - decision valid;
 - canonical anchor valid;
 - report references scoring/evidence hashes;
-- current-recipient presentations valid и помещаются в Telegram.
+- current-recipient presentations valid, имеют
+  `PresentationCompletenessReceipt` и помещаются в Telegram.
 
 Одна DB transaction фиксирует immutable refs/hashes, completed status и
 delivery intents.
@@ -928,8 +1067,12 @@ delivery intents.
 Delivery uniqueness:
 
 ```text
-runId + chatId + messageThreadId + presentationArtifactHash
+requestCorrelationId + chatId + messageThreadId + presentationArtifactHash
 ```
+
+Один analysis run может обслуживать несколько явных `CheckRequest`. Dedup
+подавляет повторную обработку одного request, но не подавляет новый осознанный
+request только потому, что он переиспользовал тот же report.
 
 ### 12.2 Delivery states
 
@@ -1011,26 +1154,54 @@ Live TBL7, TQr и dense-wallet runs не являются Golden.
 `recent-wallet canary` на восьми последних уникальных TRON-адресах из рабочей
 БД. Выборка фиксируется один раз перед запуском:
 
-1. источник — `forensic_check_jobs.subject_address`;
-2. для каждого адреса берётся `max(created_at)`;
-3. TBL7 и TQr исключаются;
-4. невалидные TRON-адреса исключаются;
-5. порядок — `latest_created_at desc, subject_address asc`;
-6. первые восемь адресов и timestamp выборки записываются в immutable canary
-   manifest.
+1. источник — canonical `CheckRequest.subjectAddress` до зафиксированного
+   selection cutoff;
+2. разрешены только `runPurpose=user_check`; legacy row допускается только при
+   доказанном user-originated provenance. Canary, synthetic, Admin/maintenance
+   и неизвестные purpose исключаются до группировки;
+3. для каждого адреса берётся `max(created_at)`;
+4. TBL7 и TQr исключаются;
+5. невалидные TRON-адреса исключаются;
+6. порядок — `latest_created_at desc, subject_address asc`;
+7. первые восемь адресов, cutoff, query/schema version и source row IDs
+   записываются в immutable canary manifest.
+
+Если после прохода по eligible history не найдено восемь уникальных адресов,
+canary precondition считается невыполненным и release блокируется явной
+причиной, а не молча уменьшается до меньшей выборки.
 
 Каждый выбранный адрес проходит тот же полный production analysis и renderer,
-которые использует Unified Check, но в `no-delivery` режиме: Telegram API не
-вызывается, а точный HTML, score, decision, manifests, hashes, child attempts и
-runtime metrics сохраняются как canary artifacts.
+которые использует Unified Check, но с
+`runPurpose=release_canary`, `sideEffectPolicy=isolated` и в `no-delivery`
+режиме. Telegram API и delivery-intent writer не вызываются. Derived labels,
+observations, risk decisions, watch/payment state и user-facing result indexes
+записывать в authoritative production namespace запрещено. Canary может
+переиспользовать только immutable provider pages/direct index с совпадающими
+provenance и snapshot keys; все остальные результаты сохраняются в
+namespaced canary artifacts.
 
-Для одного адреса устанавливается 35-минутный наблюдательный deadline. Это
+Harness создаёт восемь новых parent runs одной зафиксированной batch и ставит
+`analysisReuse=forbid`, чтобы canary действительно проверял orchestration и
+scheduler. Exact-matching immutable provider pages/direct index разрешено
+переиспользовать как cache; completed user/canary analysis целиком
+переиспользовать нельзя.
+
+Для одного адреса устанавливается 35-минутный наблюдательный deadline от
+`UnifiedCheckRun.createdAt`; он включает queue wait, provider wait и compute
+time, которые измеряются раздельно. Это
 ограничение live-canary harness, а не coverage/page/time gate пользовательского
 анализа. По достижении deadline проверка классифицируется как
 `canary_execution_blocked`, сохраняются последняя фаза, heartbeat, provider
 state, queue age и логи. Harness не превращает этот исход в risk decision, не
 публикует частичный Telegram-отчёт и не запускает адрес повторно без новой
 диагностической гипотезы либо изменения кода, данных или конфигурации.
+
+После deadline harness прекращает выдавать новые canary chunks и запрашивает
+cooperative cancellation. Running task завершает только текущую атомарную
+provider/checkpoint operation, наблюдает cancellation token на ближайшей
+границе chunk и не публикует поздний accepted result. Запрещено вручную менять
+статус живого worker в БД. Completed child artifacts остаются immutable, а
+cancellation/blocker оформляется отдельным canary artifact.
 
 Canary report для каждого адреса показывает:
 
@@ -1123,7 +1294,11 @@ Comparator, импортирующий production, принадлежит Plan B
 - child branch не публикует final score;
 - direct/indirect имеют различную семантику;
 - later label учитывается по temporal semantics;
-- один snapshot создаёт одинаковые hashes, score и HTML;
+- одинаковые AnalysisManifest + canonical evidence создают одинаковые analysis
+  hashes, report hash и score;
+- одинаковые PresentationManifest, включая locale/template version, создают
+  byte-identical HTML и presentation hash; разные locale закономерно имеют
+  разные presentation artifacts;
 - все contributions объяснимы canonical evidence;
 - restart даёт byte-identical report.
 
@@ -1143,9 +1318,12 @@ Comparator, импортирующий production, принадлежит Plan B
 - 500 direct-history pages обработаны до конца.
 - Overlap pages не дублируют event.
 - Worker crash не теряет cursor.
+- Новые блоки после snapshot cutoff не меняют выполняющийся run.
 - Backward/forward coverage раздельны.
 - Dense node агрегируется, но не останавливается автоматически.
 - Terminal reasons валидируются.
+- Completion требует valid `TraversalClosureCertificate` с пустым frontier,
+  amount reconciliation и zero dropped/unclassified states.
 
 ### 15.3 Scoring
 
@@ -1153,12 +1331,15 @@ Comparator, импортирующий production, принадлежит Plan B
 - Unknown alone добавляет zero.
 - Neutral candidate обязателен.
 - Canonical dedup работает между child modes.
+- Event/state/path fact key profiles не collision-merge и не зависят от input
+  array position.
 - Conflict rules соблюдаются.
 - Coverage-only mutation score-invariant.
 
 ### 15.4 Scheduler
 
 - Fast/Where/Deep page request coalesced.
+- Requests с разными provider/pagination/snapshot semantics не coalesced.
 - Exhausted key переключает ready work на healthy keys.
 - Old retry не блокирует new run.
 - Dense wallet не занимает весь pool.
@@ -1177,18 +1358,25 @@ Comparator, импортирующий production, принадлежит Plan B
 - Legacy/Unified разделены fence.
 - Ambiguous Telegram result не resends automatically.
 - Confirmed delivery не повторяется.
-- Double request не создаёт duplicate delivery.
-- HTML valid, links не дублируются, сообщение не truncated.
+- Повтор одного `requestCorrelationId` не создаёт duplicate delivery.
+- Новый явный request получает один outcome даже при reuse того же analysis.
+- HTML valid, links не дублируются, сообщение не truncated и имеет valid
+  `PresentationCompletenessReceipt`.
 
 ### 15.7 Live canary
 
 - Детерминированная выборка последних восьми уникальных адресов зафиксирована
-  до запуска; TBL7/TQr в неё не входят.
+  до запуска; TBL7/TQr, synthetic/Admin и предыдущие canary jobs в неё не
+  входят.
 - Каждый адрес запущен ровно один раз в `no-delivery` режиме.
 - На каждый адрес существует terminal canary artifact либо конкретный
   `canary_execution_blocked` artifact после 35-минутного deadline.
 - Для `COMPLETED` сохранены exact HTML/hash, score, decision и runtime metrics.
 - Ни один canary не создаёт Telegram delivery intent.
+- Derived canary facts/results не попадают в authoritative production
+  namespaces; разрешённый shared index подтверждён provenance receipt.
+- Deadline отсчитывается от parent creation, а cooperative cancellation не
+  оставляет живой canary, способный позднее опубликовать accepted result.
 - Повторный запуск разрешён только после зафиксированного изменения или новой
   диагностической гипотезы.
 
@@ -1214,7 +1402,9 @@ Comparator, импортирующий production, принадлежит Plan B
 ### Telegram size
 
 Literal raw completeness невозможна в одном сообщении. Принята semantic
-completeness с доказательными aggregates.
+completeness с доказательными aggregates и completeness receipt. Все
+существенные категории, totals и critical risk classes сохраняются; перечислить
+каждую raw transaction в Telegram не является обещанием продукта.
 
 ### Attribution uncertainty
 
@@ -1237,6 +1427,17 @@ exactly-once.
 Golden regression использует frozen bundles. Live behavior проверяется canary
 и не меняет locked expected.
 
+### Границы текущего scope
+
+В эту реализацию не входят:
+
+- progress-сообщения или редактирование Telegram report;
+- literal dump всех raw transactions в Telegram;
+- выбор FIFO/LIFO/proportional до adjudication;
+- превращение live canary в Golden expected;
+- пересчёт legacy results новой policy;
+- обещание строгой exactly-once доставки поверх Telegram transport.
+
 ## 18. Защита от зацикливания выполнения
 
 Эти правила относятся к разработке, тестам и review-процессу. Они не
@@ -1253,6 +1454,19 @@ Golden regression использует frozen bundles. Live behavior прове�
 После изменения выполняются только относящиеся к нему targeted tests. Полный
 test suite, Golden comparator, replay и Telegram acceptance запускаются один
 раз на соответствующем milestone и один раз перед release.
+
+Pre-release gate receipt привязан к точному release candidate:
+
+- commit/runtime hash;
+- config и policy versions;
+- DB/schema migration set;
+- locked Golden manifest hashes;
+- comparator и renderer versions.
+
+Изменение candidate после gate invalidates только зависящие от изменённого
+input gates. Они запускаются один раз заново для нового candidate; независимые
+gates не повторяются. Поэтому правило targeted recheck не разрешает release по
+устаревшему full-suite/comparator receipt.
 
 Ошибка возвращает на доработку только затронутый artifact или модуль. Она не
 возвращает весь план к первому этапу и не требует повторять уже подтверждённые
