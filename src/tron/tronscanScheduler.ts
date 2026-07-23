@@ -499,3 +499,201 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     }
   };
 }
+
+export type UnifiedTronscanLane = "interactive" | "repair" | "background";
+
+export type UnifiedTronscanScheduleInput = TronscanScheduleInput & {
+  runId: string;
+  lane: UnifiedTronscanLane;
+  readyAtMs: number;
+};
+
+export type UnifiedFairTronscanSchedulerDiagnostics = TronscanSchedulerDiagnostics & {
+  slotCount: number;
+  fairQueued: number;
+  fairInFlight: number;
+  inFlightByRun: Record<string, number>;
+};
+
+export type UnifiedFairTronscanScheduler = {
+  schedule<T>(
+    input: UnifiedTronscanScheduleInput,
+    work: (context: TronscanScheduleContext) => Promise<T>
+  ): Promise<T>;
+  diagnostics(): UnifiedFairTronscanSchedulerDiagnostics;
+};
+
+type UnifiedFairQueueItem = {
+  input: UnifiedTronscanScheduleInput;
+  sequence: number;
+  work: (context: TronscanScheduleContext) => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+};
+
+const UNIFIED_LANE_CYCLE: readonly UnifiedTronscanLane[] = [
+  "interactive", "interactive", "interactive", "interactive",
+  "interactive", "interactive", "interactive", "interactive",
+  "repair", "repair", "background"
+];
+
+export function createUnifiedFairTronscanScheduler(
+  options: TronscanSchedulerOptions
+): UnifiedFairTronscanScheduler {
+  const underlying = createTronscanScheduler(options);
+  const now = options.now ?? (() => Date.now());
+  const delay = options.delay ?? ((ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const slotCount = Math.max(1, normalizeApiKeys(options.apiKeys).length);
+  const maxInFlight = normalizeConcurrencyLimit(options.maxInFlight, slotCount);
+  const queue: UnifiedFairQueueItem[] = [];
+  const inFlightByRun = new Map<string, number>();
+  const lastRunByLane = new Map<UnifiedTronscanLane, string>();
+  let sequence = 0;
+  let fairInFlight = 0;
+  let laneCursor = 0;
+  let drainScheduled = false;
+  let wakeAt: number | null = null;
+  let wakeToken = 0;
+
+  function scheduleDrain(): void {
+    if (drainScheduled) return;
+    drainScheduled = true;
+    void Promise.resolve().then(() => {
+      drainScheduled = false;
+      drain();
+    });
+  }
+
+  function scheduleWake(waitMs: number): void {
+    const target = now() + Math.max(0, waitMs);
+    if (wakeAt !== null && wakeAt <= target) return;
+    wakeAt = target;
+    const token = ++wakeToken;
+    void delay(waitMs).then(() => {
+      if (token !== wakeToken) return;
+      wakeAt = null;
+      scheduleDrain();
+    }, () => {
+      if (token !== wakeToken) return;
+      wakeAt = null;
+      scheduleDrain();
+    });
+  }
+
+  function runCapacity(item: UnifiedFairQueueItem, currentTime: number): number {
+    const anotherRunWaits = queue.some((candidate) =>
+      candidate !== item &&
+      candidate.input.runId !== item.input.runId &&
+      candidate.input.readyAtMs <= currentTime
+    );
+    return anotherRunWaits ? Math.max(1, Math.floor(maxInFlight / 2)) : maxInFlight;
+  }
+
+  function readyCandidates(
+    lane: UnifiedTronscanLane,
+    currentTime: number
+  ): UnifiedFairQueueItem[] {
+    return queue.filter((item) =>
+      item.input.lane === lane &&
+      item.input.readyAtMs <= currentTime &&
+      (inFlightByRun.get(item.input.runId) ?? 0) < runCapacity(item, currentTime)
+    );
+  }
+
+  function nextInLane(
+    candidates: UnifiedFairQueueItem[],
+    lane: UnifiedTronscanLane
+  ): UnifiedFairQueueItem {
+    const firstByRun = new Map<string, UnifiedFairQueueItem>();
+    for (const item of [...candidates].sort((left, right) =>
+      left.input.readyAtMs - right.input.readyAtMs || left.sequence - right.sequence
+    )) {
+      if (!firstByRun.has(item.input.runId)) firstByRun.set(item.input.runId, item);
+    }
+    const runs = [...firstByRun.keys()];
+    const previous = lastRunByLane.get(lane);
+    const previousIndex = previous === undefined ? -1 : runs.indexOf(previous);
+    const selectedRun = runs[(previousIndex + 1 + runs.length) % runs.length]!;
+    lastRunByLane.set(lane, selectedRun);
+    return firstByRun.get(selectedRun)!;
+  }
+
+  function takeNext(): UnifiedFairQueueItem | null {
+    const currentTime = now();
+    for (let offset = 0; offset < UNIFIED_LANE_CYCLE.length; offset += 1) {
+      const index = (laneCursor + offset) % UNIFIED_LANE_CYCLE.length;
+      const lane = UNIFIED_LANE_CYCLE[index]!;
+      const candidates = readyCandidates(lane, currentTime);
+      if (candidates.length === 0) continue;
+      laneCursor = (index + 1) % UNIFIED_LANE_CYCLE.length;
+      const selected = nextInLane(candidates, lane);
+      queue.splice(queue.indexOf(selected), 1);
+      return selected;
+    }
+    return null;
+  }
+
+  function dispatch(item: UnifiedFairQueueItem): void {
+    fairInFlight += 1;
+    inFlightByRun.set(
+      item.input.runId,
+      (inFlightByRun.get(item.input.runId) ?? 0) + 1
+    );
+    void underlying.schedule(item.input, item.work).then(
+      item.resolve,
+      item.reject
+    ).finally(() => {
+      fairInFlight -= 1;
+      const remaining = (inFlightByRun.get(item.input.runId) ?? 1) - 1;
+      if (remaining === 0) inFlightByRun.delete(item.input.runId);
+      else inFlightByRun.set(item.input.runId, remaining);
+      scheduleDrain();
+    });
+  }
+
+  function drain(): void {
+    while (queue.length > 0 && fairInFlight < maxInFlight) {
+      const item = takeNext();
+      if (!item) break;
+      dispatch(item);
+    }
+    if (queue.length > 0 && fairInFlight < maxInFlight) {
+      const nextReadyAt = Math.min(...queue.map((item) => item.input.readyAtMs));
+      if (nextReadyAt > now()) scheduleWake(nextReadyAt - now());
+    }
+  }
+
+  return {
+    schedule<T>(
+      input: UnifiedTronscanScheduleInput,
+      work: (context: TronscanScheduleContext) => Promise<T>
+    ): Promise<T> {
+      if (!input.runId.trim()) {
+        return Promise.reject(new TypeError("unified_scheduler_run_id_required"));
+      }
+      if (!Number.isFinite(input.readyAtMs)) {
+        return Promise.reject(new TypeError("unified_scheduler_ready_at_invalid"));
+      }
+      return new Promise<T>((resolve, reject) => {
+        queue.push({
+          input,
+          sequence: sequence++,
+          work: work as (context: TronscanScheduleContext) => Promise<unknown>,
+          resolve: resolve as (value: unknown) => void,
+          reject
+        });
+        scheduleDrain();
+      });
+    },
+    diagnostics(): UnifiedFairTronscanSchedulerDiagnostics {
+      return {
+        ...underlying.diagnostics(),
+        slotCount,
+        fairQueued: queue.length,
+        fairInFlight,
+        inFlightByRun: Object.fromEntries(inFlightByRun)
+      };
+    }
+  };
+}
