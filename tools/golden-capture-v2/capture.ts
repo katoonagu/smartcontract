@@ -1,9 +1,11 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
 import {
   canonicalJson,
   canonicalSha256
 } from "../golden-pilot-v2/canonicalJson";
+import {
+  publishArtifactOnce,
+  verifyPublishedArtifact
+} from "../golden-pilot-v2/artifactStore";
 import {
   buildNeutralExport,
   type FrozenEvidenceSourceV2
@@ -31,7 +33,19 @@ type SyntheticCase = {
   txHash: string;
 };
 
-type CaptureInput = {
+type FrozenEvidence = Pick<
+  FrozenEvidenceSourceV2,
+  "events" | "stateFacts" | "labels" | "approvals"
+>;
+
+type CapturedSource = FrozenEvidenceSourceV2 & {
+  captureProvenance: {
+    providerResponseSha256: string;
+    selectionCutoff: string;
+  };
+};
+
+export type GoldenCaptureInput = {
   catalog: Catalog;
   syntheticCases: {
     version: "golden-synthetic-cases-v2";
@@ -46,6 +60,7 @@ type CaptureInput = {
   };
   providerResponseSha256: string;
   labelDatasetSha256: string;
+  evidenceBySubject?: Record<string, FrozenEvidence>;
 };
 
 const TBL7 = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
@@ -53,6 +68,15 @@ const TQR = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 const USDT = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj";
 const PEER = "T9yD14Nj9j7xAB4dbGeiX9h8unkKv2TRTS";
 const BLACKLIST = "T9yD14Nj9j7xAB4dbGeiX9h8unkL2ynyg7";
+const PEERS = [
+  "T9yD14Nj9j7xAB4dbGeiX9h8unkKLxmGkn",
+  "T9yD14Nj9j7xAB4dbGeiX9h8unkKT76qbH",
+  "T9yD14Nj9j7xAB4dbGeiX9h8unkKawPyGg",
+  "T9yD14Nj9j7xAB4dbGeiX9h8unkKi6mJHp",
+  "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
+  PEER,
+  BLACKLIST
+] as const;
 
 function lexical(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -63,14 +87,16 @@ function requiredString(value: unknown): string | null {
 }
 
 function selectBlindSubjects(
-  rows: CaptureInput["selectionRows"],
+  rows: GoldenCaptureInput["selectionRows"],
   cutoff: string
 ): string[] {
   const eligible = rows
     .map((row) => ({
       address: requiredString(row.subjectAddress),
       createdAt: requiredString(row.createdAt),
-      userOriginated: row.chatId != null || row.requestedBy != null
+      userOriginated:
+        row.chatId != null ||
+        /^(?:user|[0-9]+)$/u.test(requiredString(row.requestedBy) ?? "")
     }))
     .filter(
       (
@@ -89,7 +115,7 @@ function selectBlindSubjects(
     )
     .sort(
       (left, right) =>
-        lexical(right.createdAt, left.createdAt) ||
+        Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
         lexical(left.address, right.address)
     );
   const selected: string[] = [];
@@ -108,8 +134,9 @@ function selectBlindSubjects(
 function emptySource(
   caseId: string,
   subjectAddress: string,
-  input: CaptureInput
-): FrozenEvidenceSourceV2 {
+  input: GoldenCaptureInput
+): CapturedSource {
+  const evidence = input.evidenceBySubject?.[subjectAddress];
   return {
     version: "frozen-evidence-source-v2",
     caseId,
@@ -119,10 +146,22 @@ function emptySource(
       ...input.snapshot,
       labelDatasetSha256: input.labelDatasetSha256
     },
-    events: [],
-    stateFacts: [],
-    labels: [],
-    approvals: []
+    events: evidence?.events.map((item) => ({ ...item })) ?? [],
+    stateFacts:
+      evidence?.stateFacts.map((item) => ({
+        ...item,
+        evidenceRefs: [...item.evidenceRefs]
+      })) ?? [],
+    labels:
+      evidence?.labels.map((item) => ({
+        ...item,
+        evidenceRefs: [...item.evidenceRefs]
+      })) ?? [],
+    approvals: evidence?.approvals.map((item) => ({ ...item })) ?? [],
+    captureProvenance: {
+      providerResponseSha256: input.providerResponseSha256,
+      selectionCutoff: input.selectionCutoff
+    }
   };
 }
 
@@ -148,8 +187,8 @@ function event(
 
 function syntheticSource(
   item: SyntheticCase,
-  input: CaptureInput
-): FrozenEvidenceSourceV2 {
+  input: GoldenCaptureInput
+): CapturedSource {
   const source = emptySource(item.caseId, item.subjectAddress, input);
   const ref = `${item.txHash}:0:trc20_transfer`;
   const fact = (factType: string, role: string, object: string | null = null) => ({
@@ -183,7 +222,10 @@ function syntheticSource(
       source.events.push(event(item, PEER, item.subjectAddress));
       return source;
     case "synthetic-direct-blacklist-1pct":
-      source.events.push(event(item, BLACKLIST, item.subjectAddress));
+      source.events.push(
+        event(item, PEER, item.subjectAddress, "990000", "0"),
+        event(item, BLACKLIST, item.subjectAddress, "10000", "1")
+      );
       source.labels.push({
         address: BLACKLIST,
         label: "Frozen at event",
@@ -191,7 +233,7 @@ function syntheticSource(
         authority: "golden-synthetic-v2",
         validFrom: item.timestamp,
         validTo: null,
-        evidenceRefs: [ref]
+        evidenceRefs: [`${item.txHash}:1:trc20_transfer`]
       });
       return source;
     case "synthetic-bybit-plus-hard-evidence":
@@ -245,35 +287,80 @@ function syntheticSource(
       source.stateFacts.push(fact("dust_spam", "recipient"));
       return source;
     case "synthetic-dense-wallet":
-      source.stateFacts.push(fact("dense_fan_in_fan_out", "subject", "500"));
+      for (let index = 0; index < 64; index += 1) {
+        const peer = PEERS[index % PEERS.length];
+        const incoming = index % 2 === 0;
+        source.events.push({
+          txHash: canonicalSha256([item.caseId, index]),
+          eventIndex: "0",
+          tokenContract: USDT,
+          from: incoming ? peer : item.subjectAddress,
+          to: incoming ? item.subjectAddress : peer,
+          amountRaw: String(1_000_000 + index),
+          timestamp: item.timestamp,
+          blockNumber: String(200 + index),
+          factType: "trc20_transfer"
+        });
+      }
+      source.stateFacts.push(fact("dense_fan_in_fan_out", "subject", "64"));
       return source;
     case "synthetic-500-pages":
-      source.stateFacts.push(fact("direct_history_pages", "subject", "500"));
+      for (let page = 1; page <= 500; page += 1) {
+        source.stateFacts.push(
+          fact("direct_history_page", "subject", String(page))
+        );
+      }
       return source;
     case "synthetic-duplicates":
       source.events.push(event(item, PEER, item.subjectAddress));
-      source.stateFacts.push(fact("duplicate_evidence_idempotent", "subject"));
+      source.stateFacts.push(
+        fact("duplicate_evidence", "fast_branch"),
+        fact("duplicate_evidence", "deep_branch")
+      );
       return source;
     case "synthetic-reorder":
-      source.events.push(event(item, PEER, item.subjectAddress));
-      source.stateFacts.push(fact("reordered_evidence_idempotent", "subject"));
+      source.events.push(
+        event(item, PEER, item.subjectAddress, item.amountRaw, "2"),
+        event(item, item.subjectAddress, PEER, item.amountRaw, "1"),
+        event(item, PEER, item.subjectAddress, item.amountRaw, "0")
+      );
       return source;
     case "synthetic-restart":
       source.events.push(event(item, PEER, item.subjectAddress));
-      source.stateFacts.push(fact("restart_deterministic", "subject"));
+      source.stateFacts.push(
+        fact("immutable_attempt", "attempt", "attempt-1"),
+        fact("immutable_attempt", "attempt", "attempt-2")
+      );
       return source;
     case "synthetic-key-exhaustion":
-      source.stateFacts.push(fact("provider_key_exhaustion", "provider"));
+      for (let key = 1; key <= 4; key += 1) {
+        source.stateFacts.push(
+          fact("provider_key_exhausted", "provider", `key-${key}`)
+        );
+      }
       return source;
     case "synthetic-ambiguous-delivery":
-      source.stateFacts.push(fact("ambiguous_delivery", "delivery"));
+      source.stateFacts.push(
+        fact("delivery_unknown", "delivery"),
+        fact("automatic_retry_forbidden", "delivery")
+      );
       return source;
     default:
       throw new TypeError(`golden_unknown_synthetic_case:${item.caseId}`);
   }
 }
 
-export function buildPureGoldenCapture(input: CaptureInput) {
+function assertHash(value: string): void {
+  if (!/^[0-9a-f]{64}$/u.test(value)) {
+    throw new Error(
+      "FAILED_TECHNICAL:golden_capture_invalid_provenance_hash"
+    );
+  }
+}
+
+export function buildPureGoldenCapture(input: GoldenCaptureInput) {
+  assertHash(input.providerResponseSha256);
+  assertHash(input.labelDatasetSha256);
   const selectedSubjects = selectBlindSubjects(
     input.selectionRows,
     input.selectionCutoff
@@ -352,33 +439,25 @@ export async function publishCanonicalArtifactIdentically(
   relativePath: string,
   value: unknown
 ) {
-  if (
-    relativePath.length === 0 ||
-    relativePath.includes("\\") ||
-    relativePath.split("/").some((part) => part === "" || part === "." || part === "..")
-  ) {
-    throw new TypeError("golden_artifact_path_invalid");
-  }
-  const absoluteRoot = resolve(root);
-  const destination = resolve(absoluteRoot, ...relativePath.split("/"));
-  if (destination !== absoluteRoot && !destination.startsWith(`${absoluteRoot}${sep}`)) {
-    throw new TypeError("golden_artifact_path_invalid");
-  }
-  const bytes = Buffer.from(canonicalJson(value), "utf8");
-  try {
-    const existing = await readFile(destination);
-    if (!existing.equals(bytes)) {
-      throw new Error("golden_artifact_existing_content_differs");
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
-  }
-  const info = await stat(destination);
-  return {
+  const expected = {
     relativePath,
     sha256: canonicalSha256(value),
-    byteLength: info.size
+    byteLength: Buffer.byteLength(canonicalJson(value), "utf8")
   };
+  try {
+    return await publishArtifactOnce(root, relativePath, value);
+  } catch (error) {
+    if ((error as Error).message !== "golden_artifact_already_exists") {
+      throw error;
+    }
+  }
+  try {
+    await verifyPublishedArtifact(root, expected);
+  } catch (error) {
+    if ((error as Error).message === "golden_artifact_verification_failed") {
+      throw new Error("golden_artifact_existing_content_differs");
+    }
+    throw error;
+  }
+  return expected;
 }

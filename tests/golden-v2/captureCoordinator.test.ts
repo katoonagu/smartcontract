@@ -151,6 +151,87 @@ describe("pure golden capture coordinator", () => {
     ).toThrow("FAILED_TECHNICAL:golden_capture_requires_five_blind_subjects");
   });
 
+  test("rejects system requesters, compares parsed timestamps and binds real evidence plus provenance", () => {
+    const rows = addresses.slice(0, 5).map((subjectAddress, index) => ({
+      jobId: `job-${index}`,
+      subjectAddress,
+      createdAt:
+        index === 0
+          ? "2026-07-23T00:00:20Z"
+          : `2026-07-23T00:00:${(19 - index).toString().padStart(2, "0")}.000Z`,
+      requestedBy: "user"
+    }));
+    rows.push({
+      jobId: "system",
+      subjectAddress: addresses[5],
+      createdAt: "2026-07-23T00:00:29.000Z",
+      requestedBy: "admin_strict_benchmark"
+    });
+    const evidence = {
+      events: [
+        {
+          txHash: "e".repeat(64),
+          eventIndex: "0",
+          tokenContract: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+          from: addresses[5],
+          to: addresses[0],
+          amountRaw: "1000000",
+          timestamp: "2026-07-23T00:00:10.000Z",
+          blockNumber: "100",
+          factType: "trc20_transfer"
+        }
+      ],
+      stateFacts: [],
+      labels: [],
+      approvals: []
+    };
+
+    const capture = buildPureGoldenCapture({
+      ...input(rows),
+      evidenceBySubject: { [addresses[0]]: evidence }
+    });
+    expect(capture.selectionManifest.selectedSubjects).toEqual(addresses.slice(0, 5));
+    expect(capture.sources[0].events).toEqual(evidence.events);
+    expect(capture.sources[0].captureProvenance.providerResponseSha256).toBe(
+      "c".repeat(64)
+    );
+    expect(() =>
+      buildPureGoldenCapture({
+        ...input(rows),
+        providerResponseSha256: "not-a-hash"
+      })
+    ).toThrow("FAILED_TECHNICAL:golden_capture_invalid_provenance_hash");
+  });
+
+  test("constructs quantitative blacklist and performance fixtures", () => {
+    const capture = buildPureGoldenCapture(
+      input(
+        addresses.slice(0, 5).map((subjectAddress, index) => ({
+          jobId: `job-${index}`,
+          subjectAddress,
+          createdAt: `2026-07-23T00:00:0${index}.000Z`,
+          chatId: "chat"
+        }))
+      )
+    );
+    const byCase = new Map(capture.sources.map((source) => [source.caseId, source]));
+    const blacklist = byCase.get("synthetic-direct-blacklist-1pct")!;
+    const total = blacklist.events.reduce(
+      (sum, item) => sum + BigInt(item.amountRaw),
+      0n
+    );
+    expect(blacklist.events.find(({ from }) => from === addresses[6])?.amountRaw).toBe(
+      (total / 100n).toString()
+    );
+    expect(byCase.get("synthetic-dense-wallet")!.events.length).toBeGreaterThan(50);
+    expect(
+      byCase
+        .get("synthetic-500-pages")!
+        .stateFacts.filter(({ factType }) => factType === "direct_history_page")
+    ).toHaveLength(500);
+    expect(byCase.get("synthetic-reorder")!.events).toHaveLength(3);
+  });
+
   test("publishes identical canonical bytes idempotently and rejects changed content", async () => {
     const root = await mkdtemp(join(tmpdir(), "golden-capture-v2-"));
     temporaryRoots.push(root);
@@ -166,6 +247,15 @@ describe("pure golden capture coordinator", () => {
 
     expect(second).toEqual(first);
     expect(first.sha256).toBe(canonicalSha256({ a: 1, z: 2 }));
+    await expect(
+      Promise.all(
+        Array.from({ length: 4 }, () =>
+          publishCanonicalArtifactIdentically(root, "capture/concurrent.json", {
+            stable: true
+          })
+        )
+      )
+    ).resolves.toHaveLength(4);
     await expect(
       publishCanonicalArtifactIdentically(root, "capture/test.json", { a: 2 })
     ).rejects.toThrow("golden_artifact_existing_content_differs");
