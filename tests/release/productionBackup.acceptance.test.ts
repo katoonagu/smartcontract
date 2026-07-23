@@ -97,6 +97,49 @@ function verifiedV2AuthorityStub() {
 }
 
 function materializeInitialGateEvidence(root: string) {
+  const task0bBytes = readFileSync(join(root, "task0b-release-freeze.json"));
+  const task0b = JSON.parse(task0bBytes.toString("utf8"));
+  const freeze = JSON.parse(readFileSync(join(root, "release-freeze-identity-v2.json"), "utf8"));
+  const releaseFreezeIdentitySha256 = sha256(Buffer.from(`${canonicalReleaseJsonV2(freeze)}\n`, "utf8"));
+  const trustPolicy = {
+    version: "trusted-os-principal-policy-v2",
+    policyId: process.platform === "win32" ? "windows-configured-canonical-set-v1" : "posix-owner-only-v1",
+    platform: process.platform === "win32" ? "windows" : "posix",
+    normalizedTrustedPrincipalSetSha256: "5".repeat(64),
+    trustedPrincipalCount: 1,
+    candidateSha: CANDIDATE_SHA,
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256,
+    task0BPreflightEvidenceSha256: sha256(task0bBytes),
+    ownerIdentityFingerprintSha256: task0b.artifactRoot.ownerIdentityFingerprintSha256,
+    accessControlFingerprintSha256: task0b.artifactRoot.accessControlFingerprintSha256,
+    authoritativePolicySource: "task0b_allowlisted_writer_principals_v2",
+    observedAt: freeze.createdAt,
+    source: "task0b_acl_policy_read_only",
+    verified: true
+  };
+  const trustPolicyBytes = Buffer.from(`${canonicalReleaseJsonV2(trustPolicy)}\n`, "utf8");
+  const trustBoundary = {
+    version: "artifact-root-trust-boundary-evidence-v1",
+    candidateSha: CANDIDATE_SHA,
+    releaseGenerationId: freeze.releaseGenerationId,
+    artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256,
+    task0BPreflightEvidenceSha256: sha256(task0bBytes),
+    artifactRootObservationSha256: freeze.artifactRootTrustBoundaryEvidenceSha256,
+    trustedOsPrincipalPolicySha256: sha256(trustPolicyBytes),
+    ownerIdentityFingerprintSha256: task0b.artifactRoot.ownerIdentityFingerprintSha256,
+    accessControlFingerprintSha256: task0b.artifactRoot.accessControlFingerprintSha256,
+    accessControlSource: task0b.artifactRoot.accessControlSource,
+    outsideRepository: true,
+    noSymlink: true,
+    restrictiveAccessVerified: true,
+    exclusiveWriteVerified: true,
+    observedAt: freeze.createdAt,
+    source: "task0b_protected_root_acl_read_only",
+    verified: true
+  };
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
   for (const gate of gates) {
     const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id as keyof typeof PRE_RELEASE_GATE_EVIDENCE_POLICY_V2];
@@ -109,8 +152,11 @@ function materializeInitialGateEvidence(root: string) {
       const path = join(root, ...relativePath.split("/"));
       if (!existsSync(path)) {
         mkdirSync(resolve(path, ".."), { recursive: true });
-        writeFileSync(path, `${canonicalReleaseJsonV2({ version: "gate-evidence-v2", candidateSha: CANDIDATE_SHA,
-          gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] })}\n`);
+        const value = relativePath === "trusted-os-principal-policy-v2.json" ? trustPolicy
+          : relativePath === "artifact-root-trust-boundary-evidence-v1.json" ? trustBoundary
+          : { version: "gate-evidence-v2", candidateSha: CANDIDATE_SHA,
+            gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };
+        writeFileSync(path, `${canonicalReleaseJsonV2(value)}\n`);
       }
       const bytes = readFileSync(path);
       const parsed = JSON.parse(bytes.toString("utf8"));
