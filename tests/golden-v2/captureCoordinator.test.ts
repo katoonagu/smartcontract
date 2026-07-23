@@ -43,6 +43,16 @@ afterEach(async () => {
 });
 
 function input(selectionRows: Array<Record<string, unknown>>) {
+  const evidenceBySubject = Object.fromEntries(
+    [
+      ...addresses,
+      "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
+      "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP"
+    ].map((address) => [
+      address,
+      { events: [], stateFacts: [], labels: [], approvals: [] }
+    ])
+  );
   return {
     catalog: CATALOG,
     syntheticCases: SYNTHETIC,
@@ -54,7 +64,8 @@ function input(selectionRows: Array<Record<string, unknown>>) {
       timestamp: "2026-07-23T00:00:30.000Z"
     },
     providerResponseSha256: "c".repeat(64),
-    labelDatasetSha256: "d".repeat(64)
+    labelDatasetSha256: "d".repeat(64),
+    evidenceBySubject
   };
 }
 
@@ -157,7 +168,7 @@ describe("pure golden capture coordinator", () => {
       subjectAddress,
       createdAt:
         index === 0
-          ? "2026-07-23T00:00:20Z"
+          ? "2026-07-23T00:00:20.000Z"
           : `2026-07-23T00:00:${(19 - index).toString().padStart(2, "0")}.000Z`,
       requestedBy: "user"
     }));
@@ -186,9 +197,13 @@ describe("pure golden capture coordinator", () => {
       approvals: []
     };
 
+    const base = input(rows);
     const capture = buildPureGoldenCapture({
-      ...input(rows),
-      evidenceBySubject: { [addresses[0]]: evidence }
+      ...base,
+      evidenceBySubject: {
+        ...base.evidenceBySubject,
+        [addresses[0]]: evidence
+      }
     });
     expect(capture.selectionManifest.selectedSubjects).toEqual(addresses.slice(0, 5));
     expect(capture.sources[0].events).toEqual(evidence.events);
@@ -210,7 +225,8 @@ describe("pure golden capture coordinator", () => {
           jobId: `job-${index}`,
           subjectAddress,
           createdAt: `2026-07-23T00:00:0${index}.000Z`,
-          chatId: "chat"
+          chatId: "chat",
+          requestedBy: "user"
         }))
       )
     );
@@ -230,6 +246,18 @@ describe("pure golden capture coordinator", () => {
         .stateFacts.filter(({ factType }) => factType === "direct_history_page")
     ).toHaveLength(500);
     expect(byCase.get("synthetic-reorder")!.events).toHaveLength(3);
+    const duplicateFacts = byCase.get("synthetic-duplicates")!.stateFacts;
+    expect(duplicateFacts).toHaveLength(2);
+    expect(duplicateFacts[1]).toEqual(duplicateFacts[0]);
+    const restartFacts = byCase.get("synthetic-restart")!.stateFacts;
+    expect(restartFacts).toHaveLength(2);
+    expect(restartFacts[1]).toEqual(restartFacts[0]);
+    expect(byCase.get("synthetic-key-exhaustion")!.stateFacts).toHaveLength(4);
+    expect(
+      byCase
+        .get("synthetic-ambiguous-delivery")!
+        .stateFacts.map(({ factType }) => factType)
+    ).toEqual(["delivery_unknown", "automatic_retry_forbidden"]);
   });
 
   test("publishes identical canonical bytes idempotently and rejects changed content", async () => {

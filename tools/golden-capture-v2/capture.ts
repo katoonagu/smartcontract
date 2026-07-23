@@ -2,36 +2,22 @@ import {
   canonicalJson,
   canonicalSha256
 } from "../golden-pilot-v2/canonicalJson";
+import { TronWeb } from "tronweb";
 import {
   publishArtifactOnce,
   verifyPublishedArtifact
 } from "../golden-pilot-v2/artifactStore";
 import {
+  parseGoldenCaseCatalogV2,
+  parseSyntheticCasesV2,
+  type GoldenCaseCatalogV2,
+  type SyntheticCaseSeedV2,
+  type SyntheticCasesV2
+} from "../golden-pilot-v2/contracts";
+import {
   buildNeutralExport,
   type FrozenEvidenceSourceV2
 } from "../golden-pilot-v2/neutralExport";
-
-type CatalogCase = {
-  caseId: string;
-  group: "blind_review" | "regression" | "synthetic_property_performance";
-  subjectAddress: string;
-  sourceArtifact: string;
-  requiredProperties: string[];
-};
-
-type Catalog = {
-  version: "golden-case-catalog-v2";
-  groups: Array<{ kind: CatalogCase["group"]; caseIds: string[] }>;
-  cases: CatalogCase[];
-};
-
-type SyntheticCase = {
-  caseId: string;
-  subjectAddress: string;
-  amountRaw: string;
-  timestamp: string;
-  txHash: string;
-};
 
 type FrozenEvidence = Pick<
   FrozenEvidenceSourceV2,
@@ -46,11 +32,8 @@ type CapturedSource = FrozenEvidenceSourceV2 & {
 };
 
 export type GoldenCaptureInput = {
-  catalog: Catalog;
-  syntheticCases: {
-    version: "golden-synthetic-cases-v2";
-    cases: SyntheticCase[];
-  };
+  catalog: GoldenCaseCatalogV2;
+  syntheticCases: SyntheticCasesV2;
   selectionRows: Array<Record<string, unknown>>;
   selectionCutoff: string;
   snapshot: {
@@ -86,7 +69,19 @@ function requiredString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function selectBlindSubjects(
+function canonicalTimestamp(value: string): number | null {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)
+  ) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) || new Date(parsed).toISOString() !== value
+    ? null
+    : parsed;
+}
+
+export function selectBlindSubjects(
   rows: GoldenCaptureInput["selectionRows"],
   cutoff: string
 ): string[] {
@@ -94,9 +89,9 @@ function selectBlindSubjects(
     .map((row) => ({
       address: requiredString(row.subjectAddress),
       createdAt: requiredString(row.createdAt),
-      userOriginated:
-        row.chatId != null ||
-        /^(?:user|[0-9]+)$/u.test(requiredString(row.requestedBy) ?? "")
+      userOriginated: /^(?:user|[0-9]+)$/u.test(
+        requiredString(row.requestedBy) ?? ""
+      )
     }))
     .filter(
       (
@@ -107,15 +102,19 @@ function selectBlindSubjects(
         userOriginated: true;
       } =>
         row.address !== null &&
+        TronWeb.isAddress(row.address) &&
         row.createdAt !== null &&
+        canonicalTimestamp(row.createdAt) !== null &&
         row.userOriginated &&
         row.address !== TBL7 &&
         row.address !== TQR &&
-        Date.parse(row.createdAt) <= Date.parse(cutoff)
+        (canonicalTimestamp(row.createdAt) as number) <=
+          (canonicalTimestamp(cutoff) ?? Number.NaN)
     )
     .sort(
       (left, right) =>
-        Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+        (canonicalTimestamp(right.createdAt) as number) -
+          (canonicalTimestamp(left.createdAt) as number) ||
         lexical(left.address, right.address)
     );
   const selected: string[] = [];
@@ -134,9 +133,12 @@ function selectBlindSubjects(
 function emptySource(
   caseId: string,
   subjectAddress: string,
-  input: GoldenCaptureInput
+  input: GoldenCaptureInput,
+  useCapturedEvidence = true
 ): CapturedSource {
-  const evidence = input.evidenceBySubject?.[subjectAddress];
+  const evidence = useCapturedEvidence
+    ? input.evidenceBySubject?.[subjectAddress]
+    : undefined;
   return {
     version: "frozen-evidence-source-v2",
     caseId,
@@ -166,7 +168,7 @@ function emptySource(
 }
 
 function event(
-  item: SyntheticCase,
+  item: SyntheticCaseSeedV2,
   from: string,
   to: string,
   amountRaw = item.amountRaw,
@@ -180,16 +182,16 @@ function event(
     to,
     amountRaw,
     timestamp: item.timestamp,
-    blockNumber: String(100 + Number.parseInt(eventIndex, 10)),
+    blockNumber: "1",
     factType: "trc20_transfer"
   };
 }
 
 function syntheticSource(
-  item: SyntheticCase,
+  item: SyntheticCaseSeedV2,
   input: GoldenCaptureInput
 ): CapturedSource {
-  const source = emptySource(item.caseId, item.subjectAddress, input);
+  const source = emptySource(item.caseId, item.subjectAddress, input, false);
   const ref = `${item.txHash}:0:trc20_transfer`;
   const fact = (factType: string, role: string, object: string | null = null) => ({
     factType,
@@ -298,7 +300,7 @@ function syntheticSource(
           to: incoming ? item.subjectAddress : peer,
           amountRaw: String(1_000_000 + index),
           timestamp: item.timestamp,
-          blockNumber: String(200 + index),
+          blockNumber: "1",
           factType: "trc20_transfer"
         });
       }
@@ -314,8 +316,8 @@ function syntheticSource(
     case "synthetic-duplicates":
       source.events.push(event(item, PEER, item.subjectAddress));
       source.stateFacts.push(
-        fact("duplicate_evidence", "fast_branch"),
-        fact("duplicate_evidence", "deep_branch")
+        fact("duplicate_evidence", "branch"),
+        fact("duplicate_evidence", "branch")
       );
       return source;
     case "synthetic-reorder":
@@ -328,8 +330,8 @@ function syntheticSource(
     case "synthetic-restart":
       source.events.push(event(item, PEER, item.subjectAddress));
       source.stateFacts.push(
-        fact("immutable_attempt", "attempt", "attempt-1"),
-        fact("immutable_attempt", "attempt", "attempt-2")
+        fact("immutable_attempt_replay", "attempt", "same-input"),
+        fact("immutable_attempt_replay", "attempt", "same-input")
       );
       return source;
     case "synthetic-key-exhaustion":
@@ -361,18 +363,35 @@ function assertHash(value: string): void {
 export function buildPureGoldenCapture(input: GoldenCaptureInput) {
   assertHash(input.providerResponseSha256);
   assertHash(input.labelDatasetSha256);
+  if (canonicalTimestamp(input.selectionCutoff) === null) {
+    throw new Error("FAILED_TECHNICAL:golden_capture_invalid_cutoff");
+  }
+  const parsedCatalog = parseGoldenCaseCatalogV2(input.catalog);
+  const parsedSynthetic = parseSyntheticCasesV2(input.syntheticCases);
+  const expectedSyntheticIds = parsedCatalog.groups.find(
+    ({ kind }) => kind === "synthetic_property_performance"
+  )?.caseIds;
+  if (
+    expectedSyntheticIds === undefined ||
+    canonicalJson(expectedSyntheticIds) !==
+      canonicalJson(parsedSynthetic.cases.map(({ caseId }) => caseId))
+  ) {
+    throw new Error(
+      "FAILED_TECHNICAL:golden_capture_synthetic_membership_mismatch"
+    );
+  }
   const selectedSubjects = selectBlindSubjects(
     input.selectionRows,
     input.selectionCutoff
   );
   let blindIndex = 0;
-  const catalog: Catalog = {
-    ...input.catalog,
-    groups: input.catalog.groups.map((group) => ({
+  const catalog: GoldenCaseCatalogV2 = {
+    ...parsedCatalog,
+    groups: parsedCatalog.groups.map((group) => ({
       ...group,
       caseIds: [...group.caseIds]
     })),
-    cases: input.catalog.cases.map((item) => {
+    cases: parsedCatalog.cases.map((item) => {
       if (item.group === "blind_review") {
         return { ...item, subjectAddress: selectedSubjects[blindIndex++] };
       }
@@ -386,8 +405,18 @@ export function buildPureGoldenCapture(input: GoldenCaptureInput) {
     })
   };
   const synthetic = new Map(
-    input.syntheticCases.cases.map((item) => [item.caseId, item])
+    parsedSynthetic.cases.map((item) => [item.caseId, item])
   );
+  for (const item of catalog.cases) {
+    if (
+      item.group !== "synthetic_property_performance" &&
+      input.evidenceBySubject?.[item.subjectAddress] === undefined
+    ) {
+      throw new Error(
+        `FAILED_TECHNICAL:golden_capture_missing_real_evidence:${item.caseId}`
+      );
+    }
+  }
   const sources = catalog.cases.map((item) => {
     const syntheticItem = synthetic.get(item.caseId);
     return syntheticItem
