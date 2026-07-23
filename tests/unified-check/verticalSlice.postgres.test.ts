@@ -19,7 +19,10 @@ import {
   finalizeUnifiedRun,
   insertUnifiedArtifact
 } from "../../src/unifiedCheck/repository";
-import type { AnalysisRunRecord } from "../../src/unifiedCheck/requestService";
+import {
+  buildUnifiedBranchInput,
+  type AnalysisRunRecord
+} from "../../src/unifiedCheck/requestService";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -86,11 +89,22 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         databaseSchemaVersion: 33,
         paginationCutoffBlockNumber: snapshot.confirmedBlockNumber,
         paginationCutoffBlockHash: snapshot.confirmedBlockHash,
-        branchArtifactHashes: {
-          fast: "e".repeat(64),
-          deep: "f".repeat(64),
-          where: "0".repeat(64)
-        }
+        branchArtifactHashes: Object.fromEntries(
+          (["fast", "deep", "where"] as const).map((branchId) => [
+            branchId,
+            fingerprintCanonicalArtifact(buildUnifiedBranchInput(
+              branchId,
+              snapshotHash,
+              {
+                labelDatasetSha256: "c".repeat(64),
+                scoringPolicyVersion: "scoring-signal-matrix-v4",
+                attributionPolicyVersion: "selected-attribution-policy-v1",
+                runtimeCommit: "candidate",
+                schemaVersion: 33
+              }
+            ))
+          ])
+        ) as Record<"fast" | "deep" | "where", string>
       } as const;
       const manifestHash = fingerprintCanonicalJson(manifest);
       const run: AnalysisRunRecord = {
@@ -187,6 +201,41 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         scoringBundleSha256: completed.hashes.scoring,
         reportSha256: completed.hashes.report
       })).rejects.toThrow("unified_final_artifact_chain_mismatch");
+
+      const danglingScoring = {
+        ...completed.scoring,
+        scoreAnchorHash: "f".repeat(64)
+      };
+      const danglingScoringHash =
+        fingerprintCanonicalArtifact(danglingScoring);
+      const danglingReport = {
+        ...completed.report,
+        scoringBundleHash: danglingScoringHash
+      };
+      const danglingReportHash = fingerprintCanonicalArtifact(danglingReport);
+      await insertUnifiedArtifact(queryable, {
+        sha256: danglingScoringHash,
+        createdByRunId: run.id,
+        kind: "scoring_bundle",
+        schemaVersion: "1",
+        artifact: danglingScoring
+      });
+      await insertUnifiedArtifact(queryable, {
+        sha256: danglingReportHash,
+        createdByRunId: run.id,
+        kind: "unified_wallet_report",
+        schemaVersion: "1",
+        artifact: danglingReport
+      });
+      await expect(finalizeUnifiedRun(db, {
+        runId: run.id,
+        finalScore: 0,
+        finalDecision: "ACCEPTABLE",
+        evidenceBundleSha256: completed.hashes.evidence,
+        traversalClosureSha256: completed.hashes.closure,
+        scoringBundleSha256: danglingScoringHash,
+        reportSha256: danglingReportHash
+      })).rejects.toThrow("unified_linked_artifact_missing:score_anchor");
 
       await client.query(
         `update unified_check_tasks

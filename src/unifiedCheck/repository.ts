@@ -524,6 +524,31 @@ export async function finalizeUnifiedRun(
     const closure = artifacts.get("traversal_closure")!;
     const scoring = artifacts.get("scoring_bundle")!;
     const report = artifacts.get("unified_wallet_report")!;
+    const resolveLinkedArtifact = async (
+      kind: string,
+      sha256: unknown
+    ): Promise<Record<string, unknown>> => {
+      if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(sha256)) {
+        throw new Error(`unified_linked_artifact_hash_invalid:${kind}`);
+      }
+      const row = requiredRow(
+        await client.query(
+          `select artifact_json from unified_check_artifacts
+            where sha256 = $1 and created_by_run_id = $2 and kind = $3`,
+          [sha256, input.runId, kind]
+        ),
+        `unified_linked_artifact_missing:${kind}`
+      );
+      if (
+        typeof row.artifact_json !== "object" ||
+        row.artifact_json === null ||
+        Array.isArray(row.artifact_json) ||
+        fingerprintCanonicalArtifact(row.artifact_json) !== sha256
+      ) {
+        throw new Error(`unified_linked_artifact_mismatch:${kind}`);
+      }
+      return row.artifact_json as Record<string, unknown>;
+    };
     if (
       evidence.analysisManifestHash !== run.analysis_manifest_sha256 ||
       closure.analysisManifestHash !== run.analysis_manifest_sha256 ||
@@ -541,12 +566,54 @@ export async function finalizeUnifiedRun(
     ) {
       throw new Error("unified_final_artifact_chain_mismatch");
     }
+    await resolveLinkedArtifact("confirmed_snapshot", manifest.snapshotHash);
+    await resolveLinkedArtifact("canonical_facts", evidence.canonicalFactsHash);
+    const visited = await resolveLinkedArtifact(
+      "traversal_visited",
+      closure.visitedStateHash
+    );
+    const frontier = await resolveLinkedArtifact(
+      "traversal_frontier",
+      closure.frontierHash
+    );
+    const scoreAnchor = await resolveLinkedArtifact(
+      "score_anchor",
+      scoring.scoreAnchorHash
+    );
+    const factInventory = await resolveLinkedArtifact(
+      "report_fact_inventory",
+      report.factInventoryHash
+    );
+    if (
+      closure.closed !== true ||
+      !Array.isArray(visited.states) ||
+      !Array.isArray(frontier.states) ||
+      frontier.states.length !== 0 ||
+      Number(scoreAnchor.score) !== input.finalScore ||
+      scoreAnchor.decision !== input.finalDecision ||
+      !Array.isArray(evidence.canonicalFactIds) ||
+      !Array.isArray(factInventory.canonicalFactIds) ||
+      JSON.stringify(factInventory.canonicalFactIds) !==
+        JSON.stringify(evidence.canonicalFactIds)
+    ) {
+      throw new Error("unified_linked_artifact_contract_mismatch");
+    }
     const acceptedAttemptHashes = evidence.acceptedChildAttemptHashes;
+    const branchOutputHashes = evidence.branchOutputHashes;
+    const manifestBranchHashes = manifest.branchArtifactHashes;
     if (
       typeof acceptedAttemptHashes !== "object" ||
       acceptedAttemptHashes === null ||
       Array.isArray(acceptedAttemptHashes) ||
-      Object.keys(acceptedAttemptHashes).sort().join(",") !== "deep,fast,where"
+      Object.keys(acceptedAttemptHashes).sort().join(",") !== "deep,fast,where" ||
+      typeof branchOutputHashes !== "object" ||
+      branchOutputHashes === null ||
+      Array.isArray(branchOutputHashes) ||
+      Object.keys(branchOutputHashes).sort().join(",") !== "deep,fast,where" ||
+      typeof manifestBranchHashes !== "object" ||
+      manifestBranchHashes === null ||
+      Array.isArray(manifestBranchHashes) ||
+      Object.keys(manifestBranchHashes).sort().join(",") !== "deep,fast,where"
     ) {
       throw new Error("unified_final_attempt_chain_mismatch");
     }
@@ -563,13 +630,57 @@ export async function finalizeUnifiedRun(
         `unified_final_attempt_missing:${branchId}`
       );
       const artifact = attempt.artifact_json as Record<string, unknown>;
+      const inputHash = (manifestBranchHashes as Record<string, unknown>)[branchId];
+      const outputHash = (branchOutputHashes as Record<string, unknown>)[branchId];
       if (
         fingerprintCanonicalArtifact(artifact) !== attemptHash ||
         artifact.runId !== input.runId ||
         artifact.branchId !== branchId ||
+        artifact.inputHash !== inputHash ||
+        artifact.outputHash !== outputHash ||
         !["COMPLETED", "NOT_APPLICABLE"].includes(String(artifact.status))
       ) {
         throw new Error(`unified_final_attempt_mismatch:${branchId}`);
+      }
+      const inputArtifact = await resolveLinkedArtifact(
+        `${branchId}_branch_input`,
+        inputHash
+      );
+      if (
+        inputArtifact.runId !== undefined ||
+        inputArtifact.branch !== branchId ||
+        inputArtifact.snapshotHash !== manifest.snapshotHash
+      ) {
+        throw new Error(`unified_final_branch_input_mismatch:${branchId}`);
+      }
+      if (outputHash === null) {
+        if (artifact.outputHash !== null) {
+          throw new Error(`unified_final_branch_output_mismatch:${branchId}`);
+        }
+      } else {
+        const outputArtifact = await resolveLinkedArtifact(
+          `${branchId}_branch_output`,
+          outputHash
+        );
+        if (
+          outputArtifact.runId !== input.runId ||
+          outputArtifact.branchId !== branchId
+        ) {
+          throw new Error(`unified_final_branch_output_mismatch:${branchId}`);
+        }
+      }
+      const seenAttempts = new Set<string>([attemptHash]);
+      let predecessor = artifact.previousAttemptHash;
+      while (predecessor !== null) {
+        if (typeof predecessor !== "string" || seenAttempts.has(predecessor)) {
+          throw new Error(`unified_final_attempt_cycle:${branchId}`);
+        }
+        seenAttempts.add(predecessor);
+        const prior = await resolveLinkedArtifact("child_attempt", predecessor);
+        if (prior.runId !== input.runId || prior.branchId !== branchId) {
+          throw new Error(`unified_final_attempt_predecessor_mismatch:${branchId}`);
+        }
+        predecessor = prior.previousAttemptHash;
       }
       const accepted = await client.query(
         `select task.id

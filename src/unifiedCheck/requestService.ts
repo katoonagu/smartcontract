@@ -342,19 +342,36 @@ function iso(date: Date): string {
   return value;
 }
 
-function branchInputHash(
+export function buildUnifiedBranchInput(
   branch: "fast" | "deep" | "where",
   snapshotHash: string,
   versions: UnifiedAnalysisVersions
-): string {
-  return fingerprintCanonicalArtifact({
+): {
+  readonly version: "unified-branch-input-v1";
+  readonly branch: "fast" | "deep" | "where";
+  readonly snapshotHash: string;
+  readonly labelDatasetSha256: string;
+  readonly runtimeCommit: string;
+  readonly schemaVersion: number;
+} {
+  return {
     version: "unified-branch-input-v1",
     branch,
     snapshotHash,
     labelDatasetSha256: versions.labelDatasetSha256,
     runtimeCommit: versions.runtimeCommit,
     schemaVersion: versions.schemaVersion
-  });
+  };
+}
+
+function branchInputHash(
+  branch: "fast" | "deep" | "where",
+  snapshotHash: string,
+  versions: UnifiedAnalysisVersions
+): string {
+  return fingerprintCanonicalArtifact(
+    buildUnifiedBranchInput(branch, snapshotHash, versions)
+  );
 }
 
 export function buildUnifiedAnalysisIdentity(input: {

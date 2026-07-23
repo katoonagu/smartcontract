@@ -8,7 +8,10 @@ import type {
   UnifiedBranchStatus,
   UnifiedWalletReportV1
 } from "./contracts";
-import type { AnalysisRunRecord } from "./requestService";
+import {
+  buildUnifiedBranchInput,
+  type AnalysisRunRecord
+} from "./requestService";
 
 export type MinimalBranchResult = {
   readonly branchId: "fast" | "deep" | "where";
@@ -93,8 +96,28 @@ export function buildMinimalUnifiedCheckCandidate(input: {
   const branchOutputHashes = {} as Record<"fast" | "deep" | "where", string | null>;
   for (const branchId of ["fast", "deep", "where"] as const) {
     const branch = byBranch.get(branchId)!;
+    const branchInput = buildUnifiedBranchInput(
+      branchId,
+      input.run.snapshotHash,
+      {
+        labelDatasetSha256: input.run.analysisManifest.labelDatasetSha256,
+        scoringPolicyVersion: input.run.analysisManifest.scoringPolicyVersion,
+        attributionPolicyVersion: input.run.analysisManifest.attributionPolicyVersion,
+        runtimeCommit: input.run.analysisManifest.runtimeCommit,
+        schemaVersion: input.run.analysisManifest.databaseSchemaVersion
+      }
+    );
+    const branchInputArtifactHash = add(
+      artifacts,
+      artifactKinds,
+      `${branchId}_branch_input`,
+      branchInput
+    );
     if (branch.inputHash !== input.run.analysisManifest.branchArtifactHashes[branchId]) {
       throw new Error(`unified_branch_input_mismatch:${branchId}`);
+    }
+    if (branchInputArtifactHash !== branch.inputHash) {
+      throw new Error(`unified_branch_input_artifact_mismatch:${branchId}`);
     }
     const outputHash = branch.output === null
       ? null

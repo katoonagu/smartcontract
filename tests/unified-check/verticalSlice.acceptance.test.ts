@@ -4,7 +4,10 @@ import {
   completeMinimalUnifiedCheck,
   type MinimalBranchResult
 } from "../../src/unifiedCheck/orchestrator";
-import type { AnalysisRunRecord } from "../../src/unifiedCheck/requestService";
+import {
+  buildUnifiedBranchInput,
+  type AnalysisRunRecord
+} from "../../src/unifiedCheck/requestService";
 
 const analysisManifest = {
   version: "analysis-manifest-v1",
@@ -25,11 +28,7 @@ const analysisManifest = {
   databaseSchemaVersion: 33,
   paginationCutoffBlockNumber: "84713573",
   paginationCutoffBlockHash: "b".repeat(64),
-  branchArtifactHashes: {
-    fast: "e".repeat(64),
-    deep: "f".repeat(64),
-    where: "0".repeat(64)
-  }
+  branchArtifactHashes: {}
 } as const;
 
 const snapshot = {
@@ -48,7 +47,26 @@ const snapshot = {
   }
 } as const;
 const snapshotHash = fingerprintCanonicalJson(snapshot);
-const boundManifest = { ...analysisManifest, snapshotHash };
+const branchVersions = {
+  labelDatasetSha256: analysisManifest.labelDatasetSha256,
+  scoringPolicyVersion: analysisManifest.scoringPolicyVersion,
+  attributionPolicyVersion: analysisManifest.attributionPolicyVersion,
+  runtimeCommit: analysisManifest.runtimeCommit,
+  schemaVersion: analysisManifest.databaseSchemaVersion
+};
+const branchArtifactHashes = Object.fromEntries(
+  (["fast", "deep", "where"] as const).map((branchId) => [
+    branchId,
+    fingerprintCanonicalJson(
+      buildUnifiedBranchInput(branchId, snapshotHash, branchVersions)
+    )
+  ])
+) as Record<"fast" | "deep" | "where", string>;
+const boundManifest = {
+  ...analysisManifest,
+  snapshotHash,
+  branchArtifactHashes
+};
 
 const run: AnalysisRunRecord = {
   id: "run-1",
@@ -67,7 +85,7 @@ const branches: MinimalBranchResult[] = (["fast", "deep", "where"] as const).map
   (branchId, index) => ({
     branchId,
     attemptId: `attempt-${branchId}`,
-    inputHash: Object.values(run.analysisManifest.branchArtifactHashes)[index]!,
+    inputHash: run.analysisManifest.branchArtifactHashes[branchId]!,
     status: "COMPLETED",
     output: { version: `${branchId}-fake-v1`, findings: [] },
     createdAt: `2026-07-23T13:00:0${index}.000Z`
