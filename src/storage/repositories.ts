@@ -7758,7 +7758,22 @@ export async function completeForensicCheckJob(
 
 export async function claimNextForensicTelegramDelivery(
   db: Db,
-  input: { now: Date }
+  input: {
+    now: Date;
+    resolveWalletDeliveryGeneration?: (input: {
+      db: {
+        query(
+          sql: string,
+          values?: unknown[]
+        ): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
+      };
+      subjectAddress: string;
+      chatId: string;
+    }) => Promise<
+      | { deliveryGeneration: "legacy" }
+      | { deliveryGeneration: "unified"; generationId: string }
+    >;
+  }
 ): Promise<ForensicTelegramDeliveryClaim | null> {
   const nowIso = input.now.toISOString();
   const cutoffs = [30_000, 120_000, 600_000]
@@ -7767,34 +7782,35 @@ export async function claimNextForensicTelegramDelivery(
   try {
     await client.query("begin");
     const candidates = await client.query(
-      `select id, kind, progress_json->'telegramDelivery' as delivery
-       from forensic_check_jobs
-       where status in ('completed', 'partial', 'failed')
-         and progress_json#>>'{telegramDelivery,version}' = 'forensic-telegram-delivery-v1'
+      `select job.id, job.kind, job.subject_address, job.chat_id,
+              job.progress_json->'telegramDelivery' as delivery
+       from forensic_check_jobs job
+       where job.status in ('completed', 'partial', 'failed')
+         and job.progress_json#>>'{telegramDelivery,version}' = 'forensic-telegram-delivery-v1'
          and (
-           progress_json#>>'{telegramDelivery,state,status}' = 'pending'
+           job.progress_json#>>'{telegramDelivery,state,status}' = 'pending'
            or (
-             progress_json#>>'{telegramDelivery,state,status}' = 'retryable'
+             job.progress_json#>>'{telegramDelivery,state,status}' = 'retryable'
              and (
                (
-                 progress_json#>'{telegramDelivery,claim}' <> 'null'::jsonb
-                 and progress_json#>>'{telegramDelivery,claim,leaseExpiresAt}' <= $1
+                 job.progress_json#>'{telegramDelivery,claim}' <> 'null'::jsonb
+                 and job.progress_json#>>'{telegramDelivery,claim,leaseExpiresAt}' <= $1
                )
                or (
-                 progress_json#>'{telegramDelivery,claim}' = 'null'::jsonb
+                 job.progress_json#>'{telegramDelivery,claim}' = 'null'::jsonb
                  and (
-                   (progress_json#>>'{telegramDelivery,state,attemptCount}' = '1'
-                     and progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $2)
-                   or (progress_json#>>'{telegramDelivery,state,attemptCount}' = '2'
-                     and progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $3)
-                   or (progress_json#>>'{telegramDelivery,state,attemptCount}' = '3'
-                     and progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $4)
+                   (job.progress_json#>>'{telegramDelivery,state,attemptCount}' = '1'
+                     and job.progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $2)
+                   or (job.progress_json#>>'{telegramDelivery,state,attemptCount}' = '2'
+                     and job.progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $3)
+                   or (job.progress_json#>>'{telegramDelivery,state,attemptCount}' = '3'
+                     and job.progress_json#>>'{telegramDelivery,state,lastAttemptAt}' <= $4)
                  )
                )
              )
            )
          )
-       order by created_at asc
+       order by job.created_at asc
        limit 10
        for update skip locked`,
       [nowIso, ...cutoffs]
@@ -7803,6 +7819,42 @@ export async function claimNextForensicTelegramDelivery(
     for (const row of candidates.rows) {
       const kind = row.kind as ForensicCheckJobKind;
       const delivery = row.delivery as unknown;
+      if (
+        input.resolveWalletDeliveryGeneration &&
+        (kind === "where_is_money_check" || kind === "address_deep_check") &&
+        typeof row.subject_address === "string" &&
+        typeof row.chat_id === "string"
+      ) {
+        const owner = await input.resolveWalletDeliveryGeneration({
+          db: client,
+          subjectAddress: row.subject_address,
+          chatId: row.chat_id
+        });
+        if (owner.deliveryGeneration === "unified") {
+          await client.query(
+            `update forensic_check_jobs
+                set progress_json = (progress_json - 'telegramDelivery')
+                  || jsonb_build_object(
+                    'quarantinedLegacyTelegramDelivery', progress_json->'telegramDelivery',
+                    'legacyDeliveryFence', jsonb_build_object(
+                      'version', 'legacy-wallet-delivery-fence-v1',
+                      'generationId', $3::text,
+                      'quarantinedAt', $4::text
+                    )
+                  ),
+                    updated_at = $4::timestamptz
+              where id = $1
+                and progress_json->'telegramDelivery' = $2::jsonb`,
+            [
+              row.id,
+              JSON.stringify(delivery),
+              owner.generationId,
+              nowIso
+            ]
+          );
+          continue;
+        }
+      }
       if (kind === "address_fast_check"
         || !isForensicTelegramDeliveryV1(delivery, kind)
         || !isTelegramDeliveryDue(delivery, input.now, kind)) {

@@ -15,6 +15,7 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     acceptedAttemptId: string | null;
   }) = {
     id: "task-1",
+    runId: "run-1",
     kind: "direct_history",
     attempt: 0,
     checkpoint: {},

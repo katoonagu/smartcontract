@@ -34,6 +34,111 @@ export type ConfirmedWalletSnapshotV1 = {
   };
 };
 
+type JsonRecord = Record<string, unknown>;
+
+function record(value: unknown, code: string): JsonRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(code);
+  }
+  return value as JsonRecord;
+}
+
+function rawInteger(value: unknown, code: string): string {
+  if (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0
+  ) {
+    return String(value);
+  }
+  if (typeof value === "string" && RAW.test(value)) return value;
+  throw new Error(code);
+}
+
+async function postJson(
+  fetchFn: typeof fetch,
+  url: URL,
+  body: unknown,
+  fullNodeApiKey: string | undefined,
+  timeoutMs: number
+): Promise<JsonRecord> {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (fullNodeApiKey) headers.set("TRON-PRO-API-KEY", fullNodeApiKey);
+  const response = await fetchFn(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!response.ok) {
+    throw new Error(`unified_snapshot_provider_http_${response.status}`);
+  }
+  return record(await response.json(), "unified_snapshot_provider_malformed");
+}
+
+export function createTronConfirmedSnapshotSource(input: {
+  fullNodeBaseUrl: URL;
+  fullNodeApiKey?: string;
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+}): SnapshotSource {
+  if (input.fullNodeBaseUrl.protocol !== "https:") {
+    throw new TypeError("unified_snapshot_provider_requires_https");
+  }
+  const fetchFn = input.fetchFn ?? fetch;
+  const timeoutMs = input.timeoutMs ?? 10_000;
+  const call = (path: string, body: unknown) =>
+    postJson(
+      fetchFn,
+      new URL(path, input.fullNodeBaseUrl),
+      body,
+      input.fullNodeApiKey,
+      timeoutMs
+    );
+  return {
+    async latestConfirmedBlock() {
+      const response = await call("/walletsolidity/getnowblock", {});
+      const header = record(
+        response.block_header,
+        "unified_snapshot_block_header_missing"
+      );
+      const rawData = record(
+        header.raw_data,
+        "unified_snapshot_block_data_missing"
+      );
+      const hash = String(response.blockID ?? "").toLowerCase();
+      const timestampMs = Number(
+        rawInteger(rawData.timestamp, "unified_snapshot_block_timestamp_invalid")
+      );
+      return {
+        number: rawInteger(
+          rawData.number,
+          "unified_snapshot_block_number_invalid"
+        ),
+        hash,
+        timestamp: new Date(timestampMs).toISOString()
+      };
+    },
+    async snapshotBalances(address, blockNumber) {
+      if (!TronWeb.isAddress(address)) {
+        throw new TypeError("unified_invalid_subject_address");
+      }
+      if (!RAW.test(blockNumber)) {
+        throw new TypeError("unified_invalid_snapshot_block");
+      }
+      // ponytail: walletsolidity balance methods do not accept an as-of block.
+      // A later direct-history reconstruction may fill this profile; reporting
+      // the moving solidified head as block-bound state would be false evidence.
+      return {
+        usdtRaw: null,
+        trxSun: null,
+        source: "tron-walletsolidity-pinned-state-unavailable",
+        consistency: "unavailable"
+      };
+    }
+  };
+}
+
 function canonicalTimestamp(value: string): string {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {

@@ -334,12 +334,12 @@ function aggregateServices(
     factIds: Set<string>;
   }>();
   for (const row of section(report, "services_boundaries").rows) {
-    const key = [
+    const key = JSON.stringify([
       row.service,
       row.direction,
       row.directness,
       row.amount.denominatorRaw
-    ].join("\u0000");
+    ]);
     const current = groups.get(key) ?? {
       service: row.service,
       direction: row.direction,
@@ -416,7 +416,9 @@ function aggregateBehaviors(
     factIds: Set<string>;
   }>();
   for (const row of section(report, "behavior_connections").rows) {
-    const key = mergeByRole ? row.role : `${row.role}\u0000${row.code}`;
+    const key = mergeByRole
+      ? row.role
+      : JSON.stringify([row.role, row.code]);
     const current = groups.get(key) ?? {
       role: row.role,
       codes: new Set<string>(),

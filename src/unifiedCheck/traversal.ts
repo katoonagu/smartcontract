@@ -63,6 +63,10 @@ function stateMergeKey(state: TraversalStateV1): string {
   ]);
 }
 
+export function traversalExpansionKey(state: TraversalStateV1): string {
+  return stateMergeKey(state);
+}
+
 export function traversalStateId(state: TraversalStateV1): string {
   return fingerprintCanonicalArtifact([
     "traversal-state-v1",
@@ -79,8 +83,12 @@ export function mergeTraversalStates(
   states: readonly TraversalStateV1[]
 ): TraversalStateV1[] {
   const merged = new Map<string, TraversalStateV1>();
+  const exactStates = new Set<string>();
   for (const state of states) {
     timestamp(state.anchorTimestamp);
+    const exactStateId = traversalStateId(state);
+    if (exactStates.has(exactStateId)) continue;
+    exactStates.add(exactStateId);
     const stateAmount = amount(
       state.allocatedAmountRaw,
       "unified_traversal_state_amount_invalid"
@@ -104,9 +112,21 @@ export function mergeTraversalStates(
           sourceEventIds: [...new Set(state.sourceEventIds)].sort()
         });
   }
-  return [...merged.values()].sort((left, right) =>
-    traversalStateId(left).localeCompare(traversalStateId(right))
-  );
+  return [...merged.values()].sort((left, right) => {
+    const direction = left.direction.localeCompare(right.direction);
+    if (direction !== 0) return direction;
+    const leftTime = timestamp(left.anchorTimestamp);
+    const rightTime = timestamp(right.anchorTimestamp);
+    const temporal = left.direction === "backward"
+      ? rightTime - leftTime
+      : leftTime - rightTime;
+    return temporal ||
+      left.sourceEventIds.length - right.sourceEventIds.length ||
+      traversalExpansionKey(left).localeCompare(
+        traversalExpansionKey(right)
+      ) ||
+      traversalStateId(left).localeCompare(traversalStateId(right));
+  });
 }
 
 function eligible(
@@ -140,6 +160,7 @@ export function expandTraversalChunk(input: {
     amountRaw: string;
   }>;
   supersededStateIds: readonly string[];
+  eligibleEventIds: readonly string[];
   eligibleEventCount: number;
   continuedRaw: string;
   terminalRaw: string;
@@ -159,7 +180,7 @@ export function expandTraversalChunk(input: {
     amountRaw: string;
   }> = [];
   const generated: TraversalStateV1[] = [];
-  let eligibleEventCount = 0;
+  const eligibleEventIds = new Set<string>();
   let continuedRaw = 0n;
   let terminalRaw = 0n;
   let residualRaw = 0n;
@@ -200,7 +221,9 @@ export function expandTraversalChunk(input: {
           : timestamp(left.timestamp) - timestamp(right.timestamp);
         return timeOrder || left.id.localeCompare(right.id);
       });
-    eligibleEventCount += candidates.length;
+    for (const candidate of candidates) {
+      eligibleEventIds.add(candidate.id);
+    }
     let remaining = stateAmount;
     for (const event of candidates) {
       if (remaining === 0n) break;
@@ -251,7 +274,8 @@ export function expandTraversalChunk(input: {
     ]),
     terminals,
     supersededStateIds,
-    eligibleEventCount,
+    eligibleEventIds: [...eligibleEventIds].sort(),
+    eligibleEventCount: eligibleEventIds.size,
     continuedRaw: continuedRaw.toString(),
     terminalRaw: terminalRaw.toString(),
     residualRaw: residualRaw.toString()
@@ -297,7 +321,7 @@ export function buildTraversalClosureCertificate(input: {
   supersededStateIds: readonly string[];
   unclassifiedCount: number;
   droppedCount: number;
-  eligibleEventCount: number;
+  eligibleEventIds: readonly string[];
   directionCount: number;
   fundingEpisodeCount: number;
   expandedStateCount: number;
@@ -312,8 +336,14 @@ export function buildTraversalClosureCertificate(input: {
   const terminal = amount(input.terminalRaw, "unified_closure_terminal_invalid");
   const continued = amount(input.continuedRaw, "unified_closure_continued_invalid");
   const residual = amount(input.residualRaw, "unified_closure_residual_invalid");
+  const eligibleEventIds = [...new Set(input.eligibleEventIds)].sort();
+  if (eligibleEventIds.some((id) => id.length === 0)) {
+    throw new Error("unified_traversal_eligible_event_invalid");
+  }
   const stateBound =
-    input.eligibleEventCount * input.directionCount * input.fundingEpisodeCount;
+    eligibleEventIds.length *
+    input.directionCount *
+    input.fundingEpisodeCount;
   if (
     input.frontier.length !== 0 ||
     input.unclassifiedCount !== 0 ||
@@ -347,6 +377,10 @@ export function buildTraversalClosureCertificate(input: {
     ),
     backwardCoverage: input.backwardCoverage,
     forwardCoverage: input.forwardCoverage,
+    eligibleEventCount: eligibleEventIds.length,
+    eligibleEventIndexHash: fingerprintCanonicalArtifact(
+      eligibleEventIds
+    ),
     expandedStateCount: input.expandedStateCount,
     structuralStateBound: stateBound,
     unclassifiedCount: 0,

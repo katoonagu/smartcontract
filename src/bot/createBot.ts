@@ -270,6 +270,14 @@ type CreateBotOptions = {
     windowEnd: Date | null;
   }) => Promise<ForensicCheckJob | null>;
   runSafetyRecheck?: typeof runSafetyRecheck;
+  createUnifiedCheckRequest?: (input: {
+    requestCorrelationId: string;
+    subjectAddress: string;
+    chatId: string;
+    messageThreadId: string;
+    locale: BotLocale;
+    telegramUserId: string;
+  }) => Promise<boolean>;
   runtimeVersion?: RuntimeVersionV1;
   resolveAddressPoisoningCandidate?: (input: {
     callbackToken: string;
@@ -4625,6 +4633,7 @@ async function startPendingCheckInBackground(
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
     saveAddressFastCheckJob?: CreateBotOptions["saveAddressFastCheckJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
+    createUnifiedCheckRequest?: CreateBotOptions["createUnifiedCheckRequest"];
     runtimeLabel?: string;
     locale: BotLocale;
   }
@@ -4647,6 +4656,21 @@ async function startPendingCheckInBackground(
   const businessConnectionId = ctx.businessConnectionId;
   const messageThreadId = ctx.msg?.is_topic_message ? ctx.msg.message_thread_id : undefined;
   const directMessagesTopicId = ctx.msg?.direct_messages_topic?.topic_id;
+  if (
+    classified.kind === "tron_address" &&
+    options.createUnifiedCheckRequest &&
+    chatId !== undefined
+  ) {
+    const claimed = await options.createUnifiedCheckRequest({
+      requestCorrelationId: `telegram:${ctx.update.update_id}:wallet-check`,
+      subjectAddress: classified.value,
+      chatId: String(chatId),
+      messageThreadId: String(messageThreadId ?? directMessagesTopicId ?? ""),
+      locale,
+      telegramUserId: options.telegramUserId
+    });
+    if (claimed) return;
+  }
   const replyTarget = {
     chat: chatId === undefined ? undefined : { id: chatId },
     reply: (text: string, sendOptions?: BotSendOptions) => {
@@ -5314,6 +5338,7 @@ export function createBot(
       queueWhereIsMoneyJob,
       queueDeepForensicJob,
       saveAddressFastCheckJob,
+      createUnifiedCheckRequest: options.createUnifiedCheckRequest,
       runtimeLabel: config.runtimeInstanceLabel,
       locale
     });
@@ -5739,6 +5764,7 @@ export function createBot(
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
         saveAddressFastCheckJob,
+        createUnifiedCheckRequest: options.createUnifiedCheckRequest,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });
@@ -5961,6 +5987,7 @@ export function createBot(
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
           saveAddressFastCheckJob,
+          createUnifiedCheckRequest: options.createUnifiedCheckRequest,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
@@ -5979,6 +6006,7 @@ export function createBot(
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
           saveAddressFastCheckJob,
+          createUnifiedCheckRequest: options.createUnifiedCheckRequest,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
@@ -6056,6 +6084,7 @@ export function createBot(
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
         saveAddressFastCheckJob,
+        createUnifiedCheckRequest: options.createUnifiedCheckRequest,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });

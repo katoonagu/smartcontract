@@ -47,6 +47,13 @@ export type AnalysisRunRecord = {
   readonly analysisManifest: AnalysisManifestV1;
 };
 
+export type UnifiedInitialTask = {
+  readonly id: string;
+  readonly kind: string;
+  readonly priorityLane: "interactive" | "repair" | "background";
+  readonly logicalKey: string;
+};
+
 export type UnifiedRequestStore = {
   createOrGetAcceptedRequest(input: CheckRequestRecord): Promise<CheckRequestRecord>;
   attachedRun(request: CheckRequestRecord): Promise<AnalysisRunRecord | null>;
@@ -54,6 +61,7 @@ export type UnifiedRequestStore = {
     requestId: string;
     candidateRun: AnalysisRunRecord;
     reuseAllowed: boolean;
+    initialTasks?: readonly UnifiedInitialTask[];
   }): Promise<{ request: CheckRequestRecord; run: AnalysisRunRecord; reused: boolean }>;
   providerWait(requestId: string, readyAt: string): Promise<CheckRequestRecord>;
   fail(requestId: string, reason: string): Promise<CheckRequestRecord>;
@@ -248,6 +256,21 @@ export function createPostgresUnifiedRequestStore(
             );
           }
         }
+        for (const task of input.initialTasks ?? []) {
+          await client.query(
+            `insert into unified_check_tasks (
+              id, run_id, kind, status, priority_lane, logical_key
+            ) values ($1,$2,$3,'QUEUED',$4,$5)
+            on conflict (run_id, kind, logical_key) do nothing`,
+            [
+              task.id,
+              runRow.id,
+              task.kind,
+              task.priorityLane,
+              task.logicalKey
+            ]
+          );
+        }
         const attached = one(
           await client.query(
             `update unified_check_requests
@@ -319,6 +342,7 @@ type IntakeInput = {
     sideEffectPolicy: UnifiedSideEffectPolicy;
   };
   candidateRunId: string;
+  initialTasks?: readonly UnifiedInitialTask[];
   versions: UnifiedAnalysisVersions;
   now?: () => Date;
 };
@@ -481,6 +505,7 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
     const attached = await input.store.attach({
       requestId: accepted.id,
       reuseAllowed: canReuse,
+      initialTasks: input.initialTasks,
       candidateRun: {
         id: input.candidateRunId,
         analysisKeySha256: identity.analysisKeySha256,

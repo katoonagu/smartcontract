@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 export type UnifiedWorkerTask = {
   readonly id: string;
+  readonly runId: string;
   readonly kind: string;
   readonly attempt: number;
   readonly checkpoint: unknown;

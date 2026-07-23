@@ -104,6 +104,23 @@ describe("Unified finite traversal", () => {
     })).toThrow("unified_traversal_terminal_evidence_invalid");
   });
 
+  it("counts unique ledger events instead of repeated candidate work", () => {
+    const expanded = expandTraversalChunk({
+      frontier: [
+        state("backward", "episode-1"),
+        state("backward", "episode-2")
+      ],
+      events: [events[0]!],
+      expandedStateIds: new Set(),
+      maxStatesThisChunk: 2,
+      terminalReason: () => null,
+      accountCreationExhausted: () => false
+    });
+    expect(expanded.processedStateIds).toHaveLength(2);
+    expect(expanded.eligibleEventIds).toEqual(["before-in"]);
+    expect(expanded.eligibleEventCount).toBe(1);
+  });
+
   it("proves frontier-empty closure, structural bound and amount reconciliation", () => {
     const coverage = buildTraversalCoverage({
       selectedAmountRaw: "100",
@@ -121,7 +138,10 @@ describe("Unified finite traversal", () => {
       supersededStateIds: [],
       unclassifiedCount: 0,
       droppedCount: 0,
-      eligibleEventCount: 10,
+      eligibleEventIds: Array.from(
+        { length: 10 },
+        (_, index) => `event-${index}`
+      ),
       directionCount: 2,
       fundingEpisodeCount: 1,
       expandedStateCount: 20,
@@ -134,6 +154,9 @@ describe("Unified finite traversal", () => {
     });
     expect(certificate.closed).toBe(true);
     expect(certificate.structuralStateBound).toBe(20);
+    expect(certificate.eligibleEventCount).toBe(10);
+    expect(certificate.eligibleEventIndexHash)
+      .toMatch(/^[0-9a-f]{64}$/u);
     expect(certificate.backwardCoverage.traceCoverage).toBe(80);
 
     expect(() => buildTraversalClosureCertificate({
@@ -147,7 +170,7 @@ describe("Unified finite traversal", () => {
       supersededStateIds: [],
       unclassifiedCount: 0,
       droppedCount: 0,
-      eligibleEventCount: 1,
+      eligibleEventIds: ["event-1"],
       directionCount: 1,
       fundingEpisodeCount: 1,
       expandedStateCount: 1,

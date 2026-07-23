@@ -154,6 +154,7 @@ export function buildRuntimeVersion(input: {
 }
 
 export function formatRuntimeVersion(runtime: RuntimeVersionV1, locale: "ru" | "en"): string {
+  const schemaVersion = String(runtime.migration.version).padStart(3, "0");
   return locale === "en"
     ? [
         "Runtime version",
@@ -162,7 +163,7 @@ export function formatRuntimeVersion(runtime: RuntimeVersionV1, locale: "ru" | "
         `Scoring policy: ${runtime.scoringPolicyVersion}`,
         `Result schema: ${runtime.resultSchemaVersion}`,
         `Narrative: ${runtime.narrativeVersion}`,
-        `Database schema: schema ${runtime.migration.version} verified · ${runtime.migration.shortChecksum}`
+        `Database schema: schema ${schemaVersion} verified · ${runtime.migration.shortChecksum}`
       ].join("\n")
     : [
         "Версия runtime",
@@ -171,6 +172,6 @@ export function formatRuntimeVersion(runtime: RuntimeVersionV1, locale: "ru" | "
         `Политика скоринга: ${runtime.scoringPolicyVersion}`,
         `Схема результата: ${runtime.resultSchemaVersion}`,
         `Версия объяснения: ${runtime.narrativeVersion}`,
-        `Схема БД: schema ${runtime.migration.version} verified · ${runtime.migration.shortChecksum}`
+        `Схема БД: schema ${schemaVersion} verified · ${runtime.migration.shortChecksum}`
       ].join("\n");
 }

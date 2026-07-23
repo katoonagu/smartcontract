@@ -34,6 +34,18 @@ postgresDescribe("migration 033 PostgreSQL acceptance", () => {
       await expect(
         verifySchema033Structure(client, { schemaName: schema })
       ).resolves.toBeUndefined();
+      await client.query(
+        `insert into unified_check_generation_fence (
+          generation_id, activated_at, runtime_commit, delivery_generation, active
+        ) values ('generation-a', now(), 'candidate-a', 'unified', true)`
+      );
+      await expect(client.query(
+        `insert into unified_check_generation_fence (
+          generation_id, activated_at, runtime_commit, delivery_generation, active
+        ) values ('generation-b', now(), 'candidate-b', 'unified', true)`
+      )).rejects.toThrow(
+        "unified_check_generation_fence_one_active_idx"
+      );
 
       await client.query(
         `insert into unified_check_runs (
@@ -59,6 +71,28 @@ postgresDescribe("migration 033 PostgreSQL acceptance", () => {
         client.query("delete from unified_check_artifacts where sha256 = $1", [
           "c".repeat(64)
         ])
+      ).rejects.toThrow("unified_immutable_artifact_mutation");
+      await client.query(
+        `insert into unified_label_datasets (sha256, dataset_json)
+         values ($1,'{"version":"fixture"}')`,
+        ["d".repeat(64)]
+      );
+      await expect(
+        client.query(
+          "update unified_label_datasets set dataset_json = '{}' where sha256 = $1",
+          ["d".repeat(64)]
+        )
+      ).rejects.toThrow("unified_immutable_artifact_mutation");
+      await client.query(
+        `insert into unified_wallet_delivery_ownership (
+          subject_address, chat_id, generation_id, acquired_at
+        ) values ('TSubject','42','generation-a',now())`
+      );
+      await expect(
+        client.query(
+          `delete from unified_wallet_delivery_ownership
+            where subject_address = 'TSubject' and chat_id = '42'`
+        )
       ).rejects.toThrow("unified_immutable_artifact_mutation");
       await client.query(
         "drop trigger unified_provider_pages_immutable on unified_provider_pages"

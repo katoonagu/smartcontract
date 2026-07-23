@@ -7,6 +7,7 @@ import type {
 import type { UnifiedPresentationResultV1 } from "./presentation";
 import {
   claimUnifiedDelivery,
+  markExpiredUnifiedDeliveryLeasesUnknown,
   settleUnifiedDelivery,
   type UnifiedQueryable
 } from "./repository";
@@ -53,6 +54,9 @@ export type UnifiedDeliverySettlementV1 = {
 };
 
 export type UnifiedDeliveryRepository = {
+  markExpiredLeasesUnknown(input: {
+    readonly now: Date;
+  }): Promise<number>;
   claimNext(input: {
     readonly leaseToken: string;
     readonly leaseMs: number;
@@ -147,24 +151,35 @@ export async function runUnifiedDeliveryCycle(input: {
   readonly now: () => Date;
   readonly leaseToken: () => string;
   readonly leaseMs: number;
+  readonly sendTimeoutMs?: number;
   readonly limit: number;
   readonly sendTelegram: (input: {
     readonly chatId: string;
     readonly messageThreadId: string;
     readonly payload: UnifiedPresentationResultV1["payload"];
-  }) => Promise<UnifiedTelegramSendResult>;
-}): Promise<{ claimed: number; settled: number }> {
+  }, signal: AbortSignal) => Promise<UnifiedTelegramSendResult>;
+}): Promise<{
+  claimed: number;
+  settled: number;
+  expiredLeasesMarkedUnknown: number;
+}> {
+  const sendTimeoutMs = input.sendTimeoutMs ?? input.leaseMs;
   if (
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 ||
     input.limit > 100 ||
     !Number.isSafeInteger(input.leaseMs) ||
-    input.leaseMs < 1
+    input.leaseMs < 1 ||
+    !Number.isSafeInteger(sendTimeoutMs) ||
+    sendTimeoutMs < 1 ||
+    sendTimeoutMs > input.leaseMs
   ) {
     throw new TypeError("unified_delivery_cycle_input_invalid");
   }
   let claimed = 0;
   let settled = 0;
+  const expiredLeasesMarkedUnknown =
+    await input.repository.markExpiredLeasesUnknown({ now: input.now() });
   for (let index = 0; index < input.limit; index += 1) {
     const now = input.now();
     const leaseToken = input.leaseToken();
@@ -190,17 +205,23 @@ export async function runUnifiedDeliveryCycle(input: {
     }
 
     let result: UnifiedTelegramSendResult;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), sendTimeoutMs);
     try {
       result = await input.sendTelegram({
         chatId: claim.request.chatId,
         messageThreadId: claim.request.messageThreadId,
         payload: claim.presentation.payload
-      });
+      }, controller.signal);
     } catch {
       result = {
         kind: "ambiguous",
-        code: "unclassified_transport_exception"
+        code: controller.signal.aborted
+          ? "transport_timeout_after_handoff"
+          : "unclassified_transport_exception"
       };
+    } finally {
+      clearTimeout(timeout);
     }
 
     if (result.kind === "confirmed") {
@@ -248,13 +269,15 @@ export async function runUnifiedDeliveryCycle(input: {
     }
     settled += 1;
   }
-  return { claimed, settled };
+  return { claimed, settled, expiredLeasesMarkedUnknown };
 }
 
 export function createPostgresUnifiedDeliveryRepository(
   db: UnifiedQueryable
 ): UnifiedDeliveryRepository {
   return {
+    markExpiredLeasesUnknown: (input) =>
+      markExpiredUnifiedDeliveryLeasesUnknown(db, input),
     async claimNext(input) {
       const row = await claimUnifiedDelivery(db, input);
       if (row === null) return null;

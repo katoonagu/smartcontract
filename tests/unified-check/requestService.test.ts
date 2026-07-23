@@ -21,6 +21,12 @@ const versions = {
 class MemoryStore implements UnifiedRequestStore {
   readonly requests = new Map<string, CheckRequestRecord>();
   readonly runs = new Map<string, AnalysisRunRecord>();
+  readonly initialTasksByRun = new Map<string, readonly {
+    id: string;
+    kind: "fast" | "where" | "deep";
+    priorityLane: "interactive" | "repair" | "background";
+    logicalKey: string;
+  }[]>();
 
   async createOrGetAcceptedRequest(input: CheckRequestRecord): Promise<CheckRequestRecord> {
     const existing = [...this.requests.values()]
@@ -38,6 +44,12 @@ class MemoryStore implements UnifiedRequestStore {
     requestId: string;
     candidateRun: AnalysisRunRecord;
     reuseAllowed: boolean;
+    initialTasks?: readonly {
+      id: string;
+      kind: "fast" | "where" | "deep";
+      priorityLane: "interactive" | "repair" | "background";
+      logicalKey: string;
+    }[];
   }): Promise<{ request: CheckRequestRecord; run: AnalysisRunRecord; reused: boolean }> {
     const request = this.requests.get(input.requestId)!;
     const reused = input.reuseAllowed
@@ -45,6 +57,9 @@ class MemoryStore implements UnifiedRequestStore {
       : undefined;
     const run = reused ?? input.candidateRun;
     this.runs.set(run.id, run);
+    if (!reused && input.initialTasks) {
+      this.initialTasksByRun.set(run.id, input.initialTasks);
+    }
     const attached = { ...request, status: "ATTACHED" as const, runId: run.id };
     this.requests.set(request.id, attached);
     return { request: attached, run, reused: Boolean(reused) };
@@ -116,6 +131,12 @@ function input(
         : "authoritative" as const
     },
     candidateRunId: runId,
+    initialTasks: (["fast", "where", "deep"] as const).map((kind) => ({
+      id: `${runId}:${kind}`,
+      kind,
+      priorityLane: "interactive" as const,
+      logicalKey: "main"
+    })),
     versions,
     now: () => new Date("2026-07-23T13:00:00.000Z")
   };
@@ -137,6 +158,8 @@ describe("Unified Check request intake", () => {
     expect(duplicate.run.id).toBe(first.run.id);
     expect(store.requests).toHaveLength(1);
     expect(store.runs).toHaveLength(1);
+    expect(store.initialTasksByRun.get(first.run.id)?.map((task) => task.kind))
+      .toEqual(["fast", "where", "deep"]);
   });
 
   it("creates two requests but reuses an exact shared analysis snapshot", async () => {

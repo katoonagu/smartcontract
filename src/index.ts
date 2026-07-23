@@ -5,6 +5,7 @@ import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
 import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
+import { TRON_USDT_CONTRACT_ADDRESS } from "./parser/transactionParser";
 import { runSingleApprovalAllowanceRefreshCycle } from "./approvals/allowanceRefreshWorker";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, createRuntimeNavigationProbe, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
@@ -14,6 +15,7 @@ import {
 } from "./check/smartContractCheck";
 import { addressPoisoningSmallTransferMaxRaw as parseAddressPoisoningSmallTransferMaxRaw, loadConfig } from "./config";
 import { buildContractDecisionEvidenceV1 } from "./forensics/contractDecision";
+import { fingerprintCanonicalArtifact } from "./forensics/canonicalJson";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
 import { runAddressIndexWorkerOnce } from "./forensics/addressIndexWorker";
 import { refreshDeepCheckSecondLayerFromIndex } from "./forensics/deepSecondLayerRefresh";
@@ -58,14 +60,18 @@ import { runStartupSchemaGate } from "./runtime/startupSchemaGate";
 import {
   ADDRESS_POISONING_INTERVAL_MS,
   buildStartupWorkSchedule,
+  buildUnifiedResourceWorkSchedule,
   createNonOverlappingStartupWork,
   startStartupWorkSchedule,
+  startUnifiedResourceWorkSchedule,
   type StartupWorkLabel,
-  type StartupWorkScheduleController
+  type StartupWorkScheduleController,
+  type UnifiedResourceWorkLabel
 } from "./runtime/startupSchedule";
 import { closeDb, createDb } from "./storage/db";
 import {
   REQUIRED_SCHEMA_FILENAME,
+  REQUIRED_SCHEMA_VERSION,
   SCHEMA_032_FILENAME,
   checksumMigrationBytes,
   verifyRequiredSchema033,
@@ -167,9 +173,16 @@ import type { ForensicCheckJob, ForensicCheckJobKind } from "./storage/repositor
 import type { TelegramMessagePayloadV1 } from "./types";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
-import type { ContractDecisionEvidenceV1, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
+import type {
+  ContractDecisionEvidenceV1,
+  IndexedTronUsdtTransfer,
+  TronAddressUsdtIndexRequestKind,
+  TronAddressUsdtIndexState
+} from "./types";
 import {
-  buildManualUnifiedResend
+  buildManualUnifiedResend,
+  createPostgresUnifiedDeliveryRepository,
+  runUnifiedDeliveryCycle
 } from "./unifiedCheck/delivery";
 import {
   buildManualResendWarningPresentation
@@ -177,10 +190,36 @@ import {
 import {
   applyUnifiedRecoveryAction,
   createUnifiedPoolTransactionHost,
+  ensureUnifiedPresentationForCompletedRequest,
   listUnifiedWatchdogRuns,
   loadUnifiedUnknownDeliveryPresentation,
   persistManualUnifiedResend
 } from "./unifiedCheck/repository";
+import {
+  createPostgresUnifiedRequestStore,
+  intakeUnifiedCheck,
+  UnifiedProviderWaitError
+} from "./unifiedCheck/requestService";
+import {
+  getActiveCheckGeneration,
+  handoffWalletDeliveryAndAcceptRequest,
+  ownsWalletDelivery,
+  selectUnifiedStartupSchedule
+} from "./unifiedCheck/rolloutFence";
+import { createTronConfirmedSnapshotSource } from "./unifiedCheck/snapshot";
+import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionPolicy.generated";
+import { SCORING_POLICY_V4 } from "./risk/scoringPolicyV4.generated";
+import { createUnifiedProductionRuntime } from "./unifiedCheck/productionRuntime";
+import { isRetryableUnifiedProviderError } from "./unifiedCheck/productionDirectHistory";
+import {
+  evidenceDateWithinSnapshot,
+  requireCompleteUnifiedBlacklistTimeline
+} from "./unifiedCheck/productionEvidence";
+import { inspectUnifiedRuns } from "./unifiedCheck/watchdog";
+import {
+  createPostgresProviderPageStore,
+  loadOrFetchProviderPage
+} from "./unifiedCheck/providerRequest";
 
 const config = loadConfig();
 const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMaxRaw(
@@ -229,6 +268,11 @@ try {
   await closeDb(db);
   throw error;
 }
+const activeCheckGeneration = await getActiveCheckGeneration(db);
+logger.info("unified_generation_fence_loaded", {
+  deliveryGeneration: activeCheckGeneration.deliveryGeneration,
+  generationId: activeCheckGeneration.generationId
+});
 const runtimeCycleRecorder = createRuntimeCycleRecorder({ runtimeVersion, logger });
 
 async function runRecordedRuntimeCycle<T>(
@@ -274,6 +318,315 @@ const tronClient = new TronscanClient({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
+});
+const unifiedSnapshotSource = createTronConfirmedSnapshotSource({
+  fullNodeBaseUrl: config.tronFullNodeBaseUrl,
+  fullNodeApiKey: config.tronFullNodeApiKey,
+  timeoutMs: config.tronscanTimeoutMs
+});
+const unifiedRequestStore = createPostgresUnifiedRequestStore(
+  unifiedTransactionHost
+);
+const unifiedLabelRows = (
+  await db.query(
+    `select address, label, label as category, source as provider,
+            created_at as observed_at
+       from address_labels
+      union all
+     select address, label, category, provider, updated_at as observed_at
+       from address_labels_cache
+      where chain = 'tron'
+      order by address, category, label, provider, observed_at`
+  )
+).rows.map((row) => ({
+  address: String(row.address),
+  label: String(row.label),
+  category: String(row.category),
+  provider: String(row.provider),
+  observedAt: new Date(String(row.observed_at)).toISOString()
+}));
+const unifiedLabelSnapshot = {
+  version: "unified-label-dataset-v1" as const,
+  rows: unifiedLabelRows
+};
+const UNIFIED_LABEL_DATASET_SHA256 =
+  fingerprintCanonicalArtifact(unifiedLabelSnapshot);
+const persistedUnifiedLabelDataset = (
+  await db.query(
+    `insert into unified_label_datasets (sha256, dataset_json)
+     values ($1,$2::jsonb)
+     on conflict (sha256) do nothing
+     returning dataset_json`,
+    [
+      UNIFIED_LABEL_DATASET_SHA256,
+      JSON.stringify(unifiedLabelSnapshot)
+    ]
+  )
+).rows[0] ?? (
+  await db.query(
+    "select dataset_json from unified_label_datasets where sha256 = $1",
+    [UNIFIED_LABEL_DATASET_SHA256]
+  )
+).rows[0];
+if (
+  !persistedUnifiedLabelDataset ||
+  fingerprintCanonicalArtifact(
+    persistedUnifiedLabelDataset.dataset_json
+  ) !== UNIFIED_LABEL_DATASET_SHA256
+) {
+  throw new Error("unified_label_dataset_persistence_mismatch");
+}
+const unifiedLabelsByAddress = new Map<string, readonly string[]>();
+for (const row of unifiedLabelRows) {
+  unifiedLabelsByAddress.set(
+    row.address,
+    [...new Set([
+      ...(unifiedLabelsByAddress.get(row.address) ?? []),
+      row.label,
+      row.category
+    ])].sort()
+  );
+}
+const unifiedProviderPageStore = createPostgresProviderPageStore(
+  unifiedTransactionHost
+);
+const unifiedProductionRuntime = createUnifiedProductionRuntime({
+  db: unifiedTransactionHost,
+  now: () => new Date(),
+  createId: randomUUID,
+  async loadProviderPage({ run, address = run.subjectAddress, cursor }) {
+    const start = cursor === null ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(start) || start < 0) {
+      throw new Error("unified_direct_history_cursor_invalid");
+    }
+    try {
+      const cached = await loadOrFetchProviderPage({
+        identity: {
+          chain: "tron",
+          providerFamily: "tronscan",
+          endpoint: "/api/token_trc20/transfers",
+          apiSchemaVersion: "tronscan-transfer-page-v1",
+          address,
+          tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+          blockStart: "0",
+          blockEnd: run.analysisManifest.confirmedBlockNumber,
+          direction: "both",
+          order: "desc",
+          pageSize: 50,
+          cursor,
+          snapshotBlockNumber:
+            run.analysisManifest.confirmedBlockNumber,
+          snapshotBlockHash: run.analysisManifest.confirmedBlockHash,
+          confirmationPolicy: "walletsolidity-confirmed-cutoff-v1"
+        },
+        store: unifiedProviderPageStore,
+        async fetchPage() {
+          const loaded =
+            await tronClient.listRelatedTrc20TransferPagePinned(
+              address,
+              {
+                start,
+                limit: 50,
+                endTimestamp: Date.parse(
+                  run.analysisManifest.confirmedBlockTimestamp
+                )
+              }
+            );
+          return {
+            payload: {
+              provider: loaded.provider,
+              transfers: loaded.transfers,
+              nextOffset: loaded.nextOffset,
+              complete: loaded.complete,
+              metadataConsistent: loaded.metadataConsistent,
+              rawResponseHashes: loaded.rawResponseHashes,
+              canonicalTransferHashes: loaded.canonicalTransferHashes
+            },
+            snapshotBlockNumber:
+              run.analysisManifest.confirmedBlockNumber,
+            snapshotBlockHash: run.analysisManifest.confirmedBlockHash,
+            cursor,
+            providerFamily: loaded.provider,
+            endpoint: "/api/token_trc20/transfers",
+            apiSchemaVersion: "tronscan-transfer-page-v1",
+            fetchedAt: new Date().toISOString(),
+            provenance: {
+              rawResponseHashes: loaded.rawResponseHashes,
+              canonicalTransferHashes: loaded.canonicalTransferHashes,
+              metadataConsistent: loaded.metadataConsistent
+            }
+          };
+        }
+      });
+      const loaded = cached.payload as {
+        provider: "tronscan" | "trongrid_fallback";
+        transfers: Awaited<
+          ReturnType<typeof tronClient.listRelatedTrc20TransferPagePinned>
+        >["transfers"];
+        nextOffset: number;
+        complete: boolean;
+        metadataConsistent: boolean;
+      };
+      if (
+        (
+          loaded.provider !== "tronscan" &&
+          loaded.provider !== "trongrid_fallback"
+        ) ||
+        !Array.isArray(loaded.transfers) ||
+        !Number.isSafeInteger(loaded.nextOffset) ||
+        typeof loaded.complete !== "boolean" ||
+        loaded.metadataConsistent !== true
+      ) {
+        throw new Error("unified_direct_history_cached_page_invalid");
+      }
+      const content = {
+        kind: "page" as const,
+        cursor,
+        nextCursor: loaded.complete ? null : String(loaded.nextOffset),
+        transfers: loaded.transfers,
+        reachedAccountCreation: loaded.complete,
+        provider: loaded.provider
+      };
+      return {
+        ...content,
+        pageHash: fingerprintCanonicalArtifact(content)
+      };
+    } catch (error) {
+      const reason = error instanceof Error
+        ? error.message
+        : "unified_direct_history_provider_failed";
+      if (isRetryableUnifiedProviderError(error)) {
+        return {
+          kind: "provider_wait" as const,
+          readyAt: new Date(Date.now() + 30_000).toISOString(),
+          reason
+        };
+      }
+      throw error;
+    }
+  },
+  async loadCounterpartyLabels(addresses) {
+    return new Map(
+      addresses
+        .filter((address) => unifiedLabelsByAddress.has(address))
+        .map((address) => [
+          address,
+          unifiedLabelsByAddress.get(address)!
+        ])
+    );
+  },
+  async loadHardEvidence({
+    subjectAddress,
+    snapshotTimestamp,
+    events,
+    knownCounterparties
+  }) {
+    const riskyLabels = new Set([
+      "scam",
+      "reported_scam",
+      "stolen_funds",
+      "phishing",
+      "risky_contract",
+      "approval_drain_proximity",
+      "darknet_exchange"
+    ]);
+    const isRisky = (address: string | null) =>
+      address !== null &&
+      (knownCounterparties.get(address) ??
+        unifiedLabelsByAddress.get(address) ??
+        [])
+        .some((label) => riskyLabels.has(label));
+    try {
+      const addresses = [...new Set(events.flatMap((event) => [
+        event.fromAddress,
+        event.toAddress
+      ]))].sort();
+      const timelines = await Promise.all(addresses.map(async (address) => ({
+        address,
+        timeline: await tronClient.getUsdtBlacklistTimeline(address)
+      })));
+      const timelineByAddress = new Map(
+        timelines.map((item) => [
+          item.address,
+          requireCompleteUnifiedBlacklistTimeline(item.timeline)
+        ])
+      );
+      const blacklistedAtEventKeys = new Set<string>();
+      for (const event of events) {
+        const counterparty = event.fromAddress === subjectAddress
+          ? event.toAddress
+          : event.fromAddress;
+        const history = [...(timelineByAddress.get(counterparty) ?? [])]
+          .filter((item) =>
+            Date.parse(item.occurredAt) <= event.blockTimestamp.getTime()
+          )
+          .sort((left, right) =>
+            Date.parse(left.occurredAt) - Date.parse(right.occurredAt)
+          );
+        if (history.at(-1)?.eventKind === "added") {
+          blacklistedAtEventKeys.add(
+            `${event.txHash}:${event.eventIndex}`
+          );
+        }
+      }
+      const approvals = [];
+      for (let start = 0; ; start += 50) {
+        const page = await tronClient.listTrc20Approvals(
+          subjectAddress,
+          { start, limit: 50 }
+        );
+        approvals.push(...page.approvals);
+        if (
+          page.approvals.length === 0 ||
+          (page.total !== null && approvals.length >= page.total)
+        ) break;
+      }
+      const dangerousApprovalIds = new Set(
+        approvals
+          .filter((approval) =>
+            evidenceDateWithinSnapshot(
+              approval.operateTime,
+              snapshotTimestamp
+            ) &&
+            approval.tokenContract === TRON_USDT_CONTRACT_ADDRESS &&
+            approval.isUnlimited &&
+            BigInt(approval.amountRaw) > 0n &&
+            isRisky(approval.spenderAddress)
+          )
+          .map((approval) => approval.spenderAddress)
+      );
+      const confirmedVictimDebitEventKeys = new Set(
+        events
+          .filter((event) =>
+            event.method === "transferFrom" &&
+            event.fromAddress === subjectAddress &&
+            event.callerAddress !== subjectAddress &&
+            isRisky(event.callerAddress)
+          )
+          .map((event) => `${event.txHash}:${event.eventIndex}`)
+      );
+      return {
+        blacklistedAtEventKeys,
+        dangerousApprovalIds,
+        confirmedVictimDebitEventKeys
+      };
+    } catch (error) {
+      const reason = error instanceof Error
+        ? error.message
+        : "unified_hard_evidence_failed";
+      if (
+        reason !==
+          "unified_blacklist_timeline_incomplete:provider_failed" &&
+        !isRetryableUnifiedProviderError(error)
+      ) {
+        throw error;
+      }
+      throw new UnifiedProviderWaitError(
+        new Date(Date.now() + 30_000).toISOString(),
+        reason
+      );
+    }
+  }
 });
 const runRuntimeNavigationProbe = createRuntimeNavigationProbe(config, db, tronClient, runtimeVersion);
 
@@ -655,6 +1008,94 @@ function shouldWakeTargetedWaiterAfterEnsure(state: TronAddressUsdtIndexState): 
 
 const bot = createBot(config, db, tronClient, {
   runtimeVersion,
+  createUnifiedCheckRequest: async (request) => {
+    if (!ownsWalletDelivery(activeCheckGeneration, "unified")) return false;
+    const now = new Date();
+    const requestId = randomUUID();
+    await handoffWalletDeliveryAndAcceptRequest(unifiedTransactionHost, {
+      subjectAddress: request.subjectAddress,
+      chatId: request.chatId,
+      generationId: activeCheckGeneration.generationId,
+      acquiredAt: now.toISOString(),
+      request: {
+        id: requestId,
+        requestCorrelationId: request.requestCorrelationId,
+        subjectAddress: request.subjectAddress,
+        chatId: request.chatId,
+        messageThreadId: request.messageThreadId,
+        locale: request.locale,
+        runPurpose: "user_check",
+        sideEffectPolicy: "authoritative",
+        status: "ACCEPTED",
+        statusReason: null,
+        runId: null,
+        readyAt: now.toISOString(),
+        attemptCount: 0,
+        acceptedAt: now.toISOString()
+      }
+    });
+    const intake = await intakeUnifiedCheck({
+      store: unifiedRequestStore,
+      snapshotSource: unifiedSnapshotSource,
+      request: {
+        id: requestId,
+        requestCorrelationId: request.requestCorrelationId,
+        subjectAddress: request.subjectAddress,
+        chatId: request.chatId,
+        messageThreadId: request.messageThreadId,
+        locale: request.locale,
+        runPurpose: "user_check",
+        sideEffectPolicy: "authoritative"
+      },
+      candidateRunId: randomUUID(),
+      initialTasks: ([
+        "direct_history",
+        "traversal",
+        "fast",
+        "where",
+        "deep"
+      ] as const)
+        .map((kind) => ({
+        id: randomUUID(),
+        kind,
+        priorityLane: "interactive" as const,
+        logicalKey: "main"
+        })),
+      versions: {
+        labelDatasetSha256: UNIFIED_LABEL_DATASET_SHA256,
+        scoringPolicyVersion: SCORING_POLICY_V4.version,
+        attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
+        runtimeCommit: runtimeVersion.gitCommitSha,
+        schemaVersion: REQUIRED_SCHEMA_VERSION
+      },
+      now: () => now
+    });
+    logger.info("unified_wallet_check_intake", {
+      requestCorrelationId: request.requestCorrelationId,
+      subjectAddress: request.subjectAddress,
+      outcome: intake.kind
+    });
+    if (
+      intake.kind === "attached" &&
+      intake.run.status === "COMPLETED" &&
+      intake.request.sideEffectPolicy === "authoritative"
+    ) {
+      await ensureUnifiedPresentationForCompletedRequest(
+        unifiedTransactionHost,
+        {
+          requestId: intake.request.id,
+          deliveryId: randomUUID()
+        }
+      ).catch((error) => {
+        logger.error("unified_completed_request_delivery_reconcile_failed", {
+          requestId: intake.request.id,
+          runId: intake.run.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
+    return true;
+  },
   checkSmartContractAddress: async ({ address, telegramUserId }) => {
     const metadata = await getCachedOrLiveAddressMetadata(address).catch((error) => {
       logger.warn("smart_contract_metadata_lookup_failed", {
@@ -923,7 +1364,38 @@ const forensicTelegramDeliveryRepository: ForensicTelegramDeliveryRepository<typ
   listDueRecoveredForensicDeliveryIntents,
   settleRecoveredForensicDeliveryIntentPreparation,
   attachRecoveredForensicTelegramDelivery,
-  claimNextForensicTelegramDelivery,
+  claimNextForensicTelegramDelivery: (deliveryDb, input) =>
+    claimNextForensicTelegramDelivery(deliveryDb, {
+      ...input,
+      resolveWalletDeliveryGeneration: async ({
+        db: client,
+        subjectAddress,
+        chatId
+      }) => {
+        if (!ownsWalletDelivery(activeCheckGeneration, "unified")) {
+          return { deliveryGeneration: "legacy" };
+        }
+        const ownership = await client.query(
+          `select 1
+             from unified_wallet_delivery_ownership
+             where subject_address = $1
+               and chat_id = $2
+               and generation_id = $3
+             limit 1`,
+          [
+            subjectAddress,
+            chatId,
+            activeCheckGeneration.generationId
+          ]
+        );
+        return ownership.rows.length === 0
+          ? { deliveryGeneration: "legacy" }
+          : {
+              deliveryGeneration: "unified",
+              generationId: activeCheckGeneration.generationId
+            };
+      }
+    }),
   settleForensicTelegramDelivery
 };
 
@@ -958,6 +1430,50 @@ const forensicTelegramDeliveryWork = createNonOverlappingStartupWork(
       completedCount: result.claimProbeCount
     })
   ).then(() => undefined),
+  () => shuttingDown
+);
+const unifiedTelegramDeliveryWork = createNonOverlappingStartupWork(
+  () => ownsWalletDelivery(activeCheckGeneration, "unified")
+    ? runUnifiedDeliveryCycle({
+    repository: createPostgresUnifiedDeliveryRepository(db),
+    now: () => new Date(),
+    leaseToken: randomUUID,
+    leaseMs: 30_000,
+    sendTimeoutMs: 25_000,
+    limit: 10,
+    sendTelegram: async (
+      { chatId, messageThreadId, payload },
+      signal
+    ) => {
+      const parsedThreadId = messageThreadId === ""
+        ? undefined
+        : Number(messageThreadId);
+      if (
+        parsedThreadId !== undefined &&
+        (!Number.isSafeInteger(parsedThreadId) || parsedThreadId < 1)
+      ) {
+        return {
+          kind: "rejected_permanent",
+          code: "telegram_message_thread_id_invalid"
+        };
+      }
+      const sent = await bot.api.sendMessage(chatId, payload.text, {
+        parse_mode: payload.parseMode,
+        ...(parsedThreadId === undefined
+          ? {}
+          : { message_thread_id: parsedThreadId })
+      }, signal as Parameters<typeof bot.api.sendMessage>[3]);
+      return {
+        kind: "confirmed",
+        telegramMessageId: String(sent.message_id)
+      };
+    }
+      }).then((summary) => {
+        if (summary.claimed > 0) {
+          logger.info("unified_delivery_cycle_completed", summary);
+        }
+      })
+    : Promise.resolve(),
   () => shuttingDown
 );
 
@@ -1581,6 +2097,7 @@ const intervalByLabel: Record<StartupWorkLabel, number> = {
 };
 
 let startupWorkSchedule: StartupWorkScheduleController | null = null;
+let unifiedWorkSchedule: StartupWorkScheduleController | null = null;
 const startupWorkScheduleItems = buildStartupWorkSchedule(config);
 
 function startBackgroundWorkSchedule(): void {
@@ -1609,6 +2126,66 @@ function startBackgroundWorkSchedule(): void {
       logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
     }
   });
+  const unifiedProviderWork = () =>
+    unifiedProductionRuntime.runProviderCycle().then(() => undefined);
+  const unifiedAnalysisWork = () =>
+    unifiedProductionRuntime.runAnalysisCycle().then(() => undefined);
+  const unifiedFinalizationWork = () =>
+    unifiedProductionRuntime.runFinalizationCycle().then((result) => {
+      if (result.finalized) {
+        logger.info("unified_wallet_check_finalized", {
+          runId: result.runId
+        });
+      }
+    });
+  const unifiedWatchdogWork = () =>
+    listUnifiedWatchdogRuns(unifiedTransactionHost, { limit: 100 })
+      .then((runs) => {
+        const projections = inspectUnifiedRuns(runs, {
+          now: new Date(),
+          staleHeartbeatMs: Math.max(
+            60_000,
+            config.forensicIncomingPollIntervalMs * 3
+          )
+        });
+        const actionable = projections.filter((run) =>
+          run.finding !== "healthy"
+        );
+        if (actionable.length > 0) {
+          logger.warn("unified_watchdog_findings", {
+            runs: actionable.map((run) => ({
+              runId: run.id,
+              finding: run.finding
+            }))
+          });
+        }
+      });
+  const unifiedWork: Record<UnifiedResourceWorkLabel, () => Promise<void>> = {
+    unified_provider_io: unifiedProviderWork,
+    unified_indexing: unifiedProviderWork,
+    unified_cpu_aggregation: unifiedAnalysisWork,
+    unified_scoring_rendering: unifiedFinalizationWork,
+    unified_delivery: unifiedTelegramDeliveryWork.run,
+    unified_watchdog: unifiedWatchdogWork
+  };
+  unifiedWorkSchedule = startUnifiedResourceWorkSchedule({
+    schedule: selectUnifiedStartupSchedule(
+      activeCheckGeneration,
+      buildUnifiedResourceWorkSchedule()
+    ),
+    startupWork: unifiedWork,
+    intervalByLabel: Object.fromEntries(
+      Object.keys(unifiedWork).map((label) => [
+        label,
+        config.forensicIncomingPollIntervalMs
+      ])
+    ) as Record<UnifiedResourceWorkLabel, number>,
+    onError: (eventName, error) => {
+      logger.error(eventName, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
   logger.info("startup_work_schedule_started", { schedule: startupWorkScheduleItems });
 }
 
@@ -1618,6 +2195,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   logger.info("shutdown_started", { signal });
   startupWorkSchedule?.stop();
   startupWorkSchedule = null;
+  unifiedWorkSchedule?.stop();
+  unifiedWorkSchedule = null;
 
   if (activePoll) {
     try {
@@ -1666,6 +2245,16 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     } catch {
       logger.error("active_forensic_telegram_delivery_shutdown_wait_failed", {
         diagnosticCode: "forensic_telegram_delivery_shutdown_wait_failed"
+      });
+    }
+  }
+  const activeUnifiedTelegramDelivery = unifiedTelegramDeliveryWork.active();
+  if (activeUnifiedTelegramDelivery) {
+    try {
+      await activeUnifiedTelegramDelivery;
+    } catch {
+      logger.error("active_unified_telegram_delivery_shutdown_wait_failed", {
+        diagnosticCode: "unified_telegram_delivery_shutdown_wait_failed"
       });
     }
   }

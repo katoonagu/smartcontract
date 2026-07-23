@@ -1960,6 +1960,7 @@ async function createSmokeBot(options: {
   db?: Db;
   beforeApiResult?: (method: string, payload: Record<string, unknown>) => Promise<void>;
   runSafetyRecheck?: BotOptions["runSafetyRecheck"];
+  createUnifiedCheckRequest?: BotOptions["createUnifiedCheckRequest"];
 } = {}) {
   const config = {
     ...createConfig(),
@@ -1996,6 +1997,7 @@ async function createSmokeBot(options: {
     getLatestDeepForensicCheckJobForAddressAnyStatus: options.getLatestDeepForensicCheckJobForAddressAnyStatus,
     resolveAddressPoisoningCandidate: options.resolveAddressPoisoningCandidate,
     runSafetyRecheck: options.runSafetyRecheck,
+    createUnifiedCheckRequest: options.createUnifiedCheckRequest,
     runtimeVersion: options.runtimeVersion
   } as BotOptions & { runtimeVersion?: RuntimeVersionFixture };
   const bot = createBot(
@@ -2601,6 +2603,68 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).not.toContain("Address risk");
     expect(lastPlainText(calls)).not.toContain("0/100");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("Start cross-bridge");
+  });
+
+  it("routes a fenced wallet check to Unified without preliminary or child messages", async () => {
+    const requests: Array<Parameters<NonNullable<BotOptions["createUnifiedCheckRequest"]>>[0]> = [];
+    let legacyProviderCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      createUnifiedCheckRequest: async (input) => {
+        requests.push(input);
+        return true;
+      },
+      addressRiskSignals: async () => {
+        legacyProviderCalls += 1;
+        return { graphSignals: [], behaviorSignals: [], amlSignals: [] };
+      },
+      queueWhereIsMoneyJob: async () => {
+        throw new Error("legacy_where_must_not_run");
+      },
+      queueDeepForensicJob: async () => {
+        throw new Error("legacy_deep_must_not_run");
+      }
+    });
+    const update = messageUpdate(`/check ${walletAddress}`, userId, "ru");
+
+    await bot.handleUpdate(update);
+
+    expect(requests).toEqual([expect.objectContaining({
+      requestCorrelationId: `telegram:${update.update_id}:wallet-check`,
+      subjectAddress: walletAddress,
+      chatId: userId,
+      messageThreadId: "",
+      locale: "ru"
+    })]);
+    expect(legacyProviderCalls).toBe(0);
+    expect(messageCalls(calls)).toEqual([]);
+  });
+
+  it("keeps transaction and incoming routes outside the Unified wallet fence", async () => {
+    let unifiedRequests = 0;
+    let incomingLookups = 0;
+    const depositJobId = "42a0a912-dc6a-45b5-b281-a2f0c7ac034e";
+    const { bot, calls } = await createSmokeBot({
+      createUnifiedCheckRequest: async () => {
+        unifiedRequests += 1;
+        return true;
+      },
+      getForensicCheckJob: async (id) => {
+        expect(id).toBe(depositJobId);
+        incomingLookups += 1;
+        return null;
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash}`, userId, "ru"));
+    await bot.handleUpdate(callbackQueryUpdate(
+      `check:deposit:${depositJobId}`,
+      userId
+    ));
+
+    expect(unifiedRequests).toBe(0);
+    expect(incomingLookups).toBe(1);
+    expect(messageCalls(calls).length).toBeGreaterThan(0);
   });
 
   it("shows bounded service exposure context for address checks", async () => {

@@ -257,16 +257,46 @@ export async function claimUnifiedTask(
     workerId: string;
     leaseToken: string;
     leaseMs: number;
+    kinds?: readonly string[];
   }
 ) {
+  if (input.kinds?.length === 0) return null;
   const result = await db.query(
     `with candidate as (
       select task.id
         from unified_check_tasks task
         join unified_check_runs run on run.id = task.run_id
-       where task.status in ('QUEUED','WAITING_RETRY')
-         and task.ready_at <= statement_timestamp()
+       where (
+           (
+             task.status in ('QUEUED','WAITING_RETRY')
+             and task.ready_at <= statement_timestamp()
+           ) or (
+             task.status = 'LEASED'
+             and task.lease_expires_at <= statement_timestamp()
+           )
+         )
          and run.status = 'RUNNING'
+         and ($4::text[] is null or task.kind = any($4::text[]))
+         and (
+           task.kind <> 'traversal' or exists (
+             select 1
+               from unified_check_tasks prerequisite
+              where prerequisite.run_id = task.run_id
+                and prerequisite.kind = 'direct_history'
+                and prerequisite.status = 'COMPLETED'
+                and prerequisite.accepted_attempt_id is not null
+           )
+         )
+         and (
+           task.kind not in ('fast','where','deep') or exists (
+             select 1
+               from unified_check_tasks prerequisite
+              where prerequisite.run_id = task.run_id
+                and prerequisite.kind = 'traversal'
+                and prerequisite.status = 'COMPLETED'
+                and prerequisite.accepted_attempt_id is not null
+           )
+         )
        order by case task.priority_lane
          when 'interactive' then 0 when 'repair' then 1 else 2 end,
          task.ready_at, task.created_at
@@ -284,7 +314,12 @@ export async function claimUnifiedTask(
       from candidate
      where task.id = candidate.id
     returning task.*`,
-    [input.workerId, input.leaseToken, input.leaseMs]
+    [
+      input.workerId,
+      input.leaseToken,
+      input.leaseMs,
+      input.kinds ? [...input.kinds] : null
+    ]
   );
   return result.rows[0] ?? null;
 }
@@ -316,7 +351,13 @@ export async function checkpointUnifiedTask(
 ) {
   const result = await db.query(
     `update unified_check_tasks
-        set checkpoint_json = $3::jsonb, updated_at = statement_timestamp()
+        set checkpoint_json = $3::jsonb,
+            status = 'QUEUED',
+            lease_owner = null,
+            lease_token = null,
+            lease_expires_at = null,
+            heartbeat_at = null,
+            updated_at = statement_timestamp()
       where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $4
       returning *`,
     [
@@ -357,12 +398,13 @@ export async function completeUnifiedTaskAttempt(
     );
     const result = await client.query(
       `update unified_check_tasks
-          set status = 'COMPLETED', lease_owner = null, lease_token = null,
+          set status = 'COMPLETED', accepted_attempt_id = $4,
+              lease_owner = null, lease_token = null,
               lease_expires_at = null, heartbeat_at = null,
               updated_at = statement_timestamp()
         where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
         returning *`,
-      [input.taskId, input.leaseToken, input.attempt]
+      [input.taskId, input.leaseToken, input.attempt, input.attemptId]
     );
     return requiredRow(result, "unified_task_lease_lost");
   });
@@ -1104,6 +1146,29 @@ export async function claimUnifiedDelivery(
     [input.leaseToken, input.leaseMs, input.now.toISOString()]
   );
   return result.rows[0] ?? null;
+}
+
+export async function markExpiredUnifiedDeliveryLeasesUnknown(
+  db: UnifiedQueryable,
+  input: { now: Date }
+): Promise<number> {
+  if (Number.isNaN(input.now.getTime())) {
+    throw new TypeError("unified_delivery_recovery_time_invalid");
+  }
+  const result = await db.query(
+    `update unified_check_deliveries
+        set status = 'DELIVERY_UNKNOWN',
+            lease_token = null,
+            lease_expires_at = null,
+            next_attempt_at = null,
+            last_error = 'unified_delivery_lease_expired_after_handoff',
+            updated_at = statement_timestamp()
+      where status = 'LEASED'
+        and lease_expires_at <= $1::timestamptz
+      returning id`,
+    [input.now.toISOString()]
+  );
+  return result.rows.length;
 }
 
 export async function settleUnifiedDelivery(

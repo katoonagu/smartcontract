@@ -5,6 +5,8 @@ import pg from "pg";
 import { fingerprintCanonicalJson } from "../../src/forensics/canonicalJson";
 import {
   claimUnifiedTask,
+  checkpointUnifiedTask,
+  completeUnifiedTaskAttempt,
   createOrGetCheckRequest,
   createOrReuseUnifiedRun,
   createUnifiedDelivery,
@@ -91,7 +93,7 @@ postgresDescribe("Unified Check repository", () => {
         tasks: [
           {
             id: "task-a",
-            kind: "fast",
+            kind: "direct_history",
             priorityLane: "interactive",
             logicalKey: "main"
           }
@@ -129,6 +131,71 @@ postgresDescribe("Unified Check repository", () => {
         workerA.release();
         workerB.release();
       }
+      const checkpointed = await checkpointUnifiedTask(scoped, {
+        taskId: "task-a",
+        leaseToken: "lease-a",
+        attempt: 1,
+        checkpoint: { cursor: "page-2" }
+      });
+      expect(checkpointed?.status).toBe("QUEUED");
+      const reclaimed = await claimUnifiedTask(scoped, {
+        workerId: "worker-c",
+        leaseToken: "lease-c",
+        leaseMs: 60_000,
+        kinds: ["direct_history"]
+      });
+      expect(reclaimed).toMatchObject({
+        id: "task-a",
+        run_id: runId,
+        attempt: 2
+      });
+      await scoped.query(
+        `update unified_check_tasks
+            set lease_expires_at = statement_timestamp() - interval '1 second'
+          where id = 'task-a'`
+      );
+      const crashReclaimed = await claimUnifiedTask(scoped, {
+        workerId: "worker-d",
+        leaseToken: "lease-d",
+        leaseMs: 60_000,
+        kinds: ["direct_history"]
+      });
+      expect(crashReclaimed).toMatchObject({
+        id: "task-a",
+        run_id: runId,
+        attempt: 3,
+        lease_owner: "worker-d"
+      });
+      const transactionHost = {
+        query: scoped.query,
+        async transaction<T>(work: (tx: typeof scoped) => Promise<T>) {
+          await client.query("begin");
+          try {
+            const result = await work(scoped);
+            await client.query("commit");
+            return result;
+          } catch (error) {
+            await client.query("rollback");
+            throw error;
+          }
+        }
+      };
+      await completeUnifiedTaskAttempt(transactionHost, {
+        taskId: "task-a",
+        leaseToken: "lease-d",
+        attempt: 3,
+        attemptId: "attempt-a",
+        artifactSha256: fingerprintCanonicalJson(artifact)
+      });
+      const completedTask = (
+        await client.query(
+          "select status, accepted_attempt_id from unified_check_tasks where id = 'task-a'"
+        )
+      ).rows[0];
+      expect(completedTask).toMatchObject({
+        status: "COMPLETED",
+        accepted_attempt_id: "attempt-a"
+      });
 
       const delivery = await createUnifiedDelivery(scoped, {
         id: "delivery-a",

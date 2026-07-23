@@ -406,11 +406,13 @@ const UNIFIED_TABLES = [
   "unified_check_artifacts",
   "unified_check_deliveries",
   "unified_provider_pages",
+  "unified_label_datasets",
+  "unified_wallet_delivery_ownership",
   "unified_check_generation_fence"
 ] as const;
 
 const UNIFIED_SCHEMA_033_CATALOG_SHA256 =
-  "0297ab2de4cf4033616b67dc4edc1f057991f0817812a9f2c4ab39333a2ee25e";
+  "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 
 function unifiedCatalogHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");

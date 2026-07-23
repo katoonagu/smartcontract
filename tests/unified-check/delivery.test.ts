@@ -88,6 +88,7 @@ function repository(
 ): UnifiedDeliveryRepository {
   let current = deliveryClaim;
   return {
+    markExpiredLeasesUnknown: vi.fn(async () => 0),
     claimNext: vi.fn(async () => {
       const selected = current;
       current = null;
@@ -161,6 +162,59 @@ describe("Unified request-scoped Telegram delivery", () => {
       status: "DELIVERY_UNKNOWN",
       errorCode: "unclassified_transport_exception"
     }));
+  });
+
+  it("settles an expired handoff lease as unknown without sending again", async () => {
+    const store = repository(null);
+    vi.mocked(store.markExpiredLeasesUnknown).mockResolvedValueOnce(1);
+    const send = vi.fn();
+    const summary = await runUnifiedDeliveryCycle({
+      repository: store,
+      now: () => new Date("2026-07-23T17:00:00.000Z"),
+      leaseToken: () => "lease-2",
+      leaseMs: 30_000,
+      limit: 1,
+      sendTelegram: send
+    });
+    expect(summary).toEqual({
+      claimed: 0,
+      settled: 0,
+      expiredLeasesMarkedUnknown: 1
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("aborts a hanging transport and records ambiguous delivery", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = repository();
+      const send = vi.fn((_: unknown, signal: AbortSignal) =>
+        new Promise<UnifiedTelegramSendResult>((_, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(new Error("aborted")), { once: true });
+        })
+      );
+      const pending = runUnifiedDeliveryCycle({
+        repository: store,
+        now: () => new Date("2026-07-23T17:00:00.000Z"),
+        leaseToken: () => "lease-1",
+        leaseMs: 30_000,
+        sendTimeoutMs: 25_000,
+        limit: 1,
+        sendTelegram: send
+      });
+      await vi.advanceTimersByTimeAsync(25_000);
+      await expect(pending).resolves.toMatchObject({
+        claimed: 1,
+        settled: 1
+      });
+      expect(store.settle).toHaveBeenCalledWith(expect.objectContaining({
+        status: "DELIVERY_UNKNOWN",
+        errorCode: "transport_timeout_after_handoff"
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("blocks a forged presentation or isolated side effect before transport", async () => {

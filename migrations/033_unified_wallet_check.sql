@@ -140,6 +140,13 @@ create table unified_provider_pages (
   provenance_json jsonb not null
 );
 
+create table unified_label_datasets (
+  sha256 text primary key,
+  dataset_json jsonb not null,
+  created_at timestamptz not null default now(),
+  check (sha256 ~ '^[0-9a-f]{64}$')
+);
+
 create table unified_check_generation_fence (
   generation_id text primary key,
   activated_at timestamptz not null,
@@ -147,6 +154,19 @@ create table unified_check_generation_fence (
   delivery_generation text not null,
   active boolean not null,
   created_at timestamptz not null default now()
+);
+
+create unique index unified_check_generation_fence_one_active_idx
+  on unified_check_generation_fence ((active))
+  where active = true;
+
+create table unified_wallet_delivery_ownership (
+  subject_address text not null,
+  chat_id text not null,
+  generation_id text not null
+    references unified_check_generation_fence(generation_id),
+  acquired_at timestamptz not null,
+  primary key (subject_address, chat_id)
 );
 
 alter table unified_check_tasks
@@ -205,4 +225,12 @@ for each row execute function unified_reject_immutable_mutation();
 
 create trigger unified_provider_pages_immutable
 before update or delete on unified_provider_pages
+for each row execute function unified_reject_immutable_mutation();
+
+create trigger unified_label_datasets_immutable
+before update or delete on unified_label_datasets
+for each row execute function unified_reject_immutable_mutation();
+
+create trigger unified_wallet_delivery_ownership_immutable
+before update or delete on unified_wallet_delivery_ownership
 for each row execute function unified_reject_immutable_mutation();

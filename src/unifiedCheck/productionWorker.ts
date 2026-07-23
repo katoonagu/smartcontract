@@ -1,0 +1,69 @@
+import {
+  checkpointUnifiedTask,
+  claimUnifiedTask,
+  completeUnifiedTaskAttempt,
+  heartbeatUnifiedTask,
+  recordUnifiedTaskAttemptAndWait,
+  settleUnifiedTaskLease,
+  type UnifiedTransactionalQueryable
+} from "./repository";
+import type {
+  UnifiedTaskCycleRepository,
+  UnifiedWorkerTask
+} from "./worker";
+
+function text(value: unknown, code: string): string {
+  if (typeof value !== "string" || value.length === 0) throw new Error(code);
+  return value;
+}
+
+function integer(value: unknown, code: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(code);
+  return parsed;
+}
+
+function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
+  return {
+    id: text(row.id, "unified_worker_task_id_invalid"),
+    runId: text(row.run_id, "unified_worker_run_id_invalid"),
+    kind: text(row.kind, "unified_worker_task_kind_invalid"),
+    attempt: integer(row.attempt, "unified_worker_attempt_invalid"),
+    checkpoint: row.checkpoint_json ?? {},
+    cancellationRequestedAt: row.cancellation_requested_at === null ||
+      row.cancellation_requested_at === undefined
+      ? null
+      : new Date(String(row.cancellation_requested_at)).toISOString()
+  };
+}
+
+export function createPostgresUnifiedTaskCycleRepository(
+  db: UnifiedTransactionalQueryable,
+  kinds: readonly string[]
+): UnifiedTaskCycleRepository {
+  if (kinds.length === 0 || kinds.some((kind) => kind.trim().length === 0)) {
+    throw new TypeError("unified_worker_kinds_invalid");
+  }
+  const claimKinds = [...new Set(kinds)].sort();
+  return {
+    async claim(input) {
+      const row = await claimUnifiedTask(db, { ...input, kinds: claimKinds });
+      return row ? workerTask(row) : null;
+    },
+    async heartbeat(input) {
+      return Boolean(await heartbeatUnifiedTask(db, input));
+    },
+    async checkpoint(input) {
+      return Boolean(await checkpointUnifiedTask(db, input));
+    },
+    async complete(input) {
+      return Boolean(await completeUnifiedTaskAttempt(db, input));
+    },
+    async settle(input) {
+      return Boolean(await settleUnifiedTaskLease(db, input));
+    },
+    async recordAttemptAndWait(input) {
+      return Boolean(await recordUnifiedTaskAttemptAndWait(db, input));
+    }
+  };
+}
