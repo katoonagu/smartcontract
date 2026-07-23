@@ -346,6 +346,13 @@ export function normalizeTronscanTransferForAddressIndex(
   };
 }
 
+export function canonicalTronUsdtEventKey(
+  transfer: Pick<IndexedTronUsdtTransfer, "txHash" | "eventIndex">,
+  tokenContract = TRON_USDT_CONTRACT_ADDRESS
+): string {
+  return `${transfer.txHash}:${transfer.eventIndex}:${tokenContract}`;
+}
+
 function canonicalTransferHash(page: AddressIndexTransferPage, rows: IndexedTronUsdtTransfer[]): string {
   return page.canonicalTransferHash ?? sha256Json({
     total: page.total,
