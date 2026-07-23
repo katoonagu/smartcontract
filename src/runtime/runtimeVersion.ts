@@ -3,6 +3,12 @@ import type {
   Schema032Verification,
   Schema033Verification
 } from "../storage/schemaMigrations";
+import {
+  REQUIRED_SCHEMA_FILENAME,
+  REQUIRED_SCHEMA_VERSION,
+  SCHEMA_032_FILENAME,
+  SCHEMA_032_VERSION
+} from "../storage/schemaMigrations";
 
 type RuntimeSchemaVerification =
   | Schema032Verification
@@ -89,16 +95,25 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
   if (runtime.narrativeVersion !== NARRATIVE_VERSION) fail("runtime_version_narrative_mismatch");
 
   const migration = record(runtime.migration, "runtime_version_migration_invalid");
-  exactKeys(migration, [
+  const migrationKeys = [
     "verified",
     "version",
     "filename",
     "checksumSha256",
     "shortChecksum"
-  ], "runtime_version_migration_shape_invalid");
+  ];
+  if (migration.version === REQUIRED_SCHEMA_VERSION) {
+    migrationKeys.push("schema032ChecksumSha256");
+  }
+  exactKeys(migration, migrationKeys, "runtime_version_migration_shape_invalid");
   if (migration.verified !== true) fail("runtime_version_migration_unverified");
-  if (migration.version !== 32) fail("runtime_version_migration_version_mismatch");
-  if (migration.filename !== "032_telegram_runtime_forensics_data_contracts.sql") {
+  if (migration.version !== SCHEMA_032_VERSION && migration.version !== REQUIRED_SCHEMA_VERSION) {
+    fail("runtime_version_migration_version_mismatch");
+  }
+  const expectedFilename = migration.version === REQUIRED_SCHEMA_VERSION
+    ? REQUIRED_SCHEMA_FILENAME
+    : SCHEMA_032_FILENAME;
+  if (migration.filename !== expectedFilename) {
     fail("runtime_version_migration_filename_mismatch");
   }
   if (typeof migration.checksumSha256 !== "string" || !CHECKSUM_PATTERN.test(migration.checksumSha256)) {
@@ -106,6 +121,15 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
   }
   if (migration.shortChecksum !== migration.checksumSha256.slice(0, 12)) {
     fail("runtime_version_migration_short_checksum_mismatch");
+  }
+  if (
+    migration.version === REQUIRED_SCHEMA_VERSION &&
+    (
+      typeof migration.schema032ChecksumSha256 !== "string" ||
+      !CHECKSUM_PATTERN.test(migration.schema032ChecksumSha256)
+    )
+  ) {
+    fail("runtime_version_schema_032_checksum_invalid");
   }
 
   Object.freeze(migration);
@@ -138,7 +162,7 @@ export function formatRuntimeVersion(runtime: RuntimeVersionV1, locale: "ru" | "
         `Scoring policy: ${runtime.scoringPolicyVersion}`,
         `Result schema: ${runtime.resultSchemaVersion}`,
         `Narrative: ${runtime.narrativeVersion}`,
-        `Database schema: schema 032 verified · ${runtime.migration.shortChecksum}`
+        `Database schema: schema ${runtime.migration.version} verified · ${runtime.migration.shortChecksum}`
       ].join("\n")
     : [
         "Версия runtime",
@@ -147,6 +171,6 @@ export function formatRuntimeVersion(runtime: RuntimeVersionV1, locale: "ru" | "
         `Политика скоринга: ${runtime.scoringPolicyVersion}`,
         `Схема результата: ${runtime.resultSchemaVersion}`,
         `Версия объяснения: ${runtime.narrativeVersion}`,
-        `Схема БД: schema 032 verified · ${runtime.migration.shortChecksum}`
+        `Схема БД: schema ${runtime.migration.version} verified · ${runtime.migration.shortChecksum}`
       ].join("\n");
 }

@@ -1,4 +1,4 @@
-import { fingerprintCanonicalJson } from "../forensics/canonicalJson";
+import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import type {
   AnalysisManifestV1,
   UnifiedRunPurpose,
@@ -10,7 +10,10 @@ import {
   type ConfirmedWalletSnapshotV1,
   type SnapshotSource
 } from "./snapshot";
-import type { UnifiedQueryable } from "./repository";
+import type {
+  UnifiedQueryable,
+  UnifiedTransactionalQueryable
+} from "./repository";
 
 export type CheckRequestStatus = "ACCEPTED" | "ATTACHED" | "FAILED_TECHNICAL";
 
@@ -22,6 +25,7 @@ export type CheckRequestRecord = {
   readonly messageThreadId: string;
   readonly locale: "ru" | "en";
   readonly runPurpose: UnifiedRunPurpose;
+  readonly sideEffectPolicy: UnifiedSideEffectPolicy;
   readonly status: CheckRequestStatus;
   readonly statusReason: string | null;
   readonly runId: string | null;
@@ -38,6 +42,7 @@ export type AnalysisRunRecord = {
   readonly sideEffectPolicy: UnifiedSideEffectPolicy;
   readonly status: UnifiedRunStatus;
   readonly snapshotHash: string;
+  readonly snapshot: ConfirmedWalletSnapshotV1;
   readonly analysisManifestSha256: string;
   readonly analysisManifest: AnalysisManifestV1;
 };
@@ -63,6 +68,7 @@ function requestRecord(row: Record<string, unknown>): CheckRequestRecord {
     messageThreadId: String(row.message_thread_id),
     locale: row.locale as "ru" | "en",
     runPurpose: row.run_purpose as UnifiedRunPurpose,
+    sideEffectPolicy: row.side_effect_policy as UnifiedSideEffectPolicy,
     status: row.status as CheckRequestStatus,
     statusReason: row.status_reason === null ? null : String(row.status_reason),
     runId: row.run_id === null ? null : String(row.run_id),
@@ -84,8 +90,23 @@ async function runRecord(
   ).rows[0];
   if (!artifact) throw new Error("unified_analysis_manifest_missing");
   const manifest = artifact.artifact_json as AnalysisManifestV1;
-  if (fingerprintCanonicalJson(manifest) !== row.analysis_manifest_sha256) {
+  if (fingerprintCanonicalArtifact(manifest) !== row.analysis_manifest_sha256) {
     throw new Error("unified_analysis_manifest_hash_mismatch");
+  }
+  const snapshotArtifact = (
+    await db.query(
+      "select artifact_json from unified_check_artifacts where sha256 = $1",
+      [manifest.snapshotHash]
+    )
+  ).rows[0];
+  if (!snapshotArtifact) throw new Error("unified_snapshot_artifact_missing");
+  const snapshot = snapshotArtifact.artifact_json as ConfirmedWalletSnapshotV1;
+  if (
+    fingerprintCanonicalArtifact(snapshot) !== manifest.snapshotHash ||
+    snapshot.confirmedBlockNumber !== manifest.confirmedBlockNumber ||
+    snapshot.confirmedBlockHash !== manifest.confirmedBlockHash
+  ) {
+    throw new Error("unified_snapshot_artifact_mismatch");
   }
   return {
     id: String(row.id),
@@ -95,6 +116,7 @@ async function runRecord(
     sideEffectPolicy: row.side_effect_policy as UnifiedSideEffectPolicy,
     status: row.status as UnifiedRunStatus,
     snapshotHash: manifest.snapshotHash,
+    snapshot,
     analysisManifestSha256: String(row.analysis_manifest_sha256),
     analysisManifest: manifest
   };
@@ -110,15 +132,15 @@ function one(
 }
 
 export function createPostgresUnifiedRequestStore(
-  db: UnifiedQueryable
+  db: UnifiedTransactionalQueryable
 ): UnifiedRequestStore {
   return {
     async createOrGetAcceptedRequest(input) {
       const inserted = await db.query(
         `insert into unified_check_requests (
           id, request_correlation_id, subject_address, chat_id, message_thread_id,
-          locale, run_purpose, status, ready_at, attempt_count, accepted_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,'ACCEPTED',$8,0,$8)
+          locale, run_purpose, side_effect_policy, status, ready_at, attempt_count, accepted_at
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,'ACCEPTED',$9,0,$9)
         on conflict (request_correlation_id) do nothing
         returning *`,
         [
@@ -129,6 +151,7 @@ export function createPostgresUnifiedRequestStore(
           input.messageThreadId,
           input.locale,
           input.runPurpose,
+          input.sideEffectPolicy,
           input.acceptedAt
         ]
       );
@@ -151,10 +174,9 @@ export function createPostgresUnifiedRequestStore(
     },
 
     async attach(input) {
-      await db.query("begin");
-      try {
+      return db.transaction(async (client) => {
         const request = one(
-          await db.query(
+          await client.query(
             "select * from unified_check_requests where id = $1 for update",
             [input.requestId]
           ),
@@ -162,18 +184,17 @@ export function createPostgresUnifiedRequestStore(
         );
         if (request.status === "ATTACHED") {
           const row = one(
-            await db.query("select * from unified_check_runs where id = $1", [request.run_id]),
+            await client.query("select * from unified_check_runs where id = $1", [request.run_id]),
             "unified_attached_run_missing"
           );
-          const run = await runRecord(db, row);
-          await db.query("commit");
+          const run = await runRecord(client, row);
           return { request: requestRecord(request), run, reused: true };
         }
         if (request.status !== "ACCEPTED") throw new Error("unified_request_not_accepted");
 
         let runRow = input.reuseAllowed
           ? (
-              await db.query(
+              await client.query(
                 `select * from unified_check_runs
                   where analysis_key_sha256 = $1 and status <> 'FAILED_TECHNICAL'
                   order by created_at asc limit 1 for update`,
@@ -183,7 +204,7 @@ export function createPostgresUnifiedRequestStore(
           : undefined;
         let reused = Boolean(runRow);
         if (!runRow) {
-          const inserted = await db.query(
+          const inserted = await client.query(
             `insert into unified_check_runs (
               id, analysis_key_sha256, subject_address, status, run_purpose,
               side_effect_policy, analysis_manifest_sha256
@@ -201,7 +222,7 @@ export function createPostgresUnifiedRequestStore(
           runRow = inserted.rows[0];
           if (!runRow) {
             runRow = one(
-              await db.query(
+              await client.query(
                 `select * from unified_check_runs
                   where analysis_key_sha256 = $1 and status <> 'FAILED_TECHNICAL'
                   order by created_at asc limit 1`,
@@ -211,20 +232,24 @@ export function createPostgresUnifiedRequestStore(
             );
             reused = true;
           } else {
-            await db.query(
+            await client.query(
               `insert into unified_check_artifacts (
                 sha256, created_by_run_id, kind, schema_version, artifact_json
-              ) values ($1,$2,'analysis_manifest','1',$3::jsonb)`,
+              ) values
+                ($1,$2,'confirmed_snapshot','1',$3::jsonb),
+                ($4,$2,'analysis_manifest','1',$5::jsonb)`,
               [
-                input.candidateRun.analysisManifestSha256,
+                input.candidateRun.snapshotHash,
                 input.candidateRun.id,
+                JSON.stringify(input.candidateRun.snapshot),
+                input.candidateRun.analysisManifestSha256,
                 JSON.stringify(input.candidateRun.analysisManifest)
               ]
             );
           }
         }
         const attached = one(
-          await db.query(
+          await client.query(
             `update unified_check_requests
                 set status = 'ATTACHED', run_id = $2
               where id = $1 and status = 'ACCEPTED'
@@ -233,13 +258,9 @@ export function createPostgresUnifiedRequestStore(
           ),
           "unified_request_attach_failed"
         );
-        const run = await runRecord(db, runRow);
-        await db.query("commit");
+        const run = await runRecord(client, runRow);
         return { request: requestRecord(attached), run, reused };
-      } catch (error) {
-        await db.query("rollback").catch(() => undefined);
-        throw error;
-      }
+      });
     },
 
     async providerWait(requestId, readyAt) {
@@ -295,6 +316,7 @@ type IntakeInput = {
     messageThreadId: string;
     locale: "ru" | "en";
     runPurpose: UnifiedRunPurpose;
+    sideEffectPolicy: UnifiedSideEffectPolicy;
   };
   candidateRunId: string;
   versions: UnifiedAnalysisVersions;
@@ -325,7 +347,7 @@ function branchInputHash(
   snapshotHash: string,
   versions: UnifiedAnalysisVersions
 ): string {
-  return fingerprintCanonicalJson({
+  return fingerprintCanonicalArtifact({
     version: "unified-branch-input-v1",
     branch,
     snapshotHash,
@@ -357,8 +379,8 @@ export function buildUnifiedAnalysisIdentity(input: {
   };
   const material = { ...sharedMaterial, reuseScope: input.reuseScope };
   return {
-    requestHash: fingerprintCanonicalJson(sharedMaterial),
-    analysisKeySha256: fingerprintCanonicalJson(material)
+    requestHash: fingerprintCanonicalArtifact(sharedMaterial),
+    analysisKeySha256: fingerprintCanonicalArtifact(material)
   };
 }
 
@@ -374,6 +396,22 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
     attemptCount: 0,
     acceptedAt
   });
+  if (
+    accepted.subjectAddress !== input.request.subjectAddress ||
+    accepted.chatId !== input.request.chatId ||
+    accepted.messageThreadId !== input.request.messageThreadId ||
+    accepted.locale !== input.request.locale ||
+    accepted.runPurpose !== input.request.runPurpose ||
+    accepted.sideEffectPolicy !== input.request.sideEffectPolicy
+  ) {
+    throw new Error("unified_request_correlation_conflict");
+  }
+  if (
+    accepted.runPurpose === "release_canary" &&
+    accepted.sideEffectPolicy !== "isolated"
+  ) {
+    throw new Error("unified_canary_must_be_isolated");
+  }
   if (accepted.status === "FAILED_TECHNICAL") {
     return { kind: "failed_technical", request: accepted };
   }
@@ -381,6 +419,9 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
     const run = await input.store.attachedRun(accepted);
     if (!run) throw new Error("unified_attached_run_missing");
     return { kind: "attached", request: accepted, run, snapshot: null, reused: true };
+  }
+  if (new Date(accepted.readyAt).getTime() > now().getTime()) {
+    return { kind: "waiting_for_provider", request: accepted };
   }
 
   try {
@@ -401,14 +442,25 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
       runId: input.candidateRunId,
       requestHash: identity.requestHash,
       snapshotHash,
+      chain: "tron",
+      subjectAddress: accepted.subjectAddress,
+      confirmedBlockNumber: snapshot.confirmedBlockNumber,
+      confirmedBlockHash: snapshot.confirmedBlockHash,
+      confirmedBlockTimestamp: snapshot.timestamp,
+      labelDatasetSha256: input.versions.labelDatasetSha256,
+      scoringPolicyVersion: input.versions.scoringPolicyVersion,
+      attributionPolicyVersion: input.versions.attributionPolicyVersion,
+      traversalPolicyVersion: "snapshot-closure-v1",
+      runtimeCommit: input.versions.runtimeCommit,
+      databaseSchemaVersion: input.versions.schemaVersion,
+      paginationCutoffBlockNumber: snapshot.confirmedBlockNumber,
+      paginationCutoffBlockHash: snapshot.confirmedBlockHash,
       branchArtifactHashes: {
         fast: branchInputHash("fast", snapshotHash, input.versions),
         deep: branchInputHash("deep", snapshotHash, input.versions),
         where: branchInputHash("where", snapshotHash, input.versions)
       }
     };
-    const sideEffectPolicy: UnifiedSideEffectPolicy =
-      accepted.runPurpose === "release_canary" ? "isolated" : "authoritative";
     const attached = await input.store.attach({
       requestId: accepted.id,
       reuseAllowed: canReuse,
@@ -417,10 +469,11 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
         analysisKeySha256: identity.analysisKeySha256,
         subjectAddress: accepted.subjectAddress,
         runPurpose: accepted.runPurpose,
-        sideEffectPolicy,
+        sideEffectPolicy: accepted.sideEffectPolicy,
         status: "RUNNING",
         snapshotHash,
-        analysisManifestSha256: fingerprintCanonicalJson(manifest),
+        snapshot,
+        analysisManifestSha256: fingerprintCanonicalArtifact(manifest),
         analysisManifest: manifest
       }
     });

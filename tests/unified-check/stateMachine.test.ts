@@ -12,18 +12,34 @@ describe("Unified Check lifecycle", () => {
     ["RUNNING", "admin_block", "BLOCKED_ADMIN"],
     ["BLOCKED_ADMIN", "admin_resume", "RUNNING"],
     ["RUNNING", "begin_finalizing", "FINALIZING"],
-    ["FINALIZING", "commit_completed", "COMPLETED"],
     ["RUNNING", "fail_technical", "FAILED_TECHNICAL"]
   ] as const)("%s + %s -> %s", (from, event, expected) => {
     expect(transitionRun(from, event)).toBe(expected);
+  });
+
+  it("commits a completed run only with its entire final artifact set", () => {
+    expect(transitionRun("FINALIZING", "commit_completed", {
+      finalScore: 0,
+      finalDecision: "ACCEPTABLE",
+      evidenceBundleHash: "a".repeat(64),
+      reportHash: "b".repeat(64),
+      traversalClosureHash: "c".repeat(64),
+      scoringBundleHash: "d".repeat(64)
+    })).toBe("COMPLETED");
+    expect(() => transitionRun("FINALIZING", "commit_completed")).toThrow(
+      "unified_completion_contract_invalid"
+    );
   });
 
   it("rejects a completed run without the final artifact set", () => {
     expect(() =>
       transitionRun("FINALIZING", "commit_completed", {
         finalScore: null,
+        finalDecision: null,
+        evidenceBundleHash: null,
         reportHash: null,
-        traversalClosureHash: null
+        traversalClosureHash: null,
+        scoringBundleHash: null
       })
     ).toThrow("unified_completion_contract_invalid");
   });

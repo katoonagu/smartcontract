@@ -25,6 +25,7 @@ create table unified_check_runs (
     'synthetic_test','maintenance'
   )),
   check (side_effect_policy in ('authoritative','isolated')),
+  check (run_purpose <> 'release_canary' or side_effect_policy = 'isolated'),
   check (final_score is null or final_score between 0 and 100),
   check (
     status <> 'COMPLETED' or
@@ -49,6 +50,7 @@ create table unified_check_requests (
   message_thread_id text not null default '',
   locale text not null,
   run_purpose text not null,
+  side_effect_policy text not null,
   status text not null,
   status_reason text,
   ready_at timestamptz not null default now(),
@@ -56,6 +58,12 @@ create table unified_check_requests (
   accepted_at timestamptz not null,
   created_at timestamptz not null default now(),
   check (locale in ('ru','en')),
+  check (run_purpose in (
+    'user_check','admin_diagnostic','release_canary',
+    'synthetic_test','maintenance'
+  )),
+  check (side_effect_policy in ('authoritative','isolated')),
+  check (run_purpose <> 'release_canary' or side_effect_policy = 'isolated'),
   check (status in ('ACCEPTED','ATTACHED','FAILED_TECHNICAL')),
   check (
     (status = 'ATTACHED' and run_id is not null)

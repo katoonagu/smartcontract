@@ -60,6 +60,12 @@ postgresDescribe("migration 033 PostgreSQL acceptance", () => {
           "c".repeat(64)
         ])
       ).rejects.toThrow("unified_immutable_artifact_mutation");
+      await client.query(
+        "drop trigger unified_provider_pages_immutable on unified_provider_pages"
+      );
+      await expect(
+        verifySchema033Structure(client, { schemaName: schema })
+      ).rejects.toThrow("schema_033_catalog_mismatch");
     } finally {
       await client.query("reset search_path");
       await client.query(`drop schema if exists "${schema}" cascade`);

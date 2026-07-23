@@ -113,18 +113,24 @@ export function transitionRun(
   event: UnifiedRunEvent,
   completion?: {
     finalScore: number | null;
+    finalDecision: "ACCEPTABLE" | "REVIEW" | "DECLINE" | null;
+    evidenceBundleHash: string | null;
     reportHash: string | null;
     traversalClosureHash: string | null;
+    scoringBundleHash: string | null;
   }
 ): UnifiedRunStatus {
   if (
     event === "commit_completed" &&
-    completion !== undefined &&
-    (!Number.isInteger(completion.finalScore) ||
+    (completion === undefined ||
+      !Number.isInteger(completion.finalScore) ||
       (completion.finalScore as number) < 0 ||
       (completion.finalScore as number) > 100 ||
+      !completion.finalDecision ||
+      !completion.evidenceBundleHash ||
       !completion.reportHash ||
-      !completion.traversalClosureHash)
+      !completion.traversalClosureHash ||
+      !completion.scoringBundleHash)
   ) {
     throw new Error("unified_completion_contract_invalid");
   }

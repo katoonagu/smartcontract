@@ -50,6 +50,19 @@ export type AnalysisManifestV1 = {
   readonly runId: string;
   readonly requestHash: Hash;
   readonly snapshotHash: Hash;
+  readonly chain: "tron";
+  readonly subjectAddress: string;
+  readonly confirmedBlockNumber: string;
+  readonly confirmedBlockHash: string;
+  readonly confirmedBlockTimestamp: string;
+  readonly labelDatasetSha256: Hash;
+  readonly scoringPolicyVersion: string;
+  readonly attributionPolicyVersion: string;
+  readonly traversalPolicyVersion: "snapshot-closure-v1";
+  readonly runtimeCommit: string;
+  readonly databaseSchemaVersion: number;
+  readonly paginationCutoffBlockNumber: string;
+  readonly paginationCutoffBlockHash: string;
   readonly branchArtifactHashes: Readonly<Record<string, Hash>>;
 };
 
@@ -72,6 +85,12 @@ export type EvidenceBundleV1 = {
   readonly analysisManifestHash: Hash;
   readonly canonicalFactsHash: Hash;
   readonly canonicalFactIds: readonly string[];
+  readonly acceptedChildAttemptHashes: Readonly<
+    Record<"fast" | "deep" | "where", Hash>
+  >;
+  readonly branchOutputHashes: Readonly<
+    Record<"fast" | "deep" | "where", Hash | null>
+  >;
 };
 
 export type TraversalClosureCertificateV1 = {

@@ -110,7 +110,10 @@ function input(
       chatId: "1",
       messageThreadId: "",
       locale: "ru" as const,
-      runPurpose: purpose
+      runPurpose: purpose,
+      sideEffectPolicy: purpose === "release_canary"
+        ? "isolated" as const
+        : "authoritative" as const
     },
     candidateRunId: runId,
     versions,
@@ -178,5 +181,36 @@ describe("Unified Check request intake", () => {
     expect(second.run.sideEffectPolicy).toBe("isolated");
     expect(second.run.id).not.toBe(first.run.id);
     expect(second.reused).toBe(false);
+  });
+
+  it("rejects correlation reuse with different immutable request identity", async () => {
+    const store = new MemoryStore();
+    await intakeUnifiedCheck(input(store, source(), "action-1", "request-1", "run-1"));
+    const conflict = input(store, source(), "action-1", "request-2", "run-2");
+    conflict.request.chatId = "different-chat";
+    await expect(intakeUnifiedCheck(conflict))
+      .rejects.toThrow("unified_request_correlation_conflict");
+    expect(store.requests).toHaveLength(1);
+  });
+
+  it("does not call the provider before an accepted request ready_at", async () => {
+    const store = new MemoryStore();
+    const original = input(store, source(), "action-1", "request-1", "run-1");
+    await store.createOrGetAcceptedRequest({
+      ...original.request,
+      status: "ACCEPTED",
+      statusReason: null,
+      runId: null,
+      readyAt: "2026-07-23T13:05:00.000Z",
+      attemptCount: 1,
+      acceptedAt: "2026-07-23T13:00:00.000Z"
+    });
+    let providerCalled = false;
+    original.snapshotSource = source("84713573", HASH_A, () => {
+      providerCalled = true;
+    });
+    const result = await intakeUnifiedCheck(original);
+    expect(result.kind).toBe("waiting_for_provider");
+    expect(providerCalled).toBe(false);
   });
 });

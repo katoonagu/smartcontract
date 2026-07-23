@@ -6,6 +6,10 @@ import {
   createPostgresUnifiedRequestStore,
   intakeUnifiedCheck
 } from "../../src/unifiedCheck/requestService";
+import type {
+  UnifiedQueryable,
+  UnifiedTransactionalQueryable
+} from "../../src/unifiedCheck/repository";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
@@ -19,9 +23,23 @@ postgresDescribe("Unified Check durable intake", () => {
       await client.query(`create schema "${schema}"`);
       await client.query(`set search_path to "${schema}"`);
       await client.query(await readFile("migrations/033_unified_wallet_check.sql", "utf8"));
-      const db = {
+      const clientQueryable: UnifiedQueryable = {
         query: (sql: string, values?: readonly unknown[]) =>
           client.query(sql, values as unknown[])
+      };
+      const db: UnifiedTransactionalQueryable = {
+        ...clientQueryable,
+        async transaction<T>(work: (tx: UnifiedQueryable) => Promise<T>): Promise<T> {
+          await client.query("begin");
+          try {
+            const result = await work(clientQueryable);
+            await client.query("commit");
+            return result;
+          } catch (error) {
+            await client.query("rollback").catch(() => undefined);
+            throw error;
+          }
+        }
       };
       const store = createPostgresUnifiedRequestStore(db);
       const base = {
@@ -63,7 +81,8 @@ postgresDescribe("Unified Check durable intake", () => {
           chatId: "1",
           messageThreadId: "",
           locale: "ru",
-          runPurpose: "user_check"
+          runPurpose: "user_check",
+          sideEffectPolicy: "authoritative"
         },
         candidateRunId: "run-1"
       });
@@ -76,7 +95,8 @@ postgresDescribe("Unified Check durable intake", () => {
           chatId: "1",
           messageThreadId: "",
           locale: "ru",
-          runPurpose: "user_check"
+          runPurpose: "user_check",
+          sideEffectPolicy: "authoritative"
         },
         candidateRunId: "run-2"
       });

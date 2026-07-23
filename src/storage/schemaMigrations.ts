@@ -409,26 +409,12 @@ const UNIFIED_TABLES = [
   "unified_check_generation_fence"
 ] as const;
 
-const UNIFIED_CONSTRAINTS = [
-  "unified_check_tasks_status_check",
-  "unified_check_tasks_lane_check",
-  "unified_check_tasks_lease_shape_check",
-  "unified_check_tasks_accepted_attempt_fk",
-  "unified_check_deliveries_status_check",
-  "unified_check_runs_hash_shape_check"
-] as const;
+const UNIFIED_SCHEMA_033_CATALOG_SHA256 =
+  "0297ab2de4cf4033616b67dc4edc1f057991f0817812a9f2c4ab39333a2ee25e";
 
-const UNIFIED_INDEXES = [
-  "unified_check_runs_reusable_analysis_idx",
-  "unified_check_tasks_claim_idx",
-  "unified_check_deliveries_claim_idx"
-] as const;
-
-const UNIFIED_IMMUTABLE_TRIGGERS = [
-  "unified_check_attempts_immutable",
-  "unified_check_artifacts_immutable",
-  "unified_provider_pages_immutable"
-] as const;
+function unifiedCatalogHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
 
 export async function verifySchema033Structure(
   queryable: SchemaQueryable,
@@ -436,58 +422,90 @@ export async function verifySchema033Structure(
 ): Promise<void> {
   const schemaName = resolveSchemaName(options);
   const tables = await queryable.query(
-    `select table_name from information_schema.tables
-      where table_schema = $1 and table_name = any($2::text[])`,
+    `select c.relname as table_name,
+            pg_get_userbyid(c.relowner) as table_owner,
+            current_user as current_user
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relkind = 'r'
+        and c.relname = any($2::text[])
+      order by c.relname`,
     [schemaName, [...UNIFIED_TABLES]]
   );
   if (
-    UNIFIED_TABLES.some(
-      (name) => !tables.rows.some((row) => row.table_name === name)
-    )
+    tables.rows.length !== UNIFIED_TABLES.length ||
+    UNIFIED_TABLES.some((name) => !tables.rows.some((row) => row.table_name === name))
   ) {
     fail("schema_033_table_missing");
   }
+  if (tables.rows.some((row) => row.table_owner !== row.current_user)) {
+    fail("schema_033_table_owner_mismatch");
+  }
+  const columns = await queryable.query(
+    `select table_name, ordinal_position, column_name, data_type,
+            is_nullable, column_default
+       from information_schema.columns
+      where table_schema = $1 and table_name = any($2::text[])
+      order by table_name, ordinal_position`,
+    [schemaName, [...UNIFIED_TABLES]]
+  );
   const constraints = await queryable.query(
-    `select c.conname, c.convalidated
+    `select t.relname as table_name, c.conname, c.contype,
+            c.convalidated, pg_get_constraintdef(c.oid) as definition
        from pg_constraint c
        join pg_class t on t.oid = c.conrelid
        join pg_namespace n on n.oid = t.relnamespace
-      where n.nspname = $1 and c.conname = any($2::text[])`,
-    [schemaName, [...UNIFIED_CONSTRAINTS]]
+      where n.nspname = $1 and t.relname = any($2::text[])
+      order by t.relname, c.conname`,
+    [schemaName, [...UNIFIED_TABLES]]
   );
-  if (
-    UNIFIED_CONSTRAINTS.some(
-      (name) =>
-        !constraints.rows.some(
-          (row) => row.conname === name && row.convalidated === true
-        )
-    )
-  ) {
-    fail("schema_033_constraint_missing");
-  }
   const indexes = await queryable.query(
-    `select indexname from pg_indexes
-      where schemaname = $1 and indexname = any($2::text[])`,
-    [schemaName, [...UNIFIED_INDEXES]]
+    `select tablename, indexname, indexdef
+       from pg_indexes
+      where schemaname = $1 and tablename = any($2::text[])
+      order by tablename, indexname`,
+    [schemaName, [...UNIFIED_TABLES]]
   );
-  if (
-    UNIFIED_INDEXES.some(
-      (name) => !indexes.rows.some((row) => row.indexname === name)
-    )
-  ) {
-    fail("schema_033_index_missing");
-  }
   const triggers = await queryable.query(
-    `select trigger_name from information_schema.triggers
-      where trigger_schema = $1 and trigger_name = any($2::text[])`,
-    [schemaName, [...UNIFIED_IMMUTABLE_TRIGGERS]]
+    `select c.relname as table_name, t.tgname,
+            pg_get_triggerdef(t.oid) as definition
+       from pg_trigger t
+       join pg_class c on c.oid = t.tgrelid
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relname = any($2::text[])
+        and not t.tgisinternal
+      order by c.relname, t.tgname`,
+    [schemaName, [...UNIFIED_TABLES]]
   );
-  if (
-    UNIFIED_IMMUTABLE_TRIGGERS.some(
-      (name) => !triggers.rows.some((row) => row.trigger_name === name)
-    )
-  ) {
-    fail("schema_033_trigger_missing");
+  const functions = await queryable.query(
+    `select p.proname, pg_get_function_result(p.oid) as result,
+            pg_get_function_arguments(p.oid) as arguments,
+            l.lanname as language, p.prosrc
+       from pg_proc p
+       join pg_namespace n on n.oid = p.pronamespace
+       join pg_language l on l.oid = p.prolang
+      where n.nspname = $1 and p.proname = 'unified_reject_immutable_mutation'
+      order by p.oid`,
+    [schemaName]
+  );
+  const normalizeSchema = (row: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [
+        key,
+        typeof value === "string"
+          ? value.replaceAll(`${schemaName}.`, "<schema>.")
+          : value
+      ])
+    );
+  const actualHash = unifiedCatalogHash({
+    columns: columns.rows,
+    constraints: constraints.rows,
+    indexes: indexes.rows.map(normalizeSchema),
+    triggers: triggers.rows.map(normalizeSchema),
+    functions: functions.rows
+  });
+  if (actualHash !== UNIFIED_SCHEMA_033_CATALOG_SHA256) {
+    fail("schema_033_catalog_mismatch");
   }
 }
 
@@ -573,6 +591,16 @@ export async function applyVerifiedTrackedMigration(
         });
         if (options.version === SCHEMA_032_VERSION) {
           await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
+        } else if (
+          options.version === REQUIRED_SCHEMA_VERSION &&
+          options.filename === REQUIRED_SCHEMA_FILENAME
+        ) {
+          await verifyRequiredSchema033(
+            queryable,
+            checksumSha256,
+            options.requiredSchema032Checksum!,
+            { schemaName }
+          );
         } else {
           await verifyRequiredSchema032(queryable, options.requiredSchema032Checksum!, { schemaName });
         }
@@ -609,6 +637,16 @@ export async function applyVerifiedTrackedMigration(
     });
     if (options.version === SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
+    } else if (
+      options.version === REQUIRED_SCHEMA_VERSION &&
+      options.filename === REQUIRED_SCHEMA_FILENAME
+    ) {
+      await verifyRequiredSchema033(
+        queryable,
+        checksumSha256,
+        options.requiredSchema032Checksum!,
+        { schemaName }
+      );
     } else {
       await verifyRequiredSchema032(queryable, options.requiredSchema032Checksum!, { schemaName });
     }

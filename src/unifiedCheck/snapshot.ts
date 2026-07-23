@@ -1,8 +1,8 @@
-import { fingerprintCanonicalJson } from "../forensics/canonicalJson";
+import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import { TronWeb } from "tronweb";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const RAW = /^(0|[1-9][0-9]*)$/u;
-const TRON_ADDRESS = /^T[1-9A-HJ-NP-Za-km-z]{33}$/u;
 
 export type SnapshotSource = {
   latestConfirmedBlock(): Promise<{
@@ -51,7 +51,7 @@ export async function acquireConfirmedWalletSnapshot(
   source: SnapshotSource,
   subjectAddress: string
 ): Promise<{ snapshot: ConfirmedWalletSnapshotV1; sha256: string }> {
-  if (!TRON_ADDRESS.test(subjectAddress)) {
+  if (!TronWeb.isAddress(subjectAddress)) {
     throw new TypeError("unified_invalid_subject_address");
   }
   const block = await source.latestConfirmedBlock();
@@ -76,5 +76,5 @@ export async function acquireConfirmedWalletSnapshot(
       consistency: balances.consistency
     }
   };
-  return { snapshot, sha256: fingerprintCanonicalJson(snapshot) };
+  return { snapshot, sha256: fingerprintCanonicalArtifact(snapshot) };
 }

@@ -4,6 +4,8 @@ const MAX_IDENTIFIER_LENGTH = 512;
 const MAX_JSON_STRING_LENGTH = 4_096;
 const MAX_CANONICAL_JSON_DEPTH = 64;
 const MAX_CANONICAL_JSON_NODES = 10_000;
+const MAX_ARTIFACT_STRING_LENGTH = 16 * 1024 * 1024;
+const MAX_ARTIFACT_JSON_NODES = 2_000_000;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -11,20 +13,23 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-export function canonicalizeJson(value: unknown): string {
+function canonicalizeWithLimits(
+  value: unknown,
+  limits: { maxStringLength: number; maxNodes: number }
+): string {
   let nodeCount = 0;
   const activeObjects = new WeakSet<object>();
 
   const visit = (item: unknown, depth: number): string => {
     nodeCount += 1;
-    if (nodeCount > MAX_CANONICAL_JSON_NODES) {
+    if (nodeCount > limits.maxNodes) {
       throw new RangeError("Canonical JSON exceeds node limit");
     }
     if (depth > MAX_CANONICAL_JSON_DEPTH) {
       throw new RangeError("Canonical JSON exceeds depth limit");
     }
     if (typeof item === "string") {
-      if (item.length > MAX_JSON_STRING_LENGTH) {
+      if (item.length > limits.maxStringLength) {
         throw new RangeError("Canonical JSON string exceeds length limit");
       }
       return JSON.stringify(item);
@@ -46,7 +51,7 @@ export function canonicalizeJson(value: unknown): string {
         throw new TypeError("Canonical JSON requires ordinary arrays");
       }
       const ownKeys = Reflect.ownKeys(item);
-      if (nodeCount + item.length > MAX_CANONICAL_JSON_NODES) {
+      if (nodeCount + item.length > limits.maxNodes) {
         throw new RangeError("Canonical JSON exceeds node limit");
       }
       if (ownKeys.length !== item.length + 1
@@ -75,7 +80,7 @@ export function canonicalizeJson(value: unknown): string {
       throw new TypeError("Canonical JSON requires plain objects");
     }
     const ownKeys = Reflect.ownKeys(item);
-    if (nodeCount + ownKeys.length > MAX_CANONICAL_JSON_NODES) {
+    if (nodeCount + ownKeys.length > limits.maxNodes) {
       throw new RangeError("Canonical JSON exceeds node limit");
     }
     if (!ownKeys.every((key) => typeof key === "string")) {
@@ -106,6 +111,24 @@ export function canonicalizeJson(value: unknown): string {
   return visit(value, 0);
 }
 
+export function canonicalizeJson(value: unknown): string {
+  return canonicalizeWithLimits(value, {
+    maxStringLength: MAX_JSON_STRING_LENGTH,
+    maxNodes: MAX_CANONICAL_JSON_NODES
+  });
+}
+
 export function fingerprintCanonicalJson(value: unknown): string {
   return createHash("sha256").update(canonicalizeJson(value)).digest("hex");
+}
+
+export function canonicalizeArtifactJson(value: unknown): string {
+  return canonicalizeWithLimits(value, {
+    maxStringLength: MAX_ARTIFACT_STRING_LENGTH,
+    maxNodes: MAX_ARTIFACT_JSON_NODES
+  });
+}
+
+export function fingerprintCanonicalArtifact(value: unknown): string {
+  return createHash("sha256").update(canonicalizeArtifactJson(value)).digest("hex");
 }

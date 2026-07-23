@@ -1,4 +1,7 @@
-import { canonicalizeJson, fingerprintCanonicalJson } from "../forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../forensics/canonicalJson";
 import type { UnifiedQueryable } from "./repository";
 
 const HASH = /^[0-9a-f]{64}$/u;
@@ -134,11 +137,11 @@ export function buildProviderRequestIdentity(
       "unified_invalid_confirmation_policy"
     )
   };
-  const canonical = canonicalizeJson(identity);
+  const canonical = canonicalizeArtifactJson(identity);
   return {
     identity,
     canonicalJson: canonical,
-    sha256: fingerprintCanonicalJson(identity)
+    sha256: fingerprintCanonicalArtifact(identity)
   };
 }
 
@@ -149,7 +152,7 @@ function validateStored(
   if (
     record.requestIdentitySha256 !== expected.sha256 ||
     record.snapshotBlockHash !== expected.identity.snapshotBlockHash ||
-    record.payloadSha256 !== fingerprintCanonicalJson(record.payload) ||
+    record.payloadSha256 !== fingerprintCanonicalArtifact(record.payload) ||
     !record.provenance ||
     typeof record.provenance !== "object" ||
     Array.isArray(record.provenance)
@@ -192,11 +195,11 @@ function validateFetched(
     snapshotBlockHash: identity.snapshotBlockHash,
     cursor: identity.cursor
   };
-  canonicalizeJson(provenance);
+  canonicalizeArtifactJson(provenance);
   return {
     requestIdentitySha256: expected.sha256,
     snapshotBlockHash: identity.snapshotBlockHash,
-    payloadSha256: fingerprintCanonicalJson(fetched.payload),
+    payloadSha256: fingerprintCanonicalArtifact(fetched.payload),
     payload: fetched.payload,
     fetchedAt: timestamp(fetched.fetchedAt),
     provenance

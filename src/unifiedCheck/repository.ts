@@ -1,3 +1,4 @@
+import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import type {
   UnifiedRunPurpose,
   UnifiedSideEffectPolicy
@@ -9,6 +10,32 @@ export type UnifiedQueryable = {
     values?: readonly unknown[]
   ): Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number | null }>;
 };
+
+export type UnifiedTransactionalQueryable = UnifiedQueryable & {
+  transaction<T>(work: (client: UnifiedQueryable) => Promise<T>): Promise<T>;
+};
+
+export function createUnifiedPoolTransactionHost(pool: UnifiedQueryable & {
+  connect(): Promise<UnifiedQueryable & { release(): void }>;
+}): UnifiedTransactionalQueryable {
+  return {
+    query: (sql, values) => pool.query(sql, values),
+    async transaction(work) {
+      const client = await pool.connect();
+      await client.query("begin");
+      try {
+        const result = await work(client);
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+  };
+}
 
 function requiredRow(
   result: { rows: Array<Record<string, unknown>> },
@@ -70,13 +97,14 @@ export async function createOrGetCheckRequest(
     messageThreadId: string;
     locale: "ru" | "en";
     runPurpose: UnifiedRunPurpose;
+    sideEffectPolicy: UnifiedSideEffectPolicy;
   }
 ) {
   const inserted = await db.query(
     `insert into unified_check_requests (
       id, request_correlation_id, subject_address, chat_id, message_thread_id,
-      locale, run_purpose, status, accepted_at
-    ) values ($1, $2, $3, $4, $5, $6, $7, 'ACCEPTED', statement_timestamp())
+      locale, run_purpose, side_effect_policy, status, accepted_at
+    ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'ACCEPTED', statement_timestamp())
     on conflict (request_correlation_id) do nothing
     returning *`,
     [
@@ -86,7 +114,8 @@ export async function createOrGetCheckRequest(
       input.chatId,
       input.messageThreadId,
       input.locale,
-      input.runPurpose
+      input.runPurpose,
+      input.sideEffectPolicy
     ]
   );
   return (
@@ -111,6 +140,10 @@ export async function insertUnifiedArtifact(
     artifact: unknown;
   }
 ) {
+  const actualSha256 = fingerprintCanonicalArtifact(input.artifact);
+  if (actualSha256 !== input.sha256) {
+    throw new Error("unified_artifact_hash_mismatch");
+  }
   const inserted = await db.query(
     `insert into unified_check_artifacts (
       sha256, created_by_run_id, kind, schema_version, artifact_json
@@ -125,16 +158,22 @@ export async function insertUnifiedArtifact(
       JSON.stringify(input.artifact)
     ]
   );
-  return (
-    inserted.rows[0] ??
-    requiredRow(
-      await db.query(
-        "select * from unified_check_artifacts where sha256 = $1",
-        [input.sha256]
-      ),
-      "unified_artifact_insert_failed"
-    )
+  const row = inserted.rows[0] ?? requiredRow(
+    await db.query(
+      "select * from unified_check_artifacts where sha256 = $1",
+      [input.sha256]
+    ),
+    "unified_artifact_insert_failed"
   );
+  if (
+    String(row.created_by_run_id) !== input.createdByRunId ||
+    String(row.kind) !== input.kind ||
+    String(row.schema_version) !== input.schemaVersion ||
+    fingerprintCanonicalArtifact(row.artifact_json) !== input.sha256
+  ) {
+    throw new Error("unified_artifact_conflict");
+  }
+  return row;
 }
 
 export async function createUnifiedTasks(
@@ -246,7 +285,7 @@ export async function checkpointUnifiedTask(
 }
 
 export async function completeUnifiedTaskAttempt(
-  db: UnifiedQueryable,
+  db: UnifiedTransactionalQueryable,
   input: {
     taskId: string;
     leaseToken: string;
@@ -254,10 +293,9 @@ export async function completeUnifiedTaskAttempt(
     artifactSha256: string;
   }
 ) {
-  await db.query("begin");
-  try {
+  return db.transaction(async (client) => {
     const task = requiredRow(
-      await db.query(
+      await client.query(
         `select * from unified_check_tasks
           where id = $1 and status = 'LEASED' and lease_token = $2
           for update`,
@@ -265,13 +303,13 @@ export async function completeUnifiedTaskAttempt(
       ),
       "unified_task_lease_lost"
     );
-    await db.query(
+    await client.query(
       `insert into unified_check_attempts (
         id, task_id, attempt, artifact_sha256, completed_at
       ) values ($1, $2, $3, $4, statement_timestamp())`,
       [input.attemptId, input.taskId, task.attempt, input.artifactSha256]
     );
-    const result = await db.query(
+    const result = await client.query(
       `update unified_check_tasks
           set status = 'COMPLETED', lease_owner = null, lease_token = null,
               lease_expires_at = null, heartbeat_at = null,
@@ -280,12 +318,8 @@ export async function completeUnifiedTaskAttempt(
         returning *`,
       [input.taskId, input.leaseToken]
     );
-    await db.query("commit");
     return requiredRow(result, "unified_task_lease_lost");
-  } catch (error) {
-    await db.query("rollback").catch(() => undefined);
-    throw error;
-  }
+  });
 }
 
 export async function selectAcceptedAttempt(
@@ -309,7 +343,7 @@ export async function selectAcceptedAttempt(
 }
 
 export async function finalizeUnifiedRun(
-  db: UnifiedQueryable,
+  db: UnifiedTransactionalQueryable,
   input: {
     runId: string;
     finalScore: number;
@@ -320,8 +354,50 @@ export async function finalizeUnifiedRun(
     reportSha256: string;
   }
 ) {
-  const result = await db.query(
-    `update unified_check_runs
+  return db.transaction(async (client) => {
+    const run = requiredRow(
+      await client.query(
+        "select * from unified_check_runs where id = $1 and status = 'FINALIZING' for update",
+        [input.runId]
+      ),
+      "unified_run_not_finalizing"
+    );
+    const references = [
+      ["evidence_bundle", input.evidenceBundleSha256],
+      ["traversal_closure", input.traversalClosureSha256],
+      ["scoring_bundle", input.scoringBundleSha256],
+      ["unified_wallet_report", input.reportSha256]
+    ] as const;
+    for (const [kind, sha256] of references) {
+      const artifact = requiredRow(
+        await client.query(
+          `select created_by_run_id, kind, artifact_json
+             from unified_check_artifacts where sha256 = $1`,
+          [sha256]
+        ),
+        `unified_final_artifact_missing:${kind}`
+      );
+      if (
+        String(artifact.created_by_run_id) !== input.runId ||
+        String(artifact.kind) !== kind ||
+        fingerprintCanonicalArtifact(artifact.artifact_json) !== sha256
+      ) {
+        throw new Error(`unified_final_artifact_mismatch:${kind}`);
+      }
+    }
+    const unfinished = requiredRow(
+      await client.query(
+        `select count(*)::int as count from unified_check_tasks
+          where run_id = $1
+            and (status not in ('COMPLETED','CANCELLED') or
+              (status = 'COMPLETED' and accepted_attempt_id is null))`,
+        [input.runId]
+      ),
+      "unified_task_gate_failed"
+    );
+    if (Number(unfinished.count) !== 0) throw new Error("unified_tasks_not_finalized");
+    const result = await client.query(
+      `update unified_check_runs
         set status = 'COMPLETED', final_score = $2, final_decision = $3,
             evidence_bundle_sha256 = $4, traversal_closure_sha256 = $5,
             scoring_bundle_sha256 = $6, report_sha256 = $7,
@@ -337,8 +413,10 @@ export async function finalizeUnifiedRun(
       input.scoringBundleSha256,
       input.reportSha256
     ]
-  );
-  return result.rows[0] ?? null;
+    );
+    if (String(run.id) !== input.runId) throw new Error("unified_run_identity_mismatch");
+    return result.rows[0] ?? null;
+  });
 }
 
 export async function createUnifiedDelivery(

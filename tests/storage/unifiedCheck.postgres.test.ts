@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
+import { fingerprintCanonicalJson } from "../../src/forensics/canonicalJson";
 import {
   claimUnifiedTask,
   createOrGetCheckRequest,
@@ -52,7 +53,8 @@ postgresDescribe("Unified Check repository", () => {
         chatId: "chat",
         messageThreadId: "",
         locale: "ru",
-        runPurpose: "synthetic_test"
+        runPurpose: "synthetic_test",
+        sideEffectPolicy: "isolated"
       });
       const requestAgain = await createOrGetCheckRequest(scoped, {
         id: "request-b",
@@ -61,16 +63,18 @@ postgresDescribe("Unified Check repository", () => {
         chatId: "chat",
         messageThreadId: "",
         locale: "ru",
-        runPurpose: "synthetic_test"
+        runPurpose: "synthetic_test",
+        sideEffectPolicy: "isolated"
       });
       expect(requestAgain.id).toBe(request.id);
 
+      const artifact = { stable: true };
       await insertUnifiedArtifact(scoped, {
-        sha256: "c".repeat(64),
+        sha256: fingerprintCanonicalJson(artifact),
         createdByRunId: runId,
         kind: "analysis",
         schemaVersion: "1",
-        artifact: { stable: true }
+        artifact
       });
       await createUnifiedTasks(scoped, {
         runId,
@@ -83,19 +87,38 @@ postgresDescribe("Unified Check repository", () => {
           }
         ]
       });
-      const [left, right] = await Promise.all([
-        claimUnifiedTask(scoped, {
+      const workerA = await pool.connect();
+      const workerB = await pool.connect();
+      await workerA.query(`set search_path to "${schema}"`);
+      await workerB.query(`set search_path to "${schema}"`);
+      await workerA.query("begin");
+      try {
+        const left = await claimUnifiedTask({
+          query: (sql: string, values?: readonly unknown[]) =>
+            workerA.query(sql, values as unknown[])
+        }, {
           workerId: "worker-a",
           leaseToken: "lease-a",
           leaseMs: 60_000
-        }),
-        claimUnifiedTask(scoped, {
+        });
+        const right = await claimUnifiedTask({
+          query: (sql: string, values?: readonly unknown[]) =>
+            workerB.query(sql, values as unknown[])
+        }, {
           workerId: "worker-b",
           leaseToken: "lease-b",
           leaseMs: 60_000
-        })
-      ]);
-      expect([left, right].filter(Boolean)).toHaveLength(1);
+        });
+        expect(left).not.toBeNull();
+        expect(right).toBeNull();
+        await workerA.query("commit");
+      } catch (error) {
+        await workerA.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        workerA.release();
+        workerB.release();
+      }
 
       const delivery = await createUnifiedDelivery(scoped, {
         id: "delivery-a",

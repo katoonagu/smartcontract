@@ -11,13 +11,44 @@ const analysisManifest = {
   schemaVersion: 1,
   runId: "run-1",
   requestHash: "d".repeat(64),
-  snapshotHash: "b".repeat(64),
+  snapshotHash: "",
+  chain: "tron",
+  subjectAddress: "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
+  confirmedBlockNumber: "84713573",
+  confirmedBlockHash: "b".repeat(64),
+  confirmedBlockTimestamp: "2026-07-23T12:53:54.000Z",
+  labelDatasetSha256: "c".repeat(64),
+  scoringPolicyVersion: "scoring-signal-matrix-v4",
+  attributionPolicyVersion: "selected-attribution-policy-v1",
+  traversalPolicyVersion: "snapshot-closure-v1",
+  runtimeCommit: "candidate",
+  databaseSchemaVersion: 33,
+  paginationCutoffBlockNumber: "84713573",
+  paginationCutoffBlockHash: "b".repeat(64),
   branchArtifactHashes: {
     fast: "e".repeat(64),
     deep: "f".repeat(64),
     where: "0".repeat(64)
   }
 } as const;
+
+const snapshot = {
+  version: "confirmed-wallet-snapshot-v1",
+  schemaVersion: 1,
+  chain: "tron",
+  subjectAddress: "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
+  confirmedBlockNumber: "84713573",
+  confirmedBlockHash: "b".repeat(64),
+  timestamp: "2026-07-23T12:53:54.000Z",
+  balances: {
+    usdtRaw: "0",
+    trxSun: "0",
+    source: "fixture",
+    consistency: "exact"
+  }
+} as const;
+const snapshotHash = fingerprintCanonicalJson(snapshot);
+const boundManifest = { ...analysisManifest, snapshotHash };
 
 const run: AnalysisRunRecord = {
   id: "run-1",
@@ -26,9 +57,10 @@ const run: AnalysisRunRecord = {
   runPurpose: "synthetic_test",
   sideEffectPolicy: "isolated",
   status: "RUNNING",
-  snapshotHash: "b".repeat(64),
-  analysisManifestSha256: fingerprintCanonicalJson(analysisManifest),
-  analysisManifest
+  snapshotHash,
+  snapshot,
+  analysisManifestSha256: fingerprintCanonicalJson(boundManifest),
+  analysisManifest: boundManifest
 };
 
 const branches: MinimalBranchResult[] = (["fast", "deep", "where"] as const).map(
