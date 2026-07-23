@@ -69,6 +69,7 @@ export type UnifiedWatchdogRunV1 = {
     readonly leaseExpiresAt: string | null;
     readonly heartbeatAt: string | null;
     readonly cancellationRequestedAt: string | null;
+    readonly lastError: string | null;
     readonly providerState: "ready" | "waiting" | "unavailable";
     readonly checkpoint: Readonly<Record<string, unknown>>;
     readonly attempts: readonly {
@@ -76,6 +77,20 @@ export type UnifiedWatchdogRunV1 = {
       readonly attempt: number;
       readonly artifactSha256: string | null;
       readonly completedAt: string | null;
+    }[];
+    readonly attemptDurations: readonly {
+      readonly attempt: number;
+      readonly startedAt: string;
+      readonly completedAt: string;
+      readonly durationMs: number;
+      readonly outcome:
+        | "CHECKPOINTED"
+        | "WAITING_RETRY"
+        | "COMPLETED"
+        | "BLOCKED_ADMIN"
+        | "FAILED_TECHNICAL"
+        | "CANCELLED"
+        | "LEASE_EXPIRED";
     }[];
     readonly durationsMs: {
       readonly queue: number;

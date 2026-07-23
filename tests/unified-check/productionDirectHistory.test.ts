@@ -147,6 +147,7 @@ describe("Unified production direct history", () => {
         checkpoint: {},
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-1",
       heartbeat
     });
     expect(first.kind).toBe("checkpoint");
@@ -160,6 +161,7 @@ describe("Unified production direct history", () => {
         checkpoint: first.checkpoint,
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-2",
       heartbeat
     });
     expect(second.kind).toBe("checkpoint");
@@ -173,6 +175,7 @@ describe("Unified production direct history", () => {
         checkpoint: second.checkpoint,
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-3",
       heartbeat
     });
 

@@ -30,7 +30,7 @@ describe("Unified production worker adapter", () => {
     } as UnifiedTransactionalQueryable;
     const repository = createPostgresUnifiedTaskCycleRepository(db, [
       "direct_history"
-    ]);
+    ], "candidate", "e".repeat(64));
 
     await expect(repository.claim({
       workerId: "worker",

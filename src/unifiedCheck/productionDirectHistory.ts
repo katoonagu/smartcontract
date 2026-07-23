@@ -134,6 +134,10 @@ export function createUnifiedDirectHistoryHandler(input: {
   loadPage(input: {
     run: LoadedRun;
     cursor: string | null;
+    taskId: string;
+    leaseToken: string;
+    attempt: number;
+    heartbeat(): Promise<void>;
   }): Promise<DirectHistoryPage | DirectHistoryProviderWait>;
   loadPageArtifact(input: {
     runId: string;
@@ -146,7 +150,7 @@ export function createUnifiedDirectHistoryHandler(input: {
     artifact: UnifiedDirectHistoryPageArtifactV1 | UnifiedDirectHistoryArtifactV1;
   }): Promise<void>;
 }): UnifiedChunkHandler {
-  return async ({ task, heartbeat }) => {
+  return async ({ task, heartbeat, leaseToken }) => {
     if (task.kind !== "direct_history") {
       return { kind: "blocked", reason: "unified_direct_history_kind_invalid" };
     }
@@ -166,7 +170,14 @@ export function createUnifiedDirectHistoryHandler(input: {
       manifest: run.analysisManifest,
       checkpoint: prior.history,
       maxPagesThisChunk: 1,
-      loadPage: (cursor) => input.loadPage({ run, cursor })
+      loadPage: (cursor) => input.loadPage({
+        run,
+        cursor,
+        taskId: task.id,
+        leaseToken,
+        attempt: task.attempt,
+        heartbeat
+      })
     });
     await heartbeat();
     if (result.outcome === "provider_wait") {

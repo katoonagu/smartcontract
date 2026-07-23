@@ -35,7 +35,13 @@ export function createUnifiedProductionBranchHandlers(input: {
   createId(): string;
   loadContext(
     runId: string,
-    branchId: BranchId
+    branchId: BranchId,
+    execution: {
+      taskId: string;
+      leaseToken: string;
+      attempt: number;
+      heartbeat(): Promise<void>;
+    }
   ): Promise<ProductionBranchContext>;
   previousAttemptHash(taskId: string): Promise<string | null>;
   persistArtifact(input: {
@@ -47,7 +53,11 @@ export function createUnifiedProductionBranchHandlers(input: {
 }): Record<BranchId, UnifiedChunkHandler> {
   return Object.fromEntries(
     (["fast", "where", "deep"] as const).map((branchId) => {
-      const handler: UnifiedChunkHandler = async ({ task, heartbeat }) => {
+      const handler: UnifiedChunkHandler = async ({
+        task,
+        heartbeat,
+        leaseToken
+      }) => {
         if (task.kind !== branchId) {
           return {
             kind: "blocked",
@@ -56,7 +66,12 @@ export function createUnifiedProductionBranchHandlers(input: {
         }
         let context: ProductionBranchContext;
         try {
-          context = await input.loadContext(task.runId, branchId);
+          context = await input.loadContext(task.runId, branchId, {
+            taskId: task.id,
+            leaseToken,
+            attempt: task.attempt,
+            heartbeat
+          });
         } catch (error) {
           if (error instanceof UnifiedProviderWaitError) {
             return {

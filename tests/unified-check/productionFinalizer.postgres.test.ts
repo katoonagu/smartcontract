@@ -379,6 +379,8 @@ postgresDescribe("Unified production finalizer", () => {
 
       await expect(runUnifiedProductionFinalizationCycle({
         db,
+        runtimeCommit: "candidate",
+        providerConfigurationSha256: "e".repeat(64),
         now: () => new Date("2026-07-23T13:02:00.000Z"),
         createId: () => "delivery-1"
       })).resolves.toEqual({ finalized: true, runId: "run-1" });

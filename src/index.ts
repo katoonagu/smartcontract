@@ -210,6 +210,9 @@ import { createTronConfirmedSnapshotSource } from "./unifiedCheck/snapshot";
 import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionPolicy.generated";
 import { SCORING_POLICY_V4 } from "./risk/scoringPolicyV4.generated";
 import { createUnifiedProductionRuntime } from "./unifiedCheck/productionRuntime";
+import {
+  buildUnifiedCanaryProviderConfiguration
+} from "./unifiedCheck/canary";
 import { isRetryableUnifiedProviderError } from "./unifiedCheck/productionDirectHistory";
 import {
   evidenceDateWithinSnapshot,
@@ -376,22 +379,43 @@ if (
 ) {
   throw new Error("unified_label_dataset_persistence_mismatch");
 }
-const unifiedLabelsByAddress = new Map<string, readonly string[]>();
-for (const row of unifiedLabelRows) {
-  unifiedLabelsByAddress.set(
-    row.address,
-    [...new Set([
-      ...(unifiedLabelsByAddress.get(row.address) ?? []),
-      row.label,
-      row.category
-    ])].sort()
-  );
-}
 const unifiedProviderPageStore = createPostgresProviderPageStore(
   unifiedTransactionHost
 );
+const unifiedProviderConfiguration =
+  buildUnifiedCanaryProviderConfiguration({
+    tronscanBaseUrl: config.tronscanBaseUrl,
+    tronFullNodeBaseUrl: config.tronFullNodeBaseUrl,
+    timeoutMs: config.tronscanTimeoutMs,
+    retryAttempts: config.tronscanRetryAttempts,
+    retryBaseDelayMs: config.tronscanRetryBaseDelayMs,
+    rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+    maxInFlight: config.tronscanMaxInFlight ?? 20,
+    maxInFlightPerGroup: config.tronscanGroupMaxInFlight ?? 2,
+    requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+    globalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
+    transferRequestMinIntervalMs:
+      config.tronscanTransferRequestMinIntervalMs,
+    approvalRequestMinIntervalMs:
+      config.tronscanApprovalRequestMinIntervalMs,
+    contractRequestMinIntervalMs:
+      config.tronscanContractRequestMinIntervalMs,
+    fullNodeRequestMinIntervalMs:
+      config.tronscanFullNodeRequestMinIntervalMs,
+    tronGridRequestMinIntervalMs: config.tronGridRequestMinIntervalMs,
+    accountGroupRequestMinIntervalMs:
+      config.tronscanAccountGroupRequestMinIntervalMs,
+    tronscanKeyCount: config.tronscanApiKeys.length,
+    fullNodeKeyConfigured: Boolean(config.tronFullNodeApiKey),
+    groups: config.tronscanApiKeyGroups.map((group) => ({
+      groupId: group.groupId,
+      keyCount: group.apiKeys.length
+    }))
+  });
 const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
+  runtimeCommit: runtimeVersion.gitCommitSha,
+  providerConfigurationSha256: unifiedProviderConfiguration.sha256,
   now: () => new Date(),
   createId: randomUUID,
   async loadProviderPage({ run, address = run.subjectAddress, cursor }) {
@@ -505,21 +529,53 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
       throw error;
     }
   },
-  async loadCounterpartyLabels(addresses) {
-    return new Map(
-      addresses
-        .filter((address) => unifiedLabelsByAddress.has(address))
-        .map((address) => [
-          address,
-          unifiedLabelsByAddress.get(address)!
-        ])
-    );
+  async loadCounterpartyLabels({ addresses, labelDatasetSha256 }) {
+    const stored = (
+      await db.query(
+        "select dataset_json from unified_label_datasets where sha256 = $1",
+        [labelDatasetSha256]
+      )
+    ).rows[0]?.dataset_json as {
+      version?: unknown;
+      rows?: unknown;
+    } | undefined;
+    if (
+      !stored ||
+      stored.version !== "unified-label-dataset-v1" ||
+      !Array.isArray(stored.rows) ||
+      fingerprintCanonicalArtifact(stored) !== labelDatasetSha256
+    ) {
+      throw new Error("unified_label_dataset_persistence_mismatch");
+    }
+    const requested = new Set(addresses);
+    const labels = new Map<string, string[]>();
+    for (const raw of stored.rows) {
+      const row = raw as {
+        address?: unknown;
+        label?: unknown;
+        category?: unknown;
+      };
+      if (
+        typeof row.address !== "string" ||
+        !requested.has(row.address) ||
+        typeof row.label !== "string" ||
+        typeof row.category !== "string"
+      ) continue;
+      labels.set(row.address, [...new Set([
+        ...(labels.get(row.address) ?? []),
+        row.label,
+        row.category
+      ])].sort());
+    }
+    return labels;
   },
   async loadHardEvidence({
     subjectAddress,
     snapshotTimestamp,
     events,
-    knownCounterparties
+    knownCounterparties,
+    cooperate,
+    providerCall
   }) {
     const riskyLabels = new Set([
       "scam",
@@ -532,19 +588,24 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     ]);
     const isRisky = (address: string | null) =>
       address !== null &&
-      (knownCounterparties.get(address) ??
-        unifiedLabelsByAddress.get(address) ??
-        [])
+      (knownCounterparties.get(address) ?? [])
         .some((label) => riskyLabels.has(label));
     try {
       const addresses = [...new Set(events.flatMap((event) => [
         event.fromAddress,
         event.toAddress
       ]))].sort();
-      const timelines = await Promise.all(addresses.map(async (address) => ({
-        address,
-        timeline: await tronClient.getUsdtBlacklistTimeline(address)
-      })));
+      const timelines = [];
+      for (const address of addresses) {
+        await cooperate();
+        timelines.push({
+          address,
+          timeline: await providerCall(() =>
+            tronClient.getUsdtBlacklistTimeline(address)
+          )
+        });
+        await cooperate();
+      }
       const timelineByAddress = new Map(
         timelines.map((item) => [
           item.address,
@@ -571,10 +632,14 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
       }
       const approvals = [];
       for (let start = 0; ; start += 50) {
-        const page = await tronClient.listTrc20Approvals(
-          subjectAddress,
-          { start, limit: 50 }
+        await cooperate();
+        const page = await providerCall(() =>
+          tronClient.listTrc20Approvals(
+            subjectAddress,
+            { start, limit: 50 }
+          )
         );
+        await cooperate();
         approvals.push(...page.approvals);
         if (
           page.approvals.length === 0 ||

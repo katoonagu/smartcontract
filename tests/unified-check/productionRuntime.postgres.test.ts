@@ -153,6 +153,8 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       });
       const runtimeInput = {
         db,
+        runtimeCommit: "candidate",
+        providerConfigurationSha256: "e".repeat(64),
         now: () => new Date("2026-07-23T13:01:00.000Z"),
         createId: (() => {
           let index = 0;
@@ -198,6 +200,25 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           outcome: "completed"
         });
       }
+      const canaryOnlyProcess = createUnifiedProductionRuntime({
+        ...runtimeInput,
+        runPurpose: "release_canary"
+      });
+      await expect(canaryOnlyProcess.runFinalizationCycle())
+        .resolves.toMatchObject({
+          finalized: false,
+          reconciled: false
+        });
+      expect((
+        await query(
+          "select status from unified_check_runs where id = 'run-1'"
+        )
+      ).rows[0]?.status).toBe("RUNNING");
+      expect(Number((
+        await query(
+          "select count(*)::int as count from unified_check_deliveries"
+        )
+      ).rows[0]?.count)).toBe(0);
       await expect(
         restartedProcess.runFinalizationCycle()
       ).resolves.toMatchObject({
@@ -287,6 +308,129 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           await query("select count(*)::int as count from unified_check_deliveries")
         ).rows[0]?.count)
       ).toBe(2);
+
+      const canary = await intakeUnifiedCheck({
+        store: requestStore,
+        snapshotSource: {
+          latestConfirmedBlock: async () => ({
+            number: "101",
+            hash: "c".repeat(64),
+            timestamp: "2026-07-23T13:03:00.000Z"
+          }),
+          snapshotBalances: async () => ({
+            usdtRaw: null,
+            trxSun: null,
+            source: "fixture",
+            consistency: "unavailable"
+          })
+        },
+        request: {
+          id: "request-canary",
+          requestCorrelationId: "correlation-canary",
+          subjectAddress: SUBJECT,
+          chatId: "canary",
+          messageThreadId: "",
+          locale: "ru",
+          runPurpose: "release_canary",
+          sideEffectPolicy: "isolated"
+        },
+        candidateRunId: "run-canary",
+        initialTasks: (
+          ["direct_history", "traversal", "fast", "where", "deep"] as const
+        ).map((kind) => ({
+          id: `task-canary-${kind}`,
+          kind,
+          priorityLane: "background",
+          logicalKey: "main"
+        })),
+        versions: {
+          labelDatasetSha256,
+          scoringPolicyVersion: "scoring-signal-matrix-v4",
+          attributionPolicyVersion: "selected-attribution-policy-v1",
+          runtimeCommit: "candidate",
+          schemaVersion: 33
+        },
+        now: () => new Date("2026-07-23T13:03:00.000Z")
+      });
+      expect(canary).toMatchObject({
+        kind: "attached",
+        reused: false,
+        run: {
+          id: "run-canary",
+          runPurpose: "release_canary",
+          sideEffectPolicy: "isolated"
+        }
+      });
+      const canaryBatchIdentity = {
+        version: "test-canary-batch-identity",
+        providerConfiguration: {
+          sha256: runtimeInput.providerConfigurationSha256,
+          artifact: {}
+        }
+      };
+      const canaryBatchIdentitySha256 =
+        fingerprintCanonicalArtifact(canaryBatchIdentity);
+      await query(
+        `insert into unified_check_artifacts (
+           sha256, created_by_run_id, kind, schema_version, artifact_json
+         ) values ($1,'run-canary','canary_batch_identity','1',$2::jsonb)`,
+        [
+          canaryBatchIdentitySha256,
+          JSON.stringify(canaryBatchIdentity)
+        ]
+      );
+      await query(
+        `update unified_check_requests
+            set chat_id = $2
+          where id = $1`,
+        ["request-canary", `canary:${canaryBatchIdentitySha256}`]
+      );
+      const mismatchedCanaryRuntime = createUnifiedProductionRuntime({
+        ...runtimeInput,
+        providerConfigurationSha256: "f".repeat(64),
+        runPurpose: "release_canary"
+      });
+      await expect(mismatchedCanaryRuntime.runProviderCycle())
+        .resolves.toMatchObject({ outcome: "idle" });
+      const oldCandidateRuntime = createUnifiedProductionRuntime({
+        ...runtimeInput,
+        runtimeCommit: "previous-candidate",
+        runPurpose: "release_canary"
+      });
+      await expect(oldCandidateRuntime.runProviderCycle())
+        .resolves.toMatchObject({ outcome: "idle" });
+      const canaryRuntime = createUnifiedProductionRuntime({
+        ...runtimeInput,
+        runPurpose: "release_canary"
+      });
+      for (let index = 0; index < 3; index += 1) {
+        await expect(canaryRuntime.runProviderCycle()).resolves.toMatchObject({
+          claimed: true
+        });
+      }
+      for (let index = 0; index < 3; index += 1) {
+        await expect(canaryRuntime.runAnalysisCycle()).resolves.toMatchObject({
+          outcome: "completed"
+        });
+      }
+      await expect(canaryRuntime.runFinalizationCycle())
+        .resolves.toMatchObject({
+          finalized: true,
+          runId: "run-canary",
+          reconciled: false
+        });
+      expect((
+        await query(
+          "select status, final_score, final_decision from unified_check_runs where id = 'run-canary'"
+        )
+      ).rows[0]).toMatchObject({
+        status: "COMPLETED",
+        final_score: 0,
+        final_decision: "ACCEPTABLE"
+      });
+      expect(Number((
+        await query("select count(*)::int as count from unified_check_deliveries")
+      ).rows[0]?.count)).toBe(2);
     } finally {
       await client.query(`drop schema if exists "${schema}" cascade`);
       client.release();

@@ -2,6 +2,7 @@ import {
   buildUnifiedPresentedCompletionCandidate
 } from "./orchestrator";
 import {
+  commitUnifiedIsolatedCanaryCompletion,
   commitUnifiedPresentedCompletion
 } from "./durableCompletion";
 import {
@@ -14,6 +15,7 @@ import type {
   AnalysisManifestV1,
   ChildAttemptArtifactV1
 } from "./contracts";
+import { assertUnifiedWriteAllowed } from "./contracts";
 import type { UnifiedBranchArtifactV1 } from "./branchAdapters";
 import {
   canonicalizeUnifiedDirectHistoryPages,
@@ -110,15 +112,55 @@ export async function runUnifiedProductionFinalizationCycle(input: {
   db: UnifiedTransactionalQueryable;
   now(): Date;
   createId(): string;
+  runtimeCommit: string;
+  providerConfigurationSha256: string;
+  runPurpose?: "user_check" | "admin_diagnostic" | "release_canary" |
+    "synthetic_test" | "maintenance";
 }): Promise<{ finalized: boolean; runId: string | null }> {
+  if (!/^[0-9a-f]{64}$/u.test(input.providerConfigurationSha256)) {
+    throw new TypeError(
+      "unified_production_provider_configuration_invalid"
+    );
+  }
   return input.db.transaction(async (client) => {
     const run = (
       await client.query(
         `select run.*
            from unified_check_runs run
+           join unified_check_artifacts manifest
+             on manifest.sha256 = run.analysis_manifest_sha256
+            and manifest.kind = 'analysis_manifest'
           where run.status = 'RUNNING'
-            and run.run_purpose = 'user_check'
-            and run.side_effect_policy = 'authoritative'
+            and (
+              (
+                run.run_purpose = 'user_check'
+                and run.side_effect_policy = 'authoritative'
+              ) or (
+                run.run_purpose = 'release_canary'
+                and run.side_effect_policy = 'isolated'
+              )
+            )
+            and (
+              run.run_purpose <> 'release_canary' or
+              clock_timestamp() <
+                run.created_at + interval '35 minutes'
+            )
+            and ($1::text is null or run.run_purpose = $1)
+            and manifest.artifact_json->>'runtimeCommit' = $2
+            and (
+              run.run_purpose <> 'release_canary' or exists (
+                select 1
+                  from unified_check_requests request
+                  join unified_check_artifacts batch_identity
+                    on batch_identity.sha256 =
+                      substring(request.chat_id from 8)
+                   and batch_identity.kind = 'canary_batch_identity'
+                 where request.run_id = run.id
+                   and request.run_purpose = 'release_canary'
+                   and batch_identity.artifact_json#>>
+                     '{providerConfiguration,sha256}' = $3
+              )
+            )
             and (
               select count(*) from unified_check_tasks task
                where task.run_id = run.id
@@ -138,11 +180,21 @@ export async function runUnifiedProductionFinalizationCycle(input: {
             )
           order by run.created_at, run.id
           for update skip locked
-          limit 1`
+          limit 1`,
+        [
+          input.runPurpose ?? null,
+          input.runtimeCommit,
+          input.providerConfigurationSha256
+        ]
       )
     ).rows[0];
     if (!run) return { finalized: false, runId: null };
     const runId = String(run.id);
+    assertUnifiedWriteAllowed({
+      runPurpose: run.run_purpose,
+      sideEffectPolicy: run.side_effect_policy,
+      namespace: "run_scoped_artifact"
+    });
     const manifest = await artifact<AnalysisManifestV1>(client, {
       runId,
       sha256: String(run.analysis_manifest_sha256),
@@ -280,33 +332,54 @@ export async function runUnifiedProductionFinalizationCycle(input: {
       ),
       "unified_production_finalizing_failed"
     );
-    const requests = (
-      await client.query(
-        `select id, locale
-           from unified_check_requests
-          where run_id = $1 and status = 'ATTACHED'
-            and side_effect_policy = 'authoritative'
-          order by id`,
-        [runId]
-      )
-    ).rows;
-    const presented = buildUnifiedPresentedCompletionCandidate({
-      report: candidate.dossier,
-      recipients: requests.map((request) => ({
-        requestId: String(request.id),
-        deliveryId: input.createId(),
-        locale: request.locale as "ru" | "en"
-      }))
-    });
     const transactionHost: UnifiedTransactionalQueryable = {
       query: (sql, values) => client.query(sql, values),
       transaction: (work) => work(client)
     };
-    await commitUnifiedPresentedCompletion({
-      db: transactionHost,
-      runId,
-      candidate: presented
-    });
+    if (
+      run.run_purpose === "release_canary" &&
+      run.side_effect_policy === "isolated"
+    ) {
+      await commitUnifiedIsolatedCanaryCompletion({
+        db: transactionHost,
+        runId,
+        report: candidate.dossier
+      });
+    } else {
+      assertUnifiedWriteAllowed({
+        runPurpose: run.run_purpose,
+        sideEffectPolicy: run.side_effect_policy,
+        namespace: "authoritative_derived"
+      });
+      assertUnifiedWriteAllowed({
+        runPurpose: run.run_purpose,
+        sideEffectPolicy: run.side_effect_policy,
+        namespace: "delivery_intent"
+      });
+      const requests = (
+        await client.query(
+          `select id, locale
+             from unified_check_requests
+            where run_id = $1 and status = 'ATTACHED'
+              and side_effect_policy = 'authoritative'
+            order by id`,
+          [runId]
+        )
+      ).rows;
+      const presented = buildUnifiedPresentedCompletionCandidate({
+        report: candidate.dossier,
+        recipients: requests.map((request) => ({
+          requestId: String(request.id),
+          deliveryId: input.createId(),
+          locale: request.locale as "ru" | "en"
+        }))
+      });
+      await commitUnifiedPresentedCompletion({
+        db: transactionHost,
+        runId,
+        candidate: presented
+      });
+    }
     void input.now();
     return { finalized: true, runId };
   });

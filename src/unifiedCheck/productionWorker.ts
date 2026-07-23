@@ -8,6 +8,9 @@ import {
   type UnifiedTransactionalQueryable
 } from "./repository";
 import type {
+  UnifiedRunPurpose
+} from "./contracts";
+import type {
   UnifiedTaskCycleRepository,
   UnifiedWorkerTask
 } from "./worker";
@@ -39,15 +42,30 @@ function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
 
 export function createPostgresUnifiedTaskCycleRepository(
   db: UnifiedTransactionalQueryable,
-  kinds: readonly string[]
+  kinds: readonly string[],
+  runtimeCommit: string,
+  providerConfigurationSha256: string,
+  runPurpose?: UnifiedRunPurpose
 ): UnifiedTaskCycleRepository {
   if (kinds.length === 0 || kinds.some((kind) => kind.trim().length === 0)) {
     throw new TypeError("unified_worker_kinds_invalid");
   }
+  if (!runtimeCommit.trim()) {
+    throw new TypeError("unified_worker_runtime_commit_invalid");
+  }
+  if (!/^[0-9a-f]{64}$/u.test(providerConfigurationSha256)) {
+    throw new TypeError("unified_worker_provider_configuration_invalid");
+  }
   const claimKinds = [...new Set(kinds)].sort();
   return {
     async claim(input) {
-      const row = await claimUnifiedTask(db, { ...input, kinds: claimKinds });
+      const row = await claimUnifiedTask(db, {
+        ...input,
+        kinds: claimKinds,
+        runPurpose,
+        runtimeCommit,
+        providerConfigurationSha256
+      });
       return row ? workerTask(row) : null;
     },
     async heartbeat(input) {

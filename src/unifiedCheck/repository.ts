@@ -1,10 +1,17 @@
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import type {
+  UnifiedCanaryBatchIdentityV1,
+  UnifiedCanaryExecutionBlockedV1,
+  UnifiedCanaryIsolationAuditV1,
+  UnifiedCanarySelectionManifestV1
+} from "./canary";
+import type {
   DeliveryIntentV1,
   ManualUnifiedResendV1,
   UnifiedRunPurpose,
   UnifiedSideEffectPolicy
 } from "./contracts";
+import { assertUnifiedWriteAllowed } from "./contracts";
 import {
   buildPresentationManifest,
   renderUnifiedWalletPresentation,
@@ -12,6 +19,48 @@ import {
 } from "./presentation";
 import type { UnifiedWalletDossierV1 } from "./report";
 import type { UnifiedWatchdogRunV1 } from "./watchdog";
+
+export const UNIFIED_CANARY_SELECTION_QUERY_VERSION =
+  "unified-canary-selection-query-v1" as const;
+
+export const UNIFIED_CANARY_SELECTION_QUERY = `
+with eligible as (
+  select
+    'unified_check_requests'::text as source_table,
+    id as source_row_id,
+    subject_address,
+    run_purpose,
+    locale,
+    accepted_at,
+    created_at,
+    true as proven_user_origin
+  from unified_check_requests
+  where run_purpose = 'user_check'
+  union all
+  select
+    'forensic_check_jobs'::text as source_table,
+    job.id as source_row_id,
+    job.subject_address,
+    'user_check'::text as run_purpose,
+    case when job.progress_json->>'locale' = 'en' then 'en' else 'ru' end,
+    job.created_at as accepted_at,
+    job.created_at,
+    true as proven_user_origin
+  from forensic_check_jobs job
+  where job.kind = 'address_fast_check'
+    and job.chat_id is not null
+    and job.requested_by is not null
+    and exists (
+      select 1 from telegram_users telegram_user
+       where telegram_user.telegram_user_id = job.requested_by
+    )
+)
+select *
+from eligible
+where greatest(accepted_at, created_at) <= $1::timestamptz
+order by greatest(accepted_at, created_at) desc, subject_address asc,
+         source_table asc, source_row_id asc
+`.trim();
 
 export type UnifiedQueryable = {
   query(
@@ -101,7 +150,10 @@ export async function createOrReuseUnifiedRun(
     inserted.rows[0] ??
     requiredRow(
       await db.query(
-        `select * from unified_check_runs
+        `select *,
+                clock_timestamp() <
+                  created_at + interval '35 minutes' as before_deadline
+           from unified_check_runs
           where analysis_key_sha256 = $1 and status <> 'FAILED_TECHNICAL'
           order by created_at asc limit 1`,
         [input.analysisKeySha256]
@@ -198,7 +250,6 @@ export async function insertUnifiedArtifact(
     "unified_artifact_insert_failed"
   );
   if (
-    String(row.created_by_run_id) !== input.createdByRunId ||
     String(row.kind) !== input.kind ||
     String(row.schema_version) !== input.schemaVersion ||
     fingerprintCanonicalArtifact(row.artifact_json) !== input.sha256
@@ -251,6 +302,361 @@ export async function createUnifiedTasks(
   return rows;
 }
 
+export async function loadUnifiedCanarySelectionRows(
+  db: UnifiedQueryable,
+  input: { cutoffAt: string }
+) {
+  const result = await db.query(
+    UNIFIED_CANARY_SELECTION_QUERY,
+    [input.cutoffAt]
+  );
+  return result.rows.map((row) => ({
+    sourceTable: String(row.source_table) as
+      "unified_check_requests" | "forensic_check_jobs",
+    sourceRowId: String(row.source_row_id),
+    subjectAddress: String(row.subject_address),
+    runPurpose: String(row.run_purpose),
+    locale: row.locale as "ru" | "en",
+    acceptedAt: row.accepted_at === null
+      ? null
+      : new Date(String(row.accepted_at)).toISOString(),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    provenUserOrigin: row.proven_user_origin === true
+  }));
+}
+
+export async function createUnifiedCanaryBatch(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    selectionManifest: {
+      version: "unified-canary-selection-manifest-v1";
+      schemaVersion: 1;
+      selected: readonly {
+        subjectAddress: string;
+        sourceRowId: string;
+      }[];
+    };
+    batchIdentity: {
+      version: "unified-canary-batch-identity-v1";
+      schemaVersion: 1;
+      selectedSourceSetSha256: string;
+      snapshots: readonly {
+        subjectAddress: string;
+        snapshotSha256: string;
+      }[];
+      candidateCommit: string;
+      activeGenerationId: string;
+      labelDatasetSha256: string;
+      scoringPolicyVersion: string;
+      attributionPolicyVersion: string;
+      traversalPolicyVersion: "snapshot-closure-v1";
+      providerSchemaVersion: "tronscan-transfer-page-v1";
+      providerConfiguration: {
+        sha256: string;
+        artifact: unknown;
+      };
+      databaseSchemaVersion: number;
+      databaseSchemaChecksumSha256: string;
+      schema032ChecksumSha256: string;
+      diagnosticHypothesis: {
+        sha256: string;
+        artifact: {
+          version: "unified-canary-diagnostic-hypothesis-v1";
+          schemaVersion: 1;
+          hypothesisId: string;
+          reason: string;
+          changedInputs: readonly string[];
+          createdAt: string;
+        };
+      } | null;
+    };
+    runs: readonly {
+      request: {
+        id: string;
+        requestCorrelationId: string;
+        subjectAddress: string;
+        chatId: string;
+        messageThreadId: string;
+        locale: "ru" | "en";
+        runPurpose: UnifiedRunPurpose;
+        sideEffectPolicy: UnifiedSideEffectPolicy;
+        acceptedAt: string;
+      };
+      candidateRun: {
+        id: string;
+        analysisKeySha256: string;
+        subjectAddress: string;
+        runPurpose: UnifiedRunPurpose;
+        sideEffectPolicy: UnifiedSideEffectPolicy;
+        snapshotHash: string;
+        snapshot: unknown;
+        analysisManifestSha256: string;
+        analysisManifest: unknown;
+      };
+      reuseAllowed: false;
+      initialTasks: readonly {
+        id: string;
+        kind: string;
+        priorityLane: "interactive" | "repair" | "background";
+        logicalKey: string;
+      }[];
+    }[];
+  }
+) {
+  if (
+    input.runs.length !== 8 ||
+    input.selectionManifest.selected.length !== 8 ||
+    input.runs.some((item, index) =>
+      item.reuseAllowed !== false ||
+      item.request.runPurpose !== "release_canary" ||
+      item.request.sideEffectPolicy !== "isolated" ||
+      item.candidateRun.runPurpose !== "release_canary" ||
+      item.candidateRun.sideEffectPolicy !== "isolated" ||
+      item.request.subjectAddress !== item.candidateRun.subjectAddress ||
+      item.request.subjectAddress !==
+        input.selectionManifest.selected[index]?.subjectAddress ||
+      item.initialTasks.length !== 5
+    ) ||
+    new Set(input.runs.map((item) => item.request.id)).size !== 8 ||
+    new Set(input.runs.map((item) => item.candidateRun.id)).size !== 8 ||
+    new Set(input.runs.map((item) =>
+      item.candidateRun.analysisKeySha256
+    )).size !== 8
+  ) {
+    throw new Error("unified_canary_batch_contract_invalid");
+  }
+  const selectionManifestSha256 = fingerprintCanonicalArtifact(
+    input.selectionManifest
+  );
+  const batchIdentitySha256 = fingerprintCanonicalArtifact(
+    input.batchIdentity
+  );
+  if (
+    input.batchIdentity.selectedSourceSetSha256 !==
+      fingerprintCanonicalArtifact({
+        version: "unified-canary-selected-source-set-v1",
+        selected: input.selectionManifest.selected
+      }) ||
+    input.batchIdentity.snapshots.length !== 8 ||
+    input.batchIdentity.snapshots.some((snapshot) =>
+      !input.runs.some((item) =>
+        item.candidateRun.subjectAddress === snapshot.subjectAddress &&
+        item.candidateRun.snapshotHash === snapshot.snapshotSha256
+      )
+    ) ||
+    input.runs.some((item) =>
+      item.request.chatId !== `canary:${batchIdentitySha256}` ||
+      item.request.messageThreadId !== selectionManifestSha256
+    )
+  ) {
+    throw new Error("unified_canary_batch_identity_invalid");
+  }
+  return db.transaction(async (client) => {
+    if ((
+      await client.query(
+        `select id from unified_check_requests
+          where request_correlation_id = $1
+          limit 1`,
+        [input.runs[0]!.request.requestCorrelationId]
+      )
+    ).rows[0]) {
+      throw new Error(
+        `unified_canary_duplicate_batch_resume:${batchIdentitySha256}`
+      );
+    }
+    const runs: { id: string; createdAt: string }[] = [];
+    for (const item of input.runs) {
+      const run = requiredRow(
+        await client.query(
+          `insert into unified_check_runs (
+            id, analysis_key_sha256, subject_address, status, run_purpose,
+            side_effect_policy, analysis_manifest_sha256
+          ) values ($1,$2,$3,'RUNNING','release_canary','isolated',$4)
+          returning *`,
+          [
+            item.candidateRun.id,
+            item.candidateRun.analysisKeySha256,
+            item.candidateRun.subjectAddress,
+            item.candidateRun.analysisManifestSha256
+          ]
+        ),
+        "unified_canary_run_create_failed"
+      );
+      await client.query(
+        `insert into unified_check_requests (
+          id, request_correlation_id, run_id, subject_address, chat_id,
+          message_thread_id, locale, run_purpose, side_effect_policy, status,
+          ready_at, attempt_count, accepted_at
+        ) values (
+          $1,$2,$3,$4,$5,$6,$7,'release_canary','isolated','ATTACHED',
+          $8,0,$8
+        )`,
+        [
+          item.request.id,
+          item.request.requestCorrelationId,
+          item.candidateRun.id,
+          item.request.subjectAddress,
+          item.request.chatId,
+          item.request.messageThreadId,
+          item.request.locale,
+          item.request.acceptedAt
+        ]
+      );
+      await insertUnifiedArtifact(client, {
+        sha256: item.candidateRun.snapshotHash,
+        createdByRunId: item.candidateRun.id,
+        kind: "confirmed_snapshot",
+        schemaVersion: "1",
+        artifact: item.candidateRun.snapshot
+      });
+      await insertUnifiedArtifact(client, {
+        sha256: item.candidateRun.analysisManifestSha256,
+        createdByRunId: item.candidateRun.id,
+        kind: "analysis_manifest",
+        schemaVersion: "1",
+        artifact: item.candidateRun.analysisManifest
+      });
+      for (const task of item.initialTasks) {
+        await client.query(
+          `insert into unified_check_tasks (
+            id, run_id, kind, status, priority_lane, logical_key
+          ) values ($1,$2,$3,'QUEUED',$4,$5)`,
+          [
+            task.id,
+            item.candidateRun.id,
+            task.kind,
+            task.priorityLane,
+            task.logicalKey
+          ]
+        );
+      }
+      runs.push({
+        id: String(run.id),
+        createdAt: new Date(String(run.created_at)).toISOString()
+      });
+    }
+    await insertUnifiedArtifact(client, {
+      sha256: selectionManifestSha256,
+      createdByRunId: runs[0]!.id,
+      kind: "canary_selection_manifest",
+      schemaVersion: "1",
+      artifact: input.selectionManifest
+    });
+    await insertUnifiedArtifact(client, {
+      sha256: batchIdentitySha256,
+      createdByRunId: runs[0]!.id,
+      kind: "canary_batch_identity",
+      schemaVersion: "1",
+      artifact: input.batchIdentity
+    });
+    return { selectionManifestSha256, batchIdentitySha256, runs };
+  });
+}
+
+export async function loadUnifiedCanaryBatchByIdentity(
+  db: UnifiedQueryable,
+  input: { batchIdentitySha256: string }
+): Promise<{
+  batchIdentitySha256: string;
+  batchIdentity: UnifiedCanaryBatchIdentityV1;
+  selectionManifestSha256: string;
+  selectionManifest: UnifiedCanarySelectionManifestV1;
+  runs: readonly {
+    id: string;
+    createdAt: string;
+    subjectAddress: string;
+    locale: "ru" | "en";
+  }[];
+}> {
+  if (!/^[0-9a-f]{64}$/u.test(input.batchIdentitySha256)) {
+    throw new TypeError("unified_canary_resume_identity_invalid");
+  }
+  const identityRow = (
+    await db.query(
+      `select artifact_json, created_by_run_id
+         from unified_check_artifacts
+        where sha256 = $1 and kind = 'canary_batch_identity'`,
+      [input.batchIdentitySha256]
+    )
+  ).rows[0];
+  if (
+    !identityRow ||
+    fingerprintCanonicalArtifact(identityRow.artifact_json) !==
+      input.batchIdentitySha256
+  ) {
+    throw new Error("unified_canary_resume_identity_missing");
+  }
+  const batchIdentity =
+    identityRow.artifact_json as UnifiedCanaryBatchIdentityV1;
+  const runRows = (
+    await db.query(
+      `select run.id, run.created_at, request.subject_address, request.locale,
+              request.message_thread_id
+         from unified_check_requests request
+         join unified_check_runs run on run.id = request.run_id
+        where request.chat_id = $1
+          and request.run_purpose = 'release_canary'
+          and request.side_effect_policy = 'isolated'
+          and run.run_purpose = 'release_canary'
+          and run.side_effect_policy = 'isolated'
+        order by request.subject_address, request.id`,
+      [`canary:${input.batchIdentitySha256}`]
+    )
+  ).rows;
+  const selectionManifestHashes = new Set(runRows.map((row) =>
+    String(row.message_thread_id)
+  ));
+  if (
+    runRows.length !== 8 ||
+    selectionManifestHashes.size !== 1
+  ) {
+    throw new Error("unified_canary_resume_batch_invalid");
+  }
+  const selectionManifestSha256 = [...selectionManifestHashes][0]!;
+  const selectionRow = (
+    await db.query(
+      `select artifact_json from unified_check_artifacts
+        where sha256 = $1 and kind = 'canary_selection_manifest'`,
+      [selectionManifestSha256]
+    )
+  ).rows[0];
+  if (
+    !selectionRow ||
+    fingerprintCanonicalArtifact(selectionRow.artifact_json) !==
+      selectionManifestSha256
+  ) {
+    throw new Error("unified_canary_resume_selection_missing");
+  }
+  const selectionManifest =
+    selectionRow.artifact_json as UnifiedCanarySelectionManifestV1;
+  const runs = runRows.map((row) => ({
+    id: String(row.id),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    subjectAddress: String(row.subject_address),
+    locale: row.locale as "ru" | "en"
+  }));
+  if (
+    runs.length !== 8 ||
+    new Set(runs.map((run) => run.id)).size !== 8 ||
+    new Set(runs.map((run) => run.subjectAddress)).size !== 8 ||
+    selectionManifest.selected.some((selected) =>
+      !runs.some((run) =>
+        run.subjectAddress === selected.subjectAddress &&
+        run.locale === selected.locale
+      )
+    )
+  ) {
+    throw new Error("unified_canary_resume_batch_invalid");
+  }
+  return {
+    batchIdentitySha256: input.batchIdentitySha256,
+    batchIdentity,
+    selectionManifestSha256,
+    selectionManifest,
+    runs
+  };
+}
+
 export async function claimUnifiedTask(
   db: UnifiedQueryable,
   input: {
@@ -258,6 +664,9 @@ export async function claimUnifiedTask(
     leaseToken: string;
     leaseMs: number;
     kinds?: readonly string[];
+    runPurpose?: UnifiedRunPurpose;
+    runtimeCommit?: string;
+    providerConfigurationSha256?: string;
   }
 ) {
   if (input.kinds?.length === 0) return null;
@@ -266,6 +675,9 @@ export async function claimUnifiedTask(
       select task.id
         from unified_check_tasks task
         join unified_check_runs run on run.id = task.run_id
+        join unified_check_artifacts manifest
+          on manifest.sha256 = run.analysis_manifest_sha256
+         and manifest.kind = 'analysis_manifest'
        where (
            (
              task.status in ('QUEUED','WAITING_RETRY')
@@ -276,7 +688,33 @@ export async function claimUnifiedTask(
            )
          )
          and run.status = 'RUNNING'
+         and task.cancellation_requested_at is null
+         and (
+           run.run_purpose <> 'release_canary' or
+           clock_timestamp() < run.created_at + interval '35 minutes'
+         )
          and ($4::text[] is null or task.kind = any($4::text[]))
+         and ($5::text is null or run.run_purpose = $5)
+         and (
+           $6::text is null or
+           manifest.artifact_json->>'runtimeCommit' = $6
+         )
+         and (
+           run.run_purpose <> 'release_canary' or (
+             $7::text is not null and exists (
+               select 1
+                 from unified_check_requests request
+                 join unified_check_artifacts batch_identity
+                   on batch_identity.sha256 =
+                     substring(request.chat_id from 8)
+                  and batch_identity.kind = 'canary_batch_identity'
+                where request.run_id = run.id
+                  and request.run_purpose = 'release_canary'
+                  and batch_identity.artifact_json#>>
+                    '{providerConfiguration,sha256}' = $7
+             )
+           )
+         )
          and (
            task.kind <> 'traversal' or exists (
              select 1
@@ -310,6 +748,67 @@ export async function claimUnifiedTask(
            lease_expires_at = statement_timestamp() + ($3::bigint * interval '1 millisecond'),
            heartbeat_at = statement_timestamp(),
            attempt = attempt + 1,
+           checkpoint_json =
+             task.checkpoint_json || jsonb_build_object(
+               'queueDurationMs',
+               coalesce(
+                 (task.checkpoint_json->>'queueDurationMs')::double precision,
+                 0
+               ) + case when task.status = 'LEASED' then 0 else
+                 greatest(
+                   extract(epoch from (
+                     statement_timestamp() -
+                     case when task.status = 'WAITING_RETRY'
+                       then greatest(task.ready_at, task.updated_at)
+                       else task.updated_at
+                     end
+                   )) * 1000,
+                   0
+                 )
+               end,
+               'providerDurationMs',
+               coalesce(
+                 (task.checkpoint_json->>'providerDurationMs')::double precision,
+                 0
+               ) + case when task.status = 'WAITING_RETRY' then
+                 greatest(
+                   extract(epoch from (
+                     least(statement_timestamp(), task.ready_at) -
+                     task.updated_at
+                   )) * 1000,
+                   0
+                 )
+               else 0 end,
+               'attemptTimings',
+               coalesce(
+                 task.checkpoint_json->'attemptTimings',
+                 '[]'::jsonb
+               ) || case when task.status = 'LEASED'
+                 then jsonb_build_array(jsonb_build_object(
+                   'attempt', task.attempt,
+                   'startedAt', coalesce(
+                     task.checkpoint_json->>'currentAttemptStartedAt',
+                     task.updated_at::text
+                   ),
+                   'completedAt', statement_timestamp(),
+                   'durationMs', greatest(
+                     extract(epoch from (
+                       statement_timestamp() - coalesce(
+                         (task.checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                         task.updated_at
+                       )
+                     )) * 1000,
+                     0
+                   ),
+                   'outcome', 'LEASE_EXPIRED'
+                 ))
+                 else '[]'::jsonb
+               end,
+               'currentAttempt',
+               task.attempt + 1,
+               'currentAttemptStartedAt',
+               statement_timestamp()
+             ),
            updated_at = statement_timestamp()
       from candidate
      where task.id = candidate.id
@@ -318,7 +817,10 @@ export async function claimUnifiedTask(
       input.workerId,
       input.leaseToken,
       input.leaseMs,
-      input.kinds ? [...input.kinds] : null
+      input.kinds ? [...input.kinds] : null,
+      input.runPurpose ?? null,
+      input.runtimeCommit ?? null,
+      input.providerConfigurationSha256 ?? null
     ]
   );
   return result.rows[0] ?? null;
@@ -340,6 +842,39 @@ export async function heartbeatUnifiedTask(
   return result.rows[0] ?? null;
 }
 
+export async function recordUnifiedTaskProviderDuration(
+  db: UnifiedQueryable,
+  input: {
+    taskId: string;
+    leaseToken: string;
+    attempt: number;
+    durationMs: number;
+  }
+) {
+  if (
+    !Number.isFinite(input.durationMs) ||
+    input.durationMs < 0
+  ) {
+    throw new TypeError("unified_task_provider_duration_invalid");
+  }
+  const result = await db.query(
+    `update unified_check_tasks
+        set checkpoint_json = checkpoint_json || jsonb_build_object(
+              'providerDurationMs',
+              coalesce(
+                (checkpoint_json->>'providerDurationMs')::double precision,
+                0
+              ) + $4::double precision
+            ),
+            updated_at = statement_timestamp()
+      where id = $1 and status = 'LEASED'
+        and lease_token = $2 and attempt = $3
+      returning *`,
+    [input.taskId, input.leaseToken, input.attempt, input.durationMs]
+  );
+  return result.rows[0] ?? null;
+}
+
 export async function checkpointUnifiedTask(
   db: UnifiedQueryable,
   input: {
@@ -351,8 +886,64 @@ export async function checkpointUnifiedTask(
 ) {
   const result = await db.query(
     `update unified_check_tasks
-        set checkpoint_json = $3::jsonb,
-            status = 'QUEUED',
+        set checkpoint_json = (
+            $3::jsonb || jsonb_build_object(
+              'queueDurationMs',
+              coalesce(
+                (checkpoint_json->>'queueDurationMs')::double precision,
+                0
+              ),
+              'providerDurationMs',
+              coalesce(
+                (checkpoint_json->>'providerDurationMs')::double precision,
+                0
+              ),
+              'attemptTimings',
+              coalesce(checkpoint_json->'attemptTimings', '[]'::jsonb) ||
+                jsonb_build_array(jsonb_build_object(
+                  'attempt', $4::int,
+                  'startedAt', coalesce(
+                    checkpoint_json->>'currentAttemptStartedAt',
+                    updated_at::text
+                  ),
+                  'completedAt', statement_timestamp(),
+                  'durationMs', greatest(
+                    extract(epoch from (
+                      statement_timestamp() - coalesce(
+                        (checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                        updated_at
+                      )
+                    )) * 1000,
+                    0
+                  ),
+                  'outcome', case
+                    when cancellation_requested_at is null
+                      and not exists (
+                        select 1 from unified_check_runs run
+                         where run.id = unified_check_tasks.run_id
+                           and run.run_purpose = 'release_canary'
+                           and clock_timestamp() >=
+                             run.created_at + interval '35 minutes'
+                      )
+                    then 'CHECKPOINTED'
+                    else 'CANCELLED'
+                  end
+                ))
+              )
+            )
+          - 'currentAttemptStartedAt' - 'currentAttempt',
+            status = case
+              when cancellation_requested_at is null
+                and not exists (
+                  select 1 from unified_check_runs run
+                   where run.id = unified_check_tasks.run_id
+                     and run.run_purpose = 'release_canary'
+                     and clock_timestamp() >=
+                       run.created_at + interval '35 minutes'
+                )
+              then 'QUEUED'
+              else 'CANCELLED'
+            end,
             lease_owner = null,
             lease_token = null,
             lease_expires_at = null,
@@ -381,15 +972,66 @@ export async function completeUnifiedTaskAttempt(
   }
 ) {
   return db.transaction(async (client) => {
-    const task = requiredRow(
+    const task = (
       await client.query(
-        `select * from unified_check_tasks
-          where id = $1 and status = 'LEASED' and lease_token = $2 and attempt = $3
+        `select task.*,
+                (
+                  run.run_purpose = 'release_canary' and
+                  clock_timestamp() >=
+                    run.created_at + interval '35 minutes'
+                ) as canary_deadline_reached
+           from unified_check_tasks task
+           join unified_check_runs run on run.id = task.run_id
+          where task.id = $1 and task.status = 'LEASED'
+            and task.lease_token = $2 and task.attempt = $3
           for update`,
         [input.taskId, input.leaseToken, input.attempt]
-      ),
-      "unified_task_lease_lost"
-    );
+      )
+    ).rows[0];
+    if (!task) throw new Error("unified_task_lease_lost");
+    if (
+      task.cancellation_requested_at !== null ||
+      task.canary_deadline_reached === true
+    ) {
+      await client.query(
+        `update unified_check_tasks
+            set status = 'CANCELLED',
+                checkpoint_json = (
+                  checkpoint_json || jsonb_build_object(
+                    'attemptTimings',
+                    coalesce(
+                      checkpoint_json->'attemptTimings',
+                      '[]'::jsonb
+                    ) || jsonb_build_array(jsonb_build_object(
+                      'attempt', attempt,
+                      'startedAt', coalesce(
+                        checkpoint_json->>'currentAttemptStartedAt',
+                        updated_at::text
+                      ),
+                      'completedAt', statement_timestamp(),
+                      'durationMs', greatest(
+                        extract(epoch from (
+                          statement_timestamp() - coalesce(
+                            (checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                            updated_at
+                          )
+                        )) * 1000,
+                        0
+                      ),
+                      'outcome', 'CANCELLED'
+                    ))
+                  )
+                ) - 'currentAttemptStartedAt' - 'currentAttempt',
+                lease_owner = null, lease_token = null,
+                lease_expires_at = null, heartbeat_at = null,
+                last_error = 'late_result_rejected_after_cancellation',
+                updated_at = statement_timestamp()
+          where id = $1 and status = 'LEASED' and lease_token = $2
+            and attempt = $3`,
+        [input.taskId, input.leaseToken, input.attempt]
+      );
+      return null;
+    }
     await client.query(
       `insert into unified_check_attempts (
         id, task_id, attempt, artifact_sha256, completed_at
@@ -399,6 +1041,32 @@ export async function completeUnifiedTaskAttempt(
     const result = await client.query(
       `update unified_check_tasks
           set status = 'COMPLETED', accepted_attempt_id = $4,
+              checkpoint_json = (
+                checkpoint_json || jsonb_build_object(
+                  'attemptTimings',
+                  coalesce(
+                    checkpoint_json->'attemptTimings',
+                    '[]'::jsonb
+                  ) || jsonb_build_array(jsonb_build_object(
+                    'attempt', attempt,
+                    'startedAt', coalesce(
+                      checkpoint_json->>'currentAttemptStartedAt',
+                      updated_at::text
+                    ),
+                    'completedAt', statement_timestamp(),
+                    'durationMs', greatest(
+                      extract(epoch from (
+                        statement_timestamp() - coalesce(
+                          (checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                          updated_at
+                        )
+                      )) * 1000,
+                      0
+                    ),
+                    'outcome', 'COMPLETED'
+                  ))
+                )
+              ) - 'currentAttemptStartedAt' - 'currentAttempt',
               lease_owner = null, lease_token = null,
               lease_expires_at = null, heartbeat_at = null,
               updated_at = statement_timestamp()
@@ -424,9 +1092,70 @@ export async function settleUnifiedTaskLease(
 ) {
   const result = await db.query(
     `update unified_check_tasks
-        set status = $4,
+        set status = case
+              when cancellation_requested_at is null
+                and not exists (
+                  select 1 from unified_check_runs run
+                   where run.id = unified_check_tasks.run_id
+                     and run.run_purpose = 'release_canary'
+                     and clock_timestamp() >=
+                       run.created_at + interval '35 minutes'
+                )
+              then $4
+              else 'CANCELLED'
+            end,
             ready_at = coalesce($5::timestamptz, ready_at),
-            checkpoint_json = coalesce($6::jsonb, checkpoint_json),
+            checkpoint_json = (
+              (
+                case
+                  when $6::jsonb is null then checkpoint_json
+                  else $6::jsonb || jsonb_build_object(
+                    'queueDurationMs',
+                    coalesce(
+                      (checkpoint_json->>'queueDurationMs')::double precision,
+                      0
+                    ),
+                    'providerDurationMs',
+                    coalesce(
+                      (checkpoint_json->>'providerDurationMs')::double precision,
+                      0
+                    )
+                  )
+                end
+              ) || jsonb_build_object(
+                'attemptTimings',
+                coalesce(checkpoint_json->'attemptTimings', '[]'::jsonb) ||
+                  jsonb_build_array(jsonb_build_object(
+                    'attempt', $3::int,
+                    'startedAt', coalesce(
+                      checkpoint_json->>'currentAttemptStartedAt',
+                      updated_at::text
+                    ),
+                    'completedAt', statement_timestamp(),
+                    'durationMs', greatest(
+                      extract(epoch from (
+                        statement_timestamp() - coalesce(
+                          (checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                          updated_at
+                        )
+                      )) * 1000,
+                      0
+                    ),
+                    'outcome', case
+                      when cancellation_requested_at is null
+                        and not exists (
+                          select 1 from unified_check_runs run
+                           where run.id = unified_check_tasks.run_id
+                             and run.run_purpose = 'release_canary'
+                             and clock_timestamp() >=
+                               run.created_at + interval '35 minutes'
+                        )
+                      then $4
+                      else 'CANCELLED'
+                    end
+                  ))
+              )
+            ) - 'currentAttemptStartedAt' - 'currentAttempt',
             last_error = $7,
             lease_owner = null, lease_token = null,
             lease_expires_at = null, heartbeat_at = null,
@@ -478,8 +1207,72 @@ export async function recordUnifiedTaskAttemptAndWait(
     return requiredRow(
       await client.query(
         `update unified_check_tasks
-            set status = 'WAITING_RETRY', ready_at = $4,
-                checkpoint_json = coalesce($5::jsonb, checkpoint_json),
+            set status = case
+                  when cancellation_requested_at is null
+                    and not exists (
+                      select 1 from unified_check_runs run
+                       where run.id = unified_check_tasks.run_id
+                         and run.run_purpose = 'release_canary'
+                         and clock_timestamp() >=
+                           run.created_at + interval '35 minutes'
+                    )
+                  then 'WAITING_RETRY'
+                  else 'CANCELLED'
+                end,
+                ready_at = $4,
+                checkpoint_json = (
+                  (
+                    case
+                      when $5::jsonb is null then checkpoint_json
+                      else $5::jsonb || jsonb_build_object(
+                        'queueDurationMs',
+                        coalesce(
+                          (checkpoint_json->>'queueDurationMs')::double precision,
+                          0
+                        ),
+                        'providerDurationMs',
+                        coalesce(
+                          (checkpoint_json->>'providerDurationMs')::double precision,
+                          0
+                        )
+                      )
+                    end
+                  ) || jsonb_build_object(
+                    'attemptTimings',
+                    coalesce(
+                      checkpoint_json->'attemptTimings',
+                      '[]'::jsonb
+                    ) || jsonb_build_array(jsonb_build_object(
+                      'attempt', $3::int,
+                      'startedAt', coalesce(
+                        checkpoint_json->>'currentAttemptStartedAt',
+                        updated_at::text
+                      ),
+                      'completedAt', statement_timestamp(),
+                      'durationMs', greatest(
+                        extract(epoch from (
+                          statement_timestamp() - coalesce(
+                            (checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                            updated_at
+                          )
+                        )) * 1000,
+                        0
+                      ),
+                      'outcome', case
+                        when cancellation_requested_at is null
+                          and not exists (
+                            select 1 from unified_check_runs run
+                             where run.id = unified_check_tasks.run_id
+                               and run.run_purpose = 'release_canary'
+                               and clock_timestamp() >=
+                                 run.created_at + interval '35 minutes'
+                          )
+                        then 'WAITING_RETRY'
+                        else 'CANCELLED'
+                      end
+                    ))
+                  )
+                ) - 'currentAttemptStartedAt' - 'currentAttempt',
                 last_error = $6,
                 lease_owner = null, lease_token = null,
                 lease_expires_at = null, heartbeat_at = null,
@@ -588,8 +1381,8 @@ export async function finalizeUnifiedRun(
       const row = requiredRow(
         await client.query(
           `select artifact_json from unified_check_artifacts
-            where sha256 = $1 and created_by_run_id = $2 and kind = $3`,
-          [sha256, input.runId, kind]
+            where sha256 = $1 and kind = $2`,
+          [sha256, kind]
         ),
         `unified_linked_artifact_missing:${kind}`
       );
@@ -854,6 +1647,11 @@ export async function persistUnifiedPresentationDelivery(
     ),
     "unified_delivery_request_missing"
   );
+  assertUnifiedWriteAllowed({
+    runPurpose: request.run_purpose as UnifiedRunPurpose,
+    sideEffectPolicy: request.side_effect_policy as UnifiedSideEffectPolicy,
+    namespace: "delivery_intent"
+  });
   if (
     String(request.run_id) !== input.runId ||
     request.status !== "ATTACHED" ||
@@ -1219,14 +2017,363 @@ export async function requestCanaryCancellation(
 ) {
   const result = await db.query(
     `update unified_check_tasks
-        set cancellation_requested_at = statement_timestamp(),
+        set cancellation_requested_at =
+              coalesce(cancellation_requested_at, statement_timestamp()),
             updated_at = statement_timestamp()
       where run_id = $1
         and status in ('QUEUED','LEASED','WAITING_RETRY','BLOCKED_ADMIN')
+        and cancellation_requested_at is null
       returning *`,
     [input.runId]
   );
   return result.rows;
+}
+
+export async function auditUnifiedCanaryIsolation(
+  db: UnifiedQueryable,
+  input: { runIds: readonly string[] }
+): Promise<UnifiedCanaryIsolationAuditV1> {
+  if (
+    input.runIds.length !== 8 ||
+    new Set(input.runIds).size !== input.runIds.length
+  ) {
+    throw new TypeError("unified_canary_isolation_audit_scope_invalid");
+  }
+  const row = requiredRow(
+    await db.query(
+      `with scoped_runs as (
+         select *
+           from unified_check_runs
+          where id = any($1::text[])
+       ), scoped_requests as (
+         select request.*
+           from unified_check_requests request
+           join scoped_runs run on run.id = request.run_id
+       )
+       select
+         (select count(*)::int from scoped_runs) as run_count,
+         (select count(*)::int from scoped_requests) as request_count,
+         (
+           select count(*)::int
+             from scoped_runs run
+             join scoped_requests request on request.run_id = run.id
+            where run.run_purpose <> 'release_canary'
+               or request.run_purpose <> 'release_canary'
+               or run.side_effect_policy <> 'isolated'
+               or request.side_effect_policy <> 'isolated'
+         ) as policy_violation_count,
+         (
+           select count(*)::int
+             from unified_check_deliveries delivery
+             join scoped_requests request on request.id = delivery.request_id
+         ) as delivery_intent_write_count,
+         (
+           select count(*)::int
+             from unified_wallet_delivery_ownership ownership
+             join scoped_requests request
+               on request.subject_address = ownership.subject_address
+              and request.chat_id = ownership.chat_id
+         ) as delivery_ownership_write_count,
+         (
+           select count(*)::int
+             from unified_check_artifacts artifact
+            where artifact.created_by_run_id = any($1::text[])
+              and artifact.kind in (
+                'presentation_envelope',
+                'presentation_completeness_receipt',
+                'delivery_intent'
+              )
+         ) as authoritative_presentation_artifact_count,
+         (
+           select count(*)::int
+             from unified_check_artifacts artifact
+            where artifact.created_by_run_id = any($1::text[])
+         ) as namespaced_artifact_count`,
+      [[...input.runIds]]
+    ),
+    "unified_canary_isolation_audit_failed"
+  );
+  if (Number(row.run_count) !== 8 || Number(row.request_count) !== 8) {
+    throw new Error("unified_canary_isolation_audit_scope_mismatch");
+  }
+  const deliveryOwnershipWriteCount =
+    Number(row.delivery_ownership_write_count);
+  const authoritativePresentationArtifactCount =
+    Number(row.authoritative_presentation_artifact_count);
+  return {
+    version: "unified-canary-isolation-audit-v1",
+    writerPolicyVersion: "unified-write-policy-v1",
+    auditedRunCount: 8,
+    auditedRequestCount: 8,
+    policyViolationCount: Number(row.policy_violation_count),
+    authoritativeNamespaceWriteCount:
+      deliveryOwnershipWriteCount +
+      authoritativePresentationArtifactCount,
+    deliveryIntentWriteCount: Number(row.delivery_intent_write_count),
+    deliveryOwnershipWriteCount,
+    authoritativePresentationArtifactCount,
+    namespacedArtifactCount: Number(row.namespaced_artifact_count),
+    authoritativeNamespaces: [
+      "unified_check_deliveries",
+      "unified_wallet_delivery_ownership",
+      "authoritative_presentation_artifacts"
+    ]
+  };
+}
+
+export async function reconcileUnifiedCanaryCancelledLeases(
+  db: UnifiedQueryable
+): Promise<string[]> {
+  const result = await db.query(
+    `update unified_check_tasks task
+        set status = 'CANCELLED',
+            checkpoint_json = (
+              task.checkpoint_json || jsonb_build_object(
+                'attemptTimings',
+                coalesce(
+                  task.checkpoint_json->'attemptTimings',
+                  '[]'::jsonb
+                ) || jsonb_build_array(jsonb_build_object(
+                  'attempt', task.attempt,
+                  'startedAt', coalesce(
+                    task.checkpoint_json->>'currentAttemptStartedAt',
+                    task.updated_at::text
+                  ),
+                  'completedAt', statement_timestamp(),
+                  'durationMs', greatest(
+                    extract(epoch from (
+                      statement_timestamp() - coalesce(
+                        (task.checkpoint_json->>'currentAttemptStartedAt')::timestamptz,
+                        task.updated_at
+                      )
+                    )) * 1000,
+                    0
+                  ),
+                  'outcome', 'CANCELLED'
+                ))
+              )
+            ) - 'currentAttemptStartedAt' - 'currentAttempt',
+            lease_owner = null,
+            lease_token = null,
+            lease_expires_at = null,
+            heartbeat_at = null,
+            last_error = coalesce(
+              task.last_error,
+              'canary_cancelled_lease_expired'
+            ),
+            updated_at = statement_timestamp()
+       from unified_check_runs run
+      where run.id = task.run_id
+        and run.run_purpose = 'release_canary'
+        and run.side_effect_policy = 'isolated'
+        and run.status in ('BLOCKED_ADMIN','FAILED_TECHNICAL')
+        and task.status = 'LEASED'
+        and task.cancellation_requested_at is not null
+        and task.lease_expires_at <= statement_timestamp()
+      returning task.id`
+  );
+  return result.rows.map((row) => String(row.id));
+}
+
+export async function persistUnifiedCanaryBlocker(
+  db: UnifiedTransactionalQueryable,
+  input: {
+    runId: string;
+    sha256: string;
+    artifact: UnifiedCanaryExecutionBlockedV1;
+  }
+) {
+  return db.transaction(async (client) => {
+    const run = requiredRow(
+      await client.query(
+        `select *,
+                clock_timestamp() <
+                  created_at + interval '35 minutes' as before_deadline
+           from unified_check_runs
+          where id = $1 and run_purpose = 'release_canary'
+            and side_effect_policy = 'isolated'
+          for update`,
+        [input.runId]
+      ),
+      "unified_canary_run_missing"
+    );
+    if (String(run.id) !== input.runId) {
+      throw new Error("unified_canary_run_binding_invalid");
+    }
+    if (run.status === "COMPLETED") {
+      return { state: "completed" as const };
+    }
+    if (run.status === "FAILED_TECHNICAL") {
+      throw new Error("unified_canary_blocker_after_technical_failure");
+    }
+    if (run.status === "BLOCKED_ADMIN") {
+      const existing = requiredRow(
+        await client.query(
+          `select sha256, artifact_json
+             from unified_check_artifacts
+            where created_by_run_id = $1
+              and kind = 'canary_execution_blocked'
+            order by created_at, sha256
+            limit 1`,
+          [input.runId]
+        ),
+        "unified_canary_persisted_blocker_missing"
+      );
+      if (
+        fingerprintCanonicalArtifact(existing.artifact_json) !==
+          existing.sha256
+      ) {
+        throw new Error("unified_canary_persisted_blocker_invalid");
+      }
+      return {
+        state: "blocked" as const,
+        artifact: existing.artifact_json as UnifiedCanaryExecutionBlockedV1
+      };
+    }
+    if (run.before_deadline === true) {
+      throw new Error("unified_canary_deadline_not_reached");
+    }
+    requiredRow(
+      await client.query(
+        `update unified_check_runs
+            set status = 'BLOCKED_ADMIN',
+                status_reason = 'canary_execution_blocked',
+                final_score = null,
+                final_decision = null,
+                updated_at = statement_timestamp()
+          where id = $1 and status in (
+            'RUNNING','WAITING_FOR_PROVIDER','FINALIZING'
+          )
+          returning *`,
+        [input.runId]
+      ),
+      "unified_canary_blocker_fence_failed"
+    );
+    await client.query(
+      `update unified_check_tasks
+          set status = case
+                when status = 'LEASED' then status
+                else 'CANCELLED'
+              end,
+              cancellation_requested_at =
+                coalesce(cancellation_requested_at, statement_timestamp()),
+              lease_owner = case
+                when status = 'LEASED' then lease_owner else null end,
+              lease_token = case
+                when status = 'LEASED' then lease_token else null end,
+              lease_expires_at = case
+                when status = 'LEASED' then lease_expires_at else null end,
+              heartbeat_at = case
+                when status = 'LEASED' then heartbeat_at else null end,
+              updated_at = statement_timestamp()
+        where run_id = $1
+          and status in ('QUEUED','LEASED','WAITING_RETRY','BLOCKED_ADMIN')`,
+      [input.runId]
+    );
+    await insertUnifiedArtifact(client, {
+      sha256: input.sha256,
+      createdByRunId: input.runId,
+      kind: "canary_execution_blocked",
+      schemaVersion: "1",
+      artifact: input.artifact
+    });
+    return { state: "blocked" as const, artifact: input.artifact };
+  });
+}
+
+export async function cooperateUnifiedCanaryRun(
+  db: UnifiedTransactionalQueryable,
+  input: { runId: string }
+): Promise<boolean> {
+  return db.transaction(async (client) => {
+    const run = requiredRow(
+      await client.query(
+        `select id, status, run_purpose, side_effect_policy,
+                clock_timestamp() <
+                  created_at + interval '35 minutes' as before_deadline
+           from unified_check_runs
+          where id = $1
+          for update`,
+        [input.runId]
+      ),
+      "unified_canary_run_missing"
+    );
+    if (run.run_purpose !== "release_canary") return true;
+    if (run.side_effect_policy !== "isolated") {
+      throw new Error("unified_canary_side_effect_policy_invalid");
+    }
+    const mayContinue =
+      run.status === "RUNNING" && run.before_deadline === true;
+    if (mayContinue) return true;
+    await client.query(
+      `update unified_check_tasks
+          set cancellation_requested_at =
+                coalesce(cancellation_requested_at, statement_timestamp()),
+              updated_at = statement_timestamp()
+        where run_id = $1
+          and status in ('QUEUED','LEASED','WAITING_RETRY','BLOCKED_ADMIN')`,
+      [input.runId]
+    );
+    return false;
+  });
+}
+
+export async function reconcileUnifiedCanaryTechnicalFailures(
+  db: UnifiedTransactionalQueryable
+) {
+  return db.transaction(async (client) => {
+    const runs = (
+      await client.query(
+        `update unified_check_runs run
+            set status = 'FAILED_TECHNICAL',
+                status_reason = (
+                  select task.last_error
+                    from unified_check_tasks task
+                   where task.run_id = run.id
+                     and task.status = 'FAILED_TECHNICAL'
+                   order by task.updated_at, task.id
+                   limit 1
+                ),
+                final_score = null,
+                final_decision = null,
+                updated_at = statement_timestamp()
+          where run.status in ('RUNNING','WAITING_FOR_PROVIDER')
+            and run.run_purpose = 'release_canary'
+            and run.side_effect_policy = 'isolated'
+            and exists (
+              select 1
+                from unified_check_tasks task
+               where task.run_id = run.id
+                 and task.status = 'FAILED_TECHNICAL'
+            )
+          returning run.id`
+      )
+    ).rows;
+    for (const run of runs) {
+      await client.query(
+        `update unified_check_tasks
+            set status = case
+                  when status = 'LEASED' then status
+                  else 'CANCELLED'
+                end,
+                cancellation_requested_at =
+                  coalesce(cancellation_requested_at, statement_timestamp()),
+                lease_owner = case
+                  when status = 'LEASED' then lease_owner else null end,
+                lease_token = case
+                  when status = 'LEASED' then lease_token else null end,
+                lease_expires_at = case
+                  when status = 'LEASED' then lease_expires_at else null end,
+                heartbeat_at = case
+                  when status = 'LEASED' then heartbeat_at else null end,
+                updated_at = statement_timestamp()
+          where run_id = $1
+            and status in ('QUEUED','LEASED','WAITING_RETRY','BLOCKED_ADMIN')`,
+        [run.id]
+      );
+    }
+    return runs.map((run) => String(run.id));
+  });
 }
 
 function iso(value: unknown): string {
@@ -1251,14 +2398,56 @@ function duration(value: unknown): number {
   return Number.isFinite(value) && Number(value) >= 0 ? Number(value) : 0;
 }
 
+function attemptDurations(
+  value: unknown
+): UnifiedWatchdogRunV1["tasks"][number]["attemptDurations"] {
+  if (!Array.isArray(value)) return [];
+  const outcomes = new Set([
+    "CHECKPOINTED",
+    "WAITING_RETRY",
+    "COMPLETED",
+    "BLOCKED_ADMIN",
+    "FAILED_TECHNICAL",
+    "CANCELLED",
+    "LEASE_EXPIRED"
+  ]);
+  return value.flatMap((raw) => {
+    const timing = object(raw);
+    const attempt = Number(timing.attempt);
+    const outcome = String(timing.outcome);
+    if (
+      !Number.isSafeInteger(attempt) ||
+      attempt < 1 ||
+      !outcomes.has(outcome)
+    ) return [];
+    try {
+      return [{
+        attempt,
+        startedAt: iso(timing.startedAt),
+        completedAt: iso(timing.completedAt),
+        durationMs: duration(timing.durationMs),
+        outcome: outcome as
+          UnifiedWatchdogRunV1["tasks"][number][
+            "attemptDurations"
+          ][number]["outcome"]
+      }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export async function listUnifiedWatchdogRuns(
   db: UnifiedQueryable,
-  input: { limit?: number } = {}
+  input: { limit?: number; runIds?: readonly string[] } = {}
 ): Promise<UnifiedWatchdogRunV1[]> {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  if (input.runIds?.length === 0) return [];
   const runs = (await db.query(
-    "select * from unified_check_runs order by updated_at desc, id limit $1",
-    [limit]
+    `select * from unified_check_runs
+      where ($2::text[] is null or id = any($2::text[]))
+      order by updated_at desc, id limit $1`,
+    [limit, input.runIds ? [...new Set(input.runIds)] : null]
   )).rows;
   const fence = (await db.query(
     `select generation_id, delivery_generation, activated_at
@@ -1268,6 +2457,7 @@ export async function listUnifiedWatchdogRuns(
       limit 1`
   )).rows[0];
   const result: UnifiedWatchdogRunV1[] = [];
+  const projectionNow = Date.now();
   for (const run of runs) {
     const tasks = (await db.query(
       "select * from unified_check_tasks where run_id = $1 order by kind, id",
@@ -1390,6 +2580,36 @@ export async function listUnifiedWatchdogRuns(
           : task.status === "WAITING_RETRY"
             ? "waiting"
             : "ready";
+        const storedQueue = duration(checkpoint.queueDurationMs);
+        const storedProvider = duration(checkpoint.providerDurationMs);
+        const updatedAt = Date.parse(iso(task.updated_at));
+        const readyAt = Date.parse(iso(task.ready_at));
+        const queue = storedQueue + (
+          task.status === "QUEUED"
+            ? Math.max(0, projectionNow - updatedAt)
+            : task.status === "WAITING_RETRY"
+              ? Math.max(0, projectionNow - Math.max(readyAt, updatedAt))
+              : 0
+        );
+        const provider = storedProvider + (
+          task.status === "WAITING_RETRY"
+            ? Math.max(
+              0,
+              Math.min(projectionNow, readyAt) - updatedAt
+            )
+            : 0
+        );
+        const terminal = [
+          "COMPLETED",
+          "FAILED_TECHNICAL",
+          "CANCELLED",
+          "BLOCKED_ADMIN"
+        ].includes(String(task.status));
+        const elapsed = Math.max(
+          0,
+          (terminal ? Date.parse(iso(task.updated_at)) : projectionNow) -
+            Date.parse(iso(task.created_at))
+        );
         return {
           id: String(task.id),
           kind: String(task.kind),
@@ -1400,6 +2620,9 @@ export async function listUnifiedWatchdogRuns(
           leaseExpiresAt: nullableIso(task.lease_expires_at),
           heartbeatAt: nullableIso(task.heartbeat_at),
           cancellationRequestedAt: nullableIso(task.cancellation_requested_at),
+          lastError: task.last_error === null
+            ? null
+            : String(task.last_error),
           providerState,
           checkpoint,
           attempts: attempts
@@ -1412,10 +2635,11 @@ export async function listUnifiedWatchdogRuns(
                 : String(attempt.artifact_sha256),
               completedAt: nullableIso(attempt.completed_at)
             })),
+          attemptDurations: attemptDurations(checkpoint.attemptTimings),
           durationsMs: {
-            queue: duration(checkpoint.queueDurationMs),
-            provider: duration(checkpoint.providerDurationMs),
-            compute: duration(checkpoint.computeDurationMs)
+            queue,
+            provider,
+            compute: Math.max(0, elapsed - queue - provider)
           }
         };
       }),

@@ -4,6 +4,7 @@ import {
   type CompletedSlice,
   type UnifiedPresentedCompletionCandidateV1
 } from "./orchestrator";
+import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import {
   finalizeUnifiedRun,
   insertUnifiedArtifact,
@@ -12,6 +13,8 @@ import {
   type UnifiedTransactionalQueryable
 } from "./repository";
 import type { AnalysisRunRecord } from "./requestService";
+import type { UnifiedWalletDossierV1 } from "./report";
+import { assertUnifiedWriteAllowed } from "./contracts";
 
 function one(
   result: { rows: Array<Record<string, unknown>> },
@@ -210,6 +213,16 @@ export async function commitUnifiedPresentedCompletion(input: {
       ),
       "unified_run_missing"
     );
+    assertUnifiedWriteAllowed({
+      runPurpose: run.run_purpose,
+      sideEffectPolicy: run.side_effect_policy,
+      namespace: "authoritative_derived"
+    });
+    assertUnifiedWriteAllowed({
+      runPurpose: run.run_purpose,
+      sideEffectPolicy: run.side_effect_policy,
+      namespace: "delivery_intent"
+    });
     if (
       run.status !== "FINALIZING" ||
       Number(run.final_score ?? input.candidate.report.score) !==
@@ -279,6 +292,101 @@ export async function commitUnifiedPresentedCompletion(input: {
     });
     if (completed === null) {
       throw new Error("unified_presented_completion_conflict");
+    }
+  });
+}
+
+export async function commitUnifiedIsolatedCanaryCompletion(input: {
+  readonly db: UnifiedTransactionalQueryable;
+  readonly runId: string;
+  readonly report: UnifiedWalletDossierV1;
+}): Promise<void> {
+  await input.db.transaction(async (client) => {
+    const run = one(
+      await client.query(
+        "select * from unified_check_runs where id = $1 for update",
+        [input.runId]
+      ),
+      "unified_run_missing"
+    );
+    assertUnifiedWriteAllowed({
+      runPurpose: run.run_purpose,
+      sideEffectPolicy: run.side_effect_policy,
+      namespace: "run_scoped_artifact"
+    });
+    if (
+      run.status !== "FINALIZING" ||
+      run.run_purpose !== "release_canary" ||
+      run.side_effect_policy !== "isolated"
+    ) {
+      throw new Error("unified_canary_run_not_finalizing");
+    }
+    const deadline = one(
+      await client.query(
+        `select clock_timestamp() <
+                  created_at + interval '35 minutes' as before_deadline
+           from unified_check_runs where id = $1`,
+        [input.runId]
+      ),
+      "unified_canary_deadline_check_failed"
+    );
+    if (deadline.before_deadline !== true) {
+      throw new Error("unified_canary_deadline_reached");
+    }
+    const requests = (
+      await client.query(
+        `select id from unified_check_requests
+          where run_id = $1 and status = 'ATTACHED'`,
+        [input.runId]
+      )
+    ).rows;
+    if (requests.length !== 1) {
+      throw new Error("unified_canary_request_set_invalid");
+    }
+    const deliveries = one(
+      await client.query(
+        `select count(*)::int as count
+           from unified_check_deliveries delivery
+           join unified_check_requests request
+             on request.id = delivery.request_id
+          where request.run_id = $1`,
+        [input.runId]
+      ),
+      "unified_canary_delivery_gate_failed"
+    );
+    if (Number(deliveries.count) !== 0) {
+      throw new Error("unified_canary_delivery_intent_forbidden");
+    }
+    const reportHash = fingerprintCanonicalArtifact(input.report);
+    await insertUnifiedArtifact(client, {
+      sha256: reportHash,
+      createdByRunId: input.runId,
+      kind: "unified_wallet_report",
+      schemaVersion: "1",
+      artifact: input.report
+    });
+    await insertUnifiedArtifact(client, {
+      sha256: input.report.factInventoryHash,
+      createdByRunId: input.runId,
+      kind: "report_fact_inventory",
+      schemaVersion: "1",
+      artifact: input.report.factInventory
+    });
+    const transactionHost: UnifiedTransactionalQueryable = {
+      query: (sql, values) => client.query(sql, values),
+      transaction: (work) => work(client)
+    };
+    const completed = await finalizeUnifiedRun(transactionHost, {
+      runId: input.runId,
+      finalScore: input.report.score,
+      finalDecision: input.report.decision,
+      evidenceBundleSha256: input.report.evidenceBundleHash,
+      traversalClosureSha256: input.report.traversalClosureHash,
+      scoringBundleSha256: input.report.scoringBundleHash,
+      reportSha256: reportHash
+    });
+    if (completed === null) {
+      throw new Error("unified_canary_completion_conflict");
     }
   });
 }

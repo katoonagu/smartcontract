@@ -25,12 +25,15 @@ import {
 import {
   createPostgresUnifiedTaskCycleRepository
 } from "./productionWorker";
+import type { UnifiedRunPurpose } from "./contracts";
 import {
   createUnifiedTraversalHandler,
   type UnifiedTraversalArtifactV1
 } from "./productionTraversal";
 import {
+  cooperateUnifiedCanaryRun,
   insertUnifiedArtifact,
+  recordUnifiedTaskProviderDuration,
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
 } from "./repository";
@@ -199,6 +202,9 @@ async function loadTraversal(
 
 export function createUnifiedProductionRuntime(input: {
   db: UnifiedTransactionalQueryable;
+  runtimeCommit: string;
+  providerConfigurationSha256: string;
+  runPurpose?: UnifiedRunPurpose;
   now?: () => Date;
   createId?: () => string;
   leaseMs?: number;
@@ -207,20 +213,63 @@ export function createUnifiedProductionRuntime(input: {
     address?: string;
     cursor: string | null;
   }): Promise<DirectHistoryPage | DirectHistoryProviderWait>;
-  loadCounterpartyLabels(
-    addresses: readonly string[]
-  ): Promise<ReadonlyMap<string, readonly string[]>>;
+  loadCounterpartyLabels(input: {
+    labelDatasetSha256: string;
+    addresses: readonly string[];
+  }): Promise<ReadonlyMap<string, readonly string[]>>;
   loadHardEvidence(input: {
     subjectAddress: string;
     snapshotBlockNumber: string;
     snapshotTimestamp: string;
     events: readonly IndexedTronUsdtTransfer[];
     knownCounterparties: ReadonlyMap<string, readonly string[]>;
+    cooperate(): Promise<void>;
+    providerCall<T>(work: () => Promise<T>): Promise<T>;
   }): Promise<UnifiedProductionHardEvidence>;
 }) {
+  if (!input.runtimeCommit.trim()) {
+    throw new TypeError("unified_production_runtime_commit_invalid");
+  }
+  if (!/^[0-9a-f]{64}$/u.test(input.providerConfigurationSha256)) {
+    throw new TypeError(
+      "unified_production_provider_configuration_invalid"
+    );
+  }
   const now = input.now ?? (() => new Date());
   const createId = input.createId ?? randomUUID;
   const leaseMs = input.leaseMs ?? 60_000;
+  const cooperate = async (runId: string): Promise<void> => {
+    if (!await cooperateUnifiedCanaryRun(input.db, { runId })) {
+      throw new Error("unified_canary_deadline_or_cancellation_reached");
+    }
+  };
+  const measuredProviderCall = async <T>(
+    runId: string,
+    execution: {
+      taskId: string;
+      leaseToken: string;
+      attempt: number;
+      heartbeat(): Promise<void>;
+    },
+    work: () => Promise<T>
+  ): Promise<T> => {
+    await execution.heartbeat();
+    await cooperate(runId);
+    const startedAt = performance.now();
+    try {
+      return await work();
+    } finally {
+      const recorded = await recordUnifiedTaskProviderDuration(input.db, {
+        taskId: execution.taskId,
+        leaseToken: execution.leaseToken,
+        attempt: execution.attempt,
+        durationMs: Math.max(0, performance.now() - startedAt)
+      });
+      if (recorded === null) throw new Error("unified_worker_lease_lost");
+      await execution.heartbeat();
+      await cooperate(runId);
+    }
+  };
   const persistArtifact = async (artifactInput: {
     runId: string;
     kind: string;
@@ -235,11 +284,22 @@ export function createUnifiedProductionRuntime(input: {
   };
   const directHistory = createUnifiedDirectHistoryHandler({
     loadRun: (runId) => loadRun(input.db, runId),
-    loadPage: ({ run, cursor }) => input.loadProviderPage({
+    loadPage: ({
       run,
-      address: run.subjectAddress,
-      cursor
-    }),
+      cursor,
+      taskId,
+      leaseToken,
+      attempt,
+      heartbeat
+    }) => measuredProviderCall(
+      run.id,
+      { taskId, leaseToken, attempt, heartbeat },
+      () => input.loadProviderPage({
+        run,
+        address: run.subjectAddress,
+        cursor
+      })
+    ),
     loadPageArtifact: ({ runId, sha256 }) =>
       artifact<UnifiedDirectHistoryPageArtifactV1>(
         input.db,
@@ -259,8 +319,18 @@ export function createUnifiedProductionRuntime(input: {
         directEvents: history.events
       };
     },
-    loadPage: ({ run, address, cursor }) =>
-      input.loadProviderPage({
+    loadPage: ({
+      run,
+      address,
+      cursor,
+      taskId,
+      leaseToken,
+      attempt,
+      heartbeat
+    }) => measuredProviderCall(
+      run.runId,
+      { taskId, leaseToken, attempt, heartbeat },
+      () => input.loadProviderPage({
         run: {
           id: run.runId,
           subjectAddress: run.manifest.subjectAddress,
@@ -270,7 +340,8 @@ export function createUnifiedProductionRuntime(input: {
         },
         address,
         cursor
-      }),
+      })
+    ),
     loadLabels: input.loadCounterpartyLabels,
     loadPageArtifact: ({ runId, sha256 }) =>
       artifact<UnifiedDirectHistoryPageArtifactV1>(
@@ -284,7 +355,7 @@ export function createUnifiedProductionRuntime(input: {
   const branches = createUnifiedProductionBranchHandlers({
     now,
     createId,
-    async loadContext(runId, branchId) {
+    async loadContext(runId, branchId, execution) {
       const run = await loadRun(input.db, runId);
       const history = await loadDirectHistory(input.db, run);
       const traversal = await loadTraversal(input.db, run);
@@ -294,17 +365,26 @@ export function createUnifiedProductionRuntime(input: {
       ]).filter((address) =>
         address.toLowerCase() !== run.subjectAddress.toLowerCase()
       ))].sort();
-      const labels = await input.loadCounterpartyLabels(counterparties);
+      const labels = await input.loadCounterpartyLabels({
+        labelDatasetSha256: run.analysisManifest.labelDatasetSha256,
+        addresses: counterparties
+      });
       const hardEvidence = branchId === "deep"
-        ? await input.loadHardEvidence({
-            subjectAddress: run.subjectAddress,
-            snapshotBlockNumber:
-              run.analysisManifest.confirmedBlockNumber,
-            snapshotTimestamp:
-              run.analysisManifest.confirmedBlockTimestamp,
-            events: history.events,
-            knownCounterparties: labels
-          })
+          ? await input.loadHardEvidence({
+              subjectAddress: run.subjectAddress,
+              snapshotBlockNumber:
+                run.analysisManifest.confirmedBlockNumber,
+              snapshotTimestamp:
+                run.analysisManifest.confirmedBlockTimestamp,
+              events: history.events,
+              knownCounterparties: labels,
+              cooperate: async () => {
+                await execution.heartbeat();
+                await cooperate(runId);
+              },
+              providerCall: (work) =>
+                measuredProviderCall(runId, execution, work)
+            })
         : {};
       return {
         runId,
@@ -342,7 +422,10 @@ export function createUnifiedProductionRuntime(input: {
       leaseMs,
       repository: createPostgresUnifiedTaskCycleRepository(
         input.db,
-        ["direct_history", "traversal"]
+        ["direct_history", "traversal"],
+        input.runtimeCommit,
+        input.providerConfigurationSha256,
+        input.runPurpose
       ),
       handlers: { direct_history: directHistory, traversal },
       createId
@@ -353,7 +436,10 @@ export function createUnifiedProductionRuntime(input: {
       leaseMs,
       repository: createPostgresUnifiedTaskCycleRepository(
         input.db,
-        ["fast", "where", "deep"]
+        ["fast", "where", "deep"],
+        input.runtimeCommit,
+        input.providerConfigurationSha256,
+        input.runPurpose
       ),
       handlers: branches,
       createId
@@ -362,8 +448,18 @@ export function createUnifiedProductionRuntime(input: {
       const finalized = await runUnifiedProductionFinalizationCycle({
         db: input.db,
         now,
-        createId
+        createId,
+        runtimeCommit: input.runtimeCommit,
+        providerConfigurationSha256: input.providerConfigurationSha256,
+        runPurpose: input.runPurpose
       });
+      if (input.runPurpose === "release_canary") {
+        return {
+          ...finalized,
+          reconciled: false,
+          requestId: null
+        };
+      }
       const reconciliation =
         await runUnifiedCompletedPresentationReconciliationCycle({
           db: input.db,

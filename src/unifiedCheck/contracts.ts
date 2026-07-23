@@ -23,6 +23,46 @@ export type UnifiedRunPurpose =
 
 export type UnifiedSideEffectPolicy = "authoritative" | "isolated";
 
+export type UnifiedWriteNamespace =
+  | "run_scoped_artifact"
+  | "authoritative_derived"
+  | "delivery_intent";
+
+export function assertUnifiedWriteAllowed(input: {
+  readonly runPurpose: unknown;
+  readonly sideEffectPolicy: unknown;
+  readonly namespace: UnifiedWriteNamespace;
+}): void {
+  if (
+    ![
+      "user_check",
+      "admin_diagnostic",
+      "release_canary",
+      "synthetic_test",
+      "maintenance"
+    ].includes(String(input.runPurpose)) ||
+    !["authoritative", "isolated"].includes(String(input.sideEffectPolicy))
+  ) {
+    throw new Error("unified_write_policy_identity_invalid");
+  }
+  if (
+    input.runPurpose === "release_canary" &&
+    input.sideEffectPolicy !== "isolated"
+  ) {
+    throw new Error("unified_canary_must_be_isolated");
+  }
+  if (
+    input.sideEffectPolicy === "isolated" &&
+    input.namespace !== "run_scoped_artifact"
+  ) {
+    throw new Error(
+      input.namespace === "delivery_intent"
+        ? "unified_canary_delivery_intent_forbidden"
+        : "unified_canary_authoritative_write_forbidden"
+    );
+  }
+}
+
 export type UnifiedDeliveryStatus =
   | "PENDING"
   | "LEASED"

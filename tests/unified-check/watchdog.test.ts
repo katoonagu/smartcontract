@@ -61,6 +61,7 @@ function run(
       leaseExpiresAt: "2026-07-23T17:10:00.000Z",
       heartbeatAt: "2026-07-23T17:01:30.000Z",
       cancellationRequestedAt: null,
+      lastError: null,
       providerState: "ready",
       checkpoint: { page: 2 },
       attempts: [{
@@ -69,6 +70,7 @@ function run(
         artifactSha256: null,
         completedAt: null
       }],
+      attemptDurations: [],
       durationsMs: {
         queue: 10,
         provider: 20,

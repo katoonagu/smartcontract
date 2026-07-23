@@ -99,6 +99,7 @@ describe("Unified production branch handlers", () => {
         checkpoint: {},
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease",
       heartbeat: async () => undefined
     });
 

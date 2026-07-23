@@ -70,6 +70,7 @@ export type UnifiedTaskCycleRepository = {
 
 export type UnifiedChunkHandler = (input: {
   task: UnifiedWorkerTask;
+  leaseToken: string;
   heartbeat(): Promise<void>;
 }) => Promise<UnifiedChunkOutcome>;
 
@@ -127,6 +128,7 @@ export async function runUnifiedTaskCycle(input: {
   try {
     const result = await handler({
       task,
+      leaseToken,
       async heartbeat() {
         if (!await input.repository.heartbeat({
           taskId: task.id,

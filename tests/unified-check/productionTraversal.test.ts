@@ -99,7 +99,7 @@ describe("Unified production finite traversal", () => {
         directEvents: [indexed()]
       }),
       loadPage,
-      loadLabels: async (addresses) => new Map(
+      loadLabels: async ({ addresses }) => new Map(
         addresses.includes(CEX) ? [[CEX, ["cex", "Bybit"]]] : []
       ),
       loadPageArtifact: async ({ sha256 }) =>
@@ -118,6 +118,7 @@ describe("Unified production finite traversal", () => {
         checkpoint: {},
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-1",
       heartbeat
     });
     expect(first.kind).toBe("checkpoint");
@@ -131,6 +132,7 @@ describe("Unified production finite traversal", () => {
         checkpoint: first.checkpoint,
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-2",
       heartbeat
     });
     expect(second.kind).toBe("completed");
@@ -185,7 +187,7 @@ describe("Unified production finite traversal", () => {
           pageHash: fingerprintCanonicalArtifact(content)
         };
       },
-      loadLabels: async (addresses) => new Map(
+      loadLabels: async ({ addresses }) => new Map(
         addresses.includes(CEX) ? [[CEX, ["cex", "Bybit"]]] : []
       ),
       loadPageArtifact: async ({ sha256 }) =>
@@ -203,6 +205,7 @@ describe("Unified production finite traversal", () => {
         checkpoint: {},
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-1",
       heartbeat: async () => undefined
     });
     expect(first.kind).toBe("checkpoint");
@@ -216,6 +219,7 @@ describe("Unified production finite traversal", () => {
         checkpoint: first.checkpoint,
         cancellationRequestedAt: null
       },
+      leaseToken: "test-lease-2",
       heartbeat: async () => undefined
     });
     expect(second.kind).toBe("completed");
@@ -261,7 +265,7 @@ describe("Unified production finite traversal", () => {
           pageHash: fingerprintCanonicalArtifact(content)
         };
       },
-      loadLabels: async (addresses) => new Map(
+      loadLabels: async ({ addresses }) => new Map(
         addresses.flatMap((address) => {
           const labels = fixture.boundaryLabels.get(address);
           return labels ? [[address, labels] as const] : [];
@@ -285,6 +289,7 @@ describe("Unified production finite traversal", () => {
           checkpoint,
           cancellationRequestedAt: null
         },
+        leaseToken: `test-lease-${attempt}`,
         heartbeat: async () => undefined
       });
       if (result.kind === "completed") {

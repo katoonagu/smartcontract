@@ -327,10 +327,15 @@ export function createUnifiedTraversalHandler(input: {
     run: LoadedTraversalContext;
     address: string;
     cursor: string | null;
+    taskId: string;
+    leaseToken: string;
+    attempt: number;
+    heartbeat(): Promise<void>;
   }): Promise<DirectHistoryPage | DirectHistoryProviderWait>;
-  loadLabels(
-    addresses: readonly string[]
-  ): Promise<ReadonlyMap<string, readonly string[]>>;
+  loadLabels(input: {
+    labelDatasetSha256: string;
+    addresses: readonly string[];
+  }): Promise<ReadonlyMap<string, readonly string[]>>;
   loadPageArtifact(input: {
     runId: string;
     sha256: string;
@@ -345,7 +350,7 @@ export function createUnifiedTraversalHandler(input: {
     artifact: unknown;
   }): Promise<void>;
 }): UnifiedChunkHandler {
-  return async ({ task, heartbeat }) => {
+  return async ({ task, heartbeat, leaseToken }) => {
     if (task.kind !== "traversal") {
       return { kind: "blocked", reason: "unified_traversal_kind_invalid" };
     }
@@ -385,7 +390,10 @@ export function createUnifiedTraversalHandler(input: {
         reason: "unified_production_traversal_late_state_merge"
       };
     }
-    const labels = await input.loadLabels([active.state.address]);
+    const labels = await input.loadLabels({
+      labelDatasetSha256: context.manifest.labelDatasetSha256,
+      addresses: [active.state.address]
+    });
     const addressLabels = labels.get(active.state.address) ?? [];
     const reason = boundary(addressLabels);
     if (reason !== null && active.pageArtifactHashes.length === 0) {
@@ -424,7 +432,11 @@ export function createUnifiedTraversalHandler(input: {
         loadPage: (cursor) => input.loadPage({
           run: context,
           address: active.state.address,
-          cursor
+          cursor,
+          taskId: task.id,
+          leaseToken,
+          attempt: task.attempt,
+          heartbeat
         })
       });
       if (result.outcome === "provider_wait") {
