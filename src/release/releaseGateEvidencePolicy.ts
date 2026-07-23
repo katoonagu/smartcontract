@@ -77,7 +77,7 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
     "release-freeze-identity-v2.json"], ["task0_baseline", "trusted_os_principal_policy",
     "release_freeze_materialization"]),
   G01_TRACE: policy("G01_TRACE", [
-    "acceptance-trace.json", "task8b-red-evidence-v1.json",
+    "acceptance-trace.json", "task8b-historical-red-evidence-v2.json",
     "suite-plan4.vitest.json", "suite-plan4.evidence.json"
   ], ["acceptance_trace", "task8b_red", "suite_report", "suite_evidence"]),
   G02_DATA: policy("G02_DATA", ["suite-plan1.vitest.json", "suite-plan1.evidence.json"],
@@ -398,12 +398,19 @@ function validateLogCaptures(value: unknown): { operationId: string; captureSha2
   return { operationId: input.operationId, captureSha256s };
 }
 
-function parseCanonicalEvidenceJson(bytes: Buffer, ref: GateEvidenceRefV2): Record<string, unknown> {
+const LEGACY_NONCANONICAL_PRE_RELEASE_KINDS = new Set<GateEvidenceKindV2>([
+  "acceptance_trace", "suite_report", "suite_evidence", "manual_telegram_acceptance",
+  "full_regression", "schema_clean", "schema_production_clone", "schema_runtime_sanitized",
+  "runtime_rehearsal", "terminal_legacy_population", "rollback_rehearsal"
+]);
+
+function parseGateEvidenceJson(bytes: Buffer, ref: GateEvidenceRefV2): Record<string, unknown> {
   let value: unknown;
   try { value = JSON.parse(bytes.toString("utf8")); }
   catch { throw new Error(`gate_evidence_json_invalid:${ref.relativePath}`); }
   if (typeof value !== "object" || value === null || Array.isArray(value)
-      || !canonicalBytesV2(value).equals(bytes)) {
+      || (!LEGACY_NONCANONICAL_PRE_RELEASE_KINDS.has(ref.kind)
+        && !canonicalBytesV2(value).equals(bytes))) {
     throw new Error(`gate_evidence_canonical_json_invalid:${ref.relativePath}`);
   }
   const object = value as Record<string, unknown>;
@@ -419,6 +426,7 @@ function parseCanonicalEvidenceJson(bytes: Buffer, ref: GateEvidenceRefV2): Reco
 export type GateEvidenceBindingContextV2 = Readonly<{
   releaseGenerationId?: string;
   artifactRootFingerprintSha256?: string;
+  artifactRootTrustBoundaryEvidenceSha256?: string;
   releaseFreezeIdentitySha256?: string;
   sourceManifestSha256?: string;
   task0bReleaseFreezeSha256?: string;
@@ -578,7 +586,7 @@ function validateTypedEvidence(
     return null;
   }
   if (bytes === null) throw new Error("gate_evidence_bytes_invalid");
-  const value = parseCanonicalEvidenceJson(bytes, ref);
+  const value = parseGateEvidenceJson(bytes, ref);
   if (ref.kind === "operational_attestation") validateOperationalAttestationV2(value);
   else if (ref.kind === "production_backup_authority") validateProductionBackupAuthority(value);
   else if (ref.kind === "production_backup_consumption") validateProductionBackupConsumption(value);
@@ -632,6 +640,86 @@ function requireJsonArtifact(
   const artifact = requireArtifact(artifacts, kind);
   if (artifact.value === null) throw new Error(`gate_evidence_json_required:${kind}`);
   return artifact as ParsedGateArtifact & { value: Record<string, unknown> };
+}
+
+function requireJsonArtifactByPath(
+  artifacts: ReadonlyMap<string, ParsedGateArtifact>,
+  relativePath: string
+): ParsedGateArtifact & { value: Record<string, unknown> } {
+  const artifact = artifacts.get(relativePath);
+  if (!artifact || artifact.value === null) throw new Error(`gate_evidence_json_required:${relativePath}`);
+  return artifact as ParsedGateArtifact & { value: Record<string, unknown> };
+}
+
+function validateG00TrustBindings(
+  artifacts: ReadonlyMap<string, ParsedGateArtifact>,
+  expected: GateEvidenceBindingContextV2
+): void {
+  const policy = requireJsonArtifactByPath(artifacts, "trusted-os-principal-policy-v2.json");
+  const boundary = requireJsonArtifactByPath(artifacts, "artifact-root-trust-boundary-evidence-v1.json");
+  exactEvidenceKeys(policy.value, ["version", "policyId", "platform", "normalizedTrustedPrincipalSetSha256",
+    "trustedPrincipalCount", "candidateSha", "releaseGenerationId", "artifactRootFingerprintSha256",
+    "releaseFreezeIdentitySha256", "task0BPreflightEvidenceSha256", "ownerIdentityFingerprintSha256",
+    "accessControlFingerprintSha256", "authoritativePolicySource", "observedAt", "source", "verified"],
+  "g00_trusted_principal_policy_schema_invalid");
+  exactEvidenceKeys(boundary.value, ["version", "candidateSha", "releaseGenerationId",
+    "artifactRootFingerprintSha256", "releaseFreezeIdentitySha256", "task0BPreflightEvidenceSha256",
+    "artifactRootObservationSha256", "trustedOsPrincipalPolicySha256", "ownerIdentityFingerprintSha256",
+    "accessControlFingerprintSha256", "accessControlSource", "outsideRepository", "noSymlink",
+    "restrictiveAccessVerified", "exclusiveWriteVerified", "observedAt", "source", "verified"],
+  "g00_trust_boundary_schema_invalid");
+  const platform = policy.value.platform;
+  if ((platform !== "windows" && platform !== "posix")
+      || policy.value.policyId !== (platform === "windows"
+        ? "windows-configured-canonical-set-v1" : "posix-owner-only-v1")
+      || positiveInteger(policy.value.trustedPrincipalCount, "g00_trusted_principal_count_invalid") < 1
+      || policy.value.authoritativePolicySource !== "task0b_allowlisted_writer_principals_v2"
+      || policy.value.source !== "task0b_acl_policy_read_only" || policy.value.verified !== true) {
+    throw new Error("g00_trusted_principal_policy_invalid");
+  }
+  evidenceSha(policy.value.normalizedTrustedPrincipalSetSha256, "g00_trusted_principal_set_hash_invalid");
+  evidenceIso(policy.value.observedAt, "g00_trust_observed_at_invalid");
+  evidenceIso(boundary.value.observedAt, "g00_trust_observed_at_invalid");
+  if (boundary.value.accessControlSource !== (platform === "windows"
+    ? "windows_acl_direct_read" : "posix_mode_direct_read")
+      || boundary.value.outsideRepository !== true || boundary.value.noSymlink !== true
+      || boundary.value.restrictiveAccessVerified !== true || boundary.value.exclusiveWriteVerified !== true
+      || boundary.value.source !== "task0b_protected_root_acl_read_only" || boundary.value.verified !== true) {
+    throw new Error("g00_trust_boundary_observation_invalid");
+  }
+  for (const value of [policy.value.ownerIdentityFingerprintSha256, policy.value.accessControlFingerprintSha256,
+    boundary.value.ownerIdentityFingerprintSha256, boundary.value.accessControlFingerprintSha256]) {
+    evidenceSha(value, "g00_trust_observation_hash_invalid");
+  }
+  if (typeof expected.releaseGenerationId !== "string" || !GENERATION.test(expected.releaseGenerationId)
+      || typeof expected.artifactRootFingerprintSha256 !== "string"
+      || !SHA256.test(expected.artifactRootFingerprintSha256)
+      || typeof expected.artifactRootTrustBoundaryEvidenceSha256 !== "string"
+      || !SHA256.test(expected.artifactRootTrustBoundaryEvidenceSha256)
+      || typeof expected.releaseFreezeIdentitySha256 !== "string"
+      || !SHA256.test(expected.releaseFreezeIdentitySha256)
+      || typeof expected.task0bReleaseFreezeSha256 !== "string"
+      || !SHA256.test(expected.task0bReleaseFreezeSha256)) {
+    throw new Error("g00_trust_binding_context_incomplete");
+  }
+  if (policy.value.candidateSha !== policy.ref.candidateSha
+      || boundary.value.candidateSha !== boundary.ref.candidateSha
+      || policy.value.releaseGenerationId !== expected.releaseGenerationId
+      || boundary.value.releaseGenerationId !== expected.releaseGenerationId
+      || policy.value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || boundary.value.artifactRootFingerprintSha256 !== expected.artifactRootFingerprintSha256
+      || policy.value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
+      || boundary.value.releaseFreezeIdentitySha256 !== expected.releaseFreezeIdentitySha256
+      || policy.value.task0BPreflightEvidenceSha256 !== expected.task0bReleaseFreezeSha256
+      || boundary.value.task0BPreflightEvidenceSha256 !== expected.task0bReleaseFreezeSha256
+      || boundary.value.artifactRootObservationSha256
+        !== expected.artifactRootTrustBoundaryEvidenceSha256
+      || boundary.value.trustedOsPrincipalPolicySha256 !== policy.ref.sha256
+      || boundary.value.ownerIdentityFingerprintSha256 !== policy.value.ownerIdentityFingerprintSha256
+      || boundary.value.accessControlFingerprintSha256 !== policy.value.accessControlFingerprintSha256
+      || boundary.value.observedAt !== policy.value.observedAt) {
+    throw new Error("g00_trust_policy_hash_or_binding_invalid");
+  }
 }
 
 type RequiredProductionGateContext = Readonly<{
@@ -881,6 +969,7 @@ export function validateGateEvidenceBytesV2(
   const seen = new Set<string>();
   const seenKinds = new Set<GateEvidenceKindV2>();
   const artifacts = new Map<GateEvidenceKindV2, ParsedGateArtifact>();
+  const artifactsByPath = new Map<string, ParsedGateArtifact>();
   for (const ref of gate.evidence) {
     if (!SAFE_RELATIVE.test(ref.relativePath) || seen.has(ref.relativePath)) {
       throw new Error("gate_evidence_path_invalid");
@@ -905,10 +994,12 @@ export function validateGateEvidenceBytesV2(
       throw new Error("gate_evidence_bytes_invalid");
     }
     const value = validateTypedEvidence(ref, bytes, byteLength);
-    artifacts.set(ref.kind, { ref, byteLength, value });
+    const artifact = { ref, byteLength, value } as const;
+    artifacts.set(ref.kind, artifact);
+    artifactsByPath.set(ref.relativePath, artifact);
     if (gatePolicy.production) validateProductionEvidencePath(ref, expected);
     if (ref.kind !== "production_backup_dump" && ref.kind !== "production_backup_restore_list") {
-      validateEvidenceBindings(parseCanonicalEvidenceJson(bytes!, ref), ref, expected);
+      validateEvidenceBindings(parseGateEvidenceJson(bytes!, ref), ref, expected);
     }
   }
   for (const required of gatePolicy.primaryPaths) {
@@ -917,6 +1008,7 @@ export function validateGateEvidenceBytesV2(
   for (const kind of gatePolicy.requiredKinds) {
     if (!seenKinds.has(kind)) throw new Error(`gate_evidence_kind_missing:${kind}`);
   }
+  if (gate.id === "G00_BASE") validateG00TrustBindings(artifactsByPath, expected);
   if (gatePolicy.production) validateProductionGateBindings(gate, artifacts, expected);
   return gate.evidence;
 }

@@ -2712,6 +2712,7 @@ export function verifyRemediationReleaseArtifactsSyncV2(
   const manifest = validateManifestGateEvidenceV2(value, artifacts, {
     releaseGenerationId: freeze.releaseGenerationId,
     artifactRootFingerprintSha256: freeze.artifactRootFingerprintSha256,
+    artifactRootTrustBoundaryEvidenceSha256: freeze.artifactRootTrustBoundaryEvidenceSha256,
     releaseFreezeIdentitySha256: releaseFreezeIdentitySha256V2(freeze),
     sourceManifestSha256ByGate,
     requireStandaloneAuthorityBinding: true,

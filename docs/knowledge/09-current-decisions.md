@@ -497,11 +497,61 @@ of these decisions, update this file in the same work.
   `reconcileWaitingForensicCheckJobs` failure and frozen stack location. This
   affects only release evidence; product/runtime/scoring semantics and
   production state do not change.
-- Task 8B RED evidence is accepted only for the exact four frozen release test
-  files. Every file must execute, every failure must be an exact
-  `Plan 5 feature missing` behavioral failure, suite-level/no-test/skip/todo,
-  generic import/environment/dependency and foreign companion failures are
-  rejected, and the exact PostgreSQL assertion remains mandatory.
+- G00 trust artifacts have one official read-only producer. It re-observes the
+  current OS owner and ACL chain, derives only the already approved Task 0B
+  writer allowlist, and publishes `trusted-os-principal-policy-v2.json` plus
+  `artifact-root-trust-boundary-evidence-v1.json` exclusively. The verifier
+  re-observes that same policy and requires exact policy/boundary bytes, Task
+  0B, freeze, root and candidate bindings. It never changes ACLs or selects a
+  new trusted principal.
+- Task 8B historical RED is V2 evidence, not a claim that the final candidate
+  was RED. The preserved behavioral RED executed product commit
+  `8bdc92350608c0c149d1b6f8e96c2f863fd531d5`; the exact four test files are
+  frozen at `9f9f5310fbe894c2feb0e49305bccdc00f4d70a7`. Their cumulative patch SHA-256 is
+  `accc3a077979ef57c65f5bc637a452659d9ce42c1b434a0423a3365c4bce6559`.
+  Official publication consumes only the preserved report SHA-256
+  `250c6876425fe24cc9345eb1dac2f0e592ffaee97cdea8ddad1a018820eec32f`
+  and cleanup receipt SHA-256
+  `9f6d14e8873140894cea99a08f6720a287006db64442e120aabb0bde4fb06175`, then
+  executes the current candidate versions of the exact four files. Every
+  historical RED fullName must exist and pass in candidate GREEN; additional
+  current candidate tests may only be passing. Git ancestry must be
+  `8bdc923… -> 9f9f531… -> d289021… -> candidate`; RED is never rerun or
+  attributed to candidate SHA. Historical cleanup proves zero remaining DBs;
+  current candidate GREEN uses a newly created exact disposable
+  `tron_watch_plan5_task8b_red` DB with `REQUIRE_PLAN5_POSTGRES=1`, OID-bound
+  cleanup and verified catalog count zero. Every file must execute, every RED
+  failure must be an exact
+  `Plan 5 feature missing` behavioral failure, and suite-level/no-test/skip/
+  todo, generic import/environment/dependency and foreign companion failures
+  remain forbidden.
+- G07 has one official promotion producer. It reads the final root-level
+  `schema032-release-evidence.json` from the exact protected clean and
+  production-clone sequence roots, validates the pair and candidate, then
+  publishes byte-identical artifacts exclusively at
+  `schema-clean/schema032-release-evidence.json` and
+  `schema-production-clone/schema032-release-evidence.json`. Manual copying to
+  those canonical consumer paths is not release evidence.
+- `pre_manual` and `readiness` each require their own exclusive
+  `verified-manifest-transition-input-*.json` producer. `pre_manual` derives
+  only completed automated G00-G11 artifacts and forbids any future G05 file;
+  `readiness` requires the revision-1 source chain and finalized real manual
+  Telegram evidence. Manifest advance replays concrete semantic verification
+  before mutation. Revision 2 remains the final read-only readiness/pre-GO
+  input; there is no third pre-GO transition producer.
+- The pre-release producer graph is closed and machine checked: every primary
+  G00-G11 path, every concrete Task 8B/runtime supporting input and both
+  manifest-transition inputs have exactly one named producer. Finalized G05
+  evidence has the dedicated non-production Telegram boundary; the already
+  approved sanitized runtime config remains a separate explicit operator
+  input. Missing, duplicate, substituted paths, producers or
+  root/freeze/candidate/lineage bindings fail closed.
+- Transition collection preserves exact raw SHA-256 for established automated
+  JSON producers whose output is pretty or producer-ordered JSON: trace,
+  Vitest/sidecars, schema, runtime/rollback/legacy and manual Telegram. Their
+  concrete semantic validators remain mandatory. New G00, Task 8B V2, freeze,
+  manifest and verified-transition artifacts remain canonical JSON; formatting
+  tolerance cannot bypass their canonical contract.
 - Release suite and full-regression execution uses an ephemeral detached local
   Git clone at the exact candidate SHA followed by lockfile-enforced `npm ci`; candidate
   tests, typecheck and Vitest never execute from mutable ignored `node_modules`

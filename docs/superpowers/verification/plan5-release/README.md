@@ -205,6 +205,12 @@ all six exact suite reports and sidecars, Task 8B RED cleanup, non-Vitest,
 schema, sanitized runtime, terminal legacy, rollback, and manual Telegram
 artifacts. Every trace GREEN hash and exact file/fullName must resolve in its
 owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
+Existing trace, Vitest/sidecar, schema, runtime/rollback/legacy and manual
+Telegram producers retain their exact raw JSON bytes and raw SHA-256 even when
+their established serialization is pretty or producer-ordered. This is not a
+semantic bypass. G00 trust, Task 8B V2, freeze, manifest and verified-transition
+artifacts still require canonical JSON, and every legacy artifact still passes
+its concrete typed/semantic verifier.
 
 1. Capture a fresh read-only Task 0B against the protected configuration. A
    manager-owned previous runtime uses its exact protected start evidence. If
@@ -217,6 +223,7 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    npm run release:task0b:preflight -- <artifact-root>
    npm run release:freeze:materialize -- <artifact-root>
    npm run release:task0b:revalidate -- <artifact-root>
+   npm run release:evidence:prepare -- g00 <artifact-root>
    ```
 
    The capture must record zero runtime stops/starts, zero database migrations,
@@ -264,10 +271,31 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
    $env:PLAN5_BASE_SHA = '4761e1453ea03a96845b68039e6d6f4812aae540'
    $env:PLAN3_TEST_DATABASE_URL = '<exact-disposable-tron_watch_plan3-url>'
    $env:PLAN4_TEST_DATABASE_URL = '<exact-disposable-tron_watch_plan4-url>'
+   $env:PLAN5_TASK8B_HISTORICAL_RED_REPORT = '<exact-preserved-task8b-red.vitest.json>'
+   $env:PLAN5_TASK8B_HISTORICAL_RED_RECEIPT = '<exact-preserved-task8b-red-evidence-v1.json>'
+   npm run release:evidence:prepare -- task8b <artifact-root>
    npm run release:verify:non-vitest -- <artifact-root>
    npm run release:trace:prepare -- <artifact-root>
    npm run release:trace:capture -- <artifact-root>
    ```
+
+   Task 8B producer requires exact `PLAN5_TASK0B_TEST_DATABASE_URL` for
+   disposable database `tron_watch` on IPv4 loopback and a non-55999 port. It
+   accepts only pinned preserved RED report
+   `250c6876425fe24cc9345eb1dac2f0e592ffaee97cdea8ddad1a018820eec32f` and
+   cleanup receipt
+   `9f6d14e8873140894cea99a08f6720a287006db64442e120aabb0bde4fb06175`
+   from the two absolute paths above. RED product execution SHA is
+   `8bdc9235…`; tests are frozen at `9f9f5310…`; owner is `d289021d…`.
+   Producer does not rerun RED. It creates fixed
+   `tron_watch_plan5_task8b_red` only for exact candidate GREEN, runs the
+   current candidate versions of the exact four files in an immutable
+   candidate snapshot, and requires every historical RED fullName to pass;
+   additional current tests may only pass. It then performs OID-bound cleanup
+   and verifies catalog count zero. Publication requires exact report,
+   historical receipt, patch, and ancestry
+   `8bdc9235… -> 9f9f5310… -> d289021d… -> candidate`. Final candidate SHA is
+   only lineage target and GREEN execution identity, never RED identity.
 
    Its literal full Vitest run is serialized with five-minute test/hook bounds
    and a 90-minute process bound. This retains finite failure handling while
@@ -362,10 +390,11 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
 
 4. Rehearse schema 032 on the clean database and the offline production clone.
    Use a separate protected sequence directory per database because the
-   producer writes an exclusive four-file sequence. Preserve/promote each
-   validated final artifact under the release-root names required by the
-   verifier: `schema-clean-evidence.json` and
-   `schema-production-clone-evidence.json`.
+   producer writes an exclusive four-file sequence. Do not manually copy its
+   final evidence into release consumer paths. After both sequences pass, the
+   official G07 producer reads each sequence root's exact root-level
+   `schema032-release-evidence.json` and exclusively promotes byte-identical
+   files to the two canonical nested paths.
 
    ```powershell
    npm run schema:release:sequence -- --offline `
@@ -379,6 +408,10 @@ owner-plan suite report; this includes the sole AC-33 auxiliary GREEN.
      --expected-endpoint <loopback-host:port> `
      --expected-system-identifier <system-identifier> `
      --artifact-root <protected-clone-sequence-root>
+
+   $env:PLAN5_SCHEMA_CLEAN_SEQUENCE_ROOT = '<protected-clean-sequence-root>'
+   $env:PLAN5_SCHEMA_CLONE_SEQUENCE_ROOT = '<protected-clone-sequence-root>'
+   npm run release:evidence:prepare -- g07 <artifact-root>
    ```
 
    The exact full migration-byte and receipt checksum is
@@ -460,6 +493,7 @@ release.
    `pre-manual` verifier while `G05_TELEGRAM` is still pending:
 
    ```powershell
+   npm run release:evidence:prepare -- pre_manual <artifact-root>
    npm run release:manifest:advance -- pre_manual absent <artifact-root>
    npm run release:verify -- --phase pre-manual --artifact-root <artifact-root>
    ```
@@ -503,6 +537,7 @@ release.
     ```powershell
     $source = (Get-FileHash -Algorithm SHA256 `
       (Join-Path '<artifact-root>' 'release-manifest.json')).Hash.ToLowerInvariant()
+    npm run release:evidence:prepare -- readiness <artifact-root> $source
     npm run release:manifest:advance -- readiness $source <artifact-root>
     npm run release:verify -- --phase readiness --artifact-root <artifact-root>
     ```

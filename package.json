@@ -29,6 +29,7 @@
     "release:task0b:revalidate": "node --import tsx scripts/captureTask0BPreflight.ts --revalidate",
     "release:task0b:runtime-manager": "node --import tsx scripts/manageTask0BRuntime.ts",
     "release:production:backup": "node --import tsx scripts/createProductionBackupEvidence.ts",
+    "release:evidence:prepare": "node --import tsx scripts/advanceRemediationReleaseManifest.ts --prepare",
     "release:manifest:advance": "node --import tsx scripts/advanceRemediationReleaseManifest.ts",
     "release:manifest:takeover": "node --import tsx scripts/takeoverManifestLease.ts",
     "release:freeze:materialize": "node --import tsx scripts/materializeReleaseFreeze.ts",

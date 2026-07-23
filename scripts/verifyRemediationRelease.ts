@@ -1517,10 +1517,26 @@ export async function verifyPreReleaseConcreteEvidenceV2(
     }
     if (traceSet.candidateSha !== manifest.candidateSha) throw new Error("acceptance trace candidate SHA mismatch");
     const task8bBytes = await readGateEvidenceByKind(
-      root, manifest, "G01_TRACE", "task8b_red", "task8b-red-evidence-v1.json"
+      root, manifest, "G01_TRACE", "task8b_red", "task8b-historical-red-evidence-v2.json"
     );
-    const task8bReportBytes = await readSafeArtifactFile(root, "task8b-red.vitest.json");
-    validateTask8BRedEvidence(parseJson(task8bBytes), parseJson(task8bReportBytes), task8bReportBytes, manifest.candidateSha);
+    const task8bReportBytes = await readSafeArtifactFile(root, "task8b-historical-red.vitest.json");
+    const task8bReceiptBytes = await readSafeArtifactFile(
+      root, "task8b-historical-red-cleanup-receipt-v1.json");
+    const task8bGreenBytes = await readSafeArtifactFile(root, "task8b-candidate-green.vitest.json");
+    const task8bPatchBytes = await readSafeArtifactFile(root, "task8b-frozen-test.patch");
+    const { validateTask8BHistoricalRedEvidenceV2 } = await import("./advanceRemediationReleaseManifest");
+    const task8b = validateTask8BHistoricalRedEvidenceV2(parseJson(task8bBytes), {
+      candidateSha: manifest.candidateSha,
+      redReportBytes: task8bReportBytes,
+      historicalReceiptBytes: task8bReceiptBytes,
+      greenReportBytes: task8bGreenBytes,
+      testPatchBytes: task8bPatchBytes
+    });
+    if (!isVerifiedGitAncestor(String(task8b.redExecutionSha), String(task8b.frozenTestSha))
+        || !isVerifiedGitAncestor(String(task8b.frozenTestSha), String(task8b.ownerCommitSha))
+        || !isVerifiedGitAncestor(String(task8b.ownerCommitSha), manifest.candidateSha)) {
+      throw new Error("Task 8B historical RED Git lineage is invalid");
+    }
     const plan4ReportBytes = await readGateEvidenceByKind(
       root, manifest, "G01_TRACE", "suite_report", "suite-plan4.vitest.json"
     );
@@ -1534,6 +1550,8 @@ export async function verifyPreReleaseConcreteEvidenceV2(
   }
 
   if (gateExecuted(manifest, "G00_BASE")) {
+    const { verifyG00TrustArtifactsCurrent } = await import("./advanceRemediationReleaseManifest");
+    await verifyG00TrustArtifactsCurrent({ artifactRoot: root });
     validateTask0BaselineEvidence(
       parseJson(await readGateEvidenceByKind(root, manifest, "G00_BASE", "task0_baseline", "task0-baseline.json")),
       manifest.candidateSha,

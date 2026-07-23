@@ -69,6 +69,8 @@ function expected() {
   return {
     releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
     artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    artifactRootTrustBoundaryEvidenceSha256:
+      RELEASE_V2_FREEZE_IDENTITY.artifactRootTrustBoundaryEvidenceSha256,
     releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
     sourceManifestSha256: SOURCE,
     task0bReleaseFreezeSha256: TASK0B_SHA256,
@@ -79,7 +81,7 @@ function expected() {
 it("binds every focused suite report and sidecar to exactly one pre-release gate", () => {
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G01_TRACE.primaryPaths).toEqual([
     "acceptance-trace.json",
-    "task8b-red-evidence-v1.json",
+    "task8b-historical-red-evidence-v2.json",
     "suite-plan4.vitest.json",
     "suite-plan4.evidence.json"
   ]);
@@ -109,6 +111,40 @@ it("binds every focused suite report and sidecar to exactly one pre-release gate
   )).toThrow(/policy_binding/i);
 });
 
+it("accepts byte-bound legacy producer JSON formatting but keeps official Task 8B canonical", () => {
+  const rawItem = (kind: any, relativePath: string, value: Record<string, unknown>, schemaVersion: string) => {
+    const content = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    return { content, ref: { kind, relativePath,
+      sha256: createHash("sha256").update(content).digest("hex"), schemaVersion,
+      candidateSha: CANDIDATE_SHA } };
+  };
+  const items = [
+    rawItem("acceptance_trace", "acceptance-trace.json",
+      { version: "acceptance-trace-v1", candidateSha: CANDIDATE_SHA }, "acceptance-trace-v1"),
+    ref("task8b_red", "task8b-historical-red-evidence-v2.json",
+      { version: "task8b-historical-red-evidence-v2", candidateSha: CANDIDATE_SHA }),
+    rawItem("suite_report", "suite-plan4.vitest.json", { success: true }, "vitest-json-report-v1"),
+    rawItem("suite_evidence", "suite-plan4.evidence.json",
+      { version: "release-suite-group-evidence-v1", candidateSha: CANDIDATE_SHA },
+      "release-suite-group-evidence-v1")
+  ];
+  expect(() => validateGateEvidenceBytesV2(
+    gate("G01_TRACE", items as any) as any,
+    new Map(items.map((item) => [item.ref.relativePath, item.content])),
+    expected()
+  )).not.toThrow();
+  const noncanonicalTask8b = rawItem("task8b_red", "task8b-historical-red-evidence-v2.json",
+    { version: "task8b-historical-red-evidence-v2", candidateSha: CANDIDATE_SHA },
+    "task8b-historical-red-evidence-v2");
+  const tampered = items.map((item) => item.ref.relativePath === noncanonicalTask8b.ref.relativePath
+    ? noncanonicalTask8b : item);
+  expect(() => validateGateEvidenceBytesV2(
+    gate("G01_TRACE", tampered as any) as any,
+    new Map(tampered.map((item) => [item.ref.relativePath, item.content])),
+    expected()
+  )).toThrow(/canonical/i);
+});
+
 it("derives Task0B production binding only from canonical bytes and the approved database identity", () => {
   expect(deriveTask0BProductionGateBindingV2(
     TASK0B_BYTES,
@@ -128,6 +164,65 @@ it("derives Task0B production binding only from canonical bytes and the approved
     CANDIDATE_SHA,
     "f".repeat(64)
   )).toThrow(/database_identity_mismatch/i);
+});
+
+it("rejects a G00 trust boundary whose authoritative principal policy hash is substituted", () => {
+  const policy = {
+    version: "trusted-os-principal-policy-v2",
+    policyId: "windows-configured-canonical-set-v1",
+    platform: "windows",
+    normalizedTrustedPrincipalSetSha256: "1".repeat(64),
+    trustedPrincipalCount: 3,
+    candidateSha: CANDIDATE_SHA,
+    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    task0BPreflightEvidenceSha256: TASK0B_SHA256,
+    ownerIdentityFingerprintSha256: "2".repeat(64),
+    accessControlFingerprintSha256: "3".repeat(64),
+    authoritativePolicySource: "task0b_allowlisted_writer_principals_v2",
+    observedAt: RELEASE_V2_NOW,
+    source: "task0b_acl_policy_read_only",
+    verified: true
+  };
+  const policyItem = ref("trusted_os_principal_policy", "trusted-os-principal-policy-v2.json", policy);
+  const boundary = {
+    version: "artifact-root-trust-boundary-evidence-v1",
+    candidateSha: CANDIDATE_SHA,
+    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    artifactRootFingerprintSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootFingerprintSha256,
+    releaseFreezeIdentitySha256: RELEASE_V2_FREEZE_SHA256,
+    task0BPreflightEvidenceSha256: TASK0B_SHA256,
+    artifactRootObservationSha256: RELEASE_V2_FREEZE_IDENTITY.artifactRootTrustBoundaryEvidenceSha256,
+    trustedOsPrincipalPolicySha256: policyItem.ref.sha256,
+    ownerIdentityFingerprintSha256: "2".repeat(64),
+    accessControlFingerprintSha256: "3".repeat(64),
+    accessControlSource: "windows_acl_direct_read",
+    outsideRepository: true,
+    noSymlink: true,
+    restrictiveAccessVerified: true,
+    exclusiveWriteVerified: true,
+    observedAt: RELEASE_V2_NOW,
+    source: "task0b_protected_root_acl_read_only",
+    verified: true
+  };
+  const items = [
+    ref("task0_baseline", "task0-baseline.json", { version: "task0-v1", candidateSha: CANDIDATE_SHA }),
+    policyItem,
+    ref("release_freeze_materialization", "artifact-root-trust-boundary-evidence-v1.json", boundary),
+    ref("release_freeze_materialization", "release-freeze-materialization-receipt-v2.json",
+      { version: "freeze-receipt-v2", candidateSha: CANDIDATE_SHA }),
+    ref("release_freeze_materialization", "release-freeze-identity-v2.json",
+      { version: "freeze-v2", candidateSha: CANDIDATE_SHA })
+  ];
+  expect(() => validateGateEvidenceBytesV2(gate("G00_BASE", items) as any,
+    new Map(items.map((item) => [item.ref.relativePath, item.content])), expected())).not.toThrow();
+  const substituted = items.map((item) => item.ref.relativePath === "artifact-root-trust-boundary-evidence-v1.json"
+    ? ref(item.ref.kind, item.ref.relativePath, { ...boundary, trustedOsPrincipalPolicySha256: "f".repeat(64) })
+    : item);
+  expect(() => validateGateEvidenceBytesV2(gate("G00_BASE", substituted) as any,
+    new Map(substituted.map((item) => [item.ref.relativePath, item.content])), expected()))
+    .toThrow(/trust.*policy|policy.*hash/i);
 });
 
 it("rejects canonical but untyped G12 consumption and progress artifacts", () => {
