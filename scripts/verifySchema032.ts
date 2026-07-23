@@ -18,7 +18,7 @@ import {
 
 export const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
 export const APPROVED_SCHEMA_033_CHECKSUM =
-  "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+  "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
 
 export type Schema032DatabaseRole = "clean" | "production_clone" | "runtime_sanitized" | "production";
 export type Schema032MigrationStatus = "applied" | "already_verified";

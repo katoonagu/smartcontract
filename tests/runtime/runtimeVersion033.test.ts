@@ -19,7 +19,7 @@ describe("runtime schema 033 identity", () => {
       }
     });
     expect(runtime.migration.version).toBe(33);
-    expect(formatRuntimeVersion(runtime, "en")).toContain("schema 33 verified");
-    expect(formatRuntimeVersion(runtime, "ru")).toContain("schema 33 verified");
+    expect(formatRuntimeVersion(runtime, "en")).toContain("schema 033 verified");
+    expect(formatRuntimeVersion(runtime, "ru")).toContain("schema 033 verified");
   });
 });

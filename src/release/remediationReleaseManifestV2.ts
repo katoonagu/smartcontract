@@ -2779,7 +2779,7 @@ const PRODUCTION_OPERATION_COMMANDS_V2 = [
   "production_rollout", "production_canary", "production_rollback", "production_recovery"
 ] as const;
 const SCHEMA032_CHECKSUM_V2 = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
-const SCHEMA033_CHECKSUM_V2 = "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+const SCHEMA033_CHECKSUM_V2 = "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
 const SCHEMA033_CATALOG_SHA256_V2 = "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 const SCHEMA032_STAGES_V2 = [
   "first_migration", "first_verification", "second_migration", "final_verification"

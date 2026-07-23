@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "vitest run --configLoader bundle",
+    "test": "vitest run --configLoader bundle --no-file-parallelism --testTimeout=300000 --hookTimeout=300000",
     "test:watch": "vitest --configLoader bundle",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",

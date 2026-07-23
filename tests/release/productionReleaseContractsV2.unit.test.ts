@@ -270,7 +270,7 @@ it("validates byte-exact lease-removal prepare and schema-032 ordered receipt", 
     preparedSettlementRelativePath: `schema032-production-settlement-prepared-${S}.json`,
     preparedSettlementSha256: S,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
-    migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+    migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
     result: "applied_and_verified" as const,
     completedStages,
     receiptChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
@@ -278,7 +278,7 @@ it("validates byte-exact lease-removal prepare and schema-032 ordered receipt", 
     schema033: {
       version: 33 as const,
       migrationFilename: "033_unified_wallet_check.sql" as const,
-      checksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+      checksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
       verificationReceiptSha256: S
     }

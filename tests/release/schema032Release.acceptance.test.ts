@@ -17,7 +17,7 @@ import {
 } from "../fixtures/release/remediationReleaseFixtures";
 
 const APPROVED_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
-const APPROVED_UNIFIED_CHECKSUM = "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+const APPROVED_UNIFIED_CHECKSUM = "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
 const CLEAN_DATABASE = "tron_watch_plan5_clean";
 const CLONE_DATABASE = "tron_watch_plan5_clone";
 const SANITIZED_DATABASE = "tron_watch_plan5_runtime_sanitized";

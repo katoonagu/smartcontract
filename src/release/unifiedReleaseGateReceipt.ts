@@ -23,7 +23,7 @@ export const APPROVED_GOLDEN_MANIFEST_DESCRIPTOR_SHA256 =
   "f64afca8698f49581ed52893f028996d32807aa8c986c17b948674212f90fe30";
 export const PLAN_A_GATE_RECEIPT_RELATIVE_PATH = "plan-a-gate-receipt-v1.json";
 export const APPROVED_SCHEMA_033_CHECKSUM =
-  "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+  "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
 
 export const UNIFIED_RELEASE_COMMANDS = Object.freeze([
   { id: "full_test", command: "npm test" },
