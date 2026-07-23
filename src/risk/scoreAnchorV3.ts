@@ -3,6 +3,10 @@ import type {
   MatrixScoringResultV4,
   ScoringFactV4
 } from "./scoringSignalMatrixV4";
+import {
+  scoreSignalMatrixV4,
+  type NeutralCandidateCode
+} from "./scoringSignalMatrixV4";
 
 export type ScoreAnchorV3 = {
   readonly version: "score-anchor-v3";
@@ -22,9 +26,15 @@ export type ScoreAnchorV3 = {
 };
 
 const BINDING_ERROR = "score_anchor_v3_fact_binding_failed";
-const ROWS = new Map<string, typeof SCORING_POLICY_V4.rows[number]>(
-  SCORING_POLICY_V4.rows.map((row) => [row.rowId, row])
+const RULES = new Map<string, typeof SCORING_POLICY_V4.rules[number]>(
+  SCORING_POLICY_V4.rules.map((rule) => [rule.ruleId, rule])
 );
+const NEUTRAL_RULES = new Set<NeutralCandidateCode>([
+  "clean_confirmed_context",
+  "neutral_no_observed_risk",
+  "unknown_without_risk_pattern",
+  "no_usdt_activity"
+]);
 
 function fail(): never {
   throw new Error(BINDING_ERROR);
@@ -47,11 +57,11 @@ export function buildScoreAnchorV3(input: {
     input.matrix.policyVersion !== "scoring-signal-matrix-v4") {
     fail();
   }
-  const row = ROWS.get(input.matrix.matrixRow);
+  const rule = RULES.get(input.matrix.matrixRow);
   if (
-    row === undefined ||
-    row.exactScore !== input.matrix.score ||
-    row.expectedDecision !== input.matrix.decision
+    rule === undefined ||
+    rule.exactScore !== input.matrix.score ||
+    rule.expectedDecision !== input.matrix.decision
   ) {
     fail();
   }
@@ -87,8 +97,18 @@ export function validateScoreAnchorV3(input: {
   readonly activeAnchors: readonly ScoreAnchorV3[];
 }): ScoreAnchorV3 {
   const { anchor } = input;
-  const row = ROWS.get(anchor.matrixRow);
+  const rule = RULES.get(anchor.matrixRow);
   const factIds = [...input.facts.map((fact) => fact.id)].sort();
+  const neutralCandidate = NEUTRAL_RULES.has(
+    anchor.matrixRow as NeutralCandidateCode
+  )
+    ? anchor.matrixRow as NeutralCandidateCode
+    : undefined;
+  const recomputed = scoreSignalMatrixV4({
+    subjectAddress: input.subjectAddress,
+    facts: input.facts,
+    neutralCandidate
+  });
   if (
     anchor.version !== "score-anchor-v3" ||
     anchor.policyVersion !== "scoring-signal-matrix-v4" ||
@@ -97,9 +117,9 @@ export function validateScoreAnchorV3(input: {
     !Number.isSafeInteger(anchor.score) ||
     anchor.score < 0 ||
     anchor.score > 100 ||
-    row === undefined ||
-    row.exactScore !== anchor.score ||
-    row.expectedDecision !== anchor.decision ||
+    rule === undefined ||
+    rule.exactScore !== anchor.score ||
+    rule.expectedDecision !== anchor.decision ||
     anchor.lockedGoldenManifestSha256 !==
       SCORING_POLICY_V4.lockedGoldenManifestSha256 ||
     input.activeAnchors.length !== 1 ||
@@ -111,7 +131,18 @@ export function validateScoreAnchorV3(input: {
       anchor.canonicalFactIds.includes(id)
     ) ||
     !anchor.primaryFactIds.includes(anchor.preferredFactId) ||
-    input.facts.some((fact) => fact.subject !== input.subjectAddress)
+    input.facts.some((fact) => fact.subject !== input.subjectAddress) ||
+    recomputed.score !== anchor.score ||
+    recomputed.decision !== anchor.decision ||
+    recomputed.matrixRow !== anchor.matrixRow ||
+    recomputed.evidenceClass !== anchor.evidenceClass ||
+    recomputed.proofLevel !== anchor.proofLevel ||
+    recomputed.authority !== anchor.authority ||
+    JSON.stringify(recomputed.canonicalFactIds) !==
+      JSON.stringify(anchor.canonicalFactIds) ||
+    JSON.stringify(recomputed.primaryFactIds) !==
+      JSON.stringify(anchor.primaryFactIds) ||
+    recomputed.preferredFactId !== anchor.preferredFactId
   ) {
     fail();
   }

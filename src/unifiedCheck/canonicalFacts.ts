@@ -7,7 +7,9 @@ export type CanonicalFactRole =
   | "drainer"
   | "spender"
   | "receiver"
-  | "sender";
+  | "sender"
+  | "approval_owner"
+  | "operational_wallet";
 
 type CommonFactInput = {
   readonly factType: string;
@@ -16,6 +18,8 @@ type CommonFactInput = {
   readonly lane: CanonicalFactLane;
   readonly strength: "exact" | "corroborated" | "contextual";
   readonly sourceBranch: "fast" | "where" | "deep";
+  readonly directness: "direct" | "indirect";
+  readonly timing: "at_event" | "later" | "current" | "unknown";
   readonly negative?: boolean;
   readonly scopeStatus?: "COMPLETED" | "NOT_APPLICABLE" | "INCOMPLETE";
   readonly payload?: unknown;
@@ -59,6 +63,8 @@ export type CanonicalFactV1 = {
   readonly lane: CanonicalFactLane;
   readonly strength: "exact" | "corroborated" | "contextual";
   readonly sourceBranches: readonly ("fast" | "where" | "deep")[];
+  readonly directness: "direct" | "indirect";
+  readonly timing: "at_event" | "later" | "current" | "unknown";
   readonly payload: unknown;
 };
 
@@ -79,6 +85,8 @@ function validateCommon(fact: CanonicalFactInput): void {
     fact.factType.trim().length === 0 ||
     fact.subject.trim().length === 0 ||
     fact.sourceBranch.trim().length === 0 ||
+    !["direct", "indirect"].includes(fact.directness) ||
+    !["at_event", "later", "current", "unknown"].includes(fact.timing) ||
     (fact.negative === true && fact.scopeStatus !== "COMPLETED")
   ) {
     throw new TypeError("unified_canonical_fact_invalid");
@@ -101,7 +109,9 @@ export function canonicalFactId(fact: CanonicalFactInput): string {
       fact.factType,
       fact.subject,
       optional(fact.counterparty, "tron_address"),
-      fact.subjectRole
+      fact.subjectRole,
+      fact.directness,
+      fact.timing
     ]);
   }
   if (fact.profile === "state") {
@@ -114,7 +124,9 @@ export function canonicalFactId(fact: CanonicalFactInput): string {
       optional(fact.counterpartyOrObject, "tron_address"),
       fact.subjectRole,
       optional(fact.effectiveAt, "timestamp"),
-      fact.snapshotBlock
+      fact.snapshotBlock,
+      fact.directness,
+      fact.timing
     ]);
   }
   return fingerprintCanonicalArtifact([
@@ -124,7 +136,9 @@ export function canonicalFactId(fact: CanonicalFactInput): string {
     fingerprintCanonicalArtifact(fact.orderedEventFactIds),
     fact.factType,
     fact.subject,
-    fact.subjectRole
+    fact.subjectRole,
+    fact.directness,
+    fact.timing
   ]);
 }
 
@@ -150,6 +164,8 @@ function toCanonical(
     lane: fact.lane,
     strength: fact.strength,
     sourceBranches,
+    directness: fact.directness,
+    timing: fact.timing,
     payload: fact.payload ?? null
   };
 }
@@ -240,6 +256,8 @@ export function canonicalizeEvidenceFacts(input: {
       lane: "pattern",
       strength: "corroborated",
       sourceBranch: "deep",
+      directness: "direct",
+      timing: "current",
       payload: { matchedWeakPatterns: matchedWeakPatterns.sort() }
     };
     const id = canonicalFactId(compositeInput);

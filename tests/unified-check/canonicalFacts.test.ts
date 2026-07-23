@@ -21,6 +21,8 @@ const event = (
   lane: "hard",
   strength: "exact",
   sourceBranch,
+  directness: "direct",
+  timing: "at_event",
   ...overrides
 } as CanonicalFactInput);
 
@@ -52,7 +54,9 @@ describe("Unified canonical facts", () => {
       snapshotBlock: "84713573",
       lane: "context",
       strength: "exact",
-      sourceBranch: "deep"
+      sourceBranch: "deep",
+      directness: "direct",
+      timing: "later"
     } as const;
     const path = {
       profile: "path",
@@ -63,7 +67,9 @@ describe("Unified canonical facts", () => {
       subjectRole: "receiver",
       lane: "context",
       strength: "corroborated",
-      sourceBranch: "where"
+      sourceBranch: "where",
+      directness: "indirect",
+      timing: "at_event"
     } as const;
     const ids = [
       canonicalFactId(event("fast")),
@@ -106,7 +112,9 @@ describe("Unified canonical facts", () => {
       snapshotBlock: "84713573",
       lane: "neutral",
       strength: "exact",
-      sourceBranch: "where"
+      sourceBranch: "where",
+      directness: "direct",
+      timing: "current"
     } as const;
     const alone = canonicalizeEvidenceFacts({
       facts: [{ ...unknown, factType: "unknown_source" }]

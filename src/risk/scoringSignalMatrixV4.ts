@@ -1,3 +1,8 @@
+import {
+  canonicalizeEvidenceFacts,
+  type CanonicalFactInput,
+  type CanonicalFactV1
+} from "../unifiedCheck/canonicalFacts";
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
 import {
   SCORING_POLICY_V4,
@@ -10,20 +15,7 @@ export type NeutralCandidateCode =
   | "unknown_without_risk_pattern"
   | "no_usdt_activity";
 
-export type ScoringFactV4 = {
-  readonly version: "canonical-fact-v1";
-  readonly id: string;
-  readonly profile: "event" | "state" | "path";
-  readonly factType: string;
-  readonly subject: string;
-  readonly subjectRole: string;
-  readonly lane: "hard" | "pattern" | "context" | "neutral";
-  readonly strength: "exact" | "corroborated" | "contextual";
-  readonly sourceBranches: readonly ("fast" | "where" | "deep")[];
-  readonly payload: unknown;
-  readonly directness?: "direct" | "indirect";
-  readonly timing?: "at_event" | "later" | "current" | "unknown";
-};
+export type ScoringFactV4 = CanonicalFactV1;
 
 export type MatrixScoringResultV4 = {
   readonly policyVersion: "scoring-signal-matrix-v4";
@@ -41,55 +33,145 @@ export type MatrixScoringResultV4 = {
   readonly neutralCandidate: NeutralCandidateCode | null;
 };
 
-type PolicyRow = typeof SCORING_POLICY_V4.rows[number];
+type GeneratedRule = typeof SCORING_POLICY_V4.rules[number];
 
-const ROWS = new Map<string, PolicyRow>(
-  SCORING_POLICY_V4.rows.map((row) => [row.rowId, row])
+type SemanticRule = {
+  readonly ruleId: GeneratedRule["ruleId"];
+  readonly factTypes: readonly string[];
+  readonly roles: readonly string[];
+  readonly lane: CanonicalFactV1["lane"];
+  readonly strengths: readonly CanonicalFactV1["strength"][];
+  readonly directness: CanonicalFactV1["directness"];
+  readonly timings: readonly CanonicalFactV1["timing"][];
+};
+
+const GENERATED_RULES = new Map<string, GeneratedRule>(
+  SCORING_POLICY_V4.rules.map((rule) => [rule.ruleId, rule])
 );
 
-const NEUTRAL_ROW: Record<NeutralCandidateCode, string> = {
-  clean_confirmed_context: "synthetic-one-legitimate-transfer",
-  neutral_no_observed_risk: "synthetic-empty-wallet",
-  unknown_without_risk_pattern: "synthetic-unknown-no-pattern",
-  no_usdt_activity: "synthetic-new-no-usdt"
-};
+const SEMANTIC_RULES: readonly SemanticRule[] = [
+  {
+    ruleId: "direct_blacklist_at_event",
+    factTypes: ["blacklisted_at_transfer", "direct_blacklist_relation"],
+    roles: ["receiver", "drainer"],
+    lane: "hard",
+    strengths: ["exact"],
+    directness: "direct",
+    timings: ["at_event"]
+  },
+  {
+    ruleId: "victim_confirmed_debit",
+    factTypes: ["confirmed_victim_debit"],
+    roles: ["victim"],
+    lane: "hard",
+    strengths: ["exact"],
+    directness: "direct",
+    timings: ["at_event"]
+  },
+  {
+    ruleId: "dangerous_approval_no_debit",
+    factTypes: ["dangerous_unlimited_approval"],
+    roles: ["approval_owner"],
+    lane: "pattern",
+    strengths: ["exact", "corroborated"],
+    directness: "direct",
+    timings: ["at_event", "current"]
+  },
+  {
+    ruleId: "correlated_dense_transit",
+    factTypes: ["unknown_with_correlated_pattern", "dense_fan_in_fan_out"],
+    roles: ["subject"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "high_volume_transit",
+    factTypes: ["high_volume_transit", "high_volume_inbound_outbound"],
+    roles: ["subject"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "collector_transit",
+    factTypes: ["collector_transit_pattern", "collector_pattern"],
+    roles: ["subject", "sender", "receiver"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "route_transit",
+    factTypes: ["route_transit_pattern"],
+    roles: ["subject", "sender", "receiver"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "selected_amount_transit",
+    factTypes: ["selected_amount_forwarded"],
+    roles: ["subject", "sender", "receiver"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "fan_out",
+    factTypes: ["fan_out_pattern"],
+    roles: ["subject"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "rapid_forwarding",
+    factTypes: ["rapid_forwarding"],
+    roles: ["subject", "sender"],
+    lane: "pattern",
+    strengths: ["corroborated"],
+    directness: "direct",
+    timings: ["current", "at_event"]
+  },
+  {
+    ruleId: "indirect_restriction_context",
+    factTypes: ["indirect_blacklist_relation"],
+    roles: ["receiver", "sender", "subject"],
+    lane: "context",
+    strengths: ["exact", "corroborated"],
+    directness: "indirect",
+    timings: ["at_event", "current"]
+  },
+  {
+    ruleId: "operational_wallet",
+    factTypes: ["old_active_operational_wallet"],
+    roles: ["operational_wallet", "subject"],
+    lane: "neutral",
+    strengths: ["exact"],
+    directness: "direct",
+    timings: ["current"]
+  }
+];
 
 function fail(code: string): never {
   throw new Error(code);
 }
 
-function row(rowId: string): PolicyRow {
-  return ROWS.get(rowId) ?? fail(`scoring_v4_policy_row_missing:${rowId}`);
+function generatedRule(ruleId: string): GeneratedRule {
+  return GENERATED_RULES.get(ruleId) ??
+    fail(`scoring_v4_policy_rule_missing:${ruleId}`);
 }
 
-function directness(fact: ScoringFactV4): "direct" | "indirect" {
-  return fact.directness ?? (fact.profile === "path" ? "indirect" : "direct");
-}
-
-function timing(
-  fact: ScoringFactV4
-): "at_event" | "later" | "current" | "unknown" {
-  if (fact.timing !== undefined) return fact.timing;
-  if (fact.factType.includes("later")) return "later";
-  return fact.profile === "event" ? "at_event" : "current";
-}
-
-function normalizedFact(fact: ScoringFactV4): ScoringFactV4 {
-  if (
-    fact.version !== "canonical-fact-v1" ||
-    fact.id.length === 0 ||
-    fact.factType.length === 0 ||
-    fact.subject.length === 0 ||
-    fact.subjectRole.length === 0
-  ) {
-    fail("scoring_v4_invalid_fact");
-  }
-  return {
-    ...fact,
-    sourceBranches: [...new Set(fact.sourceBranches)].sort(),
-    directness: directness(fact),
-    timing: timing(fact)
-  };
+function sameFact(left: ScoringFactV4, right: ScoringFactV4): boolean {
+  return fingerprintCanonicalArtifact(left) ===
+    fingerprintCanonicalArtifact(right);
 }
 
 function canonicalFacts(
@@ -97,20 +179,22 @@ function canonicalFacts(
   facts: readonly ScoringFactV4[]
 ): ScoringFactV4[] {
   const byId = new Map<string, ScoringFactV4>();
-  for (const candidate of facts) {
-    const fact = normalizedFact(candidate);
-    if (fact.subject !== subjectAddress) fail("scoring_v4_subject_mismatch");
-    const prior = byId.get(fact.id);
+  for (const fact of facts) {
     if (
-      prior !== undefined &&
-      fingerprintCanonicalArtifact(prior) !== fingerprintCanonicalArtifact(fact)
+      fact.version !== "canonical-fact-v1" ||
+      fact.id.length === 0 ||
+      fact.subject !== subjectAddress
     ) {
+      fail("scoring_v4_invalid_canonical_fact");
+    }
+    const prior = byId.get(fact.id);
+    if (prior !== undefined && !sameFact(prior, fact)) {
       fail("scoring_v4_fact_id_conflict");
     }
     byId.set(fact.id, fact);
   }
   return [...byId.values()].sort((left, right) =>
-    left.id.localeCompare(right.id)
+    left.id < right.id ? -1 : left.id > right.id ? 1 : 0
   );
 }
 
@@ -118,105 +202,53 @@ function neutralFact(
   subjectAddress: string,
   code: NeutralCandidateCode
 ): ScoringFactV4 {
-  return {
-    version: "canonical-fact-v1",
-    id: fingerprintCanonicalArtifact([
-      "canonical-fact-key-v1",
-      "state",
-      "tron",
-      code,
-      subjectAddress,
-      { kind: "absent", valueType: "tron_address" },
-      "subject",
-      { kind: "absent", valueType: "timestamp" },
-      "scoring-v4"
-    ]),
+  const input: CanonicalFactInput = {
     profile: "state",
+    chain: "tron",
     factType: code,
     subject: subjectAddress,
+    counterpartyOrObject: null,
     subjectRole: "subject",
+    effectiveAt: null,
+    snapshotBlock: "scoring-v4",
     lane: "neutral",
     strength: "exact",
-    sourceBranches: ["fast", "where", "deep"],
-    payload: null,
+    sourceBranch: "fast",
     directness: "direct",
-    timing: "current"
+    timing: "current",
+    payload: null
   };
+  return canonicalizeEvidenceFacts({ facts: [input] }).inventory.facts[0]!;
 }
 
-function classificationRow(fact: ScoringFactV4): string | null {
-  const factDirectness = directness(fact);
-  const factTiming = timing(fact);
-  if (fact.lane === "hard") {
-    if (fact.subjectRole === "victim" ||
-      fact.factType === "confirmed_victim_debit") {
-      return "synthetic-victim-debit";
-    }
-    if (factDirectness === "direct" && factTiming === "at_event") {
-      return "synthetic-direct-blacklist-1pct";
-    }
-    return "regression-tbl7";
-  }
-  if (fact.lane === "pattern") {
-    if (fact.factType.includes("approval")) {
-      return "synthetic-dangerous-approval-no-debit";
-    }
-    if (
-      fact.factType === "dense_fan_in_fan_out" ||
-      fact.factType === "unknown_with_correlated_pattern" ||
-      fact.factType.includes("high_volume") ||
-      fact.factType.includes("collector")
-    ) {
-      return "synthetic-dense-wallet";
-    }
-    if (fact.factType.includes("route")) return "blind-route-scope";
-    if (
-      fact.factType.includes("fan_out") ||
-      fact.factType.includes("selected_amount")
-    ) {
-      return "blind-wallet-scope";
-    }
-    return "blind-history-scope";
-  }
-  if (
-    fact.lane === "neutral" &&
-    (
-      fact.factType === "old_active_operational_wallet" ||
-      fact.subjectRole === "operational_wallet"
-    )
-  ) {
-    return "synthetic-operational-wallet";
-  }
-  return null;
+function matches(rule: SemanticRule, fact: ScoringFactV4): boolean {
+  return rule.factTypes.includes(fact.factType) &&
+    rule.roles.includes(fact.subjectRole) &&
+    rule.lane === fact.lane &&
+    rule.strengths.includes(fact.strength) &&
+    rule.directness === fact.directness &&
+    rule.timings.includes(fact.timing);
 }
 
-function authorityFor(
-  facts: readonly ScoringFactV4[],
-  primaryFactIds: readonly string[]
-): Pick<
+function authorityFor(rule: SemanticRule | null): Pick<
   MatrixScoringResultV4,
   "evidenceClass" | "proofLevel" | "authority"
 > {
-  const lanes = new Set(
-    facts
-      .filter((fact) => primaryFactIds.includes(fact.id))
-      .map((fact) => fact.lane)
-  );
-  if (lanes.has("hard")) {
+  if (rule?.lane === "hard") {
     return {
       evidenceClass: "exact_hard",
       proofLevel: "exact",
       authority: "on_chain"
     };
   }
-  if (lanes.has("pattern")) {
+  if (rule?.lane === "pattern") {
     return {
       evidenceClass: "pattern",
       proofLevel: "corroborated",
       authority: "deterministic_pattern"
     };
   }
-  if (lanes.has("context")) {
+  if (rule?.lane === "context") {
     return {
       evidenceClass: "context",
       proofLevel: "contextual",
@@ -234,56 +266,41 @@ export function scoreSignalMatrixV4(input: {
   readonly subjectAddress: string;
   readonly facts: readonly ScoringFactV4[];
   readonly neutralCandidate?: NeutralCandidateCode;
-  readonly goldenCaseId?: string;
 }): MatrixScoringResultV4 {
   if (input.subjectAddress.length === 0) fail("scoring_v4_subject_missing");
   let facts = canonicalFacts(input.subjectAddress, input.facts);
-  const classified = facts
-    .map((fact) => ({ fact, rowId: classificationRow(fact) }))
-    .filter((item): item is { fact: ScoringFactV4; rowId: string } =>
-      item.rowId !== null
-    );
-  const goldenRow = input.goldenCaseId === undefined
-    ? null
-    : row(input.goldenCaseId);
-  const selected = goldenRow === null
-    ? classified
-        .map((item) => ({ ...item, policy: row(item.rowId) }))
-        .sort((left, right) =>
-          right.policy.exactScore - left.policy.exactScore ||
-          left.policy.rowId.localeCompare(right.policy.rowId) ||
-          left.fact.id.localeCompare(right.fact.id)
-        )[0] ?? null
-    : { fact: facts[0] ?? null, rowId: goldenRow.rowId, policy: goldenRow };
-
+  const candidates = SEMANTIC_RULES.flatMap((semantic) =>
+    facts
+      .filter((fact) => matches(semantic, fact))
+      .map((fact) => ({
+        semantic,
+        fact,
+        generated: generatedRule(semantic.ruleId)
+      }))
+  ).sort((left, right) =>
+    right.generated.exactScore - left.generated.exactScore ||
+    (left.generated.ruleId < right.generated.ruleId ? -1 :
+      left.generated.ruleId > right.generated.ruleId ? 1 : 0) ||
+    (left.fact.id < right.fact.id ? -1 : left.fact.id > right.fact.id ? 1 : 0)
+  );
+  const selected = candidates[0] ?? null;
   let neutralCandidate: NeutralCandidateCode | null = null;
-  let selectedRow: PolicyRow;
+  let selectedRule: GeneratedRule;
   let primaryFactIds: string[];
-  if (selected === null || selected.policy.exactScore <= 5) {
+  if (selected === null || selected.generated.exactScore <= 5) {
     neutralCandidate = input.neutralCandidate ??
       (facts.some((fact) => fact.factType === "unknown_source")
         ? "unknown_without_risk_pattern"
-        : "neutral_no_observed_risk");
+        : selected?.semantic.ruleId === "operational_wallet"
+          ? "clean_confirmed_context"
+          : "neutral_no_observed_risk");
     const candidate = neutralFact(input.subjectAddress, neutralCandidate);
     facts = canonicalFacts(input.subjectAddress, [...facts, candidate]);
-    selectedRow = selected?.policy ?? row(NEUTRAL_ROW[neutralCandidate]);
-    primaryFactIds = selected?.fact === null || selected?.fact === undefined
-      ? [candidate.id]
-      : [selected.fact.id];
+    selectedRule = selected?.generated ?? generatedRule(neutralCandidate);
+    primaryFactIds = selected === null ? [candidate.id] : [selected.fact.id];
   } else {
-    selectedRow = selected.policy;
-    primaryFactIds = selected.fact === null
-      ? facts.map((fact) => fact.id)
-      : [selected.fact.id];
-  }
-  if (input.goldenCaseId !== undefined && goldenRow !== null) {
-    const adjudicatedIds = new Set<string>(goldenRow.facts.map((fact) =>
-      fact.canonicalFactId
-    ));
-    const matchingIds = facts
-      .filter((fact) => adjudicatedIds.has(fact.id))
-      .map((fact) => fact.id);
-    if (matchingIds.length > 0) primaryFactIds = matchingIds.sort();
+    selectedRule = selected.generated;
+    primaryFactIds = [selected.fact.id];
   }
   const canonicalFactIds = facts.map((fact) => fact.id);
   primaryFactIds = [...new Set(primaryFactIds)].sort();
@@ -292,10 +309,10 @@ export function scoreSignalMatrixV4(input: {
   return {
     policyVersion: "scoring-signal-matrix-v4",
     lockedGoldenManifestSha256: LOCKED_GOLDEN_MANIFEST_SHA256,
-    score: selectedRow.exactScore,
-    decision: selectedRow.expectedDecision,
-    matrixRow: selectedRow.rowId,
-    ...authorityFor(facts, primaryFactIds),
+    score: selectedRule.exactScore,
+    decision: selectedRule.expectedDecision,
+    matrixRow: selectedRule.ruleId,
+    ...authorityFor(selected?.semantic ?? null),
     facts,
     canonicalFactIds,
     primaryFactIds,

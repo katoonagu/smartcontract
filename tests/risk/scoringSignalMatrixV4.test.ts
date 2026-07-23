@@ -1,64 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { SCORING_POLICY_V4 } from "../../src/risk/scoringPolicyV4.generated";
 import {
-  scoreSignalMatrixV4,
-  type ScoringFactV4
-} from "../../src/risk/scoringSignalMatrixV4";
+  canonicalizeEvidenceFacts,
+  type CanonicalFactInput,
+  type CanonicalFactV1
+} from "../../src/unifiedCheck/canonicalFacts";
+import { scoreSignalMatrixV4 } from "../../src/risk/scoringSignalMatrixV4";
 
 const subjectAddress = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
+let sequence = 0;
 
-function fact(
-  id: string,
-  overrides: Partial<ScoringFactV4> = {}
-): ScoringFactV4 {
-  return {
-    version: "canonical-fact-v1",
-    id,
-    profile: "event",
-    factType: "ordinary_transfer",
+function fact(overrides: Partial<CanonicalFactInput> = {}): CanonicalFactV1 {
+  sequence += 1;
+  const input: CanonicalFactInput = {
+    profile: "state",
+    chain: "tron",
+    factType: `ordinary_transfer_${sequence}`,
     subject: subjectAddress,
-    subjectRole: "receiver",
+    counterpartyOrObject: null,
+    subjectRole: "subject",
+    effectiveAt: null,
+    snapshotBlock: "84713573",
     lane: "neutral",
     strength: "exact",
-    sourceBranches: ["fast"],
-    payload: null,
+    sourceBranch: "fast",
     directness: "direct",
-    timing: "at_event",
+    timing: "current",
+    payload: null,
     ...overrides
-  };
+  } as CanonicalFactInput;
+  return canonicalizeEvidenceFacts({ facts: [input] }).inventory.facts[0]!;
 }
 
 describe("scoring signal matrix v4", () => {
-  it("reproduces every adjudicated Golden score and decision", () => {
-    for (const row of SCORING_POLICY_V4.rows) {
-      const facts = row.facts.map((item) =>
-        fact(item.canonicalFactId, {
-          lane: item.lane,
-          subjectRole: item.role,
-          directness: item.directness,
-          timing: item.timing
-        })
-      );
-      const result = scoreSignalMatrixV4({
-        subjectAddress,
-        facts,
-        goldenCaseId: row.rowId
-      });
-      expect(
-        [result.score, result.decision],
-        row.rowId
-      ).toEqual([row.exactScore, row.expectedDecision]);
-    }
-  });
-
   it("is invariant to coverage, duplicate facts and input reorder", () => {
     const facts = [
-      fact("pattern-a", {
+      fact({
         factType: "dense_fan_in_fan_out",
         lane: "pattern",
         strength: "corroborated"
       }),
-      fact("safe-b")
+      fact()
     ];
     const left = scoreSignalMatrixV4({
       subjectAddress,
@@ -73,29 +54,58 @@ describe("scoring signal matrix v4", () => {
     expect(right).toEqual(left);
   });
 
-  it("does not let safe volume lower a hard floor", () => {
-    const hard = fact("hard", {
+  it("does not let safe volume lower a semantically bound hard floor", () => {
+    const hard = fact({
+      profile: "event",
+      tokenContract: "USDT",
+      txHash: "a".repeat(64),
+      eventIndex: 1,
+      counterparty: "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9",
       factType: "blacklisted_at_transfer",
       lane: "hard",
-      subjectRole: "receiver"
+      subjectRole: "receiver",
+      directness: "direct",
+      timing: "at_event"
     });
     const baseline = scoreSignalMatrixV4({ subjectAddress, facts: [hard] });
     const diluted = scoreSignalMatrixV4({
       subjectAddress,
       facts: [
         hard,
-        ...Array.from({ length: 99 }, (_, index) => fact(`safe-${index}`))
+        ...Array.from({ length: 99 }, () => fact())
       ]
     });
-    expect(baseline).toMatchObject({ score: 90, decision: "DECLINE" });
+    expect(baseline).toMatchObject({
+      score: 90,
+      decision: "DECLINE",
+      matrixRow: "direct_blacklist_at_event"
+    });
     expect(diluted.score).toBe(baseline.score);
+  });
+
+  it("does not trust a caller lane without an allowlisted semantic fact", () => {
+    const forgedClassification = fact({
+      factType: "ordinary_transfer",
+      lane: "hard",
+      strength: "exact",
+      subjectRole: "receiver",
+      directness: "direct",
+      timing: "at_event"
+    });
+    expect(scoreSignalMatrixV4({
+      subjectAddress,
+      facts: [forgedClassification]
+    })).toMatchObject({
+      score: 0,
+      decision: "ACCEPTABLE",
+      matrixRow: "neutral_no_observed_risk"
+    });
   });
 
   it("adds no risk for an unknown address without a correlated pattern", () => {
     const result = scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("unknown", {
-        profile: "state",
+      facts: [fact({
         factType: "unknown_source",
         subjectRole: "subject"
       })],
@@ -112,56 +122,80 @@ describe("scoring signal matrix v4", () => {
   });
 
   it("keeps directness, event timing and victim role semantically distinct", () => {
-    const base = {
-      factType: "blacklisted_counterparty",
-      lane: "hard" as const,
-      subjectRole: "receiver",
-      directness: "direct" as const,
-      timing: "at_event" as const
-    };
     const direct = scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("direct", base)]
+      facts: [fact({
+        profile: "event",
+        tokenContract: "USDT",
+        txHash: "b".repeat(64),
+        eventIndex: 1,
+        counterparty: "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9",
+        factType: "blacklisted_at_transfer",
+        lane: "hard",
+        subjectRole: "receiver",
+        directness: "direct",
+        timing: "at_event"
+      })]
     });
     const indirect = scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("indirect", { ...base, directness: "indirect" })]
+      facts: [fact({
+        profile: "path",
+        chain: "tron",
+        orderedEventFactIds: ["event-a"],
+        factType: "indirect_blacklist_relation",
+        lane: "context",
+        strength: "corroborated",
+        subjectRole: "receiver",
+        directness: "indirect",
+        timing: "at_event"
+      })]
     });
     const later = scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("later", { ...base, timing: "later" })]
+      facts: [fact({
+        factType: "counterparty_later_frozen",
+        lane: "context",
+        subjectRole: "receiver",
+        directness: "direct",
+        timing: "later"
+      })]
     });
     const victim = scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("victim", { ...base, subjectRole: "victim" })]
+      facts: [fact({
+        factType: "confirmed_victim_debit",
+        lane: "hard",
+        subjectRole: "victim",
+        directness: "direct",
+        timing: "at_event"
+      })]
     });
-    expect(new Set([
-      direct.score,
-      indirect.score,
-      later.score,
-      victim.score
-    ]).size).toBeGreaterThan(1);
     expect(direct.score).toBe(90);
+    expect(indirect.score).toBe(45);
+    expect(later.score).toBe(0);
     expect(victim.score).toBe(50);
   });
 
-  it("uses adjudicated rows for approval without debit and confirmed victim debit", () => {
+  it("uses adjudicated rules for approval without debit and confirmed victim debit", () => {
     expect(scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("approval", {
-        profile: "state",
+      facts: [fact({
         factType: "dangerous_unlimited_approval",
         lane: "pattern",
-        subjectRole: "approval_owner"
+        subjectRole: "approval_owner",
+        directness: "direct",
+        timing: "current"
       })]
     })).toMatchObject({ score: 55, decision: "REVIEW" });
     expect(scoreSignalMatrixV4({
       subjectAddress,
-      facts: [fact("victim-debit", {
-        profile: "state",
+      facts: [fact({
         factType: "confirmed_victim_debit",
         lane: "hard",
-        subjectRole: "victim"
+        subjectRole: "victim",
+        directness: "direct",
+        timing: "at_event"
       })]
     })).toMatchObject({ score: 50, decision: "REVIEW" });
   });

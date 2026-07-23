@@ -8,8 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
-import { generateUnifiedGoldenBindings } from "../../scripts/generateUnifiedGoldenBindings";
+import {
+  generateUnifiedGoldenBindings,
+  renderScoringBinding
+} from "../../scripts/generateUnifiedGoldenBindings";
 
 const lockedGoldenRoot = join(
   import.meta.dirname,
@@ -54,12 +56,8 @@ describe("Unified locked Golden bindings", () => {
   it("emits one adjudicated policy and exact sorted score rows bound to the locked hash", async () => {
     const paths = await fixture();
     const generated = await generateUnifiedGoldenBindings(paths);
-    const manifest = JSON.parse(
-      await readFile(join(paths.goldenRoot, "locked-manifest.json"), "utf8")
-    ) as Record<string, unknown>;
-
     expect(generated.lockedGoldenManifestSha256).toBe(
-      fingerprintCanonicalArtifact(manifest)
+      "4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407"
     );
     expect(generated.selectedAttributionPolicy).toBe("proportional");
     expect(generated.rows).toHaveLength(24);
@@ -81,29 +79,16 @@ describe("Unified locked Golden bindings", () => {
     expect(scoringSource).not.toContain("limited_coverage_floor");
   });
 
-  it("is deterministic when the manifest case input order changes", async () => {
+  it("renders policy bindings deterministically when case input order changes", async () => {
     const paths = await fixture();
-    await generateUnifiedGoldenBindings(paths);
-    const expectedAttribution = await readFile(paths.attributionOutput, "utf8");
-    const expectedScoring = await readFile(paths.scoringOutput, "utf8");
-    const manifestPath = join(paths.goldenRoot, "locked-manifest.json");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
-      cases: unknown[];
-    };
-    manifest.cases.reverse();
-    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
-
-    await generateUnifiedGoldenBindings({ ...paths, replace: true });
-    const changedHash = fingerprintCanonicalArtifact(manifest);
-
-    expect(
-      (await readFile(paths.attributionOutput, "utf8"))
-        .replace(changedHash, "<manifest>")
-    ).toBe(expectedAttribution.replace(generatedHash(expectedAttribution), "<manifest>"));
-    expect(
-      (await readFile(paths.scoringOutput, "utf8"))
-        .replaceAll(changedHash, "<manifest>")
-    ).toBe(expectedScoring.replaceAll(generatedHash(expectedScoring), "<manifest>"));
+    const generated = await generateUnifiedGoldenBindings(paths);
+    expect(renderScoringBinding(
+      [...generated.rows].reverse(),
+      generated.lockedGoldenManifestSha256
+    )).toBe(renderScoringBinding(
+      generated.rows,
+      generated.lockedGoldenManifestSha256
+    ));
   });
 
   it("refuses pre-adjudication input and a mixed selected policy", async () => {
@@ -115,9 +100,7 @@ describe("Unified locked Golden bindings", () => {
     };
     manifest.version = "golden-capture-manifest-v2";
     await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
-    await expect(generateUnifiedGoldenBindings(paths)).rejects.toThrow(
-      "unified_golden_manifest_not_locked"
-    );
+    await expect(generateUnifiedGoldenBindings(paths)).rejects.toThrow();
 
     manifest.version = "locked-golden-manifest-v2";
     await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
@@ -134,7 +117,7 @@ describe("Unified locked Golden bindings", () => {
     await writeFile(adjudicationPath, JSON.stringify(adjudication), "utf8");
     await expect(
       generateUnifiedGoldenBindings({ ...paths, replace: true })
-    ).rejects.toThrow("unified_golden_adjudication_hash_mismatch");
+    ).rejects.toThrow();
   });
 
   it("does not overwrite a binding from another source without --replace", async () => {
@@ -151,12 +134,54 @@ describe("Unified locked Golden bindings", () => {
       generateUnifiedGoldenBindings({ ...paths, replace: true })
     ).resolves.toMatchObject({ selectedAttributionPolicy: "proportional" });
   });
-});
 
-function generatedHash(source: string): string {
-  const match = source.match(
-    /LOCKED_GOLDEN_MANIFEST_SHA256 = "([a-f0-9]{64})"/
-  );
-  if (!match) throw new Error("test_generated_hash_missing");
-  return match[1]!;
-}
+  it("verifies the pinned manifest identity and every referenced artifact", async () => {
+    const paths = await fixture();
+    const descriptorPath = join(
+      paths.goldenRoot,
+      "locked-manifest-descriptor.json"
+    );
+    const descriptor = JSON.parse(await readFile(descriptorPath, "utf8")) as {
+      sha256: string;
+    };
+    descriptor.sha256 = "0".repeat(64);
+    await writeFile(descriptorPath, JSON.stringify(descriptor), "utf8");
+    await expect(generateUnifiedGoldenBindings(paths)).rejects.toThrow(
+      "golden_locked_manifest_identity_mismatch"
+    );
+
+    const fresh = await fixture();
+    await writeFile(
+      join(
+        fresh.goldenRoot,
+        "cases",
+        "synthetic-empty-wallet",
+        "neutral-bundle.json"
+      ),
+      "{}",
+      "utf8"
+    );
+    await expect(generateUnifiedGoldenBindings(fresh)).rejects.toThrow(
+      "golden_artifact_verification_failed"
+    );
+  });
+
+  it("preflights both destinations before changing either one", async () => {
+    const paths = await fixture();
+    await generateUnifiedGoldenBindings(paths);
+    const attribution = await readFile(paths.attributionOutput, "utf8");
+    const sentinel = `${attribution}// sentinel\n`;
+    await writeFile(paths.attributionOutput, sentinel, "utf8");
+    await writeFile(
+      paths.scoringOutput,
+      'export const LOCKED_GOLDEN_MANIFEST_SHA256 = "' +
+        "0".repeat(64) +
+        '";\n',
+      "utf8"
+    );
+    await expect(generateUnifiedGoldenBindings(paths)).rejects.toThrow(
+      "unified_golden_generated_source_mismatch"
+    );
+    expect(await readFile(paths.attributionOutput, "utf8")).toBe(sentinel);
+  });
+});

@@ -724,3 +724,125 @@ export async function verifyLockedGoldenManifest(
   }
   return value as LockedGoldenManifestV2;
 }
+
+async function referencedArtifact(
+  root: string,
+  relativePath: string,
+  sha256: string
+): Promise<PublishedArtifact> {
+  const bytes = await readFile(join(root, ...relativePath.split("/")));
+  const artifact = { relativePath, sha256, byteLength: bytes.byteLength };
+  await verifyPublishedArtifact(root, artifact);
+  return artifact;
+}
+
+async function actualReferencedArtifact(
+  root: string,
+  relativePath: string
+): Promise<PublishedArtifact> {
+  const bytes = await readFile(join(root, ...relativePath.split("/")));
+  const value = JSON.parse(bytes.toString("utf8")) as unknown;
+  return referencedArtifact(root, relativePath, canonicalSha256(value));
+}
+
+export async function verifyLockedGoldenRoot(
+  root: string,
+  expectedManifestSha256: string
+): Promise<{
+  manifest: LockedGoldenManifestV2;
+  manifestSha256: string;
+}> {
+  const descriptorValue = JSON.parse(
+    await readFile(join(root, "locked-manifest-descriptor.json"), "utf8")
+  ) as unknown;
+  const descriptor = record(descriptorValue);
+  exactKeys(descriptor, ["relativePath", "sha256", "byteLength"]);
+  if (
+    descriptor.relativePath !== "locked-manifest.json" ||
+    descriptor.sha256 !== expectedManifestSha256 ||
+    !Number.isSafeInteger(descriptor.byteLength) ||
+    (descriptor.byteLength as number) <= 0
+  ) {
+    throw new TypeError("golden_locked_manifest_identity_mismatch");
+  }
+  const manifestArtifact: PublishedArtifact = {
+    relativePath: descriptor.relativePath,
+    sha256: descriptor.sha256,
+    byteLength: descriptor.byteLength as number
+  };
+  const manifest = await verifyLockedGoldenManifest(root, manifestArtifact);
+  const protocol = await referencedArtifact(
+    root,
+    "control/protocol.json",
+    manifest.protocolSha256
+  );
+  const caseCatalog = await referencedArtifact(
+    root,
+    "control/case-catalog.json",
+    manifest.caseCatalogSha256
+  );
+  const comparatorContract = await referencedArtifact(
+    root,
+    "control/comparator-contract.json",
+    manifest.comparatorContractSha256
+  );
+  const cases: LockGoldenCaseInput[] = [];
+  for (const item of manifest.cases) {
+    const prefix = `cases/${item.caseId}`;
+    const reviewerA = await actualReferencedArtifact(
+      root,
+      `${prefix}/reviewer-a.json`
+    );
+    const reviewerB = await actualReferencedArtifact(
+      root,
+      `${prefix}/reviewer-b.json`
+    );
+    if (
+      canonicalJson([reviewerA.sha256, reviewerB.sha256].sort(lexical)) !==
+      canonicalJson([...item.reviewerHashes].sort(lexical))
+    ) {
+      throw new TypeError("golden_locked_reviewer_hash_mismatch");
+    }
+    cases.push({
+      caseId: item.caseId,
+      neutralBundle: await referencedArtifact(
+        root,
+        `${prefix}/neutral-bundle.json`,
+        item.neutralBundleSha256
+      ),
+      provenanceManifest: await referencedArtifact(
+        root,
+        `${prefix}/provenance-manifest.json`,
+        item.provenanceManifestSha256
+      ),
+      validatorReceipt: await referencedArtifact(
+        root,
+        `${prefix}/validator-receipt.json`,
+        item.validatorReceiptSha256
+      ),
+      reviewerArtifacts: [reviewerA, reviewerB],
+      adjudication: await referencedArtifact(
+        root,
+        `${prefix}/adjudication.json`,
+        item.adjudicationSha256
+      )
+    });
+  }
+  const rebuilt = await buildLockedGoldenManifest({
+    root,
+    outputRelativePath: "locked-manifest.json",
+    protocol,
+    caseCatalog,
+    comparatorContract,
+    cases,
+    lockedAt: manifest.lockedAt,
+    lockedBy: manifest.lockedBy
+  });
+  if (
+    canonicalJson(rebuilt) !== canonicalJson(manifest) ||
+    canonicalSha256(rebuilt) !== expectedManifestSha256
+  ) {
+    throw new TypeError("golden_locked_manifest_graph_mismatch");
+  }
+  return { manifest, manifestSha256: expectedManifestSha256 };
+}
