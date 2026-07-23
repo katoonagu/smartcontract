@@ -2,7 +2,7 @@ import "dotenv/config";
 import { readdir, readFile } from "node:fs/promises";
 import { Client } from "pg";
 import {
-  REQUIRED_SCHEMA_VERSION,
+  SCHEMA_032_VERSION,
   applyVerifiedTrackedMigration
 } from "../src/storage/schemaMigrations";
 import {
@@ -64,7 +64,7 @@ try {
     const versionText = /^(\d+)_/.exec(migrationFile)?.[1];
     if (versionText === undefined) throw new Error(`invalid_migration_filename:${migrationFile}`);
     const version = Number.parseInt(versionText, 10);
-    if (version < REQUIRED_SCHEMA_VERSION) {
+    if (version < SCHEMA_032_VERSION) {
       const sql = await readFile(migrationPath, "utf8");
       await client.query(sql);
       console.log(`Migration applied: migrations/${migrationFile}`);
@@ -76,7 +76,7 @@ try {
       migrationBytes: await readFile(migrationPath),
       requiredSchema032Checksum
     });
-    if (version === REQUIRED_SCHEMA_VERSION) requiredSchema032Checksum = verification.checksumSha256;
+    if (version === SCHEMA_032_VERSION) requiredSchema032Checksum = verification.checksumSha256;
     const action = verification.status === "applied" ? "applied and verified" : "already verified";
     console.log(
       `Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`

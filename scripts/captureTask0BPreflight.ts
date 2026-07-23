@@ -20,8 +20,8 @@ import {
 } from "../src/release/remediationReleaseManifest";
 import { validateControlledRuntimeOperationalConfig } from "./rehearseRemediationRuntime";
 import {
-  REQUIRED_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION,
+  SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
+  SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
   verifyRequiredSchema032
 } from "../src/storage/schemaMigrations";
 import {

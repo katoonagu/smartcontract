@@ -5,6 +5,8 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import {
   REQUIRED_SCHEMA_FILENAME,
   REQUIRED_SCHEMA_VERSION,
+  SCHEMA_032_FILENAME,
+  SCHEMA_032_VERSION,
   SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE,
   SCHEMA_MIGRATION_LOCK_ID,
   type Schema032Verification,
@@ -125,8 +127,10 @@ function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
 
 describe("verified schema 032 metadata", () => {
   it("pins exact migration constants, lock and byte checksum", async () => {
-    expect(REQUIRED_SCHEMA_VERSION).toBe(32);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe("032_telegram_runtime_forensics_data_contracts.sql");
+    expect(SCHEMA_032_VERSION).toBe(32);
+    expect(SCHEMA_032_FILENAME).toBe("032_telegram_runtime_forensics_data_contracts.sql");
+    expect(REQUIRED_SCHEMA_VERSION).toBe(33);
+    expect(REQUIRED_SCHEMA_FILENAME).toBe("033_unified_wallet_check.sql");
     expect(SCHEMA_MIGRATION_LOCK_ID).toBe(20260712032n);
     await expect(checksumMigrationBytes(Buffer.from("a\nb\n"))).resolves.toMatch(/^[a-f0-9]{64}$/);
     expect(await checksumMigrationBytes(Buffer.from("a\nb\n"))).not.toBe(
@@ -324,7 +328,7 @@ describe("verified schema 032 metadata", () => {
     expect(attributesExist).toBe(true);
     const attributes = new TextDecoder("utf-8", { fatal: true }).decode(attributesBytes);
     expect(attributes).toMatch(/^\/migrations\/\*\.sql text eol=lf$/m);
-    const migrationPath = `migrations/${REQUIRED_SCHEMA_FILENAME}`;
+    const migrationPath = `migrations/${SCHEMA_032_FILENAME}`;
     const exists = existsSync(migrationPath);
     const bytes = exists ? readFileSync(migrationPath) : Buffer.alloc(0);
     expect(exists).toBe(true);

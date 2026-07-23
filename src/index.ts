@@ -65,9 +65,10 @@ import {
 import { closeDb, createDb } from "./storage/db";
 import {
   REQUIRED_SCHEMA_FILENAME,
+  SCHEMA_032_FILENAME,
   checksumMigrationBytes,
-  verifyRequiredSchema032,
-  type Schema032Verification
+  verifyRequiredSchema033,
+  type Schema033Verification
 } from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
@@ -175,16 +176,21 @@ const db = createDb(config.databaseUrl);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
 try {
-  let schema032Verification: Schema032Verification | null = null;
+  let schemaVerification: Schema033Verification | null = null;
   const schema032MigrationBytes = await readFile(
-    new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
+    new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
   );
   const schema032Checksum = await checksumMigrationBytes(schema032MigrationBytes);
+  const requiredMigrationBytes = await readFile(
+    new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
+  );
+  const requiredChecksum = await checksumMigrationBytes(requiredMigrationBytes);
   forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
     verifyStartupSchema: () => runStartupSchemaGate({
-      verify: () => verifyRequiredSchema032(db, schema032Checksum),
+      verify: () =>
+        verifyRequiredSchema033(db, requiredChecksum, schema032Checksum),
       onVerified: (verification) => {
-        schema032Verification = verification;
+        schemaVerification = verification;
         logger.info("schema_migration_verified", {
           version: verification.version,
           shortChecksum: verification.shortChecksum
@@ -198,11 +204,11 @@ try {
     logger
   });
   await forensicRuntimeOrchestration.runVerifiedStartup();
-  if (!schema032Verification) throw new Error("runtime_version_schema_verification_missing");
+  if (!schemaVerification) throw new Error("runtime_version_schema_verification_missing");
   runtimeVersion = buildRuntimeVersion({
     gitCommitSha: config.runtimeGitSha,
     runtimeInstanceLabel: config.runtimeInstanceLabel,
-    migration: schema032Verification
+    migration: schemaVerification
   });
 } catch (error) {
   await closeDb(db);

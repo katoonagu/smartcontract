@@ -2,17 +2,29 @@ import { createHash } from "node:crypto";
 import { validateApprovalAllowanceStateV2 } from "../approvals/allowanceState";
 import type { ApprovalAllowanceStateV2 } from "../types";
 
-export const REQUIRED_SCHEMA_VERSION = 32;
-export const REQUIRED_SCHEMA_FILENAME = "032_telegram_runtime_forensics_data_contracts.sql";
+export const SCHEMA_032_VERSION = 32;
+export const SCHEMA_032_FILENAME =
+  "032_telegram_runtime_forensics_data_contracts.sql";
+export const REQUIRED_SCHEMA_VERSION = 33;
+export const REQUIRED_SCHEMA_FILENAME = "033_unified_wallet_check.sql";
 export const SCHEMA_MIGRATION_LOCK_ID = 20260712032n;
 export const SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE = 250;
 
 export interface Schema032Verification {
   verified: true;
-  version: 32;
+  version: typeof SCHEMA_032_VERSION;
+  filename: typeof SCHEMA_032_FILENAME;
+  checksumSha256: string;
+  shortChecksum: string;
+}
+
+export interface Schema033Verification {
+  verified: true;
+  version: typeof REQUIRED_SCHEMA_VERSION;
   filename: typeof REQUIRED_SCHEMA_FILENAME;
   checksumSha256: string;
   shortChecksum: string;
+  schema032ChecksumSha256: string;
 }
 
 export interface SchemaQueryable {
@@ -110,7 +122,7 @@ function quoteIdentifier(value: string): string {
 }
 
 function trackedMigrationError(version: number, schema032Code: string, trackedCode: string): string {
-  return version === REQUIRED_SCHEMA_VERSION ? schema032Code : trackedCode;
+  return version === SCHEMA_032_VERSION ? schema032Code : trackedCode;
 }
 
 export async function verifyTrackedMigrationReceipt(
@@ -118,7 +130,7 @@ export async function verifyTrackedMigrationReceipt(
   expectation: TrackedMigrationReceiptExpectation
 ): Promise<void> {
   const schemaName = resolveSchemaName({ schemaName: expectation.schemaName });
-  if (!Number.isSafeInteger(expectation.version) || expectation.version < REQUIRED_SCHEMA_VERSION) {
+  if (!Number.isSafeInteger(expectation.version) || expectation.version < SCHEMA_032_VERSION) {
     fail("schema_migration_invalid_version");
   }
   if (!CHECKSUM_PATTERN.test(expectation.checksumSha256)) {
@@ -368,21 +380,144 @@ export async function verifyRequiredSchema032(
     `select version, filename, checksum_sha256
        from ${quoteIdentifier(schemaName)}.schema_migration_receipts
       where version = $1`,
-    [REQUIRED_SCHEMA_VERSION]
+    [SCHEMA_032_VERSION]
   );
   if (receipt.rows.length === 0) fail("schema_032_receipt_missing");
   if (receipt.rows.length !== 1) fail("schema_032_receipt_count_mismatch");
   const row = receipt.rows[0];
-  if (Number(row.version) !== REQUIRED_SCHEMA_VERSION) fail("schema_032_version_mismatch");
-  if (row.filename !== REQUIRED_SCHEMA_FILENAME) fail("schema_032_filename_mismatch");
+  if (Number(row.version) !== SCHEMA_032_VERSION) fail("schema_032_version_mismatch");
+  if (row.filename !== SCHEMA_032_FILENAME) fail("schema_032_filename_mismatch");
   if (row.checksum_sha256 !== expectedChecksum) fail("schema_032_checksum_mismatch");
   await verifySchema032Structure(queryable, { schemaName });
+  return {
+    verified: true,
+    version: SCHEMA_032_VERSION,
+    filename: SCHEMA_032_FILENAME,
+    checksumSha256: expectedChecksum,
+    shortChecksum: expectedChecksum.slice(0, 12)
+  };
+}
+
+const UNIFIED_TABLES = [
+  "unified_check_runs",
+  "unified_check_requests",
+  "unified_check_tasks",
+  "unified_check_attempts",
+  "unified_check_artifacts",
+  "unified_check_deliveries",
+  "unified_provider_pages",
+  "unified_check_generation_fence"
+] as const;
+
+const UNIFIED_CONSTRAINTS = [
+  "unified_check_tasks_status_check",
+  "unified_check_tasks_lane_check",
+  "unified_check_tasks_lease_shape_check",
+  "unified_check_tasks_accepted_attempt_fk",
+  "unified_check_deliveries_status_check",
+  "unified_check_runs_hash_shape_check"
+] as const;
+
+const UNIFIED_INDEXES = [
+  "unified_check_runs_reusable_analysis_idx",
+  "unified_check_tasks_claim_idx",
+  "unified_check_deliveries_claim_idx"
+] as const;
+
+const UNIFIED_IMMUTABLE_TRIGGERS = [
+  "unified_check_attempts_immutable",
+  "unified_check_artifacts_immutable",
+  "unified_provider_pages_immutable"
+] as const;
+
+export async function verifySchema033Structure(
+  queryable: SchemaQueryable,
+  options?: SchemaOptions
+): Promise<void> {
+  const schemaName = resolveSchemaName(options);
+  const tables = await queryable.query(
+    `select table_name from information_schema.tables
+      where table_schema = $1 and table_name = any($2::text[])`,
+    [schemaName, [...UNIFIED_TABLES]]
+  );
+  if (
+    UNIFIED_TABLES.some(
+      (name) => !tables.rows.some((row) => row.table_name === name)
+    )
+  ) {
+    fail("schema_033_table_missing");
+  }
+  const constraints = await queryable.query(
+    `select c.conname, c.convalidated
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       join pg_namespace n on n.oid = t.relnamespace
+      where n.nspname = $1 and c.conname = any($2::text[])`,
+    [schemaName, [...UNIFIED_CONSTRAINTS]]
+  );
+  if (
+    UNIFIED_CONSTRAINTS.some(
+      (name) =>
+        !constraints.rows.some(
+          (row) => row.conname === name && row.convalidated === true
+        )
+    )
+  ) {
+    fail("schema_033_constraint_missing");
+  }
+  const indexes = await queryable.query(
+    `select indexname from pg_indexes
+      where schemaname = $1 and indexname = any($2::text[])`,
+    [schemaName, [...UNIFIED_INDEXES]]
+  );
+  if (
+    UNIFIED_INDEXES.some(
+      (name) => !indexes.rows.some((row) => row.indexname === name)
+    )
+  ) {
+    fail("schema_033_index_missing");
+  }
+  const triggers = await queryable.query(
+    `select trigger_name from information_schema.triggers
+      where trigger_schema = $1 and trigger_name = any($2::text[])`,
+    [schemaName, [...UNIFIED_IMMUTABLE_TRIGGERS]]
+  );
+  if (
+    UNIFIED_IMMUTABLE_TRIGGERS.some(
+      (name) => !triggers.rows.some((row) => row.trigger_name === name)
+    )
+  ) {
+    fail("schema_033_trigger_missing");
+  }
+}
+
+export async function verifyRequiredSchema033(
+  queryable: SchemaQueryable,
+  expectedChecksum: string,
+  schema032ChecksumSha256: string,
+  options?: SchemaOptions
+): Promise<Schema033Verification> {
+  if (!CHECKSUM_PATTERN.test(expectedChecksum)) {
+    fail("schema_033_invalid_expected_checksum");
+  }
+  const schemaName = resolveSchemaName(options);
+  await verifyRequiredSchema032(queryable, schema032ChecksumSha256, {
+    schemaName
+  });
+  await verifyTrackedMigrationReceipt(queryable, {
+    schemaName,
+    version: REQUIRED_SCHEMA_VERSION,
+    filename: REQUIRED_SCHEMA_FILENAME,
+    checksumSha256: expectedChecksum
+  });
+  await verifySchema033Structure(queryable, { schemaName });
   return {
     verified: true,
     version: REQUIRED_SCHEMA_VERSION,
     filename: REQUIRED_SCHEMA_FILENAME,
     checksumSha256: expectedChecksum,
-    shortChecksum: expectedChecksum.slice(0, 12)
+    shortChecksum: expectedChecksum.slice(0, 12),
+    schema032ChecksumSha256
   };
 }
 
@@ -391,17 +526,17 @@ export async function applyVerifiedTrackedMigration(
   options: ApplyVerifiedTrackedMigrationOptions
 ): Promise<TrackedMigrationVerification> {
   const schemaName = resolveSchemaName(options);
-  if (!Number.isSafeInteger(options.version) || options.version < REQUIRED_SCHEMA_VERSION) {
+  if (!Number.isSafeInteger(options.version) || options.version < SCHEMA_032_VERSION) {
     fail("schema_migration_invalid_version");
   }
   const filenameVersion = /^(\d+)_/.exec(options.filename)?.[1];
   if (filenameVersion === undefined || Number(filenameVersion) !== options.version || !options.filename.endsWith(".sql")) {
     fail("schema_migration_filename_version_mismatch");
   }
-  if (options.version === REQUIRED_SCHEMA_VERSION && options.filename !== REQUIRED_SCHEMA_FILENAME) {
+  if (options.version === SCHEMA_032_VERSION && options.filename !== SCHEMA_032_FILENAME) {
     fail("schema_032_filename_mismatch");
   }
-  if (options.version > REQUIRED_SCHEMA_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema032Checksum ?? "")) {
+  if (options.version > SCHEMA_032_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema032Checksum ?? "")) {
     fail("schema_migration_schema_032_checksum_required");
   }
   const checksumSha256 = await checksumMigrationBytes(options.migrationBytes);
@@ -419,7 +554,7 @@ export async function applyVerifiedTrackedMigration(
       "select to_regclass($1) as receipt_table",
       [`${schemaName}.schema_migration_receipts`]
     );
-    if (!receiptTable.rows[0]?.receipt_table && options.version > REQUIRED_SCHEMA_VERSION) {
+    if (!receiptTable.rows[0]?.receipt_table && options.version > SCHEMA_032_VERSION) {
       fail("schema_migration_receipt_table_missing");
     }
     if (receiptTable.rows[0]?.receipt_table) {
@@ -436,7 +571,7 @@ export async function applyVerifiedTrackedMigration(
           filename: options.filename,
           checksumSha256
         });
-        if (options.version === REQUIRED_SCHEMA_VERSION) {
+        if (options.version === SCHEMA_032_VERSION) {
           await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
         } else {
           await verifyRequiredSchema032(queryable, options.requiredSchema032Checksum!, { schemaName });
@@ -453,11 +588,11 @@ export async function applyVerifiedTrackedMigration(
       }
     }
 
-    if (options.version > REQUIRED_SCHEMA_VERSION) {
+    if (options.version > SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, options.requiredSchema032Checksum!, { schemaName });
     }
     await queryable.query(sql);
-    if (options.version === REQUIRED_SCHEMA_VERSION) {
+    if (options.version === SCHEMA_032_VERSION) {
       await verifySchema032Structure(queryable, { schemaName });
     }
     await queryable.query(
@@ -472,7 +607,7 @@ export async function applyVerifiedTrackedMigration(
       filename: options.filename,
       checksumSha256
     });
-    if (options.version === REQUIRED_SCHEMA_VERSION) {
+    if (options.version === SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
     } else {
       await verifyRequiredSchema032(queryable, options.requiredSchema032Checksum!, { schemaName });
@@ -498,12 +633,12 @@ export async function applyVerifiedMigration032(
 ): Promise<Schema032Verification & { status: "applied" | "already_verified" }> {
   const verification = await applyVerifiedTrackedMigration(queryable, {
     ...options,
-    version: REQUIRED_SCHEMA_VERSION,
-    filename: REQUIRED_SCHEMA_FILENAME
+      version: SCHEMA_032_VERSION,
+      filename: SCHEMA_032_FILENAME
   });
   return {
     ...verification,
-    version: REQUIRED_SCHEMA_VERSION,
-    filename: REQUIRED_SCHEMA_FILENAME
+    version: SCHEMA_032_VERSION,
+    filename: SCHEMA_032_FILENAME
   };
 }

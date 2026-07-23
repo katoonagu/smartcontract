@@ -17,10 +17,11 @@ describe("schema-verified startup gate", () => {
   it("returns verified metadata and invokes the callback once", async () => {
     const verification = {
       verified: true as const,
-      version: 32 as const,
-      filename: "032_telegram_runtime_forensics_data_contracts.sql" as const,
+      version: 33 as const,
+      filename: "033_unified_wallet_check.sql" as const,
       checksumSha256: "a".repeat(64),
-      shortChecksum: "a".repeat(12)
+      shortChecksum: "a".repeat(12),
+      schema032ChecksumSha256: "b".repeat(64)
     };
     const onVerified = vi.fn(() => undefined);
     await expect(runStartupSchemaGate({

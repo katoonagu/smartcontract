@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { Client, type ClientConfig } from "pg";
 import {
-  REQUIRED_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION,
+  SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
+  SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
   type SchemaQueryable,
   checksumMigrationBytes,
   verifyRequiredSchema032

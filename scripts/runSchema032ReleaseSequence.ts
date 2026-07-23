@@ -32,7 +32,7 @@ import {
   type Schema032MigrationTargetBinding,
   type Schema032ReleaseEvidenceV1
 } from "./verifySchema032";
-import { REQUIRED_SCHEMA_FILENAME, REQUIRED_SCHEMA_VERSION, applyVerifiedTrackedMigration,
+import { SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME, SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION, applyVerifiedTrackedMigration,
   checksumMigrationBytes } from "../src/storage/schemaMigrations";
 import {
   buildSchema032MigrationSessionIdentitySha256,

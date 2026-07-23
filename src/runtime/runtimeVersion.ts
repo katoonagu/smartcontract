@@ -1,5 +1,12 @@
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
-import type { Schema032Verification } from "../storage/schemaMigrations";
+import type {
+  Schema032Verification,
+  Schema033Verification
+} from "../storage/schemaMigrations";
+
+type RuntimeSchemaVerification =
+  | Schema032Verification
+  | Schema033Verification;
 import type { TelegramForensicResultV1 } from "../telegram/forensicPresentation";
 import type { ForensicCoverageV2, ScoreAnchorV2 } from "../types";
 
@@ -20,7 +27,7 @@ export type RuntimeVersionV1 = Readonly<{
   scoringPolicyVersion: typeof SCORING_SIGNAL_MATRIX_POLICY_VERSION;
   resultSchemaVersion: ResultSchemaVersionV1;
   narrativeVersion: NarrativeVersionV1;
-  migration: Readonly<Schema032Verification>;
+  migration: Readonly<RuntimeSchemaVerification>;
 }>;
 
 function fail(code: string): never {
@@ -108,7 +115,7 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
 export function buildRuntimeVersion(input: {
   gitCommitSha: string | undefined;
   runtimeInstanceLabel: string | undefined;
-  migration: Schema032Verification;
+  migration: RuntimeSchemaVerification;
 }): RuntimeVersionV1 {
   const runtime = {
     version: "runtime-version-v1",

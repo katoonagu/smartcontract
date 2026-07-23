@@ -60,7 +60,7 @@ postgresDescribe("migration 032 PostgreSQL acceptance", () => {
 
       // Intentionally dynamic: Task 1 proves PostgreSQL was reached before the missing implementation fails RED.
       const migrations = await import("../../src/storage/schemaMigrations");
-      const migrationBytes = readFileSync(`migrations/${migrations.REQUIRED_SCHEMA_FILENAME}`);
+      const migrationBytes = readFileSync(`migrations/${migrations.SCHEMA_032_FILENAME}`);
 
       const checksumSha256 = await migrations.checksumMigrationBytes(migrationBytes);
       await migrations.applyVerifiedMigration032(client, { migrationBytes, schemaName: schema });
@@ -236,7 +236,7 @@ postgresDescribe("migration 032 PostgreSQL acceptance", () => {
       );
 
       const migrations = await import("../../src/storage/schemaMigrations");
-      const migrationBytes = readFileSync(`migrations/${migrations.REQUIRED_SCHEMA_FILENAME}`);
+      const migrationBytes = readFileSync(`migrations/${migrations.SCHEMA_032_FILENAME}`);
       await migrations.applyVerifiedMigration032(client, { migrationBytes, schemaName: schema });
 
       const legacyColumns = await client.query(

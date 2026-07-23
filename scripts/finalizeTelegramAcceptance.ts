@@ -33,7 +33,7 @@ import {
 } from "../src/storage/repositories";
 import {
   checksumMigrationBytes,
-  REQUIRED_SCHEMA_FILENAME,
+  SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
   verifyRequiredSchema032
 } from "../src/storage/schemaMigrations";
 import { renderTelegramTechnicalResult } from "../src/telegram/technicalResult";
