@@ -567,7 +567,10 @@ export async function finalizeUnifiedRun(
       throw new Error("unified_final_artifact_chain_mismatch");
     }
     await resolveLinkedArtifact("confirmed_snapshot", manifest.snapshotHash);
-    await resolveLinkedArtifact("canonical_facts", evidence.canonicalFactsHash);
+    const canonicalFacts = await resolveLinkedArtifact(
+      "canonical_facts",
+      evidence.canonicalFactsHash
+    );
     const visited = await resolveLinkedArtifact(
       "traversal_visited",
       closure.visitedStateHash
@@ -584,6 +587,26 @@ export async function finalizeUnifiedRun(
       "report_fact_inventory",
       report.factInventoryHash
     );
+    const orderedUniqueFactIds = (value: unknown): string[] | null => {
+      if (
+        !Array.isArray(value) ||
+        value.some((id) => typeof id !== "string" || id.length === 0)
+      ) return null;
+      const canonical = [...new Set(value)].sort();
+      return JSON.stringify(value) === JSON.stringify(canonical)
+        ? canonical
+        : null;
+    };
+    const canonicalFactIds = Array.isArray(canonicalFacts.facts)
+      ? orderedUniqueFactIds(canonicalFacts.facts.map((fact) =>
+          typeof fact === "object" && fact !== null && !Array.isArray(fact)
+            ? (fact as Record<string, unknown>).id
+            : null
+        ))
+      : null;
+    const evidenceFactIds = orderedUniqueFactIds(evidence.canonicalFactIds);
+    const anchorFactIds = orderedUniqueFactIds(scoreAnchor.canonicalFactIds);
+    const inventoryFactIds = orderedUniqueFactIds(factInventory.canonicalFactIds);
     if (
       closure.closed !== true ||
       !Array.isArray(visited.states) ||
@@ -591,10 +614,13 @@ export async function finalizeUnifiedRun(
       frontier.states.length !== 0 ||
       Number(scoreAnchor.score) !== input.finalScore ||
       scoreAnchor.decision !== input.finalDecision ||
-      !Array.isArray(evidence.canonicalFactIds) ||
-      !Array.isArray(factInventory.canonicalFactIds) ||
-      JSON.stringify(factInventory.canonicalFactIds) !==
-        JSON.stringify(evidence.canonicalFactIds)
+      canonicalFactIds === null ||
+      evidenceFactIds === null ||
+      anchorFactIds === null ||
+      inventoryFactIds === null ||
+      JSON.stringify(canonicalFactIds) !== JSON.stringify(evidenceFactIds) ||
+      JSON.stringify(canonicalFactIds) !== JSON.stringify(anchorFactIds) ||
+      JSON.stringify(canonicalFactIds) !== JSON.stringify(inventoryFactIds)
     ) {
       throw new Error("unified_linked_artifact_contract_mismatch");
     }
