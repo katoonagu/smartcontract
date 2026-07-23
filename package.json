@@ -19,6 +19,8 @@
     "forensic:where-is-money": "node --import tsx scripts/forensicWhereIsMoney.ts",
     "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts",
     "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts",
+    "golden:v2": "node --import tsx scripts/tronUsdtGoldenPilotV2.ts",
+    "golden:v2:verify": "node --import tsx scripts/tronUsdtGoldenPilotV2.ts verify",
     "admin:snapshot": "node --import tsx scripts/exportAdminSnapshot.ts",
     "wallet-intelligence:backfill": "node --import tsx scripts/backfillWalletIntelligence.ts",
     "release:verify": "node --import tsx scripts/verifyRemediationRelease.ts",
