@@ -255,10 +255,27 @@ export async function captureGoldenPilotV2(input: {
         "FAILED_TECHNICAL:golden_capture_index_coverage_incomplete"
       );
     }
+    const coverageEvidence = coverage.map((item) => {
+      const limitations = [
+        ...(item.providerCapHit ? ["provider_cap_observed"] : []),
+        ...(Date.parse(item.completedAt as string) <
+        Date.parse(confirmed.snapshot.timestamp)
+          ? ["coverage_completed_before_snapshot"]
+          : [])
+      ];
+      return {
+        ...item,
+        completeThroughSnapshot: limitations.length === 0,
+        limitations
+      };
+    });
     const coverageCertificate = {
       version: "golden-capture-coverage-certificate-v2" as const,
       tokenContract: USDT,
-      subjects: coverage
+      completeThroughSnapshot: coverageEvidence.every(
+        (item) => item.completeThroughSnapshot
+      ),
+      subjects: coverageEvidence
     };
     const coverageCertificateSha256 =
       canonicalSha256(coverageCertificate);
@@ -276,7 +293,8 @@ export async function captureGoldenPilotV2(input: {
     const counterparties = [
       ...new Set(
         transfers.flatMap(({ from, to }) => [from, to]).concat(
-          approvals.flatMap(({ owner, spender }) => [owner, spender])
+          approvals.flatMap(({ owner, spender }) => [owner, spender]),
+          subjects
         )
       )
     ].sort();
@@ -399,6 +417,8 @@ export async function captureGoldenPilotV2(input: {
           isolationLevel: "repeatable read" as const,
           querySha256,
           coverageCertificateSha256,
+          coverageCompleteThroughSnapshot:
+            coverageCertificate.completeThroughSnapshot,
           coverage: coverageCertificate.subjects
         },
         provider: {

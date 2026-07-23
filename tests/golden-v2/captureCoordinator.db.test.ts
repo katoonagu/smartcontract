@@ -172,6 +172,12 @@ describe("read-only golden capture coordinator", () => {
       "Subject Service"
     ]);
     expect(result.provenanceManifest.database.coverage).toHaveLength(7);
+    expect(
+      result.provenanceManifest.database.coverage[0].limitations
+    ).toContain("coverage_completed_before_snapshot");
+    expect(
+      result.provenanceManifest.database.coverageCompleteThroughSnapshot
+    ).toBe(false);
     expect(result.labelDataset.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.provenanceManifest.provider.responseSha256).toMatch(
       /^[0-9a-f]{64}$/
