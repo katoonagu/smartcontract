@@ -1,4 +1,6 @@
 import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import { buildScoreAnchorV3 } from "../risk/scoreAnchorV3";
+import { scoreSignalMatrixV4 } from "../risk/scoringSignalMatrixV4";
 import type {
   AnalysisManifestV1,
   ChildAttemptArtifactV1,
@@ -149,24 +151,15 @@ export function buildMinimalUnifiedCheckCandidate(input: {
     );
   }
 
-  const neutralFact = {
-    version: "canonical-fact-v1",
-    id: fingerprintCanonicalArtifact([
-      "canonical-fact-key-v1",
-      "state",
-      "tron",
-      "neutral_no_observed_risk",
-      input.run.subjectAddress,
-      "none",
-      "subject",
-      "not_applicable",
-      input.run.snapshotHash
-    ]),
-    lane: "neutral",
-    code: "neutral_no_observed_risk",
-    subjectAddress: input.run.subjectAddress
+  const matrix = scoreSignalMatrixV4({
+    subjectAddress: input.run.subjectAddress,
+    facts: [],
+    neutralCandidate: "neutral_no_observed_risk"
+  });
+  const facts = {
+    version: "canonical-fact-inventory-v1",
+    facts: matrix.facts
   } as const;
-  const facts = { version: "canonical-fact-inventory-v1", facts: [neutralFact] } as const;
   const canonicalFactsHash = add(
     artifacts,
     artifactKinds,
@@ -179,7 +172,7 @@ export function buildMinimalUnifiedCheckCandidate(input: {
     schemaVersion: 1,
     analysisManifestHash: manifestHash,
     canonicalFactsHash,
-    canonicalFactIds: [neutralFact.id],
+    canonicalFactIds: matrix.canonicalFactIds,
     acceptedChildAttemptHashes,
     branchOutputHashes
   };
@@ -198,16 +191,10 @@ export function buildMinimalUnifiedCheckCandidate(input: {
     closed: true
   };
   const closureHash = add(artifacts, artifactKinds, "traversal_closure", closure);
-  const scoreAnchor = {
-    version: "score-anchor-v3",
-    policyVersion: "scoring-signal-matrix-v4",
+  const scoreAnchor = buildScoreAnchorV3({
     subjectAddress: input.run.subjectAddress,
-    mode: "unified",
-    score: 0,
-    decision: "ACCEPTABLE",
-    matrixRow: "neutral_no_observed_risk",
-    canonicalFactIds: [neutralFact.id]
-  } as const;
+    matrix
+  });
   const scoreAnchorHash = add(artifacts, artifactKinds, "score_anchor", scoreAnchor);
   const scoring: ScoringBundleV1 = {
     version: "scoring-bundle-v1",
@@ -216,13 +203,13 @@ export function buildMinimalUnifiedCheckCandidate(input: {
     traversalClosureHash: closureHash,
     policyVersion: "scoring-signal-matrix-v4",
     scoreAnchorHash,
-    score: 0,
-    decision: "ACCEPTABLE"
+    score: matrix.score,
+    decision: matrix.decision
   };
   const scoringHash = add(artifacts, artifactKinds, "scoring_bundle", scoring);
   const factInventory = {
     version: "report-fact-inventory-v1",
-    canonicalFactIds: [neutralFact.id]
+    canonicalFactIds: matrix.canonicalFactIds
   } as const;
   const factInventoryHash = add(
     artifacts,
@@ -238,8 +225,8 @@ export function buildMinimalUnifiedCheckCandidate(input: {
     traversalClosureHash: closureHash,
     scoringBundleHash: scoringHash,
     subjectAddress: input.run.subjectAddress,
-    score: 0,
-    decision: "ACCEPTABLE",
+    score: matrix.score,
+    decision: matrix.decision,
     factInventoryHash
   };
   const reportHash = add(artifacts, artifactKinds, "unified_wallet_report", report);
