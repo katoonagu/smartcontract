@@ -16,8 +16,10 @@ import {
 } from "../../src/release/unifiedReleaseGateReceipt";
 import {
   readUnifiedReleaseCommandResult,
+  unifiedReleaseNpmVersion,
   verifyPlanAApprovedGoldenRoot
 } from "../../scripts/finalizeUnifiedReleaseGates";
+import { unifiedReleaseCommandInvocation } from "../../scripts/runUnifiedReleaseGateCommand";
 import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 
 const SHA = "a".repeat(64);
@@ -215,5 +217,16 @@ describe("Unified release gate receipts", () => {
         lockedRootTreeSha: APPROVED_PLAN_A_LOCKED_ROOT_TREE_SHA
       });
     expect(() => verifyPlanAApprovedGoldenRoot("2".repeat(40))).toThrow(/authority|approved/i);
+  });
+
+  it("uses a shell-free Windows npm entry point that Node can spawn", () => {
+    const command = unifiedReleaseCommandInvocation("full_test");
+    if (process.platform === "win32") {
+      expect(command.executable).toBe(process.execPath);
+      expect(command.args[0]).toMatch(/npm[\\/]bin[\\/]npm-cli\.js$/u);
+    } else {
+      expect(command).toEqual({ executable: "npm", args: ["test"] });
+    }
+    expect(unifiedReleaseNpmVersion()).toMatch(/^\d+\.\d+\.\d+$/u);
   });
 });

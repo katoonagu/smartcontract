@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalBytesV2 } from "../src/release/releaseRootWriterStore";
 import {
@@ -11,20 +11,35 @@ import {
 } from "../src/release/unifiedReleaseGateReceipt";
 import {
   repositoryRootPhysicalSha256,
+  unifiedReleaseNpmVersion,
   verifyPlanAApprovedGoldenRoot
 } from "./finalizeUnifiedReleaseGates";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const GENERATION = /^[a-z0-9][a-z0-9-]{15,63}$/u;
 
-function invocation(id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"]): {
+export function unifiedReleaseCommandInvocation(
+  id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"]
+): {
   executable: string;
   args: string[];
 } {
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-  if (id === "full_test") return { executable: npm, args: ["test"] };
-  if (id === "typecheck") return { executable: npm, args: ["run", "typecheck"] };
+  const npm = process.platform === "win32"
+    ? {
+        executable: process.execPath,
+        prefix: [resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
+      }
+    : { executable: "npm", prefix: [] };
+  const npx = process.platform === "win32"
+    ? {
+        executable: process.execPath,
+        prefix: [resolve(dirname(process.execPath), "node_modules/npm/bin/npx-cli.js")]
+      }
+    : { executable: "npx", prefix: [] };
+  if (id === "full_test") return { executable: npm.executable, args: [...npm.prefix, "test"] };
+  if (id === "typecheck") {
+    return { executable: npm.executable, args: [...npm.prefix, "run", "typecheck"] };
+  }
   if (id === "golden_verify") {
     return {
       executable: process.execPath,
@@ -36,9 +51,9 @@ function invocation(id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"]): {
   }
   if (id === "golden_compare") {
     return {
-      executable: npm,
+      executable: npm.executable,
       args: [
-        "run", "unified:golden:compare", "--",
+        ...npm.prefix, "run", "unified:golden:compare", "--",
         "--golden", "docs/audit/2026-07-system-audit/golden-v2/locked",
         "--candidate", "artifacts/unified-wallet-replay"
       ]
@@ -46,14 +61,14 @@ function invocation(id: typeof UNIFIED_RELEASE_COMMANDS[number]["id"]): {
   }
   if (id === "presentation_acceptance") {
     return {
-      executable: npx,
-      args: ["vitest", "run", "tests/unified-check/presentation.golden.test.ts"]
+      executable: npx.executable,
+      args: [...npx.prefix, "vitest", "run", "tests/unified-check/presentation.golden.test.ts"]
     };
   }
   return {
-    executable: npx,
+    executable: npx.executable,
     args: [
-      "vitest", "run",
+      ...npx.prefix, "vitest", "run",
       "tests/storage/migration033.postgres.test.ts",
       "tests/runtime/startupSchemaGate.test.ts",
       "tests/unified-check/productionRuntime.postgres.test.ts",
@@ -122,7 +137,7 @@ export async function runUnifiedReleaseGateCommand(options: {
       await logHandle.write(chunk);
     });
   };
-  const command = invocation(expected.id);
+  const command = unifiedReleaseCommandInvocation(expected.id);
   const exitCode = await new Promise<number>((resolveExit) => {
     const child = spawn(command.executable, command.args, {
       cwd: repositoryRoot,
@@ -171,9 +186,7 @@ export async function runUnifiedReleaseGateCommand(options: {
     },
     runtime: {
       nodeVersion: process.version,
-      npmVersion: execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
-        cwd: repositoryRoot, encoding: "utf8", windowsHide: true
-      }).trim(),
+      npmVersion: unifiedReleaseNpmVersion(),
       platform: process.platform,
       arch: process.arch
     }

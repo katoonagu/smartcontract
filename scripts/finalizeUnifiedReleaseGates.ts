@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants, readFileSync, realpathSync } from "node:fs";
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateSchema032ReleaseEvidenceV1 } from "../src/release/remediationReleaseManifestV2";
 import { canonicalBytesV2 } from "../src/release/releaseRootWriterStore";
@@ -93,6 +93,16 @@ async function readSafeRegularFile(root: string, relativePath: string): Promise<
 
 export function repositoryRootPhysicalSha256(): string {
   return sha256(Buffer.from(resolve(realpathSync(repositoryRoot)), "utf8"));
+}
+
+export function unifiedReleaseNpmVersion(): string {
+  const executable = process.platform === "win32" ? process.execPath : "npm";
+  const args = process.platform === "win32"
+    ? [resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"), "--version"]
+    : ["--version"];
+  return execFileSync(executable, args, {
+    cwd: repositoryRoot, encoding: "utf8", windowsHide: true
+  }).trim();
 }
 
 export function verifyPlanAApprovedGoldenRoot(
@@ -268,9 +278,7 @@ export async function finalizeUnifiedReleaseGates(
     recordedAt,
     runtime: {
       nodeVersion: process.version,
-      npmVersion: execFileSync("npm", ["--version"], {
-        cwd: repositoryRoot, encoding: "utf8", windowsHide: true
-      }).trim()
+      npmVersion: unifiedReleaseNpmVersion()
     },
     selectedAttributionPolicy: "proportional"
   };
