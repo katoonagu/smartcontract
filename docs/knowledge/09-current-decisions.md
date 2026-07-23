@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-18
+last_verified: 2026-07-23
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -77,6 +77,43 @@ of these decisions, update this file in the same work.
 - `Where is money` explains where relevant wallet funds came from.
 - `Incoming deposit` explains one concrete deposit.
 - `DeepCheck` builds a wider forensic profile.
+
+## 2026-07-23 Approved Unified Wallet Check / Golden Pilot V2 Target
+
+This section records an approved target, not implemented current behavior. The
+normative design is
+`docs/superpowers/specs/2026-07-23-unified-wallet-check-golden-pilot-v2-design.md`.
+Until its two implementation plans are completed and released, the v3
+score-validity, separate job/delivery, bounded traversal, and current Telegram
+contracts below remain the code truth.
+
+- User-facing wallet checking will become one parent-owned Unified Check with
+  internal Fast, Where, and Deep evidence branches and one immutable final
+  Telegram report. Child branches remain separate analyzers but lose
+  user-delivery authority.
+- A completed Unified Check will always have a numeric score and
+  `ACCEPTABLE`, `REVIEW`, or `DECLINE`. Runtime/provider failure remains a
+  separate technical state and does not manufacture a score.
+- The new `scoring-signal-matrix-v4` will remove coverage as scoring evidence,
+  including the current limited-coverage floor. Unknown addresses add no risk
+  without independent correlated behavior facts. V3 and old results remain
+  reproducible.
+- Coverage becomes multidimensional audit/report metadata. Backward provenance
+  and forward continuation are distinct. Dense aggregation is not itself a
+  terminal boundary, and semantic page/time/depth limits do not terminate
+  analysis.
+- The balance attribution policy is not preselected. Golden Pilot V2 compares
+  FIFO, LIFO, and proportional attribution through blind review and
+  adjudication.
+- Golden Pilot V2 remains offline and production-independent. It emits locked
+  neutral evidence, decisions, post-adjudication scores, properties, and
+  comparator contracts. The production-importing comparator belongs to the
+  Unified Check plan.
+- Analysis, presentation, and recipients have separate manifests/artifacts.
+  Immutable child attempts feed a canonical hash chain. Ambiguous Telegram
+  delivery becomes `DELIVERY_UNKNOWN` and is never resent automatically.
+- A rollout generation fence must prevent legacy Deep/Where delivery from
+  racing the new Unified report.
 
 ## 2026-07-13 Plan 1 Remediation Foundation
 

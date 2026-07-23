@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-17
+last_verified: 2026-07-23
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -394,4 +394,34 @@ targets, requires a 15-minute attempt floor, and leaves failed reads
 ## Planned Behavior
 
 - Ordinary Where/Incoming resumable indexing to full main-path coverage.
-- Full user-facing progress for long targeted indexing in Telegram.
+- Full Admin/watchdog progress for long indexing. The approved Unified target
+  intentionally sends no intermediate Telegram progress message.
+
+## 2026-07-23 Approved Unified Target Still Open
+
+The approved target is documented in
+`docs/superpowers/specs/2026-07-23-unified-wallet-check-golden-pilot-v2-design.md`.
+This documentation work does not implement it. The following gaps remain open
+until the Golden Pilot V2 and Unified Wallet Check plans land:
+
+- Valid wallet checks can still end with `NO_FINAL_DECISION`, and limited
+  coverage can still raise the legacy unified context score to at least 30.
+- Fast, Where, and Deep still have independent job/delivery ownership instead
+  of one parent run and one final message.
+- The current low-balance selection still uses the 1,000 USDT threshold.
+- Top-level Where work can remain sequential, old retries can delay newer
+  work, and common provider pages are not yet coalesced across all child modes.
+- Current traversal limits, dense-hop materiality, aggregation, and terminal
+  semantics do not yet implement the approved bidirectional evidence-directed
+  model.
+- Canonical cross-mode fact deduplication, role/timing conflict resolution,
+  matrix v4 neutral candidates, and coverage-independent scoring are not
+  implemented.
+- Analysis/presentation manifests, immutable child-attempt lineage, the full
+  forensic hash chain, locale-specific presentation artifacts, and the legacy
+  rollout fence do not exist yet.
+- TBL7 and TQr need frozen regression bundles for Golden and separate live
+  canary runs. Dense-wallet/500-page/property fixtures also remain to be built.
+- The selected balance-attribution policy remains intentionally undecided
+  until FIFO, LIFO, and proportional results complete blind review and
+  adjudication.

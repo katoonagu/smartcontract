@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-17
+last_verified: 2026-07-23
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -266,3 +266,27 @@ coverage and reused a production helper to compute its own expected escaping.
 Correct rule: pending Deep alone selects preliminary versus final, so keep the
 other input identical; boundary tests use literal independent expectations, not
 the implementation under test as their oracle.
+
+## 2026-07-23: Do Not Confuse Aggregation, Coverage, And Completion
+
+Repeated corrections:
+
+- A route share of 100% was described as if it proved 100% source coverage.
+- A dense collector aggregation was described as if it were automatically a
+  terminal boundary.
+- An existing legacy fallback score was proposed for publication even though
+  limited coverage can raise that score.
+
+Correct rule:
+
+- Every percentage names its denominator and scope.
+- Aggregation only compresses equivalent work or presentation; it does not end
+  a route without a separate evidence-backed terminal reason.
+- Coverage is audit metadata in the approved matrix-v4 target and never
+  creates risk points.
+- A completed parent run owns the single score and delivery. Fast, Where, and
+  Deep remain separate evidence producers and must not publish competing final
+  results.
+- New target behavior is documented as planned until code and release gates
+  prove it; do not rewrite current behavior as if the design were already
+  deployed.
