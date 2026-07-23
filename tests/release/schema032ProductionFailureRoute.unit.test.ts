@@ -69,10 +69,13 @@ function writeEvidence(root: string, kind: string, relativePath: string, value: 
   };
 }
 
-function materializeInitialGateEvidence(root: string, exactCandidateSha: string) {
+function materializeInitialGateEvidence(
+  root: string,
+  exactCandidateSha: string,
+  releaseGenerationId: string
+) {
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
-  const generation = buildReleaseFreezeIdentityV2Fixture({ candidateSha: exactCandidateSha }).releaseGenerationId;
-  const unified = buildUnifiedReleaseGateEvidenceFixture(exactCandidateSha, generation);
+  const unified = buildUnifiedReleaseGateEvidenceFixture(exactCandidateSha, releaseGenerationId);
   for (const gate of gates) {
     gate.candidateSha = exactCandidateSha;
     const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[
@@ -121,7 +124,7 @@ async function materializeG12Source(root: string, exactCandidateSha: string) {
     evaluatedAt: "2026-07-18T10:00:00.000Z" });
   const initialized = await store.initializeReleaseManifestV2({ artifactRoot: root,
     evaluatedAt: "2026-07-18T10:00:00.000Z",
-    verifiedGateOutputs: materializeInitialGateEvidence(root, exactCandidateSha) });
+    verifiedGateOutputs: materializeInitialGateEvidence(root, exactCandidateSha, freeze.releaseGenerationId) });
   const manual = writeEvidence(root, "manual_telegram_acceptance", "manual-telegram-acceptance.json", {
     version: "gate-evidence-v2", candidateSha: exactCandidateSha,
     gateId: "G05_TELEGRAM", kind: "manual_telegram_acceptance"
