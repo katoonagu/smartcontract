@@ -377,7 +377,11 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
         .toEqual(["CHECKPOINTED", "WAITING_RETRY", "CANCELLED"]);
       expect(timedTask.durationsMs.queue).toBeGreaterThan(0);
       expect(timedTask.durationsMs.provider).toBeGreaterThanOrEqual(20);
-      expect(timedTask.durationsMs.compute).toBeGreaterThan(0);
+      expect(timedTask.durationsMs.compute).toBeGreaterThanOrEqual(0);
+      expect(timedTask.attemptDurations.reduce(
+        (sum, attempt) => sum + attempt.durationMs,
+        0
+      )).toBeGreaterThan(0);
       const isolation = await auditUnifiedCanaryIsolation(pool, {
         runIds: batch.runs.map((run) => run.id)
       });

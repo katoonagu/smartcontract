@@ -32,13 +32,14 @@ postgresDescribe("Unified Check repository", () => {
         query: (sql: string, values?: readonly unknown[]) =>
           client.query(sql, values as unknown[])
       };
+      const artifact = { stable: true };
       const runInput = {
         id: "run-a",
         analysisKeySha256: "a".repeat(64),
         subjectAddress: "TSubject",
         runPurpose: "synthetic_test" as const,
         sideEffectPolicy: "isolated" as const,
-        analysisManifestSha256: "b".repeat(64)
+        analysisManifestSha256: fingerprintCanonicalJson(artifact)
       };
       const first = await createOrReuseUnifiedRun(scoped, runInput);
       const reused = await createOrReuseUnifiedRun(scoped, {
@@ -80,11 +81,10 @@ postgresDescribe("Unified Check repository", () => {
         sideEffectPolicy: "isolated"
       })).rejects.toThrow("unified_request_correlation_conflict");
 
-      const artifact = { stable: true };
       await insertUnifiedArtifact(scoped, {
         sha256: fingerprintCanonicalJson(artifact),
         createdByRunId: runId,
-        kind: "analysis",
+        kind: "analysis_manifest",
         schemaVersion: "1",
         artifact
       });
