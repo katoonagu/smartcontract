@@ -1,11 +1,13 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-23
 owner_area: docs
 code_refs:
   - src/types.ts
   - src/forensics/moneyOriginTrace.ts
   - src/risk/unifiedWalletRisk.ts
+  - src/unifiedCheck/contracts.ts
+  - src/unifiedCheck/delivery.ts
 supersedes:
   - docs/project-walkthrough/09-glossary-plain-language.md
 ---
@@ -72,3 +74,48 @@ sanctioned/high-risk source, or exact approval-drain proof.
 ## policy floor
 
 A scoring rule that sets a minimum score when a strong policy signal exists.
+
+## Unified Check
+
+One parent-owned wallet analysis that coordinates Fast, Where, and Deep as
+evidence-only branches, reconciles their facts, creates one score/report, and
+owns the only automatic user delivery.
+
+## analysis manifest
+
+The immutable locale-independent binding of snapshot, attempts, canonical
+facts, traversal closure, policy/config, score anchor, and report.
+
+## presentation manifest
+
+The immutable locale-specific binding of one report to renderer version,
+Telegram HTML, completeness receipt, and presentation hash.
+
+## canonical fact key
+
+The semantic event identity used for cross-branch deduplication:
+chain, transaction hash, event index, fact type, subject, and counterparty,
+plus the normalized role/timing fields required by that fact type.
+
+## closure certificate
+
+Proof that a snapshot-bounded traversal has no remaining frontier, conserves
+classified flow/state, and dropped or unclassified counts are zero.
+
+## DELIVERY_UNKNOWN
+
+Delivery state used when Telegram may have accepted the message but the client
+cannot prove the result. Automatic resend is forbidden because it could create
+a duplicate user message.
+
+## generation fence
+
+Database-backed ownership boundary selecting either legacy wallet delivery or
+Unified delivery for new requests. Both authorities cannot own the same
+logical request.
+
+## canary purpose
+
+An isolated analysis purpose that may read real wallet/provider data but has
+no Telegram or authoritative production-write authority. Its observation
+window is operational, not a coverage threshold.

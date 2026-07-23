@@ -449,6 +449,7 @@ it("[REQ-38][SCHEMA-032-RELEASE] rejects filename full candidate checksum receip
     (value: any) => { value.receiptChecksumSha256 = "f".repeat(64); },
     (value: any) => { value.shortChecksum = "f".repeat(12); },
     (value: any) => { value.postconditionsSha256 = "f".repeat(64); },
+    (value: any) => { value.schema033.catalogSha256 = "f".repeat(64); },
     (value: any) => { value.secondApply = "applied"; }
   ];
   for (const mutate of invalid) {
@@ -786,6 +787,13 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and 
     receiptChecksumSha256: APPROVED_CHECKSUM,
     shortChecksum: APPROVED_CHECKSUM.slice(0, 12),
     postconditionsSha256: "e".repeat(64),
+    schema033: {
+      version: 33,
+      migrationFilename: "033_unified_wallet_check.sql",
+      checksumSha256: APPROVED_UNIFIED_CHECKSUM,
+      catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      verificationReceiptSha256: "f".repeat(64)
+    },
     firstApply: "applied",
     secondApply: "already_verified"
   };

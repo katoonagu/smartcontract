@@ -290,3 +290,11 @@ Correct rule:
 - New target behavior is documented as planned until code and release gates
   prove it; do not rewrite current behavior as if the design were already
   deployed.
+
+## 2026-07-23: New Schema Must Update Existing Release Guards
+
+Repeated mistake: a new migration was hidden from an older release test instead
+of being added to the fail-closed producer/evidence contract.
+
+Correct rule: bind the exact new migration/checksum and real trust-boundary
+fixture while continuing to reject future or unknown files.

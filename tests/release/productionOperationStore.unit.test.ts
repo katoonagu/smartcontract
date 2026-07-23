@@ -30,7 +30,8 @@ import {
 import { executeProtectedProductionOperationV2 } from "../../src/release/productionReleaseOrchestratorV2";
 import {
   buildReleaseManifestV2Fixture,
-  buildTask0BReleaseFreezeEvidence
+  buildTask0BReleaseFreezeEvidence,
+  buildUnifiedReleaseGateEvidenceFixture
 } from "../fixtures/release/remediationReleaseFixtures";
 import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
 
@@ -211,6 +212,7 @@ async function materializeInitialGateEvidence(root: string, candidateSha: string
     canonicalBytes(trustBoundary)
   );
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
+  const unified = buildUnifiedReleaseGateEvidenceFixture(candidateSha, freeze.releaseGenerationId);
   for (const gate of gates) {
     const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id as keyof typeof PRE_RELEASE_GATE_EVIDENCE_POLICY_V2];
     const paths = [...policy.primaryPaths];
@@ -222,8 +224,11 @@ async function materializeInitialGateEvidence(root: string, candidateSha: string
       const path = join(root, ...relativePath.split("/"));
       if (!existsSync(path)) {
         await mkdir(resolve(path, ".."), { recursive: true });
-        await writeFile(path, canonicalBytes({ version: "gate-evidence-v2", candidateSha,
-          gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] }));
+        const value = relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+          : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
+            : { version: "gate-evidence-v2", candidateSha,
+              gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };
+        await writeFile(path, canonicalBytes(value));
       }
       const bytes = readFileSync(path);
       const parsed = JSON.parse(bytes.toString("utf8"));

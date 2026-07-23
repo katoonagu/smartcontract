@@ -19,7 +19,8 @@ import {
   buildExecutedReleaseGateV2Fixture,
   buildReleaseFreezeIdentityV2Fixture,
   buildReleaseManifestV2Fixture,
-  buildTask0BReleaseFreezeEvidence
+  buildTask0BReleaseFreezeEvidence,
+  buildUnifiedReleaseGateEvidenceFixture
 } from "../fixtures/release/remediationReleaseFixtures";
 import {
   SCHEMA_032_PRODUCTION_BACKUP_TEMPLATE_SHA256,
@@ -70,6 +71,8 @@ function writeEvidence(root: string, kind: string, relativePath: string, value: 
 
 function materializeInitialGateEvidence(root: string, exactCandidateSha: string) {
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
+  const generation = buildReleaseFreezeIdentityV2Fixture({ candidateSha: exactCandidateSha }).releaseGenerationId;
+  const unified = buildUnifiedReleaseGateEvidenceFixture(exactCandidateSha, generation);
   for (const gate of gates) {
     gate.candidateSha = exactCandidateSha;
     const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[
@@ -80,10 +83,14 @@ function materializeInitialGateEvidence(root: string, exactCandidateSha: string)
       if (index >= paths.length) paths.push(`gates/${gate.id.toLowerCase()}/${kind}.json`);
     }
     gate.evidence = paths.map((relativePath, index) => writeEvidence(root,
-      policy.requiredKinds[index] ?? policy.allowedKinds[0]!, relativePath, {
-        version: "gate-evidence-v2", candidateSha: exactCandidateSha,
-        gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0]
-      }, exactCandidateSha, true).ref) as never;
+      policy.requiredKinds[index] ?? policy.allowedKinds[0]!, relativePath,
+      relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+        : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
+          : {
+              version: "gate-evidence-v2", candidateSha: exactCandidateSha,
+              gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0]
+            },
+      exactCandidateSha, true).ref) as never;
   }
   expect(gates.map((gate) => gate.id)).toEqual(PRE_RELEASE_GATE_IDS.filter((id) => id !== "G05_TELEGRAM"));
   return gates;
@@ -217,6 +224,39 @@ async function materializeG12Source(root: string, exactCandidateSha: string) {
 }
 
 describe("schema 032 production failure route", () => {
+  it("rejects changed migration 033 bytes before opening a database session", async () => {
+    dbSessionStarted.mockClear();
+    const root = mkdtempSync(join(tmpdir(), "schema033-preflight-"));
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      const exactCandidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const migrationFiles = readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort();
+      await expect(runSchema032ReleaseSequence({
+        databaseUrlEnvName: "PLAN5_SCHEMA_CLEAN_DATABASE_URL",
+        databaseUrl: "postgresql://test:test@127.0.0.1:55998/tron_watch_plan5_clean",
+        expectedEndpoint: "127.0.0.1:55998",
+        expectedSystemIdentifier: "12345678901234567890",
+        artifactRoot: root,
+        offline: true,
+        candidateSha: exactCandidateSha
+      }, {
+        observeCandidateRepositoryState: async () => ({
+          headSha: exactCandidateSha, status: "", migrationFiles
+        }),
+        readMigrationBytes: async (filename) => filename.startsWith("033_")
+          ? Buffer.from("changed migration 033")
+          : readFileSync(join("migrations", filename))
+      })).rejects.toThrow("schema_033_sequence_migration_checksum_mismatch");
+      expect(dbSessionStarted).not.toHaveBeenCalled();
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("terminalizes the exact expired G13 chain tip by transition while holding a database absence guard", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const root = protectedRoot();
@@ -375,6 +415,7 @@ describe("schema 032 production failure route", () => {
           preparedSettlementRelativePath: `schema032-production-settlement-prepared-${digest("9")}.json`,
           preparedSettlementSha256: digest("9"),
           migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+          migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
           result: "failed_after_attempt",
           failedStep,
           completedStages
@@ -481,6 +522,7 @@ describe("schema 032 production failure route", () => {
         advisoryLockKey: 320032500 as const, databaseSessionIdentitySha256: digest("2"),
         lockAcquiredAt: attemptValue.lockAcquiredAt,
         migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+        migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
         result: "failed_after_attempt" as const, failedStep: "first_migration" as const,
         completedStages: [] as [], failureArtifact
       };

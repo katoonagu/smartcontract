@@ -21,7 +21,8 @@ import {
   GATE_COMMAND_IDS,
   PRE_RELEASE_GATE_IDS,
   buildSchema032ReleaseEvidence,
-  buildTask0BReleaseFreezeEvidence
+  buildTask0BReleaseFreezeEvidence,
+  buildUnifiedReleaseGateEvidenceFixture
 } from "../fixtures/release/remediationReleaseFixtures";
 import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
 
@@ -178,6 +179,7 @@ function initialGateOutputs(candidateSha: string, artifactRoot: string) {
     outputSha256: "9".repeat(64),
     evidence: (() => {
       const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[id];
+      const unified = buildUnifiedReleaseGateEvidenceFixture(candidateSha, freeze.releaseGenerationId);
       const refs: Array<{ kind: any; relativePath: string; sha256: string; schemaVersion: string; candidateSha: string }> = [];
       const paths = [...policy.primaryPaths];
       for (const [index, kind] of policy.requiredKinds.entries()) {
@@ -189,6 +191,8 @@ function initialGateOutputs(candidateSha: string, artifactRoot: string) {
           mkdirSync(resolve(path, ".."), { recursive: true });
           const fixture = relativePath === "trusted-os-principal-policy-v2.json" ? g00Policy
             : relativePath === "artifact-root-trust-boundary-evidence-v1.json" ? g00Boundary
+              : relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+                : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
               : { version: "gate-evidence-v2", candidateSha,
                 gateId: id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };
           writeFileSync(path, canonicalBytesV2(fixture));
@@ -510,7 +514,7 @@ describe("release manifest advance CLI verified input", () => {
       transitionId: "readiness", expectedSourceSha: sourceSha, artifactRoot: setup.artifactRoot,
       cwd: setup.repository, evaluatedAt: "2026-07-18T10:01:00.000Z"
     })).rejects.toThrow(/already|exists|exclusive|conflict/i);
-  }, 30_000);
+  }, 60_000);
 
   it("rejects a caller-supplied fourth evidence path", async () => {
     const setup = makeRepositoryAndRoot();

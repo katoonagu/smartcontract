@@ -39,7 +39,8 @@ export const RELEASE_COMMAND_IDS_V2 = [
 export const GATE_EVIDENCE_KINDS_V2 = [
   "task0_baseline", "trusted_os_principal_policy", "release_freeze_materialization",
   "acceptance_trace", "task8b_red", "suite_report", "suite_evidence",
-  "full_regression", "schema_clean", "schema_production_clone",
+  "full_regression", "plan_a_gate_receipt", "unified_release_gate_receipt",
+  "schema_clean", "schema_production_clone",
   "schema_runtime_sanitized", "runtime_rehearsal", "terminal_legacy_population",
   "rollback_rehearsal", "manual_telegram_acceptance", "operational_attestation",
   "production_backup_authority", "production_backup_consumption", "production_backup_dump_progress",
@@ -627,6 +628,13 @@ export type Schema032ReleaseEvidenceV1 = {
   receiptChecksumSha256: string;
   shortChecksum: string;
   postconditionsSha256: string;
+  schema033: {
+    version: 33;
+    migrationFilename: "033_unified_wallet_check.sql";
+    checksumSha256: string;
+    catalogSha256: string;
+    verificationReceiptSha256: string;
+  };
   firstApply: "applied" | "already_verified";
   secondApply: "already_verified";
 };
@@ -652,6 +660,7 @@ export type Schema032ProductionExecutionReceiptCommonV2 = {
   preparedSettlementRelativePath: string;
   preparedSettlementSha256: string;
   migrationBytesChecksumSha256: string;
+  migration033BytesChecksumSha256: string;
 };
 export type Schema032ProductionExecutionSuccessV2 = Schema032ProductionExecutionReceiptCommonV2 & {
   result: "applied_and_verified";
@@ -663,6 +672,7 @@ export type Schema032ProductionExecutionSuccessV2 = Schema032ProductionExecution
   ];
   receiptChecksumSha256: string;
   postconditionsSha256: string;
+  schema033: Schema032ReleaseEvidenceV1["schema033"];
 };
 export type Schema032StageFailureArtifactPath<S extends Schema032Stage> =
   S extends "first_migration" ? "schema032-failures/first-migration-failure-v2.json"
@@ -2769,6 +2779,8 @@ const PRODUCTION_OPERATION_COMMANDS_V2 = [
   "production_rollout", "production_canary", "production_rollback", "production_recovery"
 ] as const;
 const SCHEMA032_CHECKSUM_V2 = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
+const SCHEMA033_CHECKSUM_V2 = "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+const SCHEMA033_CATALOG_SHA256_V2 = "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 const SCHEMA032_STAGES_V2 = [
   "first_migration", "first_verification", "second_migration", "final_verification"
 ] as const;
@@ -3261,7 +3273,7 @@ export function validateSchema032ReleaseEvidenceV1(value: unknown): Schema032Rel
   const input = record(value, "schema032_release_evidence");
   exactKeys(input, ["candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
     "candidateBytesChecksumSha256", "receiptChecksumSha256", "shortChecksum", "postconditionsSha256",
-    "firstApply", "secondApply"], "schema032_release_evidence");
+    "schema033", "firstApply", "secondApply"], "schema032_release_evidence");
   sha(input.candidateSha, SHA40, "schema032_candidate");
   oneOf(input.databaseRole, ["clean", "production_clone", "runtime_sanitized", "production"] as const, "schema032_database_role");
   sha(input.databaseFingerprintSha256, SHA256, "schema032_database_fingerprint");
@@ -3270,6 +3282,16 @@ export function validateSchema032ReleaseEvidenceV1(value: unknown): Schema032Rel
       || input.receiptChecksumSha256 !== SCHEMA032_CHECKSUM_V2
       || input.shortChecksum !== SCHEMA032_CHECKSUM_V2.slice(0, 12)) throw new Error("schema032_checksum_binding_invalid");
   sha(input.postconditionsSha256, SHA256, "schema032_postconditions");
+  const schema033 = record(input.schema033, "schema033_release_evidence");
+  exactKeys(schema033, [
+    "version", "migrationFilename", "checksumSha256", "catalogSha256", "verificationReceiptSha256"
+  ], "schema033_release_evidence");
+  if (schema033.version !== 33 || schema033.migrationFilename !== "033_unified_wallet_check.sql"
+      || schema033.checksumSha256 !== SCHEMA033_CHECKSUM_V2
+      || schema033.catalogSha256 !== SCHEMA033_CATALOG_SHA256_V2) {
+    throw new Error("schema033_release_evidence_invalid");
+  }
+  sha(schema033.verificationReceiptSha256, SHA256, "schema033_verification_receipt");
   oneOf(input.firstApply, ["applied", "already_verified"] as const, "schema032_first_apply");
   if (input.secondApply !== "already_verified") throw new Error("schema032_second_apply_invalid");
   return input as Schema032ReleaseEvidenceV1;
@@ -3307,12 +3329,15 @@ function validateSchema032ProductionExecutionReceiptFieldsV2(
     "advisoryLockKey", "databaseSessionIdentitySha256",
     "lockAcquiredAt", "lockReleasedAt",
     ...(requirePreparedSettlement ? ["preparedSettlementRelativePath", "preparedSettlementSha256"] : []),
-    "migrationBytesChecksumSha256", "result", "completedStages"];
+    "migrationBytesChecksumSha256", "migration033BytesChecksumSha256", "result", "completedStages"];
   exactKeys(input, input.result === "applied_and_verified"
-    ? [...common, "receiptChecksumSha256", "postconditionsSha256"]
+    ? [...common, "receiptChecksumSha256", "postconditionsSha256", "schema033"]
     : [...common, "failedStep", "failureArtifact"], "schema032_production_execution_receipt");
   if (input.version !== "schema-032-production-execution-receipt-v2" || input.advisoryLockKey !== 320032500
-      || input.migrationBytesChecksumSha256 !== SCHEMA032_CHECKSUM_V2) throw new Error("schema032_production_receipt_literal_invalid");
+      || input.migrationBytesChecksumSha256 !== SCHEMA032_CHECKSUM_V2
+      || input.migration033BytesChecksumSha256 !== SCHEMA033_CHECKSUM_V2) {
+    throw new Error("schema032_production_receipt_literal_invalid");
+  }
   sha(input.candidateSha, SHA40, "schema032_production_candidate");
   for (const key of ["releaseFreezeIdentitySha256", "operationalAttestationSha256", "authorityConsumptionSha256",
     ...(Object.hasOwn(input, "operationalAttestationIssuerReceiptSha256")
@@ -3340,6 +3365,16 @@ function validateSchema032ProductionExecutionReceiptFieldsV2(
     validateSchemaStages(input.completedStages, SCHEMA032_STAGES_V2, "schema032_success");
     if (input.receiptChecksumSha256 !== SCHEMA032_CHECKSUM_V2) throw new Error("schema032_receipt_checksum_invalid");
     sha(input.postconditionsSha256, SHA256, "schema032_postconditions");
+    const schema033 = record(input.schema033, "schema033_production_receipt_invalid");
+    exactKeys(schema033, [
+      "version", "migrationFilename", "checksumSha256", "catalogSha256", "verificationReceiptSha256"
+    ], "schema033_production_receipt_invalid");
+    if (schema033.version !== 33 || schema033.migrationFilename !== "033_unified_wallet_check.sql"
+        || schema033.checksumSha256 !== SCHEMA033_CHECKSUM_V2
+        || schema033.catalogSha256 !== SCHEMA033_CATALOG_SHA256_V2) {
+      throw new Error("schema033_production_receipt_invalid");
+    }
+    sha(schema033.verificationReceiptSha256, SHA256, "schema033_production_receipt_invalid");
   } else if (input.result === "failed_after_attempt") {
     const failedStep = oneOf(input.failedStep, SCHEMA032_STAGES_V2, "schema032_failed_step");
     validateSchemaStages(input.completedStages, SCHEMA032_STAGES_V2.slice(0, SCHEMA032_STAGES_V2.indexOf(failedStep)), "schema032_failure");

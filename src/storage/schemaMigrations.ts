@@ -411,7 +411,7 @@ const UNIFIED_TABLES = [
   "unified_check_generation_fence"
 ] as const;
 
-const UNIFIED_SCHEMA_033_CATALOG_SHA256 =
+export const UNIFIED_SCHEMA_033_CATALOG_SHA256 =
   "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 
 function unifiedCatalogHash(value: unknown): string {

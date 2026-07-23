@@ -10,6 +10,18 @@ import { canonicalBytesV2 } from "../../src/release/releaseRootWriterStore";
 import { releaseSha256V2 } from "../../src/release/remediationReleaseManifestV2";
 import { deriveProductionGateSourceManifestBindingsV2 } from "../../src/release/remediationReleaseManifestV2";
 import {
+  APPROVED_GOLDEN_CASE_CATALOG_SHA256,
+  APPROVED_GOLDEN_COMPARATOR_CONTRACT_SHA256,
+  APPROVED_GOLDEN_MANIFEST_DESCRIPTOR_SHA256,
+  APPROVED_GOLDEN_PROTOCOL_SHA256,
+  APPROVED_PLAN_A_LOCK_COMMIT_SHA,
+  APPROVED_PLAN_A_LOCK_TREE_SHA,
+  APPROVED_PLAN_A_LOCKED_ROOT_TREE_SHA,
+  APPROVED_LOCKED_GOLDEN_MANIFEST_SHA256,
+  PLAN_A_GATE_RECEIPT_RELATIVE_PATH,
+  UNIFIED_RELEASE_COMMANDS
+} from "../../src/release/unifiedReleaseGateReceipt";
+import {
   buildExecutedReleaseGateV2Fixture,
   buildOperationalAttestationV2Fixture,
   buildReleaseManifestV2Fixture,
@@ -90,11 +102,14 @@ it("binds every focused suite report and sidecar to exactly one pre-release gate
   ]);
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G06_FULL.primaryPaths).toEqual([
     "full-regression-evidence.json",
+    "plan-a-gate-receipt-v1.json",
+    "unified-wallet-release-gate-receipt-v1.json",
     "suite-plan5.vitest.json",
     "suite-plan5.evidence.json"
   ]);
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G06_FULL.requiredKinds).toEqual([
-    "full_regression", "suite_report", "suite_evidence"
+    "full_regression", "plan_a_gate_receipt", "unified_release_gate_receipt",
+    "suite_report", "suite_evidence"
   ]);
   expect(PRE_RELEASE_GATE_EVIDENCE_POLICY_V2.G05_TELEGRAM.allowedKinds).toEqual([
     "manual_telegram_acceptance"
@@ -109,6 +124,95 @@ it("binds every focused suite report and sidecar to exactly one pre-release gate
     new Map([[foreignSuite.ref.relativePath, foreignSuite.content]]),
     expected()
   )).toThrow(/policy_binding/i);
+});
+
+it("binds the Unified release receipt to the exact Plan-A receipt and rollout generation", () => {
+  const planA = ref("plan_a_gate_receipt", PLAN_A_GATE_RECEIPT_RELATIVE_PATH, {
+    version: "plan-a-gate-receipt-v1",
+    candidateSha: CANDIDATE_SHA,
+    approvalAuthority: {
+      commitSha: APPROVED_PLAN_A_LOCK_COMMIT_SHA,
+      repositoryTreeSha: APPROVED_PLAN_A_LOCK_TREE_SHA,
+      lockedRootTreeSha: APPROVED_PLAN_A_LOCKED_ROOT_TREE_SHA
+    },
+    artifacts: {
+      caseCatalogSha256: APPROVED_GOLDEN_CASE_CATALOG_SHA256,
+      comparatorContractSha256: APPROVED_GOLDEN_COMPARATOR_CONTRACT_SHA256,
+      lockedGoldenManifestSha256: APPROVED_LOCKED_GOLDEN_MANIFEST_SHA256,
+      lockedManifestDescriptorSha256: APPROVED_GOLDEN_MANIFEST_DESCRIPTOR_SHA256,
+      protocolSha256: APPROVED_GOLDEN_PROTOCOL_SHA256
+    },
+    commands: [
+      {
+        id: "full_test", command: "npm test", exitCode: 0,
+        outputSha256: SHA, provenanceReceiptSha256: SHA
+      },
+      {
+        id: "typecheck", command: "npm run typecheck", exitCode: 0,
+        outputSha256: SHA, provenanceReceiptSha256: SHA
+      },
+      {
+        id: "locked_verify",
+        command: "node --import tsx scripts/tronUsdtGoldenPilotV2.ts verify --input docs/audit/2026-07-system-audit/golden-v2/locked",
+        exitCode: 0,
+        outputSha256: SHA,
+        provenanceReceiptSha256: SHA
+      }
+    ],
+    recordedAt: STARTED,
+    runtime: { nodeVersion: "v22.20.0", npmVersion: "11.6.4" },
+    selectedAttributionPolicy: "proportional"
+  });
+  const unifiedValue = {
+    version: "unified-wallet-release-gate-receipt-v1",
+    candidateSha: CANDIDATE_SHA,
+    releaseGenerationId: RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId,
+    planAGate: { relativePath: PLAN_A_GATE_RECEIPT_RELATIVE_PATH, sha256: planA.ref.sha256 },
+    lockedGoldenManifestSha256: APPROVED_LOCKED_GOLDEN_MANIFEST_SHA256,
+    versions: {
+      analysisManifest: "analysis-manifest-v1", attributionPolicy: "selected-attribution-policy-v1",
+      comparator: "unified-wallet-comparator-v1", presentationManifest: "presentation-manifest-v1",
+      renderer: "unified-telegram-renderer-v1", schemaVersion: 33,
+      scoreAnchor: "score-anchor-v3", scoringPolicy: "scoring-signal-matrix-v4"
+    },
+    schema033: {
+      filename: "033_unified_wallet_check.sql",
+      checksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+      catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      cleanVerificationReceiptSha256: SHA,
+      cloneVerificationReceiptSha256: SHA
+    },
+    replayRootSha256: SHA,
+    commands: UNIFIED_RELEASE_COMMANDS.map(({ id, command }) => ({
+      id, command, exitCode: 0, outputSha256: SHA, provenanceReceiptSha256: SHA
+    })),
+    recordedAt: STARTED
+  };
+  const unified = ref("unified_release_gate_receipt", "unified-wallet-release-gate-receipt-v1.json",
+    unifiedValue);
+  const legacy = [
+    ref("full_regression", "full-regression-evidence.json", { candidateSha: CANDIDATE_SHA }),
+    ref("suite_report", "suite-plan5.vitest.json", { success: true }, "vitest-json-report-v1"),
+    ref("suite_evidence", "suite-plan5.evidence.json",
+      { version: "release-suite-group-evidence-v1", candidateSha: CANDIDATE_SHA })
+  ];
+  const items = [...legacy, planA, unified];
+  expect(() => validateGateEvidenceBytesV2(
+    gate("G06_FULL", items) as any,
+    new Map(items.map((item) => [item.ref.relativePath, item.content])),
+    expected()
+  )).not.toThrow();
+
+  const replaced = ref("unified_release_gate_receipt", unified.ref.relativePath, {
+    ...unifiedValue,
+    planAGate: { ...unifiedValue.planAGate, sha256: "b".repeat(64) }
+  });
+  const tampered = [...legacy, planA, replaced];
+  expect(() => validateGateEvidenceBytesV2(
+    gate("G06_FULL", tampered) as any,
+    new Map(tampered.map((item) => [item.ref.relativePath, item.content])),
+    expected()
+  )).toThrow(/plan_a_gate/i);
 });
 
 it("accepts byte-bound legacy producer JSON formatting but keeps official Task 8B canonical", () => {
@@ -277,11 +381,19 @@ it("rejects canonical but untyped G13 authority and consumption artifacts", () =
     lockAcquiredAt: STARTED,
     lockReleasedAt: FINISHED,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+    migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
     result: "applied_and_verified",
     completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
       .map((step) => ({ step, receiptSha256: SHA })),
     receiptChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
-    postconditionsSha256: SHA
+    postconditionsSha256: SHA,
+    schema033: {
+      version: 33,
+      migrationFilename: "033_unified_wallet_check.sql",
+      checksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+      catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      verificationReceiptSha256: SHA
+    }
   };
   const items = [
     ref("operational_attestation", "operational-attestation-g13.json", attestation),
@@ -448,11 +560,19 @@ function validG13Items() {
     executionAttemptSha256: "",
     databaseSessionIdentitySha256: "6".repeat(64), lockAcquiredAt: STARTED,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
+    migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
     result: "applied_and_verified",
     completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
       .map((step) => ({ step, receiptSha256: SHA })),
     receiptChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
-    postconditionsSha256: "7".repeat(64)
+    postconditionsSha256: "7".repeat(64),
+    schema033: {
+      version: 33,
+      migrationFilename: "033_unified_wallet_check.sql",
+      checksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+      catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      verificationReceiptSha256: SHA
+    }
   };
   const attempt = ref("production_migration_attempt",
     "schema032-production-attempt-placeholder.json", {

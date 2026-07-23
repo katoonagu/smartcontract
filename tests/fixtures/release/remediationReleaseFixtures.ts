@@ -1000,6 +1000,13 @@ export type Schema032ReleaseEvidenceV1 = {
   receiptChecksumSha256: string;
   shortChecksum: string;
   postconditionsSha256: string;
+  schema033: {
+    version: 33;
+    migrationFilename: "033_unified_wallet_check.sql";
+    checksumSha256: string;
+    catalogSha256: string;
+    verificationReceiptSha256: string;
+  };
   firstApply: "applied" | "already_verified";
   secondApply: "already_verified";
 };
@@ -1014,8 +1021,103 @@ export function buildSchema032ReleaseEvidence(): Schema032ReleaseEvidenceV1 {
     receiptChecksumSha256: SCHEMA_032_CHECKSUM,
     shortChecksum: SCHEMA_032_CHECKSUM.slice(0, 12),
     postconditionsSha256: POSTCONDITIONS_SHA256,
+    schema033: {
+      version: 33,
+      migrationFilename: "033_unified_wallet_check.sql",
+      checksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+      catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      verificationReceiptSha256: "e".repeat(64)
+    },
     firstApply: "applied",
     secondApply: "already_verified"
+  };
+}
+
+export function buildUnifiedReleaseGateEvidenceFixture(
+  candidateSha = CANDIDATE_SHA,
+  releaseGenerationId = RELEASE_V2_FREEZE_IDENTITY.releaseGenerationId
+) {
+  const planA = {
+    version: "plan-a-gate-receipt-v1",
+    candidateSha,
+    approvalAuthority: {
+      commitSha: "5149573503394815925d771ba33b2733e3248dc3",
+      repositoryTreeSha: "6f748eb72cc136d25e7faeff40fb083cf52e6290",
+      lockedRootTreeSha: "9557d4cd662a2ccfbfe53bf1d2b59a823a0aad05"
+    },
+    artifacts: {
+      caseCatalogSha256: "acdcaadc9866dc90c74d9f718774f813e3b4fd71a325322de883202642b041d1",
+      comparatorContractSha256: "b6572108512d6349c0bae6ed1365b9146db6661595903141c97160dea58a0b83",
+      lockedGoldenManifestSha256: "4d1f2568d3676cf1ee2e4411bc70e056d1f6fc80997b2919e3da4705811cb407",
+      lockedManifestDescriptorSha256: "f64afca8698f49581ed52893f028996d32807aa8c986c17b948674212f90fe30",
+      protocolSha256: "2b00227d25620a2da8a13bc1a17db2465aaa96f8ba7673c1bbf338583d130865"
+    },
+    commands: [
+      {
+        id: "full_test", command: "npm test", exitCode: 0,
+        outputSha256: "a".repeat(64), provenanceReceiptSha256: "a".repeat(64)
+      },
+      {
+        id: "typecheck", command: "npm run typecheck", exitCode: 0,
+        outputSha256: "a".repeat(64), provenanceReceiptSha256: "a".repeat(64)
+      },
+      {
+        id: "locked_verify",
+        command: "node --import tsx scripts/tronUsdtGoldenPilotV2.ts verify --input docs/audit/2026-07-system-audit/golden-v2/locked",
+        exitCode: 0,
+        outputSha256: "a".repeat(64),
+        provenanceReceiptSha256: "a".repeat(64)
+      }
+    ],
+    recordedAt: "2026-07-18T09:59:00.000Z",
+    runtime: { nodeVersion: "v22.20.0", npmVersion: "11.6.4" },
+    selectedAttributionPolicy: "proportional"
+  };
+  const planASha256 = createHash("sha256").update(`${canonicalFixtureJson(planA)}\n`).digest("hex");
+  const commands = [
+    ["full_test", "npm test"],
+    ["typecheck", "npm run typecheck"],
+    ["golden_verify",
+      "node --import tsx scripts/tronUsdtGoldenPilotV2.ts verify --input docs/audit/2026-07-system-audit/golden-v2/locked"],
+    ["golden_compare",
+      "npm run unified:golden:compare -- --golden docs/audit/2026-07-system-audit/golden-v2/locked --candidate artifacts/unified-wallet-replay"],
+    ["presentation_acceptance", "npx vitest run tests/unified-check/presentation.golden.test.ts"],
+    ["migration_startup_rehearsal",
+      "npx vitest run tests/storage/migration033.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"]
+  ].map(([id, command]) => ({
+    id, command, exitCode: 0,
+    outputSha256: "a".repeat(64),
+    provenanceReceiptSha256: "a".repeat(64)
+  }));
+  return {
+    planA,
+    unified: {
+      version: "unified-wallet-release-gate-receipt-v1",
+      candidateSha,
+      releaseGenerationId,
+      planAGate: { relativePath: "plan-a-gate-receipt-v1.json", sha256: planASha256 },
+      lockedGoldenManifestSha256: planA.artifacts.lockedGoldenManifestSha256,
+      versions: {
+        analysisManifest: "analysis-manifest-v1",
+        attributionPolicy: "selected-attribution-policy-v1",
+        comparator: "unified-wallet-comparator-v1",
+        presentationManifest: "presentation-manifest-v1",
+        renderer: "unified-telegram-renderer-v1",
+        schemaVersion: 33,
+        scoreAnchor: "score-anchor-v3",
+        scoringPolicy: "scoring-signal-matrix-v4"
+      },
+      schema033: {
+        filename: "033_unified_wallet_check.sql",
+        checksumSha256: "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7",
+        catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+        cleanVerificationReceiptSha256: "e".repeat(64),
+        cloneVerificationReceiptSha256: "e".repeat(64)
+      },
+      replayRootSha256: "a".repeat(64),
+      commands,
+      recordedAt: "2026-07-18T09:59:00.000Z"
+    }
   };
 }
 

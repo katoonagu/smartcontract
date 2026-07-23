@@ -5,14 +5,20 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { Client, type ClientConfig } from "pg";
 import {
+  REQUIRED_SCHEMA_FILENAME as RELEASE_SCHEMA_FILENAME,
+  REQUIRED_SCHEMA_VERSION as RELEASE_SCHEMA_VERSION,
   SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
   SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
+  UNIFIED_SCHEMA_033_CATALOG_SHA256,
   type SchemaQueryable,
   checksumMigrationBytes,
-  verifyRequiredSchema032
+  verifyRequiredSchema032,
+  verifyRequiredSchema033
 } from "../src/storage/schemaMigrations";
 
 export const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
+export const APPROVED_SCHEMA_033_CHECKSUM =
+  "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
 
 export type Schema032DatabaseRole = "clean" | "production_clone" | "runtime_sanitized" | "production";
 export type Schema032MigrationStatus = "applied" | "already_verified";
@@ -62,6 +68,13 @@ export type Schema032ReleaseEvidenceV1 = {
   receiptChecksumSha256: string;
   shortChecksum: string;
   postconditionsSha256: string;
+  schema033: {
+    version: typeof RELEASE_SCHEMA_VERSION;
+    migrationFilename: typeof RELEASE_SCHEMA_FILENAME;
+    checksumSha256: string;
+    catalogSha256: string;
+    verificationReceiptSha256: string;
+  };
   firstApply: "applied" | "already_verified";
   secondApply: "already_verified";
 };
@@ -120,6 +133,7 @@ const EVIDENCE_KEYS = [
   "receiptChecksumSha256",
   "shortChecksum",
   "postconditionsSha256",
+  "schema033",
   "firstApply",
   "secondApply"
 ] as const;
@@ -359,6 +373,17 @@ export function validateSchema032ReleaseEvidence(
   }
   if (value.shortChecksum !== APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)) {
     fail("schema_032_release_short_checksum_mismatch");
+  }
+  if (!isRecord(value.schema033)
+      || Object.keys(value.schema033).sort().join("|")
+        !== ["catalogSha256", "checksumSha256", "migrationFilename", "verificationReceiptSha256", "version"]
+          .sort().join("|")
+      || value.schema033.version !== RELEASE_SCHEMA_VERSION
+      || value.schema033.migrationFilename !== RELEASE_SCHEMA_FILENAME
+      || value.schema033.checksumSha256 !== APPROVED_SCHEMA_033_CHECKSUM
+      || value.schema033.catalogSha256 !== UNIFIED_SCHEMA_033_CATALOG_SHA256
+      || !SHA256_PATTERN.test(String(value.schema033.verificationReceiptSha256 ?? ""))) {
+    fail("schema_033_release_evidence_invalid");
   }
   if (value.firstApply !== "applied" && value.firstApply !== "already_verified") {
     fail("schema_032_release_first_apply_invalid");
@@ -619,6 +644,10 @@ export async function verifySchema032Release(options: {
   if (candidateBytesChecksumSha256 !== APPROVED_SCHEMA_032_CHECKSUM) {
     fail("schema_032_release_candidate_checksum_mismatch");
   }
+  const releaseMigrationBytes = await readFile(new URL(`../migrations/${RELEASE_SCHEMA_FILENAME}`, import.meta.url));
+  if (await checksumMigrationBytes(releaseMigrationBytes) !== APPROVED_SCHEMA_033_CHECKSUM) {
+    fail("schema_033_release_candidate_checksum_mismatch");
+  }
   const clientConfig = buildSchema032ClientConfig(options.databaseUrl, options.offline);
   const client = options.clientFactory?.(clientConfig) ?? new Client(clientConfig);
   let primaryFailure: unknown;
@@ -669,6 +698,11 @@ export async function verifySchema032Release(options: {
     }
     const postconditionsSha256 = await collectPostconditionsSha256(client);
     const second = await verifyRequiredSchema032(client, candidateBytesChecksumSha256);
+    const releaseVerification = await verifyRequiredSchema033(
+      client,
+      APPROVED_SCHEMA_033_CHECKSUM,
+      candidateBytesChecksumSha256
+    );
     const receipt = await client.query(`select filename, checksum_sha256
       from public.schema_migration_receipts where version = $1`, [REQUIRED_SCHEMA_VERSION]);
     if (receipt.rows.length !== 1) fail("schema_032_receipt_count_mismatch");
@@ -699,6 +733,13 @@ export async function verifySchema032Release(options: {
       receiptChecksumSha256: String(receipt.rows[0].checksum_sha256),
       shortChecksum: second.shortChecksum,
       postconditionsSha256,
+      schema033: {
+        version: RELEASE_SCHEMA_VERSION,
+        migrationFilename: RELEASE_SCHEMA_FILENAME,
+        checksumSha256: releaseVerification.checksumSha256,
+        catalogSha256: UNIFIED_SCHEMA_033_CATALOG_SHA256,
+        verificationReceiptSha256: sha256(JSON.stringify(releaseVerification))
+      },
       firstApply: firstMigration.status,
       secondApply: "already_verified"
     };

@@ -17,6 +17,7 @@ import {
   buildReleaseManifest,
   buildReleaseManifestV2Fixture,
   buildTask0BReleaseFreezeEvidence,
+  buildUnifiedReleaseGateEvidenceFixture,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
 import { PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 } from "../../src/release/releaseGateEvidencePolicy";
@@ -141,6 +142,7 @@ function materializeInitialGateEvidence(root: string) {
     verified: true
   };
   const gates = buildReleaseManifestV2Fixture().gates.filter((gate) => gate.state === "passed");
+  const unified = buildUnifiedReleaseGateEvidenceFixture(CANDIDATE_SHA, freeze.releaseGenerationId);
   for (const gate of gates) {
     const policy = PRE_RELEASE_GATE_EVIDENCE_POLICY_V2[gate.id as keyof typeof PRE_RELEASE_GATE_EVIDENCE_POLICY_V2];
     const paths = [...policy.primaryPaths];
@@ -154,6 +156,8 @@ function materializeInitialGateEvidence(root: string) {
         mkdirSync(resolve(path, ".."), { recursive: true });
         const value = relativePath === "trusted-os-principal-policy-v2.json" ? trustPolicy
           : relativePath === "artifact-root-trust-boundary-evidence-v1.json" ? trustBoundary
+          : relativePath === "plan-a-gate-receipt-v1.json" ? unified.planA
+          : relativePath === "unified-wallet-release-gate-receipt-v1.json" ? unified.unified
           : { version: "gate-evidence-v2", candidateSha: CANDIDATE_SHA,
             gateId: gate.id, kind: policy.requiredKinds[index] ?? policy.allowedKinds[0] };
         writeFileSync(path, `${canonicalReleaseJsonV2(value)}\n`);

@@ -1,7 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,12 @@ import {
 } from "../src/release/remediationReleaseManifestV2";
 import type { GateEvidencePayloadV2 } from "../src/release/releaseGateEvidencePolicy";
 import { verifyCurrentReleaseManifestChainV2 } from "../src/release/releaseManifestStoreV2";
+import {
+  PLAN_A_GATE_RECEIPT_RELATIVE_PATH,
+  validatePlanAGateReceiptV1,
+  validateUnifiedWalletReleaseGateReceiptV1,
+  type UnifiedWalletReleaseGateReceiptV1
+} from "../src/release/unifiedReleaseGateReceipt";
 
 export type RemediationSuiteGroupId = keyof typeof REMEDIATION_REQUIRED_SUITE_GROUPS;
 
@@ -219,7 +225,6 @@ export const PLAN5_CANDIDATE_ALLOWED_PATHS = new Set([
 ]);
 
 const UNIFIED_WALLET_CANDIDATE_ALLOWED_PREFIXES = Object.freeze([
-  "docs/audit/2026-07-system-audit/golden-v2/",
   "src/unifiedCheck/",
   "tests/fixtures/golden-v2/",
   "tests/fixtures/unified-check/",
@@ -230,6 +235,10 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PREFIXES = Object.freeze([
 ]);
 
 const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
+  "docs/audit/2026-07-system-audit/golden-v2/README.md",
+  "docs/audit/2026-07-system-audit/golden-v2/case-catalog.json",
+  "docs/audit/2026-07-system-audit/golden-v2/comparator-contract.json",
+  "docs/audit/2026-07-system-audit/golden-v2/protocol.json",
   "docs/knowledge/02-check-modes.md",
   "docs/knowledge/04-data-sources-tronscan-indexing.md",
   "docs/knowledge/11-glossary.md",
@@ -241,6 +250,9 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "scripts/captureTronUsdtGoldenV2.ts",
   "scripts/compareUnifiedWalletGolden.ts",
   "scripts/generateUnifiedGoldenBindings.ts",
+  "scripts/finalizeUnifiedReleaseGates.ts",
+  "scripts/runUnifiedReleaseGateCommand.ts",
+  "scripts/runSchema032ReleaseSequence.ts",
   "scripts/runUnifiedWalletCanary.ts",
   "scripts/tronUsdtGoldenPilotV2.ts",
   "src/admin/adminConsole.ts",
@@ -251,6 +263,9 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "src/risk/scoreAnchorV3.ts",
   "src/risk/scoringPolicyV4.generated.ts",
   "src/risk/scoringSignalMatrixV4.ts",
+  "src/release/remediationReleaseManifestV2.ts",
+  "src/release/releaseGateEvidencePolicy.ts",
+  "src/release/unifiedReleaseGateReceipt.ts",
   "src/runtime/startupSchedule.ts",
   "src/runtime/startupSchemaGate.ts",
   "src/storage/repositories.ts",
@@ -262,6 +277,8 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "tests/forensics/canonicalJson.test.ts",
   "tests/risk/scoreAnchorV3.test.ts",
   "tests/risk/scoringSignalMatrixV4.test.ts",
+  "tests/release/releaseGateEvidencePolicy.unit.test.ts",
+  "tests/release/unifiedReleaseGateReceipt.unit.test.ts",
   "tests/runtime/runtimeVersion033.test.ts",
   "tests/runtime/startupSchedule.test.ts",
   "tests/runtime/startupSchemaGate.test.ts",
@@ -271,6 +288,38 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "tests/storage/unifiedCheck.postgres.test.ts",
   "tests/wallet/metrics.test.ts"
 ]);
+
+const GOLDEN_V2_LOCKED_CASE_IDS = new Set([
+  "blind-history-scope", "blind-incoming-deposit-scope", "blind-route-scope",
+  "blind-selected-amount-scope", "blind-wallet-scope", "regression-tbl7", "regression-tqr",
+  "synthetic-500-pages", "synthetic-ambiguous-delivery", "synthetic-bybit-plus-hard-evidence",
+  "synthetic-dangerous-approval-no-debit", "synthetic-dense-wallet",
+  "synthetic-direct-blacklist-1pct", "synthetic-duplicates", "synthetic-dust-spam",
+  "synthetic-empty-wallet", "synthetic-key-exhaustion", "synthetic-new-no-usdt",
+  "synthetic-one-legitimate-transfer", "synthetic-operational-wallet", "synthetic-reorder",
+  "synthetic-restart", "synthetic-unknown-no-pattern", "synthetic-victim-debit"
+]);
+
+const GOLDEN_V2_LOCKED_CASE_FILES = new Set([
+  "adjudication.json", "neutral-bundle.json", "provenance-manifest.json",
+  "reviewer-a.json", "reviewer-b.json", "validator-receipt.json"
+]);
+
+function isApprovedGoldenV2Path(path: string): boolean {
+  const fixed = new Set([
+    "docs/audit/2026-07-system-audit/golden-v2/locked/control/case-catalog.json",
+    "docs/audit/2026-07-system-audit/golden-v2/locked/control/comparator-contract.json",
+    "docs/audit/2026-07-system-audit/golden-v2/locked/control/protocol.json",
+    "docs/audit/2026-07-system-audit/golden-v2/locked/locked-manifest-descriptor.json",
+    "docs/audit/2026-07-system-audit/golden-v2/locked/locked-manifest.json"
+  ]);
+  if (fixed.has(path)) return true;
+  const match = /^docs\/audit\/2026-07-system-audit\/golden-v2\/locked\/cases\/([^/]+)\/([^/]+)$/u
+    .exec(path);
+  return match !== null
+    && GOLDEN_V2_LOCKED_CASE_IDS.has(match[1]!)
+    && GOLDEN_V2_LOCKED_CASE_FILES.has(match[2]!);
+}
 
 const ADDRESS_POISONING_PROTECTED_PATHS = new Set([
   "src/monitor/addressPoisoning.ts", "src/monitor/addressPoisoningWorker.ts", "src/alerts/addressPoisoningAlert.ts",
@@ -292,6 +341,7 @@ export function validatePlan5CandidateScope(output: string): string[] {
       && !/(?:^|\/)\.\.(?:\/|$)/u.test(path)
       && (
         UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS.has(path)
+        || isApprovedGoldenV2Path(path)
         || UNIFIED_WALLET_CANDIDATE_ALLOWED_PREFIXES.some((prefix) =>
           path.startsWith(prefix)
         )
@@ -1570,6 +1620,7 @@ export async function verifyPreReleaseConcreteEvidenceV2(
   manifest: Pick<RemediationReleaseManifestV2, "candidateSha" | "planBaseSha" | "gates">
 ): Promise<void> {
   let traceSet: AcceptanceTraceSetV1 | null = null;
+  let unifiedRelease: UnifiedWalletReleaseGateReceiptV1 | null = null;
   if (gateExecuted(manifest, "G01_TRACE")) {
     const traceBytes = await readGateEvidenceByKind(
       root, manifest, "G01_TRACE", "acceptance_trace", REMEDIATION_ACCEPTANCE_TRACE_FILE
@@ -1624,6 +1675,37 @@ export async function verifyPreReleaseConcreteEvidenceV2(
   }
 
   if (gateExecuted(manifest, "G06_FULL")) {
+    const planABytes = await readGateEvidenceByKind(
+      root, manifest, "G06_FULL", "plan_a_gate_receipt", PLAN_A_GATE_RECEIPT_RELATIVE_PATH
+    );
+    const planA = validatePlanAGateReceiptV1(parseJson(planABytes), {
+      candidateSha: manifest.candidateSha
+    }, planABytes);
+    for (const [relativePath, expectedSha256] of [
+      ["docs/audit/2026-07-system-audit/golden-v2/locked/control/protocol.json",
+        planA.artifacts.protocolSha256],
+      ["docs/audit/2026-07-system-audit/golden-v2/locked/control/case-catalog.json",
+        planA.artifacts.caseCatalogSha256],
+      ["docs/audit/2026-07-system-audit/golden-v2/locked/control/comparator-contract.json",
+        planA.artifacts.comparatorContractSha256],
+      ["docs/audit/2026-07-system-audit/golden-v2/locked/locked-manifest.json",
+        planA.artifacts.lockedGoldenManifestSha256],
+      ["docs/audit/2026-07-system-audit/golden-v2/locked/locked-manifest-descriptor.json",
+        planA.artifacts.lockedManifestDescriptorSha256]
+    ] as const) {
+      const actual = createHash("sha256").update(await readFile(join(repositoryRoot, relativePath))).digest("hex");
+      if (actual !== expectedSha256) throw new Error(`Plan-A locked artifact hash mismatch: ${relativePath}`);
+    }
+    const unifiedBytes = await readGateEvidenceByKind(
+      root, manifest, "G06_FULL", "unified_release_gate_receipt",
+      "unified-wallet-release-gate-receipt-v1.json"
+    );
+    const unifiedValue = parseJson(unifiedBytes) as Record<string, unknown>;
+    unifiedRelease = validateUnifiedWalletReleaseGateReceiptV1(unifiedValue, {
+      candidateSha: manifest.candidateSha,
+      releaseGenerationId: String(unifiedValue.releaseGenerationId ?? ""),
+      planAGateReceiptSha256: createHash("sha256").update(planABytes).digest("hex")
+    });
     for (const [gateId, groupId] of [
       ["G02_DATA", "plan1"],
       ["G03_SCORING", "plan2"],
@@ -1645,13 +1727,24 @@ export async function verifyPreReleaseConcreteEvidenceV2(
   }
 
   if (gateExecuted(manifest, "G07_SCHEMA_OFFLINE")) {
+    const cleanBytes = await readGateEvidenceByKind(root, manifest, "G07_SCHEMA_OFFLINE", "schema_clean",
+      "schema-clean/schema032-release-evidence.json");
+    const cloneBytes = await readGateEvidenceByKind(root, manifest, "G07_SCHEMA_OFFLINE", "schema_production_clone",
+      "schema-production-clone/schema032-release-evidence.json");
     validateOfflineSchemaArtifactSet(
       manifest.candidateSha,
-      await readGateEvidenceByKind(root, manifest, "G07_SCHEMA_OFFLINE", "schema_clean",
-        "schema-clean/schema032-release-evidence.json"),
-      await readGateEvidenceByKind(root, manifest, "G07_SCHEMA_OFFLINE", "schema_production_clone",
-        "schema-production-clone/schema032-release-evidence.json")
+      cleanBytes,
+      cloneBytes
     );
+    if (unifiedRelease === null) throw new Error("schema 033 release evidence requires Unified gate receipt");
+    const clean = parseJson(cleanBytes) as { schema033?: { verificationReceiptSha256?: unknown } };
+    const clone = parseJson(cloneBytes) as { schema033?: { verificationReceiptSha256?: unknown } };
+    if (clean.schema033?.verificationReceiptSha256
+          !== unifiedRelease.schema033.cleanVerificationReceiptSha256
+        || clone.schema033?.verificationReceiptSha256
+          !== unifiedRelease.schema033.cloneVerificationReceiptSha256) {
+      throw new Error("Unified release receipt schema 033 proof mismatch");
+    }
   }
 
   const runtimeBundleComplete = ["G08_VERSION_SANITIZED", "G09_LEGACY_TERMINAL", "G10_ROLLBACK_REHEARSAL"]

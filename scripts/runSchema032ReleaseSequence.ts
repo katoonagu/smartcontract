@@ -19,6 +19,7 @@ import {
 } from "./captureTask0BPreflight";
 import {
   APPROVED_SCHEMA_032_CHECKSUM,
+  APPROVED_SCHEMA_033_CHECKSUM,
   SCHEMA_032_DB_MIGRATE_TEMPLATE_SHA256,
   buildSchema032ClientConfig,
   buildSchema032DatabaseFingerprint,
@@ -83,8 +84,7 @@ const MAXIMUM_G13_SEQUENCE_MS = 20 * 60_000;
 const G13_SETTLEMENT_MARGIN_MS = 5 * 60_000;
 const MINIMUM_G13_CLAIM_VALIDITY_MS = MAXIMUM_G13_SEQUENCE_MS + G13_SETTLEMENT_MARGIN_MS;
 export const SCHEMA_032_PRODUCER_ADVISORY_LOCK = 320_032_500;
-export const APPROVED_SCHEMA_033_CHECKSUM =
-  "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+export { APPROVED_SCHEMA_033_CHECKSUM };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
 export const SCHEMA_032_SEQUENCE_FILES = Object.freeze({
@@ -1799,6 +1799,7 @@ export async function runSchema032ReleaseSequence(
   testDependencies?: {
     observeCandidateRepositoryState(): Promise<{ headSha: string; status: string; migrationFiles: string[] }>;
     readCurrentTask0BReleaseRevalidation?: typeof readCurrentTask0BReleaseRevalidation;
+    readMigrationBytes?: (filename: string) => Promise<Buffer>;
   }
 ): Promise<Schema032ReleaseEvidenceV1> {
   if (testDependencies !== undefined && process.env.NODE_ENV !== "test") {
@@ -1815,9 +1816,17 @@ export async function runSchema032ReleaseSequence(
       : repository.status,
     migrationFiles: repository.migrationFiles
   });
-  const migrationBytes = await readFile(new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url));
+  const readMigrationBytes = testDependencies?.readMigrationBytes
+    ?? ((filename: string) => readFile(new URL(`../migrations/${filename}`, import.meta.url)));
+  const [migrationBytes, releaseMigrationBytes] = await Promise.all([
+    readMigrationBytes(REQUIRED_SCHEMA_FILENAME),
+    readMigrationBytes(RELEASE_SCHEMA_FILENAME)
+  ]);
   if (await checksumMigrationBytes(migrationBytes) !== APPROVED_SCHEMA_032_CHECKSUM) {
     fail("schema_032_sequence_migration_checksum_mismatch");
+  }
+  if (await checksumMigrationBytes(releaseMigrationBytes) !== APPROVED_SCHEMA_033_CHECKSUM) {
+    fail("schema_033_sequence_migration_checksum_mismatch");
   }
   const artifactRoot = await attestArtifactRoot(validated.artifactRoot, validated.databaseRole === "production");
   const existingProductionReceiptText = validated.databaseRole === "production"
@@ -1966,11 +1975,13 @@ export async function runSchema032ReleaseSequence(
         databaseSessionIdentitySha256: sessionIdentitySha256,
         lockAcquiredAt,
         migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
+        migration033BytesChecksumSha256: APPROVED_SCHEMA_033_CHECKSUM,
         result: "applied_and_verified",
         completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
           .map((step, index) => ({ step, receiptSha256: hash(Buffer.from(ordered[index]!, "utf8")) })),
         receiptChecksumSha256: evidence.receiptChecksumSha256,
-        postconditionsSha256: evidence.postconditionsSha256
+        postconditionsSha256: evidence.postconditionsSha256,
+        schema033: evidence.schema033
       };
       pendingSettlement = await prepareSchema032ProductionSettlementV2(
         artifactRoot, pendingExecutionReceiptCore
@@ -2026,6 +2037,7 @@ export async function runSchema032ReleaseSequence(
           databaseSessionIdentitySha256: sessionIdentitySha256,
           lockAcquiredAt,
           migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
+          migration033BytesChecksumSha256: APPROVED_SCHEMA_033_CHECKSUM,
           result: "failed_after_attempt",
           failedStep,
           completedStages: existing.slice(0, count).map((value, index) => ({

@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { validateTask0BReleaseFreezeEvidence } from "./remediationReleaseManifest";
 import { canonicalBytesV2 } from "./releaseRootWriterStore";
 import {
+  validatePlanAGateReceiptV1,
+  validateUnifiedWalletReleaseGateReceiptV1
+} from "./unifiedReleaseGateReceipt";
+import {
   validateOperationalAttestationV2,
   validatePreparedProductionOperationLeaseRemovalV2,
   validateProductionCanaryEvidenceV2,
@@ -89,8 +93,11 @@ export const PRE_RELEASE_GATE_EVIDENCE_POLICY_V2 = Object.freeze({
   G05_TELEGRAM: policy("G05_TELEGRAM", ["manual-telegram-acceptance.json"],
     ["manual_telegram_acceptance"]),
   G06_FULL: policy("G06_FULL", [
-    "full-regression-evidence.json", "suite-plan5.vitest.json", "suite-plan5.evidence.json"
-  ], ["full_regression", "suite_report", "suite_evidence"]),
+    "full-regression-evidence.json", "plan-a-gate-receipt-v1.json",
+    "unified-wallet-release-gate-receipt-v1.json",
+    "suite-plan5.vitest.json", "suite-plan5.evidence.json"
+  ], ["full_regression", "plan_a_gate_receipt", "unified_release_gate_receipt",
+    "suite_report", "suite_evidence"]),
   G07_SCHEMA_OFFLINE: policy("G07_SCHEMA_OFFLINE", [
     "schema-clean/schema032-release-evidence.json",
     "schema-production-clone/schema032-release-evidence.json"
@@ -600,6 +607,9 @@ function validateTypedEvidence(
     validatePreparedSchema032ProductionSettlementV2(value);
   }
   else if (ref.kind === "production_migration_sequence") validateSchema032ProductionExecutionReceiptV2(value);
+  else if (ref.kind === "plan_a_gate_receipt") {
+    validatePlanAGateReceiptV1(value, { candidateSha: ref.candidateSha }, bytes);
+  }
   else if (ref.kind === "production_operation_claim") validateProductionOperationClaimV2(value);
   else if (ref.kind === "production_operation_settlement") validateProductionOperationSettlementV2(value);
   else if (ref.kind === "production_operation_lease_removal_prepared") {
@@ -1007,6 +1017,18 @@ export function validateGateEvidenceBytesV2(
   }
   for (const kind of gatePolicy.requiredKinds) {
     if (!seenKinds.has(kind)) throw new Error(`gate_evidence_kind_missing:${kind}`);
+  }
+  if (gate.id === "G06_FULL") {
+    const planA = requireJsonArtifact(artifacts, "plan_a_gate_receipt");
+    const unified = requireJsonArtifact(artifacts, "unified_release_gate_receipt");
+    if (expected.releaseGenerationId === undefined) {
+      throw new Error("unified_release_generation_binding_missing");
+    }
+    validateUnifiedWalletReleaseGateReceiptV1(unified.value, {
+      candidateSha: gate.candidateSha,
+      releaseGenerationId: expected.releaseGenerationId,
+      planAGateReceiptSha256: planA.ref.sha256
+    });
   }
   if (gate.id === "G00_BASE") validateG00TrustBindings(artifactsByPath, expected);
   if (gatePolicy.production) validateProductionGateBindings(gate, artifacts, expected);

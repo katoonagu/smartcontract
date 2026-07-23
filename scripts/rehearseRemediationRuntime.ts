@@ -24,6 +24,9 @@ import { formatRuntimeVersion, type RuntimeVersionV1 } from "../src/runtime/runt
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const APPROVED_SCHEMA_032_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
+const APPROVED_SCHEMA_033_CHECKSUM = "d04f2aff20370a78862604c92ccbc6bf7c8b1024f95e03b4af2c8f018e701f7";
+const APPROVED_SCHEMA_033_CATALOG_SHA256 =
+  "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
 const EMPTY_ALLOWANCE_MIRROR_MISMATCH_SHA256 = createHash("sha256").update("[]", "utf8").digest("hex");
 export const ROLLBACK_REHEARSAL_COMMAND_TEMPLATE_SHA256 = "9d98c145698d181dca0e35b3694a501994c7668ba61291687287775cea880f29";
 
@@ -1530,7 +1533,7 @@ export function validateSchemaEvidenceForRehearsal(
   exactKeys(schema, [
     "candidateSha", "databaseRole", "databaseFingerprintSha256", "migrationFilename",
     "candidateBytesChecksumSha256", "receiptChecksumSha256", "shortChecksum", "postconditionsSha256",
-    "firstApply", "secondApply"
+    "schema033", "firstApply", "secondApply"
   ], "runtime_schema_evidence_shape_invalid");
   if (schema.candidateSha !== expected.candidateSha || schema.databaseRole !== expected.databaseRole
       || schema.databaseFingerprintSha256 !== expected.databaseFingerprintSha256
@@ -1542,6 +1545,17 @@ export function validateSchemaEvidenceForRehearsal(
       || (schema.firstApply !== "applied" && schema.firstApply !== "already_verified")
       || schema.secondApply !== "already_verified") {
     fail("runtime_schema_evidence_mismatch");
+  }
+  const schema033 = record(schema.schema033, "runtime_schema033_evidence_invalid");
+  exactKeys(schema033, [
+    "version", "migrationFilename", "checksumSha256", "catalogSha256", "verificationReceiptSha256"
+  ], "runtime_schema033_evidence_invalid");
+  if (schema033.version !== 33 || schema033.migrationFilename !== "033_unified_wallet_check.sql"
+      || schema033.checksumSha256 !== APPROVED_SCHEMA_033_CHECKSUM
+      || schema033.catalogSha256 !== APPROVED_SCHEMA_033_CATALOG_SHA256
+      || typeof schema033.verificationReceiptSha256 !== "string"
+      || !SHA256.test(schema033.verificationReceiptSha256)) {
+    fail("runtime_schema033_evidence_mismatch");
   }
 }
 
