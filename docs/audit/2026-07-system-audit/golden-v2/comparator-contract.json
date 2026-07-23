@@ -1,0 +1,17 @@
+{
+  "version": "unified-wallet-comparator-contract-v1",
+  "inputVersion": "unified-wallet-comparator-input-v1",
+  "outputVersion": "unified-wallet-comparator-output-v1",
+  "scoringPolicyVersion": "scoring-signal-matrix-v4",
+  "anchorVersion": "score-anchor-v3",
+  "schemaAudit": {
+    "auditedAnchorVersion": "score-anchor-v2",
+    "scoreAnchorV2Compatible": false,
+    "reasons": [
+      "ScoreAnchorV2 policyVersion is fixed to scoring-signal-matrix-v3.",
+      "ScoreAnchorV2 contains coverageDependency, which is forbidden in scoring v4.",
+      "ScoreAnchorV2 lacks canonicalFactIds and lockedGoldenManifestSha256."
+    ]
+  },
+  "implementationOwner": "unified-wallet-check-plan-b"
+}
