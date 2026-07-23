@@ -24,7 +24,7 @@ describe("golden capture CLI", () => {
     { args: ["--output"] }
   ])("rejects invalid arguments without including values: $args", ({ args }) => {
     expect(() => parseGoldenCaptureArgs(args)).toThrow(
-      "golden_capture_invalid_arguments"
+      "FAILED_TECHNICAL:golden_capture_invalid_arguments"
     );
   });
 });

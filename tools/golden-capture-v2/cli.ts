@@ -8,7 +8,7 @@ import type { GoldenCaptureInput } from "./capture";
 
 export function parseGoldenCaptureArgs(args: string[]) {
   if (!Array.isArray(args)) {
-    throw new TypeError("golden_capture_invalid_arguments");
+    throw new TypeError("FAILED_TECHNICAL:golden_capture_invalid_arguments");
   }
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -19,7 +19,7 @@ export function parseGoldenCaptureArgs(args: string[]) {
       value === undefined ||
       values.has(flag)
     ) {
-      throw new TypeError("golden_capture_invalid_arguments");
+      throw new TypeError("FAILED_TECHNICAL:golden_capture_invalid_arguments");
     }
     values.set(flag, value);
   }
@@ -32,7 +32,7 @@ export function parseGoldenCaptureArgs(args: string[]) {
       (Number.isNaN(Date.parse(cutoff)) ||
         new Date(Date.parse(cutoff)).toISOString() !== cutoff))
   ) {
-    throw new TypeError("golden_capture_invalid_arguments");
+    throw new TypeError("FAILED_TECHNICAL:golden_capture_invalid_arguments");
   }
   return { output, cutoff };
 }
@@ -77,10 +77,13 @@ export async function runGoldenCaptureCli(
     );
     return 0;
   } catch (error) {
-    const message =
+    const rawMessage =
       error instanceof Error && /^[-:a-zA-Z0-9_]+$/u.test(error.message)
         ? error.message
         : "FAILED_TECHNICAL:golden_capture_failed";
+    const message = rawMessage.startsWith("FAILED_TECHNICAL:")
+      ? rawMessage
+      : `FAILED_TECHNICAL:${rawMessage}`;
     deps.stderr.write(`${message}\n`);
     return 1;
   }

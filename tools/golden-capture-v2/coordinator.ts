@@ -1,3 +1,5 @@
+import { mkdir, open, unlink } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { canonicalSha256 } from "../golden-pilot-v2/canonicalJson";
 import {
   buildPureGoldenCapture,
@@ -44,11 +46,24 @@ type LabelRow = {
   observedAt: string;
 };
 
+type CoverageRow = {
+  address: string;
+  status: string;
+  statusReason: string | null;
+  provider: string | null;
+  fetchedTransferCount: string;
+  fetchedPageCount: string;
+  providerCapHit: boolean;
+  budgetExhausted: boolean;
+  providerInconsistent: boolean;
+  completedAt: string | null;
+};
+
 const REGRESSION_SUBJECTS = [
   "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
   "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP"
 ] as const;
-const USDT = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj";
+const USDT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
 const SELECTION_SQL = `
 SELECT
@@ -97,15 +112,28 @@ WHERE block_number <= $2::bigint
 ORDER BY block_number ASC, event_index ASC, tx_hash ASC
 `.trim();
 
-const LABELS_SQL = `
+const COVERAGE_SQL = `
 SELECT
   address,
-  label,
-  source AS authority,
-  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "observedAt"
-FROM address_labels
+  status,
+  status_reason AS "statusReason",
+  provider,
+  fetched_transfer_count::text AS "fetchedTransferCount",
+  fetched_page_count::text AS "fetchedPageCount",
+  provider_cap_hit AS "providerCapHit",
+  budget_exhausted AS "budgetExhausted",
+  provider_inconsistent AS "providerInconsistent",
+  CASE
+    WHEN completed_at IS NULL THEN NULL
+    ELSE to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  END AS "completedAt"
+FROM tron_address_usdt_index_states
 WHERE address = ANY($1::text[])
-ORDER BY address ASC, label ASC, source ASC
+  AND token_contract = $2
+  AND coverage_mode = 'all_time'
+  AND request_kind = 'broad_targeted'
+  AND target_timestamp_ms = 0
+ORDER BY address ASC
 `.trim();
 
 const METADATA_SQL = `
@@ -117,6 +145,7 @@ SELECT
 FROM address_metadata
 WHERE address = ANY($1::text[])
   AND (name IS NOT NULL OR tag IS NOT NULL)
+  AND fetched_at <= $2::timestamptz
 ORDER BY address ASC
 `.trim();
 
@@ -131,15 +160,22 @@ function evidenceRef(row: TransferRow): string {
 function labelsForSubject(
   subject: string,
   transfers: TransferRow[],
+  approvals: ApprovalRow[],
   labels: LabelRow[]
 ) {
   const refs = new Map<string, string[]>();
+  refs.set(subject, [`subject:${subject}`]);
   for (const transfer of transfers) {
     if (transfer.from !== subject && transfer.to !== subject) continue;
     const counterparty = transfer.from === subject ? transfer.to : transfer.from;
     const values = refs.get(counterparty) ?? [];
     values.push(evidenceRef(transfer));
     refs.set(counterparty, values);
+  }
+  for (const approval of approvals) {
+    if (approval.owner !== subject) continue;
+    const value = `${approval.txHash}:${approval.eventIndex}:trc20_approval`;
+    refs.set(approval.spender, [...(refs.get(approval.spender) ?? []), value]);
   }
   return labels
     .filter(({ address }) => refs.has(address))
@@ -149,7 +185,7 @@ function labelsForSubject(
       category:
         row.authority === "tronscan-metadata" ? "service_metadata" : row.label,
       authority: row.authority,
-      validFrom: null,
+      validFrom: row.observedAt,
       validTo: null,
       evidenceRefs: [...new Set(refs.get(row.address) ?? [])].sort()
     }))
@@ -172,12 +208,20 @@ export async function captureGoldenPilotV2(input: {
   const providerResponseSha256 = canonicalSha256(confirmed.rawResponse);
   let began = false;
   try {
-    await input.db.query("BEGIN READ ONLY");
+    await input.db.query(
+      "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+    );
     began = true;
     const readOnly = await input.db.query("SHOW transaction_read_only");
     if (readOnly.rows[0]?.transaction_read_only !== "on") {
       throw new Error(
         "FAILED_TECHNICAL:golden_capture_database_not_read_only"
+      );
+    }
+    const isolation = await input.db.query("SHOW transaction_isolation");
+    if (isolation.rows[0]?.transaction_isolation !== "repeatable read") {
+      throw new Error(
+        "FAILED_TECHNICAL:golden_capture_database_not_repeatable_read"
       );
     }
     const selectionRows = (
@@ -188,6 +232,36 @@ export async function captureGoldenPilotV2(input: {
       input.selectionCutoff
     );
     const subjects = [...blindSubjects, ...REGRESSION_SUBJECTS];
+    const coverage = rows<CoverageRow>(
+      await input.db.query(COVERAGE_SQL, [subjects, USDT])
+    );
+    const coverageByAddress = new Map(
+      coverage.map((item) => [item.address, item])
+    );
+    if (
+      coverage.length !== subjects.length ||
+      subjects.some((subject) => {
+        const item = coverageByAddress.get(subject);
+        return (
+          item?.status !== "complete" ||
+          item.statusReason !== "complete_provider_windowed" ||
+          item.budgetExhausted ||
+          item.providerInconsistent ||
+          item.completedAt === null
+        );
+      })
+    ) {
+      throw new Error(
+        "FAILED_TECHNICAL:golden_capture_index_coverage_incomplete"
+      );
+    }
+    const coverageCertificate = {
+      version: "golden-capture-coverage-certificate-v2" as const,
+      tokenContract: USDT,
+      subjects: coverage
+    };
+    const coverageCertificateSha256 =
+      canonicalSha256(coverageCertificate);
     const bounds = [
       subjects,
       confirmed.snapshot.confirmedBlockNumber,
@@ -206,15 +280,17 @@ export async function captureGoldenPilotV2(input: {
         )
       )
     ].sort();
-    const directLabels = rows<LabelRow>(
-      await input.db.query(LABELS_SQL, [counterparties])
-    );
     const metadata = rows<{
       address: string;
       name: string | null;
       tag: string | null;
       observedAt: string;
-    }>(await input.db.query(METADATA_SQL, [counterparties]));
+    }>(
+      await input.db.query(METADATA_SQL, [
+        counterparties,
+        confirmed.snapshot.timestamp
+      ])
+    );
     const metadataLabels: LabelRow[] = metadata.flatMap((row) =>
       [...new Set([row.name, row.tag].filter((value): value is string => Boolean(value)))]
         .sort()
@@ -225,7 +301,7 @@ export async function captureGoldenPilotV2(input: {
           observedAt: row.observedAt
         }))
     );
-    const labelEntries = [...directLabels, ...metadataLabels].sort(
+    const labelEntries = metadataLabels.sort(
       (left, right) =>
         left.address.localeCompare(right.address) ||
         left.label.localeCompare(right.label) ||
@@ -274,7 +350,12 @@ export async function captureGoldenPilotV2(input: {
                   `${row.txHash}:${row.eventIndex}:trc20_approval`
                 ]
               })),
-            labels: labelsForSubject(subject, subjectTransfers, labelEntries),
+            labels: labelsForSubject(
+              subject,
+              subjectTransfers,
+              subjectApprovals,
+              labelEntries
+            ),
             approvals: subjectApprovals.map((row) => ({
               owner: row.owner,
               spender: row.spender,
@@ -296,13 +377,14 @@ export async function captureGoldenPilotV2(input: {
       snapshot: confirmed.snapshot,
       providerResponseSha256,
       labelDatasetSha256: labelDataset.sha256,
+      coverageCertificateSha256,
       evidenceBySubject
     });
     const querySha256 = canonicalSha256([
       SELECTION_SQL,
       TRANSFERS_SQL,
       APPROVALS_SQL,
-      LABELS_SQL,
+      COVERAGE_SQL,
       METADATA_SQL
     ]);
     return {
@@ -314,7 +396,10 @@ export async function captureGoldenPilotV2(input: {
         selectionCutoff: input.selectionCutoff,
         database: {
           transactionReadOnly: true as const,
-          querySha256
+          isolationLevel: "repeatable read" as const,
+          querySha256,
+          coverageCertificateSha256,
+          coverage: coverageCertificate.subjects
         },
         provider: {
           kind: "tron-solidity-confirmed-block" as const,
@@ -332,51 +417,70 @@ export async function publishGoldenCaptureV2(
   root: string,
   result: Awaited<ReturnType<typeof captureGoldenPilotV2>>
 ) {
-  const artifacts = await Promise.all([
-    publishCanonicalArtifactIdentically(
-      root,
-      "source/case-catalog.json",
-      result.capture.catalog
-    ),
-    ...result.capture.sources.map((source) =>
-      publishCanonicalArtifactIdentically(
+  const absoluteRoot = resolve(root);
+  const lockPath = `${absoluteRoot}.capture.lock`;
+  await mkdir(dirname(absoluteRoot), { recursive: true });
+  let lock;
+  try {
+    lock = await open(lockPath, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error("FAILED_TECHNICAL:golden_capture_publication_locked");
+    }
+    throw error;
+  }
+  try {
+    const entries: Array<[string, unknown]> = [
+      ["source/case-catalog.json", result.capture.catalog],
+      ...result.capture.sources.map(
+        (source) =>
+          [`source/${source.caseId}.json`, source] as [string, unknown]
+      ),
+      ["capture/selection-manifest.json", result.capture.selectionManifest],
+      ["capture/label-dataset.json", result.labelDataset],
+      [
+        "capture/label-dataset-manifest.json",
+        {
+          version: "golden-label-dataset-manifest-v2",
+          contentSha256: result.labelDataset.sha256,
+          entryCount: result.labelDataset.entries.length,
+          snapshot: result.labelDataset.snapshot
+        }
+      ],
+      ["capture/provenance-manifest.json", result.provenanceManifest],
+      ["capture/capture-manifest.json", result.capture.captureManifest]
+    ];
+    const artifacts = [];
+    for (const [relativePath, value] of entries) {
+      artifacts.push(
+        await publishCanonicalArtifactIdentically(root, relativePath, value)
+      );
+    }
+    const inventory = artifacts
+      .map(({ relativePath, sha256, byteLength }) => ({
+        relativePath,
+        sha256,
+        byteLength
+      }))
+      .sort((left, right) =>
+        left.relativePath.localeCompare(right.relativePath)
+      );
+    artifacts.push(
+      await publishCanonicalArtifactIdentically(
         root,
-        `source/${source.caseId}.json`,
-        source
+        "capture/COMMITTED.json",
+        {
+          version: "golden-capture-commit-v2",
+          inventory,
+          inventorySha256: canonicalSha256(inventory)
+        }
       )
-    ),
-    publishCanonicalArtifactIdentically(
-      root,
-      "capture/selection-manifest.json",
-      result.capture.selectionManifest
-    ),
-    publishCanonicalArtifactIdentically(
-      root,
-      "capture/capture-manifest.json",
-      result.capture.captureManifest
-    ),
-    publishCanonicalArtifactIdentically(
-      root,
-      "capture/label-dataset.json",
-      result.labelDataset
-    ),
-    publishCanonicalArtifactIdentically(
-      root,
-      "capture/label-dataset-manifest.json",
-      {
-        version: "golden-label-dataset-manifest-v2",
-        contentSha256: result.labelDataset.sha256,
-        entryCount: result.labelDataset.entries.length,
-        snapshot: result.labelDataset.snapshot
-      }
-    ),
-    publishCanonicalArtifactIdentically(
-      root,
-      "capture/provenance-manifest.json",
-      result.provenanceManifest
-    )
-  ]);
-  return artifacts.sort((left, right) =>
-    left.relativePath.localeCompare(right.relativePath)
-  );
+    );
+    return artifacts.sort((left, right) =>
+      left.relativePath.localeCompare(right.relativePath)
+    );
+  } finally {
+    await lock.close();
+    await unlink(lockPath).catch(() => undefined);
+  }
 }

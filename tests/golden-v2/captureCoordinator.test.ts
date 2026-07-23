@@ -65,6 +65,7 @@ function input(selectionRows: Array<Record<string, unknown>>) {
     },
     providerResponseSha256: "c".repeat(64),
     labelDatasetSha256: "d".repeat(64),
+    coverageCertificateSha256: "f".repeat(64),
     evidenceBySubject
   };
 }
@@ -162,6 +163,30 @@ describe("pure golden capture coordinator", () => {
     ).toThrow("FAILED_TECHNICAL:golden_capture_requires_five_blind_subjects");
   });
 
+  test("rejects a shape-valid catalog that changes the locked case set", () => {
+    const rows = addresses.slice(0, 5).map((subjectAddress, index) => ({
+      jobId: `job-${index}`,
+      subjectAddress,
+      createdAt: `2026-07-23T00:00:0${index}.000Z`,
+      requestedBy: "user"
+    }));
+    const base = input(rows);
+    const catalog = structuredClone(base.catalog);
+    catalog.groups[0].caseIds[0] = "blind-replacement";
+    catalog.cases[0].caseId = "blind-replacement";
+    expect(() =>
+      buildPureGoldenCapture({ ...base, catalog })
+    ).toThrow("FAILED_TECHNICAL:golden_capture_locked_case_set_mismatch");
+
+    const subjectMismatch = structuredClone(base.catalog);
+    subjectMismatch.cases.find(
+      ({ caseId }: { caseId: string }) => caseId === "synthetic-empty-wallet"
+    )!.subjectAddress = addresses[6];
+    expect(() =>
+      buildPureGoldenCapture({ ...base, catalog: subjectMismatch })
+    ).toThrow("FAILED_TECHNICAL:golden_capture_synthetic_subject_mismatch");
+  });
+
   test("rejects system requesters, compares parsed timestamps and binds real evidence plus provenance", () => {
     const rows = addresses.slice(0, 5).map((subjectAddress, index) => ({
       jobId: `job-${index}`,
@@ -183,7 +208,7 @@ describe("pure golden capture coordinator", () => {
         {
           txHash: "e".repeat(64),
           eventIndex: "0",
-          tokenContract: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+          tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
           from: addresses[5],
           to: addresses[0],
           amountRaw: "1000000",

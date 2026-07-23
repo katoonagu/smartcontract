@@ -27,6 +27,7 @@ type FrozenEvidence = Pick<
 type CapturedSource = FrozenEvidenceSourceV2 & {
   captureProvenance: {
     providerResponseSha256: string;
+    coverageCertificateSha256: string;
     selectionCutoff: string;
   };
 };
@@ -43,12 +44,13 @@ export type GoldenCaptureInput = {
   };
   providerResponseSha256: string;
   labelDatasetSha256: string;
+  coverageCertificateSha256: string;
   evidenceBySubject?: Record<string, FrozenEvidence>;
 };
 
 const TBL7 = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const TQR = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
-const USDT = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj";
+const USDT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 const PEER = "T9yD14Nj9j7xAB4dbGeiX9h8unkKv2TRTS";
 const BLACKLIST = "T9yD14Nj9j7xAB4dbGeiX9h8unkL2ynyg7";
 const PEERS = [
@@ -59,6 +61,32 @@ const PEERS = [
   "T9yD14Nj9j7xAB4dbGeiX9h8unkKsN8FyA",
   PEER,
   BLACKLIST
+] as const;
+const LOCKED_CASE_IDS = [
+  "blind-wallet-scope",
+  "blind-selected-amount-scope",
+  "blind-incoming-deposit-scope",
+  "blind-route-scope",
+  "blind-history-scope",
+  "regression-tbl7",
+  "regression-tqr",
+  "synthetic-empty-wallet",
+  "synthetic-new-no-usdt",
+  "synthetic-one-legitimate-transfer",
+  "synthetic-unknown-no-pattern",
+  "synthetic-direct-blacklist-1pct",
+  "synthetic-bybit-plus-hard-evidence",
+  "synthetic-dangerous-approval-no-debit",
+  "synthetic-victim-debit",
+  "synthetic-operational-wallet",
+  "synthetic-dust-spam",
+  "synthetic-dense-wallet",
+  "synthetic-500-pages",
+  "synthetic-duplicates",
+  "synthetic-reorder",
+  "synthetic-restart",
+  "synthetic-key-exhaustion",
+  "synthetic-ambiguous-delivery"
 ] as const;
 
 function lexical(left: string, right: string): number {
@@ -162,6 +190,7 @@ function emptySource(
     approvals: evidence?.approvals.map((item) => ({ ...item })) ?? [],
     captureProvenance: {
       providerResponseSha256: input.providerResponseSha256,
+      coverageCertificateSha256: input.coverageCertificateSha256,
       selectionCutoff: input.selectionCutoff
     }
   };
@@ -363,11 +392,20 @@ function assertHash(value: string): void {
 export function buildPureGoldenCapture(input: GoldenCaptureInput) {
   assertHash(input.providerResponseSha256);
   assertHash(input.labelDatasetSha256);
+  assertHash(input.coverageCertificateSha256);
   if (canonicalTimestamp(input.selectionCutoff) === null) {
     throw new Error("FAILED_TECHNICAL:golden_capture_invalid_cutoff");
   }
   const parsedCatalog = parseGoldenCaseCatalogV2(input.catalog);
   const parsedSynthetic = parseSyntheticCasesV2(input.syntheticCases);
+  if (
+    canonicalJson(parsedCatalog.cases.map(({ caseId }) => caseId)) !==
+    canonicalJson(LOCKED_CASE_IDS)
+  ) {
+    throw new Error(
+      "FAILED_TECHNICAL:golden_capture_locked_case_set_mismatch"
+    );
+  }
   const expectedSyntheticIds = parsedCatalog.groups.find(
     ({ kind }) => kind === "synthetic_property_performance"
   )?.caseIds;
@@ -378,6 +416,19 @@ export function buildPureGoldenCapture(input: GoldenCaptureInput) {
   ) {
     throw new Error(
       "FAILED_TECHNICAL:golden_capture_synthetic_membership_mismatch"
+    );
+  }
+  const catalogById = new Map(
+    parsedCatalog.cases.map((item) => [item.caseId, item])
+  );
+  if (
+    parsedSynthetic.cases.some(
+      (item) =>
+        catalogById.get(item.caseId)?.subjectAddress !== item.subjectAddress
+    )
+  ) {
+    throw new Error(
+      "FAILED_TECHNICAL:golden_capture_synthetic_subject_mismatch"
     );
   }
   const selectedSubjects = selectBlindSubjects(
@@ -457,6 +508,7 @@ export function buildPureGoldenCapture(input: GoldenCaptureInput) {
       snapshot: input.snapshot,
       providerResponseSha256: input.providerResponseSha256,
       labelDatasetSha256: input.labelDatasetSha256,
+      coverageCertificateSha256: input.coverageCertificateSha256,
       selectionSha256: selectionManifest.selectionSha256,
       sourceInventory
     }

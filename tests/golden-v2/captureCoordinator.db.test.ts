@@ -47,6 +47,9 @@ describe("read-only golden capture coordinator", () => {
         if (text === "SHOW transaction_read_only") {
           return { rows: [{ transaction_read_only: "on" }] };
         }
+        if (text === "SHOW transaction_isolation") {
+          return { rows: [{ transaction_isolation: "repeatable read" }] };
+        }
         if (text.includes("FROM forensic_check_jobs")) {
           return {
             rows: subjects.map((subjectAddress, index) => ({
@@ -88,16 +91,24 @@ describe("read-only golden capture coordinator", () => {
             ]
           };
         }
-        if (text.includes("FROM address_labels")) {
+        if (text.includes("FROM tron_address_usdt_index_states")) {
           return {
             rows: [
-              {
-                address: peer,
-                label: "exchange",
-                authority: "system",
-                observedAt: "2026-07-01T00:00:00.000Z"
-              }
-            ]
+              ...subjects,
+              "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
+              "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP"
+            ].map((address) => ({
+              address,
+              status: "complete",
+              statusReason: "complete_provider_windowed",
+              provider: "tronscan",
+              fetchedTransferCount: "1",
+              fetchedPageCount: "1",
+              providerCapHit: false,
+              budgetExhausted: false,
+              providerInconsistent: false,
+              completedAt: "2026-07-23T00:00:07.000Z"
+            }))
           };
         }
         if (text.includes("FROM address_metadata")) {
@@ -107,6 +118,12 @@ describe("read-only golden capture coordinator", () => {
                 address: peer,
                 name: "Bybit",
                 tag: "Exchange",
+                observedAt: "2026-07-02T00:00:00.000Z"
+              },
+              {
+                address: subjects[0],
+                name: "Subject Service",
+                tag: null,
                 observedAt: "2026-07-02T00:00:00.000Z"
               }
             ]
@@ -131,11 +148,17 @@ describe("read-only golden capture coordinator", () => {
       selectionCutoff: "2026-07-23T00:00:10.000Z"
     });
 
-    expect(statements[0].text).toBe("BEGIN READ ONLY");
+    expect(statements[0].text).toBe(
+      "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+    );
     expect(statements[1].text).toBe("SHOW transaction_read_only");
+    expect(statements[2].text).toBe("SHOW transaction_isolation");
     expect(statements.at(-1)?.text).toBe("ROLLBACK");
     expect(statements.map(({ text }) => text).join("\n")).not.toMatch(
       /result_json|progress_json|score|narrative/i
+    );
+    expect(statements.map(({ text }) => text).join("\n")).not.toContain(
+      "address_labels"
     );
     const source = result.capture.sources.find(
       ({ subjectAddress, caseId }) =>
@@ -145,9 +168,10 @@ describe("read-only golden capture coordinator", () => {
     expect(source.approvals).toHaveLength(1);
     expect(source.labels.map(({ label }) => label)).toEqual([
       "Bybit",
-      "exchange",
-      "Exchange"
+      "Exchange",
+      "Subject Service"
     ]);
+    expect(result.provenanceManifest.database.coverage).toHaveLength(7);
     expect(result.labelDataset.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.provenanceManifest.provider.responseSha256).toMatch(
       /^[0-9a-f]{64}$/
@@ -159,7 +183,8 @@ describe("read-only golden capture coordinator", () => {
     const second = await publishGoldenCaptureV2(root, result);
     expect(second).toEqual(first);
     expect(await readdir(join(root, "source"))).toHaveLength(25);
-    expect(await readdir(join(root, "capture"))).toEqual([
+    expect((await readdir(join(root, "capture"))).sort()).toEqual([
+      "COMMITTED.json",
       "capture-manifest.json",
       "label-dataset-manifest.json",
       "label-dataset.json",
@@ -175,9 +200,10 @@ describe("read-only golden capture coordinator", () => {
         db: {
           async query(text: string) {
             statements.push(text);
-            return text === "SHOW transaction_read_only"
-              ? { rows: [{ transaction_read_only: "off" }] }
-              : { rows: [] };
+            if (text === "SHOW transaction_read_only") {
+              return { rows: [{ transaction_read_only: "off" }] };
+            }
+            return { rows: [] };
           }
         },
         getConfirmedSnapshot: async () => ({
