@@ -1008,6 +1008,36 @@ describe("TronscanClient", () => {
     });
   });
 
+  it("accepts an underfilled capped window from a nonzero offset as complete", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({
+      total: 10_000,
+      rangeTotal: 10_000,
+      token_transfers: Array.from({ length: 23 }, (_, index) => ({
+        transaction_id: `capped-offset-${50 + index}`,
+        from_address: "TSource111111111111111111111111111111",
+        to_address: "TSubject111111111111111111111111111111",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        quant: "1",
+        block_ts: 1_780_090_000_000 - index
+      }))
+    }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 50, limit: 50 }
+    );
+
+    expect(page).toMatchObject({
+      start: 50,
+      nextOffset: 73,
+      total: 10_000,
+      rangeTotal: 10_000,
+      complete: true,
+      metadataConsistent: true
+    });
+  });
+
   it("marks a pinned logical page inconsistent when provider offsets overlap", async () => {
     const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
       const requestUrl = url instanceof URL ? url : new URL(String(url));

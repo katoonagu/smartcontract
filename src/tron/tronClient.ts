@@ -910,7 +910,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     let total: number | null | undefined;
     let rangeTotal: number | null | undefined;
     let metadataConsistent = true;
-    let cappedRootWindowComplete = false;
+    let cappedWindowComplete = false;
 
     for (
       let subrequest = 0;
@@ -945,8 +945,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       transfers.push(...consumedTransfers);
 
       const nextOffset = start + transfers.length;
-      cappedRootWindowComplete =
-        pageStart === 0 &&
+      cappedWindowComplete =
         (page.rangeTotal ?? 0) >= TRONSCAN_RANGE_TOTAL_CAP &&
         consumedTransfers.length < pageLimit;
       if (rangeTotal !== null && rangeTotal !== undefined && nextOffset > rangeTotal) {
@@ -954,12 +953,12 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       }
       if (
         consumedTransfers.length < pageLimit
-        && !cappedRootWindowComplete
+        && !cappedWindowComplete
         && (rangeTotal === null || rangeTotal === undefined || nextOffset < rangeTotal)
       ) {
         metadataConsistent = false;
       }
-      if (cappedRootWindowComplete) break;
+      if (cappedWindowComplete) break;
       if (consumedTransfers.length === 0) break;
       if (rangeTotal !== null && rangeTotal !== undefined && nextOffset >= rangeTotal) break;
     }
@@ -976,7 +975,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       total: total ?? null,
       rangeTotal: authoritativeRangeTotal,
       complete: metadataConsistent && (
-        cappedRootWindowComplete ||
+        cappedWindowComplete ||
         (
           authoritativeRangeTotal !== null &&
           nextOffset >= authoritativeRangeTotal

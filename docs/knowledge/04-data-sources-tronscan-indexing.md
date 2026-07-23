@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-24
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -36,6 +36,11 @@ Every Unified run pins one confirmed snapshot block number, hash, and
 timestamp. Direct USDT history pages until authoritative provider exhaustion or
 account creation. Overlaps are canonically deduplicated, post-snapshot events
 are excluded, and persisted cursors make restart deterministic.
+
+TronScan reports `rangeTotal=10000` as a capped sentinel rather than an exact
+count. An underfilled pinned page therefore closes that capped window at any
+offset; it is not treated as inconsistent merely because its next offset is
+below the sentinel.
 
 Identical provider requests share an identity and may coalesce across child
 branches. The fair scheduler tracks per-key/group health and cooldowns so an

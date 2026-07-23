@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-24
 owner_area: docs
 code_refs:
   - scripts/verifyRemediationRelease.ts
@@ -40,6 +40,9 @@ Production remains legacy until those operations complete.
 - Recipient wallet precheck before signing.
 - Additional Admin exploration and optional presentation refinements that do
   not change current acceptance contracts.
+- Reuse one snapshot-bounded counterparty history across funding episodes in a
+  run. The current traversal replays cached pages once per episode, so dense
+  wallets make monotonic progress but spend unnecessary scheduler cycles.
 - Further provider/index performance tuning after measured post-deploy data.
 
 These follow-ups do not expand Task 21 or add release gates.
