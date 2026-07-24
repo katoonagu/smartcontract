@@ -4,6 +4,7 @@ export type UnifiedWorkerTask = {
   readonly id: string;
   readonly runId: string;
   readonly kind: string;
+  readonly logicalKey?: string;
   readonly attempt: number;
   readonly checkpoint: unknown;
   readonly cancellationRequestedAt: string | null;

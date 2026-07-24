@@ -36,7 +36,8 @@ describe("Unified address-history tasks", () => {
           kind: values[2],
           status: "QUEUED",
           priority_lane: values[3],
-          logical_key: values[4]
+          logical_key: values[4],
+          checkpoint_json: JSON.parse(String(values[5]))
         };
         stored.set(key, row);
         return [row];
@@ -52,7 +53,14 @@ describe("Unified address-history tasks", () => {
       priorityLane: "interactive" as const,
       histories: [{
         taskId: "address-task-1",
-        manifestKey: MANIFEST_KEY
+        manifestKey: MANIFEST_KEY,
+        identity: {
+          chain: "tron" as const,
+          snapshotHash: "b".repeat(64),
+          tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          address: "TPCP7B17wCeybFDvsnU4AWqQotT46J5nZV",
+          providerRequestVersion: "tronscan-related-trc20-v1"
+        }
       }]
     };
     const first = await ensureAddressHistoryTasks(db, input);
@@ -60,13 +68,23 @@ describe("Unified address-history tasks", () => {
       ...input,
       histories: [{
         taskId: "address-task-duplicate",
-        manifestKey: MANIFEST_KEY
+        manifestKey: MANIFEST_KEY,
+        identity: input.histories[0]!.identity
       }]
     });
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
     expect(second[0]?.id).toBe("address-task-1");
+    expect(first[0]?.checkpoint_json).toEqual({
+      version: "unified-address-history-checkpoint-v2",
+      identity: input.histories[0]!.identity,
+      history: null,
+      chunkHeadSha256: null,
+      chunkCount: 0,
+      pageCount: 0,
+      rawRowCount: 0
+    });
     expect(stored).toHaveLength(1);
   });
 

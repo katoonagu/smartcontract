@@ -19,7 +19,10 @@ import {
 } from "./presentation";
 import type { UnifiedWalletDossierV1 } from "./report";
 import type { UnifiedWatchdogRunV1 } from "./watchdog";
-import type { AddressHistoryManifestV1 } from "./addressHistory";
+import type {
+  AddressHistoryManifestIdentityV1,
+  AddressHistoryManifestV1
+} from "./addressHistory";
 
 export const UNIFIED_CANARY_SELECTION_QUERY_VERSION =
   "unified-canary-selection-query-v1" as const;
@@ -269,6 +272,7 @@ export async function createUnifiedTasks(
       kind: string;
       priorityLane: "interactive" | "repair" | "background";
       logicalKey: string;
+      checkpoint?: unknown;
     }>;
   }
 ) {
@@ -276,8 +280,8 @@ export async function createUnifiedTasks(
   for (const task of input.tasks) {
     const result = await db.query(
       `insert into unified_check_tasks (
-        id, run_id, kind, status, priority_lane, logical_key
-      ) values ($1, $2, $3, 'QUEUED', $4, $5)
+        id, run_id, kind, status, priority_lane, logical_key, checkpoint_json
+      ) values ($1, $2, $3, 'QUEUED', $4, $5, $6::jsonb)
       on conflict (run_id, kind, logical_key) do nothing
       returning *`,
       [
@@ -285,7 +289,8 @@ export async function createUnifiedTasks(
         input.runId,
         task.kind,
         task.priorityLane,
-        task.logicalKey
+        task.logicalKey,
+        JSON.stringify(task.checkpoint ?? {})
       ]
     );
     rows.push(
@@ -311,6 +316,7 @@ export async function ensureAddressHistoryTasks(
     histories: readonly {
       taskId: string;
       manifestKey: string;
+      identity: AddressHistoryManifestIdentityV1;
     }[];
   }
 ) {
@@ -320,7 +326,16 @@ export async function ensureAddressHistoryTasks(
       id: history.taskId,
       kind: "address_history",
       priorityLane: input.priorityLane,
-      logicalKey: history.manifestKey
+      logicalKey: history.manifestKey,
+      checkpoint: {
+        version: "unified-address-history-checkpoint-v2",
+        identity: history.identity,
+        history: null,
+        chunkHeadSha256: null,
+        chunkCount: 0,
+        pageCount: 0,
+        rawRowCount: 0
+      }
     }))
   });
 }

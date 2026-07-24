@@ -31,6 +31,10 @@ function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
     id: text(row.id, "unified_worker_task_id_invalid"),
     runId: text(row.run_id, "unified_worker_run_id_invalid"),
     kind: text(row.kind, "unified_worker_task_kind_invalid"),
+    logicalKey: text(
+      row.logical_key,
+      "unified_worker_task_logical_key_invalid"
+    ),
     attempt: integer(row.attempt, "unified_worker_attempt_invalid"),
     checkpoint: row.checkpoint_json ?? {},
     cancellationRequestedAt: row.cancellation_requested_at === null ||
