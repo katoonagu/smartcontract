@@ -17,11 +17,6 @@ export interface UnifiedPlannerDiscoveryIdentity
   readonly parentCanonicalSequence: number;
 }
 
-export interface UnifiedPlannerTransitionEntry
-  extends UnifiedPlannerDiscoveryIdentity, UnifiedPlannerPrefixEntry {
-  readonly acceptedAttemptId: string | null;
-}
-
 function compareCodeUnits(left: string, right: string): number {
   const length = Math.min(left.length, right.length);
   for (let index = 0; index < length; index += 1) {
@@ -92,6 +87,22 @@ export function canonicalOrderedTaskDiscoveries<
   );
 }
 
+export function appendUnifiedPlannerDiscovery<
+  T extends UnifiedPlannerDiscoveryIdentity
+>(
+  lastCanonicalSequence: number | null,
+  task: T
+): T & UnifiedPlannerPrefixEntry {
+  return {
+    ...task,
+    canonicalSequence: lastCanonicalSequence === null
+      ? 0
+      : lastCanonicalSequence + 1,
+    plannerState: "planned",
+    resultBytes: null
+  };
+}
+
 function validPositiveSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
 }
@@ -141,89 +152,23 @@ export function selectBoundedReadyPrefix<T extends UnifiedPlannerPrefixEntry>(
   return selected;
 }
 
-function orderedTransitionEntries(
-  entries: readonly UnifiedPlannerTransitionEntry[]
-): UnifiedPlannerTransitionEntry[] {
-  const ordered = [...entries].sort((left, right) =>
-    left.canonicalSequence - right.canonicalSequence
-  );
-  for (const entry of ordered) validateEntry(entry);
-  return ordered;
-}
-
-export function completeUnifiedPlannerEntries(
-  current: readonly UnifiedPlannerTransitionEntry[],
-  completions: readonly {
-    readonly taskId: string;
-    readonly acceptedAttemptId: string;
-    readonly resultBytes: number;
-  }[]
-): UnifiedPlannerTransitionEntry[] {
-  const entries = orderedTransitionEntries(current);
-  const byTaskId = new Map(entries.map((entry) => [entry.taskId, entry]));
-  for (const completion of completions) {
-    const entry = byTaskId.get(completion.taskId);
-    if (!entry || entry.plannerState !== "planned") {
-      throw new TypeError("unified_planner_transition_conflict");
-    }
-    byTaskId.set(completion.taskId, {
-      ...entry,
-      plannerState: "ready",
-      acceptedAttemptId: completion.acceptedAttemptId,
-      resultBytes: completion.resultBytes
-    });
+export function markUnifiedPlannerResultReady<
+  T extends {
+    readonly plannerState: unknown;
+    readonly resultBytes: unknown;
   }
-  return entries.map((entry) => byTaskId.get(entry.taskId)!);
-}
-
-export function commitUnifiedPlannerEntries(
-  current: readonly UnifiedPlannerTransitionEntry[],
-  input: {
-    readonly maxEntries: number;
-    readonly maxBytes: number;
-    readonly discoveredTasks: readonly UnifiedPlannerDiscoveryIdentity[];
-  }
-): {
-  readonly entries: UnifiedPlannerTransitionEntry[];
-  readonly committed: UnifiedPlannerTransitionEntry[];
-  readonly discovered: UnifiedPlannerTransitionEntry[];
+>(entry: T, resultBytes: number): Omit<
+  T,
+  "plannerState" | "resultBytes"
+> & {
+  readonly plannerState: "ready";
+  readonly resultBytes: number;
 } {
-  const entries = orderedTransitionEntries(current);
-  const uncommitted = entries.filter((entry) =>
-    entry.plannerState !== "committed"
-  );
-  const prefix = selectBoundedReadyPrefix(uncommitted, input);
-  const committedIds = new Set(prefix.map((entry) => entry.taskId));
-  const committedEntries = entries.map((entry) =>
-    committedIds.has(entry.taskId)
-      ? { ...entry, plannerState: "committed" as const }
-      : entry
-  );
-  const knownIdentities = new Set(
-    committedEntries.map((entry) => identityKey(entry))
-  );
-  let nextSequence = entries.length === 0
-    ? 0
-    : entries.at(-1)!.canonicalSequence + 1;
-  const discovered: UnifiedPlannerTransitionEntry[] = [];
-  for (const task of canonicalOrderedTaskDiscoveries(
-    input.discoveredTasks
-  )) {
-    const identity = identityKey(task);
-    if (knownIdentities.has(identity)) continue;
-    knownIdentities.add(identity);
-    discovered.push({
-      ...task,
-      canonicalSequence: nextSequence++,
-      plannerState: "planned",
-      acceptedAttemptId: null,
-      resultBytes: null
-    });
+  if (entry.plannerState !== "planned" || entry.resultBytes !== null) {
+    throw new TypeError("unified_ordered_planner_transition_conflict");
   }
-  const next = [...committedEntries, ...discovered];
-  return {
-    entries: next,
-    committed: next.filter((entry) => committedIds.has(entry.taskId)),
-    discovered
-  };
+  if (!Number.isSafeInteger(resultBytes) || resultBytes < 0) {
+    throw new TypeError("unified_planner_result_bytes_invalid");
+  }
+  return { ...entry, plannerState: "ready", resultBytes };
 }

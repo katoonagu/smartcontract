@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
-import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../../src/forensics/canonicalJson";
 import type { RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import {
   buildAddressHistoryManifest,
@@ -12,9 +15,10 @@ import {
   createUnifiedProductionRuntime
 } from "../../src/unifiedCheck/productionRuntime";
 import {
-  commitUnifiedPlannerEntries,
-  completeUnifiedPlannerEntries,
-  type UnifiedPlannerTransitionEntry
+  markUnifiedPlannerResultReady,
+  selectBoundedReadyPrefix,
+  type UnifiedPlannerDiscoveryIdentity,
+  type UnifiedPlannerPrefixEntry
 } from "../../src/unifiedCheck/planner";
 import {
   claimUnifiedTask,
@@ -34,6 +38,11 @@ const FIRST_SOURCE = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
 const SECOND_SOURCE = "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP";
 const PROVIDER_CONFIGURATION_SHA256 = "e".repeat(64);
 const MANIFEST_RESERVED_BYTES = 1_048_576;
+type PlannerTransitionRow =
+  UnifiedPlannerDiscoveryIdentity &
+  UnifiedPlannerPrefixEntry & {
+    readonly acceptedAttemptId: string | null;
+  };
 
 function transactionHost(
   client: pg.PoolClient
@@ -404,7 +413,7 @@ postgresDescribe("Unified planner restart resume", () => {
       preparePlannedState
     }) => {
       const loadPlanner = async (): Promise<
-        UnifiedPlannerTransitionEntry[]
+        PlannerTransitionRow[]
       > => (await client.query(
         `select entry.canonical_sequence, entry.planner_state,
                 entry.result_bytes, task.id as task_id,
@@ -431,36 +440,52 @@ postgresDescribe("Unified planner restart resume", () => {
       const planned = await loadPlanner();
       await expect(firstProcess.runProviderCycle())
         .resolves.toMatchObject({ outcome: "completed" });
-      const accepted = (await client.query(
-        `select task.id, task.accepted_attempt_id, attempt.artifact_sha256
+      const loadAccepted = async () => (await client.query(
+        `select task.id, task.accepted_attempt_id,
+                attempt.artifact_sha256, artifact.artifact_json
            from unified_check_tasks task
            join unified_check_attempts attempt
              on attempt.id = task.accepted_attempt_id
+           join unified_check_artifacts artifact
+             on artifact.sha256 = attempt.artifact_sha256
           where task.kind = 'address_history'`
       )).rows[0];
+      const accepted = await loadAccepted();
+      const expectedResultBytes = Buffer.byteLength(
+        canonicalizeArtifactJson(accepted.artifact_json),
+        "utf8"
+      );
+      expect(fingerprintCanonicalArtifact(accepted.artifact_json))
+        .toBe(String(accepted.artifact_sha256));
       const ready = await loadPlanner();
-      expect(ready).toEqual(completeUnifiedPlannerEntries(planned, [{
-        taskId: String(accepted.id),
-        acceptedAttemptId: String(accepted.accepted_attempt_id),
-        resultBytes: ready[0]!.resultBytes!
-      }]));
+      const expectedReady = planned.map((entry) =>
+        entry.taskId === String(accepted.id)
+          ? {
+            ...markUnifiedPlannerResultReady(
+              entry,
+              expectedResultBytes
+            ),
+            acceptedAttemptId: String(accepted.accepted_attempt_id)
+          }
+          : entry
+      );
+      expect(ready).toEqual(expectedReady);
 
       await expect(runtime().runAnalysisCycle())
         .resolves.toMatchObject({ outcome: "checkpointed" });
+      const committed = selectBoundedReadyPrefix(expectedReady, {
+        maxEntries: 1,
+        maxBytes: expectedResultBytes
+      });
+      const committedIds = new Set(committed.map((entry) => entry.taskId));
       expect(await loadPlanner()).toEqual(
-        commitUnifiedPlannerEntries(ready, {
-          maxEntries: 1,
-          maxBytes: ready[0]!.resultBytes!,
-          discoveredTasks: []
-        }).entries
+        expectedReady.map((entry) =>
+          committedIds.has(entry.taskId)
+            ? { ...entry, plannerState: "committed" }
+            : entry
+        )
       );
-      expect((await client.query(
-        `select task.id, task.accepted_attempt_id, attempt.artifact_sha256
-           from unified_check_tasks task
-           join unified_check_attempts attempt
-             on attempt.id = task.accepted_attempt_id
-          where task.kind = 'address_history'`
-      )).rows[0]).toEqual(accepted);
+      expect(await loadAccepted()).toEqual(accepted);
       await expectNoDuplicateAuthority(client, { addressAttempts: 1 });
     });
   });

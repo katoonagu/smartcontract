@@ -1,4 +1,5 @@
 import {
+  appendUnifiedPlannerDiscovery,
   canonicalOrderedTaskDiscoveries,
   selectBoundedReadyPrefix
 } from "./planner";
@@ -417,10 +418,10 @@ export async function planUnifiedOrderedTasksInTransaction(
       [runId]
     )
   ).rows[0];
-  let nextSequence = maxRow?.max_sequence === null ||
+  let lastCanonicalSequence = maxRow?.max_sequence === null ||
     maxRow?.max_sequence === undefined
-    ? 0
-    : sequence(maxRow.max_sequence) + 1;
+    ? null
+    : sequence(maxRow.max_sequence);
   const result: PlannedTask[] = [];
 
   for (const task of ordered) {
@@ -469,16 +470,25 @@ export async function planUnifiedOrderedTasksInTransaction(
       ) {
         throw new Error("unified_planner_task_not_plannable");
       }
+      const plannedEntry = appendUnifiedPlannerDiscovery(
+        lastCanonicalSequence,
+        { ...task, taskId }
+      );
       planner = (
         await client.query(
           `insert into unified_check_planner_entries (
             run_id, canonical_sequence, task_id, planner_state
-          ) values ($1,$2,$3,'planned')
+          ) values ($1,$2,$3,$4)
           returning canonical_sequence`,
-          [runId, nextSequence, taskId]
+          [
+            runId,
+            plannedEntry.canonicalSequence,
+            plannedEntry.taskId,
+            plannedEntry.plannerState
+          ]
         )
       ).rows[0];
-      nextSequence += 1;
+      lastCanonicalSequence = plannedEntry.canonicalSequence;
     }
     if (!planner) throw new Error("unified_planner_entry_insert_failed");
     result.push({

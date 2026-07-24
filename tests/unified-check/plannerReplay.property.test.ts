@@ -20,10 +20,12 @@ import {
   buildUnifiedPresentedCompletionCandidate
 } from "../../src/unifiedCheck/orchestrator";
 import {
-  commitUnifiedPlannerEntries,
-  completeUnifiedPlannerEntries,
+  appendUnifiedPlannerDiscovery,
+  canonicalOrderedTaskDiscoveries,
+  markUnifiedPlannerResultReady,
   selectBoundedReadyPrefix,
-  type UnifiedPlannerTransitionEntry
+  type UnifiedPlannerDiscoveryIdentity,
+  type UnifiedPlannerPrefixEntry
 } from "../../src/unifiedCheck/planner";
 import type { UnifiedOrderedReadyEntry } from "../../src/unifiedCheck/plannerRepository";
 import {
@@ -54,7 +56,7 @@ const FIRST_CHILD = "TAFdghHDf13ckUNZRw6dit4C4KfzRFWY1k";
 const SHARED_CHILD = "TANPg1qXHmuc53VW4BrcJJM338X5oVs1m9";
 const SECOND_CHILD = "TBL8TQTyw2GjwV3g9eZM27ajgywKZzaz3n";
 const USDT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
-const CAPACITIES = [1, 4, 8, 16, 32, 100] as const;
+const READY_AVAILABILITY_BATCH_SIZES = [1, 4, 8, 16, 32, 100] as const;
 const SNAPSHOT_HASH = "b".repeat(64);
 const VERSIONS = {
   labelDatasetSha256: "d".repeat(64),
@@ -285,22 +287,28 @@ type ReplayResult = {
   deltaHeadSha256: string | null;
 };
 
+type ReplayPlannerEntry =
+  UnifiedPlannerDiscoveryIdentity &
+  UnifiedPlannerPrefixEntry & {
+    readonly acceptedAttemptId: string | null;
+  };
+
 async function replay(input: {
   seed: number;
-  capacity: number;
-  completionOrder: "canonical" | "shuffled";
+  readyBatchSize: number;
+  availabilityOrder: "canonical" | "shuffled";
 }): Promise<ReplayResult> {
   const artifacts = new Map<string, unknown>();
-  let entries: UnifiedPlannerTransitionEntry[] = [];
+  let entries: ReplayPlannerEntry[] = [];
   const committedSequence: number[] = [];
   let checkpoint: unknown = {};
   let taskId = 0;
   let traversalAttempt = 0;
   let completedArtifactSha256: string | null = null;
-  let completionWave = 0;
+  let availabilityWave = 0;
 
   const readyEntry = (
-    entry: UnifiedPlannerTransitionEntry
+    entry: ReplayPlannerEntry
   ): UnifiedOrderedReadyEntry => {
     const history = frozenHistories.get(entry.logicalKey);
     if (
@@ -394,24 +402,27 @@ async function replay(input: {
     checkpoint = result.checkpoint;
     const orderedCommit = result.orderedCommit;
     if (!orderedCommit) return false;
-    const transition = commitUnifiedPlannerEntries(entries, {
-      maxEntries: 32,
-      maxBytes: 8_388_608,
-      discoveredTasks: orderedCommit.discoveredTasks
-    });
-    expect(
-      transition.committed.map((entry) => ({
-        canonicalSequence: entry.canonicalSequence,
-        taskId: entry.taskId,
-        acceptedAttemptId: entry.acceptedAttemptId
-      }))
-    ).toEqual(orderedCommit.entries.map((entry) => ({
-      canonicalSequence: entry.canonicalSequence,
-      taskId: entry.taskId,
-      acceptedAttemptId: entry.acceptedAttemptId
-    })));
-    entries = transition.entries;
-    committedSequence.push(...transition.committed.map((entry) =>
+    const committedIds = new Set(
+      orderedCommit.entries.map((entry) => entry.taskId)
+    );
+    entries = entries.map((entry) =>
+      committedIds.has(entry.taskId)
+        ? { ...entry, plannerState: "committed" }
+        : entry
+    );
+    let lastCanonicalSequence =
+      entries.at(-1)?.canonicalSequence ?? null;
+    for (const task of canonicalOrderedTaskDiscoveries(
+      orderedCommit.discoveredTasks
+    )) {
+      const planned = appendUnifiedPlannerDiscovery(
+        lastCanonicalSequence,
+        task
+      );
+      entries.push({ ...planned, acceptedAttemptId: null });
+      lastCanonicalSequence = planned.canonicalSequence;
+    }
+    committedSequence.push(...orderedCommit.entries.map((entry) =>
       entry.canonicalSequence
     ));
     return orderedCommit.entries.length > 0 ||
@@ -437,25 +448,25 @@ async function replay(input: {
       }
       break;
     }
-    const ordered = input.completionOrder === "canonical"
+    const ordered = input.availabilityOrder === "canonical"
       ? pending
-      : shuffled(pending, input.seed + completionWave);
-    entries = completeUnifiedPlannerEntries(
-      entries,
-      ordered.slice(0, input.capacity).map((entry) => {
-        const history = frozenHistories.get(entry.logicalKey);
-        if (!history) throw new Error("replay_frozen_history_missing");
-        return {
-          taskId: entry.taskId,
-          acceptedAttemptId: `attempt-${entry.canonicalSequence}`,
-          resultBytes: Buffer.byteLength(
-            canonicalizeArtifactJson(history.manifest),
-            "utf8"
-          )
-        };
-      })
+      : shuffled(pending, input.seed + availabilityWave);
+    const availableTaskIds = new Set(
+      ordered.slice(0, input.readyBatchSize).map((entry) => entry.taskId)
     );
-    completionWave += 1;
+    entries = entries.map((entry) => {
+      if (!availableTaskIds.has(entry.taskId)) return entry;
+      const history = frozenHistories.get(entry.logicalKey);
+      if (!history) throw new Error("replay_frozen_history_missing");
+      return {
+        ...markUnifiedPlannerResultReady(entry, Buffer.byteLength(
+          canonicalizeArtifactJson(history.manifest),
+          "utf8"
+        )),
+        acceptedAttemptId: `attempt-${entry.canonicalSequence}`
+      };
+    });
+    availabilityWave += 1;
     await drainCommittedPrefix();
   }
 
@@ -561,35 +572,39 @@ async function replay(input: {
 }
 
 describe("Unified ordered planner replay", () => {
-  it("matches the sequential barrier oracle for 600 deterministic shuffled completion schedules", async () => {
+  it("matches the canonical oracle for 600 logical ready-availability schedules", async () => {
     const oracle = await replay({
       seed: 1,
-      capacity: 1,
-      completionOrder: "canonical"
+      readyBatchSize: 1,
+      availabilityOrder: "canonical"
     });
     expect(oracle.canonicalSequence).toHaveLength(5);
     expect(oracle.discoveredChildOrdering).toHaveLength(3);
     expect(oracle.frontier).toEqual([]);
 
-    for (const capacity of CAPACITIES) {
+    // These batches model only logical result availability before each
+    // canonical commit. They do not model admission windows, provider slots,
+    // lookahead, or fairness; the active barrier admission policy is outside
+    // this harness, and broader scheduling policies belong to Plan 2.
+    for (const readyBatchSize of READY_AVAILABILITY_BATCH_SIZES) {
       for (let seed = 1; seed <= 100; seed += 1) {
         let actual: ReplayResult;
         try {
           actual = await replay({
             seed,
-            capacity,
-            completionOrder: "shuffled"
+            readyBatchSize,
+            availabilityOrder: "shuffled"
           });
         } catch (error) {
           throw new Error(
-            `seed=${seed} capacity=${capacity}: ${
+            `seed=${seed} readyBatchSize=${readyBatchSize}: ${
               error instanceof Error ? error.message : String(error)
             }`
           );
         }
         expect(
           actual,
-          `seed=${seed} capacity=${capacity}`
+          `seed=${seed} readyBatchSize=${readyBatchSize}`
         ).toEqual(oracle);
       }
     }

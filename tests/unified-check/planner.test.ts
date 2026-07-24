@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendUnifiedPlannerDiscovery,
   canonicalOrderedTasks,
+  markUnifiedPlannerResultReady,
   selectBoundedReadyPrefix,
   type UnifiedOrderedTaskIdentity,
   type UnifiedPlannerPrefixEntry
@@ -134,5 +136,23 @@ describe("Unified planner", () => {
     expect(() => selectBoundedReadyPrefix([entry(0, "ready", Number.MAX_SAFE_INTEGER + 1)], { maxEntries: 1, maxBytes: 1 })).toThrow(
       "unified_planner_result_bytes_invalid"
     );
+  });
+
+  it("appends and accepts a discovery through planner primitives", () => {
+    const planned = appendUnifiedPlannerDiscovery(7, {
+      taskId: "task-8",
+      kind: "address_history",
+      logicalKey: "history-8",
+      parentCanonicalSequence: 3
+    });
+    expect(planned).toMatchObject(
+      { canonicalSequence: 8, plannerState: "planned", resultBytes: null }
+    );
+    expect(markUnifiedPlannerResultReady(planned, 27)).toMatchObject(
+      { canonicalSequence: 8, plannerState: "ready", resultBytes: 27 }
+    );
+    expect(() =>
+      markUnifiedPlannerResultReady(entry(4, "ready", 27), 27)
+    ).toThrow("unified_ordered_planner_transition_conflict");
   });
 });
