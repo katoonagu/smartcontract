@@ -7,6 +7,9 @@ import {
   fingerprintCanonicalArtifact
 } from "../../src/forensics/canonicalJson";
 import {
+  buildAddressHistoryManifest
+} from "../../src/unifiedCheck/addressHistory";
+import {
   admitBarrierHead,
   planUnifiedOrderedTasks
 } from "../../src/unifiedCheck/plannerRepository";
@@ -143,22 +146,38 @@ async function insertAcceptedHistory(
     state: "ready" | "planned";
   }
 ) {
-  const artifact = {
-    version: "unified-address-history-manifest-v1",
-    schemaVersion: 1,
-    key: input.taskId
-  };
+  const addresses = [
+    "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9",
+    "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+    "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy"
+  ] as const;
+  const artifact = buildAddressHistoryManifest({
+    chain: "tron",
+    snapshotHash: "b".repeat(64),
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    address: addresses[input.sequence % addresses.length]!,
+    providerRequestVersion: "tronscan-related-trc20-v1",
+    pageArtifactHashes: [],
+    canonicalEventIds: [],
+    rawRowCount: 0,
+    duplicateCount: 0,
+    exhaustion: {
+      kind: "account_creation_reached",
+      evidenceSha256: "c".repeat(64)
+    }
+  });
   const artifactSha256 = fingerprintCanonicalArtifact(artifact);
   const resultBytes = Buffer.byteLength(canonicalizeArtifactJson(artifact));
   await db.query(
      `insert into unified_check_tasks (
        id, run_id, kind, status, priority_lane, logical_key
      ) values (
-       $1,'run-1','address_history',$2,'interactive',$1
+       $1,'run-1','address_history',$2,'interactive',$3
      )`,
     [
       input.taskId,
-      input.state === "ready" ? "COMPLETED" : "QUEUED"
+      input.state === "ready" ? "COMPLETED" : "QUEUED",
+      artifact.key
     ]
   );
   if (input.state === "ready") {
@@ -197,7 +216,7 @@ async function insertAcceptedHistory(
   return {
     canonicalSequence: input.sequence,
     taskId: input.taskId,
-    logicalKey: input.taskId,
+    logicalKey: artifact.key,
     acceptedAttemptId: `attempt-${input.taskId}`,
     resultBytes,
     taskKind: "address_history",
@@ -467,6 +486,63 @@ postgresDescribe("Unified ordered commit", () => {
       });
       expect((await db.query(
         "select planner_state from unified_check_planner_entries where canonical_sequence = 0"
+      )).rows[0]?.planner_state).toBe("ready");
+    });
+  });
+
+  it("rejects a task whose accepted manifest belongs to another logical identity", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      const otherManifest = buildAddressHistoryManifest({
+        chain: "tron",
+        snapshotHash: "b".repeat(64),
+        tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        address: "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP",
+        providerRequestVersion: "tronscan-related-trc20-v1",
+        pageArtifactHashes: [],
+        canonicalEventIds: [],
+        rawRowCount: 0,
+        duplicateCount: 0,
+        exhaustion: {
+          kind: "account_creation_reached",
+          evidenceSha256: "d".repeat(64)
+        }
+      });
+      const otherSha256 = fingerprintCanonicalArtifact(otherManifest);
+      const otherBytes = Buffer.byteLength(
+        canonicalizeArtifactJson(otherManifest)
+      );
+      await db.query(
+        `insert into unified_check_artifacts (
+           sha256, created_by_run_id, kind, schema_version, artifact_json
+         ) values ($1,'run-1','address_history_manifest','1',$2::jsonb)`,
+        [otherSha256, JSON.stringify(otherManifest)]
+      );
+      await db.query(
+        `update unified_check_attempts
+            set artifact_sha256 = $1
+          where id = 'attempt-history-1'`,
+        [otherSha256]
+      );
+      await db.query(
+        `update unified_check_planner_entries
+            set result_bytes = $1
+          where task_id = 'history-1'`,
+        [otherBytes]
+      );
+
+      await expect(checkpointUnifiedTask(host, commitInput({
+        ...entry,
+        resultBytes: otherBytes
+      }))).rejects.toThrow("unified_ordered_commit_prefix_mismatch");
+      expect((await db.query(
+        "select status, checkpoint_json from unified_check_tasks where id = 'traversal-1'"
+      )).rows[0]).toMatchObject({
+        status: "LEASED",
+        checkpoint_json: { deltaHeadSha256: OLD_HEAD }
+      });
+      expect((await db.query(
+        "select planner_state from unified_check_planner_entries where task_id = 'history-1'"
       )).rows[0]?.planner_state).toBe("ready");
     });
   });

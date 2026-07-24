@@ -4,6 +4,9 @@ import {
   fingerprintCanonicalArtifact
 } from "../../src/forensics/canonicalJson";
 import {
+  buildAddressHistoryManifest
+} from "../../src/unifiedCheck/addressHistory";
+import {
   checkpointUnifiedTask,
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
@@ -13,11 +16,21 @@ describe("Unified ordered checkpoint commit", () => {
   it("commits, appends parent-ordered discoveries and admits the next head in one transaction", async () => {
     const priorHead = "a".repeat(64);
     const nextHead = "b".repeat(64);
-    const artifact = {
-      version: "unified-address-history-manifest-v1",
-      schemaVersion: 1,
-      key: "manifest-1"
-    };
+    const artifact = buildAddressHistoryManifest({
+      chain: "tron",
+      snapshotHash: "b".repeat(64),
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      address: "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9",
+      providerRequestVersion: "tronscan-related-trc20-v1",
+      pageArtifactHashes: [],
+      canonicalEventIds: [],
+      rawRowCount: 0,
+      duplicateCount: 0,
+      exhaustion: {
+        kind: "account_creation_reached",
+        evidenceSha256: "c".repeat(64)
+      }
+    });
     const artifactSha256 = fingerprintCanonicalArtifact(artifact);
     const resultBytes = Buffer.byteLength(canonicalizeArtifactJson(artifact));
     const queries: string[] = [];
@@ -70,7 +83,7 @@ describe("Unified ordered checkpoint commit", () => {
               result_bytes: resultBytes,
               task_id: "history-1",
               task_kind: "address_history",
-              task_logical_key: "manifest-1",
+              task_logical_key: artifact.key,
               task_status: "COMPLETED",
               accepted_attempt_id: "attempt-history-1",
               attempt_id: "attempt-history-1",
@@ -164,7 +177,7 @@ describe("Unified ordered checkpoint commit", () => {
         entries: [{
           canonicalSequence: 7,
           taskId: "history-1",
-          logicalKey: "manifest-1",
+          logicalKey: artifact.key,
           acceptedAttemptId: "attempt-history-1",
           resultBytes,
           taskKind: "address_history",
@@ -206,5 +219,143 @@ describe("Unified ordered checkpoint commit", () => {
       sql.includes("set admitted_at") &&
       sql.includes("canonical_sequence = $2")
     )).toBe(true);
+  });
+
+  it("rejects an accepted manifest for another logical identity before checkpoint mutation", async () => {
+    const priorHead = "a".repeat(64);
+    const identity = (address: string) => ({
+      chain: "tron" as const,
+      snapshotHash: "b".repeat(64),
+      tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      address,
+      providerRequestVersion: "tronscan-related-trc20-v1",
+      pageArtifactHashes: [] as string[],
+      canonicalEventIds: [] as string[],
+      rawRowCount: 0,
+      duplicateCount: 0,
+      exhaustion: {
+        kind: "account_creation_reached" as const,
+        evidenceSha256: "c".repeat(64)
+      }
+    });
+    const manifestA = buildAddressHistoryManifest(
+      identity("TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9")
+    );
+    const manifestB = buildAddressHistoryManifest(
+      identity("TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP")
+    );
+    const artifactSha256 = fingerprintCanonicalArtifact(manifestB);
+    const resultBytes = Buffer.byteLength(
+      canonicalizeArtifactJson(manifestB)
+    );
+    let checkpointMutated = false;
+    const client: UnifiedQueryable = {
+      async query(sql) {
+        const normalized = sql.replace(/\s+/gu, " ").trim();
+        if (
+          normalized ===
+          "select run_id from unified_check_tasks where id = $1"
+        ) {
+          return { rows: [{ run_id: "run-1" }] };
+        }
+        if (
+          normalized.includes("from unified_check_runs") &&
+          normalized.includes("for update")
+        ) {
+          return { rows: [{ id: "run-1" }] };
+        }
+        if (
+          normalized.includes("from unified_check_tasks task") &&
+          normalized.includes("for update of task")
+        ) {
+          return {
+            rows: [{
+              id: "task-traversal",
+              run_id: "run-1",
+              kind: "traversal",
+              status: "LEASED",
+              lease_token: "lease-1",
+              attempt: 1,
+              cancellation_requested_at: null,
+              checkpoint_json: {
+                version: "unified-production-traversal-checkpoint-v2",
+                deltaHeadSha256: priorHead
+              }
+            }]
+          };
+        }
+        if (
+          normalized.startsWith("with head as") &&
+          normalized.includes("for update of entry")
+        ) {
+          return {
+            rows: [{
+              head_sequence: 0,
+              canonical_sequence: 0,
+              planner_state: "ready",
+              result_bytes: resultBytes,
+              task_id: "history-a",
+              task_kind: "address_history",
+              task_logical_key: manifestA.key,
+              task_status: "COMPLETED",
+              accepted_attempt_id: "attempt-history-a",
+              attempt_id: "attempt-history-a",
+              attempt_task_id: "history-a",
+              artifact_sha256: artifactSha256,
+              artifact_kind: "address_history_manifest",
+              artifact_schema_version: "1",
+              artifact_json: manifestB
+            }]
+          };
+        }
+        if (normalized.startsWith("update unified_check_tasks")) {
+          checkpointMutated = true;
+          return { rows: [{ id: "task-traversal", status: "QUEUED" }] };
+        }
+        if (
+          normalized.startsWith("update unified_check_planner_entries") &&
+          normalized.includes("set planner_state = 'committed'")
+        ) {
+          return { rows: [{ task_id: "history-a" }] };
+        }
+        if (
+          normalized.startsWith("select entry.canonical_sequence") &&
+          normalized.includes("for update of entry, task")
+        ) {
+          return { rows: [] };
+        }
+        throw new Error(`unexpected_sql:${normalized}`);
+      }
+    };
+    const db: UnifiedTransactionalQueryable = {
+      query: client.query,
+      transaction: (work) => work(client)
+    };
+
+    await expect(checkpointUnifiedTask(db, {
+      taskId: "task-traversal",
+      leaseToken: "lease-1",
+      attempt: 1,
+      checkpoint: {
+        version: "unified-production-traversal-checkpoint-v2",
+        deltaHeadSha256: "d".repeat(64)
+      },
+      orderedCommit: {
+        runId: "run-1",
+        expectedDeltaHeadSha256: priorHead,
+        entries: [{
+          canonicalSequence: 0,
+          taskId: "history-a",
+          logicalKey: manifestA.key,
+          acceptedAttemptId: "attempt-history-a",
+          resultBytes,
+          taskKind: "address_history",
+          artifactKind: "address_history_manifest",
+          artifactSchemaVersion: "1"
+        }],
+        discoveredTasks: []
+      }
+    })).rejects.toThrow("unified_ordered_commit_prefix_mismatch");
+    expect(checkpointMutated).toBe(false);
   });
 });

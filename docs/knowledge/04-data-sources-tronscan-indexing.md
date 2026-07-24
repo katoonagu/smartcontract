@@ -74,9 +74,12 @@ from the current canonical frontier, persists one capacity-independent planner
 batch, and uses head-only barrier admission. Accepted manifests may finish in
 any order, but traversal applies only a bounded continuous ready prefix in
 canonical sequence. The V2 checkpoint/delta head and exact planner prefix
-commit atomically; a gap is never skipped. Previously committed address
-manifests are loaded only by requested logical key and remain reusable by later
-funding states.
+commit atomically; a gap is never skipped. A manifest is applicable only when
+its task kind, planner logical key, stored key, and key recomputed from
+chain/snapshot/token/address/provider-request identity all match. Swapped or
+key-tampered manifests fail before a traversal delta. Previously committed
+address manifests are loaded by exact task identity and remain reusable by
+later funding states.
 
 Traversal is finite without a coverage threshold. It terminates only at
 snapshot-bounded history exhaustion or an evidence-backed service/CEX/DEX/

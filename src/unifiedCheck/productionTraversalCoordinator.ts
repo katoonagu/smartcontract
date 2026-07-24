@@ -763,16 +763,40 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
       const addressManifest = entry.artifact as
         Partial<AddressHistoryManifestV1>;
       if (
+        entry.taskKind !== "address_history" ||
         entry.artifactKind !== "address_history_manifest" ||
         entry.artifactSchemaVersion !== "1" ||
         addressManifest.version !==
           "unified-address-history-manifest-v1" ||
         addressManifest.schemaVersion !== 1 ||
-        typeof addressManifest.key !== "string"
+        typeof addressManifest.key !== "string" ||
+        addressManifest.chain !== "tron" ||
+        typeof addressManifest.snapshotHash !== "string" ||
+        typeof addressManifest.tokenContract !== "string" ||
+        typeof addressManifest.address !== "string" ||
+        typeof addressManifest.providerRequestVersion !== "string"
       ) {
         throw new Error("unified_traversal_address_manifest_mismatch");
       }
-      const planned = mandatory.get(addressManifest.key);
+      let recomputedKey: string;
+      try {
+        recomputedKey = addressHistoryManifestKey({
+          chain: addressManifest.chain,
+          snapshotHash: addressManifest.snapshotHash,
+          tokenContract: addressManifest.tokenContract,
+          address: addressManifest.address,
+          providerRequestVersion: addressManifest.providerRequestVersion
+        });
+      } catch {
+        throw new Error("unified_traversal_address_manifest_mismatch");
+      }
+      if (
+        recomputedKey !== addressManifest.key ||
+        entry.logicalKey !== addressManifest.key
+      ) {
+        throw new Error("unified_traversal_address_manifest_mismatch");
+      }
+      const planned = mandatory.get(entry.logicalKey);
       if (
         !planned ||
         addressManifest.snapshotHash !==

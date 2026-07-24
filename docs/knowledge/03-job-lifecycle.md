@@ -110,9 +110,12 @@ only unaccepted `QUEUED`/`WAITING_RETRY` planned tasks and rolls back the whole
 transition on a lifecycle mismatch. A ready head is valid only after its
 provider reservation is released; it remains traversal-actionable and emits no
 provider wake. A newly admitted planned head wakes the provider pool only after
-commit. Committed manifests remain reusable without duplicate provider work.
-Adaptive rolling admission, provider-group selection, and the capacity
-controller remain later steps.
+commit. Before any traversal delta or planner commit, both the coordinator and
+checkpoint transaction recompute an address-history manifest key from its
+authoritative identity fields and require it to match the exact planner task
+kind and logical key. Committed manifests remain reusable without duplicate
+provider work. Adaptive rolling admission, provider-group selection, and the
+capacity controller remain later steps.
 
 ## Remaining Operational Work
 

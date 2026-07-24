@@ -322,3 +322,14 @@ large logical capacity, but claim live throughput only for independent groups
 that actually exist and passed a canary. WSL is local diagnostic evidence, not
 the production memory contract. A leak requires sustained RSS/available-memory
 or swap evidence across comparable runs, not one host percentage.
+
+## 2026-07-25: Artifact Hash Is Not Planner Identity
+
+Agent mistake: a correctly hashed address-history manifest could be selected
+by its own embedded key even when the planner row belonged to another logical
+task.
+
+Correct rule: before traversal mutation or ordered commit, recompute the
+manifest key from authoritative identity fields and require task kind, planner
+logical key, embedded key, and recomputed key to agree. Content integrity does
+not substitute for contextual identity binding.

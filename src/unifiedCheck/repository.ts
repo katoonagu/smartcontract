@@ -3,6 +3,7 @@ import {
   canonicalizeArtifactJson,
   fingerprintCanonicalArtifact
 } from "../forensics/canonicalJson";
+import { addressHistoryManifestKey } from "./addressHistory";
 import type {
   UnifiedCanaryBatchIdentityV1,
   UnifiedCanaryExecutionBlockedV1,
@@ -1558,6 +1559,47 @@ function checkpointDeltaHead(checkpoint: unknown): string | null {
   return head;
 }
 
+function orderedArtifactIdentityMatches(
+  artifact: unknown,
+  expected: UnifiedOrderedCommitExpectation["entries"][number]
+): boolean {
+  if (expected.taskKind !== "address_history") return true;
+  if (
+    expected.artifactKind !== "address_history_manifest" ||
+    expected.artifactSchemaVersion !== "1" ||
+    artifact === null ||
+    typeof artifact !== "object" ||
+    Array.isArray(artifact)
+  ) {
+    return false;
+  }
+  const manifest = artifact as Record<string, unknown>;
+  if (
+    manifest.version !== "unified-address-history-manifest-v1" ||
+    manifest.schemaVersion !== 1 ||
+    typeof manifest.key !== "string" ||
+    manifest.chain !== "tron" ||
+    typeof manifest.snapshotHash !== "string" ||
+    typeof manifest.tokenContract !== "string" ||
+    typeof manifest.address !== "string" ||
+    typeof manifest.providerRequestVersion !== "string"
+  ) {
+    return false;
+  }
+  try {
+    const recomputed = addressHistoryManifestKey({
+      chain: manifest.chain,
+      snapshotHash: manifest.snapshotHash,
+      tokenContract: manifest.tokenContract,
+      address: manifest.address,
+      providerRequestVersion: manifest.providerRequestVersion
+    });
+    return recomputed === manifest.key && manifest.key === expected.logicalKey;
+  } catch {
+    return false;
+  }
+}
+
 function isTransactional(
   db: UnifiedQueryable
 ): db is UnifiedTransactionalQueryable {
@@ -1678,6 +1720,7 @@ async function checkpointUnifiedOrderedTask(
         String(row.artifact_kind) !== expected.artifactKind ||
         String(row.artifact_schema_version) !==
           expected.artifactSchemaVersion ||
+        !orderedArtifactIdentityMatches(row.artifact_json, expected) ||
         resultBytes !== expected.resultBytes ||
         fingerprintCanonicalArtifact(row.artifact_json) !==
           String(row.artifact_sha256) ||

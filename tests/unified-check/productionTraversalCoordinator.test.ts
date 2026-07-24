@@ -66,7 +66,171 @@ function event(input: {
   };
 }
 
+function twoReadyHistories(input: {
+  binding: "correct" | "swapped";
+  taskKind?: string;
+  mutateFirstKey?: string;
+}) {
+  const directEvents = [
+    event({
+      hash: "d".repeat(64),
+      from: MID,
+      to: SUBJECT,
+      amountRaw: "10",
+      timestamp: "2026-07-23T12:10:00.000Z"
+    }),
+    event({
+      hash: "e".repeat(64),
+      from: CEX,
+      to: SUBJECT,
+      amountRaw: "20",
+      timestamp: "2026-07-23T12:00:00.000Z"
+    })
+  ];
+  const histories = [MID, CEX].map((address) => {
+    const identity = {
+      chain: "tron" as const,
+      snapshotHash: manifest.snapshotHash,
+      tokenContract: USDT,
+      address,
+      providerRequestVersion: "tronscan-related-trc20-v1"
+    };
+    return {
+      identity,
+      artifact: buildAddressHistoryManifest({
+        ...identity,
+        pageArtifactHashes: [],
+        canonicalEventIds: [],
+        rawRowCount: 0,
+        duplicateCount: 0,
+        exhaustion: {
+          kind: "account_creation_reached",
+          evidenceSha256: "f".repeat(64)
+        }
+      })
+    };
+  }).sort((left, right) =>
+    left.artifact.key.localeCompare(right.artifact.key)
+  );
+  const artifacts = new Map<string, unknown>();
+  const heartbeat = vi.fn(async () => undefined);
+  const entries = histories.map((history, canonicalSequence) => {
+    const sourceIndex = input.binding === "swapped"
+      ? 1 - canonicalSequence
+      : canonicalSequence;
+    const source = histories[sourceIndex]!.artifact;
+    const artifact = canonicalSequence === 0 && input.mutateFirstKey
+      ? { ...source, key: input.mutateFirstKey }
+      : source;
+    return {
+      canonicalSequence,
+      taskId: `history-task-${canonicalSequence}`,
+      taskKind: input.taskKind ?? "address_history",
+      logicalKey: history.artifact.key,
+      acceptedAttemptId: `history-attempt-${canonicalSequence}`,
+      artifactSha256: fingerprintCanonicalArtifact(artifact),
+      artifactKind: "address_history_manifest",
+      artifactSchemaVersion: "1",
+      artifact,
+      resultBytes: Buffer.byteLength(
+        canonicalizeArtifactJson(artifact),
+        "utf8"
+      )
+    };
+  });
+  const handler = createUnifiedTraversalCoordinatorHandler({
+    commitMaxEntries: 2,
+    commitMaxBytes: 8_388_608,
+    manifestMaxBytes: 1_048_576,
+    loadContext: async () => ({ runId: "run-1", manifest, directEvents }),
+    loadLabels: async () => new Map(),
+    loadDurableAddressHistoryKeys: async ({ manifestKeys }) =>
+      new Set(manifestKeys),
+    createTaskId: () => "unused-history-task",
+    loadReadyAddressHistories: async () => entries,
+    loadCommittedAddressHistories: async () => [],
+    loadAddressHistoryPage: async () => {
+      throw new Error("empty manifest has no pages");
+    },
+    loadCompactionArtifact: async ({ sha256 }) =>
+      artifacts.get(sha256) as never,
+    loadDeltaArtifact: async ({ sha256 }) =>
+      artifacts.get(sha256) as never,
+    persistArtifact: async (artifact) => {
+      artifacts.set(artifact.sha256, artifact.artifact);
+    }
+  });
+  return {
+    artifacts,
+    entries,
+    heartbeat,
+    histories,
+    run: () => handler({
+      task: {
+        id: "task-traversal",
+        runId: "run-1",
+        kind: "traversal",
+        logicalKey: "main",
+        priorityLane: "interactive",
+        attempt: 1,
+        checkpoint: {},
+        cancellationRequestedAt: null
+      },
+      leaseToken: "lease-1",
+      heartbeat
+    })
+  };
+}
+
 describe("Unified address-centric traversal coordinator", () => {
+  it("rejects swapped valid manifests before either mandatory state mutates", async () => {
+    const scenario = twoReadyHistories({ binding: "swapped" });
+
+    await expect(scenario.run()).rejects.toThrow(
+      "unified_traversal_address_manifest_mismatch"
+    );
+    expect(scenario.heartbeat).not.toHaveBeenCalled();
+    expect([...scenario.artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-delta-v1"
+    )).toHaveLength(0);
+  });
+
+  it("applies correctly bound manifests in planner order", async () => {
+    const scenario = twoReadyHistories({ binding: "correct" });
+
+    const result = await scenario.run();
+    expect(result.kind).toBe("checkpoint");
+    if (result.kind !== "checkpoint") throw new Error("checkpoint expected");
+    expect(result.orderedCommit?.entries.map((entry) => entry.logicalKey))
+      .toEqual(scenario.histories.map((history) => history.artifact.key));
+    expect(scenario.heartbeat).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a manifest key that does not match its authoritative identity", async () => {
+    const scenario = twoReadyHistories({
+      binding: "correct",
+      mutateFirstKey: "0".repeat(64)
+    });
+
+    await expect(scenario.run()).rejects.toThrow(
+      "unified_traversal_address_manifest_mismatch"
+    );
+    expect(scenario.heartbeat).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-address-history planner task before traversal mutation", async () => {
+    const scenario = twoReadyHistories({
+      binding: "correct",
+      taskKind: "other_kind"
+    });
+
+    await expect(scenario.run()).rejects.toThrow(
+      "unified_traversal_address_manifest_mismatch"
+    );
+    expect(scenario.heartbeat).not.toHaveBeenCalled();
+  });
+
   it("loads one address history for several funding episodes and persists V2 deltas", async () => {
     const directEvents = [
       event({
