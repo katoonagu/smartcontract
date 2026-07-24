@@ -19,6 +19,7 @@ import {
 } from "./presentation";
 import type { UnifiedWalletDossierV1 } from "./report";
 import type { UnifiedWatchdogRunV1 } from "./watchdog";
+import type { AddressHistoryManifestV1 } from "./addressHistory";
 
 export const UNIFIED_CANARY_SELECTION_QUERY_VERSION =
   "unified-canary-selection-query-v1" as const;
@@ -300,6 +301,70 @@ export async function createUnifiedTasks(
     );
   }
   return rows;
+}
+
+export async function ensureAddressHistoryTasks(
+  db: UnifiedQueryable,
+  input: {
+    runId: string;
+    priorityLane: "interactive" | "repair" | "background";
+    histories: readonly {
+      taskId: string;
+      manifestKey: string;
+    }[];
+  }
+) {
+  return createUnifiedTasks(db, {
+    runId: input.runId,
+    tasks: input.histories.map((history) => ({
+      id: history.taskId,
+      kind: "address_history",
+      priorityLane: input.priorityLane,
+      logicalKey: history.manifestKey
+    }))
+  });
+}
+
+export async function loadCompletedAddressHistoryManifests(
+  db: UnifiedQueryable,
+  input: {
+    runId: string;
+    manifestKeys: readonly string[];
+  }
+): Promise<Map<string, AddressHistoryManifestV1>> {
+  const manifestKeys = [...new Set(input.manifestKeys)].sort();
+  if (manifestKeys.length === 0) return new Map();
+  const result = await db.query(
+    `select task.logical_key, artifact.artifact_json
+       from unified_check_tasks task
+       join unified_check_attempts attempt
+         on attempt.id = task.accepted_attempt_id
+       join unified_check_artifacts artifact
+         on artifact.sha256 = attempt.artifact_sha256
+      where task.run_id = $1
+        and task.kind = 'address_history'
+        and task.status = 'COMPLETED'
+        and task.logical_key = any($2::text[])
+        and artifact.kind = 'address_history_manifest'
+      order by task.logical_key`,
+    [input.runId, manifestKeys]
+  );
+  const manifests = new Map<string, AddressHistoryManifestV1>();
+  for (const row of result.rows) {
+    const logicalKey = String(row.logical_key);
+    const artifact = row.artifact_json as Partial<AddressHistoryManifestV1>;
+    if (
+      artifact === null ||
+      typeof artifact !== "object" ||
+      artifact.version !== "unified-address-history-manifest-v1" ||
+      artifact.schemaVersion !== 1 ||
+      artifact.key !== logicalKey
+    ) {
+      throw new Error("unified_address_history_manifest_row_invalid");
+    }
+    manifests.set(logicalKey, artifact as AddressHistoryManifestV1);
+  }
+  return manifests;
 }
 
 export async function loadUnifiedCanarySelectionRows(
@@ -715,16 +780,35 @@ export async function claimUnifiedTask(
              )
            )
          )
-         and (
-           task.kind <> 'traversal' or exists (
-             select 1
-               from unified_check_tasks prerequisite
-              where prerequisite.run_id = task.run_id
-                and prerequisite.kind = 'direct_history'
-                and prerequisite.status = 'COMPLETED'
-                and prerequisite.accepted_attempt_id is not null
-           )
-         )
+          and (
+            task.kind <> 'address_history' or exists (
+              select 1
+                from unified_check_tasks prerequisite
+               where prerequisite.run_id = task.run_id
+                 and prerequisite.kind = 'direct_history'
+                 and prerequisite.status = 'COMPLETED'
+                 and prerequisite.accepted_attempt_id is not null
+            )
+          )
+          and (
+            task.kind <> 'traversal' or (
+              exists (
+                select 1
+                  from unified_check_tasks prerequisite
+                 where prerequisite.run_id = task.run_id
+                   and prerequisite.kind = 'direct_history'
+                   and prerequisite.status = 'COMPLETED'
+                   and prerequisite.accepted_attempt_id is not null
+              )
+              and not exists (
+                select 1
+                  from unified_check_tasks history_task
+                 where history_task.run_id = task.run_id
+                   and history_task.kind = 'address_history'
+                   and history_task.status <> 'COMPLETED'
+              )
+            )
+          )
          and (
            task.kind not in ('fast','where','deep') or exists (
              select 1
