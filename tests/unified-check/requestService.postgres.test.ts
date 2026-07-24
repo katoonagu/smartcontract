@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import pg from "pg";
 import {
   createPostgresUnifiedRequestStore,
-  intakeUnifiedCheck
+  intakeUnifiedCheck,
+  unifiedFairnessOwnerId
 } from "../../src/unifiedCheck/requestService";
 import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
 import type {
@@ -24,6 +25,7 @@ postgresDescribe("Unified Check durable intake", () => {
       await client.query(`create schema "${schema}"`);
       await client.query(`set search_path to "${schema}"`);
       await client.query(await readFile("migrations/033_unified_wallet_check.sql", "utf8"));
+      await client.query(await readFile("migrations/034_unified_check_adaptive_planner.sql", "utf8"));
       const clientQueryable: UnifiedQueryable = {
         query: (sql: string, values?: readonly unknown[]) =>
           client.query(sql, values as unknown[])
@@ -69,7 +71,7 @@ postgresDescribe("Unified Check durable intake", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "candidate",
-          schemaVersion: 33
+          schemaVersion: 34
         },
         freezeLabelDataset: async ({
           snapshotHash,
@@ -91,7 +93,7 @@ postgresDescribe("Unified Check durable intake", () => {
           id: "request-1",
           requestCorrelationId: "action-1",
           subjectAddress: "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
-          chatId: "1",
+          chatId: "different-chat",
           messageThreadId: "",
           locale: "ru",
           runPurpose: "user_check",
@@ -122,6 +124,22 @@ postgresDescribe("Unified Check durable intake", () => {
         .toBe(2);
       expect((await client.query("select count(*)::int as count from unified_check_runs")).rows[0]?.count)
         .toBe(1);
+      expect(first.run.fairnessOwnerId).toMatch(/^[0-9a-f]{64}$/);
+      expect(first.run.fairnessOwnerId).toBe(unifiedFairnessOwnerId({
+        runPurpose: "user_check",
+        chatId: "different-chat",
+        runId: "run-1"
+      }));
+      expect(second.run.fairnessOwnerId).toBe(first.run.fairnessOwnerId);
+      expect(second.run.fairnessOwnerId).not.toBe(unifiedFairnessOwnerId({
+        runPurpose: "user_check",
+        chatId: "1",
+        runId: "run-2"
+      }));
+      expect((await client.query(
+        "select fairness_owner_id from unified_check_runs where id = $1",
+        [first.run.id]
+      )).rows[0]?.fairness_owner_id).toBe(first.run.fairnessOwnerId);
       expect(first.run.analysisManifest).toMatchObject({
         labelCatalogVersion: "unified-label-catalog-v1",
         boundaryPredicateVersion: "unified-boundary-predicates-v1"

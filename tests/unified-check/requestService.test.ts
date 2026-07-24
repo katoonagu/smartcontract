@@ -6,6 +6,7 @@ import {
 import type { SnapshotSource } from "../../src/unifiedCheck/snapshot";
 import {
   intakeUnifiedCheck,
+  unifiedFairnessOwnerId,
   type AnalysisRunRecord,
   type CheckRequestRecord,
   type UnifiedInitialTask,
@@ -20,7 +21,7 @@ const versions = {
   scoringPolicyVersion: "scoring-signal-matrix-v4",
   attributionPolicyVersion: "selected-attribution-policy-v1",
   runtimeCommit: "candidate-commit",
-  schemaVersion: 33
+  schemaVersion: 34
 } as const;
 
 class MemoryStore implements UnifiedRequestStore {
@@ -150,6 +151,30 @@ function input(
 }
 
 describe("Unified Check request intake", () => {
+  it("uses stable opaque Telegram owners and run IDs for non-user work", () => {
+    const first = unifiedFairnessOwnerId({
+      runPurpose: "user_check",
+      chatId: "123456",
+      runId: "run-1"
+    });
+    expect(first).toBe(unifiedFairnessOwnerId({
+      runPurpose: "user_check",
+      chatId: "123456",
+      runId: "run-2"
+    }));
+    expect(first).not.toBe("123456");
+    expect(first).not.toBe(unifiedFairnessOwnerId({
+      runPurpose: "user_check",
+      chatId: "654321",
+      runId: "run-3"
+    }));
+    expect(unifiedFairnessOwnerId({
+      runPurpose: "synthetic_test",
+      chatId: "123456",
+      runId: "run-4"
+    })).toBe("run-4");
+  });
+
   it("persists ACCEPTED before snapshot and deduplicates one logical UI action", async () => {
     const store = new MemoryStore();
     const provider = source("84713573", HASH_A, () => {
@@ -168,6 +193,7 @@ describe("Unified Check request intake", () => {
     expect(store.initialTasksByRun.get(first.run.id)?.map((task) => task.kind))
       .toEqual(["fast", "where", "deep"]);
     expect(first.run.analysisManifest).toMatchObject({
+      databaseSchemaVersion: 34,
       labelDatasetSha256: versions.labelDatasetSha256,
       labelCatalogVersion: "unified-label-catalog-v1",
       boundaryPredicateVersion: "unified-boundary-predicates-v1"
@@ -177,13 +203,46 @@ describe("Unified Check request intake", () => {
   it("creates two requests but reuses an exact shared analysis snapshot", async () => {
     const store = new MemoryStore();
     const first = await intakeUnifiedCheck(input(store, source(), "action-1", "request-1", "run-1"));
-    const second = await intakeUnifiedCheck(input(store, source(), "action-2", "request-2", "run-2"));
+    const secondInput = input(store, source(), "action-2", "request-2", "run-2");
+    secondInput.request.chatId = "different-chat";
+    const second = await intakeUnifiedCheck(secondInput);
     expect(first.kind).toBe("attached");
     expect(second.kind).toBe("attached");
     if (first.kind !== "attached" || second.kind !== "attached") return;
     expect(second.request.id).not.toBe(first.request.id);
     expect(second.run.id).toBe(first.run.id);
+    expect(second.run.fairnessOwnerId).toBe(first.run.fairnessOwnerId);
+    expect(second.run.fairnessOwnerId).not.toBe(unifiedFairnessOwnerId({
+      runPurpose: "user_check",
+      chatId: secondInput.request.chatId,
+      runId: "run-2"
+    }));
     expect(second.reused).toBe(true);
+  });
+
+  it("keeps one owner across new runs for a chat and separates different chats", async () => {
+    const store = new MemoryStore();
+    const first = await intakeUnifiedCheck(
+      input(store, source("84713573", HASH_A), "action-1", "request-1", "run-1")
+    );
+    const second = await intakeUnifiedCheck(
+      input(store, source("84713574", HASH_B), "action-2", "request-2", "run-2")
+    );
+    const thirdInput = input(
+      store,
+      source("84713575", "d".repeat(64)),
+      "action-3",
+      "request-3",
+      "run-3"
+    );
+    thirdInput.request.chatId = "different-chat";
+    const third = await intakeUnifiedCheck(thirdInput);
+    expect(first.kind).toBe("attached");
+    expect(second.kind).toBe("attached");
+    expect(third.kind).toBe("attached");
+    if (first.kind !== "attached" || second.kind !== "attached" || third.kind !== "attached") return;
+    expect(second.run.fairnessOwnerId).toBe(first.run.fairnessOwnerId);
+    expect(third.run.fairnessOwnerId).not.toBe(first.run.fairnessOwnerId);
   });
 
   it("freezes and binds a snapshot-specific label dataset before attach", async () => {
@@ -249,6 +308,7 @@ describe("Unified Check request intake", () => {
     expect(second.kind).toBe("attached");
     if (first.kind !== "attached" || second.kind !== "attached") return;
     expect(first.run.sideEffectPolicy).toBe("isolated");
+    expect(first.run.fairnessOwnerId).toBe("run-1");
     expect(second.run.sideEffectPolicy).toBe("isolated");
     expect(second.run.id).not.toBe(first.run.id);
     expect(second.reused).toBe(false);

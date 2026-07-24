@@ -6,8 +6,9 @@ import {
   buildRuntimeVersion,
   cloneFixture
 } from "../fixtures/release/remediationReleaseFixtures";
+import type { RuntimeVersionV1 } from "../../src/runtime/runtimeVersion";
 
-type RuntimeVersion = ReturnType<typeof buildRuntimeVersion>;
+type RuntimeVersion = RuntimeVersionV1;
 type RuntimeApi = {
   buildRuntimeVersion(input: {
     gitCommitSha: string | undefined;
@@ -17,6 +18,21 @@ type RuntimeApi = {
   formatRuntimeVersion(value: RuntimeVersion, locale: "ru" | "en"): string;
   validateRuntimeVersion(value: unknown, candidateSha: string): RuntimeVersion;
 };
+
+function buildActiveRuntimeVersion(): RuntimeVersion {
+  return {
+    ...buildRuntimeVersion(),
+    migration: {
+      verified: true,
+      version: 34,
+      filename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: SCHEMA_032_CHECKSUM,
+      shortChecksum: SCHEMA_032_CHECKSUM.slice(0, 12),
+      schema032ChecksumSha256: "c".repeat(64),
+      schema033ChecksumSha256: "d".repeat(64)
+    }
+  };
+}
 
 async function loadRuntimeApi(): Promise<RuntimeApi> {
   const modulePath: string = "../../src/runtime/runtimeVersion";
@@ -37,7 +53,7 @@ async function loadRuntimeApi(): Promise<RuntimeApi> {
 
 it("[REQ-38][RELEASE-VERSION] requires exact candidate policy result narrative and verified schema identity", async () => {
   const api = await loadRuntimeApi();
-  const valid = buildRuntimeVersion();
+  const valid = buildActiveRuntimeVersion();
   expect(() => api.validateRuntimeVersion(valid, CANDIDATE_SHA)).not.toThrow();
   const invalid = [
     (value: any) => { value.extra = true; },
@@ -62,7 +78,7 @@ it("[REQ-38][RELEASE-VERSION] requires exact candidate policy result narrative a
 
 it("[REQ-38][RUNTIME-BUILD] builds only the exact immutable contract from verified schema output", async () => {
   const api = await loadRuntimeApi();
-  const migration = buildRuntimeVersion().migration;
+  const migration = buildActiveRuntimeVersion().migration;
 
   const runtimeVersion = api.buildRuntimeVersion({
     gitCommitSha: CANDIDATE_SHA,
@@ -70,7 +86,7 @@ it("[REQ-38][RUNTIME-BUILD] builds only the exact immutable contract from verifi
     migration
   });
 
-  expect(runtimeVersion).toEqual(buildRuntimeVersion());
+  expect(runtimeVersion).toEqual(buildActiveRuntimeVersion());
   expect(runtimeVersion.migration).toEqual(migration);
   expect(Object.isFrozen(runtimeVersion)).toBe(true);
   expect(Object.isFrozen(runtimeVersion.migration)).toBe(true);
@@ -81,7 +97,7 @@ it("[REQ-38][RUNTIME-BUILD] builds only the exact immutable contract from verifi
 
 it("[REQ-38][RUNTIME-IDENTITY] rejects missing malformed mismatched control-bearing or secret-bearing identity", async () => {
   const api = await loadRuntimeApi();
-  const migration = buildRuntimeVersion().migration;
+  const migration = buildActiveRuntimeVersion().migration;
   const invalidIdentity = [
     { gitCommitSha: undefined, runtimeInstanceLabel: RUNTIME_LABEL },
     { gitCommitSha: CANDIDATE_SHA.toUpperCase(), runtimeInstanceLabel: RUNTIME_LABEL },
@@ -103,7 +119,7 @@ it("[REQ-32][RUNTIME-VERSION] renders exact pure RU and EN version output", asyn
   const runtimeVersion = api.buildRuntimeVersion({
     gitCommitSha: CANDIDATE_SHA,
     runtimeInstanceLabel: RUNTIME_LABEL,
-    migration: buildRuntimeVersion().migration
+    migration: buildActiveRuntimeVersion().migration
   });
 
   expect(api.formatRuntimeVersion(runtimeVersion, "en")).toBe([
@@ -113,7 +129,7 @@ it("[REQ-32][RUNTIME-VERSION] renders exact pure RU and EN version output", asyn
     "Scoring policy: scoring-signal-matrix-v3",
     "Result schema: score-anchor-v2+forensic-coverage-v2",
     "Narrative: telegram-forensic-result-v1",
-    `Database schema: schema 032 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
+    `Database schema: schema 034 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
   ].join("\n"));
   expect(api.formatRuntimeVersion(runtimeVersion, "ru")).toBe([
     "Версия runtime",
@@ -122,7 +138,7 @@ it("[REQ-32][RUNTIME-VERSION] renders exact pure RU and EN version output", asyn
     "Политика скоринга: scoring-signal-matrix-v3",
     "Схема результата: score-anchor-v2+forensic-coverage-v2",
     "Версия объяснения: telegram-forensic-result-v1",
-    `Схема БД: schema 032 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
+    `Схема БД: schema 034 verified · ${SCHEMA_032_CHECKSUM.slice(0, 12)}`
   ].join("\n"));
   expect(api.formatRuntimeVersion(runtimeVersion, "en")).toBe(api.formatRuntimeVersion(runtimeVersion, "en"));
 });

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runStartupSchemaGate } from "../../src/runtime/startupSchemaGate";
 
 describe("schema-verified startup gate", () => {
-  it("[REQ-38][DATA] performs no verified-start callback when schema 032 verification fails", async () => {
+  it("[REQ-38][DATA] performs no verified-start callback when schema lineage verification fails", async () => {
     const onVerified = vi.fn(() => undefined);
     await expect(runStartupSchemaGate({
       verify: async () => {
@@ -17,11 +17,12 @@ describe("schema-verified startup gate", () => {
   it("returns verified metadata and invokes the callback once", async () => {
     const verification = {
       verified: true as const,
-      version: 33 as const,
-      filename: "033_unified_wallet_check.sql" as const,
+      version: 34 as const,
+      filename: "034_unified_check_adaptive_planner.sql" as const,
       checksumSha256: "a".repeat(64),
       shortChecksum: "a".repeat(12),
-      schema032ChecksumSha256: "b".repeat(64)
+      schema032ChecksumSha256: "b".repeat(64),
+      schema033ChecksumSha256: "c".repeat(64)
     };
     const onVerified = vi.fn(() => undefined);
     await expect(runStartupSchemaGate({
@@ -128,6 +129,11 @@ describe("schema-verified startup gate", () => {
     expect(providerAt).toBeGreaterThan(closeAt);
     expect(botAt).toBeGreaterThan(providerAt);
     expect(workersAt).toBeGreaterThan(botAt);
+    expect(source).toContain("new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)");
     expect(source).toContain("new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)");
+    expect(source).toContain("new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)");
+    expect(source).toContain(
+      "verifyRequiredSchema034(db, requiredChecksum, schema032Checksum, schema033Checksum)"
+    );
   });
 });

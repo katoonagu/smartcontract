@@ -72,10 +72,11 @@ import { closeDb, createDb } from "./storage/db";
 import {
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
-  SCHEMA_033_VERSION,
+  SCHEMA_034_FILENAME,
+  SCHEMA_034_VERSION,
   checksumMigrationBytes,
-  verifyRequiredSchema033,
-  type Schema033Verification
+  verifyRequiredSchema034,
+  type Schema034Verification
 } from "./storage/schemaMigrations";
 import {
   claimObservedTransactionForUserAlert,
@@ -243,19 +244,23 @@ const unifiedTransactionHost = createUnifiedPoolTransactionHost(db);
 let forensicRuntimeOrchestration: ForensicRuntimeOrchestration;
 let runtimeVersion: RuntimeVersionV1;
 try {
-  let schemaVerification: Schema033Verification | null = null;
+  let schemaVerification: Schema034Verification | null = null;
   const schema032MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
   );
   const schema032Checksum = await checksumMigrationBytes(schema032MigrationBytes);
-  const requiredMigrationBytes = await readFile(
+  const schema033MigrationBytes = await readFile(
     new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)
+  );
+  const schema033Checksum = await checksumMigrationBytes(schema033MigrationBytes);
+  const requiredMigrationBytes = await readFile(
+    new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)
   );
   const requiredChecksum = await checksumMigrationBytes(requiredMigrationBytes);
   forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
     verifyStartupSchema: () => runStartupSchemaGate({
       verify: () =>
-        verifyRequiredSchema033(db, requiredChecksum, schema032Checksum),
+        verifyRequiredSchema034(db, requiredChecksum, schema032Checksum, schema033Checksum),
       onVerified: (verification) => {
         schemaVerification = verification;
         logger.info("schema_migration_verified", {
@@ -1240,7 +1245,7 @@ const bot = createBot(config, db, tronClient, {
         scoringPolicyVersion: SCORING_POLICY_V4.version,
         attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
         runtimeCommit: runtimeVersion.gitCommitSha,
-        schemaVersion: SCHEMA_033_VERSION
+        schemaVersion: SCHEMA_034_VERSION
       },
       freezeLabelDataset: async ({
         snapshotHash,

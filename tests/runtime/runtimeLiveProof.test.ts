@@ -15,10 +15,12 @@ function runtimeVersion() {
     runtimeInstanceLabel: `candidate-${SHA.slice(0, 8)}`,
     migration: {
       verified: true,
-      version: 32,
-      filename: "032_telegram_runtime_forensics_data_contracts.sql",
+      version: 34,
+      filename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: CHECKSUM,
-      shortChecksum: CHECKSUM.slice(0, 12)
+      shortChecksum: CHECKSUM.slice(0, 12),
+      schema032ChecksumSha256: "b".repeat(64),
+      schema033ChecksumSha256: "c".repeat(64)
     }
   });
 }

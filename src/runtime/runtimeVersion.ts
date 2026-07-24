@@ -1,18 +1,18 @@
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
 import type {
   Schema032Verification,
-  Schema033Verification
+  Schema033Verification,
+  Schema034Verification
 } from "../storage/schemaMigrations";
 import {
-  SCHEMA_032_FILENAME,
-  SCHEMA_032_VERSION,
-  SCHEMA_033_FILENAME,
-  SCHEMA_033_VERSION
+  SCHEMA_034_FILENAME,
+  SCHEMA_034_VERSION
 } from "../storage/schemaMigrations";
 
 type RuntimeSchemaVerification =
   | Schema032Verification
-  | Schema033Verification;
+  | Schema033Verification
+  | Schema034Verification;
 import type { TelegramForensicResultV1 } from "../telegram/forensicPresentation";
 import type { ForensicCoverageV2, ScoreAnchorV2 } from "../types";
 
@@ -100,20 +100,16 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
     "version",
     "filename",
     "checksumSha256",
-    "shortChecksum"
+    "shortChecksum",
+    "schema032ChecksumSha256",
+    "schema033ChecksumSha256"
   ];
-  if (migration.version === SCHEMA_033_VERSION) {
-    migrationKeys.push("schema032ChecksumSha256");
-  }
   exactKeys(migration, migrationKeys, "runtime_version_migration_shape_invalid");
   if (migration.verified !== true) fail("runtime_version_migration_unverified");
-  if (migration.version !== SCHEMA_032_VERSION && migration.version !== SCHEMA_033_VERSION) {
+  if (migration.version !== SCHEMA_034_VERSION) {
     fail("runtime_version_migration_version_mismatch");
   }
-  const expectedFilename = migration.version === SCHEMA_033_VERSION
-    ? SCHEMA_033_FILENAME
-    : SCHEMA_032_FILENAME;
-  if (migration.filename !== expectedFilename) {
+  if (migration.filename !== SCHEMA_034_FILENAME) {
     fail("runtime_version_migration_filename_mismatch");
   }
   if (typeof migration.checksumSha256 !== "string" || !CHECKSUM_PATTERN.test(migration.checksumSha256)) {
@@ -123,13 +119,16 @@ export function validateRuntimeVersion(value: unknown, candidateSha: string): Ru
     fail("runtime_version_migration_short_checksum_mismatch");
   }
   if (
-    migration.version === SCHEMA_033_VERSION &&
-    (
-      typeof migration.schema032ChecksumSha256 !== "string" ||
-      !CHECKSUM_PATTERN.test(migration.schema032ChecksumSha256)
-    )
+    typeof migration.schema032ChecksumSha256 !== "string" ||
+    !CHECKSUM_PATTERN.test(migration.schema032ChecksumSha256)
   ) {
     fail("runtime_version_schema_032_checksum_invalid");
+  }
+  if (
+    typeof migration.schema033ChecksumSha256 !== "string" ||
+    !CHECKSUM_PATTERN.test(migration.schema033ChecksumSha256)
+  ) {
+    fail("runtime_version_schema_033_checksum_invalid");
   }
 
   Object.freeze(migration);

@@ -28,9 +28,11 @@ candidate, or explicit production authority:
 
 - run the fixed final gate set once and create exact-SHA write-once receipts;
 - obtain explicit production GO and protected action authority;
-- create the production backup, apply/verify schema 033, start the candidate,
-  and activate the Unified generation fence through the existing protected
-  flow;
+- update the protected release receipts and promotion/canary schema identity
+  from 033 to 034 in Task 7;
+- create the production backup, apply/verify through schema 034, start the
+  candidate, and activate the Unified generation fence through the updated
+  protected flow;
 - run the isolated recent-eight canary only after deployment and choose GO or
   the existing rollback/recovery path.
 
@@ -52,15 +54,18 @@ configured slots while a dense wallet supplies only one claimable history.
 This is a verified code/runtime bottleneck, not evidence of a provider-key or
 memory failure.
 
-The approved but unimplemented target is adaptive rolling refill with durable
-admission and ordered canonical commit:
+Migration 034, stable fairness-owner persistence, and the run-locked durable
+planning/admission primitives are implemented. The remaining target is
+adaptive rolling refill with planner-aware claiming, atomic ordered
+acceptance, and ordered canonical commit:
 
 - `docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md`
 
-Until migration 034, planner/restart gates, replay equivalence, and the
-one/four-group live canary pass, the existing barrier remains current behavior.
-Replay simulations above four groups prove algorithmic behavior only; they do
-not prove live scaling on unavailable provider groups.
+Until the remaining planner/runtime integration, restart gates, replay
+equivalence, and the one/four-group live canary pass, the existing traversal
+barrier remains current execution behavior. Replay simulations above four
+groups prove algorithmic behavior only; they do not prove live scaling on
+unavailable provider groups.
 
 ## Non-Blocking Follow-Ups
 

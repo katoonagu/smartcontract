@@ -26,6 +26,11 @@ remain in
 `docs/superpowers/verification/plan5-release/README.md`. Do not duplicate or
 bypass that protected flow. Unified adds only the deltas below.
 
+The active candidate runtime now requires schema 034, while the protected
+receipt, promotion, and canary instructions below remain deliberately pinned
+to schema 033 pending Task 7. Do not use the pinned flow to promote the
+schema-034 candidate until that task updates and re-verifies it.
+
 ## Final Candidate Gates
 
 The independent Golden authority is immutable commit:

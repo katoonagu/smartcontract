@@ -70,7 +70,8 @@ const boundManifest = {
 };
 
 const run: AnalysisRunRecord = {
-  id: "run-1",
+      id: "run-1",
+      fairnessOwnerId: "run-1",
   analysisKeySha256: "a".repeat(64),
   subjectAddress: "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy",
   runPurpose: "synthetic_test",

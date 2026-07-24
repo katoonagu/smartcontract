@@ -78,11 +78,22 @@ external effect and forbids automatic resend. Manual resend creates a new
 warned presentation and audit record.
 
 These contracts are implemented in the release candidate but inactive in
-production until the schema-033 generation fence is switched.
+production until the protected schema-034 cutover and generation-fence switch.
+
+The active candidate startup contract now requires exact schema 034 with
+verified schema-032 and schema-033 predecessor receipts. New run creation
+persists an opaque stable fairness owner, and the durable planner repository
+can append capacity-independent canonical task rows under a run lock. The
+rolling coordinator, planner-aware claiming, ordered acceptance, and commit
+integration remain later implementation steps; merely applying schema 034
+does not switch an existing run to planner execution.
 
 ## Remaining Operational Work
 
-The runtime implementation gap is closed. P1 boundary activation still waits
+The schema-034 startup and base planner-persistence gap is closed. P1 boundary activation still waits
 for blind review/adjudication, and the performance matrix waits for frozen
 TPCP/TFWG/TXc provider bundles. Protected backup/migration/startup, generation
-activation, and post-deploy canary also remain external rollout work.
+activation, and post-deploy canary also remain external rollout work. The
+protected release receipts and promotion path remain deliberately pinned to
+schema 033 until their separate Task-7 update and therefore are not yet valid
+for the schema-034 candidate runtime.

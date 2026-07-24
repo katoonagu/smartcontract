@@ -28,9 +28,10 @@ async function runtimeProof(sequence: number) {
   const runtime = buildRuntimeVersion({
     gitCommitSha: candidateSha,
     runtimeInstanceLabel: `candidate-${candidateSha.slice(0, 8)}`,
-    migration: { verified: true, version: 32, filename: "032_telegram_runtime_forensics_data_contracts.sql",
+    migration: { verified: true, version: 34, filename: "034_unified_check_adaptive_planner.sql",
       checksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
-      shortChecksum: "41217f64c33c" }
+      shortChecksum: "41217f64c33c", schema032ChecksumSha256: "c".repeat(64),
+      schema033ChecksumSha256: "d".repeat(64) }
   });
   return { version: "runtime-proof-v1", runtimeVersion: runtime,
     runtimeVersionSha256: createHash("sha256").update(JSON.stringify(runtime)).digest("hex"),
@@ -318,9 +319,10 @@ describe("production live proof", () => {
     const runtime = (await import("../../src/runtime/runtimeVersion")).buildRuntimeVersion({
       gitCommitSha: candidateSha,
       runtimeInstanceLabel: `candidate-${candidateSha.slice(0, 8)}`,
-      migration: { verified: true, version: 32, filename: "032_telegram_runtime_forensics_data_contracts.sql",
+      migration: { verified: true, version: 34, filename: "034_unified_check_adaptive_planner.sql",
         checksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
-        shortChecksum: "41217f64c33c" }
+        shortChecksum: "41217f64c33c", schema032ChecksumSha256: "c".repeat(64),
+        schema033ChecksumSha256: "d".repeat(64) }
     });
     const { formatRuntimeVersion } = await import("../../src/runtime/runtimeVersion");
     const watermarks = Object.fromEntries(["poll", "where_forensic", "incoming_deposit", "deep_forensic",

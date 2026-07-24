@@ -115,7 +115,8 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
       } as const;
       const manifestHash = fingerprintCanonicalJson(manifest);
       const run: AnalysisRunRecord = {
-        id: "run-1",
+            id: "run-1",
+            fairnessOwnerId: "run-1",
         analysisKeySha256: "a".repeat(64),
         subjectAddress: ADDRESS,
         runPurpose: "synthetic_test",

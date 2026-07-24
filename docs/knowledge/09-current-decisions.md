@@ -52,9 +52,11 @@ audit artifacts. It is not a second source of current product truth.
   separate funding allocations. Checkpoints are bounded heads over immutable
   chunks/deltas, with deterministic V1-to-V2 rollout.
 - The provider pool exposes four configured slots, but the current traversal
-  barrier often leaves only one claimable address history per run. Adaptive
-  rolling refill, durable admission, and ordered canonical commit are approved
-  future work; they are not current candidate behavior.
+  barrier often leaves only one claimable address history per run. Schema 034,
+  stable fairness-owner persistence, and capacity-independent canonical
+  planner rows are implemented. Adaptive rolling refill, planner-aware
+  claiming, ordered acceptance, and ordered canonical commit remain later
+  work and are not current candidate execution behavior.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
@@ -107,10 +109,14 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
 
 ## Release Safety
 
-- The tracked migration chain is exact through
-  `033_unified_wallet_check.sql`; 034+ and unknown files fail closed.
-- Migration 033 checksum is verified before any DB session/mutation and its
-  receipt/catalog proof is bound in offline and production evidence.
+- The active candidate startup contract is exact through
+  `034_unified_check_adaptive_planner.sql`; unknown 035+ files fail closed.
+- Startup verifies the exact migration-034 checksum and the verified
+  schema-032/schema-033 predecessor checksums and receipts before provider,
+  bot, or worker initialization.
+- Existing release receipts and protected promotion/canary inputs remain
+  pinned to schema 033 until Task 7. They cannot promote the schema-034
+  candidate without that explicit update.
 - Candidate scope uses exact tracked paths for the Golden lock; unknown files
   below the locked root are rejected.
 - Final full suite, typecheck, Golden verify, comparator, RU/EN acceptance, and

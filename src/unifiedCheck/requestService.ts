@@ -41,6 +41,7 @@ export type CheckRequestRecord = {
 
 export type AnalysisRunRecord = {
   readonly id: string;
+  readonly fairnessOwnerId: string;
   readonly analysisKeySha256: string;
   readonly subjectAddress: string;
   readonly runPurpose: UnifiedRunPurpose;
@@ -127,6 +128,7 @@ async function runRecord(
   }
   return {
     id: String(row.id),
+    fairnessOwnerId: requiredFairnessOwnerId(row.fairness_owner_id),
     analysisKeySha256: String(row.analysis_key_sha256),
     subjectAddress: String(row.subject_address),
     runPurpose: row.run_purpose as UnifiedRunPurpose,
@@ -137,6 +139,28 @@ async function runRecord(
     analysisManifestSha256: String(row.analysis_manifest_sha256),
     analysisManifest: manifest
   };
+}
+
+function requiredFairnessOwnerId(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("unified_fairness_owner_missing");
+  }
+  return value;
+}
+
+export function unifiedFairnessOwnerId(input: {
+  runPurpose: UnifiedRunPurpose;
+  chatId: string;
+  runId: string;
+}): string {
+  const runId = requiredFairnessOwnerId(input.runId);
+  if (input.runPurpose !== "user_check") return runId;
+  const chatId = requiredFairnessOwnerId(input.chatId);
+  return fingerprintCanonicalArtifact({
+    version: "unified-fairness-owner-v1",
+    channel: "telegram",
+    owner: chatId
+  });
 }
 
 function one(
@@ -256,8 +280,8 @@ export function createPostgresUnifiedRequestStore(
           const inserted = await client.query(
             `insert into unified_check_runs (
               id, analysis_key_sha256, subject_address, status, run_purpose,
-              side_effect_policy, analysis_manifest_sha256
-            ) values ($1,$2,$3,'RUNNING',$4,$5,$6)
+              side_effect_policy, analysis_manifest_sha256, fairness_owner_id
+            ) values ($1,$2,$3,'RUNNING',$4,$5,$6,$7)
             on conflict do nothing returning *`,
             [
               input.candidateRun.id,
@@ -265,7 +289,8 @@ export function createPostgresUnifiedRequestStore(
               input.candidateRun.subjectAddress,
               input.candidateRun.runPurpose,
               input.candidateRun.sideEffectPolicy,
-              input.candidateRun.analysisManifestSha256
+              input.candidateRun.analysisManifestSha256,
+              input.candidateRun.fairnessOwnerId
             ]
           );
           runRow = inserted.rows[0];
@@ -590,6 +615,11 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
       initialTasks: input.initialTasks,
       candidateRun: {
         id: input.candidateRunId,
+        fairnessOwnerId: unifiedFairnessOwnerId({
+          runPurpose: accepted.runPurpose,
+          chatId: accepted.chatId,
+          runId: input.candidateRunId
+        }),
         analysisKeySha256: identity.analysisKeySha256,
         subjectAddress: accepted.subjectAddress,
         runPurpose: accepted.runPurpose,
