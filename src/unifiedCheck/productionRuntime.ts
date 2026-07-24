@@ -17,6 +17,7 @@ import {
 import {
   createUnifiedDirectHistoryHandler,
   canonicalizeUnifiedDirectHistoryPages,
+  type UnifiedDirectHistoryChunkArtifactV1,
   type UnifiedDirectHistoryArtifactV1,
   type UnifiedDirectHistoryPageArtifactV1
 } from "./productionDirectHistory";
@@ -337,6 +338,7 @@ export function createUnifiedProductionRuntime(input: {
     });
   };
   const directHistory = createUnifiedDirectHistoryHandler({
+    maxPagesThisChunk: input.addressHistoryPagesPerChunk ?? 4,
     loadRun: (runId) => loadRun(input.db, runId),
     loadPage: ({
       run,
@@ -360,6 +362,13 @@ export function createUnifiedProductionRuntime(input: {
         runId,
         sha256,
         "direct_history_page"
+      ),
+    loadChunkArtifact: ({ runId, sha256 }) =>
+      artifact<UnifiedDirectHistoryChunkArtifactV1>(
+        input.db,
+        runId,
+        sha256,
+        "direct_history_chunk"
       ),
     persistArtifact
   });

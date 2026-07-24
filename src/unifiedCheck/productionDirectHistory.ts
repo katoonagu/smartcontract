@@ -82,10 +82,26 @@ export function canonicalizeUnifiedDirectHistoryPages(
   };
 }
 
-type RuntimeCheckpoint = {
+type LegacyRuntimeCheckpointV1 = {
   readonly version: "unified-direct-history-checkpoint-v1";
   readonly history: DirectHistoryCheckpoint;
   readonly pageArtifactHashes: readonly string[];
+};
+
+export type UnifiedDirectHistoryChunkArtifactV1 = {
+  readonly version: "unified-direct-history-chunk-v1";
+  readonly schemaVersion: 1;
+  readonly runId: string;
+  readonly previousChunkSha256: string | null;
+  readonly pageArtifactHashes: readonly string[];
+};
+
+type RuntimeCheckpointV2 = {
+  readonly version: "unified-direct-history-checkpoint-v2";
+  readonly history: DirectHistoryCheckpoint;
+  readonly chunkHeadSha256: string | null;
+  readonly chunkCount: number;
+  readonly pageCount: number;
 };
 
 type LoadedRun = {
@@ -98,7 +114,10 @@ type LoadedRun = {
 function checkpoint(
   value: unknown,
   run: LoadedRun
-): RuntimeCheckpoint {
+): {
+  state: RuntimeCheckpointV2;
+  legacyPageArtifactHashes: readonly string[];
+} {
   if (
     value === null ||
     typeof value !== "object" ||
@@ -106,15 +125,44 @@ function checkpoint(
     (value as Record<string, unknown>).version === undefined
   ) {
     return {
-      version: "unified-direct-history-checkpoint-v1",
-      history: initialDirectHistoryCheckpoint(
-        run.analysisManifest.confirmedBlockNumber,
-        run.analysisManifest.confirmedBlockHash
-      ),
-      pageArtifactHashes: []
+      state: {
+        version: "unified-direct-history-checkpoint-v2",
+        history: initialDirectHistoryCheckpoint(
+          run.analysisManifest.confirmedBlockNumber,
+          run.analysisManifest.confirmedBlockHash
+        ),
+        chunkHeadSha256: null,
+        chunkCount: 0,
+        pageCount: 0
+      },
+      legacyPageArtifactHashes: []
     };
   }
-  const record = value as Partial<RuntimeCheckpoint>;
+  const record = value as
+    | Partial<RuntimeCheckpointV2>
+    | Partial<LegacyRuntimeCheckpointV1>;
+  if (record.version === "unified-direct-history-checkpoint-v2") {
+    if (
+      record.history === undefined ||
+      !(
+        record.chunkHeadSha256 === null ||
+        (
+          typeof record.chunkHeadSha256 === "string" &&
+          HASH.test(record.chunkHeadSha256)
+        )
+      ) ||
+      !Number.isSafeInteger(record.chunkCount) ||
+      Number(record.chunkCount) < 0 ||
+      !Number.isSafeInteger(record.pageCount) ||
+      Number(record.pageCount) < 0
+    ) {
+      throw new Error("unified_direct_history_runtime_checkpoint_invalid");
+    }
+    return {
+      state: record as RuntimeCheckpointV2,
+      legacyPageArtifactHashes: []
+    };
+  }
   if (
     record.version !== "unified-direct-history-checkpoint-v1" ||
     record.history === undefined ||
@@ -126,13 +174,65 @@ function checkpoint(
     throw new Error("unified_direct_history_runtime_checkpoint_invalid");
   }
   return {
-    version: record.version,
-    history: record.history,
-    pageArtifactHashes: [...record.pageArtifactHashes]
+    state: {
+      version: "unified-direct-history-checkpoint-v2",
+      history: record.history,
+      chunkHeadSha256: null,
+      chunkCount: 0,
+      pageCount: 0
+    },
+    legacyPageArtifactHashes: [...record.pageArtifactHashes]
   };
 }
 
+async function pageHashesFromChunks(input: {
+  runId: string;
+  headSha256: string | null;
+  expectedChunkCount: number;
+  expectedPageCount: number;
+  loadChunkArtifact(args: {
+    runId: string;
+    sha256: string;
+  }): Promise<UnifiedDirectHistoryChunkArtifactV1>;
+}): Promise<string[]> {
+  const chunks: UnifiedDirectHistoryChunkArtifactV1[] = [];
+  const seen = new Set<string>();
+  let sha256 = input.headSha256;
+  while (sha256 !== null) {
+    if (seen.has(sha256)) {
+      throw new Error("unified_direct_history_chunk_cycle");
+    }
+    seen.add(sha256);
+    const chunk = await input.loadChunkArtifact({
+      runId: input.runId,
+      sha256
+    });
+    if (
+      fingerprintCanonicalArtifact(chunk) !== sha256 ||
+      chunk.version !== "unified-direct-history-chunk-v1" ||
+      chunk.runId !== input.runId ||
+      chunk.pageArtifactHashes.length === 0 ||
+      chunk.pageArtifactHashes.some((value) => !HASH.test(value))
+    ) {
+      throw new Error("unified_direct_history_chunk_invalid");
+    }
+    chunks.push(chunk);
+    sha256 = chunk.previousChunkSha256;
+  }
+  if (chunks.length !== input.expectedChunkCount) {
+    throw new Error("unified_direct_history_chunk_count_mismatch");
+  }
+  const pageHashes = chunks
+    .reverse()
+    .flatMap((chunk) => [...chunk.pageArtifactHashes]);
+  if (pageHashes.length !== input.expectedPageCount) {
+    throw new Error("unified_direct_history_page_count_mismatch");
+  }
+  return pageHashes;
+}
+
 export function createUnifiedDirectHistoryHandler(input: {
+  maxPagesThisChunk?: number;
   loadRun(runId: string): Promise<LoadedRun>;
   loadPage(input: {
     run: LoadedRun;
@@ -146,13 +246,30 @@ export function createUnifiedDirectHistoryHandler(input: {
     runId: string;
     sha256: string;
   }): Promise<UnifiedDirectHistoryPageArtifactV1>;
+  loadChunkArtifact(input: {
+    runId: string;
+    sha256: string;
+  }): Promise<UnifiedDirectHistoryChunkArtifactV1>;
   persistArtifact(input: {
     runId: string;
-    kind: "direct_history_page" | "direct_history";
+    kind:
+      | "direct_history_page"
+      | "direct_history_chunk"
+      | "direct_history";
     sha256: string;
-    artifact: UnifiedDirectHistoryPageArtifactV1 | UnifiedDirectHistoryArtifactV1;
+    artifact:
+      | UnifiedDirectHistoryPageArtifactV1
+      | UnifiedDirectHistoryChunkArtifactV1
+      | UnifiedDirectHistoryArtifactV1;
   }): Promise<void>;
 }): UnifiedChunkHandler {
+  const maxPagesThisChunk = input.maxPagesThisChunk ?? 1;
+  if (
+    !Number.isSafeInteger(maxPagesThisChunk) ||
+    maxPagesThisChunk < 1
+  ) {
+    throw new TypeError("unified_direct_history_chunk_invalid");
+  }
   return async ({ task, heartbeat, leaseToken }) => {
     if (task.kind !== "direct_history") {
       return { kind: "blocked", reason: "unified_direct_history_kind_invalid" };
@@ -167,67 +284,128 @@ export function createUnifiedDirectHistoryHandler(input: {
     ) {
       return { kind: "blocked", reason: "unified_direct_history_run_mismatch" };
     }
-    const prior = checkpoint(task.checkpoint, run);
-    const result = await runDirectHistoryChunk({
-      address: run.subjectAddress,
-      manifest: run.analysisManifest,
-      checkpoint: prior.history,
-      maxPagesThisChunk: 1,
-      loadPage: (cursor) => input.loadPage({
-        run,
-        cursor,
-        taskId: task.id,
-        leaseToken,
-        attempt: task.attempt,
-        heartbeat
-      })
-    });
-    await heartbeat();
-    if (result.outcome === "provider_wait") {
-      return {
-        kind: "provider_wait",
-        readyAt: result.providerReadyAt!,
-        reason: result.providerWaitReason ?? "unified_provider_wait",
-        checkpoint: prior
+    const parsed = checkpoint(task.checkpoint, run);
+    let state = parsed.state;
+    let history = state.history;
+    let completed = history.reachedAccountCreation;
+    const chunkPageArtifactHashes = [
+      ...parsed.legacyPageArtifactHashes
+    ];
+
+    const flushChunk = async () => {
+      if (chunkPageArtifactHashes.length === 0) return;
+      const chunk: UnifiedDirectHistoryChunkArtifactV1 = {
+        version: "unified-direct-history-chunk-v1",
+        schemaVersion: 1,
+        runId: run.id,
+        previousChunkSha256: state.chunkHeadSha256,
+        pageArtifactHashes: [...chunkPageArtifactHashes]
       };
-    }
-    const providerPageHash = result.checkpoint.pageHashes.at(-1);
-    if (!providerPageHash || !HASH.test(providerPageHash)) {
-      return { kind: "failed", reason: "unified_direct_history_page_hash_missing" };
-    }
-    const pageArtifact: UnifiedDirectHistoryPageArtifactV1 = {
-      version: "unified-direct-history-page-v1",
-      schemaVersion: 1,
-      runId: run.id,
-      providerPageHash,
-      events: [...result.events]
-        .sort((left, right) =>
-          canonicalTronUsdtEventKey(left).localeCompare(
-            canonicalTronUsdtEventKey(right)
+      const sha256 = fingerprintCanonicalArtifact(chunk);
+      await input.persistArtifact({
+        runId: run.id,
+        kind: "direct_history_chunk",
+        sha256,
+        artifact: chunk
+      });
+      state = {
+        ...state,
+        history,
+        chunkHeadSha256: sha256,
+        chunkCount: state.chunkCount + 1,
+        pageCount: state.pageCount + chunkPageArtifactHashes.length
+      };
+      chunkPageArtifactHashes.length = 0;
+    };
+
+    for (
+      let pageIndex = 0;
+      pageIndex < maxPagesThisChunk && !completed;
+      pageIndex += 1
+    ) {
+      let loadedPage: DirectHistoryPage | null = null;
+      const result = await runDirectHistoryChunk({
+        address: run.subjectAddress,
+        manifest: run.analysisManifest,
+        checkpoint: history,
+        maxPagesThisChunk: 1,
+        loadPage: async (cursor) => {
+          const loaded = await input.loadPage({
+            run,
+            cursor,
+            taskId: task.id,
+            leaseToken,
+            attempt: task.attempt,
+            heartbeat
+          });
+          if (loaded.kind === "page") loadedPage = loaded;
+          return loaded;
+        }
+      });
+      if (result.outcome === "provider_wait") {
+        await flushChunk();
+        return {
+          kind: "provider_wait",
+          readyAt: result.providerReadyAt!,
+          reason: result.providerWaitReason ?? "unified_provider_wait",
+          checkpoint: state
+        };
+      }
+      if (loadedPage === null) {
+        return {
+          kind: "failed",
+          reason: "unified_direct_history_loaded_page_missing"
+        };
+      }
+      const providerPageHash = result.checkpoint.pageHashes.at(-1);
+      if (!providerPageHash || !HASH.test(providerPageHash)) {
+        return {
+          kind: "failed",
+          reason: "unified_direct_history_page_hash_missing"
+        };
+      }
+      const pageArtifact: UnifiedDirectHistoryPageArtifactV1 = {
+        version: "unified-direct-history-page-v1",
+        schemaVersion: 1,
+        runId: run.id,
+        providerPageHash,
+        events: [...result.events]
+          .sort((left, right) =>
+            canonicalTronUsdtEventKey(left).localeCompare(
+              canonicalTronUsdtEventKey(right)
+            )
           )
-        )
-        .map((event) => ({
-          ...event,
-          blockTimestamp: event.blockTimestamp.toISOString()
-        }))
-    };
-    const pageArtifactHash = fingerprintCanonicalArtifact(pageArtifact);
-    await input.persistArtifact({
-      runId: run.id,
-      kind: "direct_history_page",
-      sha256: pageArtifactHash,
-      artifact: pageArtifact
-    });
-    const next: RuntimeCheckpoint = {
-      version: "unified-direct-history-checkpoint-v1",
-      history: result.checkpoint,
-      pageArtifactHashes: [...prior.pageArtifactHashes, pageArtifactHash]
-    };
-    if (result.outcome === "more") {
-      return { kind: "checkpoint", checkpoint: next };
+          .map((event) => ({
+            ...event,
+            blockTimestamp: event.blockTimestamp.toISOString()
+          }))
+      };
+      const pageArtifactHash = fingerprintCanonicalArtifact(pageArtifact);
+      await input.persistArtifact({
+        runId: run.id,
+        kind: "direct_history_page",
+        sha256: pageArtifactHash,
+        artifact: pageArtifact
+      });
+      chunkPageArtifactHashes.push(pageArtifactHash);
+      history = result.checkpoint;
+      completed = result.outcome === "complete";
+      await heartbeat();
     }
+
+    await flushChunk();
+    if (!completed) {
+      return { kind: "checkpoint", checkpoint: state };
+    }
+    const pageArtifactHashes = await pageHashesFromChunks({
+      runId: run.id,
+      headSha256: state.chunkHeadSha256,
+      expectedChunkCount: state.chunkCount,
+      expectedPageCount: state.pageCount,
+      loadChunkArtifact: input.loadChunkArtifact
+    });
     const canonical = canonicalizeUnifiedDirectHistoryPages(
-      await Promise.all(next.pageArtifactHashes.map((sha256) =>
+      await Promise.all(pageArtifactHashes.map((sha256) =>
         input.loadPageArtifact({ runId: run.id, sha256 })
       ))
     );
@@ -237,7 +415,7 @@ export function createUnifiedDirectHistoryHandler(input: {
       runId: run.id,
       analysisManifestHash: run.analysisManifestSha256,
       snapshotHash: run.analysisManifest.snapshotHash,
-      pageArtifactHashes: next.pageArtifactHashes,
+      pageArtifactHashes,
       eventIndexHash: canonical.eventIndexHash,
       eventCount: canonical.eventCount,
       reachedAccountCreation: true

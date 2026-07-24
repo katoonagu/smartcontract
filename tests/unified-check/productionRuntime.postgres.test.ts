@@ -165,6 +165,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         db,
         runtimeCommit: "candidate",
         providerConfigurationSha256: "e".repeat(64),
+        addressHistoryPagesPerChunk: 1,
         now: () => new Date("2026-07-23T13:01:00.000Z"),
         createId: (() => {
           let index = 0;
@@ -195,7 +196,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       ).rows[0];
       expect(checkpointed?.status).toBe("QUEUED");
       expect(checkpointed?.checkpoint_json).toMatchObject({
-        version: "unified-direct-history-checkpoint-v1"
+        version: "unified-direct-history-checkpoint-v2"
       });
 
       const restartedProcess = createUnifiedProductionRuntime(runtimeInput);

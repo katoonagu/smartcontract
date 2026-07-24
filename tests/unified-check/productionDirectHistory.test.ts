@@ -126,6 +126,7 @@ describe("Unified production direct history", () => {
       pages.find((page) => page.cursor === cursor)!
     );
     const handler = createUnifiedDirectHistoryHandler({
+      maxPagesThisChunk: 2,
       loadRun: async () => ({
         id: "run-1",
         subjectAddress: ADDRESS,
@@ -134,6 +135,8 @@ describe("Unified production direct history", () => {
       }),
       loadPage: ({ cursor }) => loadPage(cursor),
       loadPageArtifact: async ({ sha256 }) =>
+        artifacts.get(sha256) as never,
+      loadChunkArtifact: async ({ sha256 }) =>
         artifacts.get(sha256) as never,
       persistArtifact: async (input) => {
         artifacts.set(input.sha256, input.artifact);
@@ -155,6 +158,13 @@ describe("Unified production direct history", () => {
     });
     expect(first.kind).toBe("checkpoint");
     if (first.kind !== "checkpoint") return;
+    expect(first.checkpoint).toMatchObject({
+      version: "unified-direct-history-checkpoint-v2",
+      chunkCount: 1,
+      pageCount: 2
+    });
+    expect(first.checkpoint).not.toHaveProperty("pageArtifactHashes");
+    expect(JSON.stringify(first.checkpoint).length).toBeLessThan(4_096);
     const second = await handler({
       task: {
         id: "task-history",
@@ -167,22 +177,7 @@ describe("Unified production direct history", () => {
       leaseToken: "test-lease-2",
       heartbeat
     });
-    expect(second.kind).toBe("checkpoint");
-    if (second.kind !== "checkpoint") return;
-    const third = await handler({
-      task: {
-        id: "task-history",
-        runId: "run-1",
-        kind: "direct_history",
-        attempt: 3,
-        checkpoint: second.checkpoint,
-        cancellationRequestedAt: null
-      },
-      leaseToken: "test-lease-3",
-      heartbeat
-    });
-
-    expect(third).toMatchObject({ kind: "completed" });
+    expect(second).toMatchObject({ kind: "completed" });
     expect(loadPage.mock.calls.map(([cursor]) => cursor)).toEqual([
       null,
       "1",
@@ -191,7 +186,9 @@ describe("Unified production direct history", () => {
     expect(persisted.map((item) => item.kind)).toEqual([
       "direct_history_page",
       "direct_history_page",
+      "direct_history_chunk",
       "direct_history_page",
+      "direct_history_chunk",
       "direct_history"
     ]);
     const completed = persisted.at(-1)?.artifact as {
