@@ -6,19 +6,33 @@ import {
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex";
 import type { IndexedTronUsdtTransfer } from "../../src/types";
 import {
+  runUnifiedDeepBranch,
+  runUnifiedFastBranch,
+  runUnifiedWhereBranch
+} from "../../src/unifiedCheck/branchAdapters";
+import {
   addressHistoryManifestKey,
   buildAddressHistoryManifest,
   type AddressHistoryManifestIdentityV1,
   type AddressHistoryManifestV1
 } from "../../src/unifiedCheck/addressHistory";
-import type { AnalysisManifestV1 } from "../../src/unifiedCheck/contracts";
-import { selectBoundedReadyPrefix } from "../../src/unifiedCheck/planner";
 import {
-  canonicalOrderedDiscoveries,
-  type UnifiedOrderedReadyEntry,
-  type UnifiedOrderedTaskDiscoveryInput
-} from "../../src/unifiedCheck/plannerRepository";
+  buildUnifiedPresentedCompletionCandidate
+} from "../../src/unifiedCheck/orchestrator";
+import {
+  commitUnifiedPlannerEntries,
+  completeUnifiedPlannerEntries,
+  selectBoundedReadyPrefix,
+  type UnifiedPlannerTransitionEntry
+} from "../../src/unifiedCheck/planner";
+import type { UnifiedOrderedReadyEntry } from "../../src/unifiedCheck/plannerRepository";
+import {
+  buildUnifiedProductionCompletionCandidate
+} from "../../src/unifiedCheck/productionCompletion";
 import type { UnifiedAddressHistoryPageArtifactV1 } from "../../src/unifiedCheck/productionAddressHistory";
+import {
+  buildUnifiedProductionEvidence
+} from "../../src/unifiedCheck/productionEvidence";
 import type { UnifiedTraversalArtifactV1 } from "../../src/unifiedCheck/productionTraversal";
 import {
   createUnifiedTraversalCoordinatorHandler
@@ -27,6 +41,11 @@ import type {
   TraversalCompactionArtifactV2,
   TraversalDeltaArtifactV1
 } from "../../src/unifiedCheck/traversalDelta";
+import type {
+  AnalysisManifestV1,
+  ChildAttemptArtifactV1
+} from "../../src/unifiedCheck/contracts";
+import { buildUnifiedBranchInput } from "../../src/unifiedCheck/requestService";
 
 const SUBJECT = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const FIRST_PARENT = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
@@ -36,31 +55,42 @@ const SHARED_CHILD = "TANPg1qXHmuc53VW4BrcJJM338X5oVs1m9";
 const SECOND_CHILD = "TBL8TQTyw2GjwV3g9eZM27ajgywKZzaz3n";
 const USDT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 const CAPACITIES = [1, 4, 8, 16, 32, 100] as const;
+const SNAPSHOT_HASH = "b".repeat(64);
+const VERSIONS = {
+  labelDatasetSha256: "d".repeat(64),
+  scoringPolicyVersion: "scoring-signal-matrix-v4",
+  attributionPolicyVersion: "selected-attribution-policy-v1",
+  runtimeCommit: "candidate",
+  schemaVersion: 34
+} as const;
 
 const manifest: AnalysisManifestV1 = {
   version: "analysis-manifest-v1",
   schemaVersion: 1,
   runId: "replay-run",
   requestHash: "a".repeat(64),
-  snapshotHash: "b".repeat(64),
+  snapshotHash: SNAPSHOT_HASH,
   chain: "tron",
   subjectAddress: SUBJECT,
   confirmedBlockNumber: "100",
   confirmedBlockHash: "c".repeat(64),
   confirmedBlockTimestamp: "2026-07-23T13:00:00.000Z",
-  labelDatasetSha256: "d".repeat(64),
-  scoringPolicyVersion: "scoring-signal-matrix-v4",
-  attributionPolicyVersion: "selected-attribution-policy-v1",
+  labelDatasetSha256: VERSIONS.labelDatasetSha256,
+  scoringPolicyVersion: VERSIONS.scoringPolicyVersion,
+  attributionPolicyVersion: VERSIONS.attributionPolicyVersion,
   traversalPolicyVersion: "snapshot-closure-v1",
   runtimeCommit: "candidate",
   databaseSchemaVersion: 34,
   paginationCutoffBlockNumber: "100",
   paginationCutoffBlockHash: "c".repeat(64),
-  branchArtifactHashes: {
-    fast: "e".repeat(64),
-    where: "f".repeat(64),
-    deep: "1".repeat(64)
-  }
+  branchArtifactHashes: Object.fromEntries(
+    (["fast", "where", "deep"] as const).map((branchId) => [
+      branchId,
+      fingerprintCanonicalArtifact(
+        buildUnifiedBranchInput(branchId, SNAPSHOT_HASH, VERSIONS)
+      )
+    ])
+  ) as Record<"fast" | "where" | "deep", string>
 };
 
 function seeded(seed: number): () => number {
@@ -230,12 +260,8 @@ const frozenPages = new Map(
   )
 );
 
-type InMemoryPlannerEntry = UnifiedOrderedReadyEntry & {
-  plannerState: "planned" | "ready" | "committed";
-  parentCanonicalSequence: number;
-};
-
 type ReplayResult = {
+  canonicalFacts: unknown;
   canonicalSequence: readonly {
     sequence: number;
     taskId: string;
@@ -248,6 +274,13 @@ type ReplayResult = {
   }[];
   committedSequence: readonly number[];
   frontier: UnifiedTraversalArtifactV1["frontier"];
+  closureSha256: string;
+  score: number;
+  decision: string;
+  evidenceBundleSha256: string;
+  scoringBundleSha256: string;
+  reportSha256: string;
+  deliveryIntentCount: number;
   artifactSha256: string;
   deltaHeadSha256: string | null;
 };
@@ -258,7 +291,7 @@ async function replay(input: {
   completionOrder: "canonical" | "shuffled";
 }): Promise<ReplayResult> {
   const artifacts = new Map<string, unknown>();
-  const entries: InMemoryPlannerEntry[] = [];
+  let entries: UnifiedPlannerTransitionEntry[] = [];
   const committedSequence: number[] = [];
   let checkpoint: unknown = {};
   let taskId = 0;
@@ -267,29 +300,27 @@ async function replay(input: {
   let completionWave = 0;
 
   const readyEntry = (
-    task: UnifiedOrderedTaskDiscoveryInput,
-    canonicalSequence: number
-  ): InMemoryPlannerEntry => {
-    const history = frozenHistories.get(task.logicalKey);
-    if (!history) throw new Error("replay_frozen_history_missing");
-    const artifactSha256 =
-      fingerprintCanonicalArtifact(history.manifest);
+    entry: UnifiedPlannerTransitionEntry
+  ): UnifiedOrderedReadyEntry => {
+    const history = frozenHistories.get(entry.logicalKey);
+    if (
+      !history ||
+      entry.acceptedAttemptId === null ||
+      entry.resultBytes === null
+    ) {
+      throw new Error("replay_frozen_history_missing");
+    }
     return {
-      canonicalSequence,
-      taskId: task.taskId,
-      taskKind: task.kind,
-      logicalKey: task.logicalKey,
-      acceptedAttemptId: `attempt-${canonicalSequence}`,
-      artifactSha256,
+      canonicalSequence: entry.canonicalSequence,
+      taskId: entry.taskId,
+      taskKind: entry.kind,
+      logicalKey: entry.logicalKey,
+      acceptedAttemptId: entry.acceptedAttemptId,
+      artifactSha256: fingerprintCanonicalArtifact(history.manifest),
       artifactKind: "address_history_manifest",
       artifactSchemaVersion: "1",
       artifact: history.manifest,
-      resultBytes: Buffer.byteLength(
-        canonicalizeArtifactJson(history.manifest),
-        "utf8"
-      ),
-      plannerState: "planned",
-      parentCanonicalSequence: task.parentCanonicalSequence
+      resultBytes: entry.resultBytes
     };
   };
 
@@ -317,13 +348,13 @@ async function replay(input: {
       return selectBoundedReadyPrefix(uncommitted, {
         maxEntries,
         maxBytes
-      });
+      }).map(readyEntry);
     },
     loadCommittedAddressHistories: async ({ manifestKeys }) =>
       entries.filter((entry) =>
         entry.plannerState === "committed" &&
         manifestKeys.includes(entry.logicalKey)
-      ),
+      ).map(readyEntry),
     loadAddressHistoryPage: async ({ sha256 }) => {
       const page = frozenPages.get(sha256);
       if (!page) throw new Error("replay_frozen_page_missing");
@@ -363,31 +394,26 @@ async function replay(input: {
     checkpoint = result.checkpoint;
     const orderedCommit = result.orderedCommit;
     if (!orderedCommit) return false;
-    for (const committed of orderedCommit.entries) {
-      const entry = entries[committed.canonicalSequence];
-      if (
-        !entry ||
-        entry.plannerState !== "ready" ||
-        entry.taskId !== committed.taskId ||
-        entry.acceptedAttemptId !== committed.acceptedAttemptId
-      ) {
-        throw new Error("replay_commit_prefix_mismatch");
-      }
-      entry.plannerState = "committed";
-      committedSequence.push(entry.canonicalSequence);
-    }
-    const discovered = canonicalOrderedDiscoveries(
-      orderedCommit.discoveredTasks
-    );
-    for (const task of discovered) {
-      if (entries.some((entry) =>
-        entry.taskKind === task.kind &&
-        entry.logicalKey === task.logicalKey
-      )) {
-        continue;
-      }
-      entries.push(readyEntry(task, entries.length));
-    }
+    const transition = commitUnifiedPlannerEntries(entries, {
+      maxEntries: 32,
+      maxBytes: 8_388_608,
+      discoveredTasks: orderedCommit.discoveredTasks
+    });
+    expect(
+      transition.committed.map((entry) => ({
+        canonicalSequence: entry.canonicalSequence,
+        taskId: entry.taskId,
+        acceptedAttemptId: entry.acceptedAttemptId
+      }))
+    ).toEqual(orderedCommit.entries.map((entry) => ({
+      canonicalSequence: entry.canonicalSequence,
+      taskId: entry.taskId,
+      acceptedAttemptId: entry.acceptedAttemptId
+    })));
+    entries = transition.entries;
+    committedSequence.push(...transition.committed.map((entry) =>
+      entry.canonicalSequence
+    ));
     return orderedCommit.entries.length > 0 ||
       orderedCommit.discoveredTasks.length > 0;
   };
@@ -414,9 +440,21 @@ async function replay(input: {
     const ordered = input.completionOrder === "canonical"
       ? pending
       : shuffled(pending, input.seed + completionWave);
-    for (const entry of ordered.slice(0, input.capacity)) {
-      entry.plannerState = "ready";
-    }
+    entries = completeUnifiedPlannerEntries(
+      entries,
+      ordered.slice(0, input.capacity).map((entry) => {
+        const history = frozenHistories.get(entry.logicalKey);
+        if (!history) throw new Error("replay_frozen_history_missing");
+        return {
+          taskId: entry.taskId,
+          acceptedAttemptId: `attempt-${entry.canonicalSequence}`,
+          resultBytes: Buffer.byteLength(
+            canonicalizeArtifactJson(history.manifest),
+            "utf8"
+          )
+        };
+      })
+    );
     completionWave += 1;
     await drainCommittedPrefix();
   }
@@ -425,12 +463,81 @@ async function replay(input: {
     completedArtifactSha256
   ) as UnifiedTraversalArtifactV1 | undefined;
   if (!completedArtifact) throw new Error("replay_completed_artifact_missing");
+  const evidence = buildUnifiedProductionEvidence({
+    subjectAddress: SUBJECT,
+    snapshotBlock: manifest.confirmedBlockNumber,
+    events: directEvents,
+    knownCounterparties: new Map(),
+    hardEvidence: {},
+    traversal: completedArtifact
+  });
+  const runners = {
+    fast: runUnifiedFastBranch,
+    where: runUnifiedWhereBranch,
+    deep: runUnifiedDeepBranch
+  };
+  const branches = await Promise.all(
+    (["fast", "where", "deep"] as const).map(async (branchId, index) => {
+      const output = await runners[branchId]({
+        context: {
+          runId: manifest.runId,
+          manifest,
+          directHistoryArtifactSha256: "8".repeat(64),
+          directEvents,
+          labelsDatasetSha256: manifest.labelDatasetSha256,
+          deliveryAuthority: false
+        },
+        analyze: async () => evidence[branchId]
+      });
+      const outputHash = fingerprintCanonicalArtifact(output);
+      const attempt: ChildAttemptArtifactV1 = {
+        version: "child-attempt-artifact-v1",
+        schemaVersion: 1,
+        runId: manifest.runId,
+        branchId,
+        attemptId: `attempt-${branchId}`,
+        previousAttemptHash: null,
+        inputHash: manifest.branchArtifactHashes[branchId],
+        outputHash,
+        status: "COMPLETED",
+        createdAt: `2026-07-23T13:01:0${index}.000Z`
+      };
+      return {
+        branchId,
+        output,
+        outputHash,
+        attempt,
+        attemptHash: fingerprintCanonicalArtifact(attempt)
+      };
+    })
+  );
+  const candidate = buildUnifiedProductionCompletionCandidate({
+    manifest,
+    directEvents,
+    knownCounterparties: new Map(),
+    branches,
+    traversal: completedArtifact
+  });
+  const canonicalFactsEntry = [...candidate.artifactKinds]
+    .find(([, kind]) => kind === "canonical_facts");
+  if (!canonicalFactsEntry) {
+    throw new Error("replay_canonical_facts_missing");
+  }
+  const presented = buildUnifiedPresentedCompletionCandidate({
+    report: candidate.dossier,
+    recipients: [{
+      requestId: "request-replay",
+      deliveryId: "delivery-replay",
+      locale: "ru"
+    }]
+  });
   const v2 = checkpoint as { deltaHeadSha256?: string | null };
   return {
+    canonicalFacts: candidate.artifacts.get(canonicalFactsEntry[0]),
     canonicalSequence: entries.map((entry) => ({
       sequence: entry.canonicalSequence,
       taskId: entry.taskId,
-      kind: entry.taskKind,
+      kind: entry.kind,
       logicalKey: entry.logicalKey
     })),
     discoveredChildOrdering: entries
@@ -441,6 +548,13 @@ async function replay(input: {
       })),
     committedSequence,
     frontier: completedArtifact.frontier,
+    closureSha256: candidate.hashes.closure,
+    score: candidate.dossier.score,
+    decision: candidate.dossier.decision,
+    evidenceBundleSha256: candidate.hashes.evidence,
+    scoringBundleSha256: candidate.hashes.scoring,
+    reportSha256: candidate.hashes.report,
+    deliveryIntentCount: presented.deliveries.length,
     artifactSha256: completedArtifactSha256,
     deltaHeadSha256: v2.deltaHeadSha256 ?? null
   };

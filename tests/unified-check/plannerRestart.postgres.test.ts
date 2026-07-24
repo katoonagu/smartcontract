@@ -9,11 +9,13 @@ import {
   type AddressHistoryManifestIdentityV1
 } from "../../src/unifiedCheck/addressHistory";
 import {
-  admitBarrierHead
-} from "../../src/unifiedCheck/plannerRepository";
-import {
   createUnifiedProductionRuntime
 } from "../../src/unifiedCheck/productionRuntime";
+import {
+  commitUnifiedPlannerEntries,
+  completeUnifiedPlannerEntries,
+  type UnifiedPlannerTransitionEntry
+} from "../../src/unifiedCheck/planner";
 import {
   claimUnifiedTask,
   completeUnifiedTaskAttempt,
@@ -56,19 +58,45 @@ function transactionHost(
   };
 }
 
+function failBeforeBarrierAdmission(
+  db: UnifiedTransactionalQueryable
+): UnifiedTransactionalQueryable {
+  return {
+    query: db.query,
+    transaction: (work) => db.transaction((client) => work({
+      query: async (sql, values) => {
+        if (
+          sql.includes(
+            "select entry.canonical_sequence, entry.planner_state"
+          ) &&
+          sql.includes("planner_state <> 'committed'")
+        ) {
+          throw new Error("unified_worker_lease_lost");
+        }
+        return client.query(sql, values);
+      }
+    }))
+  };
+}
+
 type Scenario = {
   readonly client: pg.PoolClient;
   readonly host: () => UnifiedTransactionalQueryable;
-  readonly runtime: () => ReturnType<typeof createUnifiedProductionRuntime>;
+  readonly runtime: (
+    options?: {
+      db?: UnifiedTransactionalQueryable;
+      leaseMs?: number;
+    }
+  ) => ReturnType<typeof createUnifiedProductionRuntime>;
   readonly preparePlannedState: (
     runtime: ReturnType<typeof createUnifiedProductionRuntime>
   ) => Promise<void>;
 };
 
-async function withScenario(
+async function withScenario<T>(
   sources: readonly string[],
-  work: (scenario: Scenario) => Promise<void>
-): Promise<void> {
+  work: (scenario: Scenario) => Promise<T>
+): Promise<T> {
   const pool = new pg.Pool({ connectionString, max: 1 });
   const client = await pool.connect();
   const schema = `planner_restart_${randomUUID().replaceAll("-", "")}`;
@@ -154,14 +182,20 @@ async function withScenario(
       block: 90 - index
     } as RawTronscanTrc20Transfer));
 
-    const runtime = () => {
+    const runtime = (
+      options: {
+        db?: UnifiedTransactionalQueryable;
+        leaseMs?: number;
+      } = {}
+    ) => {
       const processId = ++runtimeNumber;
       let id = 0;
       return createUnifiedProductionRuntime({
-        db: host(),
+        db: options.db ?? host(),
         runtimeCommit: "candidate",
         providerConfigurationSha256: PROVIDER_CONFIGURATION_SHA256,
         addressHistoryPagesPerChunk: 1,
+        leaseMs: options.leaseMs,
         now: () => new Date("2026-07-23T13:01:00.000Z"),
         createId: () => `restart-${processId}-id-${++id}`,
         async loadProviderPage({ address }) {
@@ -208,7 +242,7 @@ async function withScenario(
           where run_id = 'run-restart'`
       )).rows[0]?.count)).toBe(sources.length);
     };
-    await work({ client, host, runtime, preparePlannedState });
+    return await work({ client, host, runtime, preparePlannedState });
   } finally {
     await client.query(`drop schema if exists "${schema}" cascade`);
     client.release();
@@ -274,40 +308,59 @@ async function expectNoDuplicateAuthority(
 }
 
 postgresDescribe("Unified planner restart resume", () => {
-  it("resumes a durable plan created before barrier admission without changing sequence", async () => {
+  it("rolls planning back when loss occurs before admission and replans once after restart", async () => {
     await withScenario([FIRST_SOURCE], async ({
       client,
       host,
-      runtime,
-      preparePlannedState
+      runtime
     }) => {
       const firstProcess = runtime();
-      await preparePlannedState(firstProcess);
-      await client.query(
-        `update unified_check_planner_entries
-            set admitted_at = null, reserved_bytes = null
-          where run_id = 'run-restart' and planner_state = 'planned'`
-      );
-      const before = (await client.query(
-        `select canonical_sequence, task_id
+      await expect(firstProcess.runProviderCycle()).resolves.toMatchObject({
+        outcome: "completed",
+        taskId: "task-direct_history"
+      });
+      const interruptedProcess = runtime({
+        db: failBeforeBarrierAdmission(host()),
+        leaseMs: 0
+      });
+      await expect(interruptedProcess.runAnalysisCycle())
+        .resolves.toMatchObject({
+          outcome: "failed",
+          taskId: "task-traversal"
+        });
+      expect(Number((await client.query(
+        `select count(*)::int as count
+           from unified_check_planner_entries
+          where run_id = 'run-restart'`
+      )).rows[0]?.count)).toBe(0);
+      expect((await client.query(
+        `select status, accepted_attempt_id, checkpoint_json
+           from unified_check_tasks
+          where id = 'task-traversal'`
+      )).rows[0]).toMatchObject({
+        status: "LEASED",
+        accepted_attempt_id: null,
+        checkpoint_json: {}
+      });
+
+      const restartedProcess = runtime();
+      await expect(restartedProcess.runAnalysisCycle())
+        .resolves.toMatchObject({
+          outcome: "checkpointed",
+          taskId: "task-traversal"
+        });
+      expect((await client.query(
+        `select canonical_sequence, planner_state,
+                admitted_at is not null as admitted
            from unified_check_planner_entries
           order by canonical_sequence`
-      )).rows;
-
-      const restartedRepository = host();
-      await expect(admitBarrierHead(restartedRepository, {
-        runId: "run-restart",
-        reservedBytes: MANIFEST_RESERVED_BYTES
-      })).resolves.toBe(true);
-      const restartedProcess = runtime();
+      )).rows).toEqual([{
+        canonical_sequence: "0",
+        planner_state: "planned",
+        admitted: true
+      }]);
       await expect(restartedProcess.runProviderCycle())
         .resolves.toMatchObject({ outcome: "completed" });
-
-      expect((await client.query(
-        `select canonical_sequence, task_id
-           from unified_check_planner_entries
-          order by canonical_sequence`
-      )).rows).toEqual(before);
       await expectNoDuplicateAuthority(client, { addressAttempts: 1 });
     });
   });
@@ -344,14 +397,38 @@ postgresDescribe("Unified planner restart resume", () => {
     });
   });
 
-  it("commits an accepted manifest after restart before the coordinator wake", async () => {
+  it("matches pure acceptance and checkpoint transitions in PostgreSQL", async () => {
     await withScenario([FIRST_SOURCE], async ({
       client,
       runtime,
       preparePlannedState
     }) => {
+      const loadPlanner = async (): Promise<
+        UnifiedPlannerTransitionEntry[]
+      > => (await client.query(
+        `select entry.canonical_sequence, entry.planner_state,
+                entry.result_bytes, task.id as task_id,
+                task.kind, task.logical_key, task.accepted_attempt_id
+           from unified_check_planner_entries entry
+           join unified_check_tasks task on task.id = entry.task_id
+          order by entry.canonical_sequence`
+      )).rows.map((row) => ({
+        canonicalSequence: Number(row.canonical_sequence),
+        taskId: String(row.task_id),
+        kind: String(row.kind),
+        logicalKey: String(row.logical_key),
+        parentCanonicalSequence: -1,
+        plannerState: row.planner_state,
+        acceptedAttemptId: row.accepted_attempt_id === null
+          ? null
+          : String(row.accepted_attempt_id),
+        resultBytes: row.result_bytes === null
+          ? null
+          : Number(row.result_bytes)
+      }));
       const firstProcess = runtime();
       await preparePlannedState(firstProcess);
+      const planned = await loadPlanner();
       await expect(firstProcess.runProviderCycle())
         .resolves.toMatchObject({ outcome: "completed" });
       const accepted = (await client.query(
@@ -361,12 +438,22 @@ postgresDescribe("Unified planner restart resume", () => {
              on attempt.id = task.accepted_attempt_id
           where task.kind = 'address_history'`
       )).rows[0];
+      const ready = await loadPlanner();
+      expect(ready).toEqual(completeUnifiedPlannerEntries(planned, [{
+        taskId: String(accepted.id),
+        acceptedAttemptId: String(accepted.accepted_attempt_id),
+        resultBytes: ready[0]!.resultBytes!
+      }]));
 
       await expect(runtime().runAnalysisCycle())
         .resolves.toMatchObject({ outcome: "checkpointed" });
-      expect((await client.query(
-        `select planner_state from unified_check_planner_entries`
-      )).rows[0]?.planner_state).toBe("committed");
+      expect(await loadPlanner()).toEqual(
+        commitUnifiedPlannerEntries(ready, {
+          maxEntries: 1,
+          maxBytes: ready[0]!.resultBytes!,
+          discoveredTasks: []
+        }).entries
+      );
       expect((await client.query(
         `select task.id, task.accepted_attempt_id, attempt.artifact_sha256
            from unified_check_tasks task

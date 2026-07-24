@@ -1,4 +1,5 @@
 import {
+  canonicalOrderedTaskDiscoveries,
   selectBoundedReadyPrefix
 } from "./planner";
 import {
@@ -395,31 +396,7 @@ export async function loadUnifiedBoundedReadyPrefix(
 export function canonicalOrderedDiscoveries(
   tasks: readonly UnifiedOrderedTaskDiscoveryInput[]
 ): UnifiedOrderedTaskDiscoveryInput[] {
-  const byIdentity = new Map<string, UnifiedOrderedTaskDiscoveryInput>();
-  for (const task of tasks) {
-    if (
-      !Number.isSafeInteger(task.parentCanonicalSequence) ||
-      task.parentCanonicalSequence < -1
-    ) {
-      throw new TypeError("unified_planner_parent_sequence_invalid");
-    }
-    const identity = JSON.stringify([
-      requiredText(task.kind, "unified_planner_kind_invalid"),
-      requiredText(task.logicalKey, "unified_planner_logical_key_invalid")
-    ]);
-    const existing = byIdentity.get(identity);
-    if (
-      !existing ||
-      task.parentCanonicalSequence < existing.parentCanonicalSequence
-    ) {
-      byIdentity.set(identity, task);
-    }
-  }
-  return [...byIdentity.values()].sort((left, right) =>
-    left.parentCanonicalSequence - right.parentCanonicalSequence ||
-    left.kind.localeCompare(right.kind) ||
-    left.logicalKey.localeCompare(right.logicalKey)
-  );
+  return canonicalOrderedTaskDiscoveries(tasks);
 }
 
 export async function planUnifiedOrderedTasksInTransaction(

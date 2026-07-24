@@ -43,6 +43,11 @@ import {
   admitBarrierHeadInTransaction,
   planUnifiedOrderedTasksInTransaction
 } from "./plannerRepository";
+import {
+  commitUnifiedPlannerEntries,
+  completeUnifiedPlannerEntries,
+  type UnifiedPlannerTransitionEntry
+} from "./planner";
 
 export type { UnifiedOrderedCommitExpectation } from "./worker";
 
@@ -1701,6 +1706,7 @@ async function checkpointUnifiedOrderedTask(
     throw new Error("unified_ordered_commit_stale_head");
   }
 
+  let committedSequences: number[] = [];
   if (expectation.entries.length > 0) {
     const firstSequence = expectation.entries[0]!.canonicalSequence;
     const lastSequence = expectation.entries.at(-1)!.canonicalSequence;
@@ -1778,6 +1784,39 @@ async function checkpointUnifiedOrderedTask(
         throw new Error("unified_ordered_commit_prefix_mismatch");
       }
     }
+    const transitionEntries: UnifiedPlannerTransitionEntry[] =
+      rows.map((row) => ({
+        canonicalSequence: Number(row.canonical_sequence),
+        taskId: String(row.task_id),
+        kind: String(row.task_kind),
+        logicalKey: String(row.task_logical_key),
+        parentCanonicalSequence: -1,
+        plannerState: "ready",
+        acceptedAttemptId: String(row.accepted_attempt_id),
+        resultBytes: Number(row.result_bytes)
+      }));
+    const transition = commitUnifiedPlannerEntries(transitionEntries, {
+      maxEntries: transitionEntries.length,
+      maxBytes: Math.max(
+        1,
+        transitionEntries.reduce(
+          (sum, entry) => sum + (entry.resultBytes ?? 0),
+          0
+        )
+      ),
+      discoveredTasks: []
+    });
+    if (
+      transition.committed.length !== transitionEntries.length ||
+      transition.committed.some((entry, index) =>
+        entry.taskId !== transitionEntries[index]!.taskId
+      )
+    ) {
+      throw new Error("unified_ordered_commit_prefix_mismatch");
+    }
+    committedSequences = transition.committed.map((entry) =>
+      entry.canonicalSequence
+    );
   }
 
   const checkpointed = await checkpointUnifiedTaskRow(client, input);
@@ -1795,9 +1834,9 @@ async function checkpointUnifiedOrderedTask(
           and planner_state = 'ready'
           and committed_at is null
         returning task_id`,
-      [runId, expectation.entries.map((entry) => entry.canonicalSequence)]
+      [runId, committedSequences]
     );
-    if (committed.rows.length !== expectation.entries.length) {
+    if (committed.rows.length !== committedSequences.length) {
       throw new Error("unified_ordered_commit_prefix_mismatch");
     }
   }
@@ -2114,7 +2153,23 @@ export async function completeUnifiedTaskAttempt(
         schemaVersion: input.acceptedArtifact.schemaVersion,
         artifact: input.acceptedArtifact.value
       });
-      if (planner) resultBytes = prepared.bytes;
+      if (planner) {
+        const transitioned = completeUnifiedPlannerEntries([{
+          canonicalSequence: Number(planner.canonical_sequence),
+          taskId: input.taskId,
+          kind: String(task.kind),
+          logicalKey: String(task.logical_key),
+          parentCanonicalSequence: -1,
+          plannerState: "planned",
+          acceptedAttemptId: null,
+          resultBytes: null
+        }], [{
+          taskId: input.taskId,
+          acceptedAttemptId: input.attemptId,
+          resultBytes: prepared.bytes
+        }]);
+        resultBytes = transitioned[0]!.resultBytes;
+      }
     }
 
     await client.query(

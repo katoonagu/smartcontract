@@ -11,7 +11,6 @@ import {
   commitUnifiedPresentedCompletion
 } from "../../src/unifiedCheck/durableCompletion";
 import {
-  buildMinimalUnifiedCheckCandidate,
   buildUnifiedPresentedCompletionCandidate,
   completeMinimalUnifiedCheck,
   type MinimalBranchResult
@@ -168,37 +167,28 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
           candidate
         })
       });
-      const shuffledAcceptedCompletion =
-        buildMinimalUnifiedCheckCandidate({
-          run,
-          branches: [branches[2]!, branches[0]!, branches[1]!]
-        });
-      const exactResult = (candidate: typeof completed) => {
-        const canonicalFacts = [...candidate.artifactKinds]
-          .find(([, kind]) => kind === "canonical_facts");
-        if (!canonicalFacts) {
-          throw new Error("vertical_slice_canonical_facts_missing");
-        }
-        return {
-          canonicalFacts: candidate.artifacts.get(canonicalFacts[0]),
-          frontier: candidate.frontier,
-          closureSha256: candidate.hashes.closure,
-          score: candidate.report.score,
-          decision: candidate.report.decision,
-          evidenceBundleSha256: candidate.hashes.evidence,
-          scoringBundleSha256: candidate.hashes.scoring,
-          reportSha256: candidate.hashes.report,
-          deliveryIntentCount: candidate.delivery === null ? 0 : 1
-        };
-      };
-      expect(exactResult(shuffledAcceptedCompletion)).toEqual(
-        exactResult(completed)
-      );
       const persistedRun = (
         await client.query("select * from unified_check_runs where id = $1", [run.id])
       ).rows[0];
-      expect(persistedRun?.status).toBe("COMPLETED");
-      expect(persistedRun?.report_sha256).toBe(completed.hashes.report);
+      expect({
+        status: persistedRun?.status,
+        finalScore: persistedRun?.final_score === null
+          ? null
+          : Number(persistedRun?.final_score),
+        finalDecision: persistedRun?.final_decision,
+        evidenceBundleSha256: persistedRun?.evidence_bundle_sha256,
+        traversalClosureSha256: persistedRun?.traversal_closure_sha256,
+        scoringBundleSha256: persistedRun?.scoring_bundle_sha256,
+        reportSha256: persistedRun?.report_sha256
+      }).toEqual({
+        status: "COMPLETED",
+        finalScore: completed.report.score,
+        finalDecision: completed.report.decision,
+        evidenceBundleSha256: completed.hashes.evidence,
+        traversalClosureSha256: completed.hashes.closure,
+        scoringBundleSha256: completed.hashes.scoring,
+        reportSha256: completed.hashes.report
+      });
       expect(
         (await client.query(
           "select count(*)::int as count from unified_check_tasks where run_id = $1 and accepted_attempt_id is not null",
@@ -209,6 +199,14 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
         (await client.query("select count(*)::int as count from unified_check_deliveries"))
           .rows[0]?.count
       ).toBe(0);
+      expect(
+        (await client.query(
+          `select count(*)::int as count
+             from unified_check_artifacts
+            where created_by_run_id = $1 and kind = 'canonical_facts'`,
+          [run.id]
+        )).rows[0]?.count
+      ).toBe(1);
 
       const mismatchedEvidence = {
         ...completed.evidence,
