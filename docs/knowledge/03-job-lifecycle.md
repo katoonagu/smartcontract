@@ -93,9 +93,13 @@ task ID, attempt number, and artifact hash; it does not depend on the worker's
 ephemeral attempt UUID or a repeated artifact payload. Planner attachment and
 acceptance serialize through the run lock before task and planner locks, so a
 completed independent task cannot acquire a late `planned` row. The rolling
-coordinator, planner-aware claiming, and ordered commit integration remain
-later implementation steps; merely applying schema 034 does not switch an
-existing run to planner execution.
+planner may attach a new row only to an existing unaccepted `QUEUED` or
+`WAITING_RETRY` task. It rejects `LEASED`, `BLOCKED_ADMIN`,
+`FAILED_TECHNICAL`, `CANCELLED`, and `COMPLETED`; a task that already owns a
+planner row remains idempotently reusable after it is admitted or leased. The
+rolling coordinator, planner-aware claiming, and ordered commit integration
+remain later implementation steps; merely applying schema 034 does not switch
+an existing run to planner execution.
 
 ## Remaining Operational Work
 

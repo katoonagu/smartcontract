@@ -138,7 +138,7 @@ export async function planUnifiedOrderedTasks(
       ).rows[0];
       if (!planner) {
         if (
-          !["QUEUED", "LEASED", "WAITING_RETRY"].includes(
+          !["QUEUED", "WAITING_RETRY"].includes(
             String(durableTask.status)
           ) ||
           durableTask.accepted_attempt_id !== null

@@ -363,6 +363,147 @@ postgresDescribe("Unified ordered acceptance", () => {
     });
   });
 
+  it("rejects planning-first attachment to a leased task and lets its worker finish independently", async () => {
+    await withScenario(async ({ db, pool, schema }) => {
+      await insertLeasedTask(db, {
+        taskId: "task-planning-first",
+        ordered: false
+      });
+      const hash = artifactSha256(acceptedArtifact);
+      await db.query(
+        `insert into unified_check_artifacts (
+          sha256, created_by_run_id, kind, schema_version, artifact_json
+        ) values ($1, 'run-1', 'address_history_manifest', '1', $2::jsonb)`,
+        [hash, JSON.stringify(acceptedArtifact)]
+      );
+
+      const planningClient = await pool.connect();
+      const acceptanceClient = await pool.connect();
+      let releasePlanning!: () => void;
+      const planningMayContinue = new Promise<void>((resolve) => {
+        releasePlanning = resolve;
+      });
+      let planningAtGuard!: () => void;
+      const planningReachedGuard = new Promise<void>((resolve) => {
+        planningAtGuard = resolve;
+      });
+      let acceptanceAtRunLock!: () => void;
+      const acceptanceRequestedRunLock = new Promise<void>((resolve) => {
+        acceptanceAtRunLock = resolve;
+      });
+      try {
+        const planningHost: UnifiedTransactionalQueryable = {
+          query: (sql, values) =>
+            planningClient.query(sql, values as unknown[]),
+          async transaction<T>(
+            work: (client: UnifiedQueryable) => Promise<T>
+          ): Promise<T> {
+            await planningClient.query("begin");
+            await planningClient.query(
+              `set local search_path to "${schema}"`
+            );
+            try {
+              const result = await work({
+                async query(sql, values) {
+                  if (
+                    sql.includes("select canonical_sequence") &&
+                    sql.includes("from unified_check_planner_entries")
+                  ) {
+                    planningAtGuard();
+                    await planningMayContinue;
+                  }
+                  return planningClient.query(sql, values as unknown[]);
+                }
+              });
+              await planningClient.query("commit");
+              return result;
+            } catch (error) {
+              await planningClient.query("rollback").catch(() => undefined);
+              throw error;
+            }
+          }
+        };
+        const planning = planUnifiedOrderedTasks(planningHost, {
+          runId: "run-1",
+          tasks: [{
+            taskId: "task-planning-first",
+            kind: "address_history",
+            logicalKey: "task-planning-first",
+            priorityLane: "interactive",
+            checkpoint: { version: "planning-first-race-v1" }
+          }]
+        });
+        await planningReachedGuard;
+
+        const acceptanceHost: UnifiedTransactionalQueryable = {
+          query: (sql, values) =>
+            acceptanceClient.query(sql, values as unknown[]),
+          async transaction<T>(
+            work: (client: UnifiedQueryable) => Promise<T>
+          ): Promise<T> {
+            await acceptanceClient.query("begin");
+            await acceptanceClient.query(
+              `set local search_path to "${schema}"`
+            );
+            try {
+              const result = await work({
+                query(sql, values) {
+                  if (
+                    sql.includes("from unified_check_runs") &&
+                    sql.includes("for update")
+                  ) {
+                    acceptanceAtRunLock();
+                  }
+                  return acceptanceClient.query(sql, values as unknown[]);
+                }
+              });
+              await acceptanceClient.query("commit");
+              return result;
+            } catch (error) {
+              await acceptanceClient.query("rollback").catch(() => undefined);
+              throw error;
+            }
+          }
+        };
+        const completion = completeUnifiedTaskAttempt(acceptanceHost, {
+          taskId: "task-planning-first",
+          leaseToken: "lease-1",
+          attempt: 1,
+          attemptId: "attempt-planning-first",
+          artifactSha256: hash
+        });
+        await acceptanceRequestedRunLock;
+        releasePlanning();
+
+        await expect(planning).rejects.toThrow(
+          "unified_planner_task_not_plannable"
+        );
+        await expect(completion).resolves.toMatchObject({
+          status: "COMPLETED",
+          accepted_attempt_id: "attempt-planning-first"
+        });
+        await expect(db.query(
+          `select task.status, task.accepted_attempt_id,
+                  planner.planner_state
+             from unified_check_tasks task
+             left join unified_check_planner_entries planner
+               on planner.run_id = task.run_id and planner.task_id = task.id
+            where task.id = 'task-planning-first'`
+        )).resolves.toMatchObject({
+          rows: [{
+            status: "COMPLETED",
+            accepted_attempt_id: "attempt-planning-first",
+            planner_state: null
+          }]
+        });
+      } finally {
+        releasePlanning();
+        planningClient.release();
+        acceptanceClient.release();
+      }
+    });
+  });
+
   it("rolls back artifact, attempt, task and planner when the ready transition fails", async () => {
     await withScenario(async ({ db, transactionHost }) => {
       await insertLeasedTask(db, {
