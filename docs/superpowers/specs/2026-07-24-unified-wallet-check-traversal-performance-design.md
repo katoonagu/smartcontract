@@ -1,7 +1,7 @@
 # Unified Wallet Check Traversal Performance Design
 
 **Дата:** 2026-07-24
-**Статус:** approved design, implementation pending
+**Статус:** final approved design, implementation pending
 **Область:** Unified Wallet Check, TronScan provider/indexing, traversal,
 Admin observability
 **Базовый commit:** `eab7dadca84744e4e83bc6588ae8b4f27256935e`
@@ -114,14 +114,15 @@ artifacts и отдельные address-history tasks.
 CheckRequest
   → confirmed snapshot + frozen labels
   → direct history
-  → TraversalCoordinator
+  ├─→ Fast + direct hard evidence
+  └─→ TraversalCoordinator
        → deduplicated AddressHistoryTask(address A) ┐
        → deduplicated AddressHistoryTask(address B) ├─ four-slot provider pool
        → deduplicated AddressHistoryTask(address C) ┘
        → immutable AddressHistoryManifest per address
        → deterministic episode attribution
        → terminal evidence / next frontier
-  → Fast + Where + Deep evidence children
+  → remaining Where + Deep evidence children
   → parent reconciliation + score + report
   → one Telegram delivery
 ```
@@ -130,6 +131,11 @@ Coordinator отвечает за deterministic frontier, attribution и closure
 Address-history task отвечает только за полное snapshot-bound получение одной
 USDT-истории. Это разделение даёт параллельность и не смешивает provider fetch с
 forensic interpretation.
+
+Fast и та часть direct hard evidence, которой достаточно direct history, не
+ждут traversal. Они запускаются параллельно с ним, сохраняют evidence-only
+artifacts и не получают delivery authority. Parent finalizer по-прежнему ждёт
+все обязательные children и отправляет только один итоговый результат.
 
 ## 6. P0 — ускорение без изменения forensic-смысла
 
@@ -145,7 +151,8 @@ chain
 + providerRequestVersion
 ```
 
-`AddressHistoryManifestV1` содержит:
+`AddressHistoryManifestV1` является immutable content-addressed result и
+содержит:
 
 - нормализованный address;
 - snapshot identity;
@@ -179,20 +186,23 @@ normalizedAddress + direction
 - anchor timestamp;
 - allocated amount;
 - source event IDs;
-- proportional attribution;
+- attribution policy, закреплённой в analysis manifest;
 - direction.
 
 Результаты снова переводятся в существующие canonical states. Amount
 conservation, source lineage и роли не теряются. История загружается один раз,
 но эпизоды не сливаются в одну сумму.
 
-P0 не меняет eligibility predicate, attribution policy, terminal predicates,
-canonical fact keys, score matrix или presentation.
+Текущая locked policy — `proportional`, но P0 не выбирает её заново и не
+переводит все внутренние операции в новую модель. Он исполняет exact version и
+policy hash из analysis manifest. P0 не меняет eligibility predicate,
+attribution policy, terminal predicates, canonical fact keys, score matrix или
+presentation.
 
 ### 6.3 Отдельные address-history tasks
 
 Вместо одного активного history внутри traversal checkpoint coordinator создаёт
-immutable/deduplicated child tasks для разных frontier-адресов.
+deduplicated child tasks для разных frontier-адресов.
 
 Task identity:
 
@@ -200,11 +210,14 @@ Task identity:
 runId + addressHistoryManifestKey
 ```
 
-Одинаковый key создаёт не более одной task. Несколько traversal states ждут один
-result. Task lifecycle использует существующие состояния и lease fencing:
+Одинаковый key создаёт не более одной логической task. Task row имеет обычный
+mutable lifecycle (`QUEUED`, `LEASED`, `WAITING_RETRY`, terminal state).
+Immutable являются её child attempts, provider/page artifacts и принятый
+`AddressHistoryManifest`, а не сама task row. Несколько traversal states ждут
+один result. Task lifecycle использует существующие состояния и lease fencing:
 
 - provider cooldown/rate limit → `WAITING_FOR_PROVIDER`;
-- recoverable lease loss → новая immutable attempt;
+- recoverable lease loss → новая immutable attempt, не перезапись старой;
 - provider contradiction, invalid page identity или исчерпанные технические
   retries → `FAILED_TECHNICAL`;
 - только validated exhaustion → completed manifest.
@@ -232,6 +245,18 @@ in-flight provider calls, чем разрешают scheduler и key/group coold
 Один slot никогда не обходит lease fencing, cancellation, heartbeat,
 provider-call measurement или fair scheduling.
 
+Fairness действует на двух уровнях:
+
+- scheduler сохраняет per-key/per-group pacing и cooldown;
+- dispatcher делает weighted round-robin по interactive runs, а не исчерпывает
+  весь frontier одного run до перехода к следующему.
+
+Один dense wallet может занять до четырёх slots только если нет ready work
+других interactive runs. При конкуренции каждый active interactive run
+получает возможность progress до выдачи дополнительных slots уже
+обслуженному run. Background/repair lanes не вытесняют interactive checks, а
+старый heavy run не может вызвать starvation новой пользовательской проверки.
+
 ### 6.5 Logical chunks
 
 Физический TronScan subrequest остаётся ограничен provider-лимитом. Один task
@@ -250,28 +275,63 @@ Checkpoint выполняется при первом наступившем у�
 Chunk size — operational tuning, не coverage или traversal limit. Он не меняет
 итоговый event inventory.
 
-### 6.6 Компактный checkpoint
+### 6.6 Компактный checkpoint и delta artifacts
 
 Coordinator checkpoint хранит:
 
 - version и manifest bindings;
-- hashes frontier/visited/terminal collections;
+- head hashes append-only frontier/visited/terminal delta chains;
 - pending/completed address-history keys;
 - aggregate counters;
 - last progress timestamp;
 - только bounded recent diagnostics.
 
-Полные frontier/visited/terminal collections сохраняются как immutable
-content-addressed artifacts. Unbounded `attemptTimings` удаляется из JSONB
-checkpoint; timings записываются как bounded counters/histograms либо
-append-only operational samples.
+Checkpoint не материализует и не сохраняет новую полную копию растущих
+frontier/visited/terminal collections. Каждая обработанная logical chunk
+создаёт маленький immutable `TraversalDeltaArtifactV1`:
+
+```text
+previousDeltaHash
++ addedFrontier
++ removedFrontierStateIds
++ addedVisited
++ addedTerminals
++ addedSupersededStateIds
++ counterDeltas
+```
+
+Периодический compaction artifact разрешён только как отдельный
+content-addressed snapshot с hash предыдущей delta chain. Он создаётся редко,
+не при каждом provider page, и не меняет canonical replay. Coordinator
+checkpoint хранит только chain heads и bounded working set.
+
+Unbounded `attemptTimings` удаляется из JSONB checkpoint; timings записываются
+как bounded counters/histograms либо append-only operational samples.
 
 Один update не переписывает историю всех предыдущих attempts. Размер
 coordinator checkpoint измеряется и должен оставаться bounded относительно
 числа provider pages. Конкретный alert threshold определяется по benchmark, а
 не становится условием completion.
 
-### 6.7 P0 invariants
+### 6.7 P0 instrumentation
+
+Минимальная измерительная плоскость реализуется вместе с P0, до Admin P2. Она
+нужна, чтобы доказать эффект оптимизации и не смешивается с пользовательской
+проекцией:
+
+- provider calls, network fetches, cache hits и manifest reuses;
+- active/max provider in-flight и slot utilization;
+- key-group distribution;
+- logical chunks, task claims и checkpoints;
+- replayed/avoided address histories;
+- delta/checkpoint bytes и DB writes;
+- unique addresses, funding episodes и frontier peak;
+- monotonic timestamps фаз.
+
+P0 instrumentation доступна benchmark harness и structured logs. Она не
+влияет на hashes анализа и не обязана иметь Admin UI до P2.
+
+### 6.8 P0 invariants
 
 Для одного frozen input до и после P0 должны совпадать:
 
@@ -292,6 +352,33 @@ coordinator checkpoint измеряется и должен оставаться
 - один address/snapshot не сканируется повторно из-за разных episodes;
 - четыре provider slots реально могут обслуживать один dense wallet;
 - один provider wait не блокирует остальные ready histories.
+- dense run не вызывает starvation параллельного interactive run;
+- ранний Fast/direct hard evidence artifact не создаёт ранний score или
+  отдельную delivery.
+
+### 6.9 Versioned checkpoint rollout
+
+Новый coordinator использует
+`unified-production-traversal-checkpoint-v2`. Старый V1 checkpoint нельзя
+неявно интерпретировать как V2.
+
+Rollout contract:
+
+- новый run сразу создаёт V2 delta-chain checkpoint;
+- terminal V1 run остаётся историческим и не переписывается;
+- активный V1 run проходит deterministic one-time upgrader, который валидирует
+  manifest bindings, материализует один initial compaction artifact и causal
+  write-ом заменяет checkpoint на V2;
+- upgrade создаёт immutable migration artifact с source checkpoint hash,
+  target checkpoint hash и upgrader version;
+- повтор upgrade идемпотентен;
+- невалидный/неполный V1 checkpoint остаётся `FAILED_TECHNICAL` или
+  `BLOCKED_ADMIN` по существующей recoverability policy, но не перезапускается
+  с нуля и не получает score;
+- rollout fence не допускает одновременную запись V1 и V2 worker-ами в одну
+  task.
+
+V1/V2 restart и mixed-queue behavior имеют отдельные PostgreSQL targeted tests.
 
 ## 7. P1 — доказательное уменьшение графа
 
@@ -303,13 +390,30 @@ byte-identical. Вместо этого они проходят отдельну
 
 До traversal run получает content-addressed label snapshot с provenance:
 
-- подтверждённые CEX: Bybit, Bitget, Binance и другие поддерживаемые биржи;
-- DEX/router/pool identities;
-- bridges;
-- PSM и stablecoin infrastructure;
-- contracts с доказанной economic role;
+- CEX catalog: Binance, Bybit, OKX, WhiteBIT, Coinbase, Kraken, KuCoin,
+  Bitget, MEXC, Bitstamp, Crypto.com и HTX/Huobi с отдельной temporal sanctions
+  semantics;
+- TRON DEX/router catalog: SunSwap/SUN, verified router/aggregator entries из
+  `serviceRouteRegistry`;
+- bridge catalog: Allbridge/Allbridge LP, Bridgers и другие verified
+  cross-chain/bridge-registry entries;
+- protocol catalog: USDD PSM/GemJoin, включая exact reserve
+  `TSUYvQ5tdd3DijCD1uGunGLpftHuSZ12sQ`, и verified stablecoin protocol entries;
+- registered service endpoints: GasFree Controller
+  `TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U`, TronLink GasFree provider
+  `TLntW9Z59LYY5KEi9cmwk3PKjQga828ird`;
+- approval/action registry: Bridgers spender
+  `TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s`;
+- contracts с доказанной economic role из verified metadata/profile и
+  versioned route registry;
 - restrictions и risk labels с validity interval;
 - authority, source, observed/frozen timestamps и confidence.
+
+Это минимальный supported catalog V1. Наличие имени в каталоге не создаёт
+адресную метку автоматически: каждый address binding требует exact registry
+entry либо verified provider metadata с provenance. Простое keyword match без
+address/evidence binding остаётся hint и не становится terminal boundary.
+Расширение каталога меняет `labelCatalogVersion` и dataset hash.
 
 Dynamic enrichment, если используется, завершается до freeze. Traversal читает
 только закреплённый dataset hash. Live metadata не может незаметно изменить
@@ -359,6 +463,11 @@ synthetic cases с доказанным structural proof.
 - допустимые отношения score, но exact score только если boundary создаёт
   scoring evidence и прошёл adjudication.
 
+До P1 adjudication фиксируются expected terminal decisions, score properties и
+отношения между кейсами. Exact expected scores и обновлённые locked comparator
+artifacts создаются только после blind review/adjudication. Production code не
+назначает новые exact значения сам и не обновляет Golden package из live runs.
+
 Обязательные отрицательные кейсы:
 
 - unknown high-volume wallet не становится boundary;
@@ -383,13 +492,17 @@ Admin получает read-only progress projection:
 - canonical events и logical chunks processed;
 - coordinator checkpoint bytes и artifact bytes;
 - DB write count/bytes для task/checkpoint path;
-- estimated remaining address histories как count/range, не ETA;
+- exact discovered outstanding address histories;
+- undiscovered remainder как monotonic lower-bound/range только при
+  продолжающемся frontier expansion;
 - текущая причина отсутствия score:
   `direct_history`, `traversal_fetch`, `traversal_attribution`,
   `provider_wait`, `branch_analysis`, `finalization` или technical failure.
 
-Метрики не влияют на lifecycle, score, boundary или delivery. Estimated
-remaining work — диагностическая оценка, не completion contract.
+Метрики не влияют на lifecycle, score, boundary или delivery. Admin явно
+разделяет `discovered remaining` и `lower bound while expanding`; он не
+показывает это как точное общее число, процент завершения или ETA. Remaining
+work — диагностическая проекция, не completion contract.
 
 Telegram не получает эти operational details.
 
@@ -412,10 +525,12 @@ Telegram не получает эти operational details.
 ```text
 P0 baseline capture
   → AddressHistoryManifest
-  → compact coordinator checkpoint
+  → delta-chain coordinator checkpoint + V1→V2 upgrader
   → address-history child tasks
-  → event-driven four-slot pool
+  → event-driven fair four-slot pool
   → larger logical chunks
+  → parallel Fast/direct hard evidence
+  → P0 instrumentation
   → P0 equivalence + performance comparison
        → P1 frozen labels
        → P1 boundary predicates + Golden review
@@ -459,7 +574,29 @@ one run → two independent address histories → two provider slots
 допустим после завершения связанного этапа и один финальный check перед
 release, если release-инструкция снова его потребует.
 
-### 11.2 Frozen performance comparison
+### 11.2 Deterministic benchmark identity
+
+Каждый before/after case использует versioned
+`UnifiedPerformanceBenchmarkManifestV1`, который фиксирует:
+
+- stable benchmark `runId`/case ID, не production-generated UUID;
+- frozen clock: start instant и deterministic monotonic tick source;
+- snapshot block/hash/timestamp;
+- provider bundle hashes и ordered response identities;
+- label dataset/catalog hash;
+- provider/scheduler configuration hash, key-group count и logical chunk size;
+- runtime commit, schema/checkpoint version и benchmark harness version;
+- scoring, attribution, analysis и presentation policy versions;
+- locale и deterministic ID generator seed.
+
+Wall-clock duration и machine/runtime metadata записываются в отдельный
+measurement envelope и не входят в canonical analysis hashes. Before и after
+считаются сопоставимыми только при одинаковой semantic identity; разрешённые
+mechanical differences, например checkpoint version/chunk size, перечисляются
+явно. Случайный run ID или реальное системное время не могут создавать ложный
+hash diff.
+
+### 11.3 Frozen performance comparison
 
 Одинаковые evidence/provider bundles и одна runtime configuration прогоняются
 до и после:
@@ -488,6 +625,16 @@ Live blockchain state не используется для benchmark. Кажды
 - unique addresses, episodes и frontier peak;
 - canonical inventory/report/score/presentation hashes.
 
+Кроме одиночных cases запускается deterministic concurrency fixture:
+
+```text
+one dense interactive run
++ two small interactive runs submitted later
+```
+
+Он доказывает, что dense wallet использует четыре slots при свободной системе,
+но освобождает progress opportunities для других пользователей при конкуренции.
+
 P0 принимается только при идентичности результатов. Ускорение измеряется, но
 заранее заданный коэффициент не является release gate. Если ускорения нет,
 результат становится конкретным performance blocker с профилем причины, а не
@@ -515,6 +662,13 @@ P1 сравнивается с adjudicated boundary expectations и отдель
 - Checkpoint не растёт линейно с количеством обработанных provider pages из-за
   timings или copied collections.
 - Frozen P0 outputs идентичны baseline.
+- V1 active checkpoint детерминированно и идемпотентно переходит в V2 без
+  потери progress; V1/V2 writers не конкурируют.
+- Fast/direct hard evidence выполняется параллельно с traversal, но score и
+  delivery остаются parent-owned.
+- P0 structured instrumentation достаточно для before/after comparison до
+  появления Admin P2.
+- Межпользовательская fairness не допускает starvation small interactive runs.
 
 ### P1
 
@@ -522,10 +676,13 @@ P1 сравнивается с adjudicated boundary expectations и отдель
 - Каждая terminal boundary имеет canonical evidence и versioned predicate.
 - Missing label, elapsed time, coverage, depth и graph size не завершают state.
 - Positive и negative Golden boundary cases проходят adjudicated expectations.
+- Exact expected scores публикуются только после P1 blind
+  review/adjudication.
 
 ### P2
 
-- Admin объясняет active/waiting/remaining work и использование provider pool.
+- Admin объясняет active/waiting/discovered remaining work и использование
+  provider pool, не выдавая lower bound за процент завершения или ETA.
 - Метрики различают network, provider cache и address-manifest reuse.
 - Наблюдаемость не меняет artifacts, lifecycle, score или Telegram delivery.
 
