@@ -235,6 +235,18 @@ async function setupCommit(db: pg.PoolClient) {
   return first;
 }
 
+async function replaceNextHeadWithReady(db: pg.PoolClient) {
+  await db.query(
+    "delete from unified_check_planner_entries where task_id = 'history-2'"
+  );
+  await db.query("delete from unified_check_tasks where id = 'history-2'");
+  return insertAcceptedHistory(db, {
+    sequence: 1,
+    taskId: "history-ready",
+    state: "ready"
+  });
+}
+
 function commitInput(
   entry: Awaited<ReturnType<typeof setupCommit>>,
   overrides: Record<string, unknown> = {}
@@ -561,6 +573,64 @@ postgresDescribe("Unified ordered commit", () => {
       const entry = await setupCommit(db);
       await db.query(
         "update unified_check_tasks set status = 'COMPLETED' where id = 'history-2'"
+      );
+
+      await expect(checkpointUnifiedTask(host, commitInput(entry)))
+        .rejects.toThrow("unified_ordered_next_head_not_admissible");
+      expect((await db.query(
+        "select status, checkpoint_json from unified_check_tasks where id = 'traversal-1'"
+      )).rows[0]).toMatchObject({
+        status: "LEASED",
+        checkpoint_json: { deltaHeadSha256: OLD_HEAD }
+      });
+      expect((await db.query(
+        "select planner_state from unified_check_planner_entries where canonical_sequence = 0"
+      )).rows[0]?.planner_state).toBe("ready");
+    });
+  });
+
+  it("keeps a valid ready next head traversal-actionable without provider wake", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await replaceNextHeadWithReady(db);
+
+      const result = await checkpointUnifiedTask(host, commitInput(entry));
+      expect(result?.next_head_newly_admitted).toBe(false);
+      expect((await db.query(
+        `select planner_state, reserved_bytes, ready_at, committed_at
+           from unified_check_planner_entries
+          where task_id = 'history-ready'`
+      )).rows[0]).toMatchObject({
+        planner_state: "ready",
+        reserved_bytes: null,
+        committed_at: null
+      });
+      expect((await db.query(
+        "select status from unified_check_tasks where id = 'traversal-1'"
+      )).rows[0]?.status).toBe("QUEUED");
+
+      const claimed = await claimUnifiedTask(db, {
+        workerId: "analysis-ready-head",
+        leaseToken: "lease-ready-head",
+        leaseMs: 30_000,
+        kinds: ["traversal"]
+      });
+      expect(claimed?.id).toBe("traversal-1");
+    });
+  });
+
+  it("rolls back when a ready next head retains a reservation", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await replaceNextHeadWithReady(db);
+      await db.query(
+        `alter table unified_check_planner_entries
+           drop constraint unified_check_planner_entries_state_shape_check`
+      );
+      await db.query(
+        `update unified_check_planner_entries
+            set reserved_bytes = 1048576
+          where task_id = 'history-ready'`
       );
 
       await expect(checkpointUnifiedTask(host, commitInput(entry)))

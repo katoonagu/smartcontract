@@ -107,10 +107,12 @@ then canonical task identity, and admits the next valid barrier head. Initial
 frontier tasks use the sentinel parent and canonical identity order; when two
 parents discover the same task, the earlier parent owns it. Admission accepts
 only unaccepted `QUEUED`/`WAITING_RETRY` planned tasks and rolls back the whole
-transition on a lifecycle mismatch. A newly admitted head wakes the provider
-pool only after commit. Committed manifests remain reusable without duplicate
-provider work. Adaptive rolling admission, provider-group selection, and the
-capacity controller remain later steps.
+transition on a lifecycle mismatch. A ready head is valid only after its
+provider reservation is released; it remains traversal-actionable and emits no
+provider wake. A newly admitted planned head wakes the provider pool only after
+commit. Committed manifests remain reusable without duplicate provider work.
+Adaptive rolling admission, provider-group selection, and the capacity
+controller remain later steps.
 
 ## Remaining Operational Work
 

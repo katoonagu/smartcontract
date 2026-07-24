@@ -350,6 +350,68 @@ describe("Unified ordered planner reads", () => {
 });
 
 describe("Unified ordered head admission", () => {
+  it("treats a valid ready head with a released reservation as already actionable", async () => {
+    let mutated = false;
+    const db: UnifiedQueryable = {
+      async query(sql) {
+        if (sql.includes("for update of entry, task")) {
+          return {
+            rows: [{
+              canonical_sequence: 1,
+              planner_state: "ready",
+              admitted_at: new Date("2026-07-25T00:00:00.000Z"),
+              reserved_bytes: null,
+              result_bytes: 128,
+              ready_at: new Date("2026-07-25T00:01:00.000Z"),
+              committed_at: null,
+              task_id: "task-1",
+              task_status: "COMPLETED",
+              accepted_attempt_id: "attempt-1",
+              verified_attempt_id: "attempt-1",
+              verified_attempt_task_id: "task-1"
+            }]
+          };
+        }
+        mutated = true;
+        return { rows: [] };
+      }
+    };
+
+    await expect(admitBarrierHeadInTransaction(db, {
+      runId: "run-1",
+      reservedBytes: 1_048_576
+    })).resolves.toEqual({ newlyAdmitted: false });
+    expect(mutated).toBe(false);
+  });
+
+  it("rejects a ready head that retains a provider reservation", async () => {
+    const db: UnifiedQueryable = {
+      async query() {
+        return {
+          rows: [{
+            canonical_sequence: 1,
+            planner_state: "ready",
+            admitted_at: new Date("2026-07-25T00:00:00.000Z"),
+            reserved_bytes: 1_048_576,
+            result_bytes: 128,
+            ready_at: new Date("2026-07-25T00:01:00.000Z"),
+            committed_at: null,
+            task_id: "task-1",
+            task_status: "COMPLETED",
+            accepted_attempt_id: "attempt-1",
+            verified_attempt_id: "attempt-1",
+            verified_attempt_task_id: "task-1"
+          }]
+        };
+      }
+    };
+
+    await expect(admitBarrierHeadInTransaction(db, {
+      runId: "run-1",
+      reservedBytes: 1_048_576
+    })).rejects.toThrow("unified_ordered_next_head_not_admissible");
+  });
+
   it("rejects an invalid next-task lifecycle before admission", async () => {
     let mutated = false;
     const db: UnifiedQueryable = {

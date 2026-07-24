@@ -563,11 +563,17 @@ export async function admitBarrierHeadInTransaction(
     await db.query(
       `select entry.canonical_sequence, entry.planner_state,
               entry.admitted_at, entry.reserved_bytes, entry.result_bytes,
+              entry.ready_at, entry.committed_at,
               task.id as task_id, task.status as task_status,
-              task.accepted_attempt_id
+              task.accepted_attempt_id,
+              accepted_attempt.id as verified_attempt_id,
+              accepted_attempt.task_id as verified_attempt_task_id
          from unified_check_planner_entries entry
          join unified_check_tasks task
            on task.run_id = entry.run_id and task.id = entry.task_id
+         left join unified_check_attempts accepted_attempt
+           on accepted_attempt.id = task.accepted_attempt_id
+          and accepted_attempt.task_id = task.id
         where entry.run_id = $1
           and entry.planner_state <> 'committed'
         order by entry.canonical_sequence
@@ -581,10 +587,14 @@ export async function admitBarrierHeadInTransaction(
   if (head.planner_state === "ready") {
     if (
       head.admitted_at === null ||
-      head.reserved_bytes === null ||
+      head.reserved_bytes !== null ||
       head.result_bytes === null ||
+      head.ready_at === null ||
+      head.committed_at !== null ||
       head.task_status !== "COMPLETED" ||
-      head.accepted_attempt_id === null
+      head.accepted_attempt_id === null ||
+      head.verified_attempt_id !== head.accepted_attempt_id ||
+      head.verified_attempt_task_id !== head.task_id
     ) {
       throw new Error("unified_ordered_next_head_not_admissible");
     }

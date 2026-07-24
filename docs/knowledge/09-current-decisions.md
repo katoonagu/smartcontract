@@ -57,10 +57,11 @@ audit artifacts. It is not a second source of current product truth.
   lifecycle-valid barrier head. Initial tasks use a sentinel parent; children
   stay grouped by parent sequence before `(kind, logical_key)`, and the earlier
   parent owns duplicates. Durable reads and commit verification bind full task,
-  accepted-attempt, and artifact identity. Provider wake happens only after a
-  newly admitted head commits. Arrival order cannot change the canonical
-  traversal result. Adaptive rolling admission, provider-group selection, and
-  capacity control remain later work.
+  accepted-attempt, and artifact identity. A ready next head has released its
+  provider reservation, remains traversal-actionable, and does not trigger a
+  provider wake; wake happens only after a newly admitted planned head commits.
+  Arrival order cannot change the canonical traversal result. Adaptive rolling
+  admission, provider-group selection, and capacity control remain later work.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
