@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { fingerprintCanonicalArtifact } from "../../src/forensics/canonicalJson";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../../src/forensics/canonicalJson";
 import { canonicalTronUsdtEventKey } from "../../src/forensics/tronAddressAllTimeIndex";
 import type { IndexedTronUsdtTransfer } from "../../src/types";
 import {
@@ -121,15 +124,26 @@ describe("Unified address-centric traversal coordinator", () => {
       }
     });
     const artifacts = new Map<string, unknown>([[pageSha256, page]]);
-    let historiesReady = false;
-    const ensured = vi.fn(async (_input: unknown) => {
-      historiesReady = true;
+    let planned = false;
+    let ready = false;
+    const planAddressHistories = vi.fn(async (_input: {
+      runId: string;
+      priorityLane: "interactive" | "repair" | "background";
+      histories: readonly {
+        manifestKey: string;
+        identity: typeof identity;
+      }[];
+    }) => {
+      planned = true;
     });
+    const admitAddressHistoryHead = vi.fn(async () => true);
     const loadHistoryPage = vi.fn(async ({ sha256 }: { sha256: string }) =>
       artifacts.get(sha256) as never
     );
     const handler = createUnifiedTraversalCoordinatorHandler({
-      maxAddressesThisChunk: 1,
+      commitMaxEntries: 1,
+      commitMaxBytes: 8_388_608,
+      manifestMaxBytes: 1_048_576,
       loadContext: async () => ({
         runId: "run-1",
         manifest,
@@ -138,11 +152,24 @@ describe("Unified address-centric traversal coordinator", () => {
       loadLabels: async ({ addresses }) => new Map(
         addresses.includes(CEX) ? [[CEX, ["cex", "Bybit"]]] : []
       ),
-      ensureAddressHistories: ensured,
-      loadAddressHistoryManifests: async ({ manifestKeys }) =>
-        historiesReady && manifestKeys.includes(key)
-          ? new Map([[key, history]])
-          : new Map(),
+      loadDurableAddressHistoryKeys: async () =>
+        planned ? new Set([key]) : new Set(),
+      planAddressHistories,
+      admitAddressHistoryHead,
+      loadReadyAddressHistories: async () => ready
+        ? [{
+            canonicalSequence: 0,
+            taskId: "task-address-history",
+            acceptedAttemptId: "attempt-address-history",
+            artifactSha256: fingerprintCanonicalArtifact(history),
+            artifactKind: "address_history_manifest",
+            artifactSchemaVersion: "1",
+            artifact: history,
+            resultBytes:
+              Buffer.byteLength(canonicalizeArtifactJson(history), "utf8")
+          }]
+        : [],
+      loadCommittedAddressHistories: async () => [],
       loadAddressHistoryPage: loadHistoryPage,
       loadCompactionArtifact: async ({ sha256 }) =>
         artifacts.get(sha256) as never,
@@ -171,13 +198,15 @@ describe("Unified address-centric traversal coordinator", () => {
     expect(first.checkpoint).toMatchObject({
       version: "unified-production-traversal-checkpoint-v2"
     });
-    expect(ensured).toHaveBeenCalledTimes(1);
-    expect(ensured.mock.calls[0]?.[0]).toMatchObject({
+    expect(planAddressHistories).toHaveBeenCalledTimes(1);
+    expect(planAddressHistories.mock.calls[0]?.[0]).toMatchObject({
       runId: "run-1",
       priorityLane: "interactive",
       histories: [{ manifestKey: key, identity }]
     });
+    expect(admitAddressHistoryHead).toHaveBeenCalledTimes(1);
 
+    ready = true;
     const second = await handler({
       task: { ...baseTask, attempt: 2, checkpoint: first.checkpoint },
       leaseToken: "lease-2",
@@ -185,7 +214,18 @@ describe("Unified address-centric traversal coordinator", () => {
     });
     expect(second.kind).toBe("checkpoint");
     if (second.kind !== "checkpoint") throw new Error("checkpoint expected");
+    expect(second.orderedCommit).toEqual({
+      runId: "run-1",
+      expectedDeltaHeadSha256: null,
+      entries: [{
+        canonicalSequence: 0,
+        taskId: "task-address-history",
+        acceptedAttemptId: "attempt-address-history",
+        resultBytes: Buffer.byteLength(canonicalizeArtifactJson(history), "utf8")
+      }]
+    });
     expect(JSON.stringify(second.checkpoint).length).toBeLessThan(4_096);
+    ready = false;
     const finish = () => handler({
       task: { ...baseTask, attempt: 3, checkpoint: second.checkpoint },
       leaseToken: "lease-3",
@@ -216,5 +256,255 @@ describe("Unified address-centric traversal coordinator", () => {
       item.address === CEX &&
       item.reason === "identified_service_boundary"
     )).toBe(true);
+  });
+
+  it("plans every distinct mandatory history in one stable canonical batch", async () => {
+    const identities = [MID, CEX].map((address) => ({
+      chain: "tron" as const,
+      snapshotHash: manifest.snapshotHash,
+      tokenContract: USDT,
+      address,
+      providerRequestVersion: "tronscan-related-trc20-v1"
+    }));
+    const byKey = identities.map((item) => ({
+      manifestKey: addressHistoryManifestKey(item),
+      identity: item
+    })).sort((left, right) => left.manifestKey.localeCompare(right.manifestKey));
+    const laterAddress = byKey[1]!.identity.address;
+    const earlierAddress = byKey[0]!.identity.address;
+    const artifacts = new Map<string, unknown>();
+    const planAddressHistories = vi.fn(async (_input: {
+      runId: string;
+      priorityLane: "interactive" | "repair" | "background";
+      histories: readonly {
+        manifestKey: string;
+        identity: (typeof identities)[number];
+      }[];
+    }) => undefined);
+    const admitAddressHistoryHead = vi.fn(async () => true);
+    const handler = createUnifiedTraversalCoordinatorHandler({
+      commitMaxEntries: 32,
+      commitMaxBytes: 8_388_608,
+      manifestMaxBytes: 1_048_576,
+      loadContext: async () => ({
+        runId: "run-1",
+        manifest,
+        directEvents: [
+          event({
+            hash: "7".repeat(64),
+            from: laterAddress,
+            to: SUBJECT,
+            amountRaw: "10",
+            timestamp: "2026-07-23T12:10:00.000Z"
+          }),
+          event({
+            hash: "8".repeat(64),
+            from: earlierAddress,
+            to: SUBJECT,
+            amountRaw: "20",
+            timestamp: "2026-07-23T12:00:00.000Z"
+          }),
+          event({
+            hash: "9".repeat(64),
+            from: laterAddress,
+            to: SUBJECT,
+            amountRaw: "30",
+            timestamp: "2026-07-23T11:50:00.000Z"
+          })
+        ]
+      }),
+      loadLabels: async () => new Map(),
+      loadDurableAddressHistoryKeys: async () => new Set(),
+      planAddressHistories,
+      admitAddressHistoryHead,
+      loadReadyAddressHistories: async () => [],
+      loadCommittedAddressHistories: async () => [],
+      loadAddressHistoryPage: async () => {
+        throw new Error("not ready");
+      },
+      loadCompactionArtifact: async ({ sha256 }) =>
+        artifacts.get(sha256) as never,
+      loadDeltaArtifact: async ({ sha256 }) =>
+        artifacts.get(sha256) as never,
+      persistArtifact: async (input) => {
+        artifacts.set(input.sha256, input.artifact);
+      }
+    });
+
+    const result = await handler({
+      task: {
+        id: "task-traversal",
+        runId: "run-1",
+        kind: "traversal",
+        logicalKey: "main",
+        priorityLane: "interactive",
+        attempt: 1,
+        checkpoint: {},
+        cancellationRequestedAt: null
+      },
+      leaseToken: "lease-1",
+      heartbeat: vi.fn(async () => undefined)
+    });
+
+    expect(result.kind).toBe("checkpoint");
+    expect(planAddressHistories).toHaveBeenCalledTimes(1);
+    expect(planAddressHistories.mock.calls[0]?.[0].histories).toEqual(byKey);
+    expect(admitAddressHistoryHead).toHaveBeenCalledTimes(1);
+    expect([...artifacts.values()].filter((artifact) =>
+      (artifact as { version?: string }).version ===
+        "unified-traversal-delta-v1"
+    )).toHaveLength(0);
+  });
+
+  it("produces the same canonical delta head for random completion arrival order", async () => {
+    const run = async (arrival: "head-first" | "tail-first") => {
+      const directEvents = [
+        event({
+          hash: "a".repeat(64),
+          from: MID,
+          to: SUBJECT,
+          amountRaw: "10",
+          timestamp: "2026-07-23T12:10:00.000Z"
+        }),
+        event({
+          hash: "b".repeat(64),
+          from: CEX,
+          to: SUBJECT,
+          amountRaw: "20",
+          timestamp: "2026-07-23T12:00:00.000Z"
+        })
+      ];
+      const histories = [MID, CEX].map((address) => {
+        const identity = {
+          chain: "tron" as const,
+          snapshotHash: manifest.snapshotHash,
+          tokenContract: USDT,
+          address,
+          providerRequestVersion: "tronscan-related-trc20-v1"
+        };
+        const artifact = buildAddressHistoryManifest({
+          ...identity,
+          pageArtifactHashes: [],
+          canonicalEventIds: [],
+          rawRowCount: 0,
+          duplicateCount: 0,
+          exhaustion: {
+            kind: "account_creation_reached",
+            evidenceSha256: "c".repeat(64)
+          }
+        });
+        return {
+          manifestKey: addressHistoryManifestKey(identity),
+          identity,
+          artifact
+        };
+      }).sort((left, right) =>
+        left.manifestKey.localeCompare(right.manifestKey)
+      );
+      const artifacts = new Map<string, unknown>();
+      const planned = new Set<string>();
+      const ready = new Set<string>();
+      const committed = new Set<string>();
+      const handler = createUnifiedTraversalCoordinatorHandler({
+        commitMaxEntries: 32,
+        commitMaxBytes: 8_388_608,
+        manifestMaxBytes: 1_048_576,
+        loadContext: async () => ({ runId: "run-1", manifest, directEvents }),
+        loadLabels: async () => new Map(),
+        loadDurableAddressHistoryKeys: async ({ manifestKeys }) =>
+          new Set(manifestKeys.filter((key) => planned.has(key))),
+        planAddressHistories: async ({ histories: discovered }) => {
+          for (const history of discovered) planned.add(history.manifestKey);
+        },
+        admitAddressHistoryHead: async () => true,
+        loadReadyAddressHistories: async () => {
+          const head = histories.find((history) =>
+            !committed.has(history.manifestKey)
+          );
+          if (!head || !ready.has(head.manifestKey)) return [];
+          const prefix = [];
+          for (const [canonicalSequence, history] of histories.entries()) {
+            if (committed.has(history.manifestKey)) continue;
+            if (!ready.has(history.manifestKey)) break;
+            prefix.push({
+              canonicalSequence,
+              taskId: `task-${canonicalSequence}`,
+              acceptedAttemptId: `attempt-${canonicalSequence}`,
+              artifactSha256:
+                fingerprintCanonicalArtifact(history.artifact),
+              artifactKind: "address_history_manifest",
+              artifactSchemaVersion: "1",
+              artifact: history.artifact,
+              resultBytes: Buffer.byteLength(
+                canonicalizeArtifactJson(history.artifact),
+                "utf8"
+              )
+            });
+          }
+          return prefix;
+        },
+        loadCommittedAddressHistories: async () => [],
+        loadAddressHistoryPage: async () => {
+          throw new Error("empty manifest has no pages");
+        },
+        loadCompactionArtifact: async ({ sha256 }) =>
+          artifacts.get(sha256) as never,
+        loadDeltaArtifact: async ({ sha256 }) =>
+          artifacts.get(sha256) as never,
+        persistArtifact: async (input) => {
+          artifacts.set(input.sha256, input.artifact);
+        }
+      });
+      let checkpoint: unknown = {};
+      let attempt = 0;
+      let finalDeltaHead: string | null = null;
+      const cycle = async () => {
+        const result = await handler({
+          task: {
+            id: "task-traversal",
+            runId: "run-1",
+            kind: "traversal",
+            logicalKey: "main",
+            priorityLane: "interactive",
+            attempt: ++attempt,
+            checkpoint,
+            cancellationRequestedAt: null
+          },
+          leaseToken: `lease-${attempt}`,
+          heartbeat: vi.fn(async () => undefined)
+        });
+        if (result.kind === "checkpoint") {
+          checkpoint = result.checkpoint;
+          if (result.orderedCommit) {
+            finalDeltaHead = (
+              result.checkpoint as { deltaHeadSha256: string | null }
+            ).deltaHeadSha256;
+            for (const entry of result.orderedCommit.entries) {
+              committed.add(histories[entry.canonicalSequence]!.manifestKey);
+            }
+          }
+        }
+        return result;
+      };
+
+      await cycle();
+      const arrivalOrder = arrival === "head-first"
+        ? histories
+        : [...histories].reverse();
+      for (const history of arrivalOrder) {
+        ready.add(history.manifestKey);
+        await cycle();
+      }
+      let completed = await cycle();
+      while (completed.kind !== "completed") completed = await cycle();
+      return {
+        artifactSha256: completed.artifactSha256,
+        finalDeltaHead
+      };
+    };
+
+    const headFirst = await run("head-first");
+    const tailFirst = await run("tail-first");
+    expect(tailFirst).toEqual(headFirst);
   });
 });

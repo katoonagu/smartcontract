@@ -36,6 +36,7 @@ import {
   type TraversalCompactionArtifactV2,
   type TraversalDeltaArtifactV1
 } from "./traversalDelta";
+import type { UnifiedOrderedReadyEntry } from "./plannerRepository";
 import type { UnifiedChunkHandler } from "./worker";
 
 const ADDRESS_HISTORY_PROVIDER_VERSION =
@@ -234,14 +235,284 @@ function stateDifference(
   };
 }
 
+type TraversalApplicationInput = {
+  runId: string;
+  context: LoadedTraversalContext;
+  checkpoint: TraversalCheckpointV2;
+  state: CoordinatorState;
+  group: TraversalStateV1[];
+  generated: TraversalStateV1[];
+  addedExpandedStateIds: string[];
+  addedEligibleEventIds: string[];
+  addedExpandedStateKeys: string[];
+  addedSupersededStateIds: string[];
+  addedTerminals: UnifiedTraversalTerminalV1[];
+  persistArtifact(args: {
+    runId: string;
+    kind: PersistKind;
+    sha256: string;
+    artifact: unknown;
+  }): Promise<void>;
+};
+
+async function persistTraversalApplication(
+  input: TraversalApplicationInput
+): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+  const first = input.group[0]!;
+  const groupIds = new Set(input.group.map(traversalStateId));
+  const remaining = input.state.frontier.filter((item) =>
+    !groupIds.has(traversalStateId(item))
+  );
+  const nextFrontier = mergeTraversalStates([
+    ...remaining,
+    ...input.generated
+  ]);
+  const difference = stateDifference(input.state.frontier, nextFrontier);
+  const observedAddresses = new Set([
+    ...input.state.visitedStates.map((item) => item.address),
+    ...input.group.map((item) => item.address),
+    ...nextFrontier.map((item) => item.address),
+    ...input.state.terminals.map((item) => item.address),
+    ...input.addedTerminals.map((item) => item.address)
+  ]);
+  const observedEpisodes = new Set([
+    ...input.state.visitedStates.map((item) => item.fundingEpisodeId),
+    ...input.group.map((item) => item.fundingEpisodeId),
+    ...nextFrontier.map((item) => item.fundingEpisodeId),
+    ...input.state.terminals.map((item) => item.fundingEpisodeId),
+    ...input.addedTerminals.map((item) => item.fundingEpisodeId)
+  ]);
+  const appended = appendTraversalDelta(input.checkpoint, {
+    addedFrontier: difference.added,
+    removedFrontierStateIds: difference.removed,
+    addedVisited: input.group,
+    addedTerminals: input.addedTerminals,
+    addedSupersededStateIds: input.addedSupersededStateIds,
+    addedExpandedStateIds: input.addedExpandedStateIds,
+    addedEligibleEventIds: input.addedEligibleEventIds,
+    addedExpandedStateKeys: input.addedExpandedStateKeys,
+    counterDeltas: {
+      expanded: input.addedExpandedStateIds.length,
+      terminal: input.addedTerminals.length,
+      superseded: input.addedSupersededStateIds.length
+    },
+    operational: {
+      frontierCount: nextFrontier.length,
+      frontierPeak: Math.max(
+        input.checkpoint.operational?.frontierPeak ??
+          input.state.frontier.length,
+        nextFrontier.length
+      ),
+      uniqueAddresses: observedAddresses.size,
+      fundingEpisodes: observedEpisodes.size
+    },
+    diagnostic: {
+      at: input.context.manifest.confirmedBlockTimestamp,
+      code: `address-group:${first.direction}`
+    }
+  });
+  await input.persistArtifact({
+    runId: input.runId,
+    kind: "traversal_delta",
+    sha256: appended.sha256,
+    artifact: appended.artifact
+  });
+  return {
+    checkpoint: appended.checkpoint,
+    state: {
+      ...input.state,
+      frontier: nextFrontier,
+      visitedStates: [
+        ...new Map(
+          [...input.state.visitedStates, ...input.group]
+            .map((item) => [traversalStateId(item), item])
+        ).values()
+      ].sort((left, right) =>
+        traversalStateId(left).localeCompare(traversalStateId(right))
+      ),
+      expandedStateIds: [...new Set([
+        ...input.state.expandedStateIds,
+        ...input.addedExpandedStateIds
+      ])].sort(),
+      terminals: [
+        ...input.state.terminals,
+        ...input.addedTerminals
+      ],
+      supersededStateIds: [...new Set([
+        ...input.state.supersededStateIds,
+        ...input.addedSupersededStateIds
+      ])].sort(),
+      eligibleEventIds: [...new Set([
+        ...input.state.eligibleEventIds,
+        ...input.addedEligibleEventIds
+      ])].sort(),
+      expandedStateKeys: [...new Set([
+        ...input.state.expandedStateKeys,
+        ...input.addedExpandedStateKeys
+      ])].sort()
+    }
+  };
+}
+
+async function applyAcceptedAddressHistory(input: {
+  runId: string;
+  context: LoadedTraversalContext;
+  checkpoint: TraversalCheckpointV2;
+  state: CoordinatorState;
+  group: TraversalStateV1[];
+  addressLabels: readonly string[];
+  manifest: AddressHistoryManifestV1;
+  eventCache: Map<string, IndexedTronUsdtTransfer[]>;
+  loadAddressHistoryPage(args: {
+    runId: string;
+    sha256: string;
+  }): Promise<UnifiedAddressHistoryPageArtifactV1>;
+  persistArtifact(args: {
+    runId: string;
+    kind: PersistKind;
+    sha256: string;
+    artifact: unknown;
+  }): Promise<void>;
+}): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+  let addressEvents = input.eventCache.get(input.manifest.key);
+  if (addressEvents === undefined) {
+    const pages = await Promise.all(
+      input.manifest.pageArtifactHashes.map(async (sha256) => {
+        const page = await input.loadAddressHistoryPage({
+          runId: input.runId,
+          sha256
+        });
+        if (fingerprintCanonicalArtifact(page) !== sha256) {
+          throw new Error("unified_traversal_address_page_hash_mismatch");
+        }
+        return page;
+      })
+    );
+    addressEvents = reviveEvents(input.manifest, pages);
+    input.eventCache.set(input.manifest.key, addressEvents);
+  }
+  const expanded = expandTraversalChunk({
+    frontier: input.group,
+    events: traversalEvents(addressEvents),
+    expandedStateIds: new Set(input.state.expandedStateIds),
+    maxStatesThisChunk: input.group.length,
+    terminalReason: () => null,
+    accountCreationExhausted: () =>
+      input.manifest.exhaustion.kind === "account_creation_reached"
+  });
+  const eligibleStateIds = new Set(
+    expanded.expandedStateIdsWithEligibleEvents
+  );
+  const addedTerminals: UnifiedTraversalTerminalV1[] = [];
+  for (const item of expanded.terminals) {
+    const proof = buildUnifiedTraversalTerminalProof({
+      state: item.state,
+      reason: item.reason,
+      labels: input.addressLabels,
+      snapshotHash: input.context.manifest.snapshotHash,
+      pageArtifactHashes: input.manifest.pageArtifactHashes
+    });
+    const evidenceHash = fingerprintCanonicalArtifact(proof);
+    await input.persistArtifact({
+      runId: input.runId,
+      kind: "traversal_terminal_evidence",
+      sha256: evidenceHash,
+      artifact: proof
+    });
+    addedTerminals.push(buildUnifiedTraversalTerminalRecord({
+      state: item.state,
+      reason: item.reason,
+      labels: input.addressLabels,
+      evidenceHash,
+      amountRaw: item.amountRaw
+    }));
+  }
+  return persistTraversalApplication({
+    runId: input.runId,
+    context: input.context,
+    checkpoint: input.checkpoint,
+    state: input.state,
+    group: input.group,
+    generated: [...expanded.nextFrontier],
+    addedExpandedStateIds: [...expanded.processedStateIds],
+    addedEligibleEventIds: [...expanded.eligibleEventIds],
+    addedExpandedStateKeys: input.group
+      .filter((item) => eligibleStateIds.has(traversalStateId(item)))
+      .map(traversalExpansionKey),
+    addedSupersededStateIds: [...expanded.supersededStateIds],
+    addedTerminals,
+    persistArtifact: input.persistArtifact
+  });
+}
+
+async function applyBoundaryAddressHistory(input: {
+  runId: string;
+  context: LoadedTraversalContext;
+  checkpoint: TraversalCheckpointV2;
+  state: CoordinatorState;
+  group: TraversalStateV1[];
+  addressLabels: readonly string[];
+  reason: NonNullable<ReturnType<typeof unifiedTraversalBoundary>>;
+  persistArtifact(args: {
+    runId: string;
+    kind: PersistKind;
+    sha256: string;
+    artifact: unknown;
+  }): Promise<void>;
+}): Promise<{ checkpoint: TraversalCheckpointV2; state: CoordinatorState }> {
+  const addedTerminals: UnifiedTraversalTerminalV1[] = [];
+  for (const item of input.group) {
+    const proof = buildUnifiedTraversalTerminalProof({
+      state: item,
+      reason: input.reason,
+      labels: input.addressLabels,
+      snapshotHash: input.context.manifest.snapshotHash,
+      pageArtifactHashes: []
+    });
+    const evidenceHash = fingerprintCanonicalArtifact(proof);
+    await input.persistArtifact({
+      runId: input.runId,
+      kind: "traversal_terminal_evidence",
+      sha256: evidenceHash,
+      artifact: proof
+    });
+    addedTerminals.push(buildUnifiedTraversalTerminalRecord({
+      state: item,
+      reason: input.reason,
+      labels: input.addressLabels,
+      evidenceHash
+    }));
+  }
+  return persistTraversalApplication({
+    runId: input.runId,
+    context: input.context,
+    checkpoint: input.checkpoint,
+    state: input.state,
+    group: input.group,
+    generated: [],
+    addedExpandedStateIds: [],
+    addedEligibleEventIds: [],
+    addedExpandedStateKeys: [],
+    addedSupersededStateIds: [],
+    addedTerminals,
+    persistArtifact: input.persistArtifact
+  });
+}
+
 export function createUnifiedTraversalCoordinatorHandler(input: {
-  maxAddressesThisChunk: number;
+  commitMaxEntries: number;
+  commitMaxBytes: number;
+  manifestMaxBytes: number;
   loadContext(runId: string): Promise<LoadedTraversalContext>;
   loadLabels(args: {
     labelDatasetSha256: string;
     addresses: readonly string[];
   }): Promise<ReadonlyMap<string, readonly string[]>>;
-  ensureAddressHistories(args: {
+  loadDurableAddressHistoryKeys(args: {
+    runId: string;
+    manifestKeys: readonly string[];
+  }): Promise<ReadonlySet<string>>;
+  planAddressHistories(args: {
     runId: string;
     priorityLane: "interactive" | "repair" | "background";
     histories: readonly {
@@ -249,10 +520,19 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
       identity: AddressHistoryManifestIdentityV1;
     }[];
   }): Promise<void>;
-  loadAddressHistoryManifests(args: {
+  admitAddressHistoryHead(args: {
+    runId: string;
+    reservedBytes: number;
+  }): Promise<boolean>;
+  loadReadyAddressHistories(args: {
+    runId: string;
+    maxEntries: number;
+    maxBytes: number;
+  }): Promise<readonly UnifiedOrderedReadyEntry[]>;
+  loadCommittedAddressHistories(args: {
     runId: string;
     manifestKeys: readonly string[];
-  }): Promise<ReadonlyMap<string, AddressHistoryManifestV1>>;
+  }): Promise<readonly UnifiedOrderedReadyEntry[]>;
   loadAddressHistoryPage(args: {
     runId: string;
     sha256: string;
@@ -273,10 +553,25 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
   }): Promise<void>;
 }): UnifiedChunkHandler {
   if (
-    !Number.isSafeInteger(input.maxAddressesThisChunk) ||
-    input.maxAddressesThisChunk < 1
+    !Number.isSafeInteger(input.commitMaxEntries) ||
+    input.commitMaxEntries < 1
   ) {
-    throw new TypeError("unified_traversal_address_chunk_invalid");
+    throw new TypeError("unified_traversal_commit_entries_invalid");
+  }
+  if (
+    !Number.isSafeInteger(input.commitMaxBytes) ||
+    input.commitMaxBytes < 1
+  ) {
+    throw new TypeError("unified_traversal_commit_bytes_invalid");
+  }
+  if (
+    !Number.isSafeInteger(input.manifestMaxBytes) ||
+    input.manifestMaxBytes < 1
+  ) {
+    throw new TypeError("unified_traversal_manifest_bytes_invalid");
+  }
+  if (input.commitMaxBytes < input.manifestMaxBytes) {
+    throw new TypeError("unified_traversal_commit_bytes_too_small");
   }
   return async ({ task, heartbeat }) => {
     if (task.kind !== "traversal") {
@@ -359,235 +654,173 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
         loadDeltaArtifact: input.loadDeltaArtifact
       });
     }
-
-    const manifestCache = new Map<string, AddressHistoryManifestV1>();
+    const persistedDeltaHeadSha256 = v2.deltaHeadSha256;
     const eventCache = new Map<string, IndexedTronUsdtTransfer[]>();
-    let processedAddressGroups = 0;
+
+    const frontierAddresses = [...new Set(
+      state.frontier.map((item) => item.address)
+    )];
+    const labels = await input.loadLabels({
+      labelDatasetSha256: context.manifest.labelDatasetSha256,
+      addresses: frontierAddresses
+    });
+    const mandatory = new Map<string, {
+      manifestKey: string;
+      identity: AddressHistoryManifestIdentityV1;
+    }>();
+    for (const item of state.frontier) {
+      if (unifiedTraversalBoundary(labels.get(item.address) ?? []) !== null) {
+        continue;
+      }
+      const addressIdentity = identity(context, item.address);
+      const manifestKey = addressHistoryManifestKey(addressIdentity);
+      if (!mandatory.has(manifestKey)) {
+        mandatory.set(manifestKey, {
+          manifestKey,
+          identity: addressIdentity
+        });
+      }
+    }
+    const mandatoryKeys = [...mandatory.keys()].sort();
+    const durable = await input.loadDurableAddressHistoryKeys({
+      runId: task.runId,
+      manifestKeys: mandatoryKeys
+    });
+    const newlyMandatory = [...mandatory.values()]
+      .filter((history) => !durable.has(history.manifestKey))
+      .sort((left, right) =>
+        left.manifestKey.localeCompare(right.manifestKey)
+      );
+    if (newlyMandatory.length > 0) {
+      await input.planAddressHistories({
+        runId: task.runId,
+        priorityLane: task.priorityLane ?? "interactive",
+        histories: newlyMandatory
+      });
+    }
+    if (mandatoryKeys.length > 0) {
+      await input.admitAddressHistoryHead({
+        runId: task.runId,
+        reservedBytes: input.manifestMaxBytes
+      });
+    }
+    const applyManifestEntry = async (
+      entry: UnifiedOrderedReadyEntry
+    ): Promise<void> => {
+      const addressManifest = entry.artifact as
+        Partial<AddressHistoryManifestV1>;
+      if (
+        entry.artifactKind !== "address_history_manifest" ||
+        entry.artifactSchemaVersion !== "1" ||
+        addressManifest.version !==
+          "unified-address-history-manifest-v1" ||
+        addressManifest.schemaVersion !== 1 ||
+        typeof addressManifest.key !== "string"
+      ) {
+        throw new Error("unified_traversal_address_manifest_mismatch");
+      }
+      const planned = mandatory.get(addressManifest.key);
+      if (
+        !planned ||
+        addressManifest.snapshotHash !==
+          context.manifest.snapshotHash ||
+        addressManifest.address !== planned.identity.address ||
+        addressManifest.tokenContract !==
+          TRON_USDT_CONTRACT_ADDRESS ||
+        addressManifest.providerRequestVersion !==
+          ADDRESS_HISTORY_PROVIDER_VERSION
+      ) {
+        throw new Error("unified_traversal_address_manifest_mismatch");
+      }
+      while (true) {
+        const first = state.frontier.find((candidate) =>
+          candidate.address === addressManifest.address
+        );
+        if (!first) break;
+        const group = state.frontier.filter((candidate) =>
+          candidate.address === first.address &&
+          candidate.direction === first.direction
+        );
+        const applied = await applyAcceptedAddressHistory({
+          runId: task.runId,
+          context,
+          checkpoint: v2,
+          state,
+          group,
+          addressLabels: labels.get(first.address) ?? [],
+          manifest: addressManifest as AddressHistoryManifestV1,
+          eventCache,
+          loadAddressHistoryPage: input.loadAddressHistoryPage,
+          persistArtifact: input.persistArtifact
+        });
+        v2 = applied.checkpoint;
+        state = applied.state;
+        await heartbeat();
+      }
+    };
+    const committedHistories = await input.loadCommittedAddressHistories({
+      runId: task.runId,
+      manifestKeys: mandatoryKeys
+    });
+    for (const entry of committedHistories) await applyManifestEntry(entry);
+    const reusedCommittedHistory = committedHistories.length > 0;
+    const readyPrefix = await input.loadReadyAddressHistories({
+      runId: task.runId,
+      maxEntries: input.commitMaxEntries,
+      maxBytes: input.commitMaxBytes
+    });
+
+    if (readyPrefix.length > 0) {
+      for (const entry of readyPrefix) await applyManifestEntry(entry);
+      return {
+        kind: "checkpoint",
+        checkpoint: v2,
+        orderedCommit: {
+          runId: task.runId,
+          expectedDeltaHeadSha256: persistedDeltaHeadSha256,
+          entries: readyPrefix.map((entry) => ({
+            canonicalSequence: entry.canonicalSequence,
+            taskId: entry.taskId,
+            acceptedAttemptId: entry.acceptedAttemptId,
+            resultBytes: entry.resultBytes
+          }))
+        }
+      };
+    }
+
+    if (reusedCommittedHistory) {
+      return { kind: "checkpoint", checkpoint: v2 };
+    }
+    if (mandatoryKeys.length > 0) {
+      return { kind: "checkpoint", checkpoint: v2 };
+    }
+
+    let processedBoundaryGroups = 0;
     while (
       state.frontier.length > 0 &&
-      processedAddressGroups < input.maxAddressesThisChunk
+      processedBoundaryGroups < input.commitMaxEntries
     ) {
       const first = state.frontier[0]!;
+      const addressLabels = labels.get(first.address) ?? [];
+      const boundary = unifiedTraversalBoundary(addressLabels);
+      if (boundary === null) break;
       const group = state.frontier.filter((candidate) =>
         candidate.address === first.address &&
         candidate.direction === first.direction
       );
-      const groupIds = new Set(group.map(traversalStateId));
-      const labels = await input.loadLabels({
-        labelDatasetSha256: context.manifest.labelDatasetSha256,
-        addresses: [first.address]
-      });
-      const addressLabels = labels.get(first.address) ?? [];
-      const boundary = unifiedTraversalBoundary(addressLabels);
-      let generated: TraversalStateV1[] = [];
-      let addedExpandedStateIds: string[] = [];
-      let addedEligibleEventIds: string[] = [];
-      let addedExpandedStateKeys: string[] = [];
-      let addedSupersededStateIds: string[] = [];
-      const addedTerminals: UnifiedTraversalTerminalV1[] = [];
-
-      if (boundary !== null) {
-        for (const item of group) {
-          const proof = buildUnifiedTraversalTerminalProof({
-            state: item,
-            reason: boundary,
-            labels: addressLabels,
-            snapshotHash: context.manifest.snapshotHash,
-            pageArtifactHashes: []
-          });
-          const evidenceHash = fingerprintCanonicalArtifact(proof);
-          await input.persistArtifact({
-            runId: task.runId,
-            kind: "traversal_terminal_evidence",
-            sha256: evidenceHash,
-            artifact: proof
-          });
-          addedTerminals.push(buildUnifiedTraversalTerminalRecord({
-            state: item,
-            reason: boundary,
-            labels: addressLabels,
-            evidenceHash
-          }));
-        }
-      } else {
-        const addressIdentity = identity(context, first.address);
-        const manifestKey = addressHistoryManifestKey(addressIdentity);
-        let addressManifest = manifestCache.get(manifestKey);
-        if (addressManifest === undefined) {
-          const loaded = await input.loadAddressHistoryManifests({
-            runId: task.runId,
-            manifestKeys: [manifestKey]
-          });
-          addressManifest = loaded.get(manifestKey);
-          if (addressManifest === undefined) {
-            await input.ensureAddressHistories({
-              runId: task.runId,
-              priorityLane: task.priorityLane ?? "interactive",
-              histories: [{ manifestKey, identity: addressIdentity }]
-            });
-            return { kind: "checkpoint", checkpoint: v2 };
-          }
-          if (
-            addressManifest.snapshotHash !==
-              context.manifest.snapshotHash ||
-            addressManifest.address !== addressIdentity.address ||
-            addressManifest.tokenContract !==
-              TRON_USDT_CONTRACT_ADDRESS ||
-            addressManifest.providerRequestVersion !==
-              ADDRESS_HISTORY_PROVIDER_VERSION
-          ) {
-            return {
-              kind: "failed",
-              reason: "unified_traversal_address_manifest_mismatch"
-            };
-          }
-          manifestCache.set(manifestKey, addressManifest);
-        }
-        let addressEvents = eventCache.get(manifestKey);
-        if (addressEvents === undefined) {
-          const pages = await Promise.all(
-            addressManifest.pageArtifactHashes.map(async (sha256) => {
-              const page = await input.loadAddressHistoryPage({
-                runId: task.runId,
-                sha256
-              });
-              if (fingerprintCanonicalArtifact(page) !== sha256) {
-                throw new Error("unified_traversal_address_page_hash_mismatch");
-              }
-              return page;
-            })
-          );
-          addressEvents = reviveEvents(addressManifest, pages);
-          eventCache.set(manifestKey, addressEvents);
-        }
-        const expanded = expandTraversalChunk({
-          frontier: group,
-          events: traversalEvents(addressEvents),
-          expandedStateIds: new Set(state.expandedStateIds),
-          maxStatesThisChunk: group.length,
-          terminalReason: () => null,
-          accountCreationExhausted: () =>
-            addressManifest!.exhaustion.kind === "account_creation_reached"
-        });
-        generated = [...expanded.nextFrontier];
-        addedExpandedStateIds = [...expanded.processedStateIds];
-        addedEligibleEventIds = [...expanded.eligibleEventIds];
-        const eligibleStateIds = new Set(
-          expanded.expandedStateIdsWithEligibleEvents
-        );
-        addedExpandedStateKeys = group
-          .filter((item) => eligibleStateIds.has(traversalStateId(item)))
-          .map(traversalExpansionKey);
-        addedSupersededStateIds = [...expanded.supersededStateIds];
-        for (const item of expanded.terminals) {
-          const proof = buildUnifiedTraversalTerminalProof({
-            state: item.state,
-            reason: item.reason,
-            labels: addressLabels,
-            snapshotHash: context.manifest.snapshotHash,
-            pageArtifactHashes: addressManifest.pageArtifactHashes
-          });
-          const evidenceHash = fingerprintCanonicalArtifact(proof);
-          await input.persistArtifact({
-            runId: task.runId,
-            kind: "traversal_terminal_evidence",
-            sha256: evidenceHash,
-            artifact: proof
-          });
-          addedTerminals.push(buildUnifiedTraversalTerminalRecord({
-            state: item.state,
-            reason: item.reason,
-            labels: addressLabels,
-            evidenceHash,
-            amountRaw: item.amountRaw
-          }));
-        }
-      }
-
-      const remaining = state.frontier.filter((item) =>
-        !groupIds.has(traversalStateId(item))
-      );
-      const nextFrontier = mergeTraversalStates([...remaining, ...generated]);
-      const difference = stateDifference(state.frontier, nextFrontier);
-      const observedAddresses = new Set([
-        ...state.visitedStates.map((item) => item.address),
-        ...group.map((item) => item.address),
-        ...nextFrontier.map((item) => item.address),
-        ...state.terminals.map((item) => item.address),
-        ...addedTerminals.map((item) => item.address)
-      ]);
-      const observedEpisodes = new Set([
-        ...state.visitedStates.map((item) => item.fundingEpisodeId),
-        ...group.map((item) => item.fundingEpisodeId),
-        ...nextFrontier.map((item) => item.fundingEpisodeId),
-        ...state.terminals.map((item) => item.fundingEpisodeId),
-        ...addedTerminals.map((item) => item.fundingEpisodeId)
-      ]);
-      const appended = appendTraversalDelta(v2, {
-        addedFrontier: difference.added,
-        removedFrontierStateIds: difference.removed,
-        addedVisited: group,
-        addedTerminals,
-        addedSupersededStateIds,
-        addedExpandedStateIds,
-        addedEligibleEventIds,
-        addedExpandedStateKeys,
-        counterDeltas: {
-          expanded: addedExpandedStateIds.length,
-          terminal: addedTerminals.length,
-          superseded: addedSupersededStateIds.length
-        },
-        operational: {
-          frontierCount: nextFrontier.length,
-          frontierPeak: Math.max(
-            v2.operational?.frontierPeak ?? state.frontier.length,
-            nextFrontier.length
-          ),
-          uniqueAddresses: observedAddresses.size,
-          fundingEpisodes: observedEpisodes.size
-        },
-        diagnostic: {
-          at: context.manifest.confirmedBlockTimestamp,
-          code: `address-group:${first.direction}`
-        }
-      });
-      await input.persistArtifact({
+      const applied = await applyBoundaryAddressHistory({
         runId: task.runId,
-        kind: "traversal_delta",
-        sha256: appended.sha256,
-        artifact: appended.artifact
+        context,
+        checkpoint: v2,
+        state,
+        group,
+        addressLabels,
+        reason: boundary,
+        persistArtifact: input.persistArtifact
       });
-      v2 = appended.checkpoint;
-      state = {
-        ...state,
-        frontier: nextFrontier,
-        visitedStates: [
-          ...new Map(
-            [...state.visitedStates, ...group]
-              .map((item) => [traversalStateId(item), item])
-          ).values()
-        ].sort((left, right) =>
-          traversalStateId(left).localeCompare(traversalStateId(right))
-        ),
-        expandedStateIds: [...new Set([
-          ...state.expandedStateIds,
-          ...addedExpandedStateIds
-        ])].sort(),
-        terminals: [...state.terminals, ...addedTerminals],
-        supersededStateIds: [...new Set([
-          ...state.supersededStateIds,
-          ...addedSupersededStateIds
-        ])].sort(),
-        eligibleEventIds: [...new Set([
-          ...state.eligibleEventIds,
-          ...addedEligibleEventIds
-        ])].sort(),
-        expandedStateKeys: [...new Set([
-          ...state.expandedStateKeys,
-          ...addedExpandedStateKeys
-        ])].sort()
-      };
-      processedAddressGroups += 1;
+      v2 = applied.checkpoint;
+      state = applied.state;
+      processedBoundaryGroups += 1;
       await heartbeat();
     }
 

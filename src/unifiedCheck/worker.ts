@@ -24,8 +24,23 @@ export type UnifiedCompletedChunkOutcome = {
   readonly acceptedArtifact?: UnifiedAcceptedArtifact;
 };
 
+export type UnifiedOrderedCommitExpectation = {
+  readonly runId: string;
+  readonly expectedDeltaHeadSha256: string | null;
+  readonly entries: readonly {
+    readonly canonicalSequence: number;
+    readonly taskId: string;
+    readonly acceptedAttemptId: string;
+    readonly resultBytes: number;
+  }[];
+};
+
 export type UnifiedChunkOutcome =
-  | { kind: "checkpoint"; checkpoint: unknown }
+  | {
+      kind: "checkpoint";
+      checkpoint: unknown;
+      orderedCommit?: UnifiedOrderedCommitExpectation;
+    }
   | UnifiedCompletedChunkOutcome
   | {
       kind: "provider_wait";
@@ -54,6 +69,7 @@ export type UnifiedTaskCycleRepository = {
     leaseToken: string;
     attempt: number;
     checkpoint: unknown;
+    orderedCommit?: UnifiedOrderedCommitExpectation;
   }): Promise<boolean>;
   complete(input: {
     taskId: string;
@@ -158,7 +174,8 @@ export async function runUnifiedTaskCycle(input: {
         taskId: task.id,
         leaseToken,
         attempt: task.attempt,
-        checkpoint: result.checkpoint
+        checkpoint: result.checkpoint,
+        orderedCommit: result.orderedCommit
       })) throw new Error("unified_worker_lease_lost");
       return { claimed: true, taskId: task.id, outcome: "checkpointed" };
     }

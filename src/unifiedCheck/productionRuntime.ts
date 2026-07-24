@@ -36,6 +36,13 @@ import {
 import {
   createPostgresUnifiedTaskCycleRepository
 } from "./productionWorker";
+import {
+  admitBarrierHead,
+  loadUnifiedBoundedReadyPrefix,
+  loadUnifiedCommittedArtifacts,
+  loadUnifiedDurableOrderedLogicalKeys,
+  planUnifiedOrderedTasks
+} from "./plannerRepository";
 import type { ProviderPageDiagnostic } from "./providerRequest";
 import type { UnifiedRunPurpose } from "./contracts";
 import {
@@ -50,9 +57,8 @@ import type {
 } from "./traversalDelta";
 import {
   cooperateUnifiedCanaryRun,
-  ensureAddressHistoryTasks,
+  DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES,
   insertUnifiedArtifact,
-  loadCompletedAddressHistoryManifests,
   recordUnifiedTaskProviderDuration,
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
@@ -262,7 +268,9 @@ export function createUnifiedProductionRuntime(input: {
   createId?: () => string;
   leaseMs?: number;
   addressHistoryPagesPerChunk?: number;
-  traversalAddressesPerChunk?: number;
+  manifestMaxBytes?: number;
+  commitMaxEntries?: number;
+  commitMaxBytes?: number;
   onProviderWorkAvailable?(): void;
   loadProviderPage(input: {
     run: LoadedRun;
@@ -295,6 +303,22 @@ export function createUnifiedProductionRuntime(input: {
   const now = input.now ?? (() => new Date());
   const createId = input.createId ?? randomUUID;
   const leaseMs = input.leaseMs ?? 60_000;
+  const manifestMaxBytes = input.manifestMaxBytes ??
+    DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES;
+  const commitMaxEntries = input.commitMaxEntries ?? 32;
+  const commitMaxBytes = input.commitMaxBytes ?? 8_388_608;
+  for (const [value, code] of [
+    [manifestMaxBytes, "unified_production_manifest_max_bytes_invalid"],
+    [commitMaxEntries, "unified_production_commit_max_entries_invalid"],
+    [commitMaxBytes, "unified_production_commit_max_bytes_invalid"]
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(code);
+    }
+  }
+  if (commitMaxBytes < manifestMaxBytes) {
+    throw new TypeError("unified_production_commit_max_bytes_too_small");
+  }
   const cooperate = async (runId: string): Promise<void> => {
     if (!await cooperateUnifiedCanaryRun(input.db, { runId })) {
       throw new Error("unified_canary_deadline_or_cancellation_reached");
@@ -422,7 +446,9 @@ export function createUnifiedProductionRuntime(input: {
     persistArtifact
   });
   const traversal = createUnifiedTraversalCoordinatorHandler({
-    maxAddressesThisChunk: input.traversalAddressesPerChunk ?? 32,
+    commitMaxEntries,
+    commitMaxBytes,
+    manifestMaxBytes,
     async loadContext(runId) {
       const run = await loadRun(input.db, runId);
       const history = await loadDirectHistory(input.db, run);
@@ -433,23 +459,47 @@ export function createUnifiedProductionRuntime(input: {
       };
     },
     loadLabels: input.loadCounterpartyLabels,
-    async ensureAddressHistories({
+    loadDurableAddressHistoryKeys: ({ runId, manifestKeys }) =>
+      loadUnifiedDurableOrderedLogicalKeys(input.db, {
+        runId,
+        logicalKeys: manifestKeys
+      }),
+    async planAddressHistories({
       runId,
       priorityLane,
       histories
     }) {
-      await ensureAddressHistoryTasks(input.db, {
+      await planUnifiedOrderedTasks(input.db, {
         runId,
-        priorityLane,
-        histories: histories.map((history) => ({
-          ...history,
-          taskId: createId()
+        tasks: histories.map((history) => ({
+          taskId: createId(),
+          kind: "address_history",
+          logicalKey: history.manifestKey,
+          priorityLane,
+          checkpoint: {
+            version: "unified-address-history-checkpoint-v2",
+            identity: history.identity,
+            history: null,
+            chunkHeadSha256: null,
+            chunkCount: 0,
+            pageCount: 0,
+            rawRowCount: 0
+          }
         }))
       });
-      input.onProviderWorkAvailable?.();
     },
-    loadAddressHistoryManifests: (args) =>
-      loadCompletedAddressHistoryManifests(input.db, args),
+    async admitAddressHistoryHead(args) {
+      const admitted = await admitBarrierHead(input.db, args);
+      if (admitted) input.onProviderWorkAvailable?.();
+      return admitted;
+    },
+    loadReadyAddressHistories: (args) =>
+      loadUnifiedBoundedReadyPrefix(input.db, args),
+    loadCommittedAddressHistories: ({ runId, manifestKeys }) =>
+      loadUnifiedCommittedArtifacts(input.db, {
+        runId,
+        logicalKeys: manifestKeys
+      }),
     loadAddressHistoryPage: ({ runId, sha256 }) =>
       artifact<UnifiedAddressHistoryPageArtifactV1>(
         input.db,
@@ -603,7 +653,8 @@ export function createUnifiedProductionRuntime(input: {
         ["direct_history", "address_history", "deep_direct"],
         input.runtimeCommit,
         input.providerConfigurationSha256,
-        input.runPurpose
+        input.runPurpose,
+        { manifestMaxBytes }
       ),
       handlers: {
         direct_history: directHistory,
@@ -621,7 +672,8 @@ export function createUnifiedProductionRuntime(input: {
         ["traversal", "fast", "where", "deep"],
         input.runtimeCommit,
         input.providerConfigurationSha256,
-        input.runPurpose
+        input.runPurpose,
+        { manifestMaxBytes }
       ),
       handlers: { traversal, ...branches },
       createId

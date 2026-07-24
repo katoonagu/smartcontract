@@ -31,6 +31,7 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     artifactSha256: string;
     acceptedArtifact?: unknown;
   } | null = null;
+  lastOrderedCommit: unknown = null;
   now = new Date("2026-07-23T13:00:00.000Z");
 
   async claim(input: {
@@ -54,9 +55,11 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     leaseToken: string;
     attempt: number;
     checkpoint: unknown;
+    orderedCommit?: unknown;
   }): Promise<boolean> {
     if (!this.matches(input)) return false;
     this.task.checkpoint = input.checkpoint;
+    this.lastOrderedCommit = input.orderedCommit ?? null;
     this.task.status = "QUEUED";
     this.task.leaseToken = null;
     return true;
@@ -157,6 +160,27 @@ describe("Unified resumable worker", () => {
     release();
     expect(await first).toMatchObject({ claimed: true, outcome: "checkpointed" });
     expect(repository.task.checkpoint).toEqual({ cursor: "page-2" });
+  });
+
+  it("forwards an ordered commit expectation with the checkpoint", async () => {
+    const repository = new MemoryWorkerRepository();
+    const orderedCommit = {
+      runId: "run-1",
+      expectedDeltaHeadSha256: null,
+      entries: [{
+        canonicalSequence: 0,
+        taskId: "history-1",
+        acceptedAttemptId: "attempt-1",
+        resultBytes: 128
+      }]
+    };
+
+    await expect(cycle(repository, async () => ({
+      kind: "checkpoint",
+      checkpoint: { deltaHeadSha256: "a".repeat(64) },
+      orderedCommit
+    }), ["lease-1"])).resolves.toMatchObject({ outcome: "checkpointed" });
+    expect(repository.lastOrderedCommit).toBe(orderedCommit);
   });
 
   it("heartbeats only the live token and rejects stale publication", async () => {

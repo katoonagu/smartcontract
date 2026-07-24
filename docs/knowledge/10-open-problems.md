@@ -48,26 +48,26 @@ Production remains legacy until those operations complete.
 
 ## Dense Traversal Capacity
 
-The current coordinator exposes one mandatory address history and then waits
-for it before advancing the run. The provider pool can therefore have four
-configured slots while a dense wallet supplies only one claimable history.
-This is a verified code/runtime bottleneck, not evidence of a provider-key or
-memory failure.
+The coordinator now persists the full distinct mandatory address-history batch
+and consumes accepted results through atomic bounded ordered commit. The
+current fallback policy intentionally admits only one canonical head, so a
+dense run can still expose one claimable ordered history while the provider
+pool has four configured slots. This is now an admission-policy limit rather
+than a discovery or commit-ordering gap.
 
-Migration 034, stable fairness-owner persistence, and the run-locked durable
-planning/admission primitives are implemented. Atomic ordered acceptance is
-also implemented: the final manifest, attempt, task lease release, and planner
-ready transition commit or roll back together, with idempotent retry after an
-uncertain response. The remaining target is adaptive rolling refill with
-planner-aware claiming and ordered canonical commit:
+Migration 034, stable fairness-owner persistence, run-locked planning,
+planner-aware claiming, atomic ordered acceptance, committed-manifest reuse,
+and barrier ordered commit are implemented. The remaining target is adaptive
+rolling admission and capacity control over the same tasks, planner rows,
+artifacts, and commit path:
 
 - `docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md`
 
-Until the remaining planner/runtime integration, restart gates, replay
-equivalence, and the one/four-group live canary pass, the existing traversal
-barrier remains current execution behavior. Replay simulations above four
-groups prove algorithmic behavior only; they do not prove live scaling on
-unavailable provider groups.
+Until rolling admission, restart gates, replay equivalence, and the
+one/four-group live canary pass, head-only barrier admission remains current
+candidate execution behavior. Replay simulations above four groups prove
+algorithmic behavior only; they do not prove live scaling on unavailable
+provider groups.
 
 ## Non-Blocking Follow-Ups
 

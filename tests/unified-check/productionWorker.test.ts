@@ -9,6 +9,9 @@ import type {
 describe("Unified production worker adapter", () => {
   it("maps durable snake-case rows and limits claims to the resource kinds", async () => {
     const query = vi.fn(async (sql: string, values: readonly unknown[] = []) => {
+      if (sql.includes("to_regclass('unified_check_planner_entries')")) {
+        return { rows: [{ planner_table: "unified_check_planner_entries" }] };
+      }
       if (sql.includes("with candidate as")) {
         expect(values[3]).toEqual(["direct_history"]);
         return {

@@ -52,6 +52,12 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       await client.query(
         await readFile("migrations/033_unified_wallet_check.sql", "utf8")
       );
+      await client.query(
+        await readFile(
+          "migrations/034_unified_check_adaptive_planner.sql",
+          "utf8"
+        )
+      );
       const labelDataset = {
         version: "unified-label-dataset-v1",
         rows: []
@@ -110,7 +116,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "candidate",
-          schemaVersion: 33
+          schemaVersion: 34
         },
         now: () => new Date("2026-07-23T13:00:00.000Z")
       });
@@ -218,6 +224,17 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
            from unified_check_tasks
           where run_id = 'run-1' and status <> 'COMPLETED'`
       )).rows[0]?.count)).toBe(0);
+      expect((await query(
+        `select count(*)::int as count,
+                bool_and(planner_state = 'committed') as all_committed,
+                bool_and(admitted_at is not null) as all_admitted
+           from unified_check_planner_entries
+          where run_id = 'run-1'`
+      )).rows[0]).toMatchObject({
+        count: 1,
+        all_committed: true,
+        all_admitted: true
+      });
       const canaryOnlyProcess = createUnifiedProductionRuntime({
         ...runtimeInput,
         runPurpose: "release_canary"
@@ -312,7 +329,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "candidate",
-          schemaVersion: 33
+          schemaVersion: 34
         },
         now: () => new Date("2026-07-23T13:02:00.000Z")
       });
@@ -380,7 +397,7 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           scoringPolicyVersion: "scoring-signal-matrix-v4",
           attributionPolicyVersion: "selected-attribution-policy-v1",
           runtimeCommit: "candidate",
-          schemaVersion: 33
+          schemaVersion: 34
         },
         now: () => new Date("2026-07-23T13:03:00.000Z")
       });

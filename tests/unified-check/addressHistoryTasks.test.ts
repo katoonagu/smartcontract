@@ -126,9 +126,12 @@ describe("Unified address-history tasks", () => {
     expect(loaded.get(MANIFEST_KEY)).toEqual(manifest);
   });
 
-  it("adds address-history and traversal dependency guards to claiming", async () => {
+  it("uses planner actionability and ordered admission guards when claiming", async () => {
     let claimSql = "";
     const db = queryable((sql) => {
+      if (sql.includes("to_regclass('unified_check_planner_entries')")) {
+        return [{ planner_table: "unified_check_planner_entries" }];
+      }
       claimSql = sql;
       return [];
     });
@@ -142,8 +145,14 @@ describe("Unified address-history tasks", () => {
 
     expect(claimSql)
       .toContain("task.kind not in ('address_history','deep_direct')");
-    expect(claimSql).toContain("history_task.kind = 'address_history'");
-    expect(claimSql).toContain("history_task.status <> 'COMPLETED'");
+    expect(claimSql).not.toContain("history_task.kind = 'address_history'");
+    expect(claimSql).not.toContain("history_task.status <> 'COMPLETED'");
+    expect(claimSql).toContain("ordered_task.planner_state = 'planned'");
+    expect(claimSql).toContain("ordered_task.admitted_at is not null");
+    expect(claimSql).toContain("from unified_check_planner_entries any_entry");
+    expect(claimSql).toContain("head_entry.planner_state = 'ready'");
+    expect(claimSql).toContain("uncommitted.planner_state <> 'committed'");
+    expect(claimSql).toContain("from unified_check_planner_entries uncommitted");
     expect(claimSql).toContain("task.kind <> 'fast'");
     expect(claimSql).toContain("task.kind not in ('where','deep')");
     expect(claimSql).toContain("direct_evidence.kind = 'deep_direct'");

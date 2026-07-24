@@ -34,7 +34,13 @@ import {
   type UnifiedProgressPhaseV1,
   type UnifiedProgressProjectionV1
 } from "./progressProjection";
-import type { UnifiedAcceptedArtifact } from "./worker";
+import type {
+  UnifiedAcceptedArtifact,
+  UnifiedOrderedCommitExpectation
+} from "./worker";
+import { admitBarrierHeadInTransaction } from "./plannerRepository";
+
+export type { UnifiedOrderedCommitExpectation } from "./worker";
 
 export const DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES = 1_048_576;
 
@@ -964,6 +970,55 @@ export async function claimUnifiedTask(
   }
 ) {
   if (input.kinds?.length === 0) return null;
+  const plannerTable = (
+    await db.query(
+      "select to_regclass('unified_check_planner_entries') as planner_table"
+    )
+  ).rows[0]?.planner_table;
+  const orderedAdmission = plannerTable
+    ? `and (
+           not exists (
+             select 1
+               from unified_check_planner_entries ordered_task
+              where ordered_task.run_id = task.run_id
+                and ordered_task.task_id = task.id
+           ) or exists (
+             select 1
+               from unified_check_planner_entries ordered_task
+              where ordered_task.run_id = task.run_id
+                and ordered_task.task_id = task.id
+                and ordered_task.planner_state = 'planned'
+                and ordered_task.admitted_at is not null
+           )
+         )`
+    : "";
+  const traversalActionability = plannerTable
+    ? `and (
+             not exists (
+               select 1
+                 from unified_check_planner_entries any_entry
+                where any_entry.run_id = task.run_id
+             )
+             or not exists (
+               select 1
+                 from unified_check_planner_entries uncommitted
+                where uncommitted.run_id = task.run_id
+                  and uncommitted.planner_state <> 'committed'
+             )
+             or exists (
+               select 1
+                 from unified_check_planner_entries head_entry
+                where head_entry.run_id = task.run_id
+                  and head_entry.planner_state = 'ready'
+                  and head_entry.canonical_sequence = (
+                    select min(uncommitted.canonical_sequence)
+                      from unified_check_planner_entries uncommitted
+                     where uncommitted.run_id = task.run_id
+                       and uncommitted.planner_state <> 'committed'
+                  )
+             )
+           )`
+    : "";
   const result = await db.query(
     `with candidate as (
       select task.id
@@ -993,6 +1048,7 @@ export async function claimUnifiedTask(
            $6::text is null or
            manifest.artifact_json->>'runtimeCommit' = $6
          )
+         ${orderedAdmission}
          and (
            run.run_purpose <> 'release_canary' or (
              $7::text is not null and exists (
@@ -1029,13 +1085,7 @@ export async function claimUnifiedTask(
                    and prerequisite.status = 'COMPLETED'
                    and prerequisite.accepted_attempt_id is not null
               )
-              and not exists (
-                select 1
-                  from unified_check_tasks history_task
-                 where history_task.run_id = task.run_id
-                   and history_task.kind = 'address_history'
-                   and history_task.status <> 'COMPLETED'
-              )
+              ${traversalActionability}
             )
           )
          and (
@@ -1300,14 +1350,18 @@ export async function recordUnifiedTaskProviderDuration(
   return result.rows[0] ?? null;
 }
 
-export async function checkpointUnifiedTask(
+type UnifiedCheckpointInput = {
+  taskId: string;
+  leaseToken: string;
+  attempt: number;
+  checkpoint: unknown;
+  orderedCommit?: UnifiedOrderedCommitExpectation;
+  barrierReservedBytes?: number;
+};
+
+async function checkpointUnifiedTaskRow(
   db: UnifiedQueryable,
-  input: {
-    taskId: string;
-    leaseToken: string;
-    attempt: number;
-    checkpoint: unknown;
-  }
+  input: UnifiedCheckpointInput
 ) {
   const result = await db.query(
     `update unified_check_tasks
@@ -1420,6 +1474,224 @@ export async function checkpointUnifiedTask(
     ]
   );
   return result.rows[0] ?? null;
+}
+
+function orderedCommitExpectation(
+  value: UnifiedOrderedCommitExpectation
+): UnifiedOrderedCommitExpectation {
+  if (
+    typeof value.runId !== "string" ||
+    value.runId.trim().length === 0 ||
+    (
+      value.expectedDeltaHeadSha256 !== null &&
+      !/^[0-9a-f]{64}$/u.test(value.expectedDeltaHeadSha256)
+    ) ||
+    value.entries.length === 0
+  ) {
+    throw new TypeError("unified_ordered_commit_expectation_invalid");
+  }
+  let priorSequence: number | null = null;
+  const taskIds = new Set<string>();
+  for (const entry of value.entries) {
+    if (
+      !Number.isSafeInteger(entry.canonicalSequence) ||
+      entry.canonicalSequence < 0 ||
+      typeof entry.taskId !== "string" ||
+      entry.taskId.trim().length === 0 ||
+      typeof entry.acceptedAttemptId !== "string" ||
+      entry.acceptedAttemptId.trim().length === 0 ||
+      !Number.isSafeInteger(entry.resultBytes) ||
+      entry.resultBytes < 0 ||
+      (
+        priorSequence !== null &&
+        entry.canonicalSequence !== priorSequence + 1
+      ) ||
+      taskIds.has(entry.taskId)
+    ) {
+      throw new TypeError("unified_ordered_commit_expectation_invalid");
+    }
+    taskIds.add(entry.taskId);
+    priorSequence = entry.canonicalSequence;
+  }
+  return value;
+}
+
+function checkpointDeltaHead(checkpoint: unknown): string | null {
+  if (
+    checkpoint === null ||
+    typeof checkpoint !== "object" ||
+    Array.isArray(checkpoint)
+  ) {
+    return null;
+  }
+  const head = (checkpoint as { deltaHeadSha256?: unknown }).deltaHeadSha256;
+  if (head === null || head === undefined) return null;
+  if (typeof head !== "string" || !/^[0-9a-f]{64}$/u.test(head)) {
+    throw new Error("unified_ordered_commit_checkpoint_head_invalid");
+  }
+  return head;
+}
+
+function isTransactional(
+  db: UnifiedQueryable
+): db is UnifiedTransactionalQueryable {
+  return typeof (db as Partial<UnifiedTransactionalQueryable>).transaction ===
+    "function";
+}
+
+async function checkpointUnifiedOrderedTask(
+  client: UnifiedQueryable,
+  input: UnifiedCheckpointInput,
+  expectation: UnifiedOrderedCommitExpectation
+) {
+  const discoveredTask = (
+    await client.query(
+      "select run_id from unified_check_tasks where id = $1",
+      [input.taskId]
+    )
+  ).rows[0];
+  if (!discoveredTask) throw new Error("unified_task_lease_lost");
+  const runId = String(discoveredTask.run_id);
+  const run = (
+    await client.query(
+      `select id, run_purpose, created_at
+         from unified_check_runs
+        where id = $1
+        for update`,
+      [runId]
+    )
+  ).rows[0];
+  if (!run || runId !== expectation.runId) {
+    throw new Error("unified_ordered_commit_run_mismatch");
+  }
+  const task = (
+    await client.query(
+      `select task.*,
+              (
+                $3::text = 'release_canary' and
+                clock_timestamp() >=
+                  $4::timestamptz + interval '35 minutes'
+              ) as canary_deadline_reached
+         from unified_check_tasks task
+        where task.id = $1 and task.run_id = $2
+        for update of task`,
+      [input.taskId, runId, run.run_purpose, run.created_at]
+    )
+  ).rows[0];
+  if (
+    !task ||
+    String(task.kind) !== "traversal" ||
+    String(task.status) !== "LEASED" ||
+    String(task.lease_token) !== input.leaseToken ||
+    Number(task.attempt) !== input.attempt
+  ) {
+    throw new Error("unified_task_lease_lost");
+  }
+  if (
+    checkpointDeltaHead(task.checkpoint_json) !==
+      expectation.expectedDeltaHeadSha256
+  ) {
+    throw new Error("unified_ordered_commit_stale_head");
+  }
+
+  const firstSequence = expectation.entries[0]!.canonicalSequence;
+  const lastSequence = expectation.entries.at(-1)!.canonicalSequence;
+  const rows = (
+    await client.query(
+      `with head as (
+         select min(canonical_sequence) as canonical_sequence
+           from unified_check_planner_entries
+          where run_id = $1 and planner_state <> 'committed'
+       )
+       select head.canonical_sequence as head_sequence,
+              entry.canonical_sequence, entry.planner_state,
+              entry.result_bytes, entry.task_id,
+              task.accepted_attempt_id,
+              attempt.artifact_sha256,
+              artifact.artifact_json
+         from unified_check_planner_entries entry
+         join head
+           on entry.canonical_sequence >= head.canonical_sequence
+         join unified_check_tasks task
+           on task.run_id = entry.run_id and task.id = entry.task_id
+         join unified_check_attempts attempt
+           on attempt.id = task.accepted_attempt_id
+         join unified_check_artifacts artifact
+           on artifact.sha256 = attempt.artifact_sha256
+        where entry.run_id = $1
+          and entry.canonical_sequence between $2 and $3
+        order by entry.canonical_sequence
+        for update of entry`,
+      [runId, firstSequence, lastSequence]
+    )
+  ).rows;
+  if (rows.length !== expectation.entries.length) {
+    throw new Error("unified_ordered_commit_prefix_mismatch");
+  }
+  for (const [index, expected] of expectation.entries.entries()) {
+    const row = rows[index]!;
+    const resultBytes = Number(row.result_bytes);
+    if (
+      Number(row.head_sequence) !== firstSequence ||
+      Number(row.canonical_sequence) !== expected.canonicalSequence ||
+      String(row.planner_state) !== "ready" ||
+      String(row.task_id) !== expected.taskId ||
+      String(row.accepted_attempt_id) !== expected.acceptedAttemptId ||
+      resultBytes !== expected.resultBytes ||
+      fingerprintCanonicalArtifact(row.artifact_json) !==
+        String(row.artifact_sha256) ||
+      Buffer.byteLength(
+        canonicalizeArtifactJson(row.artifact_json),
+        "utf8"
+      ) !== resultBytes
+    ) {
+      throw new Error("unified_ordered_commit_prefix_mismatch");
+    }
+  }
+
+  const checkpointed = await checkpointUnifiedTaskRow(client, input);
+  if (!checkpointed) throw new Error("unified_task_lease_lost");
+  if (String(checkpointed.status) === "CANCELLED") return checkpointed;
+  const committed = await client.query(
+    `update unified_check_planner_entries
+        set planner_state = 'committed',
+            committed_at = statement_timestamp()
+      where run_id = $1
+        and canonical_sequence = any($2::bigint[])
+        and planner_state = 'ready'
+        and committed_at is null
+      returning task_id`,
+    [runId, expectation.entries.map((entry) => entry.canonicalSequence)]
+  );
+  if (committed.rows.length !== expectation.entries.length) {
+    throw new Error("unified_ordered_commit_prefix_mismatch");
+  }
+  await admitBarrierHeadInTransaction(client, {
+    runId,
+    reservedBytes: input.barrierReservedBytes ??
+      DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES
+  });
+  return checkpointed;
+}
+
+export async function checkpointUnifiedTask(
+  db: UnifiedQueryable,
+  input: UnifiedCheckpointInput
+) {
+  if (!isTransactional(db)) {
+    if (input.orderedCommit) {
+      throw new TypeError("unified_ordered_commit_transaction_required");
+    }
+    return checkpointUnifiedTaskRow(db, input);
+  }
+  return db.transaction(async (client) => input.orderedCommit
+    ? checkpointUnifiedOrderedTask(
+        client,
+        input,
+        orderedCommitExpectation(input.orderedCommit)
+      )
+    : checkpointUnifiedTaskRow(client, input)
+  );
 }
 
 function acceptedArtifactIdentity(

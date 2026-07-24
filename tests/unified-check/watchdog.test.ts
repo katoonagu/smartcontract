@@ -226,6 +226,9 @@ describe("Unified watchdog", () => {
             }]
           };
         }
+        if (sql.includes("to_regclass('unified_check_planner_entries')")) {
+          return { rows: [{ planner_table: null }] };
+        }
         if (sql.includes("with candidate as")) {
           expect(sql).toContain("join unified_check_runs run");
           expect(sql).toContain("run.status = 'RUNNING'");

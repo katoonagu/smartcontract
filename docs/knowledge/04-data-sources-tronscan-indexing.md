@@ -69,6 +69,15 @@ transaction also performs the planner `planned -> ready` transition. Its hash
 and `result_bytes` come from the same canonical UTF-8 serialization, so the
 manifest is not pre-persisted or counted twice.
 
+Traversal now enumerates the complete distinct mandatory address-history set
+from the current canonical frontier, persists one capacity-independent planner
+batch, and uses head-only barrier admission. Accepted manifests may finish in
+any order, but traversal applies only a bounded continuous ready prefix in
+canonical sequence. The V2 checkpoint/delta head and exact planner prefix
+commit atomically; a gap is never skipped. Previously committed address
+manifests are loaded only by requested logical key and remain reusable by later
+funding states.
+
 Traversal is finite without a coverage threshold. It terminates only at
 snapshot-bounded history exhaustion or an evidence-backed service/CEX/DEX/
 bridge/contract boundary. Canonical vertices/edges are deduplicated, dense
