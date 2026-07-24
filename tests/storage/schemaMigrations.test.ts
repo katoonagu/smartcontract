@@ -15,6 +15,7 @@ import {
   SCHEMA_MIGRATION_LOCK_ID,
   type Schema032Verification,
   checksumMigrationBytes,
+  projectSchema033CatalogAfter034,
   verifyRequiredSchema032,
   verifySchema032Structure,
   verifySchema034Structure,
@@ -466,6 +467,29 @@ describe("verified schema 032 metadata", () => {
 });
 
 describe("verified schema 034 metadata", () => {
+  it("normalizes only the table-qualified 034 additions from the frozen 033 catalog", () => {
+    const projection = projectSchema033CatalogAfter034({
+      columns: [
+        { table_name: "unified_check_runs", column_name: "fairness_owner_id" },
+        { table_name: "unified_check_requests", column_name: "fairness_owner_id" }
+      ],
+      constraints: [
+        { table_name: "unified_check_runs", conname: "unified_check_runs_fairness_owner_not_blank_check" },
+        { table_name: "unified_check_tasks", conname: "unified_check_tasks_run_id_id_key" },
+        { table_name: "unified_check_requests", conname: "unified_check_tasks_run_id_id_key" }
+      ],
+      indexes: [
+        { tablename: "unified_check_tasks", indexname: "unified_check_tasks_run_id_id_key" },
+        { tablename: "unified_check_requests", indexname: "unified_check_tasks_run_id_id_key" }
+      ]
+    });
+    expect(projection).toEqual({
+      columns: [{ table_name: "unified_check_requests", column_name: "fairness_owner_id" }],
+      constraints: [{ table_name: "unified_check_requests", conname: "unified_check_tasks_run_id_id_key" }],
+      indexes: [{ tablename: "unified_check_requests", indexname: "unified_check_tasks_run_id_id_key" }]
+    });
+  });
+
   it("pins 034 structural checks, including the planner state shape", async () => {
     await expect(verifySchema034Structure(schema034Db())).resolves.toBeUndefined();
     await expect(verifySchema034Structure(schema034Db({ stateShape: "CHECK (true)" }))).rejects.toThrow(

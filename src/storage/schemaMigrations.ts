@@ -437,9 +437,35 @@ const SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES = new Set([
   "unified_check_runs.fairness_owner_id"
 ]);
 const SCHEMA_034_CONSTRAINTS_ADDED_TO_033_TABLES = new Set([
-  "unified_check_runs_fairness_owner_not_blank_check",
-  "unified_check_tasks_run_id_id_key"
+  "unified_check_runs.unified_check_runs_fairness_owner_not_blank_check",
+  "unified_check_tasks.unified_check_tasks_run_id_id_key"
 ]);
+const SCHEMA_034_INDEXES_ADDED_TO_033_TABLES = new Set([
+  "unified_check_tasks.unified_check_tasks_run_id_id_key"
+]);
+
+type Schema033CatalogRows = Readonly<{
+  columns: readonly Record<string, unknown>[];
+  constraints: readonly Record<string, unknown>[];
+  indexes: readonly Record<string, unknown>[];
+}>;
+
+export function projectSchema033CatalogAfter034(
+  catalog: Schema033CatalogRows
+): Schema033CatalogRows {
+  return {
+    ...catalog,
+    columns: catalog.columns.filter((row) => !SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES.has(
+      `${row.table_name}.${row.column_name}`
+    )),
+    constraints: catalog.constraints.filter((row) => !SCHEMA_034_CONSTRAINTS_ADDED_TO_033_TABLES.has(
+      `${row.table_name}.${row.conname}`
+    )),
+    indexes: catalog.indexes.filter((row) => !SCHEMA_034_INDEXES_ADDED_TO_033_TABLES.has(
+      `${row.tablename}.${row.indexname}`
+    ))
+  };
+}
 
 export async function verifySchema033Structure(
   queryable: SchemaQueryable,
@@ -530,16 +556,17 @@ async function verifySchema033StructureInternal(
           : value
       ])
     );
+  const catalog = allowSchema034Additions
+    ? projectSchema033CatalogAfter034({
+      columns: columns.rows,
+      constraints: constraints.rows,
+      indexes: indexes.rows
+    })
+    : { columns: columns.rows, constraints: constraints.rows, indexes: indexes.rows };
   const actualHash = unifiedCatalogHash({
-    columns: allowSchema034Additions
-      ? columns.rows.filter((row) => !SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES.has(
-        `${row.table_name}.${row.column_name}`
-      ))
-      : columns.rows,
-    constraints: allowSchema034Additions
-      ? constraints.rows.filter((row) => !SCHEMA_034_CONSTRAINTS_ADDED_TO_033_TABLES.has(String(row.conname)))
-      : constraints.rows,
-    indexes: indexes.rows.map(normalizeSchema),
+    columns: catalog.columns,
+    constraints: catalog.constraints,
+    indexes: catalog.indexes.map(normalizeSchema),
     triggers: triggers.rows.map(normalizeSchema),
     functions: functions.rows
   });
