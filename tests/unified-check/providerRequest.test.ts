@@ -84,19 +84,33 @@ describe("Unified provider request identity", () => {
   it("coalesces concurrent exact fetches and reuses the immutable stored page", async () => {
     const store = new MemoryPages();
     const fetchPage = vi.fn(async () => response());
+    const sources: string[] = [];
     const [first, second] = await Promise.all([
-      loadOrFetchProviderPage({ identity: base, store, fetchPage }),
-      loadOrFetchProviderPage({ identity: base, store, fetchPage })
+      loadOrFetchProviderPage({
+        identity: base,
+        store,
+        fetchPage,
+        onDiagnostic: ({ source }) => sources.push(source)
+      }),
+      loadOrFetchProviderPage({
+        identity: base,
+        store,
+        fetchPage,
+        onDiagnostic: ({ source }) => sources.push(source)
+      })
     ]);
     expect(fetchPage).toHaveBeenCalledTimes(1);
     expect(second).toEqual(first);
+    expect(sources.sort()).toEqual(["inflight", "network"]);
 
     const afterRestart = await loadOrFetchProviderPage({
       identity: base,
       store,
-      fetchPage: vi.fn(async () => response())
+      fetchPage: vi.fn(async () => response()),
+      onDiagnostic: ({ source }) => sources.push(source)
     });
     expect(afterRestart).toEqual(first);
+    expect(sources.at(-1)).toBe("cache");
     expect(store.rows).toHaveLength(1);
   });
 

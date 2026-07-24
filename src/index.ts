@@ -421,7 +421,12 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
   now: () => new Date(),
   createId: randomUUID,
   onProviderWorkAvailable: () => wakeUnifiedProviderPool(),
-  async loadProviderPage({ run, address = run.subjectAddress, cursor }) {
+  async loadProviderPage({
+    run,
+    address = run.subjectAddress,
+    cursor,
+    onDiagnostic
+  }) {
     const start = cursor === null ? 0 : Number(cursor);
     if (!Number.isSafeInteger(start) || start < 0) {
       throw new Error("unified_direct_history_cursor_invalid");
@@ -447,6 +452,7 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
           confirmationPolicy: "walletsolidity-confirmed-cutoff-v1"
         },
         store: unifiedProviderPageStore,
+        onDiagnostic,
         async fetchPage() {
           const loaded =
             await tronClient.listRelatedTrc20TransferPagePinned(

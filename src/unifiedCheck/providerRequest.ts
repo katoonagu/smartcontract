@@ -73,6 +73,21 @@ export type ProviderFetchResult = {
   readonly provenance: Readonly<Record<string, unknown>>;
 };
 
+export type ProviderPageDiagnostic = {
+  readonly source: "network" | "cache" | "inflight";
+};
+
+function emitDiagnostic(
+  listener: ((diagnostic: ProviderPageDiagnostic) => void) | undefined,
+  diagnostic: ProviderPageDiagnostic
+): void {
+  try {
+    listener?.(diagnostic);
+  } catch {
+    // ponytail: diagnostics are best-effort and must never change analysis.
+  }
+}
+
 function text(value: string, code: string): string {
   if (!value.trim() || value.length > 512) throw new TypeError(code);
   return value;
@@ -215,10 +230,14 @@ export async function loadOrFetchProviderPage(input: {
   identity: ProviderRequestIdentityInput;
   store: ProviderPageStore;
   fetchPage: () => Promise<ProviderFetchResult>;
+  onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
 }): Promise<ProviderPageRecord> {
   const expected = buildProviderRequestIdentity(input.identity);
   const stored = await input.store.get(expected.sha256);
-  if (stored) return validateStored(expected, stored);
+  if (stored) {
+    emitDiagnostic(input.onDiagnostic, { source: "cache" });
+    return validateStored(expected, stored);
+  }
 
   let inFlight = inFlightByStore.get(input.store);
   if (!inFlight) {
@@ -226,7 +245,11 @@ export async function loadOrFetchProviderPage(input: {
     inFlightByStore.set(input.store, inFlight);
   }
   const existing = inFlight.get(expected.sha256);
-  if (existing) return existing;
+  if (existing) {
+    emitDiagnostic(input.onDiagnostic, { source: "inflight" });
+    return existing;
+  }
+  emitDiagnostic(input.onDiagnostic, { source: "network" });
   const pending = (async () => {
     const fetched = validateFetched(expected, await input.fetchPage());
     return validateStored(expected, await input.store.put(fetched));

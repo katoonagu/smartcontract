@@ -11,7 +11,8 @@ import {
   createOrReuseUnifiedRun,
   createUnifiedDelivery,
   createUnifiedTasks,
-  insertUnifiedArtifact
+  insertUnifiedArtifact,
+  recordUnifiedTaskProviderDuration
 } from "../../src/unifiedCheck/repository";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -131,6 +132,13 @@ postgresDescribe("Unified Check repository", () => {
         workerA.release();
         workerB.release();
       }
+      await recordUnifiedTaskProviderDuration(scoped, {
+        taskId: "task-a",
+        leaseToken: "lease-a",
+        attempt: 1,
+        durationMs: 12,
+        providerSource: "network"
+      });
       const checkpointed = await checkpointUnifiedTask(scoped, {
         taskId: "task-a",
         leaseToken: "lease-a",
@@ -211,6 +219,21 @@ postgresDescribe("Unified Check repository", () => {
         "attemptTimings"
       );
       expect(completedTask?.checkpoint_json.recentAttempts).toHaveLength(8);
+      expect(completedTask?.checkpoint_json.timingSummary).toMatchObject({
+        attemptCount: 3,
+        queueDurationMs: expect.any(Number),
+        providerDurationMs: expect.any(Number)
+      });
+      expect(completedTask?.checkpoint_json.performanceCounters).toMatchObject({
+        providerCalls: 1,
+        networkFetches: 1,
+        providerCacheHits: 0,
+        taskClaims: 3,
+        checkpoints: 1
+      });
+      expect(
+        Buffer.byteLength(JSON.stringify(completedTask?.checkpoint_json))
+      ).toBeLessThan(32_768);
 
       const delivery = await createUnifiedDelivery(scoped, {
         id: "delivery-a",

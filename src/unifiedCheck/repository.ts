@@ -913,6 +913,50 @@ export async function claimUnifiedTask(
                    0
                  )
                else 0 end,
+               'timingSummary',
+               jsonb_build_object(
+                 'attemptCount', task.attempt,
+                 'queueDurationMs',
+                 coalesce(
+                   (task.checkpoint_json->>'queueDurationMs')::double precision,
+                   0
+                 ) + case when task.status = 'LEASED' then 0 else
+                   greatest(
+                     extract(epoch from (
+                       statement_timestamp() -
+                       case when task.status = 'WAITING_RETRY'
+                         then greatest(task.ready_at, task.updated_at)
+                         else task.updated_at
+                       end
+                     )) * 1000,
+                     0
+                   )
+                 end,
+                 'providerDurationMs',
+                 coalesce(
+                   (task.checkpoint_json->>'providerDurationMs')::double precision,
+                   0
+                 ) + case when task.status = 'WAITING_RETRY' then
+                   greatest(
+                     extract(epoch from (
+                       least(statement_timestamp(), task.ready_at) -
+                       task.updated_at
+                     )) * 1000,
+                     0
+                   )
+                 else 0 end
+               ),
+               'performanceCounters',
+               coalesce(
+                 task.checkpoint_json->'performanceCounters',
+                 '{}'::jsonb
+               ) || jsonb_build_object(
+                 'taskClaims',
+                 coalesce(
+                   (task.checkpoint_json->'performanceCounters'->>'taskClaims')::bigint,
+                   0
+                 ) + 1
+               ),
                'recentAttempts',
                jsonb_path_query_array(
                  coalesce(
@@ -988,6 +1032,7 @@ export async function recordUnifiedTaskProviderDuration(
     leaseToken: string;
     attempt: number;
     durationMs: number;
+    providerSource?: "network" | "cache" | "inflight";
   }
 ) {
   if (
@@ -1003,13 +1048,40 @@ export async function recordUnifiedTaskProviderDuration(
               coalesce(
                 (checkpoint_json->>'providerDurationMs')::double precision,
                 0
-              ) + $4::double precision
+              ) + $4::double precision,
+              'performanceCounters',
+              coalesce(
+                checkpoint_json->'performanceCounters',
+                '{}'::jsonb
+              ) || jsonb_build_object(
+                'providerCalls',
+                coalesce(
+                  (checkpoint_json->'performanceCounters'->>'providerCalls')::bigint,
+                  0
+                ) + 1,
+                'networkFetches',
+                coalesce(
+                  (checkpoint_json->'performanceCounters'->>'networkFetches')::bigint,
+                  0
+                ) + case when $5 = 'network' then 1 else 0 end,
+                'providerCacheHits',
+                coalesce(
+                  (checkpoint_json->'performanceCounters'->>'providerCacheHits')::bigint,
+                  0
+                ) + case when $5 in ('cache', 'inflight') then 1 else 0 end
+              )
             ),
             updated_at = statement_timestamp()
       where id = $1 and status = 'LEASED'
         and lease_token = $2 and attempt = $3
       returning *`,
-    [input.taskId, input.leaseToken, input.attempt, input.durationMs]
+    [
+      input.taskId,
+      input.leaseToken,
+      input.attempt,
+      input.durationMs,
+      input.providerSource ?? "network"
+    ]
   );
   return result.rows[0] ?? null;
 }
@@ -1036,6 +1108,36 @@ export async function checkpointUnifiedTask(
               coalesce(
                 (checkpoint_json->>'providerDurationMs')::double precision,
                 0
+              ),
+              'timingSummary',
+              jsonb_build_object(
+                'attemptCount', $4::int,
+                'queueDurationMs',
+                coalesce(
+                  (checkpoint_json->>'queueDurationMs')::double precision,
+                  0
+                ),
+                'providerDurationMs',
+                coalesce(
+                  (checkpoint_json->>'providerDurationMs')::double precision,
+                  0
+                )
+              ),
+              'performanceCounters',
+              coalesce(
+                checkpoint_json->'performanceCounters',
+                '{}'::jsonb
+              ) || jsonb_build_object(
+                'checkpoints',
+                coalesce(
+                  (checkpoint_json->'performanceCounters'->>'checkpoints')::bigint,
+                  0
+                ) + 1,
+                'logicalChunks',
+                coalesce(
+                  (checkpoint_json->'performanceCounters'->>'logicalChunks')::bigint,
+                  0
+                ) + 1
               ),
               'recentAttempts',
               jsonb_path_query_array(
@@ -1143,6 +1245,20 @@ export async function completeUnifiedTaskAttempt(
             set status = 'CANCELLED',
                 checkpoint_json = (
                   checkpoint_json || jsonb_build_object(
+                    'timingSummary',
+                    jsonb_build_object(
+                      'attemptCount', attempt,
+                      'queueDurationMs',
+                      coalesce(
+                        (checkpoint_json->>'queueDurationMs')::double precision,
+                        0
+                      ),
+                      'providerDurationMs',
+                      coalesce(
+                        (checkpoint_json->>'providerDurationMs')::double precision,
+                        0
+                      )
+                    ),
                     'recentAttempts',
                     jsonb_path_query_array(
                       coalesce(
@@ -1193,6 +1309,20 @@ export async function completeUnifiedTaskAttempt(
           set status = 'COMPLETED', accepted_attempt_id = $4,
               checkpoint_json = (
                 checkpoint_json || jsonb_build_object(
+                  'timingSummary',
+                  jsonb_build_object(
+                    'attemptCount', attempt,
+                    'queueDurationMs',
+                    coalesce(
+                      (checkpoint_json->>'queueDurationMs')::double precision,
+                      0
+                    ),
+                    'providerDurationMs',
+                    coalesce(
+                      (checkpoint_json->>'providerDurationMs')::double precision,
+                      0
+                    )
+                  ),
                   'recentAttempts',
                   jsonb_path_query_array(
                     coalesce(
@@ -1274,10 +1404,29 @@ export async function settleUnifiedTaskLease(
                     coalesce(
                       (checkpoint_json->>'providerDurationMs')::double precision,
                       0
+                    ),
+                    'performanceCounters',
+                    coalesce(
+                      checkpoint_json->'performanceCounters',
+                      '{}'::jsonb
                     )
                   )
                 end
               ) || jsonb_build_object(
+                'timingSummary',
+                jsonb_build_object(
+                  'attemptCount', $3::int,
+                  'queueDurationMs',
+                  coalesce(
+                    (checkpoint_json->>'queueDurationMs')::double precision,
+                    0
+                  ),
+                  'providerDurationMs',
+                  coalesce(
+                    (checkpoint_json->>'providerDurationMs')::double precision,
+                    0
+                  )
+                ),
                 'recentAttempts',
                 jsonb_path_query_array(
                   coalesce(
@@ -1396,10 +1545,29 @@ export async function recordUnifiedTaskAttemptAndWait(
                         coalesce(
                           (checkpoint_json->>'providerDurationMs')::double precision,
                           0
+                        ),
+                        'performanceCounters',
+                        coalesce(
+                          checkpoint_json->'performanceCounters',
+                          '{}'::jsonb
                         )
                       )
                     end
                   ) || jsonb_build_object(
+                    'timingSummary',
+                    jsonb_build_object(
+                      'attemptCount', $3::int,
+                      'queueDurationMs',
+                      coalesce(
+                        (checkpoint_json->>'queueDurationMs')::double precision,
+                        0
+                      ),
+                      'providerDurationMs',
+                      coalesce(
+                        (checkpoint_json->>'providerDurationMs')::double precision,
+                        0
+                      )
+                    ),
                     'recentAttempts',
                     jsonb_path_query_array(
                       coalesce(

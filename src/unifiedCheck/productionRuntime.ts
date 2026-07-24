@@ -36,6 +36,7 @@ import {
 import {
   createPostgresUnifiedTaskCycleRepository
 } from "./productionWorker";
+import type { ProviderPageDiagnostic } from "./providerRequest";
 import type { UnifiedRunPurpose } from "./contracts";
 import {
   type UnifiedTraversalArtifactV1
@@ -267,6 +268,7 @@ export function createUnifiedProductionRuntime(input: {
     run: LoadedRun;
     address?: string;
     cursor: string | null;
+    onDiagnostic?: (diagnostic: ProviderPageDiagnostic) => void;
   }): Promise<DirectHistoryPage | DirectHistoryProviderWait>;
   loadCounterpartyLabels(input: {
     labelDatasetSha256: string;
@@ -306,19 +308,25 @@ export function createUnifiedProductionRuntime(input: {
       attempt: number;
       heartbeat(): Promise<void>;
     },
-    work: () => Promise<T>
+    work: (
+      onDiagnostic: (diagnostic: ProviderPageDiagnostic) => void
+    ) => Promise<T>
   ): Promise<T> => {
     await execution.heartbeat();
     await cooperate(runId);
     const startedAt = performance.now();
+    let providerSource: ProviderPageDiagnostic["source"] | undefined;
     try {
-      return await work();
+      return await work((diagnostic) => {
+        providerSource = diagnostic.source;
+      });
     } finally {
       const recorded = await recordUnifiedTaskProviderDuration(input.db, {
         taskId: execution.taskId,
         leaseToken: execution.leaseToken,
         attempt: execution.attempt,
-        durationMs: Math.max(0, performance.now() - startedAt)
+        durationMs: Math.max(0, performance.now() - startedAt),
+        providerSource
       });
       if (recorded === null) throw new Error("unified_worker_lease_lost");
       await execution.heartbeat();
@@ -350,10 +358,11 @@ export function createUnifiedProductionRuntime(input: {
     }) => measuredProviderCall(
       run.id,
       { taskId, leaseToken, attempt, heartbeat },
-      () => input.loadProviderPage({
+      (onDiagnostic) => input.loadProviderPage({
         run,
         address: run.subjectAddress,
-        cursor
+        cursor,
+        onDiagnostic
       })
     ),
     loadPageArtifact: ({ runId, sha256 }) =>
@@ -386,13 +395,14 @@ export function createUnifiedProductionRuntime(input: {
     }) => measuredProviderCall(
       run.id,
       { taskId, leaseToken, attempt, heartbeat },
-      () => input.loadProviderPage({
+      (onDiagnostic) => input.loadProviderPage({
         run: {
           ...run,
           subjectAddress: run.analysisManifest.subjectAddress
         },
         address,
-        cursor
+        cursor,
+        onDiagnostic
       })
     ),
     loadPageArtifact: ({ runId, sha256 }) =>
