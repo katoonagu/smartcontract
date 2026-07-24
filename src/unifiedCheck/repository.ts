@@ -1560,20 +1560,57 @@ function checkpointDeltaHead(checkpoint: unknown): string | null {
 }
 
 function orderedArtifactIdentityMatches(
-  artifact: unknown,
-  expected: UnifiedOrderedCommitExpectation["entries"][number]
+  input: {
+    artifact: unknown;
+    expected: UnifiedOrderedCommitExpectation["entries"][number];
+    taskKind: unknown;
+    taskLogicalKey: unknown;
+    artifactKind: unknown;
+    artifactSchemaVersion: unknown;
+  }
 ): boolean {
-  if (expected.taskKind !== "address_history") return true;
+  const {
+    artifact,
+    expected,
+    taskKind,
+    taskLogicalKey,
+    artifactKind,
+    artifactSchemaVersion
+  } = input;
+  const manifest = (
+    artifact !== null &&
+    typeof artifact === "object" &&
+    !Array.isArray(artifact)
+  )
+    ? artifact as Record<string, unknown>
+    : null;
+  const addressHistoryMarker =
+    expected.taskKind === "address_history" ||
+    taskKind === "address_history" ||
+    expected.artifactKind === "address_history_manifest" ||
+    artifactKind === "address_history_manifest" ||
+    manifest?.version === "unified-address-history-manifest-v1" ||
+    (
+      manifest !== null &&
+      "key" in manifest &&
+      "chain" in manifest &&
+      "snapshotHash" in manifest &&
+      "tokenContract" in manifest &&
+      "address" in manifest &&
+      "providerRequestVersion" in manifest
+    );
+  if (!addressHistoryMarker) return true;
   if (
+    expected.taskKind !== "address_history" ||
+    taskKind !== "address_history" ||
     expected.artifactKind !== "address_history_manifest" ||
+    artifactKind !== "address_history_manifest" ||
     expected.artifactSchemaVersion !== "1" ||
-    artifact === null ||
-    typeof artifact !== "object" ||
-    Array.isArray(artifact)
+    artifactSchemaVersion !== "1" ||
+    manifest === null
   ) {
     return false;
   }
-  const manifest = artifact as Record<string, unknown>;
   if (
     manifest.version !== "unified-address-history-manifest-v1" ||
     manifest.schemaVersion !== 1 ||
@@ -1594,7 +1631,9 @@ function orderedArtifactIdentityMatches(
       address: manifest.address,
       providerRequestVersion: manifest.providerRequestVersion
     });
-    return recomputed === manifest.key && manifest.key === expected.logicalKey;
+    return recomputed === manifest.key &&
+      manifest.key === taskLogicalKey &&
+      taskLogicalKey === expected.logicalKey;
   } catch {
     return false;
   }
@@ -1720,7 +1759,14 @@ async function checkpointUnifiedOrderedTask(
         String(row.artifact_kind) !== expected.artifactKind ||
         String(row.artifact_schema_version) !==
           expected.artifactSchemaVersion ||
-        !orderedArtifactIdentityMatches(row.artifact_json, expected) ||
+        !orderedArtifactIdentityMatches({
+          artifact: row.artifact_json,
+          expected,
+          taskKind: row.task_kind,
+          taskLogicalKey: row.task_logical_key,
+          artifactKind: row.artifact_kind,
+          artifactSchemaVersion: row.artifact_schema_version
+        }) ||
         resultBytes !== expected.resultBytes ||
         fingerprintCanonicalArtifact(row.artifact_json) !==
           String(row.artifact_sha256) ||

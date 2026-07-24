@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-24
+last_verified: 2026-07-25
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -60,9 +60,15 @@ audit artifacts. It is not a second source of current product truth.
   accepted-attempt, and artifact identity. A ready next head has released its
   provider reservation, remains traversal-actionable, and does not trigger a
   provider wake; wake happens only after a newly admitted planned head commits.
+  A wake that arrives during an active provider slot is latched per slot;
+  repeated wakes coalesce, the slot restarts once immediately, and drain waits
+  through that restart.
   Coordinator application and prefix commit both recompute address-history
   identity and bind it to the exact planner kind and logical key before
-  mutation. Arrival order cannot change the canonical traversal result.
+  mutation. Any address-history marker at the checkpoint boundary requires the
+  complete expected/stored task, artifact kind/schema, and canonical-key tuple;
+  generic identity handling applies only when no such marker exists. Arrival
+  order cannot change the canonical traversal result.
   Adaptive rolling admission, provider-group selection, and capacity control
   remain later work.
 - Direct history and direct hard evidence run in parallel with traversal, but

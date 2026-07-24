@@ -69,6 +69,47 @@ describe("Unified event-driven provider pool", () => {
     await pool.waitForIdle();
   });
 
+  it("latches and coalesces wakes while an idle cycle is still active", async () => {
+    const firstIdle = deferred<{ claimed: boolean }>();
+    let admitted = false;
+    let claims = 0;
+    const runCycle = vi.fn(async () => {
+      if (runCycle.mock.calls.length === 1) return firstIdle.promise;
+      if (admitted) {
+        admitted = false;
+        claims += 1;
+        return { claimed: true };
+      }
+      return { claimed: false };
+    });
+    const pool = createUnifiedProviderPool({
+      slots: 1,
+      runCycle,
+      onError: vi.fn()
+    });
+
+    pool.wake();
+    await vi.waitFor(() => expect(runCycle).toHaveBeenCalledTimes(1));
+    admitted = true;
+    pool.wake();
+    pool.wake();
+    pool.wake();
+    const drained = pool.waitForIdle();
+    let drainFinished = false;
+    void drained.then(() => {
+      drainFinished = true;
+    });
+    await Promise.resolve();
+    expect(drainFinished).toBe(false);
+
+    firstIdle.resolve({ claimed: false });
+    await drained;
+
+    expect(claims).toBe(1);
+    expect(runCycle).toHaveBeenCalledTimes(3);
+    expect(pool.snapshot().activeSlots).toBe(0);
+  });
+
   it("stops without starting another claim", async () => {
     const pending = deferred<{ claimed: boolean }>();
     const runCycle = vi.fn(async () => pending.promise);

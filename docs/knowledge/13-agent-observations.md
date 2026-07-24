@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-24
+last_verified: 2026-07-25
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -327,9 +327,14 @@ or swap evidence across comparable runs, not one host percentage.
 
 Agent mistake: a correctly hashed address-history manifest could be selected
 by its own embedded key even when the planner row belonged to another logical
-task.
+task. A follow-up implementation then treated a non-address expected task kind
+as permission to skip identity validation even when the accepted artifact
+itself was an address-history manifest.
 
 Correct rule: before traversal mutation or ordered commit, recompute the
 manifest key from authoritative identity fields and require task kind, planner
-logical key, embedded key, and recomputed key to agree. Content integrity does
-not substitute for contextual identity binding.
+logical key, embedded key, and recomputed key to agree. At the checkpoint
+boundary, any address-history marker requires the complete expected task,
+stored task, artifact kind/schema, and canonical-key tuple. Specialized
+validation may be skipped only for a genuinely marker-free generic artifact.
+Content integrity does not substitute for contextual identity binding.

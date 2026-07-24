@@ -221,7 +221,21 @@ describe("Unified ordered checkpoint commit", () => {
     )).toBe(true);
   });
 
-  it("rejects an accepted manifest for another logical identity before checkpoint mutation", async () => {
+  it.each([
+    {
+      name: "another logical identity",
+      taskKind: "address_history",
+      acceptedAddress: "TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP"
+    },
+    {
+      name: "a non-address task kind",
+      taskKind: "direct_history",
+      acceptedAddress: "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9"
+    }
+  ])("rejects an accepted address manifest for $name before checkpoint mutation", async ({
+    taskKind,
+    acceptedAddress
+  }) => {
     const priorHead = "a".repeat(64);
     const identity = (address: string) => ({
       chain: "tron" as const,
@@ -241,12 +255,12 @@ describe("Unified ordered checkpoint commit", () => {
     const manifestA = buildAddressHistoryManifest(
       identity("TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9")
     );
-    const manifestB = buildAddressHistoryManifest(
-      identity("TQrNKbdG7LwwQ2FqD6iHgvsNJeaVKD7NzP")
+    const acceptedManifest = buildAddressHistoryManifest(
+      identity(acceptedAddress)
     );
-    const artifactSha256 = fingerprintCanonicalArtifact(manifestB);
+    const artifactSha256 = fingerprintCanonicalArtifact(acceptedManifest);
     const resultBytes = Buffer.byteLength(
-      canonicalizeArtifactJson(manifestB)
+      canonicalizeArtifactJson(acceptedManifest)
     );
     let checkpointMutated = false;
     const client: UnifiedQueryable = {
@@ -295,7 +309,7 @@ describe("Unified ordered checkpoint commit", () => {
               planner_state: "ready",
               result_bytes: resultBytes,
               task_id: "history-a",
-              task_kind: "address_history",
+              task_kind: taskKind,
               task_logical_key: manifestA.key,
               task_status: "COMPLETED",
               accepted_attempt_id: "attempt-history-a",
@@ -304,7 +318,7 @@ describe("Unified ordered checkpoint commit", () => {
               artifact_sha256: artifactSha256,
               artifact_kind: "address_history_manifest",
               artifact_schema_version: "1",
-              artifact_json: manifestB
+              artifact_json: acceptedManifest
             }]
           };
         }
@@ -349,7 +363,7 @@ describe("Unified ordered checkpoint commit", () => {
           logicalKey: manifestA.key,
           acceptedAttemptId: "attempt-history-a",
           resultBytes,
-          taskKind: "address_history",
+          taskKind,
           artifactKind: "address_history_manifest",
           artifactSchemaVersion: "1"
         }],

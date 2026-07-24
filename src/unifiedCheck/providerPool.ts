@@ -17,6 +17,7 @@ export function createUnifiedProviderPool(input: {
   let stopped = false;
   const active: Array<Promise<void> | null> =
     Array.from({ length: input.slots }, () => null);
+  const pendingWake = Array.from({ length: input.slots }, () => false);
   const idleWaiters = new Set<() => void>();
 
   const activeCount = () => active.filter(Boolean).length;
@@ -40,6 +41,12 @@ export function createUnifiedProviderPool(input: {
       .finally(() => {
         if (active[slotId] === running) {
           active[slotId] = null;
+          if (!stopped && pendingWake[slotId]) {
+            pendingWake[slotId] = false;
+            start(slotId);
+            return;
+          }
+          pendingWake[slotId] = false;
           notify();
         }
       });
@@ -49,8 +56,13 @@ export function createUnifiedProviderPool(input: {
 
   return {
     wake() {
+      if (stopped) return;
       for (let slotId = 0; slotId < input.slots; slotId += 1) {
-        start(slotId);
+        if (active[slotId] === null) {
+          start(slotId);
+        } else {
+          pendingWake[slotId] = true;
+        }
       }
     },
     waitForIdle(): Promise<void> {
@@ -59,6 +71,7 @@ export function createUnifiedProviderPool(input: {
     },
     async stop(): Promise<void> {
       stopped = true;
+      pendingWake.fill(false);
       await Promise.allSettled(active.filter(
         (value): value is Promise<void> => value !== null
       ));

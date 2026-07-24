@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-24
+last_verified: 2026-07-25
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -77,7 +77,10 @@ canonical sequence. The V2 checkpoint/delta head and exact planner prefix
 commit atomically; a gap is never skipped. A manifest is applicable only when
 its task kind, planner logical key, stored key, and key recomputed from
 chain/snapshot/token/address/provider-request identity all match. Swapped or
-key-tampered manifests fail before a traversal delta. Previously committed
+key-tampered manifests fail before a traversal delta. If the expectation,
+stored task, artifact metadata, or artifact body marks address-history data,
+the checkpoint requires the complete address-history tuple; a contradictory
+non-address task kind cannot downgrade that validation. Previously committed
 address manifests are loaded by exact task identity and remain reusable by
 later funding states.
 

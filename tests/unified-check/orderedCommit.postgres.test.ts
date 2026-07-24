@@ -547,6 +547,29 @@ postgresDescribe("Unified ordered commit", () => {
     });
   });
 
+  it("rolls back when a non-address task carries an address-history manifest", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await db.query(
+        "update unified_check_tasks set kind = 'direct_history' where id = 'history-1'"
+      );
+
+      await expect(checkpointUnifiedTask(host, commitInput({
+        ...entry,
+        taskKind: "direct_history"
+      }))).rejects.toThrow("unified_ordered_commit_prefix_mismatch");
+      expect((await db.query(
+        "select status, checkpoint_json from unified_check_tasks where id = 'traversal-1'"
+      )).rows[0]).toMatchObject({
+        status: "LEASED",
+        checkpoint_json: { deltaHeadSha256: OLD_HEAD }
+      });
+      expect((await db.query(
+        "select planner_state from unified_check_planner_entries where task_id = 'history-1'"
+      )).rows[0]?.planner_state).toBe("ready");
+    });
+  });
+
   it("rejects a noncontinuous expectation before mutating state", async () => {
     await withScenario(async ({ db, host }) => {
       const first = await setupCommit(db);

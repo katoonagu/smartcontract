@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-24
+last_verified: 2026-07-25
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -61,6 +61,9 @@ The event-driven provider pool has four slots when four keys are configured.
 A dense run can use all idle slots, but run-aware claiming preserves progress
 opportunities for later interactive runs. Direct history and direct hard
 evidence can run alongside traversal; they still cannot finalize or deliver.
+A wake received while a slot is still finishing its active cycle is latched
+per slot. Repeated wakes coalesce into one immediate restart, and pool drain
+does not report idle between that active cycle and its latched restart.
 
 Traversal checkpoints use a versioned V2 head plus immutable delta/chunk
 artifacts. They do not copy the growing frontier, visited set, page inventory,
@@ -113,9 +116,12 @@ provider wake. A newly admitted planned head wakes the provider pool only after
 commit. Before any traversal delta or planner commit, both the coordinator and
 checkpoint transaction recompute an address-history manifest key from its
 authoritative identity fields and require it to match the exact planner task
-kind and logical key. Committed manifests remain reusable without duplicate
-provider work. Adaptive rolling admission, provider-group selection, and the
-capacity controller remain later steps.
+kind and logical key. At the checkpoint boundary, any address-history marker
+requires the complete expected task, stored task, artifact kind/schema, and
+canonical key tuple; only marker-free generic artifacts bypass these
+address-specific semantics. Committed manifests remain reusable without
+duplicate provider work. Adaptive rolling admission, provider-group selection,
+and the capacity controller remain later steps.
 
 ## Remaining Operational Work
 
