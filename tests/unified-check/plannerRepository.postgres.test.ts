@@ -210,6 +210,44 @@ postgresDescribe("Unified ordered planner repository", () => {
            from unified_check_tasks
           where run_id = 'run-1' and kind in ('aaa','zzz')`
       )).rows[0]?.count).toBe(0);
+
+      await admin.query(
+        `insert into unified_check_tasks (
+          id, run_id, kind, status, priority_lane, logical_key, checkpoint_json
+        ) values (
+          'same-run-owned','run-1','original','QUEUED','repair','identity-a',
+          '{"version":"original-v1"}'::jsonb
+        )`
+      );
+      const originalTask = (await admin.query(
+        `select id, run_id, kind, status, priority_lane, logical_key,
+                checkpoint_json, attempt, accepted_attempt_id
+           from unified_check_tasks
+          where id = 'same-run-owned'`
+      )).rows[0];
+      await expect(planUnifiedOrderedTasks(transactionHost(), {
+        runId: "run-1",
+        tasks: [
+          task("same-run-rolled-back-first", "bbb", "main"),
+          task("same-run-owned", "ccc", "identity-b")
+        ]
+      })).rejects.toThrow();
+      expect((await admin.query(
+        `select count(*)::int as count
+           from unified_check_tasks
+          where run_id = 'run-1' and kind in ('bbb','ccc')`
+      )).rows[0]?.count).toBe(0);
+      expect((await admin.query(
+        `select count(*)::int as count
+           from unified_check_planner_entries
+          where run_id = 'run-1'`
+      )).rows[0]?.count).toBe(6);
+      expect((await admin.query(
+        `select id, run_id, kind, status, priority_lane, logical_key,
+                checkpoint_json, attempt, accepted_attempt_id
+           from unified_check_tasks
+          where id = 'same-run-owned'`
+      )).rows[0]).toEqual(originalTask);
     } finally {
       await admin.query(`drop schema if exists "${schema}" cascade`);
       admin.release();
