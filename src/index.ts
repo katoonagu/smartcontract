@@ -70,9 +70,9 @@ import {
 } from "./runtime/startupSchedule";
 import { closeDb, createDb } from "./storage/db";
 import {
-  REQUIRED_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION,
   SCHEMA_032_FILENAME,
+  SCHEMA_033_FILENAME,
+  SCHEMA_033_VERSION,
   checksumMigrationBytes,
   verifyRequiredSchema033,
   type Schema033Verification
@@ -249,7 +249,7 @@ try {
   );
   const schema032Checksum = await checksumMigrationBytes(schema032MigrationBytes);
   const requiredMigrationBytes = await readFile(
-    new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
+    new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)
   );
   const requiredChecksum = await checksumMigrationBytes(requiredMigrationBytes);
   forensicRuntimeOrchestration = createForensicRuntimeOrchestration({
@@ -1240,7 +1240,7 @@ const bot = createBot(config, db, tronClient, {
         scoringPolicyVersion: SCORING_POLICY_V4.version,
         attributionPolicyVersion: SELECTED_ATTRIBUTION_POLICY.version,
         runtimeCommit: runtimeVersion.gitCommitSha,
-        schemaVersion: REQUIRED_SCHEMA_VERSION
+        schemaVersion: SCHEMA_033_VERSION
       },
       freezeLabelDataset: async ({
         snapshotHash,

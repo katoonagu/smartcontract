@@ -128,6 +128,6 @@ describe("schema-verified startup gate", () => {
     expect(providerAt).toBeGreaterThan(closeAt);
     expect(botAt).toBeGreaterThan(providerAt);
     expect(workersAt).toBeGreaterThan(botAt);
-    expect(source).toContain("new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)");
+    expect(source).toContain("new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)");
   });
 });

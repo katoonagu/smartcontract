@@ -24,7 +24,7 @@ async function installApprovalBaseline(client: pg.PoolClient): Promise<void> {
 }
 
 postgresDescribe("migration 034 PostgreSQL acceptance", () => {
-  it("applies after the tracked 032/033 receipt chain and enforces the adaptive planner", async () => {
+  it("applies after the tracked 032/033 receipt chain, preserves 033 lineage, and enforces the adaptive planner", async () => {
     expect(REQUIRED_SCHEMA_VERSION).toBe(34);
     expect(REQUIRED_SCHEMA_FILENAME).toBe("034_unified_check_adaptive_planner.sql");
 
@@ -105,6 +105,42 @@ postgresDescribe("migration 034 PostgreSQL acceptance", () => {
       expect(names).toContain("unified_check_planner_entries_ready_prefix_idx");
       expect(names).toContain("unified_check_planner_entries_admitted_task_idx");
       expect(names).toContain("unified_check_planner_entries_buffer_aggregate_idx");
+      const foreignKeys = await client.query(`select c.conname, pg_get_constraintdef(c.oid) as definition,
+        fn.nspname as referenced_schema, c.confmatchtype, c.confupdtype, c.confdeltype,
+        c.condeferrable, c.condeferred
+        from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace n on n.oid = t.relnamespace
+        join pg_class ft on ft.oid = c.confrelid
+        join pg_namespace fn on fn.oid = ft.relnamespace
+        where n.nspname = $1 and t.relname = 'unified_check_planner_entries'
+          and c.conname = any($2::text[])
+        order by c.conname`, [schema, [
+        "unified_check_planner_entries_run_id_fkey",
+        "unified_check_planner_entries_run_task_fk"
+      ]]);
+      expect(foreignKeys.rows).toEqual([
+        {
+          conname: "unified_check_planner_entries_run_id_fkey",
+          definition: "FOREIGN KEY (run_id) REFERENCES unified_check_runs(id)",
+          referenced_schema: schema,
+          confmatchtype: "s",
+          confupdtype: "a",
+          confdeltype: "a",
+          condeferrable: false,
+          condeferred: false
+        },
+        {
+          conname: "unified_check_planner_entries_run_task_fk",
+          definition: "FOREIGN KEY (run_id, task_id) REFERENCES unified_check_tasks(run_id, id)",
+          referenced_schema: schema,
+          confmatchtype: "s",
+          confupdtype: "a",
+          confdeltype: "a",
+          condeferrable: false,
+          condeferred: false
+        }
+      ]);
       await client.query(`insert into unified_check_planner_entries
         (run_id, canonical_sequence, task_id, planner_state)
         values ('run-a', 0, 'task-a', 'planned')`);

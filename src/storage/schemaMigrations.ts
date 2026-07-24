@@ -433,9 +433,25 @@ function unifiedCatalogHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+const SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES = new Set([
+  "unified_check_runs.fairness_owner_id"
+]);
+const SCHEMA_034_CONSTRAINTS_ADDED_TO_033_TABLES = new Set([
+  "unified_check_runs_fairness_owner_not_blank_check",
+  "unified_check_tasks_run_id_id_key"
+]);
+
 export async function verifySchema033Structure(
   queryable: SchemaQueryable,
   options?: SchemaOptions
+): Promise<void> {
+  await verifySchema033StructureInternal(queryable, options, false);
+}
+
+async function verifySchema033StructureInternal(
+  queryable: SchemaQueryable,
+  options: SchemaOptions | undefined,
+  allowSchema034Additions: boolean
 ): Promise<void> {
   const schemaName = resolveSchemaName(options);
   const tables = await queryable.query(
@@ -515,8 +531,14 @@ export async function verifySchema033Structure(
       ])
     );
   const actualHash = unifiedCatalogHash({
-    columns: columns.rows,
-    constraints: constraints.rows,
+    columns: allowSchema034Additions
+      ? columns.rows.filter((row) => !SCHEMA_034_COLUMNS_ADDED_TO_033_TABLES.has(
+        `${row.table_name}.${row.column_name}`
+      ))
+      : columns.rows,
+    constraints: allowSchema034Additions
+      ? constraints.rows.filter((row) => !SCHEMA_034_CONSTRAINTS_ADDED_TO_033_TABLES.has(String(row.conname)))
+      : constraints.rows,
     indexes: indexes.rows.map(normalizeSchema),
     triggers: triggers.rows.map(normalizeSchema),
     functions: functions.rows
@@ -554,6 +576,23 @@ export async function verifyRequiredSchema033(
     shortChecksum: expectedChecksum.slice(0, 12),
     schema032ChecksumSha256
   };
+}
+
+async function verifySchema033LineageForSchema034(
+  queryable: SchemaQueryable,
+  expectedChecksum: string,
+  schema032ChecksumSha256: string,
+  schemaName: string
+): Promise<void> {
+  if (!CHECKSUM_PATTERN.test(expectedChecksum)) fail("schema_033_invalid_expected_checksum");
+  await verifyRequiredSchema032(queryable, schema032ChecksumSha256, { schemaName });
+  await verifyTrackedMigrationReceipt(queryable, {
+    schemaName,
+    version: SCHEMA_033_VERSION,
+    filename: SCHEMA_033_FILENAME,
+    checksumSha256: expectedChecksum
+  });
+  await verifySchema033StructureInternal(queryable, { schemaName }, true);
 }
 
 const REQUIRED_SCHEMA_034_COLUMNS = [
@@ -629,6 +668,12 @@ export async function verifySchema034Structure(
     `select t.relname as table_name, c.conname, c.contype, c.convalidated,
             pg_get_constraintdef(c.oid) as definition,
             ft.relname as foreign_table_name,
+            fn.nspname as foreign_schema_name,
+            c.confmatchtype as foreign_match_type,
+            c.confupdtype as foreign_update_type,
+            c.confdeltype as foreign_delete_type,
+            c.condeferrable,
+            c.condeferred,
             array(
               select a.attname
                 from unnest(c.conkey) with ordinality as key_columns(attnum, ordinality)
@@ -645,6 +690,7 @@ export async function verifySchema034Structure(
        join pg_class t on t.oid = c.conrelid
        join pg_namespace n on n.oid = t.relnamespace
        left join pg_class ft on ft.oid = c.confrelid
+       left join pg_namespace fn on fn.oid = ft.relnamespace
       where n.nspname = $1 and t.relname in ('unified_check_runs', 'unified_check_tasks', 'unified_check_planner_entries')
       order by t.relname, c.conname`,
     [schemaName]
@@ -686,11 +732,23 @@ export async function verifySchema034Structure(
   const taskForeignKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_task_fk");
   if (
     runForeignKey?.foreign_table_name !== "unified_check_runs" ||
+    runForeignKey.foreign_schema_name !== schemaName ||
     JSON.stringify(runForeignKey.columns) !== JSON.stringify(["run_id"]) ||
     JSON.stringify(runForeignKey.foreign_columns) !== JSON.stringify(["id"]) ||
+    runForeignKey.foreign_match_type !== "s" ||
+    runForeignKey.foreign_update_type !== "a" ||
+    runForeignKey.foreign_delete_type !== "a" ||
+    runForeignKey.condeferrable !== false ||
+    runForeignKey.condeferred !== false ||
     taskForeignKey?.foreign_table_name !== "unified_check_tasks" ||
+    taskForeignKey.foreign_schema_name !== schemaName ||
     JSON.stringify(taskForeignKey.columns) !== JSON.stringify(["run_id", "task_id"]) ||
-    JSON.stringify(taskForeignKey.foreign_columns) !== JSON.stringify(["run_id", "id"])
+    JSON.stringify(taskForeignKey.foreign_columns) !== JSON.stringify(["run_id", "id"]) ||
+    taskForeignKey.foreign_match_type !== "s" ||
+    taskForeignKey.foreign_update_type !== "a" ||
+    taskForeignKey.foreign_delete_type !== "a" ||
+    taskForeignKey.condeferrable !== false ||
+    taskForeignKey.condeferred !== false
   ) fail("schema_034_foreign_key_mismatch");
   const indexes = await queryable.query(
     `select indexname, indexdef from pg_indexes
@@ -717,7 +775,12 @@ export async function verifyRequiredSchema034(
 ): Promise<Schema034Verification> {
   if (!CHECKSUM_PATTERN.test(expectedChecksum)) fail("schema_034_invalid_expected_checksum");
   const schemaName = resolveSchemaName(options);
-  await verifyRequiredSchema033(queryable, schema033ChecksumSha256, schema032ChecksumSha256, { schemaName });
+  await verifySchema033LineageForSchema034(
+    queryable,
+    schema033ChecksumSha256,
+    schema032ChecksumSha256,
+    schemaName
+  );
   await verifyTrackedMigrationReceipt(queryable, {
     schemaName,
     version: SCHEMA_034_VERSION,

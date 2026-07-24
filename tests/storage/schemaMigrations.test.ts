@@ -160,7 +160,11 @@ const PLANNER_CONSTRAINTS = [
   ["unified_check_planner_entries_timestamp_order_check", "unified_check_planner_entries", "c", "CHECK ((((admitted_at IS NULL) OR (admitted_at >= planned_at)) AND ((ready_at IS NULL) OR (ready_at >= admitted_at)) AND ((committed_at IS NULL) OR (committed_at >= ready_at))))"]
 ] as const;
 
-function schema034Db(options?: { stateShape?: string }): Db {
+function schema034Db(options?: {
+  stateShape?: string;
+  foreignSchema?: string;
+  taskForeignKeyDeleteAction?: string;
+}): Db {
   let informationSchemaCall = 0;
   return {
     query: async (sql: string) => {
@@ -204,7 +208,20 @@ function schema034Db(options?: { stateShape?: string }): Db {
               ? ["id"]
               : conname === "unified_check_planner_entries_run_task_fk"
                 ? ["run_id", "id"]
-                : null
+                : null,
+            foreign_schema_name: conname === "unified_check_planner_entries_run_id_fkey" ||
+              conname === "unified_check_planner_entries_run_task_fk"
+              ? options?.foreignSchema ?? "public"
+              : null,
+            foreign_match_type: conname === "unified_check_planner_entries_run_id_fkey" ||
+              conname === "unified_check_planner_entries_run_task_fk" ? "s" : null,
+            foreign_update_type: conname === "unified_check_planner_entries_run_id_fkey" ||
+              conname === "unified_check_planner_entries_run_task_fk" ? "a" : null,
+            foreign_delete_type: conname === "unified_check_planner_entries_run_task_fk"
+              ? options?.taskForeignKeyDeleteAction ?? "a"
+              : conname === "unified_check_planner_entries_run_id_fkey" ? "a" : null,
+            condeferrable: false,
+            condeferred: false
           }))
         };
       }
@@ -453,6 +470,15 @@ describe("verified schema 034 metadata", () => {
     await expect(verifySchema034Structure(schema034Db())).resolves.toBeUndefined();
     await expect(verifySchema034Structure(schema034Db({ stateShape: "CHECK (true)" }))).rejects.toThrow(
       "schema_034_constraint_definition_mismatch"
+    );
+  });
+
+  it("rejects cross-schema and cascading planner foreign keys", async () => {
+    await expect(verifySchema034Structure(schema034Db({ foreignSchema: "other_schema" }))).rejects.toThrow(
+      "schema_034_foreign_key_mismatch"
+    );
+    await expect(verifySchema034Structure(schema034Db({ taskForeignKeyDeleteAction: "c" }))).rejects.toThrow(
+      "schema_034_foreign_key_mismatch"
     );
   });
 
