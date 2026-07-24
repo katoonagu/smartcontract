@@ -129,9 +129,11 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
 - Startup verifies the exact migration-034 checksum and the verified
   schema-032/schema-033 predecessor checksums and receipts before provider,
   bot, or worker initialization.
-- Existing release receipts and protected promotion/canary inputs remain
-  pinned to schema 033 until Task 7. They cannot promote the schema-034
-  candidate without that explicit update.
+- Current release receipts and protected promotion/canary inputs require
+  schema 034. They retain exact schema-033 checksum/catalog evidence as the
+  immutable predecessor and bind clean/clone schema-034 verification receipts.
+- The protected migration sequence applies and verifies through schema 034;
+  an unknown on-disk migration 035+ or database receipt 035+ fails closed.
 - Candidate scope uses exact tracked paths for the Golden lock; unknown files
   below the locked root are rejected.
 - Final full suite, typecheck, Golden verify, comparator, RU/EN acceptance, and

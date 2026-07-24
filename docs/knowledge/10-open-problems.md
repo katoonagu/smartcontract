@@ -28,8 +28,6 @@ candidate, or explicit production authority:
 
 - run the fixed final gate set once and create exact-SHA write-once receipts;
 - obtain explicit production GO and protected action authority;
-- update the protected release receipts and promotion/canary schema identity
-  from 033 to 034 in Task 7;
 - create the production backup, apply/verify through schema 034, start the
   candidate, and activate the Unified generation fence through the updated
   protected flow;
@@ -55,7 +53,8 @@ dense run can still expose one claimable ordered history while the provider
 pool has four configured slots. This is now an admission-policy limit rather
 than a discovery or commit-ordering gap.
 
-Migration 034, stable fairness-owner persistence, run-locked planning,
+Migration 034, its protected release/schema gates, stable fairness-owner
+persistence, run-locked planning,
 planner-aware claiming, atomic ordered acceptance, committed-manifest reuse,
 and barrier ordered commit are implemented. The remaining target is adaptive
 rolling admission and capacity control over the same tasks, planner rows,

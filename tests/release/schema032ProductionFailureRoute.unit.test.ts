@@ -419,6 +419,7 @@ describe("schema 032 production failure route", () => {
           preparedSettlementSha256: digest("9"),
           migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
           migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
+          migration034BytesChecksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
           result: "failed_after_attempt",
           failedStep,
           completedStages
@@ -526,6 +527,7 @@ describe("schema 032 production failure route", () => {
         lockAcquiredAt: attemptValue.lockAcquiredAt,
         migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
         migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
+        migration034BytesChecksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
         result: "failed_after_attempt" as const, failedStep: "first_migration" as const,
         completedStages: [] as [], failureArtifact
       };

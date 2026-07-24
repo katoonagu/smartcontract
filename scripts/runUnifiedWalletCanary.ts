@@ -13,7 +13,8 @@ import {
   checksumMigrationBytes,
   SCHEMA_032_FILENAME,
   SCHEMA_033_FILENAME,
-  verifyRequiredSchema033
+  SCHEMA_034_FILENAME,
+  verifyRequiredSchema034
 } from "../src/storage/schemaMigrations";
 import {
   buildUnifiedCanaryProviderConfiguration,
@@ -119,10 +120,14 @@ async function main(): Promise<void> {
     const schema033Bytes = await readFile(
       new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)
     );
-    const schemaVerification = await verifyRequiredSchema033(
+    const schema034Bytes = await readFile(
+      new URL(`../migrations/${SCHEMA_034_FILENAME}`, import.meta.url)
+    );
+    const schemaVerification = await verifyRequiredSchema034(
       db,
-      await checksumMigrationBytes(schema033Bytes),
-      await checksumMigrationBytes(schema032Bytes)
+      await checksumMigrationBytes(schema034Bytes),
+      await checksumMigrationBytes(schema032Bytes),
+      await checksumMigrationBytes(schema033Bytes)
     );
     const activeGeneration = await getActiveCheckGeneration(db);
     if (

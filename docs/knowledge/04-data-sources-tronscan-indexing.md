@@ -109,3 +109,8 @@ The new predicates are deliberately not wired into production closure or
 exact scores until P1 blind review/adjudication. Frozen real-address
 performance replay is also pending because the earlier live runtime did not
 persist canonical provider response pages.
+
+The protected candidate path now verifies the exact schema-034 planner
+migration and its schema-033 predecessor before canary selection. This release
+identity change does not alter provider coverage, traversal closure, labels, or
+scoring policy; adaptive rolling admission remains pending.

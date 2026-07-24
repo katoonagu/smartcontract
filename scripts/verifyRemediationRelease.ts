@@ -244,8 +244,17 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "docs/knowledge/11-glossary.md",
   "docs/superpowers/plans/2026-07-23-tron-usdt-golden-pilot-v2.md",
   "docs/superpowers/plans/2026-07-23-unified-wallet-check.md",
+  "docs/superpowers/plans/2026-07-24-unified-wallet-check-adaptive-capacity-fairness.md",
+  "docs/superpowers/plans/2026-07-24-unified-wallet-check-durable-ordered-planner.md",
+  "docs/superpowers/plans/2026-07-24-unified-wallet-check-observability-benchmark-rollout.md",
+  "docs/superpowers/plans/2026-07-24-unified-wallet-check-p0-performance.md",
+  "docs/superpowers/plans/2026-07-24-unified-wallet-check-p1-boundaries.md",
+  "docs/superpowers/plans/2026-07-24-unified-wallet-check-p2-observability-benchmark.md",
   "docs/superpowers/specs/2026-07-23-unified-wallet-check-golden-pilot-v2-design.md",
+  "docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md",
+  "docs/superpowers/specs/2026-07-24-unified-wallet-check-traversal-performance-design.md",
   "migrations/033_unified_wallet_check.sql",
+  "migrations/034_unified_check_adaptive_planner.sql",
   "scripts/adjudicateTronUsdtGoldenV2.ts",
   "scripts/captureTronUsdtGoldenV2.ts",
   "scripts/compareUnifiedWalletGolden.ts",
@@ -268,9 +277,11 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "src/release/unifiedReleaseGateReceipt.ts",
   "src/runtime/startupSchedule.ts",
   "src/runtime/startupSchemaGate.ts",
+  "src/runtime/runtimeVersion.ts",
   "src/storage/repositories.ts",
   "src/storage/schemaMigrations.ts",
   "src/tron/tronscanScheduler.ts",
+  "src/tron/tronClient.ts",
   "src/wallet/metrics.ts",
   "tests/admin/adminConsole.test.ts",
   "tests/admin/adminServer.test.ts",
@@ -280,12 +291,17 @@ const UNIFIED_WALLET_CANDIDATE_ALLOWED_PATHS = new Set([
   "tests/release/releaseGateEvidencePolicy.unit.test.ts",
   "tests/release/unifiedReleaseGateReceipt.unit.test.ts",
   "tests/runtime/runtimeVersion033.test.ts",
+  "tests/runtime/runtimeVersion034.test.ts",
   "tests/runtime/startupSchedule.test.ts",
   "tests/runtime/startupSchemaGate.test.ts",
+  "tests/scripts/schema033Compatibility.test.ts",
   "tests/storage/migration032.postgres.test.ts",
   "tests/storage/migration033.postgres.test.ts",
+  "tests/storage/migration034.postgres.test.ts",
   "tests/storage/schemaMigrations.test.ts",
   "tests/storage/unifiedCheck.postgres.test.ts",
+  "tests/tron/tronClient.test.ts",
+  "tests/tron/tronscanScheduler.test.ts",
   "tests/wallet/metrics.test.ts"
 ]);
 
@@ -1736,14 +1752,24 @@ export async function verifyPreReleaseConcreteEvidenceV2(
       cleanBytes,
       cloneBytes
     );
-    if (unifiedRelease === null) throw new Error("schema 033 release evidence requires Unified gate receipt");
-    const clean = parseJson(cleanBytes) as { schema033?: { verificationReceiptSha256?: unknown } };
-    const clone = parseJson(cloneBytes) as { schema033?: { verificationReceiptSha256?: unknown } };
+    if (unifiedRelease === null) throw new Error("schema 034 release evidence requires Unified gate receipt");
+    const clean = parseJson(cleanBytes) as {
+      schema033?: { verificationReceiptSha256?: unknown };
+      schema034?: { verificationReceiptSha256?: unknown };
+    };
+    const clone = parseJson(cloneBytes) as {
+      schema033?: { verificationReceiptSha256?: unknown };
+      schema034?: { verificationReceiptSha256?: unknown };
+    };
     if (clean.schema033?.verificationReceiptSha256
           !== unifiedRelease.schema033.cleanVerificationReceiptSha256
         || clone.schema033?.verificationReceiptSha256
-          !== unifiedRelease.schema033.cloneVerificationReceiptSha256) {
-      throw new Error("Unified release receipt schema 033 proof mismatch");
+          !== unifiedRelease.schema033.cloneVerificationReceiptSha256
+        || clean.schema034?.verificationReceiptSha256
+          !== unifiedRelease.schema034.cleanVerificationReceiptSha256
+        || clone.schema034?.verificationReceiptSha256
+          !== unifiedRelease.schema034.cloneVerificationReceiptSha256) {
+      throw new Error("Unified release receipt schema 034 proof mismatch");
     }
   }
 

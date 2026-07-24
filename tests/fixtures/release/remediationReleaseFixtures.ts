@@ -1007,6 +1007,13 @@ export type Schema032ReleaseEvidenceV1 = {
     catalogSha256: string;
     verificationReceiptSha256: string;
   };
+  schema034: {
+    version: 34;
+    migrationFilename: "034_unified_check_adaptive_planner.sql";
+    checksumSha256: string;
+    catalogSha256: string;
+    verificationReceiptSha256: string;
+  };
   firstApply: "applied" | "already_verified";
   secondApply: "already_verified";
 };
@@ -1027,6 +1034,13 @@ export function buildSchema032ReleaseEvidence(): Schema032ReleaseEvidenceV1 {
       checksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
       verificationReceiptSha256: "e".repeat(64)
+    },
+    schema034: {
+      version: 34,
+      migrationFilename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      verificationReceiptSha256: "f".repeat(64)
     },
     firstApply: "applied",
     secondApply: "already_verified"
@@ -1083,7 +1097,7 @@ export function buildUnifiedReleaseGateEvidenceFixture(
       "npm run unified:golden:compare -- --golden docs/audit/2026-07-system-audit/golden-v2/locked --candidate artifacts/unified-wallet-replay"],
     ["presentation_acceptance", "npx vitest run tests/unified-check/presentation.golden.test.ts"],
     ["migration_startup_rehearsal",
-      "npx vitest run tests/storage/migration033.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"]
+      "npx vitest run tests/storage/migration034.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"]
   ].map(([id, command]) => ({
     id, command, exitCode: 0,
     outputSha256: "a".repeat(64),
@@ -1103,7 +1117,7 @@ export function buildUnifiedReleaseGateEvidenceFixture(
         comparator: "unified-wallet-comparator-v1",
         presentationManifest: "presentation-manifest-v1",
         renderer: "unified-telegram-renderer-v1",
-        schemaVersion: 33,
+        schemaVersion: 34,
         scoreAnchor: "score-anchor-v3",
         scoringPolicy: "scoring-signal-matrix-v4"
       },
@@ -1113,6 +1127,13 @@ export function buildUnifiedReleaseGateEvidenceFixture(
         catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
         cleanVerificationReceiptSha256: "e".repeat(64),
         cloneVerificationReceiptSha256: "e".repeat(64)
+      },
+      schema034: {
+        filename: "034_unified_check_adaptive_planner.sql",
+        checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+        catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+        cleanVerificationReceiptSha256: "f".repeat(64),
+        cloneVerificationReceiptSha256: "f".repeat(64)
       },
       replayRootSha256: "a".repeat(64),
       commands,

@@ -20,6 +20,7 @@ import {
 import {
   APPROVED_SCHEMA_032_CHECKSUM,
   APPROVED_SCHEMA_033_CHECKSUM,
+  APPROVED_SCHEMA_034_CHECKSUM,
   SCHEMA_032_DB_MIGRATE_TEMPLATE_SHA256,
   buildSchema032ClientConfig,
   buildSchema032DatabaseFingerprint,
@@ -34,10 +35,10 @@ import {
   type Schema032ReleaseEvidenceV1
 } from "./verifySchema032";
 import {
-  SCHEMA_033_FILENAME as RELEASE_SCHEMA_FILENAME,
-  SCHEMA_033_VERSION as RELEASE_SCHEMA_VERSION,
-  SCHEMA_034_FILENAME,
-  SCHEMA_034_VERSION,
+  SCHEMA_033_FILENAME,
+  SCHEMA_033_VERSION,
+  SCHEMA_034_FILENAME as RELEASE_SCHEMA_FILENAME,
+  SCHEMA_034_VERSION as RELEASE_SCHEMA_VERSION,
   SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
   SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
   applyVerifiedTrackedMigration,
@@ -87,6 +88,7 @@ const G13_SETTLEMENT_MARGIN_MS = 5 * 60_000;
 const MINIMUM_G13_CLAIM_VALIDITY_MS = MAXIMUM_G13_SEQUENCE_MS + G13_SETTLEMENT_MARGIN_MS;
 export const SCHEMA_032_PRODUCER_ADVISORY_LOCK = 320_032_500;
 export { APPROVED_SCHEMA_033_CHECKSUM };
+export { APPROVED_SCHEMA_034_CHECKSUM };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
 export const SCHEMA_032_SEQUENCE_FILES = Object.freeze({
@@ -339,11 +341,11 @@ export function validateSchema032CandidateRepositoryState(input: {
   if (!SHA40.test(input.candidateSha) || input.headSha !== input.candidateSha || input.status !== ""
       || !validNames || sorted.join("|") !== input.migrationFiles.join("|")
       || legacyReleaseFiles.filter((name) => name === REQUIRED_SCHEMA_FILENAME).length !== 1
+      || legacyReleaseFiles.filter((name) => name === SCHEMA_033_FILENAME).length !== 1
       || legacyReleaseFiles.filter((name) => name === RELEASE_SCHEMA_FILENAME).length !== 1
       || Math.max(...legacyReleaseFiles.map((name) => Number.parseInt(name.slice(0, 3), 10))) !== RELEASE_SCHEMA_VERSION
-      || deferredFiles.some((name) => name !== SCHEMA_034_FILENAME)
-      || deferredFiles.length > 1
-      || versions.some((version) => version > SCHEMA_034_VERSION)) {
+      || deferredFiles.length > 0
+      || versions.some((version) => version > RELEASE_SCHEMA_VERSION)) {
     fail("schema_032_sequence_candidate_repository_unverified");
   }
 }
@@ -370,9 +372,11 @@ export function validateControlledMigrationOutput(
     }
     const checksum = name === REQUIRED_SCHEMA_FILENAME
       ? APPROVED_SCHEMA_032_CHECKSUM
-      : name === RELEASE_SCHEMA_FILENAME
+      : name === SCHEMA_033_FILENAME
         ? APPROVED_SCHEMA_033_CHECKSUM
-        : null;
+        : name === RELEASE_SCHEMA_FILENAME
+          ? APPROVED_SCHEMA_034_CHECKSUM
+          : null;
     if (checksum === null) return true;
     const actions = sequence === "first"
       ? ["applied and verified", "already verified"]
@@ -988,6 +992,7 @@ async function runFixedMigrationInOwnedSession(
   try {
     await client.query("select set_config('statement_timeout', $1, false)", [`${MIGRATION_TIMEOUT_MS}ms`]);
     let requiredSchema032Checksum: string | undefined;
+    let requiredSchema033Checksum: string | undefined;
     for (const migrationFile of migrationFiles) {
       const migrationPath = new URL(`../migrations/${migrationFile}`, import.meta.url);
       const versionText = /^(\d+)_/u.exec(migrationFile)?.[1];
@@ -1002,13 +1007,20 @@ async function runFixedMigrationInOwnedSession(
         version,
         filename: migrationFile,
         migrationBytes: await readFile(migrationPath),
-        requiredSchema032Checksum
+        requiredSchema032Checksum,
+        requiredSchema033Checksum
       });
       if (version === REQUIRED_SCHEMA_VERSION) requiredSchema032Checksum = verification.checksumSha256;
-      if (version === RELEASE_SCHEMA_VERSION
-          && (migrationFile !== RELEASE_SCHEMA_FILENAME
+      if (version === SCHEMA_033_VERSION) requiredSchema033Checksum = verification.checksumSha256;
+      if (version === SCHEMA_033_VERSION
+          && (migrationFile !== SCHEMA_033_FILENAME
             || verification.checksumSha256 !== APPROVED_SCHEMA_033_CHECKSUM)) {
         fail("schema_033_checksum_mismatch");
+      }
+      if (version === RELEASE_SCHEMA_VERSION
+          && (migrationFile !== RELEASE_SCHEMA_FILENAME
+            || verification.checksumSha256 !== APPROVED_SCHEMA_034_CHECKSUM)) {
+        fail("schema_034_checksum_mismatch");
       }
       const action = verification.status === "applied" ? "applied and verified" : "already verified";
       lines.push(`Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`);
@@ -1836,15 +1848,19 @@ export async function runSchema032ReleaseSequence(
   const releaseMigrationFiles = schema032ReleaseMigrationFiles(repository.migrationFiles);
   const readMigrationBytes = testDependencies?.readMigrationBytes
     ?? ((filename: string) => readFile(new URL(`../migrations/${filename}`, import.meta.url)));
-  const [migrationBytes, releaseMigrationBytes] = await Promise.all([
+  const [migrationBytes, schema033MigrationBytes, releaseMigrationBytes] = await Promise.all([
     readMigrationBytes(REQUIRED_SCHEMA_FILENAME),
+    readMigrationBytes(SCHEMA_033_FILENAME),
     readMigrationBytes(RELEASE_SCHEMA_FILENAME)
   ]);
   if (await checksumMigrationBytes(migrationBytes) !== APPROVED_SCHEMA_032_CHECKSUM) {
     fail("schema_032_sequence_migration_checksum_mismatch");
   }
-  if (await checksumMigrationBytes(releaseMigrationBytes) !== APPROVED_SCHEMA_033_CHECKSUM) {
+  if (await checksumMigrationBytes(schema033MigrationBytes) !== APPROVED_SCHEMA_033_CHECKSUM) {
     fail("schema_033_sequence_migration_checksum_mismatch");
+  }
+  if (await checksumMigrationBytes(releaseMigrationBytes) !== APPROVED_SCHEMA_034_CHECKSUM) {
+    fail("schema_034_sequence_migration_checksum_mismatch");
   }
   const artifactRoot = await attestArtifactRoot(validated.artifactRoot, validated.databaseRole === "production");
   const existingProductionReceiptText = validated.databaseRole === "production"
@@ -1994,12 +2010,14 @@ export async function runSchema032ReleaseSequence(
         lockAcquiredAt,
         migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
         migration033BytesChecksumSha256: APPROVED_SCHEMA_033_CHECKSUM,
+        migration034BytesChecksumSha256: APPROVED_SCHEMA_034_CHECKSUM,
         result: "applied_and_verified",
         completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
           .map((step, index) => ({ step, receiptSha256: hash(Buffer.from(ordered[index]!, "utf8")) })),
         receiptChecksumSha256: evidence.receiptChecksumSha256,
         postconditionsSha256: evidence.postconditionsSha256,
-        schema033: evidence.schema033
+        schema033: evidence.schema033,
+        schema034: evidence.schema034
       };
       pendingSettlement = await prepareSchema032ProductionSettlementV2(
         artifactRoot, pendingExecutionReceiptCore
@@ -2056,6 +2074,7 @@ export async function runSchema032ReleaseSequence(
           lockAcquiredAt,
           migrationBytesChecksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
           migration033BytesChecksumSha256: APPROVED_SCHEMA_033_CHECKSUM,
+          migration034BytesChecksumSha256: APPROVED_SCHEMA_034_CHECKSUM,
           result: "failed_after_attempt",
           failedStep,
           completedStages: existing.slice(0, count).map((value, index) => ({

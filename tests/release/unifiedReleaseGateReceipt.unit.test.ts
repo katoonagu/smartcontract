@@ -8,6 +8,8 @@ import {
   APPROVED_PLAN_A_LOCK_TREE_SHA,
   APPROVED_PLAN_A_LOCKED_ROOT_TREE_SHA,
   APPROVED_LOCKED_GOLDEN_MANIFEST_SHA256,
+  APPROVED_SCHEMA_034_CATALOG_SHA256,
+  APPROVED_SCHEMA_034_CHECKSUM,
   PLAN_A_GATE_RECEIPT_RELATIVE_PATH,
   UNIFIED_RELEASE_COMMANDS,
   validatePlanAGateReceiptV1,
@@ -70,7 +72,7 @@ function unifiedReceipt() {
       comparator: "unified-wallet-comparator-v1",
       presentationManifest: "presentation-manifest-v1",
       renderer: "unified-telegram-renderer-v1",
-      schemaVersion: 33,
+      schemaVersion: 34,
       scoreAnchor: "score-anchor-v3",
       scoringPolicy: "scoring-signal-matrix-v4"
     },
@@ -78,6 +80,13 @@ function unifiedReceipt() {
       filename: "033_unified_wallet_check.sql",
       checksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      cleanVerificationReceiptSha256: SHA,
+      cloneVerificationReceiptSha256: SHA
+    },
+    schema034: {
+      filename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: APPROVED_SCHEMA_034_CHECKSUM,
+      catalogSha256: APPROVED_SCHEMA_034_CATALOG_SHA256,
       cleanVerificationReceiptSha256: SHA,
       cloneVerificationReceiptSha256: SHA
     },
@@ -142,6 +151,31 @@ describe("Unified release gate receipts", () => {
       releaseGenerationId: GENERATION,
       planAGateReceiptSha256: PLAN_A_SHA
     })).toEqual(unifiedReceipt());
+  });
+
+  it("pins the current planner schema while retaining schema 033 predecessor evidence", () => {
+    const receipt = validateUnifiedWalletReleaseGateReceiptV1(unifiedReceipt(), {
+      candidateSha: CANDIDATE,
+      releaseGenerationId: GENERATION,
+      planAGateReceiptSha256: PLAN_A_SHA
+    });
+    expect(receipt.versions.schemaVersion).toBe(34);
+    expect(receipt.schema033.filename).toBe("033_unified_wallet_check.sql");
+    expect(receipt.schema034).toMatchObject({
+      filename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: APPROVED_SCHEMA_034_CHECKSUM,
+      catalogSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      cleanVerificationReceiptSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      cloneVerificationReceiptSha256: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+  });
+
+  it("runs the exact schema-034 migration/startup/runtime rehearsal", () => {
+    expect(UNIFIED_RELEASE_COMMANDS.find(({ id }) => id === "migration_startup_rehearsal"))
+      .toEqual({
+        id: "migration_startup_rehearsal",
+        command: "npx vitest run tests/storage/migration034.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"
+      });
   });
 
   it("rejects a self-consistent Golden replacement or incomplete command set", () => {

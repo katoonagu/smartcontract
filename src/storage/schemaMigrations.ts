@@ -428,6 +428,13 @@ const UNIFIED_TABLES = [
 
 export const UNIFIED_SCHEMA_033_CATALOG_SHA256 =
   "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4";
+export const UNIFIED_SCHEMA_034_MIGRATION_SHA256 =
+  "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb";
+export const UNIFIED_SCHEMA_034_CATALOG_SHA256 = unifiedCatalogHash({
+  predecessorCatalogSha256: UNIFIED_SCHEMA_033_CATALOG_SHA256,
+  migrationFilename: SCHEMA_034_FILENAME,
+  migrationChecksumSha256: UNIFIED_SCHEMA_034_MIGRATION_SHA256
+});
 
 function unifiedCatalogHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");

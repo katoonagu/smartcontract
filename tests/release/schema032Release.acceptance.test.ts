@@ -18,6 +18,7 @@ import {
 
 const APPROVED_CHECKSUM = "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d";
 const APPROVED_UNIFIED_CHECKSUM = "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
+const APPROVED_PLANNER_CHECKSUM = "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb";
 const CLEAN_DATABASE = "tron_watch_plan5_clean";
 const CLONE_DATABASE = "tron_watch_plan5_clone";
 const SANITIZED_DATABASE = "tron_watch_plan5_runtime_sanitized";
@@ -443,6 +444,20 @@ it("[REQ-38][SCHEMA-032-RELEASE] rejects filename full candidate checksum receip
   const api = await loadApi();
   const expected = { candidateSha: CANDIDATE_SHA, postconditionsSha256: POSTCONDITIONS_SHA256 };
   expect(() => api.validateSchema032ReleaseEvidence(buildSchema032ReleaseEvidence(), expected)).not.toThrow();
+  expect(buildSchema032ReleaseEvidence()).toMatchObject({
+    schema033: {
+      version: 33,
+      migrationFilename: "033_unified_wallet_check.sql",
+      checksumSha256: APPROVED_UNIFIED_CHECKSUM
+    },
+    schema034: {
+      version: 34,
+      migrationFilename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: APPROVED_PLANNER_CHECKSUM,
+      catalogSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      verificationReceiptSha256: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    }
+  });
   const invalid = [
     (value: any) => { value.migrationFilename = "032_wrong.sql"; },
     (value: any) => { value.candidateBytesChecksumSha256 = "f".repeat(64); },
@@ -450,6 +465,8 @@ it("[REQ-38][SCHEMA-032-RELEASE] rejects filename full candidate checksum receip
     (value: any) => { value.shortChecksum = "f".repeat(12); },
     (value: any) => { value.postconditionsSha256 = "f".repeat(64); },
     (value: any) => { value.schema033.catalogSha256 = "f".repeat(64); },
+    (value: any) => { value.schema034.checksumSha256 = "f".repeat(64); },
+    (value: any) => { value.schema034.catalogSha256 = "f".repeat(64); },
     (value: any) => { value.secondApply = "applied"; }
   ];
   for (const mutate of invalid) {
@@ -794,6 +811,13 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] resumes an exact partial sequence and 
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
       verificationReceiptSha256: "f".repeat(64)
     },
+    schema034: {
+      version: 34,
+      migrationFilename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: APPROVED_PLANNER_CHECKSUM,
+      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      verificationReceiptSha256: "a".repeat(64)
+    },
     firstApply: "applied",
     secondApply: "already_verified"
   };
@@ -891,19 +915,22 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects dirty or mismatched candidate 
   for (const invalid of [
     { headSha: "d".repeat(40) },
     { status: " M scripts/migrate.ts" },
-    { migrationFiles: [...files, "034_future.sql"] }
+    { migrationFiles: [...files, "035_future.sql"] }
   ]) {
     expect(() => producer.validateSchema032CandidateRepositoryState({
       candidateSha: "c".repeat(40), headSha: "c".repeat(40), status: "", migrationFiles: files, ...invalid
     })).toThrow("schema_032_sequence_candidate_repository_unverified");
   }
-  const releaseFiles = files.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= 33);
+  const releaseFiles = files.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= 34);
   const exactLines = releaseFiles.map((name) => {
     if (name.startsWith("032_")) {
       return `Migration applied and verified: migrations/${name} (schema 32 ${APPROVED_CHECKSUM.slice(0, 12)})`;
     }
     if (name.startsWith("033_")) {
       return `Migration applied and verified: migrations/${name} (schema 33 ${APPROVED_UNIFIED_CHECKSUM.slice(0, 12)})`;
+    }
+    if (name.startsWith("034_")) {
+      return `Migration applied and verified: migrations/${name} (schema 34 ${APPROVED_PLANNER_CHECKSUM.slice(0, 12)})`;
     }
     return `Migration applied: migrations/${name}`;
   });

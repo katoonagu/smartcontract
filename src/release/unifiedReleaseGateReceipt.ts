@@ -1,4 +1,8 @@
 import { canonicalBytesV2 } from "./releaseRootWriterStore";
+import {
+  UNIFIED_SCHEMA_034_CATALOG_SHA256,
+  UNIFIED_SCHEMA_034_MIGRATION_SHA256
+} from "../storage/schemaMigrations";
 
 const SHA40 = /^[a-f0-9]{40}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
@@ -24,6 +28,10 @@ export const APPROVED_GOLDEN_MANIFEST_DESCRIPTOR_SHA256 =
 export const PLAN_A_GATE_RECEIPT_RELATIVE_PATH = "plan-a-gate-receipt-v1.json";
 export const APPROVED_SCHEMA_033_CHECKSUM =
   "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7";
+export const APPROVED_SCHEMA_034_CHECKSUM =
+  UNIFIED_SCHEMA_034_MIGRATION_SHA256;
+export const APPROVED_SCHEMA_034_CATALOG_SHA256 =
+  UNIFIED_SCHEMA_034_CATALOG_SHA256;
 
 export const UNIFIED_RELEASE_COMMANDS = Object.freeze([
   { id: "full_test", command: "npm test" },
@@ -42,7 +50,7 @@ export const UNIFIED_RELEASE_COMMANDS = Object.freeze([
   },
   {
     id: "migration_startup_rehearsal",
-    command: "npx vitest run tests/storage/migration033.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"
+    command: "npx vitest run tests/storage/migration034.postgres.test.ts tests/runtime/startupSchemaGate.test.ts tests/unified-check/productionRuntime.postgres.test.ts --maxWorkers=1"
   }
 ] as const);
 
@@ -85,12 +93,19 @@ export type UnifiedWalletReleaseGateReceiptV1 = {
     comparator: "unified-wallet-comparator-v1";
     presentationManifest: "presentation-manifest-v1";
     renderer: "unified-telegram-renderer-v1";
-    schemaVersion: 33;
+    schemaVersion: 34;
     scoreAnchor: "score-anchor-v3";
     scoringPolicy: "scoring-signal-matrix-v4";
   };
   schema033: {
     filename: "033_unified_wallet_check.sql";
+    checksumSha256: string;
+    catalogSha256: string;
+    cleanVerificationReceiptSha256: string;
+    cloneVerificationReceiptSha256: string;
+  };
+  schema034: {
+    filename: "034_unified_check_adaptive_planner.sql";
     checksumSha256: string;
     catalogSha256: string;
     cleanVerificationReceiptSha256: string;
@@ -329,7 +344,7 @@ export function validateUnifiedWalletReleaseGateReceiptV1(
   const input = record(value, "unified_release_gate_receipt_invalid");
   exactKeys(input, [
     "candidateSha", "commands", "lockedGoldenManifestSha256", "planAGate", "recordedAt",
-    "releaseGenerationId", "replayRootSha256", "schema033", "version", "versions"
+    "releaseGenerationId", "replayRootSha256", "schema033", "schema034", "version", "versions"
   ], "unified_release_gate_receipt_invalid");
   if (input.version !== "unified-wallet-release-gate-receipt-v1"
       || input.candidateSha !== context.candidateSha || !SHA40.test(context.candidateSha)
@@ -354,7 +369,7 @@ export function validateUnifiedWalletReleaseGateReceiptV1(
     comparator: "unified-wallet-comparator-v1",
     presentationManifest: "presentation-manifest-v1",
     renderer: "unified-telegram-renderer-v1",
-    schemaVersion: 33,
+    schemaVersion: 34,
     scoreAnchor: "score-anchor-v3",
     scoringPolicy: "scoring-signal-matrix-v4"
   } as const;
@@ -375,6 +390,18 @@ export function validateUnifiedWalletReleaseGateReceiptV1(
   }
   sha(schema033.cleanVerificationReceiptSha256, SHA256, "unified_release_schema033_receipt_invalid");
   sha(schema033.cloneVerificationReceiptSha256, SHA256, "unified_release_schema033_receipt_invalid");
+  const schema034 = record(input.schema034, "unified_release_schema034_invalid");
+  exactKeys(schema034, [
+    "catalogSha256", "checksumSha256", "cleanVerificationReceiptSha256",
+    "cloneVerificationReceiptSha256", "filename"
+  ], "unified_release_schema034_invalid");
+  if (schema034.filename !== "034_unified_check_adaptive_planner.sql"
+      || schema034.checksumSha256 !== APPROVED_SCHEMA_034_CHECKSUM
+      || schema034.catalogSha256 !== APPROVED_SCHEMA_034_CATALOG_SHA256) {
+    throw new Error("unified_release_schema034_invalid");
+  }
+  sha(schema034.cleanVerificationReceiptSha256, SHA256, "unified_release_schema034_receipt_invalid");
+  sha(schema034.cloneVerificationReceiptSha256, SHA256, "unified_release_schema034_receipt_invalid");
   sha(input.replayRootSha256, SHA256, "unified_release_replay_root_invalid");
   const commands = validateCommandResults(input.commands, UNIFIED_RELEASE_COMMANDS, "unified_release");
   return {
@@ -385,6 +412,7 @@ export function validateUnifiedWalletReleaseGateReceiptV1(
     lockedGoldenManifestSha256: input.lockedGoldenManifestSha256 as string,
     versions: versions as UnifiedWalletReleaseGateReceiptV1["versions"],
     schema033: schema033 as UnifiedWalletReleaseGateReceiptV1["schema033"],
+    schema034: schema034 as UnifiedWalletReleaseGateReceiptV1["schema034"],
     replayRootSha256: input.replayRootSha256 as string,
     commands,
     recordedAt: input.recordedAt

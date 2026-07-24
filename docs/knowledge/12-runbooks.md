@@ -26,10 +26,9 @@ remain in
 `docs/superpowers/verification/plan5-release/README.md`. Do not duplicate or
 bypass that protected flow. Unified adds only the deltas below.
 
-The active candidate runtime now requires schema 034, while the protected
-receipt, promotion, and canary instructions below remain deliberately pinned
-to schema 033 pending Task 7. Do not use the pinned flow to promote the
-schema-034 candidate until that task updates and re-verifies it.
+The active candidate runtime, protected receipt, promotion, and canary
+contracts now require exact schema 034. Schema 033 remains immutable
+predecessor evidence; it is not rewritten or replaced.
 
 ## Final Candidate Gates
 
@@ -80,9 +79,10 @@ schema-clean/schema032-release-evidence.json
 schema-production-clone/schema032-release-evidence.json
 ```
 
-Both artifacts must contain the schema-033 filename, checksum, catalog hash,
-and verification receipt hash. The replay directory contains exactly one
-canonical JSON file per locked case.
+Both artifacts must contain the schema-033 predecessor filename, checksum,
+catalog hash and verification receipt hash, plus the schema-034 filename,
+checksum, structural catalog identity and verification receipt hash. The
+replay directory contains exactly one canonical JSON file per locked case.
 
 After all gates pass and `git status` is clean:
 
@@ -109,8 +109,8 @@ Use the existing protected flow in this order:
 ```text
 approved final receipts
 → protected production backup
-→ exact tracked migration through schema 033
-→ startup schema-033 verification
+→ exact tracked migration through schema 034
+→ startup schema-034 verification
 → candidate runtime start
 → active Unified generation fence
 → legacy wallet-delivery quarantine
@@ -119,9 +119,10 @@ approved final receipts
 → GO or existing rollback/recovery
 ```
 
-Migration 033 is checksum-verified before the DB session can mutate anything.
-G07 clean/clone evidence and G13 production receipt bind its catalog proof.
-Unknown migration 034+ fails closed.
+Migrations 033 and 034 are checksum-verified before the DB session can mutate
+their respective tracked step. G07 clean/clone evidence and G13 production
+receipt bind the schema-033 predecessor proof and authoritative schema-034
+proof. Unknown migration 035+ fails closed.
 
 ## Frozen Performance Capture
 
@@ -139,7 +140,7 @@ fetched_at
 provenance_json
 ```
 
-TPCP, TFWG, and TXc must each be captured once on the schema-033 runtime to
+TPCP, TFWG, and TXc must each be captured once on the schema-034 runtime to
 their own terminal lifecycle state. Export by request identity, remove all key
 material, bind the ordered response identities and label/config hashes, and
 then run replay offline. Do not use the live blockchain as the benchmark and

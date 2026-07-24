@@ -293,7 +293,7 @@ export async function finalizeUnifiedReleaseGates(
   const clone = validateSchema032ReleaseEvidenceV1(JSON.parse(cloneBytes.toString("utf8")));
   if (clean.candidateSha !== candidateSha || clean.databaseRole !== "clean"
       || clone.candidateSha !== candidateSha || clone.databaseRole !== "production_clone") {
-    throw new Error("unified_release_schema033_candidate_binding_invalid");
+    throw new Error("unified_release_schema034_candidate_binding_invalid");
   }
   const unified = {
     version: "unified-wallet-release-gate-receipt-v1",
@@ -307,7 +307,7 @@ export async function finalizeUnifiedReleaseGates(
       comparator: "unified-wallet-comparator-v1",
       presentationManifest: "presentation-manifest-v1",
       renderer: "unified-telegram-renderer-v1",
-      schemaVersion: 33,
+      schemaVersion: 34,
       scoreAnchor: "score-anchor-v3",
       scoringPolicy: "scoring-signal-matrix-v4"
     },
@@ -317,6 +317,13 @@ export async function finalizeUnifiedReleaseGates(
       catalogSha256: clean.schema033.catalogSha256,
       cleanVerificationReceiptSha256: clean.schema033.verificationReceiptSha256,
       cloneVerificationReceiptSha256: clone.schema033.verificationReceiptSha256
+    },
+    schema034: {
+      filename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: clean.schema034.checksumSha256,
+      catalogSha256: clean.schema034.catalogSha256,
+      cleanVerificationReceiptSha256: clean.schema034.verificationReceiptSha256,
+      cloneVerificationReceiptSha256: clone.schema034.verificationReceiptSha256
     },
     replayRootSha256: await hashTree(join(physicalRoot, "unified-wallet-replay")),
     commands: results,

@@ -13,6 +13,8 @@ import {
   SCHEMA_032_VERSION,
   SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE,
   SCHEMA_MIGRATION_LOCK_ID,
+  UNIFIED_SCHEMA_034_CATALOG_SHA256,
+  UNIFIED_SCHEMA_034_MIGRATION_SHA256,
   type Schema032Verification,
   checksumMigrationBytes,
   projectSchema033CatalogAfter034,
@@ -468,6 +470,13 @@ describe("verified schema 032 metadata", () => {
 });
 
 describe("verified schema 034 metadata", () => {
+  it("exports the exact structural catalog identity used by release evidence", () => {
+    expect(UNIFIED_SCHEMA_034_CATALOG_SHA256).toMatch(/^[0-9a-f]{64}$/u);
+    expect(UNIFIED_SCHEMA_034_MIGRATION_SHA256).toBe(
+      "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb"
+    );
+  });
+
   it("rejects a database receipt above the active schema version", async () => {
     const values: unknown[][] = [];
     const db = {

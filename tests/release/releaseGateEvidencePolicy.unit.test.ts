@@ -172,13 +172,20 @@ it("binds the Unified release receipt to the exact Plan-A receipt and rollout ge
     versions: {
       analysisManifest: "analysis-manifest-v1", attributionPolicy: "selected-attribution-policy-v1",
       comparator: "unified-wallet-comparator-v1", presentationManifest: "presentation-manifest-v1",
-      renderer: "unified-telegram-renderer-v1", schemaVersion: 33,
+      renderer: "unified-telegram-renderer-v1", schemaVersion: 34,
       scoreAnchor: "score-anchor-v3", scoringPolicy: "scoring-signal-matrix-v4"
     },
     schema033: {
       filename: "033_unified_wallet_check.sql",
       checksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      cleanVerificationReceiptSha256: SHA,
+      cloneVerificationReceiptSha256: SHA
+    },
+    schema034: {
+      filename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
       cleanVerificationReceiptSha256: SHA,
       cloneVerificationReceiptSha256: SHA
     },
@@ -382,6 +389,7 @@ it("rejects canonical but untyped G13 authority and consumption artifacts", () =
     lockReleasedAt: FINISHED,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
     migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
+    migration034BytesChecksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
     result: "applied_and_verified",
     completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
       .map((step) => ({ step, receiptSha256: SHA })),
@@ -392,6 +400,13 @@ it("rejects canonical but untyped G13 authority and consumption artifacts", () =
       migrationFilename: "033_unified_wallet_check.sql",
       checksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      verificationReceiptSha256: SHA
+    },
+    schema034: {
+      version: 34,
+      migrationFilename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
       verificationReceiptSha256: SHA
     }
   };
@@ -561,6 +576,7 @@ function validG13Items() {
     databaseSessionIdentitySha256: "6".repeat(64), lockAcquiredAt: STARTED,
     migrationBytesChecksumSha256: "41217f64c33cb416b9f5963e15ae56e074a6a527c1c2effdadff0d8b91f6938d",
     migration033BytesChecksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
+    migration034BytesChecksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
     result: "applied_and_verified",
     completedStages: ["first_migration", "first_verification", "second_migration", "final_verification"]
       .map((step) => ({ step, receiptSha256: SHA })),
@@ -571,6 +587,13 @@ function validG13Items() {
       migrationFilename: "033_unified_wallet_check.sql",
       checksumSha256: "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7",
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
+      verificationReceiptSha256: SHA
+    },
+    schema034: {
+      version: 34,
+      migrationFilename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
       verificationReceiptSha256: SHA
     }
   };

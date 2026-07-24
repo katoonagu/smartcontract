@@ -187,6 +187,13 @@ it("[REQ-35][RUNTIME-INDEPENDENT-EVIDENCE] binds rehearsal claims to separately 
       catalogSha256: "e3f1b6152d488f9a8557085b977b2b548f963046966ff04b88a67c222f1acaa4",
       verificationReceiptSha256: "e".repeat(64)
     },
+    schema034: {
+      version: 34,
+      migrationFilename: "034_unified_check_adaptive_planner.sql",
+      checksumSha256: "492820d6caade9ee879d73aff6365f911be823258112b39a0f5fbca1d56ec4cb",
+      catalogSha256: "891df395c721ff7ac244a011e583e86a33f1364cce435ccb2af383a4f386af57",
+      verificationReceiptSha256: "f".repeat(64)
+    },
     firstApply: "applied",
     secondApply: "already_verified"
   }));

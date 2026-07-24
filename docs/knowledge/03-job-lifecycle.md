@@ -125,10 +125,12 @@ and the capacity controller remain later steps.
 
 ## Remaining Operational Work
 
-The schema-034 startup and base planner-persistence gap is closed. P1 boundary activation still waits
+The schema-034 startup, release-receipt, protected migration, and base
+planner-persistence gaps are closed. P1 boundary activation still waits
 for blind review/adjudication, and the performance matrix waits for frozen
 TPCP/TFWG/TXc provider bundles. Protected backup/migration/startup, generation
 activation, and post-deploy canary also remain external rollout work. The
-protected release receipts and promotion path remain deliberately pinned to
-schema 033 until their separate Task-7 update and therefore are not yet valid
-for the schema-034 candidate runtime.
+protected release receipt retains schema 033 as immutable predecessor evidence
+and requires the exact schema-034 migration, structural catalog identity, and
+clean/clone verification receipts. This contract authorizes no production
+mutation by itself.
