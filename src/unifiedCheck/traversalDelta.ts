@@ -36,6 +36,9 @@ export type TraversalDeltaArtifactV1 = {
   readonly addedVisited: readonly TraversalStateV1[];
   readonly addedTerminals: readonly unknown[];
   readonly addedSupersededStateIds: readonly string[];
+  readonly addedExpandedStateIds: readonly string[];
+  readonly addedEligibleEventIds: readonly string[];
+  readonly addedExpandedStateKeys: readonly string[];
   readonly counterDeltas: TraversalDeltaCountersV1;
 };
 
@@ -175,6 +178,12 @@ export function appendTraversalDelta(
     addedTerminals: [...delta.addedTerminals],
     addedSupersededStateIds:
       [...new Set(delta.addedSupersededStateIds)].sort(),
+    addedExpandedStateIds:
+      [...new Set(delta.addedExpandedStateIds)].sort(),
+    addedEligibleEventIds:
+      [...new Set(delta.addedEligibleEventIds)].sort(),
+    addedExpandedStateKeys:
+      [...new Set(delta.addedExpandedStateKeys)].sort(),
     counterDeltas
   };
   const sha256 = fingerprintCanonicalArtifact(artifact);
@@ -211,6 +220,9 @@ export function replayTraversalDeltas(
     readonly visited?: readonly TraversalStateV1[];
     readonly terminals?: readonly unknown[];
     readonly supersededStateIds?: readonly string[];
+    readonly expandedStateIds?: readonly string[];
+    readonly eligibleEventIds?: readonly string[];
+    readonly expandedStateKeys?: readonly string[];
     readonly counters?: TraversalDeltaCountersV1;
     readonly previousDeltaHash?: string | null;
   } = {}
@@ -219,6 +231,9 @@ export function replayTraversalDeltas(
   readonly visited: readonly TraversalStateV1[];
   readonly terminals: readonly unknown[];
   readonly supersededStateIds: readonly string[];
+  readonly expandedStateIds: readonly string[];
+  readonly eligibleEventIds: readonly string[];
+  readonly expandedStateKeys: readonly string[];
   readonly counters: TraversalDeltaCountersV1;
 } {
   const frontier = new Map(
@@ -229,6 +244,9 @@ export function replayTraversalDeltas(
   );
   const terminals = [...(base.terminals ?? [])];
   const superseded = new Set(base.supersededStateIds ?? []);
+  const expandedStateIds = new Set(base.expandedStateIds ?? []);
+  const eligibleEventIds = new Set(base.eligibleEventIds ?? []);
+  const expandedStateKeys = new Set(base.expandedStateKeys ?? []);
   const counters = { ...(base.counters ?? {
     expanded: 0,
     terminal: 0,
@@ -256,6 +274,15 @@ export function replayTraversalDeltas(
     for (const stateId of artifact.addedSupersededStateIds) {
       superseded.add(stateId);
     }
+    for (const stateId of artifact.addedExpandedStateIds) {
+      expandedStateIds.add(stateId);
+    }
+    for (const eventId of artifact.addedEligibleEventIds) {
+      eligibleEventIds.add(eventId);
+    }
+    for (const key of artifact.addedExpandedStateKeys) {
+      expandedStateKeys.add(key);
+    }
     counters.expanded += artifact.counterDeltas.expanded;
     counters.terminal += artifact.counterDeltas.terminal;
     counters.superseded += artifact.counterDeltas.superseded;
@@ -266,6 +293,9 @@ export function replayTraversalDeltas(
     visited: sortStates(visited.values()),
     terminals,
     supersededStateIds: [...superseded].sort(),
+    expandedStateIds: [...expandedStateIds].sort(),
+    eligibleEventIds: [...eligibleEventIds].sort(),
+    expandedStateKeys: [...expandedStateKeys].sort(),
     counters
   };
 }

@@ -40,6 +40,9 @@ describe("Unified traversal delta chain", () => {
       addedVisited: [],
       addedTerminals: [],
       addedSupersededStateIds: [],
+      addedExpandedStateIds: [],
+      addedEligibleEventIds: [],
+      addedExpandedStateKeys: [],
       counterDeltas: { expanded: 0, terminal: 0, superseded: 0 }
     });
     const two = appendTraversalDelta(one.checkpoint, {
@@ -48,6 +51,9 @@ describe("Unified traversal delta chain", () => {
       addedVisited: [STATE_A],
       addedTerminals: [],
       addedSupersededStateIds: [],
+      addedExpandedStateIds: [traversalStateId(STATE_A)],
+      addedEligibleEventIds: ["event:b", "event:a"],
+      addedExpandedStateKeys: ["expansion:a"],
       counterDeltas: { expanded: 1, terminal: 0, superseded: 0 }
     });
 
@@ -60,6 +66,9 @@ describe("Unified traversal delta chain", () => {
       terminal: 0,
       superseded: 0
     });
+    expect(replayed.expandedStateIds).toEqual([traversalStateId(STATE_A)]);
+    expect(replayed.eligibleEventIds).toEqual(["event:a", "event:b"]);
+    expect(replayed.expandedStateKeys).toEqual(["expansion:a"]);
     expect(two.checkpoint.deltaHeadSha256).toBe(two.sha256);
   });
 
@@ -72,6 +81,9 @@ describe("Unified traversal delta chain", () => {
         addedVisited: [],
         addedTerminals: [],
         addedSupersededStateIds: [],
+        addedExpandedStateIds: [],
+        addedEligibleEventIds: [],
+        addedExpandedStateKeys: [],
         counterDeltas: { expanded: 1, terminal: 0, superseded: 0 },
         diagnostic: {
           at: "2026-07-24T00:00:00.000Z",
@@ -93,6 +105,9 @@ describe("Unified traversal delta chain", () => {
       addedVisited: [],
       addedTerminals: [],
       addedSupersededStateIds: [],
+      addedExpandedStateIds: [],
+      addedEligibleEventIds: [],
+      addedExpandedStateKeys: [],
       counterDeltas: { expanded: 0, terminal: 0, superseded: 0 }
     });
     const broken = {
