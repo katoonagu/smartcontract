@@ -11,9 +11,22 @@ export type UnifiedWorkerTask = {
   readonly cancellationRequestedAt: string | null;
 };
 
+export type UnifiedAcceptedArtifact = {
+  readonly kind: string;
+  readonly schemaVersion: string;
+  readonly value: unknown;
+};
+
+export type UnifiedCompletedChunkOutcome = {
+  readonly kind: "completed";
+  readonly attemptId?: string;
+  readonly artifactSha256: string;
+  readonly acceptedArtifact?: UnifiedAcceptedArtifact;
+};
+
 export type UnifiedChunkOutcome =
   | { kind: "checkpoint"; checkpoint: unknown }
-  | { kind: "completed"; attemptId?: string; artifactSha256: string }
+  | UnifiedCompletedChunkOutcome
   | {
       kind: "provider_wait";
       readyAt: string;
@@ -48,6 +61,7 @@ export type UnifiedTaskCycleRepository = {
     attempt: number;
     attemptId: string;
     artifactSha256: string;
+    acceptedArtifact?: UnifiedAcceptedArtifact;
   }): Promise<boolean>;
   settle(input: {
     taskId: string;
@@ -154,7 +168,8 @@ export async function runUnifiedTaskCycle(input: {
         leaseToken,
         attempt: task.attempt,
         attemptId: result.attemptId ?? createId(),
-        artifactSha256: result.artifactSha256
+        artifactSha256: result.artifactSha256,
+        acceptedArtifact: result.acceptedArtifact
       })) throw new Error("unified_worker_lease_lost");
       return { claimed: true, taskId: task.id, outcome: "completed" };
     }

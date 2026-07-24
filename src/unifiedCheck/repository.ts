@@ -1,4 +1,8 @@
-import { fingerprintCanonicalArtifact } from "../forensics/canonicalJson";
+import { createHash } from "node:crypto";
+import {
+  canonicalizeArtifactJson,
+  fingerprintCanonicalArtifact
+} from "../forensics/canonicalJson";
 import type {
   UnifiedCanaryBatchIdentityV1,
   UnifiedCanaryExecutionBlockedV1,
@@ -30,6 +34,9 @@ import {
   type UnifiedProgressPhaseV1,
   type UnifiedProgressProjectionV1
 } from "./progressProjection";
+import type { UnifiedAcceptedArtifact } from "./worker";
+
+export const DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES = 1_048_576;
 
 export const UNIFIED_CANARY_SELECTION_QUERY_VERSION =
   "unified-canary-selection-query-v1" as const;
@@ -1415,6 +1422,46 @@ export async function checkpointUnifiedTask(
   return result.rows[0] ?? null;
 }
 
+function acceptedArtifactIdentity(
+  artifact: UnifiedAcceptedArtifact
+): void {
+  if (
+    typeof artifact.kind !== "string" ||
+    artifact.kind.trim().length === 0 ||
+    typeof artifact.schemaVersion !== "string" ||
+    artifact.schemaVersion.trim().length === 0
+  ) {
+    throw new TypeError("unified_ordered_artifact_identity_invalid");
+  }
+}
+
+function prepareAcceptedArtifact(
+  artifact: UnifiedAcceptedArtifact,
+  artifactSha256: string
+): {
+  readonly canonical: string;
+  readonly bytes: number;
+} {
+  acceptedArtifactIdentity(artifact);
+  const canonical = canonicalizeArtifactJson(artifact.value);
+  const actualSha256 = createHash("sha256").update(canonical).digest("hex");
+  if (actualSha256 !== artifactSha256) {
+    throw new Error("unified_artifact_hash_mismatch");
+  }
+  return {
+    canonical,
+    bytes: Buffer.byteLength(canonical, "utf8")
+  };
+}
+
+function orderedManifestMaxBytes(value: number | undefined): number {
+  const limit = value ?? DEFAULT_UNIFIED_ORDERED_MANIFEST_MAX_BYTES;
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError("unified_ordered_manifest_max_bytes_invalid");
+  }
+  return limit;
+}
+
 export async function completeUnifiedTaskAttempt(
   db: UnifiedTransactionalQueryable,
   input: {
@@ -1423,6 +1470,8 @@ export async function completeUnifiedTaskAttempt(
     attempt: number;
     attemptId: string;
     artifactSha256: string;
+    acceptedArtifact?: UnifiedAcceptedArtifact;
+    manifestMaxBytes?: number;
   }
 ) {
   return db.transaction(async (client) => {
@@ -1436,13 +1485,102 @@ export async function completeUnifiedTaskAttempt(
                 ) as canary_deadline_reached
            from unified_check_tasks task
            join unified_check_runs run on run.id = task.run_id
-          where task.id = $1 and task.status = 'LEASED'
-            and task.lease_token = $2 and task.attempt = $3
-          for update`,
-        [input.taskId, input.leaseToken, input.attempt]
+          where task.id = $1
+          for update of task`,
+        [input.taskId]
       )
     ).rows[0];
     if (!task) throw new Error("unified_task_lease_lost");
+    const plannerTable = (
+      await client.query(
+        "select to_regclass('unified_check_planner_entries') as planner_table"
+      )
+    ).rows[0]?.planner_table;
+    const planner = plannerTable
+      ? (
+          await client.query(
+            `select *
+               from unified_check_planner_entries
+              where run_id = $1 and task_id = $2
+              for update`,
+            [task.run_id, input.taskId]
+          )
+        ).rows[0]
+      : undefined;
+
+    if (task.status === "COMPLETED") {
+      const accepted = (
+        await client.query(
+          `select attempt.*, artifact.kind as artifact_kind,
+                  artifact.schema_version as artifact_schema_version,
+                  artifact.artifact_json
+             from unified_check_attempts attempt
+             join unified_check_artifacts artifact
+               on artifact.sha256 = attempt.artifact_sha256
+            where attempt.id = $1`,
+          [task.accepted_attempt_id]
+        )
+      ).rows[0];
+      if (
+        !accepted ||
+        String(accepted.task_id) !== input.taskId ||
+        Number(accepted.attempt) !== input.attempt ||
+        Number(task.attempt) !== input.attempt ||
+        String(accepted.id) !== input.attemptId ||
+        String(task.accepted_attempt_id) !== input.attemptId ||
+        String(accepted.artifact_sha256) !== input.artifactSha256
+      ) {
+        throw new Error("unified_task_acceptance_conflict");
+      }
+      if (planner && !input.acceptedArtifact) {
+        throw new Error("unified_ordered_artifact_required");
+      }
+      let prepared: ReturnType<typeof prepareAcceptedArtifact> | undefined;
+      if (input.acceptedArtifact) {
+        try {
+          prepared = prepareAcceptedArtifact(
+            input.acceptedArtifact,
+            input.artifactSha256
+          );
+        } catch {
+          throw new Error("unified_task_acceptance_conflict");
+        }
+        if (
+          String(accepted.artifact_kind) !== input.acceptedArtifact.kind ||
+          String(accepted.artifact_schema_version) !==
+            input.acceptedArtifact.schemaVersion ||
+          canonicalizeArtifactJson(accepted.artifact_json) !==
+            prepared.canonical
+        ) {
+          throw new Error("unified_task_acceptance_conflict");
+        }
+      }
+      if (planner) {
+        if (
+          !["ready", "committed"].includes(String(planner.planner_state)) ||
+          planner.admitted_at === null ||
+          planner.reserved_bytes !== null ||
+          planner.ready_at === null ||
+          !Number.isSafeInteger(Number(planner.result_bytes)) ||
+          Number(planner.result_bytes) !== prepared!.bytes
+        ) {
+          throw new Error("unified_task_acceptance_conflict");
+        }
+      }
+      const {
+        canary_deadline_reached: _canaryDeadlineReached,
+        ...completedTask
+      } = task;
+      return completedTask;
+    }
+
+    if (
+      task.status !== "LEASED" ||
+      task.lease_token !== input.leaseToken ||
+      Number(task.attempt) !== input.attempt
+    ) {
+      throw new Error("unified_task_lease_lost");
+    }
     if (
       task.cancellation_requested_at !== null ||
       task.canary_deadline_reached === true
@@ -1505,6 +1643,44 @@ export async function completeUnifiedTaskAttempt(
       );
       return null;
     }
+
+    let resultBytes: number | null = null;
+    if (planner) {
+      if (
+        planner.planner_state !== "planned" ||
+        planner.admitted_at === null ||
+        planner.reserved_bytes === null ||
+        planner.result_bytes !== null ||
+        planner.ready_at !== null ||
+        planner.committed_at !== null
+      ) {
+        throw new Error("unified_ordered_planner_transition_conflict");
+      }
+      if (!input.acceptedArtifact) {
+        throw new Error("unified_ordered_artifact_required");
+      }
+    }
+    if (input.acceptedArtifact) {
+      const prepared = prepareAcceptedArtifact(
+        input.acceptedArtifact,
+        input.artifactSha256
+      );
+      if (
+        planner &&
+        prepared.bytes > orderedManifestMaxBytes(input.manifestMaxBytes)
+      ) {
+        throw new Error("unified_ordered_manifest_hard_limit");
+      }
+      await insertUnifiedArtifact(client, {
+        sha256: input.artifactSha256,
+        createdByRunId: String(task.run_id),
+        kind: input.acceptedArtifact.kind,
+        schemaVersion: input.acceptedArtifact.schemaVersion,
+        artifact: input.acceptedArtifact.value
+      });
+      if (planner) resultBytes = prepared.bytes;
+    }
+
     await client.query(
       `insert into unified_check_attempts (
         id, task_id, attempt, artifact_sha256, completed_at
@@ -1566,7 +1742,29 @@ export async function completeUnifiedTaskAttempt(
         returning *`,
       [input.taskId, input.leaseToken, input.attempt, input.attemptId]
     );
-    return requiredRow(result, "unified_task_lease_lost");
+    const completed = requiredRow(result, "unified_task_lease_lost");
+    if (planner) {
+      const transitioned = await client.query(
+        `update unified_check_planner_entries
+            set planner_state = 'ready',
+                result_bytes = $3,
+                reserved_bytes = null,
+                ready_at = statement_timestamp()
+          where run_id = $1 and task_id = $2
+            and planner_state = 'planned'
+            and admitted_at is not null
+            and reserved_bytes is not null
+            and result_bytes is null
+            and ready_at is null
+            and committed_at is null
+          returning task_id`,
+        [task.run_id, input.taskId, resultBytes]
+      );
+      if (transitioned.rows.length !== 1) {
+        throw new Error("unified_ordered_planner_transition_conflict");
+      }
+    }
+    return completed;
   });
 }
 

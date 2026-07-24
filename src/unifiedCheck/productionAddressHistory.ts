@@ -210,8 +210,7 @@ export function createUnifiedAddressHistoryHandler(input: {
     kind:
       | "address_history_page"
       | "address_history_chunk"
-      | "address_history_exhaustion"
-      | "address_history_manifest";
+      | "address_history_exhaustion";
     sha256: string;
     artifact: unknown;
   }): Promise<void>;
@@ -395,12 +394,14 @@ export function createUnifiedAddressHistoryHandler(input: {
       };
     }
     const artifactSha256 = fingerprintCanonicalArtifact(artifact);
-    await input.persistArtifact({
-      runId: task.runId,
-      kind: "address_history_manifest",
-      sha256: artifactSha256,
-      artifact
-    });
-    return { kind: "completed", artifactSha256 };
+    return {
+      kind: "completed",
+      artifactSha256,
+      acceptedArtifact: {
+        kind: "address_history_manifest",
+        schemaVersion: "1",
+        value: artifact
+      }
+    };
   };
 }

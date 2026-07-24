@@ -83,10 +83,14 @@ production until the protected schema-034 cutover and generation-fence switch.
 The active candidate startup contract now requires exact schema 034 with
 verified schema-032 and schema-033 predecessor receipts. New run creation
 persists an opaque stable fairness owner, and the durable planner repository
-can append capacity-independent canonical task rows under a run lock. The
-rolling coordinator, planner-aware claiming, ordered acceptance, and commit
-integration remain later implementation steps; merely applying schema 034
-does not switch an existing run to planner execution.
+can append capacity-independent canonical task rows under a run lock.
+Acceptance of an admitted ordered task is now one idempotent PostgreSQL
+transaction: it inserts the immutable result artifact and attempt, completes
+and releases the task lease, and moves the planner row from `planned` to
+`ready` with the canonical UTF-8 result size. The accepted-attempt join remains
+the only artifact authority. The rolling coordinator, planner-aware claiming,
+and ordered commit integration remain later implementation steps; merely
+applying schema 034 does not switch an existing run to planner execution.
 
 ## Remaining Operational Work
 

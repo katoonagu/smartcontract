@@ -26,6 +26,11 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     acceptedAttemptId: null
   };
   readonly attempts: Array<{ id: string; attempt: number; artifactSha256: string }> = [];
+  lastCompletion: {
+    attemptId: string;
+    artifactSha256: string;
+    acceptedArtifact?: unknown;
+  } | null = null;
   now = new Date("2026-07-23T13:00:00.000Z");
 
   async claim(input: {
@@ -62,8 +67,10 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     attempt: number;
     attemptId: string;
     artifactSha256: string;
+    acceptedArtifact?: unknown;
   }): Promise<boolean> {
     if (!this.matches(input)) return false;
+    this.lastCompletion = input;
     this.attempts.push({
       id: input.attemptId,
       attempt: input.attempt,
@@ -205,6 +212,28 @@ describe("Unified resumable worker", () => {
       artifactSha256: "a".repeat(64)
     });
     expect(repository.task.acceptedAttemptId).toBe("attempt-success");
+  });
+
+  it("forwards the accepted artifact payload unchanged", async () => {
+    const repository = new MemoryWorkerRepository();
+    const acceptedArtifact = {
+      kind: "address_history_manifest",
+      schemaVersion: "1",
+      value: { version: "manifest-v1", note: "канон" }
+    };
+    const completed = await cycle(repository, async () => ({
+      kind: "completed",
+      attemptId: "attempt-success",
+      artifactSha256: "b".repeat(64),
+      acceptedArtifact
+    }), ["lease-1"]);
+
+    expect(completed.outcome).toBe("completed");
+    expect(repository.lastCompletion).toMatchObject({
+      attemptId: "attempt-success",
+      artifactSha256: "b".repeat(64)
+    });
+    expect(repository.lastCompletion?.acceptedArtifact).toBe(acceptedArtifact);
   });
 
   it("observes cancellation at a chunk boundary without invoking a handler", async () => {

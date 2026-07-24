@@ -53,7 +53,10 @@ export function createPostgresUnifiedTaskCycleRepository(
   kinds: readonly string[],
   runtimeCommit: string,
   providerConfigurationSha256: string,
-  runPurpose?: UnifiedRunPurpose
+  runPurpose?: UnifiedRunPurpose,
+  options: {
+    readonly manifestMaxBytes?: number;
+  } = {}
 ): UnifiedTaskCycleRepository {
   if (kinds.length === 0 || kinds.some((kind) => kind.trim().length === 0)) {
     throw new TypeError("unified_worker_kinds_invalid");
@@ -83,7 +86,10 @@ export function createPostgresUnifiedTaskCycleRepository(
       return Boolean(await checkpointUnifiedTask(db, input));
     },
     async complete(input) {
-      return Boolean(await completeUnifiedTaskAttempt(db, input));
+      return Boolean(await completeUnifiedTaskAttempt(db, {
+        ...input,
+        manifestMaxBytes: options.manifestMaxBytes
+      }));
     },
     async settle(input) {
       return Boolean(await settleUnifiedTaskLease(db, input));

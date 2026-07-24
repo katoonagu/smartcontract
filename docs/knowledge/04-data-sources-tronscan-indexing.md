@@ -61,6 +61,14 @@ history reuse does not merge origins or change proportional attribution.
 Provider checkpoints retain bounded counters and chain heads rather than
 repeated full collections.
 
+Address-history page, chunk, and exhaustion artifacts remain immutable as they
+are produced. The final bounded address-history manifest is returned by the
+worker and becomes authoritative only when acceptance atomically inserts it
+with the accepted attempt and task completion. For an ordered task the same
+transaction also performs the planner `planned -> ready` transition. Its hash
+and `result_bytes` come from the same canonical UTF-8 serialization, so the
+manifest is not pre-persisted or counted twice.
+
 Traversal is finite without a coverage threshold. It terminates only at
 snapshot-bounded history exhaustion or an evidence-backed service/CEX/DEX/
 bridge/contract boundary. Canonical vertices/edges are deduplicated, dense

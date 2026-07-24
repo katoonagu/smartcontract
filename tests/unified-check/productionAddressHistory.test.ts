@@ -154,16 +154,28 @@ describe("Unified production address history", () => {
       heartbeat: vi.fn(async () => undefined)
     });
 
-    expect(result).toMatchObject({ kind: "completed" });
+    expect(result).toMatchObject({
+      kind: "completed",
+      artifactSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      acceptedArtifact: {
+        kind: "address_history_manifest",
+        schemaVersion: "1",
+        value: {
+          key: manifestKey,
+          canonicalEventCount: 2,
+          rawRowCount: 2
+        }
+      }
+    });
     expect(loadPage.mock.calls.map(([cursor]) => cursor)).toEqual([null, "1"]);
     expect(persisted.map((item) => item.kind)).toEqual([
       "address_history_page",
       "address_history_page",
       "address_history_chunk",
-      "address_history_exhaustion",
-      "address_history_manifest"
+      "address_history_exhaustion"
     ]);
-    const completed = persisted.at(-1)?.artifact as {
+    if (result.kind !== "completed") throw new Error("completion expected");
+    const completed = result.acceptedArtifact?.value as {
       key: string;
       canonicalEventCount: number;
       rawRowCount: number;
@@ -173,6 +185,12 @@ describe("Unified production address history", () => {
       canonicalEventCount: 2,
       rawRowCount: 2
     });
+    expect(result.artifactSha256).toBe(
+      fingerprintCanonicalArtifact(completed)
+    );
+    expect(
+      persisted.some((item) => item.sha256 === result.artifactSha256)
+    ).toBe(false);
   });
 
   it("persists resumable progress when the provider asks to wait", async () => {

@@ -55,9 +55,11 @@ This is a verified code/runtime bottleneck, not evidence of a provider-key or
 memory failure.
 
 Migration 034, stable fairness-owner persistence, and the run-locked durable
-planning/admission primitives are implemented. The remaining target is
-adaptive rolling refill with planner-aware claiming, atomic ordered
-acceptance, and ordered canonical commit:
+planning/admission primitives are implemented. Atomic ordered acceptance is
+also implemented: the final manifest, attempt, task lease release, and planner
+ready transition commit or roll back together, with idempotent retry after an
+uncertain response. The remaining target is adaptive rolling refill with
+planner-aware claiming and ordered canonical commit:
 
 - `docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md`
 

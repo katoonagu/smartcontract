@@ -54,9 +54,11 @@ audit artifacts. It is not a second source of current product truth.
 - The provider pool exposes four configured slots, but the current traversal
   barrier often leaves only one claimable address history per run. Schema 034,
   stable fairness-owner persistence, and capacity-independent canonical
-  planner rows are implemented. Adaptive rolling refill, planner-aware
-  claiming, ordered acceptance, and ordered canonical commit remain later
-  work and are not current candidate execution behavior.
+  planner rows are implemented. Admitted ordered results now use atomic,
+  idempotent artifact/attempt/task/planner-ready acceptance with a configurable
+  manifest hard limit. Adaptive rolling refill, planner-aware claiming, and
+  ordered canonical commit remain later work and are not current candidate
+  execution behavior.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
