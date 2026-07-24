@@ -28,8 +28,8 @@ function taskField(value: unknown, errorCode: string): string {
   return value;
 }
 
-function canonicalIdentity(task: UnifiedOrderedTaskIdentity): string {
-  return `${task.kind}\u0000${task.logicalKey}`;
+function identityKey(task: UnifiedOrderedTaskIdentity): string {
+  return JSON.stringify([task.kind, task.logicalKey]);
 }
 
 export function canonicalOrderedTasks(
@@ -40,7 +40,7 @@ export function canonicalOrderedTasks(
     taskField(task.taskId, "unified_planner_task_id_invalid");
     taskField(task.kind, "unified_planner_kind_invalid");
     taskField(task.logicalKey, "unified_planner_logical_key_invalid");
-    const identity = canonicalIdentity(task);
+    const identity = identityKey(task);
     const existing = byIdentity.get(identity);
     if (existing && existing.taskId !== task.taskId) {
       throw new TypeError("unified_planner_task_identity_conflict");
@@ -48,7 +48,8 @@ export function canonicalOrderedTasks(
     if (!existing) byIdentity.set(identity, task);
   }
   return [...byIdentity.values()].sort((left, right) =>
-    compareCodeUnits(canonicalIdentity(left), canonicalIdentity(right))
+    compareCodeUnits(left.kind, right.kind) ||
+    compareCodeUnits(left.logicalKey, right.logicalKey)
   );
 }
 

@@ -66,6 +66,18 @@ describe("Unified planner", () => {
     ])).toThrow("unified_planner_task_identity_conflict");
   });
 
+  it("keeps embedded-NUL identity tuples distinct and orders them as tuples", () => {
+    const ordered = canonicalOrderedTasks([
+      task("second", "a\u0000", "b"),
+      task("first", "a", "\u0000b")
+    ]);
+
+    expect(ordered).toEqual([
+      task("first", "a", "\u0000b"),
+      task("second", "a\u0000", "b")
+    ]);
+  });
+
   it("rejects blank task identity fields", () => {
     expect(() => canonicalOrderedTasks([task("  ", "kind", "key")])).toThrow(
       "unified_planner_task_id_invalid"
