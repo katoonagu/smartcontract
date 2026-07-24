@@ -158,6 +158,19 @@ postgresDescribe("migration 034 PostgreSQL acceptance", () => {
       await expect(client.query(`insert into unified_check_planner_entries
         (run_id, canonical_sequence, task_id, planner_state, admitted_at, planned_at)
         values ('run-a', 1, 'task-c', 'ready', '2026-01-02T00:00:00Z', '2026-01-01T00:00:00Z')`)).rejects.toThrow();
+      await client.query(
+        `insert into schema_migration_receipts (
+          version, filename, checksum_sha256
+        ) values (35, '035_synthetic_future.sql', $1)`,
+        ["e".repeat(64)]
+      );
+      await expect(verifyRequiredSchema034(
+        client,
+        schema034Checksum,
+        schema032Checksum,
+        schema033Checksum,
+        { schemaName: schema }
+      )).rejects.toThrow("schema_034_newer_receipt_present");
     } finally {
       await client.query("reset search_path").catch(() => undefined);
       await client.query(`drop schema if exists "${schema}" cascade`).catch(() => undefined);

@@ -110,7 +110,8 @@ runtime counters only; expanding work has no denominator, ETA, or percent.
 ## Release Safety
 
 - The active candidate startup contract is exact through
-  `034_unified_check_adaptive_planner.sql`; unknown 035+ files fail closed.
+  `034_unified_check_adaptive_planner.sql`; database receipt versions 035+
+  fail closed. Future migration files on disk remain Task-7 allowlist scope.
 - Startup verifies the exact migration-034 checksum and the verified
   schema-032/schema-033 predecessor checksums and receipts before provider,
   bot, or worker initialization.

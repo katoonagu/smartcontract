@@ -17,6 +17,7 @@ import {
   checksumMigrationBytes,
   projectSchema033CatalogAfter034,
   verifyRequiredSchema032,
+  verifyRequiredSchema034,
   verifySchema032Structure,
   verifySchema034Structure,
   verifyTrackedMigrationReceipt
@@ -467,6 +468,27 @@ describe("verified schema 032 metadata", () => {
 });
 
 describe("verified schema 034 metadata", () => {
+  it("rejects a database receipt above the active schema version", async () => {
+    const values: unknown[][] = [];
+    const db = {
+      query: async (sql: string, queryValues?: unknown[]) => {
+        if (!sql.includes("where version > $1")) {
+          throw new Error("schema_034_higher_version_query_missing");
+        }
+        values.push(queryValues ?? []);
+        return { rows: [{ version: 35 }], rowCount: 1 };
+      }
+    } as unknown as Db;
+
+    await expect(verifyRequiredSchema034(
+      db,
+      "b".repeat(64),
+      "c".repeat(64),
+      "d".repeat(64)
+    )).rejects.toThrow("schema_034_newer_receipt_present");
+    expect(values).toEqual([[34]]);
+  });
+
   it("normalizes only the table-qualified 034 additions from the frozen 033 catalog", () => {
     const projection = projectSchema033CatalogAfter034({
       columns: [

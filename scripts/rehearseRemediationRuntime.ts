@@ -19,7 +19,7 @@ import {
   type TerminalLegacyFreezeBinding,
   type TerminalLegacyPopulationV1
 } from "../src/release/terminalLegacyPopulation";
-import { formatRuntimeVersion, type RuntimeVersionV1 } from "../src/runtime/runtimeVersion";
+import { formatRuntimeVersion } from "../src/runtime/runtimeVersion";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -324,7 +324,7 @@ function validateOperationalObservation(
           checksumSha256: APPROVED_SCHEMA_032_CHECKSUM,
           shortChecksum: APPROVED_SCHEMA_032_CHECKSUM.slice(0, 12)
         }
-      } as RuntimeVersionV1, "ru")
+      }, "ru")
     : formatPreviousRuntimeRehearsalResponse(label);
   if (value.versionResponseText !== expectedText) fail("controlled_runtime_version_response_mismatch");
 }

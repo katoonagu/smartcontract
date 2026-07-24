@@ -1,18 +1,11 @@
 import { SCORING_SIGNAL_MATRIX_POLICY_VERSION } from "../risk/scoringSignalMatrix";
-import type {
-  Schema032Verification,
-  Schema033Verification,
-  Schema034Verification
-} from "../storage/schemaMigrations";
+import type { Schema034Verification } from "../storage/schemaMigrations";
 import {
   SCHEMA_034_FILENAME,
   SCHEMA_034_VERSION
 } from "../storage/schemaMigrations";
 
-type RuntimeSchemaVerification =
-  | Schema032Verification
-  | Schema033Verification
-  | Schema034Verification;
+type RuntimeSchemaVerification = Schema034Verification;
 import type { TelegramForensicResultV1 } from "../telegram/forensicPresentation";
 import type { ForensicCoverageV2, ScoreAnchorV2 } from "../types";
 
@@ -152,7 +145,12 @@ export function buildRuntimeVersion(input: {
   return validateRuntimeVersion(runtime, input.gitCommitSha ?? "");
 }
 
-export function formatRuntimeVersion(runtime: RuntimeVersionV1, locale: "ru" | "en"): string {
+export function formatRuntimeVersion<
+  TMigration extends Readonly<{ version: number; shortChecksum: string }>
+>(
+  runtime: Omit<RuntimeVersionV1, "migration"> & Readonly<{ migration: TMigration }>,
+  locale: "ru" | "en"
+): string {
   const schemaVersion = String(runtime.migration.version).padStart(3, "0");
   return locale === "en"
     ? [

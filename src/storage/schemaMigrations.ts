@@ -802,6 +802,15 @@ export async function verifyRequiredSchema034(
 ): Promise<Schema034Verification> {
   if (!CHECKSUM_PATTERN.test(expectedChecksum)) fail("schema_034_invalid_expected_checksum");
   const schemaName = resolveSchemaName(options);
+  const newerReceipt = await queryable.query(
+    `select version
+       from ${quoteIdentifier(schemaName)}.schema_migration_receipts
+      where version > $1
+      order by version asc
+      limit 1`,
+    [SCHEMA_034_VERSION]
+  );
+  if (newerReceipt.rows.length > 0) fail("schema_034_newer_receipt_present");
   await verifySchema033LineageForSchema034(
     queryable,
     schema033ChecksumSha256,
