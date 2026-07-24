@@ -1108,6 +1108,42 @@ describe("TronscanClient", () => {
     expect(page.complete).toBe(true);
   });
 
+  it("keeps canonically distinct events in one transaction when event indexes are absent", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({
+      total: 2,
+      rangeTotal: 2,
+      token_transfers: [
+        {
+          transaction_id: "multi-event-without-index",
+          from_address: "TSource111111111111111111111111111111",
+          to_address: "TFirst1111111111111111111111111111111",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          quant: "46114610",
+          block_ts: 1_780_090_000_000
+        },
+        {
+          transaction_id: "multi-event-without-index",
+          from_address: "TSource111111111111111111111111111111",
+          to_address: "TSecond111111111111111111111111111111",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          quant: "3560390",
+          block_ts: 1_780_090_000_000
+        }
+      ]
+    }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPagePinned(
+      "TSubject111111111111111111111111111111",
+      { start: 0, limit: 50 }
+    );
+
+    expect(page.rawProviderRowIds).toHaveLength(2);
+    expect(page.rawProviderRowIds[0]).not.toBe(page.rawProviderRowIds[1]);
+    expect(page.metadataConsistent).toBe(true);
+    expect(page.complete).toBe(true);
+  });
+
   it("detects repeated tx events even when mutable row content changes", async () => {
     const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
       const requestUrl = url instanceof URL ? url : new URL(String(url));
@@ -1138,7 +1174,7 @@ describe("TronscanClient", () => {
     expect(page.complete).toBe(false);
   });
 
-  it("uses a conservative tx identity when the provider omits the event index", async () => {
+  it("deduplicates identical tx events when the provider omits the event index", async () => {
     const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
       const requestUrl = url instanceof URL ? url : new URL(String(url));
       const start = Number(requestUrl.searchParams.get("start"));
@@ -1149,8 +1185,10 @@ describe("TronscanClient", () => {
         from_address: "TSource111111111111111111111111111111",
         to_address: "TSubject111111111111111111111111111111",
         contract_address: TRON_USDT_CONTRACT_ADDRESS,
-        quant: start === 50 && offset === 0 ? "200" : "1",
-        block_ts: 1_780_090_000_000 - start - offset
+        quant: "1",
+        block_ts: start === 0 && offset === 49 || start === 50 && offset === 0
+          ? 1_780_089_999_951
+          : 1_780_090_000_000 - start - offset
       }));
       return jsonResponse({ total: 100, rangeTotal: 100, token_transfers: rows });
     });
@@ -1162,7 +1200,7 @@ describe("TronscanClient", () => {
     );
 
     expect(page.rawProviderRowIds[49]).toBe(page.rawProviderRowIds[50]);
-    expect(page.rawProviderRowIds[49]).toBe("tronscan:tx:tx-only-overlap");
+    expect(page.rawProviderRowIds[49]).toMatch(/^tronscan:tx:tx-only-overlap:row:/);
     expect(page.metadataConsistent).toBe(false);
   });
 

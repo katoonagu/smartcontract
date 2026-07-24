@@ -212,7 +212,7 @@ export function rawProviderTxRowPaginationId(
     })
     .find((value) => value !== null) ?? null;
   return eventIndex === null
-    ? `${provider}:tx:${txHash}`
+    ? `${provider}:tx:${txHash}:row:${sha256Json(canonicalTronscanTransferRow(transfer))}`
     : `${provider}:tx:${txHash}:event:${eventIndex}`;
 }
 

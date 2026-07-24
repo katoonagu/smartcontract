@@ -42,6 +42,10 @@ count. An underfilled pinned page therefore closes that capped window at any
 offset; it is not treated as inconsistent merely because its next offset is
 below the sentinel.
 
+If TronScan omits an event index, pagination identity combines the transaction
+hash with canonical event content. Distinct USDT events in one transaction
+remain separate, while an identical repeated row is still detected as overlap.
+
 Identical provider requests share an identity and may coalesce across child
 branches. The fair scheduler tracks per-key/group health and cooldowns so an
 old or waiting heavy job cannot reserve the entire pool.
