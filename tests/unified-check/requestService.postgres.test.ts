@@ -6,6 +6,7 @@ import {
   createPostgresUnifiedRequestStore,
   intakeUnifiedCheck
 } from "../../src/unifiedCheck/requestService";
+import { buildFrozenLabelDataset } from "../../src/unifiedCheck/frozenLabels";
 import type {
   UnifiedQueryable,
   UnifiedTransactionalQueryable
@@ -70,6 +71,18 @@ postgresDescribe("Unified Check durable intake", () => {
           runtimeCommit: "candidate",
           schemaVersion: 33
         },
+        freezeLabelDataset: async ({
+          snapshotHash,
+          frozenAt
+        }: {
+          snapshotHash: string;
+          frozenAt: string;
+        }) => buildFrozenLabelDataset({
+          snapshotHash,
+          frozenAt,
+          labels: [],
+          legacyRows: []
+        }),
         now: () => new Date("2026-07-23T13:00:00.000Z")
       };
       const first = await intakeUnifiedCheck({
@@ -109,6 +122,14 @@ postgresDescribe("Unified Check durable intake", () => {
         .toBe(2);
       expect((await client.query("select count(*)::int as count from unified_check_runs")).rows[0]?.count)
         .toBe(1);
+      expect(first.run.analysisManifest).toMatchObject({
+        labelCatalogVersion: "unified-label-catalog-v1",
+        boundaryPredicateVersion: "unified-boundary-predicates-v1"
+      });
+      expect((await client.query(
+        "select count(*)::int as count from unified_label_datasets where sha256 = $1",
+        [first.run.analysisManifest.labelDatasetSha256]
+      )).rows[0]?.count).toBe(1);
     } finally {
       await client.query(`drop schema if exists "${schema}" cascade`);
       client.release();

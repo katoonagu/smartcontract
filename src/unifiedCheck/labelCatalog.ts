@@ -181,6 +181,7 @@ export function buildFrozenLabelRecord(input: {
   readonly classifierHint: {
     readonly identity: string;
     readonly category: SupportedLabelCategoryV1;
+    readonly sourcePayloadSha256?: string;
   } | null;
   readonly exactRegistryBinding: EvidenceBinding | null;
   readonly verifiedProviderBinding: EvidenceBinding | null;
@@ -211,6 +212,12 @@ export function buildFrozenLabelRecord(input: {
     candidate.category === input.classifierHint.category
   );
   if (!entry) throw new TypeError("unified_label_hint_unsupported");
+  if (
+    input.classifierHint.sourcePayloadSha256 !== undefined &&
+    !HASH.test(input.classifierHint.sourcePayloadSha256)
+  ) {
+    throw new TypeError("unified_label_source_hash_invalid");
+  }
   return {
     address,
     catalogEntryId: entry.id,
@@ -220,12 +227,14 @@ export function buildFrozenLabelRecord(input: {
     authority: "classifier_hint",
     validFrom: null,
     validTo: null,
-    sourcePayloadSha256: fingerprintCanonicalArtifact({
-      version: "unified-label-hint-v1",
-      address,
-      identity: entry.identity,
-      category: entry.category
-    }),
+    sourcePayloadSha256:
+      input.classifierHint.sourcePayloadSha256 ??
+      fingerprintCanonicalArtifact({
+        version: "unified-label-hint-v1",
+        address,
+        identity: entry.identity,
+        category: entry.category
+      }),
     terminalEligible: false
   };
 }

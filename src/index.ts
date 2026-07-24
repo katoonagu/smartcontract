@@ -224,6 +224,14 @@ import {
   createPostgresProviderPageStore,
   loadOrFetchProviderPage
 } from "./unifiedCheck/providerRequest";
+import {
+  SUPPORTED_LABEL_CATALOG_V1,
+  buildFrozenLabelRecord
+} from "./unifiedCheck/labelCatalog";
+import {
+  buildFrozenLabelDataset,
+  type FrozenLabelDatasetV1
+} from "./unifiedCheck/frozenLabels";
 
 const config = loadConfig();
 const addressPoisoningSmallTransferMaxRaw = parseAddressPoisoningSmallTransferMaxRaw(
@@ -349,6 +357,43 @@ const unifiedLabelRows = (
   provider: String(row.provider),
   observedAt: new Date(String(row.observed_at)).toISOString()
 }));
+const unifiedExactLabelRecords =
+  SUPPORTED_LABEL_CATALOG_V1.entries.flatMap((entry) =>
+    entry.addressBindings.map((address) => buildFrozenLabelRecord({
+      address,
+      classifierHint: null,
+      exactRegistryBinding: {
+        catalogEntryId: entry.id,
+        authority: "internal_service_registry",
+        sourcePayloadSha256: fingerprintCanonicalArtifact({
+          version: SUPPORTED_LABEL_CATALOG_V1.version,
+          entry
+        })
+      },
+      verifiedProviderBinding: null
+    }))
+  );
+const unifiedHintLabelRecords = unifiedLabelRows.flatMap((row) => {
+  const normalizedCandidates = [row.label, row.category]
+    .map((value) => value.trim().toLowerCase());
+  const entry = SUPPORTED_LABEL_CATALOG_V1.entries.find((candidate) =>
+    normalizedCandidates.includes(candidate.identity.toLowerCase())
+  );
+  if (!entry) return [];
+  return [buildFrozenLabelRecord({
+    address: row.address,
+    classifierHint: {
+      identity: entry.identity,
+      category: entry.category,
+      sourcePayloadSha256: fingerprintCanonicalArtifact({
+        version: "unified-label-source-row-v1",
+        ...row
+      })
+    },
+    exactRegistryBinding: null,
+    verifiedProviderBinding: null
+  })];
+});
 const unifiedLabelSnapshot = {
   version: "unified-label-dataset-v1" as const,
   rows: unifiedLabelRows
@@ -552,18 +597,23 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     ).rows[0]?.dataset_json as {
       version?: unknown;
       rows?: unknown;
+      legacyRows?: unknown;
     } | undefined;
+    const rows = stored?.version === "unified-label-dataset-v1"
+      ? stored.rows
+      : stored?.version === "unified-frozen-label-dataset-v1"
+        ? stored.legacyRows
+        : undefined;
     if (
       !stored ||
-      stored.version !== "unified-label-dataset-v1" ||
-      !Array.isArray(stored.rows) ||
+      !Array.isArray(rows) ||
       fingerprintCanonicalArtifact(stored) !== labelDatasetSha256
     ) {
       throw new Error("unified_label_dataset_persistence_mismatch");
     }
     const requested = new Set(addresses);
     const labels = new Map<string, string[]>();
-    for (const raw of stored.rows) {
+    for (const raw of rows) {
       const row = raw as {
         address?: unknown;
         label?: unknown;
@@ -1160,6 +1210,21 @@ const bot = createBot(config, db, tronClient, {
         runtimeCommit: runtimeVersion.gitCommitSha,
         schemaVersion: REQUIRED_SCHEMA_VERSION
       },
+      freezeLabelDataset: async ({
+        snapshotHash,
+        frozenAt
+      }): Promise<{
+        readonly sha256: string;
+        readonly dataset: FrozenLabelDatasetV1;
+      }> => buildFrozenLabelDataset({
+        frozenAt,
+        snapshotHash,
+        labels: [
+          ...unifiedExactLabelRecords,
+          ...unifiedHintLabelRecords
+        ],
+        legacyRows: unifiedLabelRows
+      }),
       now: () => now
     });
     logger.info("unified_wallet_check_intake", {

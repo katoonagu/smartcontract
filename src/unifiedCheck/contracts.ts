@@ -74,6 +74,11 @@ export type UnifiedDeliveryStatus =
 
 type Hash = string;
 
+export const UNIFIED_LABEL_CATALOG_VERSION =
+  "unified-label-catalog-v1" as const;
+export const UNIFIED_BOUNDARY_PREDICATE_VERSION =
+  "unified-boundary-predicates-v1" as const;
+
 export type CheckRequestV1 = {
   readonly version: "check-request-v1";
   readonly schemaVersion: 1;
@@ -96,6 +101,11 @@ export type AnalysisManifestV1 = {
   readonly confirmedBlockHash: string;
   readonly confirmedBlockTimestamp: string;
   readonly labelDatasetSha256: Hash;
+  /** Optional only when reviving a manifest created before the P1 rollout. */
+  readonly labelCatalogVersion?: typeof UNIFIED_LABEL_CATALOG_VERSION;
+  /** Optional only when reviving a manifest created before the P1 rollout. */
+  readonly boundaryPredicateVersion?:
+    typeof UNIFIED_BOUNDARY_PREDICATE_VERSION;
   readonly scoringPolicyVersion: string;
   readonly attributionPolicyVersion: string;
   readonly traversalPolicyVersion: "snapshot-closure-v1";

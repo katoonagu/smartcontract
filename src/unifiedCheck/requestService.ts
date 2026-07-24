@@ -6,6 +6,10 @@ import type {
   UnifiedSideEffectPolicy
 } from "./contracts";
 import {
+  UNIFIED_BOUNDARY_PREDICATE_VERSION,
+  UNIFIED_LABEL_CATALOG_VERSION
+} from "./contracts";
+import {
   acquireConfirmedWalletSnapshot,
   type ConfirmedWalletSnapshotV1,
   type SnapshotSource
@@ -14,6 +18,7 @@ import type {
   UnifiedQueryable,
   UnifiedTransactionalQueryable
 } from "./repository";
+import type { FrozenLabelDatasetV1 } from "./frozenLabels";
 
 export type CheckRequestStatus = "ACCEPTED" | "ATTACHED" | "FAILED_TECHNICAL";
 
@@ -61,6 +66,10 @@ export type UnifiedRequestStore = {
     requestId: string;
     candidateRun: AnalysisRunRecord;
     reuseAllowed: boolean;
+    labelDataset?: {
+      readonly sha256: string;
+      readonly dataset: FrozenLabelDatasetV1;
+    };
     initialTasks?: readonly UnifiedInitialTask[];
   }): Promise<{ request: CheckRequestRecord; run: AnalysisRunRecord; reused: boolean }>;
   providerWait(requestId: string, readyAt: string): Promise<CheckRequestRecord>;
@@ -199,6 +208,38 @@ export function createPostgresUnifiedRequestStore(
           return { request: requestRecord(request), run, reused: true };
         }
         if (request.status !== "ACCEPTED") throw new Error("unified_request_not_accepted");
+
+        if (input.labelDataset) {
+          if (
+            fingerprintCanonicalArtifact(input.labelDataset.dataset) !==
+              input.labelDataset.sha256
+          ) {
+            throw new Error("unified_frozen_label_dataset_hash_mismatch");
+          }
+          await client.query(
+            `insert into unified_label_datasets (sha256, dataset_json)
+             values ($1,$2::jsonb)
+             on conflict (sha256) do nothing`,
+            [
+              input.labelDataset.sha256,
+              JSON.stringify(input.labelDataset.dataset)
+            ]
+          );
+          const persisted = one(
+            await client.query(
+              `select dataset_json from unified_label_datasets
+                where sha256 = $1`,
+              [input.labelDataset.sha256]
+            ),
+            "unified_frozen_label_dataset_missing"
+          );
+          if (
+            fingerprintCanonicalArtifact(persisted.dataset_json) !==
+              input.labelDataset.sha256
+          ) {
+            throw new Error("unified_frozen_label_dataset_persistence_mismatch");
+          }
+        }
 
         let runRow = input.reuseAllowed
           ? (
@@ -344,6 +385,14 @@ type IntakeInput = {
   candidateRunId: string;
   initialTasks?: readonly UnifiedInitialTask[];
   versions: UnifiedAnalysisVersions;
+  freezeLabelDataset?(input: {
+    readonly snapshot: ConfirmedWalletSnapshotV1;
+    readonly snapshotHash: string;
+    readonly frozenAt: string;
+  }): Promise<{
+    readonly sha256: string;
+    readonly dataset: FrozenLabelDatasetV1;
+  }>;
   now?: () => Date;
 };
 
@@ -375,6 +424,9 @@ export function buildUnifiedBranchInput(
   readonly branch: "fast" | "deep" | "where";
   readonly snapshotHash: string;
   readonly labelDatasetSha256: string;
+  readonly labelCatalogVersion: typeof UNIFIED_LABEL_CATALOG_VERSION;
+  readonly boundaryPredicateVersion:
+    typeof UNIFIED_BOUNDARY_PREDICATE_VERSION;
   readonly runtimeCommit: string;
   readonly schemaVersion: number;
 } {
@@ -383,6 +435,8 @@ export function buildUnifiedBranchInput(
     branch,
     snapshotHash,
     labelDatasetSha256: versions.labelDatasetSha256,
+    labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
+    boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
     runtimeCommit: versions.runtimeCommit,
     schemaVersion: versions.schemaVersion
   };
@@ -413,6 +467,8 @@ export function buildUnifiedAnalysisIdentity(input: {
     confirmedBlockHash: input.snapshot.confirmedBlockHash,
     snapshotHash: input.snapshotHash,
     labelDatasetSha256: input.versions.labelDatasetSha256,
+    labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
+    boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
     scoringPolicyVersion: input.versions.scoringPolicyVersion,
     attributionPolicyVersion: input.versions.attributionPolicyVersion,
     runtimeCommit: input.versions.runtimeCommit,
@@ -468,13 +524,36 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
   try {
     const { snapshot, sha256: snapshotHash } =
       await acquireConfirmedWalletSnapshot(input.snapshotSource, accepted.subjectAddress);
+    const frozenLabels = input.freezeLabelDataset
+      ? await input.freezeLabelDataset({
+          snapshot,
+          snapshotHash,
+          frozenAt: snapshot.timestamp
+        })
+      : null;
+    if (
+      frozenLabels !== null &&
+      (
+        frozenLabels.dataset.snapshotHash !== snapshotHash ||
+        frozenLabels.dataset.frozenAt !== snapshot.timestamp ||
+        fingerprintCanonicalArtifact(frozenLabels.dataset) !==
+          frozenLabels.sha256
+      )
+    ) {
+      throw new Error("unified_frozen_label_dataset_binding_mismatch");
+    }
+    const effectiveVersions: UnifiedAnalysisVersions = {
+      ...input.versions,
+      labelDatasetSha256:
+        frozenLabels?.sha256 ?? input.versions.labelDatasetSha256
+    };
     const canReuse = accepted.runPurpose !== "release_canary";
     const reuseScope = canReuse ? "shared" : `isolated:${accepted.id}`;
     const identity = buildUnifiedAnalysisIdentity({
       subjectAddress: accepted.subjectAddress,
       snapshot,
       snapshotHash,
-      versions: input.versions,
+      versions: effectiveVersions,
       reuseScope
     });
     const manifest: AnalysisManifestV1 = {
@@ -488,23 +567,26 @@ export async function intakeUnifiedCheck(input: IntakeInput): Promise<UnifiedInt
       confirmedBlockNumber: snapshot.confirmedBlockNumber,
       confirmedBlockHash: snapshot.confirmedBlockHash,
       confirmedBlockTimestamp: snapshot.timestamp,
-      labelDatasetSha256: input.versions.labelDatasetSha256,
-      scoringPolicyVersion: input.versions.scoringPolicyVersion,
-      attributionPolicyVersion: input.versions.attributionPolicyVersion,
+      labelDatasetSha256: effectiveVersions.labelDatasetSha256,
+      labelCatalogVersion: UNIFIED_LABEL_CATALOG_VERSION,
+      boundaryPredicateVersion: UNIFIED_BOUNDARY_PREDICATE_VERSION,
+      scoringPolicyVersion: effectiveVersions.scoringPolicyVersion,
+      attributionPolicyVersion: effectiveVersions.attributionPolicyVersion,
       traversalPolicyVersion: "snapshot-closure-v1",
-      runtimeCommit: input.versions.runtimeCommit,
-      databaseSchemaVersion: input.versions.schemaVersion,
+      runtimeCommit: effectiveVersions.runtimeCommit,
+      databaseSchemaVersion: effectiveVersions.schemaVersion,
       paginationCutoffBlockNumber: snapshot.confirmedBlockNumber,
       paginationCutoffBlockHash: snapshot.confirmedBlockHash,
       branchArtifactHashes: {
-        fast: branchInputHash("fast", snapshotHash, input.versions),
-        deep: branchInputHash("deep", snapshotHash, input.versions),
-        where: branchInputHash("where", snapshotHash, input.versions)
+        fast: branchInputHash("fast", snapshotHash, effectiveVersions),
+        deep: branchInputHash("deep", snapshotHash, effectiveVersions),
+        where: branchInputHash("where", snapshotHash, effectiveVersions)
       }
     };
     const attached = await input.store.attach({
       requestId: accepted.id,
       reuseAllowed: canReuse,
+      labelDataset: frozenLabels ?? undefined,
       initialTasks: input.initialTasks,
       candidateRun: {
         id: input.candidateRunId,

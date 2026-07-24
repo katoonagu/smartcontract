@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import {
+  buildFrozenLabelDataset,
+  type FrozenLabelDatasetV1
+} from "../../src/unifiedCheck/frozenLabels";
 import type { SnapshotSource } from "../../src/unifiedCheck/snapshot";
 import {
   intakeUnifiedCheck,
   type AnalysisRunRecord,
   type CheckRequestRecord,
+  type UnifiedInitialTask,
   type UnifiedRequestStore
 } from "../../src/unifiedCheck/requestService";
 
@@ -21,12 +26,9 @@ const versions = {
 class MemoryStore implements UnifiedRequestStore {
   readonly requests = new Map<string, CheckRequestRecord>();
   readonly runs = new Map<string, AnalysisRunRecord>();
-  readonly initialTasksByRun = new Map<string, readonly {
-    id: string;
-    kind: "fast" | "where" | "deep";
-    priorityLane: "interactive" | "repair" | "background";
-    logicalKey: string;
-  }[]>();
+  readonly initialTasksByRun =
+    new Map<string, readonly UnifiedInitialTask[]>();
+  readonly labelDatasets = new Map<string, unknown>();
 
   async createOrGetAcceptedRequest(input: CheckRequestRecord): Promise<CheckRequestRecord> {
     const existing = [...this.requests.values()]
@@ -44,14 +46,19 @@ class MemoryStore implements UnifiedRequestStore {
     requestId: string;
     candidateRun: AnalysisRunRecord;
     reuseAllowed: boolean;
-    initialTasks?: readonly {
-      id: string;
-      kind: "fast" | "where" | "deep";
-      priorityLane: "interactive" | "repair" | "background";
-      logicalKey: string;
-    }[];
+    labelDataset?: {
+      readonly sha256: string;
+      readonly dataset: FrozenLabelDatasetV1;
+    };
+    initialTasks?: readonly UnifiedInitialTask[];
   }): Promise<{ request: CheckRequestRecord; run: AnalysisRunRecord; reused: boolean }> {
     const request = this.requests.get(input.requestId)!;
+    if (input.labelDataset) {
+      this.labelDatasets.set(
+        input.labelDataset.sha256,
+        input.labelDataset.dataset
+      );
+    }
     const reused = input.reuseAllowed
       ? [...this.runs.values()].find((item) => item.analysisKeySha256 === input.candidateRun.analysisKeySha256)
       : undefined;
@@ -160,6 +167,11 @@ describe("Unified Check request intake", () => {
     expect(store.runs).toHaveLength(1);
     expect(store.initialTasksByRun.get(first.run.id)?.map((task) => task.kind))
       .toEqual(["fast", "where", "deep"]);
+    expect(first.run.analysisManifest).toMatchObject({
+      labelDatasetSha256: versions.labelDatasetSha256,
+      labelCatalogVersion: "unified-label-catalog-v1",
+      boundaryPredicateVersion: "unified-boundary-predicates-v1"
+    });
   });
 
   it("creates two requests but reuses an exact shared analysis snapshot", async () => {
@@ -172,6 +184,42 @@ describe("Unified Check request intake", () => {
     expect(second.request.id).not.toBe(first.request.id);
     expect(second.run.id).toBe(first.run.id);
     expect(second.reused).toBe(true);
+  });
+
+  it("freezes and binds a snapshot-specific label dataset before attach", async () => {
+    const store = new MemoryStore();
+    const request = input(
+      store,
+      source(),
+      "labels-1",
+      "request-labels",
+      "run-labels"
+    );
+    Object.assign(request, {
+      freezeLabelDataset: async (freezeInput: {
+        snapshotHash: string;
+        frozenAt: string;
+      }) => {
+        expect(freezeInput).toMatchObject({
+          snapshotHash: expect.any(String),
+          frozenAt: "2026-07-23T12:53:54.000Z"
+        });
+        return buildFrozenLabelDataset({
+          frozenAt: freezeInput.frozenAt,
+          snapshotHash: freezeInput.snapshotHash,
+          labels: [],
+          legacyRows: []
+        });
+      }
+    });
+    const result = await intakeUnifiedCheck(request);
+    expect(result.kind).toBe("attached");
+    if (result.kind !== "attached") return;
+    expect(result.run.analysisManifest.labelDatasetSha256)
+      .not.toBe(versions.labelDatasetSha256);
+    expect(store.labelDatasets.has(
+      result.run.analysisManifest.labelDatasetSha256
+    )).toBe(true);
   });
 
   it("pins block/hash and leaves the old manifest immutable when a newer block arrives", async () => {
