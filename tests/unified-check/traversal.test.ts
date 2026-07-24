@@ -119,6 +119,28 @@ describe("Unified finite traversal", () => {
     expect(expanded.processedStateIds).toHaveLength(2);
     expect(expanded.eligibleEventIds).toEqual(["before-in"]);
     expect(expanded.eligibleEventCount).toBe(1);
+    expect(expanded.expandedStateIdsWithEligibleEvents)
+      .toEqual(expanded.processedStateIds);
+  });
+
+  it("marks only states that actually found eligible events", () => {
+    const expanded = expandTraversalChunk({
+      frontier: [
+        state("backward", "episode-with-events"),
+        {
+          ...state("backward", "episode-without-events"),
+          anchorTimestamp: "2026-07-23T10:00:00.000Z"
+        }
+      ],
+      events: [events[0]!],
+      expandedStateIds: new Set(),
+      maxStatesThisChunk: 2,
+      terminalReason: () => null,
+      accountCreationExhausted: () => true
+    });
+    expect(expanded.expandedStateIdsWithEligibleEvents).toEqual([
+      traversalStateId(state("backward", "episode-with-events"))
+    ]);
   });
 
   it("proves frontier-empty closure, structural bound and amount reconciliation", () => {

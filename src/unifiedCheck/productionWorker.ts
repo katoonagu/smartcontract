@@ -35,6 +35,10 @@ function workerTask(row: Record<string, unknown>): UnifiedWorkerTask {
       row.logical_key,
       "unified_worker_task_logical_key_invalid"
     ),
+    priorityLane: text(
+      row.priority_lane,
+      "unified_worker_task_priority_lane_invalid"
+    ) as UnifiedWorkerTask["priorityLane"],
     attempt: integer(row.attempt, "unified_worker_attempt_invalid"),
     checkpoint: row.checkpoint_json ?? {},
     cancellationRequestedAt: row.cancellation_requested_at === null ||

@@ -17,6 +17,7 @@ describe("Unified production worker adapter", () => {
             run_id: "run-1",
             kind: "direct_history",
             logical_key: "main",
+            priority_lane: "interactive",
             attempt: 2,
             checkpoint_json: { cursor: "50" },
             cancellation_requested_at: null
@@ -42,6 +43,7 @@ describe("Unified production worker adapter", () => {
       runId: "run-1",
       kind: "direct_history",
       logicalKey: "main",
+      priorityLane: "interactive",
       attempt: 2,
       checkpoint: { cursor: "50" },
       cancellationRequestedAt: null

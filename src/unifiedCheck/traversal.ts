@@ -161,6 +161,7 @@ export function expandTraversalChunk(input: {
   }>;
   supersededStateIds: readonly string[];
   eligibleEventIds: readonly string[];
+  expandedStateIdsWithEligibleEvents: readonly string[];
   eligibleEventCount: number;
   continuedRaw: string;
   terminalRaw: string;
@@ -181,6 +182,7 @@ export function expandTraversalChunk(input: {
   }> = [];
   const generated: TraversalStateV1[] = [];
   const eligibleEventIds = new Set<string>();
+  const expandedStateIdsWithEligibleEvents: string[] = [];
   let continuedRaw = 0n;
   let terminalRaw = 0n;
   let residualRaw = 0n;
@@ -221,6 +223,9 @@ export function expandTraversalChunk(input: {
           : timestamp(left.timestamp) - timestamp(right.timestamp);
         return timeOrder || left.id.localeCompare(right.id);
       });
+    if (candidates.length > 0) {
+      expandedStateIdsWithEligibleEvents.push(stateId);
+    }
     for (const candidate of candidates) {
       eligibleEventIds.add(candidate.id);
     }
@@ -275,6 +280,7 @@ export function expandTraversalChunk(input: {
     terminals,
     supersededStateIds,
     eligibleEventIds: [...eligibleEventIds].sort(),
+    expandedStateIdsWithEligibleEvents,
     eligibleEventCount: eligibleEventIds.size,
     continuedRaw: continuedRaw.toString(),
     terminalRaw: terminalRaw.toString(),

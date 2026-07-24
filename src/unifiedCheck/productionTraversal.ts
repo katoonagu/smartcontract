@@ -35,7 +35,7 @@ const RESTRICTION_LABELS = new Set([
   "risky_contract", "approval_drain_proximity"
 ]);
 
-type LoadedTraversalContext = {
+export type LoadedTraversalContext = {
   readonly runId: string;
   readonly manifest: AnalysisManifestV1;
   readonly directEvents: readonly IndexedTronUsdtTransfer[];
@@ -83,7 +83,7 @@ type ActiveHistory = {
   readonly pageArtifactHashes: readonly string[];
 };
 
-type TraversalCheckpoint = {
+export type UnifiedLegacyTraversalCheckpointV1 = {
   readonly version: "unified-production-traversal-checkpoint-v1";
   readonly frontier: readonly TraversalStateV1[];
   readonly visitedStates: readonly TraversalStateV1[];
@@ -105,9 +105,9 @@ function eventId(event: IndexedTronUsdtTransfer): string {
   return canonicalTronUsdtEventKey(event);
 }
 
-function initialCheckpoint(
+export function initialUnifiedTraversalCheckpointV1(
   context: LoadedTraversalContext
-): TraversalCheckpoint {
+): UnifiedLegacyTraversalCheckpointV1 {
   const subject = context.manifest.subjectAddress.toLowerCase();
   const backward = context.directEvents
     .filter((event) => event.toAddress.toLowerCase() === subject)
@@ -151,16 +151,16 @@ function initialCheckpoint(
 function checkpoint(
   value: unknown,
   context: LoadedTraversalContext
-): TraversalCheckpoint {
+): UnifiedLegacyTraversalCheckpointV1 {
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
     (value as Record<string, unknown>).version === undefined
   ) {
-    return initialCheckpoint(context);
+    return initialUnifiedTraversalCheckpointV1(context);
   }
-  const parsed = value as Partial<TraversalCheckpoint>;
+  const parsed = value as Partial<UnifiedLegacyTraversalCheckpointV1>;
   if (
     parsed.version !== "unified-production-traversal-checkpoint-v1" ||
     !Array.isArray(parsed.frontier) ||
@@ -177,10 +177,12 @@ function checkpoint(
   ) {
     throw new Error("unified_production_traversal_checkpoint_invalid");
   }
-  return parsed as TraversalCheckpoint;
+  return parsed as UnifiedLegacyTraversalCheckpointV1;
 }
 
-function boundary(labels: readonly string[]): TraversalTerminalReason | null {
+export function unifiedTraversalBoundary(
+  labels: readonly string[]
+): TraversalTerminalReason | null {
   if (labels.some((label) => RESTRICTION_LABELS.has(label))) {
     return "policy_or_restriction_boundary";
   }
@@ -190,7 +192,7 @@ function boundary(labels: readonly string[]): TraversalTerminalReason | null {
   return null;
 }
 
-function terminalProof(input: {
+export function buildUnifiedTraversalTerminalProof(input: {
   state: TraversalStateV1;
   reason: TraversalTerminalReason;
   labels: readonly string[];
@@ -208,7 +210,7 @@ function terminalProof(input: {
   };
 }
 
-function terminalRecord(input: {
+export function buildUnifiedTraversalTerminalRecord(input: {
   state: TraversalStateV1;
   reason: TraversalTerminalReason;
   labels: readonly string[];
@@ -258,9 +260,20 @@ function coverage(
   });
 }
 
-async function completedArtifact(
+export async function buildUnifiedTraversalCompletedArtifact(
   context: LoadedTraversalContext,
-  state: TraversalCheckpoint
+  state: Pick<
+    UnifiedLegacyTraversalCheckpointV1,
+    | "frontier"
+    | "visitedStates"
+    | "expandedStateIds"
+    | "terminals"
+    | "supersededStateIds"
+    | "eligibleEventIds"
+    | "expandedStateKeys"
+    | "selectedBackwardRaw"
+    | "selectedForwardRaw"
+  >
 ): Promise<UnifiedTraversalArtifactV1> {
   const selected = BigInt(state.selectedBackwardRaw) +
     BigInt(state.selectedForwardRaw);
@@ -357,7 +370,10 @@ export function createUnifiedTraversalHandler(input: {
     const context = await input.loadContext(task.runId);
     let state = checkpoint(task.checkpoint, context);
     if (state.frontier.length === 0 && state.active === null) {
-      const artifact = await completedArtifact(context, state);
+      const artifact = await buildUnifiedTraversalCompletedArtifact(
+        context,
+        state
+      );
       const sha256 = fingerprintCanonicalArtifact(artifact);
       await input.persistArtifact({
         runId: task.runId,
@@ -395,9 +411,9 @@ export function createUnifiedTraversalHandler(input: {
       addresses: [active.state.address]
     });
     const addressLabels = labels.get(active.state.address) ?? [];
-    const reason = boundary(addressLabels);
+    const reason = unifiedTraversalBoundary(addressLabels);
     if (reason !== null && active.pageArtifactHashes.length === 0) {
-      const proof = terminalProof({
+      const proof = buildUnifiedTraversalTerminalProof({
         state: active.state,
         reason,
         labels: addressLabels,
@@ -415,12 +431,15 @@ export function createUnifiedTraversalHandler(input: {
         ...state,
         frontier: mergeTraversalStates(remainingFrontier),
         visitedStates: [...state.visitedStates, active.state],
-        terminals: [...state.terminals, terminalRecord({
+        terminals: [
+          ...state.terminals,
+          buildUnifiedTraversalTerminalRecord({
           state: active.state,
           reason,
           labels: addressLabels,
           evidenceHash
-        })],
+          })
+        ],
         active: null
       };
     } else {
@@ -511,7 +530,7 @@ export function createUnifiedTraversalHandler(input: {
         });
         const terminals: UnifiedTraversalTerminalV1[] = [];
         for (const item of expanded.terminals) {
-          const proof = terminalProof({
+          const proof = buildUnifiedTraversalTerminalProof({
             state: item.state,
             reason: item.reason,
             labels: addressLabels,
@@ -525,7 +544,7 @@ export function createUnifiedTraversalHandler(input: {
             sha256: evidenceHash,
             artifact: proof
           });
-          terminals.push(terminalRecord({
+          terminals.push(buildUnifiedTraversalTerminalRecord({
             state: item.state,
             reason: item.reason,
             labels: addressLabels,
@@ -563,7 +582,10 @@ export function createUnifiedTraversalHandler(input: {
     }
     await heartbeat();
     if (state.frontier.length === 0 && state.active === null) {
-      const artifact = await completedArtifact(context, state);
+      const artifact = await buildUnifiedTraversalCompletedArtifact(
+        context,
+        state
+      );
       const sha256 = fingerprintCanonicalArtifact(artifact);
       await input.persistArtifact({
         runId: task.runId,
