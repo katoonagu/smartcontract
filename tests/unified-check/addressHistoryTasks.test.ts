@@ -145,5 +145,7 @@ describe("Unified address-history tasks", () => {
     expect(claimSql).toContain("history_task.status <> 'COMPLETED'");
     expect(claimSql).toContain("task.kind <> 'fast'");
     expect(claimSql).toContain("task.kind not in ('where','deep')");
+    expect(claimSql).toContain("active_task.run_id = task.run_id");
+    expect(claimSql).toContain("served_task.run_id = task.run_id");
   });
 });

@@ -846,6 +846,22 @@ export async function claimUnifiedTask(
          )
        order by case task.priority_lane
          when 'interactive' then 0 when 'repair' then 1 else 2 end,
+         (
+           select count(*)
+             from unified_check_tasks active_task
+            where active_task.run_id = task.run_id
+              and active_task.status = 'LEASED'
+              and active_task.lease_expires_at > statement_timestamp()
+         ),
+         coalesce(
+           (
+             select max(served_task.updated_at)
+               from unified_check_tasks served_task
+              where served_task.run_id = task.run_id
+                and served_task.attempt > 0
+           ),
+           '-infinity'::timestamptz
+         ),
          greatest(task.ready_at, task.updated_at), task.created_at
        for update skip locked
        limit 1

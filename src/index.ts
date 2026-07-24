@@ -210,6 +210,7 @@ import { createTronConfirmedSnapshotSource } from "./unifiedCheck/snapshot";
 import { SELECTED_ATTRIBUTION_POLICY } from "./unifiedCheck/selectedAttributionPolicy.generated";
 import { SCORING_POLICY_V4 } from "./risk/scoringPolicyV4.generated";
 import { createUnifiedProductionRuntime } from "./unifiedCheck/productionRuntime";
+import { createUnifiedProviderPool } from "./unifiedCheck/providerPool";
 import {
   buildUnifiedCanaryProviderConfiguration
 } from "./unifiedCheck/canary";
@@ -412,12 +413,14 @@ const unifiedProviderConfiguration =
       keyCount: group.apiKeys.length
     }))
   });
+let wakeUnifiedProviderPool: () => void = () => undefined;
 const unifiedProductionRuntime = createUnifiedProductionRuntime({
   db: unifiedTransactionHost,
   runtimeCommit: runtimeVersion.gitCommitSha,
   providerConfigurationSha256: unifiedProviderConfiguration.sha256,
   now: () => new Date(),
   createId: randomUUID,
+  onProviderWorkAvailable: () => wakeUnifiedProviderPool(),
   async loadProviderPage({ run, address = run.subjectAddress, cursor }) {
     const start = cursor === null ? 0 : Number(cursor);
     if (!Number.isSafeInteger(start) || start < 0) {
@@ -698,6 +701,18 @@ const unifiedProductionRuntime = createUnifiedProductionRuntime({
     }
   }
 });
+const unifiedProviderPool = createUnifiedProviderPool({
+  slots: Math.min(4, Math.max(1, config.tronscanApiKeys.length)),
+  runCycle: (slotId) =>
+    unifiedProductionRuntime.runProviderCycle(slotId),
+  onError(error, slotId) {
+    logger.error("unified_provider_pool_slot_failed", {
+      slotId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+wakeUnifiedProviderPool = () => unifiedProviderPool.wake();
 const runRuntimeNavigationProbe = createRuntimeNavigationProbe(config, db, tronClient, runtimeVersion);
 
 function getBackgroundUsdtAllowance(input: {
@@ -2196,8 +2211,9 @@ function startBackgroundWorkSchedule(): void {
       logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
     }
   });
-  const unifiedProviderWork = () =>
-    unifiedProductionRuntime.runProviderCycle().then(() => undefined);
+  const unifiedProviderWork = async () => {
+    unifiedProviderPool.wake();
+  };
   const unifiedAnalysisWork = () =>
     unifiedProductionRuntime.runAnalysisCycle().then(() => undefined);
   const unifiedFinalizationWork = () =>
@@ -2267,6 +2283,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   startupWorkSchedule = null;
   unifiedWorkSchedule?.stop();
   unifiedWorkSchedule = null;
+  await unifiedProviderPool.stop();
 
   if (activePoll) {
     try {

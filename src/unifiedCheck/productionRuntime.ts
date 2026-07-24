@@ -223,6 +223,7 @@ export function createUnifiedProductionRuntime(input: {
   leaseMs?: number;
   addressHistoryPagesPerChunk?: number;
   traversalAddressesPerChunk?: number;
+  onProviderWorkAvailable?(): void;
   loadProviderPage(input: {
     run: LoadedRun;
     address?: string;
@@ -388,6 +389,7 @@ export function createUnifiedProductionRuntime(input: {
           taskId: createId()
         }))
       });
+      input.onProviderWorkAvailable?.();
     },
     loadAddressHistoryManifests: (args) =>
       loadCompletedAddressHistoryManifests(input.db, args),
@@ -480,8 +482,8 @@ export function createUnifiedProductionRuntime(input: {
     persistArtifact
   });
   return {
-    runProviderCycle: () => runUnifiedTaskCycle({
-      workerId: "unified-provider",
+    runProviderCycle: (slotId = 0) => runUnifiedTaskCycle({
+      workerId: `unified-provider-${slotId}`,
       now,
       leaseMs,
       repository: createPostgresUnifiedTaskCycleRepository(
