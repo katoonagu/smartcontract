@@ -73,7 +73,9 @@ type LegacyTraversalCheckpointV1 = {
   readonly expandedStateIds: readonly string[];
   readonly terminals: readonly unknown[];
   readonly supersededStateIds: readonly string[];
-  readonly active: unknown;
+  readonly active: {
+    readonly state: TraversalStateV1;
+  } | null;
   readonly eligibleEventIds: readonly string[];
   readonly expandedStateKeys: readonly string[];
   readonly selectedBackwardRaw: string;
@@ -336,7 +338,16 @@ function legacyCheckpoint(value: unknown): LegacyTraversalCheckpointV1 {
   }
   if (
     typeof record.selectedBackwardRaw !== "string" ||
-    typeof record.selectedForwardRaw !== "string"
+    typeof record.selectedForwardRaw !== "string" ||
+    !(
+      record.active === null ||
+      (
+        record.active !== undefined &&
+        typeof record.active === "object" &&
+        !Array.isArray(record.active) &&
+        (record.active as { state?: unknown }).state !== undefined
+      )
+    )
   ) {
     throw new Error("unified_traversal_checkpoint_upgrade_source_invalid");
   }
@@ -383,7 +394,12 @@ export function upgradeTraversalCheckpointV1(input: {
     analysisManifestHash,
     snapshotHash,
     sourceCheckpointSha256,
-    frontier: sortStates(source.frontier),
+    // ponytail: a V1 partial page is intentionally refetched once; restoring
+    // its state preserves attribution while avoiding a second checkpoint path.
+    frontier: sortStates([
+      ...source.frontier,
+      ...(source.active === null ? [] : [source.active.state])
+    ]),
     visited: sortStates(source.visitedStates),
     terminals: [...source.terminals],
     supersededStateIds: [...new Set(source.supersededStateIds)].sort(),

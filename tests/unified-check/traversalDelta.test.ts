@@ -154,4 +154,29 @@ describe("Unified traversal delta chain", () => {
       upgradeArtifact: null
     });
   });
+
+  it("restores an in-flight V1 state to the frontier during rollout", () => {
+    const upgraded = upgradeTraversalCheckpointV1({
+      checkpoint: {
+        version: "unified-production-traversal-checkpoint-v1",
+        frontier: [],
+        visitedStates: [],
+        expandedStateIds: [],
+        terminals: [],
+        supersededStateIds: [],
+        active: {
+          state: STATE_A,
+          history: { cursor: "50" },
+          pageArtifactHashes: ["3".repeat(64)]
+        },
+        eligibleEventIds: [],
+        expandedStateKeys: [],
+        selectedBackwardRaw: "100",
+        selectedForwardRaw: "0"
+      },
+      ...BINDINGS
+    });
+
+    expect(upgraded.compactionArtifact?.frontier).toEqual([STATE_A]);
+  });
 });
