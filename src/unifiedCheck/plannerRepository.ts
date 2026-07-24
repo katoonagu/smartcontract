@@ -106,7 +106,7 @@ export async function planUnifiedOrderedTasks(
           id, run_id, kind, status, priority_lane, logical_key, checkpoint_json
         ) values ($1,$2,$3,'QUEUED',$4,$5,$6::jsonb)
         on conflict (run_id, kind, logical_key) do nothing
-        returning id`,
+        returning id, status, accepted_attempt_id`,
         [
           planned.task.taskId,
           runId,
@@ -118,9 +118,10 @@ export async function planUnifiedOrderedTasks(
       );
       const durableTask = insertedTask.rows[0] ?? (
         await client.query(
-          `select id
+          `select id, status, accepted_attempt_id
              from unified_check_tasks
-            where run_id = $1 and kind = $2 and logical_key = $3`,
+            where run_id = $1 and kind = $2 and logical_key = $3
+            for update`,
           [runId, planned.task.kind, planned.task.logicalKey]
         )
       ).rows[0];
@@ -130,11 +131,20 @@ export async function planUnifiedOrderedTasks(
         await client.query(
           `select canonical_sequence
              from unified_check_planner_entries
-            where run_id = $1 and task_id = $2`,
+            where run_id = $1 and task_id = $2
+            for update`,
           [runId, taskId]
         )
       ).rows[0];
       if (!planner) {
+        if (
+          !["QUEUED", "LEASED", "WAITING_RETRY"].includes(
+            String(durableTask.status)
+          ) ||
+          durableTask.accepted_attempt_id !== null
+        ) {
+          throw new Error("unified_planner_task_not_plannable");
+        }
         planner = (
           await client.query(
             `insert into unified_check_planner_entries (

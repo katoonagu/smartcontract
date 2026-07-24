@@ -1475,22 +1475,43 @@ export async function completeUnifiedTaskAttempt(
   }
 ) {
   return db.transaction(async (client) => {
+    const discoveredTask = (
+      await client.query(
+        "select run_id from unified_check_tasks where id = $1",
+        [input.taskId]
+      )
+    ).rows[0];
+    if (!discoveredTask) throw new Error("unified_task_lease_lost");
+    const runId = String(discoveredTask.run_id);
+    const run = (
+      await client.query(
+        `select id, run_purpose, created_at
+           from unified_check_runs
+          where id = $1
+          for update`,
+        [runId]
+      )
+    ).rows[0];
+    if (!run || String(run.id) !== runId) {
+      throw new Error("unified_task_acceptance_conflict");
+    }
     const task = (
       await client.query(
         `select task.*,
                 (
-                  run.run_purpose = 'release_canary' and
+                  $3::text = 'release_canary' and
                   clock_timestamp() >=
-                    run.created_at + interval '35 minutes'
+                    $4::timestamptz + interval '35 minutes'
                 ) as canary_deadline_reached
            from unified_check_tasks task
-           join unified_check_runs run on run.id = task.run_id
-          where task.id = $1
+          where task.id = $1 and task.run_id = $2
           for update of task`,
-        [input.taskId]
+        [input.taskId, runId, run.run_purpose, run.created_at]
       )
     ).rows[0];
-    if (!task) throw new Error("unified_task_lease_lost");
+    if (!task || String(task.run_id) !== runId) {
+      throw new Error("unified_task_acceptance_conflict");
+    }
     const plannerTable = (
       await client.query(
         "select to_regclass('unified_check_planner_entries') as planner_table"
@@ -1526,14 +1547,10 @@ export async function completeUnifiedTaskAttempt(
         String(accepted.task_id) !== input.taskId ||
         Number(accepted.attempt) !== input.attempt ||
         Number(task.attempt) !== input.attempt ||
-        String(accepted.id) !== input.attemptId ||
-        String(task.accepted_attempt_id) !== input.attemptId ||
+        String(accepted.id) !== String(task.accepted_attempt_id) ||
         String(accepted.artifact_sha256) !== input.artifactSha256
       ) {
         throw new Error("unified_task_acceptance_conflict");
-      }
-      if (planner && !input.acceptedArtifact) {
-        throw new Error("unified_ordered_artifact_required");
       }
       let prepared: ReturnType<typeof prepareAcceptedArtifact> | undefined;
       if (input.acceptedArtifact) {
@@ -1556,13 +1573,18 @@ export async function completeUnifiedTaskAttempt(
         }
       }
       if (planner) {
+        const plannerResultBytes = Number(planner.result_bytes);
         if (
           !["ready", "committed"].includes(String(planner.planner_state)) ||
           planner.admitted_at === null ||
           planner.reserved_bytes !== null ||
           planner.ready_at === null ||
-          !Number.isSafeInteger(Number(planner.result_bytes)) ||
-          Number(planner.result_bytes) !== prepared!.bytes
+          !Number.isSafeInteger(plannerResultBytes) ||
+          plannerResultBytes < 0 ||
+          (
+            prepared !== undefined &&
+            plannerResultBytes !== prepared.bytes
+          )
         ) {
           throw new Error("unified_task_acceptance_conflict");
         }

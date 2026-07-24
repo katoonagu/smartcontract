@@ -88,9 +88,14 @@ Acceptance of an admitted ordered task is now one idempotent PostgreSQL
 transaction: it inserts the immutable result artifact and attempt, completes
 and releases the task lease, and moves the planner row from `planned` to
 `ready` with the canonical UTF-8 result size. The accepted-attempt join remains
-the only artifact authority. The rolling coordinator, planner-aware claiming,
-and ordered commit integration remain later implementation steps; merely
-applying schema 034 does not switch an existing run to planner execution.
+the only artifact authority. Replay after an uncertain response uses the stable
+task ID, attempt number, and artifact hash; it does not depend on the worker's
+ephemeral attempt UUID or a repeated artifact payload. Planner attachment and
+acceptance serialize through the run lock before task and planner locks, so a
+completed independent task cannot acquire a late `planned` row. The rolling
+coordinator, planner-aware claiming, and ordered commit integration remain
+later implementation steps; merely applying schema 034 does not switch an
+existing run to planner execution.
 
 ## Remaining Operational Work
 

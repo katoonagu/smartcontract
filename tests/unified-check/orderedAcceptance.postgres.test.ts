@@ -6,6 +6,9 @@ import {
   canonicalizeArtifactJson
 } from "../../src/forensics/canonicalJson";
 import {
+  planUnifiedOrderedTasks
+} from "../../src/unifiedCheck/plannerRepository";
+import {
   completeUnifiedTaskAttempt,
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
@@ -30,6 +33,8 @@ function artifactSha256(value: unknown): string {
 async function withScenario(
   work: (input: {
     db: pg.PoolClient;
+    pool: pg.Pool;
+    schema: string;
     transactionHost: UnifiedTransactionalQueryable;
   }) => Promise<void>
 ): Promise<void> {
@@ -72,7 +77,7 @@ async function withScenario(
         'isolated','analysis-manifest-1','run-1'
       )`
     );
-    await work({ db, transactionHost });
+    await work({ db, pool, schema, transactionHost });
   } finally {
     await db.query(`drop schema if exists "${schema}" cascade`);
     db.release();
@@ -190,9 +195,25 @@ postgresDescribe("Unified ordered acceptance", () => {
 
       const retried = await completeUnifiedTaskAttempt(
         transactionHost,
-        completionInput({ leaseToken: "lease-already-cleared" })
+        completionInput({
+          leaseToken: "lease-already-cleared",
+          attemptId: "fresh-attempt-id"
+        })
       );
       expect(retried).toMatchObject({
+        id: "task-ordered",
+        status: "COMPLETED",
+        accepted_attempt_id: "attempt-1"
+      });
+      const payloadFreeRetry = await completeUnifiedTaskAttempt(
+        transactionHost,
+        completionInput({
+          leaseToken: "lease-already-cleared",
+          attemptId: "another-fresh-attempt-id",
+          acceptedArtifact: undefined
+        })
+      );
+      expect(payloadFreeRetry).toMatchObject({
         id: "task-ordered",
         status: "COMPLETED",
         accepted_attempt_id: "attempt-1"
@@ -224,10 +245,121 @@ postgresDescribe("Unified ordered acceptance", () => {
         transactionHost,
         completionInput({ attempt: 2 })
       )).rejects.toThrow("unified_task_acceptance_conflict");
-      await expect(completeUnifiedTaskAttempt(
-        transactionHost,
-        completionInput({ attemptId: "attempt-other" })
-      )).rejects.toThrow("unified_task_acceptance_conflict");
+    });
+  });
+
+  it("serializes planner attachment behind acceptance and rejects a completed task", async () => {
+    await withScenario(async ({ db, pool, schema }) => {
+      await insertLeasedTask(db, {
+        taskId: "task-race",
+        ordered: false
+      });
+      const hash = artifactSha256(acceptedArtifact);
+      await db.query(
+        `insert into unified_check_artifacts (
+          sha256, created_by_run_id, kind, schema_version, artifact_json
+        ) values ($1, 'run-1', 'address_history_manifest', '1', $2::jsonb)`,
+        [hash, JSON.stringify(acceptedArtifact)]
+      );
+
+      const acceptanceClient = await pool.connect();
+      const planningClient = await pool.connect();
+      try {
+        await acceptanceClient.query("begin");
+        await acceptanceClient.query(`set local search_path to "${schema}"`);
+        await acceptanceClient.query(
+          "select id from unified_check_runs where id = 'run-1' for update"
+        );
+        let planningLockRequested!: () => void;
+        const planningReachedRunLock = new Promise<void>((resolve) => {
+          planningLockRequested = resolve;
+        });
+        const planningHost: UnifiedTransactionalQueryable = {
+          query: (sql, values) =>
+            planningClient.query(sql, values as unknown[]),
+          async transaction<T>(
+            work: (client: UnifiedQueryable) => Promise<T>
+          ): Promise<T> {
+            await planningClient.query("begin");
+            await planningClient.query(
+              `set local search_path to "${schema}"`
+            );
+            try {
+              const result = await work({
+                query(sql, values) {
+                  if (
+                    sql.includes("from unified_check_runs") &&
+                    sql.includes("for update")
+                  ) {
+                    planningLockRequested();
+                  }
+                  return planningClient.query(sql, values as unknown[]);
+                }
+              });
+              await planningClient.query("commit");
+              return result;
+            } catch (error) {
+              await planningClient.query("rollback").catch(() => undefined);
+              throw error;
+            }
+          }
+        };
+        const planning = planUnifiedOrderedTasks(planningHost, {
+          runId: "run-1",
+          tasks: [{
+            taskId: "task-race",
+            kind: "address_history",
+            logicalKey: "task-race",
+            priorityLane: "interactive",
+            checkpoint: { version: "race-v1" }
+          }]
+        });
+        await planningReachedRunLock;
+
+        const acceptanceHost: UnifiedTransactionalQueryable = {
+          query: (sql, values) =>
+            acceptanceClient.query(sql, values as unknown[]),
+          transaction: (work) => work({
+            query: (sql, values) =>
+              acceptanceClient.query(sql, values as unknown[])
+          })
+        };
+        await expect(completeUnifiedTaskAttempt(acceptanceHost, {
+          taskId: "task-race",
+          leaseToken: "lease-1",
+          attempt: 1,
+          attemptId: "attempt-race",
+          artifactSha256: hash
+        })).resolves.toMatchObject({
+          status: "COMPLETED",
+          accepted_attempt_id: "attempt-race"
+        });
+        await acceptanceClient.query("commit");
+
+        await expect(planning).rejects.toThrow(
+          "unified_planner_task_not_plannable"
+        );
+        await expect(db.query(
+          `select task.status, task.accepted_attempt_id,
+                  planner.planner_state
+             from unified_check_tasks task
+             left join unified_check_planner_entries planner
+               on planner.run_id = task.run_id and planner.task_id = task.id
+            where task.id = 'task-race'`
+        )).resolves.toMatchObject({
+          rows: [{
+            status: "COMPLETED",
+            accepted_attempt_id: "attempt-race",
+            planner_state: null
+          }]
+        });
+      } catch (error) {
+        await acceptanceClient.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        acceptanceClient.release();
+        planningClient.release();
+      }
     });
   });
 
