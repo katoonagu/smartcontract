@@ -5,9 +5,6 @@ import {
 } from "../../src/unifiedCheck/productionBranches";
 import type { AnalysisManifestV1 } from "../../src/unifiedCheck/contracts";
 import type { IndexedTronUsdtTransfer } from "../../src/types";
-import {
-  buildTraversalCoverage
-} from "../../src/unifiedCheck/traversal";
 
 const ADDRESS = "TBL7SHuSwpXnK6fWfwuRWrbpBjSqCQscQy";
 const manifest = {
@@ -51,38 +48,7 @@ describe("Unified production branch handlers", () => {
         deliveryAuthority: false,
         knownCounterparties: new Map(),
         hardEvidence: {},
-        traversal: {
-          version: "unified-traversal-artifact-v1",
-          schemaVersion: 1,
-          runId: "run-1",
-          analysisManifestHash: fingerprintCanonicalArtifact(manifest),
-          snapshotHash: manifest.snapshotHash,
-          visitedStates: [],
-          frontier: [],
-          terminalStates: [],
-          supersededStateIds: [],
-          eligibleEventIds: [],
-          eligibleEventCount: 0,
-          directionCount: 0,
-          fundingEpisodeCount: 0,
-          expandedStateCount: 0,
-          allocatedInputRaw: "0",
-          terminalRaw: "0",
-          residualRaw: "0",
-          backwardCoverage: buildTraversalCoverage({
-            selectedAmountRaw: "0",
-            tracedAmountRaw: "0",
-            identifiedAmountRaw: "0",
-            unknownBoundaryRaw: "0"
-          }),
-          forwardCoverage: buildTraversalCoverage({
-            selectedAmountRaw: "0",
-            tracedAmountRaw: "0",
-            identifiedAmountRaw: "0",
-            unknownBoundaryRaw: "0"
-          }),
-          closed: true
-        }
+        traversal: undefined
       }),
       previousAttemptHash: async () => null,
       persistArtifact: async (input) => {

@@ -19,7 +19,7 @@ import type {
 type ProductionBranchContext = UnifiedBranchContext & {
   readonly knownCounterparties: ReadonlyMap<string, readonly string[]>;
   readonly hardEvidence: UnifiedProductionHardEvidence;
-  readonly traversal: UnifiedTraversalArtifactV1;
+  readonly traversal?: UnifiedTraversalArtifactV1;
 };
 
 type BranchId = "fast" | "where" | "deep";
@@ -81,6 +81,12 @@ export function createUnifiedProductionBranchHandlers(input: {
             };
           }
           throw error;
+        }
+        if (branchId !== "fast" && context.traversal === undefined) {
+          return {
+            kind: "blocked",
+            reason: `unified_branch_traversal_missing:${branchId}`
+          };
         }
         const evidence = buildUnifiedProductionEvidence({
           subjectAddress: context.manifest.subjectAddress,

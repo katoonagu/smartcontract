@@ -143,5 +143,7 @@ describe("Unified address-history tasks", () => {
     expect(claimSql).toContain("task.kind <> 'address_history'");
     expect(claimSql).toContain("history_task.kind = 'address_history'");
     expect(claimSql).toContain("history_task.status <> 'COMPLETED'");
+    expect(claimSql).toContain("task.kind <> 'fast'");
+    expect(claimSql).toContain("task.kind not in ('where','deep')");
   });
 });

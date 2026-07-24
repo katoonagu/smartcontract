@@ -7,6 +7,11 @@ import type {
   DirectHistoryProviderWait
 } from "./directHistory";
 import {
+  createUnifiedAddressHistoryHandler,
+  type UnifiedAddressHistoryChunkArtifactV1,
+  type UnifiedAddressHistoryPageArtifactV1
+} from "./productionAddressHistory";
+import {
   createUnifiedProductionBranchHandlers
 } from "./productionBranches";
 import {
@@ -27,12 +32,20 @@ import {
 } from "./productionWorker";
 import type { UnifiedRunPurpose } from "./contracts";
 import {
-  createUnifiedTraversalHandler,
   type UnifiedTraversalArtifactV1
 } from "./productionTraversal";
 import {
+  createUnifiedTraversalCoordinatorHandler
+} from "./productionTraversalCoordinator";
+import type {
+  TraversalCompactionArtifactV2,
+  TraversalDeltaArtifactV1
+} from "./traversalDelta";
+import {
   cooperateUnifiedCanaryRun,
+  ensureAddressHistoryTasks,
   insertUnifiedArtifact,
+  loadCompletedAddressHistoryManifests,
   recordUnifiedTaskProviderDuration,
   type UnifiedQueryable,
   type UnifiedTransactionalQueryable
@@ -208,6 +221,8 @@ export function createUnifiedProductionRuntime(input: {
   now?: () => Date;
   createId?: () => string;
   leaseMs?: number;
+  addressHistoryPagesPerChunk?: number;
+  traversalAddressesPerChunk?: number;
   loadProviderPage(input: {
     run: LoadedRun;
     address?: string;
@@ -309,16 +324,9 @@ export function createUnifiedProductionRuntime(input: {
       ),
     persistArtifact
   });
-  const traversal = createUnifiedTraversalHandler({
-    async loadContext(runId) {
-      const run = await loadRun(input.db, runId);
-      const history = await loadDirectHistory(input.db, run);
-      return {
-        runId,
-        manifest: run.analysisManifest,
-        directEvents: history.events
-      };
-    },
+  const addressHistory = createUnifiedAddressHistoryHandler({
+    maxPagesThisChunk: input.addressHistoryPagesPerChunk ?? 4,
+    loadRun: (runId) => loadRun(input.db, runId),
     loadPage: ({
       run,
       address,
@@ -328,27 +336,81 @@ export function createUnifiedProductionRuntime(input: {
       attempt,
       heartbeat
     }) => measuredProviderCall(
-      run.runId,
+      run.id,
       { taskId, leaseToken, attempt, heartbeat },
       () => input.loadProviderPage({
         run: {
-          id: run.runId,
-          subjectAddress: run.manifest.subjectAddress,
-          analysisManifestSha256:
-            fingerprintCanonicalArtifact(run.manifest),
-          analysisManifest: run.manifest
+          ...run,
+          subjectAddress: run.analysisManifest.subjectAddress
         },
         address,
         cursor
       })
     ),
-    loadLabels: input.loadCounterpartyLabels,
     loadPageArtifact: ({ runId, sha256 }) =>
-      artifact<UnifiedDirectHistoryPageArtifactV1>(
+      artifact<UnifiedAddressHistoryPageArtifactV1>(
         input.db,
         runId,
         sha256,
-        "traversal_history_page"
+        "address_history_page"
+      ),
+    loadChunkArtifact: ({ runId, sha256 }) =>
+      artifact<UnifiedAddressHistoryChunkArtifactV1>(
+        input.db,
+        runId,
+        sha256,
+        "address_history_chunk"
+      ),
+    persistArtifact
+  });
+  const traversal = createUnifiedTraversalCoordinatorHandler({
+    maxAddressesThisChunk: input.traversalAddressesPerChunk ?? 32,
+    async loadContext(runId) {
+      const run = await loadRun(input.db, runId);
+      const history = await loadDirectHistory(input.db, run);
+      return {
+        runId,
+        manifest: run.analysisManifest,
+        directEvents: history.events
+      };
+    },
+    loadLabels: input.loadCounterpartyLabels,
+    async ensureAddressHistories({
+      runId,
+      priorityLane,
+      histories
+    }) {
+      await ensureAddressHistoryTasks(input.db, {
+        runId,
+        priorityLane,
+        histories: histories.map((history) => ({
+          ...history,
+          taskId: createId()
+        }))
+      });
+    },
+    loadAddressHistoryManifests: (args) =>
+      loadCompletedAddressHistoryManifests(input.db, args),
+    loadAddressHistoryPage: ({ runId, sha256 }) =>
+      artifact<UnifiedAddressHistoryPageArtifactV1>(
+        input.db,
+        runId,
+        sha256,
+        "address_history_page"
+      ),
+    loadCompactionArtifact: ({ runId, sha256 }) =>
+      artifact<TraversalCompactionArtifactV2>(
+        input.db,
+        runId,
+        sha256,
+        "traversal_compaction_v2"
+      ),
+    loadDeltaArtifact: ({ runId, sha256 }) =>
+      artifact<TraversalDeltaArtifactV1>(
+        input.db,
+        runId,
+        sha256,
+        "traversal_delta"
       ),
     persistArtifact
   });
@@ -358,7 +420,9 @@ export function createUnifiedProductionRuntime(input: {
     async loadContext(runId, branchId, execution) {
       const run = await loadRun(input.db, runId);
       const history = await loadDirectHistory(input.db, run);
-      const traversal = await loadTraversal(input.db, run);
+      const traversal = branchId === "fast"
+        ? undefined
+        : await loadTraversal(input.db, run);
       const counterparties = [...new Set(history.events.flatMap((event) => [
         event.fromAddress,
         event.toAddress
@@ -422,12 +486,15 @@ export function createUnifiedProductionRuntime(input: {
       leaseMs,
       repository: createPostgresUnifiedTaskCycleRepository(
         input.db,
-        ["direct_history", "traversal"],
+        ["direct_history", "address_history"],
         input.runtimeCommit,
         input.providerConfigurationSha256,
         input.runPurpose
       ),
-      handlers: { direct_history: directHistory, traversal },
+      handlers: {
+        direct_history: directHistory,
+        address_history: addressHistory
+      },
       createId
     }),
     runAnalysisCycle: () => runUnifiedTaskCycle({
@@ -436,12 +503,12 @@ export function createUnifiedProductionRuntime(input: {
       leaseMs,
       repository: createPostgresUnifiedTaskCycleRepository(
         input.db,
-        ["fast", "where", "deep"],
+        ["traversal", "fast", "where", "deep"],
         input.runtimeCommit,
         input.providerConfigurationSha256,
         input.runPurpose
       ),
-      handlers: branches,
+      handlers: { traversal, ...branches },
       createId
     }),
     runFinalizationCycle: async () => {

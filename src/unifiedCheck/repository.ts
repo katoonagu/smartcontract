@@ -825,7 +825,17 @@ export async function claimUnifiedTask(
             )
           )
          and (
-           task.kind not in ('fast','where','deep') or exists (
+           task.kind <> 'fast' or exists (
+             select 1
+               from unified_check_tasks prerequisite
+              where prerequisite.run_id = task.run_id
+                and prerequisite.kind = 'direct_history'
+                and prerequisite.status = 'COMPLETED'
+                and prerequisite.accepted_attempt_id is not null
+           )
+         )
+         and (
+           task.kind not in ('where','deep') or exists (
              select 1
                from unified_check_tasks prerequisite
               where prerequisite.run_id = task.run_id
