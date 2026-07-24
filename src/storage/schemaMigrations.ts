@@ -5,8 +5,12 @@ import type { ApprovalAllowanceStateV2 } from "../types";
 export const SCHEMA_032_VERSION = 32;
 export const SCHEMA_032_FILENAME =
   "032_telegram_runtime_forensics_data_contracts.sql";
-export const REQUIRED_SCHEMA_VERSION = 33;
-export const REQUIRED_SCHEMA_FILENAME = "033_unified_wallet_check.sql";
+export const SCHEMA_033_VERSION = 33;
+export const SCHEMA_033_FILENAME = "033_unified_wallet_check.sql";
+export const SCHEMA_034_VERSION = 34;
+export const SCHEMA_034_FILENAME = "034_unified_check_adaptive_planner.sql";
+export const REQUIRED_SCHEMA_VERSION = SCHEMA_034_VERSION;
+export const REQUIRED_SCHEMA_FILENAME = SCHEMA_034_FILENAME;
 export const SCHEMA_MIGRATION_LOCK_ID = 20260712032n;
 export const SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE = 250;
 
@@ -20,11 +24,21 @@ export interface Schema032Verification {
 
 export interface Schema033Verification {
   verified: true;
-  version: typeof REQUIRED_SCHEMA_VERSION;
-  filename: typeof REQUIRED_SCHEMA_FILENAME;
+  version: typeof SCHEMA_033_VERSION;
+  filename: typeof SCHEMA_033_FILENAME;
   checksumSha256: string;
   shortChecksum: string;
   schema032ChecksumSha256: string;
+}
+
+export interface Schema034Verification {
+  verified: true;
+  version: typeof SCHEMA_034_VERSION;
+  filename: typeof SCHEMA_034_FILENAME;
+  checksumSha256: string;
+  shortChecksum: string;
+  schema032ChecksumSha256: string;
+  schema033ChecksumSha256: string;
 }
 
 export interface SchemaQueryable {
@@ -44,6 +58,7 @@ interface ApplyVerifiedTrackedMigrationOptions extends SchemaOptions {
   filename: string;
   migrationBytes: Uint8Array;
   requiredSchema032Checksum?: string;
+  requiredSchema033Checksum?: string;
 }
 
 export interface TrackedMigrationVerification {
@@ -526,18 +541,198 @@ export async function verifyRequiredSchema033(
   });
   await verifyTrackedMigrationReceipt(queryable, {
     schemaName,
-    version: REQUIRED_SCHEMA_VERSION,
-    filename: REQUIRED_SCHEMA_FILENAME,
+    version: SCHEMA_033_VERSION,
+    filename: SCHEMA_033_FILENAME,
     checksumSha256: expectedChecksum
   });
   await verifySchema033Structure(queryable, { schemaName });
   return {
     verified: true,
-    version: REQUIRED_SCHEMA_VERSION,
-    filename: REQUIRED_SCHEMA_FILENAME,
+    version: SCHEMA_033_VERSION,
+    filename: SCHEMA_033_FILENAME,
     checksumSha256: expectedChecksum,
     shortChecksum: expectedChecksum.slice(0, 12),
     schema032ChecksumSha256
+  };
+}
+
+const REQUIRED_SCHEMA_034_COLUMNS = [
+  ["run_id", "text", "NO", null],
+  ["canonical_sequence", "bigint", "NO", null],
+  ["task_id", "text", "NO", null],
+  ["planner_state", "text", "NO", null],
+  ["result_bytes", "bigint", "YES", null],
+  ["admitted_at", "timestamp with time zone", "YES", null],
+  ["reserved_bytes", "bigint", "YES", null],
+  ["planned_at", "timestamp with time zone", "NO", "statement_timestamp()"],
+  ["ready_at", "timestamp with time zone", "YES", null],
+  ["committed_at", "timestamp with time zone", "YES", null]
+] as const;
+
+const REQUIRED_SCHEMA_034_CONSTRAINTS = [
+  ["unified_check_runs_fairness_owner_not_blank_check", "unified_check_runs", "c"],
+  ["unified_check_tasks_run_id_id_key", "unified_check_tasks", "u"],
+  ["unified_check_planner_entries_pkey", "unified_check_planner_entries", "p"],
+  ["unified_check_planner_entries_run_id_task_id_key", "unified_check_planner_entries", "u"],
+  ["unified_check_planner_entries_run_id_fkey", "unified_check_planner_entries", "f"],
+  ["unified_check_planner_entries_run_task_fk", "unified_check_planner_entries", "f"],
+  ["unified_check_planner_entries_canonical_sequence_check", "unified_check_planner_entries", "c"],
+  ["unified_check_planner_entries_result_bytes_check", "unified_check_planner_entries", "c"],
+  ["unified_check_planner_entries_reserved_bytes_check", "unified_check_planner_entries", "c"],
+  ["unified_check_planner_entries_state_check", "unified_check_planner_entries", "c"],
+  ["unified_check_planner_entries_state_shape_check", "unified_check_planner_entries", "c"],
+  ["unified_check_planner_entries_timestamp_order_check", "unified_check_planner_entries", "c"]
+] as const;
+
+const REQUIRED_SCHEMA_034_INDEXES = [
+  "unified_check_planner_entries_next_uncommitted_idx",
+  "unified_check_planner_entries_ready_prefix_idx",
+  "unified_check_planner_entries_admitted_task_idx",
+  "unified_check_planner_entries_buffer_aggregate_idx"
+] as const;
+
+export async function verifySchema034Structure(
+  queryable: SchemaQueryable,
+  options?: SchemaOptions
+): Promise<void> {
+  const schemaName = resolveSchemaName(options);
+  const columns = await queryable.query(
+    `select column_name, data_type, is_nullable, column_default
+       from information_schema.columns
+      where table_schema = $1 and table_name = 'unified_check_planner_entries'
+      order by ordinal_position`,
+    [schemaName]
+  );
+  if (columns.rows.length !== REQUIRED_SCHEMA_034_COLUMNS.length) fail("schema_034_column_count_mismatch");
+  for (const [index, [columnName, dataType, nullable, columnDefault]] of REQUIRED_SCHEMA_034_COLUMNS.entries()) {
+    const row = columns.rows[index];
+    if (
+      row?.column_name !== columnName || row.data_type !== dataType || row.is_nullable !== nullable ||
+      normalizeDefinition(row.column_default) !== normalizeDefinition(columnDefault)
+    ) {
+      fail("schema_034_column_mismatch");
+    }
+  }
+  const fairnessOwner = await queryable.query(
+    `select data_type, is_nullable, column_default
+       from information_schema.columns
+      where table_schema = $1 and table_name = 'unified_check_runs' and column_name = 'fairness_owner_id'`,
+    [schemaName]
+  );
+  const fairnessOwnerRow = fairnessOwner.rows[0];
+  if (
+    fairnessOwner.rows.length !== 1 || fairnessOwnerRow.data_type !== "text" ||
+    fairnessOwnerRow.is_nullable !== "NO" || fairnessOwnerRow.column_default !== null
+  ) fail("schema_034_fairness_owner_column_mismatch");
+
+  const constraints = await queryable.query(
+    `select t.relname as table_name, c.conname, c.contype, c.convalidated,
+            pg_get_constraintdef(c.oid) as definition,
+            ft.relname as foreign_table_name,
+            array(
+              select a.attname
+                from unnest(c.conkey) with ordinality as key_columns(attnum, ordinality)
+                join pg_attribute a on a.attrelid = t.oid and a.attnum = key_columns.attnum
+               order by key_columns.ordinality
+            ) as columns,
+            array(
+              select fa.attname
+                from unnest(c.confkey) with ordinality as foreign_key_columns(attnum, ordinality)
+                join pg_attribute fa on fa.attrelid = c.confrelid and fa.attnum = foreign_key_columns.attnum
+               order by foreign_key_columns.ordinality
+            ) as foreign_columns
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       join pg_namespace n on n.oid = t.relnamespace
+       left join pg_class ft on ft.oid = c.confrelid
+      where n.nspname = $1 and t.relname in ('unified_check_runs', 'unified_check_tasks', 'unified_check_planner_entries')
+      order by t.relname, c.conname`,
+    [schemaName]
+  );
+  for (const [name, tableName, type] of REQUIRED_SCHEMA_034_CONSTRAINTS) {
+    const row = constraints.rows.find((candidate) => candidate.conname === name);
+    if (!row || row.table_name !== tableName || row.contype !== type || row.convalidated !== true) {
+      fail("schema_034_constraint_mismatch");
+    }
+  }
+  const exactConstraint = (name: string, definition: string) => {
+    const row = constraints.rows.find((candidate) => candidate.conname === name);
+    if (normalizeDefinition(row?.definition) !== normalizeDefinition(definition)) {
+      fail("schema_034_constraint_definition_mismatch");
+    }
+  };
+  exactConstraint("unified_check_runs_fairness_owner_not_blank_check", "CHECK ((btrim(fairness_owner_id) <> ''::text))");
+  exactConstraint("unified_check_planner_entries_canonical_sequence_check", "CHECK ((canonical_sequence >= 0))");
+  exactConstraint("unified_check_planner_entries_result_bytes_check", "CHECK (((result_bytes IS NULL) OR (result_bytes >= 0)))");
+  exactConstraint("unified_check_planner_entries_reserved_bytes_check", "CHECK (((reserved_bytes IS NULL) OR (reserved_bytes >= 0)))");
+  exactConstraint("unified_check_planner_entries_state_check", "CHECK ((planner_state = ANY (ARRAY['planned'::text, 'ready'::text, 'committed'::text])))");
+  exactConstraint(
+    "unified_check_planner_entries_state_shape_check",
+    "CHECK ((((planner_state = 'planned'::text) AND (result_bytes IS NULL) AND (ready_at IS NULL) AND (committed_at IS NULL) AND (((admitted_at IS NULL) AND (reserved_bytes IS NULL)) OR ((admitted_at IS NOT NULL) AND (reserved_bytes IS NOT NULL)))) OR ((planner_state = 'ready'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NULL)) OR ((planner_state = 'committed'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NOT NULL))))"
+  );
+  exactConstraint(
+    "unified_check_planner_entries_timestamp_order_check",
+    "CHECK ((((admitted_at IS NULL) OR (admitted_at >= planned_at)) AND ((ready_at IS NULL) OR (ready_at >= admitted_at)) AND ((committed_at IS NULL) OR (committed_at >= ready_at))))"
+  );
+  const taskKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_tasks_run_id_id_key");
+  const plannerPrimaryKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_pkey");
+  const plannerTaskKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_id_task_id_key");
+  if (
+    JSON.stringify(taskKey?.columns) !== JSON.stringify(["run_id", "id"]) ||
+    JSON.stringify(plannerPrimaryKey?.columns) !== JSON.stringify(["run_id", "canonical_sequence"]) ||
+    JSON.stringify(plannerTaskKey?.columns) !== JSON.stringify(["run_id", "task_id"])
+  ) fail("schema_034_unique_constraint_mismatch");
+  const runForeignKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_id_fkey");
+  const taskForeignKey = constraints.rows.find((candidate) => candidate.conname === "unified_check_planner_entries_run_task_fk");
+  if (
+    runForeignKey?.foreign_table_name !== "unified_check_runs" ||
+    JSON.stringify(runForeignKey.columns) !== JSON.stringify(["run_id"]) ||
+    JSON.stringify(runForeignKey.foreign_columns) !== JSON.stringify(["id"]) ||
+    taskForeignKey?.foreign_table_name !== "unified_check_tasks" ||
+    JSON.stringify(taskForeignKey.columns) !== JSON.stringify(["run_id", "task_id"]) ||
+    JSON.stringify(taskForeignKey.foreign_columns) !== JSON.stringify(["run_id", "id"])
+  ) fail("schema_034_foreign_key_mismatch");
+  const indexes = await queryable.query(
+    `select indexname, indexdef from pg_indexes
+      where schemaname = $1 and tablename = 'unified_check_planner_entries'
+        and indexname = any($2::text[])`,
+    [schemaName, [...REQUIRED_SCHEMA_034_INDEXES]]
+  );
+  if (indexes.rows.length !== REQUIRED_SCHEMA_034_INDEXES.length) fail("schema_034_index_missing");
+  const indexByName = new Map(indexes.rows.map((row) => [row.indexname, normalizeDefinition(row.indexdef)]));
+  if (
+    !indexByName.get("unified_check_planner_entries_next_uncommitted_idx")?.includes("(run_id, canonical_sequence) WHERE (planner_state <> 'committed'::text)") ||
+    !indexByName.get("unified_check_planner_entries_ready_prefix_idx")?.includes("(run_id, canonical_sequence) WHERE (planner_state = 'ready'::text)") ||
+    !indexByName.get("unified_check_planner_entries_admitted_task_idx")?.includes("(run_id, task_id) WHERE ((planner_state = 'planned'::text) AND (admitted_at IS NOT NULL))") ||
+    !indexByName.get("unified_check_planner_entries_buffer_aggregate_idx")?.includes("(run_id, planner_state) INCLUDE (result_bytes, reserved_bytes, ready_at, admitted_at)")
+  ) fail("schema_034_index_mismatch");
+}
+
+export async function verifyRequiredSchema034(
+  queryable: SchemaQueryable,
+  expectedChecksum: string,
+  schema032ChecksumSha256: string,
+  schema033ChecksumSha256: string,
+  options?: SchemaOptions
+): Promise<Schema034Verification> {
+  if (!CHECKSUM_PATTERN.test(expectedChecksum)) fail("schema_034_invalid_expected_checksum");
+  const schemaName = resolveSchemaName(options);
+  await verifyRequiredSchema033(queryable, schema033ChecksumSha256, schema032ChecksumSha256, { schemaName });
+  await verifyTrackedMigrationReceipt(queryable, {
+    schemaName,
+    version: SCHEMA_034_VERSION,
+    filename: SCHEMA_034_FILENAME,
+    checksumSha256: expectedChecksum
+  });
+  await verifySchema034Structure(queryable, { schemaName });
+  return {
+    verified: true,
+    version: SCHEMA_034_VERSION,
+    filename: SCHEMA_034_FILENAME,
+    checksumSha256: expectedChecksum,
+    shortChecksum: expectedChecksum.slice(0, 12),
+    schema032ChecksumSha256,
+    schema033ChecksumSha256
   };
 }
 
@@ -556,8 +751,17 @@ export async function applyVerifiedTrackedMigration(
   if (options.version === SCHEMA_032_VERSION && options.filename !== SCHEMA_032_FILENAME) {
     fail("schema_032_filename_mismatch");
   }
+  if (options.version === SCHEMA_033_VERSION && options.filename !== SCHEMA_033_FILENAME) {
+    fail("schema_033_filename_mismatch");
+  }
+  if (options.version === SCHEMA_034_VERSION && options.filename !== SCHEMA_034_FILENAME) {
+    fail("schema_034_filename_mismatch");
+  }
   if (options.version > SCHEMA_032_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema032Checksum ?? "")) {
     fail("schema_migration_schema_032_checksum_required");
+  }
+  if (options.version > SCHEMA_033_VERSION && !CHECKSUM_PATTERN.test(options.requiredSchema033Checksum ?? "")) {
+    fail("schema_migration_schema_033_checksum_required");
   }
   const checksumSha256 = await checksumMigrationBytes(options.migrationBytes);
   let sql: string;
@@ -593,10 +797,15 @@ export async function applyVerifiedTrackedMigration(
         });
         if (options.version === SCHEMA_032_VERSION) {
           await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
-        } else if (
-          options.version === REQUIRED_SCHEMA_VERSION &&
-          options.filename === REQUIRED_SCHEMA_FILENAME
-        ) {
+        } else if (options.version === SCHEMA_034_VERSION && options.filename === SCHEMA_034_FILENAME) {
+          await verifyRequiredSchema034(
+            queryable,
+            checksumSha256,
+            options.requiredSchema032Checksum!,
+            options.requiredSchema033Checksum!,
+            { schemaName }
+          );
+        } else if (options.version === SCHEMA_033_VERSION && options.filename === SCHEMA_033_FILENAME) {
           await verifyRequiredSchema033(
             queryable,
             checksumSha256,
@@ -618,7 +827,14 @@ export async function applyVerifiedTrackedMigration(
       }
     }
 
-    if (options.version > SCHEMA_032_VERSION) {
+    if (options.version > SCHEMA_033_VERSION) {
+      await verifyRequiredSchema033(
+        queryable,
+        options.requiredSchema033Checksum!,
+        options.requiredSchema032Checksum!,
+        { schemaName }
+      );
+    } else if (options.version > SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, options.requiredSchema032Checksum!, { schemaName });
     }
     await queryable.query(sql);
@@ -639,10 +855,15 @@ export async function applyVerifiedTrackedMigration(
     });
     if (options.version === SCHEMA_032_VERSION) {
       await verifyRequiredSchema032(queryable, checksumSha256, { schemaName });
-    } else if (
-      options.version === REQUIRED_SCHEMA_VERSION &&
-      options.filename === REQUIRED_SCHEMA_FILENAME
-    ) {
+    } else if (options.version === SCHEMA_034_VERSION && options.filename === SCHEMA_034_FILENAME) {
+      await verifyRequiredSchema034(
+        queryable,
+        checksumSha256,
+        options.requiredSchema032Checksum!,
+        options.requiredSchema033Checksum!,
+        { schemaName }
+      );
+    } else if (options.version === SCHEMA_033_VERSION && options.filename === SCHEMA_033_FILENAME) {
       await verifyRequiredSchema033(
         queryable,
         checksumSha256,

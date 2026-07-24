@@ -5,6 +5,10 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import {
   REQUIRED_SCHEMA_FILENAME,
   REQUIRED_SCHEMA_VERSION,
+  SCHEMA_033_FILENAME,
+  SCHEMA_033_VERSION,
+  SCHEMA_034_FILENAME,
+  SCHEMA_034_VERSION,
   SCHEMA_032_FILENAME,
   SCHEMA_032_VERSION,
   SCHEMA_ALLOWANCE_VALIDATION_BATCH_SIZE,
@@ -13,6 +17,7 @@ import {
   checksumMigrationBytes,
   verifyRequiredSchema032,
   verifySchema032Structure,
+  verifySchema034Structure,
   verifyTrackedMigrationReceipt
 } from "../../src/storage/schemaMigrations";
 
@@ -125,12 +130,108 @@ function schemaDb(overrides: Partial<Record<string, QueryResult>> = {}): Db {
   } as unknown as Db;
 }
 
+const PLANNER_COLUMNS = [
+  ["run_id", "text", "NO", null],
+  ["canonical_sequence", "bigint", "NO", null],
+  ["task_id", "text", "NO", null],
+  ["planner_state", "text", "NO", null],
+  ["result_bytes", "bigint", "YES", null],
+  ["admitted_at", "timestamp with time zone", "YES", null],
+  ["reserved_bytes", "bigint", "YES", null],
+  ["planned_at", "timestamp with time zone", "NO", "statement_timestamp()"],
+  ["ready_at", "timestamp with time zone", "YES", null],
+  ["committed_at", "timestamp with time zone", "YES", null]
+] as const;
+
+const PLANNER_STATE_SHAPE = "CHECK ((((planner_state = 'planned'::text) AND (result_bytes IS NULL) AND (ready_at IS NULL) AND (committed_at IS NULL) AND (((admitted_at IS NULL) AND (reserved_bytes IS NULL)) OR ((admitted_at IS NOT NULL) AND (reserved_bytes IS NOT NULL)))) OR ((planner_state = 'ready'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NULL)) OR ((planner_state = 'committed'::text) AND (admitted_at IS NOT NULL) AND (reserved_bytes IS NULL) AND (result_bytes IS NOT NULL) AND (ready_at IS NOT NULL) AND (committed_at IS NOT NULL))))";
+
+const PLANNER_CONSTRAINTS = [
+  ["unified_check_runs_fairness_owner_not_blank_check", "unified_check_runs", "c", "CHECK ((btrim(fairness_owner_id) <> ''::text))"],
+  ["unified_check_tasks_run_id_id_key", "unified_check_tasks", "u", "UNIQUE (run_id, id)"],
+  ["unified_check_planner_entries_pkey", "unified_check_planner_entries", "p", "PRIMARY KEY (run_id, canonical_sequence)"],
+  ["unified_check_planner_entries_run_id_task_id_key", "unified_check_planner_entries", "u", "UNIQUE (run_id, task_id)"],
+  ["unified_check_planner_entries_run_id_fkey", "unified_check_planner_entries", "f", "FOREIGN KEY (run_id) REFERENCES unified_check_runs(id)"],
+  ["unified_check_planner_entries_run_task_fk", "unified_check_planner_entries", "f", "FOREIGN KEY (run_id, task_id) REFERENCES unified_check_tasks(run_id, id)"],
+  ["unified_check_planner_entries_canonical_sequence_check", "unified_check_planner_entries", "c", "CHECK ((canonical_sequence >= 0))"],
+  ["unified_check_planner_entries_result_bytes_check", "unified_check_planner_entries", "c", "CHECK (((result_bytes IS NULL) OR (result_bytes >= 0)))"],
+  ["unified_check_planner_entries_reserved_bytes_check", "unified_check_planner_entries", "c", "CHECK (((reserved_bytes IS NULL) OR (reserved_bytes >= 0)))"],
+  ["unified_check_planner_entries_state_check", "unified_check_planner_entries", "c", "CHECK ((planner_state = ANY (ARRAY['planned'::text, 'ready'::text, 'committed'::text])))"],
+  ["unified_check_planner_entries_state_shape_check", "unified_check_planner_entries", "c", PLANNER_STATE_SHAPE],
+  ["unified_check_planner_entries_timestamp_order_check", "unified_check_planner_entries", "c", "CHECK ((((admitted_at IS NULL) OR (admitted_at >= planned_at)) AND ((ready_at IS NULL) OR (ready_at >= admitted_at)) AND ((committed_at IS NULL) OR (committed_at >= ready_at))))"]
+] as const;
+
+function schema034Db(options?: { stateShape?: string }): Db {
+  let informationSchemaCall = 0;
+  return {
+    query: async (sql: string) => {
+      if (sql.includes("information_schema.columns")) {
+        informationSchemaCall += 1;
+        return {
+          rows: informationSchemaCall === 1
+            ? PLANNER_COLUMNS.map(([column_name, data_type, is_nullable, column_default]) => ({
+              column_name, data_type, is_nullable, column_default
+            }))
+            : [{ data_type: "text", is_nullable: "NO", column_default: null }]
+        };
+      }
+      if (sql.includes("pg_constraint")) {
+        return {
+          rows: PLANNER_CONSTRAINTS.map(([conname, table_name, contype, definition]) => ({
+            conname,
+            table_name,
+            contype,
+            convalidated: true,
+            definition: conname === "unified_check_planner_entries_state_shape_check"
+              ? options?.stateShape ?? definition
+              : definition,
+            columns: conname === "unified_check_tasks_run_id_id_key"
+              ? ["run_id", "id"]
+              : conname === "unified_check_planner_entries_pkey"
+                ? ["run_id", "canonical_sequence"]
+                : conname === "unified_check_planner_entries_run_id_task_id_key"
+                  ? ["run_id", "task_id"]
+                  : conname === "unified_check_planner_entries_run_id_fkey"
+                    ? ["run_id"]
+                    : conname === "unified_check_planner_entries_run_task_fk"
+                      ? ["run_id", "task_id"]
+                      : null,
+            foreign_table_name: conname === "unified_check_planner_entries_run_id_fkey"
+              ? "unified_check_runs"
+              : conname === "unified_check_planner_entries_run_task_fk"
+                ? "unified_check_tasks"
+                : null,
+            foreign_columns: conname === "unified_check_planner_entries_run_id_fkey"
+              ? ["id"]
+              : conname === "unified_check_planner_entries_run_task_fk"
+                ? ["run_id", "id"]
+                : null
+          }))
+        };
+      }
+      if (sql.includes("pg_indexes")) {
+        return {
+          rows: [
+            ["unified_check_planner_entries_next_uncommitted_idx", "CREATE INDEX x ON y (run_id, canonical_sequence) WHERE (planner_state <> 'committed'::text)"],
+            ["unified_check_planner_entries_ready_prefix_idx", "CREATE INDEX x ON y (run_id, canonical_sequence) WHERE (planner_state = 'ready'::text)"],
+            ["unified_check_planner_entries_admitted_task_idx", "CREATE INDEX x ON y (run_id, task_id) WHERE ((planner_state = 'planned'::text) AND (admitted_at IS NOT NULL))"],
+            ["unified_check_planner_entries_buffer_aggregate_idx", "CREATE INDEX x ON y (run_id, planner_state) INCLUDE (result_bytes, reserved_bytes, ready_at, admitted_at)"]
+          ].map(([indexname, indexdef]) => ({ indexname, indexdef }))
+        };
+      }
+      return { rows: [] };
+    }
+  } as unknown as Db;
+}
+
 describe("verified schema 032 metadata", () => {
   it("pins exact migration constants, lock and byte checksum", async () => {
     expect(SCHEMA_032_VERSION).toBe(32);
     expect(SCHEMA_032_FILENAME).toBe("032_telegram_runtime_forensics_data_contracts.sql");
-    expect(REQUIRED_SCHEMA_VERSION).toBe(33);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe("033_unified_wallet_check.sql");
+    expect(SCHEMA_033_VERSION).toBe(33);
+    expect(SCHEMA_033_FILENAME).toBe("033_unified_wallet_check.sql");
+    expect(SCHEMA_034_VERSION).toBe(34);
+    expect(REQUIRED_SCHEMA_VERSION).toBe(34);
+    expect(REQUIRED_SCHEMA_FILENAME).toBe("034_unified_check_adaptive_planner.sql");
     expect(SCHEMA_MIGRATION_LOCK_ID).toBe(20260712032n);
     await expect(checksumMigrationBytes(Buffer.from("a\nb\n"))).resolves.toMatch(/^[a-f0-9]{64}$/);
     expect(await checksumMigrationBytes(Buffer.from("a\nb\n"))).not.toBe(
@@ -345,4 +446,14 @@ describe("verified schema 032 metadata", () => {
     expect(backfill).toContain("status = 'unknown'");
     expect(backfill).not.toMatch(/where\s+allowance_check_status/i);
   });
+});
+
+describe("verified schema 034 metadata", () => {
+  it("pins 034 structural checks, including the planner state shape", async () => {
+    await expect(verifySchema034Structure(schema034Db())).resolves.toBeUndefined();
+    await expect(verifySchema034Structure(schema034Db({ stateShape: "CHECK (true)" }))).rejects.toThrow(
+      "schema_034_constraint_definition_mismatch"
+    );
+  });
+
 });

@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
 import {
-  REQUIRED_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION,
   SCHEMA_032_FILENAME,
   SCHEMA_032_VERSION,
   verifySchema033Structure
@@ -13,10 +11,16 @@ import {
 const connectionString = process.env.TEST_DATABASE_URL;
 const postgresDescribe = connectionString ? describe : describe.skip;
 
+it("keeps migration 033 bytes and checksum immutable", async () => {
+  const migration033Bytes = await readFile("migrations/033_unified_wallet_check.sql");
+  expect(migration033Bytes).toHaveLength(7968);
+  expect(createHash("sha256").update(migration033Bytes).digest("hex")).toBe(
+    "d04f2aff20370a78862604c92ccbcb6bf7c8b1024f95e03b4af2c8f018e701f7"
+  );
+});
+
 postgresDescribe("migration 033 PostgreSQL acceptance", () => {
   it("creates the exact durable Unified schema and immutable artifacts", async () => {
-    expect(REQUIRED_SCHEMA_VERSION).toBe(33);
-    expect(REQUIRED_SCHEMA_FILENAME).toBe("033_unified_wallet_check.sql");
     expect(SCHEMA_032_VERSION).toBe(32);
     expect(SCHEMA_032_FILENAME).toBe(
       "032_telegram_runtime_forensics_data_contracts.sql"
