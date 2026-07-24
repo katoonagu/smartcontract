@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-24
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -49,6 +49,10 @@ ready work continues. A retry creates a new attempt linked to the previous one;
 it never mutates failed history. The watchdog may requeue recoverable work or
 mark a real technical failure, but cannot convert unfinished traversal into
 `COMPLETED`.
+
+An eligible task that checkpoints refreshes its scheduling age and yields to
+older ready work in the same priority lane. A long traversal therefore cannot
+reclaim every provider cycle while another interactive run remains queued.
 
 Only the parent finalizer can commit the authoritative analysis manifest,
 canonical fact inventory, score anchor, report, locale presentations, and

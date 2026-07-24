@@ -737,7 +737,7 @@ export async function claimUnifiedTask(
          )
        order by case task.priority_lane
          when 'interactive' then 0 when 'repair' then 1 else 2 end,
-         task.ready_at, task.created_at
+         greatest(task.ready_at, task.updated_at), task.created_at
        for update skip locked
        limit 1
     )

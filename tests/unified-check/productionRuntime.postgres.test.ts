@@ -11,7 +11,10 @@ import {
   createPostgresUnifiedRequestStore,
   intakeUnifiedCheck
 } from "../../src/unifiedCheck/requestService";
-import type {
+import {
+  checkpointUnifiedTask,
+  claimUnifiedTask,
+  type
   UnifiedTransactionalQueryable
 } from "../../src/unifiedCheck/repository";
 
@@ -431,6 +434,81 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       expect(Number((
         await query("select count(*)::int as count from unified_check_deliveries")
       ).rows[0]?.count)).toBe(2);
+    } finally {
+      await client.query(`drop schema if exists "${schema}" cascade`);
+      client.release();
+      await pool.end();
+    }
+  });
+
+  it("rotates checkpointed provider tasks across ready runs", async () => {
+    const pool = new pg.Pool({ connectionString, max: 1 });
+    const client = await pool.connect();
+    const schema = `unifiedfair_${randomUUID().replaceAll("-", "")}`;
+    try {
+      await client.query(`create schema "${schema}"`);
+      await client.query(`set search_path to "${schema}"`);
+      await client.query(
+        await readFile("migrations/033_unified_wallet_check.sql", "utf8")
+      );
+      for (const [index, suffix] of ["a", "b", "c"].entries()) {
+        const runId = `run-${suffix}`;
+        const manifestSha256 = suffix.repeat(64);
+        await client.query(
+          `insert into unified_check_runs (
+             id, analysis_key_sha256, subject_address, status, run_purpose,
+             side_effect_policy, analysis_manifest_sha256, created_at, updated_at
+           ) values (
+             $1,$2,$3,'RUNNING','user_check','authoritative',$4,
+             $5::timestamptz,$5::timestamptz
+           )`,
+          [
+            runId,
+            `${index + 1}`.repeat(64),
+            `TSubject${suffix.repeat(26)}`,
+            manifestSha256,
+            `2026-07-23T12:0${index}:00.000Z`
+          ]
+        );
+        await client.query(
+          `insert into unified_check_artifacts (
+             sha256, created_by_run_id, kind, schema_version, artifact_json
+           ) values ($1,$2,'analysis_manifest','1','{}'::jsonb)`,
+          [manifestSha256, runId]
+        );
+        await client.query(
+          `insert into unified_check_tasks (
+             id, run_id, kind, status, priority_lane, ready_at,
+             created_at, updated_at
+           ) values (
+             $1,$2,'direct_history','QUEUED','interactive',
+             '2026-07-23T12:00:00.000Z',$3::timestamptz,$3::timestamptz
+           )`,
+          [`task-${suffix}`, runId, `2026-07-23T12:0${index}:00.000Z`]
+        );
+      }
+
+      const first = await claimUnifiedTask(client, {
+        workerId: "provider-1",
+        leaseToken: "lease-1",
+        leaseMs: 30_000,
+        kinds: ["direct_history"]
+      });
+      expect(first?.id).toBe("task-a");
+      await expect(checkpointUnifiedTask(client, {
+        taskId: "task-a",
+        leaseToken: "lease-1",
+        attempt: Number(first?.attempt),
+        checkpoint: { cursor: "50" }
+      })).resolves.toBeTruthy();
+
+      const second = await claimUnifiedTask(client, {
+        workerId: "provider-2",
+        leaseToken: "lease-2",
+        leaseMs: 30_000,
+        kinds: ["direct_history"]
+      });
+      expect(second?.id).toBe("task-b");
     } finally {
       await client.query(`drop schema if exists "${schema}" cascade`);
       client.release();
