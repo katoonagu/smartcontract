@@ -126,17 +126,6 @@ describe("Unified address-centric traversal coordinator", () => {
     const artifacts = new Map<string, unknown>([[pageSha256, page]]);
     let planned = false;
     let ready = false;
-    const planAddressHistories = vi.fn(async (_input: {
-      runId: string;
-      priorityLane: "interactive" | "repair" | "background";
-      histories: readonly {
-        manifestKey: string;
-        identity: typeof identity;
-      }[];
-    }) => {
-      planned = true;
-    });
-    const admitAddressHistoryHead = vi.fn(async () => true);
     const loadHistoryPage = vi.fn(async ({ sha256 }: { sha256: string }) =>
       artifacts.get(sha256) as never
     );
@@ -154,12 +143,13 @@ describe("Unified address-centric traversal coordinator", () => {
       ),
       loadDurableAddressHistoryKeys: async () =>
         planned ? new Set([key]) : new Set(),
-      planAddressHistories,
-      admitAddressHistoryHead,
+      createTaskId: () => "task-address-history",
       loadReadyAddressHistories: async () => ready
         ? [{
             canonicalSequence: 0,
             taskId: "task-address-history",
+            taskKind: "address_history",
+            logicalKey: key,
             acceptedAttemptId: "attempt-address-history",
             artifactSha256: fingerprintCanonicalArtifact(history),
             artifactKind: "address_history_manifest",
@@ -198,14 +188,20 @@ describe("Unified address-centric traversal coordinator", () => {
     expect(first.checkpoint).toMatchObject({
       version: "unified-production-traversal-checkpoint-v2"
     });
-    expect(planAddressHistories).toHaveBeenCalledTimes(1);
-    expect(planAddressHistories.mock.calls[0]?.[0]).toMatchObject({
+    expect(first.orderedCommit).toMatchObject({
       runId: "run-1",
-      priorityLane: "interactive",
-      histories: [{ manifestKey: key, identity }]
+      entries: [],
+      discoveredTasks: [{
+        parentCanonicalSequence: -1,
+        taskId: "task-address-history",
+        kind: "address_history",
+        logicalKey: key,
+        priorityLane: "interactive",
+        checkpoint: { identity }
+      }]
     });
-    expect(admitAddressHistoryHead).toHaveBeenCalledTimes(1);
 
+    planned = true;
     ready = true;
     const second = await handler({
       task: { ...baseTask, attempt: 2, checkpoint: first.checkpoint },
@@ -220,9 +216,14 @@ describe("Unified address-centric traversal coordinator", () => {
       entries: [{
         canonicalSequence: 0,
         taskId: "task-address-history",
+        logicalKey: key,
         acceptedAttemptId: "attempt-address-history",
-        resultBytes: Buffer.byteLength(canonicalizeArtifactJson(history), "utf8")
-      }]
+        resultBytes: Buffer.byteLength(canonicalizeArtifactJson(history), "utf8"),
+        taskKind: "address_history",
+        artifactKind: "address_history_manifest",
+        artifactSchemaVersion: "1"
+      }],
+      discoveredTasks: []
     });
     expect(JSON.stringify(second.checkpoint).length).toBeLessThan(4_096);
     ready = false;
@@ -273,15 +274,7 @@ describe("Unified address-centric traversal coordinator", () => {
     const laterAddress = byKey[1]!.identity.address;
     const earlierAddress = byKey[0]!.identity.address;
     const artifacts = new Map<string, unknown>();
-    const planAddressHistories = vi.fn(async (_input: {
-      runId: string;
-      priorityLane: "interactive" | "repair" | "background";
-      histories: readonly {
-        manifestKey: string;
-        identity: (typeof identities)[number];
-      }[];
-    }) => undefined);
-    const admitAddressHistoryHead = vi.fn(async () => true);
+    let nextTask = 0;
     const handler = createUnifiedTraversalCoordinatorHandler({
       commitMaxEntries: 32,
       commitMaxBytes: 8_388_608,
@@ -315,8 +308,7 @@ describe("Unified address-centric traversal coordinator", () => {
       }),
       loadLabels: async () => new Map(),
       loadDurableAddressHistoryKeys: async () => new Set(),
-      planAddressHistories,
-      admitAddressHistoryHead,
+      createTaskId: () => `history-task-${nextTask++}`,
       loadReadyAddressHistories: async () => [],
       loadCommittedAddressHistories: async () => [],
       loadAddressHistoryPage: async () => {
@@ -347,9 +339,14 @@ describe("Unified address-centric traversal coordinator", () => {
     });
 
     expect(result.kind).toBe("checkpoint");
-    expect(planAddressHistories).toHaveBeenCalledTimes(1);
-    expect(planAddressHistories.mock.calls[0]?.[0].histories).toEqual(byKey);
-    expect(admitAddressHistoryHead).toHaveBeenCalledTimes(1);
+    if (result.kind !== "checkpoint") throw new Error("checkpoint expected");
+    expect(result.orderedCommit?.discoveredTasks.map((task) => ({
+      parentCanonicalSequence: task.parentCanonicalSequence,
+      logicalKey: task.logicalKey
+    }))).toEqual(byKey.map((history) => ({
+      parentCanonicalSequence: -1,
+      logicalKey: history.manifestKey
+    })));
     expect([...artifacts.values()].filter((artifact) =>
       (artifact as { version?: string }).version ===
         "unified-traversal-delta-v1"
@@ -405,6 +402,7 @@ describe("Unified address-centric traversal coordinator", () => {
       const planned = new Set<string>();
       const ready = new Set<string>();
       const committed = new Set<string>();
+      let taskId = 0;
       const handler = createUnifiedTraversalCoordinatorHandler({
         commitMaxEntries: 32,
         commitMaxBytes: 8_388_608,
@@ -413,10 +411,7 @@ describe("Unified address-centric traversal coordinator", () => {
         loadLabels: async () => new Map(),
         loadDurableAddressHistoryKeys: async ({ manifestKeys }) =>
           new Set(manifestKeys.filter((key) => planned.has(key))),
-        planAddressHistories: async ({ histories: discovered }) => {
-          for (const history of discovered) planned.add(history.manifestKey);
-        },
-        admitAddressHistoryHead: async () => true,
+        createTaskId: () => `history-task-${taskId++}`,
         loadReadyAddressHistories: async () => {
           const head = histories.find((history) =>
             !committed.has(history.manifestKey)
@@ -429,6 +424,8 @@ describe("Unified address-centric traversal coordinator", () => {
             prefix.push({
               canonicalSequence,
               taskId: `task-${canonicalSequence}`,
+              taskKind: "address_history",
+              logicalKey: history.manifestKey,
               acceptedAttemptId: `attempt-${canonicalSequence}`,
               artifactSha256:
                 fingerprintCanonicalArtifact(history.artifact),
@@ -479,6 +476,9 @@ describe("Unified address-centric traversal coordinator", () => {
             finalDeltaHead = (
               result.checkpoint as { deltaHeadSha256: string | null }
             ).deltaHeadSha256;
+            for (const discovered of result.orderedCommit.discoveredTasks) {
+              planned.add(discovered.logicalKey);
+            }
             for (const entry of result.orderedCommit.entries) {
               committed.add(histories[entry.canonicalSequence]!.manifestKey);
             }

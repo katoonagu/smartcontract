@@ -30,8 +30,20 @@ export type UnifiedOrderedCommitExpectation = {
   readonly entries: readonly {
     readonly canonicalSequence: number;
     readonly taskId: string;
+    readonly logicalKey: string;
     readonly acceptedAttemptId: string;
     readonly resultBytes: number;
+    readonly taskKind: string;
+    readonly artifactKind: string;
+    readonly artifactSchemaVersion: string;
+  }[];
+  readonly discoveredTasks: readonly {
+    readonly parentCanonicalSequence: number;
+    readonly taskId: string;
+    readonly kind: string;
+    readonly logicalKey: string;
+    readonly priorityLane: "interactive" | "repair" | "background";
+    readonly checkpoint: unknown;
   }[];
 };
 
@@ -70,7 +82,10 @@ export type UnifiedTaskCycleRepository = {
     attempt: number;
     checkpoint: unknown;
     orderedCommit?: UnifiedOrderedCommitExpectation;
-  }): Promise<boolean>;
+  }): Promise<{
+    readonly checkpointed: boolean;
+    readonly providerWorkAvailable: boolean;
+  }>;
   complete(input: {
     taskId: string;
     leaseToken: string;
@@ -121,6 +136,7 @@ export async function runUnifiedTaskCycle(input: {
   repository: UnifiedTaskCycleRepository;
   handlers: Record<string, UnifiedChunkHandler>;
   createId?: () => string;
+  onProviderWorkAvailable?(): void | Promise<void>;
 }): Promise<{
   claimed: boolean;
   taskId: string | null;
@@ -170,13 +186,19 @@ export async function runUnifiedTaskCycle(input: {
       }
     });
     if (result.kind === "checkpoint") {
-      if (!await input.repository.checkpoint({
+      const checkpointed = await input.repository.checkpoint({
         taskId: task.id,
         leaseToken,
         attempt: task.attempt,
         checkpoint: result.checkpoint,
         orderedCommit: result.orderedCommit
-      })) throw new Error("unified_worker_lease_lost");
+      });
+      if (!checkpointed.checkpointed) {
+        throw new Error("unified_worker_lease_lost");
+      }
+      if (checkpointed.providerWorkAvailable) {
+        await input.onProviderWorkAvailable?.();
+      }
       return { claimed: true, taskId: task.id, outcome: "checkpointed" };
     }
     if (result.kind === "completed") {

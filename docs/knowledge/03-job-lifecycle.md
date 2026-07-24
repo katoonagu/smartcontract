@@ -98,16 +98,19 @@ planner may attach a new row only to an existing unaccepted `QUEUED` or
 `FAILED_TECHNICAL`, `CANCELLED`, and `COMPLETED`; a task that already owns a
 planner row remains idempotently reusable after it is admitted or leased.
 
-The candidate traversal coordinator now plans the full newly mandatory
-canonical address-history set independent of provider capacity. Barrier
-admission exposes only the first planned head. Traversal is claimable for
-initial planning, a ready canonical head, or deterministic refill/closure after
-every existing row is committed. A short checkpoint transaction verifies the
-current V2 delta head and accepted-attempt artifact identities, persists one
-bounded next checkpoint, commits the exact continuous ready prefix, and admits
-the next existing barrier head atomically. Committed manifests remain reusable
-for later states without duplicate provider work. Adaptive rolling admission,
-provider-group selection, and the capacity controller remain later steps.
+The candidate traversal coordinator emits every newly mandatory
+address-history task with its canonical parent sequence. The run-locked
+checkpoint transaction verifies the full task/accepted-attempt/artifact
+identity, persists one bounded V2 checkpoint, commits the exact continuous
+ready prefix, appends discoveries after existing rows by parent sequence and
+then canonical task identity, and admits the next valid barrier head. Initial
+frontier tasks use the sentinel parent and canonical identity order; when two
+parents discover the same task, the earlier parent owns it. Admission accepts
+only unaccepted `QUEUED`/`WAITING_RETRY` planned tasks and rolls back the whole
+transition on a lifecycle mismatch. A newly admitted head wakes the provider
+pool only after commit. Committed manifests remain reusable without duplicate
+provider work. Adaptive rolling admission, provider-group selection, and the
+capacity controller remain later steps.
 
 ## Remaining Operational Work
 

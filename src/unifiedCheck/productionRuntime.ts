@@ -37,11 +37,9 @@ import {
   createPostgresUnifiedTaskCycleRepository
 } from "./productionWorker";
 import {
-  admitBarrierHead,
   loadUnifiedBoundedReadyPrefix,
   loadUnifiedCommittedArtifacts,
-  loadUnifiedDurableOrderedLogicalKeys,
-  planUnifiedOrderedTasks
+  loadUnifiedDurableOrderedTaskIdentities
 } from "./plannerRepository";
 import type { ProviderPageDiagnostic } from "./providerRequest";
 import type { UnifiedRunPurpose } from "./contracts";
@@ -459,46 +457,38 @@ export function createUnifiedProductionRuntime(input: {
       };
     },
     loadLabels: input.loadCounterpartyLabels,
-    loadDurableAddressHistoryKeys: ({ runId, manifestKeys }) =>
-      loadUnifiedDurableOrderedLogicalKeys(input.db, {
-        runId,
-        logicalKeys: manifestKeys
-      }),
-    async planAddressHistories({
-      runId,
-      priorityLane,
-      histories
-    }) {
-      await planUnifiedOrderedTasks(input.db, {
-        runId,
-        tasks: histories.map((history) => ({
-          taskId: createId(),
-          kind: "address_history",
-          logicalKey: history.manifestKey,
-          priorityLane,
-          checkpoint: {
-            version: "unified-address-history-checkpoint-v2",
-            identity: history.identity,
-            history: null,
-            chunkHeadSha256: null,
-            chunkCount: 0,
-            pageCount: 0,
-            rawRowCount: 0
-          }
-        }))
-      });
+    loadDurableAddressHistoryKeys: async ({ runId, manifestKeys }) => {
+      const identities = await loadUnifiedDurableOrderedTaskIdentities(
+        input.db,
+        {
+          runId,
+          identities: manifestKeys.map((logicalKey) => ({
+            kind: "address_history",
+            logicalKey
+          }))
+        }
+      );
+      return new Set(manifestKeys.filter((logicalKey) =>
+        identities.has(JSON.stringify(["address_history", logicalKey]))
+      ));
     },
-    async admitAddressHistoryHead(args) {
-      const admitted = await admitBarrierHead(input.db, args);
-      if (admitted) input.onProviderWorkAvailable?.();
-      return admitted;
-    },
+    createTaskId: createId,
     loadReadyAddressHistories: (args) =>
-      loadUnifiedBoundedReadyPrefix(input.db, args),
+      loadUnifiedBoundedReadyPrefix(input.db, {
+        ...args,
+        expectedTaskKind: "address_history",
+        expectedArtifactKind: "address_history_manifest",
+        expectedArtifactSchemaVersion: "1"
+      }),
     loadCommittedAddressHistories: ({ runId, manifestKeys }) =>
       loadUnifiedCommittedArtifacts(input.db, {
         runId,
-        logicalKeys: manifestKeys
+        identities: manifestKeys.map((logicalKey) => ({
+          kind: "address_history",
+          logicalKey
+        })),
+        expectedArtifactKind: "address_history_manifest",
+        expectedArtifactSchemaVersion: "1"
       }),
     loadAddressHistoryPage: ({ runId, sha256 }) =>
       artifact<UnifiedAddressHistoryPageArtifactV1>(
@@ -676,7 +666,8 @@ export function createUnifiedProductionRuntime(input: {
         { manifestMaxBytes }
       ),
       handlers: { traversal, ...branches },
-      createId
+      createId,
+      onProviderWorkAvailable: input.onProviderWorkAvailable
     }),
     runFinalizationCycle: async () => {
       const finalized = await runUnifiedProductionFinalizationCycle({

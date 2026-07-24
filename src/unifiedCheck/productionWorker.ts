@@ -83,10 +83,15 @@ export function createPostgresUnifiedTaskCycleRepository(
       return Boolean(await heartbeatUnifiedTask(db, input));
     },
     async checkpoint(input) {
-      return Boolean(await checkpointUnifiedTask(db, {
+      const checkpointed = await checkpointUnifiedTask(db, {
         ...input,
         barrierReservedBytes: options.manifestMaxBytes
-      }));
+      });
+      return {
+        checkpointed: Boolean(checkpointed),
+        providerWorkAvailable:
+          checkpointed?.next_head_newly_admitted === true
+      };
     },
     async complete(input) {
       return Boolean(await completeUnifiedTaskAttempt(db, {

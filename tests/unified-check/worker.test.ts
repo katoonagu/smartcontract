@@ -32,6 +32,7 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     acceptedArtifact?: unknown;
   } | null = null;
   lastOrderedCommit: unknown = null;
+  providerWorkAvailable = false;
   now = new Date("2026-07-23T13:00:00.000Z");
 
   async claim(input: {
@@ -56,13 +57,21 @@ class MemoryWorkerRepository implements UnifiedTaskCycleRepository {
     attempt: number;
     checkpoint: unknown;
     orderedCommit?: unknown;
-  }): Promise<boolean> {
-    if (!this.matches(input)) return false;
+  }): Promise<{
+    checkpointed: boolean;
+    providerWorkAvailable: boolean;
+  }> {
+    if (!this.matches(input)) {
+      return { checkpointed: false, providerWorkAvailable: false };
+    }
     this.task.checkpoint = input.checkpoint;
     this.lastOrderedCommit = input.orderedCommit ?? null;
     this.task.status = "QUEUED";
     this.task.leaseToken = null;
-    return true;
+    return {
+      checkpointed: true,
+      providerWorkAvailable: this.providerWorkAvailable
+    };
   }
 
   async complete(input: {
@@ -170,9 +179,14 @@ describe("Unified resumable worker", () => {
       entries: [{
         canonicalSequence: 0,
         taskId: "history-1",
+        logicalKey: "manifest-1",
         acceptedAttemptId: "attempt-1",
-        resultBytes: 128
-      }]
+        resultBytes: 128,
+        taskKind: "address_history",
+        artifactKind: "address_history_manifest",
+        artifactSchemaVersion: "1"
+      }],
+      discoveredTasks: []
     };
 
     await expect(cycle(repository, async () => ({
@@ -181,6 +195,29 @@ describe("Unified resumable worker", () => {
       orderedCommit
     }), ["lease-1"])).resolves.toMatchObject({ outcome: "checkpointed" });
     expect(repository.lastOrderedCommit).toBe(orderedCommit);
+  });
+
+  it("wakes provider work exactly once after a committed head admission", async () => {
+    const repository = new MemoryWorkerRepository();
+    repository.providerWorkAvailable = true;
+    const wake = vi.fn();
+
+    await runUnifiedTaskCycle({
+      workerId: "worker-1",
+      now: () => repository.now,
+      leaseMs: 60_000,
+      repository,
+      handlers: {
+        direct_history: async () => ({
+          kind: "checkpoint",
+          checkpoint: { cursor: "page-2" }
+        })
+      },
+      createId: () => "lease-1",
+      onProviderWorkAvailable: wake
+    } as Parameters<typeof runUnifiedTaskCycle>[0]);
+
+    expect(wake).toHaveBeenCalledTimes(1);
   });
 
   it("heartbeats only the live token and rejects stale publication", async () => {

@@ -114,6 +114,13 @@ async function insertCompletedDirectHistory(db: pg.PoolClient) {
      )`
   );
   await db.query(
+    `insert into unified_check_artifacts (
+       sha256, created_by_run_id, kind, schema_version, artifact_json
+     ) values (
+       'artifact-direct-1','run-1','direct_history','1','{}'::jsonb
+     )`
+  );
+  await db.query(
     `insert into unified_check_attempts (
        id, task_id, attempt, artifact_sha256, completed_at
      ) values (
@@ -190,8 +197,12 @@ async function insertAcceptedHistory(
   return {
     canonicalSequence: input.sequence,
     taskId: input.taskId,
+    logicalKey: input.taskId,
     acceptedAttemptId: `attempt-${input.taskId}`,
-    resultBytes
+    resultBytes,
+    taskKind: "address_history",
+    artifactKind: "address_history_manifest",
+    artifactSchemaVersion: "1"
   };
 }
 
@@ -240,7 +251,8 @@ function commitInput(
     orderedCommit: {
       runId: "run-1",
       expectedDeltaHeadSha256: OLD_HEAD,
-      entries: [entry]
+      entries: [entry],
+      discoveredTasks: []
     },
     ...overrides
   };
@@ -407,21 +419,24 @@ postgresDescribe("Unified ordered commit", () => {
       orderedCommit: {
         runId: "run-1",
         expectedDeltaHeadSha256: OLD_HEAD,
-        entries: [{ ...entry, acceptedAttemptId: "attempt-wrong" }]
+        entries: [{ ...entry, acceptedAttemptId: "attempt-wrong" }],
+        discoveredTasks: []
       }
     })],
     ["result bytes", (entry: Awaited<ReturnType<typeof setupCommit>>) => ({
       orderedCommit: {
         runId: "run-1",
         expectedDeltaHeadSha256: OLD_HEAD,
-        entries: [{ ...entry, resultBytes: entry.resultBytes + 1 }]
+        entries: [{ ...entry, resultBytes: entry.resultBytes + 1 }],
+        discoveredTasks: []
       }
     })],
     ["stale delta head", (entry: Awaited<ReturnType<typeof setupCommit>>) => ({
       orderedCommit: {
         runId: "run-1",
         expectedDeltaHeadSha256: "c".repeat(64),
-        entries: [entry]
+        entries: [entry],
+        discoveredTasks: []
       }
     })],
     ["lease", () => ({ leaseToken: "lease-wrong" })]
@@ -456,7 +471,8 @@ postgresDescribe("Unified ordered commit", () => {
         orderedCommit: {
           runId: "run-1",
           expectedDeltaHeadSha256: OLD_HEAD,
-          entries: [first, third]
+          entries: [first, third],
+          discoveredTasks: []
         }
       }))).rejects.toThrow("unified_ordered_commit_expectation_invalid");
       expect((await db.query(
@@ -484,6 +500,71 @@ postgresDescribe("Unified ordered commit", () => {
       `);
       await expect(checkpointUnifiedTask(host, commitInput(entry)))
         .rejects.toThrow("injected ordered commit failure");
+      expect((await db.query(
+        "select status, checkpoint_json from unified_check_tasks where id = 'traversal-1'"
+      )).rows[0]).toMatchObject({
+        status: "LEASED",
+        checkpoint_json: { deltaHeadSha256: OLD_HEAD }
+      });
+      expect((await db.query(
+        "select planner_state from unified_check_planner_entries where canonical_sequence = 0"
+      )).rows[0]?.planner_state).toBe("ready");
+    });
+  });
+
+  it("atomically commits, appends a discovered child and admits it", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await db.query(
+        "delete from unified_check_planner_entries where task_id = 'history-2'"
+      );
+      await db.query(
+        "delete from unified_check_tasks where id = 'history-2'"
+      );
+      const result = await checkpointUnifiedTask(host, commitInput(entry, {
+        orderedCommit: {
+          runId: "run-1",
+          expectedDeltaHeadSha256: OLD_HEAD,
+          entries: [entry],
+          discoveredTasks: [{
+            parentCanonicalSequence: 0,
+            taskId: "history-child",
+            kind: "address_history",
+            logicalKey: "history-child",
+            priorityLane: "interactive",
+            checkpoint: { version: "test-v1" }
+          }]
+        }
+      }));
+
+      expect(result?.next_head_newly_admitted).toBe(true);
+      expect((await db.query(
+        `select entry.canonical_sequence, entry.planner_state,
+                entry.admitted_at is not null as admitted, task.status,
+                task.accepted_attempt_id
+           from unified_check_planner_entries entry
+           join unified_check_tasks task
+             on task.run_id = entry.run_id and task.id = entry.task_id
+          where entry.task_id = 'history-child'`
+      )).rows[0]).toMatchObject({
+        canonical_sequence: "1",
+        planner_state: "planned",
+        admitted: true,
+        status: "QUEUED",
+        accepted_attempt_id: null
+      });
+    });
+  });
+
+  it("rolls back the whole transition when the next head lifecycle is invalid", async () => {
+    await withScenario(async ({ db, host }) => {
+      const entry = await setupCommit(db);
+      await db.query(
+        "update unified_check_tasks set status = 'COMPLETED' where id = 'history-2'"
+      );
+
+      await expect(checkpointUnifiedTask(host, commitInput(entry)))
+        .rejects.toThrow("unified_ordered_next_head_not_admissible");
       expect((await db.query(
         "select status, checkpoint_json from unified_check_tasks where id = 'traversal-1'"
       )).rows[0]).toMatchObject({

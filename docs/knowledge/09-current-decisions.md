@@ -51,15 +51,16 @@ audit artifacts. It is not a second source of current product truth.
 - Address history is content-addressed once per snapshot/address and reused by
   separate funding allocations. Checkpoints are bounded heads over immutable
   chunks/deltas, with deterministic V1-to-V2 rollout.
-- The candidate traversal path uses schema-034 planner rows end to end. It
-  plans every distinct currently mandatory history independently of capacity,
-  but the retained barrier policy admits only the canonical head. Ordered
-  tasks are claimable only while planned and admitted. Traversal runs for
-  initial planning, a ready head, or all-committed refill/closure. A bounded
-  continuous ready prefix and the next V2 checkpoint/delta head commit in one
-  transaction, which also admits the next existing barrier head. Arrival order
-  cannot change the canonical traversal result. Adaptive rolling admission,
-  provider-group selection, and capacity control remain later work.
+- The candidate traversal path uses schema-034 planner rows end to end. The
+  traversal checkpoint transition atomically commits a bounded ready prefix,
+  appends newly discovered histories in canonical parent order, and admits one
+  lifecycle-valid barrier head. Initial tasks use a sentinel parent; children
+  stay grouped by parent sequence before `(kind, logical_key)`, and the earlier
+  parent owns duplicates. Durable reads and commit verification bind full task,
+  accepted-attempt, and artifact identity. Provider wake happens only after a
+  newly admitted head commits. Arrival order cannot change the canonical
+  traversal result. Adaptive rolling admission, provider-group selection, and
+  capacity control remain later work.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.

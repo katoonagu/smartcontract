@@ -512,18 +512,7 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     runId: string;
     manifestKeys: readonly string[];
   }): Promise<ReadonlySet<string>>;
-  planAddressHistories(args: {
-    runId: string;
-    priorityLane: "interactive" | "repair" | "background";
-    histories: readonly {
-      manifestKey: string;
-      identity: AddressHistoryManifestIdentityV1;
-    }[];
-  }): Promise<void>;
-  admitAddressHistoryHead(args: {
-    runId: string;
-    reservedBytes: number;
-  }): Promise<boolean>;
+  createTaskId(): string;
   loadReadyAddressHistories(args: {
     runId: string;
     maxEntries: number;
@@ -657,53 +646,117 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
     const persistedDeltaHeadSha256 = v2.deltaHeadSha256;
     const eventCache = new Map<string, IndexedTronUsdtTransfer[]>();
 
-    const frontierAddresses = [...new Set(
-      state.frontier.map((item) => item.address)
-    )];
-    const labels = await input.loadLabels({
-      labelDatasetSha256: context.manifest.labelDatasetSha256,
-      addresses: frontierAddresses
-    });
-    const mandatory = new Map<string, {
+    type MandatoryHistory = {
       manifestKey: string;
       identity: AddressHistoryManifestIdentityV1;
-    }>();
-    for (const item of state.frontier) {
-      if (unifiedTraversalBoundary(labels.get(item.address) ?? []) !== null) {
-        continue;
+    };
+    const loadMandatory = async () => {
+      const frontierAddresses = [...new Set(
+        state.frontier.map((item) => item.address)
+      )];
+      const loadedLabels = await input.loadLabels({
+        labelDatasetSha256: context.manifest.labelDatasetSha256,
+        addresses: frontierAddresses
+      });
+      const loadedMandatory = new Map<string, MandatoryHistory>();
+      for (const item of state.frontier) {
+        if (
+          unifiedTraversalBoundary(
+            loadedLabels.get(item.address) ?? []
+          ) !== null
+        ) {
+          continue;
+        }
+        const addressIdentity = identity(context, item.address);
+        const manifestKey = addressHistoryManifestKey(addressIdentity);
+        if (!loadedMandatory.has(manifestKey)) {
+          loadedMandatory.set(manifestKey, {
+            manifestKey,
+            identity: addressIdentity
+          });
+        }
       }
-      const addressIdentity = identity(context, item.address);
-      const manifestKey = addressHistoryManifestKey(addressIdentity);
-      if (!mandatory.has(manifestKey)) {
-        mandatory.set(manifestKey, {
-          manifestKey,
-          identity: addressIdentity
-        });
-      }
-    }
+      return { labels: loadedLabels, mandatory: loadedMandatory };
+    };
+    let { labels, mandatory } = await loadMandatory();
     const mandatoryKeys = [...mandatory.keys()].sort();
-    const durable = await input.loadDurableAddressHistoryKeys({
+    const durable = new Set(await input.loadDurableAddressHistoryKeys({
       runId: task.runId,
       manifestKeys: mandatoryKeys
-    });
+    }));
+    const discoveries = new Map<string, {
+      parentCanonicalSequence: number;
+      taskId: string;
+      kind: "address_history";
+      logicalKey: string;
+      priorityLane: "interactive" | "repair" | "background";
+      checkpoint: unknown;
+    }>();
+    const discover = (
+      history: MandatoryHistory,
+      parentCanonicalSequence: number
+    ) => {
+      if (
+        durable.has(history.manifestKey) ||
+        discoveries.has(history.manifestKey)
+      ) {
+        return;
+      }
+      discoveries.set(history.manifestKey, {
+        parentCanonicalSequence,
+        taskId: input.createTaskId(),
+        kind: "address_history",
+        logicalKey: history.manifestKey,
+        priorityLane: task.priorityLane ?? "interactive",
+        checkpoint: {
+          version: "unified-address-history-checkpoint-v2",
+          identity: history.identity,
+          history: null,
+          chunkHeadSha256: null,
+          chunkCount: 0,
+          pageCount: 0,
+          rawRowCount: 0
+        }
+      });
+    };
     const newlyMandatory = [...mandatory.values()]
       .filter((history) => !durable.has(history.manifestKey))
       .sort((left, right) =>
         left.manifestKey.localeCompare(right.manifestKey)
       );
-    if (newlyMandatory.length > 0) {
-      await input.planAddressHistories({
-        runId: task.runId,
-        priorityLane: task.priorityLane ?? "interactive",
-        histories: newlyMandatory
-      });
+    for (const history of newlyMandatory) discover(history, -1);
+    if (discoveries.size > 0) {
+      return {
+        kind: "checkpoint",
+        checkpoint: v2,
+        orderedCommit: {
+          runId: task.runId,
+          expectedDeltaHeadSha256: persistedDeltaHeadSha256,
+          entries: [],
+          discoveredTasks: [...discoveries.values()]
+        }
+      };
     }
-    if (mandatoryKeys.length > 0) {
-      await input.admitAddressHistoryHead({
+    const collectDiscoveries = async (parentCanonicalSequence: number) => {
+      ({ labels, mandatory } = await loadMandatory());
+      const candidates = [...mandatory.values()]
+        .filter((history) =>
+          !durable.has(history.manifestKey) &&
+          !discoveries.has(history.manifestKey)
+        )
+        .sort((left, right) =>
+          left.manifestKey.localeCompare(right.manifestKey)
+        );
+      if (candidates.length === 0) return;
+      const existing = await input.loadDurableAddressHistoryKeys({
         runId: task.runId,
-        reservedBytes: input.manifestMaxBytes
+        manifestKeys: candidates.map((history) => history.manifestKey)
       });
-    }
+      for (const manifestKey of existing) durable.add(manifestKey);
+      for (const history of candidates) {
+        discover(history, parentCanonicalSequence);
+      }
+    };
     const applyManifestEntry = async (
       entry: UnifiedOrderedReadyEntry
     ): Promise<void> => {
@@ -757,6 +810,7 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
         state = applied.state;
         await heartbeat();
       }
+      await collectDiscoveries(entry.canonicalSequence);
     };
     const committedHistories = await input.loadCommittedAddressHistories({
       runId: task.runId,
@@ -781,15 +835,31 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
           entries: readyPrefix.map((entry) => ({
             canonicalSequence: entry.canonicalSequence,
             taskId: entry.taskId,
+            logicalKey: entry.logicalKey,
             acceptedAttemptId: entry.acceptedAttemptId,
-            resultBytes: entry.resultBytes
-          }))
+            resultBytes: entry.resultBytes,
+            taskKind: "address_history",
+            artifactKind: "address_history_manifest",
+            artifactSchemaVersion: "1"
+          })),
+          discoveredTasks: [...discoveries.values()]
         }
       };
     }
 
     if (reusedCommittedHistory) {
-      return { kind: "checkpoint", checkpoint: v2 };
+      return discoveries.size > 0
+        ? {
+            kind: "checkpoint",
+            checkpoint: v2,
+            orderedCommit: {
+              runId: task.runId,
+              expectedDeltaHeadSha256: persistedDeltaHeadSha256,
+              entries: [],
+              discoveredTasks: [...discoveries.values()]
+            }
+          }
+        : { kind: "checkpoint", checkpoint: v2 };
     }
     if (mandatoryKeys.length > 0) {
       return { kind: "checkpoint", checkpoint: v2 };

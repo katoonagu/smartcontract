@@ -10,7 +10,7 @@ import {
 } from "../../src/unifiedCheck/repository";
 
 describe("Unified ordered checkpoint commit", () => {
-  it("locks run, traversal task and exact ready prefix in one transaction", async () => {
+  it("commits, appends parent-ordered discoveries and admits the next head in one transaction", async () => {
     const priorHead = "a".repeat(64);
     const nextHead = "b".repeat(64);
     const artifact = {
@@ -59,7 +59,7 @@ describe("Unified ordered checkpoint commit", () => {
           };
         }
         if (
-          normalized.includes("from unified_check_planner_entries entry") &&
+          normalized.startsWith("with head as") &&
           normalized.includes("for update of entry")
         ) {
           return {
@@ -69,8 +69,15 @@ describe("Unified ordered checkpoint commit", () => {
               planner_state: "ready",
               result_bytes: resultBytes,
               task_id: "history-1",
+              task_kind: "address_history",
+              task_logical_key: "manifest-1",
+              task_status: "COMPLETED",
               accepted_attempt_id: "attempt-history-1",
+              attempt_id: "attempt-history-1",
+              attempt_task_id: "history-1",
               artifact_sha256: artifactSha256,
+              artifact_kind: "address_history_manifest",
+              artifact_schema_version: "1",
               artifact_json: artifact
             }]
           };
@@ -83,6 +90,47 @@ describe("Unified ordered checkpoint commit", () => {
           normalized.includes("set planner_state = 'committed'")
         ) {
           return { rows: [{ task_id: "history-1" }] };
+        }
+        if (normalized.includes("select max(canonical_sequence)")) {
+          return { rows: [{ max_sequence: 7 }] };
+        }
+        if (
+          normalized.includes("insert into unified_check_tasks") &&
+          normalized.includes("on conflict")
+        ) {
+          return {
+            rows: [{
+              id: "history-child",
+              status: "QUEUED",
+              accepted_attempt_id: null
+            }]
+          };
+        }
+        if (
+          normalized.includes("select canonical_sequence") &&
+          normalized.includes("from unified_check_planner_entries")
+        ) {
+          return { rows: [] };
+        }
+        if (normalized.includes("insert into unified_check_planner_entries")) {
+          return { rows: [{ canonical_sequence: 8 }] };
+        }
+        if (
+          normalized.startsWith("select entry.canonical_sequence") &&
+          normalized.includes("for update of entry, task")
+        ) {
+          return {
+            rows: [{
+              canonical_sequence: 8,
+              planner_state: "planned",
+              admitted_at: null,
+              reserved_bytes: null,
+              result_bytes: null,
+              task_id: "history-child",
+              task_status: "QUEUED",
+              accepted_attempt_id: null
+            }]
+          };
         }
         if (
           normalized.startsWith("update unified_check_planner_entries") &&
@@ -116,11 +164,28 @@ describe("Unified ordered checkpoint commit", () => {
         entries: [{
           canonicalSequence: 7,
           taskId: "history-1",
+          logicalKey: "manifest-1",
           acceptedAttemptId: "attempt-history-1",
-          resultBytes
+          resultBytes,
+          taskKind: "address_history",
+          artifactKind: "address_history_manifest",
+          artifactSchemaVersion: "1"
+        }],
+        discoveredTasks: [{
+          parentCanonicalSequence: 7,
+          taskId: "history-child",
+          kind: "address_history",
+          logicalKey: "manifest-child",
+          priorityLane: "interactive",
+          checkpoint: {
+            version: "unified-address-history-checkpoint-v2"
+          }
         }]
       }
-    })).resolves.toMatchObject({ status: "QUEUED" });
+    })).resolves.toMatchObject({
+      status: "QUEUED",
+      next_head_newly_admitted: true
+    });
 
     expect(transactions).toBe(1);
     expect(queries.findIndex((sql) =>
@@ -134,9 +199,12 @@ describe("Unified ordered checkpoint commit", () => {
       sql.includes("set planner_state = 'committed'")
     )).toBe(true);
     expect(queries.some((sql) =>
+      sql.startsWith("insert into unified_check_planner_entries")
+    )).toBe(true);
+    expect(queries.some((sql) =>
       sql.startsWith("update unified_check_planner_entries") &&
       sql.includes("set admitted_at") &&
-      sql.includes("min(head.canonical_sequence)")
+      sql.includes("canonical_sequence = $2")
     )).toBe(true);
   });
 });

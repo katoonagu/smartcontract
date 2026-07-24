@@ -4,9 +4,11 @@ import {
   fingerprintCanonicalArtifact
 } from "../../src/forensics/canonicalJson";
 import {
+  admitBarrierHeadInTransaction,
+  canonicalOrderedDiscoveries,
   loadUnifiedBoundedReadyPrefix,
   loadUnifiedCommittedArtifacts,
-  loadUnifiedDurableOrderedLogicalKeys,
+  loadUnifiedDurableOrderedTaskIdentities,
   planUnifiedOrderedTasks
 } from "../../src/unifiedCheck/plannerRepository";
 import type {
@@ -112,6 +114,57 @@ describe("Unified ordered planner attachment", () => {
 });
 
 describe("Unified ordered planner reads", () => {
+  it("keeps earlier-parent discoveries ahead of later-parent hash order", () => {
+    const common = {
+      kind: "address_history",
+      priorityLane: "interactive" as const,
+      checkpoint: { version: "unified-address-history-checkpoint-v2" }
+    };
+
+    expect(canonicalOrderedDiscoveries([
+      {
+        ...common,
+        parentCanonicalSequence: 4,
+        taskId: "child-from-earlier-parent",
+        logicalKey: "z-reversed-hash"
+      },
+      {
+        ...common,
+        parentCanonicalSequence: 5,
+        taskId: "child-from-later-parent",
+        logicalKey: "a-reversed-hash"
+      }
+    ]).map((task) => task.taskId)).toEqual([
+      "child-from-earlier-parent",
+      "child-from-later-parent"
+    ]);
+  });
+
+  it("lets the earliest canonical parent own a duplicate discovery", () => {
+    const common = {
+      kind: "address_history",
+      logicalKey: "shared-child",
+      priorityLane: "interactive" as const,
+      checkpoint: { version: "unified-address-history-checkpoint-v2" }
+    };
+
+    expect(canonicalOrderedDiscoveries([
+      {
+        ...common,
+        parentCanonicalSequence: 9,
+        taskId: "later-parent-task-id"
+      },
+      {
+        ...common,
+        parentCanonicalSequence: 3,
+        taskId: "earlier-parent-task-id"
+      }
+    ])).toMatchObject([{
+      parentCanonicalSequence: 3,
+      taskId: "earlier-parent-task-id"
+    }]);
+  });
+
   it("loads only a byte-bounded continuous ready prefix from the canonical head", async () => {
     const manifests = [0, 1, 2].map((index) => ({
       version: "unified-address-history-manifest-v1",
@@ -124,7 +177,12 @@ describe("Unified ordered planner reads", () => {
       planner_state: canonicalSequence === 2 ? "planned" : "ready",
       result_bytes: Buffer.byteLength(canonicalizeArtifactJson(artifact)),
       task_id: `task-${canonicalSequence}`,
+      task_kind: "address_history",
+      task_logical_key: `manifest-${canonicalSequence}`,
+      task_status: "COMPLETED",
       accepted_attempt_id: `attempt-${canonicalSequence}`,
+      attempt_id: `attempt-${canonicalSequence}`,
+      attempt_task_id: `task-${canonicalSequence}`,
       artifact_sha256: fingerprintCanonicalArtifact(artifact),
       artifact_kind: "address_history_manifest",
       artifact_schema_version: "1",
@@ -145,10 +203,15 @@ describe("Unified ordered planner reads", () => {
       runId: "run-1",
       maxEntries: 3,
       maxBytes:
-        Number(rows[0]!.result_bytes) + Number(rows[1]!.result_bytes)
+        Number(rows[0]!.result_bytes) + Number(rows[1]!.result_bytes),
+      expectedTaskKind: "address_history",
+      expectedArtifactKind: "address_history_manifest",
+      expectedArtifactSchemaVersion: "1"
     })).resolves.toEqual(rows.slice(0, 2).map((row, index) => ({
       canonicalSequence: index,
       taskId: row.task_id,
+      taskKind: row.task_kind,
+      logicalKey: row.task_logical_key,
       acceptedAttemptId: row.accepted_attempt_id,
       artifactSha256: row.artifact_sha256,
       artifactKind: row.artifact_kind,
@@ -158,20 +221,36 @@ describe("Unified ordered planner reads", () => {
     })));
   });
 
-  it("loads only requested logical keys that already have durable planner rows", async () => {
+  it("binds durable existence to the complete task identity", async () => {
     const db: UnifiedQueryable = {
       async query(sql, values) {
         expect(sql).toContain("join unified_check_planner_entries");
-        expect(sql).toContain("task.logical_key = any");
-        expect(values).toEqual(["run-1", ["manifest-a", "manifest-b"]]);
-        return { rows: [{ logical_key: "manifest-b" }] };
+        expect(sql).toContain("task.kind = requested.kind");
+        expect(sql).toContain("task.logical_key = requested.logical_key");
+        expect(values).toEqual([
+          "run-1",
+          ["address_history", "address_history", "other_kind"],
+          ["manifest-a", "manifest-b", "manifest-b"]
+        ]);
+        return {
+          rows: [{
+            kind: "address_history",
+            logical_key: "manifest-b"
+          }]
+        };
       }
     };
 
-    await expect(loadUnifiedDurableOrderedLogicalKeys(db, {
+    await expect(loadUnifiedDurableOrderedTaskIdentities(db, {
       runId: "run-1",
-      logicalKeys: ["manifest-b", "manifest-a", "manifest-b"]
-    })).resolves.toEqual(new Set(["manifest-b"]));
+      identities: [
+        { kind: "address_history", logicalKey: "manifest-b" },
+        { kind: "other_kind", logicalKey: "manifest-b" },
+        { kind: "address_history", logicalKey: "manifest-a" }
+      ]
+    })).resolves.toEqual(new Set([
+      JSON.stringify(["address_history", "manifest-b"])
+    ]));
   });
 
   it("loads only requested committed artifacts for deterministic history reuse", async () => {
@@ -184,14 +263,25 @@ describe("Unified ordered planner reads", () => {
     const db: UnifiedQueryable = {
       async query(sql, values) {
         expect(sql).toContain("entry.planner_state = 'committed'");
-        expect(sql).toContain("task.logical_key = any");
-        expect(values).toEqual(["run-1", ["manifest-a"]]);
+        expect(sql).toContain("task.kind = requested.kind");
+        expect(sql).toContain("attempt.task_id = task.id");
+        expect(sql).toContain("task.status");
+        expect(values).toEqual([
+          "run-1",
+          ["address_history"],
+          ["manifest-a"]
+        ]);
         return {
           rows: [{
             canonical_sequence: 3,
             result_bytes: bytes,
             task_id: "task-a",
+            task_kind: "address_history",
+            task_logical_key: "manifest-a",
+            task_status: "COMPLETED",
             accepted_attempt_id: "attempt-a",
+            attempt_id: "attempt-a",
+            attempt_task_id: "task-a",
             artifact_sha256: fingerprintCanonicalArtifact(artifact),
             artifact_kind: "address_history_manifest",
             artifact_schema_version: "1",
@@ -203,7 +293,12 @@ describe("Unified ordered planner reads", () => {
 
     await expect(loadUnifiedCommittedArtifacts(db, {
       runId: "run-1",
-      logicalKeys: ["manifest-a"]
+      identities: [{
+        kind: "address_history",
+        logicalKey: "manifest-a"
+      }],
+      expectedArtifactKind: "address_history_manifest",
+      expectedArtifactSchemaVersion: "1"
     })).resolves.toMatchObject([{
       canonicalSequence: 3,
       taskId: "task-a",
@@ -211,5 +306,77 @@ describe("Unified ordered planner reads", () => {
       artifact: { key: "manifest-a" },
       resultBytes: bytes
     }]);
+  });
+
+  it("fails closed when the accepted attempt belongs to another task", async () => {
+    const artifact = {
+      version: "unified-address-history-manifest-v1",
+      schemaVersion: 1,
+      key: "manifest-a"
+    };
+    const db: UnifiedQueryable = {
+      async query() {
+        return {
+          rows: [{
+            canonical_sequence: 0,
+            planner_state: "ready",
+            result_bytes:
+              Buffer.byteLength(canonicalizeArtifactJson(artifact)),
+            task_id: "task-a",
+            task_kind: "address_history",
+            task_logical_key: "manifest-a",
+            task_status: "COMPLETED",
+            accepted_attempt_id: "attempt-b",
+            attempt_id: "attempt-b",
+            attempt_task_id: "task-b",
+            artifact_sha256: fingerprintCanonicalArtifact(artifact),
+            artifact_kind: "address_history_manifest",
+            artifact_schema_version: "1",
+            artifact_json: artifact
+          }]
+        };
+      }
+    };
+
+    await expect(loadUnifiedBoundedReadyPrefix(db, {
+      runId: "run-1",
+      maxEntries: 1,
+      maxBytes: 1_048_576,
+      expectedTaskKind: "address_history",
+      expectedArtifactKind: "address_history_manifest",
+      expectedArtifactSchemaVersion: "1"
+    })).rejects.toThrow("unified_planner_ready_identity_mismatch");
+  });
+});
+
+describe("Unified ordered head admission", () => {
+  it("rejects an invalid next-task lifecycle before admission", async () => {
+    let mutated = false;
+    const db: UnifiedQueryable = {
+      async query(sql) {
+        if (sql.includes("for update of entry, task")) {
+          return {
+            rows: [{
+              canonical_sequence: 1,
+              planner_state: "planned",
+              admitted_at: null,
+              reserved_bytes: null,
+              result_bytes: null,
+              task_id: "task-1",
+              task_status: "COMPLETED",
+              accepted_attempt_id: null
+            }]
+          };
+        }
+        mutated = true;
+        return { rows: [] };
+      }
+    };
+
+    await expect(admitBarrierHeadInTransaction(db, {
+      runId: "run-1",
+      reservedBytes: 1_048_576
+    })).rejects.toThrow("unified_ordered_next_head_not_admissible");
+    expect(mutated).toBe(false);
   });
 });
