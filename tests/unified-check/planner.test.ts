@@ -155,4 +155,18 @@ describe("Unified planner", () => {
       markUnifiedPlannerResultReady(entry(4, "ready", 27), 27)
     ).toThrow("unified_ordered_planner_transition_conflict");
   });
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER])(
+    "rejects invalid last canonical sequence %s",
+    (lastCanonicalSequence) => {
+      expect(() => appendUnifiedPlannerDiscovery(lastCanonicalSequence, {
+        taskId: "task-invalid",
+        kind: "address_history",
+        logicalKey: "history-invalid",
+        parentCanonicalSequence: 0
+      })).toThrowError(
+        new TypeError("unified_planner_sequence_invalid")
+      );
+    }
+  );
 });

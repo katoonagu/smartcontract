@@ -93,6 +93,16 @@ export function appendUnifiedPlannerDiscovery<
   lastCanonicalSequence: number | null,
   task: T
 ): T & UnifiedPlannerPrefixEntry {
+  if (
+    lastCanonicalSequence !== null &&
+    (
+      !Number.isSafeInteger(lastCanonicalSequence) ||
+      lastCanonicalSequence < 0 ||
+      lastCanonicalSequence >= Number.MAX_SAFE_INTEGER
+    )
+  ) {
+    throw new TypeError("unified_planner_sequence_invalid");
+  }
   return {
     ...task,
     canonicalSequence: lastCanonicalSequence === null

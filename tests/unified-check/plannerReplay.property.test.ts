@@ -572,7 +572,7 @@ async function replay(input: {
 }
 
 describe("Unified ordered planner replay", () => {
-  it("matches the canonical oracle for 600 logical ready-availability schedules", async () => {
+  it("matches the canonical oracle across 600 deterministic replay executions", async () => {
     const oracle = await replay({
       seed: 1,
       readyBatchSize: 1,
@@ -585,7 +585,9 @@ describe("Unified ordered planner replay", () => {
     // These batches model only logical result availability before each
     // canonical commit. They do not model admission windows, provider slots,
     // lookahead, or fairness; the active barrier admission policy is outside
-    // this harness, and broader scheduling policies belong to Plan 2.
+    // this harness, and broader scheduling policies belong to Plan 2. Smaller
+    // batches expose distinct availability permutations; larger batches can
+    // saturate the pending frontier and verify that saturation is conflict-free.
     for (const readyBatchSize of READY_AVAILABILITY_BATCH_SIZES) {
       for (let seed = 1; seed <= 100; seed += 1) {
         let actual: ReplayResult;
