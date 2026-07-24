@@ -310,7 +310,7 @@ describe("Unified eight-wallet release canary", () => {
       item.request.runPurpose === "release_canary" &&
       item.request.sideEffectPolicy === "isolated" &&
       item.reuseAllowed === false &&
-      item.initialTasks.length === 5
+      item.initialTasks.length === 6
     )).toBe(true);
     expect(new Set(input.runs.map((item: {
       candidateRun: { analysisKeySha256: string };

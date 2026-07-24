@@ -1135,6 +1135,7 @@ const bot = createBot(config, db, tronClient, {
       candidateRunId: randomUUID(),
       initialTasks: ([
         "direct_history",
+        "deep_direct",
         "traversal",
         "fast",
         "where",

@@ -495,7 +495,7 @@ export async function createUnifiedCanaryBatch(
       item.request.subjectAddress !== item.candidateRun.subjectAddress ||
       item.request.subjectAddress !==
         input.selectionManifest.selected[index]?.subjectAddress ||
-      item.initialTasks.length !== 5
+      item.initialTasks.length !== 6
     ) ||
     new Set(input.runs.map((item) => item.request.id)).size !== 8 ||
     new Set(input.runs.map((item) => item.candidateRun.id)).size !== 8 ||
@@ -796,7 +796,7 @@ export async function claimUnifiedTask(
            )
          )
           and (
-            task.kind <> 'address_history' or exists (
+            task.kind not in ('address_history','deep_direct') or exists (
               select 1
                 from unified_check_tasks prerequisite
                where prerequisite.run_id = task.run_id
@@ -842,6 +842,15 @@ export async function claimUnifiedTask(
                 and prerequisite.kind = 'traversal'
                 and prerequisite.status = 'COMPLETED'
                 and prerequisite.accepted_attempt_id is not null
+           )
+         )
+         and (
+           task.kind <> 'deep' or not exists (
+             select 1
+               from unified_check_tasks direct_evidence
+              where direct_evidence.run_id = task.run_id
+                and direct_evidence.kind = 'deep_direct'
+                and direct_evidence.status <> 'COMPLETED'
            )
          )
        order by case task.priority_lane

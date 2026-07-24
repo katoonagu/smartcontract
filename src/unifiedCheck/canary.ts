@@ -24,6 +24,7 @@ const CANARY_SIZE = 8;
 const DEADLINE_MS = 35 * 60 * 1_000;
 const TASK_KINDS = [
   "direct_history",
+  "deep_direct",
   "traversal",
   "fast",
   "where",

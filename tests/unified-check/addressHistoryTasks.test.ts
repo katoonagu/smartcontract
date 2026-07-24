@@ -140,11 +140,14 @@ describe("Unified address-history tasks", () => {
       kinds: ["address_history", "traversal"]
     });
 
-    expect(claimSql).toContain("task.kind <> 'address_history'");
+    expect(claimSql)
+      .toContain("task.kind not in ('address_history','deep_direct')");
     expect(claimSql).toContain("history_task.kind = 'address_history'");
     expect(claimSql).toContain("history_task.status <> 'COMPLETED'");
     expect(claimSql).toContain("task.kind <> 'fast'");
     expect(claimSql).toContain("task.kind not in ('where','deep')");
+    expect(claimSql).toContain("direct_evidence.kind = 'deep_direct'");
+    expect(claimSql).toContain("direct_evidence.status <> 'COMPLETED'");
     expect(claimSql).toContain("active_task.run_id = task.run_id");
     expect(claimSql).toContain("served_task.run_id = task.run_id");
   });

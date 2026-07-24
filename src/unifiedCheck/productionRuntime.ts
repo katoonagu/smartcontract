@@ -20,6 +20,11 @@ import {
   type UnifiedDirectHistoryArtifactV1,
   type UnifiedDirectHistoryPageArtifactV1
 } from "./productionDirectHistory";
+import {
+  createUnifiedDirectEvidenceHandler,
+  reviveUnifiedDirectHardEvidence,
+  type UnifiedDirectHardEvidenceArtifactV1
+} from "./productionDirectEvidence";
 import type {
   UnifiedProductionHardEvidence
 } from "./productionEvidence";
@@ -211,6 +216,39 @@ async function loadTraversal(
     throw new Error("unified_production_runtime_traversal_mismatch");
   }
   return traversal;
+}
+
+async function loadDirectHardEvidence(
+  db: UnifiedQueryable,
+  run: LoadedRun,
+  directHistoryArtifactSha256: string
+): Promise<UnifiedProductionHardEvidence | null> {
+  const row = (
+    await db.query(
+      `select attempt.artifact_sha256
+         from unified_check_tasks task
+         join unified_check_attempts attempt
+           on attempt.id = task.accepted_attempt_id
+        where task.run_id = $1 and task.kind = 'deep_direct'
+          and task.status = 'COMPLETED'`,
+      [run.id]
+    )
+  ).rows[0];
+  if (!row) return null;
+  const evidence = await artifact<UnifiedDirectHardEvidenceArtifactV1>(
+    db,
+    run.id,
+    String(row.artifact_sha256),
+    "deep_direct_evidence"
+  );
+  if (
+    evidence.runId !== run.id ||
+    evidence.snapshotHash !== run.analysisManifest.snapshotHash ||
+    evidence.directHistoryArtifactSha256 !== directHistoryArtifactSha256
+  ) {
+    throw new Error("unified_direct_hard_evidence_binding_mismatch");
+  }
+  return reviveUnifiedDirectHardEvidence(evidence);
 }
 
 export function createUnifiedProductionRuntime(input: {
@@ -416,6 +454,54 @@ export function createUnifiedProductionRuntime(input: {
       ),
     persistArtifact
   });
+  const directEvidence = createUnifiedDirectEvidenceHandler({
+    async loadContext(runId) {
+      const run = await loadRun(input.db, runId);
+      const history = await loadDirectHistory(input.db, run);
+      return {
+        runId,
+        snapshotHash: run.analysisManifest.snapshotHash,
+        directHistoryArtifactSha256: history.artifactSha256
+      };
+    },
+    async loadEvidence({
+      runId,
+      taskId,
+      leaseToken,
+      attempt,
+      heartbeat
+    }) {
+      const run = await loadRun(input.db, runId);
+      const history = await loadDirectHistory(input.db, run);
+      const counterparties = [...new Set(history.events.flatMap((event) => [
+        event.fromAddress,
+        event.toAddress
+      ]).filter((address) =>
+        address.toLowerCase() !== run.subjectAddress.toLowerCase()
+      ))].sort();
+      const labels = await input.loadCounterpartyLabels({
+        labelDatasetSha256: run.analysisManifest.labelDatasetSha256,
+        addresses: counterparties
+      });
+      return input.loadHardEvidence({
+        subjectAddress: run.subjectAddress,
+        snapshotBlockNumber: run.analysisManifest.confirmedBlockNumber,
+        snapshotTimestamp: run.analysisManifest.confirmedBlockTimestamp,
+        events: history.events,
+        knownCounterparties: labels,
+        cooperate: async () => {
+          await heartbeat();
+          await cooperate(runId);
+        },
+        providerCall: (work) => measuredProviderCall(
+          runId,
+          { taskId, leaseToken, attempt, heartbeat },
+          work
+        )
+      });
+    },
+    persistArtifact
+  });
   const branches = createUnifiedProductionBranchHandlers({
     now,
     createId,
@@ -435,8 +521,15 @@ export function createUnifiedProductionRuntime(input: {
         labelDatasetSha256: run.analysisManifest.labelDatasetSha256,
         addresses: counterparties
       });
+      const persistedHardEvidence = branchId === "deep"
+        ? await loadDirectHardEvidence(
+            input.db,
+            run,
+            history.artifactSha256
+          )
+        : null;
       const hardEvidence = branchId === "deep"
-          ? await input.loadHardEvidence({
+          ? persistedHardEvidence ?? await input.loadHardEvidence({
               subjectAddress: run.subjectAddress,
               snapshotBlockNumber:
                 run.analysisManifest.confirmedBlockNumber,
@@ -488,14 +581,15 @@ export function createUnifiedProductionRuntime(input: {
       leaseMs,
       repository: createPostgresUnifiedTaskCycleRepository(
         input.db,
-        ["direct_history", "address_history"],
+        ["direct_history", "address_history", "deep_direct"],
         input.runtimeCommit,
         input.providerConfigurationSha256,
         input.runPurpose
       ),
       handlers: {
         direct_history: directHistory,
-        address_history: addressHistory
+        address_history: addressHistory,
+        deep_direct: directEvidence
       },
       createId
     }),
