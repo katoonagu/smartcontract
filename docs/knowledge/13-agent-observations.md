@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-24
 owner_area: docs
 code_refs:
   - AGENTS.md
@@ -14,6 +14,7 @@ code_refs:
   - src/telegram/forensicPresentation.ts
   - tests/bot/unifiedTelegramModeWiring.acceptance.test.ts
   - tests/telegram/forensicPresentationContract.acceptance.test.ts
+  - docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
 ---
@@ -309,3 +310,15 @@ Correct rule: measure frozen cases first. Admin may show exact discovered
 outstanding work and say that the total is still expanding, but never invents
 ETA or percent complete. Internal SLO proposals do not stop analysis, publish
 partial scores, add risk, or become release gates without a separate decision.
+
+## 2026-07-24: Simulated Capacity Is Not Live Capacity Proof
+
+Repeated correction: an architecture intended for 8–100 provider groups was
+described as if those groups were already available for a live benchmark, and
+high Windows/WSL memory percentage was treated as if it proved a leak.
+
+Correct rule: use deterministic replay to prove scheduling and correctness at
+large logical capacity, but claim live throughput only for independent groups
+that actually exist and passed a canary. WSL is local diagnostic evidence, not
+the production memory contract. A leak requires sustained RSS/available-memory
+or swap evidence across comparable runs, not one host percentage.

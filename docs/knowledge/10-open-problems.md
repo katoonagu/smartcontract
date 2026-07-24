@@ -7,6 +7,7 @@ code_refs:
   - scripts/finalizeUnifiedReleaseGates.ts
   - scripts/runUnifiedWalletCanary.ts
   - src/unifiedCheck
+  - docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md
 ---
 
 # Open Problems
@@ -43,12 +44,31 @@ Production remains legacy until those operations complete.
 - Run live TBL7/TQr only as separate canaries if desired; never update their
   frozen Golden expected artifacts from live state.
 
+## Dense Traversal Capacity
+
+The current coordinator exposes one mandatory address history and then waits
+for it before advancing the run. The provider pool can therefore have four
+configured slots while a dense wallet supplies only one claimable history.
+This is a verified code/runtime bottleneck, not evidence of a provider-key or
+memory failure.
+
+The approved but unimplemented target is adaptive rolling refill with durable
+admission and ordered canonical commit:
+
+- `docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md`
+
+Until migration 034, planner/restart gates, replay equivalence, and the
+one/four-group live canary pass, the existing barrier remains current behavior.
+Replay simulations above four groups prove algorithmic behavior only; they do
+not prove live scaling on unavailable provider groups.
+
 ## Non-Blocking Follow-Ups
 
 - Recipient wallet precheck before signing.
 - Additional Admin exploration and optional presentation refinements that do
   not change current acceptance contracts.
-- Further provider/index performance tuning after measured post-deploy data.
+- Further provider/index performance tuning after the adaptive rolling
+  baseline and measured live data.
 
 These follow-ups do not expand Task 21 or add release gates.
 

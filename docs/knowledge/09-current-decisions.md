@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-23
+last_verified: 2026-07-24
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -10,6 +10,7 @@ code_refs:
   - src/risk/scoringSignalMatrixV4.ts
   - src/risk/scoreAnchorV3.ts
   - migrations/033_unified_wallet_check.sql
+  - docs/superpowers/specs/2026-07-24-unified-wallet-check-adaptive-rolling-planner-design.md
   - scripts/verifyRemediationRelease.ts
   - scripts/runSchema032ReleaseSequence.ts
   - scripts/finalizeUnifiedReleaseGates.ts
@@ -50,8 +51,10 @@ audit artifacts. It is not a second source of current product truth.
 - Address history is content-addressed once per snapshot/address and reused by
   separate funding allocations. Checkpoints are bounded heads over immutable
   chunks/deltas, with deterministic V1-to-V2 rollout.
-- Four ready provider slots may work one dense run when idle; run-aware
-  fairness prevents it from starving other interactive checks.
+- The provider pool exposes four configured slots, but the current traversal
+  barrier often leaves only one claimable address history per run. Adaptive
+  rolling refill, durable admission, and ordered canonical commit are approved
+  future work; they are not current candidate behavior.
 - Direct history and direct hard evidence run in parallel with traversal, but
   only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
