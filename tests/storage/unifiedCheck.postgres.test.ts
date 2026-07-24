@@ -151,8 +151,18 @@ postgresDescribe("Unified Check repository", () => {
       });
       await scoped.query(
         `update unified_check_tasks
-            set lease_expires_at = statement_timestamp() - interval '1 second'
+            set lease_expires_at = statement_timestamp() - interval '1 second',
+                checkpoint_json =
+                  (checkpoint_json - 'recentAttempts') || jsonb_build_object(
+                  'attemptTimings',
+                  $1::jsonb
+                )
           where id = 'task-a'`
+        ,
+        [JSON.stringify(Array.from({ length: 20 }, (_, index) => ({
+          attempt: index + 1,
+          outcome: "LEGACY"
+        })))]
       );
       const crashReclaimed = await claimUnifiedTask(scoped, {
         workerId: "worker-d",
@@ -189,13 +199,18 @@ postgresDescribe("Unified Check repository", () => {
       });
       const completedTask = (
         await client.query(
-          "select status, accepted_attempt_id from unified_check_tasks where id = 'task-a'"
+          `select status, accepted_attempt_id, checkpoint_json
+             from unified_check_tasks where id = 'task-a'`
         )
       ).rows[0];
       expect(completedTask).toMatchObject({
         status: "COMPLETED",
         accepted_attempt_id: "attempt-a"
       });
+      expect(completedTask?.checkpoint_json).not.toHaveProperty(
+        "attemptTimings"
+      );
+      expect(completedTask?.checkpoint_json.recentAttempts).toHaveLength(8);
 
       const delivery = await createUnifiedDelivery(scoped, {
         id: "delivery-a",

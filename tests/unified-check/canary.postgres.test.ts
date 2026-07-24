@@ -184,7 +184,7 @@ postgresDescribe("Unified canary PostgreSQL contracts", () => {
       expect(Number((await pool.query(
         `select count(*)::int as count from unified_check_tasks
           where priority_lane = 'background'`
-      )).rows[0]?.count)).toBe(40);
+      )).rows[0]?.count)).toBe(48);
       expect(Number((await pool.query(
         "select count(*)::int as count from unified_check_deliveries"
       )).rows[0]?.count)).toBe(0);

@@ -882,7 +882,7 @@ export async function claimUnifiedTask(
            lease_expires_at = statement_timestamp() + ($3::bigint * interval '1 millisecond'),
            heartbeat_at = statement_timestamp(),
            attempt = attempt + 1,
-           checkpoint_json =
+           checkpoint_json = (
              task.checkpoint_json || jsonb_build_object(
                'queueDurationMs',
                coalesce(
@@ -913,12 +913,14 @@ export async function claimUnifiedTask(
                    0
                  )
                else 0 end,
-               'attemptTimings',
-               coalesce(
-                 task.checkpoint_json->'attemptTimings',
-                 '[]'::jsonb
-               ) || case when task.status = 'LEASED'
-                 then jsonb_build_array(jsonb_build_object(
+               'recentAttempts',
+               jsonb_path_query_array(
+                 coalesce(
+                   task.checkpoint_json->'recentAttempts',
+                   task.checkpoint_json->'attemptTimings',
+                   '[]'::jsonb
+                 ) || case when task.status = 'LEASED'
+                   then jsonb_build_array(jsonb_build_object(
                    'attempt', task.attempt,
                    'startedAt', coalesce(
                      task.checkpoint_json->>'currentAttemptStartedAt',
@@ -935,14 +937,17 @@ export async function claimUnifiedTask(
                      0
                    ),
                    'outcome', 'LEASE_EXPIRED'
-                 ))
-                 else '[]'::jsonb
-               end,
+                   ))
+                   else '[]'::jsonb
+                 end,
+                 '$[last - 7 to last]'
+               ),
                'currentAttempt',
                task.attempt + 1,
                'currentAttemptStartedAt',
                statement_timestamp()
-             ),
+             )
+           ) - 'attemptTimings',
            updated_at = statement_timestamp()
       from candidate
      where task.id = candidate.id
@@ -1032,9 +1037,13 @@ export async function checkpointUnifiedTask(
                 (checkpoint_json->>'providerDurationMs')::double precision,
                 0
               ),
-              'attemptTimings',
-              coalesce(checkpoint_json->'attemptTimings', '[]'::jsonb) ||
-                jsonb_build_array(jsonb_build_object(
+              'recentAttempts',
+              jsonb_path_query_array(
+                coalesce(
+                  checkpoint_json->'recentAttempts',
+                  checkpoint_json->'attemptTimings',
+                  '[]'::jsonb
+                ) || jsonb_build_array(jsonb_build_object(
                   'attempt', $4::int,
                   'startedAt', coalesce(
                     checkpoint_json->>'currentAttemptStartedAt',
@@ -1062,10 +1071,12 @@ export async function checkpointUnifiedTask(
                     then 'CHECKPOINTED'
                     else 'CANCELLED'
                   end
-                ))
+                )),
+                '$[last - 7 to last]'
+              )
               )
             )
-          - 'currentAttemptStartedAt' - 'currentAttempt',
+          - 'currentAttemptStartedAt' - 'currentAttempt' - 'attemptTimings',
             status = case
               when cancellation_requested_at is null
                 and not exists (
@@ -1132,11 +1143,13 @@ export async function completeUnifiedTaskAttempt(
             set status = 'CANCELLED',
                 checkpoint_json = (
                   checkpoint_json || jsonb_build_object(
-                    'attemptTimings',
-                    coalesce(
-                      checkpoint_json->'attemptTimings',
-                      '[]'::jsonb
-                    ) || jsonb_build_array(jsonb_build_object(
+                    'recentAttempts',
+                    jsonb_path_query_array(
+                      coalesce(
+                        checkpoint_json->'recentAttempts',
+                        checkpoint_json->'attemptTimings',
+                        '[]'::jsonb
+                      ) || jsonb_build_array(jsonb_build_object(
                       'attempt', attempt,
                       'startedAt', coalesce(
                         checkpoint_json->>'currentAttemptStartedAt',
@@ -1153,9 +1166,12 @@ export async function completeUnifiedTaskAttempt(
                         0
                       ),
                       'outcome', 'CANCELLED'
-                    ))
+                      )),
+                      '$[last - 7 to last]'
+                    )
                   )
-                ) - 'currentAttemptStartedAt' - 'currentAttempt',
+                ) - 'currentAttemptStartedAt' - 'currentAttempt'
+                  - 'attemptTimings',
                 lease_owner = null, lease_token = null,
                 lease_expires_at = null, heartbeat_at = null,
                 last_error = 'late_result_rejected_after_cancellation',
@@ -1177,11 +1193,13 @@ export async function completeUnifiedTaskAttempt(
           set status = 'COMPLETED', accepted_attempt_id = $4,
               checkpoint_json = (
                 checkpoint_json || jsonb_build_object(
-                  'attemptTimings',
-                  coalesce(
-                    checkpoint_json->'attemptTimings',
-                    '[]'::jsonb
-                  ) || jsonb_build_array(jsonb_build_object(
+                  'recentAttempts',
+                  jsonb_path_query_array(
+                    coalesce(
+                      checkpoint_json->'recentAttempts',
+                      checkpoint_json->'attemptTimings',
+                      '[]'::jsonb
+                    ) || jsonb_build_array(jsonb_build_object(
                     'attempt', attempt,
                     'startedAt', coalesce(
                       checkpoint_json->>'currentAttemptStartedAt',
@@ -1198,9 +1216,12 @@ export async function completeUnifiedTaskAttempt(
                       0
                     ),
                     'outcome', 'COMPLETED'
-                  ))
+                    )),
+                    '$[last - 7 to last]'
+                  )
                 )
-              ) - 'currentAttemptStartedAt' - 'currentAttempt',
+              ) - 'currentAttemptStartedAt' - 'currentAttempt'
+                - 'attemptTimings',
               lease_owner = null, lease_token = null,
               lease_expires_at = null, heartbeat_at = null,
               updated_at = statement_timestamp()
@@ -1257,9 +1278,13 @@ export async function settleUnifiedTaskLease(
                   )
                 end
               ) || jsonb_build_object(
-                'attemptTimings',
-                coalesce(checkpoint_json->'attemptTimings', '[]'::jsonb) ||
-                  jsonb_build_array(jsonb_build_object(
+                'recentAttempts',
+                jsonb_path_query_array(
+                  coalesce(
+                    checkpoint_json->'recentAttempts',
+                    checkpoint_json->'attemptTimings',
+                    '[]'::jsonb
+                  ) || jsonb_build_array(jsonb_build_object(
                     'attempt', $3::int,
                     'startedAt', coalesce(
                       checkpoint_json->>'currentAttemptStartedAt',
@@ -1287,9 +1312,12 @@ export async function settleUnifiedTaskLease(
                       then $4
                       else 'CANCELLED'
                     end
-                  ))
+                    )),
+                    '$[last - 7 to last]'
+                  )
               )
-            ) - 'currentAttemptStartedAt' - 'currentAttempt',
+            ) - 'currentAttemptStartedAt' - 'currentAttempt'
+              - 'attemptTimings',
             last_error = $7,
             lease_owner = null, lease_token = null,
             lease_expires_at = null, heartbeat_at = null,
@@ -1372,11 +1400,13 @@ export async function recordUnifiedTaskAttemptAndWait(
                       )
                     end
                   ) || jsonb_build_object(
-                    'attemptTimings',
-                    coalesce(
-                      checkpoint_json->'attemptTimings',
-                      '[]'::jsonb
-                    ) || jsonb_build_array(jsonb_build_object(
+                    'recentAttempts',
+                    jsonb_path_query_array(
+                      coalesce(
+                        checkpoint_json->'recentAttempts',
+                        checkpoint_json->'attemptTimings',
+                        '[]'::jsonb
+                      ) || jsonb_build_array(jsonb_build_object(
                       'attempt', $3::int,
                       'startedAt', coalesce(
                         checkpoint_json->>'currentAttemptStartedAt',
@@ -1404,9 +1434,12 @@ export async function recordUnifiedTaskAttemptAndWait(
                         then 'WAITING_RETRY'
                         else 'CANCELLED'
                       end
-                    ))
+                      )),
+                      '$[last - 7 to last]'
+                    )
                   )
-                ) - 'currentAttemptStartedAt' - 'currentAttempt',
+                ) - 'currentAttemptStartedAt' - 'currentAttempt'
+                  - 'attemptTimings',
                 last_error = $6,
                 lease_owner = null, lease_token = null,
                 lease_expires_at = null, heartbeat_at = null,
@@ -2263,11 +2296,13 @@ export async function reconcileUnifiedCanaryCancelledLeases(
         set status = 'CANCELLED',
             checkpoint_json = (
               task.checkpoint_json || jsonb_build_object(
-                'attemptTimings',
-                coalesce(
-                  task.checkpoint_json->'attemptTimings',
-                  '[]'::jsonb
-                ) || jsonb_build_array(jsonb_build_object(
+                'recentAttempts',
+                jsonb_path_query_array(
+                  coalesce(
+                    task.checkpoint_json->'recentAttempts',
+                    task.checkpoint_json->'attemptTimings',
+                    '[]'::jsonb
+                  ) || jsonb_build_array(jsonb_build_object(
                   'attempt', task.attempt,
                   'startedAt', coalesce(
                     task.checkpoint_json->>'currentAttemptStartedAt',
@@ -2284,9 +2319,12 @@ export async function reconcileUnifiedCanaryCancelledLeases(
                     0
                   ),
                   'outcome', 'CANCELLED'
-                ))
+                  )),
+                  '$[last - 7 to last]'
+                )
               )
-            ) - 'currentAttemptStartedAt' - 'currentAttempt',
+            ) - 'currentAttemptStartedAt' - 'currentAttempt'
+              - 'attemptTimings',
             lease_owner = null,
             lease_token = null,
             lease_expires_at = null,
@@ -2769,7 +2807,9 @@ export async function listUnifiedWatchdogRuns(
                 : String(attempt.artifact_sha256),
               completedAt: nullableIso(attempt.completed_at)
             })),
-          attemptDurations: attemptDurations(checkpoint.attemptTimings),
+          attemptDurations: attemptDurations(
+            checkpoint.recentAttempts ?? checkpoint.attemptTimings
+          ),
           durationsMs: {
             queue,
             provider,

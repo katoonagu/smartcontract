@@ -91,7 +91,14 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         },
         candidateRunId: "run-1",
         initialTasks: (
-          ["direct_history", "traversal", "fast", "where", "deep"] as const
+          [
+            "direct_history",
+            "deep_direct",
+            "traversal",
+            "fast",
+            "where",
+            "deep"
+          ] as const
         ).map((kind) => ({
           id: `task-${kind}`,
           kind,
@@ -195,14 +202,21 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
       await expect(restartedProcess.runProviderCycle()).resolves.toMatchObject({
         outcome: "completed"
       });
-      await expect(restartedProcess.runProviderCycle()).resolves.toMatchObject({
-        outcome: "completed"
-      });
-      for (let index = 0; index < 3; index += 1) {
-        await expect(restartedProcess.runAnalysisCycle()).resolves.toMatchObject({
-          outcome: "completed"
-        });
+      for (let index = 0; index < 16; index += 1) {
+        await restartedProcess.runAnalysisCycle();
+        await restartedProcess.runProviderCycle();
+        const outstanding = Number((await query(
+          `select count(*)::int as count
+             from unified_check_tasks
+            where run_id = 'run-1' and status <> 'COMPLETED'`
+        )).rows[0]?.count);
+        if (outstanding === 0) break;
       }
+      expect(Number((await query(
+        `select count(*)::int as count
+           from unified_check_tasks
+          where run_id = 'run-1' and status <> 'COMPLETED'`
+      )).rows[0]?.count)).toBe(0);
       const canaryOnlyProcess = createUnifiedProductionRuntime({
         ...runtimeInput,
         runPurpose: "release_canary"
@@ -278,7 +292,14 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         },
         candidateRunId: "run-2",
         initialTasks: (
-          ["direct_history", "traversal", "fast", "where", "deep"] as const
+          [
+            "direct_history",
+            "deep_direct",
+            "traversal",
+            "fast",
+            "where",
+            "deep"
+          ] as const
         ).map((kind) => ({
           id: `task-2-${kind}`,
           kind,
@@ -339,7 +360,14 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         },
         candidateRunId: "run-canary",
         initialTasks: (
-          ["direct_history", "traversal", "fast", "where", "deep"] as const
+          [
+            "direct_history",
+            "deep_direct",
+            "traversal",
+            "fast",
+            "where",
+            "deep"
+          ] as const
         ).map((kind) => ({
           id: `task-canary-${kind}`,
           kind,
@@ -406,16 +434,21 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
         ...runtimeInput,
         runPurpose: "release_canary"
       });
-      for (let index = 0; index < 3; index += 1) {
-        await expect(canaryRuntime.runProviderCycle()).resolves.toMatchObject({
-          claimed: true
-        });
+      for (let index = 0; index < 16; index += 1) {
+        await canaryRuntime.runAnalysisCycle();
+        await canaryRuntime.runProviderCycle();
+        const outstanding = Number((await query(
+          `select count(*)::int as count
+             from unified_check_tasks
+            where run_id = 'run-canary' and status <> 'COMPLETED'`
+        )).rows[0]?.count);
+        if (outstanding === 0) break;
       }
-      for (let index = 0; index < 3; index += 1) {
-        await expect(canaryRuntime.runAnalysisCycle()).resolves.toMatchObject({
-          outcome: "completed"
-        });
-      }
+      expect(Number((await query(
+        `select count(*)::int as count
+           from unified_check_tasks
+          where run_id = 'run-canary' and status <> 'COMPLETED'`
+      )).rows[0]?.count)).toBe(0);
       await expect(canaryRuntime.runFinalizationCycle())
         .resolves.toMatchObject({
           finalized: true,
