@@ -282,6 +282,100 @@ postgresDescribe("Unified production runtime restart acceptance", () => {
           await query("select count(*)::int as count from unified_check_deliveries")
         ).rows[0]?.count)
       ).toBe(1);
+      const completedTaskIdentities = (await query(
+        `select task.id, task.kind, task.logical_key,
+                task.accepted_attempt_id, attempt.artifact_sha256
+           from unified_check_tasks task
+           join unified_check_attempts attempt
+             on attempt.id = task.accepted_attempt_id
+          where task.run_id = 'run-1'
+          order by task.kind, task.logical_key`
+      )).rows;
+      const completedPlannerIdentities = (await query(
+        `select canonical_sequence, task_id, planner_state
+           from unified_check_planner_entries
+          where run_id = 'run-1'
+          order by canonical_sequence`
+      )).rows;
+      const completedAttempts = (await query(
+        `select attempt.id, attempt.task_id, attempt.attempt,
+                attempt.artifact_sha256
+           from unified_check_attempts attempt
+           join unified_check_tasks task on task.id = attempt.task_id
+          where task.run_id = 'run-1'
+          order by attempt.task_id, attempt.attempt`
+      )).rows;
+      const completedHashes = {
+        evidence_bundle_sha256: run.evidence_bundle_sha256,
+        traversal_closure_sha256: run.traversal_closure_sha256,
+        scoring_bundle_sha256: run.scoring_bundle_sha256,
+        report_sha256: run.report_sha256
+      };
+
+      const completedRestart = createUnifiedProductionRuntime(runtimeInput);
+      await expect(completedRestart.runProviderCycle())
+        .resolves.toMatchObject({ outcome: "idle" });
+      await expect(completedRestart.runAnalysisCycle())
+        .resolves.toMatchObject({ outcome: "idle" });
+      await expect(completedRestart.runFinalizationCycle())
+        .resolves.toMatchObject({
+          finalized: false,
+          reconciled: false
+        });
+      expect((await query(
+        `select task.id, task.kind, task.logical_key,
+                task.accepted_attempt_id, attempt.artifact_sha256
+           from unified_check_tasks task
+           join unified_check_attempts attempt
+             on attempt.id = task.accepted_attempt_id
+          where task.run_id = 'run-1'
+          order by task.kind, task.logical_key`
+      )).rows).toEqual(completedTaskIdentities);
+      expect((await query(
+        `select canonical_sequence, task_id, planner_state
+           from unified_check_planner_entries
+          where run_id = 'run-1'
+          order by canonical_sequence`
+      )).rows).toEqual(completedPlannerIdentities);
+      expect((await query(
+        `select attempt.id, attempt.task_id, attempt.attempt,
+                attempt.artifact_sha256
+           from unified_check_attempts attempt
+           join unified_check_tasks task on task.id = attempt.task_id
+          where task.run_id = 'run-1'
+          order by attempt.task_id, attempt.attempt`
+      )).rows).toEqual(completedAttempts);
+      expect((await query(
+        `select evidence_bundle_sha256, traversal_closure_sha256,
+                scoring_bundle_sha256, report_sha256
+           from unified_check_runs
+          where id = 'run-1'`
+      )).rows[0]).toEqual(completedHashes);
+      expect((await query(
+        `select kind, count(*)::int as count
+           from unified_check_artifacts
+          where created_by_run_id = 'run-1'
+            and kind in (
+              'canonical_facts',
+              'evidence_bundle',
+              'traversal_closure',
+              'scoring_bundle',
+              'unified_wallet_report'
+            )
+          group by kind
+          order by kind`
+      )).rows).toEqual([
+        { kind: "canonical_facts", count: 1 },
+        { kind: "evidence_bundle", count: 1 },
+        { kind: "scoring_bundle", count: 1 },
+        { kind: "traversal_closure", count: 1 },
+        { kind: "unified_wallet_report", count: 1 }
+      ]);
+      expect(Number((await query(
+        `select count(*)::int as count
+           from unified_check_deliveries
+          where request_id = 'request-1'`
+      )).rows[0]?.count)).toBe(1);
 
       const reused = await intakeUnifiedCheck({
         store: requestStore,

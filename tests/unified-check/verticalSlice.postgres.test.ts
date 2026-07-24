@@ -11,6 +11,7 @@ import {
   commitUnifiedPresentedCompletion
 } from "../../src/unifiedCheck/durableCompletion";
 import {
+  buildMinimalUnifiedCheckCandidate,
   buildUnifiedPresentedCompletionCandidate,
   completeMinimalUnifiedCheck,
   type MinimalBranchResult
@@ -167,6 +168,32 @@ postgresDescribe("Unified Check durable B0 vertical slice", () => {
           candidate
         })
       });
+      const shuffledAcceptedCompletion =
+        buildMinimalUnifiedCheckCandidate({
+          run,
+          branches: [branches[2]!, branches[0]!, branches[1]!]
+        });
+      const exactResult = (candidate: typeof completed) => {
+        const canonicalFacts = [...candidate.artifactKinds]
+          .find(([, kind]) => kind === "canonical_facts");
+        if (!canonicalFacts) {
+          throw new Error("vertical_slice_canonical_facts_missing");
+        }
+        return {
+          canonicalFacts: candidate.artifacts.get(canonicalFacts[0]),
+          frontier: candidate.frontier,
+          closureSha256: candidate.hashes.closure,
+          score: candidate.report.score,
+          decision: candidate.report.decision,
+          evidenceBundleSha256: candidate.hashes.evidence,
+          scoringBundleSha256: candidate.hashes.scoring,
+          reportSha256: candidate.hashes.report,
+          deliveryIntentCount: candidate.delivery === null ? 0 : 1
+        };
+      };
+      expect(exactResult(shuffledAcceptedCompletion)).toEqual(
+        exactResult(completed)
+      );
       const persistedRun = (
         await client.query("select * from unified_check_runs where id = $1", [run.id])
       ).rows[0];
