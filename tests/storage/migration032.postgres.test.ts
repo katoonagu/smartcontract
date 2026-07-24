@@ -103,19 +103,17 @@ postgresDescribe("migration 032 PostgreSQL acceptance", () => {
       );
       expect(preserved.rows[0]?.allowance_check_status).toBe("confirmed_zero");
 
-      const migration033Bytes = readFileSync(
-        `migrations/${migrations.REQUIRED_SCHEMA_FILENAME}`
-      );
+      const migration033Bytes = readFileSync(`migrations/${migrations.SCHEMA_033_FILENAME}`);
       await expect(migrations.applyVerifiedTrackedMigration(client, {
-        version: 33,
-        filename: migrations.REQUIRED_SCHEMA_FILENAME,
+        version: migrations.SCHEMA_033_VERSION,
+        filename: migrations.SCHEMA_033_FILENAME,
         migrationBytes: migration033Bytes,
         requiredSchema032Checksum: checksumSha256,
         schemaName: schema
       })).resolves.toMatchObject({ status: "applied", version: 33 });
       await expect(migrations.applyVerifiedTrackedMigration(client, {
-        version: 33,
-        filename: migrations.REQUIRED_SCHEMA_FILENAME,
+        version: migrations.SCHEMA_033_VERSION,
+        filename: migrations.SCHEMA_033_FILENAME,
         migrationBytes: migration033Bytes,
         requiredSchema032Checksum: checksumSha256,
         schemaName: schema
@@ -123,7 +121,7 @@ postgresDescribe("migration 032 PostgreSQL acceptance", () => {
       const receipt033 = await client.query(
         "select filename from schema_migration_receipts where version = 33"
       );
-      expect(receipt033.rows).toEqual([{ filename: migrations.REQUIRED_SCHEMA_FILENAME }]);
+      expect(receipt033.rows).toEqual([{ filename: migrations.SCHEMA_033_FILENAME }]);
 
       await client.query(`update wallet_approvals set
         allowance_confirmed_raw = '1',

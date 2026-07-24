@@ -897,7 +897,8 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects dirty or mismatched candidate 
       candidateSha: "c".repeat(40), headSha: "c".repeat(40), status: "", migrationFiles: files, ...invalid
     })).toThrow("schema_032_sequence_candidate_repository_unverified");
   }
-  const exactLines = files.map((name) => {
+  const releaseFiles = files.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= 33);
+  const exactLines = releaseFiles.map((name) => {
     if (name.startsWith("032_")) {
       return `Migration applied and verified: migrations/${name} (schema 32 ${APPROVED_CHECKSUM.slice(0, 12)})`;
     }
@@ -906,7 +907,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects dirty or mismatched candidate 
     }
     return `Migration applied: migrations/${name}`;
   });
-  expect(() => producer.validateControlledMigrationOutput(`${exactLines.join("\n")}\n`, files, "first"))
+  expect(() => producer.validateControlledMigrationOutput(`${exactLines.join("\n")}\n`, releaseFiles, "first"))
     .not.toThrow();
   const invalidOutputs = [
     `${exactLines.join("\n")}\nMigration applied: migrations/034_future.sql\n`,
@@ -916,7 +917,7 @@ it("[REQ-38][SCHEMA-032-RELEASE-PRODUCER] rejects dirty or mismatched candidate 
     `${exactLines.join("\n")}\0`
   ];
   for (const output of invalidOutputs) {
-    expect(() => producer.validateControlledMigrationOutput(output, files, "first"))
+    expect(() => producer.validateControlledMigrationOutput(output, releaseFiles, "first"))
       .toThrow("schema_032_sequence_migration_output_invalid");
   }
   expect(() => producer.validateControlledMigrationOutput(`${exactLines.join("\n")}\n`, files, "second"))

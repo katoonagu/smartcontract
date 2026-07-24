@@ -11,8 +11,8 @@ import { SCORING_POLICY_V4 } from "../src/risk/scoringPolicyV4.generated";
 import { closeDb, createDb } from "../src/storage/db";
 import {
   checksumMigrationBytes,
-  REQUIRED_SCHEMA_FILENAME,
   SCHEMA_032_FILENAME,
+  SCHEMA_033_FILENAME,
   verifyRequiredSchema033
 } from "../src/storage/schemaMigrations";
 import {
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
       new URL(`../migrations/${SCHEMA_032_FILENAME}`, import.meta.url)
     );
     const schema033Bytes = await readFile(
-      new URL(`../migrations/${REQUIRED_SCHEMA_FILENAME}`, import.meta.url)
+      new URL(`../migrations/${SCHEMA_033_FILENAME}`, import.meta.url)
     );
     const schemaVerification = await verifyRequiredSchema033(
       db,

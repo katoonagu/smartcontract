@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { Client } from "pg";
 import {
   SCHEMA_032_VERSION,
+  SCHEMA_033_VERSION,
   applyVerifiedTrackedMigration
 } from "../src/storage/schemaMigrations";
 import {
@@ -12,7 +13,18 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 const migrationsDir = new URL("../migrations/", import.meta.url);
+const maximumVersionText = process.env.SCHEMA_MIGRATION_MAX_VERSION;
+const maximumVersion = maximumVersionText === undefined
+  ? Number.POSITIVE_INFINITY
+  : Number.parseInt(maximumVersionText, 10);
 let migrationFiles: string[];
+
+if (
+  maximumVersionText !== undefined &&
+  (!/^\d+$/u.test(maximumVersionText) || !Number.isSafeInteger(maximumVersion) || maximumVersion < SCHEMA_032_VERSION)
+) {
+  throw new Error("schema_migration_max_version_invalid");
+}
 
 try {
   migrationFiles = (await readdir(migrationsDir))
@@ -59,11 +71,13 @@ await client.connect();
 try {
   await assertReleaseSessionIdentity();
   let requiredSchema032Checksum: string | undefined;
+  let requiredSchema033Checksum: string | undefined;
   for (const migrationFile of migrationFiles) {
     const migrationPath = new URL(`../migrations/${migrationFile}`, import.meta.url);
     const versionText = /^(\d+)_/.exec(migrationFile)?.[1];
     if (versionText === undefined) throw new Error(`invalid_migration_filename:${migrationFile}`);
     const version = Number.parseInt(versionText, 10);
+    if (version > maximumVersion) continue;
     if (version < SCHEMA_032_VERSION) {
       const sql = await readFile(migrationPath, "utf8");
       await client.query(sql);
@@ -74,9 +88,11 @@ try {
       version,
       filename: migrationFile,
       migrationBytes: await readFile(migrationPath),
-      requiredSchema032Checksum
+      requiredSchema032Checksum,
+      requiredSchema033Checksum
     });
     if (version === SCHEMA_032_VERSION) requiredSchema032Checksum = verification.checksumSha256;
+    if (version === SCHEMA_033_VERSION) requiredSchema033Checksum = verification.checksumSha256;
     const action = verification.status === "applied" ? "applied and verified" : "already verified";
     console.log(
       `Migration ${action}: migrations/${migrationFile} (schema ${verification.version} ${verification.shortChecksum})`

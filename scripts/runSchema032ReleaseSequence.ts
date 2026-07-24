@@ -34,8 +34,10 @@ import {
   type Schema032ReleaseEvidenceV1
 } from "./verifySchema032";
 import {
-  REQUIRED_SCHEMA_FILENAME as RELEASE_SCHEMA_FILENAME,
-  REQUIRED_SCHEMA_VERSION as RELEASE_SCHEMA_VERSION,
+  SCHEMA_033_FILENAME as RELEASE_SCHEMA_FILENAME,
+  SCHEMA_033_VERSION as RELEASE_SCHEMA_VERSION,
+  SCHEMA_034_FILENAME,
+  SCHEMA_034_VERSION,
   SCHEMA_032_FILENAME as REQUIRED_SCHEMA_FILENAME,
   SCHEMA_032_VERSION as REQUIRED_SCHEMA_VERSION,
   applyVerifiedTrackedMigration,
@@ -332,15 +334,22 @@ export function validateSchema032CandidateRepositoryState(input: {
   const sorted = [...input.migrationFiles].sort();
   const validNames = sorted.every((name) => /^\d{3}_[A-Za-z0-9_.-]+\.sql$/u.test(name));
   const versions = sorted.map((name) => Number.parseInt(name.slice(0, 3), 10));
+  const legacyReleaseFiles = sorted.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= RELEASE_SCHEMA_VERSION);
+  const deferredFiles = sorted.filter((name) => Number.parseInt(name.slice(0, 3), 10) > RELEASE_SCHEMA_VERSION);
   if (!SHA40.test(input.candidateSha) || input.headSha !== input.candidateSha || input.status !== ""
       || !validNames || sorted.join("|") !== input.migrationFiles.join("|")
-      || sorted.filter((name) => name === REQUIRED_SCHEMA_FILENAME).length !== 1
-      || sorted.filter((name) => name === RELEASE_SCHEMA_FILENAME).length !== 1
-      || Math.max(...versions) !== RELEASE_SCHEMA_VERSION
-      || versions.some((version) => version > RELEASE_SCHEMA_VERSION)
-      || sorted.at(-1) !== RELEASE_SCHEMA_FILENAME) {
+      || legacyReleaseFiles.filter((name) => name === REQUIRED_SCHEMA_FILENAME).length !== 1
+      || legacyReleaseFiles.filter((name) => name === RELEASE_SCHEMA_FILENAME).length !== 1
+      || Math.max(...legacyReleaseFiles.map((name) => Number.parseInt(name.slice(0, 3), 10))) !== RELEASE_SCHEMA_VERSION
+      || deferredFiles.some((name) => name !== SCHEMA_034_FILENAME)
+      || deferredFiles.length > 1
+      || versions.some((version) => version > SCHEMA_034_VERSION)) {
     fail("schema_032_sequence_candidate_repository_unverified");
   }
+}
+
+function schema032ReleaseMigrationFiles(migrationFiles: readonly string[]): string[] {
+  return migrationFiles.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= RELEASE_SCHEMA_VERSION);
 }
 
 export function validateControlledMigrationOutput(
@@ -599,7 +608,8 @@ function safeChildEnvironment(
   databaseUrl: string,
   npmExecPath: string,
   expectedSessionIdentitySha256: string,
-  expectedEndpoint: string
+  expectedEndpoint: string,
+  maximumVersion: number
 ): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {
     DATABASE_URL: databaseUrl,
@@ -607,7 +617,8 @@ function safeChildEnvironment(
     npm_execpath: npmExecPath,
     NO_COLOR: "1",
     SCHEMA_032_RELEASE_EXPECTED_SESSION_IDENTITY_SHA256: expectedSessionIdentitySha256,
-    SCHEMA_032_RELEASE_EXPECTED_ENDPOINT: expectedEndpoint
+    SCHEMA_032_RELEASE_EXPECTED_ENDPOINT: expectedEndpoint,
+    SCHEMA_MIGRATION_MAX_VERSION: String(maximumVersion)
   };
   for (const key of ["PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "ComSpec", "COMSPEC"] as const) {
     if (process.env[key] !== undefined) result[key] = process.env[key];
@@ -900,7 +911,13 @@ async function runFixedMigration(
   return new Promise((resolveResult) => {
     const child = spawn(process.execPath, [npmCli, "run", "--silent", "db:migrate"], {
       cwd: resolve(fileURLToPath(new URL("..", import.meta.url))),
-      env: safeChildEnvironment(databaseUrl, npmCli, expectedSessionIdentitySha256, expectedEndpoint),
+      env: safeChildEnvironment(
+        databaseUrl,
+        npmCli,
+        expectedSessionIdentitySha256,
+        expectedEndpoint,
+        RELEASE_SCHEMA_VERSION
+      ),
       windowsHide: true,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"]
@@ -1816,6 +1833,7 @@ export async function runSchema032ReleaseSequence(
       : repository.status,
     migrationFiles: repository.migrationFiles
   });
+  const releaseMigrationFiles = schema032ReleaseMigrationFiles(repository.migrationFiles);
   const readMigrationBytes = testDependencies?.readMigrationBytes
     ?? ((filename: string) => readFile(new URL(`../migrations/${filename}`, import.meta.url)));
   const [migrationBytes, releaseMigrationBytes] = await Promise.all([
@@ -1924,10 +1942,10 @@ export async function runSchema032ReleaseSequence(
         }
         await revalidateProductionOperation?.();
         const result = validated.databaseRole === "production"
-          ? await runFixedMigrationInOwnedSession(client, repository.migrationFiles, sequence)
+          ? await runFixedMigrationInOwnedSession(client, releaseMigrationFiles, sequence)
           : await runFixedMigration(
             validated.databaseUrl,
-            repository.migrationFiles,
+            releaseMigrationFiles,
             sequence,
             validated.offline,
             before.sessionIdentitySha256,
