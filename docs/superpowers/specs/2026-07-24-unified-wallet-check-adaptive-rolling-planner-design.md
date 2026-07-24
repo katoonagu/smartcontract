@@ -382,7 +382,8 @@ chunk.
 Canonical head может быть admitted при наличии capacity даже при заполненном
 ready-buffer, потому что её завершение разблокирует commit. Обычные eligibility
 условия всё равно обязательны: `ready_at` task наступил, task не leased другим
-worker и её provider group не заблокирована cooldown/circuit.
+worker и существует хотя бы одна `healthy` provider group, способная её
+выполнить. Ordered task заранее не закреплена за конкретной provider group.
 
 ## 10. Atomic acceptance
 
