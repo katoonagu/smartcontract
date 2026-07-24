@@ -43,7 +43,13 @@ describe("Unified traversal delta chain", () => {
       addedExpandedStateIds: [],
       addedEligibleEventIds: [],
       addedExpandedStateKeys: [],
-      counterDeltas: { expanded: 0, terminal: 0, superseded: 0 }
+      counterDeltas: { expanded: 0, terminal: 0, superseded: 0 },
+      operational: {
+        frontierCount: 1,
+        frontierPeak: 1,
+        uniqueAddresses: 1,
+        fundingEpisodes: 1
+      }
     });
     const two = appendTraversalDelta(one.checkpoint, {
       addedFrontier: [STATE_B],
@@ -54,7 +60,13 @@ describe("Unified traversal delta chain", () => {
       addedExpandedStateIds: [traversalStateId(STATE_A)],
       addedEligibleEventIds: ["event:b", "event:a"],
       addedExpandedStateKeys: ["expansion:a"],
-      counterDeltas: { expanded: 1, terminal: 0, superseded: 0 }
+      counterDeltas: { expanded: 1, terminal: 0, superseded: 0 },
+      operational: {
+        frontierCount: 1,
+        frontierPeak: 2,
+        uniqueAddresses: 2,
+        fundingEpisodes: 2
+      }
     });
 
     const replayed = replayTraversalDeltas([one.artifact, two.artifact]);
@@ -70,6 +82,12 @@ describe("Unified traversal delta chain", () => {
     expect(replayed.eligibleEventIds).toEqual(["event:a", "event:b"]);
     expect(replayed.expandedStateKeys).toEqual(["expansion:a"]);
     expect(two.checkpoint.deltaHeadSha256).toBe(two.sha256);
+    expect(two.checkpoint.operational).toEqual({
+      frontierCount: 1,
+      frontierPeak: 2,
+      uniqueAddresses: 2,
+      fundingEpisodes: 2
+    });
   });
 
   it("keeps checkpoint JSON bounded as the delta chain grows", () => {

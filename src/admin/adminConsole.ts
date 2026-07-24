@@ -2214,6 +2214,49 @@ export function adminConsoleHtml(): string {
         ' → <span data-dag-edge-to>' + escapeHtml(edge?.to || "unknown_target") + '</span>' +
         '</div>';
     }
+    function unifiedProgressHtml(progress) {
+      if (!progress) {
+        return '<section><h3>Execution progress</h3><div class="muted">Progress instrumentation is unavailable for this run.</div></section>';
+      }
+      const provider = progress.provider || {};
+      const remaining = progress.remaining || {};
+      const reuse = progress.reuse || {};
+      const traversal = progress.traversal || {};
+      const storage = progress.storage || {};
+      const keyGroups = asArray(provider.keyGroups).map((group) =>
+        '<div>' + escapeHtml(group.id || "unknown") + ': ' +
+          escapeHtml(group.requests || 0) + ' requests · ' +
+          escapeHtml(group.inFlight || 0) + ' in-flight · ' +
+          escapeHtml(group.status || "idle") + '</div>'
+      ).join('');
+      const remainingText = remaining.totalKnown
+        ? escapeHtml(remaining.discoveredExact || 0) + ' exact'
+        : escapeHtml(remaining.discoveredExact || 0) + ' exact; total still expanding';
+      return '<section><h3>Execution progress</h3>' +
+        '<div>Phase: ' + escapeHtml(progress.phase || "unknown") + '</div>' +
+        '<div>Provider slots: ' + escapeHtml(provider.activeSlots || 0) + '/' +
+          escapeHtml(provider.configuredSlots || 0) + ' active · ' +
+          escapeHtml(provider.coolingDownSlots || 0) + ' cooling down</div>' +
+        '<div>Requests: ' + escapeHtml(Number(provider.requestsPerSecond || 0).toFixed(2)) + '/sec</div>' +
+        '<div>Discovered outstanding: ' + remainingText + '</div>' +
+        '<div>Frontier: ' + escapeHtml(traversal.frontier || 0) +
+          ' current · ' + escapeHtml(traversal.frontierPeak || 0) + ' peak</div>' +
+        '<div>Address histories / funding episodes: ' +
+          escapeHtml(traversal.uniqueAddresses || 0) + ' / ' +
+          escapeHtml(traversal.fundingEpisodes || 0) + '</div>' +
+        '<div>Network / provider cache / manifest reuse: ' +
+          escapeHtml(reuse.networkFetches || 0) + ' / ' +
+          escapeHtml(reuse.providerCacheHits || 0) + ' / ' +
+          escapeHtml(reuse.manifestReuses || 0) + '</div>' +
+        '<div>Checkpoint / delta artifacts: ' +
+          escapeHtml(storage.checkpointBytes || 0) + ' B / ' +
+          escapeHtml(storage.deltaArtifactBytes || 0) + ' B</div>' +
+        (keyGroups ? '<div class="muted">Key groups</div>' + keyGroups : '') +
+        (progress.noScoreReason
+          ? '<div class="hint">' + escapeHtml(progress.noScoreReason) + '</div>'
+          : '') +
+        '</section>';
+    }
     function renderUnifiedCheckDetail() {
       const root = el("unifiedCheckDetail");
       const detail = state.unifiedChecks.detail;
@@ -2254,6 +2297,7 @@ export function adminConsoleHtml(): string {
           '<div><span class="' + classifyStatus(run.status) + '">' + escapeHtml(run.status) +
           '</span> · ' + escapeHtml(run.finding) + '</div>' +
           '<div class="muted">' + escapeHtml(run.statusReason || 'No status reason') + '</div></section>' +
+        unifiedProgressHtml(detail.progress) +
         '<section><h3>Runtime contract</h3>' +
           '<div>generation: ' + escapeHtml(JSON.stringify(generation)) + '</div>' +
           '<div>versions: ' + escapeHtml(JSON.stringify(versions)) + '</div>' +

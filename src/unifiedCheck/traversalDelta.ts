@@ -18,6 +18,13 @@ export type TraversalDeltaCountersV1 = {
   readonly superseded: number;
 };
 
+export type TraversalOperationalCountersV1 = {
+  readonly frontierCount: number;
+  readonly frontierPeak: number;
+  readonly uniqueAddresses: number;
+  readonly fundingEpisodes: number;
+};
+
 export type TraversalCheckpointV2 = {
   readonly version: "unified-production-traversal-checkpoint-v2";
   readonly analysisManifestHash: string;
@@ -25,6 +32,8 @@ export type TraversalCheckpointV2 = {
   readonly deltaHeadSha256: string | null;
   readonly compactionSha256: string | null;
   readonly counters: TraversalDeltaCountersV1;
+  /** Missing only on V2 checkpoints written before operational counters. */
+  readonly operational?: TraversalOperationalCountersV1;
   readonly recentDiagnostics: readonly TraversalDiagnosticSampleV1[];
 };
 
@@ -122,6 +131,19 @@ function validateCheckpoint(checkpoint: TraversalCheckpointV2): void {
   count(checkpoint.counters.expanded, "unified_traversal_counter_invalid");
   count(checkpoint.counters.terminal, "unified_traversal_counter_invalid");
   count(checkpoint.counters.superseded, "unified_traversal_counter_invalid");
+  const operational = checkpoint.operational ?? {
+    frontierCount: 0,
+    frontierPeak: 0,
+    uniqueAddresses: 0,
+    fundingEpisodes: 0
+  };
+  count(operational.frontierCount, "unified_traversal_operational_invalid");
+  count(operational.frontierPeak, "unified_traversal_operational_invalid");
+  count(operational.uniqueAddresses, "unified_traversal_operational_invalid");
+  count(operational.fundingEpisodes, "unified_traversal_operational_invalid");
+  if (operational.frontierCount > operational.frontierPeak) {
+    throw new Error("unified_traversal_operational_invalid");
+  }
 }
 
 export function initialTraversalCheckpointV2(input: {
@@ -141,6 +163,12 @@ export function initialTraversalCheckpointV2(input: {
     deltaHeadSha256: null,
     compactionSha256: null,
     counters: { expanded: 0, terminal: 0, superseded: 0 },
+    operational: {
+      frontierCount: 0,
+      frontierPeak: 0,
+      uniqueAddresses: 0,
+      fundingEpisodes: 0
+    },
     recentDiagnostics: []
   };
 }
@@ -149,6 +177,7 @@ export function appendTraversalDelta(
   checkpoint: TraversalCheckpointV2,
   delta: Omit<TraversalDeltaArtifactV1, "version" | "previousDeltaHash"> & {
     readonly diagnostic?: TraversalDiagnosticSampleV1;
+    readonly operational?: TraversalOperationalCountersV1;
   }
 ): {
   readonly checkpoint: TraversalCheckpointV2;
@@ -198,6 +227,25 @@ export function appendTraversalDelta(
           code: delta.diagnostic.code
         }
       ].slice(-MAX_RECENT_DIAGNOSTICS);
+  const priorOperational = checkpoint.operational ?? {
+    frontierCount: 0,
+    frontierPeak: 0,
+    uniqueAddresses: 0,
+    fundingEpisodes: 0
+  };
+  const operational = delta.operational ?? priorOperational;
+  count(operational.frontierCount, "unified_traversal_operational_invalid");
+  count(operational.frontierPeak, "unified_traversal_operational_invalid");
+  count(operational.uniqueAddresses, "unified_traversal_operational_invalid");
+  count(operational.fundingEpisodes, "unified_traversal_operational_invalid");
+  if (
+    operational.frontierCount > operational.frontierPeak ||
+    operational.frontierPeak < priorOperational.frontierPeak ||
+    operational.uniqueAddresses < priorOperational.uniqueAddresses ||
+    operational.fundingEpisodes < priorOperational.fundingEpisodes
+  ) {
+    throw new Error("unified_traversal_operational_invalid");
+  }
   return {
     artifact,
     sha256,
@@ -210,6 +258,7 @@ export function appendTraversalDelta(
         superseded:
           checkpoint.counters.superseded + counterDeltas.superseded
       },
+      operational,
       recentDiagnostics: diagnostics
     }
   };
@@ -420,6 +469,18 @@ export function upgradeTraversalCheckpointV1(input: {
       expanded: source.expandedStateIds.length,
       terminal: source.terminals.length,
       superseded: source.supersededStateIds.length
+    },
+    operational: {
+      frontierCount: source.frontier.length,
+      frontierPeak: source.frontier.length,
+      uniqueAddresses: new Set([
+        ...source.frontier.map((state) => state.address),
+        ...source.visitedStates.map((state) => state.address)
+      ]).size,
+      fundingEpisodes: new Set([
+        ...source.frontier.map((state) => state.fundingEpisodeId),
+        ...source.visitedStates.map((state) => state.fundingEpisodeId)
+      ]).size
     },
     recentDiagnostics: [{
       at: "1970-01-01T00:00:00.000Z",

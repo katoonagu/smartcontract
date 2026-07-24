@@ -192,6 +192,7 @@ import {
   createUnifiedPoolTransactionHost,
   ensureUnifiedPresentationForCompletedRequest,
   listUnifiedWatchdogRuns,
+  loadUnifiedProgressProjection,
   loadUnifiedUnknownDeliveryPresentation,
   persistManualUnifiedResend
 } from "./unifiedCheck/repository";
@@ -851,6 +852,37 @@ const adminDashboard = await maybeStartAdminDashboard({
   startAdminServer: (adminDeps) => startAdminServer({
     ...adminDeps,
     listUnifiedRuns: () => listUnifiedWatchdogRuns(db),
+    getUnifiedProgress: (runId) => {
+      const now = new Date();
+      const pool = unifiedProviderPool.snapshot();
+      const scheduler = tronscanScheduler.diagnostics();
+      const groupIds = new Set([
+        ...Object.keys(scheduler.dispatchedRequestsByAccountGroup),
+        ...Object.keys(scheduler.inFlightByAccountGroup),
+        ...Object.keys(scheduler.accountGroupCooldownUntilMs)
+      ]);
+      return loadUnifiedProgressProjection(db, {
+        runId,
+        now,
+        configuredSlots: pool.slots,
+        keyGroups: [...groupIds].map((id) => {
+          const inFlight = scheduler.inFlightByAccountGroup[id] ?? 0;
+          const coolingDown =
+            (scheduler.accountGroupCooldownUntilMs[id] ?? 0) > now.getTime();
+          return {
+            id,
+            requests:
+              scheduler.dispatchedRequestsByAccountGroup[id] ?? 0,
+            inFlight,
+            status: coolingDown
+              ? "cooldown" as const
+              : inFlight > 0
+                ? "active" as const
+                : "idle" as const
+          };
+        })
+      });
+    },
     applyUnifiedRecoveryAction: async (input) => {
       if (input.action !== "manual-delivery") {
         return applyUnifiedRecoveryAction(unifiedTransactionHost, {

@@ -23,6 +23,13 @@ import type {
   AddressHistoryManifestIdentityV1,
   AddressHistoryManifestV1
 } from "./addressHistory";
+import {
+  projectUnifiedProgress,
+  type UnifiedProgressInputV1,
+  type UnifiedProgressLifecycleV1,
+  type UnifiedProgressPhaseV1,
+  type UnifiedProgressProjectionV1
+} from "./progressProjection";
 
 export const UNIFIED_CANARY_SELECTION_QUERY_VERSION =
   "unified-canary-selection-query-v1" as const;
@@ -76,6 +83,206 @@ export type UnifiedQueryable = {
 export type UnifiedTransactionalQueryable = UnifiedQueryable & {
   transaction<T>(work: (client: UnifiedQueryable) => Promise<T>): Promise<T>;
 };
+
+function progressNumber(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("unified_progress_repository_number_invalid");
+  }
+  return parsed;
+}
+
+export async function loadUnifiedProgressProjection(
+  db: UnifiedQueryable,
+  input: {
+    readonly runId: string;
+    readonly now: Date;
+    readonly configuredSlots: number;
+    readonly keyGroups?: UnifiedProgressInputV1["provider"]["keyGroups"];
+  }
+): Promise<UnifiedProgressProjectionV1> {
+  if (!Number.isSafeInteger(input.configuredSlots) || input.configuredSlots < 1) {
+    throw new TypeError("unified_progress_slots_invalid");
+  }
+  if (!Number.isFinite(input.now.getTime())) {
+    throw new TypeError("unified_progress_clock_invalid");
+  }
+  const row = (
+    await db.query(
+      `with selected_run as (
+         select *
+           from unified_check_runs
+          where id = $1
+       ),
+       task_rollup as (
+         select
+           count(*) filter (
+             where kind = 'address_history'
+               and status not in ('COMPLETED','CANCELLED')
+           )::int as address_outstanding,
+           count(*) filter (
+             where kind in ('direct_history','address_history','deep_direct')
+               and status = 'LEASED'
+               and lease_expires_at > $2::timestamptz
+           )::int as provider_active,
+           count(*) filter (
+             where kind in ('direct_history','address_history','deep_direct')
+               and status = 'WAITING_RETRY'
+           )::int as provider_cooldown,
+           coalesce(sum(
+             coalesce(
+               (checkpoint_json->'performanceCounters'->>'providerCalls')::bigint,
+               0
+             )
+           ),0)::bigint as provider_calls,
+           coalesce(sum(
+             coalesce(
+               (checkpoint_json->'performanceCounters'->>'networkFetches')::bigint,
+               0
+             )
+           ),0)::bigint as network_fetches,
+           coalesce(sum(
+             coalesce(
+               (checkpoint_json->'performanceCounters'->>'providerCacheHits')::bigint,
+               0
+             )
+           ),0)::bigint as provider_cache_hits,
+           coalesce(sum(pg_column_size(checkpoint_json)),0)::bigint
+             as checkpoint_bytes,
+           bool_or(kind = 'direct_history' and status <> 'COMPLETED')
+             as direct_incomplete,
+           bool_or(kind = 'traversal' and status <> 'COMPLETED')
+             as traversal_incomplete,
+           bool_or(
+             kind in ('fast','where','deep') and status <> 'COMPLETED'
+           ) as branches_incomplete,
+           (
+             coalesce(
+               jsonb_agg(checkpoint_json) filter (where kind = 'traversal'),
+               '[]'::jsonb
+             )->0
+           ) as traversal_checkpoint
+         from unified_check_tasks
+        where run_id = $1
+       ),
+       delta_rollup as (
+         select coalesce(sum(pg_column_size(artifact_json)),0)::bigint
+                  as delta_bytes
+           from unified_check_artifacts
+          where created_by_run_id = $1 and kind = 'traversal_delta'
+       )
+       select
+         run.status,
+         run.created_at,
+         tasks.*,
+         deltas.delta_bytes
+       from selected_run run
+       cross join task_rollup tasks
+       cross join delta_rollup deltas`,
+      [input.runId, input.now.toISOString()]
+    )
+  ).rows[0];
+  if (!row) throw new Error("unified_progress_run_missing");
+
+  const runStatus = String(row.status);
+  const lifecycle: UnifiedProgressLifecycleV1 =
+    runStatus === "COMPLETED"
+      ? "COMPLETED"
+      : runStatus === "FAILED_TECHNICAL"
+        ? "FAILED_TECHNICAL"
+        : runStatus === "WAITING_FOR_PROVIDER"
+          ? "WAITING_FOR_PROVIDER"
+          : runStatus === "BLOCKED_ADMIN"
+            ? "BLOCKED_ADMIN"
+            : "RUNNING";
+  const directIncomplete = row.direct_incomplete === true;
+  const traversalIncomplete = row.traversal_incomplete === true;
+  const branchesIncomplete = row.branches_incomplete === true;
+  const addressOutstanding = progressNumber(row.address_outstanding);
+  const phase: UnifiedProgressPhaseV1 =
+    lifecycle === "COMPLETED"
+      ? "completed"
+      : lifecycle === "FAILED_TECHNICAL"
+        ? "failed_technical"
+        : lifecycle === "WAITING_FOR_PROVIDER"
+          ? "provider_wait"
+          : directIncomplete
+            ? "direct_history"
+            : addressOutstanding > 0
+              ? "traversal_fetch"
+              : traversalIncomplete
+                ? "traversal_attribution"
+                : branchesIncomplete
+                  ? "branch_analysis"
+                  : "finalization";
+  const checkpoint =
+    row.traversal_checkpoint &&
+    typeof row.traversal_checkpoint === "object" &&
+    !Array.isArray(row.traversal_checkpoint)
+      ? row.traversal_checkpoint as Record<string, unknown>
+      : {};
+  const operational =
+    checkpoint.operational &&
+    typeof checkpoint.operational === "object" &&
+    !Array.isArray(checkpoint.operational)
+      ? checkpoint.operational as Record<string, unknown>
+      : {};
+  const frontier = progressNumber(operational.frontierCount);
+  const frontierPeak = Math.max(
+    frontier,
+    progressNumber(operational.frontierPeak)
+  );
+  const uniqueAddresses = progressNumber(operational.uniqueAddresses);
+  const fundingEpisodes = progressNumber(operational.fundingEpisodes);
+  const activeSlots = Math.min(
+    input.configuredSlots,
+    progressNumber(row.provider_active)
+  );
+  const coolingDownSlots = Math.min(
+    input.configuredSlots - activeSlots,
+    progressNumber(row.provider_cooldown)
+  );
+  const createdAt = new Date(String(row.created_at));
+  if (!Number.isFinite(createdAt.getTime())) {
+    throw new Error("unified_progress_run_clock_invalid");
+  }
+  const measurementWindowMs = Math.max(
+    1,
+    Math.trunc(input.now.getTime() - createdAt.getTime())
+  );
+  const avoided = Math.max(0, fundingEpisodes - uniqueAddresses);
+
+  return projectUnifiedProgress({
+    lifecycle,
+    phase,
+    provider: {
+      configuredSlots: input.configuredSlots,
+      activeSlots,
+      coolingDownSlots,
+      requests: progressNumber(row.provider_calls),
+      measurementWindowMs,
+      keyGroups: input.keyGroups ?? []
+    },
+    traversal: {
+      discoveredOutstanding: addressOutstanding,
+      frontierExpanding: lifecycle !== "COMPLETED" && traversalIncomplete,
+      frontierCount: frontier,
+      frontierPeak,
+      uniqueAddresses,
+      fundingEpisodes
+    },
+    storage: {
+      checkpointBytes: progressNumber(row.checkpoint_bytes),
+      deltaArtifactBytes: progressNumber(row.delta_bytes)
+    },
+    reuse: {
+      networkFetches: progressNumber(row.network_fetches),
+      providerCacheHits: progressNumber(row.provider_cache_hits),
+      manifestReuses: avoided,
+      replayAvoided: avoided
+    }
+  });
+}
 
 export function createUnifiedPoolTransactionHost(pool: UnifiedQueryable & {
   connect(): Promise<UnifiedQueryable & { release(error?: Error): void }>;

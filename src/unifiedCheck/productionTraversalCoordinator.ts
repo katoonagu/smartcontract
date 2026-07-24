@@ -509,6 +509,20 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
       );
       const nextFrontier = mergeTraversalStates([...remaining, ...generated]);
       const difference = stateDifference(state.frontier, nextFrontier);
+      const observedAddresses = new Set([
+        ...state.visitedStates.map((item) => item.address),
+        ...group.map((item) => item.address),
+        ...nextFrontier.map((item) => item.address),
+        ...state.terminals.map((item) => item.address),
+        ...addedTerminals.map((item) => item.address)
+      ]);
+      const observedEpisodes = new Set([
+        ...state.visitedStates.map((item) => item.fundingEpisodeId),
+        ...group.map((item) => item.fundingEpisodeId),
+        ...nextFrontier.map((item) => item.fundingEpisodeId),
+        ...state.terminals.map((item) => item.fundingEpisodeId),
+        ...addedTerminals.map((item) => item.fundingEpisodeId)
+      ]);
       const appended = appendTraversalDelta(v2, {
         addedFrontier: difference.added,
         removedFrontierStateIds: difference.removed,
@@ -522,6 +536,15 @@ export function createUnifiedTraversalCoordinatorHandler(input: {
           expanded: addedExpandedStateIds.length,
           terminal: addedTerminals.length,
           superseded: addedSupersededStateIds.length
+        },
+        operational: {
+          frontierCount: nextFrontier.length,
+          frontierPeak: Math.max(
+            v2.operational?.frontierPeak ?? state.frontier.length,
+            nextFrontier.length
+          ),
+          uniqueAddresses: observedAddresses.size,
+          fundingEpisodes: observedEpisodes.size
         },
         diagnostic: {
           at: context.manifest.confirmedBlockTimestamp,

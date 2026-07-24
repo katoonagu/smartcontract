@@ -195,6 +195,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Unknown delivery is never resent automatically.");
   });
 
+  it("renders exact Unified progress without ETA or percent-complete claims", () => {
+    const html = adminConsoleHtml();
+    expect(html).toContain("function unifiedProgressHtml(progress)");
+    expect(html).toContain("Discovered outstanding");
+    expect(html).toContain("total still expanding");
+    expect(html).toContain("Provider slots");
+    expect(html).toContain("Network / provider cache / manifest reuse");
+    expect(html).not.toContain("Estimated remaining time");
+    expect(html).not.toContain("Percent complete");
+  });
+
   it("renders escaped Unified DAG edge relations with both endpoints", () => {
     const html = adminConsoleHtml();
     const start = html.indexOf("function unifiedDagEdgeHtml(edge)");

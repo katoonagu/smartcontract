@@ -12,6 +12,7 @@ import {
   type WhereFundingCandidateItem
 } from "./whereFundingCandidateVisibility";
 import type { UnifiedWatchdogProjectionV1 } from "../unifiedCheck/watchdog";
+import type { UnifiedProgressProjectionV1 } from "../unifiedCheck/progressProjection";
 
 export type AdminUnifiedDagV1 = {
   readonly version: "admin-unified-dag-v1";
@@ -35,7 +36,8 @@ export type AdminUnifiedDagV1 = {
 };
 
 export function projectUnifiedRunDag(
-  run: UnifiedWatchdogProjectionV1
+  run: UnifiedWatchdogProjectionV1,
+  progress: UnifiedProgressProjectionV1 | null = null
 ): AdminUnifiedDagV1 {
   const runNodeId = `run:${run.id}`;
   const nodes: AdminUnifiedDagV1["nodes"][number][] = [{
@@ -52,6 +54,7 @@ export function projectUnifiedRunDag(
       versions: run.versions,
       traversal: run.traversal,
       generation: run.generation,
+      progress,
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
       completedAt: run.completedAt

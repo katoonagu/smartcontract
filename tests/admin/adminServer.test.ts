@@ -474,6 +474,46 @@ describe("startAdminServer", () => {
     const server = await start({
       ...deps(),
       listUnifiedRuns: async () => [unifiedRun()],
+      getUnifiedProgress: async () => ({
+        version: "unified-progress-projection-v1",
+        lifecycle: "BLOCKED_ADMIN",
+        phase: "traversal_fetch",
+        noScoreReason: "Analysis requires an Admin decision; no risk score exists yet.",
+        provider: {
+          configuredSlots: 4,
+          activeSlots: 1,
+          idleSlots: 2,
+          coolingDownSlots: 1,
+          requestsPerSecond: 2,
+          keyGroups: [{
+            id: "primary",
+            requests: 120,
+            inFlight: 1,
+            status: "active"
+          }]
+        },
+        remaining: {
+          discoveredExact: 3,
+          totalKnown: false,
+          undiscoveredLowerBound: 0
+        },
+        reuse: {
+          networkFetches: 60,
+          providerCacheHits: 20,
+          manifestReuses: 42,
+          replayAvoided: 42
+        },
+        traversal: {
+          frontier: 20,
+          frontierPeak: 35,
+          uniqueAddresses: 48,
+          fundingEpisodes: 90
+        },
+        storage: {
+          checkpointBytes: 1024,
+          deltaArtifactBytes: 4096
+        }
+      }),
       applyUnifiedRecoveryAction: async (input) => {
         actions.push(input);
         return { ok: true, code: "resumed" };
@@ -501,8 +541,27 @@ describe("startAdminServer", () => {
       { headers }
     );
     expect(detail.status).toBe(200);
-    expect(await detail.json()).toMatchObject({
-      dag: { version: "admin-unified-dag-v1", runId: "unified-run-1" }
+    const detailBody = await detail.json();
+    expect(detailBody).toMatchObject({
+      progress: {
+        lifecycle: "BLOCKED_ADMIN",
+        remaining: { discoveredExact: 3, totalKnown: false },
+        provider: { keyGroups: [{ id: "primary", requests: 120 }] }
+      },
+      dag: {
+        version: "admin-unified-dag-v1",
+        runId: "unified-run-1"
+      }
+    });
+    expect(detailBody.dag.nodes.find(
+      (node: { id: string }) => node.id === "run:unified-run-1"
+    )).toMatchObject({
+      metadata: {
+        progress: {
+          lifecycle: "BLOCKED_ADMIN",
+          remaining: { discoveredExact: 3, totalKnown: false }
+        }
+      }
     });
 
     const page = await fetch(`${server.url}/admin/unified-checks`, { headers });

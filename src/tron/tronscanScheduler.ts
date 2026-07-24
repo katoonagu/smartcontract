@@ -45,6 +45,7 @@ export type TronscanSchedulerDiagnostics = {
   endpointCooldownUntilMs: Partial<Record<TronscanEndpointBucket, number>>;
   accountGroupCooldownUntilMs: Record<string, number>;
   inFlightByAccountGroup: Record<string, number>;
+  dispatchedRequestsByAccountGroup: Record<string, number>;
 };
 
 export type TronscanScheduler = {
@@ -96,6 +97,7 @@ type RateLimitScopeState = {
 
 type AccountGroupState = {
   inFlight: number;
+  dispatchedRequests: number;
   nextRequestAtMs: number;
   cooldownUntilMs: number;
   nextRequestAtMsByScope: Record<TronscanRateLimitScope, number>;
@@ -210,6 +212,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     if (existing) return existing;
     const created: AccountGroupState = {
       inFlight: 0,
+      dispatchedRequests: 0,
       nextRequestAtMs: 0,
       cooldownUntilMs: 0,
       nextRequestAtMsByScope: emptyScopeRecord(0),
@@ -379,6 +382,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     }
     inFlight += 1;
     accountGroup.inFlight += 1;
+    accountGroup.dispatchedRequests += 1;
     dispatchedRequests += 1;
     void (async () => {
       try {
@@ -494,6 +498,9 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         ),
         inFlightByAccountGroup: Object.fromEntries(
           [...accountGroupState.entries()].map(([groupId, state]) => [groupId, state.inFlight])
+        ),
+        dispatchedRequestsByAccountGroup: Object.fromEntries(
+          [...accountGroupState.entries()].map(([groupId, state]) => [groupId, state.dispatchedRequests])
         )
       };
     }

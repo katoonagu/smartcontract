@@ -851,7 +851,11 @@ describe("TronScan scheduler", () => {
     const diagnostics = scheduler.diagnostics();
     expect(diagnostics).toEqual(expect.objectContaining({
       apiKeyGroupCount: 2,
-      accountGroupCooldownUntilMs: expect.objectContaining({ shared: 1250, backup: 0 })
+      accountGroupCooldownUntilMs: expect.objectContaining({ shared: 1250, backup: 0 }),
+      dispatchedRequestsByAccountGroup: expect.objectContaining({
+        shared: 1,
+        backup: 0
+      })
     }));
     expect(JSON.stringify(diagnostics)).not.toContain("key-a");
     expect(JSON.stringify(diagnostics)).not.toContain("key-b");

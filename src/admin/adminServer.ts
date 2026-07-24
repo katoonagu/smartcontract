@@ -56,6 +56,7 @@ import {
   inspectUnifiedRuns,
   type UnifiedWatchdogRunV1
 } from "../unifiedCheck/watchdog";
+import type { UnifiedProgressProjectionV1 } from "../unifiedCheck/progressProjection";
 
 export type AdminServerConfig = {
   host: string;
@@ -82,6 +83,7 @@ export type AdminServerDeps = {
   getRuntimeProof?(): RuntimeProofV1;
   runRuntimeNavigationProbe?(): Promise<RuntimeNavigationProbeV1>;
   listUnifiedRuns?(): Promise<UnifiedWatchdogRunV1[]>;
+  getUnifiedProgress?(runId: string): Promise<UnifiedProgressProjectionV1>;
   applyUnifiedRecoveryAction?(input: {
     runId: string;
     action:
@@ -1544,7 +1546,14 @@ async function handleApiRequest(
       writeJson(response, 404, { error: "Unified run not found." });
       return;
     }
-    writeJson(response, 200, { run, dag: projectUnifiedRunDag(run) });
+    const progress = deps.getUnifiedProgress
+      ? await deps.getUnifiedProgress(run.id)
+      : null;
+    writeJson(response, 200, {
+      run,
+      progress,
+      dag: projectUnifiedRunDag(run, progress)
+    });
     return;
   }
 
