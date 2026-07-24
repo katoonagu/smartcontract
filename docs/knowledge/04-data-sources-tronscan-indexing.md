@@ -14,6 +14,11 @@ code_refs:
   - src/unifiedCheck/fairScheduler.ts
   - src/unifiedCheck/traversal.ts
   - src/unifiedCheck/productionTraversal.ts
+  - src/unifiedCheck/addressHistory.ts
+  - src/unifiedCheck/productionAddressHistory.ts
+  - src/unifiedCheck/frozenLabels.ts
+  - src/unifiedCheck/labelCatalog.ts
+  - src/unifiedCheck/boundaryPredicates.ts
 ---
 
 # TronScan Data And Indexing
@@ -50,6 +55,12 @@ Identical provider requests share an identity and may coalesce across child
 branches. The fair scheduler tracks per-key/group health and cooldowns so an
 old or waiting heavy job cannot reserve the entire pool.
 
+A snapshot/address/USDT history is materialized once as content-addressed
+chunks and reused by all funding episodes. Episode attribution stays separate;
+history reuse does not merge origins or change proportional attribution.
+Provider checkpoints retain bounded counters and chain heads rather than
+repeated full collections.
+
 Traversal is finite without a coverage threshold. It terminates only at
 snapshot-bounded history exhaustion or an evidence-backed service/CEX/DEX/
 bridge/contract boundary. Canonical vertices/edges are deduplicated, dense
@@ -61,6 +72,17 @@ terminal boundary.
 Coverage is multidimensional audit metadata. It cannot change matrix-v4 score
 or turn unfinished work into `COMPLETED`.
 
+The candidate also freezes a versioned supported-label catalog and provenance
+dataset per snapshot. The supported CEX catalog is Binance, Bybit, OKX,
+WhiteBIT, Coinbase, Kraken, KuCoin, Bitget, MEXC, Bitstamp, Crypto.com, and
+HTX/Huobi. Other supported entries are SunSwap/SUN, Allbridge, Bridgers, USDD
+PSM/GemJoin, GasFree, and the TronLink GasFree provider. A label alone is not
+an economic boundary: terminal predicates require valid-at-event identity and
+the corresponding route/economic proof. Hint labels and later-discovered
+restrictions remain context only.
+
 This data plane is implemented and tested but is not the deployed index path.
-Remaining work is protected schema/startup activation and post-deploy
-observation on real provider traffic.
+The new predicates are deliberately not wired into production closure or
+exact scores until P1 blind review/adjudication. Frozen real-address
+performance replay is also pending because the earlier live runtime did not
+persist canonical provider response pages.

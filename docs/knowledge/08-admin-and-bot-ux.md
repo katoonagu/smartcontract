@@ -50,8 +50,14 @@ delivery.
 
 Admin exposes parent/child states, immutable attempts, provider waits,
 closure/coverage diagnostics, artifact hashes, score anchor, delivery state,
-and watchdog actions. `FAILED_TECHNICAL` is operational. `DELIVERY_UNKNOWN` is
-visible and never auto-retried; manual resend is explicit and warned.
+and watchdog actions. The authorized Unified detail view also shows the
+current phase, active/idle/cooling provider slots, request rate, opaque
+key-group use, exact discovered outstanding work, frontier current/peak,
+address-history reuse, cache/network counts, and checkpoint/delta bytes.
+When the frontier can expand it says `total still expanding`; it never invents
+percent complete or ETA. `FAILED_TECHNICAL` is operational.
+`DELIVERY_UNKNOWN` is visible and never auto-retried; manual resend is explicit
+and warned.
 
 The rollout fence and `/check` wiring are implemented in the candidate.
 Production continues legacy delivery until schema 033 and the Unified

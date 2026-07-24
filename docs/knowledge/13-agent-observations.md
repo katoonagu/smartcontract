@@ -298,3 +298,14 @@ of being added to the fail-closed producer/evidence contract.
 
 Correct rule: bind the exact new migration/checksum and real trust-boundary
 fixture while continuing to reject future or unknown files.
+
+## 2026-07-24: Do Not Turn Performance Hopes Into Product Limits
+
+Repeated correction: proposed two/ten-minute targets and “estimated remaining”
+work drifted toward user-visible limits even though dense frontier size is not
+known in advance.
+
+Correct rule: measure frozen cases first. Admin may show exact discovered
+outstanding work and say that the total is still expanding, but never invents
+ETA or percent complete. Internal SLO proposals do not stop analysis, publish
+partial scores, add risk, or become release gates without a separate decision.

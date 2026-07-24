@@ -11,12 +11,20 @@ code_refs:
 
 # Open Problems
 
-## Release-Blocking Operations
+## External Blockers
 
-The Unified implementation gap is closed. The following work remains because it
-depends on a final candidate or explicit production authority:
+The P0 runtime and P2 Admin progress implementation gaps are closed. The
+following work depends on frozen evidence, human adjudication, a final
+candidate, or explicit production authority:
 
-- commit the consolidated candidate;
+- Capture canonical provider request identities and response pages for TPCP,
+  TFWG, and TXc on the schema-033 runtime, then freeze the bundles. The saved
+  recent-run logs contain request events but not response bodies, and their
+  database predates `unified_provider_pages`; a truthful before/after matrix
+  cannot be reconstructed from them.
+- Blind-review/adjudicate the P1 positive and negative boundary cases before
+  enabling those predicates or creating exact expected scores.
+
 - run the fixed final gate set once and create exact-SHA write-once receipts;
 - obtain explicit production GO and protected action authority;
 - create the production backup, apply/verify schema 033, start the candidate,
@@ -40,9 +48,6 @@ Production remains legacy until those operations complete.
 - Recipient wallet precheck before signing.
 - Additional Admin exploration and optional presentation refinements that do
   not change current acceptance contracts.
-- Reuse one snapshot-bounded counterparty history across funding episodes in a
-  run. The current traversal replays cached pages once per episode, so dense
-  wallets make monotonic progress but spend unnecessary scheduler cycles.
 - Further provider/index performance tuning after measured post-deploy data.
 
 These follow-ups do not expand Task 21 or add release gates.

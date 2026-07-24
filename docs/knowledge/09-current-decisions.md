@@ -47,6 +47,13 @@ audit artifacts. It is not a second source of current product truth.
   exhaustion or evidence-backed boundaries, never a product coverage target.
 - Dense graphs remain finite through canonical deduplication, equivalent-state
   merging, and closure certificates.
+- Address history is content-addressed once per snapshot/address and reused by
+  separate funding allocations. Checkpoints are bounded heads over immutable
+  chunks/deltas, with deterministic V1-to-V2 rollout.
+- Four ready provider slots may work one dense run when idle; run-aware
+  fairness prevents it from starving other interactive checks.
+- Direct history and direct hard evidence run in parallel with traversal, but
+  only the completed parent owns scoring and delivery.
 - Canonical fact identity prevents Fast/Where/Deep double counting.
 - Matrix v4 gives unknown addresses zero by default and creates risk only from
   evidence or confirmed behavior combinations.
@@ -78,7 +85,22 @@ presentation manifests.
 
 Admin owns operational visibility: parent/child lifecycle, immutable attempts,
 provider waits, closure/coverage, hashes, score anchor, delivery state, and
-watchdog actions.
+watchdog actions. Its progress projection reports exact discovered work and
+runtime counters only; expanding work has no denominator, ETA, or percent.
+
+## Labels, Boundaries, And Performance Evidence
+
+- Supported labels are a versioned, snapshot-bound dataset with provenance.
+- A known label is not sufficient to stop traversal; the matching
+  valid-at-event route/economic predicate must also hold.
+- P1 boundary predicates remain candidate-only until blind review and
+  adjudication. Exact expected scores are created only after that decision.
+- Benchmark identity fixes case/run IDs, clock, snapshot, provider/label/config
+  hashes, policies, locale, deterministic ID seed, runtime commit, checkpoint
+  version, chunk size, slot count, and harness version.
+- Wall time and machine metadata are measurements outside canonical analysis
+  hashes. Any eventual SLO is internal observability, never a user timeout,
+  coverage gate, completion condition, or publication rule.
 
 ## Release Safety
 

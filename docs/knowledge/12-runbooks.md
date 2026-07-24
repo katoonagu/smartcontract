@@ -118,6 +118,33 @@ Migration 033 is checksum-verified before the DB session can mutate anything.
 G07 clean/clone evidence and G13 production receipt bind its catalog proof.
 Unknown migration 034+ fails closed.
 
+## Frozen Performance Capture
+
+The deterministic benchmark manifest is implemented and separates semantic
+identity from execution identity. A real-address benchmark is runnable only
+after every request made by the case has an immutable
+`unified_provider_pages` row containing:
+
+```text
+request_identity_sha256
+snapshot_block_hash
+payload_sha256
+payload_json
+fetched_at
+provenance_json
+```
+
+TPCP, TFWG, and TXc must each be captured once on the schema-033 runtime to
+their own terminal lifecycle state. Export by request identity, remove all key
+material, bind the ordered response identities and label/config hashes, and
+then run replay offline. Do not use the live blockchain as the benchmark and
+do not reconstruct response bodies from request-only logs.
+
+The current blocker is missing historical response pages for those three
+addresses. Therefore there is no measured before/after table or proposed
+internal SLO yet. Once bundles exist, compare only runs with identical semantic
+identity; execution identity may differ for the declared mechanical changes.
+
 ## Live Canary
 
 Live canary is post-deployment only. It selects exactly eight most recent
